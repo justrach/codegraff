@@ -24,6 +24,12 @@
 //!              breadth is what they are paying for), or a prior solo/scout
 //!              attempt already failed — first-attempt failure is the free
 //!              escalation signal, and the only one worth trusting.
+//!   R0d deep   between R0 and the fleet: a FIRST failure on a 1-2 file ask
+//!              is reasoning-shaped, not coverage-shaped, so the ladder
+//!              prescribes one sequential revision carrying the observed
+//!              failure evidence — but only where a verifier exists to catch
+//!              a second miss (failure_evidence.zig). A second failure, or a
+//!              verifier-less class, goes to R3: the judges are the feedback.
 //!
 //! Where a learned cell has evidence (orchestration_policy.zig) it overrides
 //! the hand rung and the row says `source:"learned"`; otherwise the ladder
@@ -49,6 +55,7 @@ const route_policy = @import("route_policy.zig");
 const orch = @import("orchestration_policy.zig");
 const orch_rows = @import("orchestration_rows.zig");
 const pb = @import("phase_budget.zig");
+const fe = @import("failure_evidence.zig");
 const brief_diversity = @import("brief_diversity.zig");
 const fleet = @import("fleet.zig");
 const trace = @import("trace.zig");
@@ -75,6 +82,10 @@ pub const Observables = struct {
     plan_estimate: u64 = 0,
     audit: bool = false,
     prior_failure: bool = false,
+    /// How MANY times this class already declined — 1 opens R0d, 2+ means the
+    /// deep retry was already spent and only the fleet is left.
+    prior_failure_count: u8 = 0,
+    verifier: fe.Verifier = .none,
     remaining: u64 = 0,
     cap: u64 = 0,
 };
@@ -165,6 +176,8 @@ pub fn observe(phases: []const Value, raw: []const u8, shape: route_policy.Shape
         .task_class = shapes.classOf(raw),
         .audit = shapes.isAuditClass(raw),
         .prior_failure = priorAttemptFailed(shapes.classOf(raw)),
+        .prior_failure_count = declineCount(shapes.classOf(raw)),
+        .verifier = fe.verifierFor(shapes.classOf(raw), false),
         .remaining = remaining,
         .cap = cap,
         .plan_estimate = pb.planEstimate(phases),
@@ -202,13 +215,30 @@ pub const solo_advice =
     "the files, make the edits, verify — and re-invoke the workflow tool only if verification fails, " ++
     "which is the signal that earns a fleet.";
 
-/// The hand ladder's rung. Ordered by precedence, NOT by cost: the two
-/// escalation signals (an ask that asked for breadth, an attempt that already
-/// failed) are checked first, then the cheap rungs, and R0 is the fallthrough
-/// — so a plan that justifies nothing gets nothing.
+/// The R0d advisory. Same non-error contract as solo_advice; the difference
+/// is the prescription — a REVISION, not a redo: re-derive from the observed
+/// failure, not from the reasoning that already missed once.
+pub const deep_retry_advice =
+    "workflow declined (escalation R0d): the first solo attempt failed, but this is a revision case, " ++
+    "not a fleet case. Redo the work yourself, deeper: re-read the failure evidence, re-derive the " ++
+    "approach from that evidence rather than from your earlier reasoning, and verify against the " ++
+    "same signal before answering. If verification fails again, re-invoke the workflow tool — a " ++
+    "second failure earns the fleet.";
+
+/// The hand ladder's rung. Ordered by precedence, NOT by cost: the revision
+/// rung, then the two escalation signals (an ask that asked for breadth, an
+/// attempt that already failed), then the cheap rungs, and R0 is the
+/// fallthrough — so a plan that justifies nothing gets nothing.
 pub fn ladderRung(o: Observables) Rung {
     const l = pb.Ledger.init(o.cap);
     const fleet_affordable = l.fits(o.remaining, pb.fleetFloor(o.shape));
+    // One deep solo retry before the fleet. Checked BEFORE affordability:
+    // a revision spends no spawns, so a pool too dry for a fleet can still
+    // afford it — and the failure that earns it is reasoning-shaped (small
+    // scope), which parallel sampling cannot fix. Weng's gate applies: no
+    // verifier, no revision loop.
+    if (o.prior_failure and !o.audit and o.prior_failure_count == 1 and
+        o.files < fleet_scope_min and o.verifier != .none) return .R0d;
     if ((o.audit or o.prior_failure) and fleet_affordable) return .R3;
     // An open-ended question is the one case where delegation pays for itself
     // at width ONE: the scout burns its own context on the search and hands
@@ -259,6 +289,7 @@ pub fn verdictFor(rung: Rung, o: Observables, phases: []const Value) Verdict {
     const l = pb.Ledger.init(o.cap);
     switch (rung) {
         .R0 => return .{ .solo = solo_advice },
+        .R0d => return .{ .solo = deep_retry_advice },
         // One scout, one synthesis: cap every phase at a single task.
         .R1 => return .{ .downsize = 1 },
         .R2, .R3 => {
@@ -289,6 +320,10 @@ pub fn priorAttemptFailed(tc: shapes.TaskClass) bool {
     return g_declined[@intFromEnum(tc)] > 0;
 }
 
+pub fn declineCount(tc: shapes.TaskClass) u8 {
+    return g_declined[@intFromEnum(tc)];
+}
+
 pub fn noteDeclined(tc: shapes.TaskClass) void {
     const i = @intFromEnum(tc);
     if (g_declined[i] < 255) g_declined[i] += 1;
@@ -298,6 +333,23 @@ pub fn noteDeclined(tc: shapes.TaskClass) void {
 pub fn resetSession() void {
     g_declined = @splat(0);
     g_explore_used = false;
+    fe.reset();
+}
+
+/// R0d's advisory with the class's observed evidence appended. Falls back to
+/// the bare advisory on an empty ledger or OOM — the prescription stands even
+/// when the harness observed nothing concrete.
+pub fn deepRetryAdvice(arena: Allocator, tc: shapes.TaskClass) []const u8 {
+    const ev = fe.evidence(tc);
+    if (ev.len == 0) return deep_retry_advice;
+    return std.fmt.allocPrint(arena, "{s}\n\nPRIOR ATTEMPT EVIDENCE (verify against this, not against your recollection):\n{s}", .{ deep_retry_advice, ev }) catch deep_retry_advice;
+}
+
+/// The evidence for THIS turn's ask class — what workflow prepends to R3
+/// briefs so a post-failure fleet attacks the observed failure rather than a
+/// paraphrase of the original ask.
+pub fn evidenceForAsk() []const u8 {
+    return fe.evidence(shapes.classOf(shapes.rawAsk()));
 }
 
 /// A pipeline that could not fit the pool counts as a declined attempt for
@@ -370,6 +422,8 @@ pub const Ctx = struct {
     used: u64 = 0,
     /// The ROOT's resolved model: this decision's fitness stratum.
     stratum: []const u8 = "",
+    /// An --eval loop is configured: the strongest verifier, any class.
+    has_eval: bool = false,
     agent_cwd: ?[]const u8 = null,
 };
 
@@ -387,6 +441,7 @@ pub fn ctxFrom(t: anytype, arena: Allocator) Ctx {
         .cap = pb.capOf(t.run_budget),
         .used = pb.usedOf(t.run_budget),
         .stratum = t.provider.model,
+        .has_eval = t.has_eval,
         .agent_cwd = t.agent_cwd,
     };
 }
@@ -427,7 +482,8 @@ fn armsFor(key: orch.Key) []const orch.ArmObs {
 /// execWorkflow, before a single future is allocated.
 pub fn admit(c: Ctx, phases: []const Value, shape: route_policy.Shape) Decision {
     const raw = shapes.rawAsk();
-    const o = observe(phases, raw, shape, c.remaining, c.cap);
+    var o = observe(phases, raw, shape, c.remaining, c.cap);
+    if (c.has_eval) o.verifier = .eval;
     const key: orch.Key = .{
         .task_class = o.task_class,
         .budget_band = orch.BudgetBand.of(o.remaining),
@@ -443,6 +499,9 @@ pub fn admit(c: Ctx, phases: []const Value, shape: route_policy.Shape) Decision 
             d = .{ .rung = learned, .source = .learned, .verdict = verdictFor(learned, o, phases) };
         }
     }
+    // R0d's advisory carries the observed failure evidence, composed here
+    // because verdictFor is pure and the evidence needs the arena.
+    if (d.rung == .R0d) d.verdict = .{ .solo = deepRetryAdvice(c.arena, o.task_class) };
     const collapse = predictedCollapse(c.arena, phases);
     orch_rows.emitDecision(.{
         .key = key,
@@ -526,6 +585,7 @@ fn predictedCollapse(arena: Allocator, phases: []const Value) CollapsePreview {
 // Lives next door (600-line cap) and is re-exported whole, so a call site
 // reaches the ladder and the landing guarantee through one import.
 pub const edit_contract = @import("edit_contract.zig");
+pub const failure_evidence = fe;
 pub const contract_unmet = edit_contract.contract_unmet;
 pub const contract_brief_note = edit_contract.contract_brief_note;
 pub const isContracted = edit_contract.isContracted;
@@ -535,5 +595,6 @@ pub const contractCheck = edit_contract.contractCheck;
 
 test {
     _ = edit_contract;
+    _ = fe;
     _ = @import("escalation_tests.zig");
 }

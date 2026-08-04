@@ -267,6 +267,82 @@ test "countDistinctFiles: paths, not version numbers or sentence periods" {
     try std.testing.expect(n >= escalation.fleet_scope_min);
 }
 
+test "ladder: a first small-scope failure with a verifier is R0d — revision before fleet" {
+    var o = base();
+    o.prior_failure = true;
+    o.prior_failure_count = 1;
+    o.verifier = .diff;
+    try std.testing.expectEqual(Rung.R0d, escalation.ladderRung(o));
+    // R0d spends no spawns, so it stays admissible where a fleet is not.
+    o.remaining = 3;
+    try std.testing.expectEqual(Rung.R0d, escalation.ladderRung(o));
+    // A SECOND failure means the revision was already spent: fleet next.
+    o = base();
+    o.prior_failure = true;
+    o.prior_failure_count = 2;
+    o.verifier = .diff;
+    try std.testing.expectEqual(Rung.R3, escalation.ladderRung(o));
+    // No verifier, no revision loop (Weng's gate): the R3 judges ARE the
+    // external feedback a solo retry would lack.
+    o.prior_failure_count = 1;
+    o.verifier = .none;
+    try std.testing.expectEqual(Rung.R3, escalation.ladderRung(o));
+    // A coverage-shaped failure (3+ files) wants breadth, not revision.
+    o.verifier = .diff;
+    o.files = 4;
+    try std.testing.expectEqual(Rung.R3, escalation.ladderRung(o));
+    // Audit language keeps its precedence over the revision rung.
+    o = base();
+    o.prior_failure = true;
+    o.prior_failure_count = 1;
+    o.verifier = .diff;
+    o.audit = true;
+    try std.testing.expectEqual(Rung.R3, escalation.ladderRung(o));
+}
+
+test "R0d: the advisory prescribes a revision and carries the parked evidence" {
+    escalation.resetSession();
+    defer escalation.resetSession();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // Bare advisory: a revision prescription with a path to the fleet.
+    const bare = escalation.deepRetryAdvice(a, .bugfix);
+    try std.testing.expect(std.mem.indexOf(u8, bare, "R0d") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bare, "second failure earns the fleet") != null);
+    // With parked evidence the advisory embeds it verbatim — the retry acts
+    // on the observed signal, not on the reasoning that already missed.
+    escalation.failure_evidence.note(.bugfix, "eval RED: score 40.0/100 (target 90, exit 1)");
+    const with_ev = escalation.deepRetryAdvice(a, .bugfix);
+    try std.testing.expect(std.mem.indexOf(u8, with_ev, "PRIOR ATTEMPT EVIDENCE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, with_ev, "eval RED: score 40.0/100") != null);
+    // Another class stays bare — evidence never leaks across classes.
+    try std.testing.expect(std.mem.indexOf(u8, escalation.deepRetryAdvice(a, .research), "PRIOR ATTEMPT EVIDENCE") == null);
+    // resetSession clears the ledger with the rest of the session state.
+    escalation.resetSession();
+    try std.testing.expectEqualStrings("", escalation.failure_evidence.evidence(.bugfix));
+}
+
+test "observe: decline count and the class verifier feed the revision gate" {
+    escalation.resetSession();
+    defer escalation.resetSession();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const phases = phasesFrom(a, "[{\"title\":\"implement the fix\",\"tasks\":[1]}]");
+    escalation.noteDeclined(.bugfix);
+    const o = escalation.observe(phases, "fix the bug in stats.py", .review, 27, 30);
+    try std.testing.expect(o.prior_failure);
+    try std.testing.expectEqual(@as(u8, 1), o.prior_failure_count);
+    try std.testing.expectEqual(escalation.failure_evidence.Verifier.diff, o.verifier);
+    try std.testing.expectEqual(Rung.R0d, escalation.ladderRung(o));
+    // verdictFor(R0d) declines non-error with the revision prescription.
+    switch (escalation.verdictFor(.R0d, o, phases)) {
+        .solo => |advice| try std.testing.expect(std.mem.indexOf(u8, advice, "revision case") != null),
+        else => return error.ExpectedSolo,
+    }
+}
+
 test "edit contract: a clean tree is is_error, a tree that moved is ok" {
     // The PURE half of §3b, which is the half with the interesting logic — the
     // impure half is one `git status --porcelain` and a string compare.

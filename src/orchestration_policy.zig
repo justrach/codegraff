@@ -44,6 +44,14 @@ pub const TaskClass = shapes.TaskClass;
 pub const Rung = enum {
     /// Solo: the root does the work; the workflow tool declines and says so.
     R0,
+    /// Solo, DEEPER: decline again after a first failure, but prescribe a
+    /// sequential revision — retry carrying the concrete failure evidence,
+    /// think longer, verify against the signal that failed. Admitted only
+    /// when a verifier exists (failure_evidence.verifierFor): without
+    /// external feedback a revision loop converts right answers to wrong
+    /// ones, so a verifier-less failure goes straight to R3, where the
+    /// judges ARE the feedback.
+    R0d,
     /// One scout: a single sweep + synthesize, to keep the parent's context
     /// clean rather than to parallelize.
     R1,
@@ -60,13 +68,16 @@ pub const Rung = enum {
         return std.meta.stringToEnum(Rung, s);
     }
 
-    /// Ordinal, for the trade-down asymmetry in `override`.
+    /// Ordinal, for the trade-down asymmetry in `override`. R0d sits between
+    /// solo and scout: it spends no spawns, but it does spend a root retry
+    /// the plain R0 decline would not have prescribed.
     pub fn level(self: Rung) u8 {
         return switch (self) {
             .R0 => 0,
-            .R1 => 1,
-            .R2 => 2,
-            .R3 => 3,
+            .R0d => 1,
+            .R1 => 2,
+            .R2 => 3,
+            .R3 => 4,
         };
     }
 };

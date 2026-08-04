@@ -233,9 +233,11 @@ pub fn tierLabelFor(provider_id: []const u8, model: []const u8) []const u8 {
 /// model the worker actually ran on.
 ///
 /// Until now the only routing axis a fitness row carried was
-/// scoring.providerClass, whose needle table buckets gpt-5.6-sol, -terra and
-/// -luna IDENTICALLY as "frontier" (the pinned, deliberate disagreement test
-/// in subagent_selection.zig). A rung-only difference was therefore invisible
+/// scoring.providerClass, whose needle table then bucketed gpt-5.6-sol,
+/// -terra and -luna IDENTICALLY as "frontier" (closed since — terra/luna are
+/// tier-distinct needles now — though a class still pools distinct models:
+/// sol and bare gpt-5.6 share "frontier"). A rung-only difference was
+/// therefore invisible
 /// to every comparison built on it — which is precisely why #290 had to
 /// forbid phase workers from varying their model at all: nothing downstream
 /// could have told the model's contribution from the prompt's.

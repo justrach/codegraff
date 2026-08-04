@@ -7,8 +7,9 @@
 //! prompt variants of one phase against each other and files the winner under
 //! the prompt fingerprint. A phase whose tasks could differ in model would
 //! attribute the model's effect to the genome — and nothing downstream could
-//! have caught it, since scoring.providerClass buckets gpt-5.6-sol, -terra
-//! and -luna identically (route_policy.stratumOf tells that story in full).
+//! have caught it, since scoring.providerClass then bucketed gpt-5.6-sol,
+//! -terra and -luna identically (route_policy.stratumOf tells that story in
+//! full).
 //!
 //! The confound is PER-TASK variation, not the model. This module applies the
 //! #372 policy exactly once for a whole phase:
