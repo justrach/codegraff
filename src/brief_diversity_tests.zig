@@ -163,9 +163,139 @@ test "#382: a fleet whose variation lives in system_prompt is judged on that axi
     try std.testing.expect(bd.personaAxis(a, &shape_c_prompts, &partial_genomes) == null);
     try std.testing.expect(bd.check(a, null, "variants", &shape_c_prompts, &partial_genomes).len > 0);
 
-    // …and near-identical personas still warn, on the persona text.
-    const same = [_]?[]const u8{ shape_c_genomes[0], shape_c_genomes[0], shape_c_genomes[0] };
-    try std.testing.expect(bd.check(a, null, "variants", &shape_c_prompts, &same).len > 0);
+    // Personas that DIFFER but only slightly still warn, on the persona text —
+    // that fleet really is one concept wearing three hats.
+    const near = [_]?[]const u8{
+        "You are an implementer. Favour the MVP: ship the smallest thing that works.",
+        "You are an implementer. Favour the MVP: ship the smallest thing that works today.",
+        "You are an implementer. Favour the MVP: ship the smallest thing that can work.",
+    };
+    try std.testing.expect(bd.personaAxis(a, &shape_c_prompts, &near) != null);
+    try std.testing.expect(bd.check(a, null, "variants", &shape_c_prompts, &near).len > 0);
+}
+
+test "personaAxis: identical genomes are a CONSTANT, not an axis — measure the briefs" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // THE false positive, transcribed from eval run 01-bugfix-B. Three finders
+    // carrying ONE resolved system_prompt and three genuinely different briefs.
+    // The old rule ("every task has SOME override") moved the axis to the
+    // personas, measured them at 1.000, and fired the warning — while the text
+    // that actually varied was never looked at. A gate reporting "100% similar"
+    // for a fleet whose briefs are ~17% similar is worse than no gate.
+    const one_genome = "You are a code reviewer. Report concrete defects with file:line evidence.";
+    const genomes = [_]?[]const u8{ one_genome, one_genome, one_genome };
+    const briefs = [_][]const u8{
+        "Review implementation correctness in stats.py: check each function against its docstring and the behaviour the tests assert.",
+        "Analyze boundary cases: empty input, single element, even-length input, and ties between equally frequent values.",
+        "Trace tests to functions: map every assertion in test_stats.py back to the function it exercises and note which are unmet.",
+    };
+
+    // The axis does NOT move: with one genome there is nothing to measure on it.
+    try std.testing.expect(bd.personaAxis(a, &briefs, &genomes) == null);
+    // So the gate measures the briefs — and the briefs are varied, so it is
+    // silent. This is the exact run that used to warn at 1.00.
+    const r = bd.analyze(a, &briefs);
+    try std.testing.expect(!r.warn);
+    try std.testing.expect(r.mean < bd.warn_threshold);
+    try std.testing.expectEqualStrings("", bd.check(a, null, "find", &briefs, &genomes));
+
+    // The same one-genome fleet with COPIED briefs still warns — the fix moves
+    // the measurement, it does not silence it.
+    const copies = [_][]const u8{ briefs[0], briefs[0], briefs[0] };
+    try std.testing.expect(bd.check(a, null, "find", &copies, &genomes).len > 0);
+
+    // genomeSha is content equality over the RESOLVED genome, which is what a
+    // prompt_sha comparison means here.
+    try std.testing.expectEqual(bd.genomeSha(one_genome), bd.genomeSha("You are a code reviewer. Report concrete defects with file:line evidence."));
+    try std.testing.expect(bd.genomeSha(one_genome) != bd.genomeSha("You are a security reviewer."));
+}
+
+test "collapse: same genome + same brief spawns once, and the survivor takes the fan-in" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const g = "reviewer persona";
+    const genomes = [_]?[]const u8{ g, g, g };
+
+    // Three byte-identical briefs under one genome: one worker, asked thrice.
+    const same = [_][]const u8{ near_copies[0], near_copies[0], near_copies[0] };
+    const c = bd.collapse(a, &same, &genomes, false);
+    try std.testing.expectEqual(@as(usize, 1), c.survivors.len);
+    try std.testing.expectEqual(@as(usize, 2), c.collapsed());
+    // Every duplicate points at the SURVIVOR, so the fan-in has one source and
+    // the next phase's {{prev}} reads exactly what it would have read.
+    for (c.rep) |r| try std.testing.expectEqual(@as(usize, 0), r);
+    try std.testing.expectEqual(@as(usize, 0), c.survivors[0]);
+    // And the manifest says so, rather than the run silently narrowing.
+    try std.testing.expect(std.mem.indexOf(u8, bd.collapseNote(a, c), "collapsed 2 duplicate") != null);
+}
+
+test "collapse: both halves are required — genome alone or brief alone is not a duplicate" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // Same genome, DIFFERENT briefs: a legitimate fan-out (three reviewers,
+    // one persona, three dimensions). This is the study's find phase.
+    const g = "reviewer persona";
+    const one_genome = [_]?[]const u8{ g, g, g };
+    const varied = bd.collapse(a, &thesis_fleet[0..3].*, &one_genome, false);
+    try std.testing.expectEqual(@as(usize, 3), varied.survivors.len);
+    try std.testing.expectEqual(@as(usize, 0), varied.collapsed());
+
+    // Same brief, DIFFERENT genomes: shape C's whole point — N implementers,
+    // one task, a different system_prompt each. Nothing may collapse.
+    const c = bd.collapse(a, &shape_c_prompts, &shape_c_genomes, true);
+    try std.testing.expectEqual(@as(usize, 3), c.survivors.len);
+
+    // Near-copies (one brief, /vN swapped) sit at ~0.74 — BELOW the 0.85
+    // collapse threshold, so they survive even under one genome. The warn gate
+    // can afford to be wrong; a gate that deletes a worker cannot.
+    const near = bd.collapse(a, &near_copies, &one_genome, false);
+    try std.testing.expectEqual(@as(usize, 3), near.survivors.len);
+    try std.testing.expect(bd.analyze(a, &near_copies).warn); // it still WARNS
+}
+
+test "collapse: floors — a variants phase keeps a tournament, everywhere else keeps one" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const g = "one persona";
+    const genomes = [_]?[]const u8{ g, g, g, g };
+    const same = [_][]const u8{ near_copies[0], near_copies[0], near_copies[0], near_copies[0] };
+
+    // "Run the same brief N times and judge the spread" is a legitimate ask,
+    // and a tournament of one is not a tournament.
+    const variants = bd.collapse(a, &same, &genomes, true);
+    try std.testing.expectEqual(@as(usize, 2), variants.survivors.len);
+    // Elsewhere there is nothing to rank, so one survivor is the whole answer.
+    const ordinary = bd.collapse(a, &same, &genomes, false);
+    try std.testing.expectEqual(@as(usize, 1), ordinary.survivors.len);
+
+    // Degenerate inputs pass through as identity rather than guessing.
+    const single = [_][]const u8{same[0]};
+    const one_g = [_]?[]const u8{g};
+    const id = bd.collapse(a, &single, &one_g, false);
+    try std.testing.expectEqual(@as(usize, 1), id.survivors.len);
+    try std.testing.expectEqual(@as(usize, 0), id.collapsed());
+    try std.testing.expectEqualStrings("", bd.collapseNote(a, id));
+}
+
+test "collapse: two tasks with no genome at all still collapse on identical text" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // Both null is "same genome" — an inline fan-out with no persona is still
+    // one configuration, and two identical briefs under it are one worker.
+    const none = [_]?[]const u8{ null, null, null };
+    const same = [_][]const u8{ near_copies[0], near_copies[0], near_copies[2] };
+    const c = bd.collapse(a, &same, &none, false);
+    try std.testing.expectEqual(@as(usize, 2), c.survivors.len); // 0 and 2 survive, 1 folds into 0
+    try std.testing.expectEqual(@as(usize, 0), c.rep[1]);
+    try std.testing.expectEqual(@as(usize, 2), c.rep[2]);
 }
 
 test "#382: a fleet smaller than min_fleet is never judged" {

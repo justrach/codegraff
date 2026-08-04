@@ -260,7 +260,9 @@ test "#376 firewall: the seat is resolved ONCE per phase, outside the task loop"
     // may swap the phase's model but still yields ONE seat for the whole
     // phase — the property this test exists to protect.
     const seat_at = std.mem.indexOf(u8, src, "const seat = vision_ask.phaseSeat(route_phase.forPhase(").?;
-    const loop_at = std.mem.indexOf(u8, src, "for (labels, prompts, overrides, niches, isolations, isolation_fallbacks, futures, 1..)").?;
+    // (The loop indexes from 0 rather than 1 since the §2b collapse gate needs
+    // the task INDEX to look up its survivor, not a 1-based display number.)
+    const loop_at = std.mem.indexOf(u8, src, "for (labels, prompts, overrides, niches, isolations, isolation_fallbacks, futures, 0..)").?;
     try std.testing.expect(seat_at < loop_at); // resolved before the fan-out
     // Every spawn in the phase — first attempt and retry alike — receives that
     // one value verbatim; nothing per task is ever passed as a model pin.

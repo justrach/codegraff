@@ -267,12 +267,152 @@ pub fn warningText(arena: Allocator, r: Report) ?[]const u8 {
 ///
 /// A fleet whose personas ARE near-identical still warns, on the persona
 /// text — which is the right answer, since that fleet really is one concept.
+///
+/// THE SHA GATE. The original test was "every task carries SOME override",
+/// which is presence, not variation — and presence is not what makes the
+/// persona the axis. The eval study caught the difference in the worst
+/// possible place: three finders that all carried the SAME resolved
+/// system_prompt and three genuinely different briefs measured 1.000 on the
+/// persona axis and fired the warning, while the text that actually varied
+/// was never looked at. A gate that reports 100% similar for a fleet whose
+/// briefs are 17% similar is worse than no gate: it is a number that means
+/// the opposite of what it says.
+///
+/// So: all resolved genomes IDENTICAL means the genome is a constant, not an
+/// axis, and the answer is null — measure the briefs, which is where the
+/// variation has to be if there is any. Shape C (N implementers, one task, a
+/// DIFFERENT system_prompt each) is unaffected, because its genomes really do
+/// differ and that is exactly the case this function exists for.
 pub fn personaAxis(arena: Allocator, briefs: []const []const u8, genomes: []const ?[]const u8) ?[]const []const u8 {
     if (genomes.len != briefs.len) return null;
     for (genomes) |g| if (g == null or g.?.len == 0) return null;
+    // Content equality over the RESOLVED genome (fleet.resolveOverride has
+    // already turned `agent:"reviewer"` into that persona's text), which is
+    // what a prompt_sha comparison means here.
+    const first = genomeSha(genomes[0].?);
+    var varied = false;
+    for (genomes[1..]) |g| if (genomeSha(g.?) != first) {
+        varied = true;
+    };
+    if (!varied) return null;
     const out = arena.alloc([]const u8, genomes.len) catch return null;
     for (genomes, out) |g, *o| o.* = g.?;
     return out;
+}
+
+/// The resolved genome's content fingerprint. A 64-bit content hash rather
+/// than the 128-bit scoring.promptFingerprint: this is only ever used for
+/// EQUALITY between genomes held in one process at one instant, never
+/// persisted, never joined against an archive — so importing the signing
+/// fingerprint here would buy nothing and add a dependency.
+pub fn genomeSha(genome: []const u8) u64 {
+    return std.hash.Wyhash.hash(0xf1ee7, genome);
+}
+
+// ── collapse ───────────────────────────────────────────────────────────────
+// The gate above measures and warns. This DOES something about the one case
+// where the measurement is unambiguous: two tasks that carry the same genome
+// AND essentially the same brief are the same worker, spawned twice, and the
+// second one costs a full model call to produce text the first already
+// produced. The study has both halves of the proof — a research phase that
+// spawned three sweepers over three small files whose briefs measured 1.000
+// similar to each other, and the same task answered identically by one.
+//
+// Collapsing is safe in a way warning is not, because the duplicate's output
+// is not lost: the survivor's result is fanned into every collapsed task's
+// {{prev}} slot, so the next phase reads exactly what it would have read.
+// What disappears is the redundant CALL.
+
+/// Jaccard at or above which two same-genome briefs are one brief. Higher
+/// than warn_threshold (0.55) by a wide margin, and deliberately so: the warn
+/// gate is advisory and can afford to be wrong, while this one silently
+/// removes a worker, so it fires only on near-copies. On the fixture scale in
+/// this file, 0.85 sits ABOVE the near-copies fixture (0.739) — meaning even
+/// "one brief with /vN swapped" survives, and only briefs that are the same
+/// modulo whitespace and a word collapse.
+pub const collapse_threshold: f64 = 0.85;
+
+pub const Collapse = struct {
+    /// For each input task, the index of the task that will actually run for
+    /// it — itself when it survives, the survivor's index when it collapsed.
+    rep: []const usize,
+    /// Surviving indices, ascending.
+    survivors: []const usize,
+
+    pub fn collapsed(self: Collapse) usize {
+        return self.rep.len - self.survivors.len;
+    }
+};
+
+fn identity(arena: Allocator, n: usize) Collapse {
+    const rep = arena.alloc(usize, n) catch return .{ .rep = &.{}, .survivors = &.{} };
+    for (rep, 0..) |*r, i| r.* = i;
+    return .{ .rep = rep, .survivors = rep };
+}
+
+/// Which tasks actually need to be spawned.
+///
+/// Two tasks are duplicates iff their resolved genomes are byte-identical AND
+/// their briefs measure `collapse_threshold` or more similar. Both halves are
+/// required: same genome + different brief is a legitimate fan-out (three
+/// reviewers, one persona, three dimensions), and same brief + different
+/// genome is shape C's whole point.
+///
+/// FLOORS. A `variants` phase keeps at least 2 tasks even when every brief is
+/// identical, because "run the same brief N times and judge the spread" is a
+/// legitimate thing to ask for and a tournament of one is not a tournament.
+/// Everywhere else the floor is 1.
+pub fn collapse(arena: Allocator, briefs: []const []const u8, genomes: []const ?[]const u8, variants_phase: bool) Collapse {
+    const n = briefs.len;
+    if (n < 2 or n > max_briefs) return identity(arena, n);
+    const floor: usize = if (variants_phase) 2 else 1;
+    const rep = arena.alloc(usize, n) catch return identity(arena, n);
+    const words = arena.alloc(u64, max_words) catch return identity(arena, n);
+    const grams = arena.alloc(u64, n * max_words) catch return identity(arena, n);
+    const sets = arena.alloc([]const u64, n) catch return identity(arena, n);
+    for (briefs, sets, 0..) |brief, *set, k| {
+        set.* = gramSet(grams[k * max_words ..][0..max_words], wordHashes(words, brief));
+    }
+    var alive: usize = n;
+    for (rep, 0..) |*r, i| r.* = i;
+    for (0..n) |i| {
+        if (rep[i] != i) continue; // already collapsed into someone else
+        for (i + 1..n) |j| {
+            if (rep[j] != j or alive <= floor) continue;
+            const gi = genomes[i];
+            const gj = genomes[j];
+            const same_genome = (gi == null and gj == null) or
+                (gi != null and gj != null and genomeSha(gi.?) == genomeSha(gj.?));
+            if (!same_genome) continue;
+            // An exact brief match always collapses, whatever the shingle
+            // metric says — a brief too short to shingle (gramSet folds it to
+            // one gram) would otherwise depend on hash luck.
+            const exact = std.mem.eql(u8, briefs[i], briefs[j]);
+            if (!exact and jaccard(sets[i], sets[j]) < collapse_threshold) continue;
+            rep[j] = i;
+            alive -= 1;
+        }
+    }
+    const survivors = arena.alloc(usize, alive) catch return identity(arena, n);
+    var s: usize = 0;
+    for (rep, 0..) |r, i| if (r == i) {
+        survivors[s] = i;
+        s += 1;
+    };
+    return .{ .rep = rep, .survivors = survivors[0..s] };
+}
+
+/// The manifest line a collapsed phase carries, or "" when nothing collapsed.
+/// The root reads the manifest, so this is where "you asked for five workers
+/// and got three because two were copies" becomes visible instead of silent.
+pub fn collapseNote(arena: Allocator, c: Collapse) []const u8 {
+    if (c.collapsed() == 0) return "";
+    return std.fmt.allocPrint(
+        arena,
+        "collapsed {d} duplicate brief(s): same system_prompt and >={d:.0}% identical text, so they " ++
+            "spawned once and the survivor's result was fanned into every duplicate's slot.",
+        .{ c.collapsed(), collapse_threshold * 100 },
+    ) catch "";
 }
 
 /// Cap on the phase label copied into the trace line, matching

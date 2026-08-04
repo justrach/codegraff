@@ -25,6 +25,7 @@ const fleet = @import("fleet.zig");
 const main_mod = @import("main.zig");
 const route_policy = @import("route_policy.zig"); // #372 (shape, role, tier) coordinates on the local capture rows
 const playbook_reflect = @import("playbook_reflect.zig"); // #383 Reflector: one bounded distillation per process, on a target-met eval
+const orch_rows = @import("orchestration_rows.zig"); // the orchestration outcome rides the same score funnel
 
 test {
     _ = @import("agent_eval_tests.zig");
@@ -122,6 +123,29 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
     // provider/client, and a second eval that DOES meet its target) out of a
     // live model call.
     if (met) playbook_reflect.afterEval(self, note, combined orelse 0, run.stdout);
+
+    // The orchestration outcome (§5). This is the same funnel the DGM score
+    // rows use, and for the same reason: an eval verdict is the one place the
+    // harness holds ground truth about whether a run WORKED. If this turn made
+    // an escalation decision, that decision now gets its measured cost and
+    // result — score, calls actually spent, and whether the edit-contract
+    // probe ever saw a diff.
+    //
+    // Gated on `met`, and that gate is load-bearing. An `--until` loop
+    // evaluates repeatedly: red, repair, green. Filing on the FIRST verdict
+    // recorded score 0 for a run that went on to score 100 — observed, on the
+    // very first acceptance run of this feature — which would teach the policy
+    // that the rung it chose had failed when it had succeeded. A run that
+    // never goes green files nothing here and stays uncelled, which is the
+    // same doctrine foldArms applies to every incomplete row: an uncelled
+    // observation is honest, a mis-celled one poisons the cell. The one
+    // failure that DOES get recorded is the one that matters most, and it is
+    // recorded elsewhere — run_budget.exhaustedFatal files score 0,
+    // exhausted:true before the process dies.
+    if (met) if (orch_rows.pending() != null) if (combined) |s| {
+        if (s >= 0 and s <= 100)
+            orch_rows.flushPending(s / 100.0, if (self.run_budget) |b| b.used() else 0, 0, false, &promptFingerprint(cmd));
+    };
 
     // Feed the eval-driven score into the fleet (docs/hyperagents.md §9.B):
     // on a NEW BEST, submit the genome (this agent's persona) with its achieved

@@ -46,6 +46,12 @@ pub const FailKind = enum {
     model,
     invalid,
     auth,
+    /// The shared model-call pool is dry (run_budget.RunBudgetExhausted).
+    /// Distinct from `quota`, which is the PROVIDER refusing: this one is the
+    /// harness's own ceiling, it is GLOBAL to the run, and no amount of
+    /// waiting or retrying changes it — the next attempt is refused before it
+    /// reaches the network, and is still charged for trying.
+    budget_exhausted,
     unknown,
 
     fn label(self: FailKind) []const u8 {
@@ -55,6 +61,7 @@ pub const FailKind = enum {
             .model => "model-availability",
             .invalid => "invalid-arguments",
             .auth => "auth",
+            .budget_exhausted => "model-call-budget",
             .unknown => "unknown",
         };
     }
@@ -62,10 +69,22 @@ pub const FailKind = enum {
     pub fn retrySafe(self: FailKind) bool {
         return switch (self) {
             .quota, .transport, .unknown => true,
-            .model, .invalid, .auth => false,
+            .model, .invalid, .auth, .budget_exhausted => false,
         };
     }
 };
+
+/// The marker a budget-exhausted failure carries, so a workflow retry pass can
+/// tell it apart from any other unretryable failure and abort the WHOLE pass
+/// rather than skipping one task. Matches agent_request.zig's message text.
+pub const budget_exhausted_marker = "model-call budget exhausted";
+
+/// Did this failure come from the shared pool running dry? Read by the
+/// workflow retry sites: the first one of these ends the pass, because every
+/// sibling retry would be refused identically and each refusal still costs.
+pub fn isBudgetExhausted(text: []const u8) bool {
+    return util.indexOfIgnoreCase(text, budget_exhausted_marker) != null;
+}
 
 fn containsAnyCI(hay: []const u8, needles: []const []const u8) bool {
     for (needles) |n| if (util.indexOfIgnoreCase(hay, n) != null) return true;
@@ -77,7 +96,13 @@ pub fn classifyFailure(err: anyerror, detail: ?[]const u8) FailKind {
         error.StreamStalled, error.StreamDropped => return .transport,
         else => {},
     }
+    if (err == error.RunBudgetExhausted) return .budget_exhausted;
     const msg = detail orelse return .unknown;
+    // Before every other arm, including the 5xx one: the harness's OWN pool
+    // running dry says "budget" and "exhausted", and the words in that message
+    // ("quota"-adjacent, and it names a limit) would otherwise classify it as
+    // a provider rate limit and earn it a retry that cannot possibly succeed.
+    if (isBudgetExhausted(msg)) return .budget_exhausted;
     // 5xx before everything: a server-side outage is the most common transient
     // failure there is, and "503 Service Unavailable" used to fall through to
     // the .model arm on the bare word "unavailable". That was harmless while
@@ -247,6 +272,10 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         else
             .child,
         .sys_override = sys_override,
+        // §2c: the judge is text-only. It ranks handed excerpts, so a toolset
+        // only buys it the chance to go re-read the repo — which is where its
+        // ~3 calls per score went. One judge, one call.
+        .text_only = std.mem.eql(u8, kind, "judge_task"),
         .reasoning = effort orelse .medium, // #292 follow-up: effort pin; unpinned workers keep the default depth, not the root's /effort
     };
     const sub_start = Io.Timestamp.now(ctx.io, .awake);

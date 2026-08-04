@@ -91,6 +91,21 @@ const playbook_reflect = @import("playbook_reflect.zig");
 // that staying true.
 const mcp_config = @import("mcp_config.zig");
 
+// The ultracode escalation ladder and the machinery it decides with. The
+// production graph reaches escalation.zig/phase_budget.zig through
+// workflow.zig, but only through a CALL — nothing references their decls at
+// container level, so without these hooks the whole threshold matrix, the
+// reservation ledger, the collapse gate and the #290 fold firewall would
+// compile and never run a single test.
+const escalation = @import("escalation.zig");
+const escalation_tests = @import("escalation_tests.zig");
+const edit_contract = @import("edit_contract.zig");
+const phase_budget = @import("phase_budget.zig");
+const orchestration_policy = @import("orchestration_policy.zig");
+const orchestration_policy_tests = @import("orchestration_policy_tests.zig");
+const orchestration_rows = @import("orchestration_rows.zig");
+const workflow_pipeline = @import("workflow_pipeline.zig");
+
 // #364: shutdown-phase timings. Production reaches it from readline.zig,
 // session.zig, mcp.zig, telemetry.zig and startup_timing.zig, so its coverage
 // is contingent on those call sites staying — pinned here instead.
@@ -132,4 +147,12 @@ test {
     _ = playbook_glue;
     _ = playbook_reflect;
     _ = shutdown_trace;
+    _ = escalation;
+    _ = escalation_tests;
+    _ = edit_contract;
+    _ = phase_budget;
+    _ = orchestration_policy;
+    _ = orchestration_policy_tests;
+    _ = orchestration_rows;
+    _ = workflow_pipeline;
 }
