@@ -40,17 +40,16 @@ pub const canonical_slots = [_][]const u8{
     // C — design/solve
     "variants",
     "build",
-    // D — migration/mechanical has NO slot: shape D is a pipeline, and a
-    // pipeline stage cannot be scored (#296). `transform` used to sit here and
-    // advertise a cell nothing could ever fill — pipeline stages call runSub
-    // directly and never reach scoreVariants, the one path that derives a slot,
-    // so the only way to score one was to disobey the catalog and run it as a
-    // phase. Dropped rather than scored: a tournament needs an axis a stage
-    // does not have. One stage carries ONE system_prompt, so its N "variants"
-    // would be N ITEMS — the same genome on different inputs — and ranking
-    // those measures item difficulty, not prompt quality. Restore `transform`
-    // only together with per-stage prompt variants; migration EXECUTION is
-    // unaffected either way, the catalog still names the stage below.
+    // D — migration/mechanical: scored at STAGE level, never per item (#296).
+    // A stage carries ONE genome run over items that differ BY DESIGN, so a
+    // judge tournament across items would rank item difficulty, not prompt
+    // quality — the per-task variation #290 forbids attributing fitness
+    // across. pipeline_score.captureStage instead files one judge-free row
+    // per stage per run (item completion fraction) under the stage's
+    // (migration, slot) cell and its one #376 seat, so `transform` claims a
+    // cell that pipeline runs actually fill. The #296 test below pins that
+    // path: remove it and this slot must leave the vocabulary again.
+    "transform",
     // E — feature
     "scope",
     "implement",
@@ -205,28 +204,34 @@ test "shape catalog names every canonical slot it depends on" {
     }
 }
 
-test "#296: no canonical slot is reachable only through a pipeline stage" {
-    // Only the PHASES path scores: scoreVariants derives the slot with
-    // canonicalSlot(phase title), and pipeline stages call runSub directly.
-    // So a slot the catalog names ONLY inside shape D (the pipeline shape)
-    // declares a MAP-Elites cell nothing can ever fill. `transform` was exactly
-    // that, and this pins it shut — re-adding it to canonical_slots turns this
-    // red, because D's stage list is the only place the catalog says the word.
+test "#296: every canonical slot is reachable by a scoring path — phases OR the stage capture" {
+    // Two scoring paths exist. PHASES: scoreVariants derives the slot with
+    // canonicalSlot(phase title). STAGES: pipeline_score.captureStage files
+    // one stage-level row per run under the stage's slot. A slot the catalog
+    // names ONLY inside shape D (the pipeline shape) therefore needs the
+    // stage path alive, or it declares a MAP-Elites cell nothing can ever
+    // fill — the trap `transform` sat in while pipelines went unscored.
+    // Adding a slot no path reaches turns this red, by design.
     const d = std.mem.indexOf(u8, shape_catalog_note, "D migration/mechanical").?;
     const e = std.mem.indexOf(u8, shape_catalog_note, "E feature").?;
     // The trailing prose (scaling advice, the isolation warning) names stages
     // by example, so the E window has to stop before it or this proves nothing.
     const tail = std.mem.indexOf(u8, shape_catalog_note, "Scale to the ask").?;
+    // The stage path, pinned as source text: workflow_pipeline.run folds each
+    // stage's per-item outcomes into ONE captureStage call. Removing that
+    // call re-opens the gap for every slot only shape D names.
+    const stage_path_alive = std.mem.indexOf(u8, @embedFile("workflow_pipeline.zig"), "pipeline_score.captureStage(") != null;
     for (canonical_slots) |slot| {
         const in_a_phase_shape = std.mem.indexOf(u8, shape_catalog_note[0..d], slot) != null or
             std.mem.indexOf(u8, shape_catalog_note[e..tail], slot) != null;
-        try std.testing.expect(in_a_phase_shape);
+        const in_the_pipeline_shape = std.mem.indexOf(u8, shape_catalog_note[d..e], slot) != null;
+        try std.testing.expect(in_a_phase_shape or (in_the_pipeline_shape and stage_path_alive));
     }
-    // Migration EXECUTION is untouched: the catalog still tells the model to
-    // run a `transform` stage, it just no longer claims a fitness cell for it.
-    try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, "transform") != null);
-    try std.testing.expectEqualStrings("", canonicalSlot("transform"));
-    try std.testing.expectEqualStrings("", canonicalSlot("transform each file"));
+    // `transform` claims its cell through the stage path ALONE: the catalog
+    // names it only in D, and it is celled again — the #296 gap is closed.
+    try std.testing.expect(stage_path_alive);
+    try std.testing.expectEqualStrings("transform", canonicalSlot("transform"));
+    try std.testing.expectEqualStrings("transform", canonicalSlot("transform each file"));
 }
 
 test "shape catalog covers all six shapes and stays within a sane token budget" {
@@ -266,7 +271,7 @@ test "#382: shape F carries the contract that separates a concept fleet from a r
     try std.testing.expect(std.mem.indexOf(u8, entry, "unmerged until the user picks") != null);
     // F is a phases shape naming a canonical slot, so its round is scoreable
     // (#296): a shape whose only slot were off-vocabulary could never accrue
-    // fitness, which is the trap `transform` fell into.
+    // fitness — the trap `transform` sat in until the stage capture existed.
     try std.testing.expectEqualStrings("variants", canonicalSlot("variants   each brief carries"));
 }
 

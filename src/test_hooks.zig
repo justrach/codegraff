@@ -105,6 +105,9 @@ const orchestration_policy = @import("orchestration_policy.zig");
 const orchestration_policy_tests = @import("orchestration_policy_tests.zig");
 const orchestration_rows = @import("orchestration_rows.zig");
 const workflow_pipeline = @import("workflow_pipeline.zig");
+// #296: the pipeline stage-level fitness capture. Reached in production only
+// through workflow_pipeline.run's CALL, so its tests need the hook.
+const pipeline_score = @import("pipeline_score.zig");
 
 // #364: shutdown-phase timings. Production reaches it from readline.zig,
 // session.zig, mcp.zig, telemetry.zig and startup_timing.zig, so its coverage
@@ -155,4 +158,5 @@ test {
     _ = orchestration_policy_tests;
     _ = orchestration_rows;
     _ = workflow_pipeline;
+    _ = pipeline_score;
 }

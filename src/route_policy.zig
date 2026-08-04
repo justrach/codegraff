@@ -75,7 +75,7 @@ pub const Shape = enum {
     review, // A — find/verify/synthesize
     research, // B — sweep/synthesize
     design, // C — variants/build
-    migration, // D — pipeline (transform/verify); never scored, see #296
+    migration, // D — pipeline (transform/verify); stage-level scored, see #296
     feature, // E — scope/implement/review
     adhoc,
 

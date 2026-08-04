@@ -57,11 +57,11 @@ test "canonicalSlot + telemetrySlot compose: a real phase title reaches a cell o
     try std.testing.expectEqualStrings("find", compose("find security bugs"));
     try std.testing.expectEqualStrings("verify", compose("verify each finding"));
     try std.testing.expectEqualStrings("synthesize", compose("Synthesize the results"));
-    // #296 — `transform` is a PIPELINE stage label, and pipeline stages never
-    // reach scoreVariants, so it was dropped from the vocabulary rather than
-    // left advertising a cell nothing could fill. It is now uncelled like any
-    // other off-vocabulary title; see the D-shape comment in shapes.zig.
-    try std.testing.expectEqualStrings("", compose("transform each file"));
+    // #296 — `transform` is a PIPELINE stage label. It was dropped while no
+    // stage could be scored, and rejoined the vocabulary with the stage-level
+    // capture (pipeline_score.zig): a transform stage now reaches its cell
+    // like any phase slot; see the D-shape comment in shapes.zig.
+    try std.testing.expectEqualStrings("transform", compose("transform each file"));
     // A customer name in a phase title reaches no cell and leaves no plaintext.
     try std.testing.expectEqualStrings("", compose("Migrate Acme billing schema"));
     // And the composed result is always vocabulary-or-empty, never caller text.
