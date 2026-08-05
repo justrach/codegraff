@@ -172,8 +172,9 @@ pub const Follower = struct {
 /// An ack missing from this list wedges the session PERMANENTLY — serve.zig
 /// streams it and then blocks in takeDelimiter() still holding `busy`, so every
 /// later request on that session waits on a lock nobody will release. The test
-/// below pins this list against the emitter so a new control command cannot
-/// land without one.
+/// below pins this list against mainloop.zig's INLINE control block only, so a
+/// handler that emits its ack from its own module (mainloop_score.zig does)
+/// stays invisible to the scan and needs its own case there.
 pub const terminal_events = [_][]const u8{
     "turn",
     "error",
@@ -386,7 +387,8 @@ test "terminal_events covers every control ack mainloop can emit" {
     // reads; a wrapped `.emit(.{` would slip past it entirely unchecked.
     const emit = ".emit(.{";
     const typed_emit = emit ++ " .type = \"";
-    try testing.expectEqual(std.mem.count(u8, block, emit), std.mem.count(u8, block, typed_emit));
+    const typed = std.mem.count(u8, block, typed_emit);
+    try testing.expectEqual(std.mem.count(u8, block, emit), typed);
 
     var checked: usize = 0;
     var rest = block;
@@ -395,15 +397,23 @@ test "terminal_events covers every control ack mainloop can emit" {
         const stop = from + (std.mem.indexOfScalar(u8, rest[from..], '"') orelse return error.ControlBlockMoved);
         const name = rest[from..stop];
         rest = rest[stop..];
-        var buf: [128]u8 = undefined;
-        const line = try std.fmt.bufPrint(&buf, "{{\"seq\":1,\"type\":\"{s}\"}}", .{name});
+        var buf: [512]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "{{\"seq\":1,\"type\":\"{s}\"}}", .{name}) catch {
+            std.debug.print("\nack name of {d} bytes starting \"{s}\" overflows this test's scratch buffer — enlarge buf\n", .{ name.len, name[0..@min(name.len, 48)] });
+            return error.ControlAckNameTooLong;
+        };
         if (!terminalEvent(line)) {
             std.debug.print("\ncontrol ack \"{s}\" is missing from serve_events.terminal_events\n", .{name});
             return error.ControlAckNotTerminal;
         }
         checked += 1;
     }
-    try testing.expect(checked >= 12); // the scan read acks, not an empty slice
+    // Exact, so a scan that skips an emit (rather than finding a bad one) still
+    // fails; plus a floor, because the markers above could match a shorter
+    // region and leave both counts trivially in agreement. 17 acks today, and
+    // this only trips if acks are DELETED — adding one is fine.
+    try testing.expectEqual(typed, checked);
+    try testing.expect(checked >= 17);
 
     // score is acked from its own module; answer/reattach never reach the
     // streaming loop (serve.zig answers both before serveMessage sends).
