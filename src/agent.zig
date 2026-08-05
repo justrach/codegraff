@@ -181,6 +181,7 @@ pub const Agent = struct {
     last_request_context_overflow: bool = false, // explicit provider rejection, not an inferred meter threshold
     last_request_write_failed: bool = false, // transport gave up specifically with WriteFailed this request
     compact_transport_failures: u8 = 0, // bounded escape for repeated opaque over-cap WriteFailed/network failures
+    compact_summary_failures: u8 = 0, // #379: consecutive complete-but-unusable (empty/truncated) summaries
     ws_off: bool = false, // codex ws transport disabled for this session after a handshake/transport fallback to SSE (#codex-ws)
     ws_transport_failures: u8 = 0, // consecutive WS failures; retry once before latching persistent SSE
     streamed_text: bool = false, // the last request printed its text live
@@ -244,9 +245,8 @@ pub const Agent = struct {
         return fmt.len > 0 and fmt[fmt.len - 1] == '\n';
     }
 
-    /// Report an API error: remember the formatted message for the --json
-    /// `error` event, then print it like say() plus a #398 duration hint;
-    /// last_api_error keeps the provider's words (classifiers match them).
+    /// Remember the formatted message for the --json `error` event, then print
+    /// like say() + a #398 duration hint; last_api_error keeps provider words.
     pub fn sayApiError(self: *Agent, comptime fmt: []const u8, args: anytype) !void {
         self.last_api_error = std.fmt.allocPrint(self.arena, fmt, args) catch null;
         if (self.last_api_error) |m| if (@import("retry_hint.zig").humanizeRetrySeconds(m)) |h| return self.say("{s} (~{s})\n", .{ m, h.buf[0..h.len] });
