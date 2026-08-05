@@ -31,10 +31,16 @@ const term = @import("term.zig");
 const tty = term.tty;
 
 const http = @import("http.zig");
+const http_stall = @import("http_stall.zig");
 const WatchdogFired = http.WatchdogFired;
-const streamStallWatch = http.streamStallWatch;
 const deadlineStallTask = http.deadlineStallTask;
 const watchdogError = http.watchdogError;
+
+/// (#401) The tokens-flowing classifier: its own module (this file is at the
+/// 600-line cap), aliased back so call sites and tests keep naming agent_ws.
+const signal = @import("agent_ws_signal.zig");
+pub const frameHasOutputText = signal.frameHasOutputText;
+pub const TokenSignal = signal.TokenSignal;
 
 const isStreamEnd = @import("agent_stream.zig").isStreamEnd;
 
@@ -212,17 +218,24 @@ pub fn sendFrameWatched(io: Io, client: *ws.WsClient, frame: []const u8, poll_st
     const SendDone = union(enum) { sent: ws.Error!void, stall: WatchdogFired };
     var sd_buf: [2]SendDone = undefined;
     var ssel: Io.Select(SendDone) = .init(io, &sd_buf);
-    // #56 Fix-B: pool exhausted — never degrade to a bare blocking sendText,
-    // which IS the hang this guard exists for; fail retryable (HungRequest) the
-    // way the SSE head guard does. The WATCHDOG is spawned FIRST so that stays
-    // possible on the SECOND spawn too: once an unbounded blocking write is in
-    // flight, the only way out of this function is to join it — #401's hang
-    // through a different door. Watchdog-first leaves every failure with
-    // nothing running, or only a cancellable sleeper to unwind.
-    ssel.concurrent(.stall, deadlineStallTask, .{ io, poll_stdin, budget }) catch return error.HungRequest;
-    ssel.concurrent(.sent, wsSendTask, .{ client, frame }) catch {
-        ssel.cancelDiscard(); // only the sleeper is running; it unwinds at once
-        return error.HungRequest;
+    // #56 Fix-B, mirroring the SSE head guard's ASYMMETRY exactly
+    // (agent_stream.zig:263-283) rather than hard-failing both arms:
+    //   * PAYLOAD spawn failed → fail retryable (HungRequest). Nothing is in
+    //     flight, and a bare blocking sendText IS the hang this guard exists
+    //     for, so there is nothing to degrade to.
+    //   * WATCHDOG spawn failed → DEGRADE: the write is already in flight and
+    //     the only exit is to join it. Failing here instead would turn a
+    //     momentary Io-pool shortage (a deep subagent fan-out) into two
+    //     transport failures and a session-wide SSE latch — where SSE, in the
+    //     same situation, simply proceeds.
+    ssel.concurrent(.sent, wsSendTask, .{ client, frame }) catch return error.HungRequest;
+    ssel.concurrent(.stall, deadlineStallTask, .{ io, poll_stdin, budget }) catch {
+        const r = ssel.await() catch |e| { // the send is the only arm running
+            ssel.cancelDiscard();
+            return e;
+        };
+        ssel.cancelDiscard();
+        return r.sent;
     };
     const first = ssel.await() catch |e| {
         ssel.cancelDiscard();
@@ -262,13 +275,18 @@ pub fn connectWatched(gpa: std.mem.Allocator, io: Io, url: []const u8, headers: 
     const Dialed = union(enum) { dialed: ws.Error!*ws.WsClient, stall: WatchdogFired };
     var dl_buf: [2]Dialed = undefined;
     var dsel: Io.Select(Dialed) = .init(io, &dl_buf);
-    // Watchdog first, then the dial — same #56 Fix-B reasoning as
-    // sendFrameWatched: neither spawn failure may leave an unwatched blocking
-    // call, and an in-flight dial can only be unwound by joining it.
-    dsel.concurrent(.stall, deadlineStallTask, .{ io, poll_stdin, http.head_stall_ms }) catch return error.HungRequest;
-    dsel.concurrent(.dialed, wsConnectTask, .{ gpa, io, url, headers }) catch {
+    // Same #56 Fix-B asymmetry as sendFrameWatched (and the SSE head guard it
+    // copies): a failed DIAL spawn is retryable HungRequest with nothing in
+    // flight; a failed WATCHDOG spawn degrades to the unwatched dial, because
+    // that dial is already running and a pool shortage must not cost a turn.
+    dsel.concurrent(.dialed, wsConnectTask, .{ gpa, io, url, headers }) catch return error.HungRequest;
+    dsel.concurrent(.stall, deadlineStallTask, .{ io, poll_stdin, http.head_stall_ms }) catch {
+        const r = dsel.await() catch |e| { // the dial is the only arm running
+            drainDialSelect(gpa, &dsel);
+            return e;
+        };
         drainDialSelect(gpa, &dsel);
-        return error.HungRequest;
+        return r.dialed;
     };
     const first = dsel.await() catch |e| {
         drainDialSelect(gpa, &dsel);
@@ -308,48 +326,25 @@ pub fn connectWatched(gpa: std.mem.Allocator, io: Io, url: []const u8, headers: 
 //     full-history re-anchor. A false positive here is expensive.
 //   * A blocking peek is #401's hang, moved earlier in the turn.
 //
-// So the held socket is written into on faith and DETECTION is the pair of
-// deadlines this file adds: sendFrameWatched bounds the write into a wedged
-// socket, and the read watchdog bounds the silence after it. A dead reused
-// socket costs one bounded round trip plus a re-anchor instead of an unbounded
-// hang — what `is_closed()` buys, one turn later.
-
-/// (#401) Does this ws frame carry VISIBLE OUTPUT TEXT — the WS side of the
-/// SSE reader's tokens-flowing signal?
-///
-/// It must mean EXACTLY what the SSE signal means, because both feed the same
-/// http_stall.budgetMs. SSE passes `self.partial_text.items.len != 0`, and
-/// partial_text grows in exactly one place for `.responses` (agent_stream.zig,
-/// streamSseLine): a `response.output_text.delta` whose `delta` is a non-empty
-/// string. Reasoning deltas are handled ABOVE that arm's `if (text.len == 0)
-/// return;` and never reach the append, so a silent reasoning phase keeps the
-/// FULL pre-first-token budget on SSE — deliberately, since it legitimately
-/// runs minutes. `response.output_item.done` carries the finished text and also
-/// never touches partial_text. Both are excluded here for the same reason.
-///
-/// Frame ARRIVAL is not that signal: response.created / response.in_progress /
-/// response.output_item.added land within milliseconds of the send, long before
-/// the model has thought (and ping/pong never surfaces from readMessage at
-/// all). Keying the budget on "a frame landed" tightens every WS turn to a
-/// quarter budget from ~100ms in, so a high-effort turn reasoning silently past
-/// that is killed as a stall, re-sent as a full re-anchor, stalled again, and
-/// latched off WS for the session — while the identical turn survives on SSE.
-///
-/// Shape mirrors isStreamEnd: a cheap substring candidate, then an
-/// authoritative parse, so a reasoning delta that merely QUOTES the event name
-/// is not mistaken for one. Called only until it first returns true.
-pub fn frameHasOutputText(gpa: std.mem.Allocator, frame: []const u8) bool {
-    const ev = "response.output_text.delta";
-    if (std.mem.indexOf(u8, frame, ev) == null) return false;
-    var scratch = std.heap.ArenaAllocator.init(gpa);
-    defer scratch.deinit();
-    const v = std.json.parseFromSliceLeaky(std.json.Value, scratch.allocator(), frame, .{ .allocate = .alloc_always }) catch return false;
-    if (v != .object) return false;
-    const ty = v.object.get("type") orelse return false;
-    if (ty != .string or !std.mem.eql(u8, ty.string, ev)) return false;
-    const d = v.object.get("delta") orelse return false;
-    return d == .string and d.string.len != 0;
-}
+// So the held socket is written into on faith and DETECTION is the three
+// deadlines this file adds. Stated as the bound it actually is, since an
+// earlier round of this note claimed more than it bought:
+//
+//   * sendFrameWatched bounds the WRITE into a wedged socket (sendDeadlineMs).
+//   * On a REUSED socket the read loop's FIRST frame is bounded by
+//     head_stall_ms (30s), not the 120s pre-first-token budget, and surfaces as
+//     error.HungRequest — the transport ladder (one fresh re-dial with full
+//     history, SSE on the second), never a spend against request()'s 2-slot
+//     stall budget. The WS analog of the SSE head guard, safe for the same
+//     reason frame arrival is a BAD tokens-flowing signal: created/in_progress
+//     land within milliseconds of a send, so ZERO frames from a socket we have
+//     no handshake for is a dead socket, not a thinking model.
+//   * After that first frame the inter-frame budget takes over (full while the
+//     model reasons in silence, a quarter once prose has flowed).
+//
+// So a dead reused socket costs up to 30s of dead air plus a re-anchor, where
+// `is_closed()` costs a syscall. Bounded and off the stall budget, not free:
+// reference parity on the pre-reuse check itself stays NOT MET.
 
 /// One Responses turn over ws. Returns the reassembled body as SSE-format
 /// `data:` lines (parseResponses consumes it unchanged). Connect/transport
@@ -419,6 +414,12 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     // Hold ONE WS across the turn's tool loop (codex-style): the first request
     // dials; subsequent requests reuse it and send previous_response_id + delta.
     // The open connection IS the sticky context (no x-codex-turn-state to echo).
+    //
+    // (#401) …and which of the two it is decides the FIRST-frame budget below: a
+    // socket dialed just now finished a TLS + upgrade handshake milliseconds
+    // ago, so the peer is known live and a long silence is the model thinking. A
+    // socket held since the last request has proved nothing since.
+    const reused = self.codex_ws != null;
     if (self.codex_ws == null) {
         self.codex_ws = connectWatched(gpa, self.io, url, &headers, orig_tio != null) catch |e| {
             // HungRequest, matching connectWatched's deadline error — NOT
@@ -470,29 +471,45 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     errdefer full.deinit();
     var fbuf: std.ArrayList(u8) = .empty;
     defer fbuf.deinit(gpa);
-    // (#401) Frames received for THIS response — the OBSERVABILITY counter,
-    // used only for the "first frame" trace note that splits a hung turn into
-    // its two halves.
+    // (#401) Frames received for THIS response: the "first frame" trace note
+    // that splits a hung turn into its two halves, and the head-budget gate
+    // below. It is NOT the tokens-flowing signal — see TokenSignal.
     var frames_seen: usize = 0;
-    // (#401) …and, separately, whether VISIBLE OUTPUT TEXT has arrived — THIS is
-    // what the read watchdog's budget keys on. Before the first token the model
-    // may legitimately reason in silence for minutes (the full stream_stall_ms);
-    // once text has flowed and stopped, that is a dead socket and
-    // http_stall.budgetMs tightens to a quarter (#56). The WS reader used to
-    // hardcode "no tokens yet", so it re-armed the FULL 120s budget on every
-    // frame and never tightened — why #401's mid-stream silence sat for 120s per
-    // attempt, ~4 minutes before the SSE latch, against successful turns of
-    // 3.6-11.6s. frameHasOutputText mirrors the SSE reader's signal exactly.
+    // (#401) …and, separately, whether VISIBLE PROSE has arrived — THIS is what
+    // the read watchdog's budget keys on. Before the first token the model may
+    // reason in silence for minutes (the full stream_stall_ms); once prose has
+    // flowed and stopped, that is a dead socket and http_stall.budgetMs tightens
+    // to a quarter (#56). The WS reader used to hardcode "no tokens yet", re-arming
+    // the FULL 120s budget on every frame — why #401's mid-stream silence sat for
+    // 120s per attempt, ~4 minutes before the SSE latch, against successful turns
+    // of 3.6-11.6s. TokenSignal mirrors BOTH of the SSE reader's producers.
+    var sig: TokenSignal = .{};
     var text_seen = false;
 
     stream: while (true) {
-        // Race the frame read against the shared idle-stall watchdog so a dead
-        // ws can't hang the turn — a deadline surfaces as error.StreamStalled
-        // (never a user Esc), handled identically to the SSE path (#134). The
-        // budget is re-decided every iteration from text_seen, so silence AFTER
-        // OUTPUT TEXT tightens to a quarter the way SSE's always has, and a
-        // silent reasoning phase keeps the full budget the way SSE's does (#401).
+        // Race the frame read against a stall watchdog so a dead ws can't hang
+        // the turn (#134), on a budget re-decided every iteration:
+        //
+        //   * REUSED socket, no frame yet → the head budget, as HungRequest.
+        //     Nothing has proved this peer alive since the last turn, and the
+        //     backend answers a send with response.created / in_progress within
+        //     milliseconds, so zero frames is a dead socket, not a thinking
+        //     model. HungRequest keeps it on postLive's transport ladder (one
+        //     fresh re-dial, then SSE) instead of spending a slot of request()'s
+        //     2-slot stall budget — the SSE head guard's contract for "sent,
+        //     nothing came back". A FRESH connect skips this: its handshake just
+        //     proved liveness, so it keeps the full pre-first-token budget.
+        //   * otherwise → the inter-frame budget: full while only protocol /
+        //     reasoning frames have landed, a quarter once prose has flowed.
+        //     http_stall.budgetMs is what streamStallWatch asks the SSE reader's
+        //     budget of on every tick; it cannot change mid-wait, so deciding it
+        //     here is equivalent and lets both regimes share one watchdog arm.
         read: {
+            const head_wait = reused and frames_seen == 0;
+            const budget = if (head_wait)
+                http.head_stall_ms
+            else
+                http_stall.budgetMs(http.stream_stall_ms, text_seen);
             const ReadDone = union(enum) { msg: ws.Error!ws.Opcode, stall: WatchdogFired };
             var rd_buf: [2]ReadDone = undefined;
             var rsel: Io.Select(ReadDone) = .init(self.io, &rd_buf);
@@ -508,7 +525,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
                 if (self.tracer) |tr| tr.note("ws", "stall");
                 return error.StreamStalled;
             };
-            rsel.concurrent(.stall, streamStallWatch, .{ self.io, orig_tio != null, text_seen }) catch {
+            rsel.concurrent(.stall, deadlineStallTask, .{ self.io, orig_tio != null, budget }) catch {
                 const r = rsel.await() catch |e| {
                     rsel.cancelDiscard();
                     return e;
@@ -524,7 +541,14 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
             rsel.cancelDiscard();
             switch (first) {
                 .msg => |m| _ = m catch |e| return e,
-                .stall => |w| {
+                .stall => |w| if (head_wait) {
+                    // A reused socket that answered NOTHING is a transport
+                    // failure, not the end of the turn: no user-facing "ending
+                    // turn" line (postLive retries a fresh socket, as for a send
+                    // stall), and HungRequest so the ladder pays, not the budget.
+                    if (self.tracer) |tr| tr.note("ws", if (w == .esc) "esc" else "reuse dead — no first frame");
+                    return watchdogError(w, error.HungRequest);
+                } else {
                     if (w == .deadline and !main_mod.json_mode) if (self.out) |o| {
                         o.writeAll("\n⚠ stream stalled — ending turn\n") catch {};
                         o.flush() catch {};
@@ -534,16 +558,19 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
                 },
             }
         }
-        // A frame landed. This only feeds the trace note — it is NOT the budget
-        // signal (the first frames of a turn are protocol events that arrive
-        // before the model has thought). Counted before the empty-frame skip
-        // below: an empty frame is still evidence the peer is alive.
+        // A frame landed: the peer is alive, which retires the head budget — but
+        // it is NOT the tokens-flowing signal (the first frames of a turn are
+        // protocol events that arrive before the model has thought). Counted
+        // before the empty-frame skip: an empty frame is still evidence too.
         frames_seen += 1;
         if (frames_seen == 1) if (self.tracer) |tr| tr.note("ws", "first frame");
         if (fbuf.items.len == 0) continue :stream;
-        // …and THIS is the budget signal: visible output text, the same event
-        // that grows partial_text on SSE. Checked only until it first fires.
-        if (!text_seen and frameHasOutputText(gpa, fbuf.items)) {
+        // …and THIS is the budget signal: visible prose, from EITHER event that
+        // grows partial_text on SSE — an output-text delta, or the streamed
+        // arguments of a whitelisted meta call (attempt_completion / ask_user),
+        // which is all a final-answer turn emits. Fed every frame until it
+        // fires (output_item.added/done open and close the tracked call).
+        if (!text_seen and sig.flowing(gpa, fbuf.items)) {
             text_seen = true;
             if (self.tracer) |tr| tr.note("ws", "first output text — tightening stall budget");
         }

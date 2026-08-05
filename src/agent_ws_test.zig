@@ -367,6 +367,59 @@ test "#401: only a visible output-text delta is the tokens-flowing signal (SSE p
     try std.testing.expect(agent_ws.frameHasOutputText(gpa, "{\"seq\":3,\"delta\":\"h\",\"type\":\"response.output_text.delta\"}"));
 }
 
+// (#401 round 4) …and the SECOND producer, which the round-3 signal missed.
+//
+// partial_text does NOT grow in only one place on SSE: streamSseLine calls
+// argLiveDelta on every line, and emitArgText appends the streamed ARGUMENTS of
+// a whitelisted meta call (agent_argstream.ArgTool). attempt_completion is
+// graff's ordinary final-answer tool, so a codex turn whose whole visible output
+// is that prose emits `response.function_call_arguments.delta` and never one
+// output_text delta — SSE tightened from the first prose byte while WS held the
+// full 120s. The whitelist is `argToolFor`, shared with ArgLive so the two
+// cannot drift: an ordinary tool's argument stream prints nothing and must not
+// tighten anything.
+test "#401: whitelisted tool-argument prose is a tokens-flowing signal too (SSE parity)" {
+    const gpa = std.testing.allocator;
+    const open_meta = "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"name\":\"attempt_completion\"}}";
+    const open_edit = "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"name\":\"edit_file\"}}";
+    const arg_delta = "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"result\\\":\\\"hi\"}";
+    const done_0 = "{\"type\":\"response.output_item.done\",\"output_index\":0}";
+
+    // attempt_completion: the open event is not prose, the first argument byte is.
+    var meta: agent_ws.TokenSignal = .{};
+    try std.testing.expect(!meta.flowing(gpa, open_meta));
+    try std.testing.expect(meta.flowing(gpa, arg_delta));
+
+    // ask_user's `question` is the other whitelisted field.
+    var ask: agent_ws.TokenSignal = .{};
+    try std.testing.expect(!ask.flowing(gpa, "{\"type\":\"response.output_item.added\",\"output_index\":7,\"item\":{\"type\":\"function_call\",\"name\":\"ask_user\"}}"));
+    try std.testing.expect(ask.flowing(gpa, "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":7,\"delta\":\"{\\\"question\\\":\\\"?\"}"));
+
+    // An ORDINARY tool's arguments stream invisibly on SSE, so the identical
+    // delta must leave the pre-first-token budget standing.
+    var edit: agent_ws.TokenSignal = .{};
+    try std.testing.expect(!edit.flowing(gpa, open_edit));
+    try std.testing.expect(!edit.flowing(gpa, arg_delta));
+
+    // …as must an arg delta for an item nobody opened, a different item, an
+    // empty delta, a non-function_call item, and one whose call already closed.
+    var stray: agent_ws.TokenSignal = .{};
+    try std.testing.expect(!stray.flowing(gpa, arg_delta));
+    try std.testing.expect(!stray.flowing(gpa, open_meta));
+    try std.testing.expect(!stray.flowing(gpa, "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"x\"}"));
+    try std.testing.expect(!stray.flowing(gpa, "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"\"}"));
+    try std.testing.expect(!stray.flowing(gpa, done_0));
+    try std.testing.expect(!stray.flowing(gpa, arg_delta)); // closed by done_0
+    var msg: agent_ws.TokenSignal = .{};
+    try std.testing.expect(!msg.flowing(gpa, "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"name\":\"attempt_completion\"}}"));
+    try std.testing.expect(!msg.flowing(gpa, arg_delta));
+
+    // …and the other producer still reaches the same entry point unchanged.
+    var text: agent_ws.TokenSignal = .{};
+    try std.testing.expect(!text.flowing(gpa, "{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"hmm\"}"));
+    try std.testing.expect(text.flowing(gpa, "{\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}"));
+}
+
 // A flat head-sized send deadline is a false-positive generator on exactly the
 // frame most likely to sit under it: every recovery re-anchors with the FULL
 // conversation, so the retried frame is hundreds of KB where the delta was a few.
@@ -395,12 +448,15 @@ test "sendDeadlineMs (#401): head budget for a delta, transmit room for a full r
     try std.testing.expectEqual(head, agent_ws.sendDeadlineMs(1024 * 1024, head, 500));
 }
 
-// #401's transport tests (mock-WS end-to-end) live in agent_ws_stall_test.zig:
-// they need a loopback WebSocket server and a real Agent, which is more harness
-// than this file's pure-decision tests carry. main.zig's test root is AT the
-// 600-line cap, so that module is hooked transitively through this one, which is
-// already on the root chain (reference_zig_test_wiring: a module with no path to
-// the root compiles but never runs a single test).
+// #401's transport tests (mock-WS end-to-end) live in agent_ws_stall_test.zig
+// (budgets, guards, teardown) and agent_ws_reuse_test.zig (reuse vs fresh
+// connect), on the shared agent_ws_mock.zig harness: they need a loopback
+// WebSocket server and a real Agent, which is more harness than this file's
+// pure-decision tests carry. main.zig's test root is AT the 600-line cap, so
+// those modules are hooked transitively through this one, which is already on
+// the root chain (reference_zig_test_wiring: a module with no path to the root
+// compiles but never runs a single test).
 comptime {
     _ = @import("agent_ws_stall_test.zig");
+    _ = @import("agent_ws_reuse_test.zig");
 }
