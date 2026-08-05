@@ -138,15 +138,15 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     try root.messages.append(try messages_mod.textMessage(arena, "user", oneshot_user));
     if (telemetry.g_telem) |t| t.countTurn();
     const final_text = providers.runTurnWithFallback(root, keys, arena, null) catch |err| {
-        // std.process.fatal does not unwind main's defers. Mirror their normal
-        // order here: join the fleet worker, reap background jobs and pumps,
-        // then emit/upload the terminal behavioral event.
+        // std.process.fatal does not unwind main's defers. Mirror their order:
+        // join the fleet, reap jobs/pumps, then the terminal behavioral event.
         fleet.joinElites(io);
         jobs.jobsReap(gpa, io);
-        // Mirror main's teardown fully: flush buffered OTLP telemetry too, so
-        // a fatal one-shot is visible in ordinary telemetry, not only behavioral.
+        // Flush buffered OTLP too: a fatal one-shot stays visible in ordinary telemetry.
         if (telemetry.g_telem) |t| t.flush();
         if (tracer.behavior) |behavior| behavior.finish(.failed);
+        pricing.printUsageFooter(io); // #387/#389: fatal exits still owe cost accounting
+        if (root.tools_used.count() > 0) std.debug.print("note: {d} tool call(s) completed before the failure; their work was not rolled back\n", .{root.tools_used.count()});
         switch (err) {
             error.FallbackConsentRequired => std.process.fatal("saved model unavailable; provider '{s}' is not allowlisted — run graff interactively, then /fallback allow {s}", .{ root.provider.id, root.provider.id }),
             error.ApiError => std.process.fatal("{s}", .{root.last_api_error orelse "api error"}),
@@ -157,11 +157,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     try out.print("{s}\n", .{final_text});
     try out.flush();
     // Usage summary → stderr, so stdout stays exactly the answer.
-    var ubuf: [256]u8 = undefined;
-    var uw: Io.Writer = .fixed(&ubuf);
-    if (pricing.CostTally.render(pricing.g_cost.snap(io), &uw)) {
-        std.debug.print("[usage] {s}\n", .{uw.buffered()});
-    } else |_| {}
+    pricing.printUsageFooter(io);
     session.saveSession(root, arena, root.session_name) catch |err| {
         std.debug.print("⚠ session save failed: {s}\n", .{@errorName(err)});
     };
