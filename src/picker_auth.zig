@@ -11,6 +11,8 @@ const style = &ansi.style;
 const term = @import("term.zig");
 const tty = term.tty;
 const oauth = @import("oauth.zig");
+const oauth_helpers = @import("oauth_helpers.zig"); // the test pins g_codex_home, the resolver startup sets
+const policy = @import("agent_request_policy.zig");
 const providers = @import("providers.zig");
 const switchProvider = providers.switchProvider;
 const agent_mod = @import("agent.zig");
@@ -75,13 +77,17 @@ pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: 
         // and every following turn (plus its auto-compaction) kept 401ing. The
         // provider.id guard is what keeps `/login kimi` from hijacking a live codex
         // session; the model-picker path re-assigns via switchProvider anyway.
-        if (reloaded and std.mem.eql(u8, root.provider.id, provider_id)) {
-            const key = value.* orelse continue;
-            root.provider.api_key = root.arena.dupe(u8, key) catch key;
+        //
+        // adoptFreshAuth is the same binding the mid-turn refresh uses: it dupes
+        // BOTH the key and the account id onto the session arena (this function's
+        // `arena` parameter can be a scoped caller arena, and account outlives it),
+        // and releases the WS transport latch the expired credential earned.
+        if (reloaded) if (value.*) |key| if (std.mem.eql(u8, root.provider.id, provider_id)) {
+            const is_codex = std.mem.eql(u8, provider_id, "codex");
+            policy.adoptFreshAuth(root, .{ .key = key, .account = if (is_codex) keys.codex_account else "" });
             root.provider.source = .login;
-            if (std.mem.eql(u8, provider_id, "codex")) root.provider.account = keys.codex_account;
             root.closeCodexWs(); // the held socket was dialed with the stale bearer
-        }
+        };
     }
     if (std.mem.eql(u8, provider_id, "codex") and keys.get("codex") != null)
         root.reloadModelCatalog(keys.*);
@@ -105,10 +111,19 @@ test "#402: reloadLoginKey hot-reloads the ACTIVE agent's credential, not just K
         ,
     });
 
+    const saved_codex_home = oauth_helpers.g_codex_home;
+    defer oauth_helpers.g_codex_home = saved_codex_home;
+    oauth_helpers.g_codex_home = ""; // CODEX_HOME unset: ~/.codex
+
     var root: Agent = undefined;
     root.io = io;
     root.gpa = std.testing.allocator;
     root.arena = arena;
+    root.scratch_arena = null;
+    root.tracer = null;
+    root.sub = false;
+    root.out = null;
+    root.label = "root";
     root.home = home;
     root.model_catalog = null; // the catalog reload would go to the network
     root.codex_ws = null;
@@ -138,6 +153,32 @@ test "#402: reloadLoginKey hot-reloads the ACTIVE agent's credential, not just K
     try std.testing.expectEqualStrings("codex", root.provider.id);
     try std.testing.expect(root.codex_prev_id != null);
     std.testing.allocator.free(root.codex_prev_id.?);
+    root.codex_prev_id = null;
+
+    // The #402 split-brain: with CODEX_HOME set, `/login` must read back the very
+    // file the request loop's refresh reads and writes. Before the fix this half
+    // stayed on ~/.codex while the refresh resolved $CODEX_HOME, so `/login`
+    // reported success and the next request's proactive read silently reverted the
+    // session to the expired token.
+    const custom = try std.fmt.allocPrint(arena, "{s}/custom-codex-home", .{home});
+    try Io.Dir.cwd().createDirPath(io, custom);
+    try Io.Dir.cwd().writeFile(io, .{
+        .sub_path = try std.fmt.allocPrint(arena, "{s}/auth.json", .{custom}),
+        .data =
+        \\{"tokens":{"access_token":"env-tok","refresh_token":"","account_id":"acct-3"}}
+        ,
+    });
+    oauth_helpers.g_codex_home = custom;
+    root.provider.api_key = "expired-tok";
+    reloadLoginKey(&root, &keys, arena, "codex");
+    try std.testing.expectEqualStrings("env-tok", root.provider.api_key);
+    try std.testing.expectEqualStrings("acct-3", root.provider.account);
+
+    // …and the mid-turn recovery resolves the SAME file, so it cannot undo the
+    // login it just observed.
+    var refreshed = false;
+    try std.testing.expect(!policy.retryAfterAuthRefresh(&root, "Unauthorized", &refreshed));
+    try std.testing.expectEqualStrings("env-tok", root.provider.api_key);
 }
 
 /// Read an API key without terminal echo or history persistence. The ordinary

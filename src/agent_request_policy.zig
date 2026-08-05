@@ -6,6 +6,7 @@ const Agent = @import("agent.zig").Agent;
 const http = @import("http.zig");
 const RetryPlan = http.RetryPlan;
 const oauth = @import("oauth.zig");
+const oauth_helpers = @import("oauth_helpers.zig"); // tests pin g_codex_home, the resolver startup sets
 const telemetry = @import("telemetry.zig");
 const util = @import("util.zig");
 
@@ -30,14 +31,37 @@ test "isAuthError (#148): auth failures only, not credits/rate/other" {
     try std.testing.expect(!isAuthError("context length exceeded"));
 }
 
-/// The CODEX_HOME this session authenticated against. startup.zig resolves
-/// $CODEX_HOME once and parks it on the catalog; the login flows instead always
-/// write ~/.codex, which is the `null` fallback inside refreshOAuthKey. Reading
-/// or writing the other one would silently refresh a credential the session is
-/// not using.
-pub fn codexHome(self: *Agent) ?[]const u8 {
-    const catalog = self.model_catalog orelse return null;
-    return if (catalog.codex_home.len > 0) catalog.codex_home else null;
+/// Bind a refreshed credential to the LIVE provider. The ChatGPT account id
+/// travels WITH the token: it is the chatgpt-account-id header on every codex
+/// request (http_headers.zig, agent_ws.zig), so a new bearer paired with the
+/// previous account's id just 401/403s again. Both are duped onto the session
+/// arena — the refresh internals are scratch (#124), and a /login caller's arena
+/// may be scoped.
+///
+/// Called only when the credential actually CHANGED, which is also why the WS
+/// transport latch is released here: an expired bearer fails the WebSocket
+/// HANDSHAKE, and that failure never reaches the `.responses` error arm where
+/// this recovery lives — postLive counts it as a transport failure and latches
+/// `ws_off` (persistent SSE) for the rest of the session (agent_ws.zig). Those
+/// failures belonged to the credential; a credential that just changed earns the
+/// transport back, and the existing ladder re-latches after two fresh failures
+/// if the socket really was the problem.
+pub fn adoptFreshAuth(self: *Agent, fresh: oauth.FreshKey) void {
+    self.provider.api_key = self.arena.dupe(u8, fresh.key) catch self.provider.api_key;
+    if (fresh.account.len > 0 and !std.mem.eql(u8, fresh.account, self.provider.account))
+        self.provider.account = self.arena.dupe(u8, fresh.account) catch self.provider.account;
+    self.ws_off = false;
+    self.ws_transport_failures = 0;
+}
+
+/// A grant succeeded but its rotated credential could not be written back.
+/// OpenAI kills the old refresh_token the moment the new one is issued, so the
+/// in-memory token is now the only live credential: say so, instead of letting
+/// the next session start logged out with no explanation.
+fn warnUnpersistedRefresh(self: *Agent) void {
+    const name = oauth.takePersistError() orelse return;
+    if (self.tracer) |tr| tr.note("oauth_refresh", "refreshed token could not be written to auth.json");
+    self.say("[⚠ refreshed the Codex token but could not save it ({s}) — run `graff login codex` before your next session]\n", .{name}) catch {};
 }
 
 /// #148/#402: a login-sourced credential was rejected. Adopt a token an
@@ -50,15 +74,15 @@ pub fn codexHome(self: *Agent) ?[]const u8 {
 /// dead credential fails the turn instead of re-sending a full history forever
 /// — the #402 symptom, where every user message re-fired a ~302KB turn body and
 /// a ~868KB compaction body. A refresh that hands back the SAME token could not
-/// have helped either, so it does not earn a retry.
+/// have helped either, so it does not earn a retry. Neither does a credential
+/// belonging to a DIFFERENT ChatGPT account (refreshOAuthKey returns null).
 pub fn retryAfterAuthRefresh(self: *Agent, msg: []const u8, refreshed: *bool) bool {
     if (refreshed.* or self.provider.source != .login or !isAuthError(msg)) return false;
     refreshed.* = true;
-    const fresh = oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, true, self.provider.api_key, codexHome(self)) orelse return false;
-    if (std.mem.eql(u8, fresh, self.provider.api_key)) return false;
-    // #124: dupe off the scratch refresh internals — the key must survive every
-    // later request of the session.
-    self.provider.api_key = self.arena.dupe(u8, fresh) catch self.provider.api_key;
+    const fresh = oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, true, self.provider.api_key, self.provider.account) orelse return false;
+    warnUnpersistedRefresh(self);
+    if (std.mem.eql(u8, fresh.key, self.provider.api_key)) return false;
+    adoptFreshAuth(self, fresh);
     if (self.tracer) |tr| tr.note("oauth_refresh", "auth error — refreshed login token, retrying");
     return true;
 }
@@ -97,7 +121,89 @@ test "retryAfterAuthRefresh (#402): one attempt per request, login-sourced auth 
     }
 }
 
-test "retryAfterAuthRefresh (#402): a codex 401 adopts the token /login wrote, then stops" {
+/// A subagent-shaped agent: `model_catalog` is root-only (agent.zig) and
+/// `home` is never set on a child (subagent_run.zig), which is exactly the pair
+/// the old code resolved the codex credential dir from.
+fn testChildAgent(io: std.Io, arena: std.mem.Allocator, account: []const u8) Agent {
+    var agent: Agent = undefined;
+    agent.io = io;
+    agent.gpa = std.testing.allocator;
+    agent.arena = arena;
+    agent.scratch_arena = null;
+    agent.home = "";
+    agent.model_catalog = null;
+    agent.sub = true;
+    agent.out = null;
+    agent.label = "child";
+    agent.tracer = null;
+    agent.ws_off = true; // the expired bearer already failed the WS handshake
+    agent.ws_transport_failures = 2;
+    agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "expired-tok", .model = "gpt-5.6", .context = 272000, .account = account, .source = .login };
+    return agent;
+}
+
+fn writeTestAuth(io: std.Io, arena: std.mem.Allocator, dir: []const u8, access: []const u8, refresh: []const u8, account: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    try std.Io.Dir.cwd().writeFile(io, .{
+        .sub_path = try std.fmt.allocPrint(arena, "{s}/auth.json", .{dir}),
+        .data = try std.fmt.allocPrint(arena, "{{\"tokens\":{{\"access_token\":\"{s}\",\"refresh_token\":\"{s}\",\"account_id\":\"{s}\"}}}}", .{ access, refresh, account }),
+    });
+}
+
+test "retryAfterAuthRefresh (#402): a codex 401 adopts the token /login wrote — subagents included" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
+    const env_home = try std.fmt.allocPrint(arena, "{s}/env-codex-home", .{base});
+    try writeTestAuth(io, arena, env_home, "fresh-tok", "r1", "acct-1");
+
+    const saved = oauth_helpers.g_codex_home;
+    defer oauth_helpers.g_codex_home = saved;
+    oauth_helpers.g_codex_home = env_home; // what startup pinned from $CODEX_HOME
+
+    // CODEX_HOME set, and the agent is a CHILD: no model catalog, no home. Both
+    // recovery paths used to be unconditional no-ops here, and a long codex run
+    // spends most of its wall clock inside subagents — where a token is most
+    // likely to cross expiry.
+    var agent = testChildAgent(io, arena, "acct-1");
+    const expired = "Provided authentication token is expired. Please re-authenticate.";
+    var refreshed = false;
+    try std.testing.expect(retryAfterAuthRefresh(&agent, expired, &refreshed));
+    try std.testing.expect(refreshed);
+    try std.testing.expectEqualStrings("fresh-tok", agent.provider.api_key);
+    try std.testing.expectEqualStrings("acct-1", agent.provider.account);
+    // The WS handshake failures that latched persistent SSE were the expired
+    // credential's; a credential that just changed earns the transport back.
+    try std.testing.expect(!agent.ws_off);
+    try std.testing.expectEqual(@as(u8, 0), agent.ws_transport_failures);
+    try std.testing.expect(!retryAfterAuthRefresh(&agent, expired, &refreshed)); // bounded
+
+    // A refresh that can only hand back the SAME token cannot help; retrying would
+    // just re-send the whole history for another guaranteed 401.
+    try writeTestAuth(io, arena, env_home, "fresh-tok", "", "acct-1");
+    var again = false;
+    try std.testing.expect(!retryAfterAuthRefresh(&agent, expired, &again));
+    try std.testing.expect(again); // attempt was spent, so the turn fails instead of looping
+
+    // CODEX_HOME UNSET: the same recovery, from ~/.codex, for an agent that does
+    // have a home. One resolver serves both.
+    oauth_helpers.g_codex_home = "";
+    const home = try std.fmt.allocPrint(arena, "{s}/home", .{base});
+    try writeTestAuth(io, arena, try std.fmt.allocPrint(arena, "{s}/.codex", .{home}), "home-tok", "r2", "acct-1");
+    var root = testChildAgent(io, arena, "acct-1");
+    root.home = home;
+    var root_refreshed = false;
+    try std.testing.expect(retryAfterAuthRefresh(&root, expired, &root_refreshed));
+    try std.testing.expectEqualStrings("home-tok", root.provider.api_key);
+}
+
+test "retryAfterAuthRefresh (#402): a different ChatGPT account is never adopted" {
     const io = std.testing.io;
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -107,45 +213,28 @@ test "retryAfterAuthRefresh (#402): a codex 401 adopts the token /login wrote, t
     defer tmp.cleanup();
     var real_buf: [std.fs.max_path_bytes]u8 = undefined;
     const codex_home = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
-    const auth_path = try std.fmt.allocPrint(arena, "{s}/auth.json", .{codex_home});
-    try std.Io.Dir.cwd().writeFile(io, .{
-        .sub_path = auth_path,
-        .data =
-        \\{"tokens":{"access_token":"fresh-tok","refresh_token":"r1","account_id":"a"}}
-        ,
-    });
+    try writeTestAuth(io, arena, codex_home, "other-tok", "r1", "acct-two");
 
-    var agent: Agent = undefined;
-    agent.io = io;
-    agent.gpa = std.testing.allocator;
-    agent.arena = arena;
-    agent.scratch_arena = null;
-    agent.home = "/graff-test-no-such-home";
-    agent.tracer = null;
-    agent.model_catalog = .{ .codex_home = codex_home }; // startup's resolved $CODEX_HOME
-    agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "expired-tok", .model = "gpt-5.6", .context = 272000, .source = .login };
-    const expired = "Provided authentication token is expired. Please re-authenticate.";
+    const saved = oauth_helpers.g_codex_home;
+    defer oauth_helpers.g_codex_home = saved;
+    oauth_helpers.g_codex_home = codex_home;
 
-    // The literal issue reproduction: /login rewrote auth.json, the live session was
-    // still on the expired bearer. The retry must pick the new one up with no
-    // network call and no restart.
+    // codex-rs's reload_if_account_id_matches: someone re-authenticated as a
+    // SECOND ChatGPT account while this session was live. Adopting that bearer
+    // under this session's chatgpt-account-id header only 401/403s again, with
+    // the one recovery attempt already spent.
+    var agent = testChildAgent(io, arena, "acct-one");
     var refreshed = false;
-    try std.testing.expect(retryAfterAuthRefresh(&agent, expired, &refreshed));
+    try std.testing.expect(!retryAfterAuthRefresh(&agent, "Unauthorized", &refreshed));
     try std.testing.expect(refreshed);
-    try std.testing.expectEqualStrings("fresh-tok", agent.provider.api_key);
-    try std.testing.expect(!retryAfterAuthRefresh(&agent, expired, &refreshed)); // bounded
+    try std.testing.expectEqualStrings("expired-tok", agent.provider.api_key);
+    try std.testing.expectEqualStrings("acct-one", agent.provider.account);
 
-    // A refresh that can only hand back the SAME token cannot help; retrying would
-    // just re-send the whole history for another guaranteed 401.
-    try std.Io.Dir.cwd().writeFile(io, .{
-        .sub_path = auth_path,
-        .data =
-        \\{"tokens":{"access_token":"fresh-tok","refresh_token":"","account_id":"a"}}
-        ,
-    });
-    var again = false;
-    try std.testing.expect(!retryAfterAuthRefresh(&agent, expired, &again));
-    try std.testing.expect(again); // attempt was spent, so the turn fails instead of looping
+    // The same file IS adopted by a session that belongs to that account.
+    var sibling = testChildAgent(io, arena, "acct-two");
+    var sibling_refreshed = false;
+    try std.testing.expect(retryAfterAuthRefresh(&sibling, "Unauthorized", &sibling_refreshed));
+    try std.testing.expectEqualStrings("other-tok", sibling.provider.api_key);
 }
 
 /// True if `msg` is a provider's "input is over the context window" rejection,

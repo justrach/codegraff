@@ -111,13 +111,14 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     // #402: codex joins this path. Its on-disk read is unconditional (a ChatGPT
     // token carries no expiry we can cheaply check), which is also codex-rs's
     // STEP 1 — a `graff login` in another terminal is picked up here, without
-    // waiting for a 401.
+    // waiting for a 401. It reads the ONE credential dir every login flow writes
+    // (oauth.codexHomeDir), so this can no longer revert a login that just
+    // succeeded, and it needs neither the root's catalog nor a `home`.
     if (self.provider.source == .login) {
-        if (oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, false, null, policy.codexHome(self))) |fresh| {
-            // Only re-dupe on a real change: this runs every request, and the
+        if (oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, false, null, self.provider.account)) |fresh| {
+            // Only adopt on a real change: this runs every request, and the
             // session arena is never reclaimed.
-            if (!std.mem.eql(u8, fresh, self.provider.api_key))
-                self.provider.api_key = self.arena.dupe(u8, fresh) catch self.provider.api_key;
+            if (!std.mem.eql(u8, fresh.key, self.provider.api_key)) policy.adoptFreshAuth(self, fresh);
         }
     }
     // #95: scrub any malformed function_call_output before it hits the wire.

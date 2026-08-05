@@ -61,6 +61,11 @@ test "codexWsIdleExpired: fires only strictly past the idle limit (codex-ws)" {
 // The pure unit tests over retryAfterAuthRefresh all pass even if this call site
 // is deleted, so pin the site itself — same shape as the source pins in
 // route_policy_tests.zig / route_phase_tests.zig.
+//
+// A source pin proves placement, never behaviour: it would still pass against a
+// stubbed-out helper. The behavioural half is scripts/test-codex-auth-recovery.py,
+// which drives a real graff against the codex mock over a PTY and asserts the
+// RETRIED request's Authorization header carries the newly adopted bearer.
 test "the codex .responses arm refreshes auth and re-anchors before resending (#402)" {
     const src = @embedFile("agent_request.zig");
     const arm_start = std.mem.indexOf(u8, src, "unparseable codex response").?;

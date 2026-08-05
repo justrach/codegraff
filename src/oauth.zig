@@ -50,13 +50,20 @@ pub fn loadCodexAuthFrom(io: Io, arena: Allocator, codex_home: []const u8) ?Code
     return .{ .token = token, .account = account };
 }
 
-/// Default-home compatibility wrapper used by login flows that always write
-/// ~/.codex/auth.json. Startup and `graff models` use loadCodexAuthFrom so a
-/// user-supplied CODEX_HOME controls both credentials and the native catalog.
+/// Read it from THE codex home (helpers.codexHomeDir: $CODEX_HOME, else
+/// ~/.codex). #402: this used to hardcode ~/.codex, so an in-session `/login`
+/// read back a different file than the request loop's refresh wrote — under
+/// CODEX_HOME the login "succeeded" and the session kept its expired token.
 pub fn loadCodexAuth(io: Io, arena: Allocator, home: []const u8) ?CodexAuth {
-    const codex_home = std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch return null;
-    return loadCodexAuthFrom(io, arena, codex_home);
+    return loadCodexAuthFrom(io, arena, helpers.codexHomeDir(arena, home) orelse return null);
 }
+
+/// The one credential-directory resolver, re-exported for the callers that
+/// already import oauth (startup, the request loop, the pickers).
+pub const codexHomeDir = helpers.codexHomeDir;
+pub const initCodexHome = helpers.initCodexHome;
+pub const FreshKey = helpers.FreshKey;
+pub const takePersistError = helpers.takePersistError;
 
 // #148: how long before an OAuth access token's expiry to proactively refresh
 // it — wider than the old 60s so a mid-session refresh has headroom before a
@@ -93,7 +100,7 @@ pub fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, re
 
     var body: []const u8 = undefined;
     if (refresh_only) {
-        const path = try std.fmt.allocPrint(arena, "{s}/.codex/auth.json", .{home});
+        const path = try helpers.codexAuthPath(arena, helpers.codexHomeDir(arena, home) orelse return error.NoCodexHome);
         const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(256 * 1024)) catch {
             try out.print("not logged in (no {s}) — run `graff login` first\n", .{path});
             try out.flush();
@@ -103,7 +110,7 @@ pub fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, re
         const refresh = blk: {
             if (v == .object) if (v.object.get("tokens")) |t| if (t == .object)
                 if (t.object.get("refresh_token")) |r| if (r == .string) break :blk r.string;
-            try out.writeAll("no refresh_token in ~/.codex/auth.json\n");
+            try out.print("no refresh_token in {s}\n", .{path});
             try out.flush();
             return;
         };
@@ -180,7 +187,9 @@ pub fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, re
     const refresh = strFieldObj(resp, "refresh_token") orelse "";
     const account = accountFromIdToken(arena, id_token);
     try writeCodexAuth(io, arena, home, id_token, access, refresh, account);
-    try out.print("✓ logged into Codex (account {s}…) — wrote ~/.codex/auth.json. /model codex\n", .{account[0..@min(account.len, 8)]});
+    // Name the file actually written: under $CODEX_HOME it is not ~/.codex, and
+    // saying otherwise is how #402 stayed invisible for so long.
+    try out.print("✓ logged into Codex (account {s}…) — wrote {s}/auth.json. /model codex\n", .{ account[0..@min(account.len, 8)], helpers.codexHomeDir(arena, home) orelse "~/.codex" });
     try out.flush();
 }
 
@@ -355,9 +364,12 @@ pub fn loadKimiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8,
 ///
 /// #402: codex used to be excluded here as "long-lived" — it is not, and that
 /// premise is what made an expired ChatGPT token unrecoverable for the life of
-/// a session. `codex_home` must be the dir startup resolved from $CODEX_HOME;
-/// null falls back to ~/.codex, which is what the login flows write.
-pub fn refreshOAuthKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, provider_id: []const u8, force: bool, stale: ?[]const u8, codex_home: ?[]const u8) ?[]const u8 {
+/// a session. Its credential dir comes from the ONE resolver, never from the
+/// caller: the root agent's model catalog and a subagent's empty `home` used to
+/// answer differently, and only one of those is the file `/login` writes.
+/// `account` is this session's ChatGPT account id (empty when unknown or not
+/// codex) — see loadCodexOAuth's expect_account.
+pub fn refreshOAuthKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, provider_id: []const u8, force: bool, stale: ?[]const u8, account: []const u8) ?helpers.FreshKey {
     const is_kimi = std.mem.eql(u8, provider_id, "kimi");
     const is_xai = std.mem.eql(u8, provider_id, "xai");
     const is_codex = std.mem.eql(u8, provider_id, "codex");
@@ -365,10 +377,11 @@ pub fn refreshOAuthKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u
     oauth_refresh_mutex.lockUncancelable(io);
     defer oauth_refresh_mutex.unlock(io);
     if (is_codex) {
-        const dir = codex_home orelse (std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch return null);
-        return helpers.loadCodexOAuth(io, gpa, arena, dir, force, stale);
+        const dir = helpers.codexHomeDir(arena, home) orelse return null;
+        return helpers.loadCodexOAuth(io, gpa, arena, dir, force, stale, account);
     }
-    return if (is_kimi) loadKimiOAuth(io, gpa, arena, home, force, stale) else loadXaiOAuth(io, gpa, arena, home, force, stale);
+    const key = (if (is_kimi) loadKimiOAuth(io, gpa, arena, home, force, stale) else loadXaiOAuth(io, gpa, arena, home, force, stale)) orelse return null;
+    return .{ .key = key };
 }
 
 // xAI (Grok) OAuth — device-code flow against auth.x.ai. The OIDC discovery
