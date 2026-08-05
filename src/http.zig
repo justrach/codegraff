@@ -231,19 +231,16 @@ fn postWatchdog(io: Io) WatchdogFired {
 
 // A streaming response idle THIS LONG (not total response time — the watchdog
 // resets its clock on every line, so it measures the gap between tokens/
-// keep-alives/reasoning deltas) is a dead or hung connection, so a turn can't
-// wait forever. This is the PRE-first-token budget, generous because a silent
-// reasoning phase legitimately runs minutes; http_stall.budgetMs tightens it
-// once tokens are flowing (#56). Tunable via GRAFF_STREAM_STALL_SECS (wired in
-// session_run.setupSkillsAndTheme), which scales both regimes. Giving up here
-// is error.StreamStalled — a harness stall, NEVER a user Esc (#134).
+// keep-alives/reasoning deltas) is a dead or hung connection. This is the
+// PRE-first-token budget, generous because a silent reasoning phase legitimately
+// runs minutes; http_stall.budgetMs tightens it once tokens are flowing (#56).
+// Tunable via GRAFF_STREAM_STALL_SECS (session_run.setupSkillsAndTheme), which
+// scales both regimes. Giving up is error.StreamStalled, NEVER a user Esc (#134).
 pub var stream_stall_ms: u64 = 120 * 1000;
 
-/// A response head (HTTP status line + headers) idle this long means the server
-/// accepted the connection but isn't responding — common right after a
-/// keep-alive drop that caused an HttpConnectionClosing retry. Shorter than
-/// stream_stall_ms because the head should arrive in milliseconds; any delay
-/// past this is a stall, not a slow model. Mutable so a test can shrink it.
+/// A response head idle this long = the server accepted the connection but is
+/// not answering (common right after a keep-alive drop). Mutable so a test can
+/// shrink it; anything that does must restore it (shared process-wide).
 pub var head_stall_ms: u64 = 30 * 1000;
 
 /// Retry policy for request() after a failed attempt. Transport flakes
@@ -319,13 +316,11 @@ pub fn streamStallTask(io: Io, poll_stdin: bool) WatchdogFired {
     return streamStallWatch(io, poll_stdin, false);
 }
 
-/// Select-arm wrapper: fires after head_stall_ms (head receive stall), or
-/// early on Esc. Races postStream's send + receiveHead so a freshly-redialed
-/// connection that the server accepts but never answers can't hang the turn
-/// (the root cause of the "retrying (1/3)" → "thinking… forever" bug).
-pub fn headStallTask(io: Io, poll_stdin: bool) WatchdogFired {
+/// Select-arm wrapper: fires after `budget_ms` of silence, or early on Esc.
+/// Parameterized so a payload-sized deadline (agent_ws.sendDeadlineMs) shares it.
+pub fn deadlineStallTask(io: Io, poll_stdin: bool, budget_ms: u64) WatchdogFired {
     var waited: u64 = 0;
-    while (waited < head_stall_ms) {
+    while (waited < budget_ms) {
         io.sleep(.fromMilliseconds(50), .awake) catch return .deadline;
         waited += 50;
         if (poll_stdin and Agent.drainSteerStdin(true)) {
@@ -335,6 +330,12 @@ pub fn headStallTask(io: Io, poll_stdin: bool) WatchdogFired {
         if (Agent.esc_cancel.load(.acquire)) return .esc;
     }
     return .deadline;
+}
+
+/// Races postStream's send + receiveHead so a redialed connection the server
+/// accepts but never answers can't hang the turn ("retrying (1/3)" → forever).
+pub fn headStallTask(io: Io, poll_stdin: bool) WatchdogFired {
+    return deadlineStallTask(io, poll_stdin, head_stall_ms);
 }
 
 /// Select-arm wrapper for `post` (pins the member type to anyerror![]u8).

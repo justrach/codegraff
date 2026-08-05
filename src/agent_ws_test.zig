@@ -1,9 +1,6 @@
 //! Regression tests for Codex WebSocket delta-session re-anchoring.
 
 const std = @import("std");
-const builtin = @import("builtin");
-const Io = std.Io;
-const http = @import("http.zig");
 const Agent = @import("agent.zig").Agent;
 const textMessage = @import("messages.zig").textMessage;
 const ws = @import("ws.zig");
@@ -344,146 +341,12 @@ test "buildBody (.responses): never emits a top-level max_output_tokens (codex g
     try std.testing.expect(std.mem.indexOf(u8, title, "max_output_tokens") == null);
 }
 
-// ── #401: the WS transport's outbound half ───────────────────────────────────
-
-fn nowMs(io: Io) i64 {
-    return @intCast(@divTrunc(Io.Timestamp.now(io, .awake).nanoseconds, std.time.ns_per_ms));
-}
-
-// A loopback listener that completes the upgrade and then stops reading. That
-// is the half-open shape a held codex socket lands in while a tool call runs,
-// and the one the #401 trace shows: "ws reuse (delta)" and then nothing.
-const HalfOpenServer = struct {
-    fn run(io: Io, server: *std.Io.net.Server, upgrade: bool, done: *std.atomic.Value(bool)) void {
-        const c = server.accept(io) catch return;
-        defer c.close(io);
-        if (upgrade) {
-            var rbuf: [4096]u8 = undefined;
-            var sr = std.Io.net.Stream.Reader.init(c, io, &rbuf);
-            while (true) {
-                const line = sr.interface.takeDelimiterInclusive('\n') catch break;
-                if (line.len <= 2) break; // blank line: end of the upgrade request
-            }
-            var wbuf: [256]u8 = undefined;
-            var sw = std.Io.net.Stream.Writer.init(c, io, &wbuf);
-            sw.interface.writeAll("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n") catch {};
-            sw.interface.flush() catch {};
-        }
-        // …and from here never read (or, with upgrade=false, never answer at
-        // all): the socket stays open and undrained until the test releases it.
-        while (!done.load(.acquire)) io.sleep(.fromMilliseconds(20), .awake) catch break;
-    }
-};
-
-// #401 regression. A main-agent request sent over a REUSED codex WS right after
-// a tool result hung forever: `sendText` was a bare blocking socket write with
-// no deadline, no Esc poll and no trace note, so a peer that had silently
-// stopped draining parked the turn inside the write syscall until TCP gave up
-// (minutes to never). The read loop was already watchdogged, which is why the
-// trace stopped dead at "reuse (delta)" with no stall/esc/completed note. The
-// guarded send must surface error.StreamStalled promptly instead, so
-// request()'s bounded reconnect → WS→SSE ladder can recover the turn.
-test "sendFrameWatched (#401): a peer that stops draining fails fast instead of hanging" {
-    // Windows loopback buffer sizing / RST timing is not deterministic enough
-    // to guarantee the write blocks rather than failing outright (same reason
-    // the #177 poison test is POSIX-only).
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-
-    var addr = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
-    var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
-    var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(HalfOpenServer.run, .{ io, &server, true, &done });
-    defer fut.await(io);
-    defer done.store(true, .release);
-    defer server.deinit(io);
-
-    const bound = server.socket.address;
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "ws://127.0.0.1:{d}/x", .{bound.getPort()});
-    const client = try ws.WsClient.connect(gpa, io, url, false, &.{});
-
-    // head_stall_ms is shared with the SSE head path — restore it or every
-    // later test in this binary inherits a 300ms budget.
-    const saved = http.head_stall_ms;
-    http.head_stall_ms = 300;
-    defer http.head_stall_ms = saved;
-
-    // Bigger than any plausible loopback send+receive buffer, so the write
-    // really blocks in the kernel instead of slipping through.
-    const big = try gpa.alloc(u8, 16 * 1024 * 1024);
-    defer gpa.free(big);
-    @memset(big, 'x');
-
-    const t0 = nowMs(io);
-    const sent = agent_ws.sendFrameWatched(io, client, big, false);
-    const send_ms = nowMs(io) - t0;
-
-    // …and the recovery must not re-hang: deinit's courtesy close frame is
-    // another blocking write on the same wedged socket, so `dead` skips it.
-    const t1 = nowMs(io);
-    client.dead = true;
-    client.deinit(gpa);
-    const close_ms = nowMs(io) - t1;
-
-    try std.testing.expectError(error.StreamStalled, sent);
-    try std.testing.expect(send_ms < 10_000); // before the fix this never returned at all
-    // …and it was the WATCHDOG that ended it, not the pool-exhausted shortcut
-    // (which also returns StreamStalled, instantly, and would pass vacuously).
-    try std.testing.expect(send_ms >= 200);
-    try std.testing.expect(close_ms < 5_000);
-}
-
-// #401 (F3). Once the send is guarded, the retry it triggers redials — and the
-// dial was unbounded too: DNS + TCP + TLS + a blocking read of the 101 status
-// line. A host that accepts the connection but never upgrades would hang at the
-// "connecting" note and swallow the recovery. Same watchdog, same error, so
-// request()'s stall budget applies and the second failure latches SSE.
-test "connectWatched (#401): a host that accepts but never upgrades times out" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-
-    var addr = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
-    var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
-    var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(HalfOpenServer.run, .{ io, &server, false, &done });
-    defer fut.await(io);
-    defer done.store(true, .release);
-    defer server.deinit(io);
-
-    const bound = server.socket.address;
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "ws://127.0.0.1:{d}/x", .{bound.getPort()});
-
-    const saved = http.head_stall_ms;
-    http.head_stall_ms = 300;
-    defer http.head_stall_ms = saved;
-
-    const t0 = nowMs(io);
-    const dialed = agent_ws.connectWatched(gpa, io, url, &.{}, false);
-    const dial_ms = nowMs(io) - t0;
-    if (dialed) |c| {
-        c.dead = true;
-        c.deinit(gpa);
-    } else |_| {}
-
-    try std.testing.expectError(error.StreamStalled, dialed);
-    try std.testing.expect(dial_ms < 10_000);
-    try std.testing.expect(dial_ms >= 200); // the watchdog fired, not the pool-exhausted shortcut
-}
-
-// #134's classification, pinned for the two arms #401 adds. A wedged send is a
-// harness stall (the turn reconnects, and mainloop records it as "response
-// ended early"), never "[response interrupted by user]"; a real Esc during the
-// send — which was inert before #401, since nothing polled stdin there — must
-// stay a deliberate interrupt that request()'s retry loop refuses to retry.
-test "the #401 send/dial guards classify a deadline as a stall and an Esc as an interrupt" {
-    try std.testing.expect(http.watchdogError(.deadline, error.StreamStalled) == error.StreamStalled);
-    try std.testing.expect(http.watchdogError(.deadline, error.StreamStalled) != error.Interrupted);
-    try std.testing.expect(http.watchdogError(.esc, error.StreamStalled) == error.Interrupted);
-    // The send budget is the head budget, not the pre-first-token stream budget:
-    // it measures "the frame is not on the wire yet", not "the model is slow".
-    try std.testing.expect(http.head_stall_ms < http.stream_stall_ms);
+// #401's transport tests (mock-WS end-to-end) live in agent_ws_stall_test.zig:
+// they need a loopback WebSocket server and a real Agent, which is more harness
+// than this file's pure-decision tests carry. main.zig's test root is AT the
+// 600-line cap, so that module is hooked transitively through this one, which is
+// already on the root chain (reference_zig_test_wiring: a module with no path to
+// the root compiles but never runs a single test).
+comptime {
+    _ = @import("agent_ws_stall_test.zig");
 }

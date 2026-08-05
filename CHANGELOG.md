@@ -10,6 +10,26 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## Unreleased
+
+- Codex WebSocket turns no longer sit silent for minutes when the backend goes
+  quiet mid-response. The WS reader armed its stall watchdog with a hardcoded
+  "no tokens yet", so it re-armed the full 120s pre-first-token budget on every
+  frame and never tightened once data was flowing — the SSE reader has always
+  tightened to a quarter. Silence after frames now trips in ~30s, and the trace
+  gains `sent <n>b` and `first frame` notes, so a hang says which half of the
+  turn went quiet instead of stopping dead at `reuse (delta)` (#401).
+- The WS send and dial are under a deadline too (an unbounded blocking write /
+  an unbounded dial through DNS + TLS + the 101 status line), with Esc live
+  during both. They report the transport-flake error the SSE guard uses, so a
+  wedged socket is retried on a fresh one rather than spending the turn's stall
+  budget; the send deadline scales with the frame so a full-conversation
+  re-anchor is not a false positive. A held socket that any path already
+  condemned is re-anchored instead of reused (openai/codex `is_closed()`
+  parity), and a suspect socket is torn down with a plain FIN rather than a
+  courtesy close frame that could block again. A failed WS handshake no longer
+  leaks its fd and CA bundle.
+
 ## v0.0.237 (2026-08-04)
 
 - Ultracode redesigned around an escalation ladder: the codeword now means
