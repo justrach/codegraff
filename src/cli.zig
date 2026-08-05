@@ -21,6 +21,13 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.238
+    \\  • Tight-budget runs hold back a landing reserve, so they finish, verify, and still deliver the final answer instead of dying mid-narration
+    \\  • A completed run releases the terminal instead of suspending on tty input, and worker activity lines wait for the foreground's line boundary
+    \\  • Completed todo items parked from a prior goal retire at the next ask instead of piling up across prompts
+    \\  • Fleet workers retry transient failures within a bound — one flaky HTTP response can't lose a finished report, and budget refusals never blind-retry
+    \\  • Search roles ride the small rung; landed turns feed local learning, and a learned decline names the policy it came from
+    \\
     \\0.0.231
     \\  • edit_file verifies every edit actually landed on disk; a silent no-op is a loud tool error instead of a false success, and batched same-file edits can no longer race each other
     \\  • Embedder mode is complete: the hard --no-local-tools gate (MCP-sourced coding tools) plus resumable serve streams with seq ids, ?from=N replay, and durable sessions (schema 0.10)
@@ -45,11 +52,6 @@ pub const changelog_text =
     \\  • The CLI now uses Codegraff's accessible vermilion-coral accent for prompts, tools, Markdown structure, and active selections
     \\  • A quiet Ensō brush-circle is the stable thinking default; every existing animation remains selectable, including random
     \\  • Ultracode motion is now a slower rust/coral/gold ember sweep instead of a full-spectrum rainbow
-    \\
-    \\0.0.201
-    \\  • A send-failed request no longer re-pools its dead connection, so one network blip can't storm every later compaction, title, and subagent call
-    \\  • The "ultracode" codeword is matched only on what you actually typed (not on appended goal/todo notes), and /clear now clears the standing goal and ultracode mode
-    \\  • `graff login codex` lands on a branded, dark-mode-aware confirmation page instead of a bare line of text
     \\
 ;
 
