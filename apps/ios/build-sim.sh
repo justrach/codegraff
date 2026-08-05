@@ -6,8 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 APP=Graff
-BUNDLE=com.codegraff.graff
-SIM="${SIM:-iPhone 17 Pro}"
+. ./sim-lib.sh # #407: UDID + boot-state aware cleanup trap (KEEP=1 / SIM_GUI=1)
 SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 TARGET=arm64-apple-ios26.0-simulator
 OUT="build/${APP}.app"
@@ -43,12 +42,11 @@ xcrun -sdk iphonesimulator swiftc \
 cp Graff/Info.plist "$OUT/Info.plist"
 
 echo "==> booting $SIM"
-xcrun simctl boot "$SIM" 2>/dev/null || true
-open -a Simulator >/dev/null 2>&1 || true
+sim_boot
 
 echo "==> installing + launching"
-xcrun simctl install "$SIM" "$OUT"
-xcrun simctl launch "$SIM" "$BUNDLE" || true
+xcrun simctl install "$sim_udid" "$OUT"
+xcrun simctl launch "$sim_udid" "$BUNDLE" || true
 sleep 4
-xcrun simctl io "$SIM" screenshot build/launch.png >/dev/null 2>&1 || true
+xcrun simctl io "$sim_udid" screenshot build/launch.png >/dev/null 2>&1 || true
 echo "==> done — screenshot: $(pwd)/build/launch.png"
