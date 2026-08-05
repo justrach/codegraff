@@ -167,17 +167,36 @@ pub const Follower = struct {
     }
 };
 
-/// Is this child event line the terminal event of a protocol request?
-/// turn/error end user turns; the rest are between-turn acks. Unknown event
-/// types stream through (edge-version durability) — a newer child must still
-/// terminate every request with one of these.
+/// Every event type that ends a protocol request: turn/error close user turns,
+/// the rest are the between-turn acks mainloop.zig emits for control requests.
+/// An ack missing from this list wedges the session PERMANENTLY — serve.zig
+/// streams it and then blocks in takeDelimiter() still holding `busy`, so every
+/// later request on that session waits on a lock nobody will release. The test
+/// below pins this list against the emitter so a new control command cannot
+/// land without one.
+pub const terminal_events = [_][]const u8{
+    "turn",
+    "error",
+    "system_prompt",
+    "score",
+    "model",
+    "compact",
+    "mode",
+    "agent",
+    "effort",
+    "fast",
+    "ultracode",
+};
+
+/// Is this child event line the terminal event of a protocol request? Unknown
+/// event types stream through (edge-version durability) — a newer child must
+/// still terminate every request with one of these.
 pub fn terminalEvent(line: []const u8) bool {
     const t = stringField(line, "type") orelse "";
-    return std.mem.eql(u8, t, "turn") or std.mem.eql(u8, t, "error") or
-        std.mem.eql(u8, t, "system_prompt") or std.mem.eql(u8, t, "score") or
-        std.mem.eql(u8, t, "model") or std.mem.eql(u8, t, "compact") or
-        std.mem.eql(u8, t, "mode") or std.mem.eql(u8, t, "agent") or
-        std.mem.eql(u8, t, "effort") or std.mem.eql(u8, t, "fast");
+    for (terminal_events) |name| {
+        if (std.mem.eql(u8, t, name)) return true;
+    }
+    return false;
 }
 
 /// Pull a JSON string field out of an event line by scanning, not parsing:
@@ -297,6 +316,9 @@ test "terminalEvent + stringField: envelope reads survive a seq prefix" {
     try testing.expect(terminalEvent("{\"seq\":9,\"type\":\"error\",\"message\":\"x\"}"));
     try testing.expect(!terminalEvent("{\"seq\":9,\"type\":\"text\",\"text\":\"x\"}"));
     try testing.expect(!terminalEvent("{\"seq\":9,\"type\":\"tool_call\",\"name\":\"bash\"}"));
+    // set_ultracode's ack: absent from this list it streams and then blocks,
+    // holding `busy` for the life of the session.
+    try testing.expect(terminalEvent("{\"seq\":9,\"type\":\"ultracode\",\"ok\":true,\"on\":true}"));
     try testing.expectEqualStrings("turn", stringField("{\"seq\":1,\"type\":\"turn\"}", "type").?);
     try testing.expect(stringField("{\"seq\":1,\"type\":\"turn\"}", "missing") == null);
     // escaped quote inside the value is skipped, not treated as the terminator
@@ -344,4 +366,48 @@ test "EventLog + Follower: appended lines tail without gaps or duplicates" {
     try testing.expectEqual(@as(u64, 3), lastSeqOnDisk(io, tmp.dir, testing.allocator, path));
     reopened.append("{\"seq\":4,\"type\":\"started\"}");
     try testing.expectEqual(@as(u64, 4), lastSeqOnDisk(io, tmp.dir, testing.allocator, path));
+}
+
+test "terminal_events covers every control ack mainloop can emit" {
+    // The list is only correct relative to the emitter, so read the emitter.
+    // mainloop.zig's --json control block answers each between-turn request
+    // with exactly one event; any type of those that is not terminal wedges
+    // the session in serveMessage. Pinned as source text (route_policy_tests
+    // does the same for subagent.zig) because the property is about the emit
+    // sites, not about a value a runtime test could observe here.
+    const src = @embedFile("mainloop.zig");
+    const begin = std.mem.indexOf(u8, src, "json_request = std.json.parseFromSlice") orelse
+        return error.ControlBlockMoved;
+    const end = begin + (std.mem.indexOf(u8, src[begin..], "break :blk text;") orelse
+        return error.ControlBlockMoved);
+    const block = src[begin..end];
+
+    // Every ack in the block is a one-liner, which is what the scan below
+    // reads; a wrapped `.emit(.{` would slip past it entirely unchecked.
+    const emit = ".emit(.{";
+    const typed_emit = emit ++ " .type = \"";
+    try testing.expectEqual(std.mem.count(u8, block, emit), std.mem.count(u8, block, typed_emit));
+
+    var checked: usize = 0;
+    var rest = block;
+    while (std.mem.indexOf(u8, rest, typed_emit)) |at| {
+        const from = at + typed_emit.len;
+        const stop = from + (std.mem.indexOfScalar(u8, rest[from..], '"') orelse return error.ControlBlockMoved);
+        const name = rest[from..stop];
+        rest = rest[stop..];
+        var buf: [128]u8 = undefined;
+        const line = try std.fmt.bufPrint(&buf, "{{\"seq\":1,\"type\":\"{s}\"}}", .{name});
+        if (!terminalEvent(line)) {
+            std.debug.print("\ncontrol ack \"{s}\" is missing from serve_events.terminal_events\n", .{name});
+            return error.ControlAckNotTerminal;
+        }
+        checked += 1;
+    }
+    try testing.expect(checked >= 12); // the scan read acks, not an empty slice
+
+    // score is acked from its own module; answer/reattach never reach the
+    // streaming loop (serve.zig answers both before serveMessage sends).
+    const score_src = @embedFile("mainloop_score.zig");
+    try testing.expect(std.mem.indexOf(u8, score_src, ".emit(.{ .type = \"score\"") != null);
+    try testing.expect(terminalEvent("{\"seq\":1,\"type\":\"score\"}"));
 }
