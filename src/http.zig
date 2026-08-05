@@ -239,12 +239,12 @@ fn postWatchdog(io: Io) WatchdogFired {
 // is error.StreamStalled — a harness stall, NEVER a user Esc (#134).
 pub var stream_stall_ms: u64 = 120 * 1000;
 
-/// A response head (HTTP status line + headers) idle this long means the
-/// server accepted the connection but isn't responding — common right
-/// after a keep-alive drop that caused an HttpConnectionClosing retry.
-/// Shorter than stream_stall_ms because the head should arrive in
-/// milliseconds; any delay past this is a stall, not a slow model.
-const head_stall_ms: u64 = 30 * 1000;
+/// A response head (HTTP status line + headers) idle this long means the server
+/// accepted the connection but isn't responding — common right after a
+/// keep-alive drop that caused an HttpConnectionClosing retry. Shorter than
+/// stream_stall_ms because the head should arrive in milliseconds; any delay
+/// past this is a stall, not a slow model. Mutable so a test can shrink it.
+pub var head_stall_ms: u64 = 30 * 1000;
 
 /// Retry policy for request() after a failed attempt. Transport flakes
 /// (HttpConnectionClosing / WriteFailed / reset / truncated TLS) are now far
