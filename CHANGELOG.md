@@ -10,6 +10,32 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.239 (unreleased)
+
+- A successful `/login` now reaches the live session (#402): the codex
+  `.responses` error path runs the same bounded auth recovery as every other
+  wire format — re-read `auth.json` from disk first (adopting a re-login by
+  this session, a second graff, or the real codex CLI, gated on the ChatGPT
+  account id), then spend the refresh token, then retry once — instead of
+  resending the full request + compaction bodies with a dead bearer forever.
+  One `$CODEX_HOME` resolver serves every reader and writer of `auth.json`
+  (subagents included), and the mid-turn refresh persist preserves the fields
+  the codex CLI owns in that co-owned file, 0600, staged + renamed.
+- `/save <name>` and `/resume <name>` copy the typed name out of readline's
+  reused line buffer; the next prompt can no longer silently retarget the
+  autosave (or worse) via a stale slice.
+- `/rewind` never deletes a file it failed to snapshot: a pre-write read
+  failure (oversized, unreadable) now records "no snapshot" and rewind leaves
+  the file as-is with an honest count, instead of conflating read failure with
+  "didn't exist" and unlinking it.
+- `graff serve` no longer wedges permanently on `set_ultracode`: the ultracode
+  ack is a terminal event, the ack list is pinned against the emitter by test,
+  and the JSON-controls E2E covers it.
+- Credential and catalog writes are atomic (staged temp + rename via a shared
+  writer): a crash or full disk can no longer truncate the only copy of a
+  refresh token. xAI credentials now land 0600/0700 like kimi's; the MCP OAuth
+  store and the multi-provider key map write through the same path.
+
 ## v0.0.237 (2026-08-04)
 
 - Ultracode redesigned around an escalation ladder: the codeword now means
