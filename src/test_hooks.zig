@@ -116,6 +116,10 @@ const shutdown_trace = @import("shutdown_trace.zig");
 const snapshots = @import("snapshots.zig");
 const snapshots_tests = @import("snapshots_tests.zig");
 
+// Atomic + owner-only credential writes. Production reaches it only through
+// calls from oauth.zig and the catalog writers, so its own tests need the hook.
+const credential_store = @import("credential_store.zig");
+
 test {
     _ = learn_holdout;
     _ = learn_receipt;
@@ -152,6 +156,7 @@ test {
     _ = playbook_glue;
     _ = playbook_reflect;
     _ = shutdown_trace;
+    _ = credential_store;
     _ = escalation;
     _ = escalation_tests;
     _ = edit_contract;

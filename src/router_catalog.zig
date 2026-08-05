@@ -9,6 +9,7 @@ const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
 
 const catalog_selection = @import("catalog_selection.zig");
+const credential_store = @import("credential_store.zig");
 const pricing = @import("pricing.zig");
 const provider = @import("provider.zig");
 const serde = @import("serde.zig");
@@ -160,12 +161,7 @@ fn writeCache(io: Io, arena: Allocator, home: []const u8, spec: provider.Provide
     const document = cacheDocument(io, arena, spec, models) orelse return;
     for ([_][]const u8{ dirPath(arena, home, spec), flatPath(arena, home, spec) }) |path| {
         if (path.len == 0) continue;
-        const file = Io.Dir.cwd().createFile(io, path, .{}) catch continue;
-        defer file.close(io);
-        var buffer: [4096]u8 = undefined;
-        var writer = file.writer(io, &buffer);
-        writer.interface.writeAll(document) catch continue;
-        writer.interface.flush() catch continue;
+        credential_store.replaceFile(io, Io.Dir.cwd(), path, document, .default_file) catch continue;
         return;
     }
 }
