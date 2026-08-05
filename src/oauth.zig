@@ -31,6 +31,7 @@ const unixMs = util.unixMs;
 const kimi_catalog = @import("kimi_catalog.zig");
 const pricing = @import("pricing.zig");
 const codegraff = @import("oauth_codegraff.zig");
+const credential_store = @import("credential_store.zig");
 
 pub const CodexAuth = struct { token: []const u8, account: []const u8 };
 
@@ -230,38 +231,11 @@ fn kimiOAuthPost(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, url
 }
 
 fn kimiAuthPath(arena: Allocator, home: []const u8) []const u8 {
-    return std.fmt.allocPrint(arena, "{s}/.kimi/credentials/graff-oauth.json", .{home}) catch "";
+    return credential_store.oauthPath(arena, home, ".kimi");
 }
 
 fn writeKimiAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8, refresh: []const u8, expires_at: i64) !void {
-    const private_file_permissions: Io.File.Permissions = if (Io.File.Permissions.has_executable_bit) @enumFromInt(0o600) else .default_file;
-    const private_dir_permissions: Io.File.Permissions = if (Io.File.Permissions.has_executable_bit) @enumFromInt(0o700) else .default_dir;
-    // createDir is one level, so make ~/.kimi then ~/.kimi/credentials.
-    const kimi_dir = try std.fmt.allocPrint(arena, "{s}/.kimi", .{home});
-    const credentials_dir = try std.fmt.allocPrint(arena, "{s}/.kimi/credentials", .{home});
-    Io.Dir.cwd().createDir(io, kimi_dir, private_dir_permissions) catch {};
-    Io.Dir.cwd().createDir(io, credentials_dir, private_dir_permissions) catch {};
-    for ([_][]const u8{ kimi_dir, credentials_dir }) |path| {
-        // iterate=true: see kimi_catalog.secureDir — a default openDir can be
-        // O_PATH on Linux, where fchmod panics EBADF instead of erroring.
-        const dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch continue;
-        defer dir.close(io);
-        dir.setPermissions(io, private_dir_permissions) catch {};
-    }
-    var obj: std.json.ObjectMap = .empty;
-    try obj.put(arena, "access_token", .{ .string = access });
-    try obj.put(arena, "refresh_token", .{ .string = refresh });
-    try obj.put(arena, "expires_at", .{ .integer = expires_at });
-    var aw: Io.Writer.Allocating = .init(arena);
-    var s: std.json.Stringify = .{ .writer = &aw.writer };
-    try s.write(Value{ .object = obj });
-    const f = try Io.Dir.cwd().createFile(io, kimiAuthPath(arena, home), .{ .permissions = private_file_permissions });
-    defer f.close(io);
-    f.setPermissions(io, private_file_permissions) catch {};
-    var wbuf: [4096]u8 = undefined;
-    var fw = f.writer(io, &wbuf);
-    try fw.interface.writeAll(aw.writer.buffered());
-    try fw.interface.flush();
+    return credential_store.writeOAuth(io, arena, home, ".kimi", access, refresh, expires_at);
 }
 
 /// `graff login kimi`: Kimi Code device-code OAuth. Prints a verification URL +
@@ -428,25 +402,11 @@ fn xaiOAuthPost(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body:
 }
 
 fn xaiAuthPath(arena: Allocator, home: []const u8) []const u8 {
-    return std.fmt.allocPrint(arena, "{s}/.xai/credentials/graff-oauth.json", .{home}) catch "";
+    return credential_store.oauthPath(arena, home, ".xai");
 }
 
 fn writeXaiAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8, refresh: []const u8, expires_at: i64) !void {
-    Io.Dir.cwd().createDir(io, try std.fmt.allocPrint(arena, "{s}/.xai", .{home}), .default_dir) catch {};
-    Io.Dir.cwd().createDir(io, try std.fmt.allocPrint(arena, "{s}/.xai/credentials", .{home}), .default_dir) catch {};
-    var obj: std.json.ObjectMap = .empty;
-    try obj.put(arena, "access_token", .{ .string = access });
-    try obj.put(arena, "refresh_token", .{ .string = refresh });
-    try obj.put(arena, "expires_at", .{ .integer = expires_at });
-    var aw: Io.Writer.Allocating = .init(arena);
-    var st: std.json.Stringify = .{ .writer = &aw.writer };
-    try st.write(Value{ .object = obj });
-    const f = try Io.Dir.cwd().createFile(io, xaiAuthPath(arena, home), .{});
-    defer f.close(io);
-    var wbuf: [4096]u8 = undefined;
-    var fw = f.writer(io, &wbuf);
-    try fw.interface.writeAll(aw.writer.buffered());
-    try fw.interface.flush();
+    return credential_store.writeOAuth(io, arena, home, ".xai", access, refresh, expires_at);
 }
 
 /// `graff login xai`: xAI/Grok device-code OAuth. Prints a verification URL +

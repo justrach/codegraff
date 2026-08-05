@@ -7,6 +7,8 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
 
+const credential_store = @import("credential_store.zig");
+
 const settings_dir = ".harness";
 const settings_path = ".harness/settings.json";
 const field = "fallback_providers";
@@ -52,13 +54,8 @@ pub fn save(io: Io, gpa: Allocator, providers: []const []const u8) bool {
     defer aw.deinit();
     var stringify: std.json.Stringify = .{ .writer = &aw.writer, .options = .{ .whitespace = .indent_2 } };
     stringify.write(Value{ .object = root }) catch return false;
-    const file = Io.Dir.cwd().createFile(io, settings_path, .{}) catch return false;
-    defer file.close(io);
-    var buf: [4096]u8 = undefined;
-    var writer = file.writer(io, &buf);
-    writer.interface.writeAll(aw.writer.buffered()) catch return false;
-    writer.interface.writeByte('\n') catch return false;
-    writer.interface.flush() catch return false;
+    aw.writer.writeByte('\n') catch return false;
+    credential_store.replaceFile(io, Io.Dir.cwd(), settings_path, aw.writer.buffered(), .default_file) catch return false;
     return true;
 }
 

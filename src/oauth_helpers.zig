@@ -7,6 +7,8 @@ const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
+const credential_store = @import("credential_store.zig");
+
 pub fn b64url(arena: Allocator, bytes: []const u8) []const u8 {
     const enc = std.base64.url_safe_no_pad.Encoder;
     const buf = arena.alloc(u8, enc.calcSize(bytes.len)) catch return "";
@@ -44,12 +46,7 @@ pub fn writeCodexAuth(io: Io, arena: Allocator, home: []const u8, id_token: []co
     var aw: Io.Writer.Allocating = .init(arena);
     var stringify: std.json.Stringify = .{ .writer = &aw.writer };
     try stringify.write(Value{ .object = object });
-    const file = try Io.Dir.cwd().createFile(io, path, .{});
-    defer file.close(io);
-    var write_buffer: [4096]u8 = undefined;
-    var writer = file.writer(io, &write_buffer);
-    try writer.interface.writeAll(aw.writer.buffered());
-    try writer.interface.flush();
+    try credential_store.replaceFile(io, Io.Dir.cwd(), path, aw.writer.buffered(), .default_file);
 }
 
 /// The page the Codex OAuth callback tab lands on after a successful login.
