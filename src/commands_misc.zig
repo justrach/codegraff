@@ -131,6 +131,15 @@ fn showModelsHealth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer
     try out.flush();
 }
 
+/// `/save <name>` and `/resume <name>`: a typed name is a slice of readline's
+/// reused line buffer (readLine returns `buf.items`, cleared and regrown on the
+/// next call), while root.session_name is read by every later autosave — so a
+/// typed name is copied into the session arena, the same ownership /new and
+/// /rename give theirs. An omitted name keeps the caller's owned fallback.
+fn ownedSessionName(arena: Allocator, arg: []const u8, fallback: []const u8) ![]const u8 {
+    return if (arg.len == 0) fallback else arena.dupe(u8, arg);
+}
+
 /// Try to handle a misc slash command. Returns false (line unhandled) if
 /// `line` doesn't match any command in this file — the caller falls through
 /// to handleRest() for the unknown-command/help terminal stage.
@@ -436,7 +445,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.startsWith(u8, line, "/save")) {
         const arg = std.mem.trim(u8, line["/save".len..], " \t");
-        const name = if (arg.len == 0) root.session_name else arg;
+        const name = try ownedSessionName(arena, arg, root.session_name);
         saveSession(root, arena, name) catch |err| {
             try out.print("save failed: {t}\n", .{err});
             try out.flush();
@@ -450,7 +459,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.startsWith(u8, line, "/resume")) {
         root.ensureStoredKeys(keys);
         const arg = std.mem.trim(u8, line["/resume".len..], " \t");
-        var name: []const u8 = if (arg.len == 0) "last" else arg;
+        var name: []const u8 = try ownedSessionName(arena, arg, "last");
         // Bare /resume on a TTY: pick from the saved sessions interactively,
         // labeled by stored title + age instead of raw file names (#109).
         if (arg.len == 0 and main_mod.use_color and root.in != null) {
@@ -474,7 +483,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try sessions.append(arena, .{ .name = e.title orelse e.base, .desc = desc });
             }
             const idx = listPicker(root, arena, out, "Resume session ›", sessions.items) orelse return true;
-            name = entries.items[idx].base;
+            name = entries.items[idx].base; // arena-owned by listSavedSessions, so it outlives the turn too
         }
         loadSession(root, keys, arena, name) catch |err| {
             switch (err) {
@@ -539,4 +548,29 @@ pub fn handleRest(line: []const u8, out: *Io.Writer) !void {
         \\
     );
     try out.flush();
+}
+
+test "a typed /save|/resume name is copied out of readline's reused line buffer" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Stands in for mainloop's ctx.linebuf: readLine clears and refills this
+    // same ArrayList every turn, and returns slices of it.
+    var linebuf: std.ArrayList(u8) = .empty;
+    defer linebuf.deinit(std.testing.allocator);
+    try linebuf.appendSlice(std.testing.allocator, "alpha");
+
+    const name = try ownedSessionName(arena, linebuf.items, "last");
+    try std.testing.expectEqualStrings("alpha", name);
+    try std.testing.expect(name.ptr != linebuf.items.ptr);
+
+    // Next turn: same storage, different text. A stored slice would retarget.
+    linebuf.clearRetainingCapacity();
+    try linebuf.appendSlice(std.testing.allocator, "bravo");
+    try std.testing.expectEqualStrings("alpha", name);
+
+    // An omitted name reuses the caller's already-owned fallback verbatim.
+    const bare = try ownedSessionName(arena, "", name);
+    try std.testing.expect(bare.ptr == name.ptr);
 }
