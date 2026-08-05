@@ -64,6 +64,84 @@ fn warnUnpersistedRefresh(self: *Agent) void {
     self.say("[⚠ refreshed the Codex token but could not save it ({s}) — run `graff login codex` before your next session]\n", .{name}) catch {};
 }
 
+/// #148/#402: adopt a credential another writer has already produced BEFORE the
+/// request goes out — codex-rs's STEP 1, run preemptively instead of only after
+/// a rejection, so a `graff login` in another terminal (or the real codex CLI)
+/// heals a live session without waiting for it to 401 first. Runs for the root
+/// and for subagents alike: the credential resolver needs neither the root's
+/// model catalog nor a `home`, and it resolves the ONE directory every login
+/// flow writes (oauth.codexHomeDir), so this read can no longer revert a
+/// `/login` that just succeeded — the reported #402 symptom.
+///
+/// kimi/xai refresh only near expiry; the codex read is unconditional, because a
+/// ChatGPT access token carries no expiry field we could check cheaply.
+///
+/// The read + JSON parse are scoped to a LOCAL arena rather than
+/// `self.scratchAlloc()`. This runs on every single request, and a subagent has
+/// no scratch arena — scratchAlloc() falls back to the session arena, which is
+/// never reclaimed, so the ~1-2KB per request would accumulate for the whole
+/// life of the child. adoptFreshAuth dupes what it keeps onto the session arena,
+/// so nothing here outlives this frame.
+pub fn refreshLoginKeyBeforeSend(self: *Agent) void {
+    if (self.provider.source != .login) return;
+    var scratch = std.heap.ArenaAllocator.init(self.gpa);
+    defer scratch.deinit();
+    const fresh = oauth.refreshOAuthKey(self.io, self.gpa, scratch.allocator(), self.home, self.provider.id, false, null, self.provider.account) orelse return;
+    // Only adopt on a real CHANGE: an unchanged credential must not churn the
+    // session arena, nor hand the WS transport latch back on every request.
+    if (std.mem.eql(u8, fresh.key, self.provider.api_key)) return;
+    adoptFreshAuth(self, fresh);
+}
+
+test "refreshLoginKeyBeforeSend (#402): an out-of-band login heals a live session, at no per-request cost" {
+    const io = std.testing.io;
+    var session = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer session.deinit();
+    var scratch_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer scratch_state.deinit();
+    const arena = scratch_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const codex_home = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
+    try writeTestAuth(io, arena, codex_home, "startup-tok", "", "acct-1");
+
+    const saved = oauth_helpers.g_codex_home;
+    defer oauth_helpers.g_codex_home = saved;
+    oauth_helpers.g_codex_home = codex_home;
+
+    // A CHILD: no catalog, no home, and no scratch arena — everything it
+    // allocates lands on the session arena below and is never reclaimed.
+    var agent = testChildAgent(io, session.allocator(), "acct-1");
+    agent.provider.api_key = "startup-tok";
+
+    // Nothing changed on disk: every request re-reads, and none of it may stick.
+    const settled = blk: {
+        var i: usize = 0;
+        while (i < 4) : (i += 1) refreshLoginKeyBeforeSend(&agent);
+        break :blk session.queryCapacity();
+    };
+    var i: usize = 0;
+    while (i < 200) : (i += 1) refreshLoginKeyBeforeSend(&agent);
+    try std.testing.expectEqual(settled, session.queryCapacity());
+    try std.testing.expectEqualStrings("startup-tok", agent.provider.api_key);
+
+    // `graff login` in another terminal, mid-session: picked up on the very next
+    // request, with its account id, without waiting for a 401 — and the WS
+    // transport the dead credential latched off is handed back.
+    try writeTestAuth(io, arena, codex_home, "relogin-tok", "", "acct-1");
+    refreshLoginKeyBeforeSend(&agent);
+    try std.testing.expectEqualStrings("relogin-tok", agent.provider.api_key);
+    try std.testing.expect(!agent.ws_off);
+
+    // An env-sourced key has no login file behind it and must never be touched.
+    agent.provider.source = .environment;
+    try writeTestAuth(io, arena, codex_home, "third-tok", "", "acct-1");
+    refreshLoginKeyBeforeSend(&agent);
+    try std.testing.expectEqualStrings("relogin-tok", agent.provider.api_key);
+}
+
 /// #148/#402: a login-sourced credential was rejected. Adopt a token an
 /// in-session `/login` (or another process) has already written to disk, else
 /// spend the refresh grant — then retry the request once with the new bearer.

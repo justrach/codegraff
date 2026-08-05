@@ -10,12 +10,19 @@ Driven through a real graff process on a PTY, against the codex mock:
      the mock rewrites ``$CODEX_HOME/auth.json`` — standing in for the ``/login``
      (or a second graff, or the real ``codex`` CLI) that re-authenticates while
      this session is live.
-  3. graff must adopt that credential without a restart and resend the turn.
+  3. graff must adopt that credential without a restart and resend the turn
+     (the REACTIVE half: the ``.responses`` 401 arm).
+  4. While serving that retry the mock rewrites auth.json once more, and the user
+     sends a second message. That turn never 401s, so only the PROACTIVE
+     per-request re-read can pick the new credential up — codex-rs's STEP 1 run
+     preemptively. It is also the half that regressed the reported symptom: a
+     proactive read pointed at a different directory than the login writer
+     silently reverts a ``/login`` that just succeeded.
 
-Asserted on the wire: a second request exists, it carries the NEW bearer and the
-new chatgpt-account-id, and the session prints the reply. Before #402 the turn
-died on the 401 body and every later turn re-fired the same expired token, which
-is exactly what the issue reports.
+Asserted on the wire: the retry carries the NEW bearer and the account id, the
+turn after it carries the NEXT one, and the session prints both replies. Before
+#402 the turn died on the 401 body and every later turn re-fired the same expired
+token, which is exactly what the issue reports.
 
 $CODEX_HOME deliberately is NOT ``$HOME/.codex``: the credential the recovery
 reads has to be the one the login flows write, and this scenario only passes when
@@ -36,8 +43,10 @@ _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
 
 FINAL_REPLY = "AUTH_RECOVERY_OK"
+SECOND_REPLY = "AUTH_PROACTIVE_OK"
 EXPIRED_TOKEN = "tok-expired-402"
 FRESH_TOKEN = "tok-fresh-402"
+RELOGIN_TOKEN = "tok-relogin-402"
 EXPIRED_ACCOUNT = "acct-402"
 EXPIRED_BODY = json.dumps(
     {
@@ -88,23 +97,29 @@ def main() -> None:
             return unauthorized()
 
         def events(request: RecordedRequest) -> list[dict]:
+            if request.ordinal == 2:
+                # The retry is in flight and will succeed. Re-authenticate AGAIN
+                # behind graff's back: no later request 401s, so only the
+                # proactive per-request re-read can notice this one.
+                write_auth(codex_home, RELOGIN_TOKEN)
+            reply = FINAL_REPLY if request.ordinal <= 2 else SECOND_REPLY
             return [
                 {
                     "type": "response.output_item.done",
                     "item": {
                         "type": "message",
-                        "id": "msg_auth_ok",
+                        "id": f"msg_auth_ok_{request.ordinal}",
                         "status": "completed",
                         "role": "assistant",
                         "content": [
-                            {"type": "output_text", "text": FINAL_REPLY, "annotations": []}
+                            {"type": "output_text", "text": reply, "annotations": []}
                         ],
                     },
                 },
                 {
                     "type": "response.completed",
                     "response": {
-                        "id": "resp_auth_ok",
+                        "id": f"resp_auth_ok_{request.ordinal}",
                         "usage": {
                             "input_tokens": 100,
                             "input_tokens_details": {"cached_tokens": 0},
@@ -150,6 +165,10 @@ def main() -> None:
                 session.send_line("say hello")
                 session.wait_for_literal(FINAL_REPLY, start=cursor)
                 session.wait_for_literal("] ›", start=cursor)
+                cursor = len(session.raw)
+                session.send_line("say hello again")
+                session.wait_for_literal(SECOND_REPLY, start=cursor)
+                session.wait_for_literal("] ›", start=cursor)
                 session.send_key("ctrl-d")
                 result = session.read_until_exit(5.0)
                 if result.timed_out or result.exit_code != 0:
@@ -158,9 +177,9 @@ def main() -> None:
                     )
 
             requests = mock.recorded_requests()
-            if len(requests) < 2:
+            if len(requests) < 3:
                 raise AssertionError(
-                    f"the 401 was terminal — no retry was sent: {[r.ordinal for r in requests]!r}"
+                    f"expected a retry and a second turn, got: {[r.ordinal for r in requests]!r}"
                 )
             first = requests[0].headers.get("authorization", "")
             if first != f"Bearer {EXPIRED_TOKEN}":
@@ -173,18 +192,24 @@ def main() -> None:
             account = requests[1].headers.get("chatgpt-account-id", "")
             if account != EXPIRED_ACCOUNT:
                 raise AssertionError(f"account header lost on the retry: {account!r}")
-            # The adopted credential must also be the one every LATER request uses,
-            # not just this one retry.
-            for request in requests[1:]:
+            # The PROACTIVE half: nothing 401'd after the retry, so the only way
+            # request 3 can carry the credential written during request 2 is the
+            # per-request re-read — and only if it resolves the file the login
+            # flows write.
+            for request in requests[2:]:
                 token = request.headers.get("authorization", "")
-                if token != f"Bearer {FRESH_TOKEN}":
+                if token != f"Bearer {RELOGIN_TOKEN}":
                     raise AssertionError(
-                        f"request {request.ordinal} fell back to a stale token: {token!r}"
+                        f"request {request.ordinal} did not pick up the out-of-band login: {token!r}"
+                    )
+                if request.headers.get("chatgpt-account-id", "") != EXPIRED_ACCOUNT:
+                    raise AssertionError(
+                        f"request {request.ordinal} lost the account header"
                     )
         finally:
             mock.stop()
 
-    print("ok    an expired codex token is adopted mid-turn and the retry carries it")
+    print("ok    an expired codex token is adopted mid-turn, and an out-of-band login mid-session")
 
 
 if __name__ == "__main__":

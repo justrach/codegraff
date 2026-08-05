@@ -10,7 +10,6 @@ const Value = std.json.Value;
 
 const main_mod = @import("main.zig");
 const Agent = @import("agent.zig").Agent;
-const oauth = @import("oauth.zig");
 
 const messages_mod = @import("messages.zig");
 const sanitizeMessagesUtf8 = messages_mod.sanitizeMessagesUtf8;
@@ -96,31 +95,18 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     var stream_usage = true; // openai stream_options; dropped if rejected
     var auth_refreshed = false; // #148: at most one forced token refresh + retry
     // #124: reclaim last request's transient parse garbage FIRST, so everything
-    // below (oauth refresh internals, per-event parse trees, tool-arg parses)
-    // can use the scratch arena for this request. Safe: all scratch data is
+    // below (per-event parse trees, tool-arg parses) can use the scratch arena
+    // for this request. Safe: all scratch data is
     // consumed before the next request(); messages/todos/prompts live on the
     // session arena.
     if (self.scratch_arena) |sa| resetRequestScratch(sa);
-    // #148: a login-sourced OAuth token (kimi/xai, ~1h) expires mid-session and
-    // is minted only at startup; refresh it in place before the call when near
-    // expiry so a long session — or a subagent that inherited the on-disk token —
-    // never 401s. Login-sourced keys only (env keys untouched); a cheap disk read
-    // unless actually near expiry. The refresh internals (file read + JSON parse,
-    // ~1-2KB) are scratch (#124); only the token itself is duped to survive
-    // future requests.
-    // #402: codex joins this path. Its on-disk read is unconditional (a ChatGPT
-    // token carries no expiry we can cheaply check), which is also codex-rs's
-    // STEP 1 — a `graff login` in another terminal is picked up here, without
-    // waiting for a 401. It reads the ONE credential dir every login flow writes
-    // (oauth.codexHomeDir), so this can no longer revert a login that just
-    // succeeded, and it needs neither the root's catalog nor a `home`.
-    if (self.provider.source == .login) {
-        if (oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, false, null, self.provider.account)) |fresh| {
-            // Only adopt on a real change: this runs every request, and the
-            // session arena is never reclaimed.
-            if (!std.mem.eql(u8, fresh.key, self.provider.api_key)) policy.adoptFreshAuth(self, fresh);
-        }
-    }
+    // #148/#402: a login-sourced OAuth token expires mid-session and is minted
+    // only at startup; pick up whatever is currently on disk before the call, so
+    // a long session — or a subagent that inherited the token — never 401s over
+    // a credential somebody has already replaced. Login-sourced keys only (env
+    // keys untouched), and see refreshLoginKeyBeforeSend for why its transients
+    // do NOT go on the scratch arena.
+    policy.refreshLoginKeyBeforeSend(self);
     // #95: scrub any malformed function_call_output before it hits the wire.
     const message_arena = self.messageMutationAlloc();
     sanitizeMessagesUtf8(message_arena, &self.messages); // invalid UTF-8 (any source/format) -> '?' so content never serializes as a byte-int array the API rejects
