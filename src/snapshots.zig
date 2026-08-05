@@ -85,7 +85,13 @@ pub const Snapshots = struct {
             done.append(self.gpa, snap.path) catch {};
             switch (snap.before) {
                 .content => |b| Io.Dir.cwd().writeFile(self.io, .{ .sub_path = snap.path, .data = b }) catch continue,
-                .absent => Io.Dir.cwd().deleteFile(self.io, snap.path) catch {},
+                // A delete that FAILED left the file exactly as the rewound
+                // turns wrote it, so it must not be counted as restored.
+                // FileNotFound is the one exception: something else already
+                // removed it, so the tree is in the state the rewind wanted.
+                .absent => Io.Dir.cwd().deleteFile(self.io, snap.path) catch |err| {
+                    if (err != error.FileNotFound) continue;
+                },
                 // Nothing was captured: there is nothing to put back, and
                 // deleting would destroy content /rewind never owned.
                 .unreadable => {

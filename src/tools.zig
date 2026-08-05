@@ -83,11 +83,12 @@ pub const ToolOutput = struct {
 
 // `/rewind`'s pre-write file history lives in snapshots.zig (this file is at
 // the 600-line cap); re-exported so `tools.Snapshots` keeps resolving for
-// main.zig/agent.zig/exec.zig.
+// main.zig/agent.zig/exec.zig — and so `Rewound`, which `restore()` now
+// returns, reaches its callers by that one route rather than a second import.
 const snapshots_mod = @import("snapshots.zig");
-pub const Before = snapshots_mod.Before;
 pub const beforeFromRead = snapshots_mod.beforeFromRead;
 pub const Snapshots = snapshots_mod.Snapshots;
+pub const Rewound = snapshots_mod.Rewound;
 
 /// Everything a tool executor may touch from a pool thread. All fields are
 /// thread-safe (gpa, io, shared http client, mutex-guarded registry and

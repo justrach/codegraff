@@ -103,3 +103,62 @@ test "/rewind: a file too big to snapshot survives — it is never mistaken for 
     defer gpa.free(after);
     try std.testing.expectEqualStrings("clobbered\n", after);
 }
+
+test "/rewind: a delete that FAILS is not counted as a file restored" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "sub", .default_dir);
+    const dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{&tmp.sub_path});
+
+    var snaps: snapshots.Snapshots = .{ .gpa = gpa, .io = io };
+    defer snaps.deinit();
+    snaps.turn = 1;
+    // Brand new file → snapshot `.absent` → the rewind's job is to delete it.
+    try writeFile(&snaps, a, try std.fmt.allocPrint(a, "{s}/sub/new.txt", .{dir}), "created this turn\n");
+
+    // The tree moves under us between the write and the rewind: `sub` is a
+    // regular FILE now, so deleting `sub/new.txt` fails with NotDir.
+    try tmp.dir.deleteTree(io, "sub");
+    try tmp.dir.writeFile(io, .{ .sub_path = "sub", .data = "not a directory\n" });
+
+    const rw = snaps.restore(1);
+    // Nothing was put back and nothing was deleted, so the count must be 0:
+    // reporting "restored 1 file(s)" here tells the user a lie they would act on.
+    try std.testing.expectEqual(@as(usize, 0), rw.restored);
+    // `skipped` is only for snapshots we never captured — this one we had.
+    try std.testing.expectEqual(@as(usize, 0), rw.skipped);
+    const kept = try tmp.dir.readFileAlloc(io, "sub", gpa, .limited(4096));
+    defer gpa.free(kept);
+    try std.testing.expectEqualStrings("not a directory\n", kept);
+}
+
+test "/rewind: a file already gone when the rewind runs still counts as restored" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var snaps: snapshots.Snapshots = .{ .gpa = gpa, .io = io };
+    defer snaps.deinit();
+    snaps.turn = 1;
+    const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/gone.txt", .{&tmp.sub_path});
+    try writeFile(&snaps, a, path, "created this turn\n");
+
+    // A bash `rm` (untracked by /rewind) got there first. The delete fails with
+    // FileNotFound, but the tree IS in the state the rewind wanted.
+    try tmp.dir.deleteFile(io, "gone.txt");
+    const rw = snaps.restore(1);
+    try std.testing.expectEqual(@as(usize, 1), rw.restored);
+    try std.testing.expectEqual(@as(usize, 0), rw.skipped);
+}
