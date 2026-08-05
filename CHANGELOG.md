@@ -15,22 +15,26 @@ current is part of cutting a release.
 - Codex WebSocket turns no longer sit silent for minutes when the backend goes
   quiet mid-response. The WS reader armed its stall watchdog with a hardcoded
   "no tokens yet", so it re-armed the full 120s pre-first-token budget on every
-  frame and never tightened once data was flowing — the SSE reader has always
-  tightened to a quarter. Silence after frames now trips in ~30s, and the trace
-  gains `sent <n>b` and `first frame` notes, so a hang says which half of the
-  turn went quiet instead of stopping dead at `reuse (delta)` (#401).
+  frame and never tightened once the model was actually emitting — the SSE
+  reader has always tightened to a quarter. Silence after visible output text
+  now trips in ~30s, while a silent reasoning phase keeps the full budget,
+  exactly as on SSE: the signal is the same `response.output_text.delta` the SSE
+  reader keys on, not mere frame arrival, because the protocol events land
+  milliseconds after the send and would otherwise stall out a long thinking
+  turn. The trace gains `sent <n>b`, `first frame` and `first output text`
+  notes, so a hang says which half of the turn went quiet instead of stopping
+  dead at `reuse (delta)` (#401).
 - The WS send and dial are under a deadline too (an unbounded blocking write /
   an unbounded dial through DNS + TLS + the 101 status line), with Esc live
   during both. They report the transport-flake error the SSE guard uses, so a
   wedged socket is retried on a fresh one rather than spending the turn's stall
   budget; the send deadline scales with the frame so a full-conversation
-  re-anchor is not a false positive. A held socket that any path already
-  condemned is re-anchored instead of reused (openai/codex `is_closed()`
-  parity), and a suspect socket is torn down with a plain FIN rather than a
-  courtesy close frame that could block again. Both guards name themselves in
-  the trace (`send stall` / `connect stall`), so a stalled dial is no longer
-  reported as a bare error name. A failed WS handshake no longer leaks its fd
-  and CA bundle.
+  re-anchor is not a false positive. When the Io pool is exhausted both fail
+  retryable instead of degrading to an unwatched blocking call, and both name
+  themselves in the trace (`send stall` / `connect stall`), so a stalled dial is
+  no longer reported as a bare error name. A socket the idle window condemns is
+  torn down with a plain FIN rather than a courtesy close frame that could block
+  again, and a failed WS handshake no longer leaks its fd and CA bundle.
 
 ## v0.0.237 (2026-08-04)
 

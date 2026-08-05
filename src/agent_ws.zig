@@ -11,12 +11,11 @@
 //!
 //! Observability (issue #134's ask): every ws lifecycle step is routed to the
 //! tracer ("ws" notes: connecting/connected/reuse (delta)/sent Nb/first frame/
-//! completed/send stall/stall/esc/fallback/errors), which lands in the run's
-//! file under .graff/traces so an agent can debug a ws turn after the fact;
-//! GRAFF_WS_DEBUG=1 additionally dumps the handshake + frames to stderr. The
-//! `sent`/`first frame` pair is what makes a hang diagnosable: which of the
-//! turn's two halves went quiet is otherwise unrecoverable from the trace
-//! (#401).
+//! first output text/completed/send stall/stall/esc/fallback/errors), which
+//! lands in the run's file under .graff/traces so an agent can debug a ws turn
+//! after the fact; GRAFF_WS_DEBUG=1 additionally dumps the handshake + frames to
+//! stderr. The `sent`/`first frame` pair is what makes a hang diagnosable: which
+//! of the turn's two halves went quiet is otherwise unrecoverable (#401).
 
 const std = @import("std");
 const Io = std.Io;
@@ -178,17 +177,14 @@ fn wsConnectTask(gpa: std.mem.Allocator, io: Io, url: []const u8, headers: []con
 
 /// The deadline for writing a frame of `frame_len` bytes.
 ///
-/// NOT a flat head-sized budget, because the frame most likely to sit under
-/// this guard is the LARGEST one: every recovery re-anchors with the full
-/// conversation (closeCodexWs nulls codex_prev_id), so the retried frame is the
-/// whole history where the delta was a few KB. A flat 30s over a ~1MB re-anchor
-/// on a slow uplink is a false positive that costs a transport failure — and
-/// two of those latch SSE for the session.
-///
-/// Policy: start at the head budget (a small frame really must be on the wire in
-/// head time) and add one second per 64KB — a ~512 kbit/s floor, far below any
-/// link that can carry a codex session — clamped to the read budget so the send
-/// guard can never outlast the watchdog that covers the reply.
+/// NOT a flat head-sized budget: the frame most likely to sit under this guard
+/// is the LARGEST one, because every recovery re-anchors with the full
+/// conversation (closeCodexWs nulls codex_prev_id). A flat 30s over a ~1MB
+/// re-anchor on a slow uplink is a false positive costing a transport failure,
+/// and two of those latch SSE for the session. Policy: the head budget plus one
+/// second per 64KB (a ~512 kbit/s floor, far below any link that can carry a
+/// codex session), clamped to the read budget so the send guard can never
+/// outlast the watchdog covering the reply.
 pub fn sendDeadlineMs(frame_len: usize, head_ms: u64, stream_ms: u64) u64 {
     const grow: u64 = @as(u64, @intCast(frame_len / (64 * 1024))) *| 1000;
     return @min(head_ms +| grow, @max(head_ms, stream_ms));
@@ -205,28 +201,28 @@ pub fn sendDeadlineMs(frame_len: usize, head_ms: u64, stream_ms: u64) u64 {
 /// socket buffer and returns. What this closes is the rarer, larger case: a
 /// full-history re-anchor on a wedged or blackholed socket, where the write
 /// genuinely can block forever. #401's own signature is a READ-side stall — see
-/// the frames-flowing budget in postResponsesWs.
+/// the output-text budget in postResponsesWs.
 ///
 /// A deadline is error.HungRequest, matching the SSE send+head guard it mirrors
 /// (agent_stream.zig): postLive counts it as a transport failure, so it retries
 /// a fresh socket and latches SSE on the second — WITHOUT spending the read
-/// loop's 2-slot stall budget, which StreamStalled would. An Esc is
-/// error.Interrupted, which request() never retries.
+/// loop's 2-slot stall budget, which StreamStalled would. Esc is Interrupted.
 pub fn sendFrameWatched(io: Io, client: *ws.WsClient, frame: []const u8, poll_stdin: bool) !void {
     const budget = sendDeadlineMs(frame.len, http.head_stall_ms, http.stream_stall_ms);
     const SendDone = union(enum) { sent: ws.Error!void, stall: WatchdogFired };
     var sd_buf: [2]SendDone = undefined;
     var ssel: Io.Select(SendDone) = .init(io, &sd_buf);
     // #56 Fix-B: pool exhausted — never degrade to a bare blocking sendText,
-    // which IS the hang this guard exists for. Fail retryable instead.
-    ssel.concurrent(.sent, wsSendTask, .{ client, frame }) catch return error.HungRequest;
-    ssel.concurrent(.stall, deadlineStallTask, .{ io, poll_stdin, budget }) catch {
-        const r = ssel.await() catch |e| {
-            ssel.cancelDiscard();
-            return e;
-        };
-        ssel.cancelDiscard();
-        return r.sent;
+    // which IS the hang this guard exists for; fail retryable (HungRequest) the
+    // way the SSE head guard does. The WATCHDOG is spawned FIRST so that stays
+    // possible on the SECOND spawn too: once an unbounded blocking write is in
+    // flight, the only way out of this function is to join it — #401's hang
+    // through a different door. Watchdog-first leaves every failure with
+    // nothing running, or only a cancellable sleeper to unwind.
+    ssel.concurrent(.stall, deadlineStallTask, .{ io, poll_stdin, budget }) catch return error.HungRequest;
+    ssel.concurrent(.sent, wsSendTask, .{ client, frame }) catch {
+        ssel.cancelDiscard(); // only the sleeper is running; it unwinds at once
+        return error.HungRequest;
     };
     const first = ssel.await() catch |e| {
         ssel.cancelDiscard();
@@ -258,26 +254,21 @@ fn drainDialSelect(gpa: std.mem.Allocator, sel: anytype) void {
 /// but never upgrades would swallow the very retry the other guards trigger —
 /// hanging at the "connecting" note instead.
 ///
-/// Budget: the flat head budget, not sendDeadlineMs — a dial carries no payload,
-/// so there is nothing to scale by. The one slow step inside is ca_bundle.rescan
-/// (a local CA-store scan, tens of ms warm); a machine where that genuinely
-/// needs >30s is already failing every HTTPS request in the process.
-///
-/// error.HungRequest, like the send guard: a failed dial is a transport failure
-/// (postLive's ws_transport_failures ladder → one fresh retry, then SSE), never
-/// a spend against the read loop's stall budget.
+/// Budget: the flat head budget, not sendDeadlineMs — a dial carries no payload
+/// to scale by. error.HungRequest, like the send guard: a failed dial is a
+/// transport failure (postLive's ws_transport_failures ladder → one fresh retry,
+/// then SSE), never a spend against the read loop's stall budget.
 pub fn connectWatched(gpa: std.mem.Allocator, io: Io, url: []const u8, headers: []const ws.Header, poll_stdin: bool) !*ws.WsClient {
     const Dialed = union(enum) { dialed: ws.Error!*ws.WsClient, stall: WatchdogFired };
     var dl_buf: [2]Dialed = undefined;
     var dsel: Io.Select(Dialed) = .init(io, &dl_buf);
-    dsel.concurrent(.dialed, wsConnectTask, .{ gpa, io, url, headers }) catch return error.HungRequest;
-    dsel.concurrent(.stall, deadlineStallTask, .{ io, poll_stdin, http.head_stall_ms }) catch {
-        const r = dsel.await() catch |e| {
-            drainDialSelect(gpa, &dsel);
-            return e;
-        };
+    // Watchdog first, then the dial — same #56 Fix-B reasoning as
+    // sendFrameWatched: neither spawn failure may leave an unwatched blocking
+    // call, and an in-flight dial can only be unwound by joining it.
+    dsel.concurrent(.stall, deadlineStallTask, .{ io, poll_stdin, http.head_stall_ms }) catch return error.HungRequest;
+    dsel.concurrent(.dialed, wsConnectTask, .{ gpa, io, url, headers }) catch {
         drainDialSelect(gpa, &dsel);
-        return r.dialed;
+        return error.HungRequest;
     };
     const first = dsel.await() catch |e| {
         drainDialSelect(gpa, &dsel);
@@ -290,18 +281,74 @@ pub fn connectWatched(gpa: std.mem.Allocator, io: Io, url: []const u8, headers: 
     }
 }
 
-/// (reference parity, openai/codex) A cached socket must be liveness-checked
-/// before it is reused: codex-rs asks the pooled connection `is_closed()` and
-/// dials fresh when its read pump already saw the stream end, rather than
-/// sending a turn into a socket it has decided is gone. graff's client is
-/// synchronous — there is no background pump to set a "closed" bit — so the
-/// equivalent signal is `dead`, which every teardown that touches a SUSPECT
-/// socket sets (the send/read errdefer in postResponsesWs, the idle-expiry
-/// close, the late-dial drain). A wall-clock idle window alone is not this
-/// check: it cannot see a socket the peer or an LB blackholed 30s into a tool
-/// call, which is well inside the window.
-pub fn wsReusable(client: *const ws.WsClient) bool {
-    return !client.dead;
+// (reference parity, openai/codex) A pre-reuse LIVENESS CHECK is deliberately
+// NOT implemented; this is the record of why, since the gap is real.
+//
+// codex-rs asks a pooled connection `is_closed()` before reusing it. That bit
+// exists because a BACKGROUND READ PUMP is already draining the socket, so the
+// stream end has been observed by the time the next turn asks. graff's ws
+// client is synchronous — nothing has touched the socket since the last turn
+// ended — so there is no observation to consult, and every substitute is worse
+// than the gap:
+//
+//   * A `dead` flag on the held client is unreachable by construction: every
+//     path that sets it destroys the client on the next statement
+//     (drainDialSelect, the idle-expiry close, postResponsesWs's errdefer, all
+//     funnelling through closeCodexWs, which deinits it and nulls
+//     agent.codex_ws). A still-referenced held client can never carry it, so
+//     the branch would be dead code claiming to be a check. An earlier round of
+//     this fix shipped exactly that; it is deleted rather than left to read
+//     like coverage. `dead` keeps its real job: suppressing deinit's blocking
+//     courtesy close frame on a socket that already wedged us.
+//   * A zero-timeout poll for readability cannot see the case that matters — a
+//     peer or LB that BLACKHOLES the socket sends nothing, so the fd looks
+//     exactly like a healthy idle one. What it WOULD see is a routine
+//     between-turns server ping or a partial TLS record, and read them as
+//     "closed", trading a healthy session's prompt-cache anchor for a
+//     full-history re-anchor. A false positive here is expensive.
+//   * A blocking peek is #401's hang, moved earlier in the turn.
+//
+// So the held socket is written into on faith and DETECTION is the pair of
+// deadlines this file adds: sendFrameWatched bounds the write into a wedged
+// socket, and the read watchdog bounds the silence after it. A dead reused
+// socket costs one bounded round trip plus a re-anchor instead of an unbounded
+// hang — what `is_closed()` buys, one turn later.
+
+/// (#401) Does this ws frame carry VISIBLE OUTPUT TEXT — the WS side of the
+/// SSE reader's tokens-flowing signal?
+///
+/// It must mean EXACTLY what the SSE signal means, because both feed the same
+/// http_stall.budgetMs. SSE passes `self.partial_text.items.len != 0`, and
+/// partial_text grows in exactly one place for `.responses` (agent_stream.zig,
+/// streamSseLine): a `response.output_text.delta` whose `delta` is a non-empty
+/// string. Reasoning deltas are handled ABOVE that arm's `if (text.len == 0)
+/// return;` and never reach the append, so a silent reasoning phase keeps the
+/// FULL pre-first-token budget on SSE — deliberately, since it legitimately
+/// runs minutes. `response.output_item.done` carries the finished text and also
+/// never touches partial_text. Both are excluded here for the same reason.
+///
+/// Frame ARRIVAL is not that signal: response.created / response.in_progress /
+/// response.output_item.added land within milliseconds of the send, long before
+/// the model has thought (and ping/pong never surfaces from readMessage at
+/// all). Keying the budget on "a frame landed" tightens every WS turn to a
+/// quarter budget from ~100ms in, so a high-effort turn reasoning silently past
+/// that is killed as a stall, re-sent as a full re-anchor, stalled again, and
+/// latched off WS for the session — while the identical turn survives on SSE.
+///
+/// Shape mirrors isStreamEnd: a cheap substring candidate, then an
+/// authoritative parse, so a reasoning delta that merely QUOTES the event name
+/// is not mistaken for one. Called only until it first returns true.
+pub fn frameHasOutputText(gpa: std.mem.Allocator, frame: []const u8) bool {
+    const ev = "response.output_text.delta";
+    if (std.mem.indexOf(u8, frame, ev) == null) return false;
+    var scratch = std.heap.ArenaAllocator.init(gpa);
+    defer scratch.deinit();
+    const v = std.json.parseFromSliceLeaky(std.json.Value, scratch.allocator(), frame, .{ .allocate = .alloc_always }) catch return false;
+    if (v != .object) return false;
+    const ty = v.object.get("type") orelse return false;
+    if (ty != .string or !std.mem.eql(u8, ty.string, ev)) return false;
+    const d = v.object.get("delta") orelse return false;
+    return d == .string and d.string.len != 0;
 }
 
 /// One Responses turn over ws. Returns the reassembled body as SSE-format
@@ -352,21 +399,19 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     // return error.CodexWsReanchor so request()'s rebuild: loop rebuilds full
     // input. A non-delta body is self-contained: just fall through and dial.
     //
-    // …and the liveness half of the same decision (wsReusable): a socket some
-    // earlier path already condemned is never reused, whatever the clock says.
+    // This CLOCK is the only pre-send gate there is — see the liveness note
+    // above for why a real is_closed() equivalent is not available here, and
+    // which deadlines cover the socket it cannot judge.
     if (self.codex_ws) |held| {
-        const idle = codexWsIdleExpired(nowAwakeMs(self.io), self.codex_ws_used_ms);
-        if (idle or !wsReusable(held)) {
-            // Both branches hold a SUSPECT socket, so neither may spend a
-            // blocking courtesy close frame on it (ws.WsClient.deinit).
+        if (codexWsIdleExpired(nowAwakeMs(self.io), self.codex_ws_used_ms)) {
+            // The premise of this branch is that the server has likely already
+            // killed this socket, so it is SUSPECT: it must not spend a blocking
+            // courtesy close frame on it (ws.WsClient.deinit).
             held.dead = true;
             self.closeCodexWs();
             if (self.tracer) |tr| {
                 var nbuf: [64]u8 = undefined;
-                tr.note("ws", if (idle)
-                    std.fmt.bufPrint(&nbuf, "idle > {d}s — re-anchoring with fresh connection", .{@divTrunc(codex_ws_idle_ms, std.time.ms_per_s)}) catch "idle — re-anchoring with fresh connection"
-                else
-                    "held socket marked dead — re-anchoring with fresh connection");
+                tr.note("ws", std.fmt.bufPrint(&nbuf, "idle > {d}s — re-anchoring with fresh connection", .{@divTrunc(codex_ws_idle_ms, std.time.ms_per_s)}) catch "idle — re-anchoring with fresh connection");
             }
             if (std.mem.indexOf(u8, body, "\"previous_response_id\"") != null) return error.CodexWsReanchor;
         }
@@ -425,24 +470,28 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     errdefer full.deinit();
     var fbuf: std.ArrayList(u8) = .empty;
     defer fbuf.deinit(gpa);
-    // (#401) Frames received for THIS response. The read watchdog's budget is a
-    // function of it: before the first frame the model may legitimately reason
-    // in silence for minutes (the full stream_stall_ms), but once frames have
-    // arrived and stopped, that is a dead socket and http_stall.budgetMs
-    // tightens to a quarter (#56). The WS reader used to hardcode "no tokens
-    // yet", so it re-armed the FULL 120s budget on every frame and never
-    // tightened — the SSE reader has always passed a real signal
-    // (agent_stream.zig, partial_text.items.len != 0). That is why #401's
-    // mid-stream silence sat for 120s per attempt, ~4 minutes before the SSE
-    // latch, against successful turns of 3.6-11.6s.
+    // (#401) Frames received for THIS response — the OBSERVABILITY counter,
+    // used only for the "first frame" trace note that splits a hung turn into
+    // its two halves.
     var frames_seen: usize = 0;
+    // (#401) …and, separately, whether VISIBLE OUTPUT TEXT has arrived — THIS is
+    // what the read watchdog's budget keys on. Before the first token the model
+    // may legitimately reason in silence for minutes (the full stream_stall_ms);
+    // once text has flowed and stopped, that is a dead socket and
+    // http_stall.budgetMs tightens to a quarter (#56). The WS reader used to
+    // hardcode "no tokens yet", so it re-armed the FULL 120s budget on every
+    // frame and never tightened — why #401's mid-stream silence sat for 120s per
+    // attempt, ~4 minutes before the SSE latch, against successful turns of
+    // 3.6-11.6s. frameHasOutputText mirrors the SSE reader's signal exactly.
+    var text_seen = false;
 
     stream: while (true) {
         // Race the frame read against the shared idle-stall watchdog so a dead
         // ws can't hang the turn — a deadline surfaces as error.StreamStalled
         // (never a user Esc), handled identically to the SSE path (#134). The
-        // budget is re-decided every iteration from frames_seen, so silence
-        // AFTER frames tightens to a quarter the way SSE's always has (#401).
+        // budget is re-decided every iteration from text_seen, so silence AFTER
+        // OUTPUT TEXT tightens to a quarter the way SSE's always has, and a
+        // silent reasoning phase keeps the full budget the way SSE's does (#401).
         read: {
             const ReadDone = union(enum) { msg: ws.Error!ws.Opcode, stall: WatchdogFired };
             var rd_buf: [2]ReadDone = undefined;
@@ -459,7 +508,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
                 if (self.tracer) |tr| tr.note("ws", "stall");
                 return error.StreamStalled;
             };
-            rsel.concurrent(.stall, streamStallWatch, .{ self.io, orig_tio != null, frames_seen != 0 }) catch {
+            rsel.concurrent(.stall, streamStallWatch, .{ self.io, orig_tio != null, text_seen }) catch {
                 const r = rsel.await() catch |e| {
                     rsel.cancelDiscard();
                     return e;
@@ -485,12 +534,19 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
                 },
             }
         }
-        // A frame landed: bytes are flowing, so from here silence is a dead
-        // socket rather than a thinking model. Counted before the empty-frame
-        // skip below — an empty frame is still evidence the peer is alive.
+        // A frame landed. This only feeds the trace note — it is NOT the budget
+        // signal (the first frames of a turn are protocol events that arrive
+        // before the model has thought). Counted before the empty-frame skip
+        // below: an empty frame is still evidence the peer is alive.
         frames_seen += 1;
         if (frames_seen == 1) if (self.tracer) |tr| tr.note("ws", "first frame");
         if (fbuf.items.len == 0) continue :stream;
+        // …and THIS is the budget signal: visible output text, the same event
+        // that grows partial_text on SSE. Checked only until it first fires.
+        if (!text_seen and frameHasOutputText(gpa, fbuf.items)) {
+            text_seen = true;
+            if (self.tracer) |tr| tr.note("ws", "first output text — tightening stall budget");
+        }
 
         // Wrap the ws frame as an SSE data: line so parseResponses/isStreamEnd
         // (shared with the SSE path) handle reassembly + completion.

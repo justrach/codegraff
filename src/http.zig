@@ -311,11 +311,6 @@ pub fn streamStallWatch(io: Io, poll_stdin: bool, tokens_flowing: bool) Watchdog
     return .deadline;
 }
 
-/// Pre-first-token arm: the codex WS reader has no per-read token signal (#56).
-pub fn streamStallTask(io: Io, poll_stdin: bool) WatchdogFired {
-    return streamStallWatch(io, poll_stdin, false);
-}
-
 /// Select-arm wrapper: fires after `budget_ms` of silence, or early on Esc.
 /// Parameterized so a payload-sized deadline (agent_ws.sendDeadlineMs) shares it.
 pub fn deadlineStallTask(io: Io, poll_stdin: bool, budget_ms: u64) WatchdogFired {

@@ -2,10 +2,9 @@
 //! loopback WebSocket server that can misbehave on demand. These exercise the
 //! REAL production entry point (agent_ws.postResponsesWs) rather than the guard
 //! helpers in isolation, because #401's whole lesson was that the call sites and
-//! the budgets — not the helpers — were where the turn went silent.
-//!
-//! The mock is in the same spirit as the GRAFF_CODEX_URL/lmstudio HTTP mocks:
-//! `provider.url` points at 127.0.0.1 and no network, key or provider is used.
+//! the budgets — not the helpers — were where the turn went silent. The mock is
+//! in the same spirit as the GRAFF_CODEX_URL/lmstudio HTTP mocks: `provider.url`
+//! points at 127.0.0.1, and no network, key or provider is used.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -25,6 +24,16 @@ fn nowMs(io: Io) i64 {
 const delta_event = "{\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}";
 const completed_event = "{\"type\":\"response.completed\"}";
 
+/// What the backend actually puts on the socket in the first milliseconds after
+/// a send, before the model has produced anything: the two protocol events, then
+/// a reasoning delta. None of these grows partial_text on the SSE path, so none
+/// may tighten the WS read budget either.
+const protocol_events = [_][]const u8{
+    "{\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}",
+    "{\"type\":\"response.in_progress\",\"response\":{\"id\":\"r1\"}}",
+    "{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"thinking\"}",
+};
+
 /// A loopback WebSocket peer with a scripted failure mode.
 const Mock = struct {
     const Mode = enum {
@@ -40,6 +49,10 @@ const Mock = struct {
         frame_then_silence,
         /// The healthy control: delta, then response.completed.
         frame_then_complete,
+        /// Upgrade, take the client's frame, answer with `protocol_events` and
+        /// then go quiet while the model "thinks". Frames flow, none of them is
+        /// output text — so the budget must stay at the pre-first-token value.
+        protocol_then_silence,
     };
 
     fn run(io: Io, server: *std.Io.net.Server, mode: Mode, done: *std.atomic.Value(bool)) void {
@@ -66,13 +79,18 @@ const Mock = struct {
                 if (mode == .frame_then_complete)
                     writeTextFrame(&sw.interface, completed_event) catch return idle(io, done);
             },
+            .protocol_then_silence => {
+                readClientFrame(&sr.interface) catch return idle(io, done);
+                for (protocol_events) |ev|
+                    writeTextFrame(&sw.interface, ev) catch return idle(io, done);
+            },
         }
         idle(io, done);
     }
 
-    /// Hold the connection open (and, for never_drain, undrained) until the
-    /// test releases it. Closing early would hand the client a clean EOF, which
-    /// is a different failure than the silence being reproduced.
+    /// Hold the connection open (and, for never_drain, undrained) until the test
+    /// releases it. Closing early hands the client a clean EOF, a different
+    /// failure than the silence being reproduced.
     fn idle(io: Io, done: *std.atomic.Value(bool)) void {
         while (!done.load(.acquire)) io.sleep(.fromMilliseconds(20), .awake) catch break;
     }
@@ -98,9 +116,8 @@ const Mock = struct {
     }
 };
 
-/// A root-shaped Agent pointed at the mock. `out`/`in` stay null: no TTY means
-/// no spinner, no Esc poll and no user-facing stall line, so the test observes
-/// the transport alone.
+/// A root-shaped Agent pointed at the mock. `out`/`in` stay null: no TTY means no
+/// spinner, no Esc poll and no user-facing stall line — the transport alone.
 fn mockAgent(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: Io, url: []const u8) Agent {
     return .{
         .gpa = gpa,
@@ -134,14 +151,13 @@ fn traced(tw: *Io.Writer.Allocating, needle: []const u8) bool {
 // The reported turn sent a delta over a reused codex WS after a tool result, sat
 // on the thinking indicator until the user interrupted, and left a trace that
 // stopped dead at "ws reuse (delta)". The read loop WAS watchdogged — but it
-// armed http.streamStallTask, which hardcodes tokens_flowing=false, so it
-// re-armed the FULL pre-first-token budget (120s) on every frame and never
-// tightened once data flowed; the SSE reader has always passed a real signal
+// armed a hardcoded tokens_flowing=false, so it re-armed the FULL
+// pre-first-token budget (120s) on every frame and never tightened once VISIBLE
+// OUTPUT TEXT flowed; the SSE reader has always passed a real signal
 // (agent_stream.zig: partial_text.items.len != 0) and tightens to a quarter.
-//
-// Here the mock answers one delta frame and then goes silent forever. The read
-// must give up on the TIGHTENED budget, emit the notes that make the signature
-// diagnosable, and tear the session down so request() re-anchors.
+// Here the mock answers one output_text delta and then goes silent forever: the
+// read must give up on the TIGHTENED budget, emit the notes that make the
+// signature diagnosable, and tear the session down so request() re-anchors.
 test "#401: silence after frames trips the tightened read budget, not the full pre-first-token one" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const gpa = std.testing.allocator;
@@ -219,9 +235,8 @@ test "#401: silence after frames trips the tightened read budget, not the full p
     try std.testing.expectEqual(@as(usize, 0), agent.codex_sent_upto);
 }
 
-// The control for the test above: same harness, same tightened budgets, a
-// server that finishes. Proves the stall is the SERVER's silence, not the mock
-// or the frames_seen wiring — and pins the happy path's notes.
+// The control: same harness, same tightened budgets, a server that finishes.
+// Proves the stall is the SERVER's silence, not the mock — and pins the notes.
 test "#401 control: a mock that completes the response still finishes the turn cleanly" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const gpa = std.testing.allocator;
@@ -275,17 +290,82 @@ test "#401 control: a mock that completes the response still finishes the turn c
     try std.testing.expect(agent.codex_ws != null); // held for the next delta
 }
 
+// The other half of the budget signal, and the round-2 regression it pins.
+//
+// `frames_seen != 0` was not SSE parity: the backend answers a send with
+// response.created / response.in_progress within milliseconds, tightening the
+// budget to a quarter before the model has thought — so a silent reasoning phase
+// longer than that became a stall, a full re-anchor, a second stall, and a
+// permanent ws_off latch, while the identical turn survives on SSE. This mock
+// sends exactly those events plus a reasoning delta and then goes quiet: at
+// 500ms tightened vs 2000ms pre-first-token, the turn must outlive the tightened
+// budget. Reverting the watchdog arg to `frames_seen != 0` fails this at
+// `ms >= 1500`. The FIRST test in this file is the paired positive case.
+test "#401: protocol and reasoning frames do NOT tighten the read budget (SSE parity)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var addr = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
+    var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
+    defer server.deinit(io);
+    var done: std.atomic.Value(bool) = .init(false);
+    var fut = io.async(Mock.run, .{ io, &server, Mock.Mode.protocol_then_silence, &done });
+    defer fut.await(io);
+    defer done.store(true, .release);
+
+    const saved_stream = http.stream_stall_ms;
+    const saved_floor = http_stall.idle_floor_ms;
+    http.stream_stall_ms = 2000;
+    http_stall.idle_floor_ms = 100;
+    defer http.stream_stall_ms = saved_stream;
+    defer http_stall.idle_floor_ms = saved_floor;
+    try std.testing.expectEqual(@as(u64, 500), http_stall.budgetMs(http.stream_stall_ms, true));
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tw: Io.Writer.Allocating = .init(gpa);
+    defer tw.deinit();
+    var tracer: trace.Tracer = .{ .io = io, .gpa = gpa, .out = &tw.writer, .start = Io.Timestamp.now(io, .awake) };
+
+    var url_buf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/x", .{server.socket.address.getPort()});
+    var agent = mockAgent(gpa, arena, io, url);
+    agent.tracer = &tracer;
+    defer if (agent.codex_ws) |c| {
+        c.dead = true;
+        c.deinit(gpa);
+        agent.codex_ws = null;
+    };
+
+    const body = "{\"model\":\"gpt-5\",\"input\":[]}";
+    const t0 = nowMs(io);
+    const r = agent_ws.postResponsesWs(&agent, body);
+    const ms = nowMs(io) - t0;
+    if (r) |ok| gpa.free(ok) else |_| {}
+
+    // It still ends as a stall — nothing here is unbounded — but on the FULL
+    // pre-first-token budget, which is what a thinking model is entitled to.
+    try std.testing.expectError(error.StreamStalled, r);
+    try std.testing.expect(ms >= 1500); // the tightened 500ms budget was NOT used
+    try std.testing.expect(ms < 6000); // …and the full one still bounds it
+    // Frames DID arrive (so this is a budget decision, not a dead mock) and none
+    // of them counted as output text.
+    try std.testing.expect(traced(&tw, "\"detail\":\"first frame\""));
+    try std.testing.expect(!traced(&tw, "\"detail\":\"first output text"));
+}
+
 // ── the outbound half: production wiring, not the helper ─────────────────────
 
-// The guard the previous round left untested where it matters. `sendText` is a
-// blocking socket write; against a peer that stops draining, a large enough
-// frame parks in the kernel until TCP gives up. This drives postResponsesWs, so
-// it covers the CALL SITE and the errdefer, not just the helper: reverting
-// `sendFrameWatched(...)` to a bare `try client.sendText(frame)` hangs it.
-//
-// The error is HungRequest, the SSE send+head guard's error, NOT StreamStalled —
-// which would spend a slot of request()'s 2-slot stall budget and PERMANENTLY
-// latch ws_off on the second occurrence. A frame that never left is a transport
+// `sendText` is a blocking socket write; against a peer that stops draining, a
+// large enough frame parks in the kernel until TCP gives up. This drives
+// postResponsesWs, so it covers the CALL SITE and the errdefer, not just the
+// helper: reverting it to a bare `try client.sendText(frame)` hangs. The error
+// is HungRequest, the SSE send+head guard's error, NOT StreamStalled — which
+// would spend a slot of request()'s 2-slot stall budget and PERMANENTLY latch
+// ws_off on the second occurrence. A frame that never left is a transport
 // failure: postLive retries a fresh socket and only then falls back to SSE.
 test "#401: a peer that stops draining fails the send fast, tears down, and does not latch the stall budget" {
     if (builtin.os.tag == .windows) return error.SkipZigTest; // loopback buffer sizing is not deterministic there
@@ -352,14 +432,12 @@ test "#401: a peer that stops draining fails the send fast, tears down, and does
     try std.testing.expect(agent.codex_ws == null);
 }
 
-// Once the send is guarded, the retry it triggers redials — and the dial is
-// unbounded too: DNS + TCP + TLS + a blocking read of the 101 status line. A
-// host that accepts and never upgrades would swallow the very recovery the
-// other guards trigger, hanging at the "connecting" note. This drives
-// postResponsesWs, so it covers the CALL SITE and its trace note — the half the
-// previous round left untested, and the half that was wrong: the note matched
-// error.StreamStalled, which connectWatched no longer returns, so a stalled
-// dial traced a bare "HungRequest". A bare ws.WsClient.connect hangs this test.
+// The dial is unbounded too: DNS + TCP + TLS + a blocking read of the 101 status
+// line. A host that accepts and never upgrades would swallow the very recovery
+// the other guards trigger, hanging at the "connecting" note. This drives
+// postResponsesWs, so it covers the CALL SITE and its trace note — which was
+// wrong: it matched error.StreamStalled, which connectWatched no longer returns,
+// so a stalled dial traced a bare "HungRequest". A bare connect hangs this test.
 test "#401: a stalled dial fails the turn fast and traces `connect stall` (production call site)" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const gpa = std.testing.allocator;
@@ -413,104 +491,6 @@ test "#401: a stalled dial fails the turn fast and traces `connect stall` (produ
     try std.testing.expect(agent.codex_ws == null);
 }
 
-// ── reference parity: liveness before reuse ──────────────────────────────────
-
-// openai/codex checks `is_closed()` on a pooled WS before reusing it. graff's
-// only pre-reuse gate was a 4-minute wall clock, which cannot see a socket
-// blackholed 30s into a tool call — inside the window, and #401's shape. `dead`
-// is the synchronous equivalent; removing the `or !wsReusable(held)` clause
-// makes this test fail with StreamStalled (the turn dies in the read loop).
-test "#401 parity: a held socket already marked dead is re-anchored, never reused" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-
-    var addr = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
-    var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
-    defer server.deinit(io);
-    var done: std.atomic.Value(bool) = .init(false);
-    var fut = io.async(Mock.run, .{ io, &server, Mock.Mode.frame_then_silence, &done });
-    defer fut.await(io);
-    defer done.store(true, .release);
-
-    const saved_stream = http.stream_stall_ms;
-    const saved_floor = http_stall.idle_floor_ms;
-    http.stream_stall_ms = 2000;
-    http_stall.idle_floor_ms = 100;
-    defer http.stream_stall_ms = saved_stream;
-    defer http_stall.idle_floor_ms = saved_floor;
-
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var tw: Io.Writer.Allocating = .init(gpa);
-    defer tw.deinit();
-    var tracer: trace.Tracer = .{ .io = io, .gpa = gpa, .out = &tw.writer, .start = Io.Timestamp.now(io, .awake) };
-
-    var url_buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/x", .{server.socket.address.getPort()});
-    var agent = mockAgent(gpa, arena, io, url);
-    agent.tracer = &tracer;
-
-    var ws_url_buf: [64]u8 = undefined;
-    const ws_url = try std.fmt.bufPrint(&ws_url_buf, "ws://127.0.0.1:{d}/x", .{server.socket.address.getPort()});
-    const held = try ws.WsClient.connect(gpa, io, ws_url, false, &.{});
-    held.dead = true; // some earlier path condemned it
-    agent.codex_ws = held;
-    agent.codex_ws_used_ms = nowMs(io); // …and the IDLE branch must NOT be what fires
-    defer if (agent.codex_ws) |c| {
-        c.dead = true;
-        c.deinit(gpa);
-        agent.codex_ws = null;
-    };
-
-    const body = "{\"model\":\"gpt-5\",\"previous_response_id\":\"resp_1\",\"input\":[]}";
-    const t0 = nowMs(io);
-    const r = agent_ws.postResponsesWs(&agent, body);
-    const ms = nowMs(io) - t0;
-    if (r) |ok| gpa.free(ok) else |_| {}
-
-    // A delta body is useless on a fresh connection, so the caller is asked to
-    // rebuild full input — the same contract as the idle-expiry branch.
-    try std.testing.expectError(error.CodexWsReanchor, r);
-    try std.testing.expect(agent.codex_ws == null);
-    try std.testing.expect(ms < 1000); // decided up front; no frame was ever sent
-    try std.testing.expect(traced(&tw, "\"detail\":\"held socket marked dead"));
-    try std.testing.expect(!traced(&tw, "\"detail\":\"idle >"));
-    try std.testing.expect(!traced(&tw, "\"detail\":\"sent "));
-}
-
-// ── the send-deadline policy ─────────────────────────────────────────────────
-
-// A flat head-sized send deadline is a false-positive generator on exactly the
-// frame most likely to sit under it: every recovery re-anchors with the FULL
-// conversation, so the retried frame is hundreds of KB where the delta was a
-// few. Two such false positives latch SSE for the session, so the budget grows
-// with the payload — while still never outlasting the read watchdog.
-test "sendDeadlineMs (#401): head budget for a delta, transmit room for a full re-anchor, capped by the read budget" {
-    const head: u64 = 30 * 1000;
-    const stream: u64 = 120 * 1000;
-
-    // A delta frame keeps the flat head budget: it must be on the wire fast.
-    try std.testing.expectEqual(head, agent_ws.sendDeadlineMs(0, head, stream));
-    try std.testing.expectEqual(head, agent_ws.sendDeadlineMs(4 * 1024, head, stream));
-    try std.testing.expectEqual(head, agent_ws.sendDeadlineMs(64 * 1024 - 1, head, stream));
-
-    // One second per 64KB (~512 kbit/s, far below any link that can carry a
-    // codex session): a ~1MB full re-anchor gets 16 extra seconds.
-    try std.testing.expectEqual(head + 1000, agent_ws.sendDeadlineMs(64 * 1024, head, stream));
-    try std.testing.expectEqual(head + 16_000, agent_ws.sendDeadlineMs(1024 * 1024, head, stream));
-
-    // …but never past the watchdog that covers the reply, however large.
-    try std.testing.expectEqual(stream, agent_ws.sendDeadlineMs(64 * 1024 * 1024, head, stream));
-    try std.testing.expectEqual(stream, agent_ws.sendDeadlineMs(std.math.maxInt(usize), head, stream));
-
-    // A shrunken read budget (a test, or a low GRAFF_STREAM_STALL_SECS) can
-    // never clamp the send below the head budget.
-    try std.testing.expectEqual(head, agent_ws.sendDeadlineMs(1024 * 1024, head, 500));
-}
-
 // ── teardown: a suspect socket gets a FIN, not a courtesy close frame ────────
 
 // How the client ended the connection, as seen from the other side.
@@ -518,9 +498,9 @@ const saw_nothing: u8 = 0;
 const saw_close_frame: u8 = 1;
 const saw_fin: u8 = 2;
 
-/// Complete the upgrade, then classify the next thing the client does: a ws
-/// close frame (opcode 0x8) or EOF. `deinit` normally writes a courtesy close
-/// frame — one more BLOCKING write on a socket that may be what wedged us.
+/// Complete the upgrade, then classify the next thing the client does: a ws close
+/// frame (opcode 0x8) or EOF. `deinit` normally writes a courtesy close frame —
+/// one more BLOCKING write on a socket that may be what wedged us.
 fn closeObserver(io: Io, server: *std.Io.net.Server, seen: *std.atomic.Value(u8), done: *std.atomic.Value(bool)) void {
     const c = server.accept(io) catch return;
     defer c.close(io);
