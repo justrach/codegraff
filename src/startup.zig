@@ -176,9 +176,7 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     // var. The same directory is used for native model-catalog discovery.
     var codex_account: ?[]const u8 = null;
     if (keys_cli.homeEnv(environ_map)) |home| {
-        const codex_home = environ_map.get("CODEX_HOME") orelse
-            (std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch "");
-        if (oauth.loadCodexAuthFrom(io, arena, codex_home)) |auth| {
+        if (oauth.loadCodexAuthFrom(io, arena, oauth.codexHomeDir(arena, home) orelse "")) |auth| {
             for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
                 if (std.mem.eql(u8, spec.id, "codex")) {
                     value.* = auth.token;
@@ -231,9 +229,7 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
         } else keys_cli.loadMissingStoredKeys(io, gpa, arena, home, &keys, .all);
     }
     const home = keys_cli.homeEnv(environ_map) orelse "";
-    const codex_home = environ_map.get("CODEX_HOME") orelse
-        (std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch "");
-    var model_catalog: models_cache.LazyCodexCatalog = .{ .codex_home = codex_home };
+    var model_catalog: models_cache.LazyCodexCatalog = .{ .codex_home = oauth.codexHomeDir(arena, home) orelse "" };
     const saved_model: ?serde.SavedModel = if (model_flag == null) serde.loadModel(io, arena, home) else null;
     // Dynamic Codex discovery is observable only when startup may select
     // Codex. Explicit/saved non-Codex launches defer the version subprocess,
@@ -437,6 +433,11 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     }
     router_config.load(io, arena) catch |err|
         std.process.fatal("invalid {s}: {s}", .{ router_config.path, @errorName(err) });
+    // #402: pin THE codex credential directory ($CODEX_HOME, else ~/.codex) before
+    // anything can read or write auth.json — `graff login` is dispatched below,
+    // and every later reader (startup, /login, the mid-turn refresh, subagents)
+    // resolves through this one answer instead of guessing.
+    oauth.initCodexHome(arena, init.environ_map.get("CODEX_HOME"), keys_cli.homeEnv(init.environ_map));
 
     // `harness key set <provider> <key>` / `harness key list`: safe key store
     // (macOS Keychain, else a 0600 file). Exits after.
@@ -546,8 +547,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // pull fresh metadata; route dry-runs provider seating on the same caches.
     if (flags.positionals.items.len > 0 and (std.mem.eql(u8, flags.positionals.items[0], "models") or std.mem.eql(u8, flags.positionals.items[0], "route"))) {
         const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
-        const codex_home = init.environ_map.get("CODEX_HOME") orelse
-            (std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch "");
+        const codex_home = oauth.codexHomeDir(arena, home) orelse "";
         const codex_auth = oauth.loadCodexAuthFrom(io, arena, codex_home);
         const refreshing = flags.positionals.items.len > 1 and
             (std.mem.eql(u8, flags.positionals.items[1], "refresh") or

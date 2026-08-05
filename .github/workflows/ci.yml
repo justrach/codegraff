@@ -136,6 +136,9 @@ jobs:
       - name: Newer-issue E2E — blank sessions not persisted (#184)
         run: python3 scripts/test-e2e-newer-issues.py zig-out/bin/graff
 
+      - name: Expired codex token recovered mid-turn, retry carries it (#402)
+        run: python3 scripts/test-codex-auth-recovery.py zig-out/bin/graff
+
       - name: SDK generation drift
         run: |
           python3 sdk/generate.py --harness ./zig-out/bin/graff

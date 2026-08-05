@@ -11,6 +11,8 @@ const style = &ansi.style;
 const term = @import("term.zig");
 const tty = term.tty;
 const oauth = @import("oauth.zig");
+const oauth_helpers = @import("oauth_helpers.zig"); // the test pins g_codex_home, the resolver startup sets
+const policy = @import("agent_request_policy.zig");
 const providers = @import("providers.zig");
 const switchProvider = providers.switchProvider;
 const agent_mod = @import("agent.zig");
@@ -35,37 +37,148 @@ pub const PickerFn = *const fn (
 ) ?usize;
 
 /// After an in-session `/login` writes its credential file, pull the fresh key
-/// (and the Codex account id) into the live Keys so the current conversation
-/// uses it without a restart — the in-session twin of the startup loaders.
+/// (and the Codex account id) into the live Keys AND into the running agent, so
+/// the current conversation uses it without a restart — the in-session twin of
+/// the startup loaders.
 pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: []const u8) void {
     const home = root.home;
     for (provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
         if (!std.mem.eql(u8, spec.id, provider_id)) continue;
+        var reloaded = false;
         if (std.mem.eql(u8, provider_id, "codegraff")) {
             if (oauth.loadCodegraffKey(root.io, arena, home)) |k| {
                 value.* = k;
                 source.* = .login;
+                reloaded = true;
             }
         } else if (std.mem.eql(u8, provider_id, "kimi")) {
             if (oauth.loadKimiOAuth(root.io, root.gpa, arena, home, false, null)) |k| {
                 value.* = k;
                 source.* = .login;
+                reloaded = true;
             }
         } else if (std.mem.eql(u8, provider_id, "xai")) {
             if (oauth.loadXaiOAuth(root.io, root.gpa, arena, home, false, null)) |k| {
                 value.* = k;
                 source.* = .login;
+                reloaded = true;
             }
         } else if (std.mem.eql(u8, provider_id, "codex")) {
             if (oauth.loadCodexAuth(root.io, arena, home)) |auth| {
                 value.* = auth.token;
                 source.* = .login;
                 keys.codex_account = auth.account;
+                reloaded = true;
             }
         }
+        // #402: the live Agent holds its OWN Provider copy — providers.applyProviderInner
+        // is otherwise the only writer — so refreshing Keys alone left the active
+        // session bound to the token that had just expired: `/login` reported success
+        // and every following turn (plus its auto-compaction) kept 401ing. The
+        // provider.id guard is what keeps `/login kimi` from hijacking a live codex
+        // session; the model-picker path re-assigns via switchProvider anyway.
+        //
+        // adoptFreshAuth is the same binding the mid-turn refresh uses: it dupes
+        // BOTH the key and the account id onto the session arena (this function's
+        // `arena` parameter can be a scoped caller arena, and account outlives it),
+        // and releases the WS transport latch the expired credential earned.
+        if (reloaded) if (value.*) |key| if (std.mem.eql(u8, root.provider.id, provider_id)) {
+            const is_codex = std.mem.eql(u8, provider_id, "codex");
+            policy.adoptFreshAuth(root, .{ .key = key, .account = if (is_codex) keys.codex_account else "" });
+            root.provider.source = .login;
+            root.closeCodexWs(); // the held socket was dialed with the stale bearer
+        };
     }
     if (std.mem.eql(u8, provider_id, "codex") and keys.get("codex") != null)
         root.reloadModelCatalog(keys.*);
+}
+
+test "#402: reloadLoginKey hot-reloads the ACTIVE agent's credential, not just Keys" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
+    try Io.Dir.cwd().createDirPath(io, try std.fmt.allocPrint(arena, "{s}/.codex", .{home}));
+    try Io.Dir.cwd().writeFile(io, .{
+        .sub_path = try std.fmt.allocPrint(arena, "{s}/.codex/auth.json", .{home}),
+        .data =
+        \\{"tokens":{"access_token":"fresh-tok","refresh_token":"r1","account_id":"acct-2"}}
+        ,
+    });
+
+    const saved_codex_home = oauth_helpers.g_codex_home;
+    defer oauth_helpers.g_codex_home = saved_codex_home;
+    oauth_helpers.g_codex_home = ""; // CODEX_HOME unset: ~/.codex
+
+    var root: Agent = undefined;
+    root.io = io;
+    root.gpa = std.testing.allocator;
+    root.arena = arena;
+    root.scratch_arena = null;
+    root.tracer = null;
+    root.sub = false;
+    root.out = null;
+    root.label = "root";
+    root.home = home;
+    root.model_catalog = null; // the catalog reload would go to the network
+    root.codex_ws = null;
+    root.codex_prev_id = try std.testing.allocator.dupe(u8, "resp_stale");
+    root.codex_sent_upto = 7;
+    root.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "expired-tok", .model = "gpt-5.6", .context = 272000, .account = "acct-1", .source = .login };
+
+    var keys: Keys = .{ .values = @splat(null) };
+    reloadLoginKey(&root, &keys, arena, "codex");
+
+    try std.testing.expectEqualStrings("fresh-tok", keys.get("codex").?);
+    // The #402 fix: the LIVE provider, not only Keys. Without this, /login reported
+    // success while every subsequent turn and auto-compaction kept 401ing.
+    try std.testing.expectEqualStrings("fresh-tok", root.provider.api_key);
+    try std.testing.expectEqualStrings("acct-2", root.provider.account);
+    // The held WS was dialed with the stale bearer, and PR #195 forbids resending
+    // against a chain the new credential never anchored.
+    try std.testing.expect(root.codex_prev_id == null);
+    try std.testing.expectEqual(@as(usize, 0), root.codex_sent_upto);
+
+    // `/login kimi` mid-codex-session must not repoint the active provider — that
+    // would silently switch the user's model AND wire format.
+    root.provider.api_key = "expired-tok";
+    root.codex_prev_id = try std.testing.allocator.dupe(u8, "resp_two");
+    reloadLoginKey(&root, &keys, arena, "kimi"); // no kimi credential on disk here
+    try std.testing.expectEqualStrings("expired-tok", root.provider.api_key);
+    try std.testing.expectEqualStrings("codex", root.provider.id);
+    try std.testing.expect(root.codex_prev_id != null);
+    std.testing.allocator.free(root.codex_prev_id.?);
+    root.codex_prev_id = null;
+
+    // The #402 split-brain: with CODEX_HOME set, `/login` must read back the very
+    // file the request loop's refresh reads and writes. Before the fix this half
+    // stayed on ~/.codex while the refresh resolved $CODEX_HOME, so `/login`
+    // reported success and the next request's proactive read silently reverted the
+    // session to the expired token.
+    const custom = try std.fmt.allocPrint(arena, "{s}/custom-codex-home", .{home});
+    try Io.Dir.cwd().createDirPath(io, custom);
+    try Io.Dir.cwd().writeFile(io, .{
+        .sub_path = try std.fmt.allocPrint(arena, "{s}/auth.json", .{custom}),
+        .data =
+        \\{"tokens":{"access_token":"env-tok","refresh_token":"","account_id":"acct-3"}}
+        ,
+    });
+    oauth_helpers.g_codex_home = custom;
+    root.provider.api_key = "expired-tok";
+    reloadLoginKey(&root, &keys, arena, "codex");
+    try std.testing.expectEqualStrings("env-tok", root.provider.api_key);
+    try std.testing.expectEqualStrings("acct-3", root.provider.account);
+
+    // …and the mid-turn recovery resolves the SAME file, so it cannot undo the
+    // login it just observed.
+    var refreshed = false;
+    try std.testing.expect(!policy.retryAfterAuthRefresh(&root, "Unauthorized", &refreshed));
+    try std.testing.expectEqualStrings("env-tok", root.provider.api_key);
 }
 
 /// Read an API key without terminal echo or history persistence. The ordinary

@@ -48,6 +48,47 @@ test "codexWsIdleExpired: fires only strictly past the idle limit (codex-ws)" {
     try std.testing.expect(agent_ws.codexWsIdleExpired(1_000_000 + 510 * std.time.ms_per_s, 1_000_000)); // the real 8.5-min trace gap
 }
 
+// (#402) The codex `.responses` error arm must recover from a rejected auth
+// token the way the anthropic/openai arm does. Before the fix the #148 refresh
+// lived only inside the generic apiErrorMessage branch, which a ChatGPT-backend
+// 401 never reaches (the whole responses arm returns above it), so "Provided
+// authentication token is expired" was terminal for the rest of the session.
+//
+// And because the retry re-sends the full history mid-turn, it must re-anchor
+// first (PR #195): `continue :rebuild` over a live previous_response_id desyncs
+// the chained WS meter, and the held socket still carries the stale bearer.
+//
+// The pure unit tests over retryAfterAuthRefresh all pass even if this call site
+// is deleted, so pin the site itself — same shape as the source pins in
+// route_policy_tests.zig / route_phase_tests.zig.
+//
+// A source pin proves placement, never behaviour: it would still pass against a
+// stubbed-out helper. The behavioural half is scripts/test-codex-auth-recovery.py,
+// which drives a real graff against the codex mock over a PTY and asserts the
+// RETRIED request's Authorization header carries the newly adopted bearer.
+test "the codex .responses arm refreshes auth and re-anchors before resending (#402)" {
+    const src = @embedFile("agent_request.zig");
+    const arm_start = std.mem.indexOf(u8, src, "unparseable codex response").?;
+    const arm_end = std.mem.indexOf(u8, src, "codex api error: {s}").?;
+    const arm = src[arm_start..arm_end];
+
+    const call = std.mem.indexOf(u8, arm, "retryAfterAuthRefresh(self, msg, &auth_refreshed)") orelse
+        return error.ResponsesPathHasNoAuthRecovery;
+    const after = arm[call..];
+    const reanchor = std.mem.indexOf(u8, after, "closeCodexWs()") orelse return error.RetryDoesNotReanchor;
+    const resend = std.mem.indexOf(u8, after, "continue :rebuild") orelse return error.RetryDoesNotRebuild;
+    try std.testing.expect(reanchor < resend);
+
+    // Both wire formats go through the one helper — no second, drifting copy.
+    try std.testing.expect(std.mem.indexOf(u8, src[arm_end..], "retryAfterAuthRefresh(self, msg, &auth_refreshed)") != null);
+
+    // The guard bool is declared OUTSIDE `rebuild:`. Reset it inside the loop and a
+    // permanently dead credential refresh-and-resends a full history forever, which
+    // is strictly worse than the bug being fixed.
+    try std.testing.expect(std.mem.indexOf(u8, src, "var auth_refreshed = false;").? <
+        std.mem.indexOf(u8, src, "rebuild: while (true)").?);
+}
+
 test "WS fallback latches only after a retry" {
     try std.testing.expect(!agent_ws.wsShouldFallback(0));
     try std.testing.expect(!agent_ws.wsShouldFallback(1));
