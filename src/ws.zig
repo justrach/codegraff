@@ -79,6 +79,11 @@ pub const WsClient = struct {
     ca_bundle: std.crypto.Certificate.Bundle = .empty,
     ca_lock: Io.RwLock = .init,
     gpa: Allocator,
+    /// (#401) The peer is wedged or gone — tear down with a plain FIN instead
+    /// of deinit's courtesy close frame, which is another blocking write on the
+    /// very socket that just proved it won't drain (it would re-hang the
+    /// recovery path that is trying to abandon this connection).
+    dead: bool = false,
     sock_rbuf: [sock_buf_cap]u8 = undefined,
     sock_wbuf: [sock_buf_cap]u8 = undefined,
     tls_rbuf: [tls_buf_cap]u8 = undefined,
@@ -118,6 +123,13 @@ pub const WsClient = struct {
         self.* = .{ .io = io, .stream = stream, .rd = undefined, .wr = undefined, .gpa = gpa };
         self.rd = net.Stream.Reader.init(stream, io, &self.sock_rbuf);
         self.wr = net.Stream.Writer.init(stream, io, &self.sock_wbuf);
+        // From here the client owns the socket (and, for wss, the CA bundle):
+        // release both if the TLS or upgrade handshake fails, or every failed
+        // dial leaks an fd — which #401's reconnect ladder now retries into.
+        errdefer {
+            self.ca_bundle.deinit(gpa);
+            self.stream.close(io);
+        }
 
         if (u.tls) {
             var entropy: [tls.Client.Options.entropy_len]u8 = undefined;
@@ -154,7 +166,7 @@ pub const WsClient = struct {
     }
 
     pub fn deinit(self: *WsClient, gpa: Allocator) void {
-        self.sendFrame(.close, "") catch {};
+        if (!self.dead) self.sendFrame(.close, "") catch {}; // (#401) see `dead`
         self.ca_bundle.deinit(gpa);
         self.stream.close(self.io);
         gpa.destroy(self);

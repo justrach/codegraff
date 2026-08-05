@@ -16,7 +16,10 @@ const idle_divisor: u64 = 4;
 /// ...but never below this, so a small GRAFF_STREAM_STALL_SECS cannot shrink
 /// the between-lines budget to a couple of seconds and start killing healthy
 /// streams. Clamped to the configured budget, which always wins when smaller.
-const idle_floor_ms: u64 = 15 * 1000;
+/// Mutable ONLY so a test can exercise the two regimes apart without sleeping
+/// through a real 15s floor; production never writes it. A test that shrinks it
+/// must restore it (process-wide, shared with every later test in the binary).
+pub var idle_floor_ms: u64 = 15 * 1000;
 
 /// How long a stream read may sit silent before the watchdog calls it dead.
 /// `base_ms` is the configured budget (http.stream_stall_ms); `tokens_flowing`

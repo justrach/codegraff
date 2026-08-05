@@ -35,6 +35,41 @@ current is part of cutting a release.
   writer): a crash or full disk can no longer truncate the only copy of a
   refresh token. xAI credentials now land 0600/0700 like kimi's; the MCP OAuth
   store and the multi-provider key map write through the same path.
+- Codex WebSocket turns no longer sit silent for minutes when the backend goes
+  quiet mid-response. The WS reader armed its stall watchdog with a hardcoded
+  "no tokens yet", so it re-armed the full 120s pre-first-token budget on every
+  frame and never tightened once the model was actually emitting — the SSE
+  reader has always tightened to a quarter. Silence after visible prose now
+  trips in ~30s, while a silent reasoning phase keeps the full budget, exactly
+  as on SSE. "Visible prose" means both things that print on SSE: a
+  `response.output_text.delta`, and the streamed arguments of `attempt_completion`
+  / `ask_user` — which is all a final-answer turn emits, so keying on output
+  text alone would have left the commonest turn shape on the old budget. Mere
+  frame arrival is still not the signal: the protocol events land milliseconds
+  after the send and would stall out a long thinking turn. The trace gains
+  `sent <n>b`, `first frame` and `first output text` notes, so a hang says which
+  half of the turn went quiet instead of stopping dead at `reuse (delta)` (#401).
+- A REUSED codex WS that answers nothing is now caught in ~30s instead of ~120s,
+  and as a transport failure rather than a stalled turn. Nothing proves a held
+  socket is still alive, and the backend acks a send within milliseconds, so
+  zero frames back is a dead socket: it gets the head budget and re-anchors on a
+  fresh connection (SSE only after a second failure), instead of spending a slot
+  of the turn's stall budget waiting out the full pre-first-token window. A
+  freshly dialed socket is unaffected — its handshake just proved the peer is
+  there, so it keeps the full budget for a model that thinks before it speaks.
+- The WS send and dial are under a deadline too (an unbounded blocking write /
+  an unbounded dial through DNS + TLS + the 101 status line), with Esc live
+  during both. They report the transport-flake error the SSE guard uses, so a
+  wedged socket is retried on a fresh one rather than spending the turn's stall
+  budget; the send deadline scales with the frame so a full-conversation
+  re-anchor is not a false positive. Both name themselves in the trace
+  (`send stall` / `connect stall`), so a stalled dial is no longer reported as a
+  bare error name. Under Io-pool exhaustion they follow the SSE guard exactly: a
+  failed payload spawn fails retryable, a failed watchdog spawn degrades to the
+  unwatched call already in flight, so a momentary pool shortage cannot latch a
+  session onto SSE. A socket the idle window condemns is torn down with a plain
+  FIN rather than a courtesy close frame that could block again, and a failed WS
+  handshake no longer leaks its fd and CA bundle.
 
 ## v0.0.237 (2026-08-04)
 
