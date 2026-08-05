@@ -29,6 +29,7 @@ const strField = tools.strField;
 const intField = tools.intField;
 const missingArg = tools.missingArg;
 const outsideCwd = tools.outsideCwd;
+const beforeFromRead = tools.beforeFromRead; // /rewind snapshot classifier (snapshots.zig)
 const blankText = tools.blankText;
 const rawFetch = tools.rawFetch;
 const bash_stdout_cap = tools.bash_stdout_cap;
@@ -445,9 +446,11 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         const lock = edit_verify.lockPath(io, resolved);
         defer lock.unlock(io);
         if (ctx.snapshots) |snaps| if (!ctx.from_sub) {
-            // capture the prior content (or absence) before overwriting, for /rewind
-            const before = Io.Dir.cwd().readFileAlloc(io, resolved, gpa, .limited(4 * 1024 * 1024)) catch null;
-            defer if (before) |b| gpa.free(b);
+            // capture the prior content (or absence) before overwriting, for /rewind.
+            // beforeFromRead keeps a merely UNREADABLE file (over the cap, permissions)
+            // distinct from a missing one — only the latter is a rewind-deletes-it.
+            const before = beforeFromRead(Io.Dir.cwd().readFileAlloc(io, resolved, gpa, .limited(4 * 1024 * 1024)));
+            defer if (before == .content) gpa.free(before.content);
             snaps.record(path, before);
         };
         // #179: an existing file keeps its mode (e.g. 0755) across the overwrite;

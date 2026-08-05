@@ -111,6 +111,11 @@ const workflow_pipeline = @import("workflow_pipeline.zig");
 // is contingent on those call sites staying — pinned here instead.
 const shutdown_trace = @import("shutdown_trace.zig");
 
+// `/rewind`'s snapshot store, split off tools.zig (600-line cap). Production
+// reaches it only through a type alias, which analyses nothing.
+const snapshots = @import("snapshots.zig");
+const snapshots_tests = @import("snapshots_tests.zig");
+
 test {
     _ = learn_holdout;
     _ = learn_receipt;
@@ -155,4 +160,6 @@ test {
     _ = orchestration_policy_tests;
     _ = orchestration_rows;
     _ = workflow_pipeline;
+    _ = snapshots;
+    _ = snapshots_tests;
 }
