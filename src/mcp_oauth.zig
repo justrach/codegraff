@@ -5,6 +5,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const util = @import("util.zig");
 const discovery = @import("mcp_oauth_discovery.zig");
+const credential_store = @import("credential_store.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -369,14 +370,10 @@ fn writeCredentials(io: Io, arena: Allocator, home: []const u8, resource_url: []
     var stringify: std.json.Stringify = .{ .writer = &aw.writer };
     try stringify.write(Value{ .object = obj });
     const user_only: Io.Dir.Permissions = @enumFromInt(0o600);
-    {
-        const file = try Io.Dir.cwd().createFile(io, path, .{ .permissions = user_only });
-        defer file.close(io);
-        var buffer: [4096]u8 = undefined;
-        var fw = file.writer(io, &buffer);
-        try fw.interface.writeAll(aw.writer.buffered());
-        try fw.interface.flush();
-    }
+    // Atomic: this file is the only copy of the client_secret + refresh token,
+    // so a truncate-in-place that dies mid-write logs the user out of the MCP
+    // server with nothing left to recover from.
+    try credential_store.replaceFile(io, Io.Dir.cwd(), path, aw.writer.buffered(), user_only);
     if (builtin.os.tag == .windows)
         try secureWindowsCredentials(io, dir, path)
     else
@@ -540,6 +537,37 @@ test "supported scopes are joined for authorization requests" {
     const arena = arena_state.allocator();
     const metadata = try jsonObject("{\"scopes_supported\":[\"openid\",\"docs:read\",\"offline_access\"]}", arena);
     try std.testing.expectEqualStrings("openid docs:read offline_access", try supportedScopes(arena, metadata));
+}
+
+test "writeCredentials: 0600, and a rewrite cannot truncate the live token file" {
+    if (builtin.os.tag == .windows) return;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const home = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}", .{&tmp.sub_path});
+    const resource = "https://mcp.example/api";
+    const endpoints: EndpointSet = .{ .issuer = "https://idp.example", .authorization = "https://idp.example/a", .token = "https://idp.example/t", .registration = "https://idp.example/r" };
+
+    try writeCredentials(io, arena, home, resource, endpoints, .{ .id = "c1", .secret = "s1" }, .{ .access = "a1", .refresh = "refresh-1", .expires_at_ms = 1 });
+    const path = try credentialPath(arena, home, resource);
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), (try Io.Dir.cwd().statFile(io, path, .{})).permissions.toMode() & 0o777);
+
+    // Hold the first inode open across a re-login. A truncate-in-place writer
+    // blanks it out from under this handle; only a rename leaves it whole, which
+    // is what keeps a crashed rewrite from eating the client_secret + refresh.
+    const first = try Io.Dir.cwd().openFile(io, path, .{});
+    defer first.close(io);
+    try writeCredentials(io, arena, home, resource, endpoints, .{ .id = "c2", .secret = "s2" }, .{ .access = "a2", .refresh = "refresh-2", .expires_at_ms = 2 });
+
+    var read_buffer: [512]u8 = undefined;
+    var reader = first.reader(io, &read_buffer);
+    const kept = try reader.interface.allocRemaining(arena, .limited(64 * 1024));
+    try std.testing.expect(std.mem.indexOf(u8, kept, "refresh-1") != null);
+    const current = try Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024));
+    try std.testing.expect(std.mem.indexOf(u8, current, "refresh-2") != null);
 }
 
 test "credential path is stable and resource-specific" {

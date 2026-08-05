@@ -8,6 +8,7 @@
 //! codegraff gateway base) back-imported from main.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
@@ -548,4 +549,36 @@ test "supersededToken (#245): a concurrent refresher's token is adopted, not re-
     // A caller that cannot say which token failed keeps the old behaviour.
     try std.testing.expect(!supersededToken(true, replaced, null));
     try std.testing.expect(!supersededToken(false, replaced, null));
+}
+
+test "writeKimiAuth/writeXaiAuth: both real writers store 0600 in 0700 dirs, loadable" {
+    if (builtin.os.tag == .windows) return;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const home = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}", .{&tmp.sub_path});
+    const far_future = 4102444800; // year 2100: the loaders must not try to refresh
+
+    // Drive the two production writers, not a shared helper: xAI used to open its
+    // token file with a bare createFile (0644, no 0700 dirs) while kimi hardened
+    // its own, and only pinning both functions keeps that from coming back.
+    try writeKimiAuth(io, arena, home, "kimi-access", "kimi-refresh", far_future);
+    try writeXaiAuth(io, arena, home, "xai-access", "xai-refresh", far_future);
+
+    for ([_][]const u8{ ".kimi", ".xai" }) |provider_dir| {
+        const base = try tmp.dir.openDir(io, provider_dir, .{});
+        defer base.close(io);
+        const credentials = try base.openDir(io, "credentials", .{});
+        defer credentials.close(io);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o700), (try base.stat(io)).permissions.toMode() & 0o777);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o700), (try credentials.stat(io)).permissions.toMode() & 0o777);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), (try credentials.statFile(io, "graff-oauth.json", .{})).permissions.toMode() & 0o777);
+    }
+
+    // …and the real loaders find what the real writers wrote, at their own paths.
+    try std.testing.expectEqualStrings("kimi-access", loadKimiOAuth(io, std.testing.allocator, arena, home, false, null).?);
+    try std.testing.expectEqualStrings("xai-access", loadXaiOAuth(io, std.testing.allocator, arena, home, false, null).?);
 }

@@ -7,7 +7,11 @@
 //! silent logout with nothing left to recover from. Write a per-writer-unique
 //! temp file in the target's own directory, fsync it, then rename over the
 //! target, so a reader sees either the whole old file or the whole new one.
-//! Same shape as learn_store.writeAtomicReplace / eval_memory.writeNotes.
+//!
+//! The guarantee is against a crashed process, not against power loss: the temp
+//! file is fsynced but the containing directory is not, so some filesystems can
+//! still lose the rename across a hard power cut. Same shape — and same limit —
+//! as learn_store.writeAtomicReplace / eval_memory.writeNotes.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -22,12 +26,29 @@ pub const private_dir: Io.File.Permissions = if (Io.File.Permissions.has_executa
 /// Replace `dir`/`sub_path` with `bytes` atomically. `sub_path` may carry
 /// directory components; createFileAtomic keeps the temp file in the target's
 /// own directory, so the rename never crosses a filesystem.
+///
+/// `permissions` is the mode for a file that does not exist yet. Pass
+/// `private_file` for anything holding a secret; pass `.default_file` to keep
+/// the ordinary umask-governed behaviour of a plain `createFile`.
 pub fn replaceFile(io: Io, dir: Io.Dir, sub_path: []const u8, bytes: []const u8, permissions: Io.File.Permissions) !void {
     var atomic = try dir.createFileAtomic(io, sub_path, .{ .permissions = permissions, .replace = true });
     defer atomic.deinit(io);
-    // The create mode is masked by umask; chmod is not, so an unusual umask
-    // cannot narrow the file out from under the caller that asked for 0600.
-    if (builtin.os.tag != .windows) atomic.file.setPermissions(io, permissions) catch {};
+    if (Io.File.Permissions.has_executable_bit) {
+        if (permissions != .default_file) {
+            // An explicit mode is a requirement, not a hint: the create mode is
+            // masked by umask and chmod is not, so re-apply it and an unusual
+            // umask cannot widen the file out from under a caller asking for
+            // 0600. NEVER do this for .default_file — that constant is 0o666,
+            // and chmodding to it publishes a world-writable credential file.
+            atomic.file.setPermissions(io, permissions) catch {};
+        } else if (dir.statFile(io, sub_path, .{})) |existing| {
+            // Rename-into-place discards the old inode, so without this a mode
+            // the user set by hand (`chmod 600 ~/.codex/auth.json`) would be
+            // silently re-widened on every save. Nothing to carry for a new
+            // file, and then umask governs exactly as createFile did.
+            atomic.file.setPermissions(io, Io.File.Permissions.fromMode(existing.permissions.toMode() & 0o7777)) catch {};
+        } else |_| {}
+    }
     try atomic.file.writeStreamingAll(io, bytes);
     try atomic.file.sync(io);
     try atomic.replace(io);
@@ -99,7 +120,32 @@ test "replaceFile: renames a whole new file into place, never truncating the tar
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, tmp.dir));
 }
 
-test "writeOAuth: the credential file is 0600 inside 0700 directories (#xai parity)" {
+test "replaceFile: .default_file keeps umask in charge and never widens an existing mode" {
+    if (builtin.os.tag == .windows) return;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    // A NEW file must land on exactly the mode the plain `createFile` these call
+    // sites used to do produces: 0o666 masked by the process umask. Chmodding to
+    // the requested `.default_file` instead would publish 0o666 — world-WRITABLE
+    // ~/.codex/auth.json and ~/.simple-harness-codegraff.json.
+    (try tmp.dir.createFile(io, "reference", .{})).close(io);
+    const reference_mode = (try tmp.dir.statFile(io, "reference", .{})).permissions.toMode() & 0o777;
+    try replaceFile(io, tmp.dir, "settings.json", "{}", .default_file);
+    // (Comparing against a live reference rather than a hard 0o644 keeps this
+    // umask-agnostic; the umask-independent guard is the second half below.)
+    try std.testing.expectEqual(reference_mode, (try tmp.dir.statFile(io, "settings.json", .{})).permissions.toMode() & 0o777);
+
+    // An EXISTING file's mode survives the rewrite. Rename-into-place discards
+    // the old inode, so a user's manual `chmod 600` has to be carried forward by
+    // hand or every save silently re-widens the file.
+    try tmp.dir.setFilePermissions(io, "settings.json", private_file, .{});
+    try replaceFile(io, tmp.dir, "settings.json", "{\"fallback_providers\":[]}", .default_file);
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), (try tmp.dir.statFile(io, "settings.json", .{})).permissions.toMode() & 0o777);
+}
+
+test "writeOAuth: the credential file is 0600 inside 0700 directories" {
     if (builtin.os.tag == .windows) return;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true });

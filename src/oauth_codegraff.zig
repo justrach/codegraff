@@ -93,7 +93,9 @@ fn writeKey(io: Io, arena: Allocator, home: []const u8, key: []const u8) !void {
     var aw: Io.Writer.Allocating = .init(arena);
     var stringify: std.json.Stringify = .{ .writer = &aw.writer };
     try stringify.write(Value{ .object = obj });
-    try credential_store.replaceFile(io, Io.Dir.cwd(), path, aw.writer.buffered(), .default_file);
+    // 0600: the file is a bearer cg_sk_ API key, same posture as the kimi/xai
+    // credential stores.
+    try credential_store.replaceFile(io, Io.Dir.cwd(), path, aw.writer.buffered(), credential_store.private_file);
 }
 
 /// Load the harness login file first, then graff's credential store.
