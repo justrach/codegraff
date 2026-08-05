@@ -376,8 +376,14 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     // The open connection IS the sticky context (no x-codex-turn-state to echo).
     if (self.codex_ws == null) {
         self.codex_ws = connectWatched(gpa, self.io, url, &headers, orig_tio != null) catch |e| {
+            // HungRequest, matching connectWatched's deadline error — NOT
+            // StreamStalled, which the guard stopped returning when it moved to
+            // the SSE guard's transport-flake semantics. An arm naming the wrong
+            // error is unreachable, and a stalled dial then traces a bare
+            // "HungRequest" instead of saying the dial is where it stalled (the
+            // observability #401 was filed about).
             if (self.tracer) |tr| tr.note("ws", switch (e) {
-                error.StreamStalled => "connect stall",
+                error.HungRequest => "connect stall",
                 error.Interrupted => "esc",
                 else => @errorName(e),
             });

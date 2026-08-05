@@ -27,8 +27,10 @@ current is part of cutting a release.
   re-anchor is not a false positive. A held socket that any path already
   condemned is re-anchored instead of reused (openai/codex `is_closed()`
   parity), and a suspect socket is torn down with a plain FIN rather than a
-  courtesy close frame that could block again. A failed WS handshake no longer
-  leaks its fd and CA bundle.
+  courtesy close frame that could block again. Both guards name themselves in
+  the trace (`send stall` / `connect stall`), so a stalled dial is no longer
+  reported as a bare error name. A failed WS handshake no longer leaks its fd
+  and CA bundle.
 
 ## v0.0.237 (2026-08-04)
 
