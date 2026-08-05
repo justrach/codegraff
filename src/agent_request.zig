@@ -29,9 +29,9 @@ const run_budget_mod = @import("run_budget.zig");
 
 const policy = @import("agent_request_policy.zig");
 const errorCode = policy.errorCode;
-const isAuthError = policy.isAuthError;
 const isQuotaExceeded = policy.isQuotaExceeded;
 const recoverContextOverflow = policy.recoverContextOverflow;
+const retryAfterAuthRefresh = policy.retryAfterAuthRefresh;
 const retryTransientServerError = policy.retryTransientServerError;
 
 const context = @import("agent_context.zig");
@@ -108,9 +108,16 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     // unless actually near expiry. The refresh internals (file read + JSON parse,
     // ~1-2KB) are scratch (#124); only the token itself is duped to survive
     // future requests.
+    // #402: codex joins this path. Its on-disk read is unconditional (a ChatGPT
+    // token carries no expiry we can cheaply check), which is also codex-rs's
+    // STEP 1 — a `graff login` in another terminal is picked up here, without
+    // waiting for a 401.
     if (self.provider.source == .login) {
-        if (oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, false, null)) |fresh| {
-            self.provider.api_key = self.arena.dupe(u8, fresh) catch self.provider.api_key;
+        if (oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, false, null, policy.codexHome(self))) |fresh| {
+            // Only re-dupe on a real change: this runs every request, and the
+            // session arena is never reclaimed.
+            if (!std.mem.eql(u8, fresh, self.provider.api_key))
+                self.provider.api_key = self.arena.dupe(u8, fresh) catch self.provider.api_key;
         }
     }
     // #95: scrub any malformed function_call_output before it hits the wire.
@@ -348,6 +355,20 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                         self.closeCodexWs();
                         continue :rebuild;
                     }
+                    // #402: a ChatGPT-backend 401 ("Provided authentication
+                    // token is expired") lands here as a plain JSON error body,
+                    // so the #148 reactive refresh further down — which only
+                    // anthropic/openai bodies reach — never saw it. Auth-expired
+                    // was terminal on this path: the session, and every
+                    // auto-compaction it triggered, 401'd forever even after a
+                    // successful /login.
+                    if (retryAfterAuthRefresh(self, msg, &auth_refreshed)) {
+                        // PR #195: a mid-turn resend must re-anchor — the chained
+                        // WS meter desyncs otherwise — and the held socket was
+                        // dialed with the stale bearer besides.
+                        self.closeCodexWs();
+                        continue :rebuild;
+                    }
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("codex api error: {s}", .{msg});
                     return error.ApiError;
@@ -417,18 +438,11 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                 continue;
             }
             // #148: a stale login token 401s here with the provider's "API Key
-            // invalid/expired"; force a refresh and retry once (kimi-code's
-            // buildAuth(true)). Give up only if the fresh token also fails.
-            if (!auth_refreshed and self.provider.source == .login and isAuthError(msg)) {
-                if (oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, true, self.provider.api_key)) |fresh| {
-                    auth_refreshed = true;
-                    // #124: dupe off the scratch refresh internals — the key must
-                    // survive every later request of the session.
-                    self.provider.api_key = self.arena.dupe(u8, fresh) catch self.provider.api_key;
-                    if (self.tracer) |tr| tr.note("oauth_refresh", "auth error — refreshed login token, retrying");
-                    continue;
-                }
-            }
+            // invalid/expired"; adopt a newer on-disk token or force a refresh
+            // and retry once (kimi-code's buildAuth(true)). Give up only if the
+            // fresh token also fails. No closeCodexWs — this branch is never on
+            // the codex WS.
+            if (retryAfterAuthRefresh(self, msg, &auth_refreshed)) continue;
             // #193 follow-up: recover an anthropic/openai context-window rejection
             // in-turn instead of failing the turn (before this only codex recovered;
             // anthropic and openai died). Shared with the two error branches above.

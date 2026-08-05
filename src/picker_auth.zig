@@ -35,37 +35,109 @@ pub const PickerFn = *const fn (
 ) ?usize;
 
 /// After an in-session `/login` writes its credential file, pull the fresh key
-/// (and the Codex account id) into the live Keys so the current conversation
-/// uses it without a restart — the in-session twin of the startup loaders.
+/// (and the Codex account id) into the live Keys AND into the running agent, so
+/// the current conversation uses it without a restart — the in-session twin of
+/// the startup loaders.
 pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: []const u8) void {
     const home = root.home;
     for (provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
         if (!std.mem.eql(u8, spec.id, provider_id)) continue;
+        var reloaded = false;
         if (std.mem.eql(u8, provider_id, "codegraff")) {
             if (oauth.loadCodegraffKey(root.io, arena, home)) |k| {
                 value.* = k;
                 source.* = .login;
+                reloaded = true;
             }
         } else if (std.mem.eql(u8, provider_id, "kimi")) {
             if (oauth.loadKimiOAuth(root.io, root.gpa, arena, home, false, null)) |k| {
                 value.* = k;
                 source.* = .login;
+                reloaded = true;
             }
         } else if (std.mem.eql(u8, provider_id, "xai")) {
             if (oauth.loadXaiOAuth(root.io, root.gpa, arena, home, false, null)) |k| {
                 value.* = k;
                 source.* = .login;
+                reloaded = true;
             }
         } else if (std.mem.eql(u8, provider_id, "codex")) {
             if (oauth.loadCodexAuth(root.io, arena, home)) |auth| {
                 value.* = auth.token;
                 source.* = .login;
                 keys.codex_account = auth.account;
+                reloaded = true;
             }
+        }
+        // #402: the live Agent holds its OWN Provider copy — providers.applyProviderInner
+        // is otherwise the only writer — so refreshing Keys alone left the active
+        // session bound to the token that had just expired: `/login` reported success
+        // and every following turn (plus its auto-compaction) kept 401ing. The
+        // provider.id guard is what keeps `/login kimi` from hijacking a live codex
+        // session; the model-picker path re-assigns via switchProvider anyway.
+        if (reloaded and std.mem.eql(u8, root.provider.id, provider_id)) {
+            const key = value.* orelse continue;
+            root.provider.api_key = root.arena.dupe(u8, key) catch key;
+            root.provider.source = .login;
+            if (std.mem.eql(u8, provider_id, "codex")) root.provider.account = keys.codex_account;
+            root.closeCodexWs(); // the held socket was dialed with the stale bearer
         }
     }
     if (std.mem.eql(u8, provider_id, "codex") and keys.get("codex") != null)
         root.reloadModelCatalog(keys.*);
+}
+
+test "#402: reloadLoginKey hot-reloads the ACTIVE agent's credential, not just Keys" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
+    try Io.Dir.cwd().createDirPath(io, try std.fmt.allocPrint(arena, "{s}/.codex", .{home}));
+    try Io.Dir.cwd().writeFile(io, .{
+        .sub_path = try std.fmt.allocPrint(arena, "{s}/.codex/auth.json", .{home}),
+        .data =
+        \\{"tokens":{"access_token":"fresh-tok","refresh_token":"r1","account_id":"acct-2"}}
+        ,
+    });
+
+    var root: Agent = undefined;
+    root.io = io;
+    root.gpa = std.testing.allocator;
+    root.arena = arena;
+    root.home = home;
+    root.model_catalog = null; // the catalog reload would go to the network
+    root.codex_ws = null;
+    root.codex_prev_id = try std.testing.allocator.dupe(u8, "resp_stale");
+    root.codex_sent_upto = 7;
+    root.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "expired-tok", .model = "gpt-5.6", .context = 272000, .account = "acct-1", .source = .login };
+
+    var keys: Keys = .{ .values = @splat(null) };
+    reloadLoginKey(&root, &keys, arena, "codex");
+
+    try std.testing.expectEqualStrings("fresh-tok", keys.get("codex").?);
+    // The #402 fix: the LIVE provider, not only Keys. Without this, /login reported
+    // success while every subsequent turn and auto-compaction kept 401ing.
+    try std.testing.expectEqualStrings("fresh-tok", root.provider.api_key);
+    try std.testing.expectEqualStrings("acct-2", root.provider.account);
+    // The held WS was dialed with the stale bearer, and PR #195 forbids resending
+    // against a chain the new credential never anchored.
+    try std.testing.expect(root.codex_prev_id == null);
+    try std.testing.expectEqual(@as(usize, 0), root.codex_sent_upto);
+
+    // `/login kimi` mid-codex-session must not repoint the active provider — that
+    // would silently switch the user's model AND wire format.
+    root.provider.api_key = "expired-tok";
+    root.codex_prev_id = try std.testing.allocator.dupe(u8, "resp_two");
+    reloadLoginKey(&root, &keys, arena, "kimi"); // no kimi credential on disk here
+    try std.testing.expectEqualStrings("expired-tok", root.provider.api_key);
+    try std.testing.expectEqualStrings("codex", root.provider.id);
+    try std.testing.expect(root.codex_prev_id != null);
+    std.testing.allocator.free(root.codex_prev_id.?);
 }
 
 /// Read an API key without terminal echo or history persistence. The ordinary

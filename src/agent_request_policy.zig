@@ -5,6 +5,7 @@ const std = @import("std");
 const Agent = @import("agent.zig").Agent;
 const http = @import("http.zig");
 const RetryPlan = http.RetryPlan;
+const oauth = @import("oauth.zig");
 const telemetry = @import("telemetry.zig");
 const util = @import("util.zig");
 
@@ -27,6 +28,124 @@ test "isAuthError (#148): auth failures only, not credits/rate/other" {
     try std.testing.expect(!isAuthError("rate limit exceeded"));
     try std.testing.expect(!isAuthError("model not found"));
     try std.testing.expect(!isAuthError("context length exceeded"));
+}
+
+/// The CODEX_HOME this session authenticated against. startup.zig resolves
+/// $CODEX_HOME once and parks it on the catalog; the login flows instead always
+/// write ~/.codex, which is the `null` fallback inside refreshOAuthKey. Reading
+/// or writing the other one would silently refresh a credential the session is
+/// not using.
+pub fn codexHome(self: *Agent) ?[]const u8 {
+    const catalog = self.model_catalog orelse return null;
+    return if (catalog.codex_home.len > 0) catalog.codex_home else null;
+}
+
+/// #148/#402: a login-sourced credential was rejected. Adopt a token an
+/// in-session `/login` (or another process) has already written to disk, else
+/// spend the refresh grant — then retry the request once with the new bearer.
+///
+/// Bounded exactly like codex-rs's UnauthorizedRecovery (reload → refresh →
+/// give up and surface the error): `refreshed` is declared OUTSIDE the caller's
+/// rebuild loop and is set the moment we attempt anything, so a permanently
+/// dead credential fails the turn instead of re-sending a full history forever
+/// — the #402 symptom, where every user message re-fired a ~302KB turn body and
+/// a ~868KB compaction body. A refresh that hands back the SAME token could not
+/// have helped either, so it does not earn a retry.
+pub fn retryAfterAuthRefresh(self: *Agent, msg: []const u8, refreshed: *bool) bool {
+    if (refreshed.* or self.provider.source != .login or !isAuthError(msg)) return false;
+    refreshed.* = true;
+    const fresh = oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, true, self.provider.api_key, codexHome(self)) orelse return false;
+    if (std.mem.eql(u8, fresh, self.provider.api_key)) return false;
+    // #124: dupe off the scratch refresh internals — the key must survive every
+    // later request of the session.
+    self.provider.api_key = self.arena.dupe(u8, fresh) catch self.provider.api_key;
+    if (self.tracer) |tr| tr.note("oauth_refresh", "auth error — refreshed login token, retrying");
+    return true;
+}
+
+test "retryAfterAuthRefresh (#402): one attempt per request, login-sourced auth errors only" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var agent: Agent = undefined;
+    agent.arena = arena_state.allocator();
+    agent.tracer = null;
+    agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "expired-tok", .model = "gpt-5.6", .context = 272000, .source = .environment };
+    const expired = "Provided authentication token is expired. Please re-authenticate.";
+
+    // An env key has no refresh flow — it must never reach the network.
+    var refreshed = false;
+    try std.testing.expect(!retryAfterAuthRefresh(&agent, expired, &refreshed));
+    try std.testing.expect(!refreshed);
+
+    // Already attempted this request: no second refresh, so no second resend of a
+    // full history (#402's runaway 302KB + 868KB bodies).
+    agent.provider.source = .login;
+    refreshed = true;
+    try std.testing.expect(!retryAfterAuthRefresh(&agent, expired, &refreshed));
+
+    // Non-auth failures must never burn a refresh token. A broadened isAuthError
+    // would rotate credentials on quota 429s and context rejections.
+    for ([_][]const u8{
+        "rate limit exceeded",
+        "You have run out of credits or need a Grok subscription.",
+        "prompt is too long: 219373 tokens > 200000 maximum",
+        "model not found",
+    }) |msg| {
+        var not_auth = false;
+        try std.testing.expect(!retryAfterAuthRefresh(&agent, msg, &not_auth));
+        try std.testing.expect(!not_auth);
+    }
+}
+
+test "retryAfterAuthRefresh (#402): a codex 401 adopts the token /login wrote, then stops" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const codex_home = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
+    const auth_path = try std.fmt.allocPrint(arena, "{s}/auth.json", .{codex_home});
+    try std.Io.Dir.cwd().writeFile(io, .{
+        .sub_path = auth_path,
+        .data =
+        \\{"tokens":{"access_token":"fresh-tok","refresh_token":"r1","account_id":"a"}}
+        ,
+    });
+
+    var agent: Agent = undefined;
+    agent.io = io;
+    agent.gpa = std.testing.allocator;
+    agent.arena = arena;
+    agent.scratch_arena = null;
+    agent.home = "/graff-test-no-such-home";
+    agent.tracer = null;
+    agent.model_catalog = .{ .codex_home = codex_home }; // startup's resolved $CODEX_HOME
+    agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "expired-tok", .model = "gpt-5.6", .context = 272000, .source = .login };
+    const expired = "Provided authentication token is expired. Please re-authenticate.";
+
+    // The literal issue reproduction: /login rewrote auth.json, the live session was
+    // still on the expired bearer. The retry must pick the new one up with no
+    // network call and no restart.
+    var refreshed = false;
+    try std.testing.expect(retryAfterAuthRefresh(&agent, expired, &refreshed));
+    try std.testing.expect(refreshed);
+    try std.testing.expectEqualStrings("fresh-tok", agent.provider.api_key);
+    try std.testing.expect(!retryAfterAuthRefresh(&agent, expired, &refreshed)); // bounded
+
+    // A refresh that can only hand back the SAME token cannot help; retrying would
+    // just re-send the whole history for another guaranteed 401.
+    try std.Io.Dir.cwd().writeFile(io, .{
+        .sub_path = auth_path,
+        .data =
+        \\{"tokens":{"access_token":"fresh-tok","refresh_token":"","account_id":"a"}}
+        ,
+    });
+    var again = false;
+    try std.testing.expect(!retryAfterAuthRefresh(&agent, expired, &again));
+    try std.testing.expect(again); // attempt was spent, so the turn fails instead of looping
 }
 
 /// True if `msg` is a provider's "input is over the context window" rejection,
