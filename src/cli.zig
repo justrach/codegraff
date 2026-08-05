@@ -21,6 +21,12 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.239
+    \\  • Codex WebSocket turns can't stall silently: visible output tightens the watchdog, a mute reused socket is retried in ~30s, and send/dial run under deadlines with Esc live
+    \\  • A successful /login reaches the live session — codex auth recovery re-reads auth.json, spends the refresh token, and retries once instead of looping on a dead bearer
+    \\  • Failed one-shots still print the [usage] footer and note completed tool work; rate-limit waits get a human duration; empty compaction summaries escalate instead of looping
+    \\  • /save and /resume copy the typed name out of the readline buffer, and /rewind never deletes a file it failed to snapshot
+    \\
     \\0.0.238
     \\  • Tight-budget runs hold back a landing reserve, so they finish, verify, and still deliver the final answer instead of dying mid-narration
     \\  • A completed run releases the terminal instead of suspending on tty input, and worker activity lines wait for the foreground's line boundary
@@ -35,11 +41,6 @@ pub const changelog_text =
     \\0.0.229
     \\  • SKILL.md skills: markdown playbooks in .harness/skills (or .claude/skills) load on demand, cost one catalog line each, and /skills manages them
     \\  • The bundled skill-creator teaches the full authoring loop, from capturing intent mid-session to forward-testing with fresh subagents
-    \\
-    \\0.0.215
-    \\  • Local learning can race multiple prompt variants, rank correctness before tool economy, and expose only the winner to a hidden holdout
-    \\  • Runs checkpoint safely, keep promotion manual by default, and can bundle an aggregate-only signed grade submission
-    \\  • Aggregate receipts expire after 30 days and can be deleted remotely without deleting local evidence or requiring telemetry consent
     \\  • Root/subagent model shapes can keep orchestration on Sol while routing parallel workers and judges to Terra
     \\  • Remote MCP servers now support Streamable HTTP, OAuth discovery/PKCE/refresh, and an opt-out core Smolify connection
     \\
