@@ -115,14 +115,14 @@ const base_specs = [_]ToolSpec{
 const meta_specs = [_]ToolSpec{
     .{
         .name = "todo_write",
-        .desc = "Replace the task list for the current standing goal (items from a replaced, cleared or completed goal are parked - kept in the session, but not part of this list and not replaced by this call). An item you already marked completed is kept as history when you leave it out; list it again (with any status) to change or remove it that way. Omitted pending/in_progress items are dropped. Every call needs at least one item: a call with none leaves the list untouched. Use to plan and track multi-step work; skip it for trivial single-step tasks. Each item has content and status (pending|in_progress|completed). Write steps small enough to verify individually; keep exactly ONE item in_progress at a time — mark it in_progress when you start and completed as it lands, never a batch flipped at the end.",
+        .desc = "Replace the task list for the current standing goal (items from a replaced, cleared or completed goal are parked - kept in the session, but not part of this list and not replaced by this call). An item you already marked completed is kept as history when you leave it out, for as long as the current request is being worked; list it again (with any status) to change or remove it that way. Once every item is completed, the next thing the user asks starts a clean list - finished work is not carried into it. Omitted pending/in_progress items are dropped. Every call needs at least one item: a call with none leaves the list untouched. Use to plan and track multi-step work; skip it for trivial single-step tasks. Each item has content and status (pending|in_progress|completed). Write steps small enough to verify individually; keep exactly ONE item in_progress at a time — mark it in_progress when you start and completed as it lands, never a batch flipped at the end.",
         .schema =
         \\{"type": "object", "properties": {"todos": {"type": "array", "items": {"type": "object", "properties": {"content": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}}, "required": ["content", "status"]}}}, "required": ["todos"]}
         ,
     },
     .{
         .name = "todo_read",
-        .desc = "Read your current task list (the current goal's items; work parked by an earlier goal is not included).",
+        .desc = "Read your current task list (the current goal's items; work parked by an earlier goal, and finished lists retired by a later request, are not included).",
         .schema = empty_schema,
     },
     .{

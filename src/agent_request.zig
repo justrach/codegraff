@@ -25,6 +25,7 @@ const apiErrorMessage = tools_mod.apiErrorMessage;
 const mentionsReasoningEffort = tools_mod.mentionsReasoningEffort;
 const telemetry = @import("telemetry.zig");
 const run_budget_mod = @import("run_budget.zig");
+const wire_messages = @import("messages.zig");
 
 const policy = @import("agent_request_policy.zig");
 const errorCode = policy.errorCode;
@@ -70,7 +71,15 @@ fn resetRequestScratch(scratch: *std.heap.ArenaAllocator) void {
     }
 }
 
-pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
+/// #390 — appended once, on the run's final admitted model call, right where
+/// the tools disappear, so the model knows WHY and lands instead of retrying.
+pub const landing_note =
+    "[budget landing] This is the final model call this run's --max-model-calls budget admits, so " ++
+    "no tools are offered. Land the answer NOW from the evidence already gathered: state what was " ++
+    "completed and what was verified, then name what remains unchecked. Honestly-labeled partial " ++
+    "results beat dying mid-tool-call.";
+
+pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // Startup paints the prompt while CA loading continues. The root turn and
     // title task rendezvous here, then issue their requests concurrently.
     http.waitForClientReady(self.io);
@@ -88,6 +97,19 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
         };
     }
     defer if (budget_permit) |*permit| permit.release();
+    // #390 — the landing reserve's root half: the pool's FINAL admitted call
+    // belongs to the answer. Offer no tools (compaction's trick) and say why,
+    // so the model lands a text answer now instead of asking for a tool the
+    // budget can never pay for — which is how the audit smoke died narrating.
+    // compaction/title requests pass tools=null already and skip this whole.
+    var tools = tools_in;
+    if (self.run_budget) |b| if (budget_permit) |p| {
+        if (b.max_model_calls != 0 and p.call_number == b.max_model_calls and tools != null) {
+            tools = null;
+            try self.messages.append(try wire_messages.textMessage(self.arena, "user", landing_note));
+            if (self.tracer) |tr| tr.note("budget", "final call: tools withheld so the run lands its answer (#390)");
+        }
+    };
     self.last_request_context_overflow = false;
     self.last_request_write_failed = false;
     self.last_usage_includes_output = false;
@@ -239,7 +261,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     if (err == error.RateLimited and main_mod.g_5xx_body_len > 0 and
                         isQuotaExceeded(main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len]))
                     {
-                        self.last_api_error = std.fmt.allocPrint(self.arena, "rate limited (429): quota/billing cap — {s}", .{main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len]}) catch "rate limited (429): quota exceeded";
+                        self.last_api_error = std.fmt.allocPrint(self.arena, "rate limited (429): {s} — {s}", .{ policy.quota_cap_marker, main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] }) catch "rate limited (429): quota exceeded";
                         if (telemetry.g_telem) |t| t.errorEvent("quota", self.last_api_error orelse "quota exceeded");
                         if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, 0, body.len, 0, 0, 0, true);
                         return error.ApiError;

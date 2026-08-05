@@ -104,6 +104,92 @@ pub const tty = struct {
         }
     };
 
+    /// Who owns the controlling terminal. A tty read issued from a BACKGROUND
+    /// process group is what raises SIGTTIN, so #396's prompt asks this before
+    /// it ever blocks. Anything unknowable answers "we do" — the pre-#396
+    /// behaviour — so a platform without the call, or a stdin that is not a
+    /// terminal, can never make Graff give up by mistake.
+    /// (std.posix.tcgetpgrp exists but resolves through std.c, which carries no
+    /// tcgetpgrp/getpgrp on Darwin — so each family declares its own: raw
+    /// syscalls on Linux, where a build may not link libc at all, and the libc
+    /// symbols everywhere else.)
+    const Foreground = if (is_windows) struct {
+        fn owned() bool {
+            return true;
+        }
+    } else if (builtin.os.tag == .linux) struct {
+        fn owned() bool {
+            var fg: std.posix.pid_t = undefined;
+            const rc = std.os.linux.tcgetpgrp(std.posix.STDIN_FILENO, &fg);
+            if (@as(isize, @bitCast(rc)) < 0) return true; // not a terminal
+            const own: std.posix.pid_t = @intCast(@as(u32, @truncate(std.os.linux.getpgid(0))));
+            return fg == own;
+        }
+    } else struct {
+        extern "c" fn tcgetpgrp(fd: std.posix.fd_t) std.posix.pid_t;
+        extern "c" fn getpgrp() std.posix.pid_t;
+
+        fn owned() bool {
+            const fg = tcgetpgrp(std.posix.STDIN_FILENO);
+            if (fg < 0) return true; // no controlling terminal / not a tty
+            return fg == getpgrp();
+        }
+    };
+
+    /// Terminal-reader lifecycle (#396), kept as pure state so the ordering
+    /// invariant — a run that has COMPLETED never blocks on the tty again — is
+    /// unit-testable with no terminal in sight. The syscalls stay in the
+    /// wrappers below; this only tracks how deep raw mode is and whether the
+    /// terminal has been handed back.
+    pub const Lifecycle = struct {
+        /// Nested raw-mode entries (a picker opened from the line editor).
+        raw_depth: u8 = 0,
+        /// The run finished and the terminal went back: no further blocking
+        /// read may be issued.
+        released: bool = false,
+
+        /// A raw-mode entry succeeded. True for the OUTERMOST one, whose saved
+        /// terminal state is the one a release has to put back.
+        pub fn entered(self: *Lifecycle) bool {
+            self.raw_depth +|= 1;
+            return self.raw_depth == 1;
+        }
+
+        /// A restore ran. True once raw mode is fully off again.
+        pub fn restored(self: *Lifecycle) bool {
+            self.raw_depth -|= 1;
+            return self.raw_depth == 0;
+        }
+
+        /// End of the run. True when raw mode is STILL on and the caller has to
+        /// put the terminal back — the leftover-process case in #396, where
+        /// teardown never reached the line editor's `defer restore`.
+        pub fn release(self: *Lifecycle) bool {
+            const still_raw = self.raw_depth > 0;
+            self.raw_depth = 0;
+            self.released = true;
+            return still_raw;
+        }
+
+        /// May a blocking read on the controlling terminal still be issued?
+        pub fn mayBlock(self: Lifecycle) bool {
+            return !self.released;
+        }
+
+        /// Re-arm for a fresh interactive session in the same process. Release
+        /// latches the reader shut; it is not a one-way door for the process.
+        pub fn rearm(self: *Lifecycle) void {
+            self.released = false;
+        }
+    };
+
+    /// Process-wide reader state. Driven from the main thread only — the Esc
+    /// watch task on the pool touches poll/readStdin, never this.
+    var life: Lifecycle = .{};
+    /// What the OUTERMOST enterRaw() captured, so a release can undo raw mode
+    /// from anywhere (including a path that never reached the editor's defer).
+    var raw_outer: ?RawState = null;
+
     /// One-time: let the Windows console interpret ANSI/VT escapes. No-op
     /// elsewhere. Call once from main before any styled output.
     pub fn enableVtOutput() void {
@@ -155,6 +241,7 @@ pub const tty = struct {
             raw |= win.ENABLE_VIRTUAL_TERMINAL_INPUT;
             if (blocking) raw &= ~@as(u32, win.ENABLE_PROCESSED_INPUT) else raw |= win.ENABLE_PROCESSED_INPUT;
             if (win.SetConsoleMode(h, raw) == 0) return null;
+            if (life.entered()) raw_outer = .{ .in_mode = mode };
             return .{ .in_mode = mode };
         }
         const fd = std.posix.STDIN_FILENO;
@@ -171,11 +258,13 @@ pub const tty = struct {
         var job_control = JobControlGuard.init(.output);
         defer job_control.deinit();
         std.posix.tcsetattr(fd, .NOW, raw) catch return null;
+        if (life.entered()) raw_outer = orig;
         return orig;
     }
 
     /// Restore the mode captured by enterRaw().
     pub fn restore(state: RawState) void {
+        if (life.restored()) raw_outer = null;
         if (is_windows) {
             _ = win.SetConsoleMode(win.GetStdHandle(win.STD_INPUT_HANDLE), state.in_mode);
             return;
@@ -231,6 +320,127 @@ pub const tty = struct {
         var job_control = JobControlGuard.init(.input);
         defer job_control.deinit();
         return std.posix.read(std.posix.STDIN_FILENO, buf) catch 0;
+    }
+
+    /// Hand the controlling terminal back at the end of a run (#396): undo a raw
+    /// mode still in force and latch the reader shut, so nothing that runs after
+    /// completion can block on the tty. Idempotent; safe off a terminal.
+    pub fn releaseTerminal() void {
+        const still_raw = life.release();
+        const saved = raw_outer;
+        raw_outer = null;
+        if (still_raw) if (saved) |state| restore(state);
+    }
+
+    /// True while this process group owns the controlling terminal.
+    pub fn isForeground() bool {
+        return Foreground.owned();
+    }
+
+    /// Outcome of a blocking read on the controlling terminal.
+    pub const BlockingRead = union(enum) {
+        bytes: usize,
+        eof,
+        /// The read must not happen: this process is no longer the terminal's
+        /// foreground group, or the run already released the terminal. Do NOT
+        /// retry — retrying is what left a completed Graff stopped ("suspended
+        /// (tty input)") on a shared tty in #396.
+        background,
+    };
+
+    /// Blocking terminal read that can never be stopped by SIGTTIN: the signal
+    /// stays blocked around the syscall (#271's guard), so a read that runs from
+    /// the background fails with EIO and is REPORTED instead of suspending us.
+    pub fn readBlocking(buf: []u8) BlockingRead {
+        if (!life.mayBlock()) return .background;
+        if (is_windows) {
+            while (poll(-1)) {
+                const got = readStdin(buf);
+                if (got > 0) return .{ .bytes = got };
+            }
+            return .eof;
+        }
+        if (!isForeground()) return .background;
+        var job_control = JobControlGuard.init(.input);
+        defer job_control.deinit();
+        const n = std.posix.read(std.posix.STDIN_FILENO, buf) catch |err| switch (err) {
+            error.InputOutput => return .background, // EIO: the read ran from the background
+            else => return .eof,
+        };
+        return if (n == 0) .eof else .{ .bytes = n };
+    }
+
+    /// Prompt idle cadence. Two consecutive misses (~1s) is the grace before a
+    /// backgrounded prompt gives up, so a terminal handed over for a moment (a
+    /// shell mid-tcsetpgrp) never reads as abandoned.
+    const foreground_poll_ms: i32 = 500;
+    const background_grace: u8 = 2;
+
+    /// Wait for terminal input without ever blocking in a read this process is
+    /// not allowed to make. False means STOP READING: either input is waiting
+    /// while we sit in the background (the SIGTTIN case — the kernel would stop
+    /// us) or the terminal was released/abandoned.
+    pub fn waitForegroundInput() bool {
+        var missed: u8 = 0;
+        while (life.mayBlock()) {
+            if (poll(foreground_poll_ms)) return true;
+            if (isForeground()) {
+                missed = 0;
+                continue;
+            }
+            missed +|= 1;
+            if (missed >= background_grace) return false;
+        }
+        return false;
+    }
+
+    pub const PromptByte = union(enum) { byte: u8, eof, background };
+
+    /// Bytes the guarded read pulled off the terminal but the editor has not
+    /// consumed yet: one syscall per keystroke would be fine, one per byte of a
+    /// paste would not. Survives across readLine/picker calls exactly the way
+    /// the reader's own buffer used to, so typed-ahead still carries over.
+    var queued: [256]u8 = undefined;
+    var queued_len: usize = 0;
+    var queued_pos: usize = 0;
+
+    /// Terminal bytes already read and waiting. The editor's "is this a bare
+    /// Esc?" checks must count these as well as the reader's own buffer.
+    pub fn pendingBytes() usize {
+        return queued_len - queued_pos;
+    }
+
+    /// One byte of terminal input, job-control aware (#396). Every blocking
+    /// read the line editor and the pickers make goes through here, so none of
+    /// them can be the read the kernel stops with SIGTTIN. Order: our own
+    /// queue, then whatever the reader still holds, then a guarded read that
+    /// only happens while this process still owns the terminal.
+    pub fn promptByte(in: *std.Io.Reader) PromptByte {
+        if (queued_pos < queued_len) {
+            defer queued_pos += 1;
+            return .{ .byte = queued[queued_pos] };
+        }
+        if (in.buffered().len > 0) return if (in.takeByte()) |b| .{ .byte = b } else |_| .eof;
+        if (!waitForegroundInput()) return .background;
+        queued_len = 0;
+        queued_pos = 0;
+        switch (readBlocking(queued[0..])) {
+            .bytes => |n| {
+                queued_len = n;
+                queued_pos = 1;
+                return .{ .byte = queued[0] };
+            },
+            .eof => return .eof,
+            .background => return .background,
+        }
+    }
+
+    /// stderr with SIGTTOU blocked: the note explaining a background exit must
+    /// not itself stop Graff on a terminal with TOSTOP set.
+    pub fn noteFromBackground(msg: []const u8) void {
+        var job_control = JobControlGuard.init(.output);
+        defer job_control.deinit();
+        std.debug.print("{s}", .{msg});
     }
 };
 
@@ -288,4 +498,67 @@ pub fn inputPending() bool {
 /// ultracode wave to tick at a slower, calmer cadence than the 50ms default.
 pub fn inputPendingTimed(timeout_ms: i32) bool {
     return tty.poll(timeout_ms);
+}
+
+test "#396 lifecycle: a completed run releases raw mode and latches the reader shut" {
+    var life: tty.Lifecycle = .{};
+    try std.testing.expect(life.mayBlock());
+    try std.testing.expect(life.entered()); // the line editor
+    try std.testing.expect(!life.entered()); // a picker opened from inside it
+    try std.testing.expect(!life.restored()); // picker closed; the editor is still raw
+    // The run ends with the editor still in raw mode — exactly the leftover
+    // process in #396. Release both reports the terminal needs putting back and
+    // stops any later blocking read from being issued.
+    try std.testing.expect(life.release());
+    try std.testing.expect(!life.mayBlock());
+    // Idempotent: teardown may release twice (mainloop defer + explicit call)
+    // and the second one must not claim there is raw mode left to undo.
+    try std.testing.expect(!life.release());
+    try std.testing.expect(!life.mayBlock());
+    life.rearm();
+    try std.testing.expect(life.mayBlock());
+}
+
+test "#396 lifecycle: a terminal already restored needs no release-time restore" {
+    var life: tty.Lifecycle = .{};
+    _ = life.entered();
+    try std.testing.expect(life.restored());
+    try std.testing.expect(!life.release()); // nothing raw left to undo
+    try std.testing.expect(!life.mayBlock()); // but the reader is still shut
+}
+
+test "#396 firewall: the idle prompt read is job-control aware and gives the tty back first" {
+    // The property is about the CALL SITE — that the ONE read which sits idle
+    // after a completed run can never be the bare blocking read the kernel
+    // stops with SIGTTIN — so it is pinned as source text (the #376 pattern).
+    const src = @embedFile("readline.zig");
+    const guarded = std.mem.indexOf(u8, src, "switch (tty.promptByte(in))").?;
+    const arm = std.mem.indexOf(u8, src[guarded..], ".background => {").? + guarded;
+    const window = src[arm..@min(src.len, arm + 700)];
+    // ORDER: hand the terminal back BEFORE the note and the session save, so a
+    // process that has already lost the foreground stops holding raw mode at
+    // once rather than after disk I/O.
+    const release_at = std.mem.indexOf(u8, window, "tty.releaseTerminal();").?;
+    const note_at = std.mem.indexOf(u8, window, "tty.noteFromBackground(").?;
+    const save_at = std.mem.indexOf(u8, window, "saveSession(root").?;
+    try std.testing.expect(release_at < note_at);
+    try std.testing.expect(note_at < save_at);
+    // And it must LEAVE, not loop back into another read of the same terminal.
+    try std.testing.expect(std.mem.indexOf(u8, window[save_at..], "return null;") != null);
+}
+
+test "#396 firewall: both completion paths release the terminal" {
+    // One-shot (`-p`, the headless --yolo path) releases at the end of the run,
+    // after the answer is printed and the session saved.
+    const oneshot = @embedFile("session_run.zig");
+    const answer_at = std.mem.indexOf(u8, oneshot, "session.saveSession(root, arena, root.session_name)").?;
+    const release_at = std.mem.indexOf(u8, oneshot, "terminal.tty.releaseTerminal();").?;
+    try std.testing.expect(answer_at < release_at);
+    // The interactive loop releases on ANY exit, and its defer is registered
+    // last so LIFO teardown runs it first — before flushSavesAtExit and the
+    // slower telemetry/learning phases main() owns.
+    const loop = @embedFile("mainloop.zig");
+    const flush_at = std.mem.indexOf(u8, loop, "defer session.flushSavesAtExit();").?;
+    const loop_release_at = std.mem.indexOf(u8, loop, "defer terminal.tty.releaseTerminal();").?;
+    try std.testing.expect(flush_at < loop_release_at);
 }

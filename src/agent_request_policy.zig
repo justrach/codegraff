@@ -454,6 +454,14 @@ test "isTransientServerError (#opencode-parity): overload/server_error retry; qu
 /// "exceeded your current quota", "quota exceeded") — a usage limit a retry can't
 /// clear, unlike transient rate-limit throttling — so we fail fast + fail over rather
 /// than burning retry attempts.
+/// The phrase agent_request stamps into `last_api_error` when a 429 body named
+/// a billing/credit cap rather than transient throttling. It is a const, not a
+/// literal spelled twice, because a second reader now depends on it: a worker's
+/// in-turn retry ladder (subagent_retry.hardQuotaCap) reads this marker back
+/// out of the message to tell "the account is capped" — where re-asking is
+/// pure waste — from "slow down", where re-asking is the whole point.
+pub const quota_cap_marker = "quota/billing cap";
+
 pub fn isQuotaExceeded(body: []const u8) bool {
     return util.indexOfIgnoreCase(body, "insufficient_quota") != null or
         util.indexOfIgnoreCase(body, "insufficient quota") != null or

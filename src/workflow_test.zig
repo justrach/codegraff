@@ -102,7 +102,10 @@ test "buildAbortText names the phase index and title, and surfaces each failed t
     const labels = [_][]const u8{ "scan A", "scan B" };
     // Parallel per-task excerpts: one real API error, one task that left
     // nothing to report.
-    const details = [_][]const u8{ "subagent sa-001 failed before producing a report: 429 rate_limit_exceeded [quota failure].", "" };
+    // Mirrors what subagentFailure actually emits today, attempt count and all
+    // — a fixture that has drifted from production cannot catch the excerpt
+    // regressing, which is the only thing this test is for.
+    const details = [_][]const u8{ "subagent sa-001 failed before producing a report: 429 rate_limit_exceeded [quota/rate-limit failure, 3 attempts]. retry is likely safe", "" };
     const text = try buildAbortText(a, &labels, &details, 2, 3, "Recon");
 
     // Every failed task's header survives, so a human can see what was tried.
@@ -125,7 +128,7 @@ test "failExcerpt keeps the API error on one capped line, and stays empty when t
 
     // A real subagentFailure text: the cause survives, flattened, so it can sit
     // under a "### label" header without breaking that layout.
-    const raw = "subagent sa-001 failed before producing a report:\n{\"error\":\"rate_limit_exceeded\"}\t[quota failure].";
+    const raw = "subagent sa-001 failed before producing a report:\n{\"error\":\"rate_limit_exceeded\"}\t[quota/rate-limit failure, 3 attempts]. retry is likely safe";
     const one = failExcerpt(a, raw);
     try std.testing.expect(std.mem.indexOf(u8, one, "rate_limit_exceeded") != null);
     try std.testing.expect(std.mem.indexOfAny(u8, one, "\n\r\t") == null);

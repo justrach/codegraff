@@ -74,6 +74,36 @@ const Env = struct {
 /// niche is the persona name (or the phase title for an inline variant).
 const sweep_niches = [_][]const u8{ "researcher", "skeptic" };
 
+test "role prior: search roles ride the small rung; judged roles keep the session rung" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // NO lived evidence: an empty archive, so any move is the prior alone.
+    const saved = Env.install(a, "", true);
+    defer saved.restore();
+
+    const find = phase.forPhase(codex("gpt-5.6-terra"), .review, "find the defects", &.{}, true);
+    try std.testing.expectEqualStrings("gpt-5.6-luna", find.provider.model);
+    try std.testing.expect(find.pin != null);
+    try std.testing.expect(find.role_prior);
+    // The source stays the ladder's — a hand rule must not claim evidence.
+    try std.testing.expectEqual(policy.Source.ladder, find.sourceFor(false));
+
+    const sweep = phase.forPhase(codex("gpt-5.6-terra"), .research, "sweep the sources", &.{}, true);
+    try std.testing.expectEqualStrings("gpt-5.6-luna", sweep.provider.model);
+
+    const verify = phase.forPhase(codex("gpt-5.6-terra"), .review, "verify each finding", &.{}, true);
+    try std.testing.expect(verify.pin == null);
+    try std.testing.expectEqualStrings("gpt-5.6-terra", verify.provider.model);
+
+    // A user-chosen seat is never moved by the prior, same as #372's rule.
+    const pinned = Env.install(a, "", false);
+    defer pinned.restore();
+    const kept = phase.forPhase(codex("gpt-5.6-terra"), .review, "find the defects", &.{}, true);
+    try std.testing.expect(kept.pin == null);
+    try std.testing.expectEqualStrings("gpt-5.6-terra", kept.provider.model);
+}
+
 test "#376 uniformRole: a phase routes only when all of its workers agree on one role" {
     // The phase title's own canonical slot is the role every worker reports
     // (policy.roleOf reads the title first), whatever their niches are.
@@ -242,11 +272,16 @@ test "#376: an uncelled phase, and a bootstrap install, keep today's behavior ex
         try std.testing.expectEqualStrings("gpt-5.6-terra", seat.provider.model);
     }
     {
-        // An install with no archive at all: zero cells, nothing to say.
+        // An install with no archive at all: zero cells — the learned layer
+        // says nothing, so the search-role PRIOR seats sweep at the small
+        // rung. Still reported as the ladder's answer: a hand rule, not
+        // evidence, and never a claim of `learned-policy`.
         const env = Env.install(a, "", true);
         defer env.restore();
         const seat = phase.forPhase(base, .research, "sweep the repo", &sweep_niches, true);
-        try std.testing.expect(seat.pin == null);
+        try std.testing.expect(seat.pin != null);
+        try std.testing.expectEqualStrings("gpt-5.6-luna", seat.provider.model);
+        try std.testing.expect(seat.role_prior);
         try std.testing.expectEqual(policy.Source.ladder, seat.sourceFor(false));
     }
 }

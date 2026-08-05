@@ -26,6 +26,8 @@ const main_mod = @import("main.zig");
 const route_policy = @import("route_policy.zig"); // #372 (shape, role, tier) coordinates on the local capture rows
 const playbook_reflect = @import("playbook_reflect.zig"); // #383 Reflector: one bounded distillation per process, on a target-met eval
 const orch_rows = @import("orchestration_rows.zig"); // the orchestration outcome rides the same score funnel
+const shapes = @import("shapes.zig");
+const failure_evidence = @import("failure_evidence.zig"); // a RED verdict is parked as escalation evidence
 
 test {
     _ = @import("agent_eval_tests.zig");
@@ -102,6 +104,14 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
     const met = if (combined) |s| s >= target_f else false;
     self.eval_repair_pending = exit_code != 0 or !met;
     self.eval_verified = !self.eval_repair_pending;
+    // A RED verdict is harness ground truth about a FAILED attempt: park a
+    // capped excerpt so the next escalation decision carries the evidence
+    // (the R0d revision advisory, or an R3 fleet's briefs).
+    if (exit_code != 0 or !met) {
+        var ev_buf: [256]u8 = undefined;
+        const ev = std.fmt.bufPrint(&ev_buf, "eval RED: score {d:.1}/100 (target {d}, exit {d}) — {s}", .{ combined orelse -1.0, self.eval_target, exit_code, utf8Prefix(note, 128) }) catch "eval RED: scoring command failed";
+        failure_evidence.note(shapes.classOf(shapes.rawAsk()), ev);
+    }
     // A green eval refunds the RED-continuation budget (see grantRepairTurn):
     // red→repair→green→red progress cycles keep running; only sustained
     // failure exhausts it.
@@ -315,6 +325,7 @@ pub fn runJudge(self: *Agent, rubric: []const u8, eval_output: []const u8, note:
         .subagent_cross_provider = self.subagent_cross_provider,
         .registry = if (self.sub) null else self.registry,
         .from_sub = self.sub,
+        .has_eval = self.eval_cmd != null,
         .approvals = self.approvals,
         .tracer = self.tracer,
         .run_budget = self.run_budget,

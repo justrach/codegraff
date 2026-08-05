@@ -190,7 +190,7 @@ fn readSecret(root: *Agent, arena: Allocator, out: *Io.Writer) ?[]const u8 {
     defer tty.restore(raw_state);
     var secret: std.ArrayList(u8) = .empty;
     while (true) {
-        const byte = in.takeByte() catch return null;
+        const byte = @import("input_util.zig").editByte(in) orelse return null; // #396: guarded
         switch (byte) {
             '\r', '\n' => {
                 out.writeByte('\n') catch {};

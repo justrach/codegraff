@@ -19,6 +19,8 @@ const style = &ansi.style;
 const terminal = @import("term.zig");
 const termCols = terminal.termCols;
 
+const tick_gate = @import("tick_gate.zig"); // #tui-tick: subagent ticks land at line boundaries
+
 // isTableSeparator lives in agent_table.zig; reached through the Agent
 // struct's member alias.
 const isTableSeparator = Agent.isTableSeparator;
@@ -39,6 +41,18 @@ pub fn streamMarkdown(self: *Agent, text: []const u8) void {
     const w = self.out orelse return;
     for (text) |b| self.mdByte(w, b);
     w.flush() catch {};
+    // Only now, with the delta actually on the terminal, may a parallel
+    // child's activity line through — and only if this delta ended a row
+    // (#tui-tick). Subagents render no markdown, so this is the root's stream.
+    if (!self.sub and !main_mod.json_mode) _ = tick_gate.setLineStart(atLineStart(self));
+}
+
+/// True when the renderer has nothing painted on the current row: it committed
+/// its last line with a newline and holds no prefix. A still-held/classifying
+/// line has printed nothing yet but counts as mid-line anyway — a tick delayed
+/// by one line is harmless, a tick inside a word is the bug.
+pub fn atLineStart(self: *const Agent) bool {
+    return self.md_kind == .classify and self.md_buf.items.len == 0 and self.md_word.items.len == 0;
 }
 
 pub const MdKind = enum { classify, hold, prose, header, fenced };

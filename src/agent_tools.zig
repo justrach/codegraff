@@ -140,6 +140,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             .subagent_cross_provider = self.subagent_cross_provider,
             .registry = if (self.sub) null else self.registry,
             .from_sub = self.sub,
+            .has_eval = self.eval_cmd != null,
             .approvals = self.approvals,
             .tracer = self.tracer,
             .run_budget = self.run_budget,
@@ -149,9 +150,8 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             .loop_deadline_ms = self.loop_deadline_ms,
             .agent_cwd = self.agent_cwd,
         };
-        // Esc while tools run: spawn a stdin watcher for the duration of
-        // the join (see esc_cancel). Subagents notice the flag mid-flight;
-        // the root aborts the turn at its next runTurn iteration.
+        // Esc while tools run: a stdin watcher for the join (esc_cancel);
+        // subagents notice mid-flight, the root aborts at its next runTurn.
         const esc_watch = !self.sub and self.in != null and main_mod.use_color and !main_mod.json_mode;
         var esc_tio: ?tty.RawState = null;
         var esc_fut: ?Io.Future(void) = null;

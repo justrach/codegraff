@@ -7,8 +7,9 @@
 //! prompt variants of one phase against each other and files the winner under
 //! the prompt fingerprint. A phase whose tasks could differ in model would
 //! attribute the model's effect to the genome — and nothing downstream could
-//! have caught it, since scoring.providerClass buckets gpt-5.6-sol, -terra
-//! and -luna identically (route_policy.stratumOf tells that story in full).
+//! have caught it, since scoring.providerClass then bucketed gpt-5.6-sol,
+//! -terra and -luna identically (route_policy.stratumOf tells that story in
+//! full).
 //!
 //! The confound is PER-TASK variation, not the model. This module applies the
 //! #372 policy exactly once for a whole phase:
@@ -75,6 +76,9 @@ pub const Seat = struct {
     /// the seat could not see one — a capability requirement, not a measured
     /// preference, so it must not be reported as `learned-policy`.
     vision: bool = false,
+    /// `pin` was set by the search-role prior (a hand rule, not evidence),
+    /// so the source must stay the ladder's, not claim `learned-policy`.
+    role_prior: bool = false,
 
     /// The (shape, role) cell one worker files its score under. Identical for
     /// every worker of a routed phase by construction: `uniformRole` only
@@ -89,10 +93,18 @@ pub const Seat = struct {
     /// is what keeps the trace honest about a phase-level choice.
     pub fn sourceFor(self: Seat, has_override: bool) Source {
         if (self.vision) return .vision_ask; // #380 — a capability, not a preference
-        if (self.pin != null) return .learned_policy;
+        if (self.pin != null) return if (self.role_prior) self.base_source else .learned_policy;
         return if (has_override) .workflow_override else self.base_source;
     }
 };
+
+/// The roles whose work is reading and reporting — the search half of every
+/// shape. Their whole benefit is a summary, so the role prior seats them at
+/// the ladder's SMALL rung; verify/review/implement/synthesize keep the
+/// session rung (their work is judged or lands edits).
+fn searchRole(role: []const u8) bool {
+    return std.mem.eql(u8, role, "find") or std.mem.eql(u8, role, "sweep");
+}
 
 /// The one role a whole phase can be routed under: the phase title's own
 /// canonical slot when it names one (policy.roleOf then reports it for every
@@ -134,7 +146,22 @@ pub fn forPhase(
     // The baseline a challenger must dominate is the model this phase would
     // otherwise have run — so the comparison is against reality, not against
     // a rung nobody was going to use.
-    const learned = policy.learnedRung(base.id, .{ .shape = shape, .role = seat.role }, base.model) orelse return seat;
+    const learned = policy.learnedRung(base.id, .{ .shape = shape, .role = seat.role }, base.model) orelse {
+        // No lived evidence for this cell. Search roles then ride the small
+        // rung by default ("different things get different things") — their
+        // whole product is a summary. resolveIn re-runs the tier chain
+        // (catalog check, cost ceiling), so the worst case is today's answer;
+        // once real evidence lands in the cell, it decides instead.
+        if (searchRole(seat.role)) {
+            const r = pin_mod.resolveIn(base, .{ .tier = .small }, .{ .shape = shape, .role = seat.role });
+            if (r.provider) |p| if (!std.mem.eql(u8, p.model, seat.provider.model)) {
+                seat.pin = p;
+                seat.provider = p;
+                seat.role_prior = true;
+            };
+        }
+        return seat;
+    };
     // Re-clear the cost ceiling for the swapped model: learning may descend
     // price, never escalate it, and a swap that somehow fails the ceiling is
     // dropped rather than failing the phase.

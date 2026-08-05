@@ -15,6 +15,10 @@
 //! whose content matches a preserved one WINS, so "redo X, as pending" still
 //! works and never leaves a duplicate behind.
 //!
+//! The preserve rule is per-ASK, not per-session (#394): retireFinishedForNewAsk
+//! below expires it at the next user ask, so the record of done work survives
+//! the ask that produced it without following every later prompt around.
+//!
 //! Split out of agent_tools.zig, which is at this repo's 600-line file cap.
 //! Reached through the `test { _ = ... }` hook in main.zig - without that line
 //! these tests silently compile to nothing and the suite still reports green.
@@ -56,6 +60,37 @@ pub fn clearEpochForReplace(todos: *std.ArrayList(TodoItem), epoch: u64, incomin
 fn mentions(contents: []const []const u8, content: []const u8) bool {
     for (contents) |c| if (std.mem.eql(u8, c, content)) return true;
     return false;
+}
+
+/// A genuinely NEW user ask retires the checklist the PREVIOUS one finished
+/// (#394). clearEpochForReplace keeps an omitted completed item because it is
+/// the record of work done under THIS ask - but nothing ever expired that
+/// parking, so five unrelated asks in one session accumulated: todo_read came
+/// back with thirteen [x] entries spanning goals that had nothing to do with the
+/// prompt in front of the model, and every new prompt inherited the pile.
+/// The boundary is the cheapest honest one available in the loop: a user turn
+/// (goal_state.beginTurn's `new_ask` - never a /loop continuation, which is the
+/// same ask still running) whose current epoch is FULLY completed. An unfinished
+/// checklist is live work and crosses the turn untouched, which is what the
+/// compaction handoff and every cross-turn resume depend on.
+/// Retirement is retention, like parking (#318): the items keep their content,
+/// status and epoch, stay in root.todos and in the session JSON as the ask's
+/// archive, and are merely skipped by the epoch-scoped queries in goal_state.
+/// Subagents and /review turns share the Agent struct but not the user's ask,
+/// so they never retire anything. Returns how many items retired.
+pub fn retireFinishedForNewAsk(root: *Agent) usize {
+    if (root.sub or root.review_mode) return 0;
+    const epoch = goal_state.currentEpoch(root.goal);
+    // allDone is false on an empty epoch (#226) and skips already-retired items,
+    // so this is a no-op with no checklist, with open work, or run twice.
+    if (!goal_state.allDone(root.todos.items, epoch)) return 0;
+    var n: usize = 0;
+    for (root.todos.items) |*t| {
+        if (t.epoch != epoch or t.retired) continue;
+        t.retired = true;
+        n += 1;
+    }
+    return n;
 }
 
 pub const WriteResult = struct { text: []const u8, rejected: bool = false, dropped_open: usize = 0 };
@@ -267,4 +302,108 @@ test "preserved [x] items never make the NEXT goal born done (#318 guard holds)"
     try std.testing.expect(refusal != null and std.mem.indexOf(u8, refusal.?, "no checklist") != null);
     // A's record is still there, parked under its own epoch.
     try std.testing.expectEqualStrings("[x] A1\n[x] A2", goal_state.renderTodos(&root, 1));
+}
+
+test "a new user ask retires the finished checklist; the next list is that ask's own (#394)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = todoRoot(ar); // no /goal: the plain todo_write user #394 was filed by
+
+    // Ask 1, finished.
+    _ = try applyTodoWrite(&root, try todosArg(ar,
+        \\{"todos":[{"content":"rename the flag in config.zig","status":"completed"}]}
+    ));
+    try std.testing.expect(goal_state.allDone(root.todos.items, 0));
+    try std.testing.expect(goal_state.checklistFinished(&root));
+
+    // The user asks for something else. Before this, the [x] line rode along
+    // into every later list - five asks deep it was a thirteen-item pile.
+    try std.testing.expectEqual(@as(usize, 1), retireFinishedForNewAsk(&root));
+    try std.testing.expectEqualStrings("(no todos)", goal_state.renderTodos(&root, 0));
+    try std.testing.expectEqualStrings("", goal_state.renderCurrent(&root));
+    try std.testing.expect(!goal_state.hasCurrent(root.todos.items, 0));
+    try std.testing.expect(!goal_state.allDone(root.todos.items, 0)); // retired history is not a fresh completion
+    try std.testing.expect(!goal_state.checklistFinished(&root));
+    try std.testing.expectEqual(@as(usize, 0), goal_state.openCount(root.todos.items, 0));
+    // Retirement RETAINS (#318): the archive keeps every field, it just stops being current.
+    try std.testing.expectEqual(@as(usize, 1), root.todos.items.len);
+    try std.testing.expect(root.todos.items[0].retired);
+    try std.testing.expectEqualStrings("rename the flag in config.zig", root.todos.items[0].content);
+    try std.testing.expectEqualStrings("completed", root.todos.items[0].status);
+    try std.testing.expectEqual(@as(u64, 0), root.todos.items[0].epoch);
+
+    // Ask 2's checklist is ask 2's work alone - no inherited [x] lines, and no
+    // "1 open item(s) you left out were dropped" either: nothing open was left out.
+    const rendered = (try applyTodoWrite(&root, try todosArg(ar,
+        \\{"todos":[{"content":"draft the release notes","status":"in_progress"}]}
+    ))).text;
+    try std.testing.expectEqualStrings("[~] draft the release notes", rendered);
+    // Mid-ask turns retire nothing: the list is open work.
+    try std.testing.expectEqual(@as(usize, 0), retireFinishedForNewAsk(&root));
+    try std.testing.expectEqualStrings("[~] draft the release notes", goal_state.renderCurrent(&root));
+
+    // Ask 2 finishes; ask 3 retires ITS list and leaves the older archive alone.
+    _ = try applyTodoWrite(&root, try todosArg(ar,
+        \\{"todos":[{"content":"draft the release notes","status":"completed"}]}
+    ));
+    try std.testing.expectEqual(@as(usize, 1), retireFinishedForNewAsk(&root));
+    try std.testing.expectEqual(@as(usize, 0), retireFinishedForNewAsk(&root)); // idempotent
+    try std.testing.expectEqualStrings("(no todos)", goal_state.renderTodos(&root, 0));
+    try std.testing.expectEqual(@as(usize, 2), root.todos.items.len);
+}
+
+test "retirement is per-ASK: an unfinished checklist crosses the turn whole (#394 keeps 2896b32)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = todoRoot(ar);
+    root.goal = .{ .objective = "ship the migration", .epoch = 1 };
+    _ = try applyTodoWrite(&root, try todosArg(ar,
+        \\{"todos":[{"content":"migrate the schema","status":"completed"},
+        \\          {"content":"backfill the rows","status":"pending"}]}
+    ));
+    // The user turn (or a compaction handoff) lands mid-ask: one item done, one
+    // open. Retiring here would be the #318 bug again - the completed item is
+    // this ask's own record and compaction-keeps-completed rides on it.
+    try std.testing.expectEqual(@as(usize, 0), retireFinishedForNewAsk(&root));
+    try std.testing.expectEqualStrings("[x] migrate the schema\n[ ] backfill the rows", goal_state.renderCurrent(&root));
+    // And the omitted-completed preserve rule still holds inside the ask.
+    const rendered = (try applyTodoWrite(&root, try todosArg(ar,
+        \\{"todos":[{"content":"backfill the rows","status":"in_progress"}]}
+    ))).text;
+    try std.testing.expectEqualStrings("[x] migrate the schema\n[~] backfill the rows", rendered);
+    try std.testing.expectEqual(@as(usize, 0), retireFinishedForNewAsk(&root));
+    try std.testing.expect(!root.todos.items[0].retired);
+}
+
+test "retirement is epoch-scoped, root-only, and leaves no checklist to complete against (#394)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = todoRoot(ar);
+    try root.todos.append(ar, .{ .content = "parked open", .status = "pending", .epoch = 1 });
+    try root.todos.append(ar, .{ .content = "parked done", .status = "completed", .epoch = 1 });
+    root.goal = .{ .objective = "phase B", .epoch = 2 };
+    _ = try applyTodoWrite(&root, try todosArg(ar,
+        \\{"todos":[{"content":"B1","status":"completed"}]}
+    ));
+
+    // Subagents and /review turns share the Agent struct but not the user's ask.
+    root.sub = true;
+    try std.testing.expectEqual(@as(usize, 0), retireFinishedForNewAsk(&root));
+    root.sub = false;
+    root.review_mode = true;
+    try std.testing.expectEqual(@as(usize, 0), retireFinishedForNewAsk(&root));
+    root.review_mode = false;
+
+    try std.testing.expectEqual(@as(usize, 1), retireFinishedForNewAsk(&root)); // B1 only
+    try std.testing.expect(!root.todos.items[0].retired and !root.todos.items[1].retired);
+    try std.testing.expectEqualStrings("[ ] parked open\n[x] parked done", goal_state.renderTodos(&root, 1));
+    try std.testing.expectEqual(@as(usize, 1), goal_state.parkedOpenCount(root.todos.items, 2));
+    // The retired epoch reads as "no checklist yet", not as a finished one: a
+    // completion claim on the new ask is deferred rather than pre-accepted off
+    // the previous ask's [x] lines (#318's born-done trap, one boundary over).
+    const refusal = try goal_state.completionGate(ar, &root);
+    try std.testing.expect(refusal != null and std.mem.indexOf(u8, refusal.?, "no checklist") != null);
 }

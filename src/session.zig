@@ -156,6 +156,7 @@ fn fingerprint(root: *Agent, name: []const u8) u64 {
         f.text(t.content);
         f.text(t.status);
         f.num(t.epoch);
+        f.flag(t.retired); // #394: retiring a finished checklist is a real state change, so it must reach disk
     }
     f.text(root.session_title orelse sessionTitle(root));
     // The persisted meter's two inputs. Its third (system prompt + tool schema
@@ -279,6 +280,12 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
         try s.write(t.status);
         try s.objectField("epoch");
         try s.write(t.epoch);
+        // #394: only when set, so a session with no retired history is written
+        // exactly as before and older builds read it back unchanged.
+        if (t.retired) {
+            try s.objectField("retired");
+            try s.write(true);
+        }
         try s.endObject();
     }
     try s.endArray();
@@ -354,7 +361,10 @@ pub fn appendTodosFromValue(arena: Allocator, todos: *std.ArrayList(agent_mod.To
         const content = if (item.object.get("content")) |c| (if (c == .string) c.string else continue) else continue;
         const status = if (item.object.get("status")) |s| (if (s == .string) s.string else "pending") else "pending";
         const epoch: u64 = if (item.object.get("epoch")) |e| (if (e == .integer and e.integer >= 0) @intCast(e.integer) else 0) else 0;
-        try todos.append(arena, .{ .content = content, .status = status, .epoch = epoch });
+        // Absent in sessions written before #394: those items are live, and the
+        // first new ask retires them if they turn out to be a finished list.
+        const retired = if (item.object.get("retired")) |r| (r == .bool and r.bool) else false;
+        try todos.append(arena, .{ .content = content, .status = status, .epoch = epoch, .retired = retired });
     }
 }
 

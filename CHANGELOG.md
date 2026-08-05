@@ -71,6 +71,19 @@ current is part of cutting a release.
   FIN rather than a courtesy close frame that could block again, and a failed WS
   handshake no longer leaks its fd and CA bundle.
 
+## v0.0.238 (2026-08-05)
+
+- Tight-budget runs hold back a landing reserve, so they finish, verify, and
+  still deliver the final answer instead of dying mid-narration.
+- A completed run releases the terminal instead of suspending on tty input
+  (#396), and worker activity lines wait for the foreground's line boundary.
+- Completed todo items parked from a prior goal retire at the next ask instead
+  of piling up across prompts (#394).
+- Fleet workers retry transient failures within a bound — one flaky HTTP
+  response can't lose a finished report, and budget refusals never blind-retry.
+- Search roles ride the small rung; landed turns feed local learning, and a
+  learned decline names the policy it came from.
+
 ## v0.0.237 (2026-08-04)
 
 - Ultracode redesigned around an escalation ladder: the codeword now means

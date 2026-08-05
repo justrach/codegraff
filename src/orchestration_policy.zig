@@ -44,6 +44,14 @@ pub const TaskClass = shapes.TaskClass;
 pub const Rung = enum {
     /// Solo: the root does the work; the workflow tool declines and says so.
     R0,
+    /// Solo, DEEPER: decline again after a first failure, but prescribe a
+    /// sequential revision — retry carrying the concrete failure evidence,
+    /// think longer, verify against the signal that failed. Admitted only
+    /// when a verifier exists (failure_evidence.verifierFor): without
+    /// external feedback a revision loop converts right answers to wrong
+    /// ones, so a verifier-less failure goes straight to R3, where the
+    /// judges ARE the feedback.
+    R0d,
     /// One scout: a single sweep + synthesize, to keep the parent's context
     /// clean rather than to parallelize.
     R1,
@@ -60,13 +68,16 @@ pub const Rung = enum {
         return std.meta.stringToEnum(Rung, s);
     }
 
-    /// Ordinal, for the trade-down asymmetry in `override`.
+    /// Ordinal, for the trade-down asymmetry in `override`. R0d sits between
+    /// solo and scout: it spends no spawns, but it does spend a root retry
+    /// the plain R0 decline would not have prescribed.
     pub fn level(self: Rung) u8 {
         return switch (self) {
             .R0 => 0,
-            .R1 => 1,
-            .R2 => 2,
-            .R3 => 3,
+            .R0d => 1,
+            .R1 => 2,
+            .R2 => 3,
+            .R3 => 4,
         };
     }
 };
@@ -402,6 +413,16 @@ pub fn override(arms: []const ArmObs, key: Key, ladder: Rung, remaining: u64, la
 
 /// Production entry point: the session's folded arms, falling back to the
 /// compiled prior when the local archive has never seen this cell.
+/// The solo advisory for a LEARNED R0: escalation's solo_advice contract,
+/// but naming the real reason — recorded outcomes for this cell traded the
+/// fleet down — instead of scope arithmetic the decision never consulted.
+pub const learned_solo_advice =
+    "workflow declined (escalation R0, learned): recorded outcomes for this task class and " ++
+    "budget band score solo work above a fleet here, so the learned policy traded the " ++
+    "orchestration down. Do it yourself — read the files, make the edits, verify — and " ++
+    "re-invoke the workflow tool only if verification fails, which is the signal that " ++
+    "earns a fleet.";
+
 pub fn learnedRung(key: Key, ladder: Rung, remaining: u64, landing_reserve: u64) ?Rung {
     if (override(g_arms, key, ladder, remaining, landing_reserve)) |r| return r;
     var buf: [8]ArmObs = undefined;

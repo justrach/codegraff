@@ -1,8 +1,7 @@
-//! Agent-boot + run-loop entry helpers, split out of session_start.zig
-//! (600-line goal — session_start.zig itself crossed the line goal once this
-//! content grew). Covers everything from approvals/hooks/fleet-type loading
-//! through Agent construction, the `graff repl`/one-shot early-exit paths,
-//! session resume/finalize, and the skills/theme/PTY self-tests setup.
+//! Agent-boot + run-loop entry helpers, split out of session_start.zig (600-line
+//! goal). Covers approvals/hooks/fleet-type loading through Agent construction,
+//! the `graff repl`/one-shot early-exit paths, session resume/finalize, and the
+//! skills/theme/PTY self-tests setup.
 //!
 //! Same dangling-pointer discipline as session_start.zig: `buildRootAgent`
 //! returns `agent_mod.Agent` by value — safe because its pointer fields
@@ -12,8 +11,7 @@
 //! `restoreResumedSession`/`finalizeSession` take `root: *agent_mod.Agent` —
 //! by the time any of these run, `root` is already stable main()-owned
 //! storage, so passing its address around is ordinary pointer-passing.
-//! `setupSkillsAndTheme` hands back which reset `defer`s main() must register
-//! itself (a `defer` here would fire when THIS function returns, not main()).
+//! `setupSkillsAndTheme` hands back which reset `defer`s main() must register itself.
 //!
 //! Back-imports main (as main_mod) for Agent/the mutable globals it sets.
 //! Sibling-imports everything else directly.
@@ -60,6 +58,7 @@ const run_budget_mod = @import("run_budget.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const commands_privacy = @import("commands_privacy.zig");
 const prompts = @import("prompts.zig");
+const terminal = @import("term.zig"); // #396: releaseTerminal at one-shot completion
 
 /// `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL
 /// agent loop — each prompt runs a full root turn (tools + MCP) via
@@ -179,6 +178,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     for (root.md_table.items) |r| gpa.free(r);
     root.md_table.deinit(gpa);
     root.tools_used.deinit(gpa);
+    terminal.tty.releaseTerminal(); // #396: the run is over — hand the tty back and latch the reader shut before main()'s teardown
 }
 
 /// Loads persisted command/tool approvals + lifecycle hooks + the MAP-Elites

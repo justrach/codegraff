@@ -102,6 +102,7 @@ pub const ToolCtx = struct {
     subagent_cross_provider: bool = false,
     registry: ?*mcp.Registry,
     from_sub: bool,
+    has_eval: bool = false, // the root's --eval loop: escalation's strongest verifier
     approvals: ?*Approvals,
     tracer: ?*Tracer,
     run_budget: ?*run_budget_mod.RunBudget = null,
