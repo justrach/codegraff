@@ -26,6 +26,7 @@ const command_catalog = @import("command_catalog.zig");
 const picker_auth = @import("picker_auth.zig");
 const util = @import("util.zig");
 const shapes = @import("shapes.zig");
+const editByte = @import("input_util.zig").editByte; // #396: job-control-aware key reads
 
 /// Case-insensitive subsequence match (fzf-style): every char of `needle`
 /// appears in `hay` in order, gaps allowed — so "gpt5.5" matches "gpt-5.5".
@@ -274,7 +275,7 @@ pub fn modelPicker(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer)
         out.writeAll(style.reset) catch {};
         out.flush() catch {};
 
-        const ch = in.takeByte() catch return null;
+        const ch = editByte(in) orelse return null;
         switch (ch) {
             '\r', '\n' => return if (filtered.items.len > 0) filtered.items[sel] else null,
             0x03, 0x07 => return null, // Ctrl-C / Ctrl-G
@@ -283,8 +284,8 @@ pub fn modelPicker(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer)
                 sel = 0;
             },
             0x1b => {
-                if ((in.takeByte() catch return null) != '[') continue;
-                switch (in.takeByte() catch return null) {
+                if ((editByte(in) orelse return null) != '[') continue;
+                switch (editByte(in) orelse return null) {
                     'A' => if (sel > 0) {
                         sel -= 1;
                     },
@@ -370,7 +371,7 @@ pub fn listPickerAt(root: *Agent, arena: Allocator, out: *Io.Writer, title: []co
         out.writeAll(style.reset) catch {};
         out.flush() catch {};
 
-        const ch = in.takeByte() catch return null;
+        const ch = editByte(in) orelse return null;
         switch (ch) {
             '\r', '\n' => return if (filtered.items.len > 0) filtered.items[sel] else null,
             0x03, 0x07 => return null, // Ctrl-C / Ctrl-G
@@ -379,8 +380,8 @@ pub fn listPickerAt(root: *Agent, arena: Allocator, out: *Io.Writer, title: []co
                 sel = 0;
             },
             0x1b => {
-                if ((in.takeByte() catch return null) != '[') return null; // bare Esc cancels
-                switch (in.takeByte() catch return null) {
+                if ((editByte(in) orelse return null) != '[') return null; // bare Esc cancels
+                switch (editByte(in) orelse return null) {
                     'A' => if (sel > 0) {
                         sel -= 1;
                     },

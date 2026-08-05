@@ -10,6 +10,7 @@ const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;
 const intFieldObj = util.intFieldObj;
 const openBrowser = @import("oauth_helpers.zig").openBrowser;
+const credential_store = @import("credential_store.zig");
 const codegraff_device_base = @import("main.zig").codegraff_device_base;
 
 const key_file = ".simple-harness-codegraff.json";
@@ -92,12 +93,9 @@ fn writeKey(io: Io, arena: Allocator, home: []const u8, key: []const u8) !void {
     var aw: Io.Writer.Allocating = .init(arena);
     var stringify: std.json.Stringify = .{ .writer = &aw.writer };
     try stringify.write(Value{ .object = obj });
-    const file = try Io.Dir.cwd().createFile(io, path, .{});
-    defer file.close(io);
-    var wbuf: [4096]u8 = undefined;
-    var writer = file.writer(io, &wbuf);
-    try writer.interface.writeAll(aw.writer.buffered());
-    try writer.interface.flush();
+    // 0600: the file is a bearer cg_sk_ API key, same posture as the kimi/xai
+    // credential stores.
+    try credential_store.replaceFile(io, Io.Dir.cwd(), path, aw.writer.buffered(), credential_store.private_file);
 }
 
 /// Load the harness login file first, then graff's credential store.

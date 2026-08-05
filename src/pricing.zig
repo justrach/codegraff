@@ -128,6 +128,17 @@ pub const CostTally = struct {
 
 pub var g_cost: CostTally = .{};
 
+/// The one-shot `[usage]` stderr footer. Shared by the success path and the
+/// fatal paths (#387/#389): the expensive runs — budget exhaustion, a late
+/// gateway refusal — must not exit without cost accounting.
+pub fn printUsageFooter(io: Io) void {
+    var buf: [256]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    if (CostTally.render(g_cost.snap(io), &w)) {
+        std.debug.print("[usage] {s}\n", .{w.buffered()});
+    } else |_| {}
+}
+
 // Known models per provider: context window in tokens. Direct-provider
 // numbers from models.dev/api.json, codegraff numbers from the gateway's
 // /v1/models endpoint (both snapshot 2026-06-10). The same model name can

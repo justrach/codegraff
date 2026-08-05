@@ -250,7 +250,7 @@ fn armedCompletionGate(arena: Allocator, st: State) Allocator.Error!?Check {
 fn countEpoch(todos: []const TodoItem, epoch: u64) usize {
     var n: usize = 0;
     for (todos) |t| {
-        if (t.epoch == epoch) n += 1;
+        if (t.epoch == epoch and !t.retired) n += 1; // #394: retired history is not part of the live checklist this reports
     }
     return n;
 }

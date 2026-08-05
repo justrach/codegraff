@@ -34,6 +34,15 @@ test "todos round-trip: appendTodosFromValue parses content/status/epoch, skips 
     // Legacy sessions (no todos field / wrong type): nothing appended.
     try session.appendTodosFromValue(a, &todos, .null);
     try std.testing.expectEqual(@as(usize, 2), todos.items.len);
+    // #394: `retired` round-trips, and its absence means live - a pre-#394
+    // session restores an ordinary checklist, not a silently invisible one.
+    try std.testing.expect(!todos.items[0].retired);
+    const retired = try std.json.parseFromSliceLeaky(Value, a,
+        \\[{"content":"the previous ask","status":"completed","epoch":2,"retired":true}]
+    , .{});
+    try session.appendTodosFromValue(a, &todos, retired);
+    try std.testing.expectEqual(@as(usize, 3), todos.items.len);
+    try std.testing.expect(todos.items[2].retired);
 }
 
 test "goalFromValue: legacy string -> active; object round-trips; paused stays paused (#223)" {

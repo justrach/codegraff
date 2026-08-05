@@ -18,6 +18,7 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 
+const credential_store = @import("credential_store.zig");
 const main_mod = @import("main.zig");
 const provider_mod = @import("provider.zig");
 const provider_specs = provider_mod.provider_specs;
@@ -121,12 +122,11 @@ pub fn storeKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, prov
     var aw: Io.Writer.Allocating = .init(arena);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     s.write(Value{ .object = obj }) catch return false;
-    const f = Io.Dir.cwd().createFile(io, path, .{}) catch return false;
-    defer f.close(io);
-    var wbuf: [4096]u8 = undefined;
-    var fw = f.writer(io, &wbuf);
-    fw.interface.writeAll(aw.writer.buffered()) catch return false;
-    fw.interface.flush() catch return false;
+    // Atomic + 0600: this is a read-modify-write of EVERY provider's key, so a
+    // truncate-in-place that dies mid-write does not lose one key, it loses all
+    // of them at once. 0600 also makes the "0600 JSON file" above true: the old
+    // createFile took the umask default, i.e. world-readable API keys.
+    credential_store.replaceFile(io, Io.Dir.cwd(), path, aw.writer.buffered(), credential_store.private_file) catch return false;
     return true;
 }
 

@@ -35,7 +35,9 @@ const failureAllowsRetry = subagent_run.failureAllowsRetry;
 const fleet = @import("fleet.zig");
 const Isolation = fleet.Isolation;
 const route_policy = @import("route_policy.zig");
+const route_phase = @import("route_phase.zig"); // #376 one learned seat per stage
 const route_trace = @import("route_trace.zig");
+const pipeline_score = @import("pipeline_score.zig"); // #296 stage-level fitness
 const telemetry = @import("telemetry.zig");
 const wfp = @import("workflow_progress.zig");
 const escalation = @import("escalation.zig");
@@ -59,6 +61,12 @@ const StageSpec = struct {
     isolation: Isolation = .shared_cwd, // #276 P0-1
     isolation_fallback: bool = false,
     role: []const u8 = "", // #372: this stage's canonical slot, for its route trace
+    /// #376 applied to stages: the ONE seat every item's worker for this
+    /// stage runs on, resolved once in run(). Stage-uniform, so #290's
+    /// no-per-task-variation rule holds across items exactly as it does
+    /// across a phase's tasks — which is what makes the stage scoreable as
+    /// a unit (#296).
+    seat: route_phase.Seat = .{ .provider = undefined },
 };
 
 /// Replace every `needle` in `hay` with `repl` (arena-allocated); returns `hay`
@@ -94,19 +102,23 @@ pub fn pipelinePrompt(arena: Allocator, raw: []const u8, item: []const u8, prev:
 /// concurrently. A failed stage is retried once (#2); a stage that still fails
 /// ends the chain with a terse marker plus a capped one-line excerpt of its
 /// error (#248), rather than feeding the whole error downstream.
-fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) ToolOutput {
+fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec, stats: []pipeline_score.StageStat) ToolOutput {
     const gpa = ctx.gpa;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var prev: []const u8 = "";
-    for (stages, 1..) |st, stage_no| {
+    for (stages, stats, 1..) |st, *stat, stage_no| {
         const prompt = pipelinePrompt(arena, st.prompt, item, prev, stage_no) catch |e| return failure(gpa, e);
         // #372: say out loud which route this stage worker actually got, and
-        // under which cell — an inherited route was invisible before.
-        route_trace.emitSpawnProvider(ctx.io, ctx.tracer, st.label, subagent_run.childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider), .{ .shape = .migration, .role = st.role }, if (st.override != null) .workflow_override else route_trace.sessionSource(ctx.subagent_provider != null), st.override, st.niche);
-        // null pin: neither #292's per-spawn pins nor #376's phase seat reach a pipeline stage — a chain is never scored (#296), so it has no cell to learn from.
-        var out = if (runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, null, null)) |r| r.output else |e| failure(gpa, e);
+        // under which cell. The seat was resolved ONCE per stage in run()
+        // (#376), so every item's worker reports — and runs — the same model;
+        // #292's per-spawn pins still reach `subagent` only.
+        route_trace.emitSpawnProvider(ctx.io, ctx.tracer, st.label, st.seat.provider, st.seat.cellOf(st.niche), st.seat.sourceFor(st.override != null), st.override, st.niche);
+        // Counters only — the fitness fold happens per STAGE after run()'s
+        // join (#296), never here where it would be a per-item row (#290).
+        stat.noteAttempt();
+        var out = if (runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, st.seat.pin, null)) |r| r.output else |e| failure(gpa, e);
         if (out.is_error) {
             // Only spend the one retry (#2) when the harness's own
             // classification hasn't already ruled it out (auth, invalid
@@ -114,7 +126,9 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) Tool
             // stay failed below without wasting a second attempt.
             if (failureAllowsRetry(out.text)) {
                 gpa.free(out.text);
-                out = if (runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, null, null)) |r| r.output else |e| failure(gpa, e);
+                // The SAME seat: a retry that changed model would break the
+                // stage uniformity the fitness row attributes to.
+                out = if (runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, st.seat.pin, null)) |r| r.output else |e| failure(gpa, e);
             }
             if (out.is_error) {
                 // #248 — excerpt the stage's own error BEFORE freeing it, so
@@ -132,6 +146,7 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) Tool
                 };
             }
         }
+        stat.noteOk();
         const duped = arena.dupe(u8, out.text) catch {
             gpa.free(out.text);
             return failure(gpa, error.OutOfMemory);
@@ -164,10 +179,11 @@ pub fn pipelineIsolationError(stage_index: usize, iso: Isolation) ?[]const u8 {
     };
 }
 
-/// What a pipeline of `items` x `stages` will cost, at the default per-stage
-/// role cost. Pipelines are never scored (#296) so their stages carry no
-/// canonical slot to price individually — the flat median is the honest
-/// estimate, and it is the one the study's refactor run would have failed.
+/// What a pipeline of `items` x `stages` will cost, at each stage's role
+/// cost. `transform` rejoined the vocabulary for stage-level SCORING (#296)
+/// but deliberately has no entry in phase_budget's pricing table, so a
+/// mechanical stage is still charged the default median — the estimate the
+/// study's refactor run would have failed, unchanged by the scoring path.
 pub fn pipelineEstimate(items: usize, stage_roles: []const []const u8) u64 {
     var per_item: u64 = 0;
     for (stage_roles) |r| per_item += phase_budget.roleCost(r);
@@ -206,7 +222,9 @@ pub fn run(ctx: ToolCtx, pv: Value, outer_context: []const u8) !ToolOutput {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    // Parse stages once — shared (read-only) by every item chain.
+    // Parse stages once — shared (read-only) by every item chain. `base` is
+    // the model every stage worker would have used before #376's seats.
+    const base = subagent_run.childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
     const stages = try arena.alloc(StageSpec, stage_vals.len);
     for (stage_vals, stages, 0..) |sv, *sp, stage_index| {
         if (sv != .object) return .{ .text = try gpa.dupe(u8, "each pipeline stage must be an object"), .is_error = true };
@@ -226,6 +244,11 @@ pub fn run(ctx: ToolCtx, pv: Value, outer_context: []const u8) !ToolOutput {
             return .{ .text = try gpa.dupe(u8, msg), .is_error = true };
         sp.isolation_fallback = fleet.resolveIsolationFallback(so);
         sp.role = route_policy.roleOf(sp.label, sp.niche); // #372
+        // #376 for stages: ONE learned seat per stage, shared by every item's
+        // chain — stage-uniform, so #290 holds across items. Same guardrails
+        // as a phase seat: only a ladder-descended session may move, only to
+        // a rung that dominates on the bench sheet, provider-local always.
+        sp.seat = route_phase.forPhase(base, .migration, sp.label, &.{sp.niche}, ctx.subagent_provider != null);
     }
 
     // Admission, pipeline flavour. The phases path runs the full escalation
@@ -260,9 +283,18 @@ pub fn run(ctx: ToolCtx, pv: Value, outer_context: []const u8) !ToolOutput {
     // return can never abandon a running chain.
     const futures = try arena.alloc(Io.Future(ToolOutput), items.len);
     const outputs = try arena.alloc(ToolOutput, items.len);
-    for (item_strs, futures) |item, *fut| fut.* = ctx.io.async(pipelineChain, .{ ctx, item, stages });
+    const stats = try arena.alloc(pipeline_score.StageStat, stages.len);
+    for (stats) |*s| s.* = .{};
+    for (item_strs, futures) |item, *fut| fut.* = ctx.io.async(pipelineChain, .{ ctx, item, stages, stats });
     for (futures, outputs) |*fut, *out| out.* = fut.await(ctx.io);
     defer for (outputs) |out| gpa.free(out.text);
+
+    // #296 — the stage-level fitness fold: one judge-free row per stage per
+    // run, under the stage's (migration, slot) cell and its one seat. After
+    // the join, so per-item outcomes can never become per-item fitness rows
+    // (#290: items differ by design, and ranking them would confound item
+    // difficulty with genome quality). Observation only — nothing reads it.
+    for (stages, stats) |st, *stat| _ = pipeline_score.captureStage(st.seat.provider, st.label, st.niche, st.override orelse st.prompt, stat);
 
     var failed: usize = 0;
     for (outputs) |out| if (out.is_error) {

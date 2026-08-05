@@ -10,7 +10,6 @@ const Value = std.json.Value;
 
 const main_mod = @import("main.zig");
 const Agent = @import("agent.zig").Agent;
-const oauth = @import("oauth.zig");
 
 const messages_mod = @import("messages.zig");
 const sanitizeMessagesUtf8 = messages_mod.sanitizeMessagesUtf8;
@@ -26,12 +25,13 @@ const apiErrorMessage = tools_mod.apiErrorMessage;
 const mentionsReasoningEffort = tools_mod.mentionsReasoningEffort;
 const telemetry = @import("telemetry.zig");
 const run_budget_mod = @import("run_budget.zig");
+const wire_messages = @import("messages.zig");
 
 const policy = @import("agent_request_policy.zig");
 const errorCode = policy.errorCode;
-const isAuthError = policy.isAuthError;
 const isQuotaExceeded = policy.isQuotaExceeded;
 const recoverContextOverflow = policy.recoverContextOverflow;
+const retryAfterAuthRefresh = policy.retryAfterAuthRefresh;
 const retryTransientServerError = policy.retryTransientServerError;
 
 const context = @import("agent_context.zig");
@@ -71,7 +71,15 @@ fn resetRequestScratch(scratch: *std.heap.ArenaAllocator) void {
     }
 }
 
-pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
+/// #390 — appended once, on the run's final admitted model call, right where
+/// the tools disappear, so the model knows WHY and lands instead of retrying.
+pub const landing_note =
+    "[budget landing] This is the final model call this run's --max-model-calls budget admits, so " ++
+    "no tools are offered. Land the answer NOW from the evidence already gathered: state what was " ++
+    "completed and what was verified, then name what remains unchecked. Honestly-labeled partial " ++
+    "results beat dying mid-tool-call.";
+
+pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // Startup paints the prompt while CA loading continues. The root turn and
     // title task rendezvous here, then issue their requests concurrently.
     http.waitForClientReady(self.io);
@@ -89,6 +97,19 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
         };
     }
     defer if (budget_permit) |*permit| permit.release();
+    // #390 — the landing reserve's root half: the pool's FINAL admitted call
+    // belongs to the answer. Offer no tools (compaction's trick) and say why,
+    // so the model lands a text answer now instead of asking for a tool the
+    // budget can never pay for — which is how the audit smoke died narrating.
+    // compaction/title requests pass tools=null already and skip this whole.
+    var tools = tools_in;
+    if (self.run_budget) |b| if (budget_permit) |p| {
+        if (b.max_model_calls != 0 and p.call_number == b.max_model_calls and tools != null) {
+            tools = null;
+            try self.messages.append(try wire_messages.textMessage(self.arena, "user", landing_note));
+            if (self.tracer) |tr| tr.note("budget", "final call: tools withheld so the run lands its answer (#390)");
+        }
+    };
     self.last_request_context_overflow = false;
     self.last_request_write_failed = false;
     self.last_usage_includes_output = false;
@@ -96,23 +117,18 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     var stream_usage = true; // openai stream_options; dropped if rejected
     var auth_refreshed = false; // #148: at most one forced token refresh + retry
     // #124: reclaim last request's transient parse garbage FIRST, so everything
-    // below (oauth refresh internals, per-event parse trees, tool-arg parses)
-    // can use the scratch arena for this request. Safe: all scratch data is
+    // below (per-event parse trees, tool-arg parses) can use the scratch arena
+    // for this request. Safe: all scratch data is
     // consumed before the next request(); messages/todos/prompts live on the
     // session arena.
     if (self.scratch_arena) |sa| resetRequestScratch(sa);
-    // #148: a login-sourced OAuth token (kimi/xai, ~1h) expires mid-session and
-    // is minted only at startup; refresh it in place before the call when near
-    // expiry so a long session — or a subagent that inherited the on-disk token —
-    // never 401s. Login-sourced keys only (env keys untouched); a cheap disk read
-    // unless actually near expiry. The refresh internals (file read + JSON parse,
-    // ~1-2KB) are scratch (#124); only the token itself is duped to survive
-    // future requests.
-    if (self.provider.source == .login) {
-        if (oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, false, null)) |fresh| {
-            self.provider.api_key = self.arena.dupe(u8, fresh) catch self.provider.api_key;
-        }
-    }
+    // #148/#402: a login-sourced OAuth token expires mid-session and is minted
+    // only at startup; pick up whatever is currently on disk before the call, so
+    // a long session — or a subagent that inherited the token — never 401s over
+    // a credential somebody has already replaced. Login-sourced keys only (env
+    // keys untouched), and see refreshLoginKeyBeforeSend for why its transients
+    // do NOT go on the scratch arena.
+    policy.refreshLoginKeyBeforeSend(self);
     // #95: scrub any malformed function_call_output before it hits the wire.
     const message_arena = self.messageMutationAlloc();
     sanitizeMessagesUtf8(message_arena, &self.messages); // invalid UTF-8 (any source/format) -> '?' so content never serializes as a byte-int array the API rejects
@@ -245,7 +261,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     if (err == error.RateLimited and main_mod.g_5xx_body_len > 0 and
                         isQuotaExceeded(main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len]))
                     {
-                        self.last_api_error = std.fmt.allocPrint(self.arena, "rate limited (429): quota/billing cap — {s}", .{main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len]}) catch "rate limited (429): quota exceeded";
+                        self.last_api_error = std.fmt.allocPrint(self.arena, "rate limited (429): {s} — {s}", .{ policy.quota_cap_marker, main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] }) catch "rate limited (429): quota exceeded";
                         if (telemetry.g_telem) |t| t.errorEvent("quota", self.last_api_error orelse "quota exceeded");
                         if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, 0, body.len, 0, 0, 0, true);
                         return error.ApiError;
@@ -348,6 +364,20 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                         self.closeCodexWs();
                         continue :rebuild;
                     }
+                    // #402: a ChatGPT-backend 401 ("Provided authentication
+                    // token is expired") lands here as a plain JSON error body,
+                    // so the #148 reactive refresh further down — which only
+                    // anthropic/openai bodies reach — never saw it. Auth-expired
+                    // was terminal on this path: the session, and every
+                    // auto-compaction it triggered, 401'd forever even after a
+                    // successful /login.
+                    if (retryAfterAuthRefresh(self, msg, &auth_refreshed)) {
+                        // PR #195: a mid-turn resend must re-anchor — the chained
+                        // WS meter desyncs otherwise — and the held socket was
+                        // dialed with the stale bearer besides.
+                        self.closeCodexWs();
+                        continue :rebuild;
+                    }
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("codex api error: {s}", .{msg});
                     return error.ApiError;
@@ -417,18 +447,11 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                 continue;
             }
             // #148: a stale login token 401s here with the provider's "API Key
-            // invalid/expired"; force a refresh and retry once (kimi-code's
-            // buildAuth(true)). Give up only if the fresh token also fails.
-            if (!auth_refreshed and self.provider.source == .login and isAuthError(msg)) {
-                if (oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, true, self.provider.api_key)) |fresh| {
-                    auth_refreshed = true;
-                    // #124: dupe off the scratch refresh internals — the key must
-                    // survive every later request of the session.
-                    self.provider.api_key = self.arena.dupe(u8, fresh) catch self.provider.api_key;
-                    if (self.tracer) |tr| tr.note("oauth_refresh", "auth error — refreshed login token, retrying");
-                    continue;
-                }
-            }
+            // invalid/expired"; adopt a newer on-disk token or force a refresh
+            // and retry once (kimi-code's buildAuth(true)). Give up only if the
+            // fresh token also fails. No closeCodexWs — this branch is never on
+            // the codex WS.
+            if (retryAfterAuthRefresh(self, msg, &auth_refreshed)) continue;
             // #193 follow-up: recover an anthropic/openai context-window rejection
             // in-turn instead of failing the turn (before this only codex recovered;
             // anthropic and openai died). Shared with the two error branches above.

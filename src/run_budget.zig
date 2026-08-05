@@ -88,6 +88,14 @@ pub const RunBudget = struct {
     /// a new call from the same shared ceiling.
     pub fn acquire(self: *RunBudget, io: Io, depth: u8, kind: CallKind) !Permit {
         if (depth > self.max_depth) return error.AgentDepthExceeded;
+        // #390 — the landing reserve's hard half: a CHILD may not take the
+        // pool's last slot. The final call is the root's landing answer; a
+        // worker that consumed it would leave the run to die narrating.
+        // Racy against a concurrent sibling (remaining() is a plain load),
+        // so it is a strong bias rather than a lock — the root's own final
+        // call cannot race itself, which is the case that matters.
+        if (depth > 0 and self.max_model_calls != 0 and self.remaining() <= 1)
+            return error.RunBudgetExhausted;
         try self.acquireConcurrency(io);
         errdefer {
             const before = self.active.fetchSub(1, .release);
@@ -132,8 +140,8 @@ pub const RunBudget = struct {
     }
 };
 
-test "RunBudget enforces depth, call ceiling, and releases concurrency" {
-    var budget: RunBudget = .{ .max_model_calls = 2, .max_concurrency = 1, .max_depth = 1 };
+test "RunBudget enforces depth, call ceiling, and reserves the last call for the root" {
+    var budget: RunBudget = .{ .max_model_calls = 3, .max_concurrency = 1, .max_depth = 1 };
     var first = try budget.acquire(std.testing.io, 0, .root);
     try std.testing.expectEqual(@as(u64, 1), first.call_number);
     try std.testing.expectEqual(@as(u32, 1), budget.active.load(.acquire));
@@ -142,6 +150,11 @@ test "RunBudget enforces depth, call ceiling, and releases concurrency" {
 
     var second = try budget.acquire(std.testing.io, 1, .child);
     second.release();
+    // #390 — one slot left: a child is refused it, the root's landing takes it.
+    try std.testing.expectError(error.RunBudgetExhausted, budget.acquire(std.testing.io, 1, .child));
+    var last = try budget.acquire(std.testing.io, 0, .root);
+    try std.testing.expectEqual(@as(u64, 3), last.call_number);
+    last.release();
     try std.testing.expectError(error.RunBudgetExhausted, budget.acquire(std.testing.io, 0, .root));
     try std.testing.expectError(error.AgentDepthExceeded, budget.acquire(std.testing.io, 2, .child));
     try std.testing.expectEqual(@as(u64, 0), budget.remaining());

@@ -131,6 +131,19 @@ fn showModelsHealth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer
     try out.flush();
 }
 
+/// `/save <name>` and `/resume <name>`: a typed name is a slice of readline's
+/// reused line buffer (readLine returns `buf.items`, cleared and regrown on the
+/// next call), while root.session_name is read by every later autosave — so a
+/// typed name is copied into the session arena, the same ownership /new and
+/// /rename give theirs. An omitted name keeps the caller's owned fallback.
+///
+/// Both call sites are covered end-to-end by main_test.zig's "typed session
+/// name survives readline reusing its line buffer" — a test against this
+/// helper alone would stay green with either site reverted.
+fn ownedSessionName(arena: Allocator, arg: []const u8, fallback: []const u8) Allocator.Error![]const u8 {
+    return if (arg.len == 0) fallback else arena.dupe(u8, arg);
+}
+
 /// Try to handle a misc slash command. Returns false (line unhandled) if
 /// `line` doesn't match any command in this file — the caller falls through
 /// to handleRest() for the unknown-command/help terminal stage.
@@ -436,7 +449,14 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.startsWith(u8, line, "/save")) {
         const arg = std.mem.trim(u8, line["/save".len..], " \t");
-        const name = if (arg.len == 0) root.session_name else arg;
+        // Caught, not propagated: an error out of here reaches mainloop's
+        // unguarded handleCommand call and ends the REPL, where every other
+        // way /save can fail just prints and returns to the prompt.
+        const name = ownedSessionName(arena, arg, root.session_name) catch |err| {
+            try out.print("save failed: {t}\n", .{err});
+            try out.flush();
+            return true;
+        };
         saveSession(root, arena, name) catch |err| {
             try out.print("save failed: {t}\n", .{err});
             try out.flush();
@@ -450,7 +470,11 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.startsWith(u8, line, "/resume")) {
         root.ensureStoredKeys(keys);
         const arg = std.mem.trim(u8, line["/resume".len..], " \t");
-        var name: []const u8 = if (arg.len == 0) "last" else arg;
+        var name: []const u8 = ownedSessionName(arena, arg, "last") catch |err| {
+            try out.print("resume failed: {t}\n", .{err});
+            try out.flush();
+            return true;
+        };
         // Bare /resume on a TTY: pick from the saved sessions interactively,
         // labeled by stored title + age instead of raw file names (#109).
         if (arg.len == 0 and main_mod.use_color and root.in != null) {
@@ -474,7 +498,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try sessions.append(arena, .{ .name = e.title orelse e.base, .desc = desc });
             }
             const idx = listPicker(root, arena, out, "Resume session ›", sessions.items) orelse return true;
-            name = entries.items[idx].base;
+            name = entries.items[idx].base; // arena-owned by listSavedSessions, so it outlives the turn too
         }
         loadSession(root, keys, arena, name) catch |err| {
             switch (err) {

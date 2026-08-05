@@ -96,12 +96,15 @@ class RecordedRequest:
 
     ``connection_id`` is populated for WebSocket requests so tests can prove a
     post-compaction request re-anchored on a new socket. SSE requests use None.
+    ``headers`` are the request's HTTP headers, lowercased — the credential a
+    given attempt actually put on the wire is only observable there (#402).
     """
 
     ordinal: int
     transport: str
     connection_id: int | None
     body: dict
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 class _SockReader:
@@ -216,6 +219,13 @@ class CodexMock:
     events_for_request: Callable[[RecordedRequest], list[dict]] | None = field(
         default=None, repr=False
     )
+    # Optional raw-HTTP escape hatch for the SSE path: return the exact bytes to
+    # send (status line + headers + body) instead of a 200 event stream, or None
+    # to fall through to ``events_for_request``. Needed for the non-2xx JSON
+    # envelopes graff parses itself — e.g. the 401 that #402 recovers from.
+    raw_for_request: Callable[[RecordedRequest], bytes | None] | None = field(
+        default=None, repr=False
+    )
     requests: list[RecordedRequest] = field(default_factory=list, repr=False)
     _sock: socket.socket | None = field(default=None, repr=False)
     _threads: list[threading.Thread] = field(default_factory=list, repr=False)
@@ -257,20 +267,37 @@ class CodexMock:
         if self.verbose:
             print(f"[codex-mock] {message}", file=sys.stderr, flush=True)
 
-    def _events(
-        self, transport: str, connection_id: int | None, body: dict
-    ) -> list[dict]:
+    def _record(
+        self,
+        transport: str,
+        connection_id: int | None,
+        body: dict,
+        headers: dict[str, str],
+    ) -> RecordedRequest:
         with self._lock:
             request = RecordedRequest(
                 ordinal=len(self.requests) + 1,
                 transport=transport,
                 connection_id=connection_id,
                 body=body,
+                headers=dict(headers),
             )
             self.requests.append(request)
+        return request
+
+    def _events_for(self, request: RecordedRequest) -> list[dict]:
         if self.events_for_request is not None:
             return self.events_for_request(request)
         return turn_events(f"resp_mock_{request.ordinal}")
+
+    def _events(
+        self,
+        transport: str,
+        connection_id: int | None,
+        body: dict,
+        headers: dict[str, str] | None = None,
+    ) -> list[dict]:
+        return self._events_for(self._record(transport, connection_id, body, headers or {}))
 
     def _accept_loop(self) -> None:
         srv = self._sock
@@ -358,7 +385,7 @@ class CodexMock:
             self._log(f"ws <- {etype} ({len(message.payload)}b)")
             if etype != "response.create":
                 continue
-            for ev in self._events("ws", connection_id, event):
+            for ev in self._events("ws", connection_id, event, headers):
                 _send_frame(
                     conn, OP_TEXT, json.dumps(ev, separators=(",", ":")).encode("utf-8")
                 )
@@ -378,7 +405,16 @@ class CodexMock:
             parsed = {}
         if not isinstance(parsed, dict):
             parsed = {}
-        events = self._events("sse", None, parsed)
+        request = self._record("sse", None, parsed, headers)
+        if self.raw_for_request is not None:
+            raw = self.raw_for_request(request)
+            if raw is not None:
+                conn.sendall(raw)
+                self._log(f"sse -> raw ({len(raw)}b)")
+                with self._lock:
+                    self.sse_turns += 1
+                return
+        events = self._events_for(request)
         payload = "".join(
             f"data: {json.dumps(ev, separators=(',', ':'))}\n\n" for ev in events
         ).encode("utf-8")

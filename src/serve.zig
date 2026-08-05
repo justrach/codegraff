@@ -255,7 +255,7 @@ pub fn freeSession(st: *ServeState, sess: *ServeSession) void {
 
 /// POST /v1/sessions/<id>: forward one protocol request line to the child and
 /// stream its stdout events back as chunked NDJSON until the terminal event
-/// for that request (turn/error for user turns; system_prompt/score acks).
+/// for that request (every type in serve_events.terminal_events).
 /// `?from=N` (or `"resume_from": N` in the body) replays persisted events with
 /// seq >= N first, so a reconnecting supervisor never has a hole.
 fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8, from_query: ?u64) !void {

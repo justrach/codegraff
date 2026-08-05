@@ -12,8 +12,9 @@
 //! `frontier`/`mid`/`small` here are the ladder's OWN rung labels; they are
 //! NOT guaranteed to equal scoring.providerClass(name) for that literal
 //! model string — see the "ladder rungs vs providerClass" pinned test in
-//! subagent_selection.zig for the documented (intentional, not papered
-//! over) disagreement on the gpt-5.6 family and deepseek-v4-flash.
+//! subagent_selection.zig: the gpt-5.6 family now agrees end-to-end, leaving
+//! deepseek-v4-flash as the documented (intentional, not papered over)
+//! disagreement.
 const std = @import("std");
 
 const pricing = @import("pricing.zig");

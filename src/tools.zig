@@ -1,6 +1,6 @@
 //! Tool execution context, lifecycle-hook dispatch, and the small tool
-//! helpers. Split out of main.zig (600-line goal): `ToolOutput`/`Snapshot(s)`/
-//! `ToolCtx`, pre/post-tool hook dispatch (`hookPayload`/`hookGate`/
+//! helpers. Split out of main.zig (600-line goal): `ToolOutput`/`ToolCtx`,
+//! pre/post-tool hook dispatch (`hookPayload`/`hookGate`/
 //! `runPostToolHooks`), the codedb-guard (issue #626: `codedbGuard`/
 //! `extractSourceFilePath`/`referencesSourceFile`) and the metered-companion
 //! router (`companionRoute`/`companionNativeFallback`), plus the small
@@ -81,78 +81,14 @@ pub const ToolOutput = struct {
     ms: i64 = 0, // set by execTool
 };
 
-/// One pre-edit file snapshot, tagged with the turn that's about to modify it.
-/// `before == null` means the file didn't exist (rewind deletes it).
-const Snapshot = struct { turn: u32, path: []const u8, before: ?[]const u8 };
-
-/// Per-session record of file mutations (write_file/edit_file), so `/rewind`
-/// can restore the working tree to an earlier turn. Mutex-guarded — tools run
-/// on the pool concurrently. Bash edits are NOT tracked.
-pub const Snapshots = struct {
-    gpa: Allocator,
-    io: Io,
-    mutex: Io.Mutex = .init,
-    list: std.ArrayList(Snapshot) = .empty,
-    turn: u32 = 0, // the turn currently executing (set by the REPL loop)
-
-    /// Record a file's pre-modification content (called before the write).
-    pub fn record(self: *Snapshots, path: []const u8, before: ?[]const u8) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        const p = self.gpa.dupe(u8, path) catch return;
-        const b: ?[]const u8 = if (before) |x| (self.gpa.dupe(u8, x) catch {
-            self.gpa.free(p);
-            return;
-        }) else null;
-        self.list.append(self.gpa, .{ .turn = self.turn, .path = p, .before = b }) catch {
-            self.gpa.free(p);
-            if (b) |bb| self.gpa.free(bb);
-        };
-    }
-
-    /// Restore every file modified at turn ≥ n to its state before turn n, then
-    /// drop those snapshots. Returns the number of files restored.
-    pub fn restore(self: *Snapshots, n: u32) usize {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        var done: std.ArrayList([]const u8) = .empty;
-        defer done.deinit(self.gpa);
-        var restored: usize = 0;
-        for (self.list.items) |snap| {
-            if (snap.turn < n) continue;
-            var seen = false;
-            for (done.items) |d| if (std.mem.eql(u8, d, snap.path)) {
-                seen = true;
-            };
-            if (seen) continue; // earliest snapshot per path wins (= state before turn n)
-            done.append(self.gpa, snap.path) catch {};
-            if (snap.before) |b| {
-                Io.Dir.cwd().writeFile(self.io, .{ .sub_path = snap.path, .data = b }) catch continue;
-            } else {
-                Io.Dir.cwd().deleteFile(self.io, snap.path) catch {};
-            }
-            restored += 1;
-        }
-        // Drop (and free) snapshots from the rewound turns.
-        var i: usize = 0;
-        while (i < self.list.items.len) {
-            if (self.list.items[i].turn >= n) {
-                const s = self.list.orderedRemove(i);
-                self.gpa.free(s.path);
-                if (s.before) |b| self.gpa.free(b);
-            } else i += 1;
-        }
-        return restored;
-    }
-
-    pub fn deinit(self: *Snapshots) void {
-        for (self.list.items) |s| {
-            self.gpa.free(s.path);
-            if (s.before) |b| self.gpa.free(b);
-        }
-        self.list.deinit(self.gpa);
-    }
-};
+// `/rewind`'s pre-write file history lives in snapshots.zig (this file is at
+// the 600-line cap); re-exported so `tools.Snapshots` keeps resolving for
+// main.zig/agent.zig/exec.zig — and so `Rewound`, which `restore()` now
+// returns, reaches its callers by that one route rather than a second import.
+const snapshots_mod = @import("snapshots.zig");
+pub const beforeFromRead = snapshots_mod.beforeFromRead;
+pub const Snapshots = snapshots_mod.Snapshots;
+pub const Rewound = snapshots_mod.Rewound;
 
 /// Everything a tool executor may touch from a pool thread. All fields are
 /// thread-safe (gpa, io, shared http client, mutex-guarded registry and
@@ -166,6 +102,7 @@ pub const ToolCtx = struct {
     subagent_cross_provider: bool = false,
     registry: ?*mcp.Registry,
     from_sub: bool,
+    has_eval: bool = false, // the root's --eval loop: escalation's strongest verifier
     approvals: ?*Approvals,
     tracer: ?*Tracer,
     run_budget: ?*run_budget_mod.RunBudget = null,

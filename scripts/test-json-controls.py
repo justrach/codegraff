@@ -2,10 +2,10 @@
 """Automated integration test for the graff --json live control protocol.
 
 Spawns `graff --json`, sends each control request (set_model / compact /
-set_mode / set_agent) plus error paths, and asserts the structured ack/error
-events. Deterministic and offline: a dummy CODEGRAFF_API_KEY lets the session
-start and switch within codegraff, while switching to a keyless provider
-exercises the error path -- no real API calls.
+set_mode / set_agent / set_effort / set_fast / set_ultracode) plus error paths,
+and asserts the structured ack/error events. Deterministic and offline: a dummy
+CODEGRAFF_API_KEY lets the session start and switch within codegraff, while
+switching to a keyless provider exercises the error path -- no real API calls.
 
 Usage: python3 scripts/test-json-controls.py [path-to-graff]
 Exit 0 if all assertions pass, 1 otherwise.
@@ -73,8 +73,19 @@ CASES = [
     ({"type": "set_fast", "on": False},
      lambda e: e.get("type") == "fast" and e.get("on") is False,
      "set_fast off -> fast ack"),
+    ({"type": "set_ultracode", "on": True},
+     lambda e: e.get("type") == "ultracode" and e.get("ok") and e.get("on") is True,
+     "set_ultracode on -> ultracode ack"),
+    ({"type": "set_ultracode", "on": False},
+     lambda e: e.get("type") == "ultracode" and e.get("on") is False,
+     "set_ultracode off -> ultracode ack"),
 ]
-CONTROL_TYPES = {"model", "compact", "mode", "agent", "effort", "fast", "error"}
+# Every ack type a control request can answer with. The filter below keeps only
+# these, positionally against CASES, so a type missing here silently drops its
+# case's ack and shifts (or vacuously passes) every case after it. Keep in sync
+# with src/serve_events.zig's terminal_events minus "turn" (no user turns here).
+CONTROL_TYPES = {"model", "compact", "mode", "agent", "effort", "fast",
+                 "ultracode", "system_prompt", "score", "error"}
 
 def run():
     env = dict(os.environ)

@@ -39,8 +39,12 @@ pub fn providerClass(model: []const u8) []const u8 {
         .{ .needle = "-mini", .tier = "small" }, // -mini suffix, not "minimax"/"gemini"
         .{ .needle = "lite", .tier = "small" },
         .{ .needle = "nano", .tier = "small" },
+        // gpt-5.x rungs (#291): family-agnostic like "haiku"/"flash" so a
+        // future gpt-5.7-terra keeps its tier; must precede "gpt-5".
+        .{ .needle = "terra", .tier = "mid" },
+        .{ .needle = "luna", .tier = "small" },
         .{ .needle = "opus", .tier = "frontier" },
-        .{ .needle = "gpt-5", .tier = "frontier" },
+        .{ .needle = "gpt-5", .tier = "frontier" }, // sol and bare gpt-5.x stay frontier
         .{ .needle = "deepseek-v4", .tier = "frontier" },
         .{ .needle = "grok-4", .tier = "frontier" },
         .{ .needle = "glm-5", .tier = "frontier" },
@@ -255,6 +259,9 @@ test "score signing message is canonical and cross-language stable" {
 test "providerClass buckets models by capability tier" {
     try std.testing.expectEqualStrings("frontier", providerClass("claude-opus-4-8"));
     try std.testing.expectEqualStrings("frontier", providerClass("gpt-5.5"));
+    try std.testing.expectEqualStrings("frontier", providerClass("gpt-5.6-sol"));
+    try std.testing.expectEqualStrings("mid", providerClass("gpt-5.6-terra")); // rung needle beats "gpt-5"
+    try std.testing.expectEqualStrings("small", providerClass("gpt-5.6-luna"));
     try std.testing.expectEqualStrings("frontier", providerClass("deepseek-v4-pro"));
     try std.testing.expectEqualStrings("frontier", providerClass("grok-4.3"));
     try std.testing.expectEqualStrings("small", providerClass("claude-haiku-4-5"));

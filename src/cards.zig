@@ -20,6 +20,9 @@ const root = @import("main.zig");
 const util = @import("util.zig");
 const utf8Prefix = util.utf8Prefix;
 
+// #tui-tick: cards go through the line-boundary gate, not straight to stderr.
+const tick_gate = @import("tick_gate.zig");
+
 // ── Subagent cards (#51) ───────────────────────────────────────────────────
 //
 // When the model fans out parallel subagents (several `subagent` calls in one
@@ -31,9 +34,12 @@ const utf8Prefix = util.utf8Prefix;
 // run can be inspected from the terminal (the card prints the inspect: path).
 //
 // The cards are append-only and each card is built as one string then handed
-// to a single std.debug.print (std serializes the stderr mutex), so parallel
-// children never interleave mid-card. Box width is clamped to the terminal so
-// narrow terminals degrade to a readable column. Execution is unchanged.
+// to tick_gate.workerLine — one std.debug.print (std serializes the stderr
+// mutex) so parallel children never interleave mid-card, deferred until the
+// foreground stream's last published position is a line boundary (flush
+// granularity — see tick_gate.zig's module doc for what that does and does not
+// guarantee, #tui-tick). Box width is clamped to the terminal so narrow
+// terminals degrade to a readable column. Execution is unchanged.
 
 /// Monotonic counter feeding the per-subagent ordinal in its stable id.
 pub var g_subagent_seq: std.atomic.Value(u32) = .init(0);
@@ -83,7 +89,7 @@ pub fn subagentLaunchCard(arena: Allocator, id: []const u8, sprite: []const u8, 
     boxRule(w, inner, .top);
     boxLine(w, inner, if (root.use_color) "▸ " else "> ", activity);
     boxRule(w, inner, .bottom);
-    std.debug.print("{s}", .{aw.writer.buffered()});
+    tick_gate.workerLine(aw.writer.buffered());
 }
 
 /// Render the completion card: status, elapsed, tools, and the inspect: path.
@@ -111,7 +117,7 @@ pub fn subagentDoneCard(arena: Allocator, id: []const u8, sprite: []const u8, la
     if (detail_path) |p|
         boxLine(w, inner, bullet, std.fmt.allocPrint(arena, "inspect: {s}", .{p}) catch p);
     boxRule(w, inner, .bottom);
-    std.debug.print("{s}", .{aw.writer.buffered()});
+    tick_gate.workerLine(aw.writer.buffered());
 }
 
 const BoxEdge = enum { top, bottom };
@@ -215,6 +221,9 @@ pub fn writeSubagentDetail(
     w.writeByte('\n') catch return null;
     Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = aw.writer.buffered() }) catch return null;
     return path;
+}
+test { // the gate's own tests only run when something references the module
+    _ = tick_gate;
 }
 test "subagentId: stable shape, ordinal-prefixed, hash-suffixed (#51)" {
     var a: [40]u8 = undefined;

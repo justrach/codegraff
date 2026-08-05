@@ -27,6 +27,7 @@ const ansi = @import("ansi.zig");
 const fallback_config = @import("fallback_config.zig");
 const util = @import("util.zig");
 const trace = @import("trace.zig");
+const orch_rows = @import("orchestration_rows.zig");
 
 fn localProviderUrl(url: []const u8) bool {
     return std.mem.startsWith(u8, url, "http://127.0.0.1") or std.mem.startsWith(u8, url, "http://localhost") or std.mem.startsWith(u8, url, "http://[::1]");
@@ -233,6 +234,13 @@ pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*I
             // provider streaming paths, so the root turn's final text is
             // recorded once here (opt-in rich capture only; no-op otherwise).
             if (root.tracer) |tr| tr.textDelta(text);
+            // The landed-turn funnel: a run with no eval loop files its parked
+            // orchestration outcome here, or the learned policy never sees an
+            // ordinary success — completing the turn within budget IS the
+            // outcome it optimizes. With an eval configured, agent_eval owns
+            // the pending row and files the real score instead.
+            if (root.eval_cmd == null)
+                orch_rows.flushPending(1.0, if (root.run_budget) |b| b.used() else 0, 0, false, "");
             return text;
         } else |err| {
             // A Codex-shaped review is an isolated one-shot, not a provider switch for its parent.

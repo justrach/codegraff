@@ -24,6 +24,7 @@ const models_cache = @import("models_cache.zig");
 const keys_cli = @import("keys_cli.zig");
 const run_budget_mod = @import("run_budget.zig");
 const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
+const tick_gate = @import("tick_gate.zig"); // #tui-tick: child ticks wait for a foreground line boundary
 
 // prompt_ui (agent_prompt.zig) owns the width-budgeted status line (#209,
 // 600-line goal); prompt() is member-aliased back onto Agent below.
@@ -35,6 +36,7 @@ pub const TodoItem = struct {
     content: []const u8,
     status: []const u8,
     epoch: u64 = 0, // the goal epoch that authored this item (#318); 0 = no goal
+    retired: bool = false, // a LATER user ask retired this finished item (#394): kept as the session's archive, invisible to every epoch-scoped query
 };
 
 /// Governed-run status for a standing /goal (#223). Only `.active` steers turns;
@@ -179,6 +181,7 @@ pub const Agent = struct {
     last_request_context_overflow: bool = false, // explicit provider rejection, not an inferred meter threshold
     last_request_write_failed: bool = false, // transport gave up specifically with WriteFailed this request
     compact_transport_failures: u8 = 0, // bounded escape for repeated opaque over-cap WriteFailed/network failures
+    compact_summary_failures: u8 = 0, // #379: consecutive complete-but-unusable (empty/truncated) summaries
     ws_off: bool = false, // codex ws transport disabled for this session after a handshake/transport fallback to SSE (#codex-ws)
     ws_transport_failures: u8 = 0, // consecutive WS failures; retry once before latching persistent SSE
     streamed_text: bool = false, // the last request printed its text live
@@ -211,15 +214,42 @@ pub const Agent = struct {
         if (self.out) |w| {
             try w.print(fmt, args);
             try w.flush();
+            // The root just ended a row: anything a child offered mid-stream
+            // may land now (#tui-tick).
+            if (!self.sub and !main_mod.json_mode and comptime endsLine(fmt)) _ = tick_gate.setLineStart(true);
         } else {
-            std.debug.print("  [{s}] " ++ fmt, .{self.label} ++ args);
+            // A pool-thread child has no writer: its activity line goes to
+            // stderr THROUGH the gate, so it lands at a line boundary the root
+            // has published rather than mid-row (#tui-tick).
+            var buf: [tick_gate.slot_bytes]u8 = undefined;
+            var sink = Io.Writer.fixed(&buf);
+            const fit = if (sink.print("  [{s}] " ++ fmt, .{self.label} ++ args)) |_| true else |_| false;
+            var line = sink.buffered();
+            // Over-long (an uncapped provider error) means the fixed sink cut
+            // the text and ate the trailing newline. The gate cannot repair
+            // that — the cut exactly fills a slot, so its own guard never fires
+            // — and a line that does not end its row splices the next worker
+            // line onto it mid-column, which is the reported artifact. End it.
+            if (!fit or line.len == 0 or line[line.len - 1] != '\n') {
+                // usize, not @min's narrowed comptime-derived type: at + 1 == buf.len.
+                const at: usize = @min(line.len, buf.len - 1); // append, or overwrite the last byte
+                buf[at] = '\n';
+                line = buf[0 .. at + 1];
+            }
+            tick_gate.workerLine(line);
         }
     }
 
-    /// Report an API error: remember the formatted message so the --json
-    /// `error` event can carry the detail, then print it like say().
+    /// Comptime: does this say() format end a terminal row?
+    fn endsLine(comptime fmt: []const u8) bool {
+        return fmt.len > 0 and fmt[fmt.len - 1] == '\n';
+    }
+
+    /// Remember the formatted message for the --json `error` event, then print
+    /// like say() + a #398 duration hint; last_api_error keeps provider words.
     pub fn sayApiError(self: *Agent, comptime fmt: []const u8, args: anytype) !void {
         self.last_api_error = std.fmt.allocPrint(self.arena, fmt, args) catch null;
+        if (self.last_api_error) |m| if (@import("retry_hint.zig").humanizeRetrySeconds(m)) |h| return self.say("{s} (~{s})\n", .{ m, h.buf[0..h.len] });
         try self.say(fmt ++ "\n", args);
     }
 
@@ -563,4 +593,8 @@ pub const Agent = struct {
 test {
     _ = @import("agent_prompt.zig");
     try agent_tests.lazyRootTools(Agent);
+}
+
+test "say: an over-long worker line still ends its row (#tui-tick)" {
+    try agent_tests.workerLineAlwaysEndsRow(Agent);
 }

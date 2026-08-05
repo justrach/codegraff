@@ -17,6 +17,7 @@ const strFieldObj = util.strFieldObj;
 const provider = @import("provider.zig"); // g_codex_url_override: keep /models discovery on the same origin as the overridden responses endpoint
 const kimi_catalog = @import("kimi_catalog.zig");
 const cache_tests = @import("models_cache_tests.zig");
+const credential_store = @import("credential_store.zig");
 
 const models_dev_url = "https://models.dev/api.json";
 const codex_models_url = "https://chatgpt.com/backend-api/codex/models";
@@ -262,12 +263,7 @@ fn writeCodexCache(io: Io, arena: Allocator, home: []const u8, version: []const 
     aw.writer.writeAll("]}\n") catch return;
     for ([_][]const u8{ codexDirPath(arena, home), codexFlatPath(arena, home) }) |path| {
         if (path.len == 0) continue;
-        const f = Io.Dir.cwd().createFile(io, path, .{}) catch continue;
-        defer f.close(io);
-        var wbuf: [4096]u8 = undefined;
-        var fw = f.writer(io, &wbuf);
-        fw.interface.writeAll(aw.writer.buffered()) catch continue;
-        fw.interface.flush() catch continue;
+        credential_store.replaceFile(io, Io.Dir.cwd(), path, aw.writer.buffered(), .default_file) catch continue;
         return;
     }
 }
@@ -418,12 +414,7 @@ fn writeCache(io: Io, arena: Allocator, home: []const u8, metas: []const Meta) ?
     const bytes = aw.writer.buffered();
     for ([_][]const u8{ dirPath(arena, home), flatPath(arena, home) }) |path| {
         if (path.len == 0) continue;
-        const f = Io.Dir.cwd().createFile(io, path, .{}) catch continue;
-        defer f.close(io);
-        var wbuf: [4096]u8 = undefined;
-        var fw = f.writer(io, &wbuf);
-        fw.interface.writeAll(bytes) catch continue;
-        fw.interface.flush() catch continue;
+        credential_store.replaceFile(io, Io.Dir.cwd(), path, bytes, .default_file) catch continue;
         return path;
     }
     return null;

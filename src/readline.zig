@@ -39,6 +39,7 @@ const cleanDroppedPath = input_util.cleanDroppedPath;
 const collectRepoFiles = input_util.collectRepoFiles;
 const isImagePath = input_util.isImagePath;
 const redraw = input_util.redraw;
+const editByte = input_util.editByte; // #396: job-control-aware continuation reads
 const setLine = input_util.setLine;
 const delRange = input_util.delRange;
 const prevWord = input_util.prevWord;
@@ -105,8 +106,10 @@ pub fn readLine(
             // A local terminal answers DSR in a few milliseconds. Do not hold
             // every prompt for 500ms when a multiplexer drops/delays it: the
             // main loop's CSI 'R' arm adopts a late reply without losing layout.
-            if (in.buffered().len == 0 and !inputPendingTimed(20)) break :dsr;
-            const b = in.takeByte() catch break :dsr;
+            if (tty.pendingBytes() == 0 and in.buffered().len == 0 and !inputPendingTimed(20)) break :dsr;
+            // #396: a byte landing in this 20ms window while we are in the
+            // background used to reach a bare blocking read → SIGTTIN → stopped.
+            const b = editByte(in) orelse break :dsr;
             if (!in_esc) {
                 if (b == 0x1b) {
                     in_esc = true;
@@ -190,7 +193,20 @@ pub fn readLine(
                 input_util.g_shine_phase +%= 1;
                 redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
             }
-            break :blk in.takeByte() catch return null;
+            break :blk switch (tty.promptByte(in)) {
+                .byte => |b| b,
+                .eof => return null,
+                // #396: no longer the foreground group. Blocking here anyway is
+                // what stopped a COMPLETED run ("suspended (tty input)") while it
+                // still held raw mode. Give the tty back FIRST, then quit like ^Z.
+                .background => {
+                    shutdown_trace.mark("readline-background: releasing the tty");
+                    tty.releaseTerminal();
+                    tty.noteFromBackground("graff: no longer the foreground job — terminal released, session saved, exiting\n");
+                    saveSession(root, root.arena, root.session_name) catch {};
+                    return null;
+                },
+            };
         };
         if (c != 0x09) comp_active = false; // any non-Tab key ends the cycle
         switch (c) {
@@ -334,13 +350,13 @@ pub fn readLine(
                 // A bare Esc (no byte follows) clears the line — without
                 // this the chord read below would block and silently eat
                 // the next keypress.
-                if (in.buffered().len == 0 and !inputPending()) {
+                if (tty.pendingBytes() == 0 and in.buffered().len == 0 and !inputPending()) {
                     buf.clearRetainingCapacity();
                     cur = 0;
                     redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
                     continue;
                 }
-                const b1 = in.takeByte() catch break;
+                const b1 = editByte(in) orelse break; // #396: guarded
                 if (b1 == 0x7f or b1 == 0x08) { // Option/Alt+Delete → delete previous word
                     const s = prevWord(buf.items, cur);
                     if (s < cur) {
@@ -374,7 +390,7 @@ pub fn readLine(
                 var pn: usize = 0;
                 var final: u8 = 0;
                 while (true) {
-                    const x = in.takeByte() catch break;
+                    const x = editByte(in) orelse break; // #396: guarded
                     if (x >= 0x40 and x <= 0x7e) {
                         final = x;
                         break;
@@ -434,7 +450,7 @@ pub fn readLine(
                             var blob: std.ArrayList(u8) = .empty;
                             defer blob.deinit(gpa);
                             while (true) { // read until the ESC[201~ end marker
-                                const x = in.takeByte() catch break;
+                                const x = editByte(in) orelse break; // #396: guarded
                                 blob.append(gpa, x) catch break;
                                 if (std.mem.endsWith(u8, blob.items, "\x1b[201~")) {
                                     blob.shrinkRetainingCapacity(blob.items.len - 6);

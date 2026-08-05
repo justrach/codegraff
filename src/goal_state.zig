@@ -9,6 +9,11 @@
 //! Every query and render here is epoch-scoped instead - the old destructive
 //! parkSuperseded/closeEpoch pair is gone, because a mistyped /goal must not be
 //! able to erase the user's checklist.
+//! RETIREMENT (#394) is the same retention one axis over: an item a LATER user
+//! ask retired keeps its epoch and its place in root.todos and the session JSON,
+//! and is simply skipped by every query and render below - so a finished
+//! checklist stops following the session around without anything being deleted.
+//! goal_todo.retireFinishedForNewAsk owns when that happens.
 //! Pure logic — no Io — so every rule here is unit-tested.
 
 const std = @import("std");
@@ -17,6 +22,7 @@ const Allocator = std.mem.Allocator;
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 const TodoItem = agent_mod.TodoItem;
+const goal_todo = @import("goal_todo.zig");
 const repl_glue = @import("repl_glue.zig");
 
 /// Epoch for a goal that replaces `old`, above every epoch already present in
@@ -44,21 +50,23 @@ pub fn currentEpoch(goal: ?agent_mod.Goal) u64 {
     return if (g.status == .complete) 0 else g.epoch;
 }
 
-/// Not-yet-completed items belonging to `epoch`.
+/// Not-yet-completed items belonging to `epoch` (retired ones never count).
 pub fn openCount(todos: []const TodoItem, epoch: u64) usize {
     var n: usize = 0;
     for (todos) |t| {
-        if (t.epoch == epoch and !std.mem.eql(u8, t.status, "completed")) n += 1;
+        if (t.epoch == epoch and !t.retired and !std.mem.eql(u8, t.status, "completed")) n += 1;
     }
     return n;
 }
 
 /// True only when `epoch` has a nonempty checklist and every item is completed
-/// (#226 — an empty list is "no plan yet", never "done").
+/// (#226 — an empty list is "no plan yet", never "done"). An epoch left holding
+/// only RETIRED items is empty by this rule, so retiring a finished checklist
+/// can never read as a fresh completion (#394).
 pub fn allDone(todos: []const TodoItem, epoch: u64) bool {
     var seen = false;
     for (todos) |t| {
-        if (t.epoch != epoch) continue;
+        if (t.epoch != epoch or t.retired) continue;
         if (!std.mem.eql(u8, t.status, "completed")) return false;
         seen = true;
     }
@@ -72,7 +80,7 @@ pub fn allDone(todos: []const TodoItem, epoch: u64) bool {
 pub fn parkedOpenCount(todos: []const TodoItem, keep_epoch: u64) usize {
     var parked: usize = 0;
     for (todos) |t| {
-        if (t.epoch == keep_epoch) continue;
+        if (t.epoch == keep_epoch or t.retired) continue;
         if (!std.mem.eql(u8, t.status, "completed")) parked += 1;
     }
     return parked;
@@ -99,8 +107,12 @@ pub fn adoptTodos(todos: []TodoItem, from_epoch: u64, to_epoch: u64) void {
 /// attempt_completion per turn, so clearing the arm at the turn boundary made
 /// every refusal unresolvable - refuse, turn ends, flag clears, refuse again,
 /// forever, with nothing the user could type to break out.
-pub fn beginTurn(root: *Agent) void {
+/// `new_ask` marks a turn the USER started (false for a /loop continuation,
+/// which is the same ask still running): that is the boundary where a finished
+/// checklist retires instead of following the session forever (#394).
+pub fn beginTurn(root: *Agent, new_ask: bool) void {
     root.completion_refused = false;
+    if (new_ask) _ = goal_todo.retireFinishedForNewAsk(root);
 }
 
 /// The caller's half of a refusal: arm the double-check so the model's promised
@@ -215,9 +227,12 @@ pub fn goalActive(agent: *Agent) bool {
     return !agent.sub and !agent.review_mode and agent.goal != null and agent.goal.?.status == .active;
 }
 
-/// True when any todo belongs to `epoch` (the goal has a checklist at all).
+/// True when any LIVE todo belongs to `epoch` (the goal has a checklist at all).
+/// Retired items do not qualify (#394): an epoch holding only retired history
+/// has no evidence of its own, so the completion gate asks for a plan instead of
+/// accepting "checklist present, 0 open" - the #318 born-done trap.
 pub fn hasCurrent(todos: []const TodoItem, epoch: u64) bool {
-    for (todos) |t| if (t.epoch == epoch) return true;
+    for (todos) |t| if (t.epoch == epoch and !t.retired) return true;
     return false;
 }
 
@@ -281,7 +296,7 @@ pub fn renderTodos(self: *Agent, epoch: u64) []const u8 {
     var aw: Io.Writer.Allocating = .init(self.arena);
     const w = &aw.writer;
     for (self.todos.items) |t| {
-        if (t.epoch != epoch) continue;
+        if (t.epoch != epoch or t.retired) continue; // #394: a previous ask's finished list is archive, not this ask's plan
         const mark = if (std.mem.eql(u8, t.status, "completed"))
             "[x]"
         else if (std.mem.eql(u8, t.status, "in_progress"))
@@ -481,7 +496,7 @@ test "the completion double-check survives the turn boundary, re-arms on change 
     // Turn boundary: only the per-turn flag clears. A model emits one
     // attempt_completion per turn, so clearing the arm here made the refusal
     // unresolvable forever - the #318 fix reappearing as the #318 bug.
-    beginTurn(&root);
+    beginTurn(&root, true); // a new user ask: the arm still survives it, and the open checklist is not retirable
     try std.testing.expect(!root.completion_refused);
     try std.testing.expect(root.completion_gate_armed);
     try std.testing.expect((try completionGate(ar, &root)) == null);

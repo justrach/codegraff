@@ -105,11 +105,25 @@ const orchestration_policy = @import("orchestration_policy.zig");
 const orchestration_policy_tests = @import("orchestration_policy_tests.zig");
 const orchestration_rows = @import("orchestration_rows.zig");
 const workflow_pipeline = @import("workflow_pipeline.zig");
+// #296: the pipeline stage-level fitness capture. Reached in production only
+// through workflow_pipeline.run's CALL, so its tests need the hook.
+const pipeline_score = @import("pipeline_score.zig");
+const retry_hint = @import("retry_hint.zig");
+const agent_compact_summary_test = @import("agent_compact_summary_test.zig");
 
 // #364: shutdown-phase timings. Production reaches it from readline.zig,
 // session.zig, mcp.zig, telemetry.zig and startup_timing.zig, so its coverage
 // is contingent on those call sites staying — pinned here instead.
 const shutdown_trace = @import("shutdown_trace.zig");
+
+// `/rewind`'s snapshot store, split off tools.zig (600-line cap). Production
+// reaches it only through a type alias, which analyses nothing.
+const snapshots = @import("snapshots.zig");
+const snapshots_tests = @import("snapshots_tests.zig");
+
+// Atomic + owner-only credential writes. Production reaches it only through
+// calls from oauth.zig and the catalog writers, so its own tests need the hook.
+const credential_store = @import("credential_store.zig");
 
 test {
     _ = learn_holdout;
@@ -147,6 +161,7 @@ test {
     _ = playbook_glue;
     _ = playbook_reflect;
     _ = shutdown_trace;
+    _ = credential_store;
     _ = escalation;
     _ = escalation_tests;
     _ = edit_contract;
@@ -155,4 +170,9 @@ test {
     _ = orchestration_policy_tests;
     _ = orchestration_rows;
     _ = workflow_pipeline;
+    _ = snapshots;
+    _ = snapshots_tests;
+    _ = pipeline_score;
+    _ = retry_hint;
+    _ = agent_compact_summary_test;
 }

@@ -27,6 +27,21 @@ Assertions a case can make:
   {"request_contains": {"index": -1, "text": "..."}}   what the harness sent
   {"request_lacks":    {"index": -1, "text": "..."}}
   {"final_text_contains": "..."}
+  {"stderr_contains": "..."}                what the harness printed to stderr
+
+A case that deliberately DIES declares the exit code it wants with
+{"expected_exit": N} (default 0). Without it the runner auto-failed every
+nonzero exit, which made the harness's own fatal paths untestable - the
+loudest of them being run_budget.exhaustedFatal (#368), the last line a
+one-shot run prints when the model-call pool runs dry. A timeout is never
+an expected exit and always fails.
+
+A case may also carry {"workspace_seed": {"relative/path": "content", ...}}:
+files written into the fresh workspace BEFORE graff boots, in scripted and
+--provider modes alike - for state the harness reads at startup, like the
+trajectory archive bench_priors folds. Under --provider the ScriptedModel
+never runs, so request_contains/request_lacks are skipped and scoring rests
+on the event and final-text asserts.
 """
 
 from __future__ import annotations
@@ -120,6 +135,12 @@ def execute(case: dict[str, Any], graff: str, port: int,
             # SUBAGENT compacts, say - sets it here rather than in the shared
             # block, so one case cannot quietly change the others.
             env.update({k: str(v) for k, v in case.get("env", {}).items()})
+            # Pre-boot world: state the harness reads at startup (the trajectory
+            # archive folds in bench_priors before any scripted step could write it).
+            for rel, content in case.get("workspace_seed", {}).items():
+                dest = pathlib.Path(workspace) / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(content, encoding="utf-8")
             argv = [graff, "--json", "--yolo", "--model", model or "lmstudio"]
             if provider:
                 argv += ["--subagent-provider", provider]
@@ -159,7 +180,7 @@ def execute(case: dict[str, Any], graff: str, port: int,
             time.sleep(0.05)
 
 
-def evaluate(case: dict[str, Any], run: Run) -> list[str]:
+def evaluate(case: dict[str, Any], run: Run, live: bool = False) -> list[str]:
     failures = []
     for claim in case.get("assert", []):
         (kind, spec), = claim.items()
@@ -179,6 +200,8 @@ def evaluate(case: dict[str, Any], run: Run) -> list[str]:
                 failures.append(
                     f"{seen} event(s) matched {json.dumps(spec['match'])}, wanted at most {want}")
         elif kind in ("request_contains", "request_lacks"):
+            if live:
+                continue  # a live provider records no requests; scripted-only surface
             body = run.request_text(spec.get("index", -1))
             if body is None:
                 failures.append(f"the harness sent no request at index {spec.get('index', -1)}")
@@ -193,6 +216,12 @@ def evaluate(case: dict[str, Any], run: Run) -> list[str]:
         elif kind == "final_text_contains":
             if spec not in run.final_text():
                 failures.append(f"the final answer was {run.final_text()!r}, wanted {spec!r}")
+        elif kind == "stderr_contains":
+            # The harness's own last words. stdout carries the event stream, so
+            # anything the harness says on the way out - a fatal line, a phase
+            # SKIPPED note, a CLI refusal - is only visible here.
+            if spec not in run.stderr:
+                failures.append(f"stderr never mentioned {spec!r}")
         else:
             failures.append(f"unknown assertion {kind!r}")
     return failures
@@ -229,7 +258,8 @@ def main() -> None:
 
     if args.provider:
         print(f"tier 2: {len(cases)} case(s) against {args.provider}"
-              f"/{args.model or 'default'} - this spends real calls\n")
+              f"/{args.model or 'default'} - this spends real calls"
+              " (request_* asserts skipped: no scripted request log)\n")
     else:
         print(f"tier 2: {len(cases)} case(s) against the scripted model"
               f" on 127.0.0.1:{args.port} - offline, no spend\n")
@@ -242,23 +272,27 @@ def main() -> None:
                               "exit_code": run.exit_code, "stderr": run.stderr[-2000:]},
                              indent=2))
             return
-        problems = evaluate(case, run)
+        problems = evaluate(case, run, live=bool(args.provider))
         # A harness that crashed, hung, or died instantly must FAIL the case on
         # its own, not merely annotate someone else's failure. Without this a
         # case whose assertions are all upper bounds passes against a binary
-        # that never ran at all.
-        if run.exit_code not in (0, None):
-            problems.append(f"graff exited {run.exit_code}")
-        elif run.exit_code is None:
+        # that never ran at all. The default is still 0; a case that means to
+        # exercise a fatal path names its code with "expected_exit", which is
+        # the only way the harness's own deliberate deaths become testable.
+        # A timeout is never expected - it is the absence of a decision.
+        want = case.get("expected_exit", 0)
+        if run.exit_code is None:
             problems.append("graff did not exit (timed out)")
+        elif run.exit_code != want:
+            problems.append(f"graff exited {run.exit_code}, wanted {want}")
         if problems:
             failed.append(case["id"])
             print(f"  FAIL  {case['id']}")
             print(f"        guards: {case['why']}")
             for problem in problems:
                 print(f"        - {problem}")
-            if run.exit_code not in (0, None):
-                print(f"        graff exited {run.exit_code}; stderr tail:")
+            if run.exit_code not in (want, None):
+                print(f"        graff exited {run.exit_code} (wanted {want}); stderr tail:")
                 print("        " + run.stderr.strip().splitlines()[-1] if run.stderr.strip() else "")
         else:
             print(f"  pass  {case['id']}")

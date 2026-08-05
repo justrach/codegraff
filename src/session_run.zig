@@ -1,8 +1,7 @@
-//! Agent-boot + run-loop entry helpers, split out of session_start.zig
-//! (600-line goal — session_start.zig itself crossed the line goal once this
-//! content grew). Covers everything from approvals/hooks/fleet-type loading
-//! through Agent construction, the `graff repl`/one-shot early-exit paths,
-//! session resume/finalize, and the skills/theme/PTY self-tests setup.
+//! Agent-boot + run-loop entry helpers, split out of session_start.zig (600-line
+//! goal). Covers approvals/hooks/fleet-type loading through Agent construction,
+//! the `graff repl`/one-shot early-exit paths, session resume/finalize, and the
+//! skills/theme/PTY self-tests setup.
 //!
 //! Same dangling-pointer discipline as session_start.zig: `buildRootAgent`
 //! returns `agent_mod.Agent` by value — safe because its pointer fields
@@ -12,8 +11,7 @@
 //! `restoreResumedSession`/`finalizeSession` take `root: *agent_mod.Agent` —
 //! by the time any of these run, `root` is already stable main()-owned
 //! storage, so passing its address around is ordinary pointer-passing.
-//! `setupSkillsAndTheme` hands back which reset `defer`s main() must register
-//! itself (a `defer` here would fire when THIS function returns, not main()).
+//! `setupSkillsAndTheme` hands back which reset `defer`s main() must register itself.
 //!
 //! Back-imports main (as main_mod) for Agent/the mutable globals it sets.
 //! Sibling-imports everything else directly.
@@ -60,6 +58,7 @@ const run_budget_mod = @import("run_budget.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const commands_privacy = @import("commands_privacy.zig");
 const prompts = @import("prompts.zig");
+const terminal = @import("term.zig"); // #396: releaseTerminal at one-shot completion
 
 /// `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL
 /// agent loop — each prompt runs a full root turn (tools + MCP) via
@@ -139,15 +138,15 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     try root.messages.append(try messages_mod.textMessage(arena, "user", oneshot_user));
     if (telemetry.g_telem) |t| t.countTurn();
     const final_text = providers.runTurnWithFallback(root, keys, arena, null) catch |err| {
-        // std.process.fatal does not unwind main's defers. Mirror their normal
-        // order here: join the fleet worker, reap background jobs and pumps,
-        // then emit/upload the terminal behavioral event.
+        // std.process.fatal does not unwind main's defers. Mirror their order:
+        // join the fleet, reap jobs/pumps, then the terminal behavioral event.
         fleet.joinElites(io);
         jobs.jobsReap(gpa, io);
-        // Mirror main's teardown fully: flush buffered OTLP telemetry too, so
-        // a fatal one-shot is visible in ordinary telemetry, not only behavioral.
+        // Flush buffered OTLP too: a fatal one-shot stays visible in ordinary telemetry.
         if (telemetry.g_telem) |t| t.flush();
         if (tracer.behavior) |behavior| behavior.finish(.failed);
+        pricing.printUsageFooter(io); // #387/#389: fatal exits still owe cost accounting
+        if (root.tools_used.count() > 0) std.debug.print("note: {d} tool call(s) completed before the failure; their work was not rolled back\n", .{root.tools_used.count()});
         switch (err) {
             error.FallbackConsentRequired => std.process.fatal("saved model unavailable; provider '{s}' is not allowlisted — run graff interactively, then /fallback allow {s}", .{ root.provider.id, root.provider.id }),
             error.ApiError => std.process.fatal("{s}", .{root.last_api_error orelse "api error"}),
@@ -158,11 +157,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     try out.print("{s}\n", .{final_text});
     try out.flush();
     // Usage summary → stderr, so stdout stays exactly the answer.
-    var ubuf: [256]u8 = undefined;
-    var uw: Io.Writer = .fixed(&ubuf);
-    if (pricing.CostTally.render(pricing.g_cost.snap(io), &uw)) {
-        std.debug.print("[usage] {s}\n", .{uw.buffered()});
-    } else |_| {}
+    pricing.printUsageFooter(io);
     session.saveSession(root, arena, root.session_name) catch |err| {
         std.debug.print("⚠ session save failed: {s}\n", .{@errorName(err)});
     };
@@ -179,6 +174,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     for (root.md_table.items) |r| gpa.free(r);
     root.md_table.deinit(gpa);
     root.tools_used.deinit(gpa);
+    terminal.tty.releaseTerminal(); // #396: the run is over — hand the tty back and latch the reader shut before main()'s teardown
 }
 
 /// Loads persisted command/tool approvals + lifecycle hooks + the MAP-Elites

@@ -194,6 +194,7 @@ pub fn compact(self: *Agent) anyerror!usize {
     // including its user boundary and paired tool calls/results.
     for (recent_messages) |message| try fresh.append(message);
     self.messages = fresh;
+    self.compact_summary_failures = 0; // #379: a usable summary ends the streak
     self.last_context_tokens = 0;
     self.context_local_tokens = 0;
     self.goal_note_fp = 0; // the injected goal note died with the old history - re-state in full (#318)
@@ -541,6 +542,20 @@ pub fn repeatedOpaqueCompactionFailure(self: *Agent, err: anyerror) bool {
         (self.provider.nearContextLimit(effective) or locally_over_window);
 }
 
+/// #379: two consecutive COMPLETED-but-unusable summaries (empty or truncated)
+/// are provably not transport noise — the model, at this context size, is not
+/// going to produce one, and without escalation the over-cap history is
+/// re-shipped forever. Unlike compact_transport_failures this counter survives
+/// a complete response; only a usable summary (or a trim) resets it.
+pub fn repeatedEmptySummaryFailure(self: *Agent, err: anyerror) bool {
+    const unusable = err == error.EmptySummary or err == error.IncompleteSummary;
+    if (unusable) self.compact_summary_failures +|= 1 else self.compact_summary_failures = 0;
+    const threshold = self.provider.compactAt();
+    return unusable and threshold > 0 and
+        self.compact_summary_failures >= 2 and
+        self.effectiveContextTokens() >= threshold;
+}
+
 pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
     if (self.compact()) |_| {
         self.compact_transport_failures = 0;
@@ -560,15 +575,18 @@ pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
             },
         }
         const repeated_opaque_overflow = repeatedOpaqueCompactionFailure(self, err);
+        const repeated_empty_summary = repeatedEmptySummaryFailure(self, err);
         // The caller's policy is computed before compact() makes its summary
         // request. Override it only for a concrete provider overflow rejection,
-        // or after two consecutive WriteFailed compaction attempts when the
-        // effective meter is near 95% (or local bytes prove over-window). The
-        // first failure and ordinary transport outages always preserve history.
-        if (!trim_on_fail and !self.last_request_context_overflow and !repeated_opaque_overflow) return;
+        // after two consecutive WriteFailed compaction attempts when the
+        // effective meter is near 95% (or local bytes prove over-window), or
+        // after two complete-but-unusable summaries while over compact@ (#379).
+        // The first failure and ordinary transport outages preserve history.
+        if (!trim_on_fail and !self.last_request_context_overflow and !repeated_opaque_overflow and !repeated_empty_summary) return;
         const dropped = self.emergencyTrim();
         if (dropped > 0) {
             self.compact_transport_failures = 0;
+            self.compact_summary_failures = 0;
             if (main_mod.json_mode)
                 self.emit(.{ .type = "compact", .ok = true, .trimmed = dropped })
             else

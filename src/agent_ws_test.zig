@@ -48,6 +48,47 @@ test "codexWsIdleExpired: fires only strictly past the idle limit (codex-ws)" {
     try std.testing.expect(agent_ws.codexWsIdleExpired(1_000_000 + 510 * std.time.ms_per_s, 1_000_000)); // the real 8.5-min trace gap
 }
 
+// (#402) The codex `.responses` error arm must recover from a rejected auth
+// token the way the anthropic/openai arm does. Before the fix the #148 refresh
+// lived only inside the generic apiErrorMessage branch, which a ChatGPT-backend
+// 401 never reaches (the whole responses arm returns above it), so "Provided
+// authentication token is expired" was terminal for the rest of the session.
+//
+// And because the retry re-sends the full history mid-turn, it must re-anchor
+// first (PR #195): `continue :rebuild` over a live previous_response_id desyncs
+// the chained WS meter, and the held socket still carries the stale bearer.
+//
+// The pure unit tests over retryAfterAuthRefresh all pass even if this call site
+// is deleted, so pin the site itself — same shape as the source pins in
+// route_policy_tests.zig / route_phase_tests.zig.
+//
+// A source pin proves placement, never behaviour: it would still pass against a
+// stubbed-out helper. The behavioural half is scripts/test-codex-auth-recovery.py,
+// which drives a real graff against the codex mock over a PTY and asserts the
+// RETRIED request's Authorization header carries the newly adopted bearer.
+test "the codex .responses arm refreshes auth and re-anchors before resending (#402)" {
+    const src = @embedFile("agent_request.zig");
+    const arm_start = std.mem.indexOf(u8, src, "unparseable codex response").?;
+    const arm_end = std.mem.indexOf(u8, src, "codex api error: {s}").?;
+    const arm = src[arm_start..arm_end];
+
+    const call = std.mem.indexOf(u8, arm, "retryAfterAuthRefresh(self, msg, &auth_refreshed)") orelse
+        return error.ResponsesPathHasNoAuthRecovery;
+    const after = arm[call..];
+    const reanchor = std.mem.indexOf(u8, after, "closeCodexWs()") orelse return error.RetryDoesNotReanchor;
+    const resend = std.mem.indexOf(u8, after, "continue :rebuild") orelse return error.RetryDoesNotRebuild;
+    try std.testing.expect(reanchor < resend);
+
+    // Both wire formats go through the one helper — no second, drifting copy.
+    try std.testing.expect(std.mem.indexOf(u8, src[arm_end..], "retryAfterAuthRefresh(self, msg, &auth_refreshed)") != null);
+
+    // The guard bool is declared OUTSIDE `rebuild:`. Reset it inside the loop and a
+    // permanently dead credential refresh-and-resends a full history forever, which
+    // is strictly worse than the bug being fixed.
+    try std.testing.expect(std.mem.indexOf(u8, src, "var auth_refreshed = false;").? <
+        std.mem.indexOf(u8, src, "rebuild: while (true)").?);
+}
+
 test "WS fallback latches only after a retry" {
     try std.testing.expect(!agent_ws.wsShouldFallback(0));
     try std.testing.expect(!agent_ws.wsShouldFallback(1));
@@ -339,4 +380,124 @@ test "buildBody (.responses): never emits a top-level max_output_tokens (codex g
     const title = try agent.buildBody(null, false, false, false);
     defer std.testing.allocator.free(title);
     try std.testing.expect(std.mem.indexOf(u8, title, "max_output_tokens") == null);
+}
+
+// (#401) The exact SSE-parity boundary. `frames_seen != 0` was NOT this: it
+// went true on response.created, milliseconds after the send, so the tightened
+// 30s budget covered the whole silent reasoning phase — which SSE gives the full
+// 120s. Everything in `quiet` below leaves the pre-first-token budget standing.
+test "#401: only a visible output-text delta is the tokens-flowing signal (SSE parity)" {
+    const gpa = std.testing.allocator;
+    const quiet = [_][]const u8{
+        "{\"type\":\"response.created\",\"response\":{}}", // protocol events: the
+        "{\"type\":\"response.in_progress\",\"response\":{}}", // model has not
+        "{\"type\":\"response.output_item.added\",\"output_index\":0}", // thought yet
+        "{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"hmm\"}", // never feeds partial_text
+        // …nor does one that merely QUOTES the event name: the cheap substring
+        // pre-filter must not be what decides.
+        "{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"response.output_text.delta\"}",
+        "{\"type\":\"response.output_item.done\",\"item\":{\"content\":[{\"text\":\"hi\"}]}}", // carries text, but SSE ignores it too
+        "{\"type\":\"response.output_text.delta\",\"delta\":\"\"}", // SSE's `text.len == 0` gate
+        "{\"type\":\"response.completed\"}",
+        "not json",
+        "",
+    };
+    for (quiet) |f| try std.testing.expect(!agent_ws.frameHasOutputText(gpa, f));
+    // …and the one thing that IS the signal, whatever the key order.
+    try std.testing.expect(agent_ws.frameHasOutputText(gpa, "{\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}"));
+    try std.testing.expect(agent_ws.frameHasOutputText(gpa, "{\"seq\":3,\"delta\":\"h\",\"type\":\"response.output_text.delta\"}"));
+}
+
+// (#401 round 4) …and the SECOND producer, which the round-3 signal missed.
+//
+// partial_text does NOT grow in only one place on SSE: streamSseLine calls
+// argLiveDelta on every line, and emitArgText appends the streamed ARGUMENTS of
+// a whitelisted meta call (agent_argstream.ArgTool). attempt_completion is
+// graff's ordinary final-answer tool, so a codex turn whose whole visible output
+// is that prose emits `response.function_call_arguments.delta` and never one
+// output_text delta — SSE tightened from the first prose byte while WS held the
+// full 120s. The whitelist is `argToolFor`, shared with ArgLive so the two
+// cannot drift: an ordinary tool's argument stream prints nothing and must not
+// tighten anything.
+test "#401: whitelisted tool-argument prose is a tokens-flowing signal too (SSE parity)" {
+    const gpa = std.testing.allocator;
+    const open_meta = "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"name\":\"attempt_completion\"}}";
+    const open_edit = "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"name\":\"edit_file\"}}";
+    const arg_delta = "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"result\\\":\\\"hi\"}";
+    const done_0 = "{\"type\":\"response.output_item.done\",\"output_index\":0}";
+
+    // attempt_completion: the open event is not prose, the first argument byte is.
+    var meta: agent_ws.TokenSignal = .{};
+    try std.testing.expect(!meta.flowing(gpa, open_meta));
+    try std.testing.expect(meta.flowing(gpa, arg_delta));
+
+    // ask_user's `question` is the other whitelisted field.
+    var ask: agent_ws.TokenSignal = .{};
+    try std.testing.expect(!ask.flowing(gpa, "{\"type\":\"response.output_item.added\",\"output_index\":7,\"item\":{\"type\":\"function_call\",\"name\":\"ask_user\"}}"));
+    try std.testing.expect(ask.flowing(gpa, "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":7,\"delta\":\"{\\\"question\\\":\\\"?\"}"));
+
+    // An ORDINARY tool's arguments stream invisibly on SSE, so the identical
+    // delta must leave the pre-first-token budget standing.
+    var edit: agent_ws.TokenSignal = .{};
+    try std.testing.expect(!edit.flowing(gpa, open_edit));
+    try std.testing.expect(!edit.flowing(gpa, arg_delta));
+
+    // …as must an arg delta for an item nobody opened, a different item, an
+    // empty delta, a non-function_call item, and one whose call already closed.
+    var stray: agent_ws.TokenSignal = .{};
+    try std.testing.expect(!stray.flowing(gpa, arg_delta));
+    try std.testing.expect(!stray.flowing(gpa, open_meta));
+    try std.testing.expect(!stray.flowing(gpa, "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"x\"}"));
+    try std.testing.expect(!stray.flowing(gpa, "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"\"}"));
+    try std.testing.expect(!stray.flowing(gpa, done_0));
+    try std.testing.expect(!stray.flowing(gpa, arg_delta)); // closed by done_0
+    var msg: agent_ws.TokenSignal = .{};
+    try std.testing.expect(!msg.flowing(gpa, "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"name\":\"attempt_completion\"}}"));
+    try std.testing.expect(!msg.flowing(gpa, arg_delta));
+
+    // …and the other producer still reaches the same entry point unchanged.
+    var text: agent_ws.TokenSignal = .{};
+    try std.testing.expect(!text.flowing(gpa, "{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"hmm\"}"));
+    try std.testing.expect(text.flowing(gpa, "{\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}"));
+}
+
+// A flat head-sized send deadline is a false-positive generator on exactly the
+// frame most likely to sit under it: every recovery re-anchors with the FULL
+// conversation, so the retried frame is hundreds of KB where the delta was a few.
+// Two such false positives latch SSE for the session, so the budget grows with
+// the payload — while still never outlasting the read watchdog.
+test "sendDeadlineMs (#401): head budget for a delta, transmit room for a full re-anchor, capped by the read budget" {
+    const head: u64 = 30 * 1000;
+    const stream: u64 = 120 * 1000;
+
+    // A delta frame keeps the flat head budget: it must be on the wire fast.
+    try std.testing.expectEqual(head, agent_ws.sendDeadlineMs(0, head, stream));
+    try std.testing.expectEqual(head, agent_ws.sendDeadlineMs(4 * 1024, head, stream));
+    try std.testing.expectEqual(head, agent_ws.sendDeadlineMs(64 * 1024 - 1, head, stream));
+
+    // One second per 64KB (~512 kbit/s, far below any link that can carry a
+    // codex session): a ~1MB full re-anchor gets 16 extra seconds.
+    try std.testing.expectEqual(head + 1000, agent_ws.sendDeadlineMs(64 * 1024, head, stream));
+    try std.testing.expectEqual(head + 16_000, agent_ws.sendDeadlineMs(1024 * 1024, head, stream));
+
+    // …but never past the watchdog that covers the reply, however large.
+    try std.testing.expectEqual(stream, agent_ws.sendDeadlineMs(64 * 1024 * 1024, head, stream));
+    try std.testing.expectEqual(stream, agent_ws.sendDeadlineMs(std.math.maxInt(usize), head, stream));
+
+    // A shrunken read budget (a test, or a low GRAFF_STREAM_STALL_SECS) can
+    // never clamp the send below the head budget.
+    try std.testing.expectEqual(head, agent_ws.sendDeadlineMs(1024 * 1024, head, 500));
+}
+
+// #401's transport tests (mock-WS end-to-end) live in agent_ws_stall_test.zig
+// (budgets, guards, teardown) and agent_ws_reuse_test.zig (reuse vs fresh
+// connect), on the shared agent_ws_mock.zig harness: they need a loopback
+// WebSocket server and a real Agent, which is more harness than this file's
+// pure-decision tests carry. main.zig's test root is AT the 600-line cap, so
+// those modules are hooked transitively through this one, which is already on
+// the root chain (reference_zig_test_wiring: a module with no path to the root
+// compiles but never runs a single test).
+comptime {
+    _ = @import("agent_ws_stall_test.zig");
+    _ = @import("agent_ws_reuse_test.zig");
 }

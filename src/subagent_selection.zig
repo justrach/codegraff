@@ -274,22 +274,24 @@ test "default ladder never crosses a provider boundary implicitly" {
 test "ladder rungs vs providerClass: documented, intentional disagreement (#291)" {
     // #291 requires ladder tier labels to match scoring.providerClass()
     // output for the same models, "or report the discrepancy rather than
-    // papering over it." providerClass's needle table buckets the whole
-    // gpt-5.x family (sol/terra/luna alike) as "frontier" — it has no
-    // name-based way to split terra/luna out — and deepseek-v4-flash as
-    // "small" via its "flash" needle, even though the ladder treats flash as
-    // deepseek's only cheaper (mid) rung. This test pins that the mismatch
-    // is real and known today, not a bug the ladder introduced; it is
-    // reported rather than silently patched into scoring.zig's needle
-    // table, which other, unrelated callers (DGM fitness scoring/fleet
-    // niche gating) also depend on.
+    // papering over it." The gpt family now agrees end-to-end with the
+    // ladder, like claude: "terra"/"luna" are tier-distinct needles in
+    // providerClass (as opus/sonnet/haiku are), so pullElites and fleet
+    // propose events keyed on the class are no longer rung-blind — a terra
+    // root pulls "mid" elites, not elites grown on sol.
     try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("gpt-5.6-sol"));
-    try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("gpt-5.6-terra")); // ladder rung: mid
-    try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("gpt-5.6-luna")); // ladder rung: small
+    try std.testing.expectEqualStrings("mid", @import("scoring.zig").providerClass("gpt-5.6-terra")); // ladder rung: mid
+    try std.testing.expectEqualStrings("small", @import("scoring.zig").providerClass("gpt-5.6-luna")); // ladder rung: small
+    // The one remaining disagreement, still reported rather than papered
+    // over: the ladder treats deepseek-v4-flash as deepseek's only cheaper
+    // rung (mid), while providerClass's "flash" needle states its absolute
+    // capability (small). Relative-vs-absolute semantics, not a bug — the
+    // needle table's other callers (DGM fitness scoring/fleet niche gating)
+    // want the absolute answer.
     try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("deepseek-v4-pro"));
     try std.testing.expectEqualStrings("small", @import("scoring.zig").providerClass("deepseek-v4-flash")); // ladder rung: mid
-    // Claude already agrees end-to-end (opus/sonnet/haiku are tier-distinct
-    // needles in providerClass, matching the ladder one-for-one).
+    // Claude agrees end-to-end (opus/sonnet/haiku are tier-distinct needles
+    // in providerClass, matching the ladder one-for-one).
     try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("claude-opus-4-8"));
     try std.testing.expectEqualStrings("mid", @import("scoring.zig").providerClass("claude-sonnet-4-6"));
     try std.testing.expectEqualStrings("small", @import("scoring.zig").providerClass("claude-haiku-4-5"));

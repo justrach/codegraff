@@ -1,6 +1,5 @@
-//! Root interactive/JSON event loop. `main` owns setup and storage; `Ctx`
-//! contains borrowed pointers that stay valid until `run` returns for final
-//! session cleanup. Helpers are imported from their extracted sibling modules.
+//! Root interactive/JSON event loop. `main` owns setup and storage; `Ctx` holds
+//! borrowed pointers valid until `run` returns for final session cleanup.
 
 const std = @import("std");
 const Io = std.Io;
@@ -40,6 +39,7 @@ const readline = @import("readline.zig");
 const title_mod = @import("title.zig");
 const mainloop_title = @import("mainloop_title.zig");
 const review = @import("review.zig");
+const terminal = @import("term.zig");
 
 /// Borrowed pointers into main()'s stack plus immutable arena-owned prompt slices.
 pub const Ctx = struct {
@@ -61,8 +61,8 @@ pub fn run(ctx: *Ctx) !void {
     var title_jobs: mainloop_title.Jobs = .{};
     defer title_jobs.deinit(ctx);
     defer session.flushSavesAtExit(); // #273: the turn-path autosaves write in the background — no queued one may outlive this loop, on ANY exit (#364 stamps this teardown phase)
-    // Trajectory spine state: each turn's parent is the previous turn, and a
-    // changed prompt fingerprint marks a set_system_prompt mutation edge.
+    defer terminal.tty.releaseTerminal(); // #396: registered LAST so LIFO runs it FIRST — the tty goes back before the save/telemetry/learning phases that can take seconds
+    // Trajectory spine: each turn's parent is the previous; a changed prompt fingerprint marks a set_system_prompt edge.
     var prev_turn_id: u64 = 0;
     var prev_prompt_fp: [16]u8 = scoring.promptFingerprint(ctx.root.systemPrompt());
 
@@ -398,7 +398,7 @@ pub fn run(ctx: *Ctx) !void {
         } else 0;
         ctx.root.tools_used.clear(ctx.io); // per-turn tool log for the turn's node
         ctx.root.tool_calls_this_turn = 0;
-        goal_state.beginTurn(ctx.root); // per-turn gate flags; the ARMED double-check is NOT one of them (#318)
+        goal_state.beginTurn(ctx.root, !is_loop_continuation); // per-turn gate flags (the ARMED double-check is NOT one, #318) + the new-ask retirement of a finished checklist (#394)
         ctx.root.seen_tool_keys.clearRetainingCapacity();
         if (main_mod.json_mode) ctx.root.emit(.{ .type = "started", .provider = ctx.root.provider.id, .model = ctx.root.provider.model });
         if (ctx.interactive and !main_mod.json_mode) {

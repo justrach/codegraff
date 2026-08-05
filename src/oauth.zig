@@ -8,6 +8,7 @@
 //! codegraff gateway base) back-imported from main.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
@@ -31,6 +32,7 @@ const unixMs = util.unixMs;
 const kimi_catalog = @import("kimi_catalog.zig");
 const pricing = @import("pricing.zig");
 const codegraff = @import("oauth_codegraff.zig");
+const credential_store = @import("credential_store.zig");
 
 pub const CodexAuth = struct { token: []const u8, account: []const u8 };
 
@@ -50,13 +52,20 @@ pub fn loadCodexAuthFrom(io: Io, arena: Allocator, codex_home: []const u8) ?Code
     return .{ .token = token, .account = account };
 }
 
-/// Default-home compatibility wrapper used by login flows that always write
-/// ~/.codex/auth.json. Startup and `graff models` use loadCodexAuthFrom so a
-/// user-supplied CODEX_HOME controls both credentials and the native catalog.
+/// Read it from THE codex home (helpers.codexHomeDir: $CODEX_HOME, else
+/// ~/.codex). #402: this used to hardcode ~/.codex, so an in-session `/login`
+/// read back a different file than the request loop's refresh wrote — under
+/// CODEX_HOME the login "succeeded" and the session kept its expired token.
 pub fn loadCodexAuth(io: Io, arena: Allocator, home: []const u8) ?CodexAuth {
-    const codex_home = std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch return null;
-    return loadCodexAuthFrom(io, arena, codex_home);
+    return loadCodexAuthFrom(io, arena, helpers.codexHomeDir(arena, home) orelse return null);
 }
+
+/// The one credential-directory resolver, re-exported for the callers that
+/// already import oauth (startup, the request loop, the pickers).
+pub const codexHomeDir = helpers.codexHomeDir;
+pub const initCodexHome = helpers.initCodexHome;
+pub const FreshKey = helpers.FreshKey;
+pub const takePersistError = helpers.takePersistError;
 
 // #148: how long before an OAuth access token's expiry to proactively refresh
 // it — wider than the old 60s so a mid-session refresh has headroom before a
@@ -72,27 +81,15 @@ var oauth_refresh_mutex: Io.Mutex = .init;
 // auth.openai.com). `harness login` runs the browser flow; `harness login
 // --refresh` refreshes the stored token (no browser).
 const oauth_authorize_url = "https://auth.openai.com/oauth/authorize";
-const oauth_token_url = "https://auth.openai.com/oauth/token";
-const codex_client_id = "app_EMoamEEZ73f0CkXaXp7hrann";
+const oauth_token_url = helpers.codex_token_url;
+const codex_client_id = helpers.codex_client_id;
 const codex_redirect = "http://localhost:1455/auth/callback";
 const codex_redirect_enc = "http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback";
-const oauth_scope_enc = "openid%20profile%20email%20offline_access";
+const oauth_scope_enc = helpers.codex_scope_enc;
 
 /// POST a form body to the OAuth token endpoint; return the parsed JSON object.
 fn oauthTokenPost(io: Io, gpa: Allocator, arena: Allocator, body: []const u8) !std.json.ObjectMap {
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    var aw: Io.Writer.Allocating = .init(arena);
-    _ = try client.fetch(.{
-        .location = .{ .url = oauth_token_url },
-        .method = .POST,
-        .payload = body,
-        .response_writer = &aw.writer,
-        .headers = .{ .content_type = .{ .override = "application/x-www-form-urlencoded" } },
-    });
-    const v = try std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always });
-    if (v != .object) return error.BadOAuthResponse;
-    return v.object;
+    return helpers.oauthFormPost(io, gpa, arena, oauth_token_url, body);
 }
 
 /// `harness login [--refresh]`: the ChatGPT/Codex OAuth flow. Fresh login runs
@@ -105,7 +102,7 @@ pub fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, re
 
     var body: []const u8 = undefined;
     if (refresh_only) {
-        const path = try std.fmt.allocPrint(arena, "{s}/.codex/auth.json", .{home});
+        const path = try helpers.codexAuthPath(arena, helpers.codexHomeDir(arena, home) orelse return error.NoCodexHome);
         const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(256 * 1024)) catch {
             try out.print("not logged in (no {s}) — run `graff login` first\n", .{path});
             try out.flush();
@@ -115,7 +112,7 @@ pub fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, re
         const refresh = blk: {
             if (v == .object) if (v.object.get("tokens")) |t| if (t == .object)
                 if (t.object.get("refresh_token")) |r| if (r == .string) break :blk r.string;
-            try out.writeAll("no refresh_token in ~/.codex/auth.json\n");
+            try out.print("no refresh_token in {s}\n", .{path});
             try out.flush();
             return;
         };
@@ -192,7 +189,9 @@ pub fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, re
     const refresh = strFieldObj(resp, "refresh_token") orelse "";
     const account = accountFromIdToken(arena, id_token);
     try writeCodexAuth(io, arena, home, id_token, access, refresh, account);
-    try out.print("✓ logged into Codex (account {s}…) — wrote ~/.codex/auth.json. /model codex\n", .{account[0..@min(account.len, 8)]});
+    // Name the file actually written: under $CODEX_HOME it is not ~/.codex, and
+    // saying otherwise is how #402 stayed invisible for so long.
+    try out.print("✓ logged into Codex (account {s}…) — wrote {s}/auth.json. /model codex\n", .{ account[0..@min(account.len, 8)], helpers.codexHomeDir(arena, home) orelse "~/.codex" });
     try out.flush();
 }
 
@@ -230,38 +229,11 @@ fn kimiOAuthPost(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, url
 }
 
 fn kimiAuthPath(arena: Allocator, home: []const u8) []const u8 {
-    return std.fmt.allocPrint(arena, "{s}/.kimi/credentials/graff-oauth.json", .{home}) catch "";
+    return credential_store.oauthPath(arena, home, ".kimi");
 }
 
 fn writeKimiAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8, refresh: []const u8, expires_at: i64) !void {
-    const private_file_permissions: Io.File.Permissions = if (Io.File.Permissions.has_executable_bit) @enumFromInt(0o600) else .default_file;
-    const private_dir_permissions: Io.File.Permissions = if (Io.File.Permissions.has_executable_bit) @enumFromInt(0o700) else .default_dir;
-    // createDir is one level, so make ~/.kimi then ~/.kimi/credentials.
-    const kimi_dir = try std.fmt.allocPrint(arena, "{s}/.kimi", .{home});
-    const credentials_dir = try std.fmt.allocPrint(arena, "{s}/.kimi/credentials", .{home});
-    Io.Dir.cwd().createDir(io, kimi_dir, private_dir_permissions) catch {};
-    Io.Dir.cwd().createDir(io, credentials_dir, private_dir_permissions) catch {};
-    for ([_][]const u8{ kimi_dir, credentials_dir }) |path| {
-        // iterate=true: see kimi_catalog.secureDir — a default openDir can be
-        // O_PATH on Linux, where fchmod panics EBADF instead of erroring.
-        const dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch continue;
-        defer dir.close(io);
-        dir.setPermissions(io, private_dir_permissions) catch {};
-    }
-    var obj: std.json.ObjectMap = .empty;
-    try obj.put(arena, "access_token", .{ .string = access });
-    try obj.put(arena, "refresh_token", .{ .string = refresh });
-    try obj.put(arena, "expires_at", .{ .integer = expires_at });
-    var aw: Io.Writer.Allocating = .init(arena);
-    var s: std.json.Stringify = .{ .writer = &aw.writer };
-    try s.write(Value{ .object = obj });
-    const f = try Io.Dir.cwd().createFile(io, kimiAuthPath(arena, home), .{ .permissions = private_file_permissions });
-    defer f.close(io);
-    f.setPermissions(io, private_file_permissions) catch {};
-    var wbuf: [4096]u8 = undefined;
-    var fw = f.writer(io, &wbuf);
-    try fw.interface.writeAll(aw.writer.buffered());
-    try fw.interface.flush();
+    return credential_store.writeOAuth(io, arena, home, ".kimi", access, refresh, expires_at);
 }
 
 /// `graff login kimi`: Kimi Code device-code OAuth. Prints a verification URL +
@@ -326,24 +298,9 @@ pub fn kimiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !vo
 }
 
 /// #245 single-flight guard: has the token that just 401'd already been replaced
-/// on disk by another concurrent refresher?
-///
-/// `force` means "the access token I was holding just failed with a 401". The
-/// refresh mutex serializes concurrent refreshers but does NOT dedupe them, so a
-/// fleet of subagents that all 401 on the same expired token would each re-mint
-/// in turn. Kimi (and xAI) rotate refresh tokens and INVALIDATE the superseded
-/// access token, so refresher N+1 kills the token refresher N just adopted — the
-/// 401 cascade that wipes out a whole fleet.
-///
-/// If the on-disk token already differs from the one that failed, the 401 was
-/// about the OLD token and somebody else has already done the work: adopt theirs
-/// instead of minting another. `stale == null` keeps the previous behaviour for
-/// callers that cannot say which token failed.
-fn supersededToken(force: bool, on_disk: []const u8, stale: ?[]const u8) bool {
-    if (!force) return false;
-    const failed = stale orelse return false;
-    return !std.mem.eql(u8, on_disk, failed);
-}
+/// on disk by another concurrent refresher? Defined in oauth_helpers.zig, where
+/// the silent codex refresh (#402) needs the same primitive.
+const supersededToken = helpers.supersededToken;
 
 /// Reads the stored Kimi OAuth access token, refreshing it in place when within
 /// 60s of expiry. Returns null if not logged in. Mirrors loadCodexAuth.
@@ -373,19 +330,33 @@ pub fn loadKimiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8,
     return access;
 }
 
-/// #148: mid-session refresh for a login-sourced key. For the short-lived
-/// refreshable OAuth providers (kimi/xai) returns the current access token,
-/// refreshed in place if within oauth_refresh_margin_s of expiry (or `force`d,
-/// e.g. after a 401). Returns null for providers with no auto-refresh flow
-/// (env keys, and the long-lived codex/codegraff tokens), so the caller keeps
-/// the key it has. Mutex-guarded so concurrent subagents don't double-refresh.
-pub fn refreshOAuthKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, provider_id: []const u8, force: bool, stale: ?[]const u8) ?[]const u8 {
+/// #148: mid-session refresh for a login-sourced key. For the refreshable OAuth
+/// providers (kimi/xai/codex) returns the current access token, refreshed in
+/// place if near expiry or `force`d (e.g. after a 401). Returns null for
+/// providers with no auto-refresh flow (env keys, the long-lived codegraff
+/// token), so the caller keeps the key it has. Mutex-guarded so concurrent
+/// subagents don't double-refresh.
+///
+/// #402: codex used to be excluded here as "long-lived" — it is not, and that
+/// premise is what made an expired ChatGPT token unrecoverable for the life of
+/// a session. Its credential dir comes from the ONE resolver, never from the
+/// caller: the root agent's model catalog and a subagent's empty `home` used to
+/// answer differently, and only one of those is the file `/login` writes.
+/// `account` is this session's ChatGPT account id (empty when unknown or not
+/// codex) — see loadCodexOAuth's expect_account.
+pub fn refreshOAuthKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, provider_id: []const u8, force: bool, stale: ?[]const u8, account: []const u8) ?helpers.FreshKey {
     const is_kimi = std.mem.eql(u8, provider_id, "kimi");
     const is_xai = std.mem.eql(u8, provider_id, "xai");
-    if (!is_kimi and !is_xai) return null;
+    const is_codex = std.mem.eql(u8, provider_id, "codex");
+    if (!is_kimi and !is_xai and !is_codex) return null;
     oauth_refresh_mutex.lockUncancelable(io);
     defer oauth_refresh_mutex.unlock(io);
-    return if (is_kimi) loadKimiOAuth(io, gpa, arena, home, force, stale) else loadXaiOAuth(io, gpa, arena, home, force, stale);
+    if (is_codex) {
+        const dir = helpers.codexHomeDir(arena, home) orelse return null;
+        return helpers.loadCodexOAuth(io, gpa, arena, dir, force, stale, account);
+    }
+    const key = (if (is_kimi) loadKimiOAuth(io, gpa, arena, home, force, stale) else loadXaiOAuth(io, gpa, arena, home, force, stale)) orelse return null;
+    return .{ .key = key };
 }
 
 // xAI (Grok) OAuth — device-code flow against auth.x.ai. The OIDC discovery
@@ -428,25 +399,11 @@ fn xaiOAuthPost(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body:
 }
 
 fn xaiAuthPath(arena: Allocator, home: []const u8) []const u8 {
-    return std.fmt.allocPrint(arena, "{s}/.xai/credentials/graff-oauth.json", .{home}) catch "";
+    return credential_store.oauthPath(arena, home, ".xai");
 }
 
 fn writeXaiAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8, refresh: []const u8, expires_at: i64) !void {
-    Io.Dir.cwd().createDir(io, try std.fmt.allocPrint(arena, "{s}/.xai", .{home}), .default_dir) catch {};
-    Io.Dir.cwd().createDir(io, try std.fmt.allocPrint(arena, "{s}/.xai/credentials", .{home}), .default_dir) catch {};
-    var obj: std.json.ObjectMap = .empty;
-    try obj.put(arena, "access_token", .{ .string = access });
-    try obj.put(arena, "refresh_token", .{ .string = refresh });
-    try obj.put(arena, "expires_at", .{ .integer = expires_at });
-    var aw: Io.Writer.Allocating = .init(arena);
-    var st: std.json.Stringify = .{ .writer = &aw.writer };
-    try st.write(Value{ .object = obj });
-    const f = try Io.Dir.cwd().createFile(io, xaiAuthPath(arena, home), .{});
-    defer f.close(io);
-    var wbuf: [4096]u8 = undefined;
-    var fw = f.writer(io, &wbuf);
-    try fw.interface.writeAll(aw.writer.buffered());
-    try fw.interface.flush();
+    return credential_store.writeOAuth(io, arena, home, ".xai", access, refresh, expires_at);
 }
 
 /// `graff login xai`: xAI/Grok device-code OAuth. Prints a verification URL +
@@ -588,4 +545,36 @@ test "supersededToken (#245): a concurrent refresher's token is adopted, not re-
     // A caller that cannot say which token failed keeps the old behaviour.
     try std.testing.expect(!supersededToken(true, replaced, null));
     try std.testing.expect(!supersededToken(false, replaced, null));
+}
+
+test "writeKimiAuth/writeXaiAuth: both real writers store 0600 in 0700 dirs, loadable" {
+    if (builtin.os.tag == .windows) return;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const home = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}", .{&tmp.sub_path});
+    const far_future = 4102444800; // year 2100: the loaders must not try to refresh
+
+    // Drive the two production writers, not a shared helper: xAI used to open its
+    // token file with a bare createFile (0644, no 0700 dirs) while kimi hardened
+    // its own, and only pinning both functions keeps that from coming back.
+    try writeKimiAuth(io, arena, home, "kimi-access", "kimi-refresh", far_future);
+    try writeXaiAuth(io, arena, home, "xai-access", "xai-refresh", far_future);
+
+    for ([_][]const u8{ ".kimi", ".xai" }) |provider_dir| {
+        const base = try tmp.dir.openDir(io, provider_dir, .{});
+        defer base.close(io);
+        const credentials = try base.openDir(io, "credentials", .{});
+        defer credentials.close(io);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o700), (try base.stat(io)).permissions.toMode() & 0o777);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o700), (try credentials.stat(io)).permissions.toMode() & 0o777);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), (try credentials.statFile(io, "graff-oauth.json", .{})).permissions.toMode() & 0o777);
+    }
+
+    // …and the real loaders find what the real writers wrote, at their own paths.
+    try std.testing.expectEqualStrings("kimi-access", loadKimiOAuth(io, std.testing.allocator, arena, home, false, null).?);
+    try std.testing.expectEqualStrings("xai-access", loadXaiOAuth(io, std.testing.allocator, arena, home, false, null).?);
 }

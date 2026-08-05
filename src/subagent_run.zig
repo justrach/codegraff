@@ -27,6 +27,7 @@ const cards = @import("cards.zig");
 const trace = @import("trace.zig");
 const textMessage = @import("messages.zig").textMessage;
 const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
+const subagent_retry = @import("subagent_retry.zig"); // bounded in-worker re-ask: the failover the root has and a worker did not
 
 fn guiEmit(io: Io, ev: anytype) void {
     if (!main_mod.json_mode) return;
@@ -54,7 +55,7 @@ pub const FailKind = enum {
     budget_exhausted,
     unknown,
 
-    fn label(self: FailKind) []const u8 {
+    pub fn label(self: FailKind) []const u8 {
         return switch (self) {
             .quota => "quota/rate-limit",
             .transport => "transport",
@@ -127,14 +128,28 @@ pub const retry_ok_note = "retry is likely safe — re-run the same task (after 
 /// chance of success. failureAllowsRetry keys off this exact string.
 pub const retry_unsafe_note = "retry is NOT safe as-is — fix the cause first (switch model, correct arguments, or re-auth)";
 
-fn subagentFailure(gpa: Allocator, sub_id: []const u8, err: anyerror, detail: ?[]const u8) ToolOutput {
+/// The one text the parent reads when a worker dies. `attempts` is how many
+/// asks this worker actually made (subagent_retry's bounded ladder), and it is
+/// in the string on purpose: "failed before producing a report" left the
+/// parent unable to tell a worker that was never really tried from one that
+/// was tried three times and refused every time. Naming the count is the
+/// honesty half of adding a retry at all.
+///
+/// It rides in the CLASS bracket, after the cause, not in the prefix. The
+/// prefix is scarce: workflow.zig head-slices this text at fail_excerpt_cap
+/// (200 chars) precisely because the cause sits immediately behind
+/// "…failed before producing a report: ", so every character spent before the
+/// colon is a character of real provider error deleted from the next phase's
+/// {{prev}}. "failed after 3 attempts before producing a report:" cost ~17 of
+/// them; this ordering keeps the count and the prefix.
+fn subagentFailure(gpa: Allocator, sub_id: []const u8, err: anyerror, detail: ?[]const u8, attempts: u8) ToolOutput {
     const kind = classifyFailure(err, detail);
     const cause = detail orelse @errorName(err);
     const retry = if (kind.retrySafe()) retry_ok_note else retry_unsafe_note;
     const text = std.fmt.allocPrint(
         gpa,
-        "subagent {s} failed before producing a report: {s} [{s} failure]. {s}",
-        .{ sub_id, cause, kind.label(), retry },
+        "subagent {s} failed before producing a report: {s} [{s} failure, {d} {s}]. {s}",
+        .{ sub_id, cause, kind.label(), attempts, subagent_retry.attemptsWord(attempts), retry },
     ) catch return .{ .is_error = true };
     return .{ .text = text, .is_error = true };
 }
@@ -180,13 +195,14 @@ pub fn variantProviderClass(seat: Provider, i: usize) []const u8 {
 /// #376 — the routing STRATUM variant `i` was observed in: the resolved model
 /// itself, not its capability bucket.
 ///
-/// providerClass cannot separate gpt-5.6-sol from -terra/-luna (all three are
-/// "frontier"), so the matched-tournament guard in scoreVariants was blind to
-/// a rung-only difference — the documented #291 gap that made phase routing
-/// unsafe. Keyed on this it is not: a phase whose variants somehow spanned two
-/// models is refused as unscoreable, and every fitness row records the same
-/// value so a cross-run comparison can stratify by it (fitness_strata.zig)
-/// rather than averaging over rungs.
+/// providerClass once bucketed gpt-5.6-sol/-terra/-luna identically as
+/// "frontier" (the #291 gap, closed since), and a class stays coarser than a
+/// model regardless — "frontier" pools sol with bare gpt-5.6 — so a
+/// matched-tournament guard keyed on it was blind to a rung-only difference,
+/// which made phase routing unsafe. Keyed on this it is not: a phase whose
+/// variants somehow spanned two models is refused as unscoreable, and every
+/// fitness row records the same value so a cross-run comparison can stratify
+/// by it (fitness_strata.zig) rather than averaging over rungs.
 pub fn variantStratum(seat: Provider, i: usize) []const u8 {
     _ = i;
     return route_policy.stratumOf(seat.model);
@@ -331,7 +347,29 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     const task_prompt = playbook.rideBrief(ctx.io, arena, try goal_pacing.childTaskPrompt(arena, prompt, ctx.loop_deadline_ms, util.unixMs(ctx.io)));
     try agent.messages.append(try textMessage(arena, "user", task_prompt));
     defer agent.tools_used.deinit(gpa);
-    const report = agent.runTurn();
+    // Bounded in-worker re-ask. The ROOT has failover (runTurnWithFallback);
+    // a worker had one shot, so a single flaky response cost a whole report
+    // while its siblings on the same credential finished. subagent_retry owns
+    // the ceiling and the class filter — this loop only spends them, on the
+    // SAME provider (no worker cross-provider failover: see that module).
+    // Resuming runTurn re-issues a request against the history as it stands,
+    // so nothing already executed is replayed; a wire failure lands before any
+    // assistant message is appended, which is what keeps that true.
+    var attempts: u8 = 0;
+    const report: anyerror![]const u8 = ask: {
+        while (true) {
+            attempts += 1;
+            agent.last_api_error = null; // a stale cause must never classify the next ask
+            const r = agent.runTurn();
+            const err = if (r) |_| break :ask r else |e| e;
+            const fail_kind = classifyFailure(err, agent.last_api_error);
+            if (!subagent_retry.shouldRetry(err, fail_kind, agent.last_api_error, attempts)) break :ask r;
+            // A /loop deadline the run is already past makes waiting pointless.
+            if (subagent_retry.pastDeadline(util.unixMs(ctx.io), ctx.loop_deadline_ms)) break :ask r;
+            subagent_retry.traceAttempt(ctx.tracer, sub_id, attempts, fail_kind, agent.last_api_error);
+            agent.sleepInterruptible(subagent_retry.backoffMs(fail_kind, attempts)) catch break :ask r;
+        }
+    };
     const run_ms: i64 = @intCast(@max(0, sub_start.untilNow(ctx.io, .awake).toMilliseconds()));
     const run_ok = if (report) |r| r.len > 0 else |_| false;
     if (wf_task) {
@@ -374,7 +412,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     }
     if (telemetry.g_telem) |t| t.runEvent(&fp, sys_override != null, run_ok, run_ms, used_tools);
     const text = report catch |err| {
-        var out = subagentFailure(gpa, sub_id, err, agent.last_api_error);
+        var out = subagentFailure(gpa, sub_id, err, agent.last_api_error, attempts);
         if (wt) |w| {
             const combined = std.fmt.allocPrint(gpa, "{s}\n\n[worktree left in place after failure — path: {s}, branch: {s}]", .{ out.text, w.path, w.branch }) catch return .{ .output = out, .usage = usage };
             gpa.free(out.text);
@@ -441,13 +479,13 @@ test "failureAllowsRetry keys off the harness's own retry-safety classification"
 
     // A real auth failure: subagentFailure classifies it .auth (retrySafe:
     // false) and appends retry_unsafe_note — the gate must block a retry.
-    const auth = subagentFailure(gpa, "sa-001", error.Unexpected, "401 unauthorized: invalid_api_key");
+    const auth = subagentFailure(gpa, "sa-001", error.Unexpected, "401 unauthorized: invalid_api_key", 2);
     defer gpa.free(auth.text);
     try std.testing.expect(!failureAllowsRetry(auth.text));
 
     // A real transport/transient failure: classifies .transport (retrySafe:
     // true) and appends retry_ok_note — the gate must keep allowing retries.
-    const transient = subagentFailure(gpa, "sa-002", error.StreamStalled, null);
+    const transient = subagentFailure(gpa, "sa-002", error.StreamStalled, null, 3);
     defer gpa.free(transient.text);
     try std.testing.expect(failureAllowsRetry(transient.text));
 
@@ -455,6 +493,44 @@ test "failureAllowsRetry keys off the harness's own retry-safety classification"
     // empty-report path, or an isolation-setup failure) — no marker means no
     // classification was made, so it must keep retrying like before this fix.
     try std.testing.expect(failureAllowsRetry("subagent finished without a report"));
+}
+
+test "a worker failure names how many asks it actually made (fleet honesty)" {
+    const gpa = std.testing.allocator;
+
+    // The observed run: one worker refused with an auth-shaped error while its
+    // siblings on the SAME credential succeeded. subagent_retry buys that one
+    // extra ask — and the parent must be able to tell "asked twice, refused
+    // twice" from "never really tried". The old text said neither.
+    const detail = "api error: The API Key appears to be invalid or may have expired.";
+    const twice = subagentFailure(gpa, "sa-001-abcd", error.ApiError, detail, subagent_retry.auth_attempts);
+    defer gpa.free(twice.text);
+    try std.testing.expect(std.mem.indexOf(u8, twice.text, "[auth failure, 2 attempts]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, twice.text, detail) != null); // cause still verbatim
+    try std.testing.expect(!failureAllowsRetry(twice.text)); // auth still blocks the PHASE retry above
+
+    // The count must NOT push the cause out of workflow.zig's head-slice: the
+    // prefix stays exactly as long as it was before retries existed, so the
+    // 200-char excerpt still carries the provider's own words.
+    try std.testing.expect(std.mem.startsWith(u8, twice.text, "subagent sa-001-abcd failed before producing a report: api error:"));
+    const head = twice.text[0..@min(200, twice.text.len)]; // workflow.fail_excerpt_cap
+    try std.testing.expect(std.mem.indexOf(u8, head, detail) != null);
+
+    // A structural failure is asked once and says so — no plural implying a
+    // ladder that never ran.
+    const once = subagentFailure(gpa, "sa-002-abcd", error.ApiError, "model_not_found", 1);
+    defer gpa.free(once.text);
+    try std.testing.expect(std.mem.indexOf(u8, once.text, "[model-availability failure, 1 attempt]") != null);
+
+    // The ladder runSub's loop can actually spend. Pinned here because these
+    // are the numbers the sentence above is claiming to report.
+    try std.testing.expectEqual(@as(u8, 2), subagent_retry.attemptBudget(.auth, null));
+    try std.testing.expectEqual(@as(u8, 3), subagent_retry.attemptBudget(.transport, null));
+    try std.testing.expectEqual(@as(u8, 1), subagent_retry.attemptBudget(.model, null));
+    // A billing cap wearing the .quota label gets ONE ask, not the ladder —
+    // the request layer already refused to keep paying for that refusal.
+    try std.testing.expectEqual(@as(u8, 1), subagent_retry.attemptBudget(.quota, "rate limited (429): quota/billing cap — insufficient_quota"));
+    try std.testing.expectEqual(@as(u8, 3), subagent_retry.attemptBudget(.quota, "rate limited (429): please retry shortly"));
 }
 
 test "a child's api-error cause reaches the parent verbatim (#287/#299)" {
@@ -489,7 +565,7 @@ test "a child's api-error cause reaches the parent verbatim (#287/#299)" {
 
         // This is the wiring runSub depends on: agent.last_api_error ->
         // subagentFailure -> the string the parent's tool result carries.
-        const out = subagentFailure(gpa, "sa-001-abcd", error.ApiError, child.last_api_error);
+        const out = subagentFailure(gpa, "sa-001-abcd", error.ApiError, child.last_api_error, 1);
         defer gpa.free(out.text);
         try std.testing.expect(out.is_error);
         try std.testing.expect(std.mem.indexOf(u8, out.text, detail) != null); // verbatim

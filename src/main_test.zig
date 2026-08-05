@@ -1,10 +1,15 @@
-//! Focused regressions for incremental markdown streaming and `/bash` result ownership.
+//! Focused regressions for incremental markdown streaming, `/bash` result
+//! ownership, and `/save`|`/resume` session-name ownership — each driven
+//! through the real handler, since every one of these defects lived in a call
+//! site rather than in a helper.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Agent = @import("agent.zig").Agent;
 const Keys = @import("provider.zig").Keys;
 const util = @import("util.zig");
+const session_writer = @import("session_writer.zig");
 const handleCommand = @import("main.zig").handleCommand;
 
 fn prewarmCaBundle(client: *std.http.Client, gpa: std.mem.Allocator, io: Io) void {
@@ -151,6 +156,165 @@ test "/bash slash command runs the bash tool and frees its gpa-allocated result"
 
     const written = aw.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, written, "leak-guard-XYZ") != null);
+}
+
+/// True when `name` points anywhere inside the line buffer's allocation — the
+/// whole defect below. A plain `name.ptr != buf.ptr` would miss it: the typed
+/// name starts past the command word, so it never equals the buffer's base.
+fn aliasesLineBuffer(name: []const u8, buf: std.ArrayList(u8)) bool {
+    const base = @intFromPtr(buf.items.ptr);
+    const p = @intFromPtr(name.ptr);
+    return p >= base and p < base + buf.capacity;
+}
+
+test "typed session name survives readline reusing its line buffer" {
+    // mainloop hands handleCommand a slice of ctx.linebuf, and readline clears
+    // + regrows that SAME ArrayList every turn. /save and /resume each stored
+    // that borrowed slice in root.session_name, which every later autosave
+    // reads — so the next line the user typed silently retargeted the save.
+    //
+    // Both handlers are driven for real here. The defect is in the two
+    // assignments, not in any helper: asserting on the helper alone stays
+    // green with either call site reverted.
+    //
+    // saveSession/loadSession resolve against the process cwd (neither takes a
+    // Dir), so move into a scratch directory for the duration — the same fchdir
+    // dance agent_eval_tests.zig uses, and POSIX-only for the same reason.
+    if (builtin.os.tag == .windows) return;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var orig_dir = try Io.Dir.cwd().openDir(io, ".", .{});
+    defer orig_dir.close(io);
+    defer _ = std.posix.system.fchdir(orig_dir.handle);
+    if (std.posix.system.fchdir(tmp.dir.handle) != 0) return error.ChdirFailed;
+    session_writer.resetForTest();
+    defer session_writer.resetForTest();
+
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+
+    // One user turn: #184 skips the write for a blank draft, and /save must
+    // reach disk for the /resume half below to have a file to load.
+    var msgs = std.json.Array.init(arena);
+    var user: std.json.ObjectMap = .empty;
+    try user.put(arena, "role", .{ .string = "user" });
+    try user.put(arena, "content", .{ .string = "first prompt" });
+    try msgs.append(.{ .object = user });
+
+    var root: Agent = .{
+        .gpa = gpa,
+        .arena = arena,
+        .io = io,
+        .client = &client,
+        .provider = .{
+            .id = "anthropic",
+            .kind = .anthropic,
+            .auth = .x_api_key,
+            .url = "",
+            .api_key = "k",
+            .model = "claude-opus-4-8",
+            .context = 100_000,
+        },
+        .messages = msgs,
+        .sub = false,
+        .label = "root",
+        .out = null,
+    };
+    defer root.tools_used.deinit(gpa);
+    // /resume rebuilds the provider from the saved id, which needs a key.
+    var keys: Keys = .{ .values = @splat("k") };
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+
+    // Stands in for mainloop's ctx.linebuf: ONE allocation, cleared and
+    // refilled every turn. Reserved up front so no refill ever reallocates —
+    // exactly how readline reuses it, and so the stale-read is in live memory.
+    var linebuf: std.ArrayList(u8) = .empty;
+    defer linebuf.deinit(gpa);
+    try linebuf.ensureTotalCapacity(gpa, 64);
+
+    linebuf.appendSliceAssumeCapacity("/save alpha");
+    try handleCommand(&root, &keys, arena, linebuf.items, &aw.writer);
+    try std.testing.expectEqualStrings("alpha", root.session_name);
+    try std.testing.expect(!aliasesLineBuffer(root.session_name, linebuf));
+
+    // The next turn overwrites the buffer in place. A borrowed name now reads
+    // "other", and every autosave from here writes the wrong session file.
+    linebuf.clearRetainingCapacity();
+    linebuf.appendSliceAssumeCapacity("/some other line entirely");
+    try std.testing.expectEqualStrings("alpha", root.session_name);
+
+    // /resume assigns root.session_name at its own, separate call site. It
+    // reloads the file /save just wrote, so the handler runs to completion —
+    // a failed load returns early and leaves this "last" behind.
+    root.session_name = "last";
+    linebuf.clearRetainingCapacity();
+    linebuf.appendSliceAssumeCapacity("/resume alpha");
+    try handleCommand(&root, &keys, arena, linebuf.items, &aw.writer);
+    try std.testing.expectEqualStrings("alpha", root.session_name);
+    try std.testing.expect(!aliasesLineBuffer(root.session_name, linebuf));
+
+    linebuf.clearRetainingCapacity();
+    linebuf.appendSliceAssumeCapacity("/some other line entirely");
+    try std.testing.expectEqualStrings("alpha", root.session_name);
+    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "resumed alpha") != null);
+}
+
+test "/save and /resume report a failed name copy instead of ending the REPL" {
+    // mainloop.zig calls handleCommand unguarded, so an error returned from a
+    // slash command tears the loop down. Every other way /save or /resume can
+    // fail prints and returns to the prompt; copying the name must too. The
+    // `try` on each handleCommand below IS the assertion — a propagated
+    // OutOfMemory fails this test exactly as it would kill the session.
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+
+    var root: Agent = .{
+        .gpa = gpa,
+        .arena = arena_state.allocator(),
+        .io = io,
+        .client = &client,
+        .provider = .{
+            .id = "anthropic",
+            .kind = .anthropic,
+            .auth = .x_api_key,
+            .url = "",
+            .api_key = "k",
+            .model = "claude-opus-4-8",
+            .context = 100_000,
+        },
+        .messages = std.json.Array.init(arena_state.allocator()),
+        .sub = false,
+        .label = "root",
+        .out = null,
+    };
+    defer root.tools_used.deinit(gpa);
+    var keys: Keys = .{ .values = @splat("k") };
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+
+    // fail_index 0: the copy of the typed name is the first turn allocation,
+    // so this is the OOM the two call sites have to absorb.
+    for ([_][]const u8{ "/save alpha", "/resume alpha" }) |line| {
+        var failing = std.testing.FailingAllocator.init(arena_state.allocator(), .{ .fail_index = 0 });
+        try handleCommand(&root, &keys, failing.allocator(), line, &aw.writer);
+        try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "failed: OutOfMemory") != null);
+        // The name was never adopted: autosaves keep writing where they were.
+        try std.testing.expectEqualStrings("last", root.session_name);
+        aw.clearRetainingCapacity();
+    }
 }
 
 // main.zig itself is at the 600-line ceiling (#274 fix), so

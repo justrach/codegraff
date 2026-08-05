@@ -239,6 +239,7 @@ test "workflow_progress (#63): a phase transition emits structured state, not ju
     ctx.run_budget = null;
     ctx.tracer = null;
     ctx.agent_cwd = null;
+    ctx.has_eval = false;
     ctx.provider = .{ .id = "", .kind = .anthropic, .auth = .bearer, .url = "", .api_key = "", .model = "", .context = 0 };
     const input = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"phases\":[{\"title\":\"find security bugs\",\"tasks\":[1,2]}]}", .{});
     const out = try workflow.execWorkflow(ctx, input);

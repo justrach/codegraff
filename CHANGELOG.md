@@ -10,6 +10,96 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.239 (unreleased)
+
+- A successful `/login` now reaches the live session (#402): the codex
+  `.responses` error path runs the same bounded auth recovery as every other
+  wire format — re-read `auth.json` from disk first (adopting a re-login by
+  this session, a second graff, or the real codex CLI, gated on the ChatGPT
+  account id), then spend the refresh token, then retry once — instead of
+  resending the full request + compaction bodies with a dead bearer forever.
+  One `$CODEX_HOME` resolver serves every reader and writer of `auth.json`
+  (subagents included), and the mid-turn refresh persist preserves the fields
+  the codex CLI owns in that co-owned file, 0600, staged + renamed.
+- `/save <name>` and `/resume <name>` copy the typed name out of readline's
+  reused line buffer; the next prompt can no longer silently retarget the
+  autosave (or worse) via a stale slice.
+- `/rewind` never deletes a file it failed to snapshot: a pre-write read
+  failure (oversized, unreadable) now records "no snapshot" and rewind leaves
+  the file as-is with an honest count, instead of conflating read failure with
+  "didn't exist" and unlinking it.
+- `graff serve` no longer wedges permanently on `set_ultracode`: the ultracode
+  ack is a terminal event, the ack list is pinned against the emitter by test,
+  and the JSON-controls E2E covers it.
+- Credential and catalog writes are atomic (staged temp + rename via a shared
+  writer): a crash or full disk can no longer truncate the only copy of a
+  refresh token. xAI credentials now land 0600/0700 like kimi's; the MCP OAuth
+  store and the multi-provider key map write through the same path.
+- Codex WebSocket turns no longer sit silent for minutes when the backend goes
+  quiet mid-response. The WS reader armed its stall watchdog with a hardcoded
+  "no tokens yet", so it re-armed the full 120s pre-first-token budget on every
+  frame and never tightened once the model was actually emitting — the SSE
+  reader has always tightened to a quarter. Silence after visible prose now
+  trips in ~30s, while a silent reasoning phase keeps the full budget, exactly
+  as on SSE. "Visible prose" means both things that print on SSE: a
+  `response.output_text.delta`, and the streamed arguments of `attempt_completion`
+  / `ask_user` — which is all a final-answer turn emits, so keying on output
+  text alone would have left the commonest turn shape on the old budget. Mere
+  frame arrival is still not the signal: the protocol events land milliseconds
+  after the send and would stall out a long thinking turn. The trace gains
+  `sent <n>b`, `first frame` and `first output text` notes, so a hang says which
+  half of the turn went quiet instead of stopping dead at `reuse (delta)` (#401).
+- A REUSED codex WS that answers nothing is now caught in ~30s instead of ~120s,
+  and as a transport failure rather than a stalled turn. Nothing proves a held
+  socket is still alive, and the backend acks a send within milliseconds, so
+  zero frames back is a dead socket: it gets the head budget and re-anchors on a
+  fresh connection (SSE only after a second failure), instead of spending a slot
+  of the turn's stall budget waiting out the full pre-first-token window. A
+  freshly dialed socket is unaffected — its handshake just proved the peer is
+  there, so it keeps the full budget for a model that thinks before it speaks.
+- The WS send and dial are under a deadline too (an unbounded blocking write /
+  an unbounded dial through DNS + TLS + the 101 status line), with Esc live
+  during both. They report the transport-flake error the SSE guard uses, so a
+  wedged socket is retried on a fresh one rather than spending the turn's stall
+  budget; the send deadline scales with the frame so a full-conversation
+  re-anchor is not a false positive. Both name themselves in the trace
+  (`send stall` / `connect stall`), so a stalled dial is no longer reported as a
+  bare error name. Under Io-pool exhaustion they follow the SSE guard exactly: a
+  failed payload spawn fails retryable, a failed watchdog spawn degrades to the
+  unwatched call already in flight, so a momentary pool shortage cannot latch a
+  session onto SSE. A socket the idle window condemns is torn down with a plain
+  FIN rather than a courtesy close frame that could block again, and a failed WS
+  handshake no longer leaks its fd and CA bundle.
+- A one-shot that dies (budget exhaustion, a late gateway refusal) still prints
+  the `[usage]` footer and notes how many tool calls already completed — the
+  runs most likely to be expensive no longer exit with no cost accounting, and
+  an aborted run no longer reads as if nothing happened (#387, #389).
+- Rate-limit errors that say "try again in 350000 seconds" now append a human
+  duration ("~4d 1h"). The provider's exact words are preserved — the hint is
+  display-only (#398).
+- Auto-compaction escalates instead of looping when the model keeps returning
+  empty summaries: two consecutive complete-but-unusable summaries over the
+  threshold unlock the bounded emergency trim, and compaction summary requests
+  run at low reasoning effort so a high-effort reasoner can't complete with
+  reasoning items and no summary text (#379).
+- iOS simulator scripts clean up what they start: the app is terminated and a
+  device is shut down when (and only when) the run booted it; the Simulator
+  window no longer pops open unless `SIM_GUI=1`, and `KEEP=1` preserves
+  everything for debugging (#407).
+
+## v0.0.238 (2026-08-05)
+
+- Tight-budget runs hold back a landing reserve, so they finish, verify, and
+  still deliver the final answer instead of dying mid-narration.
+- A completed run releases the terminal instead of suspending on tty input
+  (#396), and worker activity lines wait for the foreground's line boundary.
+- Completed todo items parked from a prior goal retire at the next ask instead
+  of piling up across prompts (#394).
+- Fleet workers retry transient failures within a bound — one flaky HTTP
+  response can't lose a finished report, and budget refusals never blind-retry.
+- Search roles ride the small rung; landed turns feed local learning, and a
+  learned decline names the policy it came from.
+
 ## v0.0.237 (2026-08-04)
 
 - Ultracode redesigned around an escalation ladder: the codeword now means

@@ -21,6 +21,19 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.239
+    \\  • Codex WebSocket turns can't stall silently: visible output tightens the watchdog, a mute reused socket is retried in ~30s, and send/dial run under deadlines with Esc live
+    \\  • A successful /login reaches the live session — codex auth recovery re-reads auth.json, spends the refresh token, and retries once instead of looping on a dead bearer
+    \\  • Failed one-shots still print the [usage] footer and note completed tool work; rate-limit waits get a human duration; empty compaction summaries escalate instead of looping
+    \\  • /save and /resume copy the typed name out of the readline buffer, and /rewind never deletes a file it failed to snapshot
+    \\
+    \\0.0.238
+    \\  • Tight-budget runs hold back a landing reserve, so they finish, verify, and still deliver the final answer instead of dying mid-narration
+    \\  • A completed run releases the terminal instead of suspending on tty input, and worker activity lines wait for the foreground's line boundary
+    \\  • Completed todo items parked from a prior goal retire at the next ask instead of piling up across prompts
+    \\  • Fleet workers retry transient failures within a bound — one flaky HTTP response can't lose a finished report, and budget refusals never blind-retry
+    \\  • Search roles ride the small rung; landed turns feed local learning, and a learned decline names the policy it came from
+    \\
     \\0.0.231
     \\  • edit_file verifies every edit actually landed on disk; a silent no-op is a loud tool error instead of a false success, and batched same-file edits can no longer race each other
     \\  • Embedder mode is complete: the hard --no-local-tools gate (MCP-sourced coding tools) plus resumable serve streams with seq ids, ?from=N replay, and durable sessions (schema 0.10)
@@ -28,11 +41,6 @@ pub const changelog_text =
     \\0.0.229
     \\  • SKILL.md skills: markdown playbooks in .harness/skills (or .claude/skills) load on demand, cost one catalog line each, and /skills manages them
     \\  • The bundled skill-creator teaches the full authoring loop, from capturing intent mid-session to forward-testing with fresh subagents
-    \\
-    \\0.0.215
-    \\  • Local learning can race multiple prompt variants, rank correctness before tool economy, and expose only the winner to a hidden holdout
-    \\  • Runs checkpoint safely, keep promotion manual by default, and can bundle an aggregate-only signed grade submission
-    \\  • Aggregate receipts expire after 30 days and can be deleted remotely without deleting local evidence or requiring telemetry consent
     \\  • Root/subagent model shapes can keep orchestration on Sol while routing parallel workers and judges to Terra
     \\  • Remote MCP servers now support Streamable HTTP, OAuth discovery/PKCE/refresh, and an opt-out core Smolify connection
     \\
@@ -45,11 +53,6 @@ pub const changelog_text =
     \\  • The CLI now uses Codegraff's accessible vermilion-coral accent for prompts, tools, Markdown structure, and active selections
     \\  • A quiet Ensō brush-circle is the stable thinking default; every existing animation remains selectable, including random
     \\  • Ultracode motion is now a slower rust/coral/gold ember sweep instead of a full-spectrum rainbow
-    \\
-    \\0.0.201
-    \\  • A send-failed request no longer re-pools its dead connection, so one network blip can't storm every later compaction, title, and subagent call
-    \\  • The "ultracode" codeword is matched only on what you actually typed (not on appended goal/todo notes), and /clear now clears the standing goal and ultracode mode
-    \\  • `graff login codex` lands on a branded, dark-mode-aware confirmation page instead of a bare line of text
     \\
 ;
 
