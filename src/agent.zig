@@ -244,10 +244,12 @@ pub const Agent = struct {
         return fmt.len > 0 and fmt[fmt.len - 1] == '\n';
     }
 
-    /// Report an API error: remember the formatted message so the --json
-    /// `error` event can carry the detail, then print it like say().
+    /// Report an API error: remember the formatted message for the --json
+    /// `error` event, then print it like say() plus a #398 duration hint;
+    /// last_api_error keeps the provider's words (classifiers match them).
     pub fn sayApiError(self: *Agent, comptime fmt: []const u8, args: anytype) !void {
         self.last_api_error = std.fmt.allocPrint(self.arena, fmt, args) catch null;
+        if (self.last_api_error) |m| if (@import("retry_hint.zig").humanizeRetrySeconds(m)) |h| return self.say("{s} (~{s})\n", .{ m, h.buf[0..h.len] });
         try self.say(fmt ++ "\n", args);
     }
 
