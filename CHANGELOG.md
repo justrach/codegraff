@@ -70,6 +70,22 @@ current is part of cutting a release.
   session onto SSE. A socket the idle window condemns is torn down with a plain
   FIN rather than a courtesy close frame that could block again, and a failed WS
   handshake no longer leaks its fd and CA bundle.
+- A one-shot that dies (budget exhaustion, a late gateway refusal) still prints
+  the `[usage]` footer and notes how many tool calls already completed — the
+  runs most likely to be expensive no longer exit with no cost accounting, and
+  an aborted run no longer reads as if nothing happened (#387, #389).
+- Rate-limit errors that say "try again in 350000 seconds" now append a human
+  duration ("~4d 1h"). The provider's exact words are preserved — the hint is
+  display-only (#398).
+- Auto-compaction escalates instead of looping when the model keeps returning
+  empty summaries: two consecutive complete-but-unusable summaries over the
+  threshold unlock the bounded emergency trim, and compaction summary requests
+  run at low reasoning effort so a high-effort reasoner can't complete with
+  reasoning items and no summary text (#379).
+- iOS simulator scripts clean up what they start: the app is terminated and a
+  device is shut down when (and only when) the run booted it; the Simulator
+  window no longer pops open unless `SIM_GUI=1`, and `KEEP=1` preserves
+  everything for debugging (#407).
 
 ## v0.0.238 (2026-08-05)
 
