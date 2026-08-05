@@ -24,6 +24,7 @@ const isLocalUrl = keys_cli.isLocalUrl;
 const openAiModelsUrl = keys_cli.openAiModelsUrl;
 const fetchOpenAIModels = keys_cli.fetchOpenAIModels;
 const harness_version = main_mod.harness_version;
+const Rewound = @import("tools.zig").Rewound; // what one /rewind restored/skipped
 
 const pricing = @import("pricing.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
@@ -285,17 +286,16 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.goal_note_fp = 0; // the goal note may have been in the dropped turns (#318)
         // Restore files written/edited during the rewound turns, and re-point the
         // turn counter so the next prompt re-takes turn n.
-        var restored: usize = 0;
+        var rw: Rewound = .{};
         if (root.snapshots) |snaps| {
-            restored = snaps.restore(@intCast(n));
+            rw = snaps.restore(@intCast(n));
             snaps.turn = @intCast(n - 1);
         }
         try out.print("⏪ rewound to before prompt {d} — dropped {d} message(s)", .{ n, dropped });
-        if (restored > 0) {
-            try out.print(", restored {d} file(s)", .{restored});
-        } else {
-            try out.print("{s} (no tracked file changes){s}", .{ style.dim, style.reset });
-        }
+        if (rw.restored > 0) try out.print(", restored {d} file(s)", .{rw.restored});
+        // Left alone rather than deleted. State the fact, never a cause: `.unreadable` is every non-FileNotFound read failure, so the reason is not knowable here.
+        if (rw.skipped > 0) try out.print(", left {d} file(s) as-is (no snapshot was captured)", .{rw.skipped});
+        if (rw.restored == 0 and rw.skipped == 0) try out.print("{s} (no tracked file changes){s}", .{ style.dim, style.reset });
         try out.writeAll("\n");
         try out.flush();
         return true;

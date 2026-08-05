@@ -235,7 +235,7 @@ pub fn applyEdit(ctx: ToolCtx, path: []const u8, resolved: []const u8, old: []co
         // drift falls through to the write, where verification is the backstop.
         if (attempt == 0 and drifted(io, resolved, prev_stat)) continue;
 
-        if (ctx.snapshots) |snaps| if (!ctx.from_sub) snaps.record(path, data); // pre-edit content for /rewind
+        if (ctx.snapshots) |snaps| if (!ctx.from_sub) snaps.record(path, .{ .content = data }); // pre-edit content for /rewind
 
         // Premium splice: when the zigrep suite is installed, zigpatch does the
         // write — an atomic tmp+rename byte-level --all splice (our count

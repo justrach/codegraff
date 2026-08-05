@@ -247,8 +247,10 @@ pub fn execImagegen(ctx: ToolCtx, input: Value) !ToolOutput {
     // /rewind parity with write_file: capture what we are about to overwrite
     // before anything runs, so an imagegen that clobbers a file is undoable.
     if (ctx.snapshots) |snaps| if (!ctx.from_sub and before.existed) {
+        // The file IS there, so a read failure (a big image past the cap) means
+        // "no snapshot", never "absent" — /rewind would delete it otherwise.
         const prior = Io.Dir.cwd().readFileAlloc(io, resolved, arena, .limited(16 * 1024 * 1024)) catch null;
-        snaps.record(out_rel, prior);
+        snaps.record(out_rel, if (prior) |p| .{ .content = p } else .unreadable);
     };
     // Same stripe as edit_file/write_file, so an imagegen and an edit_file
     // landing on one path in the same turn take turns instead of interleaving.
