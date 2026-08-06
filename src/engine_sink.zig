@@ -14,7 +14,12 @@
 //! - JsonSink: the existing --json wire lines for these events,
 //!   byte-identical to the old inline emits. The ONE translation point from
 //!   internal type to wire shape: any change here is externally visible and
-//!   gated behind a schema_version bump.
+//!   gated behind a schema_version bump. Not yet the ONLY producer of those
+//!   shapes, though: subagent_run.zig's guiEmit writes `tool_call`/
+//!   `tool_result` rows with an extra `id` (schema_protocol.zig) straight to
+//!   stdout, bypassing this sink. Routing them through it needs an optional
+//!   `id` on ToolInvocation/ToolOutcome — decide that when #429 takes the
+//!   subagent cluster, while these structs are still cheap to change.
 //!
 //! Events are stamped with a {generation, sequence} Cursor at the dispatch
 //! boundary. In --json mode (the only durable sink today), durable events
@@ -61,11 +66,11 @@ pub const EngineSink = struct {
     /// The emission boundary: stamp, then hand off. `io` backs the stdout
     /// lock, taken only when a durable sink reserves AND json_mode is on —
     /// a global, so `io` may be passed undefined only where json_mode is
-    /// known false (TUI dispatch; the tests here pin it). Durable emitters
-    /// must not emit durable events a sink will drop (jsonEmit returns on
-    /// out == null): the reserved id would burn with no wire line, opening
-    /// a seq gap (#330). Today printDelta guarantees that by returning
-    /// early when out == null, before any durable emission.
+    /// known false (TUI dispatch; the tests here pin it). A durable sink must
+    /// never be handed an event it will drop: the reserved id would burn with
+    /// no wire line, opening a seq gap (#330). jsonSink enforces that at
+    /// construction — an agent with no writer gets a non-durable vtable — so
+    /// emitters need no `out == null` guard of their own.
     pub fn emit(self: EngineSink, io: Io, ev: EngineEvent) void {
         const reserve = self.vt.durable and engine_events.durable(ev);
         if (reserve and main_mod.json_mode) {
@@ -91,12 +96,21 @@ pub fn tuiSink(a: *Agent) EngineSink {
     return .{ .ctx = a, .vt = &tui_vtable };
 }
 
+/// The --json wire, for an agent that HAS one. A frontendless agent — a
+/// pool-thread subagent (subagent_run.zig builds every child with
+/// `.out = null`) or the ACP root (acp.zig nulls it while json_mode is on) —
+/// gets the same emitter but a NON-durable vtable: jsonEmit drops every line
+/// for it, and a durable sink would have reserved a sequence id for each of
+/// those dropped lines, opening exactly the gap #330 promises cannot exist.
+/// Structural, so no emitter has to re-derive the rule per call site.
 pub fn jsonSink(a: *Agent) EngineSink {
-    return .{ .ctx = a, .vt = &json_vtable };
+    return .{ .ctx = a, .vt = if (a.out == null) &json_dropped_vtable else &json_vtable };
 }
 
 const tui_vtable: VTable = .{ .emit = tuiEmit, .durable = false };
 const json_vtable: VTable = .{ .emit = jsonEmit, .durable = true };
+/// Same writer, nothing to write to: see jsonSink.
+const json_dropped_vtable: VTable = .{ .emit = jsonEmit, .durable = false };
 
 /// Today's interactive rendering, relocated behind the event contract. Every
 /// branch is the old inline agent_stream.zig code path, gate for gate.
@@ -438,6 +452,37 @@ test "JsonSink drops ask_user's bracket and a meta result without burning ids (s
         "{\"seq\":1,\"type\":\"tool_result\",\"name\":\"ask_user\",\"is_error\":false,\"text\":\"yes\"}\n",
         aw.writer.buffered(),
     );
+}
+
+test "a frontendless agent's wire sink burns no ids for the lines it cannot write (#330)" {
+    const saved_json = main_mod.json_mode; // pin: see the dispatch-order test
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
+    protocol_seq.resetForTest();
+    defer protocol_seq.resetForTest();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+    a.out = null; // a pool-thread subagent, or the ACP root: nowhere to write
+    const s = jsonSink(&a);
+    try std.testing.expect(!s.vt.durable); // the guarantee is structural, not per-call-site
+
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"path\":\"f\"}", .{});
+    const call: engine_events.ToolInvocation = .{ .name = "read_file", .input = input };
+    const done: engine_events.ToolOutcome = .{ .name = "read_file", .text = "hi", .is_error = false };
+    s.emit(undefined, .{ .tool_call_announced = call });
+    s.emit(undefined, .{ .tool_call_started = call });
+    s.emit(undefined, .{ .tool_result = done });
+    s.emit(undefined, .{ .tool_call_finished = done });
+    s.emit(undefined, .{ .tool_rejected = .{ .name = "bash", .input = input, .reason = "budget", .message = "no" } });
+    s.emit(undefined, .{ .text_delta = .{ .text = "hi" } });
+    // Every one of those would have been a wire line for a rooted agent. With
+    // no writer there is no line, so there must be no id either: a supervisor
+    // reads a gap as lost data.
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+    try std.testing.expectEqual(@as(u64, 0), protocol_seq.current());
 }
 
 test "TuiSink draws the ⚙ and ✓ lines and nothing for the brackets (slice 1c)" {

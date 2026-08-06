@@ -132,7 +132,11 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
     }
 
     if (ext_idx.items.len > 0) {
-        if (ext_idx.items.len > 1) {
+        // A child's fan-out is the root's to announce, so the moment is not
+        // produced at all for a subagent: engine policy about who owns the
+        // terminal, kept at the emit site rather than re-derived by a sink
+        // that would need to back-read the Agent to know (#422 slice-1 rule).
+        if (ext_idx.items.len > 1 and !self.sub) {
             engine_sink.forAgent(self).emit(self.io, .{ .parallel_batch_started = .{ .count = ext_idx.items.len } });
         }
         const ctx: ToolCtx = .{
@@ -193,7 +197,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
         brief_diversity.noteSiblingBatch(self.arena, self.tracer, calls, ext_idx.items, results); // #382
         // #266: a cancelled parallel batch used to just look "running" and then
         // failed — one terminal line says what completed, failed, and cancelled.
-        if (ext_idx.items.len > 1) {
+        if (ext_idx.items.len > 1 and !self.sub) { // root's line to draw, as above
             var tally: engine_events.BatchOutcome = .{ .done = 0, .failed = 0, .cancelled = 0 };
             for (ext_idx.items) |i| {
                 const r = results[i];
@@ -315,7 +319,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         }
         if (try goal_state.completionGate(self.arena, self)) |refusal| {
             goal_state.noteCompletionRefused(self); // arm the double-check (across turns) and mark the turn as worked (#318)
-            engine_sink.forAgent(self).emit(self.io, .completion_deferred);
+            if (!self.sub) engine_sink.forAgent(self).emit(self.io, .completion_deferred); // root-only notice, as ever
             return .{ .text = refusal, .is_error = true };
         }
         const result = if (tools_mod.json_args.object(call.input)) |o| (tools_mod.json_args.str(o, "result") orelse "") else "";
@@ -329,7 +333,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
             if (self.tracer) |t| t.note("goal", "completion; standing goal retained");
         }
         // Skip the re-print only when the result streamed live in full.
-        if (!self.argStreamedFully(call)) engine_sink.forAgent(self).emit(self.io, .{ .completion_text = .{ .text = result } });
+        if (!self.sub and !self.argStreamedFully(call)) engine_sink.forAgent(self).emit(self.io, .{ .completion_text = .{ .text = result } });
         return .{ .text = "completion recorded", .is_error = false };
     }
     if (std.mem.eql(u8, call.name, "eval")) {
@@ -340,7 +344,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         // Epoch-scoped replace, keeping omitted completed items; a write with
         // no usable items is rejected untouched (#318). goal_todo owns the rule.
         const r = try goal_todo.applyTodoWrite(self, if (tools_mod.json_args.object(call.input)) |o| o.get("todos") else null);
-        if (!r.rejected) engine_sink.forAgent(self).emit(self.io, .{ .todo_list_updated = .{ .text = r.text } });
+        if (!self.sub and !r.rejected) engine_sink.forAgent(self).emit(self.io, .{ .todo_list_updated = .{ .text = r.text } });
         return .{ .text = r.text, .is_error = r.rejected };
     }
     if (std.mem.eql(u8, call.name, "clock_sleep")) {
@@ -437,8 +441,9 @@ pub fn emitAskUser(self: *Agent, call_id: []const u8, question: []const u8, inpu
 /// --json supervisor times against, and the ⚙ line the terminal draws for the
 /// first of the two. Which of them a frontend surfaces (the wire skips
 /// ask_user, the terminal skips prose that already streamed) is the sink's
-/// call — engine_events.durable() decides the wire half so no sequence id is
-/// ever reserved for a line the wire drops.
+/// call — engine_events.durable() decides the wire half, and jsonSink is
+/// non-durable for an agent with no writer, so no sequence id is ever
+/// reserved for a line the wire drops (#330).
 pub fn sayToolUse(self: *Agent, call: ToolCall) !void {
     const ev: engine_events.ToolInvocation = .{
         .name = call.name,

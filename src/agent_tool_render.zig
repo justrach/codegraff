@@ -12,6 +12,11 @@
 //! - write errors are swallowed rather than propagated, because a sink's emit
 //!   path returns void. A caller that used to abort its batch on a broken
 //!   stdout now continues into the next failing write instead.
+//!
+//! WHO may announce a moment stays engine policy: the `!self.sub` gates on the
+//! batch tallies and the meta notices remain at their emit sites, so nothing
+//! here back-reads Agent policy to decide whether to draw. The only Agent
+//! reads below are drawing handles — the writer and the allocator.
 
 const std = @import("std");
 const Io = std.Io;
@@ -21,7 +26,7 @@ const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 const agent_output = @import("agent_output.zig");
 const sayText = agent_output.sayText;
-const util = @import("util.zig"); // tests only: repeatBytes for the arg-cap case
+const util = @import("util.zig"); // tests only: repeatBytes for the two cap cases
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
@@ -92,14 +97,12 @@ pub fn toolResultLine(a: *Agent, r: ToolOutcome) void {
 const notice_buf_bytes: usize = 192;
 
 pub fn parallelBatchStarted(a: *Agent, count: usize) void {
-    if (a.sub) return; // a child's fan-out is the root's line to draw, not its own
     var buf: [notice_buf_bytes]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "  {s}↯ running {d} tools in parallel{s}\n", .{ style.dim, count, style.reset }) catch return;
     sayText(a, line);
 }
 
 pub fn parallelBatchFinished(a: *Agent, o: BatchOutcome) void {
-    if (a.sub) return;
     var buf: [notice_buf_bytes]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "  {s}↯ parallel tools finished: {d} completed, {d} failed, {d} cancelled{s}\n", .{ style.dim, o.done, o.failed, o.cancelled, style.reset }) catch return;
     sayText(a, line);
@@ -108,7 +111,6 @@ pub fn parallelBatchFinished(a: *Agent, o: BatchOutcome) void {
 /// #318: the checklist isn't settled, so the completion parks. The escapes are
 /// the literal bytes the old call site spelled out (⏸, 🎯 below).
 pub fn completionDeferred(a: *Agent) void {
-    if (a.sub) return;
     sayText(a, "\xe2\x8f\xb8 completion deferred \xe2\x80\x94 the standing goal's checklist isn't settled\n");
 }
 
@@ -118,7 +120,6 @@ pub fn goalCompleted(a: *Agent) void {
 
 /// A meta tool's own user-facing text, one line, exactly as it came.
 pub fn toolTextLine(a: *Agent, text: []const u8) void {
-    if (a.sub) return;
     var line: Io.Writer.Allocating = .init(a.gpa);
     defer line.deinit();
     line.writer.print("{s}\n", .{text}) catch return;
@@ -169,7 +170,9 @@ test "the ⚙ line reproduces the old inline announcement, cap and ellipsis incl
     const line = aw.writer.buffered();
     try std.testing.expect(std.mem.startsWith(u8, line, "⚙ codedb {\"q\":\"xxx"));
     try std.testing.expect(std.mem.endsWith(u8, line, "…\n"));
-    try std.testing.expectEqual(arg_preview_bytes, line.len - "⚙ codedb ".len - "…\n".len);
+    // The literal, not arg_preview_bytes: this asserts the conversion kept the
+    // pre-#422 inline cap, and asserting the constant against itself would not.
+    try std.testing.expectEqual(@as(usize, 160), line.len - "⚙ codedb ".len - "…\n".len);
 }
 
 test "the result line marks success, failure and cancellation and previews one line" {
@@ -198,6 +201,15 @@ test "the result line marks success, failure and cancellation and previews one l
     aw.clearRetainingCapacity();
     toolResultLine(&a, .{ .name = "todo_write", .text = "todos", .is_error = false, .meta = true });
     try std.testing.expectEqualStrings("", aw.writer.buffered());
+
+    // Over the cap: exactly 100 bytes of the first line, then the ellipsis —
+    // the literal the pre-#422 inline path spelled out, not result_preview_bytes.
+    aw.clearRetainingCapacity();
+    const long = util.repeatBytes("z", 250);
+    toolResultLine(&a, .{ .name = "bash", .text = &long, .is_error = false });
+    const rline = aw.writer.buffered();
+    try std.testing.expect(std.mem.endsWith(u8, rline, "…\n"));
+    try std.testing.expectEqual(@as(usize, 100), rline.len - "  ✓ ".len - "…\n".len);
 
     // --timing adds the measured duration between the mark and the preview.
     aw.clearRetainingCapacity();
@@ -236,12 +248,8 @@ test "batch tallies and meta notices render the old wording verbatim" {
     toolTextLine(&a, "completion recorded");
     try std.testing.expectEqualStrings("completion recorded\n", aw.writer.buffered());
 
-    // A subagent announces none of the root's batch/goal lines.
-    aw.clearRetainingCapacity();
-    a.sub = true;
-    parallelBatchStarted(&a, 3);
-    parallelBatchFinished(&a, .{ .done = 1, .failed = 0, .cancelled = 0 });
-    completionDeferred(&a);
-    toolTextLine(&a, "x");
-    try std.testing.expectEqualStrings("", aw.writer.buffered());
+    // Who may announce these is engine policy, not a drawing decision: the
+    // `!self.sub` gates live at the emit sites (agent_tools.runTools /
+    // handleMeta), so a subagent never produces the moment at all and this
+    // file needs no read into the Agent to suppress it.
 }
