@@ -12,6 +12,18 @@ current is part of cutting a release.
 
 ## v0.0.241 (unreleased)
 
+- Cross-process locks stopped trusting a bare pid (#413): an owner record now
+  carries the holder's process START identity next to its pid (`/proc/<pid>/stat`
+  field 22 on Linux, `proc_pidinfo` on macOS, `GetProcessTimes` on Windows), so
+  liveness is "the pid is alive AND it is still the same process". A recycled
+  pid can no longer look like a live owner forever, and a crashed holder's lock
+  is reclaimed because its identity provably mismatches rather than because a
+  timeout guessed. A record written by an older graff carries no identity and
+  keeps the pid-only contract exactly as before, so an in-flight lock is never
+  bricked, and an identity that cannot be read fails safe: held, never stolen.
+  The #320 worktree lease gets the producer it was missing, and a session save
+  on a filesystem with no working locks (#289) now coordinates through an owner
+  record instead of racing unguarded.
 - A no-progress `eval` is no longer paid for (#412). A goal/loop run
   re-verifies on every continuation, so a model that has edited nothing since
   the last RED re-ran the whole `--eval` command — plus a `--judge` model call,
