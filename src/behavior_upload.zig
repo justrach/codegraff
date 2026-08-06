@@ -69,6 +69,12 @@ pub fn controlledClientName(raw: []const u8) []const u8 {
     return "harness";
 }
 
+/// Per-turn behavioral counters. Every field is a SUM over the requests and
+/// tool calls that turn made — the root's and every subagent's alike (see
+/// api_subagent_calls / tool_subagent_calls for how many of each were a
+/// child's). That is the right shape for latency and byte totals; it is a
+/// trap for `context_tokens`, which reads like an occupancy and is not one.
+/// Nothing in the harness reads these back: they exist to be uploaded.
 pub const TurnMetrics = struct {
     turn: u64,
     api_calls: u64 = 0,
@@ -77,6 +83,12 @@ pub const TurnMetrics = struct {
     api_latency_ms: u64 = 0,
     request_bytes: u64 = 0,
     response_bytes: u64 = 0,
+    /// NOT a context-window reading (#418). Every agent's meter at the moment
+    /// of its request, ADDED TOGETHER — so a turn that fanned out eight
+    /// workers reports roughly nine windows' worth and can exceed the model's
+    /// window several times over. The authoritative per-agent occupancy is
+    /// `Agent.last_context_tokens` / `Agent.effectiveContextTokens()`, which
+    /// is what the compaction gates read; never substitute this for it.
     context_tokens: u64 = 0,
     cache_read_tokens: u64 = 0,
     tool_calls: u64 = 0,
@@ -324,6 +336,13 @@ pub const Upload = struct {
         saturatingAdd(&metrics.api_latency_ms, nonNegative(ms));
         saturatingAdd(&metrics.request_bytes, @intCast(req_bytes));
         saturatingAdd(&metrics.response_bytes, @intCast(resp_bytes));
+        // #418: `context_tokens` here is the CALLER's meter — the root's on a
+        // root request, a child's when from_subagent — and this accumulates
+        // them into one turn-wide sum. Deliberate for upload, and the reason
+        // the field is not a context occupancy: a child's window is not the
+        // parent's. Keep the summing on this side of the boundary. The
+        // parent's own meter must never see a child's tokens, which is what
+        // src/usage_attribution_tests.zig pins.
         saturatingAdd(&metrics.context_tokens, context_tokens);
         saturatingAdd(&metrics.cache_read_tokens, cache_read_tokens);
     }
