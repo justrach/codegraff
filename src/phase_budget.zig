@@ -25,6 +25,13 @@
 //!   P3 optional      judges and other nice-to-haves run only when they fit
 //!                    ON TOP of the reserve (subagent.scoreVariants).
 //!
+//! The reserve is not only landing WORK. Every call that reads a result or
+//! makes an edit ends in a tool round-trip, so a run can spend the reserve
+//! down to zero doing exactly what it was asked to do and then have nothing
+//! left to SAY SO. The final narration turn is a model call like any other:
+//! `cost_narration` names it and `totalReserve` folds it into the reserve, so
+//! no gate here can spend the turn that reports the work (#390).
+//!
 //! Everything here is PURE arithmetic over cheap observables — no model call,
 //! no I/O — so the whole ladder is unit-testable without a network.
 
@@ -89,9 +96,34 @@ pub fn landingReserve(cap: u64) u64 {
     return @max(min_landing_reserve, cap / 5);
 }
 
+/// #390: what the run's FINAL turn costs — the one model call that tells the
+/// user what happened. One call, no tools, and until it was named here nobody
+/// had reserved it. `landingReserve` sizes the calls that LAND the work (read
+/// a result, edit, verify), and each of those ends in a tool round-trip that
+/// owes a follow-up call; a run could therefore admit its work, land it,
+/// verify it, truncate its last phase correctly — and still die on the turn
+/// that would have reported all of it. That is not hypothetical either: it is
+/// the 06-audit acceptance run at cap 30, `exhaustedFatal` with the work done
+/// and nothing narrated.
+pub const cost_narration: u64 = 1;
+
+/// What the ledger actually holds back: the calls that land the work PLUS the
+/// one that narrates it.
+///
+/// THE TWO HARNESS LIABILITIES ARE ORDERED, AND THE ORDER IS NOT SYMMETRIC.
+/// Narration is MANDATORY and senior — it IS part of the reserve, funded
+/// before any phase spends a call and before #391's optional note, and no
+/// gate below can reach it. The pre-compaction note is optional and junior:
+/// it must clear this whole number to run at all. Narration is counted
+/// exactly ONCE, right here, and nothing adds it again — a liability with a
+/// reserve of its own is the double-count `cost_precompact_note` warns about.
+pub fn totalReserve(cap: u64) u64 {
+    return landingReserve(cap) + cost_narration;
+}
+
 /// #391: what ONE pre-compaction note-to-self costs. It is a cost, not a
-/// second reserve, and that distinction is the whole point. The reserve above
-/// already protects the calls the root needs to land and narrate the work
+/// second reserve, and that distinction is the whole point. `totalReserve`
+/// already protects the calls the root needs to land AND narrate the work
 /// (#390); a note with a reserve of its own would be a SECOND ledger over the
 /// same pool, and two ledgers each holding back "the last call" double-count
 /// it. Charged through `affordsHarnessNote` instead, so the note runs only
@@ -170,13 +202,14 @@ pub fn isLandingRole(role: []const u8) bool {
 pub const Ledger = struct {
     /// The run's `--max-model-calls`; 0 means unlimited.
     cap: u64,
-    /// Calls held back for the root to land the work.
+    /// Calls held back for the root to land the work AND narrate it — the
+    /// landing reserve plus the one final turn (`totalReserve`).
     reserve: u64,
     /// Calls this run's phases have already been charged for by `commit`.
     committed: u64 = 0,
 
     pub fn init(cap: u64) Ledger {
-        return .{ .cap = cap, .reserve = landingReserve(cap) };
+        return .{ .cap = cap, .reserve = totalReserve(cap) };
     }
 
     /// An unlimited pool cannot exhaust, so every gate below passes; keeping
@@ -206,11 +239,32 @@ pub const Ledger = struct {
         return remaining < later_min + self.reserve;
     }
 
+    /// The part of the reserve that funds landing WORK — everything except
+    /// the final turn. Stated so the split is readable rather than inferred:
+    /// `reserve == landingWork() + cost_narration`, always.
+    pub fn landingWork(self: Ledger) u64 {
+        return self.reserve -| cost_narration;
+    }
+
+    /// The SENIOR harness liability: can the run still say what it did?
+    /// Narration sits INSIDE the reserve rather than on top of it, so unlike
+    /// the note it is never asked to clear anything — one call left is
+    /// enough, and every gate above exists to make sure one call is left.
+    /// Deliberately NOT `fits`: routing narration through the P3 predicate
+    /// would make the mandatory turn junior to the reserve that exists for
+    /// it, which is the inversion #390 is about.
+    pub fn affordsNarration(self: Ledger, remaining: u64) bool {
+        if (self.unlimited()) return true;
+        return remaining >= cost_narration;
+    }
+
     /// P3 for the HARNESS's own optional call (#391's pre-compaction note).
     /// Same predicate the judges use, and deliberately so: the note is the
-    /// junior liability on this ledger. Narration is mandatory and owns the
-    /// reserve; the note is a nice-to-have and must clear it. A run that can
-    /// only afford one more call spends it landing, not journaling.
+    /// JUNIOR liability on this ledger. Narration is mandatory and is part of
+    /// the reserve; the note is a nice-to-have and must clear the whole of
+    /// it. A run that can only afford one more call spends it landing and
+    /// narrating, not journaling — so of the two harness calls the note is
+    /// always the one refused first.
     pub fn affordsHarnessNote(self: Ledger, remaining: u64) bool {
         return self.fits(remaining, cost_precompact_note);
     }
@@ -264,12 +318,27 @@ test "landingReserve: a floor below cap 30, a fifth above it" {
     try std.testing.expectEqual(@as(u64, 20), landingReserve(100));
 }
 
+test "totalReserve (#390): the work reserve PLUS the one turn that reports it" {
+    // Narration is one turn, not a proportion, and it is added exactly once —
+    // at every cap, including the unlimited pool whose reserve is nominal.
+    for ([_]u64{ 0, 12, 30, 40, 100 }) |cap| {
+        const l = Ledger.init(cap);
+        try std.testing.expectEqual(landingReserve(cap) + cost_narration, totalReserve(cap));
+        try std.testing.expectEqual(totalReserve(cap), l.reserve);
+        // The split reads back exactly, so no call is counted on both sides.
+        try std.testing.expectEqual(landingReserve(cap), l.landingWork());
+        try std.testing.expectEqual(l.reserve, l.landingWork() + cost_narration);
+    }
+    // The 06-audit acceptance cap: 6 calls to land, 1 to say what happened.
+    try std.testing.expectEqual(@as(u64, 7), totalReserve(30));
+}
+
 test "fleetFloor: every shape costs more than the reserve it must clear" {
     for ([_]Shape{ .review, .research, .design, .feature, .migration, .adhoc }) |s| {
         try std.testing.expect(fleetFloor(s) >= min_landing_reserve);
     }
-    // The study's cap-30 bugfix: a review fleet (17) plus the reserve (6) is
-    // 23 of the ~27 calls left after the root has read the task — affordable
+    // The study's cap-30 bugfix: a review fleet (17) plus the reserve (7) is
+    // 24 of the ~27 calls left after the root has read the task — affordable
     // on paper, which is exactly why SCOPE, not budget alone, has to gate it.
     try std.testing.expectEqual(@as(u64, 17), fleetFloor(.review));
     try std.testing.expectEqual(@as(u64, 14), fleetFloor(.research));
@@ -278,10 +347,10 @@ test "fleetFloor: every shape costs more than the reserve it must clear" {
 
 test "Ledger: spendable, fits and earlyExit all sit ON TOP of the reserve" {
     var l = Ledger.init(30);
-    try std.testing.expectEqual(@as(u64, 6), l.reserve);
-    try std.testing.expectEqual(@as(u64, 21), l.spendable(27));
-    try std.testing.expect(l.fits(27, 21));
-    try std.testing.expect(!l.fits(27, 22)); // one call into the reserve is one too many
+    try std.testing.expectEqual(@as(u64, 7), l.reserve); // 6 to land + 1 to narrate
+    try std.testing.expectEqual(@as(u64, 20), l.spendable(27));
+    try std.testing.expect(l.fits(27, 20));
+    try std.testing.expect(!l.fits(27, 21)); // one call into the reserve is one too many
     // Saturating, never wrapping: below the reserve there is simply nothing
     // to spend, and no gate may read that as "a very large budget".
     try std.testing.expectEqual(@as(u64, 0), l.spendable(4));
@@ -295,19 +364,67 @@ test "Ledger: spendable, fits and earlyExit all sit ON TOP of the reserve" {
 
 test "affordsHarnessNote (#391): the note clears #390's reserve, it does not get one of its own" {
     const l = Ledger.init(30);
-    // The boundary is DERIVED from the landing reserve, not from a constant of
-    // the note's own: the first `remaining` that admits a note is one call
-    // above the reserve #390 holds back. A second, independent reserve would
-    // move this boundary and fail here.
-    const boundary = landingReserve(30) + cost_precompact_note;
+    // The boundary is DERIVED from the reserve, not from a constant of the
+    // note's own: the first `remaining` that admits a note is one call above
+    // the whole reserve #390 holds back (landing work AND narration). A
+    // second, independent reserve would move this boundary and fail here.
+    const boundary = l.reserve + cost_precompact_note;
     try std.testing.expect(l.affordsHarnessNote(boundary));
-    try std.testing.expect(!l.affordsHarnessNote(boundary - 1)); // exactly the reserve: landing only
+    try std.testing.expect(!l.affordsHarnessNote(boundary - 1)); // the reserve: land and narrate only
     try std.testing.expect(!l.affordsHarnessNote(0));
     // And the note is junior to a phase that fits: whatever spendable() says
     // is available for real work is available for the note too, never more.
     try std.testing.expectEqual(l.fits(boundary, cost_precompact_note), l.affordsHarnessNote(boundary));
     // An unlimited pool always affords it (the reserve is still nominal).
     try std.testing.expect(Ledger.init(0).affordsHarnessNote(std.math.maxInt(u64)));
+}
+
+test "#390: a run that spends every call it may is still left one to narrate" {
+    const l = Ledger.init(30);
+    // The shape the issue reports: 27 left after the root has read the task,
+    // a fleet that takes every call the ledger will release, then a P2 stop.
+    var remaining: u64 = 27;
+    const spent = l.spendable(remaining);
+    try std.testing.expect(l.fits(remaining, spent));
+    remaining -= spent;
+    try std.testing.expectEqual(l.reserve, remaining); // the reserve, untouched
+    // The root now lands the work, spending the calls `landingReserve` was
+    // sized for — read a result, make the edit, verify it …
+    remaining -= landingReserve(l.cap);
+    // … and one call is STILL there. That is the entire point of #390, and
+    // the assertion that goes red the moment cost_narration stops being
+    // added: before it, landing consumed the reserve down to nothing.
+    try std.testing.expectEqual(cost_narration, remaining);
+    try std.testing.expect(l.affordsNarration(remaining));
+
+    // At the boundary — nothing spendable left at all, P2 stopping the loop —
+    // the run still narrates. This is what failed before cost_narration.
+    try std.testing.expectEqual(@as(u64, 0), l.spendable(l.reserve));
+    try std.testing.expect(l.earlyExit(l.reserve, 1));
+    try std.testing.expect(l.affordsNarration(l.reserve));
+    try std.testing.expect(l.affordsNarration(cost_narration));
+    // Only a pool that is genuinely empty cannot narrate.
+    try std.testing.expect(!l.affordsNarration(0));
+    try std.testing.expect(Ledger.init(0).affordsNarration(0)); // unlimited never gates
+}
+
+test "#390/#391: narration is senior, the note is junior, and neither is counted twice" {
+    const l = Ledger.init(30);
+    var narrates_but_no_note: u64 = 0;
+    var r: u64 = 0;
+    while (r <= l.reserve + 3) : (r += 1) {
+        // The junior liability never runs where the senior one could not.
+        if (l.affordsHarnessNote(r)) try std.testing.expect(l.affordsNarration(r));
+        if (l.affordsNarration(r) and !l.affordsHarnessNote(r)) narrates_but_no_note += 1;
+    }
+    // And the gap is real, not vacuous: every call from 1 up to the whole
+    // reserve narrates and refuses the note, so of the two harness calls the
+    // note is always the one given up first.
+    try std.testing.expectEqual(l.reserve, narrates_but_no_note);
+    // The note's boundary is the reserve + its own cost: narration is paid
+    // for ONCE, inside the reserve, and never charged again on top of it.
+    try std.testing.expect(!l.affordsHarnessNote(l.reserve));
+    try std.testing.expect(l.affordsHarnessNote(l.reserve + cost_precompact_note));
 }
 
 test "Ledger: an unlimited pool never gates" {

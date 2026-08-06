@@ -47,7 +47,7 @@ test "ladder: the study's cap-30 bugfix is R0 — one file is not a fleet" {
     var o = base();
     try std.testing.expectEqual(Rung.R0, escalation.ladderRung(o));
     // Note WHY it is R0 and not a budget refusal: a review fleet (17) plus the
-    // landing reserve (6) does fit the 27 that remain. The budget said yes.
+    // landing reserve (7) does fit the 27 that remain. The budget said yes.
     try std.testing.expect(pb.Ledger.init(30).fits(27, pb.fleetFloor(.review)));
     // Two files is still a pair, not a fan-out.
     o.files = 2;
@@ -69,7 +69,7 @@ test "ladder: scope alone opens R2, and only at 3+ files with a plan that fans o
 test "ladder: budget vetoes R2 even at full scope" {
     var o = base();
     o.files = 6;
-    // 12 left, 6 reserved, a review fleet needs 17: the fleet cannot finish,
+    // 12 left, 7 reserved, a review fleet needs 17: the fleet cannot finish,
     // so the answer is the rung that can.
     o.remaining = 12;
     try std.testing.expectEqual(Rung.R0, escalation.ladderRung(o));
@@ -146,25 +146,26 @@ test "downsizeWidth: trims redundant finders and never the landing phase" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
     // A-fix at width: 4 finders (16) + 1 implementer (6) + 1 verify (3) = 25,
-    // against 21 spendable at cap 30 / 27 remaining.
+    // against 20 spendable at cap 30 / 27 remaining.
     const phases = phasesFrom(a,
         \\[{"title":"find the defect","tasks":[1,2,3,4]},
         \\ {"title":"implement the fix","tasks":[1]},
         \\ {"title":"verify the diff","tasks":[1]}]
     );
     const w = escalation.downsizeWidth(phases, 30, 27);
-    // 3 finders (12) + 6 + 3 = 21 fits exactly; 4 (16+6+3=25) would not.
-    try std.testing.expectEqual(@as(usize, 3), w);
+    // 2 finders (8) + 6 + 3 = 17 fits; 3 (12+6+3=21) is one call past the
+    // reserve, because the reserve also holds the narration turn (#390).
+    try std.testing.expectEqual(@as(usize, 2), w);
     // Whatever the width, the implement phase carries one task, so the edit
     // contract survives every trim — which is §4-P1's inviolable rule.
     try std.testing.expect(w >= 1);
     // Squeeze until only the skinniest plan fits: 1 finder + 1 implementer +
-    // 1 verify = 13, on top of the 6-call reserve, so 19 left is the floor.
-    try std.testing.expectEqual(@as(usize, 1), escalation.downsizeWidth(phases, 30, 19));
+    // 1 verify = 13, on top of the 7-call reserve, so 20 left is the floor.
+    try std.testing.expectEqual(@as(usize, 1), escalation.downsizeWidth(phases, 30, 20));
     // And below that, nothing fits — the caller must fall back to solo. Note
     // WHAT does not fit: the landing phase's own implementer, which is the
     // point at which a fleet stops being able to produce a patch at all.
-    try std.testing.expectEqual(@as(usize, 0), escalation.downsizeWidth(phases, 30, 18));
+    try std.testing.expectEqual(@as(usize, 0), escalation.downsizeWidth(phases, 30, 19));
     // An unlimited pool never trims.
     try std.testing.expectEqual(@as(usize, 4), escalation.downsizeWidth(phases, 0, std.math.maxInt(u64)));
 }
