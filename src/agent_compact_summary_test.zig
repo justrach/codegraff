@@ -5,7 +5,7 @@ const std = @import("std");
 const Agent = @import("agent.zig").Agent;
 const compact = @import("agent_compact.zig");
 const repeatedEmptySummaryFailure = compact.repeatedEmptySummaryFailure;
-const compact_note = @import("compact_note.zig");
+const handoff_note = @import("compact_handoff_note.zig");
 const session_transcript = @import("session_transcript.zig");
 const compact_instruction = @import("prompts.zig").compact_instruction;
 
@@ -81,7 +81,7 @@ test "#411's request note leaves #379's empty-summary escalation exactly as it w
     agent.context_local_tokens = agent.fullRequestEstimateTokens();
     agent.compact_summary_failures = 0;
 
-    const request = try compact_note.summaryRequest(a, &agent);
+    const request = try handoff_note.summaryRequest(a, &agent);
     try std.testing.expect(std.mem.startsWith(u8, request, compact_instruction));
     try std.testing.expect(std.mem.indexOf(u8, request, "durable state, re-derived") == null);
     try std.testing.expect(!repeatedEmptySummaryFailure(&agent, error.EmptySummary));

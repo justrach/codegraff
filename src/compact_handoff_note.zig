@@ -1,5 +1,10 @@
 //! #411: what SURVIVES a compaction, told to the model twice.
 //!
+//! NOT `compact_note.zig` (#391), which is the other side of the same boundary:
+//! that one is the buffer-reserved turn where the MODEL writes notes to itself
+//! before rollover. This one is the HARNESS's own ground truth, injected around
+//! the handoff - hence the name. Both halves of the boundary, two modules.
+//!
 //! THE PROBLEM. compact() replaces the history with a summary and never says
 //! what the summary does NOT have to carry. The model therefore treats the
 //! compaction as total loss and spends the summary hoarding contents - pasted

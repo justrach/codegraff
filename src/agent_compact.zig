@@ -11,7 +11,7 @@ const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 const goal_flow = @import("goal_flow.zig");
-const compact_note = @import("compact_note.zig"); // #411: both halves of "what survives a compaction"
+const handoff_note = @import("compact_handoff_note.zig"); // #411: both halves of "what survives a compaction"
 
 const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
@@ -160,7 +160,7 @@ pub fn compact(self: *Agent) anyerror!usize {
         }
     };
 
-    try self.messages.append(try textMessage(compact_arena, "user", try compact_note.summaryRequest(compact_arena, self)));
+    try self.messages.append(try textMessage(compact_arena, "user", try handoff_note.summaryRequest(compact_arena, self)));
     // #174: establish the synthetic summary turn before pruning Responses
     // reasoning. An active tool loop's reasoning is newer than the real user
     // turn and must remain while that loop is in flight, but it becomes prior-
@@ -231,7 +231,7 @@ pub fn handoffMessage(self: *Agent, summary: []const u8, discarded: []const Valu
     else
         try rootHandoff(self, summary);
     const standing = try goal_flow.compactionSnapshot(self.arena, self);
-    return compact_note.handoff(self.arena, self, base, standing, discarded);
+    return handoff_note.handoff(self.arena, self, base, standing, discarded);
 }
 
 fn rootHandoff(self: *Agent, summary: []const u8) ![]const u8 {
