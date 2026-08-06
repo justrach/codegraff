@@ -48,10 +48,18 @@ pub fn resetForTest() void {
 /// Does NOT write the trailing newline — the caller owns line framing (and,
 /// for stdout, the lock that keeps two writers from interleaving).
 pub fn writeEvent(w: *Io.Writer, ev: anytype) !void {
+    try writeEventStamped(w, next(), ev);
+}
+
+/// Same wire shape with a caller-reserved id: the #422 emission boundary
+/// (engine_sink.zig) stamps an event's Cursor first — inside the stdout lock —
+/// and the sink serializes with that exact sequence, so the stamp and the wire
+/// can never drift. Never bumps the counter itself.
+pub fn writeEventStamped(w: *Io.Writer, seq_id: u64, ev: anytype) !void {
     var s: std.json.Stringify = .{ .writer = w };
     try s.beginObject();
     try s.objectField("seq");
-    try s.write(next());
+    try s.write(seq_id);
     inline for (comptime std.meta.fieldNames(@TypeOf(ev))) |name| {
         comptime {
             if (std.mem.eql(u8, name, "seq"))
@@ -136,4 +144,21 @@ test "seqOf reads the envelope off a prefix and refuses to guess" {
     // A payload field named "seq" is NOT the envelope, however close it sits.
     try std.testing.expect(seqOf("{\"type\":\"tool_result\",\"seq\":5}") == null);
     try std.testing.expect(seqOf(" {\"seq\":5}") == null); // callers trim first
+}
+
+test "writeEventStamped uses the caller's id and never bumps the counter" {
+    resetForTest();
+    defer resetForTest();
+    var buf: [256]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try writeEventStamped(&w, 7, .{ .type = "text", .text = "hi" });
+    const line = w.buffered();
+    try std.testing.expect(std.mem.startsWith(u8, line, "{\"seq\":7,\"type\":\"text\""));
+    try std.testing.expectEqual(@as(u64, 7), seqOf(line).?);
+    // The stamped write reserved nothing: the next writeEvent still takes id 1.
+    try std.testing.expectEqual(@as(u64, 0), current());
+    var buf2: [256]u8 = undefined;
+    var w2: Io.Writer = .fixed(&buf2);
+    try writeEvent(&w2, .{ .type = "text" });
+    try std.testing.expectEqual(@as(u64, 1), seqOf(w2.buffered()).?);
 }
