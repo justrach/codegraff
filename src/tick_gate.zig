@@ -30,7 +30,27 @@
 //! direct stderr write and the gate stays out of the way.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const root = @import("main.zig"); // live json_mode toggle
+
+/// #444. A test binary has no terminal for a worker line to reach, and stderr
+/// there is not free: zig's build runner routes a Run step through its ERROR
+/// printer whenever `result_stderr` is non-empty — even on a green exit 0 — so
+/// a passing suite that says anything renders a step-failure tree and a red
+/// `failed command: …/test --listen=-`. That output read as a failure for
+/// months (the line people latched onto was an unrelated negative control's
+/// expected diagnostic, which merely sat in the same stderr buffer).
+///
+/// So: the gate's accounting still runs under test — offers are held, drops are
+/// counted, released lines are still counted — only the physical write is
+/// elided, and elided at comptime, so no test build can reach a stderr write
+/// through this module.
+const emit_to_stderr = !builtin.is_test;
+
+fn writeLine(text: []const u8) void {
+    if (!emit_to_stderr) return;
+    std.debug.print("{s}", .{text});
+}
 
 /// Held lines. Small on purpose: a fleet that outruns the stream should show
 /// its newest activity, not replay a backlog once the line finally ends.
@@ -116,11 +136,30 @@ fn unlock() void {
 /// A pool-thread worker wants `text` (whole, newline-terminated lines) on the
 /// terminal: printed now at a foreground line boundary, held otherwise.
 pub fn workerLine(text: []const u8) void {
-    if (root.json_mode) return std.debug.print("{s}", .{text});
+    if (root.json_mode) return writeLine(text);
     lock();
     const held = g_gate.offer(text);
     unlock();
-    if (!held) std.debug.print("{s}", .{text});
+    if (!held) writeLine(text);
+}
+
+/// workerLine for a format string. The activity lines subsystems print
+/// directly ("  [workflow] phase 1/2: …", "  [diversity] …") are exactly the
+/// class this module exists for — see the module doc — but they reached stderr
+/// through a raw std.debug.print, so they neither honoured the line-boundary
+/// gate nor could be elided in a test binary (#444). Same fixed slot and same
+/// "a cut line still ends its row" repair as agent_output.say.
+pub fn workerPrint(comptime fmt: []const u8, args: anytype) void {
+    var buf: [slot_bytes]u8 = undefined;
+    var sink = std.Io.Writer.fixed(&buf);
+    const fit = if (sink.print(fmt, args)) |_| true else |_| false;
+    var line = sink.buffered();
+    if (!fit or line.len == 0 or line[line.len - 1] != '\n') {
+        const at: usize = @min(line.len, buf.len - 1);
+        buf[at] = '\n';
+        line = buf[0 .. at + 1];
+    }
+    workerLine(line);
 }
 
 /// Publish the foreground stream's position and release everything held once it
@@ -155,18 +194,39 @@ fn release() usize {
         const dropped = if (took == null) g_gate.takeDropped() else 0;
         unlock();
         if (took) |n| {
-            std.debug.print("{s}", .{buf[0..n]});
+            writeLine(buf[0..n]);
             for (buf[0..n]) |c| {
                 if (c == '\n') lines += 1;
             }
             continue;
         }
         if (dropped > 0) {
-            std.debug.print("  [·] {d} subagent line(s) dropped while the answer streamed\n", .{dropped});
+            var note: [64]u8 = undefined;
+            writeLine(std.fmt.bufPrint(&note, "  [·] {d} subagent line(s) dropped while the answer streamed\n", .{dropped}) catch "  [·] subagent line(s) dropped while the answer streamed\n");
             lines += 1;
         }
         return lines;
     }
+}
+
+test "#444: the worker-line write is elided at comptime in a test binary" {
+    // The whole point of the gate under test is the accounting, not the write.
+    // If this ever flips true, a passing `zig build test` starts printing a
+    // step-failure tree and `failed command: …` on a green exit 0 again,
+    // because zig's build runner error-prints any Run step with stderr.
+    try std.testing.expect(!emit_to_stderr);
+    comptime std.debug.assert(!emit_to_stderr);
+    // The bookkeeping is untouched: an offer at a line boundary is still
+    // refused (the caller "prints"), and a held one is still retrievable.
+    hold();
+    defer _ = setLineStart(true);
+    workerLine("  [w] held under test\n");
+    var buf: [slot_bytes]u8 = undefined;
+    lock();
+    const n = g_gate.take(&buf);
+    unlock();
+    try std.testing.expect(n != null);
+    try std.testing.expectEqualStrings("  [w] held under test\n", buf[0..n.?]);
 }
 
 test "tick gate: a tick offered mid-line waits for the newline (#tui-tick)" {

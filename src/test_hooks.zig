@@ -70,6 +70,19 @@ const scoring_slot_test = @import("scoring_slot_test.zig");
 // #273: session.zig's own tests, moved off it for the same reason.
 const session_tests = @import("session_tests.zig");
 
+// #441: and session_transcript.zig's, moved off it for the same reason again.
+// The module itself is reached from session.queueSave, but this FILE is not, so
+// without the hook its whole suite compiles to nothing and reports green.
+// #429 batch 2 + #440: the env-knob guard. Its own module, so a knob that
+// stops being parsed fails a test instead of vanishing silently.
+const session_settings_tests = @import("session_settings_tests.zig");
+
+const session_transcript_tests = @import("session_transcript_tests.zig");
+
+// #445: moved off commands_session.zig when the transcript-line reset needed
+// three lines there and the file was at exactly 600. The tests are unchanged.
+const commands_session_test = @import("commands_session_test.zig");
+
 // #375: `graff acp` (Zed's Agent Client Protocol over stdio). args.zig calls
 // one predicate from it, which analyses the file but does not run its tests.
 const acp = @import("acp.zig");
@@ -86,10 +99,21 @@ const agent_eval_control_tests = @import("agent_eval_control_tests.zig");
 const playbook_glue = @import("playbook_glue.zig");
 const playbook_reflect = @import("playbook_reflect.zig");
 
+// #391: the pre-compaction note store and its note turn. prompts.zig reaches
+// compact_note.zig through a CALL only, and agent_compact.zig reaches the glue
+// the same way, so neither pulls its tests in without these.
+const compact_note = @import("compact_note.zig");
+const compact_note_glue = @import("compact_note_glue.zig");
+
 // #345: the global-vs-project MCP config merge. mcp.zig does reference its
 // decls, but the hook makes the coverage explicit rather than contingent on
 // that staying true.
 const mcp_config = @import("mcp_config.zig");
+
+// #416: two-phase MCP tool exposure. schema.zig/exec.zig reach the gate, but
+// its tests live in a sibling file that nothing in production imports.
+const mcp_schema_gate = @import("mcp_schema_gate.zig");
+const mcp_schema_gate_tests = @import("mcp_schema_gate_tests.zig");
 
 // The ultracode escalation ladder and the machinery it decides with. The
 // production graph reaches escalation.zig/phase_budget.zig through
@@ -129,6 +153,12 @@ const credential_store = @import("credential_store.zig");
 // Production reaches both only through CALLS, so their tests need the hook.
 const engine_events = @import("engine_events.zig");
 const engine_sink = @import("engine_sink.zig");
+// #429 batch 3: the terminal halves the status line and the `/skills` command
+// surface moved into, plus the policy leaf approvals.zig split its pure half
+// out to. Production reaches all three through calls or aliases only.
+const agent_prompt_render = @import("agent_prompt_render.zig");
+const skill_docs_render = @import("skill_docs_render.zig");
+const harness_policy = @import("harness_policy.zig");
 
 // #412: the worktree fingerprint behind the no-progress verify guard.
 // agent_eval.zig reaches it through a CALL only, which analyses nothing.
@@ -170,15 +200,25 @@ test {
     _ = serve_create;
     _ = scoring_slot_test;
     _ = session_tests;
+    _ = session_transcript_tests;
+    _ = session_settings_tests;
+    _ = commands_session_test;
     _ = mcp_config;
+    _ = mcp_schema_gate;
+    _ = mcp_schema_gate_tests;
     _ = acp;
     _ = agent_eval_control_tests;
     _ = playbook_glue;
     _ = playbook_reflect;
+    _ = compact_note;
+    _ = compact_note_glue;
     _ = shutdown_trace;
     _ = credential_store;
     _ = engine_events;
     _ = engine_sink;
+    _ = agent_prompt_render;
+    _ = skill_docs_render;
+    _ = harness_policy;
     _ = verify_fingerprint;
     _ = proc_identity;
     _ = escalation;

@@ -7,8 +7,8 @@
 //! goal). companionRoute/companionNativeFallback stay in main.zig — they take
 //! ToolCtx/ToolCall, which are still main-resident (the tools/exec region
 //! hasn't been extracted yet), and are only called from execTool's routing
-//! path there. Back-imports main for Approvals, runCapped (= jobs.runCapped),
-//! and the LIVE mutable globals g_path_env/g_skill_disabled/
+//! path there. Back-imports main for runCapped (= jobs.runCapped) and the LIVE
+//! mutable globals g_path_env/g_skill_disabled/
 //! g_companion_disabled — these stay `pub var` in main.zig (its own /skills
 //! command handler and startup code read/write them directly too), never
 //! aliased by value here.
@@ -21,9 +21,9 @@ const mcp = @import("mcp.zig");
 const smolify_manifest = @import("smolify_manifest.zig");
 
 const main_mod = @import("main.zig");
-const approvals_mod = @import("approvals.zig");
+// Only the settings-file location, never the approval session (#422 ratchet).
+const policy = @import("harness_policy.zig");
 const jobs = @import("jobs.zig");
-const Approvals = approvals_mod.Approvals;
 const runCapped = jobs.runCapped;
 
 /// Codex-style optional skills: known companion tools the harness quietly
@@ -217,7 +217,7 @@ pub fn skillActive(io: Io, sk: SkillDef) bool {
 /// anything else leaves it enabled. Covers skills_registry AND companion
 /// servers (codedb-pro).
 pub fn loadSkillSettings(io: Io, arena: Allocator) void {
-    const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
+    const data = Io.Dir.cwd().readFileAlloc(io, policy.settings_path, arena, .limited(1 << 20)) catch return;
     const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
     if (v != .object) return;
     const skills = v.object.get("skills") orelse return;
@@ -242,12 +242,12 @@ fn applySkillSettings(skills: Value) void {
 /// preserving every other key (allow-list and hooks live there too).
 /// Enabling removes the key; disabling writes `false`. Best-effort.
 pub fn saveSkillSetting(io: Io, gpa: Allocator, name: []const u8, enabled: bool) bool {
-    Io.Dir.cwd().createDir(io, Approvals.settings_dir, .default_dir) catch {}; // already-exists is fine
+    Io.Dir.cwd().createDir(io, policy.settings_dir, .default_dir) catch {}; // already-exists is fine
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var root_obj: std.json.ObjectMap = .empty;
-    if (Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, a, .limited(1 << 20))) |data| {
+    if (Io.Dir.cwd().readFileAlloc(io, policy.settings_path, a, .limited(1 << 20))) |data| {
         if (std.json.parseFromSliceLeaky(Value, a, data, .{ .allocate = .alloc_always })) |v| {
             if (v == .object) root_obj = v.object;
         } else |_| {}
@@ -270,7 +270,7 @@ pub fn saveSkillSetting(io: Io, gpa: Allocator, name: []const u8, enabled: bool)
     defer aw.deinit();
     var s: std.json.Stringify = .{ .writer = &aw.writer, .options = .{ .whitespace = .indent_2 } };
     s.write(Value{ .object = root_obj }) catch return false;
-    const f = Io.Dir.cwd().createFile(io, Approvals.settings_path, .{}) catch return false;
+    const f = Io.Dir.cwd().createFile(io, policy.settings_path, .{}) catch return false;
     defer f.close(io);
     var wbuf: [4096]u8 = undefined;
     var fw = f.writer(io, &wbuf);

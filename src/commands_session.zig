@@ -15,6 +15,7 @@ const tools_mod = @import("tools.zig");
 const session_mod = @import("session.zig");
 const goal_state = @import("goal_state.zig");
 const goal_flow = @import("goal_flow.zig");
+const prompts = @import("prompts.zig"); // #445: the transcript line's compaction flag resets with the conversation
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
 const ToolCall = tools_mod.ToolCall;
@@ -48,7 +49,7 @@ const skillDisabled = skills.skillDisabled;
 const skillInstalled = skills.skillInstalled;
 const saveSkillSetting = skills.saveSkillSetting;
 const skills_registry = skills.skills_registry;
-const skill_docs = @import("skill_docs.zig"); // the other kind: SKILL.md playbooks
+const skill_docs_render = @import("skill_docs_render.zig"); // the other kind: SKILL.md playbooks
 
 const title_mod = @import("title.zig");
 const setTerminalTitle = title_mod.setTerminalTitle;
@@ -58,7 +59,7 @@ const setTerminalTitle = title_mod.setTerminalTitle;
 /// standing goal containing the word "ultracode" was re-appended to every
 /// assembled prompt and kept re-triggering the explicit-codeword banner
 /// after "context cleared" (#178).
-fn resetConversationSteering(root: *Agent) void {
+pub fn resetConversationSteering(root: *Agent) void {
     root.goal = null;
     root.completion_gate_armed = false; // a dropped goal re-arms the completion double-check (#318)
     root.todos_dirty = false; // the conversation's checklist dies with it; nothing survives as /loop evidence (#318)
@@ -72,31 +73,6 @@ fn resetConversationSteering(root: *Agent) void {
     // the user set a fresh /goal, got a RETIRABLE one, and the next
     // attempt_completion ended their steering - #318 through the /clear door.
     if (root.goal_flag) |g| root.goal = goal_flow.standingGoalFromFlag(g, null, root.todos.items, 0);
-}
-
-test "/clear + /new reset conversation steering — goal and ultracode_mode don't survive (#178)" {
-    var root: Agent = undefined;
-    root.goal = .{ .objective = "ultracode: index the statutes" };
-    root.ultracode_mode = true;
-    root.goal_flag = null; // no --goal: the conversation's goal dies with it
-    root.todos = .empty;
-    resetConversationSteering(&root);
-    try std.testing.expect(root.goal == null);
-    try std.testing.expect(!root.ultracode_mode);
-}
-
-test "/clear keeps a --goal standing objective standing (#318 through the /clear door)" {
-    var root: Agent = undefined;
-    root.ultracode_mode = false;
-    root.todos = .empty;
-    root.goal_flag = "keep the tree green"; // the user passed --goal
-    root.goal = .{ .objective = "keep the tree green", .standing = true, .epoch = 1 };
-    resetConversationSteering(&root);
-    // Before this, /clear dropped it, the user typed a fresh /goal, got a
-    // RETIRABLE one, and the next attempt_completion ended their steering.
-    const g = root.goal orelse return error.TestExpectedNonNull;
-    try std.testing.expect(g.standing);
-    try std.testing.expectEqualStrings("keep the tree green", g.objective);
 }
 
 /// Try to handle a session/environment slash command. Returns false (line
@@ -117,6 +93,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.todos.clearRetainingCapacity();
         const had_goal = root.goal != null;
         resetConversationSteering(root);
+        prompts.resetSessionCompacted(root, arena); // #445: the save below empties the file the #410 line names
         saveSession(root, arena, root.session_name) catch {};
         setTerminalTitle(out, "Chat", main_mod.g_cwd_display);
         try out.writeAll("context cleared — fresh conversation\n");
@@ -137,6 +114,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.title_generation +%= 1;
         root.tui_header_shown = false;
         root.session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(root.io)});
+        prompts.resetSessionCompacted(root, arena); // #445: after the rename, so the re-arm reads the NEW session
         saveSession(root, arena, root.session_name) catch {};
         try out.print("new session → {s}{s}\n", .{ root.session_name, session_ext });
         try out.flush();
@@ -408,7 +386,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 return true;
             }
             // Markdown skills use the same {"skills": {"<name>": false}} key.
-            if (try skill_docs.handleRemove(root.io, root.gpa, arena, name, out)) return true;
+            if (try skill_docs_render.handleRemove(root.io, root.gpa, arena, name, out)) return true;
             try out.print("unknown skill: {s} — /skills lists both kinds\n", .{name});
             try out.flush();
             return true;
@@ -465,13 +443,13 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             }
             // Not a companion: a markdown skill hidden by an earlier
             // `/skills remove` comes back by clearing that opt-out.
-            if (try skill_docs.handleAdd(root.io, root.gpa, arena, name, out)) return true;
+            if (try skill_docs_render.handleAdd(root.io, root.gpa, arena, name, out)) return true;
             try out.print("unknown skill: {s} — /skills lists both kinds\n", .{name});
             try out.flush();
             return true;
         }
         // Markdown skills first (SKILL.md playbooks), then the companions.
-        try skill_docs.printSection(root.io, arena, out);
+        try skill_docs_render.printSection(root.io, arena, out);
         try out.print("{s}companions{s} — optional companion tools (codex-style; one context line each when installed)\n", .{ style.bold, style.reset });
         for (skills_registry) |sk| {
             const inst = skillInstalled(root.io, sk);

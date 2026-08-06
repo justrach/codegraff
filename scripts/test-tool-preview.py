@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Prove large tool output is persisted while model history stays concise."""
+"""Prove a large tool result comes back as a #440 handle, not as payload.
+
+The full bytes land on disk; history gets a bounded preview plus the handle's
+absolute path, the byte count, and a measured shape hint.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +20,9 @@ from pty_harness import PtySession
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
 FINAL_REPLY = "TOOL_PREVIEW_OK"
-PAYLOAD = "large-tool-result:" + "x" * 6000
+# tool_handle.default_threshold_bytes; the payload has to clear it comfortably.
+THRESHOLD = 4096
+PAYLOAD = "large-tool-result:" + "x" * 20000
 
 
 def message_item(text: str, item_id: str) -> dict:
@@ -133,25 +139,35 @@ def main() -> None:
             if len(outputs) != 1 or not isinstance(outputs[0], str):
                 raise AssertionError(f"missing function_call_output: {second_input!r}")
             preview = outputs[0]
-            if len(preview) > 2000:
+            if len(preview) > THRESHOLD:
                 raise AssertionError(f"model-facing preview is {len(preview)} chars")
+            # #440: preview + handle path + byte count + shape hint, in one marker.
             match = re.search(
-                r"\[full tool result: (\.graff/tool-results/[0-9a-f]+-\d+\.txt) — inspect with read_file\]",
+                r"\[tool result handle: (\d+) bytes, (.+?) — the COMPLETE result is at (.+?)\. Slice",
                 preview,
             )
             if match is None:
-                raise AssertionError(f"preview has no inspect pointer: {preview!r}")
-            detail_path = os.path.join(tmp, match.group(1))
-            with open(detail_path, encoding="utf-8") as fh:
+                raise AssertionError(f"preview has no handle marker: {preview!r}")
+            byte_count, shape, handle = int(match.group(1)), match.group(2), match.group(3)
+            if byte_count != len(PAYLOAD):
+                raise AssertionError(f"handle claims {byte_count} bytes, payload is {len(PAYLOAD)}")
+            if shape != "1 lines":
+                raise AssertionError(f"shape hint is not measured from the payload: {shape!r}")
+            if not os.path.isabs(handle):
+                raise AssertionError(f"handle path is not absolute: {handle!r}")
+            with open(handle, encoding="utf-8") as fh:
                 persisted = fh.read()
             if persisted != PAYLOAD:
                 raise AssertionError(
-                    f"persisted tool result changed ({len(persisted)} != {len(PAYLOAD)})"
+                    f"handle does not hold the full result ({len(persisted)} != {len(PAYLOAD)})"
                 )
     finally:
         mock.stop()
 
-    print("ok    large tool output persisted exactly; model history received a <=2k preview")
+    print(
+        "ok    large tool output became a handle: full bytes on disk, "
+        f"<={THRESHOLD}-byte preview + path + size + shape in history"
+    )
 
 
 if __name__ == "__main__":

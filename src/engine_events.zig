@@ -103,6 +103,125 @@ pub const BatchOutcome = struct { done: usize, failed: usize, cancelled: usize }
 /// in that tool's own module, not in this vocabulary.
 pub const ToolText = struct { text: []const u8 };
 
+/// One operational line about the session itself (slice 2): a config file that
+/// did not parse, an MCP server that would not connect, what startup loaded.
+/// The engine owns the wording — the shared shape is what keeps the lifecycle
+/// cluster from needing a variant per call site — and a sink owns how loud it
+/// looks. Anything with real structure a frontend would want to read gets its
+/// own variant instead (see session_banner and its neighbours below).
+pub const Notice = struct {
+    /// An emphasized opening fragment (a badge like "⚠ YOLO") a sink may draw
+    /// apart from the rest of the line; empty for an ordinary notice.
+    lead: []const u8 = "",
+    text: []const u8,
+    tone: Tone = .plain,
+
+    /// How much attention the line is asking for — the only rendering decision
+    /// the engine delegates, since it is about meaning, not palette.
+    pub const Tone = enum { plain, dim, warn, alert };
+};
+
+/// The interactive startup line. Only the two facts vary per run; what else
+/// goes on it (the key hints) is frontend knowledge and lives in the sink.
+pub const SessionBanner = struct { cwd: []const u8, trace_path: []const u8 };
+
+/// `-w/--worktree` entered its scratch checkout. `autocommit` says the run
+/// will checkpoint each turn onto that branch (main.g_worktree_autocommit).
+pub const WorktreeEntry = struct { path: []const u8, branch: []const u8, autocommit: bool };
+
+/// Startup could not honor the saved model preference and picked another.
+/// `blocked` means the substitute is cross-provider and not on the fallback
+/// allow-list, so it stays a one-session choice until the user widens it.
+pub const SavedModelNotice = struct {
+    saved: []const u8,
+    model: []const u8,
+    provider: []const u8,
+    blocked: bool,
+};
+
+/// A mid-turn provider failover (providers.runTurnWithFallback). Wire: the
+/// existing `model` event, which carries the SUBSTITUTE only — `context_note`
+/// (what happened to the conversation across the switch) is the terminal's
+/// half, and the wire's own fixed note lives in the sink that writes it.
+pub const ProviderFallback = struct {
+    from_provider: []const u8,
+    from_model: []const u8,
+    to_provider: []const u8,
+    to_model: []const u8,
+    to_context: u64,
+    context_note: []const u8,
+};
+
+/// The durable session file was written. `ext` is session.session_ext, kept in
+/// the payload rather than the sink because the extension belongs to the
+/// session format, not to any frontend.
+pub const SessionSaved = struct { name: []const u8, ext: []const u8 };
+
+// ── The interactive status line (#429 batch 3) ───────────────────────────────
+// Its own value types rather than main.zig's/learning_privacy's: this file is
+// the vocabulary, and a transport-split sink must be able to read an event
+// without importing the engine. The emit site maps with an exhaustive switch,
+// so adding a tier upstream is a compile error here rather than a silent
+// mistranslation.
+
+/// Reasoning depth, when the provider takes one at all (main.ReasoningEffort).
+pub const ReasoningEffort = enum { low, medium, high, xhigh, max, ultra };
+
+/// The federated-learning privacy ceiling (learning_privacy.Mode).
+pub const PrivacyTier = enum { local, aggregate, templates, examples };
+
+/// What the cost meter can say. Deliberately not a pre-formatted string: only
+/// `.usd` has a figure, and the other three are states, not numbers.
+pub const CostMeter = union(enum) {
+    /// The meter is off (--no-cost): the segment does not exist.
+    hidden,
+    /// A flat-rate provider (codex): spend is not per-turn, so there is no
+    /// figure to show.
+    subscription,
+    /// No price-table entry for this model — a real figure cannot be derived.
+    unpriced,
+    /// Session spend so far, in US dollars.
+    usd: f64,
+};
+
+/// The live context meter. Present only once a response has reported usage;
+/// `tokens` is the effective count, which is not always what the last response
+/// said (local estimates carry it between turns).
+pub const ContextMeter = struct {
+    tokens: u64,
+    window: u64,
+    /// The count at which this provider compacts.
+    compact_at: u64,
+};
+
+/// Everything the status line printed before a human turn actually says.
+/// Deliberately semantic: no widths, no colors, no assembled segments. Which
+/// badges survive a narrow pane is a rendering decision (#209) and belongs to
+/// the sink, which is the only thing that knows the terminal.
+pub const PromptStatus = struct {
+    model: []const u8,
+    provider_id: []const u8,
+    cwd: []const u8,
+    /// The privacy mode's own badge wording, owned by learning_privacy.zig —
+    /// carried whole for the same reason ToolText is, while the tier beside it
+    /// is what a sink picks a tone from.
+    privacy_label: []const u8,
+    privacy: PrivacyTier,
+    /// null when this provider takes no reasoning effort, so no badge exists.
+    effort: ?ReasoningEffort = null,
+    /// null until a response has reported usage.
+    context: ?ContextMeter = null,
+    /// Prompt-cache hit on the last response; 0 = nothing cached.
+    cache_read: u64 = 0,
+    cost: CostMeter = .hidden,
+    /// The Fast badge APPLIES — the flag is on and the provider honors it.
+    fast: bool = false,
+    fallback: bool = false,
+    plan: bool = false,
+    strict: bool = false,
+    ultracode: bool = false,
+};
+
 /// Everything the streaming path tells a frontend. Each doc comment states
 /// the emission site's contract, not how any one sink draws it.
 pub const EngineEvent = union(enum) {
@@ -186,6 +305,50 @@ pub const EngineEvent = union(enum) {
     completion_text: ToolText,
     /// todo_write applied; the payload is the list as goal_todo rendered it.
     todo_list_updated: ToolText,
+
+    // ── The session-lifecycle cluster (slice 2) ──────────────────────────
+    // These fire around the turn loop rather than inside it: startup, config
+    // loading, provider failover, shutdown. Most of them happen before an
+    // Agent exists or after it stops mattering, which is why they reach a
+    // sink through engine_sink.writerSink rather than forAgent.
+    //
+    // The `!json_mode` / `oneshot_prompt == null` gates stay at the EMIT
+    // sites, as slice 1c's review put the `!sub` gates back: who may write to
+    // the terminal at all is engine policy about who owns it, not a drawing
+    // decision, and a sink has no way to know a run is a one-shot.
+    /// An operational line about the session. Presentation-only: none of these
+    /// ever appeared on the --json wire.
+    session_notice: Notice,
+    /// The interactive startup banner.
+    session_banner: SessionBanner,
+    /// `-w/--worktree` entered its scratch checkout.
+    worktree_entered: WorktreeEntry,
+    /// The saved model preference could not be honored this session. The
+    /// startup twin of provider_fallback, and deliberately not a Notice: a
+    /// frontend that wants to offer "use it anyway" needs the fields.
+    saved_model_unavailable: SavedModelNotice,
+    /// Untrusted MCP servers are configured and the session wants a decision
+    /// before connecting them. TRANSITIONAL (Phase 1b): only the QUESTION is
+    /// inverted here — the stdin read still happens at the emit site. When
+    /// input inversion lands (#430) this becomes a request answered by a
+    /// `respond` command, so plan for replacement, not extension.
+    mcp_consent_prompt: struct { count: usize },
+    /// The active provider failed over mid-turn. Wire: the existing `model`
+    /// event; the terminal draws a notice instead.
+    provider_fallback: ProviderFallback,
+    /// The durable session file was written.
+    session_saved: SessionSaved,
+    /// The run is over and the engine is done with the frontend: a terminal
+    /// frontend hands raw mode back here (#396). Emitted on the one-shot's
+    /// completion path in EVERY mode, so a sink must not gate it on json_mode.
+    run_finished,
+
+    /// A human turn is about to be read: this is what the session looks like
+    /// right now (#429). Presentation-only and always will be — the --json
+    /// wire has no prompt because an SDK client drives turns itself, which is
+    /// why the emit site skips json_mode entirely rather than relying on a
+    /// silent sink.
+    prompt_ready: PromptStatus,
 };
 
 /// Durable events are the protocol stream: what the --json wire emits today
@@ -207,6 +370,9 @@ pub fn durable(ev: EngineEvent) bool {
         // except ask_user, whose typed reply IS the result.
         .tool_result, .tool_call_finished => |r| !r.meta or r.ask_user,
         .tool_rejected => true,
+        // The lifecycle cluster is presentation-only except the failover,
+        // which has always been the wire's `model` event.
+        .provider_fallback => true,
         else => false,
     };
 }
@@ -320,6 +486,49 @@ test "slice 1c: the tool-cluster notices are presentation pulses" {
         .{ .todo_list_updated = .{ .text = "todos" } },
     };
     for (pulses) |ev| try std.testing.expect(!durable(ev));
+}
+
+test "slice 2: the lifecycle cluster is pulses, except the failover the wire carries" {
+    const pulses: [8]EngineEvent = .{
+        .{ .session_notice = .{ .text = "loaded 2 saved approval(s)", .tone = .dim } },
+        .{ .session_banner = .{ .cwd = "/repo", .trace_path = ".graff/traces/a.jsonl" } },
+        .{ .worktree_entered = .{ .path = ".graff/worktrees/w", .branch = "worktree-w", .autocommit = true } },
+        .{ .saved_model_unavailable = .{ .saved = "old", .model = "new", .provider = "codex", .blocked = false } },
+        .{ .mcp_consent_prompt = .{ .count = 3 } },
+        .{ .session_saved = .{ .name = "session-1", .ext = ".session.json" } },
+        .run_finished,
+        // A notice with a badge is still a notice, not a second variant.
+        .{ .session_notice = .{ .lead = "⚠ YOLO", .text = " mode", .tone = .alert } },
+    };
+    for (pulses) |ev| try std.testing.expect(!durable(ev));
+    // The failover has always reached a --json client as the `model` event, so
+    // it reserves an id like any other wire line.
+    try std.testing.expect(durable(.{ .provider_fallback = .{
+        .from_provider = "codex",
+        .from_model = "gpt-5.5",
+        .to_provider = "anthropic",
+        .to_model = "sonnet",
+        .to_context = 200_000,
+        .context_note = "context kept",
+    } }));
+}
+
+test "batch 3: the status line is a presentation pulse, never a wire line" {
+    // The --json wire has never had a prompt event and must not grow one by
+    // accident: a client that drives its own turns would read a burned
+    // sequence id as lost data (#330).
+    const status: PromptStatus = .{
+        .model = "gpt-5.6",
+        .provider_id = "codex",
+        .cwd = "~/src/graff",
+        .privacy_label = "Privacy:Aggregate",
+        .privacy = .aggregate,
+        .effort = .high,
+        .context = .{ .tokens = 12_345, .window = 200_000, .compact_at = 160_000 },
+        .cache_read = 2048,
+        .cost = .subscription,
+    };
+    try std.testing.expect(!durable(.{ .prompt_ready = status }));
 }
 
 test "generation only moves forward, one restart at a time" {

@@ -1,7 +1,8 @@
 //! Lifecycle hooks (codex/Claude-style): the Hook/Hooks config types, the
 //! settings.json "hooks" loader, and the per-hook subprocess runner. Split out
-//! of main.zig (#123). Back-imports main only for Approvals (the settings-file
-//! path) and the win shim (Windows stderr-pipe peek). The pre/post/turn-end
+//! of main.zig (#123). Takes the settings-file path from harness_policy.zig
+//! and the Windows stderr-pipe peek from win_api.zig — both leaves, so this
+//! file imports nothing that draws to a terminal (#429). The pre/post/turn-end
 //! dispatch stays in main. The codedb-guard (issue #626) per-file index cache
 //! (CodedbFileCheck/codedbFileIndexed) also lives here (600-line goal); the
 //! guard's on/off + PATH-presence globals (g_codedb_guard/g_codedb_present)
@@ -15,10 +16,8 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const root = @import("main.zig");
-const approvals_mod = @import("approvals.zig");
-const terminal = @import("term.zig");
-const Approvals = approvals_mod.Approvals;
-const win = terminal.win;
+const harness_policy = @import("harness_policy.zig");
+const win = @import("win_api.zig");
 
 /// Lifecycle hooks (codex/Claude-style), loaded once at startup from
 /// .harness/settings.json's "hooks" object. Three events:
@@ -91,7 +90,7 @@ fn parseHookList(arena: Allocator, v: ?Value) []const Hook {
 /// Parse the "hooks" section of .harness/settings.json (arena-owned slices;
 /// call once at startup with the session arena).
 pub fn loadHooks(io: Io, arena: Allocator) Hooks {
-    const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return .{};
+    const data = Io.Dir.cwd().readFileAlloc(io, harness_policy.settings_path, arena, .limited(1 << 20)) catch return .{};
     const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return .{};
     if (v != .object) return .{};
     const hooks = v.object.get("hooks") orelse return .{};

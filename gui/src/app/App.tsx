@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 
 import { NewChatTrigger } from "../components/NewChatTrigger";
+import { AgentOverviewPanel } from "../components/agent-overview/AgentOverviewPanel";
 import { GeneralSettingsPane } from "../components/general-settings/GeneralSettingsPane";
 import { McpSettingsPane } from "../components/mcp-settings/McpSettingsPane";
 import { ProvidersSettingsPane } from "../components/providers-settings/ProvidersSettingsPane";
@@ -373,7 +374,12 @@ function AppShell() {
                     <SidebarVisibilityContext.Provider
                       value={isDesktopSidebarVisible}
                     >
-                      <WorkspaceBoard />
+                      <div className="flex h-full min-w-0 flex-1 overflow-hidden">
+                        <div className="min-w-0 flex-1">
+                          <WorkspaceBoard />
+                        </div>
+                        <AgentOverviewPanel />
+                      </div>
                     </SidebarVisibilityContext.Provider>
                   </SettingsNavigationProvider>
                 )}

@@ -46,9 +46,10 @@ const ToolOutput = tools.ToolOutput;
 const strField = tools.strField;
 const missingArg = tools.missingArg;
 const outsideCwd = tools.outsideCwd;
-const approvals_mod = @import("approvals.zig");
-const confinedPath = approvals_mod.confinedPath;
-const noSymlinkEscape = approvals_mod.noSymlinkEscape;
+// Path confinement only — never the approval session (#422 ratchet).
+const policy = @import("harness_policy.zig");
+const confinedPath = policy.confinedPath;
+const noSymlinkEscape = policy.noSymlinkEscape;
 const skills = @import("skills.zig");
 const edit_verify = @import("edit_verify.zig"); // same per-path lock stripe write_file/edit_file use
 const skill = @import("imagegen_skill.zig");

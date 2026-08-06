@@ -44,6 +44,39 @@ TRANSACTIONAL_FINAL = "done after transactional compaction failure"
 TRANSACTIONAL_REASONING_MARKER = "transactional-active-reasoning:"
 TRANSACTIONAL_CALL_ID = "call_transactional_1"
 
+# #391: compaction now spends one extra quiet turn writing a note to self
+# before the summary. Both synthetic turns are identified by the head of their
+# instruction so the fixtures below can be keyed on CONTENT rather than on a
+# request ordinal — see midturn_events for why that matters.
+NOTE_INSTRUCTION_HEAD = "Your context is about to be compacted"
+COMPACT_INSTRUCTION_HEAD = "Summarize this entire conversation"
+NOTE_BLOCK_HEADER = "NOTES TO SELF"
+MIDTURN_NOTE = (
+    "SUBGOAL: exercise the server-side context meter\n"
+    "ANCHORS: src/agent_compact.zig:130\n"
+    "DEAD ENDS: none yet"
+)
+TRANSACTIONAL_NOTE = (
+    "SUBGOAL: prove the transactional rollback\nANCHORS: src/agent_compact.zig:152"
+)
+
+
+def user_text(item: object) -> str | None:
+    if not isinstance(item, dict) or item.get("role") != "user":
+        return None
+    content = item.get("content")
+    return content if isinstance(content, str) else None
+
+
+def last_user_text(request: RecordedRequest) -> str:
+    """The final user turn of a Responses request, or "" — how the two
+    synthetic compaction turns are told apart without counting ordinals."""
+    for item in reversed(request.body.get("input") or []):
+        text = user_text(item)
+        if text is not None:
+            return text
+    return ""
+
 
 def response_events(
     item: dict | list[dict], response_id: str, total_tokens: int
@@ -95,7 +128,28 @@ def active_reasoning_item() -> dict:
 
 
 def midturn_events(request: RecordedRequest) -> list[dict]:
-    """Script tool call -> compaction summary -> final answer."""
+    """Script tool call -> #391 note to self -> compaction summary -> answer.
+
+    Keyed on the request's LAST USER TURN, not on its ordinal. Compaction
+    gained a step in #391, and an ordinal-keyed fixture re-targets silently
+    when that happens: the summary reply lands on the note turn, the note reply
+    becomes the handoff summary, and the scenario still goes green while
+    proving something else entirely. Content keying makes the fixture describe
+    what each reply is FOR.
+    """
+    tail = last_user_text(request)
+    if tail.startswith(NOTE_INSTRUCTION_HEAD):
+        return response_events(
+            message_item(MIDTURN_NOTE, "msg_midturn_note"),
+            "resp_midturn_note",
+            1_050,
+        )
+    if tail.startswith(COMPACT_INSTRUCTION_HEAD):
+        return response_events(
+            message_item(MIDTURN_SUMMARY, "msg_midturn_summary"),
+            "resp_midturn_summary",
+            1_100,
+        )
     if request.ordinal == 1:
         item = {
             "type": "function_call",
@@ -113,12 +167,6 @@ def midturn_events(request: RecordedRequest) -> list[dict]:
             [active_reasoning_item(), item],
             "resp_midturn_1",
             MIDTURN_TOTAL_TOKENS,
-        )
-    if request.ordinal == 2:
-        return response_events(
-            message_item(MIDTURN_SUMMARY, "msg_midturn_summary"),
-            "resp_midturn_summary",
-            1_100,
         )
     return response_events(
         message_item(MIDTURN_FINAL, "msg_midturn_final"),
@@ -140,7 +188,25 @@ def transactional_reasoning_item() -> dict:
 
 
 def transactional_events(request: RecordedRequest) -> list[dict]:
-    """Script tool call -> empty summary -> answer from restored live history."""
+    """Script tool call -> note to self -> EMPTY summary -> answer from the
+    restored live history. Content-keyed for the same reason midturn_events is:
+    the empty reply has to land on the SUMMARY request specifically, and an
+    ordinal would have quietly moved it onto the #391 note turn instead."""
+    tail = last_user_text(request)
+    if tail.startswith(NOTE_INSTRUCTION_HEAD):
+        return response_events(
+            message_item(TRANSACTIONAL_NOTE, "msg_transactional_note"),
+            "resp_transactional_note",
+            1_050,
+        )
+    if tail.startswith(COMPACT_INSTRUCTION_HEAD):
+        # A syntactically valid Responses answer with no summary text exercises
+        # compact()'s EmptySummary rollback, rather than a transport failure.
+        return response_events(
+            message_item("", "msg_transactional_empty_summary"),
+            "resp_transactional_empty_summary",
+            1_100,
+        )
     if request.ordinal == 1:
         call = {
             "type": "function_call",
@@ -155,26 +221,11 @@ def transactional_events(request: RecordedRequest) -> list[dict]:
             "resp_transactional_1",
             MIDTURN_TOTAL_TOKENS,
         )
-    if request.ordinal == 2:
-        # A syntactically valid Responses answer with no summary text exercises
-        # compact()'s EmptySummary rollback, rather than a transport failure.
-        return response_events(
-            message_item("", "msg_transactional_empty_summary"),
-            "resp_transactional_empty_summary",
-            1_100,
-        )
     return response_events(
         message_item(TRANSACTIONAL_FINAL, "msg_transactional_final"),
         f"resp_transactional_{request.ordinal}",
         1_300,
     )
-
-
-def user_text(item: object) -> str | None:
-    if not isinstance(item, dict) or item.get("role") != "user":
-        return None
-    content = item.get("content")
-    return content if isinstance(content, str) else None
 
 
 def assert_compaction_meter(label: str, rendered: str) -> None:
@@ -273,21 +324,51 @@ def run_scenario(
 
 def assert_midturn_requests(mock: CodexMock) -> None:
     requests = mock.recorded_requests()
-    if len(requests) != 3:
+    # Four, since #391: the real turn, the pre-compaction note-to-self, the
+    # compaction summary, then the continuation. This scenario is a PLANNED
+    # rollover by construction (the server meter is 90% — over compact@ 80%,
+    # under the 95% recovery boundary; see MIDTURN_TOTAL_TOKENS above), which
+    # is exactly the case #391's note fires on. On the salvage paths — a
+    # provider over-window rejection, or >=95% where compactOrRecover may drop
+    # real history — compact_note.decideContext refuses it and this stays three.
+    if len(requests) != 4:
         raise AssertionError(
-            f"midturn: expected exactly 3 model requests, got {len(requests)}: {requests!r}"
+            f"midturn: expected exactly 4 model requests, got {len(requests)}: {requests!r}"
         )
-    first, compact, final = requests
+    first, note, compact, final = requests
     if any("max_output_tokens" in request.body for request in requests):
         raise AssertionError("midturn: Responses requests must omit max_output_tokens")
     transports = [request.transport for request in requests]
-    if transports != ["ws", "sse", "ws"]:
-        raise AssertionError(f"midturn: expected WS -> SSE -> WS, got {transports!r}")
-    if mock.ws_turns != 2 or mock.sse_turns != 1 or mock.ws_connections != 2:
+    if transports != ["ws", "sse", "sse", "ws"]:
         raise AssertionError(
-            "midturn: expected two turns on two fresh WS connections plus one SSE "
-            f"turn; ws_turns={mock.ws_turns} sse_turns={mock.sse_turns} "
+            f"midturn: expected WS -> SSE(note) -> SSE(summary) -> WS, got {transports!r}"
+        )
+    if mock.ws_turns != 2 or mock.sse_turns != 2 or mock.ws_connections != 2:
+        raise AssertionError(
+            "midturn: expected two turns on two fresh WS connections plus two quiet "
+            f"SSE turns; ws_turns={mock.ws_turns} sse_turns={mock.sse_turns} "
             f"ws_connections={mock.ws_connections}"
+        )
+    # The two synthetic turns are identified by CONTENT, not position, so this
+    # cannot silently pass if their order ever swaps.
+    if not last_user_text(note).startswith("Your context is about to be compacted"):
+        raise AssertionError(
+            f"midturn: request 2 is not the #391 note turn: {last_user_text(note)[:120]!r}"
+        )
+    if not last_user_text(compact).startswith("Summarize this entire conversation"):
+        raise AssertionError(
+            f"midturn: request 3 is not the compaction summary: {last_user_text(compact)[:120]!r}"
+        )
+    # #195's invariant, checked rather than assumed: the note turn is a quiet
+    # SSE request that opens NO WebSocket. It runs inside runTurn's existing
+    # closeCodexWs bracket, against a throwaway clone of history, so it must
+    # not appear in the WS choreography at all — ws_connections stays 2 and
+    # the post-compaction turn still re-anchors on a socket the pre-compaction
+    # turn never used.
+    if note.connection_id is not None:
+        raise AssertionError(
+            f"midturn: the note turn opened a WebSocket (conn {note.connection_id}); "
+            "it must stay off the WS session it is compacting around"
         )
     if first.connection_id == final.connection_id:
         raise AssertionError("midturn: final request reused the pre-compaction WS")
@@ -297,6 +378,39 @@ def assert_midturn_requests(mock: CodexMock) -> None:
                 f"midturn: request {request.ordinal} carried stale previous_response_id: "
                 f"{request.body['previous_response_id']!r}"
             )
+
+    # The note turn is a bounded, tool-less auxiliary call on its own persona —
+    # never the root prompt, which would hand it the whole tool catalog and its
+    # own previous note.
+    if "tools" in note.body or not str(note.body.get("instructions", "")).startswith(
+        "You are writing a private note to your future self"
+    ):
+        raise AssertionError(
+            f"midturn: the note turn was not the bounded tool-less persona call: {note.body!r}"
+        )
+
+    # #391 END TO END, on the wire. The note is written before the summary, so
+    # every request AFTER it must carry it in `instructions` — the system
+    # prompt, which compaction cannot rewrite — while the request before it
+    # carries nothing.
+    if NOTE_BLOCK_HEADER in str(first.body.get("instructions", "")):
+        raise AssertionError("midturn: a note block existed before any note was written")
+    for label, request in (("summary", compact), ("post-compaction", final)):
+        instructions = str(request.body.get("instructions", ""))
+        if NOTE_BLOCK_HEADER not in instructions or MIDTURN_NOTE not in instructions:
+            raise AssertionError(
+                f"midturn: the {label} request did not carry the note-to-self VERBATIM "
+                f"in its system prompt: {instructions[-400:]!r}"
+            )
+    # …and it is STATE, not conversation: the post-compaction turn's history is
+    # the handoff summary alone. If the note ever appears in `input` it has
+    # become something a later compaction can summarize away.
+    final_json = json.dumps(final.body.get("input") or [], separators=(",", ":"))
+    if NOTE_BLOCK_HEADER in final_json or MIDTURN_NOTE in final_json:
+        raise AssertionError(
+            "midturn: the note leaked into conversation history, where the next "
+            f"compaction would paraphrase it away: {final_json[:400]!r}"
+        )
 
     first_input = first.body.get("input")
     if (
@@ -365,24 +479,37 @@ def assert_midturn_requests(mock: CodexMock) -> None:
 
 def assert_transactional_requests(mock: CodexMock) -> None:
     requests = mock.recorded_requests()
-    if len(requests) != 3:
+    # Four since #391 — the note turn precedes the summary here too. The note
+    # is written and kept even though this compaction then FAILS: it is state
+    # about the live conversation, not about the summary, and the rollback
+    # restores history the note still describes correctly.
+    if len(requests) != 4:
         raise AssertionError(
-            "transactional: expected exactly 3 model requests, "
+            "transactional: expected exactly 4 model requests, "
             f"got {len(requests)}: {requests!r}"
         )
-    first, compact, final = requests
+    first, note, compact, final = requests
     if any("max_output_tokens" in request.body for request in requests):
         raise AssertionError("transactional: Responses requests must omit max_output_tokens")
     transports = [request.transport for request in requests]
-    if transports != ["ws", "sse", "ws"]:
+    if transports != ["ws", "sse", "sse", "ws"]:
         raise AssertionError(
-            f"transactional: expected WS -> SSE -> WS, got {transports!r}"
+            f"transactional: expected WS -> SSE(note) -> SSE(summary) -> WS, got {transports!r}"
         )
-    if mock.ws_turns != 2 or mock.sse_turns != 1 or mock.ws_connections != 2:
+    if mock.ws_turns != 2 or mock.sse_turns != 2 or mock.ws_connections != 2:
         raise AssertionError(
             "transactional: expected two turns on two fresh WS connections plus "
-            f"one SSE turn; ws_turns={mock.ws_turns} sse_turns={mock.sse_turns} "
+            f"two quiet SSE turns; ws_turns={mock.ws_turns} sse_turns={mock.sse_turns} "
             f"ws_connections={mock.ws_connections}"
+        )
+    if not last_user_text(note).startswith(NOTE_INSTRUCTION_HEAD):
+        raise AssertionError(
+            f"transactional: request 2 is not the #391 note turn: {last_user_text(note)[:120]!r}"
+        )
+    if note.connection_id is not None or "tools" in note.body:
+        raise AssertionError(
+            "transactional: the note turn must be a tool-less SSE request that "
+            f"opens no WebSocket: {note.body!r}"
         )
     if first.connection_id == final.connection_id:
         raise AssertionError(

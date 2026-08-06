@@ -49,34 +49,16 @@ const execTool = exec.execTool;
 
 const brief_diversity = @import("brief_diversity.zig"); // #382: N sibling spawns in one batch are a fleet
 const playbook_glue = @import("playbook_glue.zig"); // #381: the note_constraint meta arm
+const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: the load_tool_schemas meta arm
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
 const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
 
-const tool_results_dir = ".graff/tool-results";
-pub const tool_preview_chars: usize = 2_000;
-var tool_result_seq: std.atomic.Value(u64) = .init(0);
-
-pub fn toolPreviewText(arena: std.mem.Allocator, text: []const u8, path: ?[]const u8) ![]const u8 {
-    if (text.len <= tool_preview_chars) return arena.dupe(u8, text);
-    const marker = if (path) |p|
-        try std.fmt.allocPrint(arena, "[full tool result: {s} — inspect with read_file]", .{p})
-    else
-        "[tool result truncated: full-result persistence failed]";
-    const head = util.utf8Prefix(text, tool_preview_chars -| (marker.len + 2));
-    return std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ head, marker });
-}
-
-fn persistToolResult(self: *Agent, text: []const u8) ?[]const u8 {
-    if (text.len <= tool_preview_chars) return null;
-    // createDir reports PathAlreadyExists, which is the normal case because
-    // trace setup creates `.graff` at launch. createDirPath is idempotent.
-    Io.Dir.cwd().createDirPath(self.io, tool_results_dir) catch return null;
-    const seq = tool_result_seq.fetchAdd(1, .monotonic);
-    const run_id = if (self.tracer) |tr| tr.identity.run_id else "untraced";
-    const path = std.fmt.allocPrint(self.arena, "{s}/{s}-{d}.txt", .{ tool_results_dir, run_id, seq }) catch return null;
-    Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = text, .flags = .{ .exclusive = true } }) catch return null;
-    return path;
-}
+// #440: the ONE size contract for a tool result — preview + durable handle +
+// byte count + shape hint, applied here at tool time. It replaced this file's
+// old persistToolResult/toolPreviewText pair (a 2000-char head and a bare
+// path), and it clamps itself under the send-time per-output cap so the two are
+// ordered by construction rather than stacked.
+const tool_handle = @import("tool_handle.zig");
 
 // escWatchTask/drainStdin/rawNonblockStdin live in agent_interrupt.zig;
 // Agent.esc_watch_done is a struct-level pub var that STAYS declared inside the
@@ -184,11 +166,21 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
         for (ext_idx.items, futures) |i, *fut| fut.* = self.io.async(execTool, .{ ctx, calls[i] });
         for (futures, outputs) |*fut, *output| output.* = fut.await(self.io);
         defer for (outputs) |output| self.gpa.free(output.text);
+        // #440: one threshold for the whole batch, pinned under this model's
+        // send-time per-output cap so an oversized result is always turned into
+        // a handle HERE rather than truncated later.
+        const handle_threshold = tool_handle.effectiveThreshold(self.provider.perOutputCap());
+        const handle_target: tool_handle.Target = .{
+            .io = self.io,
+            .dir = .cwd(),
+            .run_id = if (self.tracer) |tr| tr.identity.run_id else "untraced",
+        };
         for (ext_idx.items, outputs) |i, output| {
-            // Keep the model-facing history compact. The exact output remains
-            // inspectable on disk and the short preview carries its pointer.
-            const detail = persistToolResult(self, output.text);
-            results[i] = .{ .text = try toolPreviewText(self.arena, output.text, detail), .is_error = output.is_error, .cancelled = output.cancelled, .ms = output.ms };
+            // A result over the threshold never enters the conversation whole:
+            // the complete bytes go to a durable handle and the model gets a
+            // bounded preview, that path, the byte count, and a shape hint.
+            const handled = try tool_handle.forResult(self.gpa, self.arena, handle_target, output.text, handle_threshold);
+            results[i] = .{ .text = handled.text, .is_error = output.is_error, .cancelled = output.cancelled, .ms = output.ms };
             if (self.eval_cmd != null and toolInvalidatesEval(calls[i])) {
                 self.eval_verified = false;
                 self.eval_repair_pending = false;
@@ -209,15 +201,6 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
     // Show a compact ✓/✗ + preview for each non-meta call (no-op for subs).
     for (calls, results) |call, r| self.sayToolResult(call.name, r);
     return results;
-}
-
-test "toolPreviewText caps context and preserves an inspect pointer" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const preview = try toolPreviewText(arena_state.allocator(), &util.repeatBytes("x", 5000), ".graff/tool-results/run-1.txt");
-    try std.testing.expect(preview.len <= tool_preview_chars);
-    try std.testing.expect(std.mem.indexOf(u8, preview, ".graff/tool-results/run-1.txt") != null);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(preview));
 }
 
 pub fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
@@ -368,6 +351,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         return .{ .text = try clockSleepSuccessText(self.arena, parsed.ms, parsed.clamped), .is_error = false };
     }
     if (std.mem.eql(u8, call.name, "note_constraint")) return playbook_glue.noteConstraint(self, call.input); // #381: append-only, and it re-composes the root's own prompt
+    if (std.mem.eql(u8, call.name, mcp_schema_gate.tool_name)) return mcp_schema_gate.handleLoad(self, call.input); // #416: inline, so the loaded-schema set has exactly one writer
     if (std.mem.eql(u8, call.name, "ask_user")) return self.askUser(call);
     // todo_read
     return .{ .text = self.renderTodos(goal_state.currentEpoch(self.goal)), .is_error = false };

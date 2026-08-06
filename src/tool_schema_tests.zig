@@ -29,6 +29,8 @@ const mcp_protocol = @import("mcp_protocol.zig");
 const imagegen = @import("imagegen.zig");
 const no_local_tools = @import("no_local_tools.zig");
 const Provider = @import("provider.zig").Provider;
+const gate = @import("mcp_schema_gate.zig"); // #416
+const smolify_manifest = @import("smolify_manifest.zig"); // a REAL 13-tool MCP manifest to measure #416 against
 
 const testing = std.testing;
 
@@ -64,9 +66,19 @@ fn forEachServedSchema(arena: Allocator, catalog: []const u8, check: *const fn (
     }
 }
 
+/// #444: the diagnostic below is for a REAL offender, where stderr is exactly
+/// what you want. The negative control at the bottom of the next test deals in
+/// a deliberately bad schema, and its print landed on every green run — where
+/// zig's build runner error-prints any Run step whose stderr is non-empty, so a
+/// passing suite rendered a step-failure tree and `failed command: …/test`.
+/// Reading that as a failure cost real time. Muted for the control only; the
+/// assertion it makes is unchanged.
+var report_offenders: bool = true;
+
 fn assertClean(name: []const u8, sch: Value) anyerror!void {
     if (combinatorAnywhere(sch)) |key| {
-        std.debug.print("\ntool '{s}' has a JSON Schema '{s}' — Anthropic rejects the whole request over a top-level one\n", .{ name, key });
+        if (report_offenders)
+            std.debug.print("\ntool '{s}' has a JSON Schema '{s}' — Anthropic rejects the whole request over a top-level one\n", .{ name, key });
         return error.ToolSchemaHasCombinator;
     }
 }
@@ -100,10 +112,15 @@ test "no built-in tool schema carries oneOf/allOf/anyOf — the wire rejection t
         }
     }
 
-    // The guard has to be able to fail, or it proves nothing.
+    // The guard has to be able to fail, or it proves nothing. Silently (#444):
+    // this is the ONE call to assertClean that is meant to fail, so its
+    // diagnostic is noise on a green run — and a green run's stderr is what
+    // zig's build runner error-prints.
     const bad = try std.json.parseFromSliceLeaky(Value, arena,
         \\{"type":"object","properties":{},"anyOf":[{"required":["a"]},{"required":["b"]}]}
     , .{});
+    report_offenders = false;
+    defer report_offenders = true;
     try testing.expectError(error.ToolSchemaHasCombinator, assertClean("fake", bad));
 }
 
@@ -188,6 +205,101 @@ test "the discovery path itself flattens, so nothing reaches a provider unlowere
                     std.debug.print("\nMCP tool '{s}' still has top-level '{s}'\n", .{ name, key });
                     return error.ToolSchemaHasCombinator;
                 }
+            }
+        }.check);
+    }
+}
+
+/// #416's catalog half, measured against a REAL MCP manifest rather than a
+/// made-up one: the bundled Smolify server (13 tools, ~9.5 KB of description +
+/// schema — the same order as the companion server that provoked the issue at
+/// +2,568 input tokens per call).
+fn realServerTools(arena: Allocator) ![]const mcp.Tool {
+    var list: std.ArrayList(mcp.Tool) = .empty;
+    _ = try smolify_manifest.appendTools(mcp.Tool, arena, &list, 0, true);
+    return list.items;
+}
+
+test "#416: deferring a real MCP server's schemas cuts the served catalog in half" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    gate.reset();
+    gate.g_policy = .{};
+    defer {
+        gate.reset();
+        gate.g_policy = .{};
+    }
+    const tools = try realServerTools(arena);
+    try testing.expectEqual(@as(usize, 13), tools.len);
+
+    // Pre-#416 behavior, still reachable with the escape-hatch pin.
+    gate.g_policy = .{ .eager = &.{"*"} };
+    const eager = try schema.renderRootTools(arena, .anthropic, &.{}, tools);
+
+    // The default: this server is 2.3x over the 4 KiB budget, so it defers.
+    gate.g_policy = .{};
+    try testing.expect(gate.serverCost(tools, "smolify") > gate.default_budget);
+    const deferred = try schema.renderRootTools(arena, .anthropic, &.{}, tools);
+
+    // The measurement this issue exists for: the MCP half of the catalog on
+    // its own (no built-in specs), so the number is the saving and nothing
+    // else. Measured on this manifest: 10,505 -> 3,696 bytes, a 64.8% cut, or
+    // roughly 1,700 input tokens at 4 bytes/token — per request, for the whole
+    // session, from ONE server. Asserted at a conservative 50% so a schema
+    // that grows a little does not turn the guard red.
+    try testing.expect(deferred.len * 2 < eager.len);
+
+    // Every tool is still REGISTERED — deferral hides schemas, not tools.
+    for (tools) |t| try testing.expect(std.mem.indexOf(u8, deferred, t.qualified_name) != null);
+    // ...with a one-line description, and no schema body. These property names
+    // appear in the real schemas and in no description, so finding one would
+    // mean a schema leaked through.
+    for ([_][]const u8{ "pathHints", "maxTokens", "lineCount" }) |only_in_schema| {
+        try testing.expect(std.mem.indexOf(u8, eager, only_in_schema) != null);
+        try testing.expect(std.mem.indexOf(u8, deferred, only_in_schema) == null);
+    }
+    // ...and the tool that undoes it rides along — but only while it is needed,
+    // so a session whose servers are all eager is never charged for it.
+    const with_specs = try schema.renderRootTools(arena, .anthropic, &schema.root_specs, tools);
+    try testing.expect(std.mem.indexOf(u8, with_specs, gate.tool_name) != null);
+    gate.g_policy = .{ .eager = &.{"*"} };
+    const eager_specs = try schema.renderRootTools(arena, .anthropic, &schema.root_specs, tools);
+    try testing.expect(std.mem.indexOf(u8, eager_specs, gate.tool_name) == null);
+    gate.g_policy = .{};
+
+    // Loading one tool restores that tool's schema to the catalog and nothing
+    // else's: enabling is per tool, not per server.
+    const req = try std.json.parseFromSliceLeaky(Value, arena, "{\"tools\":[\"mcp__smolify__read_public_source\"]}", .{ .allocate = .alloc_always });
+    const loaded = try gate.loadInto(arena, tools, req);
+    try testing.expect(!loaded.is_error);
+    try testing.expectEqual(@as(usize, 1), loaded.loaded);
+    const after = try schema.renderRootTools(arena, .anthropic, &.{}, tools);
+    try testing.expect(std.mem.indexOf(u8, after, "lineCount") != null); // read_public_source's own schema is back
+    try testing.expect(std.mem.indexOf(u8, after, "pathHints") == null); // build_docs_context's is not
+    try testing.expect(after.len > deferred.len and after.len < eager.len);
+}
+
+test "#416: every provider wire format defers identically, and stays valid JSON" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    gate.reset();
+    gate.g_policy = .{};
+    defer {
+        gate.reset();
+        gate.g_policy = .{};
+    }
+    const tools = try realServerTools(arena);
+    for ([_]Provider.Kind{ .anthropic, .openai, .responses }) |kind| {
+        const catalog = try schema.renderRootTools(arena, kind, &.{}, tools);
+        // A placeholder must be as wire-legal as a real schema: parseable,
+        // combinator-free, and a JSON Schema object like every other entry.
+        try forEachServedSchema(arena, catalog, struct {
+            fn check(name: []const u8, sch: Value) anyerror!void {
+                _ = name;
+                try testing.expectEqualStrings("object", sch.object.get("type").?.string);
+                try testing.expect(mcp_protocol.topLevelCombinator(sch) == null);
             }
         }.check);
     }

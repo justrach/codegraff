@@ -1,6 +1,6 @@
 //! Provider-switch core: resolve a /model or set_model request to a
 //! Provider, apply it to the running Agent (translating or clearing history
-//! across a wire-format change), and print the switch confirmation. Split
+//! across a wire-format change), and announce the switch. Split
 //! out of main.zig (600-line goal). The interactive pickers + ultracode
 //! steering + login-auth flow that build on top of this live in
 //! pickers.zig, which back-imports switchProvider from here. Back-imports
@@ -23,7 +23,7 @@ const saveModel = serde.saveModel;
 
 const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
-const ansi = @import("ansi.zig");
+const engine_sink = @import("engine_sink.zig"); // #429: the failover notice is a typed event, not a print
 const fallback_config = @import("fallback_config.zig");
 const util = @import("util.zig");
 const trace = @import("trace.zig");
@@ -259,22 +259,19 @@ pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*I
             attempted[attempted_len] = fallback.id;
             attempted_len += 1;
             const note = try applyFallbackProvider(root, arena, fallback);
-            if (main_mod.json_mode) {
-                root.emit(.{ .type = "model", .ok = true, .provider = fallback.id, .model = fallback.model, .context = fallback.context, .note = "automatic session fallback; saved model preference kept" });
-            } else if (out) |w| {
-                try w.print("{s}⚠ {s} via {s} is unavailable; trying {s} via {s} for this session ({s}) — saved default kept{s}\n", .{
-                    ansi.style.yellow,
-                    failed_model,
-                    failed_id,
-                    fallback.model,
-                    fallback.id,
-                    note,
-                    ansi.style.reset,
-                });
-                try w.flush();
-            } else {
-                std.debug.print("⚠ {s} via {s} is unavailable; trying {s} via {s} for this session ({s}) — saved default kept\n", .{ failed_model, failed_id, fallback.model, fallback.id, note });
-            }
+            // One moment, three audiences (#422): the --json wire's `model`
+            // event, the terminal's warning, and — for a run whose stdout is
+            // reserved (`-p`, `acp`) — stderr, because a silent model swap is
+            // a cost and consent surprise. The sink picks; `out` is the
+            // caller's frontend, which is not always `root.out`.
+            engine_sink.forSession(root, out).emit(root.io, .{ .provider_fallback = .{
+                .from_provider = failed_id,
+                .from_model = failed_model,
+                .to_provider = fallback.id,
+                .to_model = fallback.model,
+                .to_context = fallback.context,
+                .context_note = note,
+            } });
             if (root.tracer) |tr| {
                 const trace_note = std.fmt.allocPrint(arena, "{s}/{s} -> {s}/{s}", .{ failed_id, failed_model, fallback.id, fallback.model }) catch "automatic provider fallback";
                 tr.note("model_fallback", trace_note);
