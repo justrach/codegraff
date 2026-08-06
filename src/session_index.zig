@@ -18,6 +18,13 @@ pub const session_ext = ".session.json";
 /// Title-named session files live here (resume reads this).
 pub const sessions_dir = ".graff/sessions";
 
+/// #441: the append-only transcript beside each session file, and the one
+/// rotated generation behind it. The suffixes live here, with the session
+/// suffix, because BOTH the writer (session_transcript.zig) and the sweep that
+/// reclaims them with their session (tool_spill.zig) have to agree on them.
+pub const transcript_ext = ".transcript.jsonl";
+pub const transcript_rotated_ext = ".transcript.1.jsonl";
+
 /// Path to a session file: .graff/sessions/<name>.session.json.
 pub fn sessionPath(arena: Allocator, name: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ sessions_dir, name, session_ext });
