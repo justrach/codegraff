@@ -10,7 +10,7 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.0.240 (unreleased)
+## v0.0.241 (unreleased)
 
 - An oversized tool output is now spilled, not destroyed (#409). The
   per-result cap (#193/#201) used to delete the elided bytes, leaving the
@@ -23,6 +23,9 @@ current is part of cutting a release.
   disk), and reclaimed with the session: an artifact dir whose
   `<session>.session.json` is gone is swept at the next spill. Subagents,
   whose history is never persisted, keep the plain truncation.
+
+## v0.0.240 (2026-08-06)
+
 - The REPL/engine separation began (#422): agent output now flows through a
   typed event vocabulary and a strict sink boundary (`engine_events.zig` /
   `engine_sink.zig`), with streamed model output, the codex WS transport

@@ -169,6 +169,12 @@ fn refund(len: usize) ?[]const u8 {
 /// at the FIRST spill: a run that never spills does no extra I/O at all, and by
 /// then this session's own dir is either current (skipped by name) or still
 /// young enough for the grace window.
+///
+/// Reclaiming late is deliberate. The AI-title rename deletes the old session
+/// file mid-conversation; MOVING that session's artifacts with it (or deleting
+/// them there and then) would strand every path already handed to the model in
+/// this transcript. Leaving them put keeps those paths valid for the rest of the
+/// session, and the next run collects what the rename left behind.
 fn sweepOnce(sink: Sink, arena: Allocator, current: []const u8) void {
     if (g_swept.swap(true, .monotonic)) return;
     var names: std.ArrayList([]const u8) = .empty; // collect first: deleting mid-iteration is not portable
