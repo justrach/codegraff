@@ -34,7 +34,7 @@ Failures name the invariant, say which regression it guards, and print the comma
 
 Two rules the hook enforces that are easy to trip:
 
-- **The suite count is a ratchet.** If it drops, either restore the tests or lower `test_count_baseline` in the manifest in the same commit, with a reason in the message.
+- **The suite count is a ratchet.** If it drops, either restore the tests or lower `test_count_baseline` in the manifest in the same commit, with a reason in the message. Nothing raises it for you: bump it at each release cut, and tier 1 warns once the real suite has run more than `test_count_slack` (25) tests ahead of the floor, because a floor that far behind would not notice a whole module falling out of the test root.
 - **The SDKs are generated, not written.** Run `python3 sdk/generate.py --harness ./zig-out/bin/graff` after any change to the model catalog, tool schemas, or provider list, and commit the result.
 
 ## Tier 2: model-backed behavior

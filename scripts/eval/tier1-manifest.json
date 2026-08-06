@@ -4,13 +4,18 @@
     "Tier 1 of the internal eval set: the deterministic invariants the pre-push hook enforces.",
     "No network, no model calls. Tier 2 (model-backed behavior) lives in evals/ and is opt-in.",
     "test_count_baseline is a ratchet: the suite may grow, it may never shrink. A drop means a",
-    "module stopped being referenced from the test root and its tests silently vanished."
+    "module stopped being referenced from the test root and its tests silently vanished.",
+    "It is a FLOOR and nothing raises it automatically - bump it by hand at each release cut.",
+    "test_count_slack is how far the real suite may run ahead of that floor before the tests",
+    "check starts WARNING that the ratchet has stalled: it sat 350 behind for months (#439),",
+    "which is a floor low enough to catch nothing."
   ],
   "test_roots": [
     "src/main.zig",
     "src/repl.zig"
   ],
-  "test_count_baseline": 656,
+  "test_count_baseline": 994,
+  "test_count_slack": 25,
   "required_invariants": [
     {
       "id": "goal-epochs",

@@ -17,6 +17,11 @@ Subcommands (all offline, all under a second):
   filters             print one -Dtest-filter value per line, for the shell
   count --observed N  the total suite count may grow, never shrink
   invariants --observed N   the filtered run must have run exactly the required set
+
+`count` exits 3, not 1, when the suite has run far enough ahead of the baseline
+that the floor no longer guards anything (#439: it sat 350 behind). That is a
+warning the caller surfaces, never a failure - the baseline is a floor, and only
+a human bumps it, in the commit that earned the tests.
 """
 
 from __future__ import annotations
@@ -33,6 +38,12 @@ MANIFEST = REPO / "scripts" / "eval" / "tier1-manifest.json"
 IMPORT = re.compile(r'@import\("([^"]+\.zig)"\)')
 TEST_DECL = re.compile(r'(?m)^test[ {]')
 TEST_NAME = re.compile(r'(?m)^test "((?:[^"\\]|\\.)*)"')
+
+# `count` exit code for "green, but the baseline is far enough behind the real
+# suite that it guards nothing". Kept out of 0/1 so the shell can tell a warning
+# from a pass and from a failure. scripts/eval-tier1.sh reads it.
+RATCHET_STALLED = 3
+DEFAULT_SLACK = 25
 
 
 def load_manifest() -> dict:
@@ -171,6 +182,7 @@ def main() -> None:
 
     if args.cmd == "count":
         baseline = int(manifest["test_count_baseline"])
+        slack = int(manifest.get("test_count_slack", DEFAULT_SLACK))
         if args.observed < baseline:
             print(
                 f"  FAIL test count dropped: {args.observed} ran, baseline is {baseline}.\n"
@@ -182,7 +194,23 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        if args.observed > baseline:
+        drift = args.observed - baseline
+        if drift > slack:
+            # Never raise it here: a floor that moves on its own is not a floor,
+            # and the number belongs in the same commit as the tests that earned
+            # it. But say it loudly, because the alternative is what #439 found -
+            # a baseline 350 behind, guarding nothing, for months.
+            print(
+                f"  WARN the ratchet has stalled: {args.observed} tests ran but"
+                f" test_count_baseline is {baseline}, {drift} behind (slack {slack}).\n"
+                "    A floor that far below the suite would not notice a whole module\n"
+                "    falling out of the test root.\n"
+                f"      fix: set test_count_baseline to {args.observed} in\n"
+                "           scripts/eval/tier1-manifest.json and commit it.",
+                file=sys.stderr,
+            )
+            sys.exit(RATCHET_STALLED)
+        if drift:
             print(
                 f"  {args.observed} tests ran (baseline {baseline}) - "
                 "bump test_count_baseline in scripts/eval/tier1-manifest.json to ratchet it up"

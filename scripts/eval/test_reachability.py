@@ -15,6 +15,14 @@ test root" and exited 0 while 37 tests were dead. This compares two ground
 truths instead - the names declared in src/*.zig, and the names present in the
 compiled binary - so it cannot be fooled by an import Zig never follows.
 
+Which binary matters as much as which names. This used to read the NEWEST
+artifact under .zig-cache/o, and a `-Dtest-filter` build lands there too: after
+one - `zig build test -Dtest-filter=foo` by hand, or the `invariants` check
+right before this one in a hook that reordered - the newest artifact holds only
+the tests that filter matched, and every other declared test read as "not
+compiled in" (#439). tier1_test_binary.select() picks the artifact by the names
+it carries instead, so the full build wins even when a filtered one is newer.
+
 Usage:  python3 scripts/eval/test_reachability.py [--verbose]
 Exit 0 when every declared test is compiled in; 1 otherwise.
 """
@@ -22,39 +30,22 @@ Exit 0 when every declared test is compiled in; 1 otherwise.
 from __future__ import annotations
 
 import pathlib
-import re
 import subprocess
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import tier1_test_binary  # noqa: E402  (sibling module, not an installed package)
+from tier1_test_binary import ArtifactError, declared_tests, select  # noqa: E402
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-SRC = ROOT / "src"
-CACHE = ROOT / ".zig-cache" / "o"
-
-TEST_NAME = re.compile(r'^test "((?:[^"\\]|\\.)*)"', re.M)
-
-
-def declared_tests() -> dict[str, str]:
-    """Every `test "name"` in src/*.zig, mapped to its file."""
-    out: dict[str, str] = {}
-    for path in sorted(SRC.glob("*.zig")):
-        for match in TEST_NAME.finditer(path.read_text(encoding="utf-8")):
-            # The source carries Zig escapes; the binary carries the resolved
-            # bytes. Unescape so a name containing a quote still matches.
-            name = match.group(1).replace('\\"', '"').replace("\\\\", "\\")
-            out[name] = path.name
-    return out
-
-
-def newest_test_binary() -> pathlib.Path | None:
-    candidates = [p for p in CACHE.glob("*/test") if p.is_file()]
-    return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
 
 
 def main() -> int:
     verbose = "--verbose" in sys.argv
 
     # A stale binary would give a false verdict in either direction, so build
-    # first and let a compile failure surface as a compile failure.
+    # first - unfiltered, which is also what makes the artifact we want exist -
+    # and let a compile failure surface as a compile failure.
     build = subprocess.run(
         ["zig", "build", "test"], cwd=ROOT, capture_output=True, text=True
     )
@@ -63,23 +54,27 @@ def main() -> int:
         sys.stderr.write(build.stderr[-2000:])
         return 1
 
-    binary = newest_test_binary()
-    if binary is None:
-        sys.stderr.write("no compiled test binary found under .zig-cache/o\n")
-        return 1
-
-    # Raw bytes, NOT `strings`: that tool only extracts ASCII runs, so every
-    # test name containing an em dash, an arrow or a quote read as missing and
-    # the guard cried wolf on six perfectly live tests. Searching the bytes for
-    # the UTF-8 encoding of each name has no such blind spot.
-    blob = binary.read_bytes()
-
     declared = declared_tests()
-    missing: dict[str, list[str]] = {}
-    for name, file in declared.items():
-        if name.encode("utf-8") not in blob:
-            missing.setdefault(file, []).append(name)
+    try:
+        # No filters: the full build, i.e. the artifact carrying the most
+        # declared names. Raw bytes, NOT `strings` - that tool only extracts
+        # ASCII runs, so every test name containing an em dash, an arrow or a
+        # quote read as missing and the guard cried wolf on six live tests.
+        chosen = select([], declared)
+    except ArtifactError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 1
+    binary = chosen.path
 
+    missing: dict[str, list[str]] = {}
+    for name in chosen.missing:
+        missing.setdefault(declared[name], []).append(name)
+
+    if not chosen.was_newest:
+        print(
+            "  ignored a newer but filtered artifact in .zig-cache/o"
+            f" ({tier1_test_binary.candidates()[0].parent.name})"
+        )
     if not missing:
         print(f"  all {len(declared)} declared tests are compiled in ({binary.parent.name})")
         return 0
