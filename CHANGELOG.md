@@ -10,6 +10,71 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.242 (2026-08-06)
+
+- MCP tool schemas load on demand (#416): a server's tools are advertised by
+  name and one-line description, and `load_tool_schemas` fetches the full JSON
+  on request, once per session. On a real 13-tool server the served catalog
+  drops 10,505 → 3,696 bytes, a 64.8% cut and roughly 1,700 input tokens off
+  every request for the whole session. Servers under 4 KiB of schema stay eager,
+  so small servers behave byte-for-byte as before and only the expensive ones
+  change. Trust and consent are untouched — deferral is about context cost, not
+  permissions.
+- Tool results above a threshold return a handle instead of their contents
+  (#440): a bounded preview, the path holding the complete result, the byte
+  count, and a measured shape hint (line count, or a JSON payload's top-level
+  keys). This replaces a three-cap stack in which the middle cap made the outer
+  one unreachable, so the #409 spill could never fire for bash, read_file,
+  webfetch or codedb. The bash capture ceiling rises 128 KiB → 1 MiB, since at
+  the old value the handle would have described a result already a quarter
+  destroyed.
+- The session transcript is append-only (#441). The premise shipped in #410 was
+  false: `<name>.session.json` is one JSON object whose history is rewritten in
+  place, so compaction permanently discarded it. A new
+  `<name>.transcript.jsonl` records each message as it first enters history and
+  is never rewritten, which makes "what did that error say exactly?" a grep
+  again. At its size cap the generation rotates by rename rather than being
+  truncated in place — an in-place rewrite is the very failure this fixes.
+- Compaction now says what survives, on both sides. Before the boundary the
+  agent spends one budgeted turn writing notes to its future self (#391),
+  drawn from the same ledger as the landing reserve rather than a second one,
+  and refused outright when the session is already being rescued. After it, a
+  note states the durable state that actually persists: active goal and todos,
+  files modified this session, the transcript path, and any live result handles
+  (#411).
+- The durable-transcript prompt line waits for the first compaction (#445).
+  Before one, the live context is a superset of the file, so the line pointed
+  the model at wording it could already see; the measured cost was ~240 input
+  tokens on every call. Short sessions, which is most of them, now pay nothing.
+- **Windows: the transcript wrote nothing at all** (#441). `File.stat` on a
+  write-only handle returns `ACCESS_DENIED` there, so the append offset lookup
+  failed after the file had been created and every transcript was 0 bytes. The
+  same pattern is still live in `playbook.zig` and `serve_events.zig`, tracked
+  in #462. `.graff/` paths are forward-slashed on every platform by invariant,
+  since those strings are shown to the model.
+- The `anyOf` test failure was never a flake (#444). The build runner prints a
+  full step-failure report for a *successful* step whose stderr is non-empty,
+  and records `failed command:` before the child's exit status is known. Cached
+  test steps do not re-run the tests, so "warm re-runs passed" was vacuous and
+  seed-independence followed for free. Engine stderr is now silent in test
+  builds and the suite emits zero bytes.
+- Engine/REPL separation reached the lifecycle and long-tail clusters (#429):
+  `session_start`, `session_run`, `providers`, `hooks`, `skills`, `skill_docs`,
+  `review`, `imagegen` and `agent_prompt` no longer import the terminal.
+  `session_run.zig` fell 597 → 450 lines, relieving the cap pressure the epic
+  predicted it would. The inventory also found that `approvals.zig` was on the
+  ban list as a consent surface rather than for any terminal coupling, so its
+  pure half moved to `harness_policy.zig`.
+- A GUI panel answers "what are my agents doing" without opening each
+  conversation, sorted attention-first (#419).
+- Two eval harnesses became durable rather than living in scratch: the live A/B
+  token-economics rig that produced the numbers above, and the golden
+  byte-identity harness the engine work is verified against.
+- Two silent-failure classes gained guards, each proven by break-and-revert: an
+  environment knob that stops being parsed now fails a test instead of quietly
+  ceasing to exist, and the prompt funnel can no longer arm a process-global
+  from a test build.
+
 ## v0.0.241 (2026-08-06)
 
 - The engine separation reached the tool-execution cluster (#422): tool-call

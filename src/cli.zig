@@ -21,6 +21,12 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.242
+    \\  • MCP tool schemas load on demand: a 13-tool server's catalog drops 64.8%, about 1,700 input tokens off every request; small servers stay eager and unchanged
+    \\  • A big tool result returns a handle — preview, path, byte count, shape — instead of its contents, so it never occupies context turn after turn
+    \\  • Sessions keep an append-only transcript compaction cannot rewrite, and compaction now states what survives on both sides of the boundary
+    \\  • Windows: the transcript wrote 0 bytes on every run; the durable-transcript prompt line now waits for the first compaction instead of being paid for from turn one
+    \\
     \\0.0.241
     \\  • Goal/loop runs stop paying for verifications the workspace cannot have changed: an unchanged tree skips the eval command and its judge call, and the model is steered to edit first
     \\  • Oversized tool outputs spill to a session artifact the model can read or grep instead of being destroyed at the cap; throttles no longer masquerade as context overflows, and silent overflows recover in one trim
@@ -47,12 +53,6 @@ pub const changelog_text =
     \\0.0.231
     \\  • edit_file verifies every edit actually landed on disk; a silent no-op is a loud tool error instead of a false success, and batched same-file edits can no longer race each other
     \\  • Embedder mode is complete: the hard --no-local-tools gate (MCP-sourced coding tools) plus resumable serve streams with seq ids, ?from=N replay, and durable sessions (schema 0.10)
-    \\
-    \\0.0.229
-    \\  • SKILL.md skills: markdown playbooks in .harness/skills (or .claude/skills) load on demand, cost one catalog line each, and /skills manages them
-    \\  • The bundled skill-creator teaches the full authoring loop, from capturing intent mid-session to forward-testing with fresh subagents
-    \\  • Root/subagent model shapes can keep orchestration on Sol while routing parallel workers and judges to Terra
-    \\  • Remote MCP servers now support Streamable HTTP, OAuth discovery/PKCE/refresh, and an opt-out core Smolify connection
     \\
 ;
 
