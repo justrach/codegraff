@@ -332,9 +332,11 @@ test "#445: the transcript line is absent until the first compaction, then rides
     const saved = prompts.g_session_compacted;
     defer prompts.g_session_compacted = saved;
     defer prompts.armSessionTranscript(a, "", .{}, false); // leave the global as the rest of the suite expects it
+    defer prompts.armCompactNotes(""); // #391's store is a process global: never leak an armed session into another test
 
     var agent: agent_mod.Agent = undefined;
     agent.sub = false;
+    agent.io = std.testing.io; // the note block reads the fs when armed; a stub's undefined io segfaults
     agent.session_name = "session-445";
     prompts.g_session_compacted = false;
 
@@ -390,9 +392,11 @@ test "#445: /new and /clear disarm the transcript line again, and a later compac
     const saved = prompts.g_session_compacted;
     defer prompts.g_session_compacted = saved;
     defer prompts.armSessionTranscript(a, "", .{}, false); // leave the global as the rest of the suite expects it
+    defer prompts.armCompactNotes(""); // #391's store is a process global: never leak an armed session into another test
 
     var agent: agent_mod.Agent = undefined;
     agent.sub = false;
+    agent.io = std.testing.io; // the note block reads the fs when armed; a stub's undefined io segfaults
     agent.session_name = "session-long";
     prompts.g_session_compacted = false;
     prompts.armSessionTranscript(a, agent.session_name, .{}, false);
@@ -455,9 +459,11 @@ test "#445: /resume disarms the transcript line and leaves no stale session path
     const saved = prompts.g_session_compacted;
     defer prompts.g_session_compacted = saved;
     defer prompts.armSessionTranscript(a, "", .{}, false); // leave the global as the rest of the suite expects it
+    defer prompts.armCompactNotes(""); // #391's store is a process global: never leak an armed session into another test
 
     var agent: agent_mod.Agent = undefined;
     agent.sub = false;
+    agent.io = std.testing.io; // the note block reads the fs when armed; a stub's undefined io segfaults
     agent.session_name = "session-before";
     prompts.g_session_compacted = false;
     prompts.armSessionTranscript(a, agent.session_name, .{}, false);

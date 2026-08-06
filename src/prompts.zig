@@ -170,11 +170,26 @@ pub var g_session_compacted: bool = false;
 /// bare `Agent` with an `undefined` Io out of the filesystem.
 var g_note_session: []const u8 = "";
 
+/// Backing store for the above. The global OWNS its name rather than borrowing
+/// the caller's: in production every session name is arena-owned for the life
+/// of the process, but a unit test hands over a short-lived buffer, and the
+/// first test to arm one left every later composition dereferencing freed
+/// memory — a segfault inside `compact_note.pathFor`, far from the cause.
+/// Copying makes the hazard structurally impossible instead of a rule callers
+/// must remember. Names longer than this disarm rather than truncate: a
+/// truncated name would silently read a DIFFERENT session's notes.
+var g_note_session_buf: [256]u8 = undefined;
+
 /// Armed by setRootSystemPrompts, and re-armed by the note writer itself so a
 /// `/save <name>` mid-session cannot leave the injection reading a store the
 /// writer has stopped writing to.
 pub fn armCompactNotes(session_name: []const u8) void {
-    g_note_session = session_name;
+    if (session_name.len == 0 or session_name.len > g_note_session_buf.len) {
+        g_note_session = "";
+        return;
+    }
+    @memcpy(g_note_session_buf[0..session_name.len], session_name);
+    g_note_session = g_note_session_buf[0..session_name.len];
 }
 
 /// One line naming the durable transcript. Deliberately NOT described as
@@ -435,6 +450,13 @@ test "setSystemPrompts (#326): derives all four variants from base, composing ul
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var agent: Agent = undefined;
+    // #391's note block reads the filesystem whenever a session is armed, and
+    // g_note_session is a PROCESS global: another test in this binary can leave
+    // it armed, at which point this stub's undefined `io` segfaults inside
+    // compact_note.load. A real io makes the read miss harmlessly instead, and
+    // disarming keeps this test from depending on suite order either way.
+    agent.io = std.testing.io;
+    armCompactNotes("");
 
     try setSystemPrompts(&agent, "BASE-A", a);
     try std.testing.expectEqualStrings("BASE-A", agent.sys_normal);

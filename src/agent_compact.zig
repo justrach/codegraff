@@ -11,6 +11,11 @@ const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 const goal_flow = @import("goal_flow.zig");
+// #445 needs this back: #411 dropped the alias as unused in the same release,
+// having moved the last compact_instruction reference into handoff_note, while
+// #445 added noteSessionCompacted call sites that reach through it. Neither
+// branch could see the other, so the break only appeared at integration.
+const prompts = @import("prompts.zig");
 const handoff_note = @import("compact_handoff_note.zig"); // #411: both halves of "what survives a compaction"
 const compact_note_glue = @import("compact_note_glue.zig"); // #391
 
