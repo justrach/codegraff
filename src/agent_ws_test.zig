@@ -1,12 +1,15 @@
 //! Regression tests for Codex WebSocket delta-session re-anchoring.
 
 const std = @import("std");
+const main_mod = @import("main.zig");
 const Agent = @import("agent.zig").Agent;
 const textMessage = @import("messages.zig").textMessage;
 const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig");
 const codex_chain = @import("codex_chain.zig");
 const agent_compact = @import("agent_compact.zig");
+const engine_sink = @import("engine_sink.zig");
+const engine_events = @import("engine_events.zig");
 
 test "closeCodexWs resets the delta session state + frees the response id (codex-ws)" {
     var agent: Agent = undefined;
@@ -94,6 +97,76 @@ test "WS fallback latches only after a retry" {
     try std.testing.expect(!agent_ws.wsShouldFallback(1));
     try std.testing.expect(agent_ws.wsShouldFallback(2));
     try std.testing.expect(agent_ws.wsShouldFallback(255));
+}
+
+fn sinkRecord(ctx: *anyopaque, ev: engine_sink.Stamped) void {
+    const rec: *std.ArrayList(engine_sink.Stamped) = @ptrCast(@alignCast(ctx));
+    rec.append(std.testing.allocator, ev) catch @panic("OOM");
+}
+
+// (#422 slice 1b) postLive draws nothing itself anymore: each forced stall/
+// drop seam emits exactly ONE transport_aborted event through the sink
+// (TuiSink renders the old inline ⚠ lines, JsonSink drops it — pinned in
+// engine_sink.zig) and returns the matching transport error. An injected
+// recording sink observes the contract directly — no TTY, no globals read.
+test "postLive force seams emit one transport_aborted through the sink (#422)" {
+    const saved_sa = main_mod.g_force_stall_always;
+    const saved_da = main_mod.g_force_drop_always;
+    const saved_so = main_mod.g_force_stall_once;
+    const saved_do = main_mod.g_force_drop_once;
+    defer {
+        main_mod.g_force_stall_always = saved_sa;
+        main_mod.g_force_drop_always = saved_da;
+        main_mod.g_force_stall_once = saved_so;
+        main_mod.g_force_drop_once = saved_do;
+    }
+    main_mod.g_force_stall_always = false;
+    main_mod.g_force_drop_always = false;
+    main_mod.g_force_stall_once = false;
+    main_mod.g_force_drop_once = false;
+
+    var rec: std.ArrayList(engine_sink.Stamped) = .empty;
+    defer rec.deinit(std.testing.allocator);
+    const vt: engine_sink.VTable = .{ .emit = sinkRecord, .durable = false };
+    var a: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = std.testing.allocator,
+        .io = undefined,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = null,
+        .sink = .{ .ctx = &rec, .vt = &vt },
+    };
+
+    const Case = struct {
+        flag: *bool,
+        consumed: bool, // the once-seams reset themselves on use
+        err: anyerror,
+        reason: engine_events.StreamAbort,
+        turn_ending: bool,
+    };
+    const cases = [_]Case{
+        .{ .flag = &main_mod.g_force_stall_always, .consumed = false, .err = error.StreamStalled, .reason = .stalled, .turn_ending = false },
+        .{ .flag = &main_mod.g_force_drop_always, .consumed = false, .err = error.StreamDropped, .reason = .dropped, .turn_ending = false },
+        .{ .flag = &main_mod.g_force_stall_once, .consumed = true, .err = error.StreamStalled, .reason = .stalled, .turn_ending = true },
+        .{ .flag = &main_mod.g_force_drop_once, .consumed = true, .err = error.StreamDropped, .reason = .dropped, .turn_ending = true },
+    };
+    for (cases, 1..) |c, want_events| {
+        c.flag.* = true;
+        try std.testing.expectError(c.err, agent_ws.postLive(&a, "{}"));
+        if (c.consumed) try std.testing.expect(!c.flag.*) else c.flag.* = false;
+        try std.testing.expectEqual(want_events, rec.items.len); // exactly one event per cut
+        switch (rec.items[want_events - 1].event) {
+            .transport_aborted => |t| {
+                try std.testing.expectEqual(c.reason, t.reason);
+                try std.testing.expectEqual(c.turn_ending, t.turn_ending);
+            },
+            else => return error.TestUnexpectedEvent,
+        }
+    }
 }
 
 // (#codex-ws) End-to-end regression for the reanchor fix: buildBody's
