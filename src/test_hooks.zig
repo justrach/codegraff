@@ -129,6 +129,12 @@ const credential_store = @import("credential_store.zig");
 // Production reaches both only through CALLS, so their tests need the hook.
 const engine_events = @import("engine_events.zig");
 const engine_sink = @import("engine_sink.zig");
+// #429 batch 3: the terminal halves the status line and the `/skills` command
+// surface moved into, plus the policy leaf approvals.zig split its pure half
+// out to. Production reaches all three through calls or aliases only.
+const agent_prompt_render = @import("agent_prompt_render.zig");
+const skill_docs_render = @import("skill_docs_render.zig");
+const harness_policy = @import("harness_policy.zig");
 
 // #412: the worktree fingerprint behind the no-progress verify guard.
 // agent_eval.zig reaches it through a CALL only, which analyses nothing.
@@ -179,6 +185,9 @@ test {
     _ = credential_store;
     _ = engine_events;
     _ = engine_sink;
+    _ = agent_prompt_render;
+    _ = skill_docs_render;
+    _ = harness_policy;
     _ = verify_fingerprint;
     _ = proc_identity;
     _ = escalation;

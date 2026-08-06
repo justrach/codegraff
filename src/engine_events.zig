@@ -103,6 +103,71 @@ pub const BatchOutcome = struct { done: usize, failed: usize, cancelled: usize }
 /// in that tool's own module, not in this vocabulary.
 pub const ToolText = struct { text: []const u8 };
 
+// ── The interactive status line (#429 batch 3) ───────────────────────────────
+// Its own value types rather than main.zig's/learning_privacy's: this file is
+// the vocabulary, and a transport-split sink must be able to read an event
+// without importing the engine. The emit site maps with an exhaustive switch,
+// so adding a tier upstream is a compile error here rather than a silent
+// mistranslation.
+
+/// Reasoning depth, when the provider takes one at all (main.ReasoningEffort).
+pub const ReasoningEffort = enum { low, medium, high, xhigh, max, ultra };
+
+/// The federated-learning privacy ceiling (learning_privacy.Mode).
+pub const PrivacyTier = enum { local, aggregate, templates, examples };
+
+/// What the cost meter can say. Deliberately not a pre-formatted string: only
+/// `.usd` has a figure, and the other three are states, not numbers.
+pub const CostMeter = union(enum) {
+    /// The meter is off (--no-cost): the segment does not exist.
+    hidden,
+    /// A flat-rate provider (codex): spend is not per-turn, so there is no
+    /// figure to show.
+    subscription,
+    /// No price-table entry for this model — a real figure cannot be derived.
+    unpriced,
+    /// Session spend so far, in US dollars.
+    usd: f64,
+};
+
+/// The live context meter. Present only once a response has reported usage;
+/// `tokens` is the effective count, which is not always what the last response
+/// said (local estimates carry it between turns).
+pub const ContextMeter = struct {
+    tokens: u64,
+    window: u64,
+    /// The count at which this provider compacts.
+    compact_at: u64,
+};
+
+/// Everything the status line printed before a human turn actually says.
+/// Deliberately semantic: no widths, no colors, no assembled segments. Which
+/// badges survive a narrow pane is a rendering decision (#209) and belongs to
+/// the sink, which is the only thing that knows the terminal.
+pub const PromptStatus = struct {
+    model: []const u8,
+    provider_id: []const u8,
+    cwd: []const u8,
+    /// The privacy mode's own badge wording, owned by learning_privacy.zig —
+    /// carried whole for the same reason ToolText is, while the tier beside it
+    /// is what a sink picks a tone from.
+    privacy_label: []const u8,
+    privacy: PrivacyTier,
+    /// null when this provider takes no reasoning effort, so no badge exists.
+    effort: ?ReasoningEffort = null,
+    /// null until a response has reported usage.
+    context: ?ContextMeter = null,
+    /// Prompt-cache hit on the last response; 0 = nothing cached.
+    cache_read: u64 = 0,
+    cost: CostMeter = .hidden,
+    /// The Fast badge APPLIES — the flag is on and the provider honors it.
+    fast: bool = false,
+    fallback: bool = false,
+    plan: bool = false,
+    strict: bool = false,
+    ultracode: bool = false,
+};
+
 /// Everything the streaming path tells a frontend. Each doc comment states
 /// the emission site's contract, not how any one sink draws it.
 pub const EngineEvent = union(enum) {
@@ -186,6 +251,13 @@ pub const EngineEvent = union(enum) {
     completion_text: ToolText,
     /// todo_write applied; the payload is the list as goal_todo rendered it.
     todo_list_updated: ToolText,
+
+    /// A human turn is about to be read: this is what the session looks like
+    /// right now (#429). Presentation-only and always will be — the --json
+    /// wire has no prompt because an SDK client drives turns itself, which is
+    /// why the emit site skips json_mode entirely rather than relying on a
+    /// silent sink.
+    prompt_ready: PromptStatus,
 };
 
 /// Durable events are the protocol stream: what the --json wire emits today
@@ -320,6 +392,24 @@ test "slice 1c: the tool-cluster notices are presentation pulses" {
         .{ .todo_list_updated = .{ .text = "todos" } },
     };
     for (pulses) |ev| try std.testing.expect(!durable(ev));
+}
+
+test "batch 3: the status line is a presentation pulse, never a wire line" {
+    // The --json wire has never had a prompt event and must not grow one by
+    // accident: a client that drives its own turns would read a burned
+    // sequence id as lost data (#330).
+    const status: PromptStatus = .{
+        .model = "gpt-5.6",
+        .provider_id = "codex",
+        .cwd = "~/src/graff",
+        .privacy_label = "Privacy:Aggregate",
+        .privacy = .aggregate,
+        .effort = .high,
+        .context = .{ .tokens = 12_345, .window = 200_000, .compact_at = 160_000 },
+        .cache_read = 2048,
+        .cost = .subscription,
+    };
+    try std.testing.expect(!durable(.{ .prompt_ready = status }));
 }
 
 test "generation only moves forward, one restart at a time" {
