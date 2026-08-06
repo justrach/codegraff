@@ -73,6 +73,9 @@ pub var cap_bytes: usize = 16 * 1024 * 1024;
 /// `.graff/sessions/<name>.transcript.jsonl`. Pure; #411's post-compaction note
 /// and anything else that needs the path calls this instead of re-deriving the
 /// filename.
+///
+/// Forward-slashed on every platform, Windows included — deliberately, and
+/// downstream may rely on it. session_index.zig states the invariant and why.
 pub fn transcriptPath(arena: Allocator, name: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ session_index.sessions_dir, name, transcript_ext });
 }
@@ -242,8 +245,13 @@ fn seed(io: Io, dir: Io.Dir, arena: Allocator, name: []const u8) void {
     const path = transcriptPath(arena, name) catch return;
     const data = dir.readFileAlloc(io, path, arena, .limited(cap_bytes)) catch return;
     g.bytes = data.len;
+    // '\n' explicitly, both here and in `flush` — never a platform default.
+    // The digest is over the line's bytes, so a stray '\r' from an editor that
+    // rewrote the file with CRLF would silently stop every line matching and
+    // re-append the whole history; strip it rather than trust the writer.
     var it = std.mem.splitScalar(u8, data, '\n');
-    while (it.next()) |line| {
+    while (it.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, "\r");
         if (line.len == 0) continue; // the trailing newline, or a torn write
         bump(digest(line));
     }
@@ -274,13 +282,27 @@ fn flush(io: Io, dir: Io.Dir, arena: Allocator, name: []const u8, pending: []con
 /// or rewritten — that is the whole append-only guarantee, and it is why a
 /// compaction running against the same session cannot cost the transcript a
 /// byte. Returns the new size.
+///
+/// `.read = true` is load-bearing on WINDOWS and cost-free everywhere else.
+/// Io.Dir.createFile maps `read` straight onto the NT access mask
+/// (`GENERIC = .{ .WRITE = true, .READ = flags.read }`), and a write-only
+/// handle carries FILE_GENERIC_WRITE, which does NOT include
+/// FILE_READ_ATTRIBUTES. `File.stat` is NtQueryInformationFile(.All), which
+/// needs exactly that right, so on a write-only handle it fails with
+/// ACCESS_DENIED — and this function then returned null having already CREATED
+/// the file, so every Windows transcript was an empty file and no message was
+/// ever recorded. The path-based `statFile` fallback keeps a future std change
+/// from re-introducing a silent no-write instead of an append.
 fn appendWhole(io: Io, dir: Io.Dir, path: []const u8, data: []const u8) ?usize {
     dir.createDirPath(io, session_index.sessions_dir) catch {};
-    const f = dir.createFile(io, path, .{ .truncate = false }) catch return null;
+    const f = dir.createFile(io, path, .{ .truncate = false, .read = true }) catch return null;
     defer f.close(io);
-    const st = f.stat(io) catch return null;
-    f.writePositionalAll(io, data, st.size) catch return null;
-    return @as(usize, @intCast(st.size)) + data.len;
+    const end: u64 = if (f.stat(io)) |st| st.size else |_| blk: {
+        const st = dir.statFile(io, path, .{}) catch return null;
+        break :blk st.size;
+    };
+    f.writePositionalAll(io, data, end) catch return null;
+    return @as(usize, @intCast(end)) + data.len;
 }
 
 /// At the cap the live generation is RENAMED aside, never trimmed in place.
@@ -293,6 +315,13 @@ fn appendWhole(io: Io, dir: Io.Dir, path: []const u8, data: []const u8) ?usize {
 /// live one, every line ever written stays a line somewhere, and the bound is
 /// simply two generations. The previous generation is what the next rotation
 /// replaces, so disk use is capped rather than merely slowed.
+///
+/// Replacing an EXISTING previous generation is the part Windows would
+/// normally refuse (its rename does not overwrite). Io.Dir.rename is the
+/// replacing one on every OS — dirRenameWindows passes replace_if_exists=true,
+/// and Io.Dir.renamePreserve is the variant that fails on a taken name — so
+/// the second and every later rotation works there too. The test below rotates
+/// twice for exactly that reason.
 fn rotate(io: Io, dir: Io.Dir, arena: Allocator, name: []const u8) void {
     const live = transcriptPath(arena, name) catch return;
     const prev = rotatedPath(arena, name) catch return;
@@ -306,232 +335,5 @@ pub fn resetForTest() void {
     detach();
 }
 
-// ── tests ────────────────────────────────────────────────────────────────
-
-const testing = std.testing;
-
-fn msg(arena: Allocator, role: []const u8, text: []const u8) !Value {
-    var o: std.json.ObjectMap = .empty;
-    try o.put(arena, "role", .{ .string = role });
-    try o.put(arena, "content", .{ .string = text });
-    return .{ .object = o };
-}
-
-/// The fields `record` reads, and nothing else.
-fn agentFor(gpa: Allocator, arena: Allocator, io: Io, name: []const u8) Agent {
-    var root: Agent = undefined;
-    root.gpa = gpa;
-    root.io = io;
-    root.sub = false;
-    root.session_name = name;
-    root.messages = std.json.Array.init(arena);
-    return root;
-}
-
-fn readTranscript(dir: Io.Dir, gpa: Allocator, rel: []const u8) ![]u8 {
-    return dir.readFileAlloc(testing.io, rel, gpa, .limited(1 << 20));
-}
-
-fn countLines(data: []const u8) usize {
-    return std.mem.count(u8, data, "\n");
-}
-
-test "one line per message, however many times the autosave runs (#441)" {
-    const io = testing.io;
-    const gpa = testing.allocator;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    resetForTest();
-    tool_spill.resetForTest();
-    defer resetForTest();
-    var tmp = testing.tmpDir(.{ .iterate = true });
-    defer tmp.cleanup();
-
-    var root = agentFor(gpa, a, io, "s");
-    try root.messages.append(try msg(a, "user", "why did the build fail?"));
-    record(&root, tmp.dir, "s");
-    // The autosave runs again over an unchanged history: no second line.
-    record(&root, tmp.dir, "s");
-    record(&root, tmp.dir, "s");
-    const one = try readTranscript(tmp.dir, gpa, ".graff/sessions/s.transcript.jsonl");
-    defer gpa.free(one);
-    try testing.expectEqual(@as(usize, 1), countLines(one));
-    try testing.expect(std.mem.indexOf(u8, one, "why did the build fail?") != null);
-
-    // A new turn adds exactly its own lines.
-    try root.messages.append(try msg(a, "assistant", "error: undefined symbol GRAFF_441"));
-    record(&root, tmp.dir, "s");
-    record(&root, tmp.dir, "s");
-    const two = try readTranscript(tmp.dir, gpa, ".graff/sessions/s.transcript.jsonl");
-    defer gpa.free(two);
-    try testing.expectEqual(@as(usize, 2), countLines(two));
-    // Append-only at the byte level: the first line is untouched where it was.
-    try testing.expect(std.mem.startsWith(u8, two, one));
-
-    // A genuine repeat is a real message, not a duplicate: forward-only
-    // matching must not swallow it.
-    try root.messages.append(try msg(a, "user", "why did the build fail?"));
-    record(&root, tmp.dir, "s");
-    const three = try readTranscript(tmp.dir, gpa, ".graff/sessions/s.transcript.jsonl");
-    defer gpa.free(three);
-    try testing.expectEqual(@as(usize, 3), countLines(three));
-}
-
-test "compaction discards the history; the transcript still has it (#441)" {
-    const io = testing.io;
-    const gpa = testing.allocator;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    resetForTest();
-    tool_spill.resetForTest();
-    defer resetForTest();
-    var tmp = testing.tmpDir(.{ .iterate = true });
-    defer tmp.cleanup();
-
-    var root = agentFor(gpa, a, io, "c");
-    // The exact wording that a summary would paraphrase away.
-    const detail = "ld: symbol(s) not found for architecture arm64: _graff_441_probe";
-    try root.messages.append(try msg(a, "user", "build it"));
-    try root.messages.append(try msg(a, "tool", detail));
-    try root.messages.append(try msg(a, "assistant", "fixing the link order"));
-    try root.messages.append(try msg(a, "user", "and now?"));
-    record(&root, tmp.dir, "c");
-    const before = try readTranscript(tmp.dir, gpa, ".graff/sessions/c.transcript.jsonl");
-    defer gpa.free(before);
-    try testing.expectEqual(@as(usize, 4), countLines(before));
-
-    // compact()'s shape: a fresh array of [handoff summary] ++ the recent
-    // suffix verbatim. The detail is now unreachable from `messages` — the very
-    // next autosave rewrites the session file without it.
-    const tail = root.messages.items[3];
-    var fresh = std.json.Array.init(a);
-    try fresh.append(try msg(a, "user", "[summary] we were fixing a link error"));
-    try fresh.append(tail);
-    root.messages = fresh;
-    record(&root, tmp.dir, "c");
-
-    const after = try readTranscript(tmp.dir, gpa, ".graff/sessions/c.transcript.jsonl");
-    defer gpa.free(after);
-    // (a) every earlier line survived, byte for byte, in place
-    try testing.expect(std.mem.startsWith(u8, after, before));
-    // (b) the discarded detail is still greppable
-    try testing.expect(std.mem.indexOf(u8, after, detail) != null);
-    // (c) only the summary was added — the verbatim tail is not duplicated
-    try testing.expectEqual(@as(usize, 5), countLines(after));
-    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, after, "and now?"));
-    try testing.expect(std.mem.indexOf(u8, after, "[summary] we were fixing") != null);
-
-    // And the turn after the compaction keeps appending normally.
-    try root.messages.append(try msg(a, "assistant", "linked clean"));
-    record(&root, tmp.dir, "c");
-    const later = try readTranscript(tmp.dir, gpa, ".graff/sessions/c.transcript.jsonl");
-    defer gpa.free(later);
-    try testing.expectEqual(@as(usize, 6), countLines(later));
-    try testing.expect(std.mem.startsWith(u8, later, after));
-}
-
-test "a resumed session does not re-append its restored history (#441)" {
-    const io = testing.io;
-    const gpa = testing.allocator;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    resetForTest();
-    tool_spill.resetForTest();
-    defer resetForTest();
-    var tmp = testing.tmpDir(.{ .iterate = true });
-    defer tmp.cleanup();
-
-    var root = agentFor(gpa, a, io, "r");
-    try root.messages.append(try msg(a, "user", "first"));
-    try root.messages.append(try msg(a, "assistant", "second"));
-    record(&root, tmp.dir, "r");
-
-    // A new process resumes "r": same history, no in-memory state at all. The
-    // digests are re-seeded from the file, so nothing is written twice.
-    resetForTest();
-    record(&root, tmp.dir, "r");
-    const data = try readTranscript(tmp.dir, gpa, ".graff/sessions/r.transcript.jsonl");
-    defer gpa.free(data);
-    try testing.expectEqual(@as(usize, 2), countLines(data));
-    try testing.expectEqual(@as(usize, 2), lineCount());
-    // The accessor #411 uses answers for the attached session only.
-    try testing.expectEqualStrings(".graff/sessions/r.transcript.jsonl", activePath(&root, a).?);
-    root.session_name = "somewhere-else";
-    try testing.expect(activePath(&root, a) == null);
-}
-
-test "a subagent writes no transcript (#441)" {
-    const io = testing.io;
-    const gpa = testing.allocator;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    resetForTest();
-    tool_spill.resetForTest();
-    defer resetForTest();
-    var tmp = testing.tmpDir(.{ .iterate = true });
-    defer tmp.cleanup();
-
-    var root = agentFor(gpa, a, io, "sub-session");
-    root.sub = true;
-    try root.messages.append(try msg(a, "user", "delegated mandate"));
-    record(&root, tmp.dir, "sub-session");
-    try testing.expect(tmp.dir.statFile(io, ".graff/sessions/sub-session.transcript.jsonl", .{}) == error.FileNotFound);
-    try testing.expect(activePath(&root, a) == null);
-
-    // A name that could escape the sessions dir writes nothing either.
-    root.sub = false;
-    record(&root, tmp.dir, "../escape");
-    try testing.expectEqual(@as(usize, 0), lineCount());
-}
-
-test "the size cap rotates the generation instead of rewriting it (#441)" {
-    const io = testing.io;
-    const gpa = testing.allocator;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    resetForTest();
-    tool_spill.resetForTest();
-    const saved_cap = cap_bytes;
-    defer {
-        cap_bytes = saved_cap;
-        resetForTest();
-    }
-    cap_bytes = 400;
-
-    var tmp = testing.tmpDir(.{ .iterate = true });
-    defer tmp.cleanup();
-    var root = agentFor(gpa, a, io, "rot");
-    try root.messages.append(try msg(a, "user", "the oldest thing said, worth keeping"));
-    record(&root, tmp.dir, "rot");
-    const first = try readTranscript(tmp.dir, gpa, ".graff/sessions/rot.transcript.jsonl");
-    defer gpa.free(first);
-
-    // Enough turns to pass the cap.
-    var i: usize = 0;
-    while (i < 8) : (i += 1) {
-        try root.messages.append(try msg(a, "assistant", "0123456789012345678901234567890123456789"));
-        record(&root, tmp.dir, "rot");
-    }
-
-    // The previous generation holds the old bytes UNCHANGED — nothing was read,
-    // trimmed and written back — and the oldest line is still greppable there.
-    const prev = try readTranscript(tmp.dir, gpa, ".graff/sessions/rot.transcript.1.jsonl");
-    defer gpa.free(prev);
-    try testing.expect(std.mem.startsWith(u8, prev, first));
-    try testing.expect(std.mem.indexOf(u8, prev, "the oldest thing said") != null);
-    // Both generations respect the cap, so the session is bounded at 2x it.
-    try testing.expect(prev.len <= cap_bytes);
-    const live = try readTranscript(tmp.dir, gpa, ".graff/sessions/rot.transcript.jsonl");
-    defer gpa.free(live);
-    try testing.expect(live.len > 0 and live.len <= cap_bytes);
-    // Rotation is a file operation, not an identity reset: the messages already
-    // written are still not re-appended to the fresh generation.
-    const lines_before = lineCount();
-    record(&root, tmp.dir, "rot");
-    try testing.expectEqual(lines_before, lineCount());
-}
+// The tests live in session_transcript_tests.zig — the 600-line cap — and are
+// reached through test_hooks.zig.

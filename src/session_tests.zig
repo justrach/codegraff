@@ -323,10 +323,14 @@ test "the autosave is where the transcript sees a new message (#441)" {
 
     // The real save path wrote the transcript beside the session file, one line
     // per message, with no hook of its own at any of the history's mutation
-    // sites. #411's note gets the path from the accessor, not by rebuilding it.
+    // sites. #411's note gets the path from the accessor, not by rebuilding it,
+    // and the assertion goes through that accessor rather than a hand-written
+    // separator: the path is forward-slashed on every platform by design
+    // (session_index.zig), but what matters here is that it names a real file.
     f.root.session_name = "wf";
-    try std.testing.expectEqualStrings(".graff/sessions/wf.transcript.jsonl", session_transcript.activePath(&f.root, arena).?);
-    const lines = try tmp.dir.readFileAlloc(io, ".graff/sessions/wf.transcript.jsonl", gpa, .limited(64 * 1024));
+    const path = session_transcript.activePath(&f.root, arena) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("wf.transcript.jsonl", std.fs.path.basename(path));
+    const lines = try tmp.dir.readFileAlloc(io, path, gpa, .limited(64 * 1024));
     defer gpa.free(lines);
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, lines, "\n"));
     try std.testing.expectEqual(@as(usize, 2), session_transcript.lineCount());
