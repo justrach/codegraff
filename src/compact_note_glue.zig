@@ -51,6 +51,24 @@ pub fn gateCalls(self: *const Agent) Decision {
     });
 }
 
+/// The context half of the gate, read off the live agent. Serializes history
+/// (effectiveContextTokens), so it runs only after gateCalls has cleared.
+///
+/// `last_request_context_overflow` and `nearContextLimit` are the two signals
+/// that separate a PLANNED rollover from a rescue, and they are the same two
+/// compactOrRecover itself uses to decide whether it may trim destructively.
+/// Reading the same signals is deliberate: the note fires exactly when
+/// compaction is a scheduled event and never when it is damage control.
+pub fn contextOf(self: *Agent) compact_note.Context {
+    const effective = self.effectiveContextTokens();
+    return .{
+        .window_tokens = self.provider.context,
+        .effective_tokens = effective,
+        .over_window_rejection = self.last_request_context_overflow,
+        .near_limit = self.provider.nearContextLimit(effective),
+    };
+}
+
 /// Write one note to self, if this is a moment that deserves one. Returns the
 /// decision so a caller (and a test) can see WHICH refusal happened rather
 /// than only that nothing was written. Never throws: every failure below is a
@@ -58,7 +76,7 @@ pub fn gateCalls(self: *const Agent) Decision {
 pub fn maybeWrite(self: *Agent) Decision {
     const cheap = gateCalls(self);
     if (cheap != .fire) return cheap;
-    const room = compact_note.decideRoom(self.provider.context, self.effectiveContextTokens());
+    const room = compact_note.decideContext(contextOf(self));
     if (room != .fire) return room;
 
     // Latch the generation BEFORE the call. A note turn that fails has still

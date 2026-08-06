@@ -109,6 +109,15 @@ pub const Decision = enum {
     skip_budget,
     /// No token buffer left for the note turn under this model's window.
     skip_no_headroom,
+    /// The harness is SALVAGING, not rolling over. #391 is about a planned
+    /// rollover: context is filling, so reserve a buffer and spend one call
+    /// before the window turns over. Once the provider has actually rejected a
+    /// request for exceeding the window, or the meter is at the destructive-
+    /// recovery boundary where compactOrRecover may drop real history, the
+    /// session has demonstrably run out of room — and spending a call there is
+    /// the exact opposite of the budget discipline the rest of this file
+    /// enforces. Recovery gets the tokens; the note waits for a calmer one.
+    skip_recovering,
     /// The turn ran and produced nothing usable — a transport failure, an
     /// explicit "none", or a store that could not be written. Distinct from
     /// the gates above because this one COST a call; compaction proceeds
@@ -151,19 +160,41 @@ pub fn decideCalls(in: Inputs) Decision {
     return .fire;
 }
 
-/// The token half: is there room under the window for the note turn's reply?
-/// An unknown window (0) cannot prove there is not, and the summary request
-/// this precedes is about to ship the same input anyway.
-pub fn decideRoom(window_tokens: u64, effective_tokens: u64) Decision {
-    if (window_tokens == 0) return .fire;
-    return if (effective_tokens +| note_reserve_tokens > window_tokens) .skip_no_headroom else .fire;
+/// What the context looks like at the moment compaction was decided on.
+pub const Context = struct {
+    /// The model's advertised window; 0 when unknown.
+    window_tokens: u64,
+    /// Best current estimate of occupancy (Agent.effectiveContextTokens).
+    effective_tokens: u64,
+    /// The provider has already REJECTED a request for exceeding the window
+    /// (Agent.last_request_context_overflow). Not a threshold reading — a
+    /// concrete bounce off the wall.
+    over_window_rejection: bool,
+    /// The meter is at or past the destructive-recovery boundary, where
+    /// compactOrRecover is authorized to drop real history
+    /// (Provider.nearContextLimit, 95%).
+    near_limit: bool,
+};
+
+/// The context half. Salvage is refused OUTRIGHT, before the buffer question
+/// is even asked: at 95% the arithmetic still leaves room for the note under
+/// the window, so a token buffer alone would happily fire one into a session
+/// that is being rescued. The distinction that matters is not how many tokens
+/// are left, it is whether this compaction is planned or a rescue.
+///
+/// An unknown window (0) cannot prove there is no room, and the summary
+/// request this precedes is about to ship the same input anyway.
+pub fn decideContext(c: Context) Decision {
+    if (c.over_window_rejection or c.near_limit) return .skip_recovering;
+    if (c.window_tokens == 0) return .fire;
+    return if (c.effective_tokens +| note_reserve_tokens > c.window_tokens) .skip_no_headroom else .fire;
 }
 
 /// The whole ladder, in the order the call site runs it.
-pub fn decide(in: Inputs, window_tokens: u64, effective_tokens: u64) Decision {
+pub fn decide(in: Inputs, c: Context) Decision {
     const calls = decideCalls(in);
     if (calls != .fire) return calls;
-    return decideRoom(window_tokens, effective_tokens);
+    return decideContext(c);
 }
 
 /// A model reply that carries no note. The prompt asks for exactly "none"

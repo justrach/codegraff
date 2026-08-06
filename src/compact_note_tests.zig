@@ -45,42 +45,88 @@ fn baseInputs() compact_note.Inputs {
     };
 }
 
-test "decide (#391): fires exactly once when compaction is imminent, and not otherwise" {
-    const window: u64 = 200_000;
-    const at_compact_threshold: u64 = 160_000; // 80% — where compaction actually fires
+const window: u64 = 200_000;
 
-    // The one case that fires: a root, with a session, mid-compaction, with
-    // budget and window headroom.
-    try std.testing.expectEqual(compact_note.Decision.fire, compact_note.decide(baseInputs(), window, at_compact_threshold));
+/// The band the note is FOR: over compact@ (80%, where compaction fires) but
+/// under nearContextLimit (95%, where the harness starts salvaging). The codex
+/// PTY scenario sits here on purpose — see codex_ws_test.py's own comment,
+/// "Cross compact@ (80%) but stay below the destructive recovery boundary".
+fn plannedRollover() compact_note.Context {
+    return .{
+        .window_tokens = window,
+        .effective_tokens = window * 9 / 10, // 90%
+        .over_window_rejection = false,
+        .near_limit = false,
+    };
+}
+
+test "decide (#391): fires exactly once when compaction is imminent, and not otherwise" {
+    // The one case that fires: a root, with a session, on a planned rollover,
+    // with budget and window headroom.
+    try std.testing.expectEqual(compact_note.Decision.fire, compact_note.decide(baseInputs(), plannedRollover()));
 
     // ONCE: the same history generation never buys a second note, however
     // often compaction is retried after a transient failure (#379's loop).
     var noted = baseInputs();
     noted.last_written = 0;
-    try std.testing.expectEqual(compact_note.Decision.skip_already, compact_note.decide(noted, window, at_compact_threshold));
+    try std.testing.expectEqual(compact_note.Decision.skip_already, compact_note.decide(noted, plannedRollover()));
     // …and the NEXT compaction (history_rewrites has advanced) buys one again.
     noted.history_rewrites = 1;
-    try std.testing.expectEqual(compact_note.Decision.fire, compact_note.decide(noted, window, at_compact_threshold));
+    try std.testing.expectEqual(compact_note.Decision.fire, compact_note.decide(noted, plannedRollover()));
 
     // No durable session: nothing would ever read the note back.
     var homeless = baseInputs();
     homeless.session_name = "";
-    try std.testing.expectEqual(compact_note.Decision.skip_no_session, compact_note.decide(homeless, window, at_compact_threshold));
+    try std.testing.expectEqual(compact_note.Decision.skip_no_session, compact_note.decide(homeless, plannedRollover()));
 
-    // No token buffer left: the window is already inside the reserve, so the
-    // tokens have to go to the compaction that must happen regardless.
-    try std.testing.expectEqual(
-        compact_note.Decision.skip_no_headroom,
-        compact_note.decide(baseInputs(), window, window - compact_note.note_reserve_tokens + 1),
-    );
+    // No token buffer left: the tokens have to go to the compaction that must
+    // happen regardless.
+    var cramped = plannedRollover();
+    cramped.effective_tokens = window - compact_note.note_reserve_tokens + 1;
+    try std.testing.expectEqual(compact_note.Decision.skip_no_headroom, compact_note.decide(baseInputs(), cramped));
     // Exactly at the buffer boundary still fires — the reserve is what it says.
-    try std.testing.expectEqual(
-        compact_note.Decision.fire,
-        compact_note.decide(baseInputs(), window, window - compact_note.note_reserve_tokens),
-    );
+    cramped.effective_tokens = window - compact_note.note_reserve_tokens;
+    try std.testing.expectEqual(compact_note.Decision.fire, compact_note.decide(baseInputs(), cramped));
     // An unknown window cannot prove there is no room, and the summary request
     // this precedes is about to ship the same input anyway.
-    try std.testing.expectEqual(compact_note.Decision.fire, compact_note.decide(baseInputs(), 0, 10_000_000));
+    var unknown = plannedRollover();
+    unknown.window_tokens = 0;
+    unknown.effective_tokens = 10_000_000;
+    try std.testing.expectEqual(compact_note.Decision.fire, compact_note.decide(baseInputs(), unknown));
+}
+
+test "decideContext (#391): a planned rollover buys a note; a SALVAGE never does" {
+    // The whole point of this gate. #391 is about a SCHEDULED rollover: context
+    // is filling, so spend one call before the window turns over. Once the
+    // harness is rescuing a session, that same call is the last thing it can
+    // afford — and the token buffer alone would NOT catch it, because at 95%
+    // of a 200k window there are still 10k tokens of nominal room.
+    try std.testing.expectEqual(compact_note.Decision.fire, compact_note.decideContext(plannedRollover()));
+
+    // The destructive-recovery boundary: compactOrRecover may drop real
+    // history here, so this is damage control, not a rollover.
+    var rescuing = plannedRollover();
+    rescuing.near_limit = true;
+    rescuing.effective_tokens = window * 95 / 100;
+    try std.testing.expectEqual(compact_note.Decision.skip_recovering, compact_note.decideContext(rescuing));
+    // …refused BEFORE the buffer question, which would have said yes. This is
+    // the assertion that would fail if the salvage gate were ever folded into
+    // the token arithmetic instead of preceding it.
+    var buffer_only = rescuing;
+    buffer_only.near_limit = false;
+    try std.testing.expectEqual(compact_note.Decision.fire, compact_note.decideContext(buffer_only));
+
+    // A concrete provider rejection — the request already bounced off the wall.
+    var bounced = plannedRollover();
+    bounced.over_window_rejection = true;
+    try std.testing.expectEqual(compact_note.Decision.skip_recovering, compact_note.decideContext(bounced));
+    // Salvage outranks even an unknown window, which otherwise always fires.
+    bounced.window_tokens = 0;
+    try std.testing.expectEqual(compact_note.Decision.skip_recovering, compact_note.decideContext(bounced));
+
+    // And salvage is a CONTEXT verdict, not a call-budget one: the ledger is
+    // untouched by it, so the two halves stay independently readable.
+    try std.testing.expectEqual(compact_note.Decision.fire, compact_note.decideCalls(baseInputs()));
 }
 
 test "decide (#391): a WORKER never writes a note, whatever else is true" {
@@ -89,12 +135,15 @@ test "decide (#391): a WORKER never writes a note, whatever else is true" {
     // Checked FIRST, so a subagent is refused even in the case that would
     // otherwise fire — and still refused when every other gate would also
     // have refused, which is what makes the ordering observable.
-    try std.testing.expectEqual(compact_note.Decision.skip_worker, compact_note.decide(worker, 200_000, 160_000));
+    try std.testing.expectEqual(compact_note.Decision.skip_worker, compact_note.decide(worker, plannedRollover()));
     try std.testing.expectEqual(compact_note.Decision.skip_worker, compact_note.decideCalls(worker));
     worker.session_name = "child";
     worker.cap = 8;
     worker.remaining = 1;
-    try std.testing.expectEqual(compact_note.Decision.skip_worker, compact_note.decide(worker, 8_000, 7_999));
+    var dire = plannedRollover();
+    dire.near_limit = true;
+    dire.over_window_rejection = true;
+    try std.testing.expectEqual(compact_note.Decision.skip_worker, compact_note.decide(worker, dire));
 }
 
 test "decideCalls (#391): the budget gate IS #390's landing reserve, not a second one" {

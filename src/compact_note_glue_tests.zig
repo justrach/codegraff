@@ -97,6 +97,68 @@ test "maybeWrite (#391): the other refusals also come back named, and none of th
     try std.testing.expectEqual(compact_note.Decision.fire, glue.gateCalls(&ready));
 }
 
+/// An agent whose context is measurable: contextOf() serializes history, so
+/// unlike the gateCalls-only stubs above this one needs a real provider and a
+/// real (small) message array.
+fn measurable(arena: std.mem.Allocator, budget: *run_budget.RunBudget, window: u64) !Agent {
+    var agent = stub(arena, budget);
+    agent.provider = .{
+        .id = "codex",
+        .kind = .responses,
+        .auth = .bearer,
+        .url = "",
+        .api_key = "",
+        .model = "gpt-5",
+        .context = window,
+    };
+    agent.sys_normal = "";
+    agent.sys_strict = "";
+    agent.tools_responses = "";
+    agent.messages = std.json.Array.init(arena);
+    try agent.messages.append(try messages_mod.textMessage(arena, "user", "hello"));
+    return agent;
+}
+
+test "contextOf (#391): reads the same planned-vs-salvage signals compactOrRecover trims on" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var budget: run_budget.RunBudget = .{ .max_model_calls = 0 };
+    const window: u64 = 200_000;
+    var agent = try measurable(arena, &budget, window);
+
+    // A planned rollover: over compact@ (80%), under nearContextLimit (95%).
+    // This is the band the codex PTY midturn scenario runs in by construction
+    // ("Cross compact@ (80%) but stay below the destructive recovery boundary"),
+    // and it is the case #391 exists for.
+    agent.last_context_tokens = window * 9 / 10;
+    var ctx = glue.contextOf(&agent);
+    try std.testing.expectEqual(window, ctx.window_tokens);
+    try std.testing.expect(!ctx.near_limit);
+    try std.testing.expect(!ctx.over_window_rejection);
+    try std.testing.expectEqual(compact_note.Decision.fire, compact_note.decideContext(ctx));
+    try std.testing.expectEqual(compact_note.Decision.fire, glue.gateCalls(&agent));
+
+    // Push past 95% and the SAME agent stops buying notes — contextOf derives
+    // near_limit from Provider.nearContextLimit, the very predicate
+    // compactOrRecover uses to authorize destructive trimming.
+    agent.last_context_tokens = window * 96 / 100;
+    ctx = glue.contextOf(&agent);
+    try std.testing.expect(ctx.near_limit);
+    try std.testing.expect(agent.provider.nearContextLimit(ctx.effective_tokens));
+    try std.testing.expectEqual(compact_note.Decision.skip_recovering, compact_note.decideContext(ctx));
+    // Through the production entry point, with provider/client live: still a
+    // refusal, so no request is attempted.
+    try std.testing.expectEqual(compact_note.Decision.skip_recovering, glue.maybeWrite(&agent));
+    try std.testing.expect(agent.precompact_note_gen == null); // nothing latched
+
+    // A concrete provider overflow rejection is salvage even well under 95%.
+    agent.last_context_tokens = window * 9 / 10;
+    agent.last_request_context_overflow = true;
+    try std.testing.expectEqual(compact_note.Decision.skip_recovering, glue.maybeWrite(&agent));
+    try std.testing.expect(agent.precompact_note_gen == null);
+}
+
 test "#391: the note is STATE — a wiped history cannot touch it, and it re-injects verbatim" {
     try inScratch(struct {
         fn body(io: Io, arena: std.mem.Allocator) !void {
