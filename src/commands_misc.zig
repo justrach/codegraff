@@ -30,6 +30,7 @@ const style = &ansi.style;
 
 const goal_state = @import("goal_state.zig");
 const goal_flow = @import("goal_flow.zig");
+const prompts = @import("prompts.zig"); // #445: the transcript line's compaction flag resets with the conversation
 const jobs = @import("jobs.zig");
 const subagent = @import("subagent.zig"); // #276 P0-3: g_agent_jobs, for /jobs
 
@@ -509,6 +510,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             return true;
         };
         root.session_name = name;
+        // #445: after the rename, so the re-arm reads the resumed session. The
+        // history just loaded IS that file's contents, so the #410 line would
+        // again only describe what the live window already holds.
+        prompts.resetSessionCompacted(root, arena);
         // The third restore path (#318): --goal outranks the restored goal here
         // too, idempotently, or /resume was the one door that silently dropped it.
         if (root.goal_flag) |g| root.pending_goal_note = goal_flow.reapplyFlagGoal(arena, root, g, util.unixMs(root.io)) catch null;

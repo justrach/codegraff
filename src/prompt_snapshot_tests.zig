@@ -431,6 +431,47 @@ test "#445: /new and /clear disarm the transcript line again, and a later compac
     try std.testing.expectEqualStrings("CHILD-SENTINEL", child.sys_normal);
 }
 
+// #445: /resume is the third door onto the same state. loadSession replaces
+// the live history with a COPY of the file it just read, so the transcript
+// line is redundant for exactly the reason it is redundant on a fresh session
+// — and worse than redundant if left armed, since it would still be naming the
+// conversation the user resumed AWAY from.
+test "#445: /resume disarms the transcript line and leaves no stale session path" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+    const saved = prompts.g_session_compacted;
+    defer prompts.g_session_compacted = saved;
+    defer prompts.armSessionTranscript(a, "", .{}, false); // leave the global as the rest of the suite expects it
+
+    var agent: agent_mod.Agent = undefined;
+    agent.sub = false;
+    agent.session_name = "session-before";
+    prompts.g_session_compacted = false;
+    prompts.armSessionTranscript(a, agent.session_name, .{}, false);
+    try prompts.setSystemPrompts(&agent, "BASE", a);
+
+    // The conversation the user is about to leave compacted, so it is armed.
+    prompts.noteSessionCompacted(&agent, a);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_normal, "session-before.session.json") != null);
+
+    // /resume: commands_misc assigns the new name, THEN resets — the ordering
+    // the reset's doc comment requires, so the re-arm sees the resumed session.
+    agent.session_name = "session-resumed";
+    prompts.resetSessionCompacted(&agent, a);
+    try std.testing.expect(!prompts.g_session_compacted);
+    try std.testing.expectEqualStrings("BASE", agent.sys_normal);
+    for ([_][]const u8{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |v| {
+        try std.testing.expect(std.mem.indexOf(u8, v, "session-before.session.json") == null); // the stale path is gone
+        try std.testing.expect(std.mem.indexOf(u8, v, "session-resumed.session.json") == null); // and the new one is not owed one yet
+    }
+
+    // The resumed conversation earns the line back on its OWN first compaction.
+    prompts.noteSessionCompacted(&agent, a);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_normal, "session-resumed.session.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_normal, "session-before.session.json") == null);
+}
+
 test "#421: MCP, skill and optional-tool guidance all cost zero when absent" {
     var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer a_state.deinit();
