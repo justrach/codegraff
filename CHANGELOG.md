@@ -10,7 +10,22 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.0.240 (unreleased)
+## v0.0.241 (unreleased)
+
+- Cross-process locks stopped trusting a bare pid (#413): an owner record now
+  carries the holder's process START identity next to its pid (`/proc/<pid>/stat`
+  field 22 on Linux, `proc_pidinfo` on macOS, `GetProcessTimes` on Windows), so
+  liveness is "the pid is alive AND it is still the same process". A recycled
+  pid can no longer look like a live owner forever, and a crashed holder's lock
+  is reclaimed because its identity provably mismatches rather than because a
+  timeout guessed. A record written by an older graff carries no identity and
+  keeps the pid-only contract exactly as before, so an in-flight lock is never
+  bricked, and an identity that cannot be read fails safe: held, never stolen.
+  The #320 worktree lease gets the producer it was missing, and a session save
+  on a filesystem with no working locks (#289) now coordinates through an owner
+  record instead of racing unguarded.
+
+## v0.0.240 (2026-08-06)
 
 - The REPL/engine separation began (#422): agent output now flows through a
   typed event vocabulary and a strict sink boundary (`engine_events.zig` /
