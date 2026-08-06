@@ -21,6 +21,12 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.241
+    \\  • Goal/loop runs stop paying for verifications the workspace cannot have changed: an unchanged tree skips the eval command and its judge call, and the model is steered to edit first
+    \\  • Oversized tool outputs spill to a session artifact the model can read or grep instead of being destroyed at the cap; throttles no longer masquerade as context overflows, and silent overflows recover in one trim
+    \\  • The system prompt is capability-gated — embedder sessions drop ~15% of it — and a durable session's prompt names its own transcript
+    \\  • Cross-process locks key on process START identity, a 426 WebSocket refusal latches SSE at once, and tool-execution output joined the typed event stream
+    \\
     \\0.0.240
     \\  • Engine output now flows through a typed event stream behind a strict sink boundary — the start of the REPL/engine separation, with TUI and --json output proven byte-identical
     \\  • Quitting no longer strands the held Codex socket: loop exit closes the WebSocket and its response anchor, and debug builds finish with a clean allocator report
@@ -47,11 +53,6 @@ pub const changelog_text =
     \\  • The bundled skill-creator teaches the full authoring loop, from capturing intent mid-session to forward-testing with fresh subagents
     \\  • Root/subagent model shapes can keep orchestration on Sol while routing parallel workers and judges to Terra
     \\  • Remote MCP servers now support Streamable HTTP, OAuth discovery/PKCE/refresh, and an opt-out core Smolify connection
-    \\
-    \\0.0.209
-    \\  • Kimi Code now follows each live catalog model's native or Anthropic beta protocol, auth style, context, and thinking metadata
-    \\  • Native Kimi tool schemas are normalized to Moonshot's stricter validator; OAuth requests carry the current Kimi Code identity headers
-    \\  • `--model kimi` selects K3 today and automatically follows future pure Kimi generations
     \\
 ;
 
