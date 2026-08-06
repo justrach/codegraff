@@ -1416,6 +1416,14 @@ reports green. `invariants` goes further, rerunning the suite under
 source and never run. Both are configured as data in
 `scripts/eval/tier1-manifest.json`.
 
+Both read the count off the compiled test binary rather than off the build
+summary, because a fully cached `zig build test` prints no `N/N tests passed`
+line, and they pick that binary by the test names it carries rather than by
+mtime, so a `-Dtest-filter` build left in `.zig-cache/o` is never mistaken for
+the whole suite. `test_count_baseline` is a floor nothing raises on its own:
+bump it at each release cut, and tier 1 warns once the suite runs more than
+`test_count_slack` tests ahead of it.
+
 ---
 
 ## License

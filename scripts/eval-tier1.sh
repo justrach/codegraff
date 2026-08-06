@@ -56,12 +56,22 @@ fi
 wanted() { [[ -z "$only" || "$only" == "$1" ]]; }
 
 failed=()
+warned=()
 started=$SECONDS
+
+# scripts/eval/tier1_invariants.py `count` exits with this when the suite has run
+# far enough ahead of test_count_baseline that the floor guards nothing. Green,
+# but say so out loud - that ratchet stalled 350 tests behind for months (#439).
+RATCHET_STALLED=3
 
 announce() { printf '\n\033[1m==> %s\033[0m  %s\n' "$1" "$2"; }
 record_fail() {
   failed+=("$1")
   printf '\n  \033[31mFAILED\033[0m %s\n  rerun just this check: scripts/eval-tier1.sh --only %s\n' "$1" "$1"
+}
+record_warn() {
+  warned+=("$1")
+  printf '  \033[33mWARN\033[0m %s: %s\n' "$1" "$2"
 }
 
 # --- fmt ---------------------------------------------------------------
@@ -117,8 +127,20 @@ skip_dependent() {
 
 # --- tests -------------------------------------------------------------
 suite_count() {
-  # `--summary all` prints "N/N tests passed" even on a fully cached run.
+  # `--summary all` prints "N/N tests passed" only when the run step actually
+  # ran. A fully cached `zig build test` on zig 0.17 prints "Build Summary: 4/4
+  # steps succeeded" and nothing else, so this comes back empty and the caller
+  # falls back to artifact_count - it does NOT mean the build is red (#439).
   sed -n 's/.*Build Summary:.*; \([0-9][0-9]*\)\/[0-9][0-9]* tests passed.*/\1/p' <<<"$1" | tail -1
+}
+
+# The count off the compiled artifact instead of off the build summary: a test
+# binary run with no arguments prints "All N tests passed." every time, cached
+# build or not, and running it re-proves the suite besides. Pass the same
+# -Dtest-filter values the build used so the right artifact is picked out of
+# .zig-cache/o (see scripts/eval/tier1_test_binary.py).
+artifact_count() {
+  python3 scripts/eval/tier1_test_binary.py count "$@"
 }
 
 if wanted tests; then
@@ -136,10 +158,19 @@ if wanted tests; then
     else
       count=$(suite_count "$out")
       if [[ -z "$count" ]]; then
-        printf '  FAIL could not read the test count out of the build summary\n'
+        printf '  the cached build printed no test summary; counting from the compiled artifact\n'
+        count=$(artifact_count)
+      fi
+      if [[ -z "$count" ]]; then
+        printf '  FAIL could not read the test count from the build summary or the test artifact\n'
         record_fail tests
-      elif python3 scripts/eval/tier1_invariants.py count --observed "$count"; then :; else
-        record_fail tests
+      else
+        python3 scripts/eval/tier1_invariants.py count --observed "$count"
+        case $? in
+          0) : ;;
+          "$RATCHET_STALLED") record_warn tests "test_count_baseline is stale (see above)" ;;
+          *) record_fail tests ;;
+        esac
       fi
     fi
   fi
@@ -152,15 +183,27 @@ if wanted invariants; then
   else
     announce invariants "the named goal/loop/todo tests actually ran"
     filters=()
-    while IFS= read -r line; do [[ -n "$line" ]] && filters+=(-Dtest-filter="$line"); done \
-      < <(python3 scripts/eval/tier1_invariants.py filters)
+    counters=()
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      filters+=(-Dtest-filter="$line")
+      counters+=(--filter "$line")
+    done < <(python3 scripts/eval/tier1_invariants.py filters)
     # Anonymous `test {}` blocks ignore -Dtest-filter and always run, so measure
     # that floor with a filter that matches nothing and subtract it.
-    floor_out=$(zig build test --summary all -Dtest-filter="__tier1_matches_nothing__" 2>&1)
+    nothing="__tier1_matches_nothing__"
+    floor_out=$(zig build test --summary all -Dtest-filter="$nothing" 2>&1)
     floor=$(suite_count "$floor_out")
+    # These two builds cache like any other, and a cached run prints no test
+    # summary (#439). Ask the artifacts instead - both are small and finish in
+    # under a second.
+    [[ -n "$floor" ]] || floor=$(artifact_count --filter "$nothing")
     named_out=$(zig build test --summary all "${filters[@]}" 2>&1)
     status=$?
     named=$(suite_count "$named_out")
+    if ((status == 0)) && [[ -z "$named" ]]; then
+      named=$(artifact_count "${counters[@]}")
+    fi
     if ((status != 0)); then
       printf '%s\n' "$named_out" | tail -6
       printf '    one of the named invariants is failing.\n'
@@ -217,6 +260,9 @@ fi
 
 # --- verdict -----------------------------------------------------------
 elapsed=$((SECONDS - started))
+if ((${#warned[@]} > 0)); then
+  printf '\n\033[33m%d warning(s)\033[0m: %s\n' "${#warned[@]}" "${warned[*]}"
+fi
 if ((${#failed[@]} == 0)); then
   printf '\n\033[32mtier 1 green\033[0m in %ss\n' "$elapsed"
   exit 0
