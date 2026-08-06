@@ -101,7 +101,11 @@ pub fn untrackedPaths(arena: Allocator, status_z: []const u8) ![]const []const u
         const x = rec[0];
         const y = rec[1];
         if (x == 'R' or x == 'C' or y == 'R' or y == 'C') _ = it.next();
-        if (x == '?' and y == '?') try out.append(arena, rec[3..]);
+        // graff's own bookkeeping (.graff/ eval-log, traces, sessions) moves on
+        // every iteration by construction; counting it as workspace progress
+        // would fail the guard open in any repo that does not gitignore it.
+        if (x == '?' and y == '?' and !std.mem.startsWith(u8, rec[3..], ".graff/"))
+            try out.append(arena, rec[3..]);
     }
     return out.items;
 }
@@ -233,6 +237,15 @@ test "untrackedPaths: only ?? records, and a rename's origin field is consumed" 
     try std.testing.expectEqual(@as(usize, 2), paths.len);
     try std.testing.expectEqualStrings("notes.md", paths[0]);
     try std.testing.expectEqualStrings("a b.txt", paths[1]);
+
+    // graff's own state dir never counts as progress: in a repo that does not
+    // gitignore .graff/, the eval-log append would otherwise move the tree on
+    // every iteration and fail the guard open (found by the batch comparison).
+    const own = "?? .graff/eval-log.tsv\x00?? .graffx\x00?? src/real.zig\x00";
+    const own_paths = try untrackedPaths(ar, own);
+    try std.testing.expectEqual(@as(usize, 2), own_paths.len);
+    try std.testing.expectEqualStrings(".graffx", own_paths[0]);
+    try std.testing.expectEqualStrings("src/real.zig", own_paths[1]);
 
     // The rename's ORIGIN field must not be read as a record of its own: a
     // path beginning "?? " would otherwise be picked up out of it.
