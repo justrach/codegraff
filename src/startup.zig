@@ -348,7 +348,7 @@ pub fn buildSystemPrompt(
         try out.flush();
     };
     const base_prompt: []const u8 = system_prompt_flag orelse
-        if (learned) |policy| policy.prompt else prompts.main_system_prompt;
+        if (learned) |policy| policy.prompt else try prompts.baseForSession(arena); // #421: built-in base minus the segments whose capability this process lacks
     var sys_normal: []const u8 = base_prompt;
     for ([_][]const u8{ "AGENTS.md", "HARNESS.md", "CLAUDE.md" }) |fname| {
         const body = Io.Dir.cwd().readFileAlloc(io, fname, arena, .limited(64 * 1024)) catch continue;

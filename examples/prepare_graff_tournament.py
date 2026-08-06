@@ -27,22 +27,34 @@ def write_json(path: Path, value: object) -> None:
 
 
 def extract_root_prompt(source: Path) -> str:
+    # justrach/codegraff#421 split the root prompt into capability-scoped
+    # segments, so "everything after `pub const main_system_prompt =`" no longer
+    # names one literal. The markers delimit the whole segment region instead.
+    # Lines WITHIN one segment join with a newline; segments concatenate with
+    # nothing, which is how prompts.zig composes them (several boundaries fall
+    # mid-sentence). Joining everything with "\n" would insert a blank line at
+    # each boundary and the seed genome would not be the shipped prompt.
     lines = source.read_text(encoding="utf-8").splitlines()
     collecting = False
-    result: list[str] = []
+    segments: list[list[str]] = []
     for line in lines:
-        if line.startswith("pub const main_system_prompt ="):
+        if line.startswith("// ── ROOT PROMPT BEGIN"):
             collecting = True
             continue
-        if collecting and line == ";":
+        if collecting and line.startswith("// ── ROOT PROMPT END"):
             break
-        if collecting:
-            marker = line.find("\\\\")
-            if marker >= 0:
-                result.append(line[marker + 2 :])
+        if not collecting:
+            continue
+        if line.startswith("pub const "):
+            segments.append([])
+            continue
+        marker = line.find("\\\\")
+        if marker >= 0 and segments:
+            segments[-1].append(line[marker + 2 :])
+    result = "".join("\n".join(seg) for seg in segments)
     if not result:
-        raise ValueError("could not extract main_system_prompt")
-    return "\n".join(result).strip() + "\n"
+        raise ValueError("could not extract the root prompt segments")
+    return result.strip() + "\n"
 
 
 def pin(path: Path) -> dict[str, str]:
@@ -78,7 +90,7 @@ def main() -> None:
             raise FileNotFoundError(path)
 
     parent = output / "parent.md"
-    parent.write_text(extract_root_prompt(repo / "src" / "prompts.zig"), encoding="utf-8")
+    parent.write_text(extract_root_prompt(repo / "src" / "prompt_text.zig"), encoding="utf-8")
     parent.chmod(0o600)
     primary = output / "primary.json"
     holdout = output / "fresh-holdout.json"
