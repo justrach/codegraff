@@ -333,6 +333,7 @@ test "capOversizedToolOutputs (#193): bounds an oversized output in every wire f
     agent.last_context_tokens = 200_000;
     agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 270_000 };
     agent.sub = false;
+    agent.session_name = ""; // #409: no durable session here, so the cap truncates without spilling
     agent.strict = false;
     agent.sys_normal = "";
     agent.sys_strict = "";
@@ -358,8 +359,7 @@ test "capOversizedToolOutputs (#193): bounds an oversized output in every wire f
     // within-cap output and the non-tool message are untouched
     try std.testing.expectEqualStrings("ok", agent.messages.items[3].object.get("output").?.string);
     try std.testing.expectEqualStrings("hello", agent.messages.items[4].object.get("content").?.string);
-    // cap == 0 disables the cap entirely (unknown window)
-    try std.testing.expectEqual(@as(usize, 0), capOversizedToolOutputs(&agent, 0));
+    try std.testing.expectEqual(@as(usize, 0), capOversizedToolOutputs(&agent, 0)); // cap == 0 disables the cap entirely (unknown window)
 }
 
 test "cleanUserTurn: plain user text yes; assistant/tool_result no" {
