@@ -585,10 +585,10 @@ test { // pull in tests from imported modules (mcp.zig)
     _ = mcp;
     _ = @import("mcp_rpc.zig");
     _ = @import("main_test.zig");
-    // A module whose tests must run needs an explicit reference here: a
-    // plain @import elsewhere (or a type-only alias) is NOT enough — it
-    // compiles to nothing; scripts/eval-tier1.sh --only reach catches one.
+    // A module whose tests must run needs an explicit reference here: a plain @import
+    // elsewhere (or a type-only alias) is NOT enough — it compiles to nothing; scripts/eval-tier1.sh --only reach catches one.
     _ = @import("test_hooks.zig"); // unreached modules; their tests were silently skipped
+    _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here
     _ = @import("readline_history.zig");
     _ = @import("goal_pacing_autonomous_test.zig");
