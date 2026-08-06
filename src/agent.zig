@@ -23,8 +23,6 @@ const no_local_tools = @import("no_local_tools.zig"); // #330: --no-local-tools 
 const models_cache = @import("models_cache.zig");
 const keys_cli = @import("keys_cli.zig");
 const run_budget_mod = @import("run_budget.zig");
-const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
-const tick_gate = @import("tick_gate.zig"); // #tui-tick: child ticks wait for a foreground line boundary
 
 // prompt_ui (agent_prompt.zig) owns the width-budgeted status line (#209,
 // 600-line goal); prompt() is member-aliased back onto Agent below.
@@ -96,6 +94,9 @@ pub const Agent = struct {
     label: []const u8,
     out: ?*Io.Writer,
     in: ?*Io.Reader = null, // stdin, root only — backs the ask_user tool
+    /// Frontend event sink (#422). Null = resolved per emission from the
+    /// process mode (engine_sink.forAgent); set to inject a custom frontend.
+    sink: ?@import("engine_sink.zig").EngineSink = null,
     registry: ?*mcp.Registry = null,
     approvals: ?*approvals_mod.Approvals = null, // shared bash-approval state, set by main()
     tracer: ?*trace.Tracer = null, // shared JSONL event trace, set by main()
@@ -206,77 +207,13 @@ pub const Agent = struct {
     // of Agent's own methods.
     pub const prompt = prompt_ui.prompt;
 
-    pub fn say(self: *Agent, comptime fmt: []const u8, args: anytype) !void {
-        // stdout is a strict JSONL transport in --json mode. Human-facing
-        // notices are represented by their structured terminal/error events;
-        // never leak an unframed line that breaks SDK parsers.
-        if (main_mod.json_mode and !self.sub) return;
-        if (self.out) |w| {
-            try w.print(fmt, args);
-            try w.flush();
-            // The root just ended a row: anything a child offered mid-stream
-            // may land now (#tui-tick).
-            if (!self.sub and !main_mod.json_mode and comptime endsLine(fmt)) _ = tick_gate.setLineStart(true);
-        } else {
-            // A pool-thread child has no writer: its activity line goes to
-            // stderr THROUGH the gate, so it lands at a line boundary the root
-            // has published rather than mid-row (#tui-tick).
-            var buf: [tick_gate.slot_bytes]u8 = undefined;
-            var sink = Io.Writer.fixed(&buf);
-            const fit = if (sink.print("  [{s}] " ++ fmt, .{self.label} ++ args)) |_| true else |_| false;
-            var line = sink.buffered();
-            // Over-long (an uncapped provider error) means the fixed sink cut
-            // the text and ate the trailing newline. The gate cannot repair
-            // that — the cut exactly fills a slot, so its own guard never fires
-            // — and a line that does not end its row splices the next worker
-            // line onto it mid-column, which is the reported artifact. End it.
-            if (!fit or line.len == 0 or line[line.len - 1] != '\n') {
-                // usize, not @min's narrowed comptime-derived type: at + 1 == buf.len.
-                const at: usize = @min(line.len, buf.len - 1); // append, or overwrite the last byte
-                buf[at] = '\n';
-                line = buf[0 .. at + 1];
-            }
-            tick_gate.workerLine(line);
-        }
-    }
+    // say()/sayApiError() human-facing lines and emit() — the structured
+    // --json JSONL writer — live in agent_output.zig (#422, 600-line cap).
+    // Member-aliased so `self.say(...)`/`self.emit(...)` resolve unchanged.
+    pub const say = @import("agent_output.zig").say;
+    pub const sayApiError = @import("agent_output.zig").sayApiError;
+    pub const emit = @import("agent_output.zig").emit;
 
-    /// Comptime: does this say() format end a terminal row?
-    fn endsLine(comptime fmt: []const u8) bool {
-        return fmt.len > 0 and fmt[fmt.len - 1] == '\n';
-    }
-
-    /// Remember the formatted message for the --json `error` event, then print
-    /// like say() + a #398 duration hint; last_api_error keeps provider words.
-    pub fn sayApiError(self: *Agent, comptime fmt: []const u8, args: anytype) !void {
-        self.last_api_error = std.fmt.allocPrint(self.arena, fmt, args) catch null;
-        if (self.last_api_error) |m| if (@import("retry_hint.zig").humanizeRetrySeconds(m)) |h| return self.say("{s} (~{s})\n", .{ m, h.buf[0..h.len] });
-        try self.say(fmt ++ "\n", args);
-    }
-
-    /// Emit one structured JSONL event to stdout (--json mode). `ev` is any
-    /// struct/anonymous struct; field names become JSON keys (a std.json.Value
-    /// field, e.g. tool input, serializes correctly). Best-effort.
-    ///
-    /// #330: in --json mode the event is stamped with a monotonic `seq` so a
-    /// supervisor that loses the stream can say exactly where it stopped. The
-    /// counter is bumped inside the same lock that serializes stdout, which is
-    /// what makes the sequence gap-free rather than merely increasing.
-    pub fn emit(self: *Agent, ev: anytype) void {
-        const w = self.out orelse return;
-        // --json: the GUI stream is shared with pool-thread subagent emits
-        // (guiEmit), so serialize + flush under the lock — a raw line must never
-        // land mid-buffer and two writers must never interleave on stdout.
-        if (main_mod.json_mode) main_mod.g_gui_mu.lockUncancelable(self.io);
-        defer if (main_mod.json_mode) main_mod.g_gui_mu.unlock(self.io);
-        if (main_mod.json_mode) {
-            protocol_seq.writeEvent(w, ev) catch return;
-        } else {
-            var s: std.json.Stringify = .{ .writer = w };
-            s.write(ev) catch return;
-        }
-        w.writeByte('\n') catch return;
-        w.flush() catch return;
-    }
     pub fn systemPrompt(self: *const Agent) []const u8 {
         if (self.review_mode) return self.sys_override orelse self.sys_normal;
         if (self.sub) return self.sys_override orelse prompts.sub_system_prompt;
@@ -493,12 +430,12 @@ pub const Agent = struct {
     // spirit from arpagon/pi-animations, MIT), persists in settings.json.
     pub var g_spin_stop: std.atomic.Value(bool) = .init(true);
     pub var g_spin_future: ?Io.Future(void) = null;
-    pub const spinnerTask = @import("agent_stream.zig").spinnerTask;
-    pub const spinnerStart = @import("agent_stream.zig").spinnerStart;
-    pub const spinnerStop = @import("agent_stream.zig").spinnerStop;
-    pub const streamThinking = @import("agent_stream.zig").streamThinking;
-    pub const closeThinkingBlock = @import("agent_stream.zig").closeThinkingBlock;
-    pub const toggleThinkingFold = @import("agent_stream.zig").toggleThinkingFold;
+    pub const spinnerTask = @import("agent_stream_render.zig").spinnerTask;
+    pub const spinnerStart = @import("agent_stream_render.zig").spinnerStart;
+    pub const spinnerStop = @import("agent_stream_render.zig").spinnerStop;
+    pub const streamThinking = @import("agent_stream_render.zig").streamThinking;
+    pub const closeThinkingBlock = @import("agent_stream_render.zig").closeThinkingBlock;
+    pub const toggleThinkingFold = @import("agent_stream_render.zig").toggleThinkingFold;
     pub const postStream = @import("agent_stream.zig").postStream;
     pub const postStreamWithClient = @import("agent_stream.zig").postStreamWithClient;
     pub const printDelta = @import("agent_stream.zig").printDelta;
@@ -538,6 +475,7 @@ pub const Agent = struct {
     pub const drainSteerStdin = @import("agent_interrupt.zig").drainSteerStdin;
     pub const drainStdin = @import("agent_interrupt.zig").drainStdin;
     pub const rawNonblockStdin = @import("agent_interrupt.zig").rawNonblockStdin;
+    pub const restoreStdin = @import("agent_interrupt.zig").restoreStdin;
     pub const sleepInterruptible = @import("agent_interrupt.zig").sleepInterruptible;
     pub const ssePayload = @import("agent_interrupt.zig").ssePayload;
     pub const sseIndex = @import("agent_interrupt.zig").sseIndex;
