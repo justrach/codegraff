@@ -313,6 +313,25 @@ pub fn noteSessionCompacted(agent: *Agent, arena: Allocator) void {
     setSystemPrompts(agent, agent.sys_base, arena) catch {};
 }
 
+/// #445's inverse boundary, and it is NOT optional: one process can host
+/// several root conversations. `/new` mints a fresh `session_name` and `/clear`
+/// empties the history and saves immediately, so in both cases the durable file
+/// again holds no more than the live window — the exact state the line is not
+/// worth its tokens in. Without this, one compaction armed the line for the
+/// remaining life of the process and a user who compacted, then hit `/new`,
+/// paid for it forever pointing at a file with nothing to recover.
+///
+/// Same idiom as noteSessionCompacted: root-only, a no-op when already false,
+/// and best-effort. Call it AFTER any `session_name` reassignment, so the
+/// re-arm reads the conversation that actually exists now.
+pub fn resetSessionCompacted(agent: *Agent, arena: Allocator) void {
+    if (agent.sub or !g_session_compacted) return;
+    g_session_compacted = false;
+    armSessionTranscript(arena, agent.session_name, detectCaps(), false);
+    if (agent.sys_base.len == 0) return;
+    setSystemPrompts(agent, agent.sys_base, arena) catch {};
+}
+
 pub const sub_system_prompt =
     \\You are a subagent spawned by an orchestrator agent inside a terminal
     \\harness. Complete the assigned task using your tools, without asking

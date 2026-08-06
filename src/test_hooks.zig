@@ -70,6 +70,10 @@ const scoring_slot_test = @import("scoring_slot_test.zig");
 // #273: session.zig's own tests, moved off it for the same reason.
 const session_tests = @import("session_tests.zig");
 
+// #445: moved off commands_session.zig when the transcript-line reset needed
+// three lines there and the file was at exactly 600. The tests are unchanged.
+const commands_session_test = @import("commands_session_test.zig");
+
 // #375: `graff acp` (Zed's Agent Client Protocol over stdio). args.zig calls
 // one predicate from it, which analyses the file but does not run its tests.
 const acp = @import("acp.zig");
@@ -170,6 +174,7 @@ test {
     _ = serve_create;
     _ = scoring_slot_test;
     _ = session_tests;
+    _ = commands_session_test;
     _ = mcp_config;
     _ = acp;
     _ = agent_eval_control_tests;
