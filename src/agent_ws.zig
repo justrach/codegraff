@@ -7,7 +7,7 @@
 //!
 //! postLive() is the transport selector called by request(): codex root turns
 //! try ws (postResponsesWs), retry one failed WS with a clean full-history
-//! re-anchor, then latch onto the launch-scoped prewarmed HTTP client for SSE.
+//! re-anchor (a 426 skips it), then latch the prewarmed HTTP client for SSE.
 //!
 //! Observability (issue #134's ask): every ws lifecycle step is routed to the
 //! tracer ("ws" notes: connecting/connected/reuse (delta)/sent Nb/first frame/
@@ -89,7 +89,7 @@ pub fn wsShouldFallback(consecutive_failures: u8) bool {
 
 /// Transport selector: try ws for eligible codex turns, else persistent SSE.
 /// The first WS transport/handshake failure rebuilds full input and retries a
-/// fresh socket. The second latches SSE for the session. Esc/stall propagates.
+/// fresh socket; the second — or any 426 — latches SSE. Esc/stall propagates.
 pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
     // #134/#132 test seam: force a one-shot stall/drop on a live turn so the
     // end-to-end "[response ended early: …]" path (never "[response interrupted
@@ -123,7 +123,11 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
         if (e == error.CodexWsReanchor) return e;
         self.closeCodexWs();
         self.ws_transport_failures +|= 1;
-        const fallback = wsShouldFallback(self.ws_transport_failures);
+        // (#427) A 426 is the server answering authoritatively — it will not
+        // upgrade this endpoint — so the ladder's free retry would only redial
+        // the same refusal. Latch now (openai/codex: FallbackToHttp).
+        const declined = e == error.UpgradeRequired;
+        const fallback = declined or wsShouldFallback(self.ws_transport_failures);
         // (#codex-ws) A delta body carries previous_response_id + only the new
         // messages, anchored to the WS session that just died — the codex HTTP
         // endpoint rejects previous_response_id outright ("Unsupported
@@ -147,7 +151,7 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
             return error.CodexWsReanchor;
         }
         self.ws_off = true;
-        if (self.tracer) |tr| tr.note("ws", "transport failed twice — using persistent prewarmed SSE for this session");
+        if (self.tracer) |tr| tr.note("ws", if (declined) "426 upgrade required — using persistent prewarmed SSE for this session" else "transport failed twice — using persistent prewarmed SSE for this session");
         return self.postStream(body);
     };
     self.ws_transport_failures = 0;
@@ -510,10 +514,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         //     here is equivalent and lets both regimes share one watchdog arm.
         read: {
             const head_wait = reused and frames_seen == 0;
-            const budget = if (head_wait)
-                http.head_stall_ms
-            else
-                http_stall.budgetMs(http.stream_stall_ms, text_seen);
+            const budget = if (head_wait) http.head_stall_ms else http_stall.budgetMs(http.stream_stall_ms, text_seen);
             const ReadDone = union(enum) { msg: ws.Error!ws.Opcode, stall: WatchdogFired };
             var rd_buf: [2]ReadDone = undefined;
             var rsel: Io.Select(ReadDone) = .init(self.io, &rd_buf);

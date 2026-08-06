@@ -1,7 +1,8 @@
 //! (#401) The loopback WebSocket peer the codex-WS transport tests drive, and
 //! the root-shaped Agent pointed at it. Harness only — no tests live here; they
-//! live in agent_ws_stall_test.zig (the budgets and the guards) and
-//! agent_ws_reuse_test.zig (reuse vs fresh connect). Split out because both
+//! live in agent_ws_stall_test.zig (the budgets and the guards),
+//! agent_ws_reuse_test.zig (reuse vs fresh connect) and
+//! agent_ws_fallback_test.zig (#427, the WS→SSE ladder). Split out because both
 //! files would otherwise carry a copy, and a second copy of a mock server is
 //! exactly how two suites start testing different things.
 //!
@@ -205,4 +206,81 @@ pub fn closeObserver(io: Io, server: *std.Io.net.Server, seen: *std.atomic.Value
     };
     seen.store(if ((h[0] & 0x0f) == 0x8) saw_close_frame else saw_nothing, .release);
     Mock.idle(io, done);
+}
+
+/// (#427) The SSE turn the fallback POST is answered with: the same two events
+/// the WS modes frame, as `data:` lines, so a test can assert the turn finished
+/// over the other transport with the same needles.
+pub const sse_body = "data: " ++ delta_event ++ "\n\n" ++ "data: " ++ completed_event ++ "\n\n";
+
+/// (#427) The whole WS→SSE ladder over ONE loopback port. The first `refusals`
+/// connections are WebSocket handshakes answered with `status` — any non-101
+/// status line, i.e. "426 Upgrade Required" (authoritative: never retry) or
+/// something generic like "500 Internal Server Error" — and the connection
+/// after them is the SSE POST graff falls back to. `dials` counts refused
+/// handshakes and `sse` served fallback turns: together they prove whether the
+/// ladder burned a retry the server had already ruled out.
+pub fn refuseUpgrade(
+    io: Io,
+    server: *std.Io.net.Server,
+    status: []const u8,
+    refusals: u8,
+    dials: *std.atomic.Value(u8),
+    sse: *std.atomic.Value(u8),
+    done: *std.atomic.Value(bool),
+) void {
+    var refused: u8 = 0;
+    while (refused < refusals) : (refused += 1) {
+        if (done.load(.acquire)) return; // torn down early — see releaseAccept
+        const c = server.accept(io) catch return Mock.idle(io, done);
+        var rbuf: [8192]u8 = undefined;
+        var wbuf: [4096]u8 = undefined;
+        var sr = std.Io.net.Stream.Reader.init(c, io, &rbuf);
+        var sw = std.Io.net.Stream.Writer.init(c, io, &wbuf);
+        _ = requestHead(&sr.interface) catch {};
+        sw.interface.print("HTTP/1.1 {s}\r\nContent-Length: 0\r\n\r\n", .{status}) catch {};
+        sw.interface.flush() catch {};
+        dials.store(refused + 1, .release);
+        c.close(io); // an upgrade request carries no body, so nothing unread to RST over
+    }
+    if (done.load(.acquire)) return;
+    const c = server.accept(io) catch return Mock.idle(io, done);
+    defer c.close(io);
+    var rbuf: [8192]u8 = undefined;
+    var wbuf: [4096]u8 = undefined;
+    var sr = std.Io.net.Stream.Reader.init(c, io, &rbuf);
+    var sw = std.Io.net.Stream.Writer.init(c, io, &wbuf);
+    // The POST body must be drained: closing a socket with unread bytes in the
+    // receive queue sends an RST, which discards the reply we just wrote.
+    const body_len = requestHead(&sr.interface) catch return Mock.idle(io, done);
+    sr.interface.discardAll(body_len) catch {};
+    sw.interface.print(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {d}\r\n\r\n{s}",
+        .{ sse_body.len, sse_body },
+    ) catch return Mock.idle(io, done);
+    sw.interface.flush() catch {};
+    sse.store(1, .release);
+    Mock.idle(io, done);
+}
+
+/// (#427) Unblock a task parked in `accept` so it can observe `done` and exit.
+/// A blocked accept is not cancellable, so a test whose assertion fails BEFORE
+/// the ladder reached its last leg would otherwise hang at `fut.await` instead
+/// of reporting the failure. Register it after the await defer (LIFO: `done`,
+/// this, then the join). Same trick as http.zig's #177 poisoned-conn test.
+pub fn releaseAccept(io: Io, server: *std.Io.net.Server) void {
+    var bound = server.socket.address;
+    if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
+}
+
+/// Consume an HTTP request head, returning its Content-Length (0 when absent).
+fn requestHead(r: *Io.Reader) !usize {
+    var body_len: usize = 0;
+    while (true) {
+        const line = try r.takeDelimiterInclusive('\n');
+        if (line.len <= 2) return body_len; // the blank line ends the head
+        const tag = "content-length:";
+        if (line.len > tag.len and std.ascii.eqlIgnoreCase(line[0..tag.len], tag))
+            body_len = std.fmt.parseInt(usize, std.mem.trim(u8, line[tag.len..], " \r\n"), 10) catch 0;
+    }
 }
