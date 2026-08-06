@@ -75,6 +75,10 @@ const session_tests = @import("session_tests.zig");
 // without the hook its whole suite compiles to nothing and reports green.
 const session_transcript_tests = @import("session_transcript_tests.zig");
 
+// #445: moved off commands_session.zig when the transcript-line reset needed
+// three lines there and the file was at exactly 600. The tests are unchanged.
+const commands_session_test = @import("commands_session_test.zig");
+
 // #375: `graff acp` (Zed's Agent Client Protocol over stdio). args.zig calls
 // one predicate from it, which analyses the file but does not run its tests.
 const acp = @import("acp.zig");
@@ -176,6 +180,7 @@ test {
     _ = scoring_slot_test;
     _ = session_tests;
     _ = session_transcript_tests;
+    _ = commands_session_test;
     _ = mcp_config;
     _ = acp;
     _ = agent_eval_control_tests;

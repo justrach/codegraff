@@ -205,6 +205,13 @@ pub fn compact(self: *Agent) anyerror!usize {
     self.goal_note_fp = 0; // the injected goal note died with the old history - re-state in full (#318)
     self.history_rewrites +%= 1; // readers of pasted state (the /loop checklist gate) re-carry it (#318)
     installed_summary = true;
+    // #445: the history the model was reading is gone and the durable file is
+    // now the only place its exact wording survives, so THIS is where the #410
+    // transcript line starts being worth its tokens. It rides this boundary
+    // deliberately: the rewrite above already invalidated the provider's cached
+    // prefix, so mutating the system prompt here costs nothing extra. Root-only
+    // and once per session — prompts.noteSessionCompacted owns both rules.
+    prompts.noteSessionCompacted(self, self.arena);
     if (!main_mod.json_mode) try self.say("[history compacted to a {d}-char summary]\n", .{summary.len});
     return summary.len;
 }
@@ -559,6 +566,12 @@ pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
         if (dropped > 0) {
             self.compact_transport_failures = 0;
             self.compact_summary_failures = 0;
+            // #445: a trim is the harsher half of the same boundary — the model
+            // lost that history WITHOUT even a summary standing in for it, so
+            // the transcript line is worth more here, not less. Hooked at this
+            // call site rather than inside emergencyTrim() because the direct
+            // emergencyTrim callers drive partially-initialized test agents.
+            prompts.noteSessionCompacted(self, self.arena);
             if (main_mod.json_mode)
                 self.emit(.{ .type = "compact", .ok = true, .trimmed = dropped })
             else

@@ -296,9 +296,10 @@ test "#410: the transcript line rides the funnel, so a persona swap cannot drop 
     defer a_state.deinit();
     const a = a_state.allocator();
     var agent: agent_mod.Agent = undefined;
-    defer prompts.armSessionTranscript(a, "", .{}); // leave the global as the rest of the suite expects it
+    defer prompts.armSessionTranscript(a, "", .{}, false); // leave the global as the rest of the suite expects it
 
-    prompts.armSessionTranscript(a, "session-42", .{});
+    // Armed as #445 arms it in production: after the first compaction.
+    prompts.armSessionTranscript(a, "session-42", .{}, true);
     try prompts.setSystemPrompts(&agent, "BASE", a);
     for ([_][]const u8{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |v| {
         try std.testing.expect(std.mem.indexOf(u8, v, "BASE") != null);
@@ -312,10 +313,175 @@ test "#410: the transcript line rides the funnel, so a persona swap cannot drop 
     try std.testing.expectEqualStrings("PERSONA", agent.sys_base);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, agent.sys_normal, "session-42.session.json"));
 
-    // Unreadable session file (#330 removed read_file/bash): no line at all.
-    prompts.armSessionTranscript(a, "session-42", .{ .local_tools = false });
+    // Unreadable session file (#330 removed read_file/bash): no line at all,
+    // compacted or not — the capability half of the gate is independent.
+    prompts.armSessionTranscript(a, "session-42", .{ .local_tools = false }, true);
     try prompts.setSystemPrompts(&agent, "BASE", a);
     try std.testing.expectEqualStrings("BASE", agent.sys_normal);
+}
+
+// #445: the measured cost of the #421/#410 prompt additions was ~240 input
+// tokens on EVERY call, and the transcript line's share of it buys nothing
+// until the live window stops being a superset of the file it names. So the
+// line is deferred to the first compaction, and this pins both ends of that:
+// absent on a fresh session, present once the boundary has been crossed.
+test "#445: the transcript line is absent until the first compaction, then rides every variant" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+    const saved = prompts.g_session_compacted;
+    defer prompts.g_session_compacted = saved;
+    defer prompts.armSessionTranscript(a, "", .{}, false); // leave the global as the rest of the suite expects it
+
+    var agent: agent_mod.Agent = undefined;
+    agent.sub = false;
+    agent.session_name = "session-445";
+    prompts.g_session_compacted = false;
+
+    // A fresh session: setRootSystemPrompts arms with the flag as it stands,
+    // so every variant is exactly the base and the session pays nothing.
+    prompts.armSessionTranscript(a, agent.session_name, .{}, prompts.g_session_compacted);
+    try prompts.setSystemPrompts(&agent, "BASE", a);
+    try std.testing.expectEqualStrings("BASE", agent.sys_normal);
+    for ([_][]const u8{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |v|
+        try std.testing.expect(std.mem.indexOf(u8, v, "session-445.session.json") == null);
+
+    // The compaction boundary re-derives all four, in place, from sys_base.
+    prompts.noteSessionCompacted(&agent, a);
+    try std.testing.expect(prompts.g_session_compacted);
+    for ([_][]const u8{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |v| {
+        try std.testing.expect(std.mem.indexOf(u8, v, "BASE") != null);
+        try std.testing.expect(std.mem.indexOf(u8, v, "session-445.session.json") != null);
+    }
+    try std.testing.expectEqualStrings("BASE", agent.sys_base); // still the pure base
+
+    // Idempotent: a session that compacts ten times still carries ONE line.
+    prompts.noteSessionCompacted(&agent, a);
+    prompts.noteSessionCompacted(&agent, a);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, agent.sys_normal, "session-445.session.json"));
+    // And a later persona swap keeps it — the #326 staleness class stays closed.
+    try prompts.setSystemPrompts(&agent, "PERSONA", a);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_normal, "session-445.session.json") != null);
+
+    // A compacting SUBAGENT has no durable session of its own, and must not
+    // spend the root's tokens on a line about a file it never wrote.
+    prompts.g_session_compacted = false;
+    prompts.armSessionTranscript(a, "", .{}, false);
+    var child: agent_mod.Agent = undefined;
+    child.sub = true;
+    child.session_name = "session-child";
+    child.sys_base = "CHILD-BASE";
+    prompts.noteSessionCompacted(&child, a);
+    try std.testing.expect(!prompts.g_session_compacted);
+    try prompts.setSystemPrompts(&child, "CHILD-BASE", a);
+    try std.testing.expectEqualStrings("CHILD-BASE", child.sys_normal);
+}
+
+// #445: one PROCESS can host several root conversations. /new mints a fresh
+// session_name and /clear empties the history and saves over the file, so both
+// put the durable file back to holding no more than the live window. A flag
+// that only ever went true made one compaction arm the line for the rest of
+// the process — the exact per-call waste this issue exists to remove, walked
+// back in through the commonest flow there is.
+test "#445: /new and /clear disarm the transcript line again, and a later compaction re-arms it" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+    const saved = prompts.g_session_compacted;
+    defer prompts.g_session_compacted = saved;
+    defer prompts.armSessionTranscript(a, "", .{}, false); // leave the global as the rest of the suite expects it
+
+    var agent: agent_mod.Agent = undefined;
+    agent.sub = false;
+    agent.session_name = "session-long";
+    prompts.g_session_compacted = false;
+    prompts.armSessionTranscript(a, agent.session_name, .{}, false);
+    try prompts.setSystemPrompts(&agent, "BASE", a);
+
+    // A long session compacts: the line arms, as #445's forward boundary says.
+    prompts.noteSessionCompacted(&agent, a);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_normal, "session-long.session.json") != null);
+
+    // /new: a brand-new conversation under a brand-new name, in the SAME
+    // process. commands_session calls the reset AFTER the rename, so the
+    // re-arm reads the session that exists now — and finds nothing to say.
+    agent.session_name = "session-new";
+    prompts.resetSessionCompacted(&agent, a);
+    try std.testing.expect(!prompts.g_session_compacted);
+    try std.testing.expectEqualStrings("BASE", agent.sys_normal);
+    for ([_][]const u8{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |v| {
+        try std.testing.expect(std.mem.indexOf(u8, v, "session-long.session.json") == null); // no stale name either
+        try std.testing.expect(std.mem.indexOf(u8, v, "session-new.session.json") == null);
+    }
+
+    // ...and the new conversation earns the line back on its own first
+    // compaction, naming ITS file. The flag is a boundary, not a one-way latch.
+    prompts.noteSessionCompacted(&agent, a);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_normal, "session-new.session.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_normal, "session-long.session.json") == null);
+
+    // /clear: same name, but the immediate saveSession rewrites the durable
+    // file down to an empty history, so the line again describes nothing.
+    prompts.resetSessionCompacted(&agent, a);
+    try std.testing.expect(!prompts.g_session_compacted);
+    try std.testing.expectEqualStrings("BASE", agent.sys_normal);
+
+    // Already false: a second /clear must not touch the prompt at all.
+    agent.sys_normal = "SENTINEL";
+    prompts.resetSessionCompacted(&agent, a);
+    try std.testing.expectEqualStrings("SENTINEL", agent.sys_normal);
+
+    // A subagent's own /clear-equivalent can never disarm the ROOT's line.
+    prompts.g_session_compacted = true;
+    var child: agent_mod.Agent = undefined;
+    child.sub = true;
+    child.session_name = "session-child";
+    child.sys_base = "CHILD-BASE";
+    child.sys_normal = "CHILD-SENTINEL";
+    prompts.resetSessionCompacted(&child, a);
+    try std.testing.expect(prompts.g_session_compacted);
+    try std.testing.expectEqualStrings("CHILD-SENTINEL", child.sys_normal);
+}
+
+// #445: /resume is the third door onto the same state. loadSession replaces
+// the live history with a COPY of the file it just read, so the transcript
+// line is redundant for exactly the reason it is redundant on a fresh session
+// — and worse than redundant if left armed, since it would still be naming the
+// conversation the user resumed AWAY from.
+test "#445: /resume disarms the transcript line and leaves no stale session path" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+    const saved = prompts.g_session_compacted;
+    defer prompts.g_session_compacted = saved;
+    defer prompts.armSessionTranscript(a, "", .{}, false); // leave the global as the rest of the suite expects it
+
+    var agent: agent_mod.Agent = undefined;
+    agent.sub = false;
+    agent.session_name = "session-before";
+    prompts.g_session_compacted = false;
+    prompts.armSessionTranscript(a, agent.session_name, .{}, false);
+    try prompts.setSystemPrompts(&agent, "BASE", a);
+
+    // The conversation the user is about to leave compacted, so it is armed.
+    prompts.noteSessionCompacted(&agent, a);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_normal, "session-before.session.json") != null);
+
+    // /resume: commands_misc assigns the new name, THEN resets — the ordering
+    // the reset's doc comment requires, so the re-arm sees the resumed session.
+    agent.session_name = "session-resumed";
+    prompts.resetSessionCompacted(&agent, a);
+    try std.testing.expect(!prompts.g_session_compacted);
+    try std.testing.expectEqualStrings("BASE", agent.sys_normal);
+    for ([_][]const u8{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |v| {
+        try std.testing.expect(std.mem.indexOf(u8, v, "session-before.session.json") == null); // the stale path is gone
+        try std.testing.expect(std.mem.indexOf(u8, v, "session-resumed.session.json") == null); // and the new one is not owed one yet
+    }
+
+    // The resumed conversation earns the line back on its OWN first compaction.
+    prompts.noteSessionCompacted(&agent, a);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_normal, "session-resumed.session.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_normal, "session-before.session.json") == null);
 }
 
 test "#421: MCP, skill and optional-tool guidance all cost zero when absent" {
