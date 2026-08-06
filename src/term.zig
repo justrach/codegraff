@@ -1,68 +1,17 @@
-//! Terminal primitives (std/builtin leaf, no main import): the Windows console
-//! API shim, the cross-platform raw-mode / stdin-poll `tty` layer, terminal
-//! size (termCols/termRows), the streamed-reasoning row counter, and the
-//! stdin-ready polls. Split out of main.zig (600-line goal). main re-exports
-//! win (hooks.zig back-imports it) and aliases the rest back so call sites stay
+//! Terminal primitives (std/builtin leaf, no main import): the cross-platform
+//! raw-mode / stdin-poll `tty` layer, terminal size (termCols/termRows), the
+//! streamed-reasoning row counter, and the stdin-ready polls. Split out of
+//! main.zig (600-line goal). main aliases the rest back so call sites stay
 //! unqualified.
+//!
+//! The Windows console/pipe shim moved to win_api.zig (#429) and is re-exported
+//! below: hooks.zig wants one call out of it (PeekNamedPipe) and must not have
+//! to import the terminal cluster to get it.
 
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const win = struct {
-    const HANDLE = *anyopaque;
-    const BOOL = i32;
-    const DWORD = u32;
-    const WORD = u16;
-    const WCHAR = u16;
-    const SHORT = i16;
-
-    const STD_INPUT_HANDLE: DWORD = 0xFFFFFFF6; // (DWORD)-10
-    const STD_OUTPUT_HANDLE: DWORD = 0xFFFFFFF5; // (DWORD)-11
-
-    const ENABLE_PROCESSED_INPUT: DWORD = 0x0001;
-    const ENABLE_LINE_INPUT: DWORD = 0x0002;
-    const ENABLE_ECHO_INPUT: DWORD = 0x0004;
-    const ENABLE_VIRTUAL_TERMINAL_INPUT: DWORD = 0x0200;
-    const ENABLE_PROCESSED_OUTPUT: DWORD = 0x0001;
-    const ENABLE_VIRTUAL_TERMINAL_PROCESSING: DWORD = 0x0004;
-
-    const WAIT_OBJECT_0: DWORD = 0x0;
-    const INFINITE: DWORD = 0xFFFFFFFF;
-    const KEY_EVENT: WORD = 0x0001;
-
-    const COORD = extern struct { X: SHORT, Y: SHORT };
-    const SMALL_RECT = extern struct { Left: SHORT, Top: SHORT, Right: SHORT, Bottom: SHORT };
-    const CONSOLE_SCREEN_BUFFER_INFO = extern struct {
-        dwSize: COORD,
-        dwCursorPosition: COORD,
-        wAttributes: WORD,
-        srWindow: SMALL_RECT,
-        dwMaximumWindowSize: COORD,
-    };
-    const KEY_EVENT_RECORD = extern struct {
-        bKeyDown: BOOL,
-        wRepeatCount: WORD,
-        wVirtualKeyCode: WORD,
-        wVirtualScanCode: WORD,
-        UnicodeChar: WCHAR,
-        dwControlKeyState: DWORD,
-    };
-    // EventType (WORD) + ABI padding + the 16-byte event union, modeled as its
-    // largest relevant member (KEY_EVENT_RECORD), totals 20 bytes — the C size.
-    const INPUT_RECORD = extern struct {
-        EventType: WORD,
-        KeyEvent: KEY_EVENT_RECORD,
-    };
-
-    extern "kernel32" fn GetStdHandle(nStdHandle: DWORD) callconv(.winapi) HANDLE;
-    extern "kernel32" fn GetConsoleMode(hConsoleHandle: HANDLE, lpMode: *DWORD) callconv(.winapi) BOOL;
-    extern "kernel32" fn SetConsoleMode(hConsoleHandle: HANDLE, dwMode: DWORD) callconv(.winapi) BOOL;
-    extern "kernel32" fn GetConsoleScreenBufferInfo(hConsoleOutput: HANDLE, lpInfo: *CONSOLE_SCREEN_BUFFER_INFO) callconv(.winapi) BOOL;
-    extern "kernel32" fn GetNumberOfConsoleInputEvents(hConsoleInput: HANDLE, lpNumberOfEvents: *DWORD) callconv(.winapi) BOOL;
-    extern "kernel32" fn ReadConsoleInputW(hConsoleInput: HANDLE, lpBuffer: [*]INPUT_RECORD, nLength: DWORD, lpRead: *DWORD) callconv(.winapi) BOOL;
-    extern "kernel32" fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) callconv(.winapi) DWORD;
-    pub extern "kernel32" fn PeekNamedPipe(hNamedPipe: HANDLE, lpBuffer: ?*anyopaque, nBufferSize: DWORD, lpBytesRead: ?*DWORD, lpTotalBytesAvail: ?*DWORD, lpBytesLeftThisMessage: ?*DWORD) callconv(.winapi) BOOL;
-};
+pub const win = @import("win_api.zig");
 
 /// Cross-platform terminal control. POSIX uses termios + ioctl(TIOCGWINSZ) +
 /// poll; Windows uses the console API (Get/SetConsoleMode, screen-buffer info,
@@ -549,11 +498,17 @@ test "#396 firewall: the idle prompt read is job-control aware and gives the tty
 
 test "#396 firewall: both completion paths release the terminal" {
     // One-shot (`-p`, the headless --yolo path) releases at the end of the run,
-    // after the answer is printed and the session saved.
+    // after the answer is printed and the session saved. Since #429 it says so
+    // as a typed event — the engine no longer touches the tty itself — so the
+    // pin follows the emission, and a second pin holds the sink arm that turns
+    // it back into a release. Both halves have to exist or the run never gives
+    // the terminal back.
     const oneshot = @embedFile("session_run.zig");
     const answer_at = std.mem.indexOf(u8, oneshot, "session.saveSession(root, arena, root.session_name)").?;
-    const release_at = std.mem.indexOf(u8, oneshot, "terminal.tty.releaseTerminal();").?;
+    const release_at = std.mem.indexOf(u8, oneshot, ".emit(io, .run_finished);").?;
     try std.testing.expect(answer_at < release_at);
+    const sink = @embedFile("session_render.zig");
+    try std.testing.expect(std.mem.indexOf(u8, sink, ".run_finished => terminal.tty.releaseTerminal(),") != null);
     // The interactive loop releases on ANY exit, and its defer is registered
     // last so LIFO teardown runs it first — before flushSavesAtExit and the
     // slower telemetry/learning phases main() owns.

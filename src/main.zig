@@ -389,7 +389,7 @@ pub fn main(init: std.process.Init) !void {
     };
     if (theme_setup.should_exit) return;
     boot.mark(io, "settings/theme");
-    try session_start.connectCompanion(io, &registry_storage, flags, out, json_mode, init.environ_map);
+    try session_start.connectCompanion(io, arena, &registry_storage, flags, out, json_mode, init.environ_map);
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
     // If the metered companion connected, probe its license once so the note below can lean into paid tools (vs the conservative free-codedb note).
     if (mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeCodedbproLicensed(gpa, io);

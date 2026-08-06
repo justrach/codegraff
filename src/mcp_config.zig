@@ -126,10 +126,13 @@ pub fn load(io: Io, arena: Allocator, dir: Io.Dir, project_path: []const u8, glo
 /// global-only listing behind. `prefix`/`suffix` carry the caller's styling
 /// (dim/reset at startup, empty for the plain CLI).
 pub fn reportInvalid(merged: Merged, w: *Io.Writer, project_path: []const u8, global_path: ?[]const u8, prefix: []const u8, suffix: []const u8) !void {
-    const complaint = " is not valid MCP config (expected a JSON object with \"mcpServers\"); ignoring it.";
-    if (merged.invalid_project) try w.print("{s}{s}" ++ complaint ++ "{s}\n", .{ prefix, project_path, suffix });
-    if (merged.invalid_global) try w.print("{s}{s}" ++ complaint ++ "{s}\n", .{ prefix, global_path orelse "", suffix });
+    if (merged.invalid_project) try w.print("{s}{s}" ++ invalid_complaint ++ "{s}\n", .{ prefix, project_path, suffix });
+    if (merged.invalid_global) try w.print("{s}{s}" ++ invalid_complaint ++ "{s}\n", .{ prefix, global_path orelse "", suffix });
 }
+
+/// What follows the path in that report. Public because startup says the same
+/// thing as a typed notice now (#429) rather than printing it here.
+pub const invalid_complaint = " is not valid MCP config (expected a JSON object with \"mcpServers\"); ignoring it.";
 
 /// Whether `{home}/.mcpconfig.json` exists. That path belongs to other MCP
 /// clients and graff never reads it, so startup says so once instead of leaving

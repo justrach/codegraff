@@ -1,0 +1,188 @@
+//! The settings phase of startup, split out of session_run.zig (600-line goal,
+//! #429): per-skill/companion opt-outs, the env knobs that tune transports and
+//! budgets, the animation + terminal-theme preferences, the headless PTY render
+//! self-tests, and the yxlyx-birthday cosmetic theme.
+//!
+//! It lives here rather than in session_run because it is the one part of that
+//! file that legitimately DRAWS — theme escape sequences, spinner frames, a
+//! markdown probe — so it belongs on the terminal side of the #422 boundary
+//! with agent_stream_render.zig and session_render.zig, not on the engine side.
+//! session_run re-exports both names, so main() is unchanged.
+
+const std = @import("std");
+const Io = std.Io;
+const Allocator = std.mem.Allocator;
+
+const args = @import("args.zig");
+const main_mod = @import("main.zig");
+const agent_mod = @import("agent.zig");
+const http = @import("http.zig");
+const ws = @import("ws.zig");
+const agent_ws = @import("agent_ws.zig"); // codex_ws_idle_ms override (#codex-ws)
+const no_local_tools = @import("no_local_tools.zig"); // #330: GRAFF_NO_LOCAL_TOOLS
+const provider_mod = @import("provider.zig");
+const skills = @import("skills.zig");
+const anim = @import("anim.zig");
+
+pub const ThemeSetup = struct {
+    theme_on: bool,
+    limyuxi_glam: bool,
+    /// True when a PTY self-test already ran + printed its render — main()
+    /// should return immediately (but AFTER registering the theme/limyuxi
+    /// reset defers below, exactly like the original inline code did).
+    should_exit: bool,
+};
+
+/// Per-skill/companion opt-outs, animation + terminal-theme settings, the
+/// headless PTY render self-tests, and the
+/// yxlyx-birthday cosmetic theme. Moved out of main() verbatim (600-line
+/// goal). Returns which reset defers main() needs to register — the
+/// escape-code RESETS must fire when main() itself returns (not when this
+/// helper returns), so the `defer`s stay in main(), gated on the booleans
+/// this returns; main() registers them in the same order as the original
+/// inline code so LIFO defer-firing order is unchanged.
+pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool, cwd_display: []const u8) !ThemeSetup {
+    // Companion auto-activation: if the metered code-intelligence companion
+    // (codedb-pro, formerly muonry) is installed but nothing connected it (no
+    // workspace .mcp.json entry, or consent declined), spawn it directly — a
+    // user-installed companion at the same trust level as the skills
+    // auto-detection above it, NOT arbitrary workspace config.
+    main_mod.g_path_env = try arena.dupe(u8, environ_map.get("PATH") orelse "");
+    main_mod.g_codedb_guard = environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
+    main_mod.g_force_stall_once = environ_map.get("GRAFF_FORCE_STALL_ONCE") != null; // #134 test seam
+    main_mod.g_force_drop_once = environ_map.get("GRAFF_FORCE_DROP_ONCE") != null; // #132/#133 test seam
+    main_mod.g_force_stall_always = environ_map.get("GRAFF_FORCE_STALL_ALWAYS") != null; // #56 test seam (exhaust the reconnect budget)
+    main_mod.g_force_drop_always = environ_map.get("GRAFF_FORCE_DROP_ALWAYS") != null; // #56 test seam
+    // #134: let a provider that buffers a long reasoning phase in total silence
+    // raise the mid-stream idle-stall cutoff (default 120s). Seconds; ignored if
+    // unparseable or 0. A stall is never a user interrupt regardless of the value.
+    if (environ_map.get("GRAFF_STREAM_STALL_SECS")) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
+            if (secs > 0) http.stream_stall_ms = @min(secs, 86_400) * 1000; // clamp: <=1 day, no u64 overflow
+        } else |_| {}
+    }
+    // #codex-ws: GRAFF_CODEX_WS=off|0|false|no (case-insensitive, the
+    // GRAFF_FLEET predicate) forces the SSE transport for codex;
+    // GRAFF_WS_DEBUG=1 dumps the ws handshake + frames to stderr. This is the
+    // SOLE parse site for the codex transport knobs — a copy in main() would
+    // be silently overwritten here, since setupSkillsAndTheme runs later.
+    if (environ_map.get("GRAFF_CODEX_WS")) |v| {
+        main_mod.g_codex_ws = !(std.ascii.eqlIgnoreCase(v, "off") or std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"));
+    }
+    // #225 GRAFF_CLOCK_SLEEP (root-only clock_sleep meta tool) and #330
+    // GRAFF_NO_LOCAL_TOOLS (the hard local-execution gate): both are
+    // affirmative-only (1|true|on|yes), like GRAFF_WS_FORCE_FAIL_ONCE below,
+    // and both are OR'd onto their CLI flag so a conflicting or absent env
+    // value can never silently turn --clock-sleep / --no-local-tools back off.
+    if (environ_map.get("GRAFF_CLOCK_SLEEP")) |v| {
+        main_mod.g_clock_sleep = main_mod.g_clock_sleep or std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
+    }
+    if (environ_map.get("GRAFF_NO_LOCAL_TOOLS")) |v| no_local_tools.enabled = no_local_tools.enabled or no_local_tools.envEnables(v);
+    // (#codex-ws) GRAFF_CODEX_WS_IDLE_SECS raises/lowers the held-WS idle limit
+    // (default 4 min — the backend killed ours within 8.5 min idle; opencode
+    // pools at 5). Mirrors GRAFF_STREAM_STALL_SECS above: seconds, ignored if
+    // unparseable or 0, clamped to <=1 day.
+    if (environ_map.get("GRAFF_CODEX_WS_IDLE_SECS")) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
+            if (secs > 0) agent_ws.codex_ws_idle_ms = @intCast(@min(secs, 86_400) * 1000);
+        } else |_| {}
+    }
+    // #203: GRAFF_CONTEXT / GRAFF_CONTEXT_WINDOW declares the context window (in
+    // tokens) for an unknown/local model whose real window graff can't look up,
+    // replacing the conservative 200k fallback so the compaction gate + per-output
+    // cap are sized correctly. Only affects models that fall back to the default
+    // (see provider.contextWindowFor). Ignored if unparseable or 0.
+    if (environ_map.get("GRAFF_CONTEXT") orelse environ_map.get("GRAFF_CONTEXT_WINDOW")) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |n| {
+            if (n > 0) provider_mod.g_context_override = n;
+        } else |_| {}
+    }
+    // #204: GRAFF_COMPACT_PCT overrides the auto-compaction threshold as a percent
+    // of the window (default 80). Clamped to 1..100; ignored if unparseable or 0.
+    if (environ_map.get("GRAFF_COMPACT_PCT")) |v| {
+        if (std.fmt.parseInt(u8, std.mem.trim(u8, v, " \t"), 10)) |pct| {
+            if (pct > 0) provider_mod.g_compact_pct_override = @min(pct, 100);
+        } else |_| {}
+    }
+    ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
+    // GRAFF_WS_FORCE_FAIL_ONCE proves a clean retry; the counted sibling proves
+    // that two consecutive failures latch the SSE fallback. Test seams only.
+    if (environ_map.get("GRAFF_WS_FORCE_FAIL_ONCE")) |v| {
+        ws.g_force_connect_failure_once = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
+    }
+    if (environ_map.get("GRAFF_WS_FORCE_FAIL_COUNT")) |v| {
+        ws.g_force_connect_failure_count = std.fmt.parseInt(u8, std.mem.trim(u8, v, " \t"), 10) catch 0;
+    }
+    skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
+    anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
+    anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
+    const theme_on = anim.g_theme != null and use_color and !json_mode;
+    if (theme_on) {
+        out.writeAll(anim.themes[anim.g_theme.?].seq) catch {};
+        out.flush() catch {};
+    }
+    // 🎂 yxlyx's birthday glam — when graff runs from her home dir, dress her
+    // Ghostty in the pastel-pink theme (limyuxi_theme: light pink bg, dark plum
+    // text, pink-leaning palette) and switch the spinner to glittery sparkles.
+    // Cosmetic, flagged, gated to her cwd; resets everything on exit.
+    const limyuxi_glam = anim.limyuxi_birthday_white and use_color and !json_mode and
+        (std.mem.eql(u8, cwd_display, "/Users/limyuxi") or std.mem.startsWith(u8, cwd_display, "/Users/limyuxi/"));
+    if (limyuxi_glam) {
+        out.writeAll(anim.limyuxi_theme) catch {};
+        out.flush() catch {};
+        if (anim.animIndex("dragon")) |gi| {
+            anim.g_anim_index = gi;
+            anim.g_anim_off = false;
+            anim.g_anim_random = false;
+        }
+    }
+    if (flags.selftest_spinner_flag) {
+        // Headless render of the real thinking-spinner pool for the PTY anti-stealth
+        // test (scripts/test-pty-spinner.py): runs the real selection (so a cwd-gated
+        // pick surfaces) and prints every frame fn's output to stdout, where the test
+        // scans for the U+1F4A9 / supplementary-plane glyph class the poop hid in.
+        anim.selectSpinner(io);
+        out.print("selected: {s}\n", .{anim.anims[anim.g_anim_current].name}) catch {};
+        for (anim.anims) |a| {
+            var i: usize = 0;
+            while (i < 48) : (i += 1) {
+                a.frame(out, i) catch {};
+                out.writeByte('\n') catch {};
+            }
+        }
+        out.flush() catch {};
+        return .{ .theme_on = theme_on, .limyuxi_glam = limyuxi_glam, .should_exit = true };
+    }
+    if (flags.selftest_markdown_flag) {
+        var probe: agent_mod.Agent = .{
+            .gpa = arena,
+            .arena = arena,
+            .io = io,
+            .client = undefined,
+            .provider = undefined,
+            .messages = undefined,
+            .sub = false,
+            .label = "markdown-selftest",
+            .out = out,
+        };
+        probe.streamMarkdown(
+            \\## Gaps
+            \\- No bot-specific route tests exist.
+            \\- Pin `install.sh` and verify its checksum.
+            \\
+            \\## Recommended implementation order
+            \\1. **Immediately:** require collaborator permission.
+            \\2) **Next:** deduplicate `X-GitHub-Delivery`.
+            \\- [ ] Add a Daytona credential preflight.
+            \\- [x] Sanitize public errors.
+            \\  - Preserve private incident detail.
+            \\> Public errors must never expose secrets.
+        );
+        probe.flushStreamTail();
+        out.writeByte('\n') catch {};
+        out.flush() catch {};
+        return .{ .theme_on = theme_on, .limyuxi_glam = limyuxi_glam, .should_exit = true };
+    }
+    anim.loadDevSpinnerOptOut(io, arena, environ_map);
+    return .{ .theme_on = theme_on, .limyuxi_glam = limyuxi_glam, .should_exit = false };
+}

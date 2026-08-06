@@ -1,7 +1,13 @@
 //! Agent-boot + run-loop entry helpers, split out of session_start.zig (600-line
 //! goal). Covers approvals/hooks/fleet-type loading through Agent construction,
-//! the `graff repl`/one-shot early-exit paths, session resume/finalize, and the
-//! skills/theme/PTY self-tests setup.
+//! the `graff repl`/one-shot early-exit paths, and session resume/finalize. The
+//! skills/theme/PTY-self-test phase moved on to session_settings.zig (#429) and
+//! is re-exported from here.
+//!
+//! Engine side of the #422 boundary: every line this file used to print — the
+//! startup "loaded N …" notices, the session-saved line, the one-shot's
+//! terminal handoff — is a typed event now (engine_events.zig), rendered by
+//! whichever sink the run has. Nothing here reaches the terminal cluster.
 //!
 //! Same dangling-pointer discipline as session_start.zig: `buildRootAgent`
 //! returns `agent_mod.Agent` by value — safe because its pointer fields
@@ -22,17 +28,11 @@ const Allocator = std.mem.Allocator;
 const args = @import("args.zig");
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
-const approvals_mod = @import("approvals.zig");
+const Approvals = agent_mod.Approvals; // via the Agent that owns it, not approvals.zig (#429)
 const tools_mod = @import("tools.zig");
-const http = @import("http.zig");
-const ws = @import("ws.zig");
-const agent_ws = @import("agent_ws.zig"); // codex_ws_idle_ms override (#codex-ws)
-const no_local_tools = @import("no_local_tools.zig"); // #330: GRAFF_NO_LOCAL_TOOLS
 const provider_mod = @import("provider.zig");
 const keys_cli = @import("keys_cli.zig");
 const pricing = @import("pricing.zig");
-const skills = @import("skills.zig");
-const anim = @import("anim.zig");
 const mcp = @import("mcp.zig");
 const jobs = @import("jobs.zig");
 const trace = @import("trace.zig");
@@ -40,15 +40,18 @@ const scoring = @import("scoring.zig");
 const recipe = @import("recipe.zig");
 const telemetry = @import("telemetry.zig");
 const util = @import("util.zig");
-const ansi = @import("ansi.zig");
+const engine_sink = @import("engine_sink.zig"); // #429: startup/teardown lines are typed events
+const engine_events = @import("engine_events.zig");
+const harness_settings = @import("harness_settings.zig");
 const title_mod = @import("title.zig");
 const repl = @import("repl.zig");
-const pickers = @import("pickers.zig");
+const shapes = @import("shapes.zig"); // applyUltracodeSteering lives here (#326)
 const repl_glue = @import("repl_glue.zig");
 const eval_memory = @import("eval_memory.zig");
 const providers = @import("providers.zig");
 const messages_mod = @import("messages.zig");
 const session = @import("session.zig");
+const session_settings = @import("session_settings.zig");
 const goal_flow = @import("goal_flow.zig");
 const fleet = @import("fleet.zig");
 const hooks = @import("hooks.zig");
@@ -58,7 +61,6 @@ const run_budget_mod = @import("run_budget.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const commands_privacy = @import("commands_privacy.zig");
 const prompts = @import("prompts.zig");
-const terminal = @import("term.zig"); // #396: releaseTerminal at one-shot completion
 
 /// `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL
 /// agent loop — each prompt runs a full root turn (tools + MCP) via
@@ -118,7 +120,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     root.in = null; // gate: deny instead of prompt; ask_user: self-decide
     root.out = null; // tool progress → stderr; stdout carries only the answer
     root.stream_quiet = true;
-    const ultracode_msg = try pickers.applyUltracodeSteering(arena, prompt_text, prompt_text, prompts.ultracodeActive(root));
+    const ultracode_msg = try shapes.applyUltracodeSteering(arena, prompt_text, prompt_text, prompts.ultracodeActive(root));
     if (ultracode_msg.explicit) {
         tracer.note("ultracode", prompt_text[0..@min(prompt_text.len, 120)]);
         if (telemetry.g_telem) |t| t.ultracode();
@@ -174,7 +176,10 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     for (root.md_table.items) |r| gpa.free(r);
     root.md_table.deinit(gpa);
     root.tools_used.deinit(gpa);
-    terminal.tty.releaseTerminal(); // #396: the run is over — hand the tty back and latch the reader shut before main()'s teardown
+    // #396: the run is over. The frontend hands the terminal back and latches
+    // its reader shut before main()'s teardown — a terminal-ownership move the
+    // sink owns now, in EVERY mode, exactly as the old unconditional call did.
+    engine_sink.writerSink(out).emit(io, .run_finished);
 }
 
 /// Loads persisted command/tool approvals + lifecycle hooks + the MAP-Elites
@@ -184,24 +189,28 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
 /// = undefined;`) and this fills it in place, so main() can still register
 /// its own `defer` for `approvals.prefixes` right after the call (a `defer`
 /// registered here would fire when THIS returns, not when main() does).
-pub fn initApprovalsHooksFleet(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, approvals: *approvals_mod.Approvals, flags: args.Flags, out: *Io.Writer, json_mode: bool) !void {
+pub fn initApprovalsHooksFleet(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, approvals: *Approvals, flags: args.Flags, out: *Io.Writer, json_mode: bool) !void {
     approvals.* = .{ .yolo = flags.yolo_flag };
     const persisted_approvals = approvals.loadPersisted(io, gpa, arena);
 
     // Agent types: builtins + .harness/agents/*.md (the MAP-Elites niches).
     fleet.g_home = keys_cli.homeEnv(environ_map); // for /agents promote's personal tier
     fleet.g_agent_types = fleet.loadAgentTypes(io, arena, fleet.g_home); // builtin < ~/.harness/agents (personal) < ./.harness/agents (private)
-    if (persisted_approvals > 0 and !json_mode and flags.oneshot_prompt == null) {
-        try out.print("{s}loaded {d} saved approval(s) from {s}{s}\n", .{ ansi.style.dim, persisted_approvals, approvals_mod.Approvals.settings_path, ansi.style.reset });
-        try out.flush();
-    }
+    const sink = engine_sink.writerSink(out);
+    const speak = !json_mode and flags.oneshot_prompt == null;
+    if (persisted_approvals > 0 and speak)
+        sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "loaded {d} saved approval(s) from {s}", .{ persisted_approvals, harness_settings.path })));
     // Lifecycle hooks (pre_tool/post_tool/turn_end) from the same file.
     // (Per-skill opt-outs were loaded earlier, before the muonry auto-connect.)
     main_mod.g_hooks = hooks.loadHooks(io, arena);
-    if (main_mod.g_hooks.total() > 0 and !json_mode and flags.oneshot_prompt == null) {
-        try out.print("{s}loaded {d} lifecycle hook(s) from {s} — /hooks lists them{s}\n", .{ ansi.style.dim, main_mod.g_hooks.total(), approvals_mod.Approvals.settings_path, ansi.style.reset });
-        try out.flush();
-    }
+    if (main_mod.g_hooks.total() > 0 and speak)
+        sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "loaded {d} lifecycle hook(s) from {s} — /hooks lists them", .{ main_mod.g_hooks.total(), harness_settings.path })));
+}
+
+/// The lifecycle's most common line: dim, no badge. A helper rather than a
+/// variant — see session_start.dimNotice.
+fn dimNotice(text: []const u8) engine_events.EngineEvent {
+    return .{ .session_notice = .{ .text = text, .tone = .dim } };
 }
 
 /// Constructs the root Agent: snapshots/client/tracer/approvals/registry are
@@ -226,7 +235,7 @@ pub fn buildRootAgent(
     out: *Io.Writer,
     in: *Io.Reader,
     registry: ?*mcp.Registry,
-    approvals: *approvals_mod.Approvals,
+    approvals: *Approvals,
     tracer: *trace.Tracer,
     sys_normal: []const u8,
     snaps: *tools_mod.Snapshots,
@@ -348,12 +357,13 @@ pub fn compactResumedSession(root: *agent_mod.Agent) void {
 /// goal); `root` is already stable main()-owned storage.
 pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, json_mode: bool) !void {
     if (!json_mode and root.messages.items.len > 0) {
+        const sink = engine_sink.writerSink(out);
         if (session.saveSession(root, arena, root.session_name)) |_| {
-            out.print("{s}↩ session saved → {s}{s}{s}\n", .{ ansi.style.dim, root.session_name, ansi.style.reset, session.session_ext }) catch {};
+            sink.emit(io, .{ .session_saved = .{ .name = root.session_name, .ext = session.session_ext } });
         } else |err| { // one line, and true: never contradict a failure with "saved" (#273)
-            out.print("{s}⚠ session save failed: {t}{s}\n", .{ ansi.style.yellow, err, ansi.style.reset }) catch {};
+            const text = std.fmt.allocPrint(arena, "⚠ session save failed: {t}", .{err}) catch "⚠ session save failed";
+            sink.emit(io, .{ .session_notice = .{ .text = text, .tone = .warn } });
         }
-        out.flush() catch {};
     } else {
         session.saveSession(root, arena, root.session_name) catch {};
     }
@@ -366,168 +376,11 @@ pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer
     try out.flush();
 }
 
-pub const ThemeSetup = struct {
-    theme_on: bool,
-    limyuxi_glam: bool,
-    /// True when a PTY self-test already ran + printed its render — main()
-    /// should return immediately (but AFTER registering the theme/limyuxi
-    /// reset defers below, exactly like the original inline code did).
-    should_exit: bool,
-};
-
-/// Per-skill/companion opt-outs, animation + terminal-theme settings, the
-/// headless PTY render self-tests, and the
-/// yxlyx-birthday cosmetic theme. Moved out of main() verbatim (600-line
-/// goal). Returns which reset defers main() needs to register — the
-/// escape-code RESETS must fire when main() itself returns (not when this
-/// helper returns), so the `defer`s stay in main(), gated on the booleans
-/// this returns; main() registers them in the same order as the original
-/// inline code so LIFO defer-firing order is unchanged.
-pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool, cwd_display: []const u8) !ThemeSetup {
-    // Companion auto-activation: if the metered code-intelligence companion
-    // (codedb-pro, formerly muonry) is installed but nothing connected it (no
-    // workspace .mcp.json entry, or consent declined), spawn it directly — a
-    // user-installed companion at the same trust level as the skills
-    // auto-detection above it, NOT arbitrary workspace config.
-    main_mod.g_path_env = try arena.dupe(u8, environ_map.get("PATH") orelse "");
-    main_mod.g_codedb_guard = environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
-    main_mod.g_force_stall_once = environ_map.get("GRAFF_FORCE_STALL_ONCE") != null; // #134 test seam
-    main_mod.g_force_drop_once = environ_map.get("GRAFF_FORCE_DROP_ONCE") != null; // #132/#133 test seam
-    main_mod.g_force_stall_always = environ_map.get("GRAFF_FORCE_STALL_ALWAYS") != null; // #56 test seam (exhaust the reconnect budget)
-    main_mod.g_force_drop_always = environ_map.get("GRAFF_FORCE_DROP_ALWAYS") != null; // #56 test seam
-    // #134: let a provider that buffers a long reasoning phase in total silence
-    // raise the mid-stream idle-stall cutoff (default 120s). Seconds; ignored if
-    // unparseable or 0. A stall is never a user interrupt regardless of the value.
-    if (environ_map.get("GRAFF_STREAM_STALL_SECS")) |v| {
-        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
-            if (secs > 0) http.stream_stall_ms = @min(secs, 86_400) * 1000; // clamp: <=1 day, no u64 overflow
-        } else |_| {}
-    }
-    // #codex-ws: GRAFF_CODEX_WS=off|0|false|no (case-insensitive, the
-    // GRAFF_FLEET predicate) forces the SSE transport for codex;
-    // GRAFF_WS_DEBUG=1 dumps the ws handshake + frames to stderr. This is the
-    // SOLE parse site for the codex transport knobs — a copy in main() would
-    // be silently overwritten here, since setupSkillsAndTheme runs later.
-    if (environ_map.get("GRAFF_CODEX_WS")) |v| {
-        main_mod.g_codex_ws = !(std.ascii.eqlIgnoreCase(v, "off") or std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"));
-    }
-    // #225 GRAFF_CLOCK_SLEEP (root-only clock_sleep meta tool) and #330
-    // GRAFF_NO_LOCAL_TOOLS (the hard local-execution gate): both are
-    // affirmative-only (1|true|on|yes), like GRAFF_WS_FORCE_FAIL_ONCE below,
-    // and both are OR'd onto their CLI flag so a conflicting or absent env
-    // value can never silently turn --clock-sleep / --no-local-tools back off.
-    if (environ_map.get("GRAFF_CLOCK_SLEEP")) |v| {
-        main_mod.g_clock_sleep = main_mod.g_clock_sleep or std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
-    }
-    if (environ_map.get("GRAFF_NO_LOCAL_TOOLS")) |v| no_local_tools.enabled = no_local_tools.enabled or no_local_tools.envEnables(v);
-    // (#codex-ws) GRAFF_CODEX_WS_IDLE_SECS raises/lowers the held-WS idle limit
-    // (default 4 min — the backend killed ours within 8.5 min idle; opencode
-    // pools at 5). Mirrors GRAFF_STREAM_STALL_SECS above: seconds, ignored if
-    // unparseable or 0, clamped to <=1 day.
-    if (environ_map.get("GRAFF_CODEX_WS_IDLE_SECS")) |v| {
-        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
-            if (secs > 0) agent_ws.codex_ws_idle_ms = @intCast(@min(secs, 86_400) * 1000);
-        } else |_| {}
-    }
-    // #203: GRAFF_CONTEXT / GRAFF_CONTEXT_WINDOW declares the context window (in
-    // tokens) for an unknown/local model whose real window graff can't look up,
-    // replacing the conservative 200k fallback so the compaction gate + per-output
-    // cap are sized correctly. Only affects models that fall back to the default
-    // (see provider.contextWindowFor). Ignored if unparseable or 0.
-    if (environ_map.get("GRAFF_CONTEXT") orelse environ_map.get("GRAFF_CONTEXT_WINDOW")) |v| {
-        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |n| {
-            if (n > 0) provider_mod.g_context_override = n;
-        } else |_| {}
-    }
-    // #204: GRAFF_COMPACT_PCT overrides the auto-compaction threshold as a percent
-    // of the window (default 80). Clamped to 1..100; ignored if unparseable or 0.
-    if (environ_map.get("GRAFF_COMPACT_PCT")) |v| {
-        if (std.fmt.parseInt(u8, std.mem.trim(u8, v, " \t"), 10)) |pct| {
-            if (pct > 0) provider_mod.g_compact_pct_override = @min(pct, 100);
-        } else |_| {}
-    }
-    ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
-    // GRAFF_WS_FORCE_FAIL_ONCE proves a clean retry; the counted sibling proves
-    // that two consecutive failures latch the SSE fallback. Test seams only.
-    if (environ_map.get("GRAFF_WS_FORCE_FAIL_ONCE")) |v| {
-        ws.g_force_connect_failure_once = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
-    }
-    if (environ_map.get("GRAFF_WS_FORCE_FAIL_COUNT")) |v| {
-        ws.g_force_connect_failure_count = std.fmt.parseInt(u8, std.mem.trim(u8, v, " \t"), 10) catch 0;
-    }
-    skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
-    anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
-    anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
-    const theme_on = anim.g_theme != null and use_color and !json_mode;
-    if (theme_on) {
-        out.writeAll(anim.themes[anim.g_theme.?].seq) catch {};
-        out.flush() catch {};
-    }
-    // 🎂 yxlyx's birthday glam — when graff runs from her home dir, dress her
-    // Ghostty in the pastel-pink theme (limyuxi_theme: light pink bg, dark plum
-    // text, pink-leaning palette) and switch the spinner to glittery sparkles.
-    // Cosmetic, flagged, gated to her cwd; resets everything on exit.
-    const limyuxi_glam = anim.limyuxi_birthday_white and use_color and !json_mode and
-        (std.mem.eql(u8, cwd_display, "/Users/limyuxi") or std.mem.startsWith(u8, cwd_display, "/Users/limyuxi/"));
-    if (limyuxi_glam) {
-        out.writeAll(anim.limyuxi_theme) catch {};
-        out.flush() catch {};
-        if (anim.animIndex("dragon")) |gi| {
-            anim.g_anim_index = gi;
-            anim.g_anim_off = false;
-            anim.g_anim_random = false;
-        }
-    }
-    if (flags.selftest_spinner_flag) {
-        // Headless render of the real thinking-spinner pool for the PTY anti-stealth
-        // test (scripts/test-pty-spinner.py): runs the real selection (so a cwd-gated
-        // pick surfaces) and prints every frame fn's output to stdout, where the test
-        // scans for the U+1F4A9 / supplementary-plane glyph class the poop hid in.
-        anim.selectSpinner(io);
-        out.print("selected: {s}\n", .{anim.anims[anim.g_anim_current].name}) catch {};
-        for (anim.anims) |a| {
-            var i: usize = 0;
-            while (i < 48) : (i += 1) {
-                a.frame(out, i) catch {};
-                out.writeByte('\n') catch {};
-            }
-        }
-        out.flush() catch {};
-        return .{ .theme_on = theme_on, .limyuxi_glam = limyuxi_glam, .should_exit = true };
-    }
-    if (flags.selftest_markdown_flag) {
-        var probe: agent_mod.Agent = .{
-            .gpa = arena,
-            .arena = arena,
-            .io = io,
-            .client = undefined,
-            .provider = undefined,
-            .messages = undefined,
-            .sub = false,
-            .label = "markdown-selftest",
-            .out = out,
-        };
-        probe.streamMarkdown(
-            \\## Gaps
-            \\- No bot-specific route tests exist.
-            \\- Pin `install.sh` and verify its checksum.
-            \\
-            \\## Recommended implementation order
-            \\1. **Immediately:** require collaborator permission.
-            \\2) **Next:** deduplicate `X-GitHub-Delivery`.
-            \\- [ ] Add a Daytona credential preflight.
-            \\- [x] Sanitize public errors.
-            \\  - Preserve private incident detail.
-            \\> Public errors must never expose secrets.
-        );
-        probe.flushStreamTail();
-        out.writeByte('\n') catch {};
-        out.flush() catch {};
-        return .{ .theme_on = theme_on, .limyuxi_glam = limyuxi_glam, .should_exit = true };
-    }
-    anim.loadDevSpinnerOptOut(io, arena, environ_map);
-    return .{ .theme_on = theme_on, .limyuxi_glam = limyuxi_glam, .should_exit = false };
-}
+// The settings/theme phase moved to session_settings.zig (#429): it is the one
+// part of this file that legitimately draws, so it sits on the terminal side of
+// the #422 boundary. Re-exported so main() still calls it through session_run.
+pub const ThemeSetup = session_settings.ThemeSetup;
+pub const setupSkillsAndTheme = session_settings.setupSkillsAndTheme;
 
 /// Contribution is on by default, so say it once per machine before anything
 /// can be sent. Quiet in --json/-p, where stdout is protocol output.
