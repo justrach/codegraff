@@ -12,6 +12,17 @@ current is part of cutting a release.
 
 ## v0.0.241 (unreleased)
 
+- An oversized tool output is now spilled, not destroyed (#409). The
+  per-result cap (#193/#201) used to delete the elided bytes, leaving the
+  model to re-run the tool and guess a better slice; when the session is
+  durable the full output is now written to
+  `.graff/sessions/<session>/artifacts/tool-<n>.txt` first, and the marker in
+  the transcript cites the absolute path and the byte count, so the next turn
+  can read or grep exactly what it needs. Bounded by a 64 MiB per-session
+  budget (whole artifacts only, so a marker can never overstate what is on
+  disk), and reclaimed with the session: an artifact dir whose
+  `<session>.session.json` is gone is swept at the next spill. Subagents,
+  whose history is never persisted, keep the plain truncation.
 - Cross-process locks stopped trusting a bare pid (#413): an owner record now
   carries the holder's process START identity next to its pid (`/proc/<pid>/stat`
   field 22 on Linux, `proc_pidinfo` on macOS, `GetProcessTimes` on Windows), so
