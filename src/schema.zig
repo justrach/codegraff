@@ -17,6 +17,7 @@ const skill_docs = @import("skill_docs.zig"); // SKILL.md playbooks: the `skill`
 const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-local-tools gate (layer 1 lives here, layer 2 in exec.zig)
 const tool_gates = @import("tool_gates.zig"); // #352: the additive twin — optional tools that only exist when startup found their backing capability
 const imagegen = @import("imagegen.zig"); // #352: name/desc/schema as plain strings, like skill_docs, so this catalog needs one entry and no import cycle
+const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: which MCP tools are served schema-first vs description-only, and the `load_tool_schemas` strings
 const render = @import("schema_render.zig"); // the comptime provider-tool renderers moved out when #352's optional-tool catalogs doubled the number held here (600-line ceiling)
 const anthropicToolsJson = render.anthropicToolsJson;
 const openaiToolsJson = render.openaiToolsJson;
@@ -151,6 +152,11 @@ const meta_specs = [_]ToolSpec{
         \\{"type": "object", "properties": {"result": {"type": "string", "description": "Final answer to present to the user"}}, "required": ["result"]}
         ,
     },
+    // #416, the MCP half of progressive disclosure: an expensive server is
+    // registered by name + one line per tool, and this loads the real schemas
+    // (and enables those tools) on demand. Meta because it mutates the root's
+    // own tool catalog; renderRootTools drops it while nothing is deferred.
+    .{ .name = mcp_schema_gate.tool_name, .desc = mcp_schema_gate.tool_desc, .schema = mcp_schema_gate.tool_schema },
     .{
         .name = "clock_sleep",
         .desc = "Pause the current turn for up to 12 hours of wall-clock time; interruptible by user input, and reported as a normal (non-error) result either way. For autonomous /loop runs that need to wait before re-checking something (e.g. a long external job). Root-only; off unless --clock-sleep/GRAFF_CLOCK_SLEEP=1 is set.",
@@ -217,7 +223,7 @@ const root_specs_without_clock = rootSpecsWithout(&.{"clock_sleep"});
 const root_specs_without_learning = rootSpecsWithout(&.{"learn_candidate"});
 const root_specs_without_optional = rootSpecsWithout(&.{ "clock_sleep", "learn_candidate" });
 
-pub const meta_names = [_][]const u8{ "todo_write", "todo_read", "ask_user", "eval", "attempt_completion", "clock_sleep", "note_constraint" };
+pub const meta_names = [_][]const u8{ "todo_write", "todo_read", "ask_user", "eval", "attempt_completion", "clock_sleep", "note_constraint", mcp_schema_gate.tool_name };
 
 pub fn isMetaName(name: []const u8) bool {
     for (meta_names) |m| if (std.mem.eql(u8, name, m)) return true;
@@ -289,8 +295,18 @@ pub fn renderRootTools(
     errdefer aw.deinit();
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginArray();
-    for (specs) |t| try writeToolEntry(&s, kind, t.name, t.desc, .{ .raw = t.schema });
-    for (mcp_tools) |m| try writeToolEntry(&s, kind, m.qualified_name, m.description, .{ .value = m.input_schema });
+    for (specs) |t| {
+        if (mcp_schema_gate.hiddenSpec(t.name, mcp_tools)) continue; // #416: load_tool_schemas is pointless with nothing deferred
+        try writeToolEntry(&s, kind, t.name, t.desc, .{ .raw = t.schema });
+    }
+    // #416 layer 1: a deferred tool is still REGISTERED (name + a one-line
+    // description, so the model knows it exists and can ask for it), but its
+    // schema is a placeholder until load_tool_schemas enables it. exec.zig is
+    // layer 2, and refuses a call that arrives before that.
+    for (mcp_tools) |m| if (mcp_schema_gate.isDeferred(mcp_tools, m))
+        try writeToolEntry(&s, kind, m.qualified_name, mcp_schema_gate.shortDesc(m.description), .{ .raw = mcp_schema_gate.placeholder_schema })
+    else
+        try writeToolEntry(&s, kind, m.qualified_name, m.description, .{ .value = m.input_schema });
     try s.endArray();
     return aw.toOwnedSlice();
 }

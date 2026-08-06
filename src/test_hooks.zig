@@ -91,6 +91,11 @@ const playbook_reflect = @import("playbook_reflect.zig");
 // that staying true.
 const mcp_config = @import("mcp_config.zig");
 
+// #416: two-phase MCP tool exposure. schema.zig/exec.zig reach the gate, but
+// its tests live in a sibling file that nothing in production imports.
+const mcp_schema_gate = @import("mcp_schema_gate.zig");
+const mcp_schema_gate_tests = @import("mcp_schema_gate_tests.zig");
+
 // The ultracode escalation ladder and the machinery it decides with. The
 // production graph reaches escalation.zig/phase_budget.zig through
 // workflow.zig, but only through a CALL — nothing references their decls at
@@ -171,6 +176,8 @@ test {
     _ = scoring_slot_test;
     _ = session_tests;
     _ = mcp_config;
+    _ = mcp_schema_gate;
+    _ = mcp_schema_gate_tests;
     _ = acp;
     _ = agent_eval_control_tests;
     _ = playbook_glue;

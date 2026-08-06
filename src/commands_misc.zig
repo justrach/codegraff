@@ -31,6 +31,7 @@ const style = &ansi.style;
 const goal_state = @import("goal_state.zig");
 const goal_flow = @import("goal_flow.zig");
 const jobs = @import("jobs.zig");
+const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: which listed MCP tools are still schema-deferred
 const subagent = @import("subagent.zig"); // #276 P0-3: g_agent_jobs, for /jobs
 
 const pricing = @import("pricing.zig");
@@ -326,7 +327,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 const probe_note = if (srv.probe_fallback) |reason| reason.note() else "";
                 try out.print("  {s}{s}{s}  (mcp {s}, {d} tool(s)){s}{s}{s}\n", .{ style.accent, srv.name, style.reset, srv.protocol_version, reg.toolCount(i), style.dim, probe_note, style.reset });
             }
-            for (reg.tools) |t| try out.print("    {s}{s}{s}\n", .{ style.dim, t.qualified_name, style.reset });
+            // #416: a deferred tool is registered but carries no schema yet, so
+            // say so — otherwise the difference is invisible from here.
+            for (reg.tools) |t| try out.print("    {s}{s}{s}{s}\n", .{ style.dim, t.qualified_name, if (mcp_schema_gate.isDeferred(reg.tools, t)) "  schema deferred (#416); the model loads it on demand" else "", style.reset });
             try out.writeAll("  add more: /mcp add <name> <command> [args...]\n");
         }
         if (pending > 0) try out.print("  {s}{d} configured server(s) not connected — /mcp trust to connect them{s}\n", .{ style.dim, pending, style.reset });

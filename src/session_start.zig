@@ -37,6 +37,7 @@ const anim = @import("anim.zig");
 const mcp = @import("mcp.zig");
 const mcp_cli = @import("mcp_cli.zig");
 const mcp_config = @import("mcp_config.zig");
+const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: the eager-vs-deferred policy for MCP tool schemas
 const jobs = @import("jobs.zig");
 const tool_spill = @import("tool_spill.zig"); // #409: where an over-cap tool output's full bytes go
 const trace = @import("trace.zig");
@@ -371,6 +372,9 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     // so an unguarded line here would corrupt the head of every --json run.
     const quiet = json_mode or flags.oneshot_prompt != null;
     const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path);
+    // #416: resolve eager-vs-deferred BEFORE anything connects, so the first
+    // catalog render already knows which servers pay their schemas up front.
+    mcp_schema_gate.configure(arena, merged, environ_map);
     if (!quiet) {
         // Reported here rather than in `Registry.init`, which never runs when
         // consent is declined — a config that does not parse must be named
