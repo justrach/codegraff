@@ -43,6 +43,7 @@ const protocol_seq = @import("protocol_seq.zig");
 const render = @import("agent_stream_render.zig");
 const tool_render = @import("agent_tool_render.zig"); // slice 1c: the tool cluster's terminal half
 const session_render = @import("session_render.zig"); // slice 2: the lifecycle cluster's terminal half
+const prompt_render = @import("agent_prompt_render.zig"); // batch 3: the status line's terminal half
 const tick_gate = @import("tick_gate.zig"); // #tui-tick: child ticks wait for a foreground line boundary
 
 /// An event plus its position, as delivered to a sink.
@@ -256,6 +257,10 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         .session_saved,
         .run_finished,
         => session_render.emit(a.out, ev.event),
+        // The status line before a human turn (#429). Its drawing — palette,
+        // badge frame, and the #209 width budget that decides which segments
+        // survive a narrow pane — lives in agent_prompt_render.
+        .prompt_ready => |st| if (a.out) |w| prompt_render.promptLine(w, st),
     }
 }
 

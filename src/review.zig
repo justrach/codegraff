@@ -4,7 +4,8 @@
 const std = @import("std");
 const ToolCall = @import("tools.zig").ToolCall;
 const ExecResult = @import("tools.zig").ExecResult;
-const Approvals = @import("approvals.zig").Approvals;
+// The read-only classifier only — never the approval session (#422 ratchet).
+const policy = @import("harness_policy.zig");
 
 /// Give a review a fresh model-visible history while retaining the parent
 /// transcript. The caller restores the parent after the one-shot review and
@@ -77,7 +78,7 @@ pub fn rejectTool(arena: std.mem.Allocator, call: ToolCall) !?ExecResult {
         const background = call.input.object.get("run_in_background");
         if (command == .string and
             (background == null or background.? != .bool or !background.?.bool) and
-            Approvals.readOnlyAllowed(command.string)) return null;
+            policy.readOnlyAllowed(command.string)) return null;
     }
     return denied(arena, call.name);
 }

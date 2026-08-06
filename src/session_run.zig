@@ -42,7 +42,7 @@ const telemetry = @import("telemetry.zig");
 const util = @import("util.zig");
 const engine_sink = @import("engine_sink.zig"); // #429: startup/teardown lines are typed events
 const engine_events = @import("engine_events.zig");
-const harness_settings = @import("harness_settings.zig");
+const harness_policy = @import("harness_policy.zig");
 const title_mod = @import("title.zig");
 const repl = @import("repl.zig");
 const shapes = @import("shapes.zig"); // applyUltracodeSteering lives here (#326)
@@ -199,12 +199,12 @@ pub fn initApprovalsHooksFleet(io: Io, gpa: Allocator, arena: Allocator, environ
     const sink = engine_sink.writerSink(out);
     const speak = !json_mode and flags.oneshot_prompt == null;
     if (persisted_approvals > 0 and speak)
-        sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "loaded {d} saved approval(s) from {s}", .{ persisted_approvals, harness_settings.path })));
+        sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "loaded {d} saved approval(s) from {s}", .{ persisted_approvals, harness_policy.settings_path })));
     // Lifecycle hooks (pre_tool/post_tool/turn_end) from the same file.
     // (Per-skill opt-outs were loaded earlier, before the muonry auto-connect.)
     main_mod.g_hooks = hooks.loadHooks(io, arena);
     if (main_mod.g_hooks.total() > 0 and speak)
-        sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "loaded {d} lifecycle hook(s) from {s} — /hooks lists them", .{ main_mod.g_hooks.total(), harness_settings.path })));
+        sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "loaded {d} lifecycle hook(s) from {s} — /hooks lists them", .{ main_mod.g_hooks.total(), harness_policy.settings_path })));
 }
 
 /// The lifecycle's most common line: dim, no badge. A helper rather than a

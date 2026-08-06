@@ -21,7 +21,8 @@ const Allocator = std.mem.Allocator;
 const util = @import("util.zig");
 const tools = @import("tools.zig");
 const ToolOutput = tools.ToolOutput;
-const Approvals = @import("approvals.zig").Approvals;
+// Only the settings-file location, never the approval session (#422 ratchet).
+const policy = @import("harness_policy.zig");
 
 pub const Source = enum {
     builtin,
@@ -222,7 +223,7 @@ fn insert(arena: Allocator, list: *std.ArrayList(Skill), sk: Skill) void {
 /// entirely — the same opt-out key the companion registry uses (skills.zig), so
 /// `/skills remove <name>` works for both kinds.
 fn applyDisabled(io: Io, arena: Allocator, list: *std.ArrayList(Skill)) void {
-    const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
+    const data = Io.Dir.cwd().readFileAlloc(io, policy.settings_path, arena, .limited(1 << 20)) catch return;
     const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
     if (v != .object) return;
     const cfg = v.object.get("skills") orelse return;
@@ -294,58 +295,9 @@ fn listing(gpa: Allocator, list: []const Skill, unknown: ?[]const u8) ![]u8 {
     return aw.toOwnedSlice();
 }
 
-// --- the `/skills` surface (called from commands_session.zig) ---------------
-
-const skills_companions = @import("skills.zig");
-const ansi = @import("ansi.zig");
-const style = &ansi.style;
-
-/// `/skills remove <name>` for the markdown kind: true when `name` matched an
-/// active skill. Persists through the companions' {"skills": {…: false}} key.
-pub fn handleRemove(io: Io, gpa: Allocator, arena: Allocator, name: []const u8, out: *Io.Writer) !bool {
-    for (g_skills) |sk| {
-        if (!std.mem.eql(u8, sk.name, name)) continue;
-        if (skills_companions.saveSkillSetting(io, gpa, name, false)) {
-            _ = reload(io, arena);
-            try out.print("{s}✓ {s} disabled{s} — the skill tool no longer serves it; it leaves the startup catalog next session\n", .{ style.green, name, style.reset });
-        } else {
-            try out.print("{s}could not write {s} — {s} is still active{s}\n", .{ style.yellow, Approvals.settings_path, name, style.reset });
-        }
-        try out.flush();
-        return true;
-    }
-    return false;
-}
-
-/// `/skills add <name>`: re-enable a markdown skill hidden by an earlier
-/// remove. Scans disabled ones too, so "hidden" and "no such skill" differ.
-pub fn handleAdd(io: Io, gpa: Allocator, arena: Allocator, name: []const u8, out: *Io.Writer) !bool {
-    for (scanAll(io, arena)) |sk| {
-        if (!std.mem.eql(u8, sk.name, name)) continue;
-        if (skills_companions.saveSkillSetting(io, gpa, sk.name, true)) {
-            _ = reload(io, arena);
-            try out.print("{s}✓ {s} enabled{s} — loadable with the skill tool now\n", .{ style.green, sk.name, style.reset });
-        } else {
-            try out.print("{s}could not write {s} — {s} stays disabled{s}\n", .{ style.yellow, Approvals.settings_path, sk.name, style.reset });
-        }
-        try out.flush();
-        return true;
-    }
-    return false;
-}
-
-/// The markdown-skills section of `/skills` — re-scanned so a SKILL.md written
-/// this session shows up without a restart.
-pub fn printSection(io: Io, arena: Allocator, out: *Io.Writer) !void {
-    const md_skills = reload(io, arena);
-    try out.print("{s}skills{s} — SKILL.md playbooks; the model loads one on demand with the `skill` tool\n", .{ style.bold, style.reset });
-    if (md_skills.len == 0) {
-        try out.print("  {s}none — write one at {s}/<name>/SKILL.md{s}\n", .{ style.dim, project_dir, style.reset });
-    } else for (md_skills) |sk| {
-        try out.print("  {s}{s:<16}{s} {s}{s:<9}{s} {s}\n", .{ style.accent, sk.name, style.reset, style.dim, sk.source.label(), style.reset, util.utf8Prefix(sk.desc, 100) });
-    }
-    try out.print("  disable one: /skills remove <name> · re-enable: /skills add <name>\n\n", .{});
-}
+// The `/skills` command surface — handleRemove/handleAdd/printSection — lives
+// in skill_docs_render.zig (#429). It is the only part of this module that ever
+// drew, and drawing is the command layer's job, not the skill subsystem's.
 
 test "parseDoc: frontmatter wins over the filename, body starts after it" {
     const p = parseDoc("from-file", "---\nname: real-name\ndescription: what it does and when\n---\n\n# Body\nstep one\n");
