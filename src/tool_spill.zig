@@ -330,8 +330,14 @@ test "spill writes the full output and the marker points at it (#409)" {
     // (b) the capped message stays within the cap and cites path + byte count
     const stub = m.object.get("output").?.string;
     try std.testing.expect(stub.len <= cap);
-    try std.testing.expect(std.mem.indexOf(u8, stub, "are at /") != null); // absolute, resolved through the dir handle
-    try std.testing.expect(std.mem.indexOf(u8, stub, rel) != null);
+    // The cited path is absolute on every OS ("/…" on posix, "C:\…" or
+    // "\\?\…" on Windows), and the separators are the platform's — so
+    // extract the path from the marker and assert absoluteness, rather than
+    // matching a leading slash or posix separators (broke on windows CI).
+    const at = (std.mem.indexOf(u8, stub, "are at ") orelse return error.TestUnexpectedResult) + "are at ".len;
+    const semi = std.mem.indexOfScalarPos(u8, stub, at, ';') orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.fs.path.isAbsolute(stub[at..semi]));
+    try std.testing.expect(std.mem.indexOf(u8, stub, "tool-0.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, stub, "8192 bytes") != null);
     try std.testing.expect(std.mem.indexOf(u8, stub, "truncated") != null);
     // the needle is gone from the transcript and recoverable only from the file
