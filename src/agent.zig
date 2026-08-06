@@ -14,6 +14,10 @@ const ReasoningEffort = main_mod.ReasoningEffort;
 const ws = @import("ws.zig"); // codex Responses WS transport (delta continuation held across a turn)
 const mcp = @import("mcp.zig");
 const approvals_mod = @import("approvals.zig");
+/// The shared approval state, re-exported: a module that only passes one
+/// through (session_run's startup helpers) can name the type off the Agent
+/// that owns it instead of importing approvals.zig itself (#429).
+pub const Approvals = approvals_mod.Approvals;
 const trace = @import("trace.zig");
 const tools_mod = @import("tools.zig");
 const vision = @import("vision.zig");

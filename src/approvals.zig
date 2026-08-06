@@ -72,7 +72,10 @@ pub const Approvals = struct {
     }
 
     pub const settings_dir = ".harness";
-    pub const settings_path = ".harness/settings.json";
+    /// Re-exported so the dozens of `Approvals.settings_path` call sites keep
+    /// working; harness_settings.zig owns it now, so a module that only reads
+    /// the file no longer has to import this one (#429).
+    pub const settings_path = @import("harness_settings.zig").path;
 
     /// "Always allow" appends the key and persists the allow-list to the
     /// project's .harness/settings.json, so approvals survive restarts.

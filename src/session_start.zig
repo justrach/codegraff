@@ -7,6 +7,11 @@
 //! registry connect (consent prompt + companion auto-activation), and the
 //! `graff repl`/one-shot-prompt early-exit paths.
 //!
+//! Engine side of the #422 boundary: the banner, the worktree line, the config
+//! reports and the consent question are typed events (engine_events.zig) that a
+//! sink renders — this file names no colors and holds no key hints. The consent
+//! ANSWER is still read inline; that half belongs to input inversion (#430).
+//!
 //! Same dangling-pointer discipline as startup.zig: `openTraceFile`,
 //! `openBehaviorFile`, and `openTrajFile` return a plain
 //! (non-self-referential) File.Writer by value — main() assigns it to its OWN
@@ -33,7 +38,6 @@ const provider_mod = @import("provider.zig");
 const keys_cli = @import("keys_cli.zig");
 const pricing = @import("pricing.zig");
 const skills = @import("skills.zig");
-const anim = @import("anim.zig");
 const mcp = @import("mcp.zig");
 const mcp_cli = @import("mcp_cli.zig");
 const mcp_config = @import("mcp_config.zig");
@@ -44,11 +48,11 @@ const trace = @import("trace.zig");
 const scoring = @import("scoring.zig");
 const telemetry = @import("telemetry.zig");
 const util = @import("util.zig");
-const ansi = @import("ansi.zig");
+const engine_sink = @import("engine_sink.zig"); // #429: startup's lines are typed events, not prints
+const engine_events = @import("engine_events.zig");
 const title_mod = @import("title.zig");
 const fallback_config = @import("fallback_config.zig");
 const repl = @import("repl.zig");
-const pickers = @import("pickers.zig");
 const repl_glue = @import("repl_glue.zig");
 const messages_mod = @import("messages.zig");
 const session = @import("session.zig");
@@ -88,12 +92,13 @@ pub fn setupWorktreeAndBanner(
     preferred_provider: ?[]const u8,
     default_provider: provider_mod.Provider,
 ) !void {
-    // Color only on an interactive terminal, and honor NO_COLOR.
+    // Color only on an interactive terminal, and honor NO_COLOR. The palette
+    // itself is a sink concern (#429); this only decides whether there is one.
     if (environ_map.get("NO_COLOR") == null and (Io.File.stdout().isTty(io) catch false)) {
-        ansi.style = ansi.Style.ansi;
         main_mod.use_color = true;
+        engine_sink.enableColor();
     }
-    const style = &ansi.style;
+    const sink = engine_sink.writerSink(out);
     // --worktree/-w: run this session in an isolated git worktree so parallel
     // agents don't collide on files. Creates .graff/worktrees/<name> on branch
     // worktree-<name> (from HEAD) and enters it; reuses it if it already exists.
@@ -115,11 +120,11 @@ pub fn setupWorktreeAndBanner(
             if (std.posix.system.chdir(wt_z.ptr) != 0)
                 std.process.fatal("--worktree '{s}': could not enter {s} (is this a git repository?)", .{ wt, wt_path });
             main_mod.g_worktree_branch = wt_branch; // non-null = auto-commit each turn to this scratch branch
-            if (!main_mod.json_mode) {
-                const ac: []const u8 = if (main_mod.g_worktree_autocommit) " · auto-committing each turn (`graff worktree merge` to land it)" else "";
-                out.print("{s}worktree:{s} {s}{s}{s} (branch {s}) — edits isolated from the main checkout{s}\n", .{ style.dim, style.reset, style.accent, wt_path, style.reset, wt_branch, ac }) catch {};
-                out.flush() catch {};
-            }
+            if (!main_mod.json_mode) sink.emit(io, .{ .worktree_entered = .{
+                .path = wt_path,
+                .branch = wt_branch,
+                .autocommit = main_mod.g_worktree_autocommit,
+            } });
         }
     }
     var cwd_buf: [4096]u8 = undefined;
@@ -138,40 +143,32 @@ pub fn setupWorktreeAndBanner(
     tool_spill.enable(.{ .io = io, .dir = .cwd(), .base_abs = main_mod.g_cwd_display });
 
     if (!main_mod.json_mode and flags.oneshot_prompt == null) {
-        try out.print("{s}codegraff{s} · folder: {s}{s}{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, style.accent, main_mod.g_cwd_display, style.reset, trace_path });
-        try out.flush();
-        if (codex_account) |acct| {
-            try out.print("logged into Codex (ChatGPT account {s}…) — /model codex\n", .{acct[0..@min(acct.len, 8)]});
-            try out.flush();
-        }
-        if (flags.yolo_flag) {
-            try out.print("{s}⚠ YOLO{s} mode (--yolo): all bash/tool/MCP permission prompts are skipped\n", .{ style.red, style.reset });
-            try out.flush();
-        }
+        sink.emit(io, .{ .session_banner = .{ .cwd = main_mod.g_cwd_display, .trace_path = trace_path } });
+        if (codex_account) |acct| sink.emit(io, .{ .session_notice = .{
+            .text = try std.fmt.allocPrint(arena, "logged into Codex (ChatGPT account {s}…) — /model codex", .{acct[0..@min(acct.len, 8)]}),
+        } });
+        if (flags.yolo_flag) sink.emit(io, .{ .session_notice = .{
+            .lead = "⚠ YOLO",
+            .text = " mode (--yolo): all bash/tool/MCP permission prompts are skipped",
+            .tone = .alert,
+        } });
         if (stale_saved_model) |nm| {
             const allowed = fallback_config.load(io, arena);
             const cross_provider = preferred_provider != null and !std.mem.eql(u8, preferred_provider.?, default_provider.id);
-            const blocked = cross_provider and !fallback_config.contains(allowed, default_provider.id);
-            try out.print("{s}note: saved model '{s}' is unavailable — selected {s} via {s} for this session; saved preference kept{s}{s}\n", .{
-                style.dim,
-                nm,
-                default_provider.model,
-                default_provider.id,
-                if (blocked) ". Cross-provider use is blocked until /fallback allow " else "",
-                if (blocked) default_provider.id else "",
-            });
-            try out.writeAll(style.reset);
-            try out.flush();
+            sink.emit(io, .{ .saved_model_unavailable = .{
+                .saved = nm,
+                .model = default_provider.model,
+                .provider = default_provider.id,
+                .blocked = cross_provider and !fallback_config.contains(allowed, default_provider.id),
+            } });
         }
-        if (main_mod.show_timing or main_mod.show_cost) {
-            try out.print("{s}displays on:{s}{s}{s}\n", .{
-                style.dim,
+        if (main_mod.show_timing or main_mod.show_cost) sink.emit(io, .{ .session_notice = .{
+            .text = try std.fmt.allocPrint(arena, "displays on:{s}{s}", .{
                 if (main_mod.show_timing) " per-tool timing" else "",
                 if (main_mod.show_cost) " session cost" else "",
-                style.reset,
-            });
-            try out.flush();
-        }
+            }),
+            .tone = .dim,
+        } });
     }
 }
 
@@ -367,6 +364,7 @@ pub fn initTelemetry(io: Io, gpa: Allocator, client: *std.http.Client, environ_m
 /// returning it is safe.
 pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Writer, in: *Io.Reader, flags: args.Flags, mcp_config_path: []const u8, home: []const u8, use_color: bool, json_mode: bool, environ_map: anytype) !mcp.Registry {
     const global_path = mcp_config.globalPath(arena, home, environ_map);
+    const sink = engine_sink.writerSink(out);
     // --json's stdout is a JSONL stream and a one-shot's is the answer; neither
     // can carry chatter. With a global config `mcp_count > 0` in every project,
     // so an unguarded line here would corrupt the head of every --json run.
@@ -379,25 +377,28 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
         // Reported here rather than in `Registry.init`, which never runs when
         // consent is declined — a config that does not parse must be named
         // either way.
-        try mcp_config.reportInvalid(merged, out, mcp_config_path, global_path, ansi.style.dim, ansi.style.reset);
+        if (merged.invalid_project) sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "{s}" ++ mcp_config.invalid_complaint, .{mcp_config_path})));
+        if (merged.invalid_global) sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "{s}" ++ mcp_config.invalid_complaint, .{global_path orelse ""})));
         // A config graff does not read is worse than no config: say so once.
         if (mcp_config.unsupportedConfigPresent(io, arena, home))
-            try out.print("{s}ignoring ~/" ++ mcp_config.unsupported_rel_path ++ ": unsupported path — use ~/" ++ mcp_config.global_rel_path ++ " (global) or {s} (project){s}\n", .{ ansi.style.dim, mcp_config_path, ansi.style.reset });
+            sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "ignoring ~/" ++ mcp_config.unsupported_rel_path ++ ": unsupported path — use ~/" ++ mcp_config.global_rel_path ++ " (global) or {s} (project)", .{mcp_config_path})));
     }
     const mcp_count = mcp_cli.countMcpServers(merged);
     var connect_mcp = flags.yolo_flag or mcp_count == 0;
     if (mcp_count > 0 and !flags.yolo_flag and !json_mode and use_color) {
-        try out.print("{s}⚠ {d} untrusted MCP server(s) are configured for this session (.mcp.json and/or ~/" ++ mcp_config.global_rel_path ++ "). They may run local commands or receive data over the network. Connect them this session? [y/N] {s}", .{ ansi.style.bold, mcp_count, ansi.style.reset });
-        try out.flush();
+        sink.emit(io, .{ .mcp_consent_prompt = .{ .count = mcp_count } });
+        // Still an inline read: only the QUESTION is inverted here, and the
+        // answer becomes a typed command in #430 (input inversion).
         const ans = in.takeDelimiter('\n') catch null;
         connect_mcp = ans != null and ans.?.len > 0 and (ans.?[0] == 'y' or ans.?[0] == 'Y');
     }
     var registry: mcp.Registry = if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, environ_map) catch |err| inner: {
-        try out.print("[mcp] init failed: {t} — continuing without MCP\n", .{err});
+        sink.emit(io, .{ .session_notice = .{ .text = try std.fmt.allocPrint(arena, "[mcp] init failed: {t} — continuing without MCP", .{err}) } });
         if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;
     }) orelse mcp.Registry.emptyWithOAuthHome(gpa, io, home)) else outer: {
-        if (mcp_count > 0 and !quiet) try out.print("{s}skipped {d} MCP server(s) — /mcp trust to connect them now (or re-run with --yolo){s}\n", .{ ansi.style.dim, mcp_count, ansi.style.reset });
+        if (mcp_count > 0 and !quiet)
+            sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "skipped {d} MCP server(s) — /mcp trust to connect them now (or re-run with --yolo)", .{mcp_count})));
         break :outer mcp.Registry.emptyWithOAuthHome(gpa, io, home);
     };
     // Set on every path, not just `init`'s: `/mcp trust` has to find the global
@@ -416,7 +417,9 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
 /// Moved out of main() (600-line goal); mutates `registry` in place (it's
 /// already main()-owned and stable by the time this is called, so a pointer
 /// is all that's needed — no return-by-value trickery here).
-pub fn connectCompanion(io: Io, registry: *mcp.Registry, flags: args.Flags, out: *Io.Writer, json_mode: bool, environ_map: anytype) !void {
+pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags: args.Flags, out: *Io.Writer, json_mode: bool, environ_map: anytype) !void {
+    const sink = engine_sink.writerSink(out);
+    const speak = !json_mode and flags.oneshot_prompt == null;
     connect: {
         for (skills.companion_servers) |c| if (skills.mcpServerConnected(registry.tools, c.server)) break :connect;
         for (skills.companion_servers) |c| {
@@ -424,10 +427,7 @@ pub fn connectCompanion(io: Io, registry: *mcp.Registry, flags: args.Flags, out:
             if (registry.addServer(c.server, c.bin, &.{"--mcp"})) |_| {
                 break;
             } else |err| {
-                if (!json_mode and flags.oneshot_prompt == null) {
-                    try out.print("{s}[mcp:{s}] auto-connect failed ({t}) — native tools only{s}\n", .{ ansi.style.dim, c.server, err, ansi.style.reset });
-                    try out.flush();
-                }
+                if (speak) sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "[mcp:{s}] auto-connect failed ({t}) — native tools only", .{ c.server, err })));
             }
         }
     }
@@ -438,14 +438,18 @@ pub fn connectCompanion(io: Io, registry: *mcp.Registry, flags: args.Flags, out:
     const access = environ_map.get("GRAFF_SMOLIFY_ACCESS") orelse "public";
     const full_access = std.ascii.eqlIgnoreCase(access, "full") or std.ascii.eqlIgnoreCase(access, "authenticated");
     const added = registry.connectSmolify(full_access) catch |err| {
-        if (!json_mode and flags.oneshot_prompt == null) {
-            try out.print("{s}[mcp:smolify] auto-connect failed ({t}) — continuing offline{s}\n", .{ ansi.style.dim, err, ansi.style.reset });
-            try out.flush();
-        }
+        if (speak) sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "[mcp:smolify] auto-connect failed ({t}) — continuing offline", .{err})));
         return;
     };
-    if (added > 0 and !json_mode and flags.oneshot_prompt == null)
-        try out.print("{s}[mcp:smolify] available on demand — {d} {s} tool(s){s}\n", .{ ansi.style.dim, added, if (full_access) "full-access" else "anonymous public-read", ansi.style.reset });
+    if (added > 0 and speak)
+        sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "[mcp:smolify] available on demand — {d} {s} tool(s)", .{ added, if (full_access) "full-access" else "anonymous public-read" })));
+}
+
+/// The startup cluster's most common line: dim, no badge. A helper rather than
+/// a variant — the tone is the only thing these share and the only thing a
+/// sink needs from them.
+fn dimNotice(text: []const u8) engine_events.EngineEvent {
+    return .{ .session_notice = .{ .text = text, .tone = .dim } };
 }
 
 test "core Smolify registration is offline and lazy" {

@@ -42,6 +42,7 @@ const EngineEvent = engine_events.EngineEvent;
 const protocol_seq = @import("protocol_seq.zig");
 const render = @import("agent_stream_render.zig");
 const tool_render = @import("agent_tool_render.zig"); // slice 1c: the tool cluster's terminal half
+const session_render = @import("session_render.zig"); // slice 2: the lifecycle cluster's terminal half
 const tick_gate = @import("tick_gate.zig"); // #tui-tick: child ticks wait for a foreground line boundary
 
 /// An event plus its position, as delivered to a sink.
@@ -107,10 +108,54 @@ pub fn jsonSink(a: *Agent) EngineSink {
     return .{ .ctx = a, .vt = if (a.out == null) &json_dropped_vtable else &json_vtable };
 }
 
+/// The session lifecycle's terminal sink (slice 2). Its ctx is the WRITER, not
+/// an Agent: startup's banner and config reports happen before an Agent exists
+/// and shutdown's after it stops mattering, so `forAgent` has nothing to hand
+/// them. Nothing this cluster draws needs render state, which is why a plain
+/// writer suffices here and does not for the stream.
+///
+/// A null writer is a run with no frontend (a one-shot, whose stdout carries
+/// only the answer; `graff acp`, whose stdout is someone else's protocol) —
+/// legitimate, not an error: session_render stays silent for it, except the
+/// failover notice, which falls back to stderr as it always did. The sentinel
+/// exists only because `ctx` cannot be null.
+pub fn writerSink(w: ?*Io.Writer) EngineSink {
+    return .{ .ctx = if (w) |x| @ptrCast(x) else @ptrCast(&no_frontend), .vt = &lifecycle_vtable };
+}
+
+/// The lifecycle's sink for a moment an Agent DOES own — the mid-turn provider
+/// failover, whose --json half is the wire's `model` event but whose terminal
+/// half belongs to the caller's writer (mainloop's stdout, the REPL's own
+/// sink), not to `a.out`. Same choice as forAgent, different terminal target.
+pub fn forSession(a: *Agent, w: ?*Io.Writer) EngineSink {
+    if (a.sink) |s| return s;
+    return if (main_mod.json_mode) jsonSink(a) else writerSink(w);
+}
+
+var no_frontend: u8 align(@alignOf(Io.Writer)) = 0;
+
+/// Startup probed stdout and found a color-capable terminal. A capability, not
+/// an event: it settles what the terminal half's palette IS before anything is
+/// drawn, so it crosses the boundary as a call rather than an emission.
+pub fn enableColor() void {
+    session_render.enableColor();
+}
+
 const tui_vtable: VTable = .{ .emit = tuiEmit, .durable = false };
 const json_vtable: VTable = .{ .emit = jsonEmit, .durable = true };
 /// Same writer, nothing to write to: see jsonSink.
 const json_dropped_vtable: VTable = .{ .emit = jsonEmit, .durable = false };
+/// Presentation-only, like the TUI's: the wire lines this cluster owns go out
+/// through jsonSink instead, so this one must never reserve a sequence id.
+const lifecycle_vtable: VTable = .{ .emit = lifecycleEmit, .durable = false };
+
+fn lifecycleEmit(ctx: *anyopaque, ev: Stamped) void {
+    const w: ?*Io.Writer = if (ctx == @as(*anyopaque, @ptrCast(&no_frontend)))
+        null
+    else
+        @ptrCast(@alignCast(ctx));
+    session_render.emit(w, ev.event);
+}
 
 /// Today's interactive rendering, relocated behind the event contract. Every
 /// branch is the old inline agent_stream.zig code path, gate for gate.
@@ -198,6 +243,19 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         .completion_deferred => tool_render.completionDeferred(a),
         .goal_completed => tool_render.goalCompleted(a),
         .completion_text, .todo_list_updated => |t| tool_render.toolTextLine(a, t.text),
+        // The lifecycle cluster (slice 2). An Agent-backed TUI sink reaches
+        // these only when one is injected (tests, a future frontend): the
+        // engine's own lifecycle emitters use writerSink, whose terminal
+        // target is the caller's writer rather than a.out.
+        .session_notice,
+        .session_banner,
+        .worktree_entered,
+        .saved_model_unavailable,
+        .mcp_consent_prompt,
+        .provider_fallback,
+        .session_saved,
+        .run_finished,
+        => session_render.emit(a.out, ev.event),
     }
 }
 
@@ -238,6 +296,19 @@ fn jsonEmit(ctx: *anyopaque, ev: Stamped) void {
         .tool_result => |r| jsonLine(w, ev.cursor, .{ .type = "tool_result", .name = r.name, .is_error = r.is_error, .text = r.text }),
         .tool_call_finished => |r| jsonLine(w, ev.cursor, .{ .type = "tool_call_finished", .name = r.name, .is_error = r.is_error, .ms = r.ms }),
         .tool_rejected => |r| jsonLine(w, ev.cursor, .{ .type = "tool_rejected", .name = r.name, .reason = r.reason, .input = r.input, .message = r.message }),
+        // The failover's wire half (slice 2). Its `note` is a FIXED wire
+        // string, not the payload's context_note: a --json client is being
+        // told the saved preference survived, while the terminal is told what
+        // happened to the conversation. Two audiences, one event, and the
+        // difference lives here because this is the one translation point.
+        .provider_fallback => |f| jsonLine(w, ev.cursor, .{
+            .type = "model",
+            .ok = true,
+            .provider = f.to_provider,
+            .model = f.to_model,
+            .context = f.to_context,
+            .note = "automatic session fallback; saved model preference kept",
+        }),
         // Unreachable: durable() gated every other tag out above. Kept as a
         // hard stop so a NEW durable variant cannot silently reach the wire
         // without a shape — that would burn its id on nothing (#330).
@@ -251,278 +322,6 @@ fn jsonLine(w: *Io.Writer, cursor: engine_events.Cursor, payload: anytype) void 
     w.flush() catch return;
 }
 
-test "dispatch preserves emission order and stamps at the boundary" {
-    // emit(undefined, ...) is sound only while json_mode is false (no lock
-    // taken): pin it so a leaky earlier test can never turn this into UB.
-    const saved_json = main_mod.json_mode;
-    main_mod.json_mode = false;
-    defer main_mod.json_mode = saved_json;
-    protocol_seq.resetForTest();
-    defer protocol_seq.resetForTest();
-    var rec: std.ArrayList(Stamped) = .empty;
-    defer rec.deinit(std.testing.allocator);
-    const vt: VTable = .{ .emit = recordEmit, .durable = true };
-    const s: EngineSink = .{ .ctx = &rec, .vt = &vt };
-    s.emit(undefined, .stream_begin);
-    s.emit(undefined, .{ .reasoning_delta = .{ .text = "think" } });
-    s.emit(undefined, .{ .text_delta = .{ .text = "hi" } });
-    s.emit(undefined, .{ .stream_complete = .{ .streamed_text = true } });
-    s.emit(undefined, .stream_finished);
-    try std.testing.expectEqual(@as(usize, 5), rec.items.len);
-    const want_tags: [5]std.meta.Tag(EngineEvent) = .{
-        .stream_begin, .reasoning_delta, .text_delta, .stream_complete, .stream_finished,
-    };
-    for (want_tags, rec.items) |tag, got| try std.testing.expectEqual(tag, std.meta.activeTag(got.event));
-    // Durable deltas reserved fresh ids; pulses ride at the last reserved
-    // position — the wire's numbering shows no gap for them.
-    const want_seq: [5]u64 = .{ 0, 1, 2, 2, 2 };
-    for (want_seq, rec.items) |seq, got| try std.testing.expectEqual(seq, got.cursor.sequence);
-    for (rec.items) |got| try std.testing.expectEqual(engine_events.generation(), got.cursor.generation);
-}
-
-test "a presentation sink never reserves sequence ids" {
-    const saved_json = main_mod.json_mode; // pin: see the dispatch-order test
-    main_mod.json_mode = false;
-    defer main_mod.json_mode = saved_json;
-    protocol_seq.resetForTest();
-    defer protocol_seq.resetForTest();
-    var rec: std.ArrayList(Stamped) = .empty;
-    defer rec.deinit(std.testing.allocator);
-    const vt: VTable = .{ .emit = recordEmit, .durable = false };
-    const s: EngineSink = .{ .ctx = &rec, .vt = &vt };
-    s.emit(undefined, .{ .text_delta = .{ .text = "hi" } });
-    try std.testing.expectEqual(@as(u64, 0), rec.items[0].cursor.sequence);
-    try std.testing.expectEqual(@as(u64, 0), protocol_seq.current());
-}
-
-/// The Agent shape every sink test renders through: allocator-backed, rooted
-/// (not a subagent), writing into the caller's buffer. `io` stays undefined —
-/// dispatch only touches it under the --json lock, which these tests pin off.
-fn testAgent(w: *Io.Writer) Agent {
-    return .{
-        .gpa = std.testing.allocator,
-        .arena = std.testing.allocator,
-        .io = undefined,
-        .client = undefined,
-        .provider = undefined,
-        .messages = undefined,
-        .sub = false,
-        .label = "test",
-        .out = w,
-    };
-}
-
-fn recordEmit(ctx: *anyopaque, ev: Stamped) void {
-    const rec: *std.ArrayList(Stamped) = @ptrCast(@alignCast(ctx));
-    rec.append(std.testing.allocator, ev) catch @panic("OOM");
-}
-
-test "JsonSink writes today's wire lines byte-for-byte" {
-    const saved_json = main_mod.json_mode; // pin: see the dispatch-order test
-    main_mod.json_mode = false;
-    defer main_mod.json_mode = saved_json;
-    protocol_seq.resetForTest();
-    defer protocol_seq.resetForTest();
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var a = testAgent(&aw.writer);
-    const s = jsonSink(&a);
-    s.emit(undefined, .{ .reasoning_delta = .{ .text = "why" } });
-    s.emit(undefined, .{ .text_delta = .{ .text = "hi\n" } });
-    s.emit(undefined, .stream_begin); // pulses have no wire shape
-    // End-of-stream flushes the held render tail (old-path parity); with
-    // clean md state that adds no bytes and emits no wire line.
-    s.emit(undefined, .{ .stream_complete = .{ .streamed_text = true } });
-    try std.testing.expectEqualStrings(
-        "{\"seq\":1,\"type\":\"reasoning\",\"text\":\"why\"}\n{\"seq\":2,\"type\":\"text\",\"text\":\"hi\\n\"}\n",
-        aw.writer.buffered(),
-    );
-}
-
-test "TuiSink streams tool-arg prose raw and never ends the answer line (slice 1b)" {
-    const saved_color = main_mod.use_color; // pin the no-color branch
-    main_mod.use_color = false;
-    defer main_mod.use_color = saved_color;
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var a = testAgent(&aw.writer);
-    const s = tuiSink(&a);
-    s.emit(undefined, .{ .tool_arg_delta = .{ .text = "answer " } });
-    s.emit(undefined, .{ .tool_arg_delta = .{ .text = "prose" } });
-    // Exactly the bytes, flushed per delta, no separators added — the old
-    // inline emitArgText no-color branch.
-    try std.testing.expectEqualStrings("answer prose", aw.writer.buffered());
-}
-
-test "TuiSink transport-abort notices reproduce the old inline lines (slice 1b)" {
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var a = testAgent(&aw.writer);
-    const s = tuiSink(&a);
-    const cases = [_]struct { ev: engine_events.TransportAbort, want: []const u8 }{
-        .{ .ev = .{ .reason = .stalled, .turn_ending = false }, .want = "\n⚠ stream stalled\n" },
-        .{ .ev = .{ .reason = .stalled, .turn_ending = true }, .want = "\n⚠ stream stalled — ending turn\n" },
-        .{ .ev = .{ .reason = .dropped, .turn_ending = false }, .want = "\n⚠ connection dropped\n" },
-        .{ .ev = .{ .reason = .dropped, .turn_ending = true }, .want = "\n⚠ connection dropped — response ended early\n" },
-        // A deliberate interrupt was never announced at the transport layer.
-        .{ .ev = .{ .reason = .interrupted, .turn_ending = true }, .want = "" },
-    };
-    for (cases) |c| {
-        aw.clearRetainingCapacity();
-        s.emit(undefined, .{ .transport_aborted = c.ev });
-        try std.testing.expectEqualStrings(c.want, aw.writer.buffered());
-    }
-}
-
-test "JsonSink stays silent for moments the wire never carried (slice 1b)" {
-    const saved_json = main_mod.json_mode; // pin: see the dispatch-order test
-    main_mod.json_mode = false;
-    defer main_mod.json_mode = saved_json;
-    protocol_seq.resetForTest();
-    defer protocol_seq.resetForTest();
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var a = testAgent(&aw.writer);
-    const s = jsonSink(&a);
-    s.emit(undefined, .{ .tool_arg_delta = .{ .text = "prose" } });
-    s.emit(undefined, .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = true } });
-    s.emit(undefined, .{ .transport_aborted = .{ .reason = .dropped, .turn_ending = false } });
-    // No wire line AND no sequence id burned: both stay pulses, so the
-    // wire's gap-free numbering is untouched by them (#330).
-    try std.testing.expectEqualStrings("", aw.writer.buffered());
-    try std.testing.expectEqual(@as(u64, 0), protocol_seq.current());
-}
-
-test "JsonSink writes the tool bracket byte-for-byte, in wire order (slice 1c)" {
-    const saved_json = main_mod.json_mode; // pin: see the dispatch-order test
-    main_mod.json_mode = false;
-    defer main_mod.json_mode = saved_json;
-    protocol_seq.resetForTest();
-    defer protocol_seq.resetForTest();
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var a = testAgent(&aw.writer);
-    const s = jsonSink(&a);
-
-    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"path\":\"fixture.txt\"}", .{});
-    const call: engine_events.ToolInvocation = .{ .name = "read_file", .input = input };
-    const done: engine_events.ToolOutcome = .{ .name = "read_file", .text = "hi", .is_error = false, .ms = 7 };
-    s.emit(undefined, .{ .tool_call_announced = call });
-    s.emit(undefined, .{ .tool_call_started = call });
-    s.emit(undefined, .{ .tool_result = done });
-    s.emit(undefined, .{ .tool_call_finished = done });
-    s.emit(undefined, .{ .tool_rejected = .{ .name = "bash", .input = input, .reason = "budget", .message = "no" } });
-    try std.testing.expectEqualStrings(
-        "{\"seq\":1,\"type\":\"tool_call\",\"name\":\"read_file\",\"input\":{\"path\":\"fixture.txt\"}}\n" ++
-            "{\"seq\":2,\"type\":\"tool_call_started\",\"name\":\"read_file\",\"input\":{\"path\":\"fixture.txt\"}}\n" ++
-            "{\"seq\":3,\"type\":\"tool_result\",\"name\":\"read_file\",\"is_error\":false,\"text\":\"hi\"}\n" ++
-            "{\"seq\":4,\"type\":\"tool_call_finished\",\"name\":\"read_file\",\"is_error\":false,\"ms\":7}\n" ++
-            "{\"seq\":5,\"type\":\"tool_rejected\",\"name\":\"bash\",\"reason\":\"budget\",\"input\":{\"path\":\"fixture.txt\"},\"message\":\"no\"}\n",
-        aw.writer.buffered(),
-    );
-}
-
-test "JsonSink drops ask_user's bracket and a meta result without burning ids (slice 1c)" {
-    const saved_json = main_mod.json_mode; // pin: see the dispatch-order test
-    main_mod.json_mode = false;
-    defer main_mod.json_mode = saved_json;
-    protocol_seq.resetForTest();
-    defer protocol_seq.resetForTest();
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var a = testAgent(&aw.writer);
-    const s = jsonSink(&a);
-
-    const ask: engine_events.ToolInvocation = .{ .name = "ask_user", .input = .null, .ask_user = true };
-    s.emit(undefined, .{ .tool_call_announced = ask }); // the wire's `ask_user` event carries this moment
-    s.emit(undefined, .{ .tool_call_started = ask });
-    s.emit(undefined, .{ .tool_result = .{ .name = "todo_write", .text = "todos", .is_error = false, .meta = true } });
-    s.emit(undefined, .{ .parallel_batch_started = .{ .count = 2 } }); // TUI-only notices
-    s.emit(undefined, .completion_deferred);
-    s.emit(undefined, .{ .completion_text = .{ .text = "done" } });
-    // No line AND no id spent: the wire's numbering stays gap-free (#330).
-    try std.testing.expectEqualStrings("", aw.writer.buffered());
-    try std.testing.expectEqual(@as(u64, 0), protocol_seq.current());
-
-    // ask_user's own RESULT is on the wire, though — the typed reply is it.
-    s.emit(undefined, .{ .tool_result = .{ .name = "ask_user", .text = "yes", .is_error = false, .meta = true, .ask_user = true } });
-    try std.testing.expectEqualStrings(
-        "{\"seq\":1,\"type\":\"tool_result\",\"name\":\"ask_user\",\"is_error\":false,\"text\":\"yes\"}\n",
-        aw.writer.buffered(),
-    );
-}
-
-test "a frontendless agent's wire sink burns no ids for the lines it cannot write (#330)" {
-    const saved_json = main_mod.json_mode; // pin: see the dispatch-order test
-    main_mod.json_mode = false;
-    defer main_mod.json_mode = saved_json;
-    protocol_seq.resetForTest();
-    defer protocol_seq.resetForTest();
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var a = testAgent(&aw.writer);
-    a.out = null; // a pool-thread subagent, or the ACP root: nowhere to write
-    const s = jsonSink(&a);
-    try std.testing.expect(!s.vt.durable); // the guarantee is structural, not per-call-site
-
-    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"path\":\"f\"}", .{});
-    const call: engine_events.ToolInvocation = .{ .name = "read_file", .input = input };
-    const done: engine_events.ToolOutcome = .{ .name = "read_file", .text = "hi", .is_error = false };
-    s.emit(undefined, .{ .tool_call_announced = call });
-    s.emit(undefined, .{ .tool_call_started = call });
-    s.emit(undefined, .{ .tool_result = done });
-    s.emit(undefined, .{ .tool_call_finished = done });
-    s.emit(undefined, .{ .tool_rejected = .{ .name = "bash", .input = input, .reason = "budget", .message = "no" } });
-    s.emit(undefined, .{ .text_delta = .{ .text = "hi" } });
-    // Every one of those would have been a wire line for a rooted agent. With
-    // no writer there is no line, so there must be no id either: a supervisor
-    // reads a gap as lost data.
-    try std.testing.expectEqualStrings("", aw.writer.buffered());
-    try std.testing.expectEqual(@as(u64, 0), protocol_seq.current());
-}
-
-test "TuiSink draws the ⚙ and ✓ lines and nothing for the brackets (slice 1c)" {
-    const saved_color = main_mod.use_color;
-    main_mod.use_color = false;
-    defer main_mod.use_color = saved_color;
-    const saved_json = main_mod.json_mode; // sayText's root gate reads it
-    main_mod.json_mode = false;
-    defer main_mod.json_mode = saved_json;
-    const ansi = @import("ansi.zig");
-    const saved_style = ansi.style;
-    ansi.style = .{}; // assert the text, not the palette
-    defer ansi.style = saved_style;
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var a = testAgent(&aw.writer);
-    const s = tuiSink(&a);
-
-    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"path\":\"fixture.txt\"}", .{});
-    const call: engine_events.ToolInvocation = .{ .name = "read_file", .input = input };
-    const done: engine_events.ToolOutcome = .{ .name = "read_file", .text = "line one\nline two\n", .is_error = false };
-    s.emit(undefined, .{ .tool_call_announced = call });
-    s.emit(undefined, .{ .tool_call_started = call }); // silent: the ⚙ line already said it
-    s.emit(undefined, .{ .tool_result = done });
-    s.emit(undefined, .{ .tool_call_finished = done }); // silent
-    s.emit(undefined, .{ .tool_rejected = .{ .name = "bash", .input = input, .reason = "budget", .message = "no" } }); // silent
-    // Exactly the two lines the eval golden's tool turn shows.
-    try std.testing.expectEqualStrings("⚙ read_file {\"path\":\"fixture.txt\"}\n  ✓ line one…\n", aw.writer.buffered());
-}
-
-test "TuiSink renders a plain text delta exactly as the no-color TTY did" {
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var a = testAgent(&aw.writer);
-    const s = tuiSink(&a);
-    s.emit(undefined, .{ .text_delta = .{ .text = "plain\n" } });
-    try std.testing.expectEqualStrings("plain\n", aw.writer.buffered());
-    // Normal end after streamed text: the separating newline, as before.
-    s.emit(undefined, .{ .stream_complete = .{ .streamed_text = true } });
-    try std.testing.expectEqualStrings("plain\n\n", aw.writer.buffered());
+test {
+    _ = @import("engine_sink_tests.zig");
 }
