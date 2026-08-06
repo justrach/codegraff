@@ -21,8 +21,12 @@ const AnswerRequest = tools_mod.AnswerRequest;
 const answerParseError = tools_mod.answerParseError;
 const parseAnswerRequest = tools_mod.parseAnswerRequest;
 
-const ansi = @import("ansi.zig");
-const style = &ansi.style;
+// #422 slice 1c: every emission here leaves as a typed event; the terminal
+// palette lives in agent_tool_render.zig, behind the sink. `term.zig` stays
+// because raw/nonblocking stdin for the Esc watcher below is frontend INPUT,
+// which belongs to the input-inversion issue (#430), not to this one.
+const engine_events = @import("engine_events.zig");
+const engine_sink = @import("engine_sink.zig");
 
 const terminal = @import("term.zig");
 const tty = terminal.tty;
@@ -128,8 +132,12 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
     }
 
     if (ext_idx.items.len > 0) {
+        // A child's fan-out is the root's to announce, so the moment is not
+        // produced at all for a subagent: engine policy about who owns the
+        // terminal, kept at the emit site rather than re-derived by a sink
+        // that would need to back-read the Agent to know (#422 slice-1 rule).
         if (ext_idx.items.len > 1 and !self.sub) {
-            try self.say("  {s}↯ running {d} tools in parallel{s}\n", .{ style.dim, ext_idx.items.len, style.reset });
+            engine_sink.forAgent(self).emit(self.io, .{ .parallel_batch_started = .{ .count = ext_idx.items.len } });
         }
         const ctx: ToolCtx = .{
             .gpa = self.gpa,
@@ -189,15 +197,13 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
         brief_diversity.noteSiblingBatch(self.arena, self.tracer, calls, ext_idx.items, results); // #382
         // #266: a cancelled parallel batch used to just look "running" and then
         // failed — one terminal line says what completed, failed, and cancelled.
-        if (ext_idx.items.len > 1 and !self.sub) {
-            var done: usize = 0;
-            var failed: usize = 0;
-            var cancelled: usize = 0;
+        if (ext_idx.items.len > 1 and !self.sub) { // root's line to draw, as above
+            var tally: engine_events.BatchOutcome = .{ .done = 0, .failed = 0, .cancelled = 0 };
             for (ext_idx.items) |i| {
                 const r = results[i];
-                if (r.cancelled) cancelled += 1 else if (r.is_error) failed += 1 else done += 1;
+                if (r.cancelled) tally.cancelled += 1 else if (r.is_error) tally.failed += 1 else tally.done += 1;
             }
-            try self.say("  {s}↯ parallel tools finished: {d} completed, {d} failed, {d} cancelled{s}\n", .{ style.dim, done, failed, cancelled, style.reset });
+            engine_sink.forAgent(self).emit(self.io, .{ .parallel_batch_finished = tally });
         }
     }
     // Show a compact ✓/✗ + preview for each non-meta call (no-op for subs).
@@ -257,9 +263,16 @@ pub fn toolDedupeKey(self: *Agent, call: ToolCall) ![]const u8 {
     return key;
 }
 
+/// A refusal that happened before the tool ran. The terminal has never drawn
+/// one (the user learns of it through the model's next answer), so only a
+/// wire sink gives this moment a shape.
 pub fn emitToolRejected(self: *Agent, call: ToolCall, reason: []const u8, message: []const u8) void {
-    if (!main_mod.json_mode) return;
-    self.emit(.{ .type = "tool_rejected", .name = call.name, .reason = reason, .input = call.input, .message = message });
+    engine_sink.forAgent(self).emit(self.io, .{ .tool_rejected = .{
+        .name = call.name,
+        .input = call.input,
+        .reason = reason,
+        .message = message,
+    } });
 }
 
 /// #225: clock_sleep meta tool — root-only, feature-flagged (main.zig
@@ -306,7 +319,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         }
         if (try goal_state.completionGate(self.arena, self)) |refusal| {
             goal_state.noteCompletionRefused(self); // arm the double-check (across turns) and mark the turn as worked (#318)
-            if (!self.sub) try self.say("\xe2\x8f\xb8 completion deferred \xe2\x80\x94 the standing goal's checklist isn't settled\n", .{});
+            if (!self.sub) engine_sink.forAgent(self).emit(self.io, .completion_deferred); // root-only notice, as ever
             return .{ .text = refusal, .is_error = true };
         }
         const result = if (tools_mod.json_args.object(call.input)) |o| (tools_mod.json_args.str(o, "result") orelse "") else "";
@@ -315,12 +328,12 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         // A --goal standing objective is exempt: the completion is recorded above, the steering stays, and only /goal clear|pause|<new> retires it.
         if (goal_state.retireOnCompletion(self, util.unixMs(self.io))) {
             if (self.tracer) |t| t.note("goal", "completed via attempt_completion");
-            try self.say("\xf0\x9f\x8e\xaf standing goal complete\n", .{});
+            engine_sink.forAgent(self).emit(self.io, .goal_completed);
         } else if (goal_state.goalActive(self)) {
             if (self.tracer) |t| t.note("goal", "completion; standing goal retained");
         }
         // Skip the re-print only when the result streamed live in full.
-        if (!self.sub and !self.argStreamedFully(call)) try self.say("{s}\n", .{result});
+        if (!self.sub and !self.argStreamedFully(call)) engine_sink.forAgent(self).emit(self.io, .{ .completion_text = .{ .text = result } });
         return .{ .text = "completion recorded", .is_error = false };
     }
     if (std.mem.eql(u8, call.name, "eval")) {
@@ -331,7 +344,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         // Epoch-scoped replace, keeping omitted completed items; a write with
         // no usable items is rejected untouched (#318). goal_todo owns the rule.
         const r = try goal_todo.applyTodoWrite(self, if (tools_mod.json_args.object(call.input)) |o| o.get("todos") else null);
-        if (!self.sub and !r.rejected) try self.say("{s}\n", .{r.text});
+        if (!self.sub and !r.rejected) engine_sink.forAgent(self).emit(self.io, .{ .todo_list_updated = .{ .text = r.text } });
         return .{ .text = r.text, .is_error = r.rejected };
     }
     if (std.mem.eql(u8, call.name, "clock_sleep")) {
@@ -424,61 +437,43 @@ pub fn emitAskUser(self: *Agent, call_id: []const u8, question: []const u8, inpu
     try w.flush();
 }
 
+/// The call's announcement moment, as one pair of events: the bracket a
+/// --json supervisor times against, and the ⚙ line the terminal draws for the
+/// first of the two. Which of them a frontend surfaces (the wire skips
+/// ask_user, the terminal skips prose that already streamed) is the sink's
+/// call — engine_events.durable() decides the wire half, and jsonSink is
+/// non-durable for an agent with no writer, so no sequence id is ever
+/// reserved for a line the wire drops (#330).
 pub fn sayToolUse(self: *Agent, call: ToolCall) !void {
-    if (main_mod.json_mode) {
-        if (std.mem.eql(u8, call.name, "ask_user")) return;
-        self.emit(.{ .type = "tool_call", .name = call.name, .input = call.input });
-        self.emit(.{ .type = "tool_call_started", .name = call.name, .input = call.input });
-        return;
-    }
-    // The ⚙ line would just repeat prose that already streamed live.
-    if (self.argStreamedFully(call)) return;
-    var aw: Io.Writer.Allocating = .init(self.gpa);
-    defer aw.deinit();
-    var s: std.json.Stringify = .{ .writer = &aw.writer };
-    try s.write(call.input);
-    const full = aw.writer.buffered();
-    const shown = if (full.len > 160) full[0..160] else full;
-    try self.say("{s}⚙{s} {s}{s} {s}{s}{s}{s}\n", .{
-        style.dim,   style.reset, style.accent, call.name,
-        style.dim,   shown,
-        if (full.len > 160) "…" else "",
-        style.reset,
-    });
+    const ev: engine_events.ToolInvocation = .{
+        .name = call.name,
+        .input = call.input,
+        .ask_user = std.mem.eql(u8, call.name, "ask_user"),
+        .arg_streamed = self.argStreamedFully(call),
+    };
+    const sink = engine_sink.forAgent(self);
+    sink.emit(self.io, .{ .tool_call_announced = ev });
+    sink.emit(self.io, .{ .tool_call_started = ev });
 }
 
-/// Compact result feedback for one finished tool call: a green ✓ / red ✗
-/// and a one-line preview of what it returned. Root only (subagents have
-/// no writer); meta tools render their own UX, so skip them.
+/// The same bracket, closing: the result a frontend shows and the finish
+/// event carrying its outcome and duration. Meta tools render their own UX,
+/// so both sinks drop them (ask_user excepted on the wire, where the typed
+/// reply IS the result).
 pub fn sayToolResult(self: *Agent, name: []const u8, r: ExecResult) void {
-    const w = self.out orelse return;
-    if (main_mod.json_mode) {
-        if (isMetaName(name) and !std.mem.eql(u8, name, "ask_user")) return;
-        self.emit(.{ .type = "tool_result", .name = name, .is_error = r.is_error, .text = r.text });
-        self.emit(.{ .type = "tool_call_finished", .name = name, .is_error = r.is_error, .ms = r.ms });
-        return;
-    }
-    if (isMetaName(name)) return;
-    const all = std.mem.trim(u8, r.text, " \t\r\n");
-    var preview = all;
-    if (std.mem.indexOfScalar(u8, preview, '\n')) |nl| preview = preview[0..nl];
-    preview = std.mem.trim(u8, preview, " \t\r");
-    const shown = if (preview.len > 100) preview[0..100] else preview;
-    const truncated = shown.len < all.len; // more content (extra lines or >100 chars)
-    const mark = if (r.cancelled) "⊘" else if (r.is_error) "✗" else "✓";
-    const mc = if (r.cancelled) style.yellow else if (r.is_error) style.red else style.green;
-    var tbuf: [24]u8 = undefined;
-    const timing = if (main_mod.show_timing and r.ms > 0)
-        (std.fmt.bufPrint(&tbuf, " ({d}ms)", .{r.ms}) catch "")
-    else
-        "";
-    w.print("  {s}{s}{s}{s}{s}{s} {s}{s}{s}{s}\n", .{
-        mc,          mark,  style.reset, style.dim, timing, style.reset,
-        style.dim,   shown,
-        if (truncated) "…" else "",
-        style.reset,
-    }) catch return;
-    w.flush() catch return;
+    if (self.out == null) return; // no frontend attached: nothing to tell, as ever
+    const ev: engine_events.ToolOutcome = .{
+        .name = name,
+        .text = r.text,
+        .is_error = r.is_error,
+        .cancelled = r.cancelled,
+        .ms = r.ms,
+        .meta = isMetaName(name),
+        .ask_user = std.mem.eql(u8, name, "ask_user"),
+    };
+    const sink = engine_sink.forAgent(self);
+    sink.emit(self.io, .{ .tool_result = ev });
+    sink.emit(self.io, .{ .tool_call_finished = ev });
 }
 
 test "parseClockSleepMs: valid ms passes through, missing/negative/non-integer reject, over-cap clamps (#225)" {

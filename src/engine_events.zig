@@ -59,6 +59,50 @@ pub const TransportAbort = struct {
     turn_ending: bool,
 };
 
+/// One tool call as the engine hands it to a frontend (#422 slice 1c).
+/// `ask_user` is called out on its own because a --json client learns of
+/// that moment through its own `ask_user` event, never as a tool-call pair.
+/// `arg_streamed` says the call's prose already streamed out of its
+/// still-in-flight arguments (agent_argstream.zig), so an announcement line
+/// would repeat what the reader just watched arrive.
+pub const ToolInvocation = struct {
+    name: []const u8,
+    input: std.json.Value,
+    ask_user: bool = false,
+    arg_streamed: bool = false,
+};
+
+/// One finished tool call. `text` is the model-facing result the engine
+/// already capped and previewed; `ms` is its measured wall clock. `meta`
+/// marks a meta tool (schema.isMetaName) — those own their UX and, except
+/// for ask_user, never carried a result on the wire.
+pub const ToolOutcome = struct {
+    name: []const u8,
+    text: []const u8,
+    is_error: bool,
+    cancelled: bool = false,
+    ms: i64 = 0,
+    meta: bool = false,
+    ask_user: bool = false,
+};
+
+/// A tool call the harness refused before it ran: the verifier boundary, a
+/// stale eval, the --max-tool-calls budget, the dedupe rule, or review mode.
+pub const ToolRejection = struct {
+    name: []const u8,
+    input: std.json.Value,
+    reason: []const u8,
+    message: []const u8,
+};
+
+/// How a parallel tool batch ended (#266): the tallies, not a rendered line.
+pub const BatchOutcome = struct { done: usize, failed: usize, cancelled: usize };
+
+/// Text whose layout belongs to the meta tool that produced it (a completion
+/// answer, a rendered todo list) — carried whole because the structure lives
+/// in that tool's own module, not in this vocabulary.
+pub const ToolText = struct { text: []const u8 };
+
 /// Everything the streaming path tells a frontend. Each doc comment states
 /// the emission site's contract, not how any one sink draws it.
 pub const EngineEvent = union(enum) {
@@ -106,14 +150,63 @@ pub const EngineEvent = union(enum) {
     /// tear down live-stream presentation (spinner, an open reasoning-only
     /// Thinking block).
     stream_finished,
+
+    // ── The tool-execution cluster (slice 1c) ────────────────────────────
+    /// A tool call cleared the gates and is about to run. Wire: the existing
+    /// `tool_call` event. TUI: the ⚙ announcement line.
+    tool_call_announced: ToolInvocation,
+    /// The same call, now dispatched — the bracket a supervisor times against.
+    /// Wire: the existing `tool_call_started` event. TUI: nothing (the ⚙ line
+    /// already said it).
+    tool_call_started: ToolInvocation,
+    /// A tool call returned. Wire: the existing `tool_result` event. TUI: the
+    /// compact ✓/✗/⊘ line with a one-line preview.
+    tool_result: ToolOutcome,
+    /// The same call's closing bracket, carrying the outcome and duration
+    /// rather than the text. Wire: `tool_call_finished`. TUI: nothing.
+    tool_call_finished: ToolOutcome,
+    /// A tool call the harness refused before running it. Wire: the existing
+    /// `tool_rejected` event; the TUI has never drawn one (the refusal reaches
+    /// the user as the model's next answer).
+    tool_rejected: ToolRejection,
+    /// A batch of external tool calls is fanning out across the pool.
+    /// Presentation-only: the wire brackets each call individually.
+    parallel_batch_started: struct { count: usize },
+    /// That batch is joined; the payload is the tally (#266 — a cancelled
+    /// batch used to just look "running" and then fail).
+    parallel_batch_finished: BatchOutcome,
+    /// attempt_completion was refused because the standing goal's checklist
+    /// is not settled (#318). Presentation-only; the model gets the refusal
+    /// as its tool result.
+    completion_deferred,
+    /// A standing --goal was retired by an accepted attempt_completion.
+    goal_completed,
+    /// The answer attempt_completion carried, surfaced because it did NOT
+    /// stream live out of the call's arguments.
+    completion_text: ToolText,
+    /// todo_write applied; the payload is the list as goal_todo rendered it.
+    todo_list_updated: ToolText,
 };
 
 /// Durable events are the protocol stream: what the --json wire emits today
 /// and what a future event log persists. Only they reserve sequence ids —
 /// presentation pulses must not open gaps in the wire's numbering.
+///
+/// This reads the PAYLOAD, not just the tag, and it has to: whether a tool
+/// moment reaches the wire depends on which tool it is. A durable sink writes
+/// exactly the events this returns true for (engine_sink.jsonEmit asserts it),
+/// so a reserved id can never burn with no line behind it (#330).
 pub fn durable(ev: EngineEvent) bool {
     return switch (ev) {
         .reasoning_delta, .text_delta => true,
+        // Every tool's call bracket is on the wire except ask_user's: a
+        // --json client is handed that moment as its own `ask_user` event,
+        // and answers it on stdin.
+        .tool_call_announced, .tool_call_started => |t| !t.ask_user,
+        // Meta tools render their own UX and never carried a wire result —
+        // except ask_user, whose typed reply IS the result.
+        .tool_result, .tool_call_finished => |r| !r.meta or r.ask_user,
+        .tool_rejected => true,
         else => false,
     };
 }
@@ -183,6 +276,48 @@ test "slice 1b: tool-arg prose and transport aborts are presentation pulses" {
         .{ .tool_arg_delta = .{ .text = "prose" } },
         .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = true } },
         .{ .transport_aborted = .{ .reason = .dropped, .turn_ending = false } },
+    };
+    for (pulses) |ev| try std.testing.expect(!durable(ev));
+}
+
+test "slice 1c: the tool bracket is durable per TOOL, not per tag" {
+    const call: ToolInvocation = .{ .name = "bash", .input = .null };
+    const ask: ToolInvocation = .{ .name = "ask_user", .input = .null, .ask_user = true };
+    // An ordinary tool's bracket is the wire's tool_call/tool_call_started…
+    try std.testing.expect(durable(.{ .tool_call_announced = call }));
+    try std.testing.expect(durable(.{ .tool_call_started = call }));
+    // …while ask_user's reaches a --json client as the `ask_user` event, so
+    // neither half may reserve an id the wire will not spend (#330).
+    try std.testing.expect(!durable(.{ .tool_call_announced = ask }));
+    try std.testing.expect(!durable(.{ .tool_call_started = ask }));
+    // arg_streamed is a TUI-only suppression: the wire still carries the call.
+    const streamed: ToolInvocation = .{ .name = "bash", .input = .null, .arg_streamed = true };
+    try std.testing.expect(durable(.{ .tool_call_announced = streamed }));
+
+    const ext: ToolOutcome = .{ .name = "bash", .text = "ok", .is_error = false };
+    const meta: ToolOutcome = .{ .name = "todo_write", .text = "ok", .is_error = false, .meta = true };
+    const answer: ToolOutcome = .{ .name = "ask_user", .text = "yes", .is_error = false, .meta = true, .ask_user = true };
+    try std.testing.expect(durable(.{ .tool_result = ext }));
+    try std.testing.expect(durable(.{ .tool_call_finished = ext }));
+    try std.testing.expect(!durable(.{ .tool_result = meta }));
+    try std.testing.expect(!durable(.{ .tool_call_finished = meta }));
+    try std.testing.expect(durable(.{ .tool_result = answer }));
+    try std.testing.expect(durable(.{ .tool_call_finished = answer }));
+
+    // A refusal has always been a wire-only moment.
+    try std.testing.expect(durable(.{ .tool_rejected = .{ .name = "bash", .input = .null, .reason = "budget", .message = "no" } }));
+}
+
+test "slice 1c: the tool-cluster notices are presentation pulses" {
+    // None of these ever appeared on the --json wire, so promoting one is a
+    // schema_version event rather than refactor fallout.
+    const pulses: [6]EngineEvent = .{
+        .{ .parallel_batch_started = .{ .count = 3 } },
+        .{ .parallel_batch_finished = .{ .done = 2, .failed = 1, .cancelled = 0 } },
+        .completion_deferred,
+        .goal_completed,
+        .{ .completion_text = .{ .text = "done" } },
+        .{ .todo_list_updated = .{ .text = "todos" } },
     };
     for (pulses) |ev| try std.testing.expect(!durable(ev));
 }
