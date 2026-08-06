@@ -51,6 +51,7 @@ pub const Segment = struct { name: []const u8, text: []const u8, gate: Gate };
 pub const segments = [_]Segment{
     .{ .name = "intro", .text = text.intro_note, .gate = .always },
     .{ .name = "local_tools", .text = text.local_tools_note, .gate = .local_tools },
+    .{ .name = "tool_handle", .text = text.tool_handle_note, .gate = .local_tools }, // #440
     .{ .name = "orchestration", .text = text.orchestration_note, .gate = .subagents },
     .{ .name = "todo", .text = text.todo_note, .gate = .todos },
     .{ .name = "trace", .text = text.trace_note, .gate = .local_tools },

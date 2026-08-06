@@ -466,8 +466,8 @@ pub fn check(arena: Allocator, tracer: ?*trace.Tracer, phase: []const u8, briefs
 ///
 /// The note is prepended to the FIRST sibling's result rather than emitted on
 /// its own, because a tool result is the only channel a batch has back to the
-/// root — and prepending puts it above text that toolPreviewText may have
-/// truncated. Best-effort throughout: this must never be able to fail a spawn
+/// root — and prepending puts it above a preview the #440 handle contract may
+/// have bounded. Best-effort throughout: this must never be able to fail a spawn
 /// that already succeeded, so every unhappy path is a bare return.
 pub fn noteSiblingBatch(arena: Allocator, tracer: ?*trace.Tracer, calls: anytype, ext: []const usize, results: anytype) void {
     var briefs: [max_briefs][]const u8 = undefined;
