@@ -256,12 +256,13 @@ pub fn buildRootAgent(
         .tools_openai = "",
         .tools_responses = "",
     };
+    // #410: the durable session's name is settled BEFORE the prompt funnel runs — setRootSystemPrompts composes the transcript line out of it.
+    const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{util.unixMs(io)});
+    root.session_name = if (flags.resume_flag) |name| (if (!flags.new_session_flag and !flags.no_resume_flag) name else fresh_session_name) else fresh_session_name;
     try prompts.setRootSystemPrompts(&root, sys_normal, arena); // #381: same funnel + the live .graff/playbook.jsonl constraint block
     // Startup pays for one provider format, not all three. Other formats are
     // rendered on first switch with the same built-in + live MCP inputs.
     try root.ensureRootTools(default_provider.kind);
-    const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{util.unixMs(io)});
-    root.session_name = if (flags.resume_flag) |name| (if (!flags.new_session_flag and !flags.no_resume_flag) name else fresh_session_name) else fresh_session_name;
     repl_glue.loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
     if (flags.goal_flag) |g| { // --goal is STANDING (#318): every turn (incl. --json/-p/SDK), never model-retired
         root.goal_flag = try arena.dupe(u8, g); // kept: re-applied over every loadSession, incl. /resume

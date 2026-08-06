@@ -12,6 +12,22 @@ current is part of cutting a release.
 
 ## v0.0.241 (unreleased)
 
+- The system prompt is now assembled from capability-gated segments (#421):
+  an instruction ships only when its capability is actually present, read
+  from the same predicates dispatch uses to refuse a hallucinated call, so
+  the prompt can never disagree with the tool catalog. An embedder session
+  (`--no-local-tools`) drops 28.5% of the base prompt; the floor config
+  drops 43.2%. At full capability the compose returns the comptime constant
+  itself — zero allocation, byte-identical to what shipped before. Two
+  standing doctrine lines joined the always-on intro: never invent a tool or
+  wrapper API, and run the target project through its OWN environment — a
+  failure there is the relevant result.
+- A durable root session's prompt now names its own transcript (#410): the
+  path to `.graff/sessions/<name>.session.json`, described truthfully — one
+  JSON object, lags the live turn, rewritten in place by compaction (a
+  resume artifact, not an append-only archive) — so the model can consult
+  it without burning turns on wrong assumptions. Suppressed when local
+  tools are gone (an unreadable path is pure token waste).
 - Context-overflow classification got a guard list and two behavioral
   detectors (#414). Non-overflow patterns are now checked FIRST, so a
   throttle whose wording collides with an overflow phrase — Bedrock's
