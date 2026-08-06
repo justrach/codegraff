@@ -14,6 +14,17 @@ precise:
   B. error.code = rate_limit_exceeded with a non-overflow message. graff must NOT
      mistake it for an overflow: the meter must not pin. Proves detection is precise.
 
+#414 adds three more, covering the classifier's guard list and its two behavioral
+detectors — the shapes where the provider never returns an error at all:
+
+  C. Bedrock's "ThrottlingException: Too many tokens, please wait before trying
+     again." — wording that collides with the generic "too many tokens" overflow
+     fallback, but is a 429. It must ride the retry ladder; the meter must not pin.
+  D. HTTP 200 with an EMPTY completion whose usage reports input at the window
+     (the z.ai silent overflow). graff must classify it as overflow anyway.
+  E. HTTP 200 with finish_reason=length and ZERO output at the window (MiMo
+     truncating our input to fit). graff must name it, not ship a silent short answer.
+
 Requires 127.0.0.1:1234 to be free (the lmstudio provider URL is fixed); skips if a
 real LM Studio (or anything) already holds it.
 """
@@ -37,12 +48,23 @@ GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
 METER_RE = re.compile(r"(\d+)k/(\d+)k ctx \((\d+)% · compact@(\d+)k\)")
 PINNED_RE = re.compile(r"(\d+)k/(\d+)k ctx \(100% · compact@\d+k\)")
 
+# lmstudio/lmstudio is a CATALOGUED model (pricing.zig context_overlay), so its
+# window is fixed at 200k and GRAFF_CONTEXT deliberately cannot shrink it (#203).
+# The #414 behavioral fixtures report usage against this number; scenario D
+# asserts the meter still reads it, so a catalog change fails loudly here.
+LMSTUDIO_WINDOW = 200_000
+
 
 class OpenAiErrorMock:
-    """Serves one fixed OpenAI-style error envelope for every /v1/chat/completions."""
+    """Serves one fixed OpenAI-style body for every /v1/chat/completions.
 
-    def __init__(self, error_obj: dict) -> None:
-        self.body = json.dumps({"error": error_obj}).encode()
+    `error_obj` is wrapped as {"error": ...}; pass a `raw` body instead to serve a
+    successful (HTTP 200) completion, which is how the #414 behavioral shapes are
+    reproduced — they never send an error to keyword-match.
+    """
+
+    def __init__(self, error_obj: dict | None = None, raw: dict | None = None) -> None:
+        self.body = json.dumps(raw if raw is not None else {"error": error_obj}).encode()
         self.hits = 0
         parent = self
 
@@ -75,9 +97,14 @@ class OpenAiErrorMock:
         self.httpd.server_close()
 
 
-def _run(error_obj: dict, tmp: str):
-    """Run one turn against a mock returning error_obj; return (rendered_text, hits)."""
-    mock = OpenAiErrorMock(error_obj)
+def _run(error_obj: dict, tmp: str, *, raw: dict | None = None, wait_for: str = "api error:"):
+    """Run one turn against a mock; return (rendered_text, hits).
+
+    `wait_for` is the literal that marks the turn as finished — an error turn ends
+    with "api error:", but a #414 behavioral-overflow turn ends with a normal
+    (empty) completion and is only visible through its own notice.
+    """
+    mock = OpenAiErrorMock(error_obj, raw=raw)
     mock.start()
     try:
         env = {
@@ -102,8 +129,7 @@ def _run(error_obj: dict, tmp: str):
             session.wait_for_literal("] ›")
             cursor = len(session.raw)
             session.send_line("hello")
-            # The turn ends with an api error either way; wait for it, then settle.
-            session.wait_for_literal("api error:", start=cursor)
+            session.wait_for_literal(wait_for, start=cursor)
             session.pump_for(1.5)
             rendered = terminal_text(bytes(session.raw[cursor:]))
 
@@ -180,6 +206,67 @@ def main() -> None:
                 f"({stray.group(0)!r}):\n{rendered}"
             )
         print("ok    non-overflow error did not pin the meter (detection is precise)")
+
+        # Scenario C (#414 guard): Bedrock's throttle wording collides head-on with
+        # the generic "too many tokens" overflow fallback. It is a 429: it must ride
+        # the retry ladder, never trigger a compaction.
+        rendered, _ = _run(
+            {
+                "message": "ThrottlingException: Too many tokens, please wait before trying again.",
+                "type": "throttling_error",
+            },
+            tmp,
+        )
+        if "Too many tokens" not in rendered:
+            raise AssertionError(f"C: throttle error was not surfaced:\n{rendered}")
+        stray = PINNED_RE.search(rendered)
+        if stray:
+            raise AssertionError(
+                "C: a Bedrock THROTTLE was classified as context overflow — the "
+                f"non-overflow guard list is not being consulted first ({stray.group(0)!r}):\n{rendered}"
+            )
+        print("ok    bedrock 'Too many tokens' throttle stayed on the retry path (#414 guard)")
+
+        # Scenario D (#414): z.ai's silent overflow. HTTP 200, an EMPTY completion,
+        # and usage that says the input already filled the window. Nothing in the
+        # body is an error, so only the behavioral detector can catch it.
+        rendered, hits = _run(
+            {},
+            tmp,
+            raw={
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": LMSTUDIO_WINDOW, "completion_tokens": 0, "total_tokens": LMSTUDIO_WINDOW},
+            },
+            wait_for="silent_overflow",
+        )
+        if hits < 1:
+            raise AssertionError("D: graff never reached the backend")
+        if "silent_overflow" not in rendered:
+            raise AssertionError(
+                f"D: an HTTP 200 with no answer and over-window usage was accepted silently:\n{rendered}"
+            )
+        pinned = PINNED_RE.search(rendered)
+        if not pinned:
+            raise AssertionError(f"D: silent overflow did not pin the meter to the window:\n{rendered}")
+        if pinned.group(2) != str(LMSTUDIO_WINDOW // 1000):
+            raise AssertionError(f"D: lmstudio's catalogued window moved; update LMSTUDIO_WINDOW ({pinned.group(0)!r})")
+        print("ok    silent 200 (empty completion, usage at the window) classified as overflow (#414)")
+
+        # Scenario E (#414): MiMo truncates an oversized input to fit the window,
+        # then reports finish_reason=length with zero output. The reply is not a
+        # real answer and must be named as such, not shipped as a short one.
+        rendered, _ = _run(
+            {},
+            tmp,
+            raw={
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": LMSTUDIO_WINDOW, "completion_tokens": 0, "total_tokens": LMSTUDIO_WINDOW},
+            },
+            wait_for="upstream_truncation",
+        )
+        if "upstream_truncation" not in rendered:
+            raise AssertionError(f"E: upstream truncation surfaced as a silent short answer:\n{rendered}")
+        print("ok    finish_reason=length with zero output at the wall reported as truncation (#414)")
 
 
 if __name__ == "__main__":

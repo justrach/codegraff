@@ -29,9 +29,15 @@ const run_budget_mod = @import("run_budget.zig");
 const wire_messages = @import("messages.zig");
 
 const policy = @import("agent_request_policy.zig");
+const overflow = @import("agent_overflow.zig");
 const errorCode = policy.errorCode;
 const isQuotaExceeded = policy.isQuotaExceeded;
-const recoverContextOverflow = policy.recoverContextOverflow;
+const recoverContextOverflow = overflow.recoverContextOverflow;
+// #414: an HTTP 200 that overflowed silently — the provider accepted an
+// over-window input and answered with nothing (z.ai), or truncated our input
+// to fit and had no room left to generate (MiMo). Neither shape produces an
+// error to keyword-match, so it is classified from the reported usage instead.
+const recoverBehavioralOverflow = overflow.recoverBehavioralOverflow;
 const retryAfterAuthRefresh = policy.retryAfterAuthRefresh;
 const retryTransientServerError = policy.retryTransientServerError;
 
@@ -346,6 +352,13 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 .ok => |obj| {
                     if (!self.compaction_request) self.compact_transport_failures = 0;
                     self.recordUsageResponses(obj, body.len);
+                    // #414: an empty output whose usage already fills the window
+                    // is an overflow the provider never reported. Re-anchor like
+                    // the error branch above: the recovery trims full history.
+                    if (recoverBehavioralOverflow(self, obj, &context_retried)) {
+                        self.closeCodexWs();
+                        continue :rebuild;
+                    }
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
                     if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
                     return obj;
@@ -415,6 +428,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     return error.ApiError;
                 };
                 self.recordUsage(root, body.len);
+                if (recoverBehavioralOverflow(self, root, &context_retried)) continue; // #414: silent overflow / upstream truncation → trim + retry
                 if (!self.compaction_request) self.compact_transport_failures = 0;
                 if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
                 if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
@@ -478,6 +492,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         }
 
         self.recordUsage(root, body.len);
+        if (recoverBehavioralOverflow(self, root, &context_retried)) continue; // #414: same, on the non-streamed body
         if (!self.compaction_request) self.compact_transport_failures = 0;
         if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
         if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
