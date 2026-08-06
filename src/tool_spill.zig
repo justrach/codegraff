@@ -304,9 +304,16 @@ test "spill writes the full output and the marker points at it (#409)" {
     enable(.{ .io = io, .dir = tmp.dir, .base_abs = "/work" });
 
     const cap: usize = 1024;
+    // A needle past the cap: only the artifact can still hold it. It has to be
+    // a STRING, not a bare 'N' — the marker embeds the artifact's real absolute
+    // path, and std.testing.tmpDir names its directory with 16 random
+    // base64-url characters. One of those is 'N' about 22% of the time, so a
+    // single-character needle made this test fail on ~1 run in 5 for reasons
+    // that had nothing to do with spilling.
+    const needle = "NEEDLE409";
     const big = try a.alloc(u8, 8192);
     @memset(big, 'x');
-    big[8000] = 'N'; // a needle past the cap: only the artifact can still hold it
+    @memcpy(big[8000..][0..needle.len], needle);
 
     var fco: std.json.ObjectMap = .empty;
     try fco.put(a, "type", .{ .string = "function_call_output" });
@@ -328,8 +335,8 @@ test "spill writes the full output and the marker points at it (#409)" {
     try std.testing.expect(std.mem.indexOf(u8, stub, "8192 bytes") != null);
     try std.testing.expect(std.mem.indexOf(u8, stub, "truncated") != null);
     // the needle is gone from the transcript and recoverable only from the file
-    try std.testing.expect(std.mem.indexOf(u8, stub, "N") == null);
-    try std.testing.expect(std.mem.indexOfScalar(u8, spilled, 'N') != null);
+    try std.testing.expect(std.mem.indexOf(u8, stub, needle) == null);
+    try std.testing.expect(std.mem.indexOf(u8, spilled, needle) != null);
 }
 
 test "the per-session byte cap bounds the spill, and over it the cap truncates as before (#409)" {
