@@ -70,6 +70,11 @@ const scoring_slot_test = @import("scoring_slot_test.zig");
 // #273: session.zig's own tests, moved off it for the same reason.
 const session_tests = @import("session_tests.zig");
 
+// #441: and session_transcript.zig's, moved off it for the same reason again.
+// The module itself is reached from session.queueSave, but this FILE is not, so
+// without the hook its whole suite compiles to nothing and reports green.
+const session_transcript_tests = @import("session_transcript_tests.zig");
+
 // #375: `graff acp` (Zed's Agent Client Protocol over stdio). args.zig calls
 // one predicate from it, which analyses the file but does not run its tests.
 const acp = @import("acp.zig");
@@ -170,6 +175,7 @@ test {
     _ = serve_create;
     _ = scoring_slot_test;
     _ = session_tests;
+    _ = session_transcript_tests;
     _ = mcp_config;
     _ = acp;
     _ = agent_eval_control_tests;

@@ -6,10 +6,11 @@
 //!
 //! Layout: `.graff/sessions/<session>/artifacts/tool-<n>.txt`, a sibling of that
 //! session's `<session>.session.json`. Two bounds keep it from growing without
-//! limit: `session_cap_bytes` per session, and reclamation of the artifact dirs
-//! whose session file is gone (`sweepOnce`) — the session FILE is the ground
-//! truth for "this session was deleted", so an `rm`, the AI-title rename, or a
-//! `/new` all reclaim what they left behind.
+//! limit: `session_cap_bytes` per session, and reclamation of the leftovers
+//! whose session file is gone (`sweepSessionsOnce`) — the session FILE is the
+//! ground truth for "this session was deleted", so an `rm`, the AI-title
+//! rename, or a `/new` all reclaim what they left behind. That sweep is shared
+//! with #441's transcripts: same rule, same grace window, one lifecycle.
 //!
 //! Spilling is off until `enable` wires a target, and never happens for a
 //! subagent: its history is not persisted, so there is no durable session to
@@ -107,6 +108,13 @@ pub fn safeName(session: []const u8) bool {
     return !std.mem.eql(u8, session, ".") and !std.mem.eql(u8, session, "..");
 }
 
+/// The three fences #411's post-compaction note reads a spilled artifact's path
+/// back out of a marker with. `Note.text` below is BUILT from them, so the
+/// reader cannot drift from the writer: change the wording and both move.
+pub const marker_head = "[tool output truncated at this model's per-result cap";
+pub const marker_path_open = " bytes are at ";
+pub const marker_path_close = "; read or grep";
+
 /// What replaces the elided bytes. `session` empty (a subagent, an unwired
 /// process) means plain truncation with `fallback`.
 pub const Note = struct {
@@ -118,7 +126,7 @@ pub const Note = struct {
     /// than growing an output the cap just shrank.
     pub fn text(self: Note, arena: Allocator, full: []const u8, cap: usize) []const u8 {
         const path = spill(arena, self.session, full) orelse return self.fallback;
-        const marker = std.fmt.allocPrint(arena, "[tool output truncated at this model's per-result cap — the FULL {d} bytes are at {s}; read or grep that file for the slice you need instead of re-running the tool (#409)]", .{ full.len, path }) catch return self.fallback;
+        const marker = std.fmt.allocPrint(arena, marker_head ++ " — the FULL {d}" ++ marker_path_open ++ "{s}" ++ marker_path_close ++ " that file for the slice you need instead of re-running the tool (#409)]", .{ full.len, path }) catch return self.fallback;
         return if (marker.len + 1 > cap) self.fallback else marker;
     }
 };
@@ -165,35 +173,58 @@ fn refund(len: usize) ?[]const u8 {
     return null;
 }
 
-/// Reclaim the artifact dirs of sessions that no longer exist. Once per process,
-/// at the FIRST spill: a run that never spills does no extra I/O at all, and by
-/// then this session's own dir is either current (skipped by name) or still
-/// young enough for the grace window.
+/// Everything a session leaves BESIDE its `<name>.session.json`: this file's
+/// artifacts directory, and #441's transcript generations. Returns the session
+/// base name that owns `entry`, or null when the entry is not leftovers (the
+/// session files themselves, anything unrecognized). One rule, one sweep — a
+/// transcript must not outlive its session any more than an artifact does.
+pub fn leftoverOwner(entry: []const u8, is_dir: bool) ?[]const u8 {
+    if (is_dir) return if (entry.len == 0) null else entry;
+    inline for (.{ session_index.transcript_ext, session_index.transcript_rotated_ext }) |ext| {
+        if (std.mem.endsWith(u8, entry, ext) and entry.len > ext.len) return entry[0 .. entry.len - ext.len];
+    }
+    return null;
+}
+
+const Leftover = struct { name: []const u8, owner: []const u8, is_dir: bool };
+
+/// The session-lifecycle sweep, shared with session_transcript.zig (#441).
+/// Runs once per process, at whichever comes first: the first spill or the
+/// first transcript append. A run that does neither does no extra I/O at all,
+/// and by then this session's own leftovers are either current (skipped by
+/// name) or still young enough for the grace window.
 ///
 /// Reclaiming late is deliberate. The AI-title rename deletes the old session
 /// file mid-conversation; MOVING that session's artifacts with it (or deleting
 /// them there and then) would strand every path already handed to the model in
-/// this transcript. Leaving them put keeps those paths valid for the rest of the
-/// session, and the next run collects what the rename left behind.
+/// this conversation. Leaving them put keeps those paths valid for the rest of
+/// the session, and the next run collects what the rename left behind.
+pub fn sweepSessionsOnce(io: Io, dir: Io.Dir, arena: Allocator, current: []const u8) void {
+    sweepOnce(.{ .io = io, .dir = dir, .base_abs = "" }, arena, current);
+}
+
 fn sweepOnce(sink: Sink, arena: Allocator, current: []const u8) void {
     if (g_swept.swap(true, .monotonic)) return;
-    var names: std.ArrayList([]const u8) = .empty; // collect first: deleting mid-iteration is not portable
+    var found: std.ArrayList(Leftover) = .empty; // collect first: deleting mid-iteration is not portable
     {
         var dir = sink.dir.openDir(sink.io, session_index.sessions_dir, .{ .iterate = true }) catch return;
         defer dir.close(sink.io);
         var it = dir.iterate();
         while (it.next(sink.io) catch null) |entry| {
-            if (entry.kind != .directory or std.mem.eql(u8, entry.name, current)) continue;
-            names.append(arena, arena.dupe(u8, entry.name) catch continue) catch continue;
+            const is_dir = entry.kind == .directory;
+            const name = arena.dupe(u8, entry.name) catch continue;
+            const owner = leftoverOwner(name, is_dir) orelse continue;
+            if (std.mem.eql(u8, owner, current)) continue; // this session's own
+            found.append(arena, .{ .name = name, .owner = owner, .is_dir = is_dir }) catch continue;
         }
     }
     const now = util.unixMs(sink.io);
-    for (names.items) |name| {
-        const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ session_index.sessions_dir, name }) catch continue;
-        const file = std.fmt.allocPrint(arena, "{s}{s}", .{ path, session_index.session_ext }) catch continue;
+    for (found.items) |left| {
+        const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ session_index.sessions_dir, left.name }) catch continue;
+        const file = std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ session_index.sessions_dir, left.owner, session_index.session_ext }) catch continue;
         const live = if (sink.dir.statFile(sink.io, file, .{})) |_| true else |_| false;
         if (!reclaimable(live, ageMs(sink, path, now), orphan_grace_ms)) continue;
-        sink.dir.deleteTree(sink.io, path) catch {};
+        if (left.is_dir) sink.dir.deleteTree(sink.io, path) catch {} else sink.dir.deleteFile(sink.io, path) catch {};
     }
 }
 
@@ -401,4 +432,43 @@ test "artifacts are reclaimed with their session, and a live session keeps its o
     try std.testing.expect(tmp.dir.statFile(io, ".graff/sessions/dead", .{}) == error.FileNotFound);
     _ = try tmp.dir.statFile(io, ".graff/sessions/alive/artifacts/tool-9.txt", .{});
     _ = try tmp.dir.statFile(io, ".graff/sessions/current/artifacts/tool-0.txt", .{});
+}
+
+test "the same sweep reclaims #441's transcripts: one lifecycle, not two" {
+    // The suffix rule, first: only leftovers have an owner, and the session
+    // files themselves must never be mistaken for one.
+    try std.testing.expectEqualStrings("s1", leftoverOwner("s1", true).?);
+    try std.testing.expectEqualStrings("s1", leftoverOwner("s1.transcript.jsonl", false).?);
+    try std.testing.expectEqualStrings("s1", leftoverOwner("s1.transcript.1.jsonl", false).?);
+    try std.testing.expect(leftoverOwner("s1.session.json", false) == null);
+    try std.testing.expect(leftoverOwner(".transcript.jsonl", false) == null); // no session owns it
+
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    resetForTest();
+    const saved_grace = orphan_grace_ms;
+    defer {
+        orphan_grace_ms = saved_grace;
+        resetForTest();
+    }
+    orphan_grace_ms = 0;
+
+    try tmp.dir.createDirPath(io, ".graff/sessions");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".graff/sessions/gone.transcript.jsonl", .data = "{}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = ".graff/sessions/gone.transcript.1.jsonl", .data = "{}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = ".graff/sessions/kept.transcript.jsonl", .data = "{}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = ".graff/sessions/kept.session.json", .data = "{}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = ".graff/sessions/now.transcript.jsonl", .data = "{}\n" });
+
+    sweepSessionsOnce(io, tmp.dir, a, "now"); // "now" is the live session
+
+    try std.testing.expect(tmp.dir.statFile(io, ".graff/sessions/gone.transcript.jsonl", .{}) == error.FileNotFound);
+    try std.testing.expect(tmp.dir.statFile(io, ".graff/sessions/gone.transcript.1.jsonl", .{}) == error.FileNotFound);
+    _ = try tmp.dir.statFile(io, ".graff/sessions/kept.transcript.jsonl", .{}); // its session is still saved
+    _ = try tmp.dir.statFile(io, ".graff/sessions/now.transcript.jsonl", .{}); // and the live one is never touched
+    _ = try tmp.dir.statFile(io, ".graff/sessions/kept.session.json", .{}); // the sweep deletes leftovers, not sessions
 }
