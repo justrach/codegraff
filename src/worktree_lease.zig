@@ -14,12 +14,17 @@
 //! and it already honours #320's rule that a pid alone may never signal an
 //! owner. Nothing writes records yet, so no root session is warned at startup;
 //! that needs a registry file plus a call site in startup.zig.
+//!
+//! #413 supplied the missing half: `proc_identity` reads a pid's START
+//! identity, so "is that pid still the process that recorded it" is now a
+//! question the OS answers rather than one this file has to be handed.
 
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const process_runner = @import("process_runner.zig");
+const proc_identity = @import("proc_identity.zig");
 const runCapped = process_runner.runCapped;
 const ranOk = process_runner.ranOk;
 
@@ -53,12 +58,13 @@ pub fn canonicalIdentity(git_dir: []const u8, common_dir: []const u8, fallback_p
     return .{ .id = g, .kind = .linked_worktree };
 }
 
-/// One recorded root-session owner of a worktree identity. `start_ns` is the
-/// process START time, not just the pid: after a crash the OS may hand the same
-/// pid to something unrelated, and #320 requires that never look like an owner.
+/// One recorded root-session owner of a worktree identity. `start_id` is the
+/// process START identity, not just the pid: after a crash the OS may hand the
+/// same pid to something unrelated, and #320 requires that never look like an
+/// owner. `proc_identity` produces the value and knows its units.
 pub const Owner = struct {
     pid: i32 = 0,
-    start_ns: u64 = 0,
+    start_id: proc_identity.StartId = 0,
     session_id: []const u8 = "",
     identity: []const u8 = "",
     last_seen_ms: i64 = 0,
@@ -71,36 +77,71 @@ pub const OwnerVerdict = enum {
     other_worktree,
     /// Another root session is alive in MY worktree: the #320 warning case.
     live_foreign,
+    /// The pid is alive but its identity could not be read, so we cannot prove
+    /// it is NOT the recorded owner. Warned about like a live one (#413): the
+    /// cost of a needless warning is a line of text, the cost of staying quiet
+    /// is two sessions editing one tree.
+    live_unverified,
     /// The owner exited (or its pid now belongs to something else).
     stale_dead,
     /// Not enough evidence to claim anyone owns it; treated as stale.
     stale_unverifiable,
 };
 
-/// `live_start_ns` is the START time of whatever process currently holds
-/// `rec.pid`, or null when no such process exists or it could not be read.
-pub fn ownerVerdict(rec: Owner, my_identity: []const u8, my_pid: i32, live_start_ns: ?u64) OwnerVerdict {
+/// The record for this process, ready to be written to a registry.
+pub fn selfOwner(io: Io, identity: []const u8, session_id: []const u8, now_ms: i64) Owner {
+    return .{
+        .pid = proc_identity.selfPid(),
+        .start_id = proc_identity.selfStartId(io),
+        .session_id = session_id,
+        .identity = identity,
+        .last_seen_ms = now_ms,
+    };
+}
+
+/// `live` is what the OS says about `rec.pid` right now (`proc_identity.probe`).
+pub fn ownerVerdict(rec: Owner, my_identity: []const u8, my_pid: i32, live: proc_identity.Probe) OwnerVerdict {
     if (rec.identity.len == 0 or my_identity.len == 0) return .stale_unverifiable;
     if (!std.mem.eql(u8, rec.identity, my_identity)) return .other_worktree;
     // A record with no start identity can only be matched by pid, and pid alone
-    // is precisely what #320 says must not signal an owner.
-    if (rec.start_ns == 0) return .stale_unverifiable;
-    const live = live_start_ns orelse return .stale_dead;
-    if (live != rec.start_ns) return .stale_dead; // pid reuse, not the owner
+    // is precisely what #320 says must not signal an owner. Unlike a mutual
+    // exclusion lock — where honouring a legacy record is the safe answer —
+    // this one only prints a warning, so the false-positive is the harm.
+    if (rec.start_id == 0) return .stale_unverifiable;
+    const unverified = switch (live) {
+        .gone => return .stale_dead,
+        .id => |v| blk: {
+            if (v != rec.start_id) return .stale_dead; // pid reuse, not the owner
+            break :blk false;
+        },
+        .unknown => true,
+    };
     if (rec.pid == my_pid) return .self;
-    return .live_foreign;
+    return if (unverified) .live_unverified else .live_foreign;
 }
 
 /// The #320 preflight: the first live foreign owner of MY worktree, if any.
 /// Everything else — my own record, another worktree's, a crashed or pid-reused
 /// one — is silent, so a stale registry can never block a startup.
-/// `live_start_ns[i]` pairs with `records[i]`; a short slice reads as "unknown".
-pub fn duplicateOwner(records: []const Owner, live_start_ns: []const ?u64, my_identity: []const u8, my_pid: i32) ?Owner {
+/// `probes[i]` pairs with `records[i]`; a record past the end of `probes` was
+/// never probed at all, which is no evidence of anything and so is skipped.
+pub fn duplicateOwner(records: []const Owner, probes: []const proc_identity.Probe, my_identity: []const u8, my_pid: i32) ?Owner {
     for (records, 0..) |rec, i| {
-        const live = if (i < live_start_ns.len) live_start_ns[i] else null;
-        if (ownerVerdict(rec, my_identity, my_pid, live) == .live_foreign) return rec;
+        if (i >= probes.len) break;
+        switch (ownerVerdict(rec, my_identity, my_pid, probes[i])) {
+            .live_foreign, .live_unverified => return rec,
+            else => {},
+        }
     }
     return null;
+}
+
+/// Probe every record's pid once into caller storage; the slice it returns is
+/// what `duplicateOwner` expects.
+pub fn probeOwners(io: Io, records: []const Owner, out: []proc_identity.Probe) []const proc_identity.Probe {
+    const n = @min(records.len, out.len);
+    for (records[0..n], out[0..n]) |rec, *slot| slot.* = proc_identity.probe(io, rec.pid);
+    return out[0..n];
 }
 
 pub fn duplicateOwnerWarning(arena: Allocator, rec: Owner, age_ms: i64) []const u8 {
@@ -174,46 +215,78 @@ test "canonicalIdentity: one id per worktree, distinct across linked worktrees (
 
 test "ownerVerdict: only a verified live process in MY worktree is an owner (#320)" {
     const me = "/repo/.git";
-    const rec: Owner = .{ .pid = 4242, .start_ns = 777, .session_id = "s-1", .identity = me };
+    const rec: Owner = .{ .pid = 4242, .start_id = 777, .session_id = "s-1", .identity = me };
 
-    try std.testing.expectEqual(OwnerVerdict.live_foreign, ownerVerdict(rec, me, 99, 777));
-    try std.testing.expectEqual(OwnerVerdict.self, ownerVerdict(rec, me, 4242, 777));
+    try std.testing.expectEqual(OwnerVerdict.live_foreign, ownerVerdict(rec, me, 99, .{ .id = 777 }));
+    try std.testing.expectEqual(OwnerVerdict.self, ownerVerdict(rec, me, 4242, .{ .id = 777 }));
     // Separate git worktrees do not conflict.
-    try std.testing.expectEqual(OwnerVerdict.other_worktree, ownerVerdict(rec, "/repo/.git/worktrees/wt1", 99, 777));
+    try std.testing.expectEqual(OwnerVerdict.other_worktree, ownerVerdict(rec, "/repo/.git/worktrees/wt1", 99, .{ .id = 777 }));
     // Crashed owner: the pid is simply gone.
-    try std.testing.expectEqual(OwnerVerdict.stale_dead, ownerVerdict(rec, me, 99, null));
+    try std.testing.expectEqual(OwnerVerdict.stale_dead, ownerVerdict(rec, me, 99, .gone));
     // PID reuse: the pid is live but it is a different process.
-    try std.testing.expectEqual(OwnerVerdict.stale_dead, ownerVerdict(rec, me, 99, 778));
+    try std.testing.expectEqual(OwnerVerdict.stale_dead, ownerVerdict(rec, me, 99, .{ .id = 778 }));
     // No start identity recorded — unverifiable is stale, never a warning.
     var no_start = rec;
-    no_start.start_ns = 0;
-    try std.testing.expectEqual(OwnerVerdict.stale_unverifiable, ownerVerdict(no_start, me, 99, 777));
+    no_start.start_id = 0;
+    try std.testing.expectEqual(OwnerVerdict.stale_unverifiable, ownerVerdict(no_start, me, 99, .{ .id = 777 }));
+}
+
+test "ownerVerdict: a pid we cannot identify is assumed to be the owner (#413)" {
+    const me = "/repo/.git";
+    const rec: Owner = .{ .pid = 4242, .start_id = 777, .session_id = "s-1", .identity = me };
+    // An unreadable identity is not evidence of death: warn rather than treat
+    // a possibly live session as stale.
+    try std.testing.expectEqual(OwnerVerdict.live_unverified, ownerVerdict(rec, me, 99, .unknown));
+    // …but it is still not somebody else when the pid is mine.
+    try std.testing.expectEqual(OwnerVerdict.self, ownerVerdict(rec, me, 4242, .unknown));
 }
 
 test "duplicateOwner: picks the live foreign session and ignores stale records (#320)" {
     const me = "/repo/.git";
     const records = [_]Owner{
-        .{ .pid = 1, .start_ns = 10, .session_id = "dead", .identity = me },
-        .{ .pid = 2, .start_ns = 20, .session_id = "other-wt", .identity = "/repo/.git/worktrees/wt1" },
-        .{ .pid = 3, .start_ns = 30, .session_id = "mine", .identity = me },
-        .{ .pid = 4, .start_ns = 40, .session_id = "live", .identity = me },
+        .{ .pid = 1, .start_id = 10, .session_id = "dead", .identity = me },
+        .{ .pid = 2, .start_id = 20, .session_id = "other-wt", .identity = "/repo/.git/worktrees/wt1" },
+        .{ .pid = 3, .start_id = 30, .session_id = "mine", .identity = me },
+        .{ .pid = 4, .start_id = 40, .session_id = "live", .identity = me },
     };
-    const live = [_]?u64{ null, 20, 30, 40 };
+    const live = [_]proc_identity.Probe{ .gone, .{ .id = 20 }, .{ .id = 30 }, .{ .id = 40 } };
     const found = duplicateOwner(&records, &live, me, 3) orelse return error.ExpectedDuplicate;
     try std.testing.expectEqualStrings("live", found.session_id);
     try std.testing.expectEqual(@as(i32, 4), found.pid);
 
     // Alone in the worktree: only my own record matches, so no warning.
     const solo = [_]Owner{records[2]};
-    try std.testing.expect(duplicateOwner(&solo, &.{30}, me, 3) == null);
+    try std.testing.expect(duplicateOwner(&solo, &.{.{ .id = 30 }}, me, 3) == null);
     // A registry we cannot read at all must not manufacture an owner.
     try std.testing.expect(duplicateOwner(&records, &.{}, me, 3) == null);
+}
+
+test "selfOwner + probeOwners: this process records and verifies as itself (#413)" {
+    const io = std.testing.io;
+    const me = "/repo/.git";
+    const mine = selfOwner(io, me, "s-self", 1234);
+    try std.testing.expect(mine.pid > 0);
+
+    var probes: [1]proc_identity.Probe = undefined;
+    const live = probeOwners(io, &.{mine}, &probes);
+    try std.testing.expectEqual(@as(usize, 1), live.len);
+    // My own live record is `self`, never a duplicate owner…
+    try std.testing.expectEqual(OwnerVerdict.self, ownerVerdict(mine, me, mine.pid, live[0]));
+    try std.testing.expect(duplicateOwner(&.{mine}, live, me, mine.pid) == null);
+
+    // …and a record claiming my pid from a process that no longer exists is
+    // stale, which is the whole point: a recycled pid cannot hold a lease.
+    if (mine.start_id != 0) {
+        var recycled = mine;
+        recycled.start_id +%= 1;
+        try std.testing.expectEqual(OwnerVerdict.stale_dead, ownerVerdict(recycled, me, mine.pid, live[0]));
+    }
 }
 
 test "duplicateOwnerWarning: names the pid, the session and an escape hatch (#320)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    const text = duplicateOwnerWarning(arena_state.allocator(), .{ .pid = 4242, .start_ns = 1, .session_id = "s-1" }, 5 * std.time.ms_per_min);
+    const text = duplicateOwnerWarning(arena_state.allocator(), .{ .pid = 4242, .start_id = 1, .session_id = "s-1" }, 5 * std.time.ms_per_min);
     try std.testing.expect(std.mem.indexOf(u8, text, "4242") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "s-1") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "5m") != null);

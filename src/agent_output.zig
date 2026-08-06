@@ -53,6 +53,32 @@ fn endsLine(comptime fmt: []const u8) bool {
     return fmt.len > 0 and fmt[fmt.len - 1] == '\n';
 }
 
+/// say() for text that is already rendered (#422: a sink holds the bytes, not
+/// a comptime format). Same routing, same worker-line framing, same tick-gate
+/// rule — only the line-ending test moves from the format to the last byte.
+/// Errors are swallowed: an event sink's emit path has nowhere to return them.
+pub fn sayText(self: *Agent, text: []const u8) void {
+    if (main_mod.json_mode and !self.sub) return;
+    if (self.out) |w| {
+        w.print("{s}", .{text}) catch return;
+        w.flush() catch return;
+        if (!self.sub and !main_mod.json_mode and text.len > 0 and text[text.len - 1] == '\n') _ = tick_gate.setLineStart(true);
+        return;
+    }
+    // A pool-thread child has no writer: same fixed slot, same label prefix,
+    // and the same repair when an over-long line lost its newline to the cut.
+    var buf: [tick_gate.slot_bytes]u8 = undefined;
+    var sink = Io.Writer.fixed(&buf);
+    const fit = if (sink.print("  [{s}] {s}", .{ self.label, text })) |_| true else |_| false;
+    var line = sink.buffered();
+    if (!fit or line.len == 0 or line[line.len - 1] != '\n') {
+        const at: usize = @min(line.len, buf.len - 1);
+        buf[at] = '\n';
+        line = buf[0 .. at + 1];
+    }
+    tick_gate.workerLine(line);
+}
+
 /// Remember the formatted message for the --json `error` event, then print
 /// like say() + a #398 duration hint; last_api_error keeps provider words.
 pub fn sayApiError(self: *Agent, comptime fmt: []const u8, args: anytype) !void {

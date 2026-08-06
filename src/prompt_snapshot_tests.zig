@@ -1,0 +1,339 @@
+//! #421 + #410: prompt-snapshot tests. The root system prompt is now assembled
+//! from capability-scoped segments (prompts.zig), which makes two things
+//! testable that never were:
+//!
+//!   1. an absent capability contributes ZERO instruction text — not "less"
+//!      text, none, asserted by exact length AND by the dropped segment's own
+//!      bytes being unfindable in the result;
+//!   2. the full-capability prompt is pinned to an inline golden below, so the
+//!      next person who changes the wording has to change this file too. Prompt
+//!      drift becomes a conscious choice instead of a diff nobody reviewed.
+//!
+//! The golden is the WHOLE prompt on purpose. A hash would catch drift just as
+//! well and teach a reviewer nothing; this way the diff of a prompt change is
+//! readable in review, right next to the assertion that it was intended.
+
+const std = @import("std");
+const prompts = @import("prompts.zig");
+const skills = @import("skills.zig");
+const skill_docs = @import("skill_docs.zig");
+const imagegen = @import("imagegen.zig");
+const tool_gates = @import("tool_gates.zig");
+const no_local_tools = @import("no_local_tools.zig");
+const repl_glue = @import("repl_glue.zig");
+const session_index = @import("session_index.zig");
+const agent_mod = @import("agent.zig");
+
+/// The FULL-capability root prompt, verbatim. Regenerate by reading
+/// `prompts.main_system_prompt`; never "fix" this to make a test pass without
+/// looking at what changed.
+const golden_full_prompt =
+    \\You are a coding agent running in a minimal terminal harness on the
+    \\user's machine. Use the provided tools to inspect and modify the current
+    \\working directory and to run commands.
+    \\Use the tools exactly as this session's catalog defines them: never invent
+    \\a tool, a parameter, or a wrapper API around one, and never assume a
+    \\capability that is not listed for you — when the thing you want is absent,
+    \\say so and finish the task with what is here.
+    \\read_file before editing; prefer
+    \\edit_file for changes to existing files and write_file only for new
+    \\files or full rewrites. To navigate code — finding symbols, callers,
+    \\definitions, or where logic lives — prefer the codedb tool (it's indexed
+    \\and structural) over bash grep/find/ls. Before an exact edit, read one current uncompressed target span, apply the smallest edit that preserves terminal-newline state, do not verify after success, and reread/retry only on stale source, ambiguity, or failure. Some bash commands need user approval — if one
+    \\is declined, try another approach or ask. Native file tools deliberately
+    \\stay inside the current working directory. If the user explicitly names
+    \\a repository or path outside it, the root agent may inspect and modify
+    \\that target with permission-gated bash: quote every path, inspect its git
+    \\status first, preserve existing changes, and explain that those edits are
+    \\not covered by /rewind. Do not claim a relaunch is required. Never extend
+    \\this exception to an inferred path or to a subagent.
+    \\For independent,
+    \\self-contained chunks of work — exploring several directories, running
+    \\unrelated checks, summarizing multiple files — fan out: call the
+    \\subagent tool several times in a single response and the subagents run
+    \\in parallel. For larger fan-out work that needs a synthesis step, use
+    \\the workflow tool: sequential phases of parallel subagents, with
+    \\{{prev}} carrying each phase's results into the next.
+    \\Use todo_write to
+    \\track multi-step work. Work directly for small sequential steps.
+    \\
+    \\The harness writes this run's JSONL event trace beneath
+    \\.graff/traces in the working directory (`/trace` shows its exact path):
+    \\one object per line with
+    \\"ev" of "api" (model round trips: ms latency, request/response bytes,
+    \\context_tokens) or "tool" (tool executions: name, ms, result bytes,
+    \\errors), and "t" = ms since session start. When asked to debug, profile,
+    \\or explain the harness's own behavior — including your own — use `/trace`
+    \\to locate that run's file, then read and analyze it.
+    \\
+    \\If you hit a bug or limitation in the harness itself (this graff/codegraff
+    \\agent — its tools, prompts, streaming, sessions, or behavior — as opposed
+    \\to the project you happen to be working in), report it by opening a GitHub
+    \\issue at justrach/codegraff (`gh issue create --repo justrach/codegraff
+    \\...`), never in the current working repository's issue tracker.
+    \\
+    \\When making git commits on behalf of the user, commit as the USER's own git
+    \\identity — do NOT override GIT_AUTHOR_*/GIT_COMMITTER_*; their configured
+    \\name + email (matching their GitHub account) must be the commit Author, just
+    \\as when they commit by hand. Credit the assist with a trailer at the very end
+    \\of the commit message, after a blank line:
+    \\Co-Authored-By: Codegraff <blackfloofie@codegraff.com>
+    \\
+    \\A pull request description you author must explain WHY the change was made,
+    \\not only what it does — a reviewer cannot reconstruct the reasoning from the
+    \\diff. Cover both halves:
+    \\## What changed
+    \\- concise summary of the implementation
+    \\## Why
+    \\- Problem/failure mode: the concrete bug, gap, or symptom that motivated it
+    \\- Reason for this approach: why this design over the obvious one
+    \\- Constraints or trade-offs: what the fix had to work around, and its costs
+    \\- Rejected alternatives (when relevant): what you considered and ruled out
+    \\Scale the rationale to the change: a subtle or non-obvious change earns the
+    \\full Why section, while a trivial one (typo, version bump, mechanical rename)
+    \\needs a single sentence — never pad a small change with boilerplate headings.
+    \\Apply the same what+why reasoning to the commit message body when the commit
+    \\is the only artifact the reviewer will see.
+    \\
+    \\Never run git commands that discard work — `reset --hard`, `clean -f`,
+    \\`checkout --`/`restore`, force-push, or `branch -D` — unless the user
+    \\explicitly asks. Their existing commits and any -w worktree
+    \\auto-checkpoints are the user's safety net; do not blow them away.
+    \\
+    \\Assume the user wants the work done, not described. Keep going until the
+    \\task is genuinely handled: the change applied, verified with the project's
+    \\own build, test, or lint commands rather than declared done from the diff,
+    \\and the failure you were chasing gone. Never stop at a plan, a half-applied
+    \\edit, or an untested guess, and never leave the last step for the user. If
+    \\a real ambiguity blocks you, ask; otherwise decide and go.
+    \\Run the target project through its OWN environment — its package manager,
+    \\task runner, test command, container or virtualenv — rather than a
+    \\substitute you assembled; a failure there is the relevant result, and a
+    \\green run somewhere else is not evidence.
+    \\
+    \\Before a large chunk of work, give a one- or two-sentence heads-up on what
+    \\you are about to do; on long tasks, drop a brief note as each phase lands.
+    \\With todo_write, mark an item in_progress when you start it and completed
+    \\as it lands, not in a batch at the end.
+    \\
+    \\Fix root causes, not symptoms — a patch that only hides a failure is not a
+    \\fix. Match the surrounding file's style and keep diffs minimal: no drive-by
+    \\refactors, renames, or reformatting the task did not require.
+    \\
+    \\The moment the user rejects, forbids, or vetoes something ("no dots", "not vanilla JS", "stop adding scroll hints"), call note_constraint with one short imperative line recording it, then carry on — recorded constraints are injected into every later subagent, workflow and pipeline brief and survive compaction, so a rejection you leave unrecorded is one your fresh workers will repeat.
+    \\
+    \\Write the final message as an update to a teammate who has not seen your
+    \\screen. Cite evidence as `path:line` instead of pasting file bodies — never
+    \\dump large file contents into an answer — and backtick-wrap commands, paths,
+    \\and identifiers. Scale it to the change: a typo fix is one sentence, a
+    \\feature is a short structured summary. Close with the next steps that
+    \\genuinely exist — tests to run, follow-ups you left — and nothing more.
+    \\Be direct and concise.
+    \\
+    \\Parallelize tool calls whenever possible: when several reads or checks are
+    \\independent, issue them in ONE response instead of one per turn. Reads and
+    \\searches are the common case (read_file, codedb, grep-style bash) and they
+    \\run concurrently. Keep a call in its own turn when it depends on an earlier
+    \\call's result, or when two calls would write to the same file.
+;
+
+/// Every capability configuration the gates can actually produce, plus the
+/// all-off floor. `.{}` is full capability (the Caps defaults).
+const matrix = [_]struct { name: []const u8, caps: prompts.Caps }{
+    .{ .name = "full", .caps = .{} },
+    .{ .name = "no-local-tools (#330 embedder)", .caps = .{ .local_tools = false } },
+    .{ .name = "no-subagents", .caps = .{ .subagents = false } },
+    .{ .name = "no-todos", .caps = .{ .todos = false } },
+    .{ .name = "no-constraints", .caps = .{ .constraints = false } },
+    .{ .name = "floor", .caps = .{ .local_tools = false, .subagents = false, .todos = false, .constraints = false } },
+};
+
+test "#421 golden: the full-capability root prompt is exactly this, byte for byte" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+
+    try std.testing.expectEqualStrings(golden_full_prompt, prompts.main_system_prompt);
+    // The segment table composes to the same bytes the comptime constant does,
+    // so a reordered or forgotten segment cannot hide behind the fast path.
+    try std.testing.expectEqualStrings(golden_full_prompt, try prompts.composeSegments(a, .{}));
+    // ...and the fast path really is a fast path: full capability allocates nothing.
+    var b_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer b_state.deinit();
+    try std.testing.expectEqualStrings(golden_full_prompt, try prompts.composeBase(b_state.allocator(), .{}));
+    try std.testing.expectEqual(@as(usize, 0), b_state.queryCapacity());
+
+    // The strict/ultra variants still compose ONTO this base rather than
+    // replacing it (#326), which the segmentation must not have disturbed.
+    try std.testing.expect(std.mem.startsWith(u8, prompts.main_system_prompt_strict, golden_full_prompt));
+}
+
+test "#421: an absent capability contributes ZERO instruction text, in every configuration" {
+    for (matrix) |row| {
+        var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer a_state.deinit();
+        const out = try prompts.composeSegments(a_state.allocator(), row.caps);
+
+        var expected: usize = 0;
+        for (prompts.segments) |seg| {
+            if (row.caps.has(seg.gate)) expected += seg.text.len;
+        }
+        std.testing.expectEqual(expected, out.len) catch |err| {
+            std.debug.print("config '{s}': composed {d} bytes, expected {d}\n", .{ row.name, out.len, expected });
+            return err;
+        };
+        // Exact length is necessary but not sufficient: prove each dropped
+        // segment's own bytes are unfindable, and each kept one is still there.
+        for (prompts.segments) |seg| {
+            const present = std.mem.indexOf(u8, out, seg.text) != null;
+            std.testing.expectEqual(row.caps.has(seg.gate), present) catch |err| {
+                std.debug.print("config '{s}': segment '{s}' present={} expected={}\n", .{ row.name, seg.name, present, row.caps.has(seg.gate) });
+                return err;
+            };
+        }
+    }
+}
+
+test "#421: a gated-off capability's tool names disappear from the prompt entirely" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+
+    // #330 embedder mode: bash, read_file, edit_file, write_file and codedb are
+    // hard-removed from every catalog, so no sentence may still name them.
+    const embedder = try prompts.composeSegments(a, .{ .local_tools = false });
+    for ([_][]const u8{ "read_file", "edit_file", "write_file", "codedb", "bash grep", "/trace", "gh issue create", ".graff/traces" }) |dead|
+        try std.testing.expect(std.mem.indexOf(u8, embedder, dead) == null);
+
+    const no_subs = try prompts.composeSegments(a, .{ .subagents = false });
+    for ([_][]const u8{ "subagent tool", "workflow tool", "{{prev}}" }) |dead|
+        try std.testing.expect(std.mem.indexOf(u8, no_subs, dead) == null);
+
+    const no_todos = try prompts.composeSegments(a, .{ .todos = false });
+    try std.testing.expect(std.mem.indexOf(u8, no_todos, "todo_write") == null);
+
+    const no_constraints = try prompts.composeSegments(a, .{ .constraints = false });
+    try std.testing.expect(std.mem.indexOf(u8, no_constraints, "note_constraint") == null);
+
+    // What survives EVERY gate: identity, the two prompt-doctrine lines, the
+    // git/PR discipline, the do-not-discard-work rail, and the closing style.
+    for (matrix) |row| {
+        const out = try prompts.composeSegments(a, row.caps);
+        for ([_][]const u8{
+            "You are a coding agent",
+            "never invent", // #421 doctrine 1: no wrapper APIs, no assumed capabilities
+            "its OWN environment", // #421 doctrine 2: verify where the project lives
+            "## What changed",
+            "Co-Authored-By: Codegraff",
+            "Never run git commands that discard work",
+            "Parallelize tool calls",
+            "Be direct and concise",
+        }) |keep| {
+            std.testing.expect(std.mem.indexOf(u8, out, keep) != null) catch |err| {
+                std.debug.print("config '{s}' lost '{s}'\n", .{ row.name, keep });
+                return err;
+            };
+        }
+    }
+}
+
+test "#421: detectCaps reads the same gates dispatch refuses a call with" {
+    const saved = no_local_tools.enabled;
+    defer no_local_tools.enabled = saved;
+
+    no_local_tools.enabled = false;
+    try std.testing.expect(prompts.detectCaps().full());
+
+    no_local_tools.enabled = true;
+    const caps = prompts.detectCaps();
+    try std.testing.expect(!caps.local_tools);
+    // #330 keeps the orchestration and meta tools: the CHILD inherits the gate,
+    // so the fan-out guidance is still guidance for a tool that exists.
+    try std.testing.expect(caps.subagents);
+    try std.testing.expect(caps.todos);
+    try std.testing.expect(caps.constraints);
+
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const gated = try prompts.baseForSession(a_state.allocator());
+    try std.testing.expect(gated.len < prompts.main_system_prompt.len);
+    try std.testing.expect(std.mem.indexOf(u8, gated, "read_file") == null);
+}
+
+test "#410: the transcript line appears exactly when a durable session exists" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+
+    // No durable session (a subagent, a stub, a future --no-session): no line.
+    try std.testing.expectEqualStrings("", prompts.sessionTranscriptNote(a, ""));
+
+    const note = prompts.sessionTranscriptNote(a, "session-1750000000000");
+    // The path is the one session_index actually writes, not a hand-written twin.
+    try std.testing.expect(std.mem.indexOf(u8, note, try session_index.sessionPath(a, "session-1750000000000")) != null);
+    try std.testing.expect(std.mem.indexOf(u8, note, "lags") != null); // the caveat #410 asks for
+    try std.testing.expect(std.mem.indexOf(u8, note, "JSON object") != null);
+    // NOT JSONL: that is the .graff/traces event stream, a different file. A
+    // wrong format claim costs the model a turn discovering it.
+    try std.testing.expect(std.mem.indexOf(u8, note, "JSONL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, "durable transcript") == null); // session-scoped, never comptime
+}
+
+test "#410: the transcript line rides the funnel, so a persona swap cannot drop it" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+    var agent: agent_mod.Agent = undefined;
+    defer prompts.armSessionTranscript(a, "", .{}); // leave the global as the rest of the suite expects it
+
+    prompts.armSessionTranscript(a, "session-42", .{});
+    try prompts.setSystemPrompts(&agent, "BASE", a);
+    for ([_][]const u8{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |v| {
+        try std.testing.expect(std.mem.indexOf(u8, v, "BASE") != null);
+        try std.testing.expect(std.mem.indexOf(u8, v, "session-42.session.json") != null);
+    }
+    // A later /agent persona or set_system_prompt goes through the same funnel
+    // and keeps it — the #326 staleness class, closed by construction.
+    try prompts.setSystemPrompts(&agent, "PERSONA", a);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_normal, "session-42.session.json") != null);
+    // sys_base stays the pure base: the next refresh composes from it, once.
+    try std.testing.expectEqualStrings("PERSONA", agent.sys_base);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, agent.sys_normal, "session-42.session.json"));
+
+    // Unreadable session file (#330 removed read_file/bash): no line at all.
+    prompts.armSessionTranscript(a, "session-42", .{ .local_tools = false });
+    try prompts.setSystemPrompts(&agent, "BASE", a);
+    try std.testing.expectEqualStrings("BASE", agent.sys_normal);
+}
+
+test "#421: MCP, skill and optional-tool guidance all cost zero when absent" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+
+    // MCP: startup.buildSystemPrompt injects a server's note only when that
+    // server actually connected, and nothing is baked into the base prompt.
+    for (skills.mcp_notes) |mn| {
+        try std.testing.expect(!skills.mcpServerConnected(&.{}, mn.server));
+        try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, mn.note) == null);
+    }
+    // Markdown skills: an empty catalog is the empty string, not a header.
+    try std.testing.expectEqualStrings("", skill_docs.promptCatalog(a, &.{}));
+    // #352 optional tools: no availability, no advertisement, and the base
+    // prompt never mentions imagegen either way (its guidance is the skill).
+    const saved = imagegen.available;
+    defer imagegen.available = saved;
+    imagegen.available = false;
+    try std.testing.expect(!tool_gates.advertised(imagegen.tool_name));
+    try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, "imagegen") == null);
+}
+
+test "#421: goal steering is empty outside a goal run" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+    try std.testing.expectEqualStrings("", try repl_glue.goalSteeringNote(a, null));
+    // ...and a goal that is no longer active steers nobody either (#223).
+    try std.testing.expectEqualStrings("", try repl_glue.goalSteeringNote(a, .{ .objective = "ship it", .status = .complete }));
+    try std.testing.expect((try repl_glue.goalSteeringNote(a, .{ .objective = "ship it", .status = .active })).len > 0);
+}

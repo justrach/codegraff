@@ -298,6 +298,7 @@ fn stubRoot(gpa: std.mem.Allocator, arena: std.mem.Allocator, out: *Io.Writer) A
         .sub = false,
         .label = "test",
         .out = out,
+        .session_name = "", // #410: a scratch stub has no durable session, so setRootSystemPrompts stays a pure string funnel here
     };
 }
 

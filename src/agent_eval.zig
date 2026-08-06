@@ -28,6 +28,7 @@ const playbook_reflect = @import("playbook_reflect.zig"); // #383 Reflector: one
 const orch_rows = @import("orchestration_rows.zig"); // the orchestration outcome rides the same score funnel
 const shapes = @import("shapes.zig");
 const failure_evidence = @import("failure_evidence.zig"); // a RED verdict is parked as escalation evidence
+const verify_fingerprint = @import("verify_fingerprint.zig"); // #412 no-progress guard: an unmoved worktree is not re-verified
 
 test {
     _ = @import("agent_eval_tests.zig");
@@ -42,6 +43,21 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
         .text = "no eval command configured - relaunch graff with --eval <scoring cmd> and --until <N>, or ask the user to set one",
         .is_error = true,
     };
+
+    // #412 no-progress guard. The tree the verifier is about to run against is
+    // fingerprinted BEFORE the command runs (the command itself may write), and
+    // when the last verdict was RED over a byte-identical tree the verifier is
+    // not run at all: nothing it could report can have changed, so the whole
+    // scoring command, its judge model call and its output tail are saved and
+    // the model is steered at the real blocker instead. The attempt still
+    // counts - a model that keeps calling eval without editing has to converge
+    // on the iteration cap, not spin for free. Unknown (no repo, git error,
+    // truncated probe) never matches, so the guard fails open.
+    const tree_fp = verify_fingerprint.capture(self.gpa, self.io, cmd);
+    if (verify_fingerprint.skipReverify(self.eval_repair_pending, self.eval_fp, tree_fp)) {
+        self.eval_iter += 1;
+        return .{ .text = try verify_fingerprint.noProgressText(self.arena, self.eval_iter), .is_error = true };
+    }
 
     // Behavioral commitment (issue #256): the eval-driven loop is the first
     // production caller of turn_committed/model_mispredicted. The commitment
@@ -64,6 +80,11 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
         if (behavior) |bt| bt.recordMisprediction(eval_turn, commitment_id, .{ .pass = true }, .{ .pass = false, .exit = @as(i32, -1) }, "eval command could not run");
         self.eval_verified = false;
         self.eval_repair_pending = true;
+        // #412: a command that never ran is not a verdict about the workspace,
+        // and "edit source files" is not the fix for it - disarm the guard so
+        // the next call really does try the command again (and so a fingerprint
+        // left by an earlier RED cannot suppress it).
+        self.eval_fp = null;
         eval_memory.record(self, note, null, -1, false);
         return .{ .text = try std.fmt.allocPrint(self.arena, "eval command could not run: {t}", .{e}), .is_error = true };
     };
@@ -104,6 +125,10 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
     const met = if (combined) |s| s >= target_f else false;
     self.eval_repair_pending = exit_code != 0 or !met;
     self.eval_verified = !self.eval_repair_pending;
+    // #412: a RED remembers the tree it failed on, so the next eval over that
+    // same tree is skipped; a green forgets it, because the next RED must be
+    // measured against its own tree and never against a stale one.
+    self.eval_fp = if (self.eval_repair_pending) tree_fp else null;
     // A RED verdict is harness ground truth about a FAILED attempt: park a
     // capped excerpt so the next escalation decision carries the evidence
     // (the R0d revision advisory, or an R3 fleet's briefs).

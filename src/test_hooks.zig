@@ -130,6 +130,16 @@ const credential_store = @import("credential_store.zig");
 const engine_events = @import("engine_events.zig");
 const engine_sink = @import("engine_sink.zig");
 
+// #412: the worktree fingerprint behind the no-progress verify guard.
+// agent_eval.zig reaches it through a CALL only, which analyses nothing.
+const verify_fingerprint = @import("verify_fingerprint.zig");
+
+// #413: process START identity, the half of a lock owner record a recycled pid
+// cannot forge. session_lock.zig and worktree_lease.zig reach it only through
+// calls, and it is the kind of module whose tests must never go quiet: every
+// cross-process lock in graff decides "stale or held" with it.
+const proc_identity = @import("proc_identity.zig");
+
 test {
     _ = learn_holdout;
     _ = learn_receipt;
@@ -169,6 +179,8 @@ test {
     _ = credential_store;
     _ = engine_events;
     _ = engine_sink;
+    _ = verify_fingerprint;
+    _ = proc_identity;
     _ = escalation;
     _ = escalation_tests;
     _ = edit_contract;

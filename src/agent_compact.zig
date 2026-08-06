@@ -17,6 +17,12 @@ const goal_flow = @import("goal_flow.zig");
 const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
 
+// #409: the per-output cap's truncation primitives, plus the artifact spill that
+// now runs inside them. Moved out of this file, which sits at the 600-line cap.
+const tool_spill = @import("tool_spill.zig");
+const isToolOutputMsg = tool_spill.isToolOutputMsg;
+const truncateToolOutput = tool_spill.truncateToolOutput;
+
 const title_mod = @import("title.zig");
 const assistantText = title_mod.assistantText;
 
@@ -366,56 +372,6 @@ pub fn emergencyCutIndex(items: []const Value) ?usize {
     return null;
 }
 
-/// True if `m` is a tool-output message whose payload can be truncated to
-/// reclaim context: responses `function_call_output`, openai `role:"tool"`, or an
-/// anthropic user message carrying `tool_result` blocks (#163).
-fn isToolOutputMsg(m: Value) bool {
-    if (m != .object) return false;
-    if (m.object.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "function_call_output")) return true;
-    if (m.object.get("role")) |r| if (r == .string) {
-        if (std.mem.eql(u8, r.string, "tool")) return true;
-        if (std.mem.eql(u8, r.string, "user")) if (m.object.get("content")) |c| if (c == .array)
-            for (c.array.items) |blk| {
-                if (blk == .object) if (blk.object.get("type")) |bt|
-                    if (bt == .string and std.mem.eql(u8, bt.string, "tool_result")) return true;
-            };
-    };
-    return false;
-}
-
-fn truncateStrField(arena: Allocator, o: *std.json.ObjectMap, key: []const u8, cap: usize, note: []const u8) usize {
-    const v = o.get(key) orelse return 0;
-    if (v != .string or v.string.len <= cap) return 0;
-    const orig = v.string.len;
-    // Keep the prefix short enough that prefix + '\n' + note <= cap, so the marker
-    // never grows an output that was only barely over the cap.
-    const stub = std.fmt.allocPrint(arena, "{s}\n{s}", .{ utf8Prefix(v.string, cap -| (note.len + 1)), note }) catch return 0;
-    o.put(arena, key, .{ .string = stub }) catch return 0;
-    return orig -| stub.len;
-}
-
-/// Truncate an over-large tool-output payload in `m` in place to ~`cap` bytes,
-/// preserving the message and its call/output pairing. Returns bytes reclaimed.
-fn truncateToolOutput(arena: Allocator, m: *Value, cap: usize, note: []const u8) usize {
-    if (m.* != .object) return 0;
-    if (m.object.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "function_call_output"))
-        return truncateStrField(arena, &m.object, "output", cap, note);
-    if (m.object.get("role")) |r| if (r == .string) {
-        if (std.mem.eql(u8, r.string, "tool")) return truncateStrField(arena, &m.object, "content", cap, note);
-        if (std.mem.eql(u8, r.string, "user")) if (m.object.get("content")) |c| if (c == .array) {
-            var saved: usize = 0;
-            for (m.object.get("content").?.array.items) |*blk| {
-                if (blk.* != .object) continue;
-                const bt = blk.object.get("type") orelse continue;
-                if (bt == .string and std.mem.eql(u8, bt.string, "tool_result"))
-                    saved += truncateStrField(arena, &blk.object, "content", cap, note);
-            }
-            return saved;
-        };
-    };
-    return 0;
-}
-
 /// Re-pair the meter after removing locally measurable context. The server-only
 /// delta remains intact, while the current local component reflects the trim.
 fn accountForReclaimedTokens(self: *Agent, reclaimed_tokens: u64) void {
@@ -447,7 +403,7 @@ pub fn trimOldestToolOutputsAlloc(self: *Agent, arena: Allocator) usize {
         if (!isToolOutputMsg(m.*)) continue;
         seen += 1;
         if (seen > total - keep_recent) break; // keep the most recent verbatim
-        reclaimed += truncateToolOutput(arena, m, stub_cap, "[old tool output truncated to recover context (#163)]");
+        reclaimed += truncateToolOutput(arena, m, stub_cap, .{ .fallback = "[old tool output truncated to recover context (#163)]" });
     }
     accountForReclaimedContext(self, reclaimed);
     return reclaimed;
@@ -467,12 +423,22 @@ pub fn trimOldestToolOutputs(self: *Agent) usize {
 /// the most-recent outputs verbatim. Cap is window-proportional (Provider.perOutputCap)
 /// so large-context models keep full results untouched. Preserves every call/output
 /// pairing (shrinks strings, never drops a message). Returns bytes reclaimed.
+///
+/// #409: the elided bytes are no longer destroyed. When this agent has a durable
+/// session, each oversized output is written to that session's artifact dir
+/// first and the marker cites the absolute path and the full byte count, so the
+/// model can read or grep the slice it needs instead of re-running the tool. A
+/// subagent (no persisted history) keeps the plain truncation below.
 pub fn capOversizedToolOutputs(self: *Agent, cap: usize) usize {
     if (cap == 0) return 0;
+    const note: tool_spill.Note = .{
+        .fallback = "[tool output truncated: over this model's per-result cap — read/fetch a smaller range (#193)]",
+        .session = tool_spill.sessionFor(self.sub, self.session_name),
+    };
     var reclaimed: usize = 0;
     for (self.messages.items) |*m| {
         if (isToolOutputMsg(m.*))
-            reclaimed += truncateToolOutput(self.messageMutationAlloc(), m, cap, "[tool output truncated: over this model's per-result cap — read/fetch a smaller range (#193)]");
+            reclaimed += truncateToolOutput(self.messageMutationAlloc(), m, cap, note);
     }
     // These outputs are appended after the prior response's usage was recorded,
     // so reclaimed bytes were never part of that authoritative server reading.

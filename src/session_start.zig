@@ -38,6 +38,7 @@ const mcp = @import("mcp.zig");
 const mcp_cli = @import("mcp_cli.zig");
 const mcp_config = @import("mcp_config.zig");
 const jobs = @import("jobs.zig");
+const tool_spill = @import("tool_spill.zig"); // #409: where an over-cap tool output's full bytes go
 const trace = @import("trace.zig");
 const scoring = @import("scoring.zig");
 const telemetry = @import("telemetry.zig");
@@ -128,6 +129,12 @@ pub fn setupWorktreeAndBanner(
         try arena.dupe(u8, cwd_buf[0..n])
     else |_|
         try arena.dupe(u8, environ_map.get("PWD") orelse ".");
+    // #409: the oversized-tool-output cap spills the full bytes into this
+    // workspace before eliding them. Wired here because this is where the cwd
+    // (post `-w` chdir) is first known absolutely, and the marker hands the
+    // model an ABSOLUTE path. Left unwired in tests, where the cap stays the
+    // pre-#409 plain truncation.
+    tool_spill.enable(.{ .io = io, .dir = .cwd(), .base_abs = main_mod.g_cwd_display });
 
     if (!main_mod.json_mode and flags.oneshot_prompt == null) {
         try out.print("{s}codegraff{s} · folder: {s}{s}{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, style.accent, main_mod.g_cwd_display, style.reset, trace_path });

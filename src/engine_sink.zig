@@ -14,7 +14,12 @@
 //! - JsonSink: the existing --json wire lines for these events,
 //!   byte-identical to the old inline emits. The ONE translation point from
 //!   internal type to wire shape: any change here is externally visible and
-//!   gated behind a schema_version bump.
+//!   gated behind a schema_version bump. Not yet the ONLY producer of those
+//!   shapes, though: subagent_run.zig's guiEmit writes `tool_call`/
+//!   `tool_result` rows with an extra `id` (schema_protocol.zig) straight to
+//!   stdout, bypassing this sink. Routing them through it needs an optional
+//!   `id` on ToolInvocation/ToolOutcome — decide that when #429 takes the
+//!   subagent cluster, while these structs are still cheap to change.
 //!
 //! Events are stamped with a {generation, sequence} Cursor at the dispatch
 //! boundary. In --json mode (the only durable sink today), durable events
@@ -36,6 +41,7 @@ const engine_events = @import("engine_events.zig");
 const EngineEvent = engine_events.EngineEvent;
 const protocol_seq = @import("protocol_seq.zig");
 const render = @import("agent_stream_render.zig");
+const tool_render = @import("agent_tool_render.zig"); // slice 1c: the tool cluster's terminal half
 const tick_gate = @import("tick_gate.zig"); // #tui-tick: child ticks wait for a foreground line boundary
 
 /// An event plus its position, as delivered to a sink.
@@ -60,11 +66,11 @@ pub const EngineSink = struct {
     /// The emission boundary: stamp, then hand off. `io` backs the stdout
     /// lock, taken only when a durable sink reserves AND json_mode is on —
     /// a global, so `io` may be passed undefined only where json_mode is
-    /// known false (TUI dispatch; the tests here pin it). Durable emitters
-    /// must not emit durable events a sink will drop (jsonEmit returns on
-    /// out == null): the reserved id would burn with no wire line, opening
-    /// a seq gap (#330). Today printDelta guarantees that by returning
-    /// early when out == null, before any durable emission.
+    /// known false (TUI dispatch; the tests here pin it). A durable sink must
+    /// never be handed an event it will drop: the reserved id would burn with
+    /// no wire line, opening a seq gap (#330). jsonSink enforces that at
+    /// construction — an agent with no writer gets a non-durable vtable — so
+    /// emitters need no `out == null` guard of their own.
     pub fn emit(self: EngineSink, io: Io, ev: EngineEvent) void {
         const reserve = self.vt.durable and engine_events.durable(ev);
         if (reserve and main_mod.json_mode) {
@@ -90,12 +96,21 @@ pub fn tuiSink(a: *Agent) EngineSink {
     return .{ .ctx = a, .vt = &tui_vtable };
 }
 
+/// The --json wire, for an agent that HAS one. A frontendless agent — a
+/// pool-thread subagent (subagent_run.zig builds every child with
+/// `.out = null`) or the ACP root (acp.zig nulls it while json_mode is on) —
+/// gets the same emitter but a NON-durable vtable: jsonEmit drops every line
+/// for it, and a durable sink would have reserved a sequence id for each of
+/// those dropped lines, opening exactly the gap #330 promises cannot exist.
+/// Structural, so no emitter has to re-derive the rule per call site.
 pub fn jsonSink(a: *Agent) EngineSink {
-    return .{ .ctx = a, .vt = &json_vtable };
+    return .{ .ctx = a, .vt = if (a.out == null) &json_dropped_vtable else &json_vtable };
 }
 
 const tui_vtable: VTable = .{ .emit = tuiEmit, .durable = false };
 const json_vtable: VTable = .{ .emit = jsonEmit, .durable = true };
+/// Same writer, nothing to write to: see jsonSink.
+const json_dropped_vtable: VTable = .{ .emit = jsonEmit, .durable = false };
 
 /// Today's interactive rendering, relocated behind the event contract. Every
 /// branch is the old inline agent_stream.zig code path, gate for gate.
@@ -171,6 +186,18 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
             render.closeThinkingBlock(a); // a reasoning-only turn still closes its block
             render.spinnerStop(a);
         },
+        // The tool cluster (slice 1c). Its drawing lives in agent_tool_render,
+        // the one file down here that still reaches the palette; the moments
+        // the terminal never drew (the dispatch/close brackets, refusals) are
+        // silent rather than absent from the vocabulary.
+        .tool_call_announced => |t| tool_render.toolUseLine(a, t),
+        .tool_result => |r| tool_render.toolResultLine(a, r),
+        .tool_call_started, .tool_call_finished, .tool_rejected => {},
+        .parallel_batch_started => |b| tool_render.parallelBatchStarted(a, b.count),
+        .parallel_batch_finished => |b| tool_render.parallelBatchFinished(a, b),
+        .completion_deferred => tool_render.completionDeferred(a),
+        .goal_completed => tool_render.goalCompleted(a),
+        .completion_text, .todo_list_updated => |t| tool_render.toolTextLine(a, t.text),
     }
 }
 
@@ -186,19 +213,35 @@ fn notice(a: *Agent, text: []const u8) void {
 fn jsonEmit(ctx: *anyopaque, ev: Stamped) void {
     const a: *Agent = @ptrCast(@alignCast(ctx));
     const w = a.out orelse return;
+    // The invariant that keeps #330's numbering gap-free: this sink writes a
+    // line for EXACTLY the events engine_events.durable() claims, so a
+    // reserved id can never end up with nothing behind it. Payload-dependent
+    // durability (ask_user's bracket, a meta tool's result) is decided there,
+    // once, rather than re-derived per branch below.
+    //
+    // Stream end/abort still flushes the held render tail, as the old inline
+    // path did in EVERY mode. (Slice 1b correction to this note: tool-arg
+    // prose CANNOT dirty md state here — argLiveDelta has always gated --json
+    // off, and this sink drops .tool_arg_delta — so with .text_delta going to
+    // the wire the tail is clean and the flush adds no bytes today. It stays
+    // because removing a wire-visible behavior, however latent, is a
+    // deliberate schema-gated change, not refactor fallout.)
+    if (!engine_events.durable(ev.event)) return switch (ev.event) {
+        .stream_aborted, .stream_complete => a.flushStreamTail(),
+        else => {},
+    };
     switch (ev.event) {
         .reasoning_delta => |d| jsonLine(w, ev.cursor, .{ .type = "reasoning", .text = d.text }),
         .text_delta => |d| jsonLine(w, ev.cursor, .{ .type = "text", .text = d.text }),
-        // Stream end/abort still flushes the held render tail, as the old
-        // inline path did in EVERY mode. (Slice 1b correction to this note:
-        // tool-arg prose CANNOT dirty md state here — argLiveDelta has always
-        // gated --json off, and this sink drops .tool_arg_delta — so with
-        // .text_delta going to the wire the tail is clean and the flush adds
-        // no bytes today. It stays because removing a wire-visible behavior,
-        // however latent, is a deliberate schema-gated change, not refactor
-        // fallout.)
-        .stream_aborted, .stream_complete => a.flushStreamTail(),
-        else => {},
+        .tool_call_announced => |t| jsonLine(w, ev.cursor, .{ .type = "tool_call", .name = t.name, .input = t.input }),
+        .tool_call_started => |t| jsonLine(w, ev.cursor, .{ .type = "tool_call_started", .name = t.name, .input = t.input }),
+        .tool_result => |r| jsonLine(w, ev.cursor, .{ .type = "tool_result", .name = r.name, .is_error = r.is_error, .text = r.text }),
+        .tool_call_finished => |r| jsonLine(w, ev.cursor, .{ .type = "tool_call_finished", .name = r.name, .is_error = r.is_error, .ms = r.ms }),
+        .tool_rejected => |r| jsonLine(w, ev.cursor, .{ .type = "tool_rejected", .name = r.name, .reason = r.reason, .input = r.input, .message = r.message }),
+        // Unreachable: durable() gated every other tag out above. Kept as a
+        // hard stop so a NEW durable variant cannot silently reach the wire
+        // without a shape — that would burn its id on nothing (#330).
+        else => @panic("engine_sink: durable event with no wire shape"),
     }
 }
 
@@ -252,6 +295,23 @@ test "a presentation sink never reserves sequence ids" {
     try std.testing.expectEqual(@as(u64, 0), protocol_seq.current());
 }
 
+/// The Agent shape every sink test renders through: allocator-backed, rooted
+/// (not a subagent), writing into the caller's buffer. `io` stays undefined —
+/// dispatch only touches it under the --json lock, which these tests pin off.
+fn testAgent(w: *Io.Writer) Agent {
+    return .{
+        .gpa = std.testing.allocator,
+        .arena = std.testing.allocator,
+        .io = undefined,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = w,
+    };
+}
+
 fn recordEmit(ctx: *anyopaque, ev: Stamped) void {
     const rec: *std.ArrayList(Stamped) = @ptrCast(@alignCast(ctx));
     rec.append(std.testing.allocator, ev) catch @panic("OOM");
@@ -265,17 +325,7 @@ test "JsonSink writes today's wire lines byte-for-byte" {
     defer protocol_seq.resetForTest();
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
-    var a: Agent = .{
-        .gpa = std.testing.allocator,
-        .arena = std.testing.allocator,
-        .io = undefined,
-        .client = undefined,
-        .provider = undefined,
-        .messages = undefined,
-        .sub = false,
-        .label = "test",
-        .out = &aw.writer,
-    };
+    var a = testAgent(&aw.writer);
     const s = jsonSink(&a);
     s.emit(undefined, .{ .reasoning_delta = .{ .text = "why" } });
     s.emit(undefined, .{ .text_delta = .{ .text = "hi\n" } });
@@ -295,17 +345,7 @@ test "TuiSink streams tool-arg prose raw and never ends the answer line (slice 1
     defer main_mod.use_color = saved_color;
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
-    var a: Agent = .{
-        .gpa = std.testing.allocator,
-        .arena = std.testing.allocator,
-        .io = undefined,
-        .client = undefined,
-        .provider = undefined,
-        .messages = undefined,
-        .sub = false,
-        .label = "test",
-        .out = &aw.writer,
-    };
+    var a = testAgent(&aw.writer);
     const s = tuiSink(&a);
     s.emit(undefined, .{ .tool_arg_delta = .{ .text = "answer " } });
     s.emit(undefined, .{ .tool_arg_delta = .{ .text = "prose" } });
@@ -317,17 +357,7 @@ test "TuiSink streams tool-arg prose raw and never ends the answer line (slice 1
 test "TuiSink transport-abort notices reproduce the old inline lines (slice 1b)" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
-    var a: Agent = .{
-        .gpa = std.testing.allocator,
-        .arena = std.testing.allocator,
-        .io = undefined,
-        .client = undefined,
-        .provider = undefined,
-        .messages = undefined,
-        .sub = false,
-        .label = "test",
-        .out = &aw.writer,
-    };
+    var a = testAgent(&aw.writer);
     const s = tuiSink(&a);
     const cases = [_]struct { ev: engine_events.TransportAbort, want: []const u8 }{
         .{ .ev = .{ .reason = .stalled, .turn_ending = false }, .want = "\n⚠ stream stalled\n" },
@@ -352,17 +382,7 @@ test "JsonSink stays silent for moments the wire never carried (slice 1b)" {
     defer protocol_seq.resetForTest();
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
-    var a: Agent = .{
-        .gpa = std.testing.allocator,
-        .arena = std.testing.allocator,
-        .io = undefined,
-        .client = undefined,
-        .provider = undefined,
-        .messages = undefined,
-        .sub = false,
-        .label = "test",
-        .out = &aw.writer,
-    };
+    var a = testAgent(&aw.writer);
     const s = jsonSink(&a);
     s.emit(undefined, .{ .tool_arg_delta = .{ .text = "prose" } });
     s.emit(undefined, .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = true } });
@@ -373,20 +393,132 @@ test "JsonSink stays silent for moments the wire never carried (slice 1b)" {
     try std.testing.expectEqual(@as(u64, 0), protocol_seq.current());
 }
 
+test "JsonSink writes the tool bracket byte-for-byte, in wire order (slice 1c)" {
+    const saved_json = main_mod.json_mode; // pin: see the dispatch-order test
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
+    protocol_seq.resetForTest();
+    defer protocol_seq.resetForTest();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+    const s = jsonSink(&a);
+
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"path\":\"fixture.txt\"}", .{});
+    const call: engine_events.ToolInvocation = .{ .name = "read_file", .input = input };
+    const done: engine_events.ToolOutcome = .{ .name = "read_file", .text = "hi", .is_error = false, .ms = 7 };
+    s.emit(undefined, .{ .tool_call_announced = call });
+    s.emit(undefined, .{ .tool_call_started = call });
+    s.emit(undefined, .{ .tool_result = done });
+    s.emit(undefined, .{ .tool_call_finished = done });
+    s.emit(undefined, .{ .tool_rejected = .{ .name = "bash", .input = input, .reason = "budget", .message = "no" } });
+    try std.testing.expectEqualStrings(
+        "{\"seq\":1,\"type\":\"tool_call\",\"name\":\"read_file\",\"input\":{\"path\":\"fixture.txt\"}}\n" ++
+            "{\"seq\":2,\"type\":\"tool_call_started\",\"name\":\"read_file\",\"input\":{\"path\":\"fixture.txt\"}}\n" ++
+            "{\"seq\":3,\"type\":\"tool_result\",\"name\":\"read_file\",\"is_error\":false,\"text\":\"hi\"}\n" ++
+            "{\"seq\":4,\"type\":\"tool_call_finished\",\"name\":\"read_file\",\"is_error\":false,\"ms\":7}\n" ++
+            "{\"seq\":5,\"type\":\"tool_rejected\",\"name\":\"bash\",\"reason\":\"budget\",\"input\":{\"path\":\"fixture.txt\"},\"message\":\"no\"}\n",
+        aw.writer.buffered(),
+    );
+}
+
+test "JsonSink drops ask_user's bracket and a meta result without burning ids (slice 1c)" {
+    const saved_json = main_mod.json_mode; // pin: see the dispatch-order test
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
+    protocol_seq.resetForTest();
+    defer protocol_seq.resetForTest();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+    const s = jsonSink(&a);
+
+    const ask: engine_events.ToolInvocation = .{ .name = "ask_user", .input = .null, .ask_user = true };
+    s.emit(undefined, .{ .tool_call_announced = ask }); // the wire's `ask_user` event carries this moment
+    s.emit(undefined, .{ .tool_call_started = ask });
+    s.emit(undefined, .{ .tool_result = .{ .name = "todo_write", .text = "todos", .is_error = false, .meta = true } });
+    s.emit(undefined, .{ .parallel_batch_started = .{ .count = 2 } }); // TUI-only notices
+    s.emit(undefined, .completion_deferred);
+    s.emit(undefined, .{ .completion_text = .{ .text = "done" } });
+    // No line AND no id spent: the wire's numbering stays gap-free (#330).
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+    try std.testing.expectEqual(@as(u64, 0), protocol_seq.current());
+
+    // ask_user's own RESULT is on the wire, though — the typed reply is it.
+    s.emit(undefined, .{ .tool_result = .{ .name = "ask_user", .text = "yes", .is_error = false, .meta = true, .ask_user = true } });
+    try std.testing.expectEqualStrings(
+        "{\"seq\":1,\"type\":\"tool_result\",\"name\":\"ask_user\",\"is_error\":false,\"text\":\"yes\"}\n",
+        aw.writer.buffered(),
+    );
+}
+
+test "a frontendless agent's wire sink burns no ids for the lines it cannot write (#330)" {
+    const saved_json = main_mod.json_mode; // pin: see the dispatch-order test
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
+    protocol_seq.resetForTest();
+    defer protocol_seq.resetForTest();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+    a.out = null; // a pool-thread subagent, or the ACP root: nowhere to write
+    const s = jsonSink(&a);
+    try std.testing.expect(!s.vt.durable); // the guarantee is structural, not per-call-site
+
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"path\":\"f\"}", .{});
+    const call: engine_events.ToolInvocation = .{ .name = "read_file", .input = input };
+    const done: engine_events.ToolOutcome = .{ .name = "read_file", .text = "hi", .is_error = false };
+    s.emit(undefined, .{ .tool_call_announced = call });
+    s.emit(undefined, .{ .tool_call_started = call });
+    s.emit(undefined, .{ .tool_result = done });
+    s.emit(undefined, .{ .tool_call_finished = done });
+    s.emit(undefined, .{ .tool_rejected = .{ .name = "bash", .input = input, .reason = "budget", .message = "no" } });
+    s.emit(undefined, .{ .text_delta = .{ .text = "hi" } });
+    // Every one of those would have been a wire line for a rooted agent. With
+    // no writer there is no line, so there must be no id either: a supervisor
+    // reads a gap as lost data.
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+    try std.testing.expectEqual(@as(u64, 0), protocol_seq.current());
+}
+
+test "TuiSink draws the ⚙ and ✓ lines and nothing for the brackets (slice 1c)" {
+    const saved_color = main_mod.use_color;
+    main_mod.use_color = false;
+    defer main_mod.use_color = saved_color;
+    const saved_json = main_mod.json_mode; // sayText's root gate reads it
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
+    const ansi = @import("ansi.zig");
+    const saved_style = ansi.style;
+    ansi.style = .{}; // assert the text, not the palette
+    defer ansi.style = saved_style;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+    const s = tuiSink(&a);
+
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"path\":\"fixture.txt\"}", .{});
+    const call: engine_events.ToolInvocation = .{ .name = "read_file", .input = input };
+    const done: engine_events.ToolOutcome = .{ .name = "read_file", .text = "line one\nline two\n", .is_error = false };
+    s.emit(undefined, .{ .tool_call_announced = call });
+    s.emit(undefined, .{ .tool_call_started = call }); // silent: the ⚙ line already said it
+    s.emit(undefined, .{ .tool_result = done });
+    s.emit(undefined, .{ .tool_call_finished = done }); // silent
+    s.emit(undefined, .{ .tool_rejected = .{ .name = "bash", .input = input, .reason = "budget", .message = "no" } }); // silent
+    // Exactly the two lines the eval golden's tool turn shows.
+    try std.testing.expectEqualStrings("⚙ read_file {\"path\":\"fixture.txt\"}\n  ✓ line one…\n", aw.writer.buffered());
+}
+
 test "TuiSink renders a plain text delta exactly as the no-color TTY did" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
-    var a: Agent = .{
-        .gpa = std.testing.allocator,
-        .arena = std.testing.allocator,
-        .io = undefined,
-        .client = undefined,
-        .provider = undefined,
-        .messages = undefined,
-        .sub = false,
-        .label = "test",
-        .out = &aw.writer,
-    };
+    var a = testAgent(&aw.writer);
     const s = tuiSink(&a);
     s.emit(undefined, .{ .text_delta = .{ .text = "plain\n" } });
     try std.testing.expectEqualStrings("plain\n", aw.writer.buffered());

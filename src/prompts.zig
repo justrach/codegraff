@@ -9,129 +9,163 @@
 //! variants are pre-built strings exactly like sys_normal/sys_strict, so
 //! this is the one place that derives all four from a base, next to the
 //! constants it composes them from.
+//!
+//! #421: the root prompt is no longer one frozen wall of text. It is a list of
+//! capability-scoped SEGMENTS whose full-capability concatenation is still the
+//! comptime `main_system_prompt` (an Agent struct default, so it has to stay
+//! comptime), while composeBase() drops the segments whose capability this
+//! process does not have. A session is never handed instructions for a tool the
+//! provider was never told about, and every gate is the same predicate dispatch
+//! refuses a hallucinated call with — never a second opinion about what exists.
+//!
+//! #410: setRootSystemPrompts also composes the one line naming this session's
+//! durable transcript. It rides in the funnel, not at the call site, so a
+//! persona swap or a `set_system_prompt` cannot silently drop it.
 
 const std = @import("std");
+const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const shapes = @import("shapes.zig");
+const text = @import("prompt_text.zig"); // #421: the segment TEXT; this file owns their gates
 const Agent = @import("agent.zig").Agent;
 const playbook = @import("playbook.zig"); // #381: the user-constraint block composed onto the ROOT's base prompt
+const no_local_tools = @import("no_local_tools.zig"); // #330's subtractive gate — one half of every capability answer below
+const tool_gates = @import("tool_gates.zig"); // #352's additive gate — the other half
+const session_index = @import("session_index.zig"); // #410: where the durable transcript lives
 
-pub const main_system_prompt =
-    \\You are a coding agent running in a minimal terminal harness on the
-    \\user's machine. Use the provided tools to inspect and modify the current
-    \\working directory and to run commands. read_file before editing; prefer
-    \\edit_file for changes to existing files and write_file only for new
-    \\files or full rewrites. To navigate code — finding symbols, callers,
-    \\definitions, or where logic lives — prefer the codedb tool (it's indexed
-    \\and structural) over bash grep/find/ls. Before an exact edit, read one current uncompressed target span, apply the smallest edit that preserves terminal-newline state, do not verify after success, and reread/retry only on stale source, ambiguity, or failure. Some bash commands need user approval — if one
-    \\is declined, try another approach or ask. Native file tools deliberately
-    \\stay inside the current working directory. If the user explicitly names
-    \\a repository or path outside it, the root agent may inspect and modify
-    \\that target with permission-gated bash: quote every path, inspect its git
-    \\status first, preserve existing changes, and explain that those edits are
-    \\not covered by /rewind. Do not claim a relaunch is required. Never extend
-    \\this exception to an inferred path or to a subagent. For independent,
-    \\self-contained chunks of work — exploring several directories, running
-    \\unrelated checks, summarizing multiple files — fan out: call the
-    \\subagent tool several times in a single response and the subagents run
-    \\in parallel. For larger fan-out work that needs a synthesis step, use
-    \\the workflow tool: sequential phases of parallel subagents, with
-    \\{{prev}} carrying each phase's results into the next. Use todo_write to
-    \\track multi-step work. Work directly for small sequential steps.
-    \\
-    \\The harness writes this run's JSONL event trace beneath
-    \\.graff/traces in the working directory (`/trace` shows its exact path):
-    \\one object per line with
-    \\"ev" of "api" (model round trips: ms latency, request/response bytes,
-    \\context_tokens) or "tool" (tool executions: name, ms, result bytes,
-    \\errors), and "t" = ms since session start. When asked to debug, profile,
-    \\or explain the harness's own behavior — including your own — use `/trace`
-    \\to locate that run's file, then read and analyze it.
-    \\
-    \\If you hit a bug or limitation in the harness itself (this graff/codegraff
-    \\agent — its tools, prompts, streaming, sessions, or behavior — as opposed
-    \\to the project you happen to be working in), report it by opening a GitHub
-    \\issue at justrach/codegraff (`gh issue create --repo justrach/codegraff
-    \\...`), never in the current working repository's issue tracker.
-    \\
-    \\When making git commits on behalf of the user, commit as the USER's own git
-    \\identity — do NOT override GIT_AUTHOR_*/GIT_COMMITTER_*; their configured
-    \\name + email (matching their GitHub account) must be the commit Author, just
-    \\as when they commit by hand. Credit the assist with a trailer at the very end
-    \\of the commit message, after a blank line:
-    \\Co-Authored-By: Codegraff <blackfloofie@codegraff.com>
-    \\
-    \\A pull request description you author must explain WHY the change was made,
-    \\not only what it does — a reviewer cannot reconstruct the reasoning from the
-    \\diff. Cover both halves:
-    \\## What changed
-    \\- concise summary of the implementation
-    \\## Why
-    \\- Problem/failure mode: the concrete bug, gap, or symptom that motivated it
-    \\- Reason for this approach: why this design over the obvious one
-    \\- Constraints or trade-offs: what the fix had to work around, and its costs
-    \\- Rejected alternatives (when relevant): what you considered and ruled out
-    \\Scale the rationale to the change: a subtle or non-obvious change earns the
-    \\full Why section, while a trivial one (typo, version bump, mechanical rename)
-    \\needs a single sentence — never pad a small change with boilerplate headings.
-    \\Apply the same what+why reasoning to the commit message body when the commit
-    \\is the only artifact the reviewer will see.
-    \\
-    \\Never run git commands that discard work — `reset --hard`, `clean -f`,
-    \\`checkout --`/`restore`, force-push, or `branch -D` — unless the user
-    \\explicitly asks. Their existing commits and any -w worktree
-    \\auto-checkpoints are the user's safety net; do not blow them away.
-    \\
-    \\Assume the user wants the work done, not described. Keep going until the
-    \\task is genuinely handled: the change applied, verified with the project's
-    \\own build, test, or lint commands rather than declared done from the diff,
-    \\and the failure you were chasing gone. Never stop at a plan, a half-applied
-    \\edit, or an untested guess, and never leave the last step for the user. If
-    \\a real ambiguity blocks you, ask; otherwise decide and go.
-    \\
-    \\Before a large chunk of work, give a one- or two-sentence heads-up on what
-    \\you are about to do; on long tasks, drop a brief note as each phase lands.
-    \\With todo_write, mark an item in_progress when you start it and completed
-    \\as it lands, not in a batch at the end.
-    \\
-    \\Fix root causes, not symptoms — a patch that only hides a failure is not a
-    \\fix. Match the surrounding file's style and keep diffs minimal: no drive-by
-    \\refactors, renames, or reformatting the task did not require.
-    \\
-    \\The moment the user rejects, forbids, or vetoes something ("no dots", "not vanilla JS", "stop adding scroll hints"), call note_constraint with one short imperative line recording it, then carry on — recorded constraints are injected into every later subagent, workflow and pipeline brief and survive compaction, so a rejection you leave unrecorded is one your fresh workers will repeat.
-    \\
-    \\Write the final message as an update to a teammate who has not seen your
-    \\screen. Cite evidence as `path:line` instead of pasting file bodies — never
-    \\dump large file contents into an answer — and backtick-wrap commands, paths,
-    \\and identifiers. Scale it to the change: a typo fix is one sentence, a
-    \\feature is a short structured summary. Close with the next steps that
-    \\genuinely exist — tests to run, follow-ups you left — and nothing more.
-    \\Be direct and concise.
-++ parallel_tools_note;
+/// The prompt text itself lives next door; this file owns when each part
+/// of it is sent. `parallel_tools_note` is re-exported because
+/// `sub_system_prompt` composes it as a comptime whole.
+pub const parallel_tools_note = text.parallel_tools_note;
 
-/// Appended to BOTH the root and subagent prompts. openai/codex carries this
-/// instruction verbatim in its base instructions ("Parallelize tool calls
-/// whenever possible - especially file reads"); graff had no equivalent on
-/// either prompt, so batching was left entirely to the model's own initiative.
-///
-/// The executor has always been ready for it: agent_tools.zig dispatches every
-/// external call in a batch as a future BEFORE awaiting any of them, with no
-/// cap and no root-vs-subagent branch. So this asks for nothing the harness
-/// does not already do - it only stops the capability going unused.
-///
-/// The last sentence is the load-bearing half. Batching two edits to one file,
-/// or a read whose path comes from the previous call's output, is wrong: graff
-/// (unlike codex, which takes a write lock for non-parallel-safe tools) runs
-/// the whole batch concurrently, so an unsafe batch really does race.
-pub const parallel_tools_note =
-    \\
-    \\
-    \\Parallelize tool calls whenever possible: when several reads or checks are
-    \\independent, issue them in ONE response instead of one per turn. Reads and
-    \\searches are the common case (read_file, codedb, grep-style bash) and they
-    \\run concurrently. Keep a call in its own turn when it depends on an earlier
-    \\call's result, or when two calls would write to the same file.
-;
+/// The capability a segment needs. `.always` is what survives every gate.
+pub const Gate = enum { always, local_tools, subagents, todos, constraints };
+
+/// `name` exists for the snapshot tests: it lets an assertion say WHICH
+/// segment a gate dropped instead of only how many bytes went missing.
+pub const Segment = struct { name: []const u8, text: []const u8, gate: Gate };
+
+/// THE root prompt, in order. This table is the single source of both the
+/// comptime full-capability constant and the runtime gated composition, so the
+/// two can never drift apart or reorder relative to each other.
+pub const segments = [_]Segment{
+    .{ .name = "intro", .text = text.intro_note, .gate = .always },
+    .{ .name = "local_tools", .text = text.local_tools_note, .gate = .local_tools },
+    .{ .name = "orchestration", .text = text.orchestration_note, .gate = .subagents },
+    .{ .name = "todo", .text = text.todo_note, .gate = .todos },
+    .{ .name = "trace", .text = text.trace_note, .gate = .local_tools },
+    .{ .name = "harness_issue", .text = text.harness_issue_note, .gate = .local_tools },
+    .{ .name = "git", .text = text.git_note, .gate = .always },
+    .{ .name = "work", .text = text.work_note, .gate = .always },
+    .{ .name = "headsup", .text = text.headsup_note, .gate = .always },
+    .{ .name = "todo_progress", .text = text.todo_progress_note, .gate = .todos },
+    .{ .name = "root_cause", .text = text.root_cause_note, .gate = .always },
+    .{ .name = "constraint", .text = text.constraint_note, .gate = .constraints },
+    .{ .name = "closing", .text = text.closing_note, .gate = .always },
+    .{ .name = "parallel_core", .text = text.parallel_core_note, .gate = .always },
+    .{ .name = "parallel_examples", .text = text.parallel_examples_note, .gate = .local_tools },
+    .{ .name = "parallel_tail", .text = text.parallel_tail_note, .gate = .always },
+};
+
+pub const main_system_prompt = blk: {
+    var out: []const u8 = "";
+    for (segments) |seg| out = out ++ seg.text;
+    break :blk out;
+};
+
+/// #421: what this session can actually do, exactly as the tool catalog
+/// reports it. Defaults are "everything", so a caller that only cares about
+/// one gate names one field.
+pub const Caps = struct {
+    /// bash + the native file/index tools. Off under #330 `--no-local-tools`.
+    local_tools: bool = true,
+    /// The `subagent`/`workflow` fan-out pair.
+    subagents: bool = true,
+    /// `todo_write`.
+    todos: bool = true,
+    /// `note_constraint`.
+    constraints: bool = true,
+
+    pub fn has(self: Caps, gate: Gate) bool {
+        return switch (gate) {
+            .always => true,
+            .local_tools => self.local_tools,
+            .subagents => self.subagents,
+            .todos => self.todos,
+            .constraints => self.constraints,
+        };
+    }
+
+    /// Nothing gated: composeBase may hand back the comptime constant.
+    pub fn full(self: Caps) bool {
+        return self.local_tools and self.subagents and self.todos and self.constraints;
+    }
+};
+
+/// Is this tool advertised to the provider this session? The two gates that
+/// can remove a built-in, and nothing else — the same pair `exec.zig` refuses
+/// a hallucinated call with, so the prompt can never disagree with dispatch.
+pub fn toolAdvertised(name: []const u8) bool {
+    return !no_local_tools.blocks(name) and !tool_gates.blocks(name);
+}
+
+/// The live gates. Every flag and env knob feeding them is settled before
+/// startup.buildSystemPrompt runs (args.parse, then setupSkillsAndTheme).
+pub fn detectCaps() Caps {
+    return .{
+        .local_tools = toolAdvertised("read_file") and toolAdvertised("bash"),
+        .subagents = toolAdvertised("subagent"),
+        .todos = toolAdvertised("todo_write"),
+        .constraints = toolAdvertised("note_constraint"),
+    };
+}
+
+/// The segment list in `main_system_prompt` order, minus every segment whose
+/// capability is absent. Always allocates; composeBase is the caller that
+/// short-circuits. Kept public so the snapshot tests can prove the
+/// full-capability composition IS `main_system_prompt`, byte for byte.
+pub fn composeSegments(arena: Allocator, caps: Caps) ![]const u8 {
+    var aw: Io.Writer.Allocating = .init(arena);
+    for (segments) |seg| {
+        if (caps.has(seg.gate)) try aw.writer.writeAll(seg.text);
+    }
+    return aw.writer.buffered();
+}
+
+/// The built-in base for `caps`. Full capability returns the comptime constant
+/// itself, so the common path allocates nothing and stays byte-identical to the
+/// prompt this harness has always sent (mirrors no_local_tools.filterRootSpecs).
+pub fn composeBase(arena: Allocator, caps: Caps) ![]const u8 {
+    if (caps.full()) return main_system_prompt;
+    return composeSegments(arena, caps);
+}
+
+/// startup.buildSystemPrompt's entry point: the built-in base, gated on what
+/// this process can actually do.
+pub fn baseForSession(arena: Allocator) ![]const u8 {
+    return composeBase(arena, detectCaps());
+}
+
+/// #410: the transcript line for THIS session, composed once by
+/// setRootSystemPrompts and re-applied by every later setSystemPrompts call so
+/// a persona swap cannot drop it. Empty for every non-root agent and every
+/// unit test — the same arming discipline playbook.g_root_inject uses.
+var g_transcript_note: []const u8 = "";
+
+/// One line naming the durable transcript. Deliberately NOT described as
+/// JSONL: `.graff/sessions/<name>.session.json` is a single JSON object (the
+/// JSONL files are the `.graff/traces` event streams the paragraph above
+/// covers), and it is not an archive of what compaction discarded either —
+/// compaction rewrites the retained history and the next autosave persists
+/// that. Promising either would cost the model turns discovering otherwise.
+pub fn sessionTranscriptNote(arena: Allocator, session_name: []const u8) []const u8 {
+    if (session_name.len == 0) return "";
+    return std.fmt.allocPrint(
+        arena,
+        "\n\nThis session's durable transcript is {s}/{s}{s} — one JSON object whose \"messages\" array holds the retained conversation. It is rewritten only after a turn completes, so it always lags the turn in progress, and compaction rewrites it in place: it is the resume artifact, not an append-only archive. Read it when you need the exact earlier wording of something this conversation no longer shows you.",
+        .{ session_index.sessions_dir, session_name, session_index.session_ext },
+    ) catch "";
+}
 
 pub const strict_note =
     \\
@@ -187,7 +221,11 @@ pub fn ultracodeActive(agent: *const Agent) bool {
 /// tests and for every non-root agent.
 pub fn setSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !void {
     agent.sys_base = base;
-    const composed = if (playbook.g_root_inject) playbook.composeRoot(agent.io, arena, base) else base;
+    const with_playbook = if (playbook.g_root_inject) playbook.composeRoot(agent.io, arena, base) else base;
+    // #410: the transcript line is a fact about the SESSION, not about the
+    // persona, so it re-composes here rather than being baked into a base a
+    // later set_agent/set_system_prompt would replace (the #326 staleness class).
+    const composed = if (g_transcript_note.len == 0) with_playbook else try std.fmt.allocPrint(arena, "{s}{s}", .{ with_playbook, g_transcript_note });
     agent.sys_normal = composed;
     agent.sys_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ composed, strict_note });
     agent.sys_ultra = try std.fmt.allocPrint(arena, "{s}{s}", .{ composed, ultracode_system_note });
@@ -201,7 +239,19 @@ pub fn setSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !void
 /// a bare `Agent` in a unit test gets neither.
 pub fn setRootSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !void {
     playbook.g_root_inject = true;
+    // #410: only the root has a durable session, and only a session file this
+    // process can still open is worth a line of context — with the native file
+    // and shell tools removed (#330) the path is unreadable from here.
+    armSessionTranscript(arena, agent.session_name, detectCaps());
     return setSystemPrompts(agent, base, arena);
+}
+
+/// #410's arming step, split out so the funnel is testable without the
+/// filesystem read setRootSystemPrompts also performs (playbook.composeRoot).
+/// An empty `session_name`, or a session whose file this process can no longer
+/// open, both arm to "" — the line is only worth context when it is actionable.
+pub fn armSessionTranscript(arena: Allocator, session_name: []const u8, caps: Caps) void {
+    g_transcript_note = if (caps.local_tools) sessionTranscriptNote(arena, session_name) else "";
 }
 
 pub const sub_system_prompt =
@@ -219,6 +269,10 @@ pub const compact_instruction =
     \\task checklist and each item's status, and any pending or unfinished
     \\work. Be thorough but compact. Reply with only the summary.
 ;
+
+test { // #421/#410: the capability matrix + the full-capability golden. An unreferenced module's tests never run.
+    _ = @import("prompt_snapshot_tests.zig");
+}
 
 // The harness has always run a returned tool batch concurrently, for subagents
 // exactly as for the root (agent_tools.zig dispatches every external call as a

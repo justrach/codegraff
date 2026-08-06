@@ -1067,7 +1067,13 @@ the data plane for task-aware recipe comparison; they do not silently switch
 models or effort levels.
 
 Long tool results are stored exactly under `.graff/tool-results/`; model history
-receives a short preview and an inspectable file pointer instead. Responses
+receives a short preview and an inspectable file pointer instead. A result that
+is still over the per-model result cap at send time is spilled the same way
+rather than truncated away: the full bytes go to
+`.graff/sessions/<session>/artifacts/`, and the note left in the transcript
+carries that absolute path and the byte count, so the next turn can read or grep
+the slice it needs. Artifacts are bounded per session and are reclaimed once the
+session file they belong to is gone. Responses
 requests are explicitly capped at 16k output tokens (4k for compaction and 64
 for titles), while compaction carries the latest clean ~8k-token user-turn
 suffix forward verbatim. A shared atomic run budget allows at most four model

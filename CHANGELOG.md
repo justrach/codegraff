@@ -10,7 +10,76 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.0.240 (unreleased)
+## v0.0.241 (unreleased)
+
+- The system prompt is now assembled from capability-gated segments (#421):
+  an instruction ships only when its capability is actually present, read
+  from the same predicates dispatch uses to refuse a hallucinated call, so
+  the prompt can never disagree with the tool catalog. An embedder session
+  (`--no-local-tools`) drops 28.5% of the base prompt; the floor config
+  drops 43.2%. At full capability the compose returns the comptime constant
+  itself — zero allocation, byte-identical to what shipped before. Two
+  standing doctrine lines joined the always-on intro: never invent a tool or
+  wrapper API, and run the target project through its OWN environment — a
+  failure there is the relevant result.
+- A durable root session's prompt now names its own transcript (#410): the
+  path to `.graff/sessions/<name>.session.json`, described truthfully — one
+  JSON object, lags the live turn, rewritten in place by compaction (a
+  resume artifact, not an append-only archive) — so the model can consult
+  it without burning turns on wrong assumptions. Suppressed when local
+  tools are gone (an unreadable path is pure token waste).
+- Context-overflow classification got a guard list and two behavioral
+  detectors (#414). Non-overflow patterns are now checked FIRST, so a
+  throttle whose wording collides with an overflow phrase — Bedrock's
+  `ThrottlingException: Too many tokens` is the canonical one — keeps riding
+  the Retry-After ladder instead of triggering a compaction that cannot help.
+  The overflow table itself grew from six substrings to the phrasings twelve
+  more providers actually send (Bedrock, Gemini, Copilot, xAI, Groq,
+  llama.cpp, Kimi, Mistral, Ollama, MiniMax, z.ai, Anthropic 413), and now
+  matches case-insensitively. Two shapes that never send an error at all are
+  caught from the reported usage instead: an HTTP 200 with an empty
+  completion whose input is at or over the window (z.ai's silent overflow),
+  and `finish_reason: length` with zero output while the input fills the
+  window (a provider truncating the input to fit, seen on MiMo) — the latter
+  is now named rather than shipped as an inexplicably short answer.
+- An oversized tool output is now spilled, not destroyed (#409). The
+  per-result cap (#193/#201) used to delete the elided bytes, leaving the
+  model to re-run the tool and guess a better slice; when the session is
+  durable the full output is now written to
+  `.graff/sessions/<session>/artifacts/tool-<n>.txt` first, and the marker in
+  the transcript cites the absolute path and the byte count, so the next turn
+  can read or grep exactly what it needs. Bounded by a 64 MiB per-session
+  budget (whole artifacts only, so a marker can never overstate what is on
+  disk), and reclaimed with the session: an artifact dir whose
+  `<session>.session.json` is gone is swept at the next spill. Subagents,
+  whose history is never persisted, keep the plain truncation.
+- Cross-process locks stopped trusting a bare pid (#413): an owner record now
+  carries the holder's process START identity next to its pid (`/proc/<pid>/stat`
+  field 22 on Linux, `proc_pidinfo` on macOS, `GetProcessTimes` on Windows), so
+  liveness is "the pid is alive AND it is still the same process". A recycled
+  pid can no longer look like a live owner forever, and a crashed holder's lock
+  is reclaimed because its identity provably mismatches rather than because a
+  timeout guessed. A record written by an older graff carries no identity and
+  keeps the pid-only contract exactly as before, so an in-flight lock is never
+  bricked, and an identity that cannot be read fails safe: held, never stolen.
+  The #320 worktree lease gets the producer it was missing, and a session save
+  on a filesystem with no working locks (#289) now coordinates through an owner
+  record instead of racing unguarded.
+- A no-progress `eval` is no longer paid for (#412). A goal/loop run
+  re-verifies on every continuation, so a model that has edited nothing since
+  the last RED re-ran the whole `--eval` command — plus a `--judge` model call,
+  plus 1500 bytes of output tail — to re-derive a verdict that could not have
+  changed. graff now fingerprints the verification before running it (the eval
+  command text, `git status --porcelain -z -uall`, `git diff --binary HEAD`,
+  and the contents of every untracked file, since the first two are blind to an
+  untracked edit); identical to the tree the last verification failed on means
+  the verifier is not run at all. The attempt still counts, so a stuck loop
+  converges on its iteration cap instead of spinning for free, and the model is
+  steered at the real blocker: the workspace has not changed, edit something
+  first. Fail-open throughout — no repo, no git, a timed-out or truncated
+  probe, an unreadable file all read as "changed" and the verifier runs.
+
+## v0.0.240 (2026-08-06)
 
 - The REPL/engine separation began (#422): agent output now flows through a
   typed event vocabulary and a strict sink boundary (`engine_events.zig` /
