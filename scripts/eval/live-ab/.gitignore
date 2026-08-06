@@ -1,0 +1,4 @@
+runs/
+results.json
+promptcap/
+__pycache__/
