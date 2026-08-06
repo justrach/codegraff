@@ -89,6 +89,15 @@ pub fn landingReserve(cap: u64) u64 {
     return @max(min_landing_reserve, cap / 5);
 }
 
+/// #391: what ONE pre-compaction note-to-self costs. It is a cost, not a
+/// second reserve, and that distinction is the whole point. The reserve above
+/// already protects the calls the root needs to land and narrate the work
+/// (#390); a note with a reserve of its own would be a SECOND ledger over the
+/// same pool, and two ledgers each holding back "the last call" double-count
+/// it. Charged through `affordsHarnessNote` instead, so the note runs only
+/// when it fits on top of the reserve rather than out of it.
+pub const cost_precompact_note: u64 = 1;
+
 /// The cheapest honest instantiation of a catalog shape — what a fleet costs
 /// at all, before any scaling to the ask. `admit` compares this (plus the
 /// reserve) against `remaining()`: below it a fleet cannot finish, so the
@@ -197,6 +206,15 @@ pub const Ledger = struct {
         return remaining < later_min + self.reserve;
     }
 
+    /// P3 for the HARNESS's own optional call (#391's pre-compaction note).
+    /// Same predicate the judges use, and deliberately so: the note is the
+    /// junior liability on this ledger. Narration is mandatory and owns the
+    /// reserve; the note is a nice-to-have and must clear it. A run that can
+    /// only afford one more call spends it landing, not journaling.
+    pub fn affordsHarnessNote(self: Ledger, remaining: u64) bool {
+        return self.fits(remaining, cost_precompact_note);
+    }
+
     pub fn commit(self: *Ledger, cost: u64) void {
         self.committed += cost;
     }
@@ -273,6 +291,23 @@ test "Ledger: spendable, fits and earlyExit all sit ON TOP of the reserve" {
     try std.testing.expect(!l.earlyExit(12, 5));
     l.commit(12);
     try std.testing.expectEqual(@as(u64, 12), l.committed);
+}
+
+test "affordsHarnessNote (#391): the note clears #390's reserve, it does not get one of its own" {
+    const l = Ledger.init(30);
+    // The boundary is DERIVED from the landing reserve, not from a constant of
+    // the note's own: the first `remaining` that admits a note is one call
+    // above the reserve #390 holds back. A second, independent reserve would
+    // move this boundary and fail here.
+    const boundary = landingReserve(30) + cost_precompact_note;
+    try std.testing.expect(l.affordsHarnessNote(boundary));
+    try std.testing.expect(!l.affordsHarnessNote(boundary - 1)); // exactly the reserve: landing only
+    try std.testing.expect(!l.affordsHarnessNote(0));
+    // And the note is junior to a phase that fits: whatever spendable() says
+    // is available for real work is available for the note too, never more.
+    try std.testing.expectEqual(l.fits(boundary, cost_precompact_note), l.affordsHarnessNote(boundary));
+    // An unlimited pool always affords it (the reserve is still nominal).
+    try std.testing.expect(Ledger.init(0).affordsHarnessNote(std.math.maxInt(u64)));
 }
 
 test "Ledger: an unlimited pool never gates" {

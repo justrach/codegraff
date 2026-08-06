@@ -33,6 +33,7 @@ const shapes = @import("shapes.zig");
 const text = @import("prompt_text.zig"); // #421: the segment TEXT; this file owns their gates
 const Agent = @import("agent.zig").Agent;
 const playbook = @import("playbook.zig"); // #381: the user-constraint block composed onto the ROOT's base prompt
+const compact_note = @import("compact_note.zig"); // #391: the pre-compaction note-to-self, composed the same way and for the same reason
 const no_local_tools = @import("no_local_tools.zig"); // #330's subtractive gate — one half of every capability answer below
 const tool_gates = @import("tool_gates.zig"); // #352's additive gate — the other half
 const session_index = @import("session_index.zig"); // #410: where the durable transcript lives
@@ -163,6 +164,19 @@ var g_transcript_note: []const u8 = "";
 /// noteSessionCompacted is the sole production writer.
 pub var g_session_compacted: bool = false;
 
+/// #391: the session whose pre-compaction notes ride the ROOT's prompt.
+/// Empty for every non-root agent and every unit test — the arming discipline
+/// g_transcript_note and playbook.g_root_inject both use, and what keeps a
+/// bare `Agent` with an `undefined` Io out of the filesystem.
+var g_note_session: []const u8 = "";
+
+/// Armed by setRootSystemPrompts, and re-armed by the note writer itself so a
+/// `/save <name>` mid-session cannot leave the injection reading a store the
+/// writer has stopped writing to.
+pub fn armCompactNotes(session_name: []const u8) void {
+    g_note_session = session_name;
+}
+
 /// One line naming the durable transcript. Deliberately NOT described as
 /// JSONL: `.graff/sessions/<name>.session.json` is a single JSON object (the
 /// JSONL files are the `.graff/traces` event streams the paragraph above
@@ -233,10 +247,15 @@ pub fn ultracodeActive(agent: *const Agent) bool {
 pub fn setSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !void {
     agent.sys_base = base;
     const with_playbook = if (playbook.g_root_inject) playbook.composeRoot(agent.io, arena, base) else base;
+    // #391: the pre-compaction note-to-self rides the SAME funnel, one rung
+    // below the user's constraints — a rule outranks the agent's own working
+    // state. Same arming discipline as the two blocks around it, so this stays
+    // a pure string funnel for every non-root agent and every unit test.
+    const with_notes = if (g_note_session.len == 0) with_playbook else compact_note.compose(agent.io, arena, with_playbook, g_note_session);
     // #410: the transcript line is a fact about the SESSION, not about the
     // persona, so it re-composes here rather than being baked into a base a
     // later set_agent/set_system_prompt would replace (the #326 staleness class).
-    const composed = if (g_transcript_note.len == 0) with_playbook else try std.fmt.allocPrint(arena, "{s}{s}", .{ with_playbook, g_transcript_note });
+    const composed = if (g_transcript_note.len == 0) with_notes else try std.fmt.allocPrint(arena, "{s}{s}", .{ with_notes, g_transcript_note });
     agent.sys_normal = composed;
     agent.sys_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ composed, strict_note });
     agent.sys_ultra = try std.fmt.allocPrint(arena, "{s}{s}", .{ composed, ultracode_system_note });
@@ -258,6 +277,7 @@ pub fn setRootSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !
     // dead process, and what that process left in the file is exactly the
     // context this one loaded, so the line would again describe what is here.
     armSessionTranscript(arena, agent.session_name, detectCaps(), g_session_compacted);
+    armCompactNotes(agent.session_name); // #391: same session, same one-time arming
     return setSystemPrompts(agent, base, arena);
 }
 
@@ -326,7 +346,17 @@ pub fn noteSessionCompacted(agent: *Agent, arena: Allocator) void {
 /// and best-effort. Call it AFTER any `session_name` reassignment, so the
 /// re-arm reads the conversation that actually exists now.
 pub fn resetSessionCompacted(agent: *Agent, arena: Allocator) void {
-    if (agent.sub or !g_session_compacted) return;
+    if (agent.sub) return;
+    // #391 + #445 integration: BOTH armings key on session_name, and the three
+    // doors that reach here (/new, /clear, /resume) can repoint it. The note
+    // store has to follow even when this session never compacted — otherwise a
+    // `/new` after a note was written leaves g_note_session on the PREVIOUS
+    // name and injects the old conversation's notes into the new one, which is
+    // the same stale-identity bug this function exists to prevent for the
+    // transcript line, one store over.
+    const note_moved = !std.mem.eql(u8, g_note_session, agent.session_name);
+    armCompactNotes(agent.session_name);
+    if (!g_session_compacted and !note_moved) return;
     g_session_compacted = false;
     armSessionTranscript(arena, agent.session_name, detectCaps(), false);
     if (agent.sys_base.len == 0) return;

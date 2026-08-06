@@ -184,6 +184,7 @@ pub const Agent = struct {
     last_request_write_failed: bool = false, // transport gave up specifically with WriteFailed this request
     compact_transport_failures: u8 = 0, // bounded escape for repeated opaque over-cap WriteFailed/network failures
     compact_summary_failures: u8 = 0, // #379: consecutive complete-but-unusable (empty/truncated) summaries
+    precompact_note_gen: ?u32 = null, // #391: history_rewrites at the last pre-compaction note-to-self, so one history generation buys at most one note however often compaction is retried (compact_note.decideCalls)
     ws_off: bool = false, // codex ws transport disabled for this session after a handshake/transport fallback to SSE (#codex-ws)
     ws_transport_failures: u8 = 0, // consecutive WS failures; retry once before latching persistent SSE
     streamed_text: bool = false, // the last request printed its text live
