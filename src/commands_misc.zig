@@ -42,6 +42,7 @@ const models_cache = @import("models_cache.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
 const providers = @import("providers.zig");
 const command_catalog = @import("command_catalog.zig");
+const side_question = @import("side_question.zig"); // #415 /btw
 const serde = @import("serde.zig");
 
 const mcp_cli = @import("mcp_cli.zig");
@@ -152,6 +153,7 @@ fn ownedSessionName(arena: Allocator, arg: []const u8, fallback: []const u8) All
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     if (try commands_privacy.tryHandle(root, line, out)) return true;
     if (try playbook_glue.command(root, arena, line, out)) return true; // #381 /never | /constraint
+    if (try side_question.command(root, arena, line, out)) return true; // #415 /btw
     // #321: doctor.zig shipped with a catalog entry but no dispatch, so /doctor
     // was advertised in /help and the `/` menu while answering "unknown command".
     if (std.mem.eql(u8, line, "/doctor")) {

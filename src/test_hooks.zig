@@ -79,6 +79,17 @@ const session_settings_tests = @import("session_settings_tests.zig");
 
 const session_transcript_tests = @import("session_transcript_tests.zig");
 
+// #415: /btw's tests. side_question.zig is reached in production from
+// commands_misc.tryHandle, but nothing references THIS file, so without the
+// hook its whole suite compiles to nothing and reports green.
+const side_question_tests = @import("side_question_tests.zig");
+
+// #415: and json_controls.zig's own. It IS imported by mainloop.zig, which is
+// not enough - mainloop is reached from main() rather than from the test root's
+// analysis, so its imports' test blocks compile to nothing (eval-tier1 --only
+// reach caught exactly this).
+const json_controls = @import("json_controls.zig");
+
 // #445: moved off commands_session.zig when the transcript-line reset needed
 // three lines there and the file was at exactly 600. The tests are unchanged.
 const commands_session_test = @import("commands_session_test.zig");
@@ -234,4 +245,6 @@ test {
     _ = pipeline_score;
     _ = retry_hint;
     _ = agent_compact_summary_test;
+    _ = side_question_tests;
+    _ = json_controls;
 }

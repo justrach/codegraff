@@ -484,6 +484,7 @@ other animation names remain available.
 /yolo           toggle bash auto-approval (skip permission prompts)
 /trace          toggle this run's JSONL event trace and show its path
 /compact        summarize history into a fresh context
+/btw <question> one side question about this conversation: no tools, billed, never added to the session
 /save | /resume | /sessions   session persistence; bare /resume → interactive picker
 /todo           show the current task list
 /skills         list SKILL.md playbooks + companion tools; add/remove toggles one

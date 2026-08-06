@@ -26,6 +26,7 @@ const goal_state = @import("goal_state.zig");
 const goal_flow = @import("goal_flow.zig");
 const goal_pacing = @import("goal_pacing.zig");
 const eval_memory = @import("eval_memory.zig");
+const json_controls = @import("json_controls.zig"); // #415: the --json controls that never become a turn
 const mainloop_score = @import("mainloop_score.zig");
 const mainloop_trace = @import("mainloop_trace.zig");
 const scoring = @import("scoring.zig");
@@ -276,14 +277,10 @@ pub fn run(ctx: *Ctx) !void {
                 continue;
             }
             if (std.mem.eql(u8, rtype, "review")) review_prompt = text;
-            if (parsed.object.get("maxToolCalls") orelse parsed.object.get("max_tool_calls")) |v| switch (v) {
-                .integer => |n| main_mod.max_tool_calls = if (n >= 0) @intCast(n) else null,
-                .null => main_mod.max_tool_calls = null,
-                else => {},
-            };
-            if (parsed.object.get("dedupeToolCalls") orelse parsed.object.get("dedupe_tool_calls")) |v| {
-                if (v == .bool) main_mod.dedupe_tool_calls = v.bool;
-            }
+            // #415: a side question is ANSWERED here and never becomes a turn —
+            // no tools, billed, and nothing added to the session or its transcript.
+            if (json_controls.sideQuestion(ctx.root, ctx.arena, rtype, text)) continue;
+            json_controls.applyToolKnobs(parsed.object);
             break :blk text;
         } else line;
         ctx.root.review_mode = review_prompt != null;
