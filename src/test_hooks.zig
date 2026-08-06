@@ -170,6 +170,11 @@ const verify_fingerprint = @import("verify_fingerprint.zig");
 // cross-process lock in graff decides "stale or held" with it.
 const proc_identity = @import("proc_identity.zig");
 
+// #418: the billable-vs-context firewall between a completed child and its
+// parent. Its own module because both files it pins the seam between
+// (agent_context.zig, subagent.zig) sit at the 600-line cap.
+const usage_attribution_tests = @import("usage_attribution_tests.zig");
+
 test {
     _ = learn_holdout;
     _ = learn_receipt;
@@ -221,6 +226,7 @@ test {
     _ = harness_policy;
     _ = verify_fingerprint;
     _ = proc_identity;
+    _ = usage_attribution_tests;
     _ = escalation;
     _ = escalation_tests;
     _ = edit_contract;
