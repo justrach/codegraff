@@ -5,18 +5,25 @@
 //! - TuiSink: today's terminal rendering, verbatim. Its helpers live in
 //!   frontend territory (agent_stream_render.zig, agent_render.zig via Agent
 //!   aliases); slice 1 keeps the render state (thinking_*/md_* fields) on the
-//!   Agent it wraps, so the ctx pointer is that state handle — it is never
-//!   read to decide WHAT to render, only where the drawing bookkeeping lives
-//!   until a later slice moves it out.
+//!   Agent it wraps, so the ctx pointer is that state handle. Known slice-1
+//!   debt against the strict-sink rule ("sinks render from events only"):
+//!   besides that drawing bookkeeping, the reasoning gate still back-reads
+//!   Agent policy (show_thinking/sub/stream_quiet — see tuiEmit). A later
+//!   slice moves visibility into the event payload or makes it a sink-owned
+//!   preference so a transport-split sink needs no reads into the Agent.
 //! - JsonSink: the existing --json wire lines for these events,
 //!   byte-identical to the old inline emits. The ONE translation point from
 //!   internal type to wire shape: any change here is externally visible and
 //!   gated behind a schema_version bump.
 //!
 //! Events are stamped with a {generation, sequence} Cursor at the dispatch
-//! boundary. Durable events on a durable sink reserve their id INSIDE the
-//! same lock that serializes --json stdout, keeping the wire's numbering
-//! gap-free and ordered against pool-thread guiEmit writers.
+//! boundary. In --json mode (the only durable sink today), durable events
+//! reserve their id INSIDE the same lock that serializes --json stdout,
+//! keeping the wire's numbering gap-free and ordered against pool-thread
+//! guiEmit writers. NOTE the lock condition is keyed to json_mode, not to
+//! vt.durable: an injected durable sink outside --json reserves WITHOUT the
+//! lock. When serve/attach (#420) adds one, key the lock to the sink (with a
+//! test seam) or it inherits exactly the reorder race this lock prevents.
 
 const std = @import("std");
 const Io = std.Io;
@@ -51,7 +58,13 @@ pub const EngineSink = struct {
     vt: *const VTable,
 
     /// The emission boundary: stamp, then hand off. `io` backs the stdout
-    /// lock; sinks that never take it (tests, TUI) may pass it undefined.
+    /// lock, taken only when a durable sink reserves AND json_mode is on —
+    /// a global, so `io` may be passed undefined only where json_mode is
+    /// known false (TUI dispatch; the tests here pin it). Durable emitters
+    /// must not emit durable events a sink will drop (jsonEmit returns on
+    /// out == null): the reserved id would burn with no wire line, opening
+    /// a seq gap (#330). Today printDelta guarantees that by returning
+    /// early when out == null, before any durable emission.
     pub fn emit(self: EngineSink, io: Io, ev: EngineEvent) void {
         const reserve = self.vt.durable and engine_events.durable(ev);
         if (reserve and main_mod.json_mode) {
@@ -92,7 +105,10 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         .stream_begin => render.spinnerStart(a),
         // Reasoning streams into the live dimmed "Thinking" block when
         // /thinking is on for a live, colored root turn; otherwise the
-        // spinner stands in for it.
+        // spinner stands in for it. TRANSITIONAL (slice-1 debt, see header):
+        // this gate back-reads Agent policy to decide WHAT to render — a
+        // wire-split sink cannot, so it must move into the event payload or
+        // become a sink-owned preference before Phase 2.
         .reasoning_delta => |d| if (a.show_thinking and !a.sub and !a.stream_quiet and main_mod.use_color)
             render.streamThinking(a, d.text),
         .text_delta => |d| {
@@ -145,6 +161,14 @@ fn jsonEmit(ctx: *anyopaque, ev: Stamped) void {
     switch (ev.event) {
         .reasoning_delta => |d| jsonLine(w, ev.cursor, .{ .type = "reasoning", .text = d.text }),
         .text_delta => |d| jsonLine(w, ev.cursor, .{ .type = "text", .text = d.text }),
+        // Stream end/abort still flushes the held render tail, as the old
+        // inline path did in EVERY mode: emitArgText streams tool-arg prose
+        // through streamMarkdown whenever use_color is on — --json on a TTY
+        // included — so md_buf/md_table can hold bytes even here. Yes, that
+        // interleaves non-JSONL text into the wire exactly as before;
+        // making --json drop the tail (or never dirty md state) is a
+        // deliberate future wire change, not slice-1 fallout.
+        .stream_aborted, .stream_complete => a.flushStreamTail(),
         else => {},
     }
 }
@@ -156,6 +180,11 @@ fn jsonLine(w: *Io.Writer, cursor: engine_events.Cursor, payload: anytype) void 
 }
 
 test "dispatch preserves emission order and stamps at the boundary" {
+    // emit(undefined, ...) is sound only while json_mode is false (no lock
+    // taken): pin it so a leaky earlier test can never turn this into UB.
+    const saved_json = main_mod.json_mode;
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
     protocol_seq.resetForTest();
     defer protocol_seq.resetForTest();
     var rec: std.ArrayList(Stamped) = .empty;
@@ -180,6 +209,9 @@ test "dispatch preserves emission order and stamps at the boundary" {
 }
 
 test "a presentation sink never reserves sequence ids" {
+    const saved_json = main_mod.json_mode; // pin: see the dispatch-order test
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
     protocol_seq.resetForTest();
     defer protocol_seq.resetForTest();
     var rec: std.ArrayList(Stamped) = .empty;
@@ -197,6 +229,9 @@ fn recordEmit(ctx: *anyopaque, ev: Stamped) void {
 }
 
 test "JsonSink writes today's wire lines byte-for-byte" {
+    const saved_json = main_mod.json_mode; // pin: see the dispatch-order test
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
     protocol_seq.resetForTest();
     defer protocol_seq.resetForTest();
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
@@ -216,6 +251,9 @@ test "JsonSink writes today's wire lines byte-for-byte" {
     s.emit(undefined, .{ .reasoning_delta = .{ .text = "why" } });
     s.emit(undefined, .{ .text_delta = .{ .text = "hi\n" } });
     s.emit(undefined, .stream_begin); // pulses have no wire shape
+    // End-of-stream flushes the held render tail (old-path parity); with
+    // clean md state that adds no bytes and emits no wire line.
+    s.emit(undefined, .{ .stream_complete = .{ .streamed_text = true } });
     try std.testing.expectEqualStrings(
         "{\"seq\":1,\"type\":\"reasoning\",\"text\":\"why\"}\n{\"seq\":2,\"type\":\"text\",\"text\":\"hi\\n\"}\n",
         aw.writer.buffered(),

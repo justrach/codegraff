@@ -61,7 +61,11 @@ pub const EngineEvent = union(enum) {
     /// ends the reasoning presentation (block close, spinner stop).
     text_delta: Delta,
     /// The user asked to fold/unfold the live reasoning view (Ctrl-T, #92).
-    /// Presentation-only; a headless frontend ignores it.
+    /// Presentation-only; a headless frontend ignores it. TRANSITIONAL
+    /// (Phase 1b): this is frontend INPUT round-tripping engine-ward through
+    /// a global (g_thinking_fold_request) and coming back out — when input
+    /// inversion lands it leaves this union (a frontend-owned command, not an
+    /// engine event), so plan for removal, not extension.
     thinking_fold_toggle,
     /// The delta stream was cut before its terminal event; the payload says
     /// how. Sinks flush any held partial output and may surface a notice for
@@ -103,9 +107,11 @@ pub fn bumpGeneration() u64 {
 }
 
 /// Stamp a Cursor at the emission boundary. `reserve` draws a fresh id from
-/// protocol_seq (durable events on a durable sink — the caller holds the
-/// stdout lock so reservation and wire order can never diverge); otherwise
-/// the event observes the last reserved position without advancing it.
+/// protocol_seq (durable events on a durable sink; in --json mode the caller
+/// holds the stdout lock so reservation and wire order can never diverge —
+/// an injected durable sink outside --json currently reserves unlocked, see
+/// the engine_sink.zig header note); otherwise the event observes the last
+/// reserved position without advancing it.
 pub fn stamp(reserve: bool) Cursor {
     return .{
         .generation = generation(),
