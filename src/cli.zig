@@ -26,6 +26,7 @@ pub const changelog_text =
     \\  • A big tool result returns a handle — preview, path, byte count, shape — instead of its contents, so it never occupies context turn after turn
     \\  • Sessions keep an append-only transcript compaction cannot rewrite, and compaction now states what survives on both sides of the boundary
     \\  • Windows: the transcript wrote 0 bytes on every run; the durable-transcript prompt line now waits for the first compaction instead of being paid for from turn one
+    \\  • /btw asks a side question over the live context with tools off, then throws it away — billed, rendered, never added to the session
     \\
     \\0.0.241
     \\  • Goal/loop runs stop paying for verifications the workspace cannot have changed: an unchanged tree skips the eval command and its judge call, and the model is steered to edit first

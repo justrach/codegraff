@@ -65,8 +65,24 @@ current is part of cutting a release.
   predicted it would. The inventory also found that `approvals.zig` was on the
   ban list as a consent surface rather than for any terminal coupling, so its
   pure half moved to `harness_policy.zig`.
+- `/btw` asks a side question over the live conversation with tools disabled,
+  renders the answer, and adds nothing to the session (#415). It is billed in
+  the `[usage]` footer, because the cost is real even though the exchange is
+  not kept. There are two persistence paths to stay out of now — the session
+  file and the new append-only transcript — and both are asserted byte-for-byte
+  before and after. A `{"type":"btw"}` `--json` control replies with an explicit
+  `persisted:false` so a client mirroring the stream can tell it apart from a
+  real turn.
 - A GUI panel answers "what are my agents doing" without opening each
   conversation, sorted attention-first (#419).
+- Child usage is pinned to the bill and kept out of the parent's context math
+  (#418). The audit found no leak — a subagent gets a fresh `Agent` whose meter
+  starts at zero and a `ToolCtx` with no pointer back to the parent, so it has
+  nothing to write to — and the invariant is now held by a test rather than by
+  construction alone: eight workers each ending past the parent's compaction
+  threshold leave the parent's context estimate identical to the control, while
+  the bill moves by exactly their usage. Had it leaked, compaction would fire
+  early on every fleet-heavy run.
 - Two eval harnesses became durable rather than living in scratch: the live A/B
   token-economics rig that produced the numbers above, and the golden
   byte-identity harness the engine work is verified against.
