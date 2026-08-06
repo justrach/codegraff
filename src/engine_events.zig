@@ -45,6 +45,20 @@ pub const Delta = struct {
     text: []const u8,
 };
 
+/// A live transport attempt was cut before the provider's terminal event —
+/// the transport-layer counterpart of StreamAbort, born in the connection/
+/// read guards (agent_ws.zig slice 1b) where nothing of the answer has
+/// rendered yet: sinks may surface a notice but have no held output to
+/// flush. `reason == .interrupted` is never emitted today (a deliberate Esc
+/// propagates as an error, silently); a sink renders nothing for it.
+pub const TransportAbort = struct {
+    reason: StreamAbort,
+    /// The guard is giving the turn up (its notice says so); false = an
+    /// attempt-level cut the reconnect ladder may still retry, surfaced
+    /// more tersely.
+    turn_ending: bool,
+};
+
 /// Everything the streaming path tells a frontend. Each doc comment states
 /// the emission site's contract, not how any one sink draws it.
 pub const EngineEvent = union(enum) {
@@ -60,6 +74,18 @@ pub const EngineEvent = union(enum) {
     /// TUI: streamed markdown (or raw bytes off-color). The first one also
     /// ends the reasoning presentation (block close, spinner stop).
     text_delta: Delta,
+    /// A chunk of user-facing prose streamed out of a whitelisted meta tool
+    /// call's still-in-flight arguments (attempt_completion's result,
+    /// ask_user's question — agent_argstream.zig, slice 1b). Never on the
+    /// wire: --json clients get the assembled tool_call instead, so a wire
+    /// sink stays silent. TUI: renders like answer text (spinner handoff
+    /// included) but does NOT end the reasoning presentation — argument
+    /// prose can stream while the model is still mid-call.
+    tool_arg_delta: Delta,
+    /// A live transport attempt was cut; the payload says how and whether
+    /// the turn ends with it (slice 1b). Distinct from stream_aborted: no
+    /// partial answer is in flight, so sinks notice without flushing.
+    transport_aborted: TransportAbort,
     /// The user asked to fold/unfold the live reasoning view (Ctrl-T, #92).
     /// Presentation-only; a headless frontend ignores it. TRANSITIONAL
     /// (Phase 1b): this is frontend INPUT round-tripping engine-ward through
@@ -147,6 +173,18 @@ test "stamp: reserving draws fresh monotonic ids; observing never advances" {
     try std.testing.expectEqual(b.sequence, o.sequence);
     try std.testing.expectEqual(b.sequence, protocol_seq.current());
     try std.testing.expectEqual(generation(), o.generation);
+}
+
+test "slice 1b: tool-arg prose and transport aborts are presentation pulses" {
+    // Neither ever appeared on the --json wire (argLiveDelta gates --json
+    // off; the transport notices were TTY-only), so neither may reserve a
+    // sequence id — promoting one is a schema_version event, not a default.
+    const pulses: [3]EngineEvent = .{
+        .{ .tool_arg_delta = .{ .text = "prose" } },
+        .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = true } },
+        .{ .transport_aborted = .{ .reason = .dropped, .turn_ending = false } },
+    };
+    for (pulses) |ev| try std.testing.expect(!durable(ev));
 }
 
 test "generation only moves forward, one restart at a time" {

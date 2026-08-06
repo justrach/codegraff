@@ -3,9 +3,9 @@
 //! and the live dimmed "Thinking" reasoning block (streamThinking/
 //! closeThinkingBlock/toggleThinkingFold), moved verbatim out of
 //! agent_stream.zig so the transport loop owns no terminal drawing. Driven by
-//! TuiSink (engine_sink.zig); agent_ws.zig still reaches the spinner through
-//! its Agent member aliases. Frontend territory: term.zig/ansi.zig/anim.zig
-//! imports live here, never in engine files.
+//! TuiSink (engine_sink.zig) only, as of slice 1b — agent_ws.zig emits events
+//! now instead of reaching the spinner aliases. Frontend territory:
+//! term.zig/ansi.zig/anim.zig imports live here, never in engine files.
 //!
 //! Agent.g_spin_stop/Agent.g_spin_future are struct-level `pub var`s that stay
 //! declared directly inside the Agent struct (never alias a `var`) — reached
