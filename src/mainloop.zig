@@ -61,6 +61,7 @@ pub fn run(ctx: *Ctx) !void {
     var title_jobs: mainloop_title.Jobs = .{};
     defer title_jobs.deinit(ctx);
     defer session.flushSavesAtExit(); // #273: the turn-path autosaves write in the background — no queued one may outlive this loop, on ANY exit (#364 stamps this teardown phase)
+    defer ctx.root.closeCodexWs(); // #424: the held WS + response-id anchor deliberately span turns, so only loop exit may free them — without this they are the gpa's only exit leaks
     defer terminal.tty.releaseTerminal(); // #396: registered LAST so LIFO runs it FIRST — the tty goes back before the save/telemetry/learning phases that can take seconds
     // Trajectory spine: each turn's parent is the previous; a changed prompt fingerprint marks a set_system_prompt edge.
     var prev_turn_id: u64 = 0;
@@ -389,8 +390,7 @@ pub fn run(ctx: *Ctx) !void {
         } else try ctx.root.messages.append(try messages.textMessage(ctx.arena, "user", ultracode_msg.text));
         ctx.root.snapshots.?.turn += 1; // tag file edits in this turn (matches /rewind numbering)
         if (telemetry.g_telem) |t| t.countTurn();
-        // Trajectory: claim this turn's node id up front so subagents spawned
-        // during the turn can attach to it as their parent.
+        // Trajectory: claim this turn's node id up front so subagents spawned during the turn can attach to it as their parent.
         const turn_id: u64 = if (trace.g_traj) |tj| blk: {
             const id = tj.nextId();
             tj.setTurn(id);
