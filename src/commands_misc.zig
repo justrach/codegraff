@@ -30,7 +30,9 @@ const style = &ansi.style;
 
 const goal_state = @import("goal_state.zig");
 const goal_flow = @import("goal_flow.zig");
+const prompts = @import("prompts.zig"); // #445: the transcript line's compaction flag resets with the conversation
 const jobs = @import("jobs.zig");
+const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: which listed MCP tools are still schema-deferred
 const subagent = @import("subagent.zig"); // #276 P0-3: g_agent_jobs, for /jobs
 
 const pricing = @import("pricing.zig");
@@ -40,6 +42,7 @@ const models_cache = @import("models_cache.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
 const providers = @import("providers.zig");
 const command_catalog = @import("command_catalog.zig");
+const side_question = @import("side_question.zig"); // #415 /btw
 const serde = @import("serde.zig");
 
 const mcp_cli = @import("mcp_cli.zig");
@@ -150,6 +153,7 @@ fn ownedSessionName(arena: Allocator, arg: []const u8, fallback: []const u8) All
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     if (try commands_privacy.tryHandle(root, line, out)) return true;
     if (try playbook_glue.command(root, arena, line, out)) return true; // #381 /never | /constraint
+    if (try side_question.command(root, arena, line, out)) return true; // #415 /btw
     // #321: doctor.zig shipped with a catalog entry but no dispatch, so /doctor
     // was advertised in /help and the `/` menu while answering "unknown command".
     if (std.mem.eql(u8, line, "/doctor")) {
@@ -326,7 +330,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 const probe_note = if (srv.probe_fallback) |reason| reason.note() else "";
                 try out.print("  {s}{s}{s}  (mcp {s}, {d} tool(s)){s}{s}{s}\n", .{ style.accent, srv.name, style.reset, srv.protocol_version, reg.toolCount(i), style.dim, probe_note, style.reset });
             }
-            for (reg.tools) |t| try out.print("    {s}{s}{s}\n", .{ style.dim, t.qualified_name, style.reset });
+            // #416: a deferred tool is registered but carries no schema yet, so
+            // say so — otherwise the difference is invisible from here.
+            for (reg.tools) |t| try out.print("    {s}{s}{s}{s}\n", .{ style.dim, t.qualified_name, if (mcp_schema_gate.isDeferred(reg.tools, t)) "  schema deferred (#416); the model loads it on demand" else "", style.reset });
             try out.writeAll("  add more: /mcp add <name> <command> [args...]\n");
         }
         if (pending > 0) try out.print("  {s}{d} configured server(s) not connected — /mcp trust to connect them{s}\n", .{ style.dim, pending, style.reset });
@@ -509,6 +515,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             return true;
         };
         root.session_name = name;
+        // #445: after the rename, so the re-arm reads the resumed session. The
+        // history just loaded IS that file's contents, so the #410 line would
+        // again only describe what the live window already holds.
+        prompts.resetSessionCompacted(root, arena);
         // The third restore path (#318): --goal outranks the restored goal here
         // too, idempotently, or /resume was the one door that silently dropped it.
         if (root.goal_flag) |g| root.pending_goal_note = goal_flow.reapplyFlagGoal(arena, root, g, util.unixMs(root.io)) catch null;

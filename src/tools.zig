@@ -355,9 +355,21 @@ pub fn outsideCwd(gpa: Allocator, path: []const u8) !ToolOutput {
     };
 }
 
-pub const bash_stdout_cap = 128 * 1024;
+/// How much of a command's output graff will hold at all. #440 demoted this
+/// from a CONTEXT cap to a capture ceiling: the model no longer receives a
+/// tool result in full (tool_handle.zig turns anything past its threshold into
+/// a preview + a durable handle), so the only thing this number still bounds is
+/// harness memory and how much of a chatty command the handle can preserve. At
+/// the old 128 KiB the handle silently lied for exactly the case #440 measured
+/// — a 168 KB log, of which a quarter was already destroyed before anything
+/// could be written down.
+pub const bash_stdout_cap = 1024 * 1024;
 pub const bash_stderr_cap = 32 * 1024;
 pub const webfetch_cap = 256 * 1024;
+/// Capture ceiling for the `codedb read --compact` fallback (#66). This used to
+/// double as a context cap that truncated any codedb result past 64 KiB; #440
+/// removed that half — the handle preserves those bytes instead of discarding
+/// them, and bounds the context on its own.
 pub const codedb_result_cap = 64 * 1024;
 
 /// True when the text carries no real content (empty, or whitespace only) —

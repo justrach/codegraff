@@ -18,6 +18,30 @@ pub const session_ext = ".session.json";
 /// Title-named session files live here (resume reads this).
 pub const sessions_dir = ".graff/sessions";
 
+/// INVARIANT: every `.graff/` path this harness builds is FORWARD-SLASHED on
+/// every platform, including Windows. Not an accident of `allocPrint` — a
+/// choice, and callers may rely on it:
+///
+///   - Windows accepts '/' in the paths reaching Io.Dir (sliceToPrefixedFileW
+///     normalizes them), so nothing is lost by not using the platform join.
+///   - These strings are SHOWN TO THE MODEL. The #410 system-prompt line names
+///     the session file, #409's cap marker cites an artifact, and #441's
+///     transcript path travels into #411's post-compaction note. A path whose
+///     shape changes per platform makes those prompts, and the goldens that
+///     pin them, harder to reason about for no gain.
+///
+/// The corollary is for TESTS: assert on the basename, or on a path built
+/// through these helpers — never by matching a separator by hand against
+/// something the OS produced. A path that came back OUT of the OS
+/// (realPathFile and friends, as in #409's spill marker) is the platform's
+/// shape, not ours, and ee28d8c is the commit that learned it.
+/// #441: the append-only transcript beside each session file, and the one
+/// rotated generation behind it. The suffixes live here, with the session
+/// suffix, because BOTH the writer (session_transcript.zig) and the sweep that
+/// reclaims them with their session (tool_spill.zig) have to agree on them.
+pub const transcript_ext = ".transcript.jsonl";
+pub const transcript_rotated_ext = ".transcript.1.jsonl";
+
 /// Path to a session file: .graff/sessions/<name>.session.json.
 pub fn sessionPath(arena: Allocator, name: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ sessions_dir, name, session_ext });

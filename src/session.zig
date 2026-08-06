@@ -26,6 +26,7 @@ const goal_state = @import("goal_state.zig");
 const session_writer = @import("session_writer.zig"); // #273: the fingerprint + the background write
 const shutdown_trace = @import("shutdown_trace.zig"); // #364: teardown phase stamps
 const protocol_seq = @import("protocol_seq.zig"); // #330: the --json event sequence survives a resume
+const session_transcript = @import("session_transcript.zig"); // #441: the append-only history this file's rewrites discard
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
 const unixMs = util.unixMs;
@@ -239,6 +240,9 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     const fp = fingerprint(root, name);
     const rel = try sessionPath(arena, name);
     if (session_writer.alreadySaved(root.io, dir, rel, fp)) return 0;
+    // #441: the same observation point, one line per new message, appended to a
+    // file this function's in-place rewrite of `messages` can never reach.
+    session_transcript.record(root, dir, name);
     var aw: Io.Writer.Allocating = .init(root.gpa);
     defer aw.deinit();
     var s: std.json.Stringify = .{ .writer = &aw.writer };

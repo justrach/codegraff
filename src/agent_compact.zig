@@ -10,9 +10,14 @@ const context_tokens = @import("context_tokens.zig");
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
-const prompts = @import("prompts.zig");
-const compact_instruction = prompts.compact_instruction;
 const goal_flow = @import("goal_flow.zig");
+// #445 needs this back: #411 dropped the alias as unused in the same release,
+// having moved the last compact_instruction reference into handoff_note, while
+// #445 added noteSessionCompacted call sites that reach through it. Neither
+// branch could see the other, so the break only appeared at integration.
+const prompts = @import("prompts.zig");
+const handoff_note = @import("compact_handoff_note.zig"); // #411: both halves of "what survives a compaction"
+const compact_note_glue = @import("compact_note_glue.zig"); // #391
 
 const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
@@ -125,6 +130,10 @@ pub fn compact(self: *Agent) anyerror!usize {
         return 0;
     };
     if (!main_mod.json_mode) try self.say("[compacting ~{d} tokens…]\n", .{pending_tokens});
+    // #391: the agent writes its own handoff BEFORE the summarizer rewrites the
+    // history it describes. Gated, budgeted, best-effort: every refusal is a
+    // named skip, so everything below runs unconditionally.
+    _ = compact_note_glue.maybeWrite(self);
     // #163: reclaim room BEFORE the summarization request so it fits under the
     // model's input cap. On codex/gpt-5.x an over-cap request fails to WRITE
     // (WriteFailed) rather than returning a clean overflow, so compaction could
@@ -161,7 +170,7 @@ pub fn compact(self: *Agent) anyerror!usize {
         }
     };
 
-    try self.messages.append(try textMessage(compact_arena, "user", compact_instruction));
+    try self.messages.append(try textMessage(compact_arena, "user", try handoff_note.summaryRequest(compact_arena, self)));
     // #174: establish the synthetic summary turn before pruning Responses
     // reasoning. An active tool loop's reasoning is newer than the real user
     // turn and must remain while that loop is in flight, but it becomes prior-
@@ -195,7 +204,7 @@ pub fn compact(self: *Agent) anyerror!usize {
     }
 
     var fresh = std.json.Array.init(self.arena);
-    try fresh.append(try textMessage(self.arena, "user", try handoffMessage(self, summary)));
+    try fresh.append(try textMessage(self.arena, "user", try handoffMessage(self, summary, live_messages.items[0..recent_start])));
     // Preserve a valid recent suffix verbatim (up to ~8k estimated tokens),
     // including its user boundary and paired tool calls/results.
     for (recent_messages) |message| try fresh.append(message);
@@ -206,6 +215,13 @@ pub fn compact(self: *Agent) anyerror!usize {
     self.goal_note_fp = 0; // the injected goal note died with the old history - re-state in full (#318)
     self.history_rewrites +%= 1; // readers of pasted state (the /loop checklist gate) re-carry it (#318)
     installed_summary = true;
+    // #445: the history the model was reading is gone and the durable file is
+    // now the only place its exact wording survives, so THIS is where the #410
+    // transcript line starts being worth its tokens. It rides this boundary
+    // deliberately: the rewrite above already invalidated the provider's cached
+    // prefix, so mutating the system prompt here costs nothing extra. Root-only
+    // and once per session — prompts.noteSessionCompacted owns both rules.
+    prompts.noteSessionCompacted(self, self.arena);
     if (!main_mod.json_mode) try self.say("[history compacted to a {d}-char summary]\n", .{summary.len});
     return summary.len;
 }
@@ -225,13 +241,14 @@ pub fn compact(self: *Agent) anyerror!usize {
 /// Without a pin, compaction would summarize the mandate away with nothing
 /// left to restate it - childHandoff below restates it verbatim instead of
 /// re-deriving it, so it can never drift or compound across compactions.
-pub fn handoffMessage(self: *Agent, summary: []const u8) ![]const u8 {
+/// `discarded` is the history this summary replaces, read only for the #409 artifact paths #411 re-states out of it.
+pub fn handoffMessage(self: *Agent, summary: []const u8, discarded: []const Value) ![]const u8 {
     const base = if (self.sub)
         (if (self.task_prompt) |tp| try childHandoff(self, tp, summary) else try rootHandoff(self, summary))
     else
         try rootHandoff(self, summary);
-    const standing = (try goal_flow.compactionSnapshot(self.arena, self)) orelse return base;
-    return std.fmt.allocPrint(self.arena, "{s}\n\n{s}", .{ base, standing });
+    const standing = try goal_flow.compactionSnapshot(self.arena, self);
+    return handoff_note.handoff(self.arena, self, base, standing, discarded);
 }
 
 fn rootHandoff(self: *Agent, summary: []const u8) ![]const u8 {
@@ -424,6 +441,12 @@ pub fn trimOldestToolOutputs(self: *Agent) usize {
 /// so large-context models keep full results untouched. Preserves every call/output
 /// pairing (shrinks strings, never drops a message). Returns bytes reclaimed.
 ///
+/// #440: a backstop now, not the first line of defense. runTools applies the
+/// handle contract at tool time with a threshold clamped below `cap`, so a
+/// freshly produced result is never oversized by the time it gets here; what
+/// remains for this pass is history this process did not produce (a session
+/// resumed from a pre-#440 build). See tool_handle.effectiveThreshold.
+///
 /// #409: the elided bytes are no longer destroyed. When this agent has a durable
 /// session, each oversized output is written to that session's artifact dir
 /// first and the marker cites the absolute path and the full byte count, so the
@@ -553,6 +576,12 @@ pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
         if (dropped > 0) {
             self.compact_transport_failures = 0;
             self.compact_summary_failures = 0;
+            // #445: a trim is the harsher half of the same boundary — the model
+            // lost that history WITHOUT even a summary standing in for it, so
+            // the transcript line is worth more here, not less. Hooked at this
+            // call site rather than inside emergencyTrim() because the direct
+            // emergencyTrim callers drive partially-initialized test agents.
+            prompts.noteSessionCompacted(self, self.arena);
             if (main_mod.json_mode)
                 self.emit(.{ .type = "compact", .ok = true, .trimmed = dropped })
             else

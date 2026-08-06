@@ -56,6 +56,7 @@ const Allocator = std.mem.Allocator;
 const trace = @import("trace.zig");
 const util = @import("util.zig");
 const fleet = @import("fleet.zig"); // resolveOverride: the shared system_prompt/agent resolution
+const tick_gate = @import("tick_gate.zig"); // #tui-tick/#444: activity lines land at a line boundary, and never in a test binary
 
 /// Shingle width. 3 is the standard near-duplicate-detection default and it
 /// is what the fixtures below were tuned against; 2 drifts toward unigram
@@ -455,7 +456,7 @@ pub fn check(arena: Allocator, tracer: ?*trace.Tracer, phase: []const u8, briefs
     // Its own prefix rather than the caller's: this fires from the workflow
     // phase loop AND from a bare sibling-spawn batch, where "[workflow]"
     // would name a workflow that never ran.
-    std.debug.print("  [diversity] {s}\n", .{text});
+    tick_gate.workerPrint("  [diversity] {s}\n", .{text});
     return text;
 }
 
@@ -466,8 +467,8 @@ pub fn check(arena: Allocator, tracer: ?*trace.Tracer, phase: []const u8, briefs
 ///
 /// The note is prepended to the FIRST sibling's result rather than emitted on
 /// its own, because a tool result is the only channel a batch has back to the
-/// root — and prepending puts it above text that toolPreviewText may have
-/// truncated. Best-effort throughout: this must never be able to fail a spawn
+/// root — and prepending puts it above a preview the #440 handle contract may
+/// have bounded. Best-effort throughout: this must never be able to fail a spawn
 /// that already succeeded, so every unhappy path is a bare return.
 pub fn noteSiblingBatch(arena: Allocator, tracer: ?*trace.Tracer, calls: anytype, ext: []const usize, results: anytype) void {
     var briefs: [max_briefs][]const u8 = undefined;

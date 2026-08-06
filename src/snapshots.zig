@@ -113,6 +113,30 @@ pub const Snapshots = struct {
         return out;
     }
 
+    /// #411: the distinct paths this session has actually modified, in
+    /// first-modified order, duped into `arena`. This ledger is the only
+    /// EXACT answer the harness has to "what did I change this session" —
+    /// which is also its bound: it records write_file/edit_file/imagegen, so
+    /// an edit made through bash is not in it, and the note that prints these
+    /// says so rather than implying the list is the whole diff. A `/rewind`
+    /// has already dropped the snapshots it undid, so a rewound file
+    /// correctly stops being listed.
+    pub fn modifiedPaths(self: *Snapshots, arena: Allocator) []const []const u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        var out: std.ArrayList([]const u8) = .empty;
+        for (self.list.items) |snap| {
+            var seen = false;
+            for (out.items) |p| if (std.mem.eql(u8, p, snap.path)) {
+                seen = true;
+            };
+            if (seen) continue;
+            const owned = arena.dupe(u8, snap.path) catch return out.items;
+            out.append(arena, owned) catch return out.items;
+        }
+        return out.items;
+    }
+
     pub fn deinit(self: *Snapshots) void {
         for (self.list.items) |s| {
             self.gpa.free(s.path);

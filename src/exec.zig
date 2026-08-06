@@ -58,6 +58,7 @@ const jobKill = jobs.jobKill;
 const shellArgv = jobs.shellArgv;
 const skills = @import("skills.zig");
 const skill_docs = @import("skill_docs.zig");
+const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: refuse an MCP tool whose schema was never loaded
 const read_file = @import("read_file.zig");
 // #337: edit_file's verified write path, plus the file-tool helpers that moved
 // out with it (this file is at the 600-line ceiling).
@@ -186,6 +187,13 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             .text = try gpa.dupe(u8, "MCP not available in this context"),
             .is_error = true,
         };
+        // #416 layer 2. Deliberately HERE, inside execToolInner: this runs
+        // downstream of agent_tool_gate.gateTool, so the consent prompt is
+        // still reached in exactly the cases (and the order) it was before —
+        // deferral can only subtract a call consent already allowed, never
+        // add one, and never short-circuits an approval check.
+        if (mcp_schema_gate.blocked(reg.tools, call.name))
+            return .{ .text = try mcp_schema_gate.refusalText(gpa, call.name), .is_error = true };
         const r = try reg.call(gpa, call.name, call.input);
         return .{ .text = r.text, .is_error = r.is_error };
     }
@@ -417,14 +425,12 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             defer gpa.free(text);
             return .{ .text = try gpa.dupe(u8, "(codedb returned nothing — try `codedb tree` to confirm the repo is indexed, or refine the query)") };
         }
-        // Context guard: an unbounded `read <big file>` once dumped 500KB into
-        // a subagent's context, ballooning it to 160k tokens and minutes-long
-        // API calls. Cap what reaches the model and point it at targeted reads.
-        if (text.len > codedb_result_cap) {
-            defer gpa.free(text);
-            const head = util.utf8Prefix(text, codedb_result_cap);
-            return .{ .text = try std.fmt.allocPrint(gpa, "{s}\n[codedb output truncated at {d} KB — prefer targeted queries: outline <path>, symbol <name> --body, or search, instead of whole-file reads]", .{ head, codedb_result_cap / 1024 }) };
-        }
+        // #440: this used to truncate anything past 64 KB, because an unbounded
+        // `read <big file>` once dumped 500KB into a subagent's context and
+        // ballooned it to 160k tokens. The guard was right and its method was
+        // destructive: the same 500KB now becomes a handle at tool time, so the
+        // context is bounded harder than it ever was here AND the bytes survive
+        // for a targeted read of the part that mattered.
         return .{ .text = text };
     }
     // #337: the read/splice/write/VERIFY path lives in edit_verify.zig, where

@@ -183,7 +183,7 @@ change is held to live in [architecture.md](architecture.md):
 | cold start                  | **~1.8 ms**                                     |
 | full agentic turn           | **12 MB** peak RSS, ~4% CPU (network-bound)     |
 | 8 parallel subagents        | **+0.4 MB each** (15 MB total)                  |
-| tool output into history    | hard 128 KB cap: a 500 MB python child process never touches the harness's footprint |
+| tool output into history    | one 4 KB handle, whatever the result's size: a 500 MB python child process never touches the harness's footprint |
 
 Benchmarked against the Rust codegraff ([justrach/codegraff](https://github.com/justrach/codegraff),
 39 MB binary, 934 crates) on the *same model through the same endpoint*,
@@ -484,6 +484,7 @@ other animation names remain available.
 /yolo           toggle bash auto-approval (skip permission prompts)
 /trace          toggle this run's JSONL event trace and show its path
 /compact        summarize history into a fresh context
+/btw <question> one side question about this conversation: no tools, billed, never added to the session
 /save | /resume | /sessions   session persistence; bare /resume → interactive picker
 /todo           show the current task list
 /skills         list SKILL.md playbooks + companion tools; add/remove toggles one
@@ -1066,14 +1067,19 @@ tool errors, uncached/cache-read tokens, and estimated cost. These records are
 the data plane for task-aware recipe comparison; they do not silently switch
 models or effort levels.
 
-Long tool results are stored exactly under `.graff/tool-results/`; model history
-receives a short preview and an inspectable file pointer instead. A result that
-is still over the per-model result cap at send time is spilled the same way
-rather than truncated away: the full bytes go to
-`.graff/sessions/<session>/artifacts/`, and the note left in the transcript
-carries that absolute path and the byte count, so the next turn can read or grep
-the slice it needs. Artifacts are bounded per session and are reclaimed once the
-session file they belong to is gone. Responses
+**Tool results are handles, not payload.** A result over the handle threshold
+(4 KB by default, `GRAFF_TOOL_HANDLE_BYTES`) never enters the conversation
+whole. Its complete bytes are written under `.graff/tool-results/` and what the
+model gets back is a bounded preview, that file's absolute path, the byte count,
+and a one-line shape hint measured from the payload — the line count, or the
+top-level keys of a JSON result. The model then slices what it needs with
+`read_file`, grep-style bash, or `codedb`, so one result costs one threshold of
+context however large it is, and nothing is thrown away to keep it there. The
+tool-time threshold is clamped under the send-time per-model result cap, which
+therefore only ever fires on history graff did not produce (a session resumed
+from an older build); when it does, the full bytes go to
+`.graff/sessions/<session>/artifacts/` the same way, bounded per session and
+reclaimed once the session file they belong to is gone. Responses
 requests are explicitly capped at 16k output tokens (4k for compaction and 64
 for titles), while compaction carries the latest clean ~8k-token user-turn
 suffix forward verbatim. A shared atomic run budget allows at most four model

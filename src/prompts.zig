@@ -21,14 +21,20 @@
 //! #410: setRootSystemPrompts also composes the one line naming this session's
 //! durable transcript. It rides in the funnel, not at the call site, so a
 //! persona swap or a `set_system_prompt` cannot silently drop it.
+//!
+//! #445: ...but not from turn one. That line only helps a model recover
+//! wording the live window no longer holds, so it waits for the first
+//! compaction and rides that boundary — see transcriptLineWanted below.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const shapes = @import("shapes.zig");
 const text = @import("prompt_text.zig"); // #421: the segment TEXT; this file owns their gates
 const Agent = @import("agent.zig").Agent;
 const playbook = @import("playbook.zig"); // #381: the user-constraint block composed onto the ROOT's base prompt
+const compact_note = @import("compact_note.zig"); // #391: the pre-compaction note-to-self, composed the same way and for the same reason
 const no_local_tools = @import("no_local_tools.zig"); // #330's subtractive gate — one half of every capability answer below
 const tool_gates = @import("tool_gates.zig"); // #352's additive gate — the other half
 const session_index = @import("session_index.zig"); // #410: where the durable transcript lives
@@ -51,6 +57,7 @@ pub const Segment = struct { name: []const u8, text: []const u8, gate: Gate };
 pub const segments = [_]Segment{
     .{ .name = "intro", .text = text.intro_note, .gate = .always },
     .{ .name = "local_tools", .text = text.local_tools_note, .gate = .local_tools },
+    .{ .name = "tool_handle", .text = text.tool_handle_note, .gate = .local_tools }, // #440
     .{ .name = "orchestration", .text = text.orchestration_note, .gate = .subagents },
     .{ .name = "todo", .text = text.todo_note, .gate = .todos },
     .{ .name = "trace", .text = text.trace_note, .gate = .local_tools },
@@ -152,6 +159,47 @@ pub fn baseForSession(arena: Allocator) ![]const u8 {
 /// unit test — the same arming discipline playbook.g_root_inject uses.
 var g_transcript_note: []const u8 = "";
 
+/// #445: has THIS process's root session compacted at least once? False at
+/// startup, set once by noteSessionCompacted, never lowered again. Public only
+/// so a test can save and restore it, exactly like playbook.g_root_inject —
+/// noteSessionCompacted is the sole production writer.
+pub var g_session_compacted: bool = false;
+
+/// #391: the session whose pre-compaction notes ride the ROOT's prompt.
+/// Empty for every non-root agent and every unit test — the arming discipline
+/// g_transcript_note and playbook.g_root_inject both use, and what keeps a
+/// bare `Agent` with an `undefined` Io out of the filesystem.
+var g_note_session: []const u8 = "";
+
+/// Backing store for the above. The global OWNS its name rather than borrowing
+/// the caller's: in production every session name is arena-owned for the life
+/// of the process, but a unit test hands over a short-lived buffer, and the
+/// first test to arm one left every later composition dereferencing freed
+/// memory — a segfault inside `compact_note.pathFor`, far from the cause.
+/// Copying makes the hazard structurally impossible instead of a rule callers
+/// must remember. Names longer than this disarm rather than truncate: a
+/// truncated name would silently read a DIFFERENT session's notes.
+var g_note_session_buf: [256]u8 = undefined;
+
+/// Armed by setRootSystemPrompts, and re-armed by the note writer itself so a
+/// `/save <name>` mid-session cannot leave the injection reading a store the
+/// writer has stopped writing to.
+/// Whether the note store currently points at a session. Exists so a test can
+/// pin the funnel's purity (see the #391/#445 regression test) without making
+/// the store itself public.
+pub fn compactNotesArmed() bool {
+    return g_note_session.len > 0;
+}
+
+pub fn armCompactNotes(session_name: []const u8) void {
+    if (session_name.len == 0 or session_name.len > g_note_session_buf.len) {
+        g_note_session = "";
+        return;
+    }
+    @memcpy(g_note_session_buf[0..session_name.len], session_name);
+    g_note_session = g_note_session_buf[0..session_name.len];
+}
+
 /// One line naming the durable transcript. Deliberately NOT described as
 /// JSONL: `.graff/sessions/<name>.session.json` is a single JSON object (the
 /// JSONL files are the `.graff/traces` event streams the paragraph above
@@ -222,10 +270,15 @@ pub fn ultracodeActive(agent: *const Agent) bool {
 pub fn setSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !void {
     agent.sys_base = base;
     const with_playbook = if (playbook.g_root_inject) playbook.composeRoot(agent.io, arena, base) else base;
+    // #391: the pre-compaction note-to-self rides the SAME funnel, one rung
+    // below the user's constraints — a rule outranks the agent's own working
+    // state. Same arming discipline as the two blocks around it, so this stays
+    // a pure string funnel for every non-root agent and every unit test.
+    const with_notes = if (g_note_session.len == 0) with_playbook else compact_note.compose(agent.io, arena, with_playbook, g_note_session);
     // #410: the transcript line is a fact about the SESSION, not about the
     // persona, so it re-composes here rather than being baked into a base a
     // later set_agent/set_system_prompt would replace (the #326 staleness class).
-    const composed = if (g_transcript_note.len == 0) with_playbook else try std.fmt.allocPrint(arena, "{s}{s}", .{ with_playbook, g_transcript_note });
+    const composed = if (g_transcript_note.len == 0) with_notes else try std.fmt.allocPrint(arena, "{s}{s}", .{ with_notes, g_transcript_note });
     agent.sys_normal = composed;
     agent.sys_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ composed, strict_note });
     agent.sys_ultra = try std.fmt.allocPrint(arena, "{s}{s}", .{ composed, ultracode_system_note });
@@ -242,16 +295,106 @@ pub fn setRootSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !
     // #410: only the root has a durable session, and only a session file this
     // process can still open is worth a line of context — with the native file
     // and shell tools removed (#330) the path is unreadable from here.
-    armSessionTranscript(arena, agent.session_name, detectCaps());
+    // #445: and a session that has not compacted yet gets nothing at all. A
+    // RESUMED session starts false too: the earlier compactions belong to a
+    // dead process, and what that process left in the file is exactly the
+    // context this one loaded, so the line would again describe what is here.
+    armSessionTranscript(arena, agent.session_name, detectCaps(), g_session_compacted);
+    // #391: same session, same one-time arming — but only outside test builds.
+    // This is the IMPLICIT path, and a unit test reaching it with a stub Agent
+    // drags prompt composition into a filesystem read through an `undefined`
+    // io, segfaulting three tests away from the cause. That is exactly what
+    // happened when #445's tests met #391 at integration. A test that WANTS the
+    // note block calls armCompactNotes directly, as compact_note_glue_tests
+    // does; the funnel stays the pure string function the rest of the suite
+    // relies on. Same shape as #444's `emit_to_stderr = !builtin.is_test`.
+    if (!builtin.is_test) armCompactNotes(agent.session_name);
     return setSystemPrompts(agent, base, arena);
 }
 
 /// #410's arming step, split out so the funnel is testable without the
 /// filesystem read setRootSystemPrompts also performs (playbook.composeRoot).
-/// An empty `session_name`, or a session whose file this process can no longer
-/// open, both arm to "" — the line is only worth context when it is actionable.
-pub fn armSessionTranscript(arena: Allocator, session_name: []const u8, caps: Caps) void {
-    g_transcript_note = if (caps.local_tools) sessionTranscriptNote(arena, session_name) else "";
+/// An empty `session_name`, a session whose file this process cannot open, and
+/// a session that has not compacted yet all arm to "" — the line is only worth
+/// context when it is both actionable and not already redundant.
+pub fn armSessionTranscript(arena: Allocator, session_name: []const u8, caps: Caps, compacted: bool) void {
+    g_transcript_note = if (transcriptLineWanted(caps, compacted)) sessionTranscriptNote(arena, session_name) else "";
+}
+
+/// #445: the transcript line's gate, in one predicate, ANDing two conditions
+/// that are different in kind and neither of which is sufficient alone:
+///
+///   - `caps.local_tools` is a CAPABILITY, read from the same catalog every
+///     other segment gate is read from: with #330's native file and shell
+///     tools removed, nothing in the session can open the path the line names.
+///   - `compacted` is session STATE, and it is why this predicate exists.
+///     Before the first compaction the live context is a SUPERSET of the
+///     transcript file — the line can only point the model at wording it can
+///     already see, and compaction rewrites the file in place anyway, so its
+///     marginal value there is ~zero. Live A/B evals put the #421/#410 prompt
+///     additions at +960 chars ≈ +240 input tokens on every single call at
+///     full capability, which the overwhelming majority of sessions (the ones
+///     that never compact at all) were paying for nothing. After a compaction
+///     the file holds wording the window no longer does: the case #410 is for.
+///
+/// Deliberately NOT a `Caps` field. `Caps` is what the tool catalog reports,
+/// and `detectCaps()` is settled before startup.buildSystemPrompt runs; this
+/// flips mid-session, by definition after the first request. Folding it in
+/// would make both of those statements false, and would put a non-segment
+/// condition into the predicate `composeBase`/`full()` short-circuit on.
+pub fn transcriptLineWanted(caps: Caps, compacted: bool) bool {
+    return caps.has(.local_tools) and compacted;
+}
+
+/// #445: the compaction boundary — the one moment the line starts earning its
+/// tokens, and the one moment mutating the system prompt is free. Compaction
+/// has already replaced the history sitting behind any cached KV prefix, so
+/// re-composing here adds no SECOND invalidation point; deferring to the next
+/// turn boundary instead would throw away a live cache for the same text.
+///
+/// Root-only (a subagent has no durable session file of its own, and must not
+/// flip the flag for the root) and idempotent: a session that compacts ten
+/// times re-derives its prompt once. Best-effort, exactly like
+/// playbook_glue.refreshRoot — a failed re-compose leaves the previous, still
+/// valid prompt in place and the next mutation through the funnel picks it up.
+pub fn noteSessionCompacted(agent: *Agent, arena: Allocator) void {
+    if (agent.sub or g_session_compacted) return;
+    g_session_compacted = true;
+    armSessionTranscript(arena, agent.session_name, detectCaps(), true);
+    if (agent.sys_base.len == 0) return; // never went through the funnel: nothing to re-derive from
+    setSystemPrompts(agent, agent.sys_base, arena) catch {};
+}
+
+/// #445's inverse boundary, and it is NOT optional: one process can host
+/// several root conversations. `/new` mints a fresh `session_name` and `/clear`
+/// empties the history and saves immediately, so in both cases the durable file
+/// again holds no more than the live window — the exact state the line is not
+/// worth its tokens in. Without this, one compaction armed the line for the
+/// remaining life of the process and a user who compacted, then hit `/new`,
+/// paid for it forever pointing at a file with nothing to recover.
+///
+/// Same idiom as noteSessionCompacted: root-only, a no-op when already false,
+/// and best-effort. Call it AFTER any `session_name` reassignment, so the
+/// re-arm reads the conversation that actually exists now.
+pub fn resetSessionCompacted(agent: *Agent, arena: Allocator) void {
+    if (agent.sub) return;
+    // #391 + #445 integration: BOTH armings key on session_name, and the three
+    // doors that reach here (/new, /clear, /resume) can repoint it. The note
+    // store has to follow even when this session never compacted — otherwise a
+    // `/new` after a note was written leaves g_note_session on the PREVIOUS
+    // name and injects the old conversation's notes into the new one, which is
+    // the same stale-identity bug this function exists to prevent for the
+    // transcript line, one store over.
+    // An UNARMED store has not "moved" — it was never pointed anywhere. Without
+    // this the predicate reads a fresh session as a move (`"" != name`) and
+    // defeats #445's own no-op-when-already-false contract.
+    const note_moved = g_note_session.len > 0 and !std.mem.eql(u8, g_note_session, agent.session_name);
+    if (!builtin.is_test) armCompactNotes(agent.session_name); // implicit path, see setRootSystemPrompts
+    if (!g_session_compacted and !note_moved) return;
+    g_session_compacted = false;
+    armSessionTranscript(arena, agent.session_name, detectCaps(), false);
+    if (agent.sys_base.len == 0) return;
+    setSystemPrompts(agent, agent.sys_base, arena) catch {};
 }
 
 pub const sub_system_prompt =

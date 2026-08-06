@@ -15,6 +15,10 @@ const Allocator = std.mem.Allocator;
 const agent_mod = @import("agent.zig");
 const session = @import("session.zig");
 const session_writer = @import("session_writer.zig");
+// #441: the save path now also appends to the session transcript, and that
+// state is per-PROCESS. Every test that reaches saveSessionTo resets it, or the
+// digests it holds outlive the testing allocator that owns them.
+const session_transcript = @import("session_transcript.zig");
 const Agent = agent_mod.Agent;
 
 test "todos round-trip: appendTodosFromValue parses content/status/epoch, skips junk (#318)" {
@@ -164,6 +168,8 @@ test "an unchanged conversation skips the save entirely (#273)" {
     const arena = arena_state.allocator();
     session_writer.resetForTest();
     defer session_writer.resetForTest();
+    session_transcript.resetForTest();
+    defer session_transcript.resetForTest();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -194,6 +200,8 @@ test "the skip never fires over a session file something else rewrote (#273/#289
     const arena = arena_state.allocator();
     session_writer.resetForTest();
     defer session_writer.resetForTest();
+    session_transcript.resetForTest();
+    defer session_transcript.resetForTest();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -225,6 +233,8 @@ test "any change to the conversation produces a save (#273)" {
     const arena = arena_state.allocator();
     session_writer.resetForTest();
     defer session_writer.resetForTest();
+    session_transcript.resetForTest();
+    defer session_transcript.resetForTest();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -268,6 +278,8 @@ test "a turn's queued save is not lost when the session ends (#273)" {
     const arena = arena_state.allocator();
     session_writer.resetForTest();
     defer session_writer.resetForTest();
+    session_transcript.resetForTest();
+    defer session_transcript.resetForTest();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -287,4 +299,47 @@ test "a turn's queued save is not lost when the session ends (#273)" {
     const saved = try readSaved(tmp.dir, gpa);
     defer gpa.free(saved);
     try std.testing.expect(std.mem.indexOf(u8, saved, "the last thing the model said") != null);
+}
+
+test "the autosave is where the transcript sees a new message (#441)" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    session_writer.resetForTest();
+    defer session_writer.resetForTest();
+    session_transcript.resetForTest();
+    defer session_transcript.resetForTest();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const f = try fixture(gpa, arena, io);
+    defer gpa.destroy(f);
+    try session.saveSessionTo(&f.root, arena, tmp.dir, "wf");
+    try appendTurn(arena, &f.root, "the reply");
+    try session.saveSessionTo(&f.root, arena, tmp.dir, "wf");
+    session.flushSaves();
+
+    // The real save path wrote the transcript beside the session file, one line
+    // per message, with no hook of its own at any of the history's mutation
+    // sites. #411's note gets the path from the accessor, not by rebuilding it,
+    // and the assertion goes through that accessor rather than a hand-written
+    // separator: the path is forward-slashed on every platform by design
+    // (session_index.zig), but what matters here is that it names a real file.
+    f.root.session_name = "wf";
+    const path = session_transcript.activePath(&f.root, arena) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("wf.transcript.jsonl", std.fs.path.basename(path));
+    const lines = try tmp.dir.readFileAlloc(io, path, gpa, .limited(64 * 1024));
+    defer gpa.free(lines);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, lines, "\n"));
+    try std.testing.expectEqual(@as(usize, 2), session_transcript.lineCount());
+    try std.testing.expect(std.mem.indexOf(u8, lines, "first prompt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lines, "the reply") != null);
+
+    // An unchanged conversation skips the save whole (#273), and therefore the
+    // transcript too: a repeated autosave never re-appends a message.
+    try session.saveSessionTo(&f.root, arena, tmp.dir, "wf");
+    session.flushSaves();
+    try std.testing.expectEqual(@as(usize, 2), session_transcript.lineCount());
 }

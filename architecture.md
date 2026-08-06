@@ -587,14 +587,18 @@ workflow tool fanning out trivial parallel tasks:
 | ---------------------------------------- | --------------- | -------- |
 | marginal RSS per parallel subagent       | ~0.4 MB         | < 2 MB   |
 | root + 8-way fan-out (max), peak RSS     | 15.0 MB         | < 64 MB  |
-| tool output retained per bash call       | ≤ 128 KB + 32 KB stderr (truncated, exit code kept) | hard cap |
+| tool output captured per bash call       | ≤ 1 MB + 32 KB stderr (truncated, exit code kept) | hard cap |
+| tool output entering model history       | ≤ 4 KB (the #440 handle threshold), whatever the result's size | hard cap |
 
 Child processes a tool spawns (python, make, …) are *outside* the budget by
 design: they live in their own process, so their memory never lands in the
 harness's RSS — verified with a 500 MB python allocation under an 8-line
-harness that stayed at 12 MB. `runCapped` keeps the first 128 KB of a chatty
-child's output and discards the rest as it streams, so even a 10 MB print
-can't inflate history or retained memory.
+harness that stayed at 12 MB. `runCapped` keeps the first 1 MB of a chatty
+child's output and discards the rest as it streams, so even a 10 MB print can't
+inflate retained memory. History is bounded separately and much harder: past the
+handle threshold a result is written to `.graff/tool-results/` and only a
+preview, a path, a byte count, and a shape hint reach the model (#440), so what
+a tool prints and what a turn pays for are no longer the same number.
 
 ### Context: vs the Rust codegraff (justrach/codegraff v0.2.16, same machine)
 
