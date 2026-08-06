@@ -10,7 +10,23 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.0.240 (unreleased)
+## v0.0.241 (unreleased)
+
+- A no-progress `eval` is no longer paid for (#412). A goal/loop run
+  re-verifies on every continuation, so a model that has edited nothing since
+  the last RED re-ran the whole `--eval` command — plus a `--judge` model call,
+  plus 1500 bytes of output tail — to re-derive a verdict that could not have
+  changed. graff now fingerprints the verification before running it (the eval
+  command text, `git status --porcelain -z -uall`, `git diff --binary HEAD`,
+  and the contents of every untracked file, since the first two are blind to an
+  untracked edit); identical to the tree the last verification failed on means
+  the verifier is not run at all. The attempt still counts, so a stuck loop
+  converges on its iteration cap instead of spinning for free, and the model is
+  steered at the real blocker: the workspace has not changed, edit something
+  first. Fail-open throughout — no repo, no git, a timed-out or truncated
+  probe, an unreadable file all read as "changed" and the verifier runs.
+
+## v0.0.240 (2026-08-06)
 
 - The REPL/engine separation began (#422): agent output now flows through a
   typed event vocabulary and a strict sink boundary (`engine_events.zig` /

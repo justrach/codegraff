@@ -130,6 +130,10 @@ const credential_store = @import("credential_store.zig");
 const engine_events = @import("engine_events.zig");
 const engine_sink = @import("engine_sink.zig");
 
+// #412: the worktree fingerprint behind the no-progress verify guard.
+// agent_eval.zig reaches it through a CALL only, which analyses nothing.
+const verify_fingerprint = @import("verify_fingerprint.zig");
+
 test {
     _ = learn_holdout;
     _ = learn_receipt;
@@ -169,6 +173,7 @@ test {
     _ = credential_store;
     _ = engine_events;
     _ = engine_sink;
+    _ = verify_fingerprint;
     _ = escalation;
     _ = escalation_tests;
     _ = edit_contract;
