@@ -27,6 +27,11 @@ const Agent = agent_mod.Agent;
 const ws = @import("ws.zig");
 const http_headers = @import("http_headers.zig");
 
+// #422 slice 1b: this file draws nothing. Wait/cut moments are typed events
+// through the sink; the spinner and the ⚠ notices are TuiSink's rendering.
+const engine_sink = @import("engine_sink.zig");
+const engine_events = @import("engine_events.zig");
+
 const term = @import("term.zig");
 const tty = term.tty;
 
@@ -93,33 +98,21 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
     // reconnect budget in agent_request exhausts and the turn ends — exercises the
     // give-up path offline, no network/key needed.
     if (main_mod.g_force_stall_always) {
-        if (!main_mod.json_mode) if (self.out) |o| {
-            o.writeAll("\n⚠ stream stalled\n") catch {};
-            o.flush() catch {};
-        };
+        emitAbort(self, .stalled, false);
         return error.StreamStalled;
     }
     if (main_mod.g_force_drop_always) {
-        if (!main_mod.json_mode) if (self.out) |o| {
-            o.writeAll("\n⚠ connection dropped\n") catch {};
-            o.flush() catch {};
-        };
+        emitAbort(self, .dropped, false);
         return error.StreamDropped;
     }
     if (main_mod.g_force_stall_once) {
         main_mod.g_force_stall_once = false;
-        if (!main_mod.json_mode) if (self.out) |o| {
-            o.writeAll("\n⚠ stream stalled — ending turn\n") catch {};
-            o.flush() catch {};
-        };
+        emitAbort(self, .stalled, true);
         return error.StreamStalled;
     }
     if (main_mod.g_force_drop_once) {
         main_mod.g_force_drop_once = false;
-        if (!main_mod.json_mode) if (self.out) |o| {
-            o.writeAll("\n⚠ connection dropped — response ended early\n") catch {};
-            o.flush() catch {};
-        };
+        emitAbort(self, .dropped, true);
         return error.StreamDropped;
     }
     if (!wsEligible(self)) return self.postStream(body);
@@ -159,6 +152,14 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
     };
     self.ws_transport_failures = 0;
     return response;
+}
+
+/// (#422 slice 1b) A transport cut becomes a typed event; the sink decides
+/// what shows. TuiSink: the old inline ⚠ lines, byte for byte. JsonSink:
+/// nothing — the wire never carried these moments and must not start to.
+fn emitAbort(self: *Agent, reason: engine_events.StreamAbort, turn_ending: bool) void {
+    const cut: engine_events.TransportAbort = .{ .reason = reason, .turn_ending = turn_ending };
+    engine_sink.forAgent(self).emit(self.io, .{ .transport_aborted = cut });
 }
 
 fn wssUrl(arena: std.mem.Allocator, https_url: []const u8) ![]u8 {
@@ -381,8 +382,11 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         tty.restore(o);
     };
 
-    self.spinnerStart();
-    defer self.spinnerStop();
+    // One wait spans the whole ws turn (frames reassemble, never stream live):
+    // the same bracket events postStream uses; the wire has no shape for them.
+    const sink = engine_sink.forAgent(self);
+    sink.emit(self.io, .stream_begin);
+    defer sink.emit(self.io, .stream_finished);
 
     if (self.tracer) |tr| tr.note("ws", "connecting");
     // (#codex-ws) Preemptive idle re-anchor: don't reuse a WS the server has
@@ -518,10 +522,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
                 // blocking readMessage can hang forever on a half-open ws with no
                 // watchdog; end the turn as StreamStalled (never a hang, never a user
                 // Esc), exactly as the .deadline arm below does.
-                if (!main_mod.json_mode) if (self.out) |o| {
-                    o.writeAll("\n⚠ stream stalled — ending turn\n") catch {};
-                    o.flush() catch {};
-                };
+                emitAbort(self, .stalled, true);
                 if (self.tracer) |tr| tr.note("ws", "stall");
                 return error.StreamStalled;
             };
@@ -549,10 +550,8 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
                     if (self.tracer) |tr| tr.note("ws", if (w == .esc) "esc" else "reuse dead — no first frame");
                     return watchdogError(w, error.HungRequest);
                 } else {
-                    if (w == .deadline and !main_mod.json_mode) if (self.out) |o| {
-                        o.writeAll("\n⚠ stream stalled — ending turn\n") catch {};
-                        o.flush() catch {};
-                    };
+                    // Only the deadline gets a notice; a user Esc stays silent.
+                    if (w == .deadline) emitAbort(self, .stalled, true);
                     if (self.tracer) |tr| tr.note("ws", if (w == .esc) "esc" else "stall");
                     return watchdogError(w, error.StreamStalled);
                 },

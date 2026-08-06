@@ -1,14 +1,15 @@
 //! Live streaming of `attempt_completion`/`ask_user` tool-argument prose:
 //! a byte-at-a-time JSON scanner (ArgLive) that finds the target string
-//! field inside the still-in-flight tool-call arguments and prints it as
-//! it arrives, so strict mode (where the whole answer is a tool call)
-//! doesn't look frozen until the call completes. Split out of the Agent
-//! struct (#123, 600-line goal).
+//! field inside the still-in-flight tool-call arguments and streams it out
+//! as typed events (#422) as it arrives, so strict mode (where the whole
+//! answer is a tool call) doesn't look frozen until the call completes.
+//! Split out of the Agent struct (#123, 600-line goal).
 
 const std = @import("std");
 const Io = std.Io;
 
 const main_mod = @import("main.zig");
+const engine_sink = @import("engine_sink.zig"); // #422: emissions go through the sink
 const agent_mod = @import("agent.zig");
 const tools_mod = @import("tools.zig");
 const Agent = agent_mod.Agent;
@@ -311,25 +312,22 @@ pub fn argLiveDelta(self: *Agent, obj: std.json.ObjectMap) void {
     }
 }
 
-/// Print live tool-argument text exactly like a text delta: clears the
-/// spinner, lands in the Esc-interrupt capture, and records which meta
-/// tool already showed its prose so handleMeta / sayToolUse don't repeat
-/// it after the call completes.
+/// Live tool-argument text (#422 slice 1b): the engine-side bookkeeping —
+/// the Esc-interrupt capture, and which meta tool already showed its prose
+/// so handleMeta / sayToolUse don't repeat it after the call completes —
+/// stays here; the bytes leave as a typed event. TuiSink renders them
+/// exactly like a text delta (spinner handoff included); the --json wire
+/// never carried these moments (argLiveDelta gates --json off), so JsonSink
+/// stays silent.
 pub fn emitArgText(self: *Agent, tool: ArgTool, text: []const u8) void {
-    const w = self.out orelse return;
+    if (self.out == null) return; // frontendless agents skip capture too, as ever
     if (text.len == 0) return;
-    self.spinnerStop(); // first visible byte: clear the thinking line
     self.streamed_text = true;
     if (self.streamed_args != tool) self.streamed_args_len = 0;
     self.streamed_args = tool;
     self.streamed_args_len += text.len;
     self.partial_text.appendSlice(self.arena, text) catch {};
-    if (main_mod.use_color) {
-        self.streamMarkdown(text);
-    } else {
-        w.writeAll(text) catch return;
-        w.flush() catch return;
-    }
+    engine_sink.forAgent(self).emit(self.io, .{ .tool_arg_delta = .{ .text = text } });
 }
 
 /// True iff this meta call's prose already streamed live *in full*: the
@@ -358,6 +356,16 @@ test "argStreamedFully: a non-object tool input is refused, not dereferenced" {
 }
 
 test "ArgLive streams the target argument field across fragment splits" {
+    // Pin the frontend the emitted events resolve to (#422 slice 1b): the
+    // bytes below are TuiSink's no-color rendering of .tool_arg_delta.
+    const saved_json = main_mod.json_mode;
+    const saved_color = main_mod.use_color;
+    main_mod.json_mode = false;
+    main_mod.use_color = false;
+    defer {
+        main_mod.json_mode = saved_json;
+        main_mod.use_color = saved_color;
+    }
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
     var a: Agent = .{

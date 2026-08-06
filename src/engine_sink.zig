@@ -122,7 +122,35 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
                 if (!a.sub) _ = tick_gate.setLineStart(d.text[d.text.len - 1] == '\n'); // #tui-tick
             }
         },
+        // Meta-tool argument prose renders like answer text — spinner handoff
+        // included — with two deliberate differences from .text_delta, both
+        // the old inline emitArgText behavior verbatim: the reasoning block
+        // stays as-is (the model is still mid-call), and the no-color branch
+        // never marks a tick-gate line start.
+        .tool_arg_delta => |d| {
+            render.spinnerStop(a); // first visible byte: clear the thinking line
+            if (main_mod.use_color) {
+                a.streamMarkdown(d.text);
+            } else if (a.out) |w| {
+                w.writeAll(d.text) catch return;
+                w.flush() catch return;
+            }
+        },
         .thinking_fold_toggle => render.toggleThinkingFold(a),
+        // Transport cuts carry no partial answer (nothing streamed on the ws
+        // path), so unlike .stream_aborted there is no tail to flush — only
+        // the notice, worded exactly as the old inline agent_ws lines were.
+        .transport_aborted => |t| notice(a, switch (t.reason) {
+            .interrupted => return, // deliberate stop: silent, as ever
+            .stalled => if (t.turn_ending)
+                "\n⚠ stream stalled — ending turn\n"
+            else
+                "\n⚠ stream stalled\n",
+            .dropped => if (t.turn_ending)
+                "\n⚠ connection dropped — response ended early\n"
+            else
+                "\n⚠ connection dropped\n",
+        }),
         .stream_aborted => |reason| {
             a.flushStreamTail(); // render any held partial markdown line
             switch (reason) {
@@ -162,12 +190,13 @@ fn jsonEmit(ctx: *anyopaque, ev: Stamped) void {
         .reasoning_delta => |d| jsonLine(w, ev.cursor, .{ .type = "reasoning", .text = d.text }),
         .text_delta => |d| jsonLine(w, ev.cursor, .{ .type = "text", .text = d.text }),
         // Stream end/abort still flushes the held render tail, as the old
-        // inline path did in EVERY mode: emitArgText streams tool-arg prose
-        // through streamMarkdown whenever use_color is on — --json on a TTY
-        // included — so md_buf/md_table can hold bytes even here. Yes, that
-        // interleaves non-JSONL text into the wire exactly as before;
-        // making --json drop the tail (or never dirty md state) is a
-        // deliberate future wire change, not slice-1 fallout.
+        // inline path did in EVERY mode. (Slice 1b correction to this note:
+        // tool-arg prose CANNOT dirty md state here — argLiveDelta has always
+        // gated --json off, and this sink drops .tool_arg_delta — so with
+        // .text_delta going to the wire the tail is clean and the flush adds
+        // no bytes today. It stays because removing a wire-visible behavior,
+        // however latent, is a deliberate schema-gated change, not refactor
+        // fallout.)
         .stream_aborted, .stream_complete => a.flushStreamTail(),
         else => {},
     }
@@ -258,6 +287,90 @@ test "JsonSink writes today's wire lines byte-for-byte" {
         "{\"seq\":1,\"type\":\"reasoning\",\"text\":\"why\"}\n{\"seq\":2,\"type\":\"text\",\"text\":\"hi\\n\"}\n",
         aw.writer.buffered(),
     );
+}
+
+test "TuiSink streams tool-arg prose raw and never ends the answer line (slice 1b)" {
+    const saved_color = main_mod.use_color; // pin the no-color branch
+    main_mod.use_color = false;
+    defer main_mod.use_color = saved_color;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = std.testing.allocator,
+        .io = undefined,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = &aw.writer,
+    };
+    const s = tuiSink(&a);
+    s.emit(undefined, .{ .tool_arg_delta = .{ .text = "answer " } });
+    s.emit(undefined, .{ .tool_arg_delta = .{ .text = "prose" } });
+    // Exactly the bytes, flushed per delta, no separators added — the old
+    // inline emitArgText no-color branch.
+    try std.testing.expectEqualStrings("answer prose", aw.writer.buffered());
+}
+
+test "TuiSink transport-abort notices reproduce the old inline lines (slice 1b)" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = std.testing.allocator,
+        .io = undefined,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = &aw.writer,
+    };
+    const s = tuiSink(&a);
+    const cases = [_]struct { ev: engine_events.TransportAbort, want: []const u8 }{
+        .{ .ev = .{ .reason = .stalled, .turn_ending = false }, .want = "\n⚠ stream stalled\n" },
+        .{ .ev = .{ .reason = .stalled, .turn_ending = true }, .want = "\n⚠ stream stalled — ending turn\n" },
+        .{ .ev = .{ .reason = .dropped, .turn_ending = false }, .want = "\n⚠ connection dropped\n" },
+        .{ .ev = .{ .reason = .dropped, .turn_ending = true }, .want = "\n⚠ connection dropped — response ended early\n" },
+        // A deliberate interrupt was never announced at the transport layer.
+        .{ .ev = .{ .reason = .interrupted, .turn_ending = true }, .want = "" },
+    };
+    for (cases) |c| {
+        aw.clearRetainingCapacity();
+        s.emit(undefined, .{ .transport_aborted = c.ev });
+        try std.testing.expectEqualStrings(c.want, aw.writer.buffered());
+    }
+}
+
+test "JsonSink stays silent for moments the wire never carried (slice 1b)" {
+    const saved_json = main_mod.json_mode; // pin: see the dispatch-order test
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
+    protocol_seq.resetForTest();
+    defer protocol_seq.resetForTest();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = std.testing.allocator,
+        .io = undefined,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = &aw.writer,
+    };
+    const s = jsonSink(&a);
+    s.emit(undefined, .{ .tool_arg_delta = .{ .text = "prose" } });
+    s.emit(undefined, .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = true } });
+    s.emit(undefined, .{ .transport_aborted = .{ .reason = .dropped, .turn_ending = false } });
+    // No wire line AND no sequence id burned: both stay pulses, so the
+    // wire's gap-free numbering is untouched by them (#330).
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+    try std.testing.expectEqual(@as(u64, 0), protocol_seq.current());
 }
 
 test "TuiSink renders a plain text delta exactly as the no-color TTY did" {
