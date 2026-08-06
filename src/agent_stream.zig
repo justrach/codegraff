@@ -17,7 +17,7 @@ const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 
-const tick_gate = @import("tick_gate.zig"); // #tui-tick: child ticks wait for a foreground line boundary
+const engine_sink = @import("engine_sink.zig"); // #422: every emission goes through the sink
 
 const reasoningDelta = @import("title.zig").reasoningDelta;
 const stream_tests = @import("agent_stream_tests.zig");
@@ -50,8 +50,15 @@ pub fn postStream(self: *Agent, body: []const u8) ![]u8 {
 /// keep-alive cannot poison the WS→SSE handoff and every fallback retry dials
 /// from a clean pool.
 pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []const u8) ![]u8 {
-    self.spinnerStart();
-    defer self.spinnerStop();
+    const sink = engine_sink.forAgent(self);
+    sink.emit(self.io, .stream_begin);
+    // Every exit path — success, interrupt, transport error — tears down the
+    // live-stream presentation (spinner, a reasoning-only turn's open block).
+    defer sink.emit(self.io, .stream_finished);
+    // Per-stream frontend bookkeeping still lives on the Agent in #422 slice 1
+    // (TuiSink wraps it); the resets are state hygiene, not emissions, and run
+    // for every mode exactly as before — emitArgText can dirty the markdown
+    // state even when this stream's deltas go to the wire.
     self.thinking_open = false; // fresh "Thinking" block state per request
     main_mod.g_thinking_open = false;
     self.thinking_rows = 0;
@@ -59,7 +66,6 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     self.thinking_folded = false;
     self.thinking_text.clearRetainingCapacity();
     self.thinking_overflow = false;
-    defer self.closeThinkingBlock(); // close a reasoning-only turn's block
     const gpa = self.gpa;
     const provider = self.provider;
     const bearer = switch (provider.auth) {
@@ -226,11 +232,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                 // flush the partial, poison, and end the turn as StreamStalled (never a
                 // hang, never a mislabeled StreamDropped or user Esc).
                 if (saw_done) break :stream;
-                self.flushStreamTail();
-                if (!main_mod.json_mode) if (self.out) |o| {
-                    o.writeAll("\n⚠ stream stalled — ending turn\n") catch {};
-                    o.flush() catch {};
-                };
+                sink.emit(self.io, .{ .stream_aborted = .stalled });
                 if (req.connection) |conn| conn.closing = true;
                 return error.StreamStalled;
             };
@@ -243,7 +245,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                 _ = r.line catch |e| {
                     if (saw_done and readErrIsClose(e)) break :stream;
                     if (got_body and readErrIsClose(e)) {
-                        noteDropped(self);
+                        sink.emit(self.io, .{ .stream_aborted = .dropped });
                         return error.StreamDropped;
                     } // #133
                     return e;
@@ -259,22 +261,18 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                 .line => |r| _ = r catch |e| {
                     if (saw_done and readErrIsClose(e)) break :stream; // #134/#135: post-completion close/reset is success, not a retryable flake
                     if (got_body and readErrIsClose(e)) {
-                        noteDropped(self);
+                        sink.emit(self.io, .{ .stream_aborted = .dropped });
                         return error.StreamDropped;
                     } // #133: closed before the terminal event
                     return e;
                 },
                 .stall => |w| {
-                    self.flushStreamTail();
-                    if (req.connection) |conn| conn.closing = true;
                     // A user Esc is a deliberate cancel; a `.deadline` is a dead or
                     // idle stream (silent past this read's budget) — end the turn as
                     // error.StreamStalled so it is never recorded as "[response
-                    // interrupted by user]" (#134). The notice below is deadline-only.
-                    if (w == .deadline and !main_mod.json_mode) if (self.out) |o| {
-                        o.writeAll("\n⚠ stream stalled — ending turn\n") catch {};
-                        o.flush() catch {};
-                    };
+                    // interrupted by user]" (#134). Only the deadline gets a notice.
+                    sink.emit(self.io, .{ .stream_aborted = if (w == .deadline) .stalled else .interrupted });
+                    if (req.connection) |conn| conn.closing = true;
                     return watchdogError(w, error.StreamStalled);
                 },
             }
@@ -288,7 +286,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
         self.printDelta(line.writer.buffered());
         if (main_mod.g_thinking_fold_request) {
             main_mod.g_thinking_fold_request = false;
-            self.toggleThinkingFold();
+            sink.emit(self.io, .thinking_fold_toggle);
         }
         // Logical stream terminator: once the provider's final event ([DONE] /
         // response.completed / message_stop) lands in `full` the response is
@@ -305,7 +303,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
         }
         line.clearRetainingCapacity();
         if ((orig_tio != null and escPressed(true)) or (self.sub and Agent.esc_cancel.load(.acquire))) {
-            self.flushStreamTail();
+            sink.emit(self.io, .{ .stream_aborted = .interrupted });
             // Mark the connection closing so req.deinit() tears it down
             // instead of draining the rest of the stream (which would
             // block until the model finished generating anyway). Subs get
@@ -316,12 +314,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
         if (!more) break;
         reader.toss(1);
     }
-    self.flushStreamTail(); // render any held partial markdown line
-    if (!main_mod.json_mode and self.streamed_text) if (self.out) |w| {
-        w.writeAll("\n") catch {};
-        w.flush() catch {};
-        _ = tick_gate.setLineStart(true); // answer is off the wire: release held child ticks (#tui-tick)
-    };
+    sink.emit(self.io, .{ .stream_complete = .{ .streamed_text = self.streamed_text } });
     return full.toOwnedSlice();
 }
 
@@ -341,18 +334,6 @@ fn readErrIsClose(e: anyerror) bool {
 fn openaiComplete(raw_line: []const u8) bool {
     const payload = ssePayload(raw_line) orelse return false;
     return std.mem.indexOf(u8, payload, "\"finish_reason\":\"") != null;
-}
-
-/// The provider closed/reset the stream before its terminal event landed — the
-/// harness is ending the turn, not the user (#133). Flush the partial and tell
-/// the user (TTY/plain), so a Moonshot-style mid-reasoning drop can never pass
-/// silently as a completed answer.
-fn noteDropped(self: *Agent) void {
-    self.flushStreamTail();
-    if (!main_mod.json_mode) if (self.out) |o| {
-        o.writeAll("\n⚠ connection dropped — response ended early\n") catch {};
-        o.flush() catch {};
-    };
 }
 
 /// True if this SSE line is the provider's terminal event — after it no more
@@ -400,10 +381,11 @@ test "openaiComplete (#133): finish_reason marks completion, deltas do not" {
     try stream_tests.openaiCompletion(openaiComplete);
 }
 
-/// Print the user-visible text from one SSE line, if any. Best-effort:
-/// parse failures are ignored (the buffered body is parsed afterwards).
+/// Extract the user-visible content from one SSE line and dispatch it as
+/// typed events through the sink. Best-effort: parse failures are ignored
+/// (the buffered body is parsed afterwards).
 pub fn printDelta(self: *Agent, raw_line: []const u8) void {
-    const w = self.out orelse return;
+    if (self.out == null) return; // pool-thread subagents have no frontend writer: skip entirely (capture included), as ever
     const payload = ssePayload(raw_line) orelse return;
     const parsed = std.json.parseFromSlice(Value, self.gpa, payload, .{}) catch return;
     defer parsed.deinit();
@@ -439,29 +421,13 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
         },
     };
     // Reasoning/thinking deltas: deepseek streams reasoning_content, anthropic
-    // a thinking_delta, codex a summary delta. JSON clients get a `reasoning`
-    // event; on a TTY we stream it into a live, dimmed "Thinking" block when
-    // /thinking is enabled, otherwise the spinner stands in for it.
+    // a thinking_delta, codex a summary delta. Presentation is the sink's call:
+    // the wire's `reasoning` event, or the live "Thinking" block / spinner.
+    const sink = engine_sink.forAgent(self);
     const reasoning = reasoningDelta(self.provider.kind, obj);
-    if (reasoning.len != 0) {
-        if (main_mod.json_mode) {
-            self.emit(.{ .type = "reasoning", .text = reasoning });
-        } else if (self.show_thinking and !self.sub and !self.stream_quiet and main_mod.use_color) {
-            self.streamThinking(reasoning);
-        }
-    }
+    if (reasoning.len != 0) sink.emit(self.io, .{ .reasoning_delta = .{ .text = reasoning } });
     if (text.len == 0) return;
-    if (self.thinking_open) self.closeThinkingBlock(); // reasoning → answer transition
-    self.spinnerStop(); // first visible byte: clear the thinking line
     self.streamed_text = true;
     self.partial_text.appendSlice(self.arena, text) catch {}; // Esc-interrupt capture
-    if (main_mod.json_mode) {
-        self.emit(.{ .type = "text", .text = text });
-    } else if (main_mod.use_color) {
-        self.streamMarkdown(text);
-    } else {
-        w.writeAll(text) catch return;
-        w.flush() catch return;
-        if (!self.sub) _ = tick_gate.setLineStart(text[text.len - 1] == '\n'); // #tui-tick
-    }
+    sink.emit(self.io, .{ .text_delta = .{ .text = text } });
 }

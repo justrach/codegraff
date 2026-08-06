@@ -125,9 +125,10 @@ const snapshots_tests = @import("snapshots_tests.zig");
 // calls from oauth.zig and the catalog writers, so its own tests need the hook.
 const credential_store = @import("credential_store.zig");
 
-// #422: the engine event vocabulary. Production reaches it only through
-// engine_sink dispatch CALLS, so its tests need the hook.
+// #422: the engine event vocabulary + the sink boundary that dispatches it.
+// Production reaches both only through CALLS, so their tests need the hook.
 const engine_events = @import("engine_events.zig");
+const engine_sink = @import("engine_sink.zig");
 
 test {
     _ = learn_holdout;
@@ -167,6 +168,7 @@ test {
     _ = shutdown_trace;
     _ = credential_store;
     _ = engine_events;
+    _ = engine_sink;
     _ = escalation;
     _ = escalation_tests;
     _ = edit_contract;

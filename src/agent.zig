@@ -94,6 +94,9 @@ pub const Agent = struct {
     label: []const u8,
     out: ?*Io.Writer,
     in: ?*Io.Reader = null, // stdin, root only — backs the ask_user tool
+    /// Frontend event sink (#422). Null = resolved per emission from the
+    /// process mode (engine_sink.forAgent); set to inject a custom frontend.
+    sink: ?@import("engine_sink.zig").EngineSink = null,
     registry: ?*mcp.Registry = null,
     approvals: ?*approvals_mod.Approvals = null, // shared bash-approval state, set by main()
     tracer: ?*trace.Tracer = null, // shared JSONL event trace, set by main()
