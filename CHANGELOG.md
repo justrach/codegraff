@@ -10,7 +10,24 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.0.239 (unreleased)
+## v0.0.240 (unreleased)
+
+- The REPL/engine separation began (#422): agent output now flows through a
+  typed event vocabulary and a strict sink boundary (`engine_events.zig` /
+  `engine_sink.zig`), with streamed model output, the codex WS transport
+  notices, and streamed tool-call arguments converted first — the TUI
+  renders and the `--json` wire serializes the same events, so the two can no
+  longer drift. Proven byte-identical to v0.0.239 by a golden before/after
+  eval harness (the same scripted mock session over both the protocol and a
+  real PTY) plus live one-shot, tool-call, and interactive smoke runs.
+  Groundwork for detached sessions and attach (#420).
+- Loop exit tears down the held codex WebSocket and its response-id anchor
+  (#424): the delta chain deliberately spans user turns, so only exit may
+  free them — and no exit path did. The socket now gets a proper close on
+  quit, and Debug builds finish with a clean allocator report instead of
+  four leak stacks.
+
+## v0.0.239 (2026-08-06)
 
 - A successful `/login` now reaches the live session (#402): the codex
   `.responses` error path runs the same bounded auth recovery as every other

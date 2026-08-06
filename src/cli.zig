@@ -21,6 +21,10 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.240
+    \\  • Engine output now flows through a typed event stream behind a strict sink boundary — the start of the REPL/engine separation, with TUI and --json output proven byte-identical
+    \\  • Quitting no longer strands the held Codex socket: loop exit closes the WebSocket and its response anchor, and debug builds finish with a clean allocator report
+    \\
     \\0.0.239
     \\  • Codex WebSocket turns can't stall silently: visible output tightens the watchdog, a mute reused socket is retried in ~30s, and send/dial run under deadlines with Esc live
     \\  • A successful /login reaches the live session — codex auth recovery re-reads auth.json, spends the refresh token, and retries once instead of looping on a dead bearer
@@ -48,11 +52,6 @@ pub const changelog_text =
     \\  • Kimi Code now follows each live catalog model's native or Anthropic beta protocol, auth style, context, and thinking metadata
     \\  • Native Kimi tool schemas are normalized to Moonshot's stricter validator; OAuth requests carry the current Kimi Code identity headers
     \\  • `--model kimi` selects K3 today and automatically follows future pure Kimi generations
-    \\
-    \\0.0.206
-    \\  • The CLI now uses Codegraff's accessible vermilion-coral accent for prompts, tools, Markdown structure, and active selections
-    \\  • A quiet Ensō brush-circle is the stable thinking default; every existing animation remains selectable, including random
-    \\  • Ultracode motion is now a slower rust/coral/gold ember sweep instead of a full-spectrum rainbow
     \\
 ;
 
