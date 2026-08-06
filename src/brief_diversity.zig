@@ -56,6 +56,7 @@ const Allocator = std.mem.Allocator;
 const trace = @import("trace.zig");
 const util = @import("util.zig");
 const fleet = @import("fleet.zig"); // resolveOverride: the shared system_prompt/agent resolution
+const tick_gate = @import("tick_gate.zig"); // #tui-tick/#444: activity lines land at a line boundary, and never in a test binary
 
 /// Shingle width. 3 is the standard near-duplicate-detection default and it
 /// is what the fixtures below were tuned against; 2 drifts toward unigram
@@ -455,7 +456,7 @@ pub fn check(arena: Allocator, tracer: ?*trace.Tracer, phase: []const u8, briefs
     // Its own prefix rather than the caller's: this fires from the workflow
     // phase loop AND from a bare sibling-spawn batch, where "[workflow]"
     // would name a workflow that never ran.
-    std.debug.print("  [diversity] {s}\n", .{text});
+    tick_gate.workerPrint("  [diversity] {s}\n", .{text});
     return text;
 }
 

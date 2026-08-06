@@ -43,6 +43,7 @@ const wfp = @import("workflow_progress.zig");
 const escalation = @import("escalation.zig");
 const phase_budget = @import("phase_budget.zig");
 const workflow = @import("workflow.zig");
+const tick_gate = @import("tick_gate.zig"); // #tui-tick/#444: activity lines land at a line boundary, and never in a test binary
 
 const max_pipeline_items = 8;
 const max_pipeline_stages = 5;
@@ -271,7 +272,7 @@ pub fn run(ctx: ToolCtx, pv: Value, outer_context: []const u8) !ToolOutput {
     }
 
     const wf_start = Io.Timestamp.now(ctx.io, .awake);
-    std.debug.print("  [workflow] pipeline: {d} item(s) × {d} stage(s), no barrier\n", .{ items.len, stages.len });
+    tick_gate.workerPrint("  [workflow] pipeline: {d} item(s) × {d} stage(s), no barrier\n", .{ items.len, stages.len });
     // #63 — same fact, as state: phase_index 0 is the run-level event, since a
     // pipeline has stages rather than phases. Per-stage events would have to be
     // threaded into pipelineChain (one chain per item, on its own pool thread);

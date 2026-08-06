@@ -64,9 +64,19 @@ fn forEachServedSchema(arena: Allocator, catalog: []const u8, check: *const fn (
     }
 }
 
+/// #444: the diagnostic below is for a REAL offender, where stderr is exactly
+/// what you want. The negative control at the bottom of the next test deals in
+/// a deliberately bad schema, and its print landed on every green run — where
+/// zig's build runner error-prints any Run step whose stderr is non-empty, so a
+/// passing suite rendered a step-failure tree and `failed command: …/test`.
+/// Reading that as a failure cost real time. Muted for the control only; the
+/// assertion it makes is unchanged.
+var report_offenders: bool = true;
+
 fn assertClean(name: []const u8, sch: Value) anyerror!void {
     if (combinatorAnywhere(sch)) |key| {
-        std.debug.print("\ntool '{s}' has a JSON Schema '{s}' — Anthropic rejects the whole request over a top-level one\n", .{ name, key });
+        if (report_offenders)
+            std.debug.print("\ntool '{s}' has a JSON Schema '{s}' — Anthropic rejects the whole request over a top-level one\n", .{ name, key });
         return error.ToolSchemaHasCombinator;
     }
 }
@@ -100,10 +110,15 @@ test "no built-in tool schema carries oneOf/allOf/anyOf — the wire rejection t
         }
     }
 
-    // The guard has to be able to fail, or it proves nothing.
+    // The guard has to be able to fail, or it proves nothing. Silently (#444):
+    // this is the ONE call to assertClean that is meant to fail, so its
+    // diagnostic is noise on a green run — and a green run's stderr is what
+    // zig's build runner error-prints.
     const bad = try std.json.parseFromSliceLeaky(Value, arena,
         \\{"type":"object","properties":{},"anyOf":[{"required":["a"]},{"required":["b"]}]}
     , .{});
+    report_offenders = false;
+    defer report_offenders = true;
     try testing.expectError(error.ToolSchemaHasCombinator, assertClean("fake", bad));
 }
 
