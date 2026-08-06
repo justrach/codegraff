@@ -148,6 +148,14 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // window past what the in-turn recovery below can reclaim (it keeps the most
     // recent outputs verbatim). Window-proportional, so large-context models keep
     // full tool results untouched.
+    //
+    // #440 narrowed this to a BACKSTOP. Every tool result this process produced
+    // already met the handle contract at tool time, under a threshold clamped to
+    // this very cap (tool_handle.effectiveThreshold), so nothing from runTools can
+    // reach here oversized. What still can: a session resumed from a build that
+    // predates #440, and any future path that appends a tool output without going
+    // through runTools. Both are exactly the cases where destroying the bytes
+    // would be the alternative, so the pass stays.
     const spills_before = tool_spill.spillCount();
     const capped = self.capOversizedToolOutputs(self.provider.perOutputCap());
     if (capped > 0) {

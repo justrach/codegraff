@@ -424,6 +424,12 @@ pub fn trimOldestToolOutputs(self: *Agent) usize {
 /// so large-context models keep full results untouched. Preserves every call/output
 /// pairing (shrinks strings, never drops a message). Returns bytes reclaimed.
 ///
+/// #440: a backstop now, not the first line of defense. runTools applies the
+/// handle contract at tool time with a threshold clamped below `cap`, so a
+/// freshly produced result is never oversized by the time it gets here; what
+/// remains for this pass is history this process did not produce (a session
+/// resumed from a pre-#440 build). See tool_handle.effectiveThreshold.
+///
 /// #409: the elided bytes are no longer destroyed. When this agent has a durable
 /// session, each oversized output is written to that session's artifact dir
 /// first and the marker cites the absolute path and the full byte count, so the

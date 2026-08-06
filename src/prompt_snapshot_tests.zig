@@ -47,6 +47,16 @@ const golden_full_prompt =
     \\status first, preserve existing changes, and explain that those edits are
     \\not covered by /rewind. Do not claim a relaunch is required. Never extend
     \\this exception to an inferred path or to a subagent.
+    \\
+    \\A tool result past the size threshold does not come back in full. What you
+    \\get is a handle: a bounded preview, the path of a file holding the COMPLETE
+    \\result, its byte count, and a one-line shape hint (the line count, or the
+    \\top-level keys of a JSON payload). Treat that path as the result — slice
+    \\what you need out of it with read_file's start_line/end_line, a grep-style
+    \\bash command, or codedb, and do that as many times as the task needs. Never
+    \\re-run the tool just to see more of its output, and never pull the whole
+    \\file back into the conversation; the handle stays readable for the rest of
+    \\the session, so the bytes are not lost by being left on disk.
     \\For independent,
     \\self-contained chunks of work — exploring several directories, running
     \\unrelated checks, summarizing multiple files — fan out: call the
@@ -202,7 +212,9 @@ test "#421: a gated-off capability's tool names disappear from the prompt entire
     // #330 embedder mode: bash, read_file, edit_file, write_file and codedb are
     // hard-removed from every catalog, so no sentence may still name them.
     const embedder = try prompts.composeSegments(a, .{ .local_tools = false });
-    for ([_][]const u8{ "read_file", "edit_file", "write_file", "codedb", "bash grep", "/trace", "gh issue create", ".graff/traces" }) |dead|
+    // "Treat that path as the result" is #440's handle contract: a session with
+    // no way to OPEN a path is never told to slice one.
+    for ([_][]const u8{ "read_file", "edit_file", "write_file", "codedb", "bash grep", "/trace", "gh issue create", ".graff/traces", "Treat that path as the result" }) |dead|
         try std.testing.expect(std.mem.indexOf(u8, embedder, dead) == null);
 
     const no_subs = try prompts.composeSegments(a, .{ .subagents = false });

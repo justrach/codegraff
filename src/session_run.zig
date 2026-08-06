@@ -28,6 +28,7 @@ const http = @import("http.zig");
 const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig"); // codex_ws_idle_ms override (#codex-ws)
 const no_local_tools = @import("no_local_tools.zig"); // #330: GRAFF_NO_LOCAL_TOOLS
+const tool_handle = @import("tool_handle.zig"); // #440: GRAFF_TOOL_HANDLE_BYTES
 const provider_mod = @import("provider.zig");
 const keys_cli = @import("keys_cli.zig");
 const pricing = @import("pricing.zig");
@@ -439,6 +440,7 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
             if (n > 0) provider_mod.g_context_override = n;
         } else |_| {}
     }
+    if (environ_map.get("GRAFF_TOOL_HANDLE_BYTES")) |v| tool_handle.applyEnv(v); // #440: bytes at which a tool result becomes preview + handle
     // #204: GRAFF_COMPACT_PCT overrides the auto-compaction threshold as a percent
     // of the window (default 80). Clamped to 1..100; ignored if unparseable or 0.
     if (environ_map.get("GRAFF_COMPACT_PCT")) |v| {
