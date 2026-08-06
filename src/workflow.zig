@@ -61,6 +61,7 @@ const report_anchors = @import("report_anchors.zig");
 const phase_budget = @import("phase_budget.zig");
 const shapes = @import("shapes.zig");
 const pipeline_mode = @import("workflow_pipeline.zig");
+const tick_gate = @import("tick_gate.zig"); // #tui-tick/#444: activity lines land at a line boundary, and never in a test binary
 
 // Pipeline mode moved to workflow_pipeline.zig (600-line cap); aliased back so
 // workflow_test.zig and every other caller still reach it here.
@@ -295,13 +296,13 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // its `when` never gates; a skipped phase leaves {{prev}} untouched, so a
         // skipped final phase just returns the prior phase's results (early-exit).
         if (phase_no > 1) if (phase.get("when")) |wv| if (wv == .string and !gateAllows(prev_results, wv.string)) {
-            std.debug.print("  [workflow] phase {d}/{d}: {s} — SKIPPED (when \"{s}\" absent)\n", .{ phase_no, phases.len, title, wv.string });
+            tick_gate.workerPrint("  [workflow] phase {d}/{d}: {s} — SKIPPED (when \"{s}\" absent)\n", .{ phase_no, phases.len, title, wv.string });
             wfp.phase(ctx.io, arena, run_id, phase_no, phases.len, title, "skipped", tasks.len); // #63
             tallies[phase_no - 1] = .{ .phase_no = phase_no, .total_phases = phases.len, .title = title, .ok = 0, .total = tasks.len, .retried = 0, .skipped_when = wv.string };
             phases_ran = phase_no;
             continue;
         };
-        std.debug.print("  [workflow] phase {d}/{d}: {s} ({d} task(s))\n", .{ phase_no, phases.len, title, tasks.len });
+        tick_gate.workerPrint("  [workflow] phase {d}/{d}: {s} ({d} task(s))\n", .{ phase_no, phases.len, title, tasks.len });
         wfp.phase(ctx.io, arena, run_id, phase_no, phases.len, title, "started", tasks.len); // #63
 
         // Resolve prompts: substitute or append the previous phase results.
