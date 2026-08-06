@@ -73,6 +73,10 @@ const session_tests = @import("session_tests.zig");
 // #441: and session_transcript.zig's, moved off it for the same reason again.
 // The module itself is reached from session.queueSave, but this FILE is not, so
 // without the hook its whole suite compiles to nothing and reports green.
+// #429 batch 2 + #440: the env-knob guard. Its own module, so a knob that
+// stops being parsed fails a test instead of vanishing silently.
+const session_settings_tests = @import("session_settings_tests.zig");
+
 const session_transcript_tests = @import("session_transcript_tests.zig");
 
 // #445: moved off commands_session.zig when the transcript-line reset needed
@@ -197,6 +201,7 @@ test {
     _ = scoring_slot_test;
     _ = session_tests;
     _ = session_transcript_tests;
+    _ = session_settings_tests;
     _ = commands_session_test;
     _ = mcp_config;
     _ = mcp_schema_gate;

@@ -336,7 +336,6 @@ test "#445: the transcript line is absent until the first compaction, then rides
 
     var agent: agent_mod.Agent = undefined;
     agent.sub = false;
-    agent.io = std.testing.io; // the note block reads the fs when armed; a stub's undefined io segfaults
     agent.session_name = "session-445";
     prompts.g_session_compacted = false;
 
@@ -396,7 +395,6 @@ test "#445: /new and /clear disarm the transcript line again, and a later compac
 
     var agent: agent_mod.Agent = undefined;
     agent.sub = false;
-    agent.io = std.testing.io; // the note block reads the fs when armed; a stub's undefined io segfaults
     agent.session_name = "session-long";
     prompts.g_session_compacted = false;
     prompts.armSessionTranscript(a, agent.session_name, .{}, false);
@@ -463,7 +461,6 @@ test "#445: /resume disarms the transcript line and leaves no stale session path
 
     var agent: agent_mod.Agent = undefined;
     agent.sub = false;
-    agent.io = std.testing.io; // the note block reads the fs when armed; a stub's undefined io segfaults
     agent.session_name = "session-before";
     prompts.g_session_compacted = false;
     prompts.armSessionTranscript(a, agent.session_name, .{}, false);
@@ -520,4 +517,38 @@ test "#421: goal steering is empty outside a goal run" {
     // ...and a goal that is no longer active steers nobody either (#223).
     try std.testing.expectEqualStrings("", try repl_glue.goalSteeringNote(a, .{ .objective = "ship it", .status = .complete }));
     try std.testing.expect((try repl_glue.goalSteeringNote(a, .{ .objective = "ship it", .status = .active })).len > 0);
+}
+
+// #391 + #445 regression. The two features collided at integration in a way
+// neither suite could see: #391's note store is a PROCESS global whose
+// composition reads the filesystem through `agent.io`, and #445's tests drive
+// the funnel with stub Agents whose `io` is `undefined`. Once anything armed
+// the store, every later composition in the binary segfaulted inside
+// compact_note.pathFor — three tests away from the cause.
+//
+// The fix is that the funnel's IMPLICIT arming is gated on `!builtin.is_test`,
+// so a test can only arm the store by asking for it. This pins that: remove the
+// gate and this goes red instead of the segfault coming back.
+test "#391/#445: the prompt funnel never arms the note store in a test build" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+
+    const saved = prompts.g_session_compacted;
+    defer prompts.g_session_compacted = saved;
+    defer prompts.armCompactNotes("");
+    defer prompts.armSessionTranscript(a, "", .{}, false);
+
+    prompts.armCompactNotes(""); // start disarmed, as a fresh process would
+    try std.testing.expect(!prompts.compactNotesArmed());
+
+    var agent: agent_mod.Agent = undefined;
+    agent.sub = false;
+    agent.session_name = "session-purity";
+    agent.io = std.testing.io; // a real io: this test is about arming, not about io
+    try prompts.setRootSystemPrompts(&agent, "BASE", a);
+
+    // Production arms here. A test build must not, or the funnel stops being
+    // the pure string function the rest of this suite depends on.
+    try std.testing.expect(!prompts.compactNotesArmed());
 }

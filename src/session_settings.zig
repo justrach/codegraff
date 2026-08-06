@@ -42,7 +42,15 @@ pub const ThemeSetup = struct {
 /// helper returns), so the `defer`s stay in main(), gated on the booleans
 /// this returns; main() registers them in the same order as the original
 /// inline code so LIFO defer-firing order is unchanged.
-pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool, cwd_display: []const u8) !ThemeSetup {
+/// Every `GRAFF_*` environment knob this binary honors, in one place.
+///
+/// Extracted from setupSkillsAndTheme so it can be driven directly by a test.
+/// The reason is concrete: #440 added GRAFF_TOOL_HANDLE_BYTES here while #429
+/// batch 2 moved this whole function to another file. Git merged both without
+/// a conflict and the knob simply stopped being parsed — no error, no failing
+/// test, a feature that silently ceased to exist. `envKnobsAreParsed` below
+/// now fails if that happens to any knob in this list.
+pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // Companion auto-activation: if the metered code-intelligence companion
     // (codedb-pro, formerly muonry) is installed but nothing connected it (no
     // workspace .mcp.json entry, or consent declined), spawn it directly — a
@@ -115,6 +123,10 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
     if (environ_map.get("GRAFF_WS_FORCE_FAIL_COUNT")) |v| {
         ws.g_force_connect_failure_count = std.fmt.parseInt(u8, std.mem.trim(u8, v, " \t"), 10) catch 0;
     }
+}
+
+pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool, cwd_display: []const u8) !ThemeSetup {
+    try applyEnvKnobs(arena, environ_map);
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
     anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme

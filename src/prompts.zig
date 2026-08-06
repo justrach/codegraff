@@ -27,6 +27,7 @@
 //! compaction and rides that boundary — see transcriptLineWanted below.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const shapes = @import("shapes.zig");
@@ -183,6 +184,13 @@ var g_note_session_buf: [256]u8 = undefined;
 /// Armed by setRootSystemPrompts, and re-armed by the note writer itself so a
 /// `/save <name>` mid-session cannot leave the injection reading a store the
 /// writer has stopped writing to.
+/// Whether the note store currently points at a session. Exists so a test can
+/// pin the funnel's purity (see the #391/#445 regression test) without making
+/// the store itself public.
+pub fn compactNotesArmed() bool {
+    return g_note_session.len > 0;
+}
+
 pub fn armCompactNotes(session_name: []const u8) void {
     if (session_name.len == 0 or session_name.len > g_note_session_buf.len) {
         g_note_session = "";
@@ -292,7 +300,15 @@ pub fn setRootSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !
     // dead process, and what that process left in the file is exactly the
     // context this one loaded, so the line would again describe what is here.
     armSessionTranscript(arena, agent.session_name, detectCaps(), g_session_compacted);
-    armCompactNotes(agent.session_name); // #391: same session, same one-time arming
+    // #391: same session, same one-time arming — but only outside test builds.
+    // This is the IMPLICIT path, and a unit test reaching it with a stub Agent
+    // drags prompt composition into a filesystem read through an `undefined`
+    // io, segfaulting three tests away from the cause. That is exactly what
+    // happened when #445's tests met #391 at integration. A test that WANTS the
+    // note block calls armCompactNotes directly, as compact_note_glue_tests
+    // does; the funnel stays the pure string function the rest of the suite
+    // relies on. Same shape as #444's `emit_to_stderr = !builtin.is_test`.
+    if (!builtin.is_test) armCompactNotes(agent.session_name);
     return setSystemPrompts(agent, base, arena);
 }
 
@@ -369,8 +385,11 @@ pub fn resetSessionCompacted(agent: *Agent, arena: Allocator) void {
     // name and injects the old conversation's notes into the new one, which is
     // the same stale-identity bug this function exists to prevent for the
     // transcript line, one store over.
-    const note_moved = !std.mem.eql(u8, g_note_session, agent.session_name);
-    armCompactNotes(agent.session_name);
+    // An UNARMED store has not "moved" — it was never pointed anywhere. Without
+    // this the predicate reads a fresh session as a move (`"" != name`) and
+    // defeats #445's own no-op-when-already-false contract.
+    const note_moved = g_note_session.len > 0 and !std.mem.eql(u8, g_note_session, agent.session_name);
+    if (!builtin.is_test) armCompactNotes(agent.session_name); // implicit path, see setRootSystemPrompts
     if (!g_session_compacted and !note_moved) return;
     g_session_compacted = false;
     armSessionTranscript(arena, agent.session_name, detectCaps(), false);
@@ -450,13 +469,6 @@ test "setSystemPrompts (#326): derives all four variants from base, composing ul
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var agent: Agent = undefined;
-    // #391's note block reads the filesystem whenever a session is armed, and
-    // g_note_session is a PROCESS global: another test in this binary can leave
-    // it armed, at which point this stub's undefined `io` segfaults inside
-    // compact_note.load. A real io makes the read miss harmlessly instead, and
-    // disarming keeps this test from depending on suite order either way.
-    agent.io = std.testing.io;
-    armCompactNotes("");
 
     try setSystemPrompts(&agent, "BASE-A", a);
     try std.testing.expectEqualStrings("BASE-A", agent.sys_normal);
