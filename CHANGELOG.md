@@ -10,8 +10,21 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.0.241 (unreleased)
+## v0.0.241 (2026-08-06)
 
+- The engine separation reached the tool-execution cluster (#422): tool-call
+  announcements, results, rejections, parallel-batch brackets, and the
+  goal/todo notices now travel the typed event stream, with the inventory
+  finding that only `agent_tools.zig` ever wrote to the terminal — the rest
+  of the cluster was already clean. The wire sink is now provably unable to
+  ship a shapeless durable event or reserve sequence ids for a frontendless
+  agent.
+- A WebSocket 426 refusal latches SSE immediately (#427): the server answered
+  authoritatively, so the session falls back on the same attempt instead of
+  burning a rebuild and a redial before the two-failure latch.
+- The tier-1 gate counts tests off the compiled artifact when a cached build
+  prints no summary, selects the reachability binary by content instead of
+  mtime, and warns when its test-count ratchet goes stale (#439).
 - The system prompt is now assembled from capability-gated segments (#421):
   an instruction ships only when its capability is actually present, read
   from the same predicates dispatch uses to refuse a hallucinated call, so
