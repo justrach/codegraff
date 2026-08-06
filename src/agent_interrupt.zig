@@ -206,6 +206,12 @@ pub fn rawNonblockStdin() ?tty.RawState {
     return tty.enterRaw(false);
 }
 
+/// Undo rawNonblockStdin. Lives here so the transport loop needs no terminal
+/// import of its own (#422: engine files never import term.zig).
+pub fn restoreStdin(orig: tty.RawState) void {
+    tty.restore(orig);
+}
+
 /// Sleep `ms` watching stdin for Esc (when the root is on a TTY), so the
 /// user can cancel a retry backoff instead of waiting it out.
 pub fn sleepInterruptible(self: *Agent, ms: u64) error{Interrupted}!void {

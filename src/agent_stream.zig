@@ -1,16 +1,13 @@
-//! The live streaming path: the thinking spinner (spinnerTask/Start/Stop,
-//! an animated indicator while the model is silent), the live dimmed
-//! "Thinking" reasoning block (streamThinking/closeThinkingBlock/
-//! toggleThinkingFold), and postStream itself — the root agent's
-//! streaming POST, racing send/receive/read against stall watchdogs,
-//! printing text deltas (printDelta) as they arrive. The highest-
+//! The live streaming path: postStream — the root agent's streaming POST,
+//! racing send/receive/read against stall watchdogs — and printDelta, which
+//! turns SSE lines into the semantic deltas a frontend renders. The highest-
 //! entanglement piece of the Agent struct (#123, 600-line goal); extracted
 //! last, after agent_request/agent_steps/agent_argstream/agent_render/
 //! agent_interrupt so it can sibling-import them directly.
 //!
-//! Agent.g_spin_stop/Agent.g_spin_future are struct-level `pub var`s that stay
-//! declared directly inside the Agent struct in main.zig (never alias a
-//! `var`) — reached here as `Agent.Agent.g_spin_stop`/`Agent.Agent.g_spin_future`.
+//! #422: this file draws nothing. The spinner and the live "Thinking" block
+//! live in agent_stream_render.zig (reached through Agent member aliases);
+//! term.zig/agent_render.zig/ansi.zig/anim.zig must never be imported here.
 
 const std = @import("std");
 const Io = std.Io;
@@ -20,16 +17,7 @@ const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 
-const style = &@import("ansi.zig").style;
-
-const anim = @import("anim.zig");
 const tick_gate = @import("tick_gate.zig"); // #tui-tick: child ticks wait for a foreground line boundary
-
-const terminal = @import("term.zig");
-const tty = terminal.tty;
-const termCols = terminal.termCols;
-const termRows = terminal.termRows;
-const advanceThinkingRows = terminal.advanceThinkingRows;
 
 const reasoningDelta = @import("title.zig").reasoningDelta;
 const stream_tests = @import("agent_stream_tests.zig");
@@ -45,133 +33,13 @@ const streamLineTask = http.streamLineTask;
 const streamStallWatch = http.streamStallWatch;
 const watchdogError = http.watchdogError;
 
-// escPressed/drainSteerStdin/rawNonblockStdin/ssePayload live in
+// escPressed/drainSteerStdin/rawNonblockStdin/restoreStdin/ssePayload live in
 // agent_interrupt.zig; reached through the Agent struct's member aliases.
 const escPressed = Agent.escPressed;
 const drainSteerStdin = Agent.drainSteerStdin;
 const rawNonblockStdin = Agent.rawNonblockStdin;
+const restoreStdin = Agent.restoreStdin;
 const ssePayload = Agent.ssePayload;
-
-pub fn spinnerTask(io: Io) void {
-    var i: usize = 0;
-    var buf: [512]u8 = undefined;
-    var w = Io.File.stdout().writer(io, &buf);
-    while (!Agent.g_spin_stop.load(.acquire)) {
-        if (main_mod.g_steer_visible.load(.acquire)) {
-            io.sleep(.fromMilliseconds(20), .awake) catch break;
-            continue;
-        }
-        // Clear-then-draw each frame: animations may vary in width.
-        w.interface.writeAll("\r\x1b[2K\x1b[?7l") catch return; // ?7l: autowrap off so a wide spinner truncates instead of wrapping in a narrow window (the "goes on and on" bug)
-        anim.anims[anim.g_anim_current].frame(&w.interface, i) catch return;
-        w.interface.writeAll("\x1b[?7h") catch return; // restore autowrap
-        w.interface.flush() catch return;
-        i += 1;
-        const frame_ticks = @max(@as(usize, 1), @as(usize, anim.anims[anim.g_anim_current].frame_ms) / 20);
-        var t: usize = 0;
-        while (t < frame_ticks and !Agent.g_spin_stop.load(.acquire)) : (t += 1) {
-            if (main_mod.g_steer_visible.load(.acquire)) break;
-            io.sleep(.fromMilliseconds(20), .awake) catch break;
-        }
-    }
-    if (!main_mod.g_steer_visible.load(.acquire)) {
-        w.interface.writeAll("\x1b[?7h\r\x1b[2K") catch return; // restore autowrap + clear
-        w.interface.flush() catch {};
-    }
-}
-
-pub fn spinnerStart(self: *Agent) void {
-    if (self.sub or main_mod.json_mode or !main_mod.use_color or self.out == null) return;
-    if (anim.g_anim_off) return;
-    if (Agent.g_spin_future != null) return;
-    anim.selectSpinner(self.io);
-    Agent.g_spin_stop.store(false, .release);
-    Agent.g_spin_future = self.io.concurrent(spinnerTask, .{self.io}) catch blk: {
-        Agent.g_spin_stop.store(true, .release); // no spare concurrency: skip quietly
-        break :blk null;
-    };
-}
-
-pub fn spinnerStop(self: *Agent) void {
-    if (self.sub) return; // root-only state — subs run on pool threads
-    if (Agent.g_spin_future) |*f| {
-        Agent.g_spin_stop.store(true, .release);
-        f.await(self.io);
-        Agent.g_spin_future = null;
-    }
-}
-
-/// Stream a chunk of the model's reasoning into a live, dimmed "Thinking"
-/// block in the terminal, opening the block (and handing the line off from
-/// the spinner) on the first chunk. Gated by /thinking; when off the block is
-/// never opened and the spinner stands in for it. We track the block's
-/// on-screen height as it streams so closeThinkingBlock can collapse it to a
-/// one-line summary when the answer starts (#75).
-pub fn streamThinking(self: *Agent, chunk: []const u8) void {
-    const w = self.out orelse return;
-    if (!self.thinking_open) {
-        self.spinnerStop();
-        w.print("{s}▼ Thinking{s}\n{s}", .{ style.dim, style.reset, style.dim }) catch return;
-        self.thinking_open = true;
-        main_mod.g_thinking_open = true;
-        self.thinking_rows = 1; // the header newline already moved us down one line
-        self.thinking_col = 0;
-        self.thinking_overflow = false;
-        // The block owns every row below this one and collapses them by cursor
-        // math — a child's tick printed inside it would be erased with the
-        // block (or shift the erase onto real output). Hold until it closes.
-        tick_gate.hold();
-    }
-    self.thinking_text.appendSlice(self.gpa, chunk) catch {};
-    if (self.thinking_folded) return; // folded: buffer only, don't draw the live block
-    w.writeAll(chunk) catch return;
-    w.flush() catch return;
-    advanceThinkingRows(&self.thinking_rows, &self.thinking_col, termCols(), chunk);
-    if (self.thinking_rows + 1 >= termRows()) self.thinking_overflow = true;
-}
-
-/// Close an open "Thinking" block. If it still fits on screen, collapse it in
-/// place to a one-line "Thought" summary (#75); if it has scrolled off
-/// (overflow) leave the reasoning and just append the summary, so we never
-/// erase the user's earlier output. Runs on the reasoning->answer transition
-/// and at stream end.
-pub fn closeThinkingBlock(self: *Agent) void {
-    if (!self.thinking_open) return;
-    self.thinking_open = false;
-    main_mod.g_thinking_open = false;
-    self.thinking_folded = false;
-    const w = self.out orelse return;
-    if (!self.thinking_overflow and self.thinking_rows >= 1 and main_mod.use_color) {
-        w.print("\x1b[{d}F\x1b[0J{s}✓ Thought{s}\n\n", .{ self.thinking_rows, style.dim, style.reset }) catch return;
-    } else {
-        w.print("{s}\n{s}✓ Thought{s}\n\n", .{ style.reset, style.dim, style.reset }) catch return;
-    }
-    w.flush() catch return;
-    _ = tick_gate.setLineStart(true); // both branches end at column 0 — held ticks land here (#tui-tick)
-}
-
-/// Ctrl-T: fold/unfold the live "Thinking" block in place (#92/#85). Only
-/// acts on an open, on-screen block; folding erases it to a one-line marker,
-/// unfolding re-streams the buffered reasoning. Cursor math mirrors
-/// closeThinkingBlock (erase `thinking_rows` lines up, clear to end).
-pub fn toggleThinkingFold(self: *Agent) void {
-    if (!self.thinking_open or self.thinking_overflow or !main_mod.use_color) return;
-    const w = self.out orelse return;
-    if (!self.thinking_folded) {
-        w.print("\x1b[{d}F\x1b[0J{s}▶ Thinking (folded · ^T){s}\n", .{ self.thinking_rows, style.dim, style.reset }) catch return;
-        self.thinking_folded = true;
-        self.thinking_rows = 1;
-        self.thinking_col = 0;
-    } else {
-        w.print("\x1b[1F\x1b[0J{s}▼ Thinking{s}\n{s}", .{ style.dim, style.reset, style.dim }) catch return;
-        self.thinking_folded = false;
-        self.thinking_rows = 1;
-        self.thinking_col = 0;
-        w.writeAll(self.thinking_text.items) catch return;
-        advanceThinkingRows(&self.thinking_rows, &self.thinking_col, termCols(), self.thinking_text.items);
-    }
-    w.flush() catch return;
-}
 
 pub fn postStream(self: *Agent, body: []const u8) ![]u8 {
     return postStreamWithClient(self, self.client, body);
@@ -226,11 +94,10 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     // the terminal scroll its own scrollback — native scroll wins, and Ctrl-T
     // still folds the live Thinking block (escPressed).
     const watch_esc = !self.sub and self.in != null and main_mod.use_color and !main_mod.json_mode;
-    var orig_tio: ?tty.RawState = null;
-    if (watch_esc) orig_tio = rawNonblockStdin();
+    const orig_tio = if (watch_esc) rawNonblockStdin() else null;
     defer if (orig_tio) |o| {
         _ = drainSteerStdin(true);
-        tty.restore(o);
+        restoreStdin(o);
     };
     var req = try client.request(.POST, try std.Uri.parse(provider.url), .{
         .redirect_behavior = .unhandled,
