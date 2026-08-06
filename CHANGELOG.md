@@ -14,7 +14,8 @@ current is part of cutting a release.
 
 - The REPL/engine separation began (#422): agent output now flows through a
   typed event vocabulary and a strict sink boundary (`engine_events.zig` /
-  `engine_sink.zig`), with streamed model output converted first — the TUI
+  `engine_sink.zig`), with streamed model output, the codex WS transport
+  notices, and streamed tool-call arguments converted first — the TUI
   renders and the `--json` wire serializes the same events, so the two can no
   longer drift. Proven byte-identical to v0.0.239 by a golden before/after
   eval harness (the same scripted mock session over both the protocol and a
