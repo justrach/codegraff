@@ -284,9 +284,10 @@ test "#410: the transcript line rides the funnel, so a persona swap cannot drop 
     defer a_state.deinit();
     const a = a_state.allocator();
     var agent: agent_mod.Agent = undefined;
-    defer prompts.armSessionTranscript(a, "", .{}); // leave the global as the rest of the suite expects it
+    defer prompts.armSessionTranscript(a, "", .{}, false); // leave the global as the rest of the suite expects it
 
-    prompts.armSessionTranscript(a, "session-42", .{});
+    // Armed as #445 arms it in production: after the first compaction.
+    prompts.armSessionTranscript(a, "session-42", .{}, true);
     try prompts.setSystemPrompts(&agent, "BASE", a);
     for ([_][]const u8{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |v| {
         try std.testing.expect(std.mem.indexOf(u8, v, "BASE") != null);
@@ -300,10 +301,68 @@ test "#410: the transcript line rides the funnel, so a persona swap cannot drop 
     try std.testing.expectEqualStrings("PERSONA", agent.sys_base);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, agent.sys_normal, "session-42.session.json"));
 
-    // Unreadable session file (#330 removed read_file/bash): no line at all.
-    prompts.armSessionTranscript(a, "session-42", .{ .local_tools = false });
+    // Unreadable session file (#330 removed read_file/bash): no line at all,
+    // compacted or not — the capability half of the gate is independent.
+    prompts.armSessionTranscript(a, "session-42", .{ .local_tools = false }, true);
     try prompts.setSystemPrompts(&agent, "BASE", a);
     try std.testing.expectEqualStrings("BASE", agent.sys_normal);
+}
+
+// #445: the measured cost of the #421/#410 prompt additions was ~240 input
+// tokens on EVERY call, and the transcript line's share of it buys nothing
+// until the live window stops being a superset of the file it names. So the
+// line is deferred to the first compaction, and this pins both ends of that:
+// absent on a fresh session, present once the boundary has been crossed.
+test "#445: the transcript line is absent until the first compaction, then rides every variant" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+    const saved = prompts.g_session_compacted;
+    defer prompts.g_session_compacted = saved;
+    defer prompts.armSessionTranscript(a, "", .{}, false); // leave the global as the rest of the suite expects it
+
+    var agent: agent_mod.Agent = undefined;
+    agent.sub = false;
+    agent.session_name = "session-445";
+    prompts.g_session_compacted = false;
+
+    // A fresh session: setRootSystemPrompts arms with the flag as it stands,
+    // so every variant is exactly the base and the session pays nothing.
+    prompts.armSessionTranscript(a, agent.session_name, .{}, prompts.g_session_compacted);
+    try prompts.setSystemPrompts(&agent, "BASE", a);
+    try std.testing.expectEqualStrings("BASE", agent.sys_normal);
+    for ([_][]const u8{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |v|
+        try std.testing.expect(std.mem.indexOf(u8, v, "session-445.session.json") == null);
+
+    // The compaction boundary re-derives all four, in place, from sys_base.
+    prompts.noteSessionCompacted(&agent, a);
+    try std.testing.expect(prompts.g_session_compacted);
+    for ([_][]const u8{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |v| {
+        try std.testing.expect(std.mem.indexOf(u8, v, "BASE") != null);
+        try std.testing.expect(std.mem.indexOf(u8, v, "session-445.session.json") != null);
+    }
+    try std.testing.expectEqualStrings("BASE", agent.sys_base); // still the pure base
+
+    // Idempotent: a session that compacts ten times still carries ONE line.
+    prompts.noteSessionCompacted(&agent, a);
+    prompts.noteSessionCompacted(&agent, a);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, agent.sys_normal, "session-445.session.json"));
+    // And a later persona swap keeps it — the #326 staleness class stays closed.
+    try prompts.setSystemPrompts(&agent, "PERSONA", a);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_normal, "session-445.session.json") != null);
+
+    // A compacting SUBAGENT has no durable session of its own, and must not
+    // spend the root's tokens on a line about a file it never wrote.
+    prompts.g_session_compacted = false;
+    prompts.armSessionTranscript(a, "", .{}, false);
+    var child: agent_mod.Agent = undefined;
+    child.sub = true;
+    child.session_name = "session-child";
+    child.sys_base = "CHILD-BASE";
+    prompts.noteSessionCompacted(&child, a);
+    try std.testing.expect(!prompts.g_session_compacted);
+    try prompts.setSystemPrompts(&child, "CHILD-BASE", a);
+    try std.testing.expectEqualStrings("CHILD-BASE", child.sys_normal);
 }
 
 test "#421: MCP, skill and optional-tool guidance all cost zero when absent" {
