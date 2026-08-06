@@ -54,7 +54,14 @@ pub const Sink = struct {
 var g_sink: ?Sink = null;
 var g_used: std.atomic.Value(usize) = .init(0);
 var g_seq: std.atomic.Value(u64) = .init(0);
+var g_spills: std.atomic.Value(u64) = .init(0);
 var g_swept: std.atomic.Value(bool) = .init(false);
+
+/// Artifacts written this process. The caller's user-facing note reads it so a
+/// cap that PRESERVED the bytes cannot read like one that destroyed them (#202).
+pub fn spillCount() u64 {
+    return g_spills.load(.monotonic);
+}
 
 pub fn enable(sink: Sink) void {
     g_sink = sink;
@@ -64,6 +71,7 @@ pub fn resetForTest() void {
     g_sink = null;
     g_used.store(0, .monotonic);
     g_seq.store(0, .monotonic);
+    g_spills.store(0, .monotonic);
     g_swept.store(false, .monotonic);
 }
 
@@ -128,6 +136,19 @@ fn spill(arena: Allocator, session: []const u8, full: []const u8) ?[]const u8 {
     const seq = g_seq.fetchAdd(1, .monotonic);
     const rel = std.fmt.allocPrint(arena, "{s}/tool-{d}.txt", .{ dir, seq }) catch return refund(full.len);
     sink.dir.writeFile(sink.io, .{ .sub_path = rel, .data = full, .flags = .{ .exclusive = true } }) catch return refund(full.len);
+    _ = g_spills.fetchAdd(1, .monotonic);
+    return absolute(sink, arena, rel);
+}
+
+/// The path the marker hands the model. Resolved through the same dir handle the
+/// artifact was written with, so it names the file that actually exists — the
+/// declared `base_abs` is only a fallback, and it is derived from $PWD when the
+/// cwd cannot be resolved, which a caller that inherited a stale PWD gets wrong.
+fn absolute(sink: Sink, arena: Allocator, rel: []const u8) []const u8 {
+    var buf: [4096]u8 = undefined;
+    if (sink.dir.realPathFile(sink.io, rel, &buf)) |n| {
+        return arena.dupe(u8, buf[0..n]) catch rel;
+    } else |_| {}
     if (sink.base_abs.len == 0) return rel;
     return std.fmt.allocPrint(arena, "{s}/{s}", .{ sink.base_abs, rel }) catch rel;
 }
@@ -296,7 +317,8 @@ test "spill writes the full output and the marker points at it (#409)" {
     // (b) the capped message stays within the cap and cites path + byte count
     const stub = m.object.get("output").?.string;
     try std.testing.expect(stub.len <= cap);
-    try std.testing.expect(std.mem.indexOf(u8, stub, "/work/" ++ rel) != null);
+    try std.testing.expect(std.mem.indexOf(u8, stub, "are at /") != null); // absolute, resolved through the dir handle
+    try std.testing.expect(std.mem.indexOf(u8, stub, rel) != null);
     try std.testing.expect(std.mem.indexOf(u8, stub, "8192 bytes") != null);
     try std.testing.expect(std.mem.indexOf(u8, stub, "truncated") != null);
     // the needle is gone from the transcript and recoverable only from the file

@@ -24,6 +24,7 @@ const tools_mod = @import("tools.zig");
 const apiErrorMessage = tools_mod.apiErrorMessage;
 const mentionsReasoningEffort = tools_mod.mentionsReasoningEffort;
 const telemetry = @import("telemetry.zig");
+const tool_spill = @import("tool_spill.zig"); // #409: did the cap preserve the bytes, or destroy them?
 const run_budget_mod = @import("run_budget.zig");
 const wire_messages = @import("messages.zig");
 
@@ -141,13 +142,24 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // window past what the in-turn recovery below can reclaim (it keeps the most
     // recent outputs verbatim). Window-proportional, so large-context models keep
     // full tool results untouched.
+    const spills_before = tool_spill.spillCount();
     const capped = self.capOversizedToolOutputs(self.provider.perOutputCap());
     if (capped > 0) {
         // #202: don't truncate silently. The model already sees an inline marker;
-        // surface it to the trace and (interactively) to the user too.
-        if (self.tracer) |tr| tr.note("context", "capped an oversized tool output before send");
-        if (!main_mod.json_mode and !self.sub)
-            self.say("[tool output over this model's per-result cap — truncated {d} bytes before send (#193)]\n", .{capped}) catch {};
+        // surface it to the trace and (interactively) to the user too. #409: say
+        // which of the two happened — the elided bytes are only GONE when there
+        // was no durable session to spill them to.
+        const spilled = tool_spill.spillCount() > spills_before;
+        if (self.tracer) |tr| tr.note("context", if (spilled)
+            "capped an oversized tool output before send (full bytes kept as a session artifact)"
+        else
+            "capped an oversized tool output before send");
+        if (!main_mod.json_mode and !self.sub) {
+            if (spilled)
+                self.say("[tool output over this model's per-result cap — {d} bytes elided before send; the full output is in this session's artifacts and the model has the path (#409)]\n", .{capped}) catch {}
+            else
+                self.say("[tool output over this model's per-result cap — truncated {d} bytes before send (#193)]\n", .{capped}) catch {};
+        }
     }
     var context_retried = false; // #193: at most one in-turn overflow recovery per request
     // #56: bounded stream-stall / drop reconnect budget (codex's stream_max_retries

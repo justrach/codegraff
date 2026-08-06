@@ -97,6 +97,9 @@ jobs:
       - name: Embedder mode resumable serve streams (#330)
         run: python3 scripts/test-serve-resume.py zig-out/bin/graff
 
+      - name: Over-cap tool output spills to a session artifact (#409)
+        run: python3 scripts/test-spill-artifact.py zig-out/bin/graff
+
       - name: Live JSON stream contains no raw stdout lines
         run: python3 scripts/test-json-live.py zig-out/bin/graff
 
