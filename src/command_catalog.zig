@@ -50,6 +50,7 @@ pub const commands = [_]Item{
     .{ .name = "/skills", .usage = "/skills [add|remove <name>]", .desc = "list SKILL.md playbooks + companion tools; add/remove enables or disables one" },
     .{ .name = "/hooks", .desc = "list lifecycle hooks and the built-in codedb guard" },
     .{ .name = "/doctor", .desc = "read-only health check: goal/todo invariants, and why steering will or will not be appended" },
+    .{ .name = "/btw", .usage = "/btw <question>", .desc = "ask one side question about this conversation — no tools, billed, never added to the session" },
     .{ .name = "/compact", .desc = "summarize history into a fresh context" },
     .{ .name = "/rewind", .usage = "/rewind [n]", .desc = "list past prompts; /rewind <n> drops prompt n+after & reverts its file edits" },
     .{ .name = "/image", .usage = "/image <path>", .desc = "attach an image to your next message (vision models only)" },
