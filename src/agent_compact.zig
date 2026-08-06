@@ -13,6 +13,7 @@ const Agent = agent_mod.Agent;
 const prompts = @import("prompts.zig");
 const compact_instruction = prompts.compact_instruction;
 const goal_flow = @import("goal_flow.zig");
+const compact_note_glue = @import("compact_note_glue.zig"); // #391
 
 const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
@@ -125,6 +126,10 @@ pub fn compact(self: *Agent) anyerror!usize {
         return 0;
     };
     if (!main_mod.json_mode) try self.say("[compacting ~{d} tokens…]\n", .{pending_tokens});
+    // #391: the agent writes its own handoff BEFORE the summarizer rewrites the
+    // history it describes. Gated, budgeted, best-effort: every refusal is a
+    // named skip, so everything below runs unconditionally.
+    _ = compact_note_glue.maybeWrite(self);
     // #163: reclaim room BEFORE the summarization request so it fits under the
     // model's input cap. On codex/gpt-5.x an over-cap request fails to WRITE
     // (WriteFailed) rather than returning a clean overflow, so compaction could

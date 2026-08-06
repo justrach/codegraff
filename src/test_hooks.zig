@@ -86,6 +86,12 @@ const agent_eval_control_tests = @import("agent_eval_control_tests.zig");
 const playbook_glue = @import("playbook_glue.zig");
 const playbook_reflect = @import("playbook_reflect.zig");
 
+// #391: the pre-compaction note store and its note turn. prompts.zig reaches
+// compact_note.zig through a CALL only, and agent_compact.zig reaches the glue
+// the same way, so neither pulls its tests in without these.
+const compact_note = @import("compact_note.zig");
+const compact_note_glue = @import("compact_note_glue.zig");
+
 // #345: the global-vs-project MCP config merge. mcp.zig does reference its
 // decls, but the hook makes the coverage explicit rather than contingent on
 // that staying true.
@@ -175,6 +181,8 @@ test {
     _ = agent_eval_control_tests;
     _ = playbook_glue;
     _ = playbook_reflect;
+    _ = compact_note;
+    _ = compact_note_glue;
     _ = shutdown_trace;
     _ = credential_store;
     _ = engine_events;
