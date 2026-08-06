@@ -108,6 +108,13 @@ pub fn safeName(session: []const u8) bool {
     return !std.mem.eql(u8, session, ".") and !std.mem.eql(u8, session, "..");
 }
 
+/// The three fences #411's post-compaction note reads a spilled artifact's path
+/// back out of a marker with. `Note.text` below is BUILT from them, so the
+/// reader cannot drift from the writer: change the wording and both move.
+pub const marker_head = "[tool output truncated at this model's per-result cap";
+pub const marker_path_open = " bytes are at ";
+pub const marker_path_close = "; read or grep";
+
 /// What replaces the elided bytes. `session` empty (a subagent, an unwired
 /// process) means plain truncation with `fallback`.
 pub const Note = struct {
@@ -119,7 +126,7 @@ pub const Note = struct {
     /// than growing an output the cap just shrank.
     pub fn text(self: Note, arena: Allocator, full: []const u8, cap: usize) []const u8 {
         const path = spill(arena, self.session, full) orelse return self.fallback;
-        const marker = std.fmt.allocPrint(arena, "[tool output truncated at this model's per-result cap — the FULL {d} bytes are at {s}; read or grep that file for the slice you need instead of re-running the tool (#409)]", .{ full.len, path }) catch return self.fallback;
+        const marker = std.fmt.allocPrint(arena, marker_head ++ " — the FULL {d}" ++ marker_path_open ++ "{s}" ++ marker_path_close ++ " that file for the slice you need instead of re-running the tool (#409)]", .{ full.len, path }) catch return self.fallback;
         return if (marker.len + 1 > cap) self.fallback else marker;
     }
 };

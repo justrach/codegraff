@@ -440,19 +440,16 @@ test "a compaction handoff carries the live checklist across the summary (#318)"
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    var agent: Agent = undefined;
-    agent.arena = a;
-    agent.task_prompt = null; // this test flips agent.sub to true below (#B3)
-    agent.sub = false;
-    agent.review_mode = false;
-    agent.todos = .empty;
+    // Root agent, every field handoffMessage reads initialized (incl. #411's
+    // ledger + session name); this test flips agent.sub to true below (#B3).
+    var agent = th.subAgent(a, false);
     agent.goal = .{ .objective = "ship the epoch fix", .epoch = 2 };
     try agent.todos.append(a, .{ .content = "write the helper", .status = "completed", .epoch = 2 });
     try agent.todos.append(a, .{ .content = "wire it into compact", .status = "completed", .epoch = 2 });
     try agent.todos.append(a, .{ .content = "test it", .status = "pending", .epoch = 2 });
     try agent.todos.append(a, .{ .content = "parked by an older goal", .status = "pending", .epoch = 1 });
 
-    const handoff = try handoffMessage(&agent, "the model summarized the earlier work");
+    const handoff = try handoffMessage(&agent, "the model summarized the earlier work", &.{});
     // The summary and its framing are unchanged...
     try std.testing.expect(std.mem.indexOf(u8, handoff, "the model summarized the earlier work") != null);
     try std.testing.expect(std.mem.indexOf(u8, handoff, "Continue assisting the user based on this summary.") != null);
@@ -476,12 +473,12 @@ test "a compaction handoff carries the live checklist across the summary (#318)"
     // A subagent shares the Agent struct but not the goal, so its handoff is
     // byte-identical to the pre-#318 text - as is a session with no goal.
     agent.sub = true;
-    const plain = try handoffMessage(&agent, "the model summarized the earlier work");
+    const plain = try handoffMessage(&agent, "the model summarized the earlier work", &.{});
     try std.testing.expect(std.mem.indexOf(u8, plain, "standing state") == null);
     try std.testing.expect(std.mem.endsWith(u8, plain, "Continue assisting the user based on this summary."));
     agent.sub = false;
     agent.goal = null;
-    try std.testing.expectEqualStrings(plain, try handoffMessage(&agent, "the model summarized the earlier work"));
+    try std.testing.expectEqualStrings(plain, try handoffMessage(&agent, "the model summarized the earlier work", &.{}));
 }
 
 test "an emergency trim re-queues the standing state, never over a user note (#318)" {
@@ -553,7 +550,7 @@ test "a compacting subagent's handoff restates its task prompt verbatim" {
     const a = arena_state.allocator();
     var agent = th.subAgent(a, true);
     agent.task_prompt = "AUDIT src/foo.zig and report every unguarded json deref";
-    const handoff = try handoffMessage(&agent, "the model summarized the earlier work");
+    const handoff = try handoffMessage(&agent, "the model summarized the earlier work", &.{});
     try std.testing.expect(std.mem.indexOf(u8, handoff, agent.task_prompt.?) != null and std.mem.indexOf(u8, handoff, "the model summarized the earlier work") != null and std.mem.indexOf(u8, handoff, "still your mandate") != null);
 }
 test "the root handoff is byte-identical to before the child pin" {
@@ -561,7 +558,7 @@ test "the root handoff is byte-identical to before the child pin" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var agent = th.subAgent(a, false);
-    const handoff = try handoffMessage(&agent, "the model summarized the earlier work");
+    const handoff = try handoffMessage(&agent, "the model summarized the earlier work", &.{});
     try std.testing.expectEqualStrings("Context: the earlier conversation was compacted to save space.\nSummary of the earlier work:\n\nthe model summarized the earlier work\n\nContinue assisting the user based on this summary.", handoff);
 }
 test "pinChildTask captures the mandate once, never re-pins, and ignores a root agent or an unrecognised head" {
@@ -588,7 +585,7 @@ test "an oversized task prompt is head-capped in the child handoff" {
     var agent = th.subAgent(a, true);
     const big = util.repeatBytes("T", 20000);
     agent.task_prompt = &big;
-    const handoff = try handoffMessage(&agent, "summary text");
+    const handoff = try handoffMessage(&agent, "summary text", &.{});
     try std.testing.expect(handoff.len < 12_000 and std.mem.indexOf(u8, handoff, "task prompt truncated for the handoff") != null and std.mem.indexOf(u8, handoff, big[0..100]) != null and std.mem.indexOf(u8, handoff, &big) == null);
 }
 test "emergencyCutIndex finds no cut in a subagent-shaped history, so the pinned mandate survives an emergency trim" {

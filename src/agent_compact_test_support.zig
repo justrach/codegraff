@@ -24,6 +24,11 @@ pub fn subAgent(a: std.mem.Allocator, sub: bool) Agent {
     agent.todos = .empty;
     agent.goal = null;
     agent.task_prompt = null;
+    // #411: the durable-state note reads the /rewind ledger and the session
+    // name on every handoff, including the null paths, so both have to be real
+    // here or an `undefined` pointer gets dereferenced instead of skipped.
+    agent.snapshots = null;
+    agent.session_name = "";
     // compactPrelude reports the token figure compact() prints, so the estimate
     // path has to be reachable: system prompt, tool json, provider context and
     // the two meter anchors it reads.

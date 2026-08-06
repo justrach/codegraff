@@ -10,9 +10,8 @@ const context_tokens = @import("context_tokens.zig");
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
-const prompts = @import("prompts.zig");
-const compact_instruction = prompts.compact_instruction;
 const goal_flow = @import("goal_flow.zig");
+const compact_note = @import("compact_note.zig"); // #411: both halves of "what survives a compaction"
 
 const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
@@ -161,7 +160,7 @@ pub fn compact(self: *Agent) anyerror!usize {
         }
     };
 
-    try self.messages.append(try textMessage(compact_arena, "user", compact_instruction));
+    try self.messages.append(try textMessage(compact_arena, "user", try compact_note.summaryRequest(compact_arena, self)));
     // #174: establish the synthetic summary turn before pruning Responses
     // reasoning. An active tool loop's reasoning is newer than the real user
     // turn and must remain while that loop is in flight, but it becomes prior-
@@ -195,7 +194,7 @@ pub fn compact(self: *Agent) anyerror!usize {
     }
 
     var fresh = std.json.Array.init(self.arena);
-    try fresh.append(try textMessage(self.arena, "user", try handoffMessage(self, summary)));
+    try fresh.append(try textMessage(self.arena, "user", try handoffMessage(self, summary, live_messages.items[0..recent_start])));
     // Preserve a valid recent suffix verbatim (up to ~8k estimated tokens),
     // including its user boundary and paired tool calls/results.
     for (recent_messages) |message| try fresh.append(message);
@@ -225,13 +224,14 @@ pub fn compact(self: *Agent) anyerror!usize {
 /// Without a pin, compaction would summarize the mandate away with nothing
 /// left to restate it - childHandoff below restates it verbatim instead of
 /// re-deriving it, so it can never drift or compound across compactions.
-pub fn handoffMessage(self: *Agent, summary: []const u8) ![]const u8 {
+/// `discarded` is the history this summary replaces, read only for the #409 artifact paths #411 re-states out of it.
+pub fn handoffMessage(self: *Agent, summary: []const u8, discarded: []const Value) ![]const u8 {
     const base = if (self.sub)
         (if (self.task_prompt) |tp| try childHandoff(self, tp, summary) else try rootHandoff(self, summary))
     else
         try rootHandoff(self, summary);
-    const standing = (try goal_flow.compactionSnapshot(self.arena, self)) orelse return base;
-    return std.fmt.allocPrint(self.arena, "{s}\n\n{s}", .{ base, standing });
+    const standing = try goal_flow.compactionSnapshot(self.arena, self);
+    return compact_note.handoff(self.arena, self, base, standing, discarded);
 }
 
 fn rootHandoff(self: *Agent, summary: []const u8) ![]const u8 {
