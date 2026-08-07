@@ -90,6 +90,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.session_title = null; // re-summarize the now-empty conversation
         root.ai_title_done = false;
         root.title_generation +%= 1;
+        root.session_recap = null; // #419: nothing to recap in an empty conversation
+        root.recap_generation +%= 1;
         root.todos.clearRetainingCapacity();
         const had_goal = root.goal != null;
         resetConversationSteering(root);
@@ -112,6 +114,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.session_title = null;
         root.ai_title_done = false; // let the new session earn its own AI title
         root.title_generation +%= 1;
+        root.session_recap = null;
+        root.recap_generation +%= 1;
         root.tui_header_shown = false;
         root.session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(root.io)});
         prompts.resetSessionCompacted(root, arena); // #445: after the rename, so the re-arm reads the NEW session

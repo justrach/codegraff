@@ -323,6 +323,7 @@ test "/save and /resume report a failed name copy instead of ending the REPL" {
 // unreferenced module's test {} blocks silently compile to nothing.
 test {
     _ = @import("startup_tests.zig");
+    _ = @import("recap.zig"); // #419: session-recap bounds/heuristic/parsing tests
 }
 
 test "failure (#253): fd-quota errors carry actionable advice, system-wide says ulimit won't help" {

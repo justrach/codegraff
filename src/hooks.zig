@@ -113,6 +113,15 @@ pub fn denialText(gpa: Allocator, h: Hook, stderr: []const u8) ?[]u8 {
     return std.fmt.allocPrint(gpa, "blocked by pre_tool hook: {s}{s}{s}", .{ msg, sep, h.suggest }) catch null;
 }
 
+/// turn_end lifecycle hooks (best-effort): every configured hook gets the
+/// success payload; stderr is freed here so the loop body stays lean.
+pub fn runTurnEndHooks(gpa: Allocator, io: Io) void {
+    for (root.g_hooks.turn_end) |h| {
+        const res = runHookCmd(gpa, io, h.command, "{\"event\":\"turn_end\",\"ok\":true}", h.timeout_ms);
+        if (res.stderr.len > 0) gpa.free(res.stderr);
+    }
+}
+
 /// Run one hook command: /bin/sh -c, event JSON on stdin, stderr captured
 /// (capped), killed at its timeout. Returns the exit code (null on timeout
 /// or spawn failure) and the trimmed stderr (gpa-owned).
