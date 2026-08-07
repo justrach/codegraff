@@ -6,7 +6,7 @@
 const std = @import("std");
 const zz = @import("zigzag");
 
-pub const accent = zz.Color.fromRgb(0xC4, 0x51, 0x3D); // accessible Codegraff vermilion coral
+pub const accent = zz.Color.fromRgb(0x05, 0x96, 0x69); // codegraff.com emerald accent (#059669)
 
 pub const HELP_CHAT =
     \\Commands (mirrors the graff session):

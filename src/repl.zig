@@ -1,5 +1,5 @@
 //! `graff repl` — an interactive chat REPL on the zigzag TUI, styled in the
-//! Codegraff ink-and-coral language: a bordered welcome box, conversation turns
+//! Codegraff ink-and-emerald language: a bordered welcome box, conversation turns
 //! (`>` you, `⏺` the model), a rounded input box pinned to the bottom, a status
 //! line, and `/`-style commands mirroring the harness's interactive set.
 //!
