@@ -1,5 +1,10 @@
 # Repository instructions
 
+## Terminal UI: what's ours to change
+
+- **Colors, bold/dim, glyphs, layout are ours.** Styling travels in the output byte stream as SGR escape sequences, so the app controls it per character. The palette lives in `src/ansi.zig` (the accent is codegraff.com's emerald `#059669`; coral/red hues are reserved for errors).
+- **The font is not ours.** The terminal emulator owns the typeface — it loads the font, measures the cell grid, and rasterizes glyphs itself; the wire protocol has no sequence for an app to request a font. (xterm's legacy `OSC 50` is unimplemented by modern emulators and would hijack the user's whole terminal — do not emit it.) If a user asks to "change the REPL font," the answer is their terminal's config, e.g. `font-family = Geist Mono` (the site's typeface) in Ghostty — never a code change here.
+
 ## File size
 
 - Keep every hand-written source file at or below 600 lines of code.
