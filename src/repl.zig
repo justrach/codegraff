@@ -118,7 +118,7 @@ pub const ultracode_palette = [_]zz.Color{
     zz.Color.fromRgb(0x9B, 0x6A, 0x35), zz.Color.fromRgb(0xA5, 0x65, 0x3B),
 };
 
-pub const enso_frames = [_][]const u8{ "◜", "◝", "◞", "◟" };
+pub const enso_frames = [_][]const u8{ "◜", "◠", "◝", "◞", "◡", "◟" };
 pub const braille_frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
 pub const dragon_frames = [_][]const u8{ "🐉  ", "🐉 ✦", "🐉 ✧", "🐉 ✦" };
 

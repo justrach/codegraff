@@ -32,7 +32,7 @@ pub const Anim = struct {
 };
 
 pub const anims = [_]Anim{
-    .{ .name = "enso", .desc = "quiet brush-circle turn (default)", .frame_ms = 160, .frame = animEnso },
+    .{ .name = "enso", .desc = "quiet brush-circle turn (default)", .frame_ms = 100, .frame = animEnso },
     .{ .name = "braille", .desc = "classic braille spinner", .frame_ms = 80, .frame = animBraille },
     .{ .name = "pulse", .desc = "pulsing star", .frame_ms = 100, .frame = animPulse },
     .{ .name = "orbit-dots", .desc = "dot orbiting a ring", .frame_ms = 100, .frame = animOrbit },
@@ -173,9 +173,12 @@ fn animThinking(w: *Io.Writer) Io.Writer.Error!void {
 }
 
 fn animEnso(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    // A deliberately small, unhurried brush-circle. Each pose holds for two
-    // frames so it reads as breathing rather than a busy loading indicator.
-    const frames = [_][]const u8{ "◜", "◜", "◝", "◝", "◞", "◞", "◟", "◟" };
+    // A deliberately small, unhurried brush-circle. Six stroke poses (the four
+    // quadrant arcs bridged by the top/bottom semicircles) stepping at 100ms
+    // read as a smooth turn — the old doubled four-pose cycle visibly jumped
+    // (~3 poses/sec). Unicode has no left/right semicircle outline, so the
+    // rotation's one seam hides on the left edge.
+    const frames = [_][]const u8{ "◜", "◠", "◝", "◞", "◡", "◟" };
     try w.print("{s}{s}{s}", .{ style.accent, frames[i % frames.len], style.reset });
     try animThinking(w);
 }
@@ -363,7 +366,7 @@ test "spinner pool is exactly the expected 10 animations (no silent additions)" 
     try std.testing.expectEqual(expected.len, anims.len);
     for (anims, 0..) |a, k| try std.testing.expectEqualStrings(expected[k], a.name);
     try std.testing.expectEqualStrings("enso", anims[0].name);
-    try std.testing.expectEqual(@as(u16, 160), anims[0].frame_ms);
+    try std.testing.expectEqual(@as(u16, 100), anims[0].frame_ms);
 }
 
 /// Check .harness/settings.json for "dev_spinner": if truthy, the

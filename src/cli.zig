@@ -23,6 +23,7 @@ pub const changelog_text =
     \\──────────
     \\0.0.243
     \\  • The terminal palette now matches codegraff.com: the identity accent is the site's emerald (#059669) — spinner, prompt, headings, tool-call lines, and attached-file chips — so a routine ⚙ bash line no longer reads as error red
+    \\  • The ensō spinner actually turns now: six brush poses stepping at 100ms instead of four doubled poses every 320ms — the ~3fps stutter is gone
     \\
     \\0.0.242
     \\  • MCP tool schemas load on demand: a 13-tool server's catalog drops 64.8%, about 1,700 input tokens off every request; small servers stay eager and unchanged

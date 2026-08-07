@@ -17,7 +17,7 @@ const tailPreview = util.tailPreview;
 
 pub fn spinnerFrame(self: *const Model, now_ms: u64) []const u8 {
     return switch (self.anim) {
-        .enso => repl.enso_frames[(now_ms / 160) % repl.enso_frames.len],
+        .enso => repl.enso_frames[(now_ms / 100) % repl.enso_frames.len],
         .braille => repl.braille_frames[(now_ms / 80) % repl.braille_frames.len],
         .dragon => repl.dragon_frames[(now_ms / 220) % repl.dragon_frames.len],
     };
