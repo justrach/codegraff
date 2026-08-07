@@ -94,6 +94,7 @@ export type Event =
   | {{ seq: number; type: "tool_call_finished"; name: string; is_error: boolean; ms: number }}
   | {{ seq: number; type: "agent_usage"; id: string; ok: boolean; duration_ms: number; tool_calls: number; context_tokens: number; cache_read_tokens: number }}
   | {{ seq: number; type: "finalizing" }}
+  | {{ seq: number; type: "session_recap"; text: string; status: "needs_input" | "completed" | "failed"; source: "heuristic" | "model" }}
   | {{ seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }}
   | {{ seq: number; type: "system_prompt"; ok: boolean; append: boolean; chars: number }}
   | {{ seq: number; type: "score"; ok: boolean; prompt_sha: string }}
@@ -544,6 +545,7 @@ export type Event =
   | {{ seq: number; type: "tool_call_finished"; name: string; is_error: boolean; ms: number }}
   | {{ seq: number; type: "agent_usage"; id: string; ok: boolean; duration_ms: number; tool_calls: number; context_tokens: number; cache_read_tokens: number }}
   | {{ seq: number; type: "finalizing" }}
+  | {{ seq: number; type: "session_recap"; text: string; status: "needs_input" | "completed" | "failed"; source: "heuristic" | "model" }}
   | {{ seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }}
   | {{ seq: number; type: "system_prompt"; ok: boolean; append: boolean; chars: number }}
   | {{ seq: number; type: "score"; ok: boolean; prompt_sha: string }}
