@@ -1,0 +1,569 @@
+//! Cross-session presence registry (#469): the disk + lifecycle half that
+//! worktree_lease.zig's pure #320 logic never got wired to. Every root session
+//! writes a small owner record (pid + start identity + worktree identity +
+//! current goal) into the per-user registry at birth and removes it at exit.
+//! Liveness is PROBED via proc_identity (#413), never trusted from the file,
+//! so a crashed session's record reaps itself on the next read — no heartbeat
+//! thread, no reaper daemon.
+//!
+//! Adherence is structural, not prompt-level:
+//!   - announce/retire/goal updates are wired into session_run + goal_flow, so
+//!     a session cannot forget to register;
+//!   - agent_tool_gate refuses the FIRST index/worktree-mutating git command
+//!     issued while a live foreign session co-owns this worktree — under
+//!     --yolo too, where no approvals prompt exists — until the command is
+//!     re-issued. That re-issue is the deliberate acknowledgment the #469
+//!     incident (two --yolo sessions, one staging renames under the other)
+//!     never had a chance to make.
+//!
+//! No locking, no arbitration (#469 v1 non-goals): the registry carries
+//! presence + intent; humans and agents still serialize the work.
+
+const std = @import("std");
+const builtin = @import("builtin");
+
+const Io = std.Io;
+const Allocator = std.mem.Allocator;
+
+const proc_identity = @import("proc_identity.zig");
+const worktree_lease = @import("worktree_lease.zig");
+const util = @import("util.zig");
+
+const unixMs = util.unixMs;
+
+const Owner = worktree_lease.Owner;
+
+/// Per-user registry: <home>/.graff/live. Deliberately NOT the per-project
+/// .graff/sessions of session_index.zig — presence is device-local and keyed
+/// by worktree identity so two checkouts of one repo stay distinct (#320).
+pub const registry_subdir = ".graff/live";
+
+const max_peers = 16;
+const record_max = 4096;
+
+/// Git subcommands that mutate the index, refs, or working tree — the shared
+/// state the #469 collision tore up. Read-only git (status/log/diff) and
+/// remote-only git (fetch/push) stay ungated: the checkpoint exists because
+/// two sessions edit ONE uncommitted tree, not because git ran.
+fn isSharedTreeSubcommand(sub: []const u8) bool {
+    const subs = [_][]const u8{
+        "add",     "rm",       "mv",           "commit", "reset",
+        "restore", "checkout", "switch",       "stash",  "pull",
+        "rebase",  "merge",    "cherry-pick",  "revert", "am",
+        "apply",   "clean",    "update-index",
+    };
+    for (subs) |s| if (std.mem.eql(u8, sub, s)) return true;
+    return false;
+}
+
+/// Whether `cmd` runs an index/tree-mutating git subcommand. Tokenizes on
+/// shell separators so `cd x && git add -A` and `sh -c 'git rm y'` classify by
+/// the subcommand, and skips git's global options so `git -C repo reset` is
+/// seen as `reset`. A quoted "git add" inside an echo string is a known false
+/// positive — the cost is one needless checkpoint line, the same trade
+/// harness_policy.isDestructiveGit makes for its substring scan.
+pub fn isSharedTreeGit(cmd: []const u8) bool {
+    var it = std.mem.tokenizeAny(u8, cmd, " \t\r\n;&|\"'`()");
+    while (it.next()) |tok| {
+        if (!std.mem.eql(u8, tok, "git")) continue;
+        while (it.next()) |arg| {
+            if (arg[0] == '-') {
+                // -C/-c take the NEXT token as their value; skip it too.
+                if (std.mem.eql(u8, arg, "-C") or std.mem.eql(u8, arg, "-c")) _ = it.next();
+                continue;
+            }
+            return isSharedTreeSubcommand(arg);
+        }
+        return false; // a bare `git` mutates nothing
+    }
+    return false;
+}
+
+/// The on-disk shape. Older/newer graffs tolerate each other via
+/// ignore_unknown_fields both ways (a superset write parses down fine).
+const RecordJson = struct {
+    pid: i32 = 0,
+    start_id: u64 = 0,
+    session_id: []const u8 = "",
+    identity: []const u8 = "",
+    goal: []const u8 = "",
+    last_seen_ms: i64 = 0,
+};
+
+pub fn formatRecord(arena: Allocator, owner: Owner) ![]const u8 {
+    var aw: std.Io.Writer.Allocating = .init(arena);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try s.write(RecordJson{
+        .pid = owner.pid,
+        .start_id = owner.start_id,
+        .session_id = owner.session_id,
+        .identity = owner.identity,
+        .goal = owner.goal,
+        .last_seen_ms = owner.last_seen_ms,
+    });
+    return aw.writer.buffered();
+}
+
+pub fn parseRecord(arena: Allocator, text: []const u8) ?Owner {
+    const rec = std.json.parseFromSliceLeaky(RecordJson, arena, text, .{ .ignore_unknown_fields = true }) catch return null;
+    if (rec.pid == 0) return null;
+    return .{
+        .pid = rec.pid,
+        .start_id = rec.start_id,
+        .session_id = rec.session_id,
+        .identity = rec.identity,
+        .goal = rec.goal,
+        .last_seen_ms = rec.last_seen_ms,
+    };
+}
+
+/// A directory listing's worth of records with each pid's OS probe aligned —
+/// the exact pair duplicateOwner/ownerVerdict consume.
+pub const Peers = struct {
+    records: []const Owner,
+    probes: []const proc_identity.Probe,
+};
+
+/// Read every record in `dir`, probe each pid, reap the provably dead, and
+/// return the survivors. Best-effort throughout: an unreadable registry means
+/// "no peers", never an error propagated into a tool call.
+pub fn listPeers(io: Io, arena: Allocator, dir: Io.Dir) Peers {
+    var records: std.ArrayList(Owner) = .empty;
+    var probes: std.ArrayList(proc_identity.Probe) = .empty;
+    var d = dir;
+    var it = d.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
+        if (records.items.len >= max_peers) break;
+        const text = d.readFileAlloc(io, entry.name, arena, .limited(record_max)) catch continue;
+        const rec = parseRecord(arena, text) orelse continue;
+        const live = proc_identity.probe(io, rec.pid);
+        if (live == .gone) {
+            // Provably dead (#413): reap on read so the registry self-cleans
+            // even when the owner crashed without retire().
+            d.deleteFile(io, entry.name) catch {};
+            continue;
+        }
+        records.append(arena, rec) catch break;
+        probes.append(arena, live) catch break;
+    }
+    return .{ .records = records.items, .probes = probes.items };
+}
+
+/// One stable key per (pid, start identity) — what a checkpoint acknowledgment
+/// is remembered by. Start identity, not pid alone: a reused pid must read as
+/// a NEW peer, not an already-acked one (#320's whole point).
+pub fn ackKey(rec: Owner) u64 {
+    var buf: [32]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "{d}:{d}", .{ rec.pid, rec.start_id }) catch unreachable;
+    return std.hash.Wyhash.hash(0, text);
+}
+
+/// The first live foreign co-owner of `my_identity` that has not been
+/// acknowledged yet, if any. Pure: the probe results and the ack set are the
+/// caller's, so tests need no processes and no filesystem.
+pub fn unackedPeer(peers: Peers, my_identity: []const u8, my_pid: i32, acked: []const u64) ?Owner {
+    for (peers.records, 0..) |rec, i| {
+        if (i >= peers.probes.len) break;
+        switch (worktree_lease.ownerVerdict(rec, my_identity, my_pid, peers.probes[i])) {
+            .live_foreign, .live_unverified => {
+                const key = ackKey(rec);
+                var seen = false;
+                for (acked) |k| {
+                    if (k == key) {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (!seen) return rec;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+// --- wired layer: one root session per process, so module state is the
+// registry handle. announce is the ONLY writer of this state; retire/noteGoal/
+// gateCheck no-op when it never ran (tests, subagents, homeless runs). ---
+
+var g_dir: ?[]const u8 = null; // gpa-owned registry dir path
+var g_identity: []const u8 = ""; // gpa-owned own worktree identity
+var g_own_name: ?[]const u8 = null; // gpa-owned own record's file name
+var g_session: []const u8 = ""; // gpa-owned session id, for rewrites
+var g_goal: []const u8 = ""; // last-known goal (session-arena-owned is fine: both outlive the session)
+var g_self: proc_identity.Record = .{}; // own pid + start-id, settled by announce
+var g_inbox_off: u64 = 0; // bytes of our own inbox already delivered
+var g_acked: [max_peers]u64 = undefined;
+var g_acked_len: usize = 0;
+
+fn writeOwn(io: Io, arena: Allocator) void {
+    const dir_path = g_dir orelse return;
+    const name = g_own_name orelse return;
+    var owner = worktree_lease.selfOwner(io, g_identity, g_session, unixMs(io));
+    owner.goal = g_goal;
+    const text = formatRecord(arena, owner) catch return;
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch return;
+    defer dir.close(io);
+    dir.writeFile(io, .{ .sub_path = name, .data = text }) catch {};
+}
+
+/// Register this root session and report any LIVE co-owner already present —
+/// the #469 "see each other before, not mid-collision" moment. Returns an
+/// arena-owned warning for the caller to surface (null = alone, or registry
+/// unavailable). Never fails a session: every failure mode degrades to
+/// silence, because presence must never be the reason graff did not start.
+pub fn announce(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, session_id: []const u8, goal: []const u8) ?[]const u8 {
+    if (builtin.is_test) return null; // tests get the parameterized store, never the real registry
+    if (home.len == 0) return null;
+    const dir_path = std.fmt.allocPrint(gpa, "{s}/{s}", .{ home, registry_subdir }) catch return null;
+    Io.Dir.cwd().createDirPath(io, dir_path) catch return null;
+    const identity = worktree_lease.currentIdentity(gpa, io, arena);
+    if (identity.id.len == 0) return null;
+    const self = proc_identity.selfRecord(io);
+    var name_buf: [64]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "{d}-{x}.json", .{ self.pid, self.start_id }) catch return null;
+    g_dir = dir_path;
+    g_identity = gpa.dupe(u8, identity.id) catch return null;
+    g_session = gpa.dupe(u8, session_id) catch "";
+    g_goal = gpa.dupe(u8, goal) catch "";
+    g_self = self;
+    g_own_name = gpa.dupe(u8, name) catch return null;
+    // Peer check BEFORE writing our own record: the warning describes the tree
+    // as it was when we arrived.
+    const warning = blk: {
+        var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch break :blk null;
+        defer dir.close(io);
+        const peers = listPeers(io, arena, dir);
+        const dup = worktree_lease.duplicateOwner(peers.records, peers.probes, g_identity, self.pid) orelse break :blk null;
+        break :blk worktree_lease.duplicateOwnerWarning(arena, dup, unixMs(io) - dup.last_seen_ms);
+    };
+    writeOwn(io, arena);
+    return warning;
+}
+
+/// Remove our record. Best-effort: a crashed session leaves it behind and the
+/// next listPeers probes it dead and reaps it — retire is hygiene, not
+/// correctness.
+/// Free the gpa-owned globals. finalizeSession calls this at exit: a Debug
+/// build's SafeAllocator reports any gpa allocation still held at process end
+/// as a leak (and exits non-zero), and these five strings are otherwise
+/// exactly that. After deinit the module is inert.
+pub fn deinit(gpa: Allocator) void {
+    if (g_dir) |p| gpa.free(p);
+    if (g_identity.len > 0) gpa.free(g_identity);
+    if (g_session.len > 0) gpa.free(g_session);
+    if (g_goal.len > 0) gpa.free(g_goal);
+    if (g_own_name) |n| gpa.free(n);
+    g_dir = null;
+    g_identity = "";
+    g_session = "";
+    g_goal = "";
+    g_own_name = null;
+    g_self = .{};
+    g_inbox_off = 0;
+    g_acked_len = 0;
+}
+
+pub fn retire(io: Io) void {
+    const dir_path = g_dir orelse return;
+    const name = g_own_name orelse return;
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch return;
+    defer dir.close(io);
+    dir.deleteFile(io, name) catch {};
+    var inbox_buf: [inbox_name_max]u8 = undefined;
+    dir.deleteFile(io, inboxName(&inbox_buf, g_self.pid, g_self.start_id)) catch {};
+}
+
+/// Refresh our record's goal — the coordination payload a peer's checkpoint
+/// prints. Only the goal_flow setters call this; a cleared goal keeps the
+/// last-known text rather than going blank mid-supersession. The goal is
+/// re-duped onto the gpa (freeing the previous) so g_goal stays gpa-owned —
+/// deinit frees it, and the caller's slice is usually session-arena memory.
+pub fn noteGoal(io: Io, gpa: Allocator, arena: Allocator, goal: []const u8) void {
+    if (g_own_name == null) return; // never announced (tests, subagents): io may be undefined — touch nothing
+    const owned = gpa.dupe(u8, goal) catch return;
+    if (g_goal.len > 0) gpa.free(g_goal);
+    g_goal = owned;
+    writeOwn(io, arena);
+}
+
+/// The tool-gate half (#469): null = no unacknowledged live co-owner, else the
+/// checkpoint text the model sees as its (un-executed) tool result. Seeing a
+/// peer ACKs it, so the re-issued command runs and one process checkpoints at
+/// most once per peer — awareness is the goal, not a tollbooth.
+pub fn gateCheck(io: Io, arena: Allocator) ?[]const u8 {
+    const dir_path = g_dir orelse return null;
+    if (g_identity.len == 0) return null;
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return null;
+    defer dir.close(io);
+    const peers = listPeers(io, arena, dir);
+    const peer = unackedPeer(peers, g_identity, proc_identity.selfPid(), g_acked[0..g_acked_len]) orelse return null;
+    if (g_acked_len < g_acked.len) {
+        g_acked[g_acked_len] = ackKey(peer);
+        g_acked_len += 1;
+    }
+    const warning = worktree_lease.duplicateOwnerWarning(arena, peer, unixMs(io) - peer.last_seen_ms);
+    return std.fmt.allocPrint(arena, "{s}shared-tree checkpoint (#469): the command was NOT run. Re-issue the identical command to proceed — this fires once per live peer — coordinate first via the peer_message tool (session \"{s}\"), or keep your edits disjoint from theirs.", .{ warning, peer.session_id }) catch warning;
+}
+
+// --- the channel (#469 phase 2): one append-only JSONL inbox per session,
+// named from the same (pid, start-id) as its presence record so a sender needs
+// nothing the record doesn't already carry. Appends use the read+write
+// positional pattern from session_transcript (#462: write-only handles break
+// appends on Windows). Delivery is queued — a sender never blocks on the
+// receiver, and two busy sessions cannot deadlock (#417's rule). ---
+
+pub const inbox_name_max = 96;
+
+/// One inbox line. `from_*` identify the sender's presence record at send
+/// time; the harness writes them, never the model.
+pub const Message = struct {
+    from_pid: i32 = 0,
+    from_session: []const u8 = "",
+    from_goal: []const u8 = "",
+    ts_ms: i64 = 0,
+    text: []const u8 = "",
+};
+
+pub fn inboxName(buf: *[inbox_name_max]u8, pid: i32, start_id: u64) []const u8 {
+    return std.fmt.bufPrint(buf, "{d}-{x}.inbox.jsonl", .{ pid, start_id }) catch unreachable;
+}
+
+/// Append one message to `target`'s inbox under `dir`. Best-effort: false on
+/// any I/O or serialization failure — a lost message is reported by the
+/// caller, never thrown into a tool call.
+pub fn postMessage(io: Io, arena: Allocator, dir: Io.Dir, target: Owner, msg: Message) bool {
+    var aw: std.Io.Writer.Allocating = .init(arena);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    s.write(msg) catch return false;
+    aw.writer.writeAll("\n") catch return false;
+    var name_buf: [inbox_name_max]u8 = undefined;
+    const name = inboxName(&name_buf, target.pid, target.start_id);
+    const f = dir.createFile(io, name, .{ .truncate = false, .read = true }) catch return false;
+    defer f.close(io);
+    const end: u64 = if (f.stat(io)) |st| st.size else |_| blk: {
+        const st = dir.statFile(io, name, .{}) catch return false;
+        break :blk st.size;
+    };
+    f.writePositionalAll(io, aw.writer.buffered(), end) catch return false;
+    return true;
+}
+
+/// Read complete inbox lines after `offset`, advancing it past everything
+/// parsed. A trailing partial line stays for the next drain — a writer
+/// mid-append never yields a torn message. A file shorter than the offset was
+/// recreated; restart from the top rather than skip it forever.
+pub fn readNewMessages(io: Io, arena: Allocator, dir: Io.Dir, name: []const u8, offset: *u64) []const Message {
+    const text = dir.readFileAlloc(io, name, arena, .limited(256 * 1024)) catch return &.{};
+    if (text.len < offset.*) offset.* = 0;
+    if (text.len == offset.*) return &.{};
+    var msgs: std.ArrayList(Message) = .empty;
+    var pos: usize = @intCast(offset.*);
+    while (std.mem.indexOfScalarPos(u8, text, pos, '\n')) |nl| {
+        const line = text[pos..nl];
+        pos = nl + 1;
+        const m = std.json.parseFromSliceLeaky(Message, arena, line, .{ .ignore_unknown_fields = true }) catch continue;
+        if (m.from_pid == 0 or m.text.len == 0) continue;
+        msgs.append(arena, m) catch break;
+    }
+    offset.* = @intCast(pos);
+    return msgs.items;
+}
+
+/// The live co-owners of MY worktree: every registry record whose verdict is
+/// live_foreign/live_unverified. The sender's target list for peer_message
+/// and /tell; already probed, with the provably dead reaped.
+pub fn liveTreePeers(io: Io, arena: Allocator) []const Owner {
+    const dir_path = g_dir orelse return &.{};
+    if (g_identity.len == 0) return &.{};
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return &.{};
+    defer dir.close(io);
+    const peers = listPeers(io, arena, dir);
+    var live: std.ArrayList(Owner) = .empty;
+    for (peers.records, 0..) |rec, i| {
+        if (i >= peers.probes.len) break;
+        switch (worktree_lease.ownerVerdict(rec, g_identity, g_self.pid, peers.probes[i])) {
+            .live_foreign, .live_unverified => live.append(arena, rec) catch break,
+            else => {},
+        }
+    }
+    return live.items;
+}
+
+/// Send-side wrapper for the wired layer: stamp the message with OUR record
+/// and append it to the target's inbox. false when this session never
+/// announced (tests, subagents) or the write failed.
+pub fn postTo(io: Io, arena: Allocator, target: Owner, text: []const u8) bool {
+    const dir_path = g_dir orelse return false;
+    if (g_self.pid == 0) return false;
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch return false;
+    defer dir.close(io);
+    return postMessage(io, arena, dir, target, .{
+        .from_pid = g_self.pid,
+        .from_session = g_session,
+        .from_goal = g_goal,
+        .ts_ms = unixMs(io),
+        .text = text,
+    });
+}
+
+/// Drain OUR inbox: every complete message since the last drain. Empty when
+/// unannounced, inbox-less, or caught up.
+pub fn drainInbox(io: Io, arena: Allocator) []const Message {
+    const dir_path = g_dir orelse return &.{};
+    if (g_self.pid == 0) return &.{};
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch return &.{};
+    defer dir.close(io);
+    var name_buf: [inbox_name_max]u8 = undefined;
+    return readNewMessages(io, arena, dir, inboxName(&name_buf, g_self.pid, g_self.start_id), &g_inbox_off);
+}
+
+pub fn ownSession() []const u8 {
+    return g_session;
+}
+
+test "isSharedTreeGit: flags index/tree-mutating git, ignores read-only git" {
+    try std.testing.expect(isSharedTreeGit("git add -A"));
+    try std.testing.expect(isSharedTreeGit("git commit -m \"wip\""));
+    try std.testing.expect(isSharedTreeGit("GIT_EDITOR=true git commit --amend"));
+    try std.testing.expect(isSharedTreeGit("git -C /tmp/repo reset HEAD~1"));
+    try std.testing.expect(isSharedTreeGit("git -c user.name=x commit"));
+    try std.testing.expect(isSharedTreeGit("cd sub && git stash"));
+    try std.testing.expect(isSharedTreeGit("sh -c 'git rm -r old/'"));
+    try std.testing.expect(isSharedTreeGit("git checkout -- src/"));
+    try std.testing.expect(!isSharedTreeGit("git status"));
+    try std.testing.expect(!isSharedTreeGit("git log --oneline -5"));
+    try std.testing.expect(!isSharedTreeGit("git diff HEAD"));
+    try std.testing.expect(!isSharedTreeGit("git push origin main"));
+    try std.testing.expect(!isSharedTreeGit("git branch"));
+    try std.testing.expect(!isSharedTreeGit("gh issue list"));
+    try std.testing.expect(!isSharedTreeGit("git"));
+    try std.testing.expect(!isSharedTreeGit("ls src/"));
+}
+
+test "presence record round-trips pid, identity, and goal" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const owner: Owner = .{
+        .pid = 4242,
+        .start_id = 0xdeadbeef,
+        .session_id = "session-1",
+        .identity = "/repo/.git",
+        .goal = "agent-inbox redesign",
+        .last_seen_ms = 123456,
+    };
+    const text = try formatRecord(arena, owner);
+    const back = parseRecord(arena, text) orelse return error.ExpectedRecord;
+    try std.testing.expectEqual(owner.pid, back.pid);
+    try std.testing.expectEqual(owner.start_id, back.start_id);
+    try std.testing.expectEqualStrings(owner.session_id, back.session_id);
+    try std.testing.expectEqualStrings(owner.identity, back.identity);
+    try std.testing.expectEqualStrings(owner.goal, back.goal);
+    try std.testing.expectEqual(owner.last_seen_ms, back.last_seen_ms);
+}
+
+test "parseRecord: rejects garbage and pid-less records, tolerates extra fields" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try std.testing.expect(parseRecord(arena, "not json") == null);
+    try std.testing.expect(parseRecord(arena, "{\"goal\":\"x\"}") == null);
+    const forward = parseRecord(arena, "{\"pid\":7,\"start_id\":3,\"future\":\"field\"}") orelse return error.ExpectedRecord;
+    try std.testing.expectEqual(7, forward.pid);
+}
+
+test "listPeers: probes liveness, reaps the provably dead, keeps the alive" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const self = proc_identity.selfRecord(io);
+    const alive: Owner = .{ .pid = self.pid, .start_id = self.start_id, .session_id = "s-live", .identity = "/x/.git", .goal = "g" };
+    try tmp.dir.writeFile(io, .{ .sub_path = "live.json", .data = try formatRecord(arena, alive) });
+    // pid -7 can never hold a process (probe: pid <= 0 is .gone), so the reap
+    // path is exercised identically on every platform.
+    const dead: Owner = .{ .pid = -7, .start_id = 1, .session_id = "s-dead", .identity = "/x/.git" };
+    try tmp.dir.writeFile(io, .{ .sub_path = "dead.json", .data = try formatRecord(arena, dead) });
+    const peers = listPeers(io, arena, tmp.dir);
+    try std.testing.expectEqual(1, peers.records.len);
+    try std.testing.expectEqualStrings("s-live", peers.records[0].session_id);
+    var buf: [16]u8 = undefined;
+    try std.testing.expectError(error.FileNotFound, tmp.dir.readFile(io, "dead.json", &buf));
+}
+
+test "unackedPeer: returns the live foreign co-owner once, then yields to the ack" {
+    const my_identity = "/repo/.git";
+    const foreign: Owner = .{ .pid = 4242, .start_id = 99, .session_id = "s-b", .identity = "/repo/.git", .goal = "theirs" };
+    const other_tree: Owner = .{ .pid = 4343, .start_id = 98, .session_id = "s-c", .identity = "/repo/.git/worktrees/wt1" };
+    const records = [_]Owner{ other_tree, foreign };
+    const probes = [_]proc_identity.Probe{ .{ .id = 98 }, .{ .id = 99 } };
+    const peers: Peers = .{ .records = &records, .probes = &probes };
+    const found = unackedPeer(peers, my_identity, 1, &.{}) orelse return error.ExpectedPeer;
+    try std.testing.expectEqualStrings("s-b", found.session_id);
+    const key = ackKey(found);
+    try std.testing.expect(unackedPeer(peers, my_identity, 1, &.{key}) == null);
+    // A new session reusing that pid is a NEW peer, not an acked one.
+    const reused: Owner = .{ .pid = 4242, .start_id = 100, .session_id = "s-d", .identity = "/repo/.git" };
+    const records2 = [_]Owner{reused};
+    const probes2 = [_]proc_identity.Probe{.{ .id = 100 }};
+    try std.testing.expect(unackedPeer(.{ .records = &records2, .probes = &probes2 }, my_identity, 1, &.{key}) != null);
+}
+
+test "inbox: post then drain returns each message once, in order, sender-stamped" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const target: Owner = .{ .pid = 4242, .start_id = 0xabc, .session_id = "s-b", .identity = "/repo/.git" };
+    const msg: Message = .{ .from_pid = 1, .from_session = "s-a", .from_goal = "agent-inbox redesign", .ts_ms = 7, .text = "hold off gui/src until I land the move" };
+    try std.testing.expect(postMessage(io, arena, tmp.dir, target, msg));
+    try std.testing.expect(postMessage(io, arena, tmp.dir, target, .{ .from_pid = 1, .from_session = "s-a", .ts_ms = 8, .text = "second note" }));
+    var name_buf: [inbox_name_max]u8 = undefined;
+    const name = inboxName(&name_buf, target.pid, target.start_id);
+    var off: u64 = 0;
+    const first = readNewMessages(io, arena, tmp.dir, name, &off);
+    try std.testing.expectEqual(2, first.len);
+    try std.testing.expectEqualStrings("s-a", first[0].from_session);
+    try std.testing.expectEqualStrings("agent-inbox redesign", first[0].from_goal);
+    try std.testing.expectEqualStrings("hold off gui/src until I land the move", first[0].text);
+    try std.testing.expectEqualStrings("second note", first[1].text);
+    // A second drain at the same offset is empty: delivery is exactly-once per reader.
+    try std.testing.expectEqual(0, readNewMessages(io, arena, tmp.dir, name, &off).len);
+}
+
+test "readNewMessages: a torn trailing line waits for the next drain" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const target: Owner = .{ .pid = 9, .start_id = 1, .session_id = "s-t" };
+    try std.testing.expect(postMessage(io, arena, tmp.dir, target, .{ .from_pid = 2, .from_session = "s-x", .ts_ms = 1, .text = "whole" }));
+    var name_buf: [inbox_name_max]u8 = undefined;
+    const name = inboxName(&name_buf, 9, 1);
+    // Simulate a writer mid-append: half a JSON line, no newline yet.
+    const f = try tmp.dir.createFile(io, name, .{ .truncate = false, .read = true });
+    const st = try f.stat(io);
+    try f.writePositionalAll(io, "{\"from_pid\":2,\"tex", st.size);
+    f.close(io);
+    var off: u64 = 0;
+    const first = readNewMessages(io, arena, tmp.dir, name, &off);
+    try std.testing.expectEqual(1, first.len); // only the complete line
+    try std.testing.expectEqualStrings("whole", first[0].text);
+    // Finish the torn line; the next drain picks it up.
+    const f2 = try tmp.dir.createFile(io, name, .{ .truncate = false, .read = true });
+    const st2 = try f2.stat(io);
+    try f2.writePositionalAll(io, "t\":\"rest\"}\n", st2.size);
+    f2.close(io);
+    const second = readNewMessages(io, arena, tmp.dir, name, &off);
+    try std.testing.expectEqual(1, second.len);
+    try std.testing.expectEqualStrings("rest", second[0].text);
+}

@@ -67,6 +67,9 @@ pub const Owner = struct {
     start_id: proc_identity.StartId = 0,
     session_id: []const u8 = "",
     identity: []const u8 = "",
+    /// #469: the owner's last-known objective — the coordination payload a
+    /// peer reads to decide whether its work overlaps. Empty when unknown.
+    goal: []const u8 = "",
     last_seen_ms: i64 = 0,
 };
 
@@ -146,10 +149,11 @@ pub fn probeOwners(io: Io, records: []const Owner, out: []proc_identity.Probe) [
 
 pub fn duplicateOwnerWarning(arena: Allocator, rec: Owner, age_ms: i64) []const u8 {
     const mins = @divTrunc(if (age_ms > 0) age_ms else 0, std.time.ms_per_min);
+    const goal = if (rec.goal.len > 0) std.fmt.allocPrint(arena, "\n  goal: {s}", .{rec.goal}) catch "" else "";
     return std.fmt.allocPrint(
         arena,
-        "⚠ another graff session already owns this worktree\n  pid {d} · session {s} · active {d}m\n  you would both be editing the same uncommitted tree — restart with -w for an isolated worktree, or continue knowing edits can collide\n",
-        .{ rec.pid, if (rec.session_id.len > 0) rec.session_id else "unknown", mins },
+        "⚠ another graff session already owns this worktree\n  pid {d} · session {s} · active {d}m{s}\n  you would both be editing the same uncommitted tree — restart with -w for an isolated worktree, or continue knowing edits can collide\n",
+        .{ rec.pid, if (rec.session_id.len > 0) rec.session_id else "unknown", mins, goal },
     ) catch "⚠ another graff session already owns this worktree\n";
 }
 

@@ -33,6 +33,7 @@ const run_budget_mod = @import("run_budget.zig");
 const prompt_ui = @import("agent_prompt.zig");
 const agent_tests = @import("agent_tests.zig");
 const goal_state = @import("goal_state.zig");
+const peer_channel = @import("peer_channel.zig"); // #469: turn-boundary peer message delivery
 
 pub const TodoItem = struct {
     content: []const u8,
@@ -314,6 +315,9 @@ pub const Agent = struct {
         try self.ensureRootTools(self.provider.kind);
         // No per-turn teardown: the socket and the chain span user turns, guarded by codex_chain.usable instead.
         self.completed = null;
+        // #469: co-resident sessions' queued messages land at the turn boundary
+        // — durable in history, visible as events, never mid-turn.
+        peer_channel.deliverInbound(self);
         if (!self.sub) esc_cancel.store(false, .release); // fresh turn, no stale cancel
         while (true) {
             // Esc during a tool join (set by escWatchTask) lands here: the

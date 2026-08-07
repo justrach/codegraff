@@ -52,6 +52,7 @@ const providers = @import("providers.zig");
 const messages_mod = @import("messages.zig");
 const session = @import("session.zig");
 const session_settings = @import("session_settings.zig");
+const presence = @import("presence.zig");
 const goal_flow = @import("goal_flow.zig");
 const fleet = @import("fleet.zig");
 const hooks = @import("hooks.zig");
@@ -277,6 +278,12 @@ pub fn buildRootAgent(
         root.goal_flag = try arena.dupe(u8, g); // kept: re-applied over every loadSession, incl. /resume
         root.goal = goal_flow.standingGoalFromFlag(root.goal_flag.?, null, root.todos.items, util.unixMs(io));
     }
+    // #469: register this root session so co-resident graffs see it (and it
+    // them) BEFORE anyone touches the shared tree — a live co-owner is named
+    // at birth here, not discovered mid-collision.
+    if (presence.announce(io, gpa, arena, root.home, root.session_name, if (root.goal) |g| g.objective else "")) |warning| {
+        if (!main_mod.json_mode and flags.oneshot_prompt == null) try out.print("{s}", .{warning});
+    }
     if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
     if (flags.eval_target_flag) |t| root.eval_target = t;
     if (flags.eval_niche_flag) |n| root.eval_niche = try arena.dupe(u8, n);
@@ -356,6 +363,10 @@ pub fn compactResumedSession(root: *agent_mod.Agent) void {
 /// final turn left uncommitted. Moved out of main() verbatim (600-line
 /// goal); `root` is already stable main()-owned storage.
 pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, json_mode: bool) !void {
+    // #469: our presence record leaves the registry with us; a crashed session
+    // skips this and gets reaped by the next reader's liveness probe instead.
+    presence.retire(io);
+    presence.deinit(gpa); // its gpa-owned globals must not reach the exit-time leak check
     if (!json_mode and root.messages.items.len > 0) {
         const sink = engine_sink.writerSink(out);
         if (session.saveSession(root, arena, root.session_name)) |_| {
