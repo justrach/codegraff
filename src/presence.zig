@@ -194,7 +194,8 @@ var g_own_name: ?[]const u8 = null; // gpa-owned own record's file name
 var g_session: []const u8 = ""; // gpa-owned session id, for rewrites
 var g_goal: []const u8 = ""; // last-known goal (session-arena-owned is fine: both outlive the session)
 var g_self: proc_identity.Record = .{}; // own pid + start-id, settled by announce
-var g_inbox_off: u64 = 0; // bytes of our own inbox already delivered
+var g_chan: ?[]const u8 = null; // gpa-owned channel file name (hash of g_identity)
+var g_inbox_off: u64 = 0; // bytes of the shared channel already delivered
 var g_acked: [max_peers]u64 = undefined;
 var g_acked_len: usize = 0;
 
@@ -229,6 +230,8 @@ pub fn announce(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, sess
     g_session = gpa.dupe(u8, session_id) catch "";
     g_goal = gpa.dupe(u8, goal) catch "";
     g_self = self;
+    var chan_buf: [chan_name_max]u8 = undefined;
+    g_chan = gpa.dupe(u8, chanName(&chan_buf, g_identity)) catch null;
     g_own_name = gpa.dupe(u8, name) catch return null;
     // Peer check BEFORE writing our own record: the warning describes the tree
     // as it was when we arrived.
@@ -256,11 +259,13 @@ pub fn deinit(gpa: Allocator) void {
     if (g_session.len > 0) gpa.free(g_session);
     if (g_goal.len > 0) gpa.free(g_goal);
     if (g_own_name) |n| gpa.free(n);
+    if (g_chan) |c| gpa.free(c);
     g_dir = null;
     g_identity = "";
     g_session = "";
     g_goal = "";
     g_own_name = null;
+    g_chan = null;
     g_self = .{};
     g_inbox_off = 0;
     g_acked_len = 0;
@@ -272,8 +277,8 @@ pub fn retire(io: Io) void {
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch return;
     defer dir.close(io);
     dir.deleteFile(io, name) catch {};
-    var inbox_buf: [inbox_name_max]u8 = undefined;
-    dir.deleteFile(io, inboxName(&inbox_buf, g_self.pid, g_self.start_id)) catch {};
+    // The shared channel is NOT ours to delete: co-resident sessions may
+    // still be mid-drain, and its bytes are the room's history.
 }
 
 /// Refresh our record's goal — the coordination payload a peer's checkpoint
@@ -308,69 +313,15 @@ pub fn gateCheck(io: Io, arena: Allocator) ?[]const u8 {
     return std.fmt.allocPrint(arena, "{s}shared-tree checkpoint (#469): the command was NOT run. Re-issue the identical command to proceed — this fires once per live peer — coordinate first via the peer_message tool (session \"{s}\"), or keep your edits disjoint from theirs.", .{ warning, peer.session_id }) catch warning;
 }
 
-// --- the channel (#469 phase 2): one append-only JSONL inbox per session,
-// named from the same (pid, start-id) as its presence record so a sender needs
-// nothing the record doesn't already carry. Appends use the read+write
-// positional pattern from session_transcript (#462: write-only handles break
-// appends on Windows). Delivery is queued — a sender never blocks on the
-// receiver, and two busy sessions cannot deadlock (#417's rule). ---
+// The channel's wire format (Message, chanName, postMessage, readNewMessages)
+// lives in presence_chan.zig — split out under the 600-line ceiling. This file
+// keeps the wired layer: which dir/name/offset a LIVE session uses.
 
-pub const inbox_name_max = 96;
-
-/// One inbox line. `from_*` identify the sender's presence record at send
-/// time; the harness writes them, never the model.
-pub const Message = struct {
-    from_pid: i32 = 0,
-    from_session: []const u8 = "",
-    from_goal: []const u8 = "",
-    ts_ms: i64 = 0,
-    text: []const u8 = "",
-};
-
-pub fn inboxName(buf: *[inbox_name_max]u8, pid: i32, start_id: u64) []const u8 {
-    return std.fmt.bufPrint(buf, "{d}-{x}.inbox.jsonl", .{ pid, start_id }) catch unreachable;
-}
-
-/// Append one message to `target`'s inbox under `dir`. Best-effort: false on
-/// any I/O or serialization failure — a lost message is reported by the
-/// caller, never thrown into a tool call.
-pub fn postMessage(io: Io, arena: Allocator, dir: Io.Dir, target: Owner, msg: Message) bool {
-    var aw: std.Io.Writer.Allocating = .init(arena);
-    var s: std.json.Stringify = .{ .writer = &aw.writer };
-    s.write(msg) catch return false;
-    aw.writer.writeAll("\n") catch return false;
-    var name_buf: [inbox_name_max]u8 = undefined;
-    const name = inboxName(&name_buf, target.pid, target.start_id);
-    const f = dir.createFile(io, name, .{ .truncate = false, .read = true }) catch return false;
-    defer f.close(io);
-    const end: u64 = if (f.stat(io)) |st| st.size else |_| blk: {
-        const st = dir.statFile(io, name, .{}) catch return false;
-        break :blk st.size;
-    };
-    f.writePositionalAll(io, aw.writer.buffered(), end) catch return false;
-    return true;
-}
-
-/// Read complete inbox lines after `offset`, advancing it past everything
-/// parsed. A trailing partial line stays for the next drain — a writer
-/// mid-append never yields a torn message. A file shorter than the offset was
-/// recreated; restart from the top rather than skip it forever.
-pub fn readNewMessages(io: Io, arena: Allocator, dir: Io.Dir, name: []const u8, offset: *u64) []const Message {
-    const text = dir.readFileAlloc(io, name, arena, .limited(256 * 1024)) catch return &.{};
-    if (text.len < offset.*) offset.* = 0;
-    if (text.len == offset.*) return &.{};
-    var msgs: std.ArrayList(Message) = .empty;
-    var pos: usize = @intCast(offset.*);
-    while (std.mem.indexOfScalarPos(u8, text, pos, '\n')) |nl| {
-        const line = text[pos..nl];
-        pos = nl + 1;
-        const m = std.json.parseFromSliceLeaky(Message, arena, line, .{ .ignore_unknown_fields = true }) catch continue;
-        if (m.from_pid == 0 or m.text.len == 0) continue;
-        msgs.append(arena, m) catch break;
-    }
-    offset.* = @intCast(pos);
-    return msgs.items;
-}
+const presence_chan = @import("presence_chan.zig");
+pub const Message = presence_chan.Message;
+const chanName = presence_chan.chanName;
+const isOwn = presence_chan.isOwn;
+const chan_name_max = presence_chan.chan_name_max;
 
 /// The live co-owners of MY worktree: every registry record whose verdict is
 /// live_foreign/live_unverified. The sender's target list for peer_message
@@ -392,32 +343,43 @@ pub fn liveTreePeers(io: Io, arena: Allocator) []const Owner {
     return live.items;
 }
 
-/// Send-side wrapper for the wired layer: stamp the message with OUR record
-/// and append it to the target's inbox. false when this session never
+/// Post to the shared worktree channel, stamped with OUR record. `to` names
+/// the intended recipient (session substring or pid) and is metadata only —
+/// every co-resident session hears the line. false when this session never
 /// announced (tests, subagents) or the write failed.
-pub fn postTo(io: Io, arena: Allocator, target: Owner, text: []const u8) bool {
+pub fn postTo(io: Io, arena: Allocator, text: []const u8, to: []const u8) bool {
     const dir_path = g_dir orelse return false;
+    const chan = g_chan orelse return false;
     if (g_self.pid == 0) return false;
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch return false;
     defer dir.close(io);
-    return postMessage(io, arena, dir, target, .{
+    return presence_chan.postMessage(io, arena, dir, chan, .{
         .from_pid = g_self.pid,
+        .from_start = g_self.start_id,
         .from_session = g_session,
         .from_goal = g_goal,
+        .to = to,
         .ts_ms = unixMs(io),
         .text = text,
     });
 }
 
-/// Drain OUR inbox: every complete message since the last drain. Empty when
-/// unannounced, inbox-less, or caught up.
-pub fn drainInbox(io: Io, arena: Allocator) []const Message {
+/// Drain the shared channel: every complete message since our last drain,
+//  minus our own echo. Empty when unannounced or caught up. A session that
+/// joins late hears the channel's whole backlog once — context, not spam:
+/// the room predates it.
+pub fn drainChannel(io: Io, arena: Allocator) []const Message {
     const dir_path = g_dir orelse return &.{};
+    const chan = g_chan orelse return &.{};
     if (g_self.pid == 0) return &.{};
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch return &.{};
     defer dir.close(io);
-    var name_buf: [inbox_name_max]u8 = undefined;
-    return readNewMessages(io, arena, dir, inboxName(&name_buf, g_self.pid, g_self.start_id), &g_inbox_off);
+    const raw = presence_chan.readNewMessages(io, arena, dir, chan, &g_inbox_off);
+    var out: std.ArrayList(Message) = .empty;
+    for (raw) |m| {
+        if (!isOwn(m, g_self.pid, g_self.start_id)) out.append(arena, m) catch break;
+    }
+    return out.items;
 }
 
 pub fn ownSession() []const u8 {
@@ -512,58 +474,4 @@ test "unackedPeer: returns the live foreign co-owner once, then yields to the ac
     const records2 = [_]Owner{reused};
     const probes2 = [_]proc_identity.Probe{.{ .id = 100 }};
     try std.testing.expect(unackedPeer(.{ .records = &records2, .probes = &probes2 }, my_identity, 1, &.{key}) != null);
-}
-
-test "inbox: post then drain returns each message once, in order, sender-stamped" {
-    const io = std.testing.io;
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const target: Owner = .{ .pid = 4242, .start_id = 0xabc, .session_id = "s-b", .identity = "/repo/.git" };
-    const msg: Message = .{ .from_pid = 1, .from_session = "s-a", .from_goal = "agent-inbox redesign", .ts_ms = 7, .text = "hold off gui/src until I land the move" };
-    try std.testing.expect(postMessage(io, arena, tmp.dir, target, msg));
-    try std.testing.expect(postMessage(io, arena, tmp.dir, target, .{ .from_pid = 1, .from_session = "s-a", .ts_ms = 8, .text = "second note" }));
-    var name_buf: [inbox_name_max]u8 = undefined;
-    const name = inboxName(&name_buf, target.pid, target.start_id);
-    var off: u64 = 0;
-    const first = readNewMessages(io, arena, tmp.dir, name, &off);
-    try std.testing.expectEqual(2, first.len);
-    try std.testing.expectEqualStrings("s-a", first[0].from_session);
-    try std.testing.expectEqualStrings("agent-inbox redesign", first[0].from_goal);
-    try std.testing.expectEqualStrings("hold off gui/src until I land the move", first[0].text);
-    try std.testing.expectEqualStrings("second note", first[1].text);
-    // A second drain at the same offset is empty: delivery is exactly-once per reader.
-    try std.testing.expectEqual(0, readNewMessages(io, arena, tmp.dir, name, &off).len);
-}
-
-test "readNewMessages: a torn trailing line waits for the next drain" {
-    const io = std.testing.io;
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const target: Owner = .{ .pid = 9, .start_id = 1, .session_id = "s-t" };
-    try std.testing.expect(postMessage(io, arena, tmp.dir, target, .{ .from_pid = 2, .from_session = "s-x", .ts_ms = 1, .text = "whole" }));
-    var name_buf: [inbox_name_max]u8 = undefined;
-    const name = inboxName(&name_buf, 9, 1);
-    // Simulate a writer mid-append: half a JSON line, no newline yet.
-    const f = try tmp.dir.createFile(io, name, .{ .truncate = false, .read = true });
-    const st = try f.stat(io);
-    try f.writePositionalAll(io, "{\"from_pid\":2,\"tex", st.size);
-    f.close(io);
-    var off: u64 = 0;
-    const first = readNewMessages(io, arena, tmp.dir, name, &off);
-    try std.testing.expectEqual(1, first.len); // only the complete line
-    try std.testing.expectEqualStrings("whole", first[0].text);
-    // Finish the torn line; the next drain picks it up.
-    const f2 = try tmp.dir.createFile(io, name, .{ .truncate = false, .read = true });
-    const st2 = try f2.stat(io);
-    try f2.writePositionalAll(io, "t\":\"rest\"}\n", st2.size);
-    f2.close(io);
-    const second = readNewMessages(io, arena, tmp.dir, name, &off);
-    try std.testing.expectEqual(1, second.len);
-    try std.testing.expectEqualStrings("rest", second[0].text);
 }

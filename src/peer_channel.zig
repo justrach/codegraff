@@ -29,7 +29,7 @@ const ExecResult = tools_mod.ExecResult;
 const Owner = worktree_lease.Owner;
 
 pub const tool_name = "peer_message";
-pub const tool_desc = "Send a message to another live graff session working in this same folder (a co-resident peer you learned about from the startup co-owner warning or a shared-tree checkpoint). The message lands in their context at their next turn boundary, stamped with your session name and current goal. Use it to coordinate the way you would steer a subagent, but sideways: announce what you are restructuring, ask them to hold off a directory, or split the work. `session` selects the peer by name substring; omit it when exactly one peer is live. Delivery is queued and one-way — the tool result only confirms the send, never a reply.";
+pub const tool_desc = "Post a message to this folder's shared graff channel: every OTHER live graff session working here hears it at its next turn boundary, stamped with your session name and current goal. Use it to coordinate the way you would steer a subagent, but sideways: announce what you are restructuring, ask the others to hold off a directory, or split the work. `session` names the intended recipient (name substring) when the message is meant for one peer — they all still hear it. Delivery is queued and one-way — the tool result only confirms the post, never a reply.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"session": {"type": "string", "description": "peer session name substring (omit when only one peer is live)"}, "text": {"type": "string", "description": "one or two sentences of coordination intent"}}, "required": ["text"]}
 ;
@@ -76,23 +76,26 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
         .text = "no live co-resident graff sessions in this worktree — the presence registry says you are alone here (a peer shows up via the startup warning when one starts)",
         .is_error = true,
     };
-    const target = switch (resolvePeer(peers, want)) {
-        .one => |p| p,
+    // `session` is validated so a mistyped target errors usefully, but every
+    // peer hears the post either way — the channel is a room, not a DM.
+    const to: []const u8 = if (want.len == 0) "" else switch (resolvePeer(peers, want)) {
+        .one => |p| p.session_id,
         .none => return .{
             .text = try std.fmt.allocPrint(self.arena, "no live peer matches \"{s}\" — live now: {s}", .{ want, peerListText(self.arena, peers) }),
             .is_error = true,
         },
         .ambiguous => return .{
-            .text = try std.fmt.allocPrint(self.arena, "more than one live peer — name one with `session`: {s}", .{peerListText(self.arena, peers)}),
+            .text = try std.fmt.allocPrint(self.arena, "more than one live peer matches — name one with `session`: {s}", .{peerListText(self.arena, peers)}),
             .is_error = true,
         },
     };
-    if (!presence.postTo(self.io, self.arena, target, text)) return .{
+    if (!presence.postTo(self.io, self.arena, text, to)) return .{
         .text = "delivery failed — the presence registry is unavailable (this session may never have announced itself)",
         .is_error = true,
     };
+    const addressed = if (to.len > 0) try std.fmt.allocPrint(self.arena, " (for \"{s}\")", .{to}) else "";
     return .{
-        .text = try std.fmt.allocPrint(self.arena, "queued for \"{s}\" (pid {d}) — it lands at their next turn boundary. Delivery is one-way: their answer, if any, arrives the same way.", .{ target.session_id, target.pid }),
+        .text = try std.fmt.allocPrint(self.arena, "posted to the worktree channel{s} — {d} live peer(s) hear it at their next turn boundary. Delivery is one-way: any answer arrives the same way.", .{ addressed, peers.len }),
         .is_error = false,
     };
 }
@@ -103,26 +106,31 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
 /// an error, because a peer's inbox must never break our session.
 pub fn deliverInbound(root: *Agent) void {
     if (root.sub) return;
-    const msgs = presence.drainInbox(root.io, root.arena);
+    const msgs = presence.drainChannel(root.io, root.arena);
     if (msgs.len == 0) return;
     const sink = engine_sink.forAgent(root);
+    const own = presence.ownSession();
     var buf: std.ArrayList(u8) = .empty;
     for (msgs) |m| {
         const goal = if (m.from_goal.len > 0) std.fmt.allocPrint(root.arena, " (goal: {s})", .{m.from_goal}) catch "" else "";
-        const line = std.fmt.allocPrint(root.arena, "[peer message from {s}{s} — #469 channel]: {s}", .{ m.from_session, goal, m.text }) catch continue;
+        // Addressing is rendered, not enforced: everyone hears the line, and
+        // the marker says who it was meant for.
+        const to = if (m.to.len == 0) "" else if (std.mem.indexOf(u8, m.to, own) != null or std.mem.indexOf(u8, own, m.to) != null) " → you" else std.fmt.allocPrint(root.arena, " → {s}", .{m.to}) catch "";
+        const line = std.fmt.allocPrint(root.arena, "[peer message from {s}{s}{s} — #469 channel]: {s}", .{ m.from_session, goal, to, m.text }) catch continue;
         buf.appendSlice(root.arena, line) catch {};
         buf.append(root.arena, '\n') catch {};
         sink.emit(root.io, .{ .session_notice = .{ .text = line, .tone = .plain } });
     }
     if (buf.items.len == 0) return;
-    buf.appendSlice(root.arena, "(reply with the peer_message tool — queued, one-way)") catch {};
+    buf.appendSlice(root.arena, "(reply with the peer_message tool — queued, one-way; everyone here hears it)") catch {};
     var obj: std.json.ObjectMap = .empty;
     obj.put(root.arena, "role", .{ .string = "user" }) catch return;
     obj.put(root.arena, "content", .{ .string = buf.items }) catch return;
     root.messages.append(.{ .object = obj }) catch {};
 }
 
-/// /tell <session> <text…>: the user's line into a peer's inbox.
+/// /tell <session|all> <text…>: the user's line into the shared channel.
+/// Every co-resident session hears it; the target only marks who it's FOR.
 pub fn tellCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     const rest = std.mem.trim(u8, line["/tell".len..], " \t");
     const peers = presence.liveTreePeers(root.io, arena);
@@ -130,13 +138,13 @@ pub fn tellCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Wr
     const target = if (split) |i| rest[0..i] else "";
     const text = if (split) |i| std.mem.trim(u8, rest[i + 1 ..], " \t") else "";
     if (target.len == 0 or text.len == 0) {
-        try out.writeAll("usage: /tell <session> <text> — message a live co-resident graff session\n");
+        try out.writeAll("usage: /tell <session|all> <text> — post to this worktree's shared graff channel\n");
         if (peers.len == 0) try out.writeAll("  (no live peers in this worktree right now)\n") else try out.print("  live now: {s}\n", .{peerListText(arena, peers)});
         try out.flush();
         return true;
     }
-    const peer = switch (resolvePeer(peers, target)) {
-        .one => |p| p,
+    const to: []const u8 = if (std.mem.eql(u8, target, "all")) "" else switch (resolvePeer(peers, target)) {
+        .one => |p| p.session_id,
         .none => {
             try out.print("no live peer matches \"{s}\"\n", .{target});
             try out.flush();
@@ -148,10 +156,10 @@ pub fn tellCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Wr
             return true;
         },
     };
-    if (presence.postTo(root.io, arena, peer, text))
-        try out.print("⇢ queued for {s} (pid {d}) — lands at their next turn boundary\n", .{ peer.session_id, peer.pid })
-    else
-        try out.writeAll("delivery failed — presence registry unavailable\n");
+    if (presence.postTo(root.io, arena, text, to)) {
+        const addressed = if (to.len > 0) try std.fmt.allocPrint(arena, " (for {s})", .{to}) else "";
+        try out.print("⇢ posted to the worktree channel{s} — {d} live peer(s) hear it at their next turn boundary\n", .{ addressed, peers.len });
+    } else try out.writeAll("delivery failed — presence registry unavailable\n");
     try out.flush();
     return true;
 }

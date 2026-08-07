@@ -53,6 +53,7 @@ const messages_mod = @import("messages.zig");
 const session = @import("session.zig");
 const session_settings = @import("session_settings.zig");
 const presence = @import("presence.zig");
+const proc_identity = @import("proc_identity.zig");
 const goal_flow = @import("goal_flow.zig");
 const fleet = @import("fleet.zig");
 const hooks = @import("hooks.zig");
@@ -267,7 +268,10 @@ pub fn buildRootAgent(
         .tools_responses = "",
     };
     // #410: the durable session's name is settled BEFORE the prompt funnel runs — setRootSystemPrompts composes the transcript line out of it.
-    const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{util.unixMs(io)});
+    // The pid suffix keeps two graffs started in the same millisecond from
+    // sharing a session name — which would also share one .session.json file
+    // (#289 contention) and collide as presence peers (#469).
+    const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}-{d}", .{ util.unixMs(io), proc_identity.selfPid() });
     root.session_name = if (flags.resume_flag) |name| (if (!flags.new_session_flag and !flags.no_resume_flag) name else fresh_session_name) else fresh_session_name;
     try prompts.setRootSystemPrompts(&root, sys_normal, arena); // #381: same funnel + the live .graff/playbook.jsonl constraint block
     // Startup pays for one provider format, not all three. Other formats are

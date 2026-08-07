@@ -14,6 +14,7 @@ const util = @import("util.zig");
 const tools_mod = @import("tools.zig");
 const session_mod = @import("session.zig");
 const goal_state = @import("goal_state.zig");
+const proc_identity = @import("proc_identity.zig");
 const goal_flow = @import("goal_flow.zig");
 const prompts = @import("prompts.zig"); // #445: the transcript line's compaction flag resets with the conversation
 const Agent = agent_mod.Agent;
@@ -117,7 +118,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.session_recap = null;
         root.recap_generation +%= 1;
         root.tui_header_shown = false;
-        root.session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(root.io)});
+        root.session_name = try std.fmt.allocPrint(arena, "session-{d}-{d}", .{ unixMs(root.io), proc_identity.selfPid() }); // same-ms uniqueness, see session_run
         prompts.resetSessionCompacted(root, arena); // #445: after the rename, so the re-arm reads the NEW session
         saveSession(root, arena, root.session_name) catch {};
         try out.print("new session → {s}{s}\n", .{ root.session_name, session_ext });
