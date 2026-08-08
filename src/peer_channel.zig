@@ -168,13 +168,14 @@ fn peerNoteIfChanged(root: *Agent) ?[]const u8 {
 pub const backlog_tail_max = 10;
 var g_backlog_tail_cut = false;
 
-/// Device-room hearing is addressed-only: the line names this session, or the
-/// USER posted it (/tell sets from_user). A model's cross-folder post reaches
-/// its target and no one else; unaddressed device lines never cross folders.
+/// Device-room hearing is addressed-only: the line names this session and it
+/// arrives whoever posted it. Unaddressed lines cross folders only when the
+/// USER broadcast them (/tell all) — a /tell to one named graff is a DM, and
+/// a session's unaddressed device line is dropped.
 pub fn deviceHears(m: presence.Message, own: []const u8) bool {
-    if (m.from_user) return true;
-    if (m.to.len == 0 or own.len == 0) return false;
-    return std.mem.indexOf(u8, m.to, own) != null or std.mem.indexOf(u8, own, m.to) != null;
+    if (m.to.len > 0 and own.len > 0 and
+        (std.mem.indexOf(u8, m.to, own) != null or std.mem.indexOf(u8, own, m.to) != null)) return true;
+    return m.from_user and m.to.len == 0;
 }
 
 pub fn deliverInbound(root: *Agent) void {
@@ -484,8 +485,11 @@ test "deviceHears: addressed lines and the user's /tell cross folders; broadcast
     // A cross-folder post naming this session arrives (substring, either way).
     try std.testing.expect(deviceHears(.{ .to = "session-111" }, own));
     try std.testing.expect(deviceHears(.{ .to = own }, "session-111"));
-    // The user's /tell crosses folders even unaddressed (their broadcast).
+    // The user's /tell all crosses folders (unaddressed broadcast) — but a
+    // /tell naming one graff is a DM: only the target hears it.
     try std.testing.expect(deviceHears(.{ .from_user = true }, own));
+    try std.testing.expect(!deviceHears(.{ .from_user = true, .to = "session-999-them" }, own));
+    try std.testing.expect(deviceHears(.{ .from_user = true, .to = "session-111" }, own));
     // Another folder's addressed work and bare/broadcast lines stay out.
     try std.testing.expect(!deviceHears(.{ .to = "session-999-them" }, own));
     try std.testing.expect(!deviceHears(.{}, own));
