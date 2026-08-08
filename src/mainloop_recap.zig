@@ -58,7 +58,10 @@ fn publish(ctx: anytype, recap: Recap, source: []const u8) void {
 /// duped before it spawns.
 pub fn onTurnEnd(ctx: anytype, jobs: *Jobs, final_text: []const u8) void {
     publish(ctx, recap_mod.heuristic(final_text, false), "heuristic");
-    jobs.start(ctx);
+    // Cosmetic model calls stay out of scripted sessions — the same rule the
+    // AI title follows (mainloop.zig): a recap request against a scripted
+    // mock shifts every request-count assertion (test-review-mode.py on CI).
+    if (!main_mod.json_mode and !ctx.root.review_mode) jobs.start(ctx);
 }
 
 fn detachedTask(job: *Job, gpa: Allocator, io: Io, client: *std.http.Client, provider: provider_mod.Provider, budget: ?*@import("run_budget.zig").RunBudget, tracer: ?*@import("trace.zig").Tracer) void {
