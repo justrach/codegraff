@@ -34,18 +34,13 @@ const unixMs = util.unixMs;
 
 const Owner = worktree_lease.Owner;
 
-/// Per-user registry: <home>/.graff/live. Deliberately NOT the per-project
-/// .graff/sessions of session_index.zig — presence is device-local and keyed
-/// by worktree identity so two checkouts of one repo stay distinct (#320).
+/// Per-user registry: <home>/.graff/live. Deliberately NOT the per-project .graff/sessions of session_index.zig — presence is device-local and keyed by worktree identity so two checkouts of one repo stay distinct (#320).
 pub const registry_subdir = ".graff/live";
 
 const max_peers = 16;
 const record_max = 4096;
 
-/// Git subcommands that mutate the index, refs, or working tree — the shared
-/// state the #469 collision tore up. Read-only git (status/log/diff) and
-/// remote-only git (fetch/push) stay ungated: the checkpoint exists because
-/// two sessions edit ONE uncommitted tree, not because git ran.
+/// Git subcommands that mutate the index, refs, or working tree — the shared state the #469 collision tore up. Read-only git (status/log/diff) and remote-only git (fetch/push) stay ungated: the checkpoint exists because two sessions edit ONE uncommitted tree, not because git ran.
 fn isSharedTreeSubcommand(sub: []const u8) bool {
     const subs = [_][]const u8{
         "add",     "rm",       "mv",           "commit", "reset",
@@ -308,8 +303,7 @@ pub fn retire(io: Io) void {
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch return;
     defer dir.close(io);
     dir.deleteFile(io, name) catch {};
-    // The shared channel is NOT ours to delete: co-resident sessions may
-    // still be mid-drain, and its bytes are the room's history.
+    // The shared channel is NOT ours to delete: co-resident sessions may still be mid-drain, and its bytes are the room's history.
 }
 
 /// Refresh our record's goal — the coordination payload a peer's checkpoint
@@ -574,7 +568,10 @@ test "listPeers: probes liveness, reaps the provably dead, keeps the alive" {
     // pid -7 can never hold a process (probe: pid <= 0 is .gone), so the reap path is exercised identically on every platform.
     const dead: Owner = .{ .pid = -7, .start_id = 1, .session_id = "s-dead", .identity = "/x/.git" };
     try tmp.dir.writeFile(io, .{ .sub_path = "dead.json", .data = try formatRecord(arena, dead) });
-    const peers = listPeers(io, arena, tmp.dir);
+    // Reopen with .iterate: tmpDir's handle isn't iteration-capable on the Linux backend (dirRead seeks an O_PATH fd → EBADF panic, the CI crash).
+    var idir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer idir.close(io);
+    const peers = listPeers(io, arena, idir);
     try std.testing.expectEqual(1, peers.records.len);
     try std.testing.expectEqualStrings("s-live", peers.records[0].session_id);
     var buf: [16]u8 = undefined;
