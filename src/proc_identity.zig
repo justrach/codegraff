@@ -155,7 +155,7 @@ fn probeLinux(io: Io, pid: i32) Probe {
         error.FileNotFound => return .gone,
         else => return .unknown,
     };
-    defer std.posix.close(fd);
+    defer _ = std.posix.system.close(fd); // raw syscall wrapper (no std.posix.close in this std); returns usize, not an error
     var buf: [4096]u8 = undefined;
     const n = std.posix.read(fd, &buf) catch return .unknown;
     return if (parseLinuxStat(buf[0..n])) |v| .{ .id = v } else .unknown;
