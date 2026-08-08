@@ -28,6 +28,7 @@ const Allocator = std.mem.Allocator;
 const proc_identity = @import("proc_identity.zig");
 const worktree_lease = @import("worktree_lease.zig");
 const util = @import("util.zig");
+const main_mod = @import("main.zig"); // `unattended`: one-shots join channel rooms at the tail, not the backlog
 
 const unixMs = util.unixMs;
 
@@ -225,6 +226,7 @@ var g_self: proc_identity.Record = .{}; // own pid + start-id, settled by announ
 var g_chan: ?[]const u8 = null; // gpa-owned channel file name (hash of g_identity)
 var g_inbox_off: u64 = 0; // bytes of the shared channel already delivered
 var g_device_off: u64 = 0; // bytes of the device-wide room already delivered
+var g_tail_seeked: bool = false; // one-shots fast-forward both rooms exactly once (empty room at join must not re-skip later arrivals)
 var g_acked: [max_peers]u64 = undefined;
 var g_acked_len: usize = 0;
 
@@ -297,6 +299,7 @@ pub fn deinit(gpa: Allocator) void {
     g_chan = null;
     g_self = .{};
     g_inbox_off = 0;
+    g_tail_seeked = false;
     g_acked_len = 0;
 }
 
@@ -396,13 +399,25 @@ pub fn postTo(io: Io, arena: Allocator, text: []const u8, to: []const u8) bool {
 /// Drain the shared channel: every complete message since our last drain,
 //  minus our own echo. Empty when unannounced or caught up. A session that
 /// joins late hears the channel's whole backlog once — context, not spam:
-/// the room predates it.
+/// the room predates it. EXCEPTION: a -p one-shot joins, works, and exits
+/// inside a minute — the backlog is context it cannot use (measured ~4k
+/// tokens of stale chatter injected on the first step of every benchmark
+/// one-shot — and it made ephemeral workers ANSWER old messages, burning
+/// turns on coordination theater). Unattended sessions start at the tail:
+/// they hear what arrives while they run, not what predates them.
 pub fn drainChannel(io: Io, arena: Allocator) []const Message {
     const dir_path = g_dir orelse return &.{};
     const chan = g_chan orelse return &.{};
     if (g_self.pid == 0) return &.{};
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch return &.{};
     defer dir.close(io);
+    if (main_mod.unattended and !g_tail_seeked) {
+        g_tail_seeked = true;
+        if (dir.readFileAlloc(io, chan, arena, .limited(16 * 1024 * 1024)) catch null) |text| g_inbox_off = @intCast(text.len);
+        // The device room too: deliverInbound always drains the worktree
+        // channel first, so one fast-forward covers both rooms.
+        if (dir.readFileAlloc(io, device_room, arena, .limited(16 * 1024 * 1024)) catch null) |text| g_device_off = @intCast(text.len);
+    }
     const raw = presence_chan.readNewMessages(io, arena, dir, chan, &g_inbox_off);
     var out: std.ArrayList(Message) = .empty;
     for (raw) |m| {

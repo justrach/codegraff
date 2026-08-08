@@ -326,7 +326,7 @@ pub fn effectiveRootSpecs(arena: Allocator) ![]const ToolSpec {
     else
         (if (learn_store.active_agent_loaded) &root_specs_without_clock else &root_specs_without_optional);
     // Optionals are appended BEFORE the #330 filter, never after (optional ≠ exempt); the --lean token filter chains last.
-    return no_local_tools.filterLeanSpecs(ToolSpec, arena, try no_local_tools.filterRootSpecs(ToolSpec, arena, try tool_gates.withAvailable(ToolSpec, arena, chosen, &optional_specs)));
+    return no_local_tools.compactLeanSpecs(ToolSpec, arena, try no_local_tools.filterLeanSpecs(ToolSpec, arena, try no_local_tools.filterRootSpecs(ToolSpec, arena, try tool_gates.withAvailable(ToolSpec, arena, chosen, &optional_specs))));
 }
 
 const Schema = union(enum) { raw: []const u8, value: Value };

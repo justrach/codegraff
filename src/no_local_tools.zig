@@ -113,6 +113,24 @@ pub fn filterLeanSpecs(comptime Spec: type, arena: Allocator, specs: []const Spe
     return buf[0..kept];
 }
 
+/// --lean's compact subagent description: same name and JSON schema, a
+/// fraction of the prose. The full description is 1.9k bytes of workflow,
+/// persona and tier/effort precedence detail a one-shot never exercises;
+/// the lean seven keep this tool BECAUSE unattended delegation goes through
+/// it, so its price is the one worth shrinking (~350 tokens/turn saved).
+pub const lean_subagent_desc = "Spawn a subagent for a self-contained task. It has bash, read_file, edit_file, write_file, codedb and does NOT share your context — the prompt must say everything. Returns its final report. In an unattended session the root's bash/edit tools are approval-denied and a subagent's are not: delegate implementation and command execution to one (tier \"small\" for mechanical work).";
+
+/// schema.zig chains this after filterLeanSpecs: identical names and JSON
+/// schemas, compact prose. Returns the input untouched when lean is off.
+pub fn compactLeanSpecs(comptime Spec: type, arena: Allocator, specs: []const Spec) ![]const Spec {
+    if (!lean) return specs;
+    const buf = try arena.dupe(Spec, specs);
+    for (buf) |*spec| {
+        if (std.mem.eql(u8, spec.name, "subagent")) spec.desc = lean_subagent_desc;
+    }
+    return buf;
+}
+
 /// Refusal text. Names the flag so the model stops retrying the same call, and
 /// points it at what does work in this deployment.
 pub const refusal_text = "--no-local-tools is set for this process: the built-in bash, bash_output, bash_kill, read_file, edit_file, write_file and codedb tools are hard-disabled and cannot be re-enabled by asking. Run commands and touch files through the sandbox tools the connected MCP server provides instead; webfetch still works.";
@@ -181,7 +199,7 @@ test "#330: GRAFF_NO_LOCAL_TOOLS is affirmative-only" {
 }
 
 test "lean: the filter keeps exactly the seven one-shot tools, and allocates nothing when off" {
-    const Spec = struct { name: []const u8 };
+    const Spec = struct { name: []const u8, desc: []const u8 = "" };
     const specs = [_]Spec{
         .{ .name = "bash" },
         .{ .name = "workflow" },
@@ -215,6 +233,17 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
     try std.testing.expect(!leanKeeps("workflow"));
     try std.testing.expect(!leanKeeps("todo_write"));
     try std.testing.expect(!leanKeeps("webfetch"));
+    // …and the compact pass shrinks subagent's prose, leaves its name/schema
+    // and every other tool alone, and is a no-op when lean is off.
+    lean = false;
+    try std.testing.expectEqual(specs.len, (try compactLeanSpecs(Spec, arena, &specs)).len);
+    lean = true;
+    const compact = try compactLeanSpecs(Spec, arena, &specs);
+    try std.testing.expectEqual(specs.len, compact.len);
+    for (compact) |s| {
+        if (std.mem.eql(u8, s.name, "subagent")) try std.testing.expectEqualStrings(lean_subagent_desc, s.desc) else try std.testing.expectEqualStrings("", s.desc);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, lean_subagent_desc, "approval-denied") != null); // keeps the one fact delegation needs
 }
 
 test "#330: filterRootSpecs drops only the gated names, and does not allocate when the gate is off" {
