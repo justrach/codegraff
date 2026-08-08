@@ -178,6 +178,30 @@ pub fn configure(arena: Allocator, merged: mcp_config.Merged, environ_map: anyty
     g_policy = policy;
 }
 
+/// Startup-only promotion after configure(): a post-connect capability probe
+/// (the codedb-pro license check) lands AFTER the registry starts, so it
+/// appends here rather than arriving through env/config. Single-threaded
+/// startup contract — call it from main() before the first catalog render,
+/// never at request time (pool threads read g_policy concurrently).
+pub fn pinEagerRuntime(arena: Allocator, server: []const u8) void {
+    if (pinnedEager(server)) return;
+    var list: std.ArrayList([]const u8) = .empty;
+    list.appendSlice(arena, g_policy.eager) catch return;
+    list.append(arena, arena.dupe(u8, server) catch return) catch return;
+    g_policy.eager = list.items;
+}
+
+/// --lean: fold EVERY MCP server behind load_tool_schemas rather than skip
+/// MCP entirely — capability survives (a load call away), prefix cost drops
+/// to names + shortened descriptions. Clears eager pins too: a licensed
+/// companion's runtime pin is worth its bytes in an interactive session, not
+/// in a one-shot counting every token. GRAFF_MCP_SCHEMA_BUDGET=0 is the same
+/// policy reached by env; this is the flag's path to it.
+pub fn deferAllRuntime() void {
+    g_policy.budget = 0;
+    g_policy.eager = &.{};
+}
+
 /// The server half of `mcp__<server>__<tool>`; "" for a name that is not one.
 pub fn serverOf(qualified: []const u8) []const u8 {
     const prefix = "mcp__";

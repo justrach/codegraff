@@ -362,12 +362,14 @@ pub fn initTelemetry(io: Io, gpa: Allocator, client: *std.http.Client, environ_m
 /// out of main() (600-line goal). Returns the Registry by value — mcp.Registry
 /// holds no self-references (its storage is ArrayList/HashMap-backed), so
 /// returning it is safe.
-/// --lean / GRAFF_LEAN=1: skip MCP connection entirely. Connected servers pay
-/// their tool schemas into the prefix of EVERY model turn — measured ~6k
-/// tokens for a licensed codedbpro alone against a ~7.4k native baseline, so
-/// an MCP-heavy config roughly doubles the context bill of a one-shot. Lean
-/// is the one-shot/CI answer; interactive sessions keep the consent flow.
-pub fn leanSkipsMcp(lean_flag: bool, environ_map: anytype) bool {
+/// --lean / GRAFF_LEAN=1. Lean no longer SKIPS MCP — it folds every server
+/// behind the load_tool_schemas meta tool (mcp_schema_gate.deferAllRuntime):
+/// connected servers pay names + one-line descriptions instead of full
+/// schemas, and capability survives a load call away. Measured prefix cost
+/// of eager MCP: ~3.3k tokens for a licensed codedbpro alone, on EVERY
+/// model turn. One-shot/CI runs count those; interactive keeps the consent
+/// flow and eager pins.
+pub fn leanMode(lean_flag: bool, environ_map: anytype) bool {
     return lean_flag or environ_map.get("GRAFF_LEAN") != null;
 }
 
@@ -382,6 +384,9 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     // #416: resolve eager-vs-deferred BEFORE anything connects, so the first
     // catalog render already knows which servers pay their schemas up front.
     mcp_schema_gate.configure(arena, merged, environ_map);
+    // --lean folds every server behind the meta tool (deferAllRuntime) rather
+    // than skipping MCP: capability a load call away, ~zero schema prefix.
+    if (leanMode(flags.lean_flag, environ_map)) mcp_schema_gate.deferAllRuntime();
     if (!quiet) {
         // Reported here rather than in `Registry.init`, which never runs when
         // consent is declined — a config that does not parse must be named
@@ -393,9 +398,8 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
             sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "ignoring ~/" ++ mcp_config.unsupported_rel_path ++ ": unsupported path — use ~/" ++ mcp_config.global_rel_path ++ " (global) or {s} (project)", .{mcp_config_path})));
     }
     const mcp_count = mcp_cli.countMcpServers(merged);
-    const lean = leanSkipsMcp(flags.lean_flag, environ_map);
-    var connect_mcp = !lean and (flags.yolo_flag or mcp_count == 0);
-    if (mcp_count > 0 and !lean and !flags.yolo_flag and !json_mode and use_color) {
+    var connect_mcp = flags.yolo_flag or mcp_count == 0;
+    if (mcp_count > 0 and !flags.yolo_flag and !json_mode and use_color) {
         sink.emit(io, .{ .mcp_consent_prompt = .{ .count = mcp_count } });
         // Still an inline read: only the QUESTION is inverted here, and the
         // answer becomes a typed command in #430 (input inversion).
@@ -439,9 +443,6 @@ pub fn probeLicensedPinEager(gpa: Allocator, arena: Allocator, io: Io) bool {
 /// already main()-owned and stable by the time this is called, so a pointer
 /// is all that's needed — no return-by-value trickery here).
 pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags: args.Flags, out: *Io.Writer, json_mode: bool, environ_map: anytype) !void {
-    // --lean / GRAFF_LEAN=1 skips ALL MCP, the auto-companion and the bundled
-    // Smolify registration included — lean means no MCP tool schemas at all.
-    if (leanSkipsMcp(flags.lean_flag, environ_map)) return;
     const sink = engine_sink.writerSink(out);
     const speak = !json_mode and flags.oneshot_prompt == null;
     connect: {
@@ -476,14 +477,14 @@ fn dimNotice(text: []const u8) engine_events.EngineEvent {
     return .{ .session_notice = .{ .text = text, .tone = .dim } };
 }
 
-test "lean skips MCP: flag or GRAFF_LEAN env, never the default" {
+test "lean mode: flag or GRAFF_LEAN env, never the default" {
     var env = std.process.Environ.Map.init(std.testing.allocator);
     defer env.deinit();
-    try std.testing.expect(!leanSkipsMcp(false, env)); // default: consent flow decides
-    try std.testing.expect(leanSkipsMcp(true, env)); // --lean wins alone
+    try std.testing.expect(!leanMode(false, env)); // default: consent flow decides
+    try std.testing.expect(leanMode(true, env)); // --lean wins alone
     try env.put("GRAFF_LEAN", "1");
-    try std.testing.expect(leanSkipsMcp(false, env)); // env wins alone
-    try std.testing.expect(leanSkipsMcp(true, env));
+    try std.testing.expect(leanMode(false, env)); // env wins alone
+    try std.testing.expect(leanMode(true, env));
 }
 
 test "core Smolify registration is offline and lazy" {

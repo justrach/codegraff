@@ -79,7 +79,9 @@ pub var lean: bool = false;
 /// (5.1k bytes): in an unattended non-yolo one-shot the root is
 /// approval-gated out of bash/edit_file and delegation is the sanctioned
 /// path (prompts.unattended_note) — dropping it would strand exactly the
-/// runs lean is built for.
+/// runs lean is built for. `load_tool_schemas` stays because lean folds MCP
+/// behind that meta tool (mcp_schema_gate.deferAllRuntime) instead of
+/// skipping it: the one-shot keeps full MCP capability a load call away.
 pub const lean_tools = [_][]const u8{
     "bash",
     "read_file",
@@ -88,6 +90,7 @@ pub const lean_tools = [_][]const u8{
     "codedb",
     "subagent",
     "attempt_completion",
+    "load_tool_schemas",
 };
 
 /// A name test only, so the catalog filter and tests share one list.
@@ -226,9 +229,10 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
     try std.testing.expectEqualStrings("read_file", kept[1].name);
     try std.testing.expectEqualStrings("subagent", kept[2].name);
     try std.testing.expectEqualStrings("attempt_completion", kept[3].name);
-    // The keep-list is exactly the seven documented tools — subagent stays
-    // (the unattended delegation path), everything orchestration/meta goes.
-    try std.testing.expectEqual(@as(usize, 7), lean_tools.len);
+    // The keep-list is exactly the eight documented tools — subagent stays
+    // (the unattended delegation path), load_tool_schemas stays (lean folds
+    // MCP behind it), everything orchestration/meta goes.
+    try std.testing.expectEqual(@as(usize, 8), lean_tools.len);
     for (lean_tools) |tool| try std.testing.expect(leanKeeps(tool));
     try std.testing.expect(!leanKeeps("workflow"));
     try std.testing.expect(!leanKeeps("todo_write"));
