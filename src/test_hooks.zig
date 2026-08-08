@@ -70,6 +70,8 @@ const scoring_slot_test = @import("scoring_slot_test.zig");
 
 // #273: session.zig's own tests, moved off it for the same reason.
 const session_tests = @import("session_tests.zig");
+// /help's sectioned render + the catalog-coverage guard.
+const help = @import("help.zig");
 
 // #441: and session_transcript.zig's, moved off it for the same reason again.
 // The module itself is reached from session.queueSave, but this FILE is not, so
@@ -218,6 +220,7 @@ test {
     _ = serve_create;
     _ = scoring_slot_test;
     _ = session_tests;
+    _ = help;
     _ = session_transcript_tests;
     _ = session_settings_tests;
     _ = commands_session_test;

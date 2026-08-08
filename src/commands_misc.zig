@@ -573,19 +573,6 @@ pub fn handleRest(line: []const u8, out: *Io.Writer) !void {
         try out.flush();
         return;
     }
-    try out.writeAll("commands (bare / opens the filterable menu):\n");
-    for (command_catalog.commands) |command| {
-        const usage = if (command.usage.len > 0) command.usage else command.name;
-        try out.print("  {s:<32} {s}\n", .{ usage, command.desc });
-    }
-    try out.writeAll(
-        \\  exit | /exit | /quit             quit (also ctrl-d or ctrl-c on an empty line)
-        \\
-        \\esc during a response interrupts the turn; streamed output remains in history.
-        \\"always allow" answers persist to .harness/settings.json in the cwd.
-        \\launch flags: --model <name> · --yolo · -p "prompt" · --json · --help · --version
-        \\subcommands: graff login [codex] · graff key set <provider> <key> · graff --schema
-        \\
-    );
+    try @import("help.zig").render(out);
     try out.flush();
 }

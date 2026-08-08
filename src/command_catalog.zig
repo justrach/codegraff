@@ -30,7 +30,7 @@ pub const commands = [_]Item{
     .{ .name = "/loop", .usage = "/loop [30m] <prompt>", .desc = "the same autonomous run as /goal, without adopting a standing objective" },
     .{ .name = "/review", .usage = "/review <target or instructions>", .desc = "run one isolated read-only review pass; no edits, delegation, or workflows" },
     .{ .name = "/never", .usage = "/never [<text>|rm <id>]", .desc = "standing constraints that ride every subagent brief and survive compaction; bare lists them, rm <id> retires one (alias /constraint)" },
-    .{ .name = "/tell", .usage = "/tell <session|all> <text>", .desc = "post to this folder's shared graff channel — every live session hears it; /sessions lists who's around" },
+    .{ .name = "/tell", .usage = "/tell <session|all> <text>", .desc = "message a running graff: <session> is a DM (only it hears, any folder); all broadcasts to every graff on this device; /sessions lists who's around" },
     .{ .name = "/peek", .usage = "/peek <session>", .desc = "see what a live co-resident session is doing right now (its transcript tail)" },
     .{ .name = "/routes", .usage = "/routes [<set>|add <set> <frontier|mid|small> <provider/model>]", .desc = "your own priced model lanes across providers — view the set and which seat wins each lane now" },
     .{ .name = "/plan", .desc = "toggle plan mode: read-only explore + propose; writes/edits denied" },
