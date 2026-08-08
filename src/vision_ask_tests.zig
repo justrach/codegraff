@@ -380,3 +380,44 @@ test "#380 does not disturb #292: the pin chain's own outcomes still arrive" {
     const typo = va.forSpawn(codex(), obj(a, "{\"tier\":\"cheap\"}"), false, .{}, "read a.png");
     try std.testing.expectEqual(pin_mod.Outcome.unknown_tier, typo.pin.outcome);
 }
+
+test "#471 the #291 ladder descent is not a human pin, so a tier ask still reaches a plan" {
+    // The bug this guards, found by running the harness for real rather than
+    // by unit test: resolveSubagentProvider returns a NON-null worker provider
+    // for the automatic #291 ladder descent, so `session_pinned` was true in
+    // every ordinary session on a provider that has a ladder. forSpawn read
+    // that as "the human chose these workers" and skipped sub-first routing
+    // entirely — a logged-in flat-rate plan sat idle while a metered rung did
+    // the work. Every prior test passed sub_ok straight into subagent_pin and
+    // so never exercised this computation at all.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const saved_keys = bench.g_keys;
+    const saved_ladder = selection.g_default_from_ladder;
+    defer {
+        bench.g_keys = saved_keys;
+        selection.g_default_from_ladder = saved_ladder;
+    }
+    var keys: provider_mod.Keys = undefined;
+    withKeys(&keys, &.{"codex"});
+
+    // Seated by the automatic ladder: an explicit tier:"small" crosses to the
+    // codex plan, because nothing here was a human decision.
+    selection.g_default_from_ladder = true;
+    const auto = va.forSpawn(deepseek(), obj(a, "{\"tier\":\"small\"}"), true, .{}, "extract the imports");
+    try std.testing.expectEqual(pin_mod.Outcome.sub_routed, auto.pin.outcome);
+    try std.testing.expectEqualStrings("codex", auto.pin.provider.?.id);
+    try std.testing.expectEqualStrings("gpt-5.6-luna", auto.pin.provider.?.model);
+
+    // A real --subagent-model session is still untouchable: the user picked
+    // the workers, and no auto-route may override that.
+    selection.g_default_from_ladder = false;
+    const pinned = va.forSpawn(deepseek(), obj(a, "{\"tier\":\"small\"}"), true, .{}, "extract the imports");
+    try std.testing.expect(pinned.pin.outcome != .sub_routed);
+
+    // And an unpinned session behaves as it always did.
+    selection.g_default_from_ladder = false;
+    const free = va.forSpawn(deepseek(), obj(a, "{\"tier\":\"small\"}"), false, .{}, "extract the imports");
+    try std.testing.expectEqual(pin_mod.Outcome.sub_routed, free.pin.outcome);
+}
