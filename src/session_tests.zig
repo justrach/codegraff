@@ -343,3 +343,25 @@ test "the autosave is where the transcript sees a new message (#441)" {
     session.flushSaves();
     try std.testing.expectEqual(@as(usize, 2), session_transcript.lineCount());
 }
+
+test "cache_key round-trips: parsed on load, garbage and absence rejected" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const good = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"cache_key":"00000000-0000-4000-8000-000000000000"}
+    , .{});
+    try std.testing.expectEqualStrings("00000000-0000-4000-8000-000000000000", session.cacheKeyFromSession(good.object).?);
+    // Legacy sessions (no field), wrong types, and non-UUID strings all read
+    // as absent: the resume then mints a fresh key, exactly as before.
+    const legacy = try std.json.parseFromSliceLeaky(Value, a, "{}", .{});
+    try std.testing.expect(session.cacheKeyFromSession(legacy.object) == null);
+    const short = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"cache_key":"short"}
+    , .{});
+    try std.testing.expect(session.cacheKeyFromSession(short.object) == null);
+    const wrong_type = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"cache_key":42}
+    , .{});
+    try std.testing.expect(session.cacheKeyFromSession(wrong_type.object) == null);
+}

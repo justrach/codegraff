@@ -26,6 +26,7 @@ const goal_state = @import("goal_state.zig");
 const session_writer = @import("session_writer.zig"); // #273: the fingerprint + the background write
 const shutdown_trace = @import("shutdown_trace.zig"); // #364: teardown phase stamps
 const protocol_seq = @import("protocol_seq.zig"); // #330: the --json event sequence survives a resume
+const http_headers = @import("http_headers.zig"); // the k3/codex prompt-cache key survives one too
 const session_transcript = @import("session_transcript.zig"); // #441: the append-only history this file's rewrites discard
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
@@ -321,6 +322,9 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     // reissuing ids the supervisor has already read off the event log.
     try s.objectField("event_seq");
     try s.write(@min(protocol_seq.current(), @as(u64, std.math.maxInt(i64))));
+    // kimi-code/codex key cache affinity on the durable conversation id; persisting ours keeps /resume warm.
+    try s.objectField("cache_key");
+    try s.write(http_headers.sessionId(root.io));
     try s.endObject();
 
     // #289: two graffs in one workspace share this file — the writer makes the
@@ -378,6 +382,11 @@ fn contextTokensFromSession(obj: std.json.ObjectMap) u64 {
     return @intCast(v.integer);
 }
 
+/// The persisted prompt-cache key; absent/malformed in pre-cache sessions, whose resume mints a fresh one as before.
+pub fn cacheKeyFromSession(obj: std.json.ObjectMap) ?[]const u8 {
+    const v = obj.get("cache_key") orelse return null;
+    return if (v == .string and v.string.len == 36) v.string else null;
+}
 /// The persisted --json sequence high-water mark (#330); 0 for sessions saved
 /// before it existed, so a resume of one starts the numbering fresh.
 fn eventSeqFromSession(obj: std.json.ObjectMap) u64 {
@@ -438,6 +447,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     // only ever raises the counter, so a legacy session (no field) or a corrupt
     // negative value simply leaves this process's numbering alone.
     protocol_seq.restore(eventSeqFromSession(obj));
+    if (cacheKeyFromSession(obj)) |k| http_headers.adoptSessionId(k);
 
     root.ensureStoredKeys(keys);
     if (std.mem.eql(u8, pid, "codex")) root.ensureModelCatalog(keys.*);

@@ -42,6 +42,19 @@ pub fn sessionId(io: Io) []const u8 {
     return session_id_buf[0..session_id_len];
 }
 
+/// /resume adopts the persisted key so k3/codex prompt-cache affinity survives
+/// the process boundary — both upstreams key the cache on the durable
+/// conversation id (kimi-code's sessionContext.sessionId; codex's ModelClient
+/// default), not a per-process UUID. No-op once this process has minted its own.
+pub fn adoptSessionId(id: []const u8) void {
+    if (id.len != 36) return;
+    while (session_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
+    defer session_id_lock.store(false, .release);
+    if (session_id_len != 0) return;
+    @memcpy(session_id_buf[0..36], id[0..36]);
+    session_id_len = 36;
+}
+
 pub fn userAgent(provider: Provider) std.http.Client.Request.Headers.Value {
     if (std.mem.eql(u8, provider.id, "kimi")) {
         return .{ .override = root.kimi_user_agent };
@@ -110,4 +123,12 @@ test "session_id is a stable per-process UUIDv4, not a shared constant" {
         }
     }
     return error.SessionIdHeaderMissing;
+}
+
+test "adoptSessionId validates length and never overwrites a minted id" {
+    const io = std.testing.io;
+    const before = sessionId(io); // minted by whichever test ran first
+    adoptSessionId("too-short");
+    adoptSessionId("00000000-0000-4000-8000-000000000000");
+    try std.testing.expectEqualStrings(before, sessionId(io));
 }
