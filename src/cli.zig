@@ -26,6 +26,11 @@ pub const changelog_text =
     \\  • Sessions can message each other: the peer_message tool and /tell post to a shared channel every co-resident session hears (address one by name, "all" reaches every session on the device), delivered mid-task at step boundaries with the sender's current goal attached
     \\  • The model is told up front who else is live and what they're working on, so it coordinates — or picks disjoint work — before any collision
     \\  • Session recaps ride the event stream: settled turns carry a Completed or Needs-input status with a one-line recap for the GUI agent overview
+    \\  • Subscriptions are billed and routed as subscriptions: a flat-rate login (Codex, Kimi, SuperGrok) now outranks an API key on the same provider instead of losing to it, costs $0 in /cost, and the key it displaced is parked and takes over — announced — only if the plan runs out of quota
+    \\  • Worker tiers land on seats you already pay for: an explicit tier ask crosses to a logged-in plan (mid → k3, small → gpt-5.6-luna) rather than a metered rung, which the #291 ladder descent used to block by looking like a manual pin
+    \\  • A tier rung must now be a genuinely cheaper SEAT, so anthropic descends opus-5 → sonnet-5 instead of to an equally-priced older opus, and deepseek-v4-flash replaces pro outright
+    \\  • `graff route` with no model lists every provider you can reach, what it bills, and the tiers it offers
+    \\  • Anthropic serves its live model list, so new Claude releases arrive without a rebuild
     \\
     \\0.0.243
     \\  • The terminal palette now matches codegraff.com: the identity accent is the site's emerald (#059669) — spinner, prompt, headings, tool-call lines, and attached-file chips — so a routine ⚙ bash line no longer reads as error red
