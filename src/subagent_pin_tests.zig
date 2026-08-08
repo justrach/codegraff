@@ -227,12 +227,47 @@ test "sub-first routing: a logged-in flat-rate sub outranks metered for explicit
     // auto-route may override: back to the provider-local path (deepseek has
     // no small rung → no_rung, session default kept).
     try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(dsv, obj(a, "{\"tier\":\"small\"}"), false).outcome);
-    // Explicit model pins stay provider-local — naming a model is a statement
-    // about THIS provider, never a silent hop.
-    try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), true).outcome);
+    // Exact model pins: provider-local first, but a name the child's provider
+    // does not serve falls through to a logged-in sub that serves it exactly
+    // — the same standing consent as the tier path, rescuing a pin that used
+    // to silently no-op.
+    const mrouted = pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.model_sub_routed, mrouted.outcome);
+    try std.testing.expectEqualStrings("codex", mrouted.provider.?.id);
+    try std.testing.expectEqualStrings("gpt-5.6-luna", mrouted.provider.?.model);
+    try std.testing.expect(mrouted.outcome.describe().len > 0);
+    // …under the identical gates: an explicit --subagent-provider
+    // (sub_ok=false) forbids the hop…
+    try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), false).outcome);
+    // …and the match is strictly exact/alias — a substring must NOT cross a
+    // provider boundary to find a model the pin did not name.
+    try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"luna\"}"), true).outcome);
     // No login (g_keys null) → no candidates → the metered ceiling rules.
     bench.g_keys = null;
     try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(dsv, obj(a, "{\"tier\":\"small\"}"), true).outcome);
+    try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), true).outcome);
+}
+
+test "exact pin: the child's own provider wins over a logged-in sub serving the same name" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const bench = @import("bench_priors.zig");
+    const saved = bench.g_keys;
+    defer bench.g_keys = saved;
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    for (provider_mod.provider_specs, 0..) |spec, i| {
+        if (std.mem.eql(u8, spec.id, "codex")) keys.values[i] = "tok";
+    }
+    bench.g_keys = &keys;
+    // openai's own catalog serves gpt-5.6-luna — the pin resolves locally
+    // (.pinned), never hopping to the codex sub that serves the same name:
+    // a locally-served pin crosses no boundary and moves no billing.
+    const oai: Provider = .{ .id = "openai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 1_050_000 };
+    const got = pin_mod.forSpawn(oai, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, got.outcome);
+    try std.testing.expectEqualStrings("openai", got.provider.?.id);
+    try std.testing.expectEqualStrings("gpt-5.6-luna", got.provider.?.model);
 }
 
 test "two logins split the tiers: k3 is mid, luna is the mechanical rung (#471)" {
@@ -334,14 +369,20 @@ test "a kimi root borrows codex's cheap rung: small -> luna when it is logged in
     try std.testing.expectEqual(pin_mod.Outcome.same, pin_mod.forSpawn(kimi_root, obj(a, "{\"tier\":\"frontier\"}"), true).outcome);
 }
 
-test "a pin never crosses a provider boundary" {
+test "without a login, a pin never crosses a provider boundary" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
-    // Whatever the base provider is, the answer is that same provider — the
-    // cross-provider decision stays with --subagent-provider and its consent
-    // flag, which resolved `base` before a pin was ever consulted.
+    // Self-sufficient about login state: sub-first/model sub routing only
+    // ever crosses to a LOGGED-IN flat-rate sub, so with g_keys null every
+    // pin answer stays on the base provider. The metered cross-provider
+    // decision stays with --subagent-provider and its consent flag, which
+    // resolved `base` before a pin was ever consulted.
+    const bench = @import("bench_priors.zig");
+    const saved = bench.g_keys;
+    defer bench.g_keys = saved;
+    bench.g_keys = null;
     const bases = [_]Provider{
         codexBase(),
         .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude-opus-4-8", .context = 200_000 },
