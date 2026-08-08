@@ -15,6 +15,8 @@ const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
 const util = @import("util.zig");
+const codedbpro_report = @import("codedbpro_report.zig"); // licensed-companion failure → redacted issue filer
+const tool_balance = @import("tool_balance.zig"); // session-wide tool-class tally (/tools)
 const ToolCall = tools.ToolCall;
 
 const tools = @import("tools.zig");
@@ -120,7 +122,7 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     // #255: reserved before any gate/dispatch runs so tool_started/
     // tool_finished bracket the whole call, including a gate denial below.
     const call_id: u64 = if (ctx.tracer) |tr| tr.toolStarted(call.name, call.input) else 0;
-    if (noLocalToolsGate(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call)) |blocked| {
+    if (noLocalToolsGate(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call) orelse licensedNativeGate(ctx, call)) |blocked| {
         var out = blocked;
         out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
         if (ctx.tracer) |tr| {
@@ -145,8 +147,29 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
         tr.toolFinished(call.name, call_id, out.ms, out.is_error, out.text.len);
     }
     if (ctx.tools_used) |ts| ts.add(ctx.io, ctx.gpa, call.name, out.is_error);
+    // Session-wide class tally (/tools) — and when suite usage NEWLY skews,
+    // the nudge rides this tool result so the model hears it, not just the
+    // user's /tools view. Edge-triggered: a few per session at most. The
+    // superseded out.text is deliberately NOT freed (it can be a static
+    // empty slice; freeing it would corrupt) — a rare small abandonment.
+    if (tool_balance.record(ctx.gpa, call, out.is_error)) |nudge| {
+        defer ctx.gpa.free(nudge);
+        out.text = std.fmt.allocPrint(ctx.gpa, "{s}\n\n[{s}]", .{ out.text, nudge }) catch out.text;
+    }
     runPostToolHooks(ctx, call, out);
     return out;
+}
+
+/// Licensed codedb-pro in charge: the natives the suite replaced are refused
+/// until a pro failure opens the fallback (plan mode exempt — it denies MCP
+/// outright). Lives in the OUTER gate chain: still downstream of
+/// agent_tool_gate like every gate here, and the refusal path returns before
+/// tool_balance.record, so a blocked native counts as a REFUSAL — /tools
+/// never mistakes a block for native usage.
+fn licensedNativeGate(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
+    const refusal = codedbpro_report.nativeRefusal(ctx, call) orelse return null;
+    tool_balance.recordRefusal();
+    return refusal;
 }
 
 /// #330 layer 2: refuse a host-touching built-in even if a provider hallucinates
@@ -194,7 +217,11 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         // add one, and never short-circuits an approval check.
         if (mcp_schema_gate.blocked(reg.tools, call.name))
             return .{ .text = try mcp_schema_gate.refusalText(gpa, call.name), .is_error = true };
-        const r = try reg.call(gpa, call.name, call.input);
+        const r = reg.call(gpa, call.name, call.input) catch |err| {
+            codedbpro_report.onFailure(ctx, call.name, @errorName(err));
+            return failure(gpa, err);
+        };
+        if (r.is_error) codedbpro_report.onFailure(ctx, call.name, r.text);
         return .{ .text = r.text, .is_error = r.is_error };
     }
 
@@ -518,4 +545,9 @@ test "internal learning respects the parent privacy ceiling" {
     try std.testing.expectEqualSlices([]const u8, &.{ "graff", "--learning-privacy", "local", "learn", "run" }, argv[0..len]);
     len = learningArgv(&argv, "graff", true);
     try std.testing.expectEqualSlices([]const u8, &.{ "graff", "--learning-privacy", "aggregate", "learn", "run", "--submit" }, argv[0..len]);
+}
+
+test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, so the compiled-in references live here (the reach check diffs the test binary, not which file holds the line)
+    _ = @import("codedbpro_report.zig");
+    _ = @import("tool_balance.zig");
 }

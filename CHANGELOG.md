@@ -10,6 +10,40 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.245 (2026-08-09)
+
+- Licensed codedb-pro is now the default toolset, not an ornament. The license
+  probe at startup pins the server's schemas eager (no per-session
+  `load_tool_schemas` toll that steered models back to the built-ins), the
+  system note makes `mcp__codedbpro__read`/`faster_search`/`batch` the stated
+  defaults for reads and searches, and the built-ins they replace are actually
+  *refused* while the licensed server is healthy: `read_file`, `codedb`, and
+  bash lines leading with `grep`/`rg`/`find` get a refusal naming the
+  replacement (shell searches point at `zigrep` directly; it always skips
+  vendor dirs, so the refusal says when `rg -uu` is the right call instead).
+  Plan mode is exempt (it denies MCP calls outright), and any codedb-pro
+  failure opens the fallback for the rest of the session — being in charge
+  must never leave the model with no working way to read.
+- codedb-pro failures file their own bug reports: the first failure per
+  signature (cap 3/session, root-only) spawns a background subagent that
+  dedupes against open issues and files on justrach/codegraff under the
+  `codedb-pro` label. The harness redacts before anything reaches a model or
+  the issue body — absolute/home paths, credential-looking tokens, URL query
+  strings — keeping only the tool name and the error essence. Unattended
+  sessions (or unapproved `gh`) draft to `.graff/issue-drafts/` instead of
+  publishing without consent.
+- Edits go through the persistent daemon instead of spawning zigpatch per
+  edit: `edit_file` keeps the /rewind snapshot and the on-disk verification,
+  but the byte-splice rides the always-on MCP connection (measured 0.34ms vs
+  2.37ms per edit on small files — fork/exec was ~85% of the cost). A
+  measured size gate (4 MiB, matching the daemon's cache ceiling) sends big
+  files to the spawn path. Pairs with zigrepper 0.2.21, where the same edits
+  got 2.9x faster still (cache-backed snapshots, light edit loads).
+- `/tools` shows the session's tool balance: codedb-pro read/search/batch vs
+  zigrep vs native fallbacks, gate refusals, and errors. When suite usage
+  skews (8+ calls, one class ≥80%), the nudge rides the tool result so the
+  model hears it — once per dominant class, not on repeat.
+
 ## v0.0.244 (2026-08-08)
 
 - Co-resident sessions see and coordinate with each other (#469): a per-user

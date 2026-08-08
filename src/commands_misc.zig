@@ -9,6 +9,8 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
+const tool_balance = @import("tool_balance.zig"); // /tools: session tool-class tally
+const codedbpro_report = @import("codedbpro_report.zig"); // /tools: licensed-gate fallback state
 const provider_mod = @import("provider.zig");
 const agent_mod = @import("agent.zig");
 const util = @import("util.zig");
@@ -240,6 +242,13 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             style.green,                                                                                     c.usd, style.reset,
             if (c.sub_calls > 0 or c.unpriced_calls > 0) " (API-key calls with a known price only)" else "",
         });
+        try out.flush();
+        return true;
+    }
+    if (std.mem.eql(u8, line, "/tools")) {
+        var snap = tool_balance.snapshot();
+        const text = try tool_balance.render(arena, &snap, main_mod.g_codedbpro_licensed, codedbpro_report.fallbackOpen());
+        try out.writeAll(text);
         try out.flush();
         return true;
     }

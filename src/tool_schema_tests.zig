@@ -280,6 +280,28 @@ test "#416: deferring a real MCP server's schemas cuts the served catalog in hal
     try testing.expect(after.len > deferred.len and after.len < eager.len);
 }
 
+test "pinEagerRuntime: a post-configure license probe promotes the server for the first catalog" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    gate.reset();
+    gate.g_policy = .{};
+    defer {
+        gate.reset();
+        gate.g_policy = .{};
+    }
+    const tools = try realServerTools(arena);
+    try testing.expect(!gate.pinnedEager("smolify"));
+    gate.pinEagerRuntime(arena, "smolify");
+    try testing.expect(gate.pinnedEager("smolify"));
+    gate.pinEagerRuntime(arena, "smolify"); // a second probe must not grow the list
+    try testing.expectEqual(@as(usize, 1), gate.g_policy.eager.len);
+    // The pin is what isDeferred consults, so the pinned server's tools serve eagerly...
+    for (tools) |t| try testing.expect(!gate.isDeferred(tools, t));
+    // ...and nothing deferred means load_tool_schemas drops out of the catalog too.
+    try testing.expect(!gate.anyDeferred(tools));
+}
+
 test "#416: every provider wire format defers identically, and stays valid JSON" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();

@@ -66,6 +66,7 @@ pub const commands = [_]Item{
     .{ .name = "/todo", .desc = "show the current task list" },
     .{ .name = "/jobs", .desc = "list background jobs" },
     .{ .name = "/cost", .desc = "session token usage and cost" },
+    .{ .name = "/tools", .desc = "session tool balance: codedb-pro vs zigrep vs native usage, gate refusals, skew" },
     .{ .name = "/animation", .desc = "pick the thinking animation; persists to settings" },
     .{ .name = "/theme", .usage = "/theme [name]", .desc = "pick a color theme; /theme off resets to your terminal default; persists" },
     .{ .name = "/fleet", .usage = "/fleet [on|off]", .desc = "federated DGM contribution (propose/submit/elite_pull)" },

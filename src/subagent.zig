@@ -278,6 +278,14 @@ fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_o
     ) };
 }
 
+/// Programmatic fire-and-forget spawn for harness-internal reporters (the
+/// codedbpro failure → issue filer): no tool-call input to parse, no persona,
+/// no pin — the session-default seat in the shared cwd. execSubagent stays
+/// the model-facing path; this never surfaces a ToolOutput to anyone.
+pub fn spawnBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8) !void {
+    _ = try spawnSubBackground(ctx, label, prompt, null, "", .shared_cwd, false, null, null, vision_ask.forPrompt(prompt));
+}
+
 /// Pure formatting for agent_output's status line: the "structured
 /// completion event" shape (#276 P0-3 design point 3) — running / completed
 /// / failed, plus the usage summary, plus the full result once done.
