@@ -38,7 +38,7 @@ fn contextWindowFor(provider_id: []const u8, model: []const u8) u64 {
 /// provider_specs; one additional OpenAI-compatible router may be loaded from
 /// `.graff/.config.router` at startup.
 pub const ProviderSpec = struct {
-    pub const LoginKind = enum { api_key, codegraff_device, codex_device, kimi_device };
+    pub const LoginKind = enum { api_key, codegraff_device, codex_device, kimi_device, xai_device };
     pub const CatalogKind = enum { baked, codex, kimi, openai, anthropic };
 
     id: []const u8,
@@ -49,6 +49,17 @@ pub const ProviderSpec = struct {
     env_key: []const u8,
     default_model: []const u8,
     login: LoginKind = .api_key,
+    /// #471: a login on this provider buys a FLAT-RATE plan (ChatGPT/Codex,
+    /// Kimi Code, SuperGrok), so its calls cost nothing per token and must not
+    /// be priced off the models.dev sheet. Declared here so a new subscription
+    /// provider is one field rather than a hardcoded id list in a second file.
+    ///
+    /// It is the login that is flat-rate, not the vendor: an env key or `/key`
+    /// on the SAME provider still bills per token, so billing.zig reads this
+    /// only when the credential's `Keys.CredentialSource` is `.login`. The
+    /// codegraff gateway is deliberately false — its device login draws on
+    /// metered credits, not a plan.
+    sub_login: bool = false,
     catalog: CatalogKind = .baked,
     models_url: []const u8 = "",
     takes_effort: bool = false,
@@ -67,12 +78,14 @@ pub const provider_specs = [_]ProviderSpec{
     // Kimi Code publishes the protocol per model. Missing/`kimi` is the native
     // chat-completions wire; a live `protocol: anthropic` row is switched in
     // Keys.build to the beta Messages endpoint + x-api-key, matching kimi-code.
-    .{ .id = "kimi", .display_name = "Kimi", .kind = .openai, .auth = .bearer, .url = kimi_native_url, .env_key = "KIMI_API_KEY", .default_model = "k3", .login = .kimi_device, .catalog = .kimi },
+    .{ .id = "kimi", .display_name = "Kimi", .kind = .openai, .auth = .bearer, .url = kimi_native_url, .env_key = "KIMI_API_KEY", .default_model = "k3", .login = .kimi_device, .sub_login = true, .catalog = .kimi },
     // moonshot: the regular Kimi Open Platform (pay-as-you-go API key, not the
     // Coding plan). OpenAI-compatible; .cn host for China. kimi-latest tracks
     // the newest Kimi. Same /v1/models discovery applies if wired later.
     .{ .id = "moonshot", .display_name = "Moonshot", .kind = .openai, .auth = .bearer, .url = "https://api.moonshot.ai/v1/chat/completions", .env_key = "MOONSHOT_API_KEY", .default_model = "kimi-latest" },
-    .{ .id = "xai", .display_name = "xAI", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3" },
+    // `graff login xai` is a real device-code OAuth flow (oauth.zig), so xAI's
+    // login is a SuperGrok plan while XAI_API_KEY is metered api.x.ai access.
+    .{ .id = "xai", .display_name = "xAI", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3", .login = .xai_device, .sub_login = true },
     .{ .id = "zai", .display_name = "Z.AI", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
     .{ .id = "fugu", .display_name = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
     .{ .id = "fireworks", .display_name = "fireworks", .kind = .openai, .auth = .bearer, .url = "https://api.fireworks.ai/inference/v1/chat/completions", .env_key = "FIREWORKS_API_KEY", .default_model = "accounts/fireworks/models/deepseek-v4-pro" },
@@ -86,7 +99,7 @@ pub const provider_specs = [_]ProviderSpec{
     // — it's the OAuth access token read from CODEX_HOME/auth.json at startup
     // (see loadCodexAuth), the same on-disk-credential trick used for the
     // codegraff gateway key in ~/forge/.credentials.json.
-    .{ .id = "codex", .display_name = "Codex (ChatGPT)", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-5.6-sol", .login = .codex_device, .catalog = .codex },
+    .{ .id = "codex", .display_name = "Codex (ChatGPT)", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-5.6-sol", .login = .codex_device, .sub_login = true, .catalog = .codex },
 };
 
 /// Optional workspace-local router loaded from `.graff/.config.router`.

@@ -187,13 +187,16 @@ test "defaultLadderModel: descends one rung per provider, bottom rung inherits" 
     try std.testing.expect(defaultLadderModel(mk("codex", "gpt-5.6-luna")) == null);
     // openai: same shape, sibling names
     try std.testing.expectEqualStrings("gpt-5.6-terra", defaultLadderModel(mk("openai", "gpt-5.6")).?);
-    // anthropic: opus -> sonnet -> haiku -> (bottom)
-    try std.testing.expectEqualStrings("claude-sonnet-4-6", defaultLadderModel(mk("anthropic", "claude-opus-4-8")).?);
-    try std.testing.expectEqualStrings("claude-haiku-4-5", defaultLadderModel(mk("anthropic", "claude-sonnet-4-6")).?);
-    try std.testing.expect(defaultLadderModel(mk("anthropic", "claude-haiku-4-5")) == null);
-    // deepseek: pro steps to its only cheaper rung (flash); flash has nowhere lower
-    try std.testing.expectEqualStrings("deepseek-v4-flash", defaultLadderModel(mk("deepseek", "deepseek-v4-pro")).?);
+    // anthropic: opus-5 -> sonnet-5 -> (bottom). #471 dropped the opus-4-8 and
+    // sonnet-4-6 rungs: every opus generation bills the same $5/$25 per MTok,
+    // so descending within the family is not a cheaper seat at all.
+    try std.testing.expectEqualStrings("claude-sonnet-5", defaultLadderModel(mk("anthropic", "claude-opus-5")).?);
+    try std.testing.expect(defaultLadderModel(mk("anthropic", "claude-sonnet-5")) == null);
+    try std.testing.expect(defaultLadderModel(mk("anthropic", "claude-opus-4-8")) == null);
+    // deepseek: flash overtook pro and is 3x cheaper too, so it is the whole
+    // ladder — one seat, nothing to descend to, and pro is not a rung at all.
     try std.testing.expect(defaultLadderModel(mk("deepseek", "deepseek-v4-flash")) == null);
+    try std.testing.expect(defaultLadderModel(mk("deepseek", "deepseek-v4-pro")) == null);
     // unlisted provider -> no ladder at all
     try std.testing.expect(defaultLadderModel(mk("xai", "grok-4.3")) == null);
     // a real, catalogued model that just isn't a rung on its own provider's
@@ -212,10 +215,10 @@ test "default ladder: resolves the mid sibling when no flags are given" {
     try std.testing.expectEqualStrings("codex", worker.id); // provider-local, unpinned
     try std.testing.expectEqualStrings("gpt-5.6-terra", worker.model);
 
-    const anthropic_root = try keys.providerById("anthropic", "claude-opus-4-8");
+    const anthropic_root = try keys.providerById("anthropic", "claude-opus-5");
     const anthropic_worker = resolveSubagentProvider(keys, anthropic_root, null, null, false, false).?;
     try std.testing.expectEqualStrings("anthropic", anthropic_worker.id);
-    try std.testing.expectEqualStrings("claude-sonnet-4-6", anthropic_worker.model);
+    try std.testing.expectEqualStrings("claude-sonnet-5", anthropic_worker.model);
 }
 
 test "default ladder: bottom-rung and off-ladder roots inherit (resolve to null)" {

@@ -27,8 +27,11 @@ pub const price_table = [_]ModelPrice{
     .{ .name = "gpt-5.3-codex", .in = 1.75, .out = 14, .cache = 0.175 },
     .{ .name = "gpt-5.2", .in = 1.75, .out = 14, .cache = 0.175 },
     .{ .name = "gpt-5-codex", .in = 1.25, .out = 10, .cache = 0.125 },
-    .{ .name = "claude-opus-4-8", .in = 15, .out = 75, .cache = 1.5 },
-    .{ .name = "claude-opus-4.8", .in = 15, .out = 75, .cache = 1.5 },
+    .{ .name = "claude-fable-5", .in = 10, .out = 50, .cache = 1 }, // pricier than opus-5; unpriced it read as a cheap rung
+    .{ .name = "claude-opus-5", .in = 5, .out = 25, .cache = 0.5 },
+    .{ .name = "claude-sonnet-5", .in = 2, .out = 10, .cache = 0.2 }, // introductory, $3/$15 from 2026-09-01
+    .{ .name = "claude-opus-4-8", .in = 5, .out = 25, .cache = 0.5 },
+    .{ .name = "claude-opus-4.8", .in = 5, .out = 25, .cache = 0.5 },
     .{ .name = "claude-sonnet-4-6", .in = 3, .out = 15, .cache = 0.3 },
     .{ .name = "claude-sonnet-4.6", .in = 3, .out = 15, .cache = 0.3 },
     .{ .name = "claude-haiku-4-5", .in = 1, .out = 5, .cache = 0.1 },
@@ -60,14 +63,11 @@ pub fn priceFor(model: []const u8) ?ModelPrice {
     return null;
 }
 
-/// Billing class of one API call: the codex subscription login bills
-/// flat-rate, price_table rows bill per token, anything else is unpriced.
+/// Billing class of one API call: a flat-rate subscription login bills nothing
+/// per token, price_table rows bill per token, anything else is unpriced.
+/// Classifying a SEAT is billing.zig's job — it needs the provider spec and the
+/// credential source, neither of which belongs in a price sheet.
 pub const Billing = enum { sub, priced, unpriced };
-
-pub fn billingFor(provider_id: []const u8, model: []const u8) Billing {
-    if (std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "kimi")) return .sub;
-    return if (priceFor(model) != null) .priced else .unpriced;
-}
 
 /// USD for one request at price `p` (negative token counts clamp to 0).
 pub fn usdFor(p: ModelPrice, uncached_in: i64, cache_in: i64, out: i64) f64 {
@@ -93,17 +93,23 @@ pub const CostTally = struct {
     sub_calls: u64 = 0, // subscription-billed (flat-rate; contribute $0)
     unpriced_calls: u64 = 0, // no price_table row
 
-    pub fn add(self: *CostTally, io: Io, provider_id: []const u8, model: []const u8, uncached_in: i64, cache_in: i64, out: i64) void {
+    /// `billing` is the caller's already-classified seat (billing.forSeat): a
+    /// flat-rate login and a metered env key on the SAME provider+model are
+    /// different classes, so the tally cannot derive it itself (#471).
+    pub fn add(self: *CostTally, io: Io, billing: Billing, model: []const u8, uncached_in: i64, cache_in: i64, out: i64) void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         self.api_calls +|= 1;
         self.in_tokens +|= @intCast(@max(uncached_in, 0));
         self.cache_tokens +|= @intCast(@max(cache_in, 0));
         self.out_tokens +|= @intCast(@max(out, 0));
-        switch (billingFor(provider_id, model)) {
+        switch (billing) {
             .sub => self.sub_calls +|= 1,
             .unpriced => self.unpriced_calls +|= 1,
-            .priced => self.usd += usdFor(priceFor(model).?, uncached_in, cache_in, out),
+            // No `.?`: the class comes from the caller; a dropped row falls back.
+            .priced => {
+                if (priceFor(model)) |p| self.usd += usdFor(p, uncached_in, cache_in, out) else self.unpriced_calls +|= 1;
+            },
         }
     }
 
@@ -181,6 +187,8 @@ pub const model_table = [_]ModelInfo{
     // (windows from max_input_tokens) — do not grow or "fix" these rows to
     // track releases; they exist so boot, --schema, and routing work before
     // the first authenticated fetch.
+    .{ .provider = "anthropic", .name = "claude-opus-5", .context = 1_000_000 },
+    .{ .provider = "anthropic", .name = "claude-sonnet-5", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-fable-5", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-8", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-7", .context = 1_000_000 },
@@ -577,13 +585,8 @@ test "refresh overlay augments price/context lookups (codex cap still applies)" 
     try std.testing.expectEqual(codex_context_window, contextFor("codex", "future-model-x"));
 }
 
-test "billingFor: subscription, priced, unpriced classification" {
-    try std.testing.expectEqual(Billing.sub, billingFor("codex", "gpt-5.5")); // priced model, but flat-rate login
-    try std.testing.expectEqual(Billing.sub, billingFor("kimi", "k3"));
-    try std.testing.expectEqual(Billing.priced, billingFor("openai", "gpt-5.5"));
-    try std.testing.expectEqual(Billing.priced, billingFor("anthropic", "claude-sonnet-4-6"));
-    try std.testing.expectEqual(Billing.unpriced, billingFor("openai", "mystery-model"));
-}
+// Seat classification moved to billing.zig with #471 — it needs the provider
+// spec and the credential source, not the price sheet. Its tests live there.
 
 test "usdFor: per-million math and negative clamping" {
     const p = priceFor("gpt-5.5").?; // $5 in / $30 out / $0.5 cache per 1M

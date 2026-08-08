@@ -254,7 +254,7 @@ pub fn visionSeat(base: Provider) ?Provider {
         if (best) |b| return b;
     }
     const local = visionModelFor(base.id) orelse return null;
-    if (!subagent_pin.rungAffordable(base.model, local)) return null;
+    if (!subagent_pin.rungAffordableOn(base, local)) return null;
     return base.withModel(local);
 }
 
@@ -264,7 +264,7 @@ pub fn visionSeat(base: Provider) ?Provider {
 /// can authorize it by name — so the refusal has to say which model that is.
 pub fn blockedByCost(base: Provider) []const u8 {
     const name = visionModelFor(base.id) orelse return "";
-    return if (subagent_pin.rungAffordable(base.model, name)) "" else name;
+    return if (subagent_pin.rungAffordableOn(base, name)) "" else name;
 }
 
 /// The whole spawn-time decision: run the #292/#372 chain unchanged, then ask

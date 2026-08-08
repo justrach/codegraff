@@ -14,6 +14,8 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const pricing = @import("pricing.zig");
+const billing = @import("billing.zig");
+const report = @import("route_report.zig");
 const provider_mod = @import("provider.zig");
 
 pub const Seat = struct {
@@ -37,7 +39,7 @@ pub fn seatFor(keys: provider_mod.Keys, query: []const u8) Answer {
     return .{ .seat = .{
         .pid = p.id,
         .model = p.model,
-        .billing = pricing.billingFor(p.id, p.model),
+        .billing = billing.forProvider(p),
         .source = p.source,
     } };
 }
@@ -57,8 +59,12 @@ pub fn command(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, s
     const rk = try @import("startup.zig").resolveKeys(io, gpa, arena, environ_map, null, null);
     if (sub_args.len == 0) {
         const d = rk.default_provider;
-        try out.print("session default: {s}/{s} · auth: {s} · billing: {s}\n", .{ d.id, d.model, d.source.label(), billingLabel(pricing.billingFor(d.id, d.model)) });
-        try out.writeAll("\nusage: graff route <model> [<model>…] — dry-run which provider a model would land on (no API call)\n");
+        try out.print("session default: {s}/{s} · auth: {s} · billing: {s}\n\n", .{ d.id, d.model, d.source.label(), billingLabel(billing.forProvider(d)) });
+        // #471: which providers are actually reachable, what each bills, and
+        // the worker tiers it offers — the question that decides where every
+        // unpinned subagent lands.
+        const home = @import("keys_cli.zig").homeEnv(environ_map) orelse "";
+        try report.write(out, report.rows(io, arena, rk.keys, home));
         try out.flush();
         return;
     }
@@ -79,7 +85,9 @@ pub fn command(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, s
 }
 
 test "seatFor: family-alias spelling seats the sub, exact names hold, unknown misses" {
-    const all = provider_mod.Keys{ .values = @splat("k") };
+    // Sources matter since #471: the flat-rate plan is the LOGIN, so a seat
+    // only bills as .sub when its credential came from one.
+    const all = provider_mod.Keys{ .values = @splat("k"), .sources = @splat(.login) };
     const kk = seatFor(all, "kimi-k3");
     try std.testing.expectEqualStrings("kimi", kk.seat.pid);
     try std.testing.expectEqualStrings("k3", kk.seat.model);
@@ -88,6 +96,12 @@ test "seatFor: family-alias spelling seats the sub, exact names hold, unknown mi
     try std.testing.expectEqualStrings("codex", sol.seat.pid);
     try std.testing.expectEqual(pricing.Billing.sub, sol.seat.billing);
     try std.testing.expect(seatFor(all, "totally-unknown-zzz") == .unknown);
+
+    // The same seat reached with KIMI_API_KEY is billed, not free. (Whether it
+    // lands on .priced or .unpriced is the price sheet's business; what must
+    // never happen is a metered key being written off as a subscription.)
+    const keyed = provider_mod.Keys{ .values = @splat("k"), .sources = @splat(.environment) };
+    try std.testing.expect(seatFor(keyed, "kimi-k3").seat.billing != .sub);
 }
 
 test "seatFor: catalogued model with no serving credential reports no_credential, not a gateway seat" {

@@ -31,6 +31,7 @@ const mcp = @import("mcp.zig");
 const provider_mod = @import("provider.zig");
 const keys_cli = @import("keys_cli.zig");
 const oauth = @import("oauth.zig");
+const credential_failover = @import("credential_failover.zig"); // #471: plan beats key, key stands by
 const pricing = @import("pricing.zig");
 const models_cache = @import("models_cache.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
@@ -187,27 +188,15 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
             codex_account = auth.account;
         }
     }
-    // Kimi "login": OAuth device-flow token from `graff login kimi`
-    // (~/.kimi/credentials/graff-oauth.json), refreshed in place when near
-    // expiry. Same on-disk-credential pattern as codex/codegraff; env wins.
-    // #274: refreshing is a synchronous network round-trip, so an explicit
-    // provider/exact-model selection that cannot route to kimi/xai must skip
-    // it entirely rather than pay for it on every startup — same selective-
-    // scope discipline as the stored-key load a few lines below.
+    // #471: the kimi/xAI device logins outrank their env keys, and the metered
+    // key is parked rather than dropped — credential_failover.preferPlan owns
+    // that policy. #274: the gate stays here because only startup knows what
+    // this invocation selected; a login refresh is a synchronous network call
+    // no provider outside the selection should pay for.
     if (keys_cli.homeEnv(environ_map)) |home| {
         for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
-            if (std.mem.eql(u8, spec.id, "kimi") and value.* == null and storedKeyMayAffectSelection(spec.id, model_flag, worker_provider_hint)) {
-                if (oauth.loadKimiOAuth(io, gpa, arena, home, false, null)) |key| {
-                    value.* = key;
-                    source.* = .login;
-                }
-            }
-            if (std.mem.eql(u8, spec.id, "xai") and value.* == null and storedKeyMayAffectSelection(spec.id, model_flag, worker_provider_hint)) {
-                if (oauth.loadXaiOAuth(io, gpa, arena, home, false, null)) |key| {
-                    value.* = key;
-                    source.* = .login;
-                }
-            }
+            if (!storedKeyMayAffectSelection(spec.id, model_flag, worker_provider_hint)) continue;
+            credential_failover.preferPlan(io, gpa, arena, home, spec, value, source);
         }
     }
     // An explicit provider or exact catalog model can observe only its

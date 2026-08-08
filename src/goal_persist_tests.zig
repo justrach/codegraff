@@ -529,5 +529,5 @@ test "absolute path prompts are not mistaken for slash commands" {
     try std.testing.expect(repl_glue.isSlashCommandLine("/not-a-command"));
 
     try std.testing.expect(!repl_glue.isSlashCommandLine("/System/Library/PrivateFrameworks/StorageManagement.framework/PlugIns/StorageManagementService what causes this to start"));
-    try std.testing.expect(!repl_glue.isSlashCommandLine("/Users/blackfloofie/codedb/src/main.zig explain this"));
+    try std.testing.expect(!repl_glue.isSlashCommandLine("/Users/example/codedb/src/main.zig explain this"));
 }

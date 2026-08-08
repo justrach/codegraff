@@ -60,6 +60,7 @@ const std = @import("std");
 const provider_mod = @import("provider.zig");
 const Provider = provider_mod.Provider;
 const pricing = @import("pricing.zig");
+const billing = @import("billing.zig"); // #471: seat billing class (flat-rate login vs metered key)
 const bench_priors = @import("bench_priors.zig");
 const fleet = @import("fleet.zig");
 const selection = @import("subagent_selection.zig");
@@ -243,14 +244,14 @@ pub fn resolveIn(base: Provider, pin: Pin, cell: Cell) Resolved {
         // opus-class) an automatic rung must not spend more than the model
         // the user chose. Escalation stays possible, but only by naming the
         // model in the call — visible, never implicit.
-        if (!rungAffordable(base.model, resolved)) return .{ .outcome = .rung_pricier };
+        if (!rungAffordableOn(base, resolved)) return .{ .outcome = .rung_pricier };
         // #372: the learned layer sits HERE, below every explicit pin. It is
         // handed the CATALOG-resolved ladder answer and may return a measured
         // improvement on it; a swap that somehow fails the same cost ceiling
         // is dropped rather than failing the spawn, so the worst case is
         // today's ladder answer.
         if (route_policy.learnedRung(base.id, cell, resolved)) |learned| {
-            if (rungAffordable(base.model, learned)) return finish(base, learned, .learned_policy);
+            if (rungAffordableOn(base, learned)) return finish(base, learned, .learned_policy);
         }
         return finish(base, resolved, .ladder);
     }
@@ -258,12 +259,28 @@ pub fn resolveIn(base: Provider, pin: Pin, cell: Cell) Resolved {
     return .{};
 }
 
-/// Flat-rate, device-login subscription providers, in fallback preference
-/// order (bench scores rank them when several are logged in). codegraff's
-/// license is deliberately absent: it fronts the metered multi-vendor
-/// gateway this policy protects the user's wallet FROM. `pub` since #380:
+/// Flat-rate, device-login subscription providers. Derived from the specs'
+/// `sub_login` declaration rather than listed here, because #471 found this
+/// was the FOURTH hardcoded "which providers are subscriptions" list in the
+/// tree and they disagreed: xAI has had a real device-code login since
+/// oauth.zig's xaiLogin, and its absence from this array is what kept a paid
+/// SuperGrok seat out of sub-first routing entirely. codegraff's license
+/// stays out for the same reason as before — `sub_login = false`, because it
+/// fronts the metered multi-vendor gateway this policy protects the wallet
+/// FROM. Order follows provider_specs; bench scores rank the candidates that
+/// are actually logged in, so it only breaks exact ties. `pub` since #380:
 /// vision_ask.visionSeat searches the same candidates under the same rule.
-pub const subscription_providers = [_][]const u8{ "codex", "kimi" };
+pub const subscription_providers = blk: {
+    var ids: [provider_mod.provider_specs.len][]const u8 = undefined;
+    var n: usize = 0;
+    for (provider_mod.provider_specs) |spec| {
+        if (!spec.sub_login) continue;
+        ids[n] = spec.id;
+        n += 1;
+    }
+    const frozen = ids[0..n].*;
+    break :blk frozen;
+};
 
 /// SUB-FIRST TIER ROUTING (explicit `tier` asks only — the silent no-tier
 /// default still inherits the user's chosen family): a logged-in flat-rate
@@ -297,6 +314,20 @@ fn subscriptionRung(tier: Tier, base: Provider) ?Resolved {
 /// subscription families like codex carry no per-token price — blocking
 /// there would kill every intra-family rung); a priced base with an unpriced
 /// rung cannot prove the rung is not an escalation, so it blocks.
+///
+/// #471: a flat-rate BASE seat has no ceiling either, and unlike the unpriced
+/// case that is not an accident of the sheet. The ceiling exists to stop an
+/// automatic rung from spending more than the model the user chose; on a
+/// subscription every rung spends the same nothing, so enforcing models.dev
+/// list prices there would gate a seat by money nobody is paying. Note the
+/// base's own price row can appear at any time — `price_overlay` is rebuilt
+/// from a remote sheet on every `graff models refresh` and matches on bare
+/// model name — so this cannot rely on `priceFor` returning null.
+pub fn rungAffordableOn(base: Provider, rung_model: []const u8) bool {
+    if (billing.freeAtTheMargin(base)) return true;
+    return rungAffordable(base.model, rung_model);
+}
+
 pub fn rungAffordable(base_model: []const u8, rung_model: []const u8) bool {
     const bp = pricing.priceFor(base_model) orelse return true;
     const rp = pricing.priceFor(rung_model) orelse return false;

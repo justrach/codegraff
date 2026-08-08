@@ -165,7 +165,7 @@ pub fn forPhase(
     // Re-clear the cost ceiling for the swapped model: learning may descend
     // price, never escalate it, and a swap that somehow fails the ceiling is
     // dropped rather than failing the phase.
-    if (!pin_mod.rungAffordable(base.model, learned)) return seat;
+    if (!pin_mod.rungAffordableOn(base, learned)) return seat;
     seat.pin = base.withModel(learned);
     seat.provider = seat.pin.?;
     return seat;
