@@ -315,9 +315,6 @@ pub const Agent = struct {
         try self.ensureRootTools(self.provider.kind);
         // No per-turn teardown: the socket and the chain span user turns, guarded by codex_chain.usable instead.
         self.completed = null;
-        // #469: co-resident sessions' queued messages land at the turn boundary
-        // — durable in history, visible as events, never mid-turn.
-        peer_channel.deliverInbound(self);
         if (!self.sub) esc_cancel.store(false, .release); // fresh turn, no stale cancel
         while (true) {
             // Esc during a tool join (set by escWatchTask) lands here: the
@@ -327,6 +324,12 @@ pub const Agent = struct {
                 if (!self.sub) esc_cancel.store(false, .release);
                 return error.Interrupted;
             }
+            // #469: co-resident sessions' queued channel messages land at EVERY
+            // step boundary, so a working session picks a peer's note up
+            // mid-task (between tool batches) and can act on it in the same
+            // turn — durable in history, visible as an event. Offset-based:
+            // an empty channel costs one small stat per step.
+            peer_channel.deliverInbound(self);
             // #193: pre-send overflow gate. A single turn's tool-output burst can
             // push the input past the model's wall before the between-turns 80%
             // meter (last_context_tokens, server-reported) catches up. Estimate the

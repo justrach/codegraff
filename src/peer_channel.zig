@@ -7,10 +7,11 @@
 //!     except sideways, between roots. Queued, one-way, never synchronous.
 //!   - /tell <session> <text>: the user's own line into a peer's inbox.
 //!   - /sessions: the saved-session list gains a "live now" section.
-//!   - deliverInbound: drains our inbox at the turn boundary (agent.runTurn)
-//!     so a peer's message lands in context as a first-class note — durable in
-//!     history, visible to the user as an event, never mid-turn (#430's
-//!     input-inversion path can move it mid-turn later).
+//!   - deliverInbound: drains the channel at every step boundary of the turn
+//!     loop (agent.runTurn), so a peer's message lands mid-task — between tool
+//!     batches — as a first-class note, durable in history and visible to the
+//!     user as an event. True mid-request injection (interrupting a streamed
+//!     response) remains #430 territory; step boundaries are the safe seams.
 
 const std = @import("std");
 
