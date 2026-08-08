@@ -2,7 +2,7 @@
 
 ## Context
 
-This repository is the Zig-native Codegraff target at `/Users/pranavp/projects/harness/codegraff-zig`. The GUI was copied from the Rust/Tauri/React Codegraff2 source repository and adapted in place so it can be tested locally against the Zig-native `graff` binary.
+This repository is the Zig-native Codegraff target at `<workspace>/codegraff-zig`. The GUI was copied from the Rust/Tauri/React Codegraff2 source repository and adapted in place so it can be tested locally against the Zig-native `graff` binary.
 
 The chosen migration strategy is copy-first: preserve the existing GUI shell and progressively replace source-specific runtime coupling.
 
@@ -14,7 +14,7 @@ Expected target-repo changes for this port:
 - `src/main.zig` has formatter-only whitespace changes required by the repo's Zig 0.16 formatter.
 - `gui/` is newly copied and adapted.
 
-The original source repo at `/Users/pranavp/projects/harness/codegraff` has a pre-existing `codedb.snapshot` modification that is not part of this port. Do not include it in the target port commit.
+The original source repo at `<workspace>/codegraff` has a pre-existing `codedb.snapshot` modification that is not part of this port. Do not include it in the target port commit.
 
 ## Major Decisions
 
@@ -85,11 +85,11 @@ A later cleanup pass can remove, gate, or re-enable these pieces as feature pari
 
 ## Verification Completed
 
-From `/Users/pranavp/projects/harness/codegraff-zig`:
+From `<workspace>/codegraff-zig`:
 
 ```bash
-/Users/pranavp/.local/zig/0.16.0/zig build
-/Users/pranavp/.local/zig/0.16.0/zig build test --summary all
+zig build
+zig build test --summary all
 cargo check --manifest-path gui/src-tauri/Cargo.toml
 cd gui && npm run build
 ```
@@ -97,8 +97,8 @@ cd gui && npm run build
 The GUI was also launched locally with:
 
 ```bash
-cd /Users/pranavp/projects/harness/codegraff-zig
-/Users/pranavp/.local/zig/0.16.0/zig build
+cd <workspace>/codegraff-zig
+zig build
 cd gui
 CODEGRAFF_GUI_BINARY=../zig-out/bin/graff npm run tauri dev
 ```

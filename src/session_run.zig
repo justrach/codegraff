@@ -52,6 +52,8 @@ const providers = @import("providers.zig");
 const messages_mod = @import("messages.zig");
 const session = @import("session.zig");
 const session_settings = @import("session_settings.zig");
+const presence = @import("presence.zig");
+const proc_identity = @import("proc_identity.zig");
 const goal_flow = @import("goal_flow.zig");
 const fleet = @import("fleet.zig");
 const hooks = @import("hooks.zig");
@@ -266,7 +268,10 @@ pub fn buildRootAgent(
         .tools_responses = "",
     };
     // #410: the durable session's name is settled BEFORE the prompt funnel runs — setRootSystemPrompts composes the transcript line out of it.
-    const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{util.unixMs(io)});
+    // The pid suffix keeps two graffs started in the same millisecond from
+    // sharing a session name — which would also share one .session.json file
+    // (#289 contention) and collide as presence peers (#469).
+    const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}-{d}", .{ util.unixMs(io), proc_identity.selfPid() });
     root.session_name = if (flags.resume_flag) |name| (if (!flags.new_session_flag and !flags.no_resume_flag) name else fresh_session_name) else fresh_session_name;
     try prompts.setRootSystemPrompts(&root, sys_normal, arena); // #381: same funnel + the live .graff/playbook.jsonl constraint block
     // Startup pays for one provider format, not all three. Other formats are
@@ -276,6 +281,12 @@ pub fn buildRootAgent(
     if (flags.goal_flag) |g| { // --goal is STANDING (#318): every turn (incl. --json/-p/SDK), never model-retired
         root.goal_flag = try arena.dupe(u8, g); // kept: re-applied over every loadSession, incl. /resume
         root.goal = goal_flow.standingGoalFromFlag(root.goal_flag.?, null, root.todos.items, util.unixMs(io));
+    }
+    // #469: register this root session so co-resident graffs see it (and it
+    // them) BEFORE anyone touches the shared tree — a live co-owner is named
+    // at birth here, not discovered mid-collision.
+    if (presence.announce(io, gpa, arena, root.home, root.session_name, if (root.goal) |g| g.objective else "")) |warning| {
+        if (!main_mod.json_mode and flags.oneshot_prompt == null) try out.print("{s}", .{warning});
     }
     if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
     if (flags.eval_target_flag) |t| root.eval_target = t;
@@ -356,6 +367,10 @@ pub fn compactResumedSession(root: *agent_mod.Agent) void {
 /// final turn left uncommitted. Moved out of main() verbatim (600-line
 /// goal); `root` is already stable main()-owned storage.
 pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, json_mode: bool) !void {
+    // #469: our presence record leaves the registry with us; a crashed session
+    // skips this and gets reaped by the next reader's liveness probe instead.
+    presence.retire(io);
+    presence.deinit(gpa); // its gpa-owned globals must not reach the exit-time leak check
     if (!json_mode and root.messages.items.len > 0) {
         const sink = engine_sink.writerSink(out);
         if (session.saveSession(root, arena, root.session_name)) |_| {

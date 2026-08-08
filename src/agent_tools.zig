@@ -36,6 +36,7 @@ const isMetaName = schema.isMetaName;
 const eval_control = @import("agent_eval_control.zig");
 const goal_state = @import("goal_state.zig");
 const goal_todo = @import("goal_todo.zig"); // todo_write's replace path + the omitted-completed preserve rule
+const peer_channel = @import("peer_channel.zig"); // #469: peer_message's handler
 pub const toolInvalidatesEval = eval_control.toolInvalidatesEval;
 pub const gateTool = @import("agent_tool_gate.zig").gateTool;
 pub const firstWord = @import("agent_tool_gate.zig").firstWord;
@@ -291,6 +292,8 @@ fn clockSleepInterruptedText(arena: std.mem.Allocator, elapsed_ms: i64) ![]const
 
 /// Handle a meta tool inline on the agent's own thread.
 pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
+    // #469: sideways coordination between co-resident root sessions.
+    if (std.mem.eql(u8, call.name, peer_channel.tool_name)) return peer_channel.handleMessage(self, call);
     if (std.mem.eql(u8, call.name, "attempt_completion")) {
         if (!self.review_mode and self.eval_cmd != null and (!self.eval_verified or self.eval_repair_pending)) {
             const message = if (self.eval_repair_pending)

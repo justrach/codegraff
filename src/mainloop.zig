@@ -39,6 +39,7 @@ const hooks = @import("hooks.zig");
 const readline = @import("readline.zig");
 const title_mod = @import("title.zig");
 const mainloop_title = @import("mainloop_title.zig");
+const mainloop_recap = @import("mainloop_recap.zig");
 const review = @import("review.zig");
 const terminal = @import("term.zig");
 
@@ -61,6 +62,8 @@ pub const Ctx = struct {
 pub fn run(ctx: *Ctx) !void {
     var title_jobs: mainloop_title.Jobs = .{};
     defer title_jobs.deinit(ctx);
+    var recap_jobs: mainloop_recap.Jobs = .{};
+    defer recap_jobs.deinit(ctx);
     defer session.flushSavesAtExit(); // #273: the turn-path autosaves write in the background — no queued one may outlive this loop, on ANY exit (#364 stamps this teardown phase)
     defer ctx.root.closeCodexWs(); // #424: the held WS + response-id anchor deliberately span turns, so only loop exit may free them — without this they are the gpa's only exit leaks
     defer terminal.tty.releaseTerminal(); // #396: registered LAST so LIFO runs it FIRST — the tty goes back before the save/telemetry/learning phases that can take seconds
@@ -78,6 +81,7 @@ pub fn run(ctx: *Ctx) !void {
     while (true) {
         // Titles can land between interactions but never join the response path.
         title_jobs.poll(ctx);
+        recap_jobs.poll(ctx); // #419: a settled model recap emits here, before the next read
         // Drain streamed follow-ups before reading fresh input (empty in JSON/GUI).
         repl_glue.resetSteerPartial();
         const steer_entry: ?repl_glue.SteerEntry = repl_glue.popSteer();
@@ -114,6 +118,7 @@ pub fn run(ctx: *Ctx) !void {
         // The title may have completed while readline was waiting. Apply it
         // before starting the newly-entered turn, still without ever waiting.
         title_jobs.poll(ctx);
+        recap_jobs.poll(ctx);
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
         // `/goal [30m] <objective>` and `/loop [30m] <prompt>` are ONE autonomous run: same
@@ -386,6 +391,7 @@ pub fn run(ctx: *Ctx) !void {
             ctx.root.pending_image = null;
         } else try ctx.root.messages.append(try messages.textMessage(ctx.arena, "user", ultracode_msg.text));
         ctx.root.snapshots.?.turn += 1; // tag file edits in this turn (matches /rewind numbering)
+        ctx.root.recap_generation +%= 1; // #419: a starting turn supersedes any recap job still in flight
         if (telemetry.g_telem) |t| t.countTurn();
         // Trajectory: claim this turn's node id up front so subagents spawned during the turn can attach to it as their parent.
         const turn_id: u64 = if (trace.g_traj) |tj| blk: {
@@ -516,6 +522,8 @@ pub fn run(ctx: *Ctx) !void {
         if (isolated_review)
             try ctx.root.messages.append(try messages.textMessage(ctx.arena, "assistant", final_text));
         const session_context_tokens = if (isolated_review) ctx.root.effectiveContextTokens() else post_turn_context_tokens;
+        // #419: heuristic session_recap precedes the terminal turn event; model recap scheduled here.
+        mainloop_recap.onTurnEnd(ctx, &recap_jobs, final_text);
         if (main_mod.json_mode) {
             const emitted_text = if (final_text.len == 0 and ctx.root.partial_text.items.len > 0)
                 std.mem.trim(u8, ctx.root.partial_text.items, " \t\r\n")
@@ -540,12 +548,7 @@ pub fn run(ctx: *Ctx) !void {
 
         // turn_end lifecycle hooks (best-effort; interrupted/errored turns
         // `continue` above and never reach here, so ok is always true).
-        if (main_mod.g_hooks.turn_end.len > 0) {
-            for (main_mod.g_hooks.turn_end) |h| {
-                const res = hooks.runHookCmd(ctx.gpa, ctx.io, h.command, "{\"event\":\"turn_end\",\"ok\":true}", h.timeout_ms);
-                if (res.stderr.len > 0) ctx.gpa.free(res.stderr);
-            }
-        }
+        hooks.runTurnEndHooks(ctx.gpa, ctx.io);
 
         if (session_context_tokens >= ctx.root.provider.compactAt()) {
             // Trim on failure only when we're genuinely against the window — at

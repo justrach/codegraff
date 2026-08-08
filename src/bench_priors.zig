@@ -332,6 +332,15 @@ pub fn effCost(m: Best) f64 {
 /// #373: does `a` beat `b` outright — at least `b`'s score for strictly less
 /// money? Then `b` is not a rung, it is a mistake: every task `b` could run,
 /// `a` runs at least as well for less.
+///
+/// Deliberately ONE cost axis. A second arm on list price was tried for #471
+/// and reverted: `dominates` feeds a Pareto front, mixing two incomparable
+/// cost axes makes it non-transitive, and a dominated model then evicts a
+/// survivor the winner does not itself dominate (`gpt-5.4` knocked out
+/// `gpt-5.6-terra` on list price while being pruned on $/task by `sol`,
+/// which is unpriced and so could not evict terra itself). The list-price
+/// rule #471 needs is a post-condition on the finished ladder instead —
+/// tier_ladder.cheaperSeat.
 pub fn dominates(a: Best, b: Best) bool {
     return a.score >= b.score and effCost(a) < effCost(b);
 }

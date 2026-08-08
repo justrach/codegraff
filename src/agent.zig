@@ -33,6 +33,7 @@ const run_budget_mod = @import("run_budget.zig");
 const prompt_ui = @import("agent_prompt.zig");
 const agent_tests = @import("agent_tests.zig");
 const goal_state = @import("goal_state.zig");
+const peer_channel = @import("peer_channel.zig"); // #469: turn-boundary peer message delivery
 
 pub const TodoItem = struct {
     content: []const u8,
@@ -200,6 +201,8 @@ pub const Agent = struct {
     thinking_text: std.ArrayList(u8) = .empty, // buffered reasoning, so a fold can unfold (#92)
     ai_title_done: bool = false, // the one-time AI tab-title call has run this session
     title_generation: u64 = 0, // invalidates detached results across /clear, /new, and manual /rename
+    session_recap: ?@import("recap.zig").Recap = null, // last turn-end recap (#419): the session_recap wire event, and /status's recap line
+    recap_generation: u64 = 0, // bumped at every turn start: supersedes detached recap jobs still in flight (#419)
     arg_live: ArgLive = .{}, // live attempt_completion/ask_user argument text
     streamed_args: ArgTool = .none, // which meta tool's prose streamed live this request
     streamed_args_len: usize = 0, // raw bytes emitted for it (gates re-print suppression)
@@ -321,6 +324,12 @@ pub const Agent = struct {
                 if (!self.sub) esc_cancel.store(false, .release);
                 return error.Interrupted;
             }
+            // #469: co-resident sessions' queued channel messages land at EVERY
+            // step boundary, so a working session picks a peer's note up
+            // mid-task (between tool batches) and can act on it in the same
+            // turn — durable in history, visible as an event. Offset-based:
+            // an empty channel costs one small stat per step.
+            peer_channel.deliverInbound(self);
             // #193: pre-send overflow gate. A single turn's tool-output burst can
             // push the input past the model's wall before the between-turns 80%
             // meter (last_context_tokens, server-reported) catches up. Estimate the

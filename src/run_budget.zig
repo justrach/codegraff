@@ -27,6 +27,7 @@ pub const CallKind = enum {
     workflow_retry,
     judge,
     title,
+    recap,
     compaction,
 };
 

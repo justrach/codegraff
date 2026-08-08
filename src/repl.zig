@@ -1,5 +1,5 @@
 //! `graff repl` — an interactive chat REPL on the zigzag TUI, styled in the
-//! Codegraff ink-and-coral language: a bordered welcome box, conversation turns
+//! Codegraff ink-and-emerald language: a bordered welcome box, conversation turns
 //! (`>` you, `⏺` the model), a rounded input box pinned to the bottom, a status
 //! line, and `/`-style commands mirroring the harness's interactive set.
 //!
@@ -118,7 +118,7 @@ pub const ultracode_palette = [_]zz.Color{
     zz.Color.fromRgb(0x9B, 0x6A, 0x35), zz.Color.fromRgb(0xA5, 0x65, 0x3B),
 };
 
-pub const enso_frames = [_][]const u8{ "◜", "◝", "◞", "◟" };
+pub const enso_frames = [_][]const u8{ "◜", "◠", "◝", "◞", "◡", "◟" };
 pub const braille_frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
 pub const dragon_frames = [_][]const u8{ "🐉  ", "🐉 ✦", "🐉 ✧", "🐉 ✦" };
 

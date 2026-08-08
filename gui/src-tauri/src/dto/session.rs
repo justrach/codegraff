@@ -117,6 +117,38 @@ pub struct ChatBindingDto {
     pub conversation_id: String,
 }
 
+/// Coarse session state carried by the harness's `session_recap` wire event
+/// (#419). Mirrored from the harness's closed vocabulary.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename = "SessionRecapStatus")]
+pub enum SessionRecapStatusDto {
+    NeedsInput,
+    Completed,
+    Failed,
+}
+
+/// What produced the recap: the free turn-end heuristic, or the detached
+/// cheap-model pass (#419).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename = "SessionRecapSource")]
+pub enum SessionRecapSourceDto {
+    Heuristic,
+    Model,
+}
+
+/// One-line harness-produced recap of a session's state, shown in the agent
+/// overview (#419).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "SessionRecap")]
+pub struct SessionRecapDto {
+    pub text: String,
+    pub status: SessionRecapStatusDto,
+    pub source: SessionRecapSourceDto,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "ConversationViewSnapshot")]
@@ -132,6 +164,11 @@ pub struct ConversationViewSnapshotDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub goal: Option<String>,
+    /// Latest harness `session_recap` for this chat (#419). Omitted until the
+    /// first turn completes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recap: Option<SessionRecapDto>,
     pub followup: Option<super::followup::FollowupRequestDto>,
 }
 

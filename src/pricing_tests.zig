@@ -12,7 +12,7 @@ test "CostTally token and call counters saturate" {
         .api_calls = std.math.maxInt(u64),
         .sub_calls = std.math.maxInt(u64),
     };
-    tally.add(std.testing.io, "codex", "gpt-5.5", 10, 10, 10);
+    tally.add(std.testing.io, .sub, "gpt-5.5", 10, 10, 10);
     try std.testing.expectEqual(std.math.maxInt(u64), tally.in_tokens);
     try std.testing.expectEqual(std.math.maxInt(u64), tally.cache_tokens);
     try std.testing.expectEqual(std.math.maxInt(u64), tally.out_tokens);

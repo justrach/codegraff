@@ -254,7 +254,7 @@ pub fn visionSeat(base: Provider) ?Provider {
         if (best) |b| return b;
     }
     const local = visionModelFor(base.id) orelse return null;
-    if (!subagent_pin.rungAffordable(base.model, local)) return null;
+    if (!subagent_pin.rungAffordableOn(base, local)) return null;
     return base.withModel(local);
 }
 
@@ -264,13 +264,23 @@ pub fn visionSeat(base: Provider) ?Provider {
 /// can authorize it by name — so the refusal has to say which model that is.
 pub fn blockedByCost(base: Provider) []const u8 {
     const name = visionModelFor(base.id) orelse return "";
-    return if (subagent_pin.rungAffordable(base.model, name)) "" else name;
+    return if (subagent_pin.rungAffordableOn(base, name)) "" else name;
 }
 
 /// The whole spawn-time decision: run the #292/#372 chain unchanged, then ask
 /// the vision question of its answer.
 pub fn forSpawn(base: Provider, obj: std.json.ObjectMap, session_pinned: bool, cell: route_policy.Cell, prompt: []const u8) Ask {
-    var ask: Ask = .{ .pin = subagent_pin.forSpawnIn(base, obj, !session_pinned, cell) };
+    // #471: `session_pinned` is true for the automatic #291 ladder descent as
+    // well as for a real --subagent-model, and sub-first tier routing was
+    // reading it as "the human chose these workers, do not override". On any
+    // root whose provider HAS a ladder that made the descent — which is most
+    // of them — an explicit tier ask could therefore never reach a flat-rate
+    // plan, and paid-for seats sat idle while metered rungs did the work.
+    // The vision path a few lines down already draws this distinction
+    // (userChose + g_default_from_ladder); this is the same rule, applied to
+    // the same bit, one decision earlier.
+    const user_pinned = session_pinned and !selection.g_default_from_ladder;
+    var ask: Ask = .{ .pin = subagent_pin.forSpawnIn(base, obj, !user_pinned, cell) };
     ask.source = if (ask.pin.provider != null) ask.pin.source else route_trace.sessionSource(session_pinned);
     ask.path = imagePathIn(prompt) orelse return ask;
     const current = ask.pin.provider orelse base;

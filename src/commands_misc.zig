@@ -43,6 +43,7 @@ const kimi_catalog = @import("kimi_catalog.zig");
 const providers = @import("providers.zig");
 const command_catalog = @import("command_catalog.zig");
 const side_question = @import("side_question.zig"); // #415 /btw
+const peer_channel = @import("peer_channel.zig"); // #469 /tell + the /sessions "live now" section
 const serde = @import("serde.zig");
 
 const mcp_cli = @import("mcp_cli.zig");
@@ -529,6 +530,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
+    if (std.mem.startsWith(u8, line, "/tell") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.tellCommand(root, arena, line, out); // #469
+    if (std.mem.startsWith(u8, line, "/peek") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.peekCommand(root, arena, line, out); // #469
     if (std.mem.eql(u8, line, "/sessions")) {
         var entries = listSavedSessions(root, arena);
         defer entries.deinit(arena);
@@ -542,6 +545,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             }
         }
         if (entries.items.len == 0) try out.writeAll("(no saved sessions in cwd)\n");
+        try peer_channel.writeLiveSection(root, arena, out); // #469: co-resident live sessions, with goals
         try out.flush();
         return true;
     }

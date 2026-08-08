@@ -116,6 +116,7 @@ def execute(case: dict[str, Any], graff: str, port: int,
             provider: str | None, model: str | None) -> Run:
     scripted = ScriptedModel(case.get("script", []))
     bound = 0 if provider else scripted.start(port)
+    peer = None
     try:
         with tempfile.TemporaryDirectory(prefix="graff-tier2-") as workspace:
             env = {
@@ -141,6 +142,23 @@ def execute(case: dict[str, Any], graff: str, port: int,
                 dest = pathlib.Path(workspace) / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(content, encoding="utf-8")
+            # A genuinely live second graff in the same workspace, for #469
+            # presence cases: the checkpoint only exists while a co-resident
+            # session does, and a real peer announces (and probes) better than
+            # any fixture — a forged record can never carry a live start-id.
+            if case.get("live_peer"):
+                peer = subprocess.Popen(
+                    [graff, "--json", "--yolo", "--model", model or "lmstudio"],
+                    cwd=workspace, env=env, stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+                live_dir = pathlib.Path(workspace) / ".graff" / "live"
+                deadline = time.time() + 30
+                while time.time() < deadline:
+                    if live_dir.is_dir() and any(live_dir.glob("*.json")):
+                        break
+                    if peer.poll() is not None:
+                        break
+                    time.sleep(0.1)
             argv = [graff, "--json", "--yolo", "--model", model or "lmstudio"]
             if provider:
                 argv += ["--subagent-provider", provider]
@@ -174,6 +192,8 @@ def execute(case: dict[str, Any], graff: str, port: int,
                         pass
             return Run(events, list(scripted.requests), stderr, code)
     finally:
+        if peer is not None:
+            peer.kill()
         if bound:
             scripted.stop()
             # The port is fixed, so let the socket clear before the next case.

@@ -33,8 +33,9 @@ pub use runtime::{
 };
 pub use session::{
     ChatBindingDto, ConversationSessionSummaryDto, ConversationViewSnapshotDto,
-    SavedWorkspaceDetailDto, SavedWorkspaceSummaryDto, SessionMessageDto, SessionSnapshotDto,
-    SessionTodoDto, SessionTodoStatusDto, WorkspaceKindDto, WorkspaceSessionDto,
+    SavedWorkspaceDetailDto, SavedWorkspaceSummaryDto, SessionMessageDto, SessionRecapDto,
+    SessionRecapSourceDto, SessionRecapStatusDto, SessionSnapshotDto, SessionTodoDto,
+    SessionTodoStatusDto, WorkspaceKindDto, WorkspaceSessionDto,
 };
 pub use terminal::{
     TerminalCloseInput, TerminalErrorEventDto, TerminalExitEventDto, TerminalOpenInput,
