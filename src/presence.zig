@@ -224,6 +224,7 @@ var g_goal: []const u8 = ""; // last-known goal (session-arena-owned is fine: bo
 var g_self: proc_identity.Record = .{}; // own pid + start-id, settled by announce
 var g_chan: ?[]const u8 = null; // gpa-owned channel file name (hash of g_identity)
 var g_inbox_off: u64 = 0; // bytes of the shared channel already delivered
+var g_device_off: u64 = 0; // bytes of the device-wide room already delivered
 var g_acked: [max_peers]u64 = undefined;
 var g_acked_len: usize = 0;
 
@@ -412,6 +413,69 @@ pub fn drainChannel(io: Io, arena: Allocator) []const Message {
 
 pub fn ownSession() []const u8 {
     return g_session;
+}
+
+pub fn ownIdentity() []const u8 {
+    return g_identity;
+}
+
+// --- the device-wide room (#469: "or just the same device"): one more log
+// every announced session drains, regardless of worktree. Worktree rooms stay
+// the default for coordination chatter; this one carries /tell all broadcasts
+// and messages addressed to a session in another folder. ---
+
+pub const device_room = "chan-all.jsonl";
+
+/// Every live session on this device, any worktree (self excluded) — the
+/// /tell target list. Like liveTreePeers but identity-blind.
+pub fn liveAllPeers(io: Io, arena: Allocator) []const Owner {
+    const dir_path = g_dir orelse return &.{};
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return &.{};
+    defer dir.close(io);
+    const peers = listPeers(io, arena, dir);
+    var live: std.ArrayList(Owner) = .empty;
+    for (peers.records, 0..) |rec, i| {
+        if (i >= peers.probes.len) break;
+        if (rec.pid == g_self.pid) continue;
+        switch (peers.probes[i]) {
+            .gone => {},
+            else => live.append(arena, rec) catch break,
+        }
+    }
+    return live.items;
+}
+
+/// Post to the device-wide room. Every announced session hears it, whatever
+/// folder it sits in; `to` marks the intended recipient as metadata.
+pub fn postToDevice(io: Io, arena: Allocator, text: []const u8, to: []const u8) bool {
+    const dir_path = g_dir orelse return false;
+    if (g_self.pid == 0) return false;
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch return false;
+    defer dir.close(io);
+    return presence_chan.postMessage(io, arena, dir, device_room, .{
+        .from_pid = g_self.pid,
+        .from_start = g_self.start_id,
+        .from_session = g_session,
+        .from_goal = g_goal,
+        .to = to,
+        .ts_ms = unixMs(io),
+        .text = text,
+    });
+}
+
+/// Drain the device-wide room (own echo skipped), same offset discipline as
+/// the worktree channel.
+pub fn drainDevice(io: Io, arena: Allocator) []const Message {
+    const dir_path = g_dir orelse return &.{};
+    if (g_self.pid == 0) return &.{};
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch return &.{};
+    defer dir.close(io);
+    const raw = presence_chan.readNewMessages(io, arena, dir, device_room, &g_device_off);
+    var out: std.ArrayList(Message) = .empty;
+    for (raw) |m| {
+        if (!isOwn(m, g_self.pid, g_self.start_id)) out.append(arena, m) catch break;
+    }
+    return out.items;
 }
 
 test "isSharedTreeGit: flags index/tree-mutating git, ignores read-only git" {

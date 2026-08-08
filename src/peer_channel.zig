@@ -30,9 +30,9 @@ const ExecResult = tools_mod.ExecResult;
 const Owner = worktree_lease.Owner;
 
 pub const tool_name = "peer_message";
-pub const tool_desc = "Post a message to this folder's shared graff channel: every OTHER live graff session working here hears it at its next turn boundary, stamped with your session name and current goal. Use it to coordinate the way you would steer a subagent, but sideways: announce what you are restructuring, ask the others to hold off a directory, or split the work. `session` names the intended recipient (name substring) when the message is meant for one peer — they all still hear it. Delivery is queued and one-way — the tool result only confirms the post, never a reply.";
+pub const tool_desc = "Post a message to the shared graff channel: live graff sessions hear it at their next step boundary, stamped with your session name and current goal. Use it to coordinate the way you would steer a subagent, but sideways: announce what you are restructuring, ask the others to hold off a directory, or split the work. Bare posts go to this folder's room; `session` names an intended recipient (name substring, possibly in another folder) or \"all\" to reach every live session on this device — everyone hears the post either way, the name only marks who it's for. Delivery is queued and one-way — the tool result only confirms the post, never a reply.";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"session": {"type": "string", "description": "peer session name substring (omit when only one peer is live)"}, "text": {"type": "string", "description": "one or two sentences of coordination intent"}}, "required": ["text"]}
+    \\{"type": "object", "properties": {"session": {"type": "string", "description": "peer session name substring (omit for this folder's room), \"all\" for every live session on this device, or a session name in another folder"}, "text": {"type": "string", "description": "one or two sentences of coordination intent"}}, "required": ["text"]}
 ;
 
 /// Resolve the one peer a message is for. `want` is a session-name substring
@@ -51,6 +51,15 @@ fn resolvePeer(peers: []const Owner, want: []const u8) union(enum) { one: Owner,
     }
     if (count == 1) return .{ .one = found.? };
     return if (count == 0) .none else .ambiguous;
+}
+
+/// Whether the named session sits in MY worktree (routes the post: worktree
+/// room when local, device room when not).
+fn isLocal(peers: []const Owner, session_id: []const u8, my_identity: []const u8) bool {
+    for (peers) |p| {
+        if (std.mem.eql(u8, p.session_id, session_id)) return std.mem.eql(u8, p.identity, my_identity);
+    }
+    return true;
 }
 
 fn peerListText(arena: Allocator, peers: []const Owner) []const u8 {
@@ -72,31 +81,49 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
     const text = tools_mod.json_args.str(obj, "text") orelse "";
     if (text.len == 0) return .{ .text = "peer_message: empty text — say what you want the peer to know", .is_error = true };
     const want = tools_mod.json_args.str(obj, "session") orelse "";
-    const peers = presence.liveTreePeers(self.io, self.arena);
-    if (peers.len == 0) return .{
+    const local = presence.liveTreePeers(self.io, self.arena);
+    if (want.len == 0 and local.len == 0) return .{
         .text = "no live co-resident graff sessions in this worktree — the presence registry says you are alone here (a peer shows up via the startup warning when one starts)",
         .is_error = true,
     };
+    // Routing: bare posts stay in the worktree room; "all" broadcasts to every
+    // live session on the device; a named target in another folder rides the
+    // device room with the address as metadata — everyone still hears it.
+    if (std.mem.eql(u8, want, "all")) {
+        const everyone = presence.liveAllPeers(self.io, self.arena);
+        if (everyone.len == 0) return .{ .text = "no live graff sessions on this device at all", .is_error = true };
+        if (!presence.postToDevice(self.io, self.arena, text, "")) return .{ .text = "delivery failed — the presence registry is unavailable", .is_error = true };
+        return .{
+            .text = try std.fmt.allocPrint(self.arena, "posted to the device-wide room — {d} live session(s) across all folders hear it at their next step boundary", .{everyone.len}),
+            .is_error = false,
+        };
+    }
     // `session` is validated so a mistyped target errors usefully, but every
     // peer hears the post either way — the channel is a room, not a DM.
-    const to: []const u8 = if (want.len == 0) "" else switch (resolvePeer(peers, want)) {
+    const to: []const u8 = if (want.len == 0) "" else switch (resolvePeer(presence.liveAllPeers(self.io, self.arena), want)) {
         .one => |p| p.session_id,
         .none => return .{
-            .text = try std.fmt.allocPrint(self.arena, "no live peer matches \"{s}\" — live now: {s}", .{ want, peerListText(self.arena, peers) }),
+            .text = try std.fmt.allocPrint(self.arena, "no live peer matches \"{s}\" — live here: {s}", .{ want, peerListText(self.arena, local) }),
             .is_error = true,
         },
         .ambiguous => return .{
-            .text = try std.fmt.allocPrint(self.arena, "more than one live peer matches — name one with `session`: {s}", .{peerListText(self.arena, peers)}),
+            .text = try std.fmt.allocPrint(self.arena, "more than one live peer matches — name one with `session`: {s}", .{peerListText(self.arena, presence.liveAllPeers(self.io, self.arena))}),
             .is_error = true,
         },
     };
-    if (!presence.postTo(self.io, self.arena, text, to)) return .{
+    const cross_folder = to.len > 0 and !isLocal(presence.liveAllPeers(self.io, self.arena), to, presence.ownIdentity());
+    const posted = if (cross_folder)
+        presence.postToDevice(self.io, self.arena, text, to)
+    else
+        presence.postTo(self.io, self.arena, text, to);
+    if (!posted) return .{
         .text = "delivery failed — the presence registry is unavailable (this session may never have announced itself)",
         .is_error = true,
     };
     const addressed = if (to.len > 0) try std.fmt.allocPrint(self.arena, " (for \"{s}\")", .{to}) else "";
+    const room: []const u8 = if (cross_folder) "device-wide room" else "worktree channel";
     return .{
-        .text = try std.fmt.allocPrint(self.arena, "posted to the worktree channel{s} — {d} live peer(s) hear it at their next turn boundary. Delivery is one-way: any answer arrives the same way.", .{ addressed, peers.len }),
+        .text = try std.fmt.allocPrint(self.arena, "posted to the {s}{s} — live peer(s) hear it at their next step boundary. Delivery is one-way: any answer arrives the same way.", .{ room, addressed }),
         .is_error = false,
     };
 }
@@ -107,20 +134,23 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
 /// an error, because a peer's inbox must never break our session.
 pub fn deliverInbound(root: *Agent) void {
     if (root.sub) return;
-    const msgs = presence.drainChannel(root.io, root.arena);
-    if (msgs.len == 0) return;
+    const local_msgs = presence.drainChannel(root.io, root.arena);
+    const device_msgs = presence.drainDevice(root.io, root.arena);
+    if (local_msgs.len == 0 and device_msgs.len == 0) return;
     const sink = engine_sink.forAgent(root);
     const own = presence.ownSession();
     var buf: std.ArrayList(u8) = .empty;
-    for (msgs) |m| {
-        const goal = if (m.from_goal.len > 0) std.fmt.allocPrint(root.arena, " (goal: {s})", .{m.from_goal}) catch "" else "";
-        // Addressing is rendered, not enforced: everyone hears the line, and
-        // the marker says who it was meant for.
-        const to = if (m.to.len == 0) "" else if (std.mem.indexOf(u8, m.to, own) != null or std.mem.indexOf(u8, own, m.to) != null) " → you" else std.fmt.allocPrint(root.arena, " → {s}", .{m.to}) catch "";
-        const line = std.fmt.allocPrint(root.arena, "[peer message from {s}{s}{s} — #469 channel]: {s}", .{ m.from_session, goal, to, m.text }) catch continue;
-        buf.appendSlice(root.arena, line) catch {};
-        buf.append(root.arena, '\n') catch {};
-        sink.emit(root.io, .{ .session_notice = .{ .text = line, .tone = .plain } });
+    for ([2][]const presence.Message{ local_msgs, device_msgs }, [2][]const u8{ "", " · device" }) |msgs, scope| {
+        for (msgs) |m| {
+            const goal = if (m.from_goal.len > 0) std.fmt.allocPrint(root.arena, " (goal: {s})", .{m.from_goal}) catch "" else "";
+            // Addressing is rendered, not enforced: everyone hears the line,
+            // and the marker says who it was meant for.
+            const to = if (m.to.len == 0) "" else if (std.mem.indexOf(u8, m.to, own) != null or std.mem.indexOf(u8, own, m.to) != null) " → you" else std.fmt.allocPrint(root.arena, " → {s}", .{m.to}) catch "";
+            const line = std.fmt.allocPrint(root.arena, "[peer message from {s}{s}{s}{s} — #469 channel]: {s}", .{ m.from_session, goal, to, scope, m.text }) catch continue;
+            buf.appendSlice(root.arena, line) catch {};
+            buf.append(root.arena, '\n') catch {};
+            sink.emit(root.io, .{ .session_notice = .{ .text = line, .tone = .plain } });
+        }
     }
     if (buf.items.len == 0) return;
     buf.appendSlice(root.arena, "(reply with the peer_message tool — queued, one-way; everyone here hears it)") catch {};
@@ -130,21 +160,23 @@ pub fn deliverInbound(root: *Agent) void {
     root.messages.append(.{ .object = obj }) catch {};
 }
 
-/// /tell <session|all> <text…>: the user's line into the shared channel.
-/// Every co-resident session hears it; the target only marks who it's FOR.
+/// /tell <session|all> <text…>: the user's line into the channel. `all` (or a
+/// target in another folder) rides the device-wide room — every live session
+/// hears it; a local target stays on the worktree room.
 pub fn tellCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     const rest = std.mem.trim(u8, line["/tell".len..], " \t");
-    const peers = presence.liveTreePeers(root.io, arena);
+    const everyone = presence.liveAllPeers(root.io, arena);
     const split = std.mem.indexOfAny(u8, rest, " \t");
     const target = if (split) |i| rest[0..i] else "";
     const text = if (split) |i| std.mem.trim(u8, rest[i + 1 ..], " \t") else "";
     if (target.len == 0 or text.len == 0) {
-        try out.writeAll("usage: /tell <session|all> <text> — post to this worktree's shared graff channel\n");
-        if (peers.len == 0) try out.writeAll("  (no live peers in this worktree right now)\n") else try out.print("  live now: {s}\n", .{peerListText(arena, peers)});
+        try out.writeAll("usage: /tell <session|all> <text> — all reaches every live session on this device, any folder\n");
+        if (everyone.len == 0) try out.writeAll("  (no live peers right now)\n") else try out.print("  live now: {s}\n", .{peerListText(arena, everyone)});
         try out.flush();
         return true;
     }
-    const to: []const u8 = if (std.mem.eql(u8, target, "all")) "" else switch (resolvePeer(peers, target)) {
+    const broadcast = std.mem.eql(u8, target, "all");
+    const to: []const u8 = if (broadcast) "" else switch (resolvePeer(everyone, target)) {
         .one => |p| p.session_id,
         .none => {
             try out.print("no live peer matches \"{s}\"\n", .{target});
@@ -152,26 +184,47 @@ pub fn tellCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Wr
             return true;
         },
         .ambiguous => {
-            try out.print("more than one live peer matches — live now: {s}\n", .{peerListText(arena, peers)});
+            try out.print("more than one live peer matches — live now: {s}\n", .{peerListText(arena, everyone)});
             try out.flush();
             return true;
         },
     };
-    if (presence.postTo(root.io, arena, text, to)) {
+    const device_wide = broadcast or !isLocal(everyone, to, presence.ownIdentity());
+    const posted = if (device_wide)
+        presence.postToDevice(root.io, arena, text, to)
+    else
+        presence.postTo(root.io, arena, text, to);
+    if (posted) {
         const addressed = if (to.len > 0) try std.fmt.allocPrint(arena, " (for {s})", .{to}) else "";
-        try out.print("⇢ posted to the worktree channel{s} — {d} live peer(s) hear it at their next turn boundary\n", .{ addressed, peers.len });
+        const room: []const u8 = if (device_wide) "device-wide room" else "worktree channel";
+        try out.print("⇢ posted to the {s}{s}\n", .{ room, addressed });
     } else try out.writeAll("delivery failed — presence registry unavailable\n");
     try out.flush();
     return true;
 }
 
-/// The "live now" section /sessions appends under the saved-session list.
+/// The "live now" section /sessions appends under the saved-session list:
+/// this worktree first, then the rest of the device.
 pub fn writeLiveSection(root: *Agent, arena: Allocator, out: *Io.Writer) !void {
-    const peers = presence.liveTreePeers(root.io, arena);
-    if (peers.len == 0) return;
-    try out.writeAll("  live now in this worktree:\n");
-    for (peers) |p| {
+    const everyone = presence.liveAllPeers(root.io, arena);
+    if (everyone.len == 0) return;
+    const mine = presence.ownIdentity();
+    var wrote_local = false;
+    var wrote_remote = false;
+    for (everyone) |p| {
+        const local = std.mem.eql(u8, p.identity, mine);
+        if (local and !wrote_local) {
+            try out.writeAll("  live now in this worktree:\n");
+            wrote_local = true;
+        }
+        if (!local and !wrote_remote) {
+            try out.writeAll("  live elsewhere on this device:\n");
+            wrote_remote = true;
+        }
         const goal = if (p.goal.len > 0) p.goal else "?";
-        try out.print("  ⚡ {s} · pid {d} · goal: {s}\n", .{ p.session_id, p.pid, goal });
+        if (local)
+            try out.print("  ⚡ {s} · pid {d} · goal: {s}\n", .{ p.session_id, p.pid, goal })
+        else
+            try out.print("  ⚡ {s} · pid {d} · {s} · goal: {s}\n", .{ p.session_id, p.pid, p.identity, goal });
     }
 }
