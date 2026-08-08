@@ -144,15 +144,21 @@ fn probePidOnly(io: Io, pid: i32) Probe {
 }
 
 fn probeLinux(io: Io, pid: i32) Probe {
+    _ = io;
     var path_buf: [64]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/stat", .{pid}) catch return .unknown;
-    // procfs reports size 0, so this reads to EOF rather than to a stat size.
-    var buf: [4096]u8 = undefined;
-    const text = Io.Dir.cwd().readFile(io, path, &buf) catch |err| switch (err) {
+    // Direct openat(FDCWD), not an Io.Dir read: under the io_uring test
+    // backend a /proc read can fail with EBADF, which the Io layer panics on
+    // as a "programmer bug" instead of surfacing a catchable error (that
+    // crashed CI on Linux). procfs reports size 0, so read to EOF.
+    const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{}, 0) catch |err| switch (err) {
         error.FileNotFound => return .gone,
         else => return .unknown,
     };
-    return if (parseLinuxStat(text)) |v| .{ .id = v } else .unknown;
+    defer std.posix.close(fd);
+    var buf: [4096]u8 = undefined;
+    const n = std.posix.read(fd, &buf) catch return .unknown;
+    return if (parseLinuxStat(buf[0..n])) |v| .{ .id = v } else .unknown;
 }
 
 /// Field 22 of a `/proc/<pid>/stat` line. Field 2 is `(comm)`, which may hold
