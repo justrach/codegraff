@@ -23,7 +23,9 @@ pub const chan_name_max = 96;
 
 /// One channel line. `from_*` identify the sender's presence record at send
 /// time; the harness writes them, never the model. `to` is a session-name
-/// substring naming who the message is FOR — everyone still hears it.
+/// substring naming who the message is FOR — the worktree room delivers every
+/// line, but the device room is folder-scoped: only addressed lines and the
+/// user's own posts (`from_user`, set by /tell) cross folders.
 pub const Message = struct {
     from_pid: i32 = 0,
     from_start: u64 = 0,
@@ -32,6 +34,7 @@ pub const Message = struct {
     to: []const u8 = "",
     ts_ms: i64 = 0,
     text: []const u8 = "",
+    from_user: bool = false,
 };
 
 /// The channel file for a worktree identity: content-hash, so it is stable

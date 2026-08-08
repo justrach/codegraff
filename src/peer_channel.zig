@@ -31,7 +31,7 @@ const ExecResult = tools_mod.ExecResult;
 const Owner = worktree_lease.Owner;
 
 pub const tool_name = "peer_message";
-pub const tool_desc = "Post a message to the shared graff channel: live graff sessions hear it at their next step boundary, stamped with your session name and current goal. Use it to coordinate the way you would steer a subagent, but sideways: announce what you are restructuring, ask the others to hold off a directory, or split the work. Bare posts go to this folder's room; `session` names an intended recipient (name substring, possibly in another folder) or \"all\" to reach every live session on this device — everyone hears the post either way, the name only marks who it's for. Delivery is queued and one-way — the tool result only confirms the post, never a reply.";
+pub const tool_desc = "Post a message to the shared graff channel: live graff sessions hear it at their next step boundary, stamped with your session name and current goal. Use it to coordinate the way you would steer a subagent, but sideways: announce what you are restructuring, ask the others to hold off a directory, or split the work. Hearing is folder-scoped: bare posts go to this folder's room and every session in it hears them; `session` names one intended recipient (name substring, possibly in another folder) — a cross-folder post is delivered to the addressed session only, never broadcast. Device-wide broadcast is the user's /tell all, not this tool. Delivery is queued and one-way — the tool result only confirms the post, never a reply.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"session": {"type": "string", "description": "peer session name substring (omit for this folder's room), \"all\" for every live session on this device, or a session name in another folder"}, "text": {"type": "string", "description": "one or two sentences of coordination intent"}}, "required": ["text"]}
 ;
@@ -87,18 +87,15 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
         .text = "no live co-resident graff sessions in this worktree — the presence registry says you are alone here (a peer shows up via the startup warning when one starts)",
         .is_error = true,
     };
-    // Routing: bare posts stay in the worktree room; "all" broadcasts to every
-    // live session on the device; a named target in another folder rides the
-    // device room with the address as metadata — everyone still hears it.
-    if (std.mem.eql(u8, want, "all")) {
-        const everyone = presence.liveAllPeers(self.io, self.arena);
-        if (everyone.len == 0) return .{ .text = "no live graff sessions on this device at all", .is_error = true };
-        if (!presence.postToDevice(self.io, self.arena, text, "")) return .{ .text = "delivery failed — the presence registry is unavailable", .is_error = true };
-        return .{
-            .text = try std.fmt.allocPrint(self.arena, "posted to the device-wide room — {d} live session(s) across all folders hear it at their next step boundary", .{everyone.len}),
-            .is_error = false,
-        };
-    }
+    // Routing: bare posts stay in the worktree room; a named target in
+    // another folder rides the device room, delivered to the addressed
+    // session only. Model broadcasts are rejected: unaddressed "all" posts
+    // flooded every folder on the device with another room's coordination —
+    // device-wide broadcast is the user's channel (/tell all).
+    if (std.mem.eql(u8, want, "all")) return .{
+        .text = "\"all\" is retired for sessions — hearing is folder-scoped now. Post bare for this folder's room, or name one session (possibly in another folder) to reach it directly.",
+        .is_error = true,
+    };
     // `session` is validated so a mistyped target errors usefully, but every
     // peer hears the post either way — the channel is a room, not a DM.
     const to: []const u8 = if (want.len == 0) "" else switch (resolvePeer(presence.liveAllPeers(self.io, self.arena), want)) {
@@ -114,7 +111,7 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
     };
     const cross_folder = to.len > 0 and !isLocal(presence.liveAllPeers(self.io, self.arena), to, presence.ownIdentity());
     const posted = if (cross_folder)
-        presence.postToDevice(self.io, self.arena, text, to)
+        presence.postToDevice(self.io, self.arena, text, to, false)
     else
         presence.postTo(self.io, self.arena, text, to);
     if (!posted) return .{
@@ -122,7 +119,7 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
         .is_error = true,
     };
     const addressed = if (to.len > 0) try std.fmt.allocPrint(self.arena, " (for \"{s}\")", .{to}) else "";
-    const room: []const u8 = if (cross_folder) "device-wide room" else "worktree channel";
+    const room: []const u8 = if (cross_folder) "device room, delivered to the addressed session only" else "worktree channel";
     return .{
         .text = try std.fmt.allocPrint(self.arena, "posted to the {s}{s} — live peer(s) hear it at their next step boundary. Delivery is one-way: any answer arrives the same way.", .{ room, addressed }),
         .is_error = false,
@@ -171,6 +168,15 @@ fn peerNoteIfChanged(root: *Agent) ?[]const u8 {
 pub const backlog_tail_max = 10;
 var g_backlog_tail_cut = false;
 
+/// Device-room hearing is addressed-only: the line names this session, or the
+/// USER posted it (/tell sets from_user). A model's cross-folder post reaches
+/// its target and no one else; unaddressed device lines never cross folders.
+pub fn deviceHears(m: presence.Message, own: []const u8) bool {
+    if (m.from_user) return true;
+    if (m.to.len == 0 or own.len == 0) return false;
+    return std.mem.indexOf(u8, m.to, own) != null or std.mem.indexOf(u8, own, m.to) != null;
+}
+
 pub fn deliverInbound(root: *Agent) void {
     if (root.sub) return;
     const note = peerNoteIfChanged(root);
@@ -190,6 +196,14 @@ pub fn deliverInbound(root: *Agent) void {
     if (note == null and local_msgs.len == 0 and device_msgs.len == 0 and omitted == 0) return;
     const sink = engine_sink.forAgent(root);
     const own = presence.ownSession();
+    // Device room is folder-scoped: hear what names this session or what the
+    // user posted; everything else collapses into one marker below.
+    var heard: std.ArrayList(presence.Message) = .empty;
+    var skipped: usize = 0;
+    for (device_msgs) |m| {
+        if (deviceHears(m, own)) heard.append(root.arena, m) catch break else skipped += 1;
+    }
+    device_msgs = heard.items;
     var buf: std.ArrayList(u8) = .empty;
     if (note) |n| {
         buf.appendSlice(root.arena, n) catch {};
@@ -198,6 +212,14 @@ pub fn deliverInbound(root: *Agent) void {
     }
     if (omitted > 0) {
         const marker = std.fmt.allocPrint(root.arena, "[#469 channel: {d} older message(s) predating this session omitted]", .{omitted}) catch "";
+        if (marker.len > 0) {
+            buf.appendSlice(root.arena, marker) catch {};
+            buf.append(root.arena, '\n') catch {};
+            sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
+        }
+    }
+    if (skipped > 0) {
+        const marker = std.fmt.allocPrint(root.arena, "[#469 device room: {d} message(s) not addressed to this session skipped — folder-scoped hearing]", .{skipped}) catch "";
         if (marker.len > 0) {
             buf.appendSlice(root.arena, marker) catch {};
             buf.append(root.arena, '\n') catch {};
@@ -255,7 +277,7 @@ pub fn tellCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Wr
     };
     const device_wide = broadcast or !isLocal(everyone, to, presence.ownIdentity());
     const posted = if (device_wide)
-        presence.postToDevice(root.io, arena, text, to)
+        presence.postToDevice(root.io, arena, text, to, true) // the user's line crosses folders; a session's does not
     else
         presence.postTo(root.io, arena, text, to);
     if (posted) {
@@ -455,4 +477,17 @@ test "summarizeTranscript: last prompt, last words, last tool, from complete lin
     try std.testing.expectEqualStrings("switched the query to display_name", sum.last_said);
     try std.testing.expectEqualStrings("edit_file", sum.last_tool);
     try std.testing.expectEqual(5, sum.messages); // the torn tail is skipped
+}
+
+test "deviceHears: addressed lines and the user's /tell cross folders; broadcasts do not" {
+    const own = "session-111-us";
+    // A cross-folder post naming this session arrives (substring, either way).
+    try std.testing.expect(deviceHears(.{ .to = "session-111" }, own));
+    try std.testing.expect(deviceHears(.{ .to = own }, "session-111"));
+    // The user's /tell crosses folders even unaddressed (their broadcast).
+    try std.testing.expect(deviceHears(.{ .from_user = true }, own));
+    // Another folder's addressed work and bare/broadcast lines stay out.
+    try std.testing.expect(!deviceHears(.{ .to = "session-999-them" }, own));
+    try std.testing.expect(!deviceHears(.{}, own));
+    try std.testing.expect(!deviceHears(.{ .to = "session-111" }, ""));
 }

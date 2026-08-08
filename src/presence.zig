@@ -461,9 +461,9 @@ pub fn liveAllPeers(io: Io, arena: Allocator) []const Owner {
     return live.items;
 }
 
-/// Post to the device-wide room. Every announced session hears it, whatever
-/// folder it sits in; `to` marks the intended recipient as metadata.
-pub fn postToDevice(io: Io, arena: Allocator, text: []const u8, to: []const u8) bool {
+/// Post to the device-wide room. Delivery there is addressed-only: heard when
+/// `to` names the session or the USER posted it (/tell sets from_user).
+pub fn postToDevice(io: Io, arena: Allocator, text: []const u8, to: []const u8, from_user: bool) bool {
     const dir_path = g_dir orelse return false;
     if (g_self.pid == 0) return false;
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch return false;
@@ -476,6 +476,7 @@ pub fn postToDevice(io: Io, arena: Allocator, text: []const u8, to: []const u8) 
         .to = to,
         .ts_ms = unixMs(io),
         .text = text,
+        .from_user = from_user,
     });
 }
 
