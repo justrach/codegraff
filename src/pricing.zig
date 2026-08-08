@@ -321,14 +321,6 @@ pub fn kimiThinkingEffort(model: []const u8, requested: []const u8) ?[]const u8 
     return info.support_efforts[info.support_efforts.len / 2];
 }
 
-/// Kimi k2.6 defaults `thinking.keep` to null: the server bills the reasoning
-/// we replay each turn and then ignores it (#323). k2.7-code always preserves
-/// and k3 rejects the parameter; the live catalog says nothing about keep, so
-/// this is a seeded id check (a point release is spelled `k2.6` or `k2p6`).
-pub fn kimiKeepsReasoning(model: []const u8) bool {
-    return kimiSupportsThinking(model) and (std.mem.indexOf(u8, model, "k2.6") != null or std.mem.indexOf(u8, model, "k2p6") != null);
-}
-
 fn pureKimiGeneration(name: []const u8) ?u32 {
     if (name.len < 2 or name[0] != 'k') return null;
     for (name[1..]) |c| if (!std.ascii.isDigit(c)) return null;

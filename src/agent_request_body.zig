@@ -44,12 +44,8 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 if (is_kimi) {
                     if (pricing.kimiSupportsThinking(self.provider.model)) {
                         try s.objectField("thinking");
-                        // #323: k2.6 bills the reasoning we replay every turn and
-                        // then ignores it unless the request says keep:"all".
-                        if (pricing.kimiKeepsReasoning(self.provider.model))
-                            try s.print("{s}", .{"{\"type\":\"enabled\",\"keep\":\"all\"}"})
-                        else
-                            try s.print("{s}", .{"{\"type\":\"enabled\"}"});
+                        // kimi-code default: keep:"all" on every thinking request (#323; k3 accepts it — verified live).
+                        try s.print("{s}", .{"{\"type\":\"enabled\",\"keep\":\"all\"}"});
                         if (pricing.kimiThinkingEffort(self.provider.model, @tagName(self.reasoning))) |effort| {
                             try s.objectField("output_config");
                             try s.beginObject();
@@ -161,16 +157,19 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 try s.beginObject();
                 try s.objectField("type");
                 try s.write("enabled");
-                // #323: same per-model opt-in as the Anthropic branch above.
-                if (pricing.kimiKeepsReasoning(self.provider.model)) {
-                    try s.objectField("keep");
-                    try s.write("all");
-                }
+                // kimi-code default: keep:"all" on every thinking request (#323).
+                try s.objectField("keep");
+                try s.write("all");
                 if (pricing.kimiThinkingEffort(self.provider.model, @tagName(self.reasoning))) |effort| {
                     try s.objectField("effort");
                     try s.write(effort);
                 }
                 try s.endObject();
+            }
+            // kimi-code pins each request to its session id for prompt-cache affinity (same partition trick as codex below).
+            if (is_kimi) {
+                try s.objectField("prompt_cache_key");
+                try s.write(http_headers.sessionId(self.io));
             }
             // Reasoning-effort hint for OpenAI-compatible providers that
             // honor it (codegraff gateway, deepseek). Mirrors the
@@ -289,12 +288,12 @@ test "Kimi request body follows live native or Anthropic protocol metadata" {
     const native = try agent.buildBody(openai_tools, false, true, true);
     defer std.testing.allocator.free(native);
     try std.testing.expect(std.mem.indexOf(u8, native, "\"max_completion_tokens\":16000") != null);
-    try std.testing.expect(std.mem.indexOf(u8, native, "\"thinking\":{\"type\":\"enabled\",\"effort\":\"max\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, native, "\"thinking\":{\"type\":\"enabled\",\"keep\":\"all\",\"effort\":\"max\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, native, "\"role\":\"system\",\"content\":\"system\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, native, "\"reasoning_effort\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, native, "\"target\":{\"anyOf\":[{\"const\":\"one\",\"type\":\"string\"},{\"const\":\"two\",\"type\":\"string\"}]}") != null);
     try std.testing.expect(std.mem.indexOf(u8, native, "\"oneOf\":[{\"required\":[\"target\"],\"type\":\"object\"},{\"required\":[\"other\"],\"type\":\"object\"}]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, native, "\"keep\"") == null); // #323: k3 has no thinking.keep
+    try std.testing.expect(std.mem.indexOf(u8, native, "\"prompt_cache_key\":\"") != null); // kimi-code: session-id cache affinity on every request
 
     agent.provider.kind = .anthropic;
     agent.provider.auth = .x_api_key;
@@ -302,13 +301,13 @@ test "Kimi request body follows live native or Anthropic protocol metadata" {
     const anthropic_tools = "[{\"name\":\"ping\",\"description\":\"\",\"input_schema\":{\"type\":\"object\"}}]";
     const anthropic = try agent.buildBody(anthropic_tools, false, true, true);
     defer std.testing.allocator.free(anthropic);
-    try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"thinking\":{\"type\":\"enabled\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"thinking\":{\"type\":\"enabled\",\"keep\":\"all\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"output_config\":{\"effort\":\"max\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"type\":\"adaptive\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"system\":[{\"type\":\"text\",\"text\":\"system\",\"cache_control\":{\"type\":\"ephemeral\"}}]") != null);
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"content\":[{\"type\":\"text\",\"text\":\"hello\",\"cache_control\":{\"type\":\"ephemeral\"}}]") != null);
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"input_schema\":{\"type\":\"object\"},\"cache_control\":{\"type\":\"ephemeral\"}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"keep\"") == null); // #323: k3 has no thinking.keep
+    try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"prompt_cache_key\"") == null); // native-transport field only
 }
 
 // ── Retained-reasoning wire-format regressions ──────────────────────────────
