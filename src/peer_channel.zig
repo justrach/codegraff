@@ -22,6 +22,7 @@ const agent_mod = @import("agent.zig");
 const tools_mod = @import("tools.zig");
 const engine_sink = @import("engine_sink.zig");
 const presence = @import("presence.zig");
+const presence_chan = @import("presence_chan.zig");
 const worktree_lease = @import("worktree_lease.zig");
 
 const Agent = agent_mod.Agent;
@@ -165,12 +166,28 @@ fn peerNoteIfChanged(root: *Agent) ?[]const u8 {
 /// user-role note in history plus user-visible events. Never fails a turn —
 /// delivery trouble is silence, not an error, because a peer must never break
 /// our session.
+/// The room tail a late joiner hears in full; anything older collapses into
+/// one "N omitted" marker instead of flooding the first history note.
+pub const backlog_tail_max = 10;
+var g_backlog_tail_cut = false;
+
 pub fn deliverInbound(root: *Agent) void {
     if (root.sub) return;
     const note = peerNoteIfChanged(root);
-    const local_msgs = presence.drainChannel(root.io, root.arena);
-    const device_msgs = presence.drainDevice(root.io, root.arena);
-    if (note == null and local_msgs.len == 0 and device_msgs.len == 0) return;
+    var local_msgs = presence.drainChannel(root.io, root.arena);
+    var device_msgs = presence.drainDevice(root.io, root.arena);
+    // Only the process's FIRST drain carries the rooms' whole backlog; later
+    // drains are incremental and must never be capped — those are live.
+    var omitted: usize = 0;
+    if (!g_backlog_tail_cut) {
+        g_backlog_tail_cut = true;
+        const dl = presence_chan.backlogDrop(local_msgs.len, backlog_tail_max);
+        const dd = presence_chan.backlogDrop(device_msgs.len, backlog_tail_max);
+        omitted = dl + dd;
+        local_msgs = local_msgs[dl..];
+        device_msgs = device_msgs[dd..];
+    }
+    if (note == null and local_msgs.len == 0 and device_msgs.len == 0 and omitted == 0) return;
     const sink = engine_sink.forAgent(root);
     const own = presence.ownSession();
     var buf: std.ArrayList(u8) = .empty;
@@ -178,6 +195,14 @@ pub fn deliverInbound(root: *Agent) void {
         buf.appendSlice(root.arena, n) catch {};
         buf.append(root.arena, '\n') catch {};
         sink.emit(root.io, .{ .session_notice = .{ .text = n, .tone = .plain } });
+    }
+    if (omitted > 0) {
+        const marker = std.fmt.allocPrint(root.arena, "[#469 channel: {d} older message(s) predating this session omitted]", .{omitted}) catch "";
+        if (marker.len > 0) {
+            buf.appendSlice(root.arena, marker) catch {};
+            buf.append(root.arena, '\n') catch {};
+            sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
+        }
     }
     for ([2][]const presence.Message{ local_msgs, device_msgs }, [2][]const u8{ "", " · device" }) |msgs, scope| {
         for (msgs) |m| {

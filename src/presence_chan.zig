@@ -84,6 +84,20 @@ pub fn readNewMessages(io: Io, arena: Allocator, dir: Io.Dir, name: []const u8, 
     return msgs.items;
 }
 
+/// A late joiner hears only the room's recent tail: more than `max` backlogged
+/// messages would bury live coordination under hours of roll-call from dead
+/// sessions (and the dump rides every later request as durable history).
+/// Returns how many leading messages to drop; the caller renders the marker.
+pub fn backlogDrop(count: usize, max: usize) usize {
+    return if (count > max) count - max else 0;
+}
+
+test "backlogDrop: only the overflow beyond the tail cap drops" {
+    try std.testing.expectEqual(@as(usize, 0), backlogDrop(0, 10));
+    try std.testing.expectEqual(@as(usize, 0), backlogDrop(10, 10));
+    try std.testing.expectEqual(@as(usize, 21), backlogDrop(31, 10));
+}
+
 test "channel: every reader hears every message once; only the sender's own echo drops" {
     const io = std.testing.io;
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

@@ -398,8 +398,9 @@ pub fn postTo(io: Io, arena: Allocator, text: []const u8, to: []const u8) bool {
 
 /// Drain the shared channel: every complete message since our last drain,
 //  minus our own echo. Empty when unannounced or caught up. A session that
-/// joins late hears the channel's whole backlog once — context, not spam:
-/// the room predates it. EXCEPTION: a -p one-shot joins, works, and exits
+/// joins late hears the whole backlog once — but peer_channel.deliverInbound
+/// tail-caps that first drain (backlog_tail_max) with an omitted-count marker.
+/// EXCEPTION: a -p one-shot joins, works, and exits
 /// inside a minute — the backlog is context it cannot use (measured ~4k
 /// tokens of stale chatter injected on the first step of every benchmark
 /// one-shot — and it made ephemeral workers ANSWER old messages, burning
