@@ -19,6 +19,8 @@ const agent_mod = @import("agent.zig");
 const http = @import("http.zig");
 const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig"); // codex_ws_idle_ms override (#codex-ws)
+const agent_request = @import("agent_request.zig"); // GRAFF_REQ_STATS → g_req_stats (token-diet measurement)
+const native_fold = @import("native_fold.zig"); // GRAFF_NO_NATIVE_FOLD → enabled
 const no_local_tools = @import("no_local_tools.zig"); // #330: GRAFF_NO_LOCAL_TOOLS
 const tool_handle = @import("tool_handle.zig"); // #440: GRAFF_TOOL_HANDLE_BYTES
 const provider_mod = @import("provider.zig");
@@ -90,6 +92,11 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // GRAFF_LEAN: presence-based, exactly matching session_start.leanSkipsMcp
     // (the MCP half of the same switch) — a "0" still means lean, by design.
     if (environ_map.get("GRAFF_LEAN") != null) no_local_tools.lean = true;
+    // GRAFF_REQ_STATS: presence-based request-anatomy print (agent_request).
+    agent_request.g_req_stats = environ_map.get("GRAFF_REQ_STATS") != null;
+    // GRAFF_NO_NATIVE_FOLD: presence-based — restore full power-tool schemas
+    // in every request (the pre-fold interactive surface).
+    if (environ_map.get("GRAFF_NO_NATIVE_FOLD") != null) native_fold.enabled = false;
     // (#codex-ws) GRAFF_CODEX_WS_IDLE_SECS raises/lowers the held-WS idle limit
     // (default 4 min — the backend killed ours within 8.5 min idle; opencode
     // pools at 5). Mirrors GRAFF_STREAM_STALL_SECS above: seconds, ignored if

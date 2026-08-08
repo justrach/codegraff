@@ -265,7 +265,18 @@ test "#416: deferring a real MCP server's schemas cuts the served catalog in hal
     try testing.expect(std.mem.indexOf(u8, with_specs, gate.tool_name) != null);
     gate.g_policy = .{ .eager = &.{"*"} };
     const eager_specs = try schema.renderRootTools(arena, .anthropic, &schema.root_specs, tools);
-    try testing.expect(std.mem.indexOf(u8, eager_specs, gate.tool_name) == null);
+    // With folded natives the meta arm still earns its slot — folded tools
+    // need it even when every MCP server is eager. With the fold off, the
+    // original "all eager, nothing to undo" rule holds unchanged.
+    const fold = @import("native_fold.zig");
+    const saved_fold = fold.enabled;
+    defer fold.enabled = saved_fold;
+    fold.enabled = true;
+    try testing.expect(std.mem.indexOf(u8, eager_specs, gate.tool_name) != null);
+    fold.enabled = false;
+    const eager_specs_nofold = try schema.renderRootTools(arena, .anthropic, &schema.root_specs, tools);
+    try testing.expect(std.mem.indexOf(u8, eager_specs_nofold, gate.tool_name) == null);
+    fold.enabled = saved_fold;
     gate.g_policy = .{};
 
     // Loading one tool restores that tool's schema to the catalog and nothing

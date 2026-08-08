@@ -19,6 +19,7 @@ const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-loc
 const tool_gates = @import("tool_gates.zig"); // #352: the additive twin — optional tools that only exist when startup found their backing capability
 const imagegen = @import("imagegen.zig"); // #352: name/desc/schema as plain strings, like skill_docs, so this catalog needs one entry and no import cycle
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: which MCP tools are served schema-first vs description-only, and the `load_tool_schemas` strings
+const native_fold = @import("native_fold.zig"); // folded native power tools: same two-phase pattern for the harness's own catalog
 const render = @import("schema_render.zig"); // the comptime provider-tool renderers moved out when #352's optional-tool catalogs doubled the number held here (600-line ceiling)
 const anthropicToolsJson = render.anthropicToolsJson;
 const openaiToolsJson = render.openaiToolsJson;
@@ -40,7 +41,7 @@ const schema_serve_json = @import("schema_serve.zig").json;
 /// Launch flags for SDK clients (schema_protocol.zig, alongside the protocol
 /// doc it is emitted with), re-exported here as the `--schema` field name.
 pub const schema_flags_json = @import("schema_protocol.zig").flags;
-const ToolSpec = struct {
+pub const ToolSpec = struct {
     name: []const u8,
     desc: []const u8, // no characters needing JSON escapes
     schema: []const u8, // raw JSON Schema string
@@ -298,8 +299,11 @@ pub fn renderRootTools(
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginArray();
     for (specs) |t| {
-        if (mcp_schema_gate.hiddenSpec(t.name, mcp_tools)) continue; // #416: load_tool_schemas is pointless with nothing deferred
-        try writeToolEntry(&s, kind, t.name, t.desc, .{ .raw = t.schema });
+        if (mcp_schema_gate.hiddenSpec(t.name, mcp_tools) and !native_fold.anyFolded()) continue; // #416: load_tool_schemas hides only with nothing deferred OR folded
+        if (native_fold.servePlaceholder(t.name)) // native fold layer 1: name + one-liner + placeholder until load_tool_schemas unfolds
+            try writeToolEntry(&s, kind, t.name, mcp_schema_gate.shortDesc(t.desc), .{ .raw = mcp_schema_gate.placeholder_schema })
+        else
+            try writeToolEntry(&s, kind, t.name, t.desc, .{ .raw = t.schema });
     }
     // #416 layer 1: a deferred tool is still REGISTERED (name + a one-line
     // description, so the model knows it exists and can ask for it), but its

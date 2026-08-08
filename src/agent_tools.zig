@@ -51,6 +51,7 @@ const execTool = exec.execTool;
 const brief_diversity = @import("brief_diversity.zig"); // #382: N sibling spawns in one batch are a fleet
 const playbook_glue = @import("playbook_glue.zig"); // #381: the note_constraint meta arm
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: the load_tool_schemas meta arm
+const native_fold = @import("native_fold.zig"); // folded native power tools: load_tool_schemas's native half
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
 const readline = @import("readline.zig"); // ask_user answers get the same full editor as the main prompt
 const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
@@ -293,6 +294,9 @@ fn clockSleepInterruptedText(arena: std.mem.Allocator, elapsed_ms: i64) ![]const
 
 /// Handle a meta tool inline on the agent's own thread.
 pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
+    // Folded natives, meta path: inline dispatch never reaches exec.zig's
+    // guard chain, so the refusal must live here too — same text, same rule.
+    if (native_fold.blocked(call.name)) return .{ .text = try native_fold.refusalText(self.arena, call.name), .is_error = true };
     // #469: sideways coordination between co-resident root sessions.
     if (std.mem.eql(u8, call.name, peer_channel.tool_name)) return peer_channel.handleMessage(self, call);
     if (std.mem.eql(u8, call.name, "attempt_completion")) {
@@ -355,7 +359,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         return .{ .text = try clockSleepSuccessText(self.arena, parsed.ms, parsed.clamped), .is_error = false };
     }
     if (std.mem.eql(u8, call.name, "note_constraint")) return playbook_glue.noteConstraint(self, call.input); // #381: append-only, and it re-composes the root's own prompt
-    if (std.mem.eql(u8, call.name, mcp_schema_gate.tool_name)) return mcp_schema_gate.handleLoad(self, call.input); // #416: inline, so the loaded-schema set has exactly one writer
+    if (std.mem.eql(u8, call.name, mcp_schema_gate.tool_name)) return (native_fold.handleLoadNative(self, call.input) catch null) orelse mcp_schema_gate.handleLoad(self, call.input); // #416: inline, one writer — folded natives answered first
     if (std.mem.eql(u8, call.name, "ask_user")) return self.askUser(call);
     // todo_read
     return .{ .text = self.renderTodos(goal_state.currentEpoch(self.goal)), .is_error = false };
@@ -517,6 +521,8 @@ test "clockSleepSuccessText/clockSleepInterruptedText: exact result strings (#22
 }
 
 test "handleMeta clock_sleep: ms=0 completes for real end-to-end, bad ms rejects without touching Io" {
+    // clock_sleep is a folded native: handleMeta refuses it until loaded. Mark it loaded rather than toggling fold.enabled: `enabled` is shared mutable state the parallel test runner races on (native_fold.zig's own tests flip it), while g_loaded is append-only and safe (the refusal is covered in native_fold.zig).
+    @import("native_fold.zig").markLoaded("clock_sleep");
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();

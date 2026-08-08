@@ -63,6 +63,15 @@ pub const errorMessage = responses.errorMessage;
 
 pub const buildBody = @import("agent_request_body.zig").buildBody;
 
+/// GRAFF_REQ_STATS=1 (set once at startup by session_settings.applyEnvKnobs):
+/// print the per-call request breakdown in request() — the token-diet
+/// program's measurement hook.
+pub var g_req_stats = false;
+
+fn reqStatsArmed() bool {
+    return g_req_stats;
+}
+
 /// Keep the normal request hot path allocation-free while avoiding a permanent
 /// RSS high-water mark after one anomalously large stream. Small scratch arenas
 /// retain their pages for the next request; large ones return all pages to the
@@ -190,6 +199,11 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         self.streamed_args = .none;
         const body = try self.buildBody(tools, force, live, stream_usage);
         defer self.gpa.free(body);
+        // GRAFF_REQ_STATS=1: per-call request anatomy for the token-diet work
+        // — total body, tools JSON, system prompt; the remainder is messages.
+        // Byte sizes, not tokens (÷~4 for a rough token read). stderr, never
+        // json_mode's stdout.
+        if (reqStatsArmed()) std.debug.print("  [req] body={d}B tools={d}B system={d}B messages~={d}B\n", .{ body.len, if (tools) |t| t.len else 0, self.sys_normal.len, body.len -| (if (tools) |t| t.len else 0) -| self.sys_normal.len });
         const t0: Io.Timestamp = .now(self.io, .awake);
         if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_started", .provider = self.provider.id, .model = self.provider.model });
         // HTTP calls are flaky: a kept-alive connection the server closed
