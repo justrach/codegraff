@@ -71,6 +71,8 @@ const hooks = @import("hooks.zig");
 const telemetry = @import("telemetry.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-local-tools gate
+const vision = @import("vision.zig"); // read_file stages images like MCP image results (#249)
+const input_util = @import("input_util.zig");
 const imagegen = @import("imagegen.zig"); // #352: the codex-gated image tool (advertising lives in schema.zig/tool_gates.zig)
 
 /// Wall-clock ceiling for one *subagent* bash command. Subagents run on pool
@@ -117,6 +119,39 @@ fn learningArgv(argv: *[10][]const u8, exe_path: []const u8, contribute: bool) u
 
 /// Runs on a pool thread; never throws — failures become is_error results.
 /// Every execution is timed (out.ms) and traced.
+/// read_file on an image: stage the pixels on the registry's pending-image
+/// slot — the same place MCP image results land (#249) — so the per-turn
+/// handoff attaches them to the agent's next turn. Null means "fall back to
+/// the generic binary-file error" (no registry, unreadable, over the ceiling).
+fn stageReadFileImage(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: []const u8, size: u64) !?ToolOutput {
+    const reg = ctx.registry orelse return null;
+    if (size == 0 or size > 5 * 1024 * 1024) return null; // vision ceiling, same as stageImagePath
+    const media_type = vision.imageMediaType(path);
+    if (!vision.visionCapable(ctx.provider)) return .{
+        .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — the active model does not accept images, so it was not attached]", .{ media_type, size }),
+    };
+    const data = Io.Dir.cwd().readFileAlloc(io, resolved, gpa, .limited(5 * 1024 * 1024)) catch return null;
+    defer gpa.free(data);
+    const enc = std.base64.standard.Encoder;
+    const b64 = try gpa.alloc(u8, enc.calcSize(data.len));
+    defer gpa.free(b64);
+    _ = enc.encode(b64, data);
+    reg.mutex.lockUncancelable(reg.io);
+    defer reg.mutex.unlock(reg.io);
+    if (reg.pending_image != null) return .{
+        .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — not attached: another image is already queued for the next turn]", .{ media_type, size }),
+    };
+    const arena = reg.arena();
+    reg.pending_image = .{
+        .media_type = try arena.dupe(u8, media_type),
+        .b64 = try arena.dupe(u8, b64),
+        .label = try arena.dupe(u8, path),
+    };
+    return .{
+        .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — attached to your next turn]", .{ media_type, size }),
+    };
+}
+
 pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     const t0: Io.Timestamp = .now(ctx.io, .awake);
     // #255: reserved before any gate/dispatch runs so tool_started/
@@ -402,9 +437,18 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
                 defer gpa.free(value.head);
                 break :blk .{ .text = try std.fmt.allocPrint(gpa, "{s}\n\n[read_file preview: {d}-byte file exceeds the {d} KiB whole-file limit; use start_line/end_line for byte-exact windows]", .{ util.utf8Prefix(value.head, value.head.len), value.total_bytes, read_file.max_bytes / 1024 }) };
             },
-            .binary => |size| .{
-                .text = try std.fmt.allocPrint(gpa, "{s} is a binary file ({d} bytes) — read_file only handles text. Use bash instead (e.g. `file`, `strings`, `pdftotext`, `sips`, `unzip -l`).", .{ path, size }),
-                .is_error = true,
+            .binary => |size| blk: {
+                // An image is only "binary" to a text-only model: stage the
+                // pixels exactly like an MCP image result (#249) so read_file
+                // on a PNG/JPG/GIF/WebP attaches it to the next turn instead
+                // of erroring out. Non-images keep the classic guidance.
+                if (input_util.isImagePath(path)) {
+                    if (try stageReadFileImage(gpa, io, ctx, resolved, path, size)) |out| break :blk out;
+                }
+                break :blk .{
+                    .text = try std.fmt.allocPrint(gpa, "{s} is a binary file ({d} bytes) — read_file only handles text. Use bash instead (e.g. `file`, `strings`, `pdftotext`, `sips`, `unzip -l`).", .{ path, size }),
+                    .is_error = true,
+                };
             },
             .range_too_large => .{
                 .text = try std.fmt.allocPrint(gpa, "read_file: requested range from {s} exceeds {d} KiB — request a narrower start_line/end_line window", .{ path, read_file.max_bytes / 1024 }),
