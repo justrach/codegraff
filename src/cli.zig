@@ -124,7 +124,8 @@ pub const usage_text =
     \\  -w, --worktree <name>           isolate this session in a git worktree (.graff/worktrees/<name>) so parallel agents don't collide on files
     \\  --no-autocommit                 with -w, don't auto-commit each turn (default on; land work with `graff worktree merge`)
     \\  --yolo           skip all permission prompts for the session
-    \\  --lean           one-shot/CI mode: slim tool surface (8 core tools), and MCP servers connect DEFERRED behind load_tool_schemas instead of paying full schemas every turn (GRAFF_LEAN=1)
+    \\  --lean           slim tool surface (8 core tools) + MCP deferred behind load_tool_schemas — the DEFAULT for -p one-shots (GRAFF_LEAN=1)
+    \\  --no-lean        opt a one-shot out of the implied --lean: full tool surface + eager MCP, the pre-default -p behavior
     \\  --no-local-tools embedder mode: hard-disable the built-in bash/bash_output/bash_kill/read_file/edit_file/write_file/codedb tools for the whole process (subagents included), so graff can run outside the sandbox and get its coding tools from an MCP server instead; webfetch, orchestration and MCP tools still work (GRAFF_NO_LOCAL_TOOLS=1)
     \\  -p, --print      one-shot print mode (answer on stdout, progress on stderr)
     \\  --timing         show per-tool wall-clock on result lines

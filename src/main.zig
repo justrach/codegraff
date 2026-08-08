@@ -392,7 +392,7 @@ pub fn main(init: std.process.Init) !void {
     try session_start.connectCompanion(io, arena, &registry_storage, flags, out, json_mode, init.environ_map);
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
     // If the metered companion connected, probe its license once so the note below can lean into paid tools (vs the conservative free-codedb note).
-    if (!session_start.leanMode(flags.lean_flag, init.environ_map) and mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeLicensedPinEager(gpa, arena, io);
+    if (!session_start.leanMode(flags.effectiveLean(), init.environ_map) and mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeLicensedPinEager(gpa, arena, io);
     boot.mark(io, "companion");
 
     var approvals: Approvals = undefined;

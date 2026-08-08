@@ -362,15 +362,16 @@ pub fn initTelemetry(io: Io, gpa: Allocator, client: *std.http.Client, environ_m
 /// out of main() (600-line goal). Returns the Registry by value — mcp.Registry
 /// holds no self-references (its storage is ArrayList/HashMap-backed), so
 /// returning it is safe.
-/// --lean / GRAFF_LEAN=1. Lean no longer SKIPS MCP — it folds every server
-/// behind the load_tool_schemas meta tool (mcp_schema_gate.deferAllRuntime):
-/// connected servers pay names + one-line descriptions instead of full
-/// schemas, and capability survives a load call away. Measured prefix cost
-/// of eager MCP: ~3.3k tokens for a licensed codedbpro alone, on EVERY
-/// model turn. One-shot/CI runs count those; interactive keeps the consent
-/// flow and eager pins.
-pub fn leanMode(lean_flag: bool, environ_map: anytype) bool {
-    return lean_flag or environ_map.get("GRAFF_LEAN") != null;
+/// --lean / GRAFF_LEAN=1, and (via Flags.effectiveLean) every one-shot that
+/// did not --no-lean: lean is the one-shot DEFAULT. Lean no longer SKIPS
+/// MCP — it folds every server behind the load_tool_schemas meta tool
+/// (mcp_schema_gate.deferAllRuntime): connected servers pay names + one-line
+/// descriptions instead of full schemas, and capability survives a load
+/// call away. Measured prefix cost of eager MCP: ~3.3k tokens for a
+/// licensed codedbpro alone, on EVERY model turn. Interactive sessions are
+/// untouched: full surface, consent flow, eager pins.
+pub fn leanMode(effective_lean: bool, environ_map: anytype) bool {
+    return effective_lean or environ_map.get("GRAFF_LEAN") != null;
 }
 
 pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Writer, in: *Io.Reader, flags: args.Flags, mcp_config_path: []const u8, home: []const u8, use_color: bool, json_mode: bool, environ_map: anytype) !mcp.Registry {
@@ -386,7 +387,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     mcp_schema_gate.configure(arena, merged, environ_map);
     // --lean folds every server behind the meta tool (deferAllRuntime) rather
     // than skipping MCP: capability a load call away, ~zero schema prefix.
-    if (leanMode(flags.lean_flag, environ_map)) mcp_schema_gate.deferAllRuntime();
+    if (leanMode(flags.effectiveLean(), environ_map)) mcp_schema_gate.deferAllRuntime();
     if (!quiet) {
         // Reported here rather than in `Registry.init`, which never runs when
         // consent is declined — a config that does not parse must be named

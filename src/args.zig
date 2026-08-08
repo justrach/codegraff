@@ -32,6 +32,7 @@ const no_local_tools = @import("no_local_tools.zig"); // #330: `--no-local-tools
 pub const Flags = struct {
     yolo_flag: bool = false,
     safe_flag: bool = false, // --safe: one-shot WITHOUT the implied --yolo (approval-gated, the old -p default)
+    no_lean_flag: bool = false, // --no-lean: one-shot WITHOUT the implied --lean (full tool surface + eager MCP, the old -p default)
     lean_flag: bool = false, // --lean: skip connecting MCP servers entirely (GRAFF_LEAN=1) — a smaller per-turn prefix for one-shot/CI runs
     no_telemetry_flag: bool = false,
     learning_privacy_flag: ?learning_privacy.Mode = null,
@@ -83,6 +84,15 @@ pub const Flags = struct {
     pub fn effectiveYolo(flags: Flags) bool {
         return flags.yolo_flag or (flags.oneshot_prompt != null and !flags.safe_flag);
     }
+
+    /// --lean is the one-shot default (measured: full catalog + eager MCP
+    /// roughly doubles a one-shot's per-turn prefix for capability one-shots
+    /// rarely exercise); interactive sessions keep the full surface, where
+    /// todos/workflow/peer tooling earn their bytes. --no-lean opts back
+    /// into the old full-surface -p; explicit --lean always wins.
+    pub fn effectiveLean(flags: Flags) bool {
+        return flags.lean_flag or (flags.oneshot_prompt != null and !flags.no_lean_flag);
+    }
 };
 
 /// Parses argv (via init.minimal.args) into a `Flags`. Fatals via
@@ -106,9 +116,10 @@ pub fn parse(init: std.process.Init) !Flags {
                     flags.yolo_flag = true;
                 } else if (std.mem.eql(u8, arg, "--safe")) {
                     flags.safe_flag = true;
+                } else if (std.mem.eql(u8, arg, "--no-lean")) {
+                    flags.no_lean_flag = true;
                 } else if (std.mem.eql(u8, arg, "--lean")) {
                     flags.lean_flag = true;
-                    no_local_tools.lean = true; // the tool-surface half of lean (the MCP half reads lean_flag via session_start.leanSkipsMcp)
                 } else if (std.mem.eql(u8, arg, "--worktree") or std.mem.eql(u8, arg, "-w")) {
                     flags.worktree_flag = it.next() orelse std.process.fatal("--worktree needs a name (e.g. --worktree agent1)", .{});
                 } else if (std.mem.eql(u8, arg, "--goal")) {
@@ -222,6 +233,12 @@ pub fn parse(init: std.process.Init) !Flags {
     }
     if (flags.print_flag and flags.oneshot_prompt == null) std.process.fatal("-p needs a prompt: harness -p \"do something\"", .{});
 
+    // The tool-surface half of lean, set AFTER the one-shot prompt is
+    // assembled: on for --lean and for every one-shot without --no-lean (the
+    // MCP half reads effectiveLean through session_start.leanMode; env
+    // GRAFF_LEAN sets the same global in session_settings.applyEnvKnobs).
+    if (flags.effectiveLean()) no_local_tools.lean = true;
+
     return flags;
 }
 
@@ -231,4 +248,12 @@ test "effectiveYolo: -p implies yolo, --safe opts out, interactive untouched" {
     try std.testing.expect(!Flags.effectiveYolo(.{ .oneshot_prompt = "fix it", .safe_flag = true }));
     try std.testing.expect(!Flags.effectiveYolo(.{}));
     try std.testing.expect(Flags.effectiveYolo(.{ .oneshot_prompt = "fix it", .yolo_flag = true, .safe_flag = true })); // explicit --yolo wins over --safe
+}
+
+test "effectiveLean: -p implies lean, --no-lean opts out, interactive keeps the full surface" {
+    try std.testing.expect(Flags.effectiveLean(.{ .lean_flag = true }));
+    try std.testing.expect(Flags.effectiveLean(.{ .oneshot_prompt = "fix it" }));
+    try std.testing.expect(!Flags.effectiveLean(.{ .oneshot_prompt = "fix it", .no_lean_flag = true }));
+    try std.testing.expect(!Flags.effectiveLean(.{}));
+    try std.testing.expect(Flags.effectiveLean(.{ .oneshot_prompt = "fix it", .lean_flag = true, .no_lean_flag = true })); // explicit --lean wins over --no-lean
 }
