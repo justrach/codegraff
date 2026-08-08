@@ -568,7 +568,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         _ = kimi_catalog.load(io, gpa, arena, home, kimi_token);
         var router_keys: provider_mod.Keys = .{ .values = @splat(null) };
         for (provider_mod.provider_specs, &router_keys.values) |spec, *value| {
-            if (spec.catalog != .openai) continue;
+            if (!router_catalog.dynamic(spec)) continue;
             const login_key = if (spec.login == .codegraff_device) oauth.loadCodegraffKey(io, arena, home) else null;
             value.* = init.environ_map.get(spec.env_key) orelse
                 login_key orelse keys_cli.loadStoredKey(io, arena, home, spec.id);

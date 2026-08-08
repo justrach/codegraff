@@ -39,7 +39,7 @@ fn contextWindowFor(provider_id: []const u8, model: []const u8) u64 {
 /// `.graff/.config.router` at startup.
 pub const ProviderSpec = struct {
     pub const LoginKind = enum { api_key, codegraff_device, codex_device, kimi_device };
-    pub const CatalogKind = enum { baked, codex, kimi, openai };
+    pub const CatalogKind = enum { baked, codex, kimi, openai, anthropic };
 
     id: []const u8,
     display_name: []const u8,
@@ -55,7 +55,10 @@ pub const ProviderSpec = struct {
 };
 
 pub const provider_specs = [_]ProviderSpec{
-    .{ .id = "anthropic", .display_name = "Anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "https://api.anthropic.com/v1/messages", .env_key = "ANTHROPIC_API_KEY", .default_model = "claude-opus-4-8" },
+    // Anthropic publishes its live model list at /v1/models (same x-api-key +
+    // anthropic-version auth as Messages), so new Claude releases appear
+    // without a rebuild; the baked pricing.zig rows stay the offline fallback.
+    .{ .id = "anthropic", .display_name = "Anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "https://api.anthropic.com/v1/messages", .env_key = "ANTHROPIC_API_KEY", .default_model = "claude-opus-4-8", .catalog = .anthropic, .models_url = "https://api.anthropic.com/v1/models?limit=1000" },
     .{ .id = "codegraff", .display_name = "Codegraff", .kind = .openai, .auth = .bearer, .url = "https://gateway.codegraff.com/v1/chat/completions", .env_key = "CODEGRAFF_API_KEY", .default_model = "deepseek-v4-pro", .login = .codegraff_device, .catalog = .openai, .models_url = "https://gateway.codegraff.com/v1/models", .takes_effort = true },
     .{ .id = "deepseek", .display_name = "DeepSeek", .kind = .openai, .auth = .bearer, .url = "https://api.deepseek.com/chat/completions", .env_key = "DEEPSEEK_API_KEY", .default_model = "deepseek-v4-pro", .takes_effort = true },
     .{ .id = "openai", .display_name = "OpenAI", .kind = .openai, .auth = .bearer, .url = "https://api.openai.com/v1/chat/completions", .env_key = "OPENAI_API_KEY", .default_model = "gpt-5.6" },
