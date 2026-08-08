@@ -36,6 +36,10 @@ const Snapshot = struct {
     // OpenAI-shaped routers and on this module's cache shape → one page.
     has_more: bool = false,
     last_id: ?[]const u8 = null,
+    // Fireworks' AIP-style pagination (nextPageToken/pageToken) — a different
+    // cursor spelled differently, so it gets its own slot rather than
+    // masquerading as an after_id.
+    page_token: ?[]const u8 = null,
 };
 
 fn isAdditional(spec: provider.ProviderSpec) bool {
@@ -139,6 +143,8 @@ pub fn parseModels(arena: Allocator, provider_id: []const u8, data: []const u8) 
         if (duplicate) continue;
         var context = positiveInt(item.object, "context_length");
         if (context == 0) context = positiveInt(item.object, "context");
+        // Fireworks declares the window in camelCase (AIP gateway shape).
+        if (context == 0) context = positiveInt(item.object, "contextLength");
         // Anthropic declares the input window as max_input_tokens. Its sibling
         // max_tokens is the OUTPUT cap (128k on Opus 5) — never read it as a
         // window, or a 1M-context model would compact at ~102k.
@@ -154,14 +160,16 @@ pub fn parseModels(arena: Allocator, provider_id: []const u8, data: []const u8) 
     const owned = rows.toOwnedSlice(arena) catch return null;
     if (owned.len == 0) return null;
     const has_more = value.object.get("has_more") orelse Value{ .null = {} };
+    const page_token = util.strFieldObj(value.object, "nextPageToken");
     return .{
         .models = owned,
         .fetched_at_ms = switch (value.object.get("fetched_at_ms") orelse Value{ .null = {} }) {
             .integer => |i| i,
             else => 0,
         },
-        .has_more = has_more == .bool and has_more.bool,
+        .has_more = (has_more == .bool and has_more.bool) or (page_token != null and page_token.?.len > 0),
         .last_id = util.strFieldObj(value.object, "last_id"),
+        .page_token = page_token,
     };
 }
 
@@ -180,12 +188,19 @@ fn catalogHeaders(arena: Allocator, spec: provider.ProviderSpec, key: []const u8
     return buf[0..2];
 }
 
-/// Next page of a Models-API cursor walk: `after_id` rides alongside the
-/// base URL's own query (limit=1000).
-fn pageUrl(arena: Allocator, base: []const u8, after_id: ?[]const u8) ?[]const u8 {
-    const id = after_id orelse return base;
+/// The two cursor spellings the catalog walk speaks: Anthropic's Models API
+/// pages with `after_id`, Fireworks' AIP gateway with `pageToken`.
+const Cursor = union(enum) { after_id: []const u8, page_token: []const u8 };
+
+/// Next page of a catalog walk: the cursor rides alongside the base URL's own
+/// query (limit=1000, or filter/pageSize for the AIP gateway).
+fn pageUrl(arena: Allocator, base: []const u8, cursor: ?Cursor) ?[]const u8 {
+    const c = cursor orelse return base;
     const sep: u8 = if (std.mem.indexOfScalar(u8, base, '?') != null) '&' else '?';
-    return std.fmt.allocPrint(arena, "{s}{c}after_id={s}", .{ base, sep, id }) catch null;
+    return switch (c) {
+        .after_id => |id| std.fmt.allocPrint(arena, "{s}{c}after_id={s}", .{ base, sep, id }) catch null,
+        .page_token => |tok| std.fmt.allocPrint(arena, "{s}{c}pageToken={s}", .{ base, sep, tok }) catch null,
+    };
 }
 
 fn containsName(rows: []const pricing.ModelInfo, name: []const u8) bool {
@@ -219,17 +234,20 @@ fn fetch(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, 
     const base = modelsUrl(spec);
     if (base.len == 0) return null;
     var rows: std.ArrayList(pricing.ModelInfo) = .empty;
-    var after_id: ?[]const u8 = null;
+    var cursor: ?Cursor = null;
     var pages: usize = 0;
     while (pages < 16) : (pages += 1) {
-        const url = pageUrl(arena, base, after_id) orelse break;
+        const url = pageUrl(arena, base, cursor) orelse break;
         const page = fetchPage(io, gpa, arena, spec, key, url) orelse break;
         for (page.models) |m| {
             if (containsName(rows.items, m.name)) continue;
             rows.append(arena, m) catch return null;
         }
         if (!page.has_more) break;
-        after_id = page.last_id orelse break;
+        cursor = if (page.page_token != null and page.page_token.?.len > 0)
+            .{ .page_token = page.page_token.? }
+        else
+            .{ .after_id = page.last_id orelse break };
     }
     if (rows.items.len == 0) return null;
     return .{ .models = rows.toOwnedSlice(arena) catch return null };
@@ -388,6 +406,33 @@ test "parseModels is reusable for a newly configured router" {
     try std.testing.expectEqual(pricing.default_context, snapshot.models[2].context);
 }
 
+test "fireworks catalog is live and parses the AIP gateway shape" {
+    const spec = provider.specFor("fireworks") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(provider.ProviderSpec.CatalogKind.openai, spec.catalog);
+    try std.testing.expect(std.mem.indexOf(u8, modelsUrl(spec), "accounts/fireworks/models") != null);
+
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const snapshot = parseModels(state.allocator(), "fireworks",
+        \\{"models":[
+        \\ {"name":"accounts/fireworks/models/glm-5p2","displayName":"GLM 5.2","contextLength":1048576},
+        \\ {"name":"accounts/fireworks/models/no-window"},
+        \\ {"name":"accounts/fireworks/models/glm-5p2","contextLength":128000}
+        \\],"nextPageToken":"tok-page-2","totalSize":3}
+    ) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), snapshot.models.len); // the duplicate id drops
+    try std.testing.expectEqualStrings("accounts/fireworks/models/glm-5p2", snapshot.models[0].name);
+    try std.testing.expectEqual(@as(u64, 1_048_576), snapshot.models[0].context); // camelCase contextLength read
+    try std.testing.expectEqual(pricing.default_context, snapshot.models[1].context); // omitted + no baked match → default
+    try std.testing.expect(snapshot.has_more);
+    try std.testing.expectEqualStrings("tok-page-2", snapshot.page_token.?);
+
+    // The walk spells the cursor the gateway's way, not Anthropic's.
+    const url = pageUrl(state.allocator(), modelsUrl(spec), .{ .page_token = "tok-page-2" }).?;
+    try std.testing.expect(std.mem.indexOf(u8, url, "&pageToken=tok-page-2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, url, "after_id") == null);
+}
+
 test "parseModels round-trips the generic cache shape" {
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
@@ -514,11 +559,11 @@ test "Models-API cursor pagination is followed 1:1 with the docs" {
     // after_id joins the base URL's existing query string.
     try std.testing.expectEqualStrings(
         "https://api.anthropic.com/v1/models?limit=1000&after_id=claude-opus-5",
-        pageUrl(arena, "https://api.anthropic.com/v1/models?limit=1000", "claude-opus-5") orelse return error.TestUnexpectedResult,
+        pageUrl(arena, "https://api.anthropic.com/v1/models?limit=1000", .{ .after_id = "claude-opus-5" }) orelse return error.TestUnexpectedResult,
     );
     try std.testing.expectEqualStrings(
         "https://example.com/models?after_id=m1",
-        pageUrl(arena, "https://example.com/models", "m1") orelse return error.TestUnexpectedResult,
+        pageUrl(arena, "https://example.com/models", .{ .after_id = "m1" }) orelse return error.TestUnexpectedResult,
     );
     try std.testing.expectEqualStrings("base", pageUrl(arena, "base", null) orelse return error.TestUnexpectedResult);
 }

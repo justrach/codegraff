@@ -88,7 +88,11 @@ pub const provider_specs = [_]ProviderSpec{
     .{ .id = "xai", .display_name = "xAI", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3", .login = .xai_device, .sub_login = true },
     .{ .id = "zai", .display_name = "Z.AI", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
     .{ .id = "fugu", .display_name = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
-    .{ .id = "fireworks", .display_name = "fireworks", .kind = .openai, .auth = .bearer, .url = "https://api.fireworks.ai/inference/v1/chat/completions", .env_key = "FIREWORKS_API_KEY", .default_model = "accounts/fireworks/models/deepseek-v4-pro" },
+    // Fireworks serves its serverless catalog live (AIP gateway shape:
+    // pageToken pagination, camelCase contextLength), so new model releases
+    // appear without a rebuild; the baked pricing.zig rows stay the offline
+    // fallback and supply windows for models the gateway omits.
+    .{ .id = "fireworks", .display_name = "fireworks", .kind = .openai, .auth = .bearer, .url = "https://api.fireworks.ai/inference/v1/chat/completions", .env_key = "FIREWORKS_API_KEY", .default_model = "accounts/fireworks/models/deepseek-v4-pro", .catalog = .openai, .models_url = "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue&pageSize=200" },
     // mlx: a local model served by mlx-lm (`mlx_lm.server`) on Apple Silicon —
     // OpenAI-compatible, no real key (MLX_API_KEY=local just clears graff's boot gate).
     .{ .id = "mlx", .display_name = "mlx", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:8080/v1/chat/completions", .env_key = "MLX_API_KEY", .default_model = "mlx-community/Qwen3.6-27B-OptiQ-4bit" },
