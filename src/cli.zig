@@ -21,6 +21,12 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.244
+    \\  • Co-resident graff sessions now see each other: a startup warning names any live session already in your worktree, and the first git mutation, file write, or shell move against a peer's tree pauses once for a deliberate re-issue — two agents can no longer silently tear one tree
+    \\  • Sessions can message each other: the peer_message tool and /tell post to a shared channel every co-resident session hears (address one by name, "all" reaches every session on the device), delivered mid-task at step boundaries with the sender's current goal attached
+    \\  • The model is told up front who else is live and what they're working on, so it coordinates — or picks disjoint work — before any collision
+    \\  • Session recaps ride the event stream: settled turns carry a Completed or Needs-input status with a one-line recap for the GUI agent overview
+    \\
     \\0.0.243
     \\  • The terminal palette now matches codegraff.com: the identity accent is the site's emerald (#059669) — spinner, prompt, headings, tool-call lines, and attached-file chips — so a routine ⚙ bash line no longer reads as error red
     \\  • The ensō spinner actually turns now: six brush poses stepping at 100ms instead of four doubled poses every 320ms — the ~3fps stutter is gone
