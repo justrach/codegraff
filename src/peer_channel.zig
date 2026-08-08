@@ -168,6 +168,18 @@ fn peerNoteIfChanged(root: *Agent) ?[]const u8 {
 pub const backlog_tail_max = 10;
 var g_backlog_tail_cut = false;
 
+/// Of a first-drain backlog the REPL prints only this many trailing lines;
+/// the rest still lands in history (the model coordinates from it) behind a
+/// "delivered to context" marker. Live drains are unaffected.
+pub const backlog_repl_show = 2;
+
+const DisplayWindow = struct { start: usize, hidden: usize };
+
+fn displayWindow(is_backlog: bool, count: usize) DisplayWindow {
+    if (!is_backlog or count <= backlog_repl_show) return .{ .start = 0, .hidden = 0 };
+    return .{ .start = count - backlog_repl_show, .hidden = count - backlog_repl_show };
+}
+
 /// Device-room hearing is addressed-only: the line names this session and it
 /// arrives whoever posted it. Unaddressed lines cross folders only when the
 /// USER broadcast them (/tell all) — a /tell to one named graff is a DM, and
@@ -186,7 +198,8 @@ pub fn deliverInbound(root: *Agent) void {
     // Only the process's FIRST drain carries the rooms' whole backlog; later
     // drains are incremental and must never be capped — those are live.
     var omitted: usize = 0;
-    if (!g_backlog_tail_cut) {
+    const is_backlog_drain = !g_backlog_tail_cut;
+    if (is_backlog_drain) {
         g_backlog_tail_cut = true;
         const dl = presence_chan.backlogDrop(local_msgs.len, backlog_tail_max);
         const dd = presence_chan.backlogDrop(device_msgs.len, backlog_tail_max);
@@ -227,6 +240,7 @@ pub fn deliverInbound(root: *Agent) void {
             sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
         }
     }
+    var lines: std.ArrayList([]const u8) = .empty;
     for ([2][]const presence.Message{ local_msgs, device_msgs }, [2][]const u8{ "", " · device" }) |msgs, scope| {
         for (msgs) |m| {
             const goal = if (m.from_goal.len > 0) std.fmt.allocPrint(root.arena, " (goal: {s})", .{m.from_goal}) catch "" else "";
@@ -236,9 +250,19 @@ pub fn deliverInbound(root: *Agent) void {
             const line = std.fmt.allocPrint(root.arena, "[peer message from {s}{s}{s}{s} — #469 channel]: {s}", .{ m.from_session, goal, to, scope, m.text }) catch continue;
             buf.appendSlice(root.arena, line) catch {};
             buf.append(root.arena, '\n') catch {};
-            sink.emit(root.io, .{ .session_notice = .{ .text = line, .tone = .plain } });
+            lines.append(root.arena, line) catch {};
         }
     }
+    // History gets every line (the model coordinates from it); the REPL prints
+    // only the tail of a first-drain backlog so a resume is not a wall of
+    // text. Live incremental drains render every line — those are new.
+    const window = displayWindow(is_backlog_drain, lines.items.len);
+    if (window.hidden > 0) {
+        const marker = std.fmt.allocPrint(root.arena, "[#469 channel: {d} backlog message(s) delivered to context — showing last {d}]", .{ window.hidden, backlog_repl_show }) catch "";
+        if (marker.len > 0) sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
+    }
+    for (lines.items[window.start..]) |line|
+        sink.emit(root.io, .{ .session_notice = .{ .text = line, .tone = .plain } });
     if (buf.items.len == 0) return;
     buf.appendSlice(root.arena, "(reply with the peer_message tool — queued, one-way; everyone here hears it)") catch {};
     var obj: std.json.ObjectMap = .empty;
@@ -494,4 +518,13 @@ test "deviceHears: addressed lines and the user's /tell cross folders; broadcast
     try std.testing.expect(!deviceHears(.{ .to = "session-999-them" }, own));
     try std.testing.expect(!deviceHears(.{}, own));
     try std.testing.expect(!deviceHears(.{ .to = "session-111" }, ""));
+}
+
+test "displayWindow: only a backlog drain is windowed, to its trailing lines" {
+    // Live incremental drains render every line, however many.
+    try std.testing.expectEqualDeep(DisplayWindow{ .start = 0, .hidden = 0 }, displayWindow(false, 25));
+    // A backlog at or under the show-count renders in full — no marker noise.
+    try std.testing.expectEqualDeep(DisplayWindow{ .start = 0, .hidden = 0 }, displayWindow(true, backlog_repl_show));
+    // A longer backlog prints only the tail; the rest is context-only.
+    try std.testing.expectEqualDeep(DisplayWindow{ .start = 8, .hidden = 8 }, displayWindow(true, 10));
 }
