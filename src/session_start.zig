@@ -147,9 +147,9 @@ pub fn setupWorktreeAndBanner(
         if (codex_account) |acct| sink.emit(io, .{ .session_notice = .{
             .text = try std.fmt.allocPrint(arena, "logged into Codex (ChatGPT account {s}…) — /model codex", .{acct[0..@min(acct.len, 8)]}),
         } });
-        if (flags.yolo_flag) sink.emit(io, .{ .session_notice = .{
+        if (flags.effectiveYolo()) sink.emit(io, .{ .session_notice = .{
             .lead = "⚠ YOLO",
-            .text = " mode (--yolo): all bash/tool/MCP permission prompts are skipped",
+            .text = if (flags.yolo_flag) " mode (--yolo): all bash/tool/MCP permission prompts are skipped" else " mode (-p implies --yolo; --safe opts out): all bash/tool/MCP permission prompts are skipped",
             .tone = .alert,
         } });
         if (stale_saved_model) |nm| {

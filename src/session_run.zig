@@ -198,7 +198,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
 /// its own `defer` for `approvals.prefixes` right after the call (a `defer`
 /// registered here would fire when THIS returns, not when main() does).
 pub fn initApprovalsHooksFleet(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, approvals: *Approvals, flags: args.Flags, out: *Io.Writer, json_mode: bool) !void {
-    approvals.* = .{ .yolo = flags.yolo_flag };
+    approvals.* = .{ .yolo = flags.effectiveYolo() }; // -p implies yolo unless --safe
     const persisted_approvals = approvals.loadPersisted(io, gpa, arena);
 
     // Agent types: builtins + .harness/agents/*.md (the MAP-Elites niches).
