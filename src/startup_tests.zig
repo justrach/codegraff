@@ -68,5 +68,12 @@ test "resolveKeys does not load Kimi/xAI OAuth credentials for an explicit unrel
     const startup = @import("startup.zig");
     try std.testing.expect(startup.storedKeyMayAffectSelection("kimi", "gpt-5.6-sol", "kimi"));
     try std.testing.expect(!startup.storedKeyMayAffectSelection("kimi", "gpt-5.6-sol", null));
-    try std.testing.expect(startup.startupStoredKeyScope("deepseek", true, "kimi").includes(6, "kimi"));
+    // The scope mask is indexed by provider_specs position — look kimi's up
+    // rather than hardcoding it, so provider insertions (PR #395 shifted it
+    // from 6 to 9) can't silently break this assertion again.
+    const specs = @import("provider.zig").provider_specs;
+    const kimi_idx = for (specs, 0..) |s, i| {
+        if (std.mem.eql(u8, s.id, "kimi")) break i;
+    } else unreachable;
+    try std.testing.expect(startup.startupStoredKeyScope("deepseek", true, "kimi").includes(kimi_idx, "kimi"));
 }
