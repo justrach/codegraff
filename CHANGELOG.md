@@ -10,6 +10,49 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.244 (2026-08-08)
+
+- Co-resident sessions see and coordinate with each other (#469): a per-user
+  registry at `~/.graff/live` names any live session already in your worktree,
+  probed for liveness on read via `proc_identity`, so crashed sessions reap
+  themselves — no heartbeats, no daemon. The first index- or tree-mutating git
+  command, file write, or shell move against a peer's tree pauses once for a
+  deliberate re-issue, under `--yolo` too, where no approval prompt exists. The
+  motivating failure: two `--yolo` roots in one worktree picked up the same task
+  and one git-staged the other's files mid-write, because neither could see the
+  other. Sessions can also talk — the `peer_message` tool, `/tell`, and `/peek`
+  over a shared per-worktree room plus a device-wide one.
+- Session recaps ride the event stream (#419): a settled turn carries a
+  Completed or Needs-input status and a one-line recap, so a GUI overview can
+  say what each agent did without re-reading the transcript.
+- Subscriptions are billed and routed as subscriptions (#471). A flat-rate
+  login and a metered API key on the same provider are different *seats*, and
+  nothing in the routing stack knew that: billing was a hardcoded provider-id
+  list, the third of four such lists in the tree, and they disagreed. xAI has
+  had a real device-code login since `graff login xai`, so a paid SuperGrok
+  session was billed at grok list price and excluded from subscription routing
+  entirely. Now the plan **outranks** the key on the same provider instead of
+  losing to it by arriving second, contributes $0 to `/cost`, and the displaced
+  key is parked — taking over, announced, only when the plan hits a quota cap.
+- Worker tiers land on seats you already pay for (#471): an explicit `tier` ask
+  crosses to a logged-in plan (`mid` → k3, `small` → gpt-5.6-luna) rather than
+  a metered rung. The #291 ladder descent had been blocking this by looking
+  like a manual pin, which made subscription routing dead in most sessions —
+  found by running the harness for real, not by the unit suite.
+- A tier rung must be a genuinely cheaper SEAT (#471): the bench sheet ranks by
+  $/task, which folds the seat's rate together with how many tokens a model
+  burns, so an equally-priced older model read as the cheap rung. Every opus
+  generation bills $5/$25, so descending opus-5 → opus-4-8 saved nothing at
+  all. Anthropic now descends opus-5 → sonnet-5, deepseek-v4-flash replaces pro
+  outright, and a mid rung that cost *more* than its own frontier is gone.
+- `graff route` with no model lists every provider you can reach, what it
+  bills, and the tiers it offers — including a plan whose displaced key is
+  parked behind it. Detection stats the credential file only: listing providers
+  never refreshes a token or spends anything.
+- Anthropic serves its live model list, like the OpenAI routers: new Claude
+  releases arrive without a rebuild, with the baked rows kept as the
+  no-key/offline fallback.
+
 ## v0.0.242 (2026-08-06)
 
 - MCP tool schemas load on demand (#416): a server's tools are advertised by
