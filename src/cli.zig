@@ -25,6 +25,7 @@ pub const changelog_text =
     \\  • Co-resident graff sessions now see each other: a startup warning names any live session already in your worktree, and the first git mutation, file write, or shell move against a peer's tree pauses once for a deliberate re-issue — two agents can no longer silently tear one tree
     \\  • Sessions can message each other: the peer_message tool and /tell post to a shared channel every co-resident session hears (address one by name, "all" reaches every session on the device), delivered mid-task at step boundaries with the sender's current goal attached
     \\  • The model is told up front who else is live and what they're working on, so it coordinates — or picks disjoint work — before any collision
+    \\  • /peek <session> shows what a live co-resident session is doing right now — its last prompt, last action, last tool
     \\  • Session recaps ride the event stream: settled turns carry a Completed or Needs-input status with a one-line recap for the GUI agent overview
     \\  • Subscriptions are billed and routed as subscriptions: a flat-rate login (Codex, Kimi, SuperGrok) now outranks an API key on the same provider instead of losing to it, costs $0 in /cost, and the key it displaced is parked and takes over — announced — only if the plan runs out of quota
     \\  • Worker tiers land on seats you already pay for: an explicit tier ask crosses to a logged-in plan (mid → k3, small → gpt-5.6-luna) rather than a metered rung, which the #291 ladder descent used to block by looking like a manual pin
