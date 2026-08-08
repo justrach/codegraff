@@ -242,6 +242,148 @@ pub fn tellCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Wr
     return true;
 }
 
+/// What a peeked session is up to, summarized from its transcript tail.
+pub const PeekSummary = struct {
+    last_prompt: []const u8 = "",
+    last_said: []const u8 = "",
+    last_tool: []const u8 = "",
+    messages: usize = 0,
+};
+
+/// Pure: parse complete transcript lines (one serialized message each, #441)
+/// and pull the last user text, last assistant text, and last tool name. A
+/// torn first line (we read a tail window) or last line (writer mid-append)
+/// is skipped — the next peek catches up.
+pub fn summarizeTranscript(arena: Allocator, text: []const u8) PeekSummary {
+    var out: PeekSummary = .{};
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |line| {
+        if (line.len == 0) continue;
+        const msg = std.json.parseFromSliceLeaky(std.json.Value, arena, line, .{ .ignore_unknown_fields = true }) catch continue;
+        if (msg != .object) continue;
+        const role = if (msg.object.get("role")) |r| (if (r == .string) r.string else "") else "";
+        out.messages += 1;
+        if (std.mem.eql(u8, role, "user")) {
+            if (firstText(msg.object)) |t| out.last_prompt = t;
+        } else if (std.mem.eql(u8, role, "assistant")) {
+            if (firstText(msg.object)) |t| {
+                out.last_said = t;
+            } else if (msg.object.get("tool_calls")) |tc| {
+                if (tc == .array and tc.array.items.len > 0) {
+                    const call = tc.array.items[0];
+                    if (call == .object) {
+                        if (call.object.get("function")) |f| {
+                            if (f == .object) {
+                                if (f.object.get("name")) |n| {
+                                    if (n == .string) out.last_tool = n.string;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (std.mem.eql(u8, role, "tool")) {
+            if (msg.object.get("name")) |n| {
+                if (n == .string) out.last_tool = n.string;
+            }
+        }
+    }
+    return out;
+}
+
+/// First readable text of a message's content, whether it's a plain string or
+/// content blocks. Peer-channel lines we inject are skipped: they quote the
+/// peer's doings, they aren't the peer's doings.
+fn firstText(obj: std.json.ObjectMap) ?[]const u8 {
+    const content = obj.get("content") orelse return null;
+    switch (content) {
+        .string => |s| return if (s.len > 0 and !std.mem.startsWith(u8, s, "[peer message")) s else null,
+        .array => |arr| {
+            for (arr.items) |blk| {
+                if (blk != .object) continue;
+                const t = blk.object.get("type") orelse continue;
+                if (t == .string and std.mem.eql(u8, t.string, "text")) {
+                    if (blk.object.get("text")) |v| {
+                        if (v == .string and v.string.len > 0) return v.string;
+                    }
+                }
+            }
+            return null;
+        },
+        else => return null,
+    }
+}
+
+fn clip(text: []const u8, max: usize) []const u8 {
+    const t = std.mem.trim(u8, text, " \t\r\n");
+    return if (t.len <= max) t else t[0..max];
+}
+
+/// The transcript path for a peer: shared worktree means shared .graff;
+/// cross-folder peers are reached through their recorded identity (a git dir
+/// whose parent is the tree root, or the cwd realpath outside git).
+fn transcriptPath(arena: Allocator, peer: Owner) []const u8 {
+    const mine = presence.ownIdentity();
+    const base = if (std.mem.eql(u8, peer.identity, mine))
+        "."
+    else if (std.mem.endsWith(u8, peer.identity, "/.git"))
+        peer.identity[0 .. peer.identity.len - "/.git".len]
+    else
+        peer.identity;
+    return std.fmt.allocPrint(arena, "{s}/.graff/sessions/{s}.transcript.jsonl", .{ base, peer.session_id }) catch "";
+}
+
+/// /peek <session>: what is the other live session DOING right now — the tail
+/// of its append-only transcript, not just its registry goal.
+pub fn peekCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
+    const target = std.mem.trim(u8, line["/peek".len..], " \t");
+    const everyone = presence.liveAllPeers(root.io, arena);
+    if (target.len == 0) {
+        try out.writeAll("usage: /peek <session> — what a live session is doing right now\n");
+        if (everyone.len == 0) try out.writeAll("  (no live peers right now)\n") else try out.print("  live now: {s}\n", .{peerListText(arena, everyone)});
+        try out.flush();
+        return true;
+    }
+    const peer = switch (resolvePeer(everyone, target)) {
+        .one => |p| p,
+        .none => {
+            try out.print("no live peer matches \"{s}\"\n", .{target});
+            try out.flush();
+            return true;
+        },
+        .ambiguous => {
+            try out.print("more than one live peer matches — live now: {s}\n", .{peerListText(arena, everyone)});
+            try out.flush();
+            return true;
+        },
+    };
+    const path = transcriptPath(arena, peer);
+    const text = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(1024 * 1024)) catch {
+        try out.print("{s} · pid {d} · goal: {s}\n  transcript not reachable from here ({s})\n", .{ peer.session_id, peer.pid, if (peer.goal.len > 0) peer.goal else "?", peer.identity });
+        try out.flush();
+        return true;
+    };
+    // Keep the tail: a long transcript's beginning is ancient history.
+    const window = if (text.len > 64 * 1024) blk: {
+        const tail = text[text.len - 64 * 1024 ..];
+        const first_nl = std.mem.indexOfScalar(u8, tail, '\n') orelse 0;
+        break :blk tail[first_nl + 1 ..];
+    } else text;
+    const sum = summarizeTranscript(arena, window);
+    const goal = if (peer.goal.len > 0) peer.goal else "?";
+    try out.print("⚡ {s} · pid {d} · goal: {s}\n", .{ peer.session_id, peer.pid, goal });
+    if (sum.last_prompt.len > 0) try out.print("  last prompt: {s}\n", .{clip(sum.last_prompt, 120)});
+    if (sum.last_said.len > 0) try out.print("  last said: {s}\n", .{clip(sum.last_said, 120)});
+    if (sum.last_tool.len > 0) try out.print("  last tool: {s}", .{sum.last_tool});
+    if (sum.messages > 0)
+        try out.print("{s}{d} transcript messages\n", .{ if (sum.last_tool.len > 0) " · " else "  ", sum.messages })
+    else if (sum.last_tool.len > 0)
+        try out.writeAll("\n");
+    if (sum.messages == 0) try out.writeAll("  (transcript is empty — it just started)\n");
+    try out.flush();
+    return true;
+}
+
 /// The "live now" section /sessions appends under the saved-session list:
 /// this worktree first, then the rest of the device.
 pub fn writeLiveSection(root: *Agent, arena: Allocator, out: *Io.Writer) !void {
@@ -266,4 +408,26 @@ pub fn writeLiveSection(root: *Agent, arena: Allocator, out: *Io.Writer) !void {
         else
             try out.print("  ⚡ {s} · pid {d} · {s} · goal: {s}\n", .{ p.session_id, p.pid, p.identity, goal });
     }
+}
+
+test "summarizeTranscript: last prompt, last words, last tool, from complete lines only" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const text =
+        \\{"role":"user","content":"refactor the digest job"}
+    ++ "\n" ++
+        \\{"role":"assistant","content":null,"tool_calls":[{"function":{"name":"edit_file"}}]}
+    ++ "\n" ++
+        \\{"role":"tool","name":"edit_file","content":"ok"}
+    ++ "\n" ++
+        \\{"role":"assistant","content":[{"type":"text","text":"switched the query to display_name"}]}
+    ++ "\n" ++
+        \\{"role":"user","content":"[peer message from s-2 — #469 channel]: hold off"}
+    ++ "\n" ++ "{\"role\":\"user\",\"content\":\"a torn last line";
+    const sum = summarizeTranscript(arena, text);
+    try std.testing.expectEqualStrings("refactor the digest job", sum.last_prompt); // peer-channel quotes are not the peer's doings
+    try std.testing.expectEqualStrings("switched the query to display_name", sum.last_said);
+    try std.testing.expectEqualStrings("edit_file", sum.last_tool);
+    try std.testing.expectEqual(5, sum.messages); // the torn tail is skipped
 }
