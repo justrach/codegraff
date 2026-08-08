@@ -178,6 +178,12 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     for (root.md_table.items) |r| gpa.free(r);
     root.md_table.deinit(gpa);
     root.tools_used.deinit(gpa);
+    // Presence announced this session at boot (#469); a one-shot returns
+    // before finalizeSession, so retire + free its gpa-owned globals here or
+    // they reach the exit-time leak check — and our record would linger in
+    // the registry until a peer's liveness probe reaps it.
+    presence.retire(io);
+    presence.deinit(gpa);
     // #396: the run is over. The frontend hands the terminal back and latches
     // its reader shut before main()'s teardown — a terminal-ownership move the
     // sink owns now, in EVERY mode, exactly as the old unconditional call did.
