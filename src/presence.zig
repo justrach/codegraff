@@ -79,6 +79,34 @@ pub fn isSharedTreeGit(cmd: []const u8) bool {
     return false;
 }
 
+/// The shell half of the #469 incident vector: `mv` (any form — a rename can
+/// disappear a file a peer just wrote) and recursive `rm`. Plain `rm` of one
+/// file stays ungated: the checkpoint exists for tree-level disruption, and
+/// it fires once per peer regardless, so the odd false positive costs one
+/// line, never a workflow.
+pub fn isSharedTreeShell(cmd: []const u8) bool {
+    var it = std.mem.tokenizeAny(u8, cmd, " \t\r\n;&|\"'`()");
+    while (it.next()) |tok| {
+        if (std.mem.eql(u8, tok, "mv")) {
+            var operands: usize = 0;
+            while (it.next()) |arg| {
+                if (arg[0] == '-') continue;
+                operands += 1;
+            }
+            if (operands >= 2) return true;
+            continue;
+        }
+        if (std.mem.eql(u8, tok, "rm")) {
+            while (it.next()) |arg| {
+                if (arg[0] != '-') break;
+                if (std.mem.indexOfAny(u8, arg, "rR") != null) return true;
+            }
+            continue;
+        }
+    }
+    return false;
+}
+
 /// The on-disk shape. Older/newer graffs tolerate each other via
 /// ignore_unknown_fields both ways (a superset write parses down fine).
 const RecordJson = struct {
@@ -310,7 +338,7 @@ pub fn gateCheck(io: Io, arena: Allocator) ?[]const u8 {
         g_acked_len += 1;
     }
     const warning = worktree_lease.duplicateOwnerWarning(arena, peer, unixMs(io) - peer.last_seen_ms);
-    return std.fmt.allocPrint(arena, "{s}shared-tree checkpoint (#469): the command was NOT run. Re-issue the identical command to proceed — this fires once per live peer — coordinate first via the peer_message tool (session \"{s}\"), or keep your edits disjoint from theirs.", .{ warning, peer.session_id }) catch warning;
+    return std.fmt.allocPrint(arena, "{s}shared-tree checkpoint (#469): the action was NOT performed. Re-issue the identical call to proceed — this fires once per live peer, across git mutations, file writes, and shell moves alike — coordinate first via the peer_message tool (session \"{s}\"), or keep your edits disjoint from theirs.", .{ warning, peer.session_id }) catch warning;
 }
 
 // The channel's wire format (Message, chanName, postMessage, readNewMessages)
@@ -403,6 +431,20 @@ test "isSharedTreeGit: flags index/tree-mutating git, ignores read-only git" {
     try std.testing.expect(!isSharedTreeGit("gh issue list"));
     try std.testing.expect(!isSharedTreeGit("git"));
     try std.testing.expect(!isSharedTreeGit("ls src/"));
+}
+
+test "isSharedTreeShell: flags mv and recursive rm, leaves everyday commands alone" {
+    try std.testing.expect(isSharedTreeShell("mv old/ new/"));
+    try std.testing.expect(isSharedTreeShell("mv a.ts b.ts"));
+    try std.testing.expect(isSharedTreeShell("mv src/a src/b dest/"));
+    try std.testing.expect(isSharedTreeShell("rm -rf node_modules"));
+    try std.testing.expect(isSharedTreeShell("rm -r build"));
+    try std.testing.expect(isSharedTreeShell("cd x && mv a b"));
+    try std.testing.expect(!isSharedTreeShell("rm -f .lock"));
+    try std.testing.expect(!isSharedTreeShell("rm one-file.txt"));
+    try std.testing.expect(!isSharedTreeShell("mv")); // no operands: a usage error, not a tree event
+    try std.testing.expect(!isSharedTreeShell("ls -la"));
+    try std.testing.expect(!isSharedTreeShell("echo moved"));
 }
 
 test "presence record round-trips pid, identity, and goal" {

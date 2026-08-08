@@ -218,7 +218,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         // touches the shared index/tree — fires under --yolo too, where no
         // approvals prompt would ever surface the collision. The model sees
         // the peer's identity + goal and re-issues the command to proceed.
-        if (presence.isSharedTreeGit(cmd)) {
+        if (presence.isSharedTreeGit(cmd) or presence.isSharedTreeShell(cmd)) {
             if (presence.gateCheck(self.io, self.arena)) |checkpoint| return .{
                 .text = checkpoint,
                 .is_error = true,
@@ -233,6 +233,12 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         else
             std.fmt.bufPrint(&line_buf, "run: {s}", .{cmd}) catch cmd;
     } else if (std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file")) {
+        // #469: the same once-per-peer checkpoint guards the files themselves —
+        // the incident's other vector was editing a file a live peer had open.
+        if (presence.gateCheck(self.io, self.arena)) |checkpoint| return .{
+            .text = checkpoint,
+            .is_error = true,
+        };
         if (approvals.allowedExact(self.io, call.name)) return null;
         key = call.name;
         const path = if (call.input == .object)
