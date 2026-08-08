@@ -553,6 +553,24 @@ test "#391/#445: the prompt funnel never arms the note store in a test build" {
     try std.testing.expect(!prompts.compactNotesArmed());
 }
 
+test "lean drops the todo/constraint capabilities from the prompt, never the local tools" {
+    const saved = no_local_tools.lean;
+    defer no_local_tools.lean = saved;
+    no_local_tools.lean = false;
+    const full = prompts.detectCaps();
+    try std.testing.expect(full.todos and full.constraints and full.local_tools);
+    no_local_tools.lean = true;
+    const lean = prompts.detectCaps();
+    try std.testing.expect(!lean.todos and !lean.constraints);
+    try std.testing.expect(lean.local_tools and lean.subagents); // the lean seven keep both
+    // …and the composition carries it: the dropped segments' bytes are gone.
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+    const lean_prompt = try prompts.composeBase(a, lean);
+    try std.testing.expect(lean_prompt.len < prompts.main_system_prompt.len);
+}
+
 test "unattended one-shots are told the REAL approval map up front; attended sessions hear nothing" {
     var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer a_state.deinit();

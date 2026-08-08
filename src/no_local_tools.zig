@@ -64,6 +64,55 @@ pub fn blocks(name: []const u8) bool {
     return enabled and isLocalTool(name);
 }
 
+/// --lean / GRAFF_LEAN=1 tool surface — the token-cost counterpart of the MCP
+/// skip (session_start.leanSkipsMcp reads the same flag/env). A one-shot
+/// coding task needs seven tools; every other schema is prefix re-sent on
+/// EVERY model turn. Measured on the full root catalog: 25.9k schema bytes
+/// (~6.5k tokens) against 8.6k (~2.1k) for this subset — ~4.3k tokens saved
+/// per turn, the difference between a ~10.7k and a ~6.4k one-shot prefix.
+/// Unlike #330 this is NOT a security boundary, so there is no dispatch
+/// layer: an unadvertised tool is simply unknown to the model, and a
+/// hallucinated call fails like any bad tool name.
+pub var lean: bool = false;
+
+/// The lean keep-list. `subagent` stays despite being the priciest schema
+/// (5.1k bytes): in an unattended non-yolo one-shot the root is
+/// approval-gated out of bash/edit_file and delegation is the sanctioned
+/// path (prompts.unattended_note) — dropping it would strand exactly the
+/// runs lean is built for.
+pub const lean_tools = [_][]const u8{
+    "bash",
+    "read_file",
+    "edit_file",
+    "write_file",
+    "codedb",
+    "subagent",
+    "attempt_completion",
+};
+
+/// A name test only, so the catalog filter and tests share one list.
+pub fn leanKeeps(name: []const u8) bool {
+    for (lean_tools) |tool| {
+        if (std.mem.eql(u8, name, tool)) return true;
+    }
+    return false;
+}
+
+/// schema.zig chains this after filterRootSpecs (a tool may survive one and
+/// not the other). Returns the input untouched when lean is off — no
+/// allocation on the normal path, mirroring filterRootSpecs.
+pub fn filterLeanSpecs(comptime Spec: type, arena: Allocator, specs: []const Spec) ![]const Spec {
+    if (!lean) return specs;
+    const buf = try arena.alloc(Spec, specs.len);
+    var kept: usize = 0;
+    for (specs) |spec| {
+        if (!leanKeeps(spec.name)) continue;
+        buf[kept] = spec;
+        kept += 1;
+    }
+    return buf[0..kept];
+}
+
 /// Refusal text. Names the flag so the model stops retrying the same call, and
 /// points it at what does work in this deployment.
 pub const refusal_text = "--no-local-tools is set for this process: the built-in bash, bash_output, bash_kill, read_file, edit_file, write_file and codedb tools are hard-disabled and cannot be re-enabled by asking. Run commands and touch files through the sandbox tools the connected MCP server provides instead; webfetch still works.";
@@ -127,8 +176,45 @@ test "#330: the gated set is exactly the host-touching built-ins; webfetch, meta
 }
 
 test "#330: GRAFF_NO_LOCAL_TOOLS is affirmative-only" {
-    for ([_][]const u8{ "1", "true", "TRUE", "on", "Yes" }) |value| try std.testing.expect(envEnables(value));
-    for ([_][]const u8{ "0", "off", "false", "no", "", "maybe" }) |value| try std.testing.expect(!envEnables(value));
+    for ([_][]const u8{ "1", "true", "TRUE", "on", "yes" }) |v| try std.testing.expect(envEnables(v));
+    for ([_][]const u8{ "", "0", "false", "off", "no", "2", "enabled" }) |v| try std.testing.expect(!envEnables(v));
+}
+
+test "lean: the filter keeps exactly the seven one-shot tools, and allocates nothing when off" {
+    const Spec = struct { name: []const u8 };
+    const specs = [_]Spec{
+        .{ .name = "bash" },
+        .{ .name = "workflow" },
+        .{ .name = "read_file" },
+        .{ .name = "todo_write" },
+        .{ .name = "subagent" },
+        .{ .name = "attempt_completion" },
+    };
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const saved = lean;
+    defer lean = saved;
+
+    lean = false;
+    try std.testing.expectEqual(specs.len, (try filterLeanSpecs(Spec, arena, &specs)).len);
+    try std.testing.expectEqual(@as(usize, 0), arena_state.queryCapacity());
+
+    lean = true;
+    const kept = try filterLeanSpecs(Spec, arena, &specs);
+    try std.testing.expectEqual(@as(usize, 4), kept.len);
+    try std.testing.expectEqualStrings("bash", kept[0].name);
+    try std.testing.expectEqualStrings("read_file", kept[1].name);
+    try std.testing.expectEqualStrings("subagent", kept[2].name);
+    try std.testing.expectEqualStrings("attempt_completion", kept[3].name);
+    // The keep-list is exactly the seven documented tools — subagent stays
+    // (the unattended delegation path), everything orchestration/meta goes.
+    try std.testing.expectEqual(@as(usize, 7), lean_tools.len);
+    for (lean_tools) |tool| try std.testing.expect(leanKeeps(tool));
+    try std.testing.expect(!leanKeeps("workflow"));
+    try std.testing.expect(!leanKeeps("todo_write"));
+    try std.testing.expect(!leanKeeps("webfetch"));
 }
 
 test "#330: filterRootSpecs drops only the gated names, and does not allocate when the gate is off" {

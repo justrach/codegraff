@@ -131,11 +131,13 @@ pub fn toolAdvertised(name: []const u8) bool {
 /// The live gates. Every flag and env knob feeding them is settled before
 /// startup.buildSystemPrompt runs (args.parse, then setupSkillsAndTheme).
 pub fn detectCaps() Caps {
+    // The lean halves agree: a tool the catalog filtered out (no_local_tools)
+    // is also not a capability the prompt may instruct about.
     return .{
         .local_tools = toolAdvertised("read_file") and toolAdvertised("bash"),
         .subagents = toolAdvertised("subagent"),
-        .todos = toolAdvertised("todo_write"),
-        .constraints = toolAdvertised("note_constraint"),
+        .todos = toolAdvertised("todo_write") and !no_local_tools.lean,
+        .constraints = toolAdvertised("note_constraint") and !no_local_tools.lean,
     };
 }
 

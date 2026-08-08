@@ -87,6 +87,9 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         main_mod.g_clock_sleep = main_mod.g_clock_sleep or std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
     }
     if (environ_map.get("GRAFF_NO_LOCAL_TOOLS")) |v| no_local_tools.enabled = no_local_tools.enabled or no_local_tools.envEnables(v);
+    // GRAFF_LEAN: presence-based, exactly matching session_start.leanSkipsMcp
+    // (the MCP half of the same switch) — a "0" still means lean, by design.
+    if (environ_map.get("GRAFF_LEAN") != null) no_local_tools.lean = true;
     // (#codex-ws) GRAFF_CODEX_WS_IDLE_SECS raises/lowers the held-WS idle limit
     // (default 4 min — the backend killed ours within 8.5 min idle; opencode
     // pools at 5). Mirrors GRAFF_STREAM_STALL_SECS above: seconds, ignored if
