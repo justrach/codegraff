@@ -32,6 +32,7 @@ pub const commands = [_]Item{
     .{ .name = "/never", .usage = "/never [<text>|rm <id>]", .desc = "standing constraints that ride every subagent brief and survive compaction; bare lists them, rm <id> retires one (alias /constraint)" },
     .{ .name = "/tell", .usage = "/tell <session|all> <text>", .desc = "post to this folder's shared graff channel — every live session hears it; /sessions lists who's around" },
     .{ .name = "/peek", .usage = "/peek <session>", .desc = "see what a live co-resident session is doing right now (its transcript tail)" },
+    .{ .name = "/routes", .usage = "/routes [<set>|add <set> <frontier|mid|small> <provider/model>]", .desc = "your own priced model lanes across providers — view the set and which seat wins each lane now" },
     .{ .name = "/plan", .desc = "toggle plan mode: read-only explore + propose; writes/edits denied" },
     .{ .name = "/ultracode", .desc = "toggle persistent workflow mode; bare opens an on/off picker, or /ultracode on|off" },
     .{ .name = "/fallback", .usage = "/fallback [allow|remove|off]", .desc = "opt-in cross-provider fallback for this workspace (same-provider rollout stays on)" },

@@ -44,6 +44,7 @@ const providers = @import("providers.zig");
 const command_catalog = @import("command_catalog.zig");
 const side_question = @import("side_question.zig"); // #415 /btw
 const peer_channel = @import("peer_channel.zig"); // #469 /tell + the /sessions "live now" section
+const route_set = @import("route_set.zig"); // /routes: user-defined priced model lanes
 const serde = @import("serde.zig");
 
 const mcp_cli = @import("mcp_cli.zig");
@@ -532,6 +533,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.startsWith(u8, line, "/tell") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.tellCommand(root, arena, line, out); // #469
     if (std.mem.startsWith(u8, line, "/peek") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.peekCommand(root, arena, line, out); // #469
+    if (std.mem.startsWith(u8, line, "/routes") and (line.len == 7 or line[7] == ' ' or line[7] == '\t')) return route_set.command(root, keys, arena, line, out); // user-defined priced lanes
     if (std.mem.eql(u8, line, "/sessions")) {
         var entries = listSavedSessions(root, arena);
         defer entries.deinit(arena);
