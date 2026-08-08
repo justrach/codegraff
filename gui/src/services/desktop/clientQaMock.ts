@@ -13,7 +13,7 @@ import type {
   UpdatePromptSettingsInput,
 } from "./types/contracts";
 
-const QA_WORKSPACE_PATH = "/Users/pranavp/projects/harness/codegraff/gui";
+const QA_WORKSPACE_PATH = "/Users/example/projects/codegraff/gui";
 const QA_CONVERSATION_ID = "qa-existing-chat";
 
 export const isQaMockMode =
@@ -310,6 +310,11 @@ export function mockInvokeCommand<T>(
         { id: `${conversationId}-user`, kind: "user", requestId: `${conversationId}-request`, text: input.prompt },
         { id: `${conversationId}-assistant`, kind: "assistant", requestId: `${conversationId}-request`, text: "QA mock response with a bullet list:\n\n- Markdown bullets align correctly.\n- `inline code` stays readable.\n\n```ts\nconst theme = 'clean-modern';\n```\n\n[Codegraff](https://github.com/justrach/codegraff)" },
       ]) as T);
+    }
+    case "respond_followup": {
+      // The mock never leaves a followup pending: answering just returns the
+      // current snapshot with no followup, which clears the needs-input state.
+      return Promise.resolve(createQaSnapshot(QA_CONVERSATION_ID, createQaSnapshot().conversationViews[0]?.messages ?? []) as T);
     }
     case "list_providers":
       return Promise.resolve(qaProviders.map((p) => ({ ...p })) as T);

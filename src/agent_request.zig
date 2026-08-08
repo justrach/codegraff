@@ -287,6 +287,12 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     if (err == error.RateLimited and main_mod.g_5xx_body_len > 0 and
                         isQuotaExceeded(main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len]))
                     {
+                        // #471: a flat-rate plan that has run out is exactly
+                        // when the metered key it outranked earns its keep.
+                        // Hand over and retry rather than failing a session
+                        // with a working credential sitting unused. One-way
+                        // and announced — see credential_failover.
+                        if (policy.handOffExhaustedPlan(self)) continue;
                         self.last_api_error = std.fmt.allocPrint(self.arena, "rate limited (429): {s} — {s}", .{ policy.quota_cap_marker, main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] }) catch "rate limited (429): quota exceeded";
                         if (telemetry.g_telem) |t| t.errorEvent("quota", self.last_api_error orelse "quota exceeded");
                         if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, 0, body.len, 0, 0, 0, true);

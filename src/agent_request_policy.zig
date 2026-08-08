@@ -6,6 +6,8 @@ const Agent = @import("agent.zig").Agent;
 const http = @import("http.zig");
 const RetryPlan = http.RetryPlan;
 const oauth = @import("oauth.zig");
+const billing = @import("billing.zig"); // #471 seat billing class
+const credential_failover = @import("credential_failover.zig"); // #471 parked metered key
 const oauth_helpers = @import("oauth_helpers.zig"); // tests pin g_codex_home, the resolver startup sets
 const telemetry = @import("telemetry.zig");
 const util = @import("util.zig");
@@ -540,4 +542,29 @@ test "recoverContextOverflow (#193): overflow trims + retries once; guard and no
     var retried2 = false;
     try std.testing.expect(!recoverContextOverflow(&agent, "invalid api key", null, &retried2));
     try std.testing.expect(!retried2);
+}
+
+/// #471: this seat is a flat-rate plan that has just reported a quota cap, and
+/// a metered credential was parked behind it at startup. Hand over to that key
+/// for the rest of the session and say so, returning true so the caller retries
+/// the SAME request on the new credential instead of failing the turn.
+///
+/// Gated on the seat being `.sub`: a metered seat hitting a billing cap has
+/// nothing better to switch to, and promoting there would burn the reserve on
+/// a wall it cannot get past. One-way by construction — credential_failover
+/// promotes once per provider, so a second cap falls through to the normal
+/// error path rather than looping on a credential that is also exhausted.
+pub fn handOffExhaustedPlan(self: *Agent) bool {
+    if (billing.forProvider(self.provider) != .sub) return false;
+    const promotion = credential_failover.promote(self.provider.id) orelse return false;
+    self.provider.api_key = self.arena.dupe(u8, promotion.key) catch promotion.key;
+    self.provider.source = promotion.source;
+    self.ws_off = false;
+    self.ws_transport_failures = 0;
+    if (self.tracer) |tr| tr.note("credential_failover", "plan exhausted — switched to the parked metered key");
+    self.say(
+        "[⚠ your {s} plan is out of quota — switching to the {s} API key for the rest of this session. Calls now bill PER TOKEN.]\n",
+        .{ self.provider.id, promotion.source.label() },
+    ) catch {};
+    return true;
 }
