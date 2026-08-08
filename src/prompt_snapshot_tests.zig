@@ -552,3 +552,26 @@ test "#391/#445: the prompt funnel never arms the note store in a test build" {
     // the pure string function the rest of this suite depends on.
     try std.testing.expect(!prompts.compactNotesArmed());
 }
+
+test "unattended one-shots are told the REAL approval map up front; attended sessions hear nothing" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+    const startup = @import("startup.zig");
+    const saved_img = imagegen.available;
+    defer imagegen.available = saved_img;
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const Io = std.Io;
+    var aw: Io.Writer.Allocating = .init(a);
+    const attended = try startup.buildSystemPrompt(std.testing.io, a, &aw.writer, null, null, true, false, &.{}, false, null, env);
+    try std.testing.expect(std.mem.indexOf(u8, attended, "AUTO-DENIED") == null);
+    var aw2: Io.Writer.Allocating = .init(a);
+    const unattended = try startup.buildSystemPrompt(std.testing.io, a, &aw2.writer, null, null, true, true, &.{}, false, null, env);
+    try std.testing.expect(std.mem.indexOf(u8, unattended, "AUTO-DENIED") != null);
+    // The map the denial text alone could not teach: the root is gated,
+    // subagents are the ungated path, and --yolo/settings are the user's.
+    try std.testing.expect(std.mem.indexOf(u8, unattended, "Subagents are NOT approval-gated") != null);
+    try std.testing.expect(std.mem.indexOf(u8, unattended, "--yolo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, unattended, ".harness/settings.json") != null);
+}

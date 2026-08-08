@@ -167,7 +167,7 @@ const skills = @import("skills.zig");
 const skills_registry = skills.skills_registry;
 const companion_servers = skills.companion_servers;
 const mcpServerConnected = skills.mcpServerConnected;
-const probeCodedbproLicensed = skills.probeCodedbproLicensed;
+const probeLicensedPinEager = session_start.probeLicensedPinEager; // probe + #416 eager pin in one startup step
 /// PATH captured at startup for skill detection (PATH won't change mid-run).
 pub var g_path_env: []const u8 = "";
 /// Human-facing current workspace folder shown in the REPL prompt.
@@ -195,7 +195,7 @@ pub var g_skill_disabled: [skills_registry.len]bool = @splat(false);
 /// Same opt-out, for the metered companion MCP servers (codedb-pro) — they live in companion_servers, NOT skills_registry, so need their own flags.
 pub var g_companion_disabled: [companion_servers.len]bool = @splat(false);
 /// True when `codedb-pro probe` exits 0 (paid + usable); set once at startup after the companion connects, selecting the licensed vs conservative note.
-var g_codedbpro_licensed: bool = false;
+pub var g_codedbpro_licensed: bool = false; // pub: codedbpro_report's native-tool gate consults it per call
 // Thinking animations: spinner animations + color themes (+ settings persistence) live in anim.zig; spinner consumers (Agent.spinnerTask, /animation, /theme) stay here.
 const anim = @import("anim.zig");
 // Steering (Codex-style): bytes typed while a turn streams are captured (not discarded), echoed live in dim emerald, and queued to run next on Enter —
@@ -392,7 +392,7 @@ pub fn main(init: std.process.Init) !void {
     try session_start.connectCompanion(io, arena, &registry_storage, flags, out, json_mode, init.environ_map);
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
     // If the metered companion connected, probe its license once so the note below can lean into paid tools (vs the conservative free-codedb note).
-    if (mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeCodedbproLicensed(gpa, io);
+    if (mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeLicensedPinEager(gpa, arena, io);
     boot.mark(io, "companion");
 
     var approvals: Approvals = undefined;
@@ -408,7 +408,7 @@ pub fn main(init: std.process.Init) !void {
     // Root system-prompt layering (base + AGENTS.md/HARNESS.md/CLAUDE.md + --append-system-prompt + active-skill lines + connected-MCP notes) lives
     // in startup.zig as buildSystemPrompt() — pure over io/arena, returns the composed base by value. buildRootAgent derives every prompt variant
     // from it via prompts.setSystemPrompts() (#326).
-    const sys_normal = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null, mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"), init.environ_map);
+    const sys_normal = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null, flags.oneshot_prompt != null and !flags.yolo_flag, mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"), init.environ_map);
     boot.mark(io, "system prompt");
     session_run.learningNotice(io, arena, init.environ_map, out, json_mode or flags.oneshot_prompt != null);
 

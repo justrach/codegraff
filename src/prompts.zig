@@ -80,6 +80,18 @@ pub const main_system_prompt = blk: {
     break :blk out;
 };
 
+/// One-shot (-p) sessions have no user to approve tool calls. The gate's REAL
+/// map (agent_tool_gate.zig): at the ROOT, bash/edit_file/write_file and
+/// unapproved MCP are auto-denied; SUBAGENTS skip the approval gate entirely
+/// (only destructive git and learn_candidate are blocked for them). Without
+/// this note the model learns the map by trial: measured benchmark flips
+/// between "subagent detour, task done" and "root edit denied, task
+/// abandoned" on identical input — plus a retry tax of failed calls first.
+/// Telling it UP FRONT makes the delegation deterministic. Appended by
+/// startup.buildSystemPrompt only when the session is unattended AND not
+/// --yolo (yolo pre-approves everything, so the note would be a lie there).
+pub const unattended_note = "\n\nThis session is non-interactive: there is no user to approve tool calls, so YOUR approval-gated tools — bash, edit_file, write_file, unapproved MCP calls — are AUTO-DENIED at the root. Never retry a denial; it will not change. Subagents are NOT approval-gated: delegate implementation and command execution to a subagent (it can edit files and run tests itself), then report its result plainly. The user can also re-run with --yolo, or pre-approve tools in .harness/settings.json, to let the root act directly.";
+
 /// #421: what this session can actually do, exactly as the tool catalog
 /// reports it. Defaults are "everything", so a caller that only cares about
 /// one gate names one field.

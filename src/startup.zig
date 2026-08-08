@@ -325,6 +325,7 @@ pub fn buildSystemPrompt(
     system_prompt_flag: ?[]const u8,
     append_system_flag: ?[]const u8,
     quiet: bool,
+    unattended: bool,
     mcp_tools: []const mcp.Tool,
     codedbpro_licensed: bool,
     learned_policy_env: ?[]const u8,
@@ -353,6 +354,7 @@ pub fn buildSystemPrompt(
     if (append_system_flag) |extra| {
         sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, extra });
     }
+    if (unattended) sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, prompts.unattended_note });
     // Codex-style skills: one capability line per installed optional
     // companion (skills_registry) — metadata in context, --help on demand.
     for (skills.skills_registry) |sk| {
