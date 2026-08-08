@@ -128,18 +128,57 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
     };
 }
 
-/// The receiving half, called once at the top of a root agent's turn: every
-/// queued peer message becomes one durable user-role note in history plus a
-/// user-visible event. Never fails a turn — delivery trouble is silence, not
-/// an error, because a peer's inbox must never break our session.
+var g_peer_fp: u64 = 0; // fingerprint of the last-injected awareness note
+var g_peer_note_rewrites: u64 = 0; // history_rewrites when it was injected
+
+/// The proactive half of #469: the model can only auto-decide to coordinate
+/// with sessions it KNOWS about — this renders the live peer set (who, where,
+/// what goal) as a context note. Returned only when the set changed since the
+/// last injection, or a history rewrite may have compacted the note away, so
+/// a steady peer set costs zero tokens. Null while the device has no peers at
+/// all and none were ever announced — solo sessions never hear about this.
+fn peerNoteIfChanged(root: *Agent) ?[]const u8 {
+    const peers = presence.liveAllPeers(root.io, root.arena);
+    if (peers.len == 0 and g_peer_fp == 0) return null;
+    var buf: std.ArrayList(u8) = .empty;
+    if (peers.len == 0) {
+        buf.appendSlice(root.arena, "[#469 presence] the other live graff sessions are gone — the shared tree is yours alone now.") catch return null;
+    } else {
+        const mine = presence.ownIdentity();
+        buf.appendSlice(root.arena, std.fmt.allocPrint(root.arena, "[#469 presence] {d} other live graff session(s):", .{peers.len}) catch return null) catch return null;
+        for (peers) |p| {
+            const where: []const u8 = if (std.mem.eql(u8, p.identity, mine)) "this folder" else p.identity;
+            buf.appendSlice(root.arena, std.fmt.allocPrint(root.arena, " {s} (goal: {s}, {s});", .{ p.session_id, if (p.goal.len > 0) p.goal else "?", where }) catch break) catch break;
+        }
+        buf.appendSlice(root.arena, " Coordinate with the peer_message tool before restructuring shared files — bare posts stay in this folder, \"all\" or a name in another folder reaches every session on this device.") catch {};
+    }
+    const text = buf.items;
+    const fp = std.hash.Wyhash.hash(0, text);
+    if (fp == g_peer_fp and root.history_rewrites == g_peer_note_rewrites) return null;
+    g_peer_fp = fp;
+    g_peer_note_rewrites = root.history_rewrites;
+    return text;
+}
+
+/// The receiving half, called at every step boundary of a root agent's turn:
+/// queued peer messages plus the peer-awareness note become one durable
+/// user-role note in history plus user-visible events. Never fails a turn —
+/// delivery trouble is silence, not an error, because a peer must never break
+/// our session.
 pub fn deliverInbound(root: *Agent) void {
     if (root.sub) return;
+    const note = peerNoteIfChanged(root);
     const local_msgs = presence.drainChannel(root.io, root.arena);
     const device_msgs = presence.drainDevice(root.io, root.arena);
-    if (local_msgs.len == 0 and device_msgs.len == 0) return;
+    if (note == null and local_msgs.len == 0 and device_msgs.len == 0) return;
     const sink = engine_sink.forAgent(root);
     const own = presence.ownSession();
     var buf: std.ArrayList(u8) = .empty;
+    if (note) |n| {
+        buf.appendSlice(root.arena, n) catch {};
+        buf.append(root.arena, '\n') catch {};
+        sink.emit(root.io, .{ .session_notice = .{ .text = n, .tone = .plain } });
+    }
     for ([2][]const presence.Message{ local_msgs, device_msgs }, [2][]const u8{ "", " · device" }) |msgs, scope| {
         for (msgs) |m| {
             const goal = if (m.from_goal.len > 0) std.fmt.allocPrint(root.arena, " (goal: {s})", .{m.from_goal}) catch "" else "";
