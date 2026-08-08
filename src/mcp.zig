@@ -17,6 +17,7 @@ const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp_config = @import("mcp_config.zig"); // #345: .mcp.json merged with the user-level ~/.codegraff/mcp.json
+const mcp_boot = @import("mcp_boot.zig"); // parallel connect fan-out; Registry.init re-exports it
 const mcp_http = @import("mcp_http.zig");
 const mcp_protocol = @import("mcp_protocol.zig");
 const mcp_stdio = @import("mcp_stdio.zig");
@@ -82,6 +83,10 @@ pub const Registry = struct {
     /// registry came from `empty*` and `init` never ran, so session_start sets
     /// this field either way.
     global_config_path: ?[]const u8 = null,
+    /// Per-server arenas from mcp_boot's parallel connect fan-out (the
+    /// registry arena is not thread-safe, so each task allocated its own).
+    /// Freed in deinit AFTER the transports referencing them are torn down.
+    task_arenas: []std.heap.ArenaAllocator = &.{},
 
     pub fn arena(self: *Registry) Allocator {
         return self.arena_state.allocator();
@@ -94,48 +99,10 @@ pub const Registry = struct {
     /// Returns null (no error) when NEITHER file exists — MCP is optional.
     /// `global_path` is borrowed, not copied: it must outlive the registry,
     /// which re-reads it on `/mcp trust`.
-    pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]const u8, home: []const u8, environ_map: anytype) !?Registry {
-        var reg: Registry = .{
-            .gpa = gpa,
-            .io = io,
-            .home = home,
-            .arena_state = std.heap.ArenaAllocator.init(gpa),
-            .stdio_probe = if (environ_map.get("GRAFF_MCP_PROBE")) |v| !std.mem.eql(u8, v, "0") else true,
-            .global_config_path = global_path,
-        };
-        mcp_rpc.applyHandshakeTimeoutEnv(environ_map); // #275 GRAFF_MCP_HANDSHAKE_SECS + #327 GRAFF_MCP_PROBE_MS, on the same pass as the probe flag
-
-        errdefer reg.deinit();
-        const a = reg.arena();
-
-        const merged = mcp_config.load(io, a, Io.Dir.cwd(), config_path, global_path);
-        if (!merged.found) {
-            reg.arena_state.deinit(); // nothing was started; no transports to tear down
-            return null;
-        }
-        // An unparseable file contributes nothing and does not take the other
-        // half down. Naming it is session_start's job, not this one's: it runs
-        // on the consent-declined path too, where `init` is never reached.
-        var servers: std.ArrayList(*Server) = .empty;
-        var tools: std.ArrayList(Tool) = .empty;
-
-        var it = merged.servers.iterator();
-        while (it.next()) |entry| {
-            // The core Smolify name is pinned below and cannot be shadowed by
-            // repository or user configuration.
-            if (std.mem.eql(u8, entry.key_ptr.*, "smolify")) continue;
-            if (entry.value_ptr.* != .object) continue;
-            const name = try a.dupe(u8, entry.key_ptr.*);
-            const cfg = entry.value_ptr.*.object;
-            reg.startServer(a, &servers, &tools, name, cfg) catch |err| {
-                std.debug.print("  [mcp:{s}] failed to start: {t}\n", .{ name, err });
-            };
-        }
-
-        reg.servers = try a.dupe(*Server, servers.items);
-        reg.tools = try a.dupe(Tool, tools.items);
-        return reg;
-    }
+    /// The fan-out lives in mcp_boot.zig (600-line ceiling): servers connect
+    /// CONCURRENTLY and merge in config order, so startup pays the slowest
+    /// handshake, not the sum of them.
+    pub const init = mcp_boot.init;
 
     /// An empty registry (no config file present), so the harness can still
     /// accept servers added at runtime via `addServer`.
@@ -327,7 +294,7 @@ pub const Registry = struct {
         } };
     }
 
-    fn startServer(
+    pub fn startServer(
         reg: *Registry,
         a: Allocator,
         servers: *std.ArrayList(*Server),
@@ -489,6 +456,7 @@ pub const Registry = struct {
     pub fn deinit(reg: *Registry) void {
         const budget: mcp_teardown.Budget = .init(reg.io, mcp_teardown.teardown_grace);
         for (reg.servers) |server| deinitServer(server, reg.io, budget);
+        for (reg.task_arenas) |*ta| ta.deinit();
         reg.arena_state.deinit();
     }
 
