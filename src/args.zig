@@ -31,6 +31,7 @@ const no_local_tools = @import("no_local_tools.zig"); // #330: `--no-local-tools
 /// after the parse loop. One field per former local, same default.
 pub const Flags = struct {
     yolo_flag: bool = false,
+    lean_flag: bool = false, // --lean: skip connecting MCP servers entirely (GRAFF_LEAN=1) — a smaller per-turn prefix for one-shot/CI runs
     no_telemetry_flag: bool = false,
     learning_privacy_flag: ?learning_privacy.Mode = null,
     schema_flag: bool = false,
@@ -93,6 +94,8 @@ pub fn parse(init: std.process.Init) !Flags {
             } else if (std.mem.startsWith(u8, arg, "-")) {
                 if (std.mem.eql(u8, arg, "--yolo")) {
                     flags.yolo_flag = true;
+                } else if (std.mem.eql(u8, arg, "--lean")) {
+                    flags.lean_flag = true;
                 } else if (std.mem.eql(u8, arg, "--worktree") or std.mem.eql(u8, arg, "-w")) {
                     flags.worktree_flag = it.next() orelse std.process.fatal("--worktree needs a name (e.g. --worktree agent1)", .{});
                 } else if (std.mem.eql(u8, arg, "--goal")) {

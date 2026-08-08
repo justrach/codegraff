@@ -15,6 +15,7 @@ pub const flags =
     \\  {"flag": "--allow-cross-provider-subagents", "arg": null, "description": "explicitly consent to sending worker prompts, code, and tool results to a provider different from the root"},
     \\  {"flag": "--no-subagent-tier", "arg": null, "description": "opt out of the default worker tier ladder; workers inherit the root model unless an explicit --subagent-model is given"},
     \\  {"flag": "--yolo", "arg": null, "description": "skip all permission prompts for the session"},
+    \\  {"flag": "--lean", "arg": null, "description": "do not connect MCP servers at all: a smaller per-turn context prefix for one-shot/CI runs (connected servers pay their tool schemas into every model turn). GRAFF_LEAN=1 is the equivalent"},
     \\  {"flag": "--no-local-tools", "arg": null, "description": "embedder mode: hard-disable the built-in bash/bash_output/bash_kill/read_file/edit_file/write_file/codedb tools for the whole process, so the harness can run outside the sandbox and source its coding tools from an MCP server instead; webfetch, orchestration and MCP tools are unaffected, and subagents inherit the gate. GRAFF_NO_LOCAL_TOOLS=1 is the equivalent"},
     \\  {"flag": "--system-prompt", "arg": "text", "description": "replace the built-in system prompt (cwd project-instructions file is still appended)"},
     \\  {"flag": "--append-system-prompt", "arg": "text", "description": "append extra text to the end of the system prompt"},
