@@ -77,3 +77,39 @@ test "resolveKeys does not load Kimi/xAI OAuth credentials for an explicit unrel
     } else unreachable;
     try std.testing.expect(startup.startupStoredKeyScope("deepseek", true, "kimi").includes(kimi_idx, "kimi"));
 }
+
+test "kimi oauth (#477): a home-less side agent resolves the startup-pinned home — real writer, real loader" {
+    // The reported bug, end to end without the network: the pre-compaction
+    // note agent (home="") could neither proactively refresh nor recover a
+    // 401, because its credential path resolved to "/.kimi/...". Pin the
+    // process home as startup does, then prove the home-less call shape
+    // finds what the real writer wrote. The ONLY g_home mutation in the
+    // suite — the parallel runner makes two mutators a coin flip.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const credential_store = @import("credential_store.zig");
+    const oauth = @import("oauth.zig");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_len = try tmp.dir.realPath(io, &real_buf);
+    const home = try arena.dupe(u8, real_buf[0..real_len]);
+
+    const saved = credential_store.g_home;
+    defer credential_store.g_home = saved;
+    credential_store.initHome(home);
+
+    // Path shapes: the pin fills in for a home-less caller, never overrides one.
+    try std.testing.expectEqualStrings(try std.fmt.allocPrint(arena, "{s}/.kimi/credentials/graff-oauth.json", .{home}), credential_store.oauthPath(arena, "", ".kimi"));
+    try std.testing.expectEqualStrings("/caller/.xai/credentials/graff-oauth.json", credential_store.oauthPath(arena, "/caller", ".xai"));
+
+    // The fix itself: write through the real writer, load with home="" — the
+    // note agent's exact call shape. Far-future expiry: no refresh, no network.
+    try credential_store.writeOAuth(io, arena, home, ".kimi", "kimi-access-477", "kimi-refresh", 4102444800);
+    try std.testing.expectEqualStrings("kimi-access-477", oauth.loadKimiOAuth(io, gpa, arena, "", false, null).?);
+}

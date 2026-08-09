@@ -138,21 +138,9 @@ test "replaceFile: renames a whole new file into place, never truncating the tar
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, tmp.dir));
 }
 
-test "oauthPath (#477): a home-less caller resolves the startup-pinned home, never the fs root" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const saved = g_home;
-    defer g_home = saved;
-    g_home = "/pinned/home";
-    // The throwaway-agent case (home=""): the pinned home, not "/.kimi/...".
-    try std.testing.expectEqualStrings("/pinned/home/.kimi/credentials/graff-oauth.json", oauthPath(a, "", ".kimi"));
-    // A caller that HAS a home is untouched — the pin is a fallback, not an override.
-    try std.testing.expectEqualStrings("/caller/home/.xai/credentials/graff-oauth.json", oauthPath(a, "/caller/home", ".xai"));
-    // Before startup pins anything the old (broken but unchanged) shape survives.
-    g_home = "";
-    try std.testing.expectEqualStrings("/.kimi/credentials/graff-oauth.json", oauthPath(a, "", ".kimi"));
-}
+// The #477 g_home fallback test lives in startup_tests.zig (with the other
+// credential-scope regressions): exactly ONE test in the suite may mutate
+// g_home, because the parallel test runner makes two mutators a coin flip.
 
 test "replaceFile: .default_file keeps umask in charge and never widens an existing mode" {
     if (builtin.os.tag == .windows) return;
