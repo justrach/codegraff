@@ -300,9 +300,8 @@ pub fn renderRootTools(
     try s.beginArray();
     for (specs) |t| {
         if (mcp_schema_gate.hiddenSpec(t.name, mcp_tools) and !native_fold.anyFolded()) continue; // #416: load_tool_schemas hides only with nothing deferred OR folded
-        if (native_fold.servePlaceholder(t.name)) // native fold layer 1: name + one-liner + placeholder until load_tool_schemas unfolds
-            try writeToolEntry(&s, kind, t.name, mcp_schema_gate.shortDesc(t.desc), .{ .raw = mcp_schema_gate.placeholder_schema })
-        else if (std.mem.eql(u8, t.name, mcp_schema_gate.tool_name))
+        if (native_fold.blocked(t.name)) continue; // zero-stub like the MCP half: folded natives ride the meta tool's listing (#476)
+        if (std.mem.eql(u8, t.name, mcp_schema_gate.tool_name))
             try writeToolEntry(&s, kind, t.name, try mcp_schema_gate.descWithListing(out, mcp_tools), .{ .raw = t.schema })
         else
             try writeToolEntry(&s, kind, t.name, t.desc, .{ .raw = t.schema });

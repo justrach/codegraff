@@ -31,18 +31,29 @@ const mcp_schema_gate = @import("mcp_schema_gate.zig"); // shortDesc + placehold
 /// power-tool schemas return to every request, the pre-fold behavior.
 pub var enabled = true;
 
-/// The folded set: power/meta tools an interactive session reaches for
-/// LATE if at all, whose schemas cost ~9.3k bytes of every request.
-/// Deliberately NOT here: the tools a session needs on turn one (bash, the
-/// file tools, subagent — the unattended delegation path), the interactive
-/// staples (todos, ask_user, peer_message, webfetch, skill), and the meta
-/// arm itself (load_tool_schemas must stay callable to unfold these).
+/// The folded set: tools an interactive session reaches for LATE if at all,
+/// plus the deliberate-act tools whose first use tolerates one load call —
+/// measured (GRAFF_REQ_STATS top-5) at ~9.5k bytes of every request, with
+/// subagent alone at 5,052 (26% of the tools surface).
+/// Deliberately NOT here: the every-turn loop (bash, the file tools, codedb),
+/// loop control (ask_user, attempt_completion), and the meta arm itself
+/// (load_tool_schemas must stay callable to unfold these). Subagents are
+/// exempt at the call gates: their catalogs are comptime-baked full surfaces,
+/// so refusing them would be incoherent.
 pub const folded = [_][]const u8{
     "workflow",
     "imagegen",
     "learn_candidate",
     "eval",
     "clock_sleep",
+    "subagent",
+    "todo_write",
+    "todo_read",
+    "peer_message",
+    "note_constraint",
+    "agent_output",
+    "skill",
+    "webfetch",
 };
 
 /// A name test only, independent of whether the fold is on.
@@ -76,15 +87,10 @@ pub fn markLoaded(name: []const u8) void {
     g_loaded_len += 1;
 }
 
-/// Whether calling `name` right now must be refused (exec.zig layer 2).
+/// Whether calling `name` right now must be refused (exec.zig layer 2);
+/// schema.zig layer 1 skips the spec entirely while this holds (zero stubs).
 pub fn blocked(name: []const u8) bool {
     return enabled and isFolded(name) and !isLoaded(name);
-}
-
-/// Whether a native spec should be served description-only (schema.zig
-/// layer 1): folded and not yet loaded.
-pub fn servePlaceholder(name: []const u8) bool {
-    return blocked(name);
 }
 
 /// Same refusal style as mcp_schema_gate.refusalText: name the fix, not just
@@ -107,7 +113,8 @@ pub fn refusalText(gpa: Allocator, name: []const u8) ![]u8 {
 /// call consent already allowed, never add one. Yields in plan mode: the
 /// read-only policy is the stronger reason, and its gate must deliver its
 /// own refusal rather than the model hearing "schema not loaded".
-pub fn gateExec(gpa: Allocator, name: []const u8) ?@import("tools.zig").ToolOutput {
+pub fn gateExec(gpa: Allocator, name: []const u8, from_sub: bool) ?@import("tools.zig").ToolOutput {
+    if (from_sub) return null; // subs are served comptime-baked full catalogs — refusing them would be incoherent
     if (@import("main.zig").plan_mode) return null;
     if (!blocked(name)) return null;
     return .{ .text = refusalText(gpa, name) catch return null, .is_error = true };
@@ -144,6 +151,30 @@ pub fn findRootSpec(arena: Allocator, name: []const u8) !?@import("schema.zig").
 pub fn handleLoadNative(agent: anytype, input: @import("std").json.Value) !?@import("tools.zig").ExecResult {
     if (!enabled) return null;
     if (input != .object) return null;
+    // query arm: token-match over the folded set's names + descriptions, so
+    // keyword discovery covers both deferred halves, not just MCP.
+    if (input.object.get("query")) |q| {
+        if (q != .string) return null;
+        var aw: Io.Writer.Allocating = .init(agent.arena);
+        var matched: usize = 0;
+        for (folded) |name| {
+            if (isLoaded(name)) continue;
+            const spec = (try findRootSpec(agent.arena, name)) orelse continue;
+            var tok = std.mem.tokenizeAny(u8, q.string, " \t,;:/_-");
+            var hits: usize = 0;
+            while (tok.next()) |w| {
+                if (w.len < 2) continue;
+                if (mcp_schema_gate.containsIgnoreCase(name, w) or mcp_schema_gate.containsIgnoreCase(spec.desc, w)) hits += 1;
+            }
+            if (hits == 0) continue;
+            markLoaded(name);
+            matched += 1;
+            aw.writer.print("{s}: {s}\n", .{ name, spec.schema }) catch return null;
+        }
+        if (matched == 0) return null; // no native match: the MCP half answers the query
+        const head = try std.fmt.allocPrint(agent.arena, "{d} native tool schema(s) below are now loaded and callable for the rest of this session. Call them with arguments matching input_schema.\n", .{matched});
+        return .{ .text = try std.fmt.allocPrint(agent.arena, "{s}{s}", .{ head, aw.writer.buffered() }), .is_error = false };
+    }
     const list = input.object.get("tools") orelse return null;
     if (list != .array) return null;
     var aw: Io.Writer.Allocating = .init(agent.arena);
@@ -178,8 +209,8 @@ test "fold: the listed tools are blocked until loaded, everything else flows" {
     // name only this test folds... every folded name is shared state, so
     // assert on the pre-load state only for names no other test loads.
     try std.testing.expect(isFolded("workflow"));
+    try std.testing.expect(isFolded("subagent")); // the 5 KB schema — biggest single fold win
     try std.testing.expect(!isFolded("bash"));
-    try std.testing.expect(!isFolded("subagent"));
     try std.testing.expect(anyFolded());
     enabled = false;
     try std.testing.expect(!blocked("workflow"));
@@ -187,11 +218,12 @@ test "fold: the listed tools are blocked until loaded, everything else flows" {
     enabled = true;
     if (!isLoaded("clock_sleep")) {
         try std.testing.expect(blocked("clock_sleep"));
-        try std.testing.expect(servePlaceholder("clock_sleep"));
         markLoaded("clock_sleep");
         try std.testing.expect(isLoaded("clock_sleep"));
         try std.testing.expect(!blocked("clock_sleep"));
     }
+    // Subagents are exempt: their catalogs are comptime-baked full surfaces.
+    try std.testing.expect(gateExec(std.testing.allocator, "workflow", true) == null);
     // A loaded name never double-registers.
     const before = g_loaded_len;
     markLoaded("clock_sleep");

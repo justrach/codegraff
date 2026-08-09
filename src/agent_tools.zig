@@ -296,7 +296,7 @@ fn clockSleepInterruptedText(arena: std.mem.Allocator, elapsed_ms: i64) ![]const
 pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     // Folded natives, meta path: inline dispatch never reaches exec.zig's
     // guard chain, so the refusal must live here too — same text, same rule.
-    if (native_fold.blocked(call.name)) return .{ .text = try native_fold.refusalText(self.arena, call.name), .is_error = true };
+    if (!self.sub and native_fold.blocked(call.name)) return .{ .text = try native_fold.refusalText(self.arena, call.name), .is_error = true };
     // #469: sideways coordination between co-resident root sessions.
     if (std.mem.eql(u8, call.name, peer_channel.tool_name)) return peer_channel.handleMessage(self, call);
     if (std.mem.eql(u8, call.name, "attempt_completion")) {

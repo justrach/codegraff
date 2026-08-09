@@ -222,6 +222,30 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     pos = name_end;
                 }
                 std.debug.print("  [req]   tools split: native={d}B codedbpro={d}B other_mcp={d}B\n", .{ native, cdbp, other_mcp });
+                // Top-5 largest native specs — the deferral candidates list.
+                var sizes: [64]struct { span: usize, at: usize } = undefined;
+                var n_sizes: usize = 0;
+                pos = 0;
+                while (std.mem.indexOfPos(u8, t, pos, "\"name\":\"")) |n2| {
+                    const ns = n2 + 8;
+                    const ne = std.mem.indexOfScalarPos(u8, t, ns, '"') orelse break;
+                    const nxt = std.mem.indexOfPos(u8, t, ne, "\"name\":\"") orelse t.len;
+                    if (!std.mem.startsWith(u8, t[ns..ne], "mcp__") and n_sizes < sizes.len) {
+                        sizes[n_sizes] = .{ .span = nxt - n2, .at = ns };
+                        n_sizes += 1;
+                    }
+                    pos = ne;
+                }
+                var top: usize = 0;
+                while (top < 5 and top < n_sizes) : (top += 1) {
+                    var bi: usize = 0;
+                    for (sizes[0..n_sizes], 0..) |sz, j| if (sz.span > sizes[bi].span) {
+                        bi = j;
+                    };
+                    const nm = t[sizes[bi].at .. std.mem.indexOfScalarPos(u8, t, sizes[bi].at, '"') orelse sizes[bi].at];
+                    std.debug.print("  [req]     {s}: {d}B\n", .{ nm, sizes[bi].span });
+                    sizes[bi].span = 0;
+                }
             }
         }
         const t0: Io.Timestamp = .now(self.io, .awake);

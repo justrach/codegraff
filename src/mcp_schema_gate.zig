@@ -83,7 +83,7 @@ pub const env_eager = "GRAFF_MCP_EAGER"; // comma-separated server names; "*" pi
 /// entry and no import cycle. The description is spliced into a raw JSON
 /// string, so it must stay free of characters needing JSON escapes.
 pub const tool_name = "load_tool_schemas";
-pub const tool_desc = "Load the full JSON input schemas for deferred tools and enable them for the rest of this session. Deferred MCP tools — and folded native power tools (workflow, imagegen, learn_candidate, eval, clock_sleep) — ship no schemas up front, so that thousands of tokens of JSON Schema stay out of every request; any deferred servers and their tool names are listed at the end of this description. A tool whose schema has not been loaded CANNOT be called: calling it returns an error telling you to load it first. Pass tools with exact names (mcp__server__tool for MCP, or a folded native name like workflow), pass server to load every deferred tool on one MCP server, or pass query with keywords to search deferred tools by name and description (the top 8 matches load). Call it with no arguments to list what is currently deferred. Loading is permanent for this session and free to repeat, because the schemas are cached.";
+pub const tool_desc = "Load the full JSON input schemas for deferred tools and enable them for the rest of this session. Deferred MCP tools — and folded native tools (workflow, imagegen, learn_candidate, eval, clock_sleep, subagent, todo_write, todo_read, peer_message, note_constraint, agent_output, skill, webfetch) — ship no schemas up front, so that thousands of tokens of JSON Schema stay out of every request; any deferred servers and their tool names are listed at the end of this description. A tool whose schema has not been loaded CANNOT be called: calling it returns an error telling you to load it first. Pass tools with exact names (mcp__server__tool for MCP, or a folded native name like workflow), pass server to load every deferred tool on one MCP server, or pass query with keywords to search deferred tools by name and description. Call it with no arguments to list what is currently deferred. Loading is permanent for this session and free to repeat, because the schemas are cached.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"tools": {"type": "array", "items": {"type": "string"}, "description": "Exact qualified MCP tool names to load, e.g. mcp__deepwiki__ask_question"}, "server": {"type": "string", "description": "Load every deferred tool on this MCP server instead of naming them one by one"}, "query": {"type": "string", "description": "Search deferred tools by keyword (matches name and description, loads the top 8 matches) — use when you know what you need but not the exact tool name"}}}
 ;
@@ -393,7 +393,7 @@ fn shortName(qualified: []const u8) []const u8 {
 
 /// Case-insensitive substring search (std.ascii has no indexOfIgnoreCase in
 /// this toolchain): windowed eqlIgnoreCase, fine at description sizes.
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     if (needle.len > haystack.len) return false;
     var i: usize = 0;
     while (i + needle.len <= haystack.len) : (i += 1)
