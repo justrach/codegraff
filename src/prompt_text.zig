@@ -150,7 +150,10 @@ pub const work_note =
     \\a green run anywhere else is not evidence — and the failure you were
     \\chasing gone. Never stop at a plan, a half-applied edit, or an untested
     \\guess, and never leave the last step for the user. If a real ambiguity
-    \\blocks you, ask; otherwise decide and go.
+    \\blocks you, ask; otherwise decide and go. Match the verification to the
+    \\ask: make the requested thing work and prove it — do not add unrequested
+    \\tests, coverage, or review passes; thoroughness past the ask is turns,
+    \\tokens, and diff noise the user did not order.
 ;
 
 /// Always present: narration is a habit, not a capability.

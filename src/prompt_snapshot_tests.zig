@@ -106,7 +106,10 @@ const golden_full_prompt =
     \\a green run anywhere else is not evidence — and the failure you were
     \\chasing gone. Never stop at a plan, a half-applied edit, or an untested
     \\guess, and never leave the last step for the user. If a real ambiguity
-    \\blocks you, ask; otherwise decide and go.
+    \\blocks you, ask; otherwise decide and go. Match the verification to the
+    \\ask: make the requested thing work and prove it — do not add unrequested
+    \\tests, coverage, or review passes; thoroughness past the ask is turns,
+    \\tokens, and diff noise the user did not order.
     \\
     \\Before a large chunk of work, give a one- or two-sentence heads-up on what
     \\you are about to do; on long tasks, drop a brief note as each phase lands.
