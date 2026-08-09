@@ -99,6 +99,23 @@ pub const Policy = struct {
 
 pub var g_policy: Policy = .{};
 
+/// GRAFF_STABLE_CATALOG=1 experiment (#476): a loaded tool's schema rides the
+/// load_tool_schemas RESULT in the conversation, so the catalog does not need
+/// to re-render it — skipping policy-deferred tools even after load keeps the
+/// request prefix byte-identical all session, which is what provider prefix
+/// caching charges against. Every load otherwise busts the cache (measured:
+/// 0% cache on the calls right after each load).
+pub var g_stable_catalog = false;
+
+/// Deferred by POLICY, ignoring load state — the stable-catalog render rule
+/// and (in stable mode) the listing, which must not change as tools load.
+pub fn policyDeferred(all: []const mcp.Tool, tool: mcp.Tool) bool {
+    if (!g_policy.enabled) return false;
+    const server = serverOf(tool.qualified_name);
+    if (pinnedEager(server)) return false;
+    return serverCost(all, server) > g_policy.budget;
+}
+
 // --- session state: which schemas have been loaded -------------------------
 
 const Node = struct {
@@ -453,9 +470,12 @@ fn matchQuery(arena: Allocator, all: []const mcp.Tool, query: []const u8) ![]usi
 /// listing), and `query` covers discovery beyond it (#476).
 pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
     if (!anyDeferred(all)) return tool_desc;
+    // Stable-catalog mode lists by POLICY, not load state: a listing that
+    // shrinks as tools load would change the prefix this mode exists to fix.
+    const deferredRule: *const fn ([]const mcp.Tool, mcp.Tool) bool = if (g_stable_catalog) &policyDeferred else &isDeferred;
     var servers: std.ArrayList([]const u8) = .empty;
     for (all) |t| {
-        if (!isDeferred(all, t)) continue;
+        if (!deferredRule(all, t)) continue;
         const sv = serverOf(t.qualified_name);
         const seen = for (servers.items) |s| {
             if (std.mem.eql(u8, s, sv)) break true;
@@ -469,7 +489,7 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
         try aw.writer.print(" {s} (", .{sv});
         var first = true;
         for (all) |t| {
-            if (!isDeferred(all, t)) continue;
+            if (!deferredRule(all, t)) continue;
             if (!std.mem.eql(u8, serverOf(t.qualified_name), sv)) continue;
             if (!first) try aw.writer.writeAll(", ");
             try aw.writer.writeAll(shortName(t.qualified_name));

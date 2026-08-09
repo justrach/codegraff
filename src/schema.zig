@@ -300,7 +300,7 @@ pub fn renderRootTools(
     try s.beginArray();
     for (specs) |t| {
         if (mcp_schema_gate.hiddenSpec(t.name, mcp_tools) and !native_fold.anyFolded()) continue; // #416: load_tool_schemas hides only with nothing deferred OR folded
-        if (native_fold.blocked(t.name)) continue; // zero-stub like the MCP half: folded natives ride the meta tool's listing (#476)
+        if (native_fold.catalogSkips(t.name)) continue; // zero-stub like the MCP half: folded natives ride the meta tool's listing (#476)
         if (std.mem.eql(u8, t.name, mcp_schema_gate.tool_name))
             try writeToolEntry(&s, kind, t.name, try mcp_schema_gate.descWithListing(out, mcp_tools), .{ .raw = t.schema })
         else
@@ -309,7 +309,9 @@ pub fn renderRootTools(
     // Deferred tools ship no catalog entries at all (codex tool_search
     // pattern): the meta tool's description lists what exists, exec.zig's
     // layer-2 refusal still guards a call that arrives before its load.
-    for (mcp_tools) |m| if (!mcp_schema_gate.isDeferred(mcp_tools, m))
+    // GRAFF_STABLE_CATALOG keeps skipping policy-deferred tools even after
+    // they load — a re-rendered catalog busts the provider's prefix cache.
+    for (mcp_tools) |m| if (!mcp_schema_gate.isDeferred(mcp_tools, m) and !(mcp_schema_gate.g_stable_catalog and mcp_schema_gate.policyDeferred(mcp_tools, m)))
         try writeToolEntry(&s, kind, m.qualified_name, m.description, .{ .value = m.input_schema });
     try s.endArray();
     return aw.toOwnedSlice();

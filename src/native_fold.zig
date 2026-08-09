@@ -93,6 +93,16 @@ pub fn blocked(name: []const u8) bool {
     return enabled and isFolded(name) and !isLoaded(name);
 }
 
+/// Whether the root catalog skips this native spec at render: folded and not
+/// yet loaded — or, under GRAFF_STABLE_CATALOG, folded at all (the loaded
+/// schema already rides the load result; a re-render would bust the prefix
+/// cache the mode exists to protect, #476).
+pub fn catalogSkips(name: []const u8) bool {
+    if (!enabled) return false;
+    if (mcp_schema_gate.g_stable_catalog) return isFolded(name);
+    return blocked(name);
+}
+
 /// Same refusal style as mcp_schema_gate.refusalText: name the fix, not just
 /// the block, so the model loads instead of retrying.
 pub fn refusalText(gpa: Allocator, name: []const u8) ![]u8 {

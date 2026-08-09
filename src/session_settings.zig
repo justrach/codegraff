@@ -21,6 +21,7 @@ const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig"); // codex_ws_idle_ms override (#codex-ws)
 const agent_request = @import("agent_request.zig"); // GRAFF_REQ_STATS → g_req_stats (token-diet measurement)
 const native_fold = @import("native_fold.zig"); // GRAFF_NO_NATIVE_FOLD → enabled
+const mcp_schema_gate = @import("mcp_schema_gate.zig"); // GRAFF_STABLE_CATALOG → g_stable_catalog
 const no_local_tools = @import("no_local_tools.zig"); // #330: GRAFF_NO_LOCAL_TOOLS
 const tool_handle = @import("tool_handle.zig"); // #440: GRAFF_TOOL_HANDLE_BYTES
 const provider_mod = @import("provider.zig");
@@ -97,6 +98,11 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // GRAFF_NO_NATIVE_FOLD: presence-based — restore full power-tool schemas
     // in every request (the pre-fold interactive surface).
     if (environ_map.get("GRAFF_NO_NATIVE_FOLD") != null) native_fold.enabled = false;
+    // GRAFF_STABLE_CATALOG: presence-based experiment (#476) — policy-deferred
+    // tools stay out of the catalog even after load_tool_schemas enables them,
+    // keeping the request prefix byte-identical all session for the provider's
+    // prefix cache. The loaded schema rides the load result in-conversation.
+    if (environ_map.get("GRAFF_STABLE_CATALOG") != null) mcp_schema_gate.g_stable_catalog = true;
     // (#codex-ws) GRAFF_CODEX_WS_IDLE_SECS raises/lowers the held-WS idle limit
     // (default 4 min — the backend killed ours within 8.5 min idle; opencode
     // pools at 5). Mirrors GRAFF_STREAM_STALL_SECS above: seconds, ignored if

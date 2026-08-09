@@ -282,6 +282,31 @@ test "query mode: keywords load the matching deferred tools, a miss lists what e
     try testing.expect(std.mem.indexOf(u8, none.text, "mcp__fat__t0") != null); // the listing follows
 }
 
+test "stable catalog: a load does not change the rendered catalog (#476 experiment)" {
+    withDefaults();
+    defer withDefaults();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const fat = try fixture(arena, "fat", 3, 2000);
+    const meta_spec = [_]@import("schema.zig").ToolSpec{.{ .name = gate.tool_name, .desc = gate.tool_desc, .schema = gate.tool_schema }};
+
+    gate.g_stable_catalog = true;
+    defer gate.g_stable_catalog = false;
+    const schema_mod = @import("schema.zig");
+    const before = try schema_mod.renderRootTools(arena, .anthropic, &meta_spec, fat);
+    const req = try std.json.parseFromSliceLeaky(Value, arena, "{\"tools\":[\"mcp__fat__t0\"]}", .{ .allocate = .alloc_always });
+    const loaded = try gate.loadInto(arena, fat, req);
+    try testing.expect(!loaded.is_error);
+    try testing.expectEqual(@as(usize, 1), loaded.loaded);
+    const after = try schema_mod.renderRootTools(arena, .anthropic, &meta_spec, fat);
+    try testing.expectEqualStrings(before, after); // the whole point: prefix cache survives a load
+
+    gate.g_stable_catalog = false;
+    const normal = try schema_mod.renderRootTools(arena, .anthropic, &meta_spec, fat);
+    try testing.expect(std.mem.indexOf(u8, normal, "mcp__fat__t0") != null); // default: loaded tools rejoin the catalog
+}
+
 test "an unknown name errors and lists what is actually deferred; no args just lists" {
     withDefaults();
     defer withDefaults();

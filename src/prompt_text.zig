@@ -153,7 +153,9 @@ pub const work_note =
     \\blocks you, ask; otherwise decide and go. Match the verification to the
     \\ask: make the requested thing work and prove it — do not add unrequested
     \\tests, coverage, or review passes; thoroughness past the ask is turns,
-    \\tokens, and diff noise the user did not order.
+    \\tokens, and diff noise the user did not order. And never repeat a tool
+    \\call with identical parameters once you have a usable result — the answer
+    \\will not change; reread only on stale source, ambiguity, or failure.
 ;
 
 /// Always present: narration is a habit, not a capability.

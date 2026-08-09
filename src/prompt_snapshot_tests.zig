@@ -109,7 +109,9 @@ const golden_full_prompt =
     \\blocks you, ask; otherwise decide and go. Match the verification to the
     \\ask: make the requested thing work and prove it — do not add unrequested
     \\tests, coverage, or review passes; thoroughness past the ask is turns,
-    \\tokens, and diff noise the user did not order.
+    \\tokens, and diff noise the user did not order. And never repeat a tool
+    \\call with identical parameters once you have a usable result — the answer
+    \\will not change; reread only on stale source, ambiguity, or failure.
     \\
     \\Before a large chunk of work, give a one- or two-sentence heads-up on what
     \\you are about to do; on long tasks, drop a brief note as each phase lands.
