@@ -203,7 +203,27 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         // — total body, tools JSON, system prompt; the remainder is messages.
         // Byte sizes, not tokens (÷~4 for a rough token read). stderr, never
         // json_mode's stdout.
-        if (reqStatsArmed()) std.debug.print("  [req] body={d}B tools={d}B system={d}B messages~={d}B\n", .{ body.len, if (tools) |t| t.len else 0, self.sys_normal.len, body.len -| (if (tools) |t| t.len else 0) -| self.sys_normal.len });
+        if (reqStatsArmed()) {
+            std.debug.print("  [req] body={d}B tools={d}B system={d}B messages~={d}B\n", .{ body.len, if (tools) |t| t.len else 0, self.sys_normal.len, body.len -| (if (tools) |t| t.len else 0) -| self.sys_normal.len });
+            // Per-server split: attribute each tool's serialized span by its
+            // name prefix (next-"name" boundary ≈ tool size, ±separators).
+            if (tools) |t| {
+                var cdbp: usize = 0;
+                var other_mcp: usize = 0;
+                var native: usize = 0;
+                var pos: usize = 0;
+                while (std.mem.indexOfPos(u8, t, pos, "\"name\":\"")) |n| {
+                    const name_start = n + 8;
+                    const name_end = std.mem.indexOfScalarPos(u8, t, name_start, '"') orelse break;
+                    const next = std.mem.indexOfPos(u8, t, name_end, "\"name\":\"") orelse t.len;
+                    const span = next - n;
+                    const nm = t[name_start..name_end];
+                    if (std.mem.startsWith(u8, nm, "mcp__codedbpro__")) cdbp += span else if (std.mem.startsWith(u8, nm, "mcp__")) other_mcp += span else native += span;
+                    pos = name_end;
+                }
+                std.debug.print("  [req]   tools split: native={d}B codedbpro={d}B other_mcp={d}B\n", .{ native, cdbp, other_mcp });
+            }
+        }
         const t0: Io.Timestamp = .now(self.io, .awake);
         if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_started", .provider = self.provider.id, .model = self.provider.model });
         // HTTP calls are flaky: a kept-alive connection the server closed

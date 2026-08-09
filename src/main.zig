@@ -167,7 +167,7 @@ const skills = @import("skills.zig");
 const skills_registry = skills.skills_registry;
 const companion_servers = skills.companion_servers;
 const mcpServerConnected = skills.mcpServerConnected;
-const probeLicensedPinEager = session_start.probeLicensedPinEager; // probe + #416 eager pin in one startup step
+const probeLicensed = session_start.probeLicensed; // license probe only — schemas stay deferred; the guard enforces routing (#476)
 /// PATH captured at startup for skill detection (PATH won't change mid-run).
 pub var g_path_env: []const u8 = "";
 /// Human-facing current workspace folder shown in the REPL prompt.
@@ -392,7 +392,7 @@ pub fn main(init: std.process.Init) !void {
     try session_start.connectCompanion(io, arena, &registry_storage, flags, out, json_mode, init.environ_map);
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
     // If the metered companion connected, probe its license once so the note below can lean into paid tools (vs the conservative free-codedb note).
-    if (!session_start.leanMode(flags.effectiveLean(), init.environ_map) and mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeLicensedPinEager(gpa, arena, io);
+    if (!session_start.leanMode(flags.effectiveLean(), init.environ_map) and mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeLicensed(gpa, io);
     boot.mark(io, "companion");
 
     var approvals: Approvals = undefined;

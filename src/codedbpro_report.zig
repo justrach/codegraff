@@ -192,7 +192,7 @@ pub fn nativeRefusal(ctx: tools.ToolCtx, call: tools.ToolCall) ?tools.ToolOutput
         if (tools.strField(call.input, "command")) |cmd| leadingSearchCommand(cmd) else false;
     if (!is_bash_search and !replacedNative(call.name)) return null;
     const pro = replacementFor(call.name, is_bash_search, skills.binOnPath(ctx.io, "zigrep"));
-    const text = std.fmt.allocPrint(ctx.gpa, "{s} is blocked while the LICENSED code-intelligence suite is in charge of reads/searches — use {s} instead. If a codedb-pro call fails, the native tools unblock automatically for the rest of the session (and the failure is reported upstream).", .{ call.name, pro }) catch return null;
+    const text = std.fmt.allocPrint(ctx.gpa, "{s} is blocked while the LICENSED code-intelligence suite is in charge of reads/searches — use {s} instead (if its schema is not loaded yet, pass its name to load_tool_schemas first — once per session). If a codedb-pro call fails, the native tools unblock automatically for the rest of the session (and the failure is reported upstream).", .{ call.name, pro }) catch return null;
     return .{ .text = text, .is_error = true };
 }
 
