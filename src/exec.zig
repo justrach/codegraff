@@ -65,6 +65,7 @@ const read_file = @import("read_file.zig");
 // #337: edit_file's verified write path, plus the file-tool helpers that moved
 // out with it (this file is at the 600-line ceiling).
 const edit_verify = @import("edit_verify.zig");
+const edit_batch = @import("edit_batch.zig"); // batched edit_file spans (#476)
 const fsErrorText = edit_verify.fsErrorText;
 const preserveMode = edit_verify.preserveMode;
 const hooks = @import("hooks.zig");
@@ -508,7 +509,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     // #337: the read/splice/write/VERIFY path lives in edit_verify.zig, where
     // the post-edit check sits ON the success path — a write that did not land
     // can no longer be reported as `replaced N occurrence(s)`.
-    if (std.mem.eql(u8, call.name, "edit_file")) return edit_verify.execEdit(ctx, input);
+    if (std.mem.eql(u8, call.name, "edit_file")) return if (input == .object and input.object.get("edits") != null) edit_batch.execBatch(ctx, input) else edit_verify.execEdit(ctx, input);
     if (std.mem.eql(u8, call.name, "write_file")) {
         const path = strField(input, "path") orelse return missingArg(gpa, "path");
         const content = strField(input, "content") orelse return missingArg(gpa, "content");

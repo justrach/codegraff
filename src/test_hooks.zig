@@ -44,6 +44,7 @@ const subagent_pin_tests = @import("subagent_pin_tests.zig");
 // Folded native tools (#416's two-phase pattern for the harness's own power
 // tools): reached in production via schema.zig/exec.zig/agent_tools.zig.
 const native_fold = @import("native_fold.zig");
+const edit_batch = @import("edit_batch.zig");
 // Moved off subagent.zig, which is at the 600-line cap.
 const subagent_tests = @import("subagent_tests.zig");
 // Bench score/cost priors → derived tier ladders (.harness/bench.json).
@@ -207,6 +208,7 @@ test {
     _ = subagent_selection;
     _ = subagent_pin_tests;
     _ = native_fold;
+    _ = edit_batch;
     _ = subagent_tests;
     _ = bench_priors;
     _ = bench_priors_tests;

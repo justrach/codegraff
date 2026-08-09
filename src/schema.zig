@@ -82,9 +82,9 @@ const base_specs = [_]ToolSpec{
     },
     .{
         .name = "edit_file",
-        .desc = "Replace an exact string in a file. old_string must match exactly one spot unless replace_all is set. Prefer this over write_file when changing an existing file.",
+        .desc = "Replace exact strings in a file. One span: old_string + new_string (old_string must match exactly one spot unless replace_all is set). Many spans: pass edits, an array of {old_string, new_string, replace_all?} applied in order — PREFER one batched call over several edit_file calls to the same file. Prefer this over write_file when changing an existing file.",
         .schema =
-        \\{"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string", "description": "Exact existing text to find"}, "new_string": {"type": "string", "description": "Replacement text"}, "replace_all": {"type": "boolean", "description": "Replace every occurrence (default: require a unique match)"}}, "required": ["path", "old_string", "new_string"]}
+        \\{"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string", "description": "Exact existing text to find (single-span form)"}, "new_string": {"type": "string", "description": "Replacement text (single-span form)"}, "replace_all": {"type": "boolean", "description": "Replace every occurrence (default: require a unique match)"}, "edits": {"type": "array", "items": {"type": "object", "properties": {"old_string": {"type": "string"}, "new_string": {"type": "string"}, "replace_all": {"type": "boolean"}}, "required": ["old_string", "new_string"]}, "description": "Batch form: several spans applied in order in one call"}}}
         ,
     },
     .{
