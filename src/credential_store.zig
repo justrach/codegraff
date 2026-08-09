@@ -54,16 +54,34 @@ pub fn replaceFile(io: Io, dir: Io.Dir, sub_path: []const u8, bytes: []const u8,
     try atomic.replace(io);
 }
 
+/// #477: the process $HOME, pinned once at startup (startup.zig, beside
+/// #402's initCodexHome). Throwaway side agents — the pre-compaction note,
+/// the title generator, playbook reflect — carry the Agent default home="",
+/// and a caller-threaded home then resolves to "/.kimi/...", which disabled
+/// BOTH refresh arms (proactive and post-401) for those agents: the first
+/// side call after token expiry ate a 401 the root call a beat later simply
+/// refreshed around. One resolver, one file, catalog or not.
+pub var g_home: []const u8 = "";
+
+pub fn initHome(home: []const u8) void {
+    if (home.len > 0) g_home = home;
+}
+
+/// The caller's home when it has one, else the startup-pinned process home.
+fn resolveHome(home: []const u8) []const u8 {
+    return if (home.len > 0) home else g_home;
+}
+
 /// `<home>/<provider_dir>/credentials/graff-oauth.json` — where the kimi and
 /// xai device-code logins keep their access/refresh pair.
 pub fn oauthPath(arena: Allocator, home: []const u8, provider_dir: []const u8) []const u8 {
-    return std.fmt.allocPrint(arena, "{s}/{s}/credentials/graff-oauth.json", .{ home, provider_dir }) catch "";
+    return std.fmt.allocPrint(arena, "{s}/{s}/credentials/graff-oauth.json", .{ resolveHome(home), provider_dir }) catch "";
 }
 
 /// Store an access/refresh/expiry triple at `oauthPath`, 0600 inside 0700 dirs.
 pub fn writeOAuth(io: Io, arena: Allocator, home: []const u8, provider_dir: []const u8, access: []const u8, refresh: []const u8, expires_at: i64) !void {
     // createDir is one level, so make <home>/<provider_dir> then its credentials/.
-    const base = try std.fmt.allocPrint(arena, "{s}/{s}", .{ home, provider_dir });
+    const base = try std.fmt.allocPrint(arena, "{s}/{s}", .{ resolveHome(home), provider_dir });
     const credentials = try std.fmt.allocPrint(arena, "{s}/credentials", .{base});
     for ([_][]const u8{ base, credentials }) |path| {
         Io.Dir.cwd().createDir(io, path, private_dir) catch {};
@@ -118,6 +136,22 @@ test "replaceFile: renames a whole new file into place, never truncating the tar
 
     // The temp file was consumed by the rename, not left in the directory.
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, tmp.dir));
+}
+
+test "oauthPath (#477): a home-less caller resolves the startup-pinned home, never the fs root" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const saved = g_home;
+    defer g_home = saved;
+    g_home = "/pinned/home";
+    // The throwaway-agent case (home=""): the pinned home, not "/.kimi/...".
+    try std.testing.expectEqualStrings("/pinned/home/.kimi/credentials/graff-oauth.json", oauthPath(a, "", ".kimi"));
+    // A caller that HAS a home is untouched — the pin is a fallback, not an override.
+    try std.testing.expectEqualStrings("/caller/home/.xai/credentials/graff-oauth.json", oauthPath(a, "/caller/home", ".xai"));
+    // Before startup pins anything the old (broken but unchanged) shape survives.
+    g_home = "";
+    try std.testing.expectEqualStrings("/.kimi/credentials/graff-oauth.json", oauthPath(a, "", ".kimi"));
 }
 
 test "replaceFile: .default_file keeps umask in charge and never widens an existing mode" {

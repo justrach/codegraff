@@ -64,6 +64,7 @@ pub fn loadCodexAuth(io: Io, arena: Allocator, home: []const u8) ?CodexAuth {
 /// already import oauth (startup, the request loop, the pickers).
 pub const codexHomeDir = helpers.codexHomeDir;
 pub const initCodexHome = helpers.initCodexHome;
+pub const initHome = credential_store.initHome; // #477: the kimi/xai half of the one-resolver pin
 pub const FreshKey = helpers.FreshKey;
 pub const takePersistError = helpers.takePersistError;
 

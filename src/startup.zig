@@ -429,6 +429,10 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // and every later reader (startup, /login, the mid-turn refresh, subagents)
     // resolves through this one answer instead of guessing.
     oauth.initCodexHome(arena, init.environ_map.get("CODEX_HOME"), keys_cli.homeEnv(init.environ_map));
+    // #477: same pin for the kimi/xai credential files, so home-less side
+    // agents (the pre-compaction note, title, reflect) resolve the ONE file
+    // the login flow writes instead of "/.kimi/...".
+    oauth.initHome(keys_cli.homeEnv(init.environ_map) orelse "");
 
     // `harness key set <provider> <key>` / `harness key list`: safe key store
     // (macOS Keychain, else a 0600 file). Exits after.
