@@ -259,6 +259,29 @@ test "one tool named twice in a call is emitted once, not duplicated" {
     try testing.expectEqual(@as(usize, 2), gate.rendersForTest());
 }
 
+test "query mode: keywords load the matching deferred tools, a miss lists what exists" {
+    withDefaults();
+    defer withDefaults();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const fat = try fixture(arena, "fat", 3, 2000);
+
+    const hit = try std.json.parseFromSliceLeaky(Value, arena, "{\"query\":\"first line\"}", .{ .allocate = .alloc_always });
+    const loaded = try gate.loadInto(arena, fat, hit);
+    try testing.expect(!loaded.is_error);
+    try testing.expect(loaded.loaded > 0);
+    for (fat) |t| try testing.expect(!gate.isDeferred(fat, t)); // all matched + enabled
+    try testing.expect(std.mem.indexOf(u8, loaded.text, "input_schema") != null); // full schemas ride the result
+
+    gate.reset();
+    const miss = try std.json.parseFromSliceLeaky(Value, arena, "{\"query\":\"zzqqx\"}", .{ .allocate = .alloc_always });
+    const none = try gate.loadInto(arena, fat, miss);
+    try testing.expect(none.is_error);
+    try testing.expect(std.mem.startsWith(u8, none.text, "no deferred tool matched query 'zzqqx'."));
+    try testing.expect(std.mem.indexOf(u8, none.text, "mcp__fat__t0") != null); // the listing follows
+}
+
 test "an unknown name errors and lists what is actually deferred; no args just lists" {
     withDefaults();
     defer withDefaults();

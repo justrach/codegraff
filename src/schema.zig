@@ -302,16 +302,15 @@ pub fn renderRootTools(
         if (mcp_schema_gate.hiddenSpec(t.name, mcp_tools) and !native_fold.anyFolded()) continue; // #416: load_tool_schemas hides only with nothing deferred OR folded
         if (native_fold.servePlaceholder(t.name)) // native fold layer 1: name + one-liner + placeholder until load_tool_schemas unfolds
             try writeToolEntry(&s, kind, t.name, mcp_schema_gate.shortDesc(t.desc), .{ .raw = mcp_schema_gate.placeholder_schema })
+        else if (std.mem.eql(u8, t.name, mcp_schema_gate.tool_name))
+            try writeToolEntry(&s, kind, t.name, try mcp_schema_gate.descWithListing(out, mcp_tools), .{ .raw = t.schema })
         else
             try writeToolEntry(&s, kind, t.name, t.desc, .{ .raw = t.schema });
     }
-    // #416 layer 1: a deferred tool is still REGISTERED (name + a one-line
-    // description, so the model knows it exists and can ask for it), but its
-    // schema is a placeholder until load_tool_schemas enables it. exec.zig is
-    // layer 2, and refuses a call that arrives before that.
-    for (mcp_tools) |m| if (mcp_schema_gate.isDeferred(mcp_tools, m))
-        try writeToolEntry(&s, kind, m.qualified_name, mcp_schema_gate.shortDesc(m.description), .{ .raw = mcp_schema_gate.placeholder_schema })
-    else
+    // Deferred tools ship no catalog entries at all (codex tool_search
+    // pattern): the meta tool's description lists what exists, exec.zig's
+    // layer-2 refusal still guards a call that arrives before its load.
+    for (mcp_tools) |m| if (!mcp_schema_gate.isDeferred(mcp_tools, m))
         try writeToolEntry(&s, kind, m.qualified_name, m.description, .{ .value = m.input_schema });
     try s.endArray();
     return aw.toOwnedSlice();

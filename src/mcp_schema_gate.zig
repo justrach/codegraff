@@ -83,9 +83,9 @@ pub const env_eager = "GRAFF_MCP_EAGER"; // comma-separated server names; "*" pi
 /// entry and no import cycle. The description is spliced into a raw JSON
 /// string, so it must stay free of characters needing JSON escapes.
 pub const tool_name = "load_tool_schemas";
-pub const tool_desc = "Load the full JSON input schemas for deferred tools and enable them for the rest of this session. MCP servers with large schemas — and folded native power tools (workflow, imagegen, learn_candidate, eval, clock_sleep) — are registered up front by name and a one-line description only, so that thousands of tokens of JSON Schema stay out of every request. A tool whose schema has not been loaded CANNOT be called: calling it returns an error telling you to load it first. Pass tools with exact names (mcp__server__tool for MCP, or a folded native name like workflow), or pass server to load every deferred tool on one MCP server. Call it with no arguments to list what is currently deferred. Loading is permanent for this session and free to repeat, because the schemas are cached.";
+pub const tool_desc = "Load the full JSON input schemas for deferred tools and enable them for the rest of this session. Deferred MCP tools — and folded native power tools (workflow, imagegen, learn_candidate, eval, clock_sleep) — ship no schemas up front, so that thousands of tokens of JSON Schema stay out of every request; any deferred servers and their tool names are listed at the end of this description. A tool whose schema has not been loaded CANNOT be called: calling it returns an error telling you to load it first. Pass tools with exact names (mcp__server__tool for MCP, or a folded native name like workflow), pass server to load every deferred tool on one MCP server, or pass query with keywords to search deferred tools by name and description (the top 8 matches load). Call it with no arguments to list what is currently deferred. Loading is permanent for this session and free to repeat, because the schemas are cached.";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"tools": {"type": "array", "items": {"type": "string"}, "description": "Exact qualified MCP tool names to load, e.g. mcp__deepwiki__ask_question"}, "server": {"type": "string", "description": "Load every deferred tool on this MCP server instead of naming them one by one"}}}
+    \\{"type": "object", "properties": {"tools": {"type": "array", "items": {"type": "string"}, "description": "Exact qualified MCP tool names to load, e.g. mcp__deepwiki__ask_question"}, "server": {"type": "string", "description": "Load every deferred tool on this MCP server instead of naming them one by one"}, "query": {"type": "string", "description": "Search deferred tools by keyword (matches name and description, loads the top 8 matches) — use when you know what you need but not the exact tool name"}}}
 ;
 
 /// How this session decides eager vs deferred. Set once by `configure`.
@@ -347,6 +347,16 @@ pub fn loadInto(arena: Allocator, all: []const mcp.Tool, input: Value) !Loaded {
             if (found) |i| try wanted.append(arena, i) else try missing.append(arena, item.string);
         }
     };
+    // codex tool_search pattern: keyword discovery when the exact name is not
+    // known — top matches join `wanted` and load exactly like named tools.
+    if (tools_mod.strField(input, "query")) |q| {
+        const matched = try matchQuery(arena, all, q);
+        if (matched.len == 0) {
+            const rest = try listing(arena, all, &.{});
+            return .{ .text = try std.fmt.allocPrint(arena, "no deferred tool matched query '{s}'. {s}", .{ q, rest }), .is_error = true };
+        }
+        for (matched) |i| try wanted.append(arena, i);
+    }
 
     if (missing.items.len > 0) return .{ .text = try listing(arena, all, missing.items), .is_error = true };
     if (wanted.items.len == 0) return .{ .text = try listing(arena, all, &.{}), .is_error = false };
@@ -371,6 +381,103 @@ pub fn loadInto(arena: Allocator, all: []const mcp.Tool, input: Value) !Loaded {
     );
     try head.writer.writeAll(aw.writer.buffered());
     return .{ .text = head.writer.buffered(), .loaded = fresh };
+}
+
+/// The short tool name within its server: mcp__codedbpro__read -> read.
+fn shortName(qualified: []const u8) []const u8 {
+    if (!std.mem.startsWith(u8, qualified, "mcp__")) return qualified;
+    const rest = qualified[5..];
+    const sep = std.mem.indexOf(u8, rest, "__") orelse return qualified;
+    return rest[sep + 2 ..];
+}
+
+/// Case-insensitive substring search (std.ascii has no indexOfIgnoreCase in
+/// this toolchain): windowed eqlIgnoreCase, fine at description sizes.
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1)
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+    return false;
+}
+
+/// Keyword search over deferred tools (the load tool's `query` arm): score
+/// each deferred tool by how many query tokens appear, case-insensitively, in
+/// its qualified name or description; return the top 8, best first. A token
+/// that matches nothing simply does not score — there is no fuzzier fallback,
+/// because the no-match path returns the full deferred listing anyway.
+fn matchQuery(arena: Allocator, all: []const mcp.Tool, query: []const u8) ![]usize {
+    const top_k = 8;
+    var best: [top_k]struct { score: usize, idx: usize } = undefined;
+    var n_best: usize = 0;
+    for (all, 0..) |t, i| {
+        if (!isDeferred(all, t)) continue;
+        var score: usize = 0;
+        var tok = std.mem.tokenizeAny(u8, query, " \t,;:/_-");
+        while (tok.next()) |w| {
+            if (w.len < 2) continue;
+            if (containsIgnoreCase(t.qualified_name, w) or containsIgnoreCase(t.description, w)) score += 1;
+        }
+        if (score == 0) continue;
+        if (n_best < top_k) {
+            best[n_best] = .{ .score = score, .idx = i };
+            n_best += 1;
+        } else {
+            // Replace the weakest entry when this one beats it.
+            var weakest: usize = 0;
+            for (best[0..n_best], 0..) |b, k| if (b.score < best[weakest].score) {
+                weakest = k;
+            };
+            if (score <= best[weakest].score) continue;
+            best[weakest] = .{ .score = score, .idx = i };
+        }
+    }
+    const out = try arena.alloc(usize, n_best);
+    // Selection-sort descending so the strongest match loads first.
+    for (out, 0..) |*slot, k| {
+        var top: usize = 0;
+        for (best[0..n_best], 0..) |b, j| if (b.score > best[top].score) {
+            top = j;
+        };
+        slot.* = best[top].idx;
+        best[top].score = 0;
+        _ = k;
+    }
+    return out;
+}
+
+/// The load tool's live catalog description: the static base plus, while
+/// anything is deferred, a compact source listing (server: short tool names).
+/// Deferred tools ship NO per-tool catalog entries of their own — this
+/// listing is how the model learns what exists (codex's tool_search source
+/// listing), and `query` covers discovery beyond it (#476).
+pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
+    if (!anyDeferred(all)) return tool_desc;
+    var servers: std.ArrayList([]const u8) = .empty;
+    for (all) |t| {
+        if (!isDeferred(all, t)) continue;
+        const sv = serverOf(t.qualified_name);
+        const seen = for (servers.items) |s| {
+            if (std.mem.eql(u8, s, sv)) break true;
+        } else false;
+        if (!seen) try servers.append(arena, sv);
+    }
+    var aw: Io.Writer.Allocating = .init(arena);
+    try aw.writer.writeAll(tool_desc);
+    try aw.writer.writeAll(" Deferred now:");
+    for (servers.items) |sv| {
+        try aw.writer.print(" {s} (", .{sv});
+        var first = true;
+        for (all) |t| {
+            if (!isDeferred(all, t)) continue;
+            if (!std.mem.eql(u8, serverOf(t.qualified_name), sv)) continue;
+            if (!first) try aw.writer.writeAll(", ");
+            try aw.writer.writeAll(shortName(t.qualified_name));
+            first = false;
+        }
+        try aw.writer.writeAll(");");
+    }
+    return aw.writer.buffered();
 }
 
 /// What is deferred right now, names + short descriptions. Doubles as the
