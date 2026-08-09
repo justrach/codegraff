@@ -242,6 +242,14 @@ pub fn spliceViaDaemon(gpa: Allocator, ctx: tools.ToolCtx, file: []const u8, dis
     return std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s} (codedb-pro, verified)", .{ count, display_path }) catch null;
 }
 
+/// Caller-error classes are already surfaced to the session by the tool
+/// result itself, and they are the caller's mistake — a path that does not
+/// resolve against the daemon's launch cwd — not a tool bug, so they never
+/// reach the issue filer (#475).
+fn callerError(err_text: []const u8) bool {
+    return std.mem.indexOf(u8, err_text, "file not found") != null;
+}
+
 /// exec.zig's MCP branch calls this on any failed mcp__codedbpro__* call
 /// (transport error or is_error result). Never blocks the calling turn: the
 /// reporter runs as a background subagent, and every failure path here is
@@ -251,6 +259,7 @@ pub fn onFailure(ctx: tools.ToolCtx, tool: []const u8, err_text: []const u8) voi
     // First failure opens the native fallback — dedupe/cap below only govern
     // ISSUE FILING, never the model's ability to keep working.
     g_fallback_open.store(true, .release);
+    if (callerError(err_text)) return;
     if (ctx.from_sub) return; // the reporter IS a subagent — never recurse
     const gpa = ctx.gpa;
     const redacted = redact(gpa, err_text) catch return;
@@ -451,4 +460,10 @@ test "onFailure opens the native fallback even from a subagent (no spawn, no rec
     try std.testing.expect(fallbackOpen());
     onFailure(ctx, "mcp__deepwiki__ask_question", "boom"); // not ours: no effect
     try std.testing.expect(fallbackOpen());
+}
+
+test "callerError: file-not-found class skips filing, opaque failures still file (#475)" {
+    try std.testing.expect(callerError("{\"ok\":false,\"file\":\"tests/test_cli.py\",\"error\":\"file not found: /x/tests/test_cli.py (relative paths resolve against the daemon's launch cwd)\"}"));
+    try std.testing.expect(!callerError("{\"ok\":false,\"error\":\"cannot read file\"}"));
+    try std.testing.expect(!callerError("connection refused"));
 }
