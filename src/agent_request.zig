@@ -205,6 +205,14 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         // json_mode's stdout.
         if (reqStatsArmed()) {
             std.debug.print("  [req] body={d}B tools={d}B system={d}B messages~={d}B\n", .{ body.len, if (tools) |t| t.len else 0, self.sys_normal.len, body.len -| (if (tools) |t| t.len else 0) -| self.sys_normal.len });
+            // One dump per process: the assembled system prompt, for offline segment attribution (#476).
+            const dumped = struct {
+                var done: bool = false;
+            };
+            if (!dumped.done and self.sys_normal.len > 10_000) {
+                dumped.done = true;
+                Io.Dir.cwd().writeFile(self.io, .{ .sub_path = "/tmp/graff-sys.txt", .data = self.sys_normal }) catch {};
+            }
             // Per-server split: attribute each tool's serialized span by its
             // name prefix (next-"name" boundary ≈ tool size, ±separators).
             if (tools) |t| {

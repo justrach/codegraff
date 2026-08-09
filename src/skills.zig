@@ -52,7 +52,7 @@ pub const skills_registry = [_]SkillDef{
         .desc = "browser automation, web crawling, iOS/Android device control (github.com/justrach/kuri)",
         .bins = &.{"kuri"},
         .install = "curl -fsSL https://raw.githubusercontent.com/justrach/kuri/main/install.sh | sh",
-        .note = "The `kuri` CLI is installed (browser automation, HAR capture, iOS/Android device control) — prefer it via bash for browser and device tasks; run `kuri --help` once to see subcommands before using it. Plain page fetching is already covered: the webfetch tool uses kuri-fetch under the hood. WARNING: iOS/Android simulator input (`kuri ios tap`/`swipe`/`scroll`/`type`) synthesizes host-level GUI events and grabs the user's real mouse cursor and keyboard focus — never use these during background work without explicit user consent (recent kuri gates them behind `--host-input`/`KURI_ALLOW_HOST_INPUT=1`). For background/non-interactive device tasks prefer `xcrun simctl` (boot/install/launch and `io ... screenshot`) and app-level deterministic/autotest hooks — and clean up after yourself (#407): shut down any device you booted (`xcrun simctl shutdown <udid>`) and never `open -a Simulator` for background work; screenshots work headless.",
+        .note = "The `kuri` CLI is installed (browser automation, HAR capture, iOS/Android device control) — prefer it via bash for those tasks; run `kuri --help` once first. Never synthesize simulator input (`kuri ios tap/swipe/scroll/type`) in background work — it grabs the user's real cursor and focus; use `xcrun simctl` instead, shut down devices you boot, and never `open -a Simulator` for background work (#407).",
     },
 };
 
@@ -67,7 +67,7 @@ pub const skills_registry = [_]SkillDef{
 /// Edits inside the cwd stay native: edit_file/write_file are
 /// /rewind-snapshotted and already splice via zigpatch, whereas codedb-pro
 /// edit/patch/replace bypass /rewind. Explicit external targets use gated bash.
-const codedbpro_note_licensed = "The codedb-pro MCP server is connected and LICENSED, and its mcp__codedbpro__* tools REPLACE the native read/search defaults — you are paying for them. Their schemas ship DEFERRED to keep every request lean: pass the mcp__codedbpro__* names to load_tool_schemas the first time you need one (once per session), then use mcp__codedbpro__read (mode=outline first, then symbol/lines) instead of read_file for navigating code, mcp__codedbpro__faster_search / meta_search instead of the codedb tool and bash grep/find for symbol, content and fuzzy search, and mcp__codedbpro__batch to run several independent reads/searches in one round-trip. The native read_file/codedb (and leading bash grep/rg/find) are BLOCKED while the licensed server is healthy — read/search calls are refused with a pointer to the pro equivalent, shell searches with a pointer to `zigrep` (the suite's own search CLI — run it directly via bash); any codedb-pro failure automatically unblocks the natives for the rest of the session (and is reported upstream, so just fall back and keep working). KEEP EDITS inside the cwd on the native edit_file/write_file tools — they are snapshot-tracked for /rewind and already splice via zigpatch; codedb-pro edit/patch/replace bypass /rewind, so do not route edits through it. An explicitly user-requested external target is the exception: use permission-gated bash with quoted paths and explain that /rewind does not cover it.";
+const codedbpro_note_licensed = "The codedb-pro MCP server is connected and LICENSED — its mcp__codedbpro__* tools (load once per session via load_tool_schemas, e.g. by query) REPLACE the native read/search defaults, which are BLOCKED while the server is healthy: read/search calls are refused with a pointer to the pro equivalent, shell searches to `zigrep` via bash; any codedb-pro failure unblocks the natives for the rest of the session. KEEP EDITS inside the cwd on the native edit_file/write_file tools — they are snapshot-tracked for /rewind; codedb-pro edit/patch/replace bypass /rewind. An explicitly user-requested external target is the exception: permission-gated bash, quoted paths, and explain /rewind does not cover it.";
 
 const McpNote = struct { server: []const u8, note: []const u8 };
 pub const mcp_notes = [_]McpNote{
@@ -397,7 +397,8 @@ test "codedbproNote: licensed flips codedbpro to the lean-in note" {
     try std.testing.expectEqualStrings(cons, codedbproNote("codedbpro", false, cons)); // unlicensed -> conservative
     try std.testing.expectEqualStrings(cons, codedbproNote("muonry", true, cons)); // other servers untouched
     try std.testing.expectEqualStrings(codedbpro_note_licensed, codedbproNote("codedbpro", true, cons)); // licensed -> lean-in
-    try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "mcp__codedbpro__read") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "mcp__codedbpro__*") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "load_tool_schemas") != null);
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "/rewind") != null);
 }
 
