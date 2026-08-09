@@ -93,6 +93,36 @@ pub fn blocked(name: []const u8) bool {
     return enabled and isFolded(name) and !isLoaded(name);
 }
 
+/// The session's loaded folded natives, in load order (schema.zig's stable
+/// tail appends them after the stable head — load order keeps it append-only).
+pub fn loadedNames() []const []const u8 {
+    return g_loaded[0..g_loaded_len];
+}
+
+/// GRAFF_STABLE_CATALOG tail (schema.zig renderRootTools, #476): every tool
+/// whose schema has loaded this session, appended in LOAD ORDER after the
+/// stable catalog head — folded natives first, then MCP tools by gate seq.
+/// Append-only is the point: a load changes only the tools array's tail
+/// bytes, and the provider's prefix cache (tools serialize before messages)
+/// survives what a mid-array re-insertion would bust.
+pub fn renderLoadedTail(s: *std.json.Stringify, kind: @import("provider.zig").Provider.Kind, out: Allocator, mcp_tools: []const @import("mcp.zig").Tool) !void {
+    const schema_mod = @import("schema.zig");
+    const mcp = @import("mcp.zig");
+    for (loadedNames()) |name| {
+        const spec = (try findRootSpec(out, name)) orelse continue;
+        try schema_mod.writeToolEntry(s, kind, spec.name, spec.desc, .{ .raw = spec.schema });
+    }
+    var loaded: std.ArrayList(mcp.Tool) = .empty;
+    for (mcp_tools) |m| if (mcp_schema_gate.policyDeferred(mcp_tools, m) and mcp_schema_gate.loadSeq(m.qualified_name) != null)
+        try loaded.append(out, m);
+    std.mem.sort(mcp.Tool, loaded.items, {}, struct {
+        fn lt(_: void, a: mcp.Tool, b: mcp.Tool) bool {
+            return mcp_schema_gate.loadSeq(a.qualified_name).? < mcp_schema_gate.loadSeq(b.qualified_name).?;
+        }
+    }.lt);
+    for (loaded.items) |m| try schema_mod.writeToolEntry(s, kind, m.qualified_name, m.description, .{ .value = m.input_schema });
+}
+
 /// Whether the root catalog skips this native spec at render: folded and not
 /// yet loaded — or, under GRAFF_STABLE_CATALOG, folded at all (the loaded
 /// schema already rides the load result; a re-render would bust the prefix

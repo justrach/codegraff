@@ -124,6 +124,9 @@ const Node = struct {
     /// so a repeated load is a pointer copy rather than a re-serialization.
     /// This is the per-session schema cache the issue asks for.
     rendered: []const u8,
+    /// Load order (0 = never loaded): the stable-catalog tail appends in this
+    /// order so a new load changes only the catalog's tail bytes (#476).
+    seq: usize,
     next: ?*Node,
 };
 
@@ -162,9 +165,23 @@ fn publish(arena: Allocator, name: []const u8, rendered: []const u8) !*Node {
     const node = try arena.create(Node);
     // The name is COPIED, not aliased: `tool.qualified_name` belongs to the
     // registry's arena, and this list has to outlive any registry rebuild.
-    node.* = .{ .name = try arena.dupe(u8, name), .rendered = rendered, .next = g_head.load(.acquire) };
+    node.* = .{ .name = try arena.dupe(u8, name), .rendered = rendered, .seq = nextSeq(), .next = g_head.load(.acquire) };
     g_head.store(node, .release);
     return node;
+}
+
+var g_seq: usize = 0;
+fn nextSeq() usize {
+    g_seq += 1;
+    return g_seq;
+}
+
+/// A loaded tool's position in load order; null when not loaded. schema.zig's
+/// stable-catalog tail sorts by this so loads are append-only.
+pub fn loadSeq(qualified: []const u8) ?usize {
+    var cur = g_head.load(.acquire);
+    while (cur) |n| : (cur = n.next) if (std.mem.eql(u8, n.name, qualified)) return n.seq;
+    return null;
 }
 
 // --- policy ----------------------------------------------------------------

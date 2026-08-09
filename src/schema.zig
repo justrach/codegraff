@@ -306,24 +306,22 @@ pub fn renderRootTools(
         else
             try writeToolEntry(&s, kind, t.name, t.desc, .{ .raw = t.schema });
     }
-    // Deferred tools ship no catalog entries at all (codex tool_search
-    // pattern): the meta tool's description lists what exists, exec.zig's
-    // layer-2 refusal still guards a call that arrives before its load.
-    // GRAFF_STABLE_CATALOG keeps skipping policy-deferred tools even after
-    // they load — a re-rendered catalog busts the provider's prefix cache.
+    // Deferred tools ship no entries (codex tool_search pattern); the meta
+    // tool's desc lists them, exec.zig layer 2 guards premature calls.
     for (mcp_tools) |m| if (!mcp_schema_gate.isDeferred(mcp_tools, m) and !(mcp_schema_gate.g_stable_catalog and mcp_schema_gate.policyDeferred(mcp_tools, m)))
         try writeToolEntry(&s, kind, m.qualified_name, m.description, .{ .value = m.input_schema });
+    // GRAFF_STABLE_CATALOG (#476): loaded tools append in LOAD ORDER after the
+    // stable head — loads change only tail bytes, the prefix cache survives.
+    if (mcp_schema_gate.g_stable_catalog) try native_fold.renderLoadedTail(&s, kind, out, mcp_tools);
     try s.endArray();
     return aw.toOwnedSlice();
 }
 
 /// Root tool catalog for the current session: optional tools are absent unless
 /// enabled and usable, avoiding schema tokens for calls that cannot succeed.
-/// #330 layer 1, root half: the gate then drops the host-touching tools from
-/// whichever catalog was chosen, so they are never advertised to a provider.
-/// MCP tools are appended afterwards by renderRootTools and stay untouched.
-/// #352 layer 1, root half: the additive gate then appends each optional tool
-/// whose backing capability startup actually found on this machine.
+/// #330 drops host-touching tools from the chosen catalog; #352 appends each
+/// optional tool whose backing capability startup found. MCP tools are
+/// appended afterwards by renderRootTools and stay untouched.
 pub fn effectiveRootSpecs(arena: Allocator) ![]const ToolSpec {
     const chosen: []const ToolSpec = if (root.g_clock_sleep)
         (if (learn_store.active_agent_loaded) &root_specs else &root_specs_without_learning)
@@ -342,7 +340,7 @@ fn writeSchema(s: *std.json.Stringify, schema: Schema) !void {
     }
 }
 
-fn writeToolEntry(s: *std.json.Stringify, kind: Provider.Kind, name: []const u8, desc: []const u8, schema: Schema) !void {
+pub fn writeToolEntry(s: *std.json.Stringify, kind: Provider.Kind, name: []const u8, desc: []const u8, schema: Schema) !void {
     switch (kind) {
         .anthropic => {
             try s.beginObject();
