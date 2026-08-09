@@ -24,11 +24,12 @@
 //!    consent prompt is reached in exactly the cases it was reached before, in
 //!    the same order, and deferral can only ever subtract a call that consent
 //!    already allowed — never add one it did not.
-//!  - **Small servers behave exactly as they do today.** The default is
-//!    size-based: a server whose tools cost at most `default_budget` bytes of
-//!    description + schema stays EAGER, because the load round trip re-emits
-//!    those same bytes and would be a wash. Only servers above the threshold
-//!    are deferred, plus whatever the user pins either way.
+//!  - **Deferral is universal.** Every server's tools ship as placeholders
+//!    until `load_tool_schemas` unfolds them — the measured interactive
+//!    anatomy (#476) is that most sessions never call most servers, so eager
+//!    bytes are re-sent cost with no payoff, and discovery has proven
+//!    reliable. `GRAFF_MCP_SCHEMA_BUDGET` restores the old size-based
+//!    threshold; `GRAFF_MCP_EAGER` pins specific servers either way.
 //!
 //! Session state (which schemas have been loaded) is a lock-free append-only
 //! list: the only writer is the orchestrator thread — `load_tool_schemas` is a
@@ -48,12 +49,15 @@ const util = @import("util.zig");
 const ExecResult = tools_mod.ExecResult;
 
 /// Per-server budget, in bytes of description + serialized schema, under which
-/// a server is served eagerly. 4 KiB is roughly 1,000 tokens: below that the
-/// `load_tool_schemas` round trip (a tool call plus a result that re-emits the
-/// very schemas it saved) costs about what deferral saves, so the indirection
-/// only pays above it. It also means every small server keeps working byte for
-/// byte as it did before #416.
-pub const default_budget: usize = 4096;
+/// a server is served eagerly. Zero by default: EVERY server defers. The old
+/// 4 KiB threshold assumed the load round trip was a wash below ~1,000 tokens,
+/// but that only holds for sessions that call the tool — the measured
+/// interactive anatomy (#476) is that most sessions never touch most servers,
+/// so eager bytes are pure re-sent cost and discovery via load_tool_schemas
+/// has proven reliable (the codedbpro pin removal shipped with zero discovery
+/// turns). GRAFF_MCP_SCHEMA_BUDGET restores a size threshold;
+/// GRAFF_MCP_EAGER pins specific servers.
+pub const default_budget: usize = 0;
 
 /// How much of an MCP tool's description survives into the deferred listing.
 /// Enough for a model to tell tools apart and decide what to load; a real MCP

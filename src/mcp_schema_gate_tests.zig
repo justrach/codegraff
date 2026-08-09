@@ -70,20 +70,27 @@ test "jsonBytes tracks the real serialized size closely enough to budget with" {
     try testing.expect(estimate <= actual + actual / 10);
 }
 
-test "a small server stays eager, an expensive one is deferred (#416 default)" {
+test "every server defers by default; the budget knob restores size-based eagerness (#476)" {
     withDefaults();
     defer withDefaults();
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
+    // Universal deferral: even a tiny server ships placeholders by default.
     const small = try fixture(arena, "small", 2, 40);
-    try testing.expect(gate.serverCost(small, "small") <= gate.default_budget);
+    try testing.expect(gate.serverCost(small, "small") > gate.default_budget);
+    for (small) |t| try testing.expect(gate.isDeferred(small, t));
+    try testing.expect(gate.anyDeferred(small));
+
+    // The old size-based policy stays reachable via GRAFF_MCP_SCHEMA_BUDGET.
+    gate.g_policy.budget = 4096;
+    try testing.expect(gate.serverCost(small, "small") <= gate.g_policy.budget);
     for (small) |t| try testing.expect(!gate.isDeferred(small, t));
     try testing.expect(!gate.anyDeferred(small));
 
     const fat = try fixture(arena, "fat", 8, 2000);
-    try testing.expect(gate.serverCost(fat, "fat") > gate.default_budget);
+    try testing.expect(gate.serverCost(fat, "fat") > gate.g_policy.budget);
     for (fat) |t| try testing.expect(gate.isDeferred(fat, t));
     try testing.expect(gate.anyDeferred(fat));
 }
@@ -276,6 +283,8 @@ test "an unknown name errors and lists what is actually deferred; no args just l
     try testing.expect(std.mem.indexOf(u8, list.text, "second line nobody needs up front") == null);
 
     // Nothing deferred at all: say so rather than printing an empty list.
+    // (Reachable via the budget knob now that every server defers by default.)
+    gate.g_policy.budget = 4096;
     const small = try fixture(arena, "small", 1, 4);
     const quiet = try gate.loadInto(arena, small, none);
     try testing.expect(!quiet.is_error);
@@ -289,6 +298,7 @@ test "an eager tool is never blocked, and the load tool is advertised only when 
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const small = try fixture(arena, "small", 2, 40);
+    gate.g_policy.budget = 4096; // make "small" eager explicitly — the default defers everything (#476)
     try testing.expect(!gate.blocked(small, "mcp__small__t0"));
     try testing.expect(!gate.hiddenSpec("bash", small)); // only the load tool is ever hidden
     try testing.expect(gate.hiddenSpec(gate.tool_name, small)); // nothing deferred -> not advertised

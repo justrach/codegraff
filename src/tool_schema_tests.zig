@@ -237,7 +237,8 @@ test "#416: deferring a real MCP server's schemas cuts the served catalog in hal
     gate.g_policy = .{ .eager = &.{"*"} };
     const eager = try schema.renderRootTools(arena, .anthropic, &.{}, tools);
 
-    // The default: this server is 2.3x over the 4 KiB budget, so it defers.
+    // The default: every server defers (budget 0, #476) — this one is 2.3x
+    // over even the old 4 KiB budget, so it deferred under that policy too.
     gate.g_policy = .{};
     try testing.expect(gate.serverCost(tools, "smolify") > gate.default_budget);
     const deferred = try schema.renderRootTools(arena, .anthropic, &.{}, tools);
