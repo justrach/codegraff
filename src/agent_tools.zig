@@ -296,8 +296,7 @@ fn clockSleepInterruptedText(arena: std.mem.Allocator, elapsed_ms: i64) ![]const
 /// Handle a meta tool inline on the agent's own thread.
 pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     // Folded natives, meta path: inline dispatch never reaches exec.zig's
-    // guard chain, so auto-load lives here too — a confident call loads the
-    // schema and proceeds (user direction), same rule as gateExec.
+    // guard chain, so auto-load lives here too — same rule as gateExec.
     if (!self.sub) native_fold.markIfFolded(call.name);
     // #469: sideways coordination between co-resident root sessions.
     if (std.mem.eql(u8, call.name, peer_channel.tool_name)) return peer_channel.handleMessage(self, call);
