@@ -354,6 +354,11 @@ pub fn buildSystemPrompt(
     if (append_system_flag) |extra| {
         sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, extra });
     }
+    // Repo map (repo_map.zig): the top of the working tree, so the model reads
+    // the files it needs instead of spending opening turns on ls/find.
+    if (environ.get("GRAFF_NO_REPO_MAP") == null) {
+        if (@import("repo_map.zig").segment(io, arena)) |map| sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, map });
+    }
     if (unattended) sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, prompts.unattended_note });
     // Codex-style skills: one capability line per installed optional
     // companion (skills_registry) — metadata in context, --help on demand.
