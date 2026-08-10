@@ -296,7 +296,7 @@ def run_scenario(
         cwd=tmp,
         env=env,
         unset_env=ambient,
-        timeout=20.0,
+        timeout=45.0,  # compaction legs stream 128 KiB of scripted reasoning; 20s flakes on loaded runners
     ) as session:
         session.wait_for_literal("] ›")
         cursor = len(session.raw)
@@ -650,7 +650,7 @@ def run_midturn_compaction_scenario(
         cwd=tmp,
         env=env,
         unset_env=ambient,
-        timeout=20.0,
+        timeout=45.0,  # compaction legs stream 128 KiB of scripted reasoning; 20s flakes on loaded runners
     ) as session:
         session.wait_for_literal("] ›")
         cursor = len(session.raw)
@@ -693,7 +693,7 @@ def run_transactional_compaction_scenario(
         cwd=tmp,
         env=env,
         unset_env=ambient,
-        timeout=20.0,
+        timeout=45.0,  # compaction legs stream 128 KiB of scripted reasoning; 20s flakes on loaded runners
     ) as session:
         session.wait_for_literal("] ›")
         cursor = len(session.raw)
