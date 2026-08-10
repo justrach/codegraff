@@ -206,6 +206,12 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             var ckbuf: [96]u8 = undefined;
             try s.objectField("prompt_cache_key");
             try s.write(promptCacheKey(self, &ckbuf));
+            // GPT-5.6 explicit caching (prompt_cache_options + per-item
+            // prompt_cache_breakpoint, openai-docs upgrading-to-gpt-5p6-sol.md)
+            // was probed here and is NOT shippable: the ChatGPT-codex route
+            // rejects both ("Unsupported parameter: prompt_cache_options",
+            // "Unknown parameter: input[0].prompt_cache_breakpoint"). Implicit
+            // caching + prompt_cache_key affinity is all this backend offers.
             // Codex WS delta: once a response.id is held on a live WS session,
             // send previous_response_id + only the items the server does not yet
             // hold, instead of the full history (avoids the huge frame that the

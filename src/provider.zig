@@ -172,8 +172,11 @@ pub const Provider = struct {
     }
 
     /// #201: absolute ceiling for a single tool output regardless of window size,
-    /// so a huge-context model still bounds one pathological result.
-    const abs_output_cap_bytes: usize = 256 * 1024;
+    /// so a huge-context model still bounds one pathological result. Aligned with
+    /// codex-rs's proven default (DEFAULT_MAX_OUTPUT_TOKENS = 10_000 ≈ 40 KB at
+    /// 4 bytes/token); oversized outputs spill to the session artifact dir with a
+    /// greppable path (#409), so a tighter ceiling costs no information.
+    const abs_output_cap_bytes: usize = 40 * 1024;
 
     /// #193 follow-up / #201: the largest a SINGLE tool output may be, in serialized
     /// bytes, before it is truncated at send time (capOversizedToolOutputs). It must
@@ -555,15 +558,16 @@ test "Keys.build: Kimi follows the live model protocol and auth style" {
 
 test "perOutputCap (#201): window-proportional with an absolute ceiling, keep_recent-safe" {
     var p: Provider = undefined;
-    // ~1/8 of the window in tokens (context/2 bytes at ~4 bytes/token)
+    // the codex-aligned 40 KB absolute ceiling binds for any window > ~82k
+    // tokens (flat 10k-token budget, codex-rs DEFAULT_MAX_OUTPUT_TOKENS)
     p.context = 270_000;
-    try std.testing.expectEqual(@as(usize, 135_000), p.perOutputCap());
+    try std.testing.expectEqual(@as(usize, 40 * 1024), p.perOutputCap());
     // #201 invariant: keep_recent (=4) verbatim outputs must stay reclaimable —
     // 4 * cap (in estimated tokens) < the window.
     try std.testing.expect(4 * (p.perOutputCap() / 4) < p.context);
     // absolute ceiling bounds a huge window so one result can't dominate
     p.context = 4_000_000;
-    try std.testing.expectEqual(@as(usize, 256 * 1024), p.perOutputCap());
+    try std.testing.expectEqual(@as(usize, 40 * 1024), p.perOutputCap());
     // unknown window disables the cap
     p.context = 0;
     try std.testing.expectEqual(@as(usize, 0), p.perOutputCap());
