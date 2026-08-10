@@ -22,18 +22,80 @@
 //! ladder (agent_overflow.zig) is the safety net.
 
 const std = @import("std");
+const Io = std.Io;
 const main_mod = @import("main.zig");
 const Agent = @import("agent.zig").Agent;
 const Provider = @import("provider.zig").Provider;
+const telemetry = @import("telemetry.zig");
+const keys_cli = @import("keys_cli.zig");
 
-/// GRAFF_SERVER_COMPACT=0/false/off opts back out to client-side summaries
-/// (session_settings.applyEnvKnobs). Default: on for .responses providers.
+/// GRAFF_SERVER_COMPACT=0/false/off forces the client arm, =1 forces the
+/// server arm (session_settings.applyEnvKnobs). Default: A/B assignment.
 pub var g_server_compact_override: ?bool = null;
 
+/// A/B assignment (#compact-ab): 50/50, bucketed by the anonymous install id
+/// so a person's arm is stable across sessions and machines stay whole-user
+/// consistent. Set once per process by assignArm (startup); null means
+/// unassigned, which behaves as the client arm (the pre-feature default).
+var g_ab_arm: ?bool = null;
+
+/// Pure bucketing: true = server arm. Deterministic on the install id.
+pub fn armForId(id: *const [32]u8) bool {
+    return (std.hash.Wyhash.hash(0, id) & 1) == 0;
+}
+
+/// Startup hook (session_settings.setupSkillsAndTheme): bucket this install.
+/// The env override wins outright, so no assignment is made when it is set.
+pub fn assignArm(io: Io, arena: std.mem.Allocator, home: []const u8) void {
+    if (g_server_compact_override != null or g_ab_arm != null) return;
+    const id = keys_cli.loadOrCreateId(io, arena, home, ".simple-harness-install-id");
+    g_ab_arm = armForId(&id);
+}
+
+/// Is the server-compaction path active for this provider?
 pub fn enabled(p: Provider) bool {
     if (p.kind != .responses) return false;
     if (g_server_compact_override) |o| return o;
-    return true;
+    return g_ab_arm orelse false;
+}
+
+/// One OTLP log record: body="experiment", kind="compact_ab", detail carries
+/// the fact ("arm=server", "prune_items=5", "summary_chars=8481"). Static or
+/// numeric content only — never user text. No-op without a telemetry sink.
+fn pushExp(detail: []const u8) void {
+    const t = telemetry.g_telem orelse return;
+    if (!t.on()) return;
+    const dup = t.gpa.dupe(u8, detail) catch "";
+    t.mutex.lockUncancelable(t.io);
+    t.push(.{ .t_ms = t.elapsedMsLocked(), .body = "experiment", .kind = "compact_ab", .detail = dup });
+    t.mutex.unlock(t.io);
+    t.maybeFlushEvents();
+}
+
+var g_ab_noted = false; // one exposure record per process; a race double-counts harmlessly
+
+/// Record which arm this session is in (both arms, so the control group is
+/// visible). Called from the Responses request-body builder on every build;
+/// the flag makes it once per process.
+pub fn noteExposure(self: *Agent) void {
+    if (g_ab_noted or self.provider.kind != .responses) return;
+    g_ab_noted = true;
+    pushExp(if (enabled(self.provider)) "arm=server" else "arm=client");
+}
+
+/// Record a successful server-side prune (the treatment arm doing work).
+fn notePrune(dropped: usize) void {
+    var buf: [24]u8 = undefined;
+    const d = std.fmt.bufPrint(&buf, "prune_items={d}", .{dropped}) catch return;
+    pushExp(d);
+}
+
+/// Record a successful client-side summary on a .responses provider — the
+/// control arm doing work (auto at >=95%, or manual /compact on codex).
+pub fn noteClientSummary(chars: usize) void {
+    var buf: [28]u8 = undefined;
+    const d = std.fmt.bufPrint(&buf, "summary_chars={d}", .{chars}) catch return;
+    pushExp(d);
 }
 
 /// Emit the compaction directive on a Responses request body. The threshold
@@ -42,6 +104,10 @@ pub fn enabled(p: Provider) bool {
 /// have.
 pub fn writeContextManagement(self: *const Agent, s: anytype) !void {
     if (!enabled(self.provider)) return;
+    try writeContextManagementBody(self, s);
+}
+
+fn writeContextManagementBody(self: *const Agent, s: anytype) !void {
     try s.objectField("context_management");
     try s.beginArray();
     try s.beginObject();
@@ -62,7 +128,11 @@ pub fn writeContextManagement(self: *const Agent, s: anytype) !void {
 /// such histories are left to the client-side path. In practice the trailing
 /// blob lands at a response boundary where pairs are complete.
 pub fn pruneToLatestBlob(self: *Agent) bool {
-    if (!enabled(self.provider)) return false;
+    return pruneIf(self, enabled(self.provider));
+}
+
+fn pruneIf(self: *Agent, server_arm: bool) bool {
+    if (!server_arm or self.provider.kind != .responses) return false;
     const items = self.messages.items;
     var blob_idx: ?usize = null;
     for (items, 0..) |m, i| {
@@ -104,6 +174,7 @@ pub fn pruneToLatestBlob(self: *Agent) bool {
     self.context_local_tokens = 0;
     self.goal_note_fp = 0;
     self.history_rewrites +%= 1; // breaks the codex chain → next request re-anchors
+    notePrune(dropped);
     if (!main_mod.json_mode) self.say("[server compacted context: {d} earlier item(s) now carried by the model's compaction state]\n", .{dropped}) catch {};
     return true;
 }
@@ -113,11 +184,15 @@ pub fn pruneToLatestBlob(self: *Agent) bool {
 /// between-turns checks). Non-responses providers get the legacy policy
 /// unchanged.
 pub fn autocompact(self: *Agent, recovery_meter: u64) void {
-    if (!enabled(self.provider)) {
+    autocompactIf(self, recovery_meter, enabled(self.provider));
+}
+
+fn autocompactIf(self: *Agent, recovery_meter: u64, server_arm: bool) void {
+    if (!server_arm or self.provider.kind != .responses) {
         self.compactOrRecover(self.provider.nearContextLimit(recovery_meter));
         return;
     }
-    if (pruneToLatestBlob(self)) return;
+    if (pruneIf(self, true)) return;
     // No blob yet: the server compacts in-stream at the same threshold, so
     // trust it at the ordinary compactAt line; the client-side summary (and
     // its destructive fallback) is reserved for genuinely near the wall, where
@@ -147,17 +222,26 @@ fn item(a: std.mem.Allocator, typ: []const u8, call_id: ?[]const u8) !std.json.V
     return .{ .object = obj };
 }
 
-test "enabled: responses-only, override wins both ways" {
+test "enabled: responses-only; unassigned defaults to client; override wins" {
     var p: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "m", .context = 272_000 };
-    try std.testing.expect(enabled(p));
+    try std.testing.expect(!enabled(p)); // no assignment in tests → client arm
     p.kind = .anthropic;
     try std.testing.expect(!enabled(p));
     p.kind = .openai;
     try std.testing.expect(!enabled(p));
     p.kind = .responses;
+    g_server_compact_override = true;
+    try std.testing.expect(enabled(p));
     g_server_compact_override = false;
-    defer g_server_compact_override = null;
     try std.testing.expect(!enabled(p));
+    g_server_compact_override = null;
+}
+
+test "armForId: deterministic bucketing of the install id" {
+    const id: [32]u8 = "0123456789abcdef0123456789abcdef".*;
+    try std.testing.expectEqual(armForId(&id), armForId(&id));
+    const other: [32]u8 = "ffffffffffffffffffffffffffffffff".*;
+    _ = armForId(&other); // both buckets are reachable outcomes; no crash, pure
 }
 
 test "writeContextManagement: threshold mirrors compactAt; silent for other kinds" {
@@ -168,7 +252,7 @@ test "writeContextManagement: threshold mirrors compactAt; silent for other kind
     var aw: @import("std").Io.Writer.Allocating = .init(a);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginObject();
-    try writeContextManagement(&agent, &s);
+    try writeContextManagementBody(&agent, &s);
     try s.endObject();
     try std.testing.expect(std.mem.indexOf(u8, aw.written(), "\"context_management\":[{\"type\":\"compaction\",\"compact_threshold\":80000}]") != null); // 80% of 100k
     agent.provider.kind = .anthropic;
@@ -186,13 +270,13 @@ test "pruneToLatestBlob: no blob or blob-first leaves history untouched" {
     const a = arena_state.allocator();
     var agent = testAgent(a, .responses);
     try agent.messages.append(try item(a, "message", null));
-    try std.testing.expect(!pruneToLatestBlob(&agent));
+    try std.testing.expect(!pruneIf(&agent, true));
     try std.testing.expectEqual(@as(usize, 1), agent.messages.items.len);
     // blob already at the head: nothing to prune
     var agent2 = testAgent(a, .responses);
     try agent2.messages.append(try item(a, "compaction", null));
     try agent2.messages.append(try item(a, "message", null));
-    try std.testing.expect(!pruneToLatestBlob(&agent2));
+    try std.testing.expect(!pruneIf(&agent2, true));
     try std.testing.expectEqual(@as(usize, 2), agent2.messages.items.len);
     try std.testing.expectEqual(@as(u32, 0), agent2.history_rewrites);
 }
@@ -210,7 +294,7 @@ test "pruneToLatestBlob: prunes to the newest blob and resets the meters" {
     try agent.messages.append(try item(a, "function_call_output", "c1"));
     agent.last_context_tokens = 200_000;
     agent.context_local_tokens = 190_000;
-    try std.testing.expect(pruneToLatestBlob(&agent));
+    try std.testing.expect(pruneIf(&agent, true));
     try std.testing.expectEqual(@as(usize, 3), agent.messages.items.len);
     try std.testing.expectEqualStrings("compaction", agent.messages.items[0].object.get("type").?.string);
     try std.testing.expectEqual(@as(u32, 1), agent.history_rewrites);
@@ -226,18 +310,18 @@ test "pruneToLatestBlob: an orphaned tool output refuses the prune" {
     try agent.messages.append(try item(a, "function_call", "c1")); // pruned by the cut
     try agent.messages.append(try item(a, "compaction", null));
     try agent.messages.append(try item(a, "function_call_output", "c1")); // orphan if pruned
-    try std.testing.expect(!pruneToLatestBlob(&agent));
+    try std.testing.expect(!pruneIf(&agent, true));
     try std.testing.expectEqual(@as(usize, 3), agent.messages.items.len);
 }
 
-test "pruneToLatestBlob: never fires for non-responses providers" {
+test "pruneIf: never fires off the server arm or off responses" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var agent = testAgent(a, .anthropic);
     try agent.messages.append(try item(a, "message", null));
     try agent.messages.append(try item(a, "compaction", null));
-    try std.testing.expect(!pruneToLatestBlob(&agent));
+    try std.testing.expect(!pruneIf(&agent, true));
     try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
 }
 
@@ -250,7 +334,7 @@ test "autocompact: responses providers hold at the ordinary threshold without a 
     // Over the 80% compactAt line but under the 95% wall, no blob: the server
     // owns compaction now, so history must survive untouched (legacy policy
     // would have run a summary here).
-    autocompact(&agent, 85_000);
+    autocompactIf(&agent, 85_000, true);
     try std.testing.expectEqual(@as(usize, 1), agent.messages.items.len);
     try std.testing.expectEqual(@as(u32, 0), agent.history_rewrites);
 }

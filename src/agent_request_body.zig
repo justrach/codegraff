@@ -247,8 +247,7 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             server_compact.noteExposure(self);
             try server_compact.writeContextManagement(self, &s);
             // No top-level max_output_tokens: the codex backend rejects it
-            // ("Unsupported parameter") on gpt-5.6-* models, hard-failing every
-            // turn; codex itself only sets it as a tool argument.
+            // ("Unsupported parameter") on gpt-5.6-* — codex sets it only as a tool argument.
             try s.objectField("stream");
             try s.write(true);
         },
