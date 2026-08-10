@@ -61,7 +61,9 @@ pub fn onTurnEnd(ctx: anytype, jobs: *Jobs, final_text: []const u8) void {
     // Cosmetic model calls stay out of scripted sessions — the same rule the
     // AI title follows (mainloop.zig): a recap request against a scripted
     // mock shifts every request-count assertion (test-review-mode.py on CI).
-    if (!main_mod.json_mode and !ctx.root.review_mode) jobs.start(ctx);
+    // Interactive PTY tests get the same protection via settings.session_recap
+    // (codex_ws_test.py's transport turn counts).
+    if (!main_mod.json_mode and !ctx.root.review_mode and ctx.root.ai_recap) jobs.start(ctx);
 }
 
 fn detachedTask(job: *Job, gpa: Allocator, io: Io, client: *std.http.Client, provider: provider_mod.Provider, budget: ?*@import("run_budget.zig").RunBudget, tracer: ?*@import("trace.zig").Tracer) void {

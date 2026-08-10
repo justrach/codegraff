@@ -146,6 +146,7 @@ pub const Agent = struct {
     review_mode: bool = false,
     show_thinking: bool = true, // stream the model's reasoning live in the TUI (/thinking); off = spinner only
     ai_title: bool = true, // AI-generate the tab/session title from the first prompt (/title)
+    ai_recap: bool = true, // AI one-line status recap at turn end (settings: session_recap)
     goal: ?Goal = null, // structured objective + status lifecycle (/goal, #223)
     goal_note_fp: u64 = 0, // last-injected standing-goal note fingerprint (goal_state.steeringGate, #318)
     goal_note_age: u32 = 0, // turns since that note was last injected (refresh interval)
