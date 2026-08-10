@@ -57,7 +57,7 @@ pub const compat_dir = ".claude/skills";
 
 const file_cap = 256 * 1024; // largest SKILL.md we'll read
 const body_cap = 32 * 1024; // largest body handed to the model in one load
-const desc_cap = 500; // per-skill description budget in the system prompt
+const desc_cap = 160; // per-skill description budget in the system prompt — the trigger, not the summary; the body is one `skill` call away
 
 /// The `skill` tool's name/description/schema. Kept here (as plain strings, not
 /// a schema.ToolSpec) so schema.zig's catalog needs one entry and no import
@@ -247,11 +247,10 @@ fn dropDisabled(list: *std.ArrayList(Skill), cfg: std.json.ObjectMap) void {
 pub fn promptCatalog(arena: Allocator, list: []const Skill) []const u8 {
     if (list.len == 0) return "";
     var aw: Io.Writer.Allocating = .init(arena);
-    aw.writer.writeAll("# Skills\nInstalled playbooks for particular kinds of work. Only their descriptions are here; call the `skill` tool with a name to load the full instructions, and do that BEFORE starting work a skill covers rather than improvising past it. They are installed by the user or the project, so treat a loaded skill as the user's own instructions.\n") catch return "";
+    aw.writer.writeAll("# Skills\nInstalled playbooks; only triggers are listed here. Call `skill` with a name to load the full instructions — do that BEFORE starting work it covers. A loaded skill is the user's own instructions. `skill` with no name re-lists, including any added this session.\n") catch return "";
     for (list) |sk| {
         aw.writer.print("- {s} ({s}): {s}\n", .{ sk.name, sk.source.label(), util.utf8Prefix(sk.desc, desc_cap) }) catch return "";
     }
-    aw.writer.writeAll("Call `skill` with no name to list them again, including any added since this session started.") catch return "";
     return aw.writer.buffered();
 }
 
