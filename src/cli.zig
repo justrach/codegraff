@@ -21,6 +21,11 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.247
+    \\  • Interactive startup is quiet by default; `GRAFF_REPL_DEBUG=1` restores launch and runtime diagnostics, and `/debug` still toggles them live
+    \\  • Shared-worktree ownership is a structured callout with the active session, goal, and `graff -w` isolation action
+    \\  • Immediate multiline pastes into `ask_user` preserve every line instead of submitting only the first
+    \\
     \\0.0.244
     \\  • Co-resident graff sessions now see each other: a startup warning names any live session already in your worktree, and the first git mutation, file write, or shell move against a peer's tree pauses once for a deliberate re-issue — two agents can no longer silently tear one tree
     \\  • Sessions can message each other: the peer_message tool and /tell post to a shared channel every co-resident session hears (address one by name, "all" reaches every session on the device), delivered mid-task at step boundaries with the sender's current goal attached
