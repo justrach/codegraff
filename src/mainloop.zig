@@ -113,7 +113,7 @@ pub fn run(ctx: *Ctx) !void {
             break :blk try std.fmt.allocPrint(ctx.arena, "/loop {s}\n{s}", .{ note, pace });
         } else if (ctx.interactive) blk: {
             try ctx.root.prompt();
-            break :blk (try readline.readLine(ctx.root, ctx.in, ctx.out, ctx.gpa, ctx.history, ctx.linebuf)) orelse break;
+            break :blk (try readline.readLine(ctx.root, ctx.in, ctx.out, ctx.gpa, ctx.history, ctx.linebuf, null)) orelse break;
         } else (try ctx.in.takeDelimiter('\n')) orelse break;
         // The title may have completed while readline was waiting. Apply it
         // before starting the newly-entered turn, still without ever waiting.
