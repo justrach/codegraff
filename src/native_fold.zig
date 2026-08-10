@@ -81,10 +81,18 @@ pub fn isLoaded(name: []const u8) bool {
 }
 
 /// The single writer: load_tool_schemas, inline on the orchestrator.
+/// Callers pass slices into per-turn JSON (freed arena memory), so storing
+/// them would dangle across turns (#480-family segfault in isLoaded); the
+/// load path only admits folded names, so canonicalize to the static entry.
 pub fn markLoaded(name: []const u8) void {
     if (isLoaded(name) or g_loaded_len >= g_loaded.len) return;
-    g_loaded[g_loaded_len] = name;
-    g_loaded_len += 1;
+    for (folded) |tool| {
+        if (std.mem.eql(u8, name, tool)) {
+            g_loaded[g_loaded_len] = tool;
+            g_loaded_len += 1;
+            return;
+        }
+    }
 }
 
 /// Whether calling `name` right now must be refused (exec.zig layer 2);
