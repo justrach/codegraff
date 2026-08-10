@@ -22,6 +22,17 @@ pub fn responsesOutputLimit(self: *const Agent) u32 {
     return self.responses_output_limit orelse max_tokens;
 }
 
+/// The cache-affinity partition for this agent. opencode keys per SESSION for
+/// the same reason: every agent in the process used to share the session id,
+/// so interleaved root/sub requests — completely different prefixes under one
+/// key — evicted each other (root cache_read measured ~35% in benchmarks).
+/// Root keeps the bare session id; every other agent gets its own suffix.
+fn promptCacheKey(self: *const Agent, buf: []u8) []const u8 {
+    const base = http_headers.sessionId(self.io);
+    if (std.mem.eql(u8, self.label, "main")) return base;
+    return std.fmt.bufPrint(buf, "{s}-{x}", .{ base, @intFromPtr(self) }) catch base;
+}
+
 pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: bool, stream_usage: bool) ![]u8 {
     var aw: Io.Writer.Allocating = .init(self.gpa);
     errdefer aw.deinit();
@@ -169,8 +180,9 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             }
             // kimi-code pins each request to its session id for prompt-cache affinity (same partition trick as codex below).
             if (is_kimi) {
+                var ckbuf: [96]u8 = undefined;
                 try s.objectField("prompt_cache_key");
-                try s.write(http_headers.sessionId(self.io));
+                try s.write(promptCacheKey(self, &ckbuf));
             }
             // Reasoning-effort hint for OpenAI-compatible providers that
             // honor it (codegraff gateway, deepseek). Mirrors the
@@ -191,8 +203,9 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             // openai/codex does (it defaults this to the same session UUID it
             // puts in the `session_id` header). Without it the backend has no
             // affinity hint for a prefix we re-upload every turn.
+            var ckbuf: [96]u8 = undefined;
             try s.objectField("prompt_cache_key");
-            try s.write(http_headers.sessionId(self.io));
+            try s.write(promptCacheKey(self, &ckbuf));
             // Codex WS delta: once a response.id is held on a live WS session,
             // send previous_response_id + only the items the server does not yet
             // hold, instead of the full history (avoids the huge frame that the
@@ -492,7 +505,7 @@ test "retained reasoning: codex full resend keeps encrypted reasoning items and 
         .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 272_000 },
         .messages = messages,
         .sub = false,
-        .label = "",
+        .label = "main",
         .out = null,
         .sys_normal = "system",
     };
