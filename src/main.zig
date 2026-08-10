@@ -167,7 +167,7 @@ const skills = @import("skills.zig");
 const skills_registry = skills.skills_registry;
 const companion_servers = skills.companion_servers;
 const mcpServerConnected = skills.mcpServerConnected;
-const probeLicensedPinEager = session_start.probeLicensedPinEager; // probe + #416 eager pin in one startup step
+const probeLicensed = session_start.probeLicensed; // license probe only — schemas stay deferred; the guard enforces routing (#476)
 /// PATH captured at startup for skill detection (PATH won't change mid-run).
 pub var g_path_env: []const u8 = "";
 /// Human-facing current workspace folder shown in the REPL prompt.
@@ -306,7 +306,6 @@ pub fn main(init: std.process.Init) !void {
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
     const out = &stdout_writer.interface;
     g_out = out;
-
     if (try session_start.runTitleCommand(io, gpa, arena, &client, default_provider, out, flags, &invocation_budget)) return;
     // Generate identity before opening either JSONL. The score channel and both
     // files share this run id; session_id is a separate runtime correlation id.
@@ -392,7 +391,7 @@ pub fn main(init: std.process.Init) !void {
     try session_start.connectCompanion(io, arena, &registry_storage, flags, out, json_mode, init.environ_map);
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
     // If the metered companion connected, probe its license once so the note below can lean into paid tools (vs the conservative free-codedb note).
-    if (!session_start.leanMode(flags.effectiveLean(), init.environ_map) and mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeLicensedPinEager(gpa, arena, io);
+    if (!session_start.leanMode(flags.effectiveLean(), init.environ_map) and mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeLicensed(gpa, io);
     boot.mark(io, "companion");
 
     var approvals: Approvals = undefined;
@@ -408,7 +407,7 @@ pub fn main(init: std.process.Init) !void {
     // Root system-prompt layering (base + AGENTS.md/HARNESS.md/CLAUDE.md + --append-system-prompt + active-skill lines + connected-MCP notes) lives
     // in startup.zig as buildSystemPrompt() — pure over io/arena, returns the composed base by value. buildRootAgent derives every prompt variant
     // from it via prompts.setSystemPrompts() (#326).
-    const sys_normal = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null, flags.oneshot_prompt != null and !flags.effectiveYolo(), mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"), init.environ_map);
+    const sys_normal = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null, (flags.oneshot_prompt != null or !(Io.File.stdin().isTty(io) catch true)) and !flags.effectiveYolo(), mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"), init.environ_map);
     boot.mark(io, "system prompt");
     session_run.learningNotice(io, arena, init.environ_map, out, json_mode or flags.oneshot_prompt != null);
 
@@ -585,10 +584,11 @@ test { // pull in tests from imported modules (mcp.zig)
     _ = mcp;
     _ = @import("mcp_rpc.zig");
     _ = @import("main_test.zig");
-    // A module whose tests must run needs an explicit reference here: a plain @import
-    // elsewhere (or a type-only alias) is NOT enough — it compiles to nothing; scripts/eval-tier1.sh --only reach catches one.
+    // A module whose tests must run needs an explicit reference here (a plain @import elsewhere compiles to nothing); scripts/eval-tier1.sh --only reach catches one.
     _ = @import("test_hooks.zig"); // unreached modules; their tests were silently skipped
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
+    _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
+    _ = @import("task_outcome.zig"); // goal-outcome telemetry events
     _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here
     _ = @import("readline_history.zig");
     _ = @import("goal_pacing_autonomous_test.zig");

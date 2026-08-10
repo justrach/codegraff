@@ -68,12 +68,16 @@ pub fn lazyRootTools(comptime Agent: type) !void {
     agent.tools_responses = "";
 
     try agent.ensureRootTools(.responses);
-    try std.testing.expect(std.mem.indexOf(u8, agent.tools_responses, "mcp__bench__search") != null);
+    // Deferred tools ship no catalog entry (#476): the qualified name is
+    // absent and discovery rides the meta tool's server listing instead.
+    try std.testing.expect(std.mem.indexOf(u8, agent.tools_responses, "mcp__bench__search") == null);
+    try std.testing.expect(std.mem.indexOf(u8, agent.tools_responses, "bench (search)") != null);
     try std.testing.expectEqual(@as(usize, 0), agent.tools_openai.len);
     try std.testing.expectEqual(@as(usize, 0), agent.tools_anthropic.len);
 
     agent.invalidateRootTools();
     try agent.ensureRootTools(.anthropic);
-    try std.testing.expect(std.mem.indexOf(u8, agent.tools_anthropic, "mcp__bench__search") != null);
+    try std.testing.expect(std.mem.indexOf(u8, agent.tools_anthropic, "mcp__bench__search") == null);
+    try std.testing.expect(std.mem.indexOf(u8, agent.tools_anthropic, "bench (search)") != null);
     try std.testing.expectEqual(@as(usize, 0), agent.tools_responses.len);
 }

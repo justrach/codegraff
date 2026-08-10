@@ -258,6 +258,13 @@ def run_scenario(
     expect_sse: int,
     health: str,
 ) -> int:
+    # Cosmetic model calls (AI title, session recap) ride the same transport
+    # and would shift every turn-count assertion below — the class of failure
+    # mainloop_recap.zig's own comment warns about. Off for the whole file.
+    harness_dir = os.path.join(tmp, ".harness")
+    os.makedirs(harness_dir, exist_ok=True)
+    with open(os.path.join(harness_dir, "settings.json"), "w", encoding="utf-8") as fh:
+        json.dump({"ai_title": False, "session_recap": False}, fh)
     env = {
         "HOME": tmp,
         "CODEX_HOME": codex_home,
@@ -265,6 +272,10 @@ def run_scenario(
         "GRAFF_FLEET": "off",
         "GRAFF_NO_TELEMETRY": "1",
         "GRAFF_CODEX_URL": f"http://127.0.0.1:{port}/backend-api/codex/responses",
+        # The server-compaction A/B buckets on the install id, which is fresh
+        # per tmp HOME — the compaction legs below would be 50/50 flaky against
+        # a mock that speaks only the client-side flow. Pin the client arm.
+        "GRAFF_SERVER_COMPACT": "0",
     }
     env.update(extra_env)
     # PtySession builds the child env from os.environ.copy(), so ambient
@@ -285,7 +296,7 @@ def run_scenario(
         cwd=tmp,
         env=env,
         unset_env=ambient,
-        timeout=20.0,
+        timeout=45.0,  # compaction legs stream 128 KiB of scripted reasoning; 20s flakes on loaded runners
     ) as session:
         session.wait_for_literal("] ›")
         cursor = len(session.raw)
@@ -639,7 +650,7 @@ def run_midturn_compaction_scenario(
         cwd=tmp,
         env=env,
         unset_env=ambient,
-        timeout=20.0,
+        timeout=45.0,  # compaction legs stream 128 KiB of scripted reasoning; 20s flakes on loaded runners
     ) as session:
         session.wait_for_literal("] ›")
         cursor = len(session.raw)
@@ -682,7 +693,7 @@ def run_transactional_compaction_scenario(
         cwd=tmp,
         env=env,
         unset_env=ambient,
-        timeout=20.0,
+        timeout=45.0,  # compaction legs stream 128 KiB of scripted reasoning; 20s flakes on loaded runners
     ) as session:
         session.wait_for_literal("] ›")
         cursor = len(session.raw)

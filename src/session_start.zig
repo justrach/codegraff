@@ -423,15 +423,15 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     return registry;
 }
 
-/// Licensed startup path (main.zig): probe the companion's license, and when
-/// paid ALSO pin the server eager in the #416 schema gate — a licensed user
-/// pays for these tools, so their full schemas belong in every request rather
-/// than behind a per-session load_tool_schemas toll that steers the model
-/// back to the native defaults. Runs before the first catalog render.
-pub fn probeLicensedPinEager(gpa: Allocator, arena: Allocator, io: Io) bool {
-    if (!skills.probeCodedbproLicensed(gpa, io)) return false;
-    mcp_schema_gate.pinEagerRuntime(arena, "codedbpro");
-    return true;
+/// Licensed startup path (main.zig): probe the companion's license so the
+/// session can lean into the paid tools. Schemas stay DEFERRED like every
+/// other server: routing to the suite is enforced by the codedbpro guard
+/// (codedbpro_report.nativeRefusal blocks the native read/search tools and
+/// points at the pro replacements), so the old eager pin paid ~17 KiB of
+/// schema bytes on every request for behavior the guard already guarantees
+/// (#476). GRAFF_MCP_EAGER=codedbpro restores the eager surface opt-in.
+pub fn probeLicensed(gpa: Allocator, io: Io) bool {
+    return skills.probeCodedbproLicensed(gpa, io);
 }
 
 /// Companion auto-activation: if the metered code-intelligence companion

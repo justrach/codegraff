@@ -35,6 +35,7 @@ const schema = @import("schema.zig");
 const isMetaName = schema.isMetaName;
 const eval_control = @import("agent_eval_control.zig");
 const goal_state = @import("goal_state.zig");
+const task_outcome = @import("task_outcome.zig");
 const goal_todo = @import("goal_todo.zig"); // todo_write's replace path + the omitted-completed preserve rule
 const peer_channel = @import("peer_channel.zig"); // #469: peer_message's handler
 pub const toolInvalidatesEval = eval_control.toolInvalidatesEval;
@@ -51,6 +52,7 @@ const execTool = exec.execTool;
 const brief_diversity = @import("brief_diversity.zig"); // #382: N sibling spawns in one batch are a fleet
 const playbook_glue = @import("playbook_glue.zig"); // #381: the note_constraint meta arm
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: the load_tool_schemas meta arm
+const native_fold = @import("native_fold.zig"); // folded native power tools: load_tool_schemas's native half
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
 const readline = @import("readline.zig"); // ask_user answers get the same full editor as the main prompt
 const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
@@ -293,6 +295,9 @@ fn clockSleepInterruptedText(arena: std.mem.Allocator, elapsed_ms: i64) ![]const
 
 /// Handle a meta tool inline on the agent's own thread.
 pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
+    // Folded natives, meta path: inline dispatch never reaches exec.zig's
+    // guard chain, so auto-load lives here too — same rule as gateExec.
+    if (!self.sub) native_fold.markIfFolded(call.name);
     // #469: sideways coordination between co-resident root sessions.
     if (std.mem.eql(u8, call.name, peer_channel.tool_name)) return peer_channel.handleMessage(self, call);
     if (std.mem.eql(u8, call.name, "attempt_completion")) {
@@ -311,6 +316,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         }
         const result = if (tools_mod.json_args.object(call.input)) |o| (tools_mod.json_args.str(o, "result") orelse "") else "";
         self.completed = try self.arena.dupe(u8, result);
+        if (!self.sub) task_outcome.noteGoalCompleted(self);
         // .complete retires the epoch (goal_state.currentEpoch) and the checklist parks - readable, no longer current, never deleted (#318).
         // A --goal standing objective is exempt: the completion is recorded above, the steering stays, and only /goal clear|pause|<new> retires it.
         if (goal_state.retireOnCompletion(self, util.unixMs(self.io))) {
@@ -355,7 +361,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         return .{ .text = try clockSleepSuccessText(self.arena, parsed.ms, parsed.clamped), .is_error = false };
     }
     if (std.mem.eql(u8, call.name, "note_constraint")) return playbook_glue.noteConstraint(self, call.input); // #381: append-only, and it re-composes the root's own prompt
-    if (std.mem.eql(u8, call.name, mcp_schema_gate.tool_name)) return mcp_schema_gate.handleLoad(self, call.input); // #416: inline, so the loaded-schema set has exactly one writer
+    if (std.mem.eql(u8, call.name, mcp_schema_gate.tool_name)) return (native_fold.handleLoadNative(self, call.input) catch null) orelse mcp_schema_gate.handleLoad(self, call.input); // #416: inline, one writer — folded natives answered first
     if (std.mem.eql(u8, call.name, "ask_user")) return self.askUser(call);
     // todo_read
     return .{ .text = self.renderTodos(goal_state.currentEpoch(self.goal)), .is_error = false };
@@ -517,6 +523,8 @@ test "clockSleepSuccessText/clockSleepInterruptedText: exact result strings (#22
 }
 
 test "handleMeta clock_sleep: ms=0 completes for real end-to-end, bad ms rejects without touching Io" {
+    // clock_sleep is a folded native: handleMeta refuses it until loaded. Mark it loaded rather than toggling fold.enabled: `enabled` is shared mutable state the parallel test runner races on (native_fold.zig's own tests flip it), while g_loaded is append-only and safe (the refusal is covered in native_fold.zig).
+    @import("native_fold.zig").markLoaded("clock_sleep");
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();

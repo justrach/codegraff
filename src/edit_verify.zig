@@ -426,7 +426,7 @@ test "verdictText names the file, refuses the success wording, and demands a re-
 
 /// Minimal ToolCtx for the file-tool tests: no client, no registry, no
 /// approvals — applyEdit touches none of them.
-fn testCtx(client: *std.http.Client) ToolCtx {
+pub fn testCtx(client: *std.http.Client) ToolCtx {
     return .{
         .gpa = std.testing.allocator,
         .io = std.testing.io,

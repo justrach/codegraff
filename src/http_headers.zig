@@ -42,6 +42,17 @@ pub fn sessionId(io: Io) []const u8 {
     return session_id_buf[0..session_id_len];
 }
 
+/// The cache-affinity partition for one agent. opencode keys per session for
+/// the same reason: every agent in the process used to share the session id,
+/// so interleaved root/sub requests — different prefixes under one key —
+/// evicted each other (root cache_read measured ~35% in benchmarks). Root
+/// ("main") keeps the bare session id; every other agent gets a unique suffix.
+pub fn promptCacheKey(io: Io, label: []const u8, agent: *const anyopaque, buf: []u8) []const u8 {
+    const base = sessionId(io);
+    if (std.mem.eql(u8, label, "main")) return base;
+    return std.fmt.bufPrint(buf, "{s}-{x}", .{ base, @intFromPtr(agent) }) catch base;
+}
+
 /// /resume adopts the persisted key so k3/codex prompt-cache affinity survives
 /// the process boundary — both upstreams key the cache on the durable
 /// conversation id (kimi-code's sessionContext.sessionId; codex's ModelClient

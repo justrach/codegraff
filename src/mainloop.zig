@@ -503,7 +503,7 @@ pub fn run(ctx: *Ctx) !void {
                 // trim only when the best meter says we're genuinely near 95%.
                 const recovery_meter = ctx.root.effectiveContextTokens();
                 if (recovery_meter >= ctx.root.provider.compactAt()) {
-                    ctx.root.compactOrRecover(ctx.root.provider.nearContextLimit(recovery_meter));
+                    ctx.root.autocompact(recovery_meter);
                 }
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
                 continue;
@@ -553,8 +553,7 @@ pub fn run(ctx: *Ctx) !void {
         if (session_context_tokens >= ctx.root.provider.compactAt()) {
             // Trim on failure only when we're genuinely against the window — at
             // 80–95% a transient compaction failure can recover next turn.
-            const near_cap = ctx.root.provider.nearContextLimit(session_context_tokens);
-            ctx.root.compactOrRecover(near_cap); // loop_list re-carries via root.history_rewrites, incl. MID-turn rewrites this block never sees (#318)
+            ctx.root.autocompact(session_context_tokens); // loop_list re-carries via root.history_rewrites, incl. MID-turn rewrites this block never sees (#318)
         }
 
         // #226: /loop controller-authorized continuation. After a cleanly-

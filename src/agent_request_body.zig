@@ -10,6 +10,7 @@ const Agent = @import("agent.zig").Agent;
 const serde = @import("serde.zig");
 const http_headers = @import("http_headers.zig");
 const codex_chain = @import("codex_chain.zig");
+const server_compact = @import("agent_server_compact.zig");
 const pricing = @import("pricing.zig");
 const writeAnthropicMessages = serde.writeAnthropicMessages;
 const writeAnthropicTools = serde.writeAnthropicTools;
@@ -168,8 +169,9 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             }
             // kimi-code pins each request to its session id for prompt-cache affinity (same partition trick as codex below).
             if (is_kimi) {
+                var ckbuf: [96]u8 = undefined;
                 try s.objectField("prompt_cache_key");
-                try s.write(http_headers.sessionId(self.io));
+                try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
             }
             // Reasoning-effort hint for OpenAI-compatible providers that
             // honor it (codegraff gateway, deepseek). Mirrors the
@@ -180,18 +182,20 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             }
         },
         .responses => {
-            // Codex / ChatGPT Responses API. system prompt → instructions;
-            // history items are valid input items; stream is required by
-            // the backend (we buffer + parse the SSE). reasoning items are
-            // returned encrypted and passed back for cross-turn continuity.
+            // Codex / ChatGPT Responses API. system prompt → instructions; history
+            // items are valid input items; stream is required (we buffer + parse the
+            // SSE); reasoning items return encrypted and are passed back per turn.
             try s.objectField("instructions");
             try s.write(self.systemPrompt());
             // Pin our full resends to a per-session cache partition, the way
             // openai/codex does (it defaults this to the same session UUID it
             // puts in the `session_id` header). Without it the backend has no
             // affinity hint for a prefix we re-upload every turn.
+            var ckbuf: [96]u8 = undefined;
             try s.objectField("prompt_cache_key");
-            try s.write(http_headers.sessionId(self.io));
+            try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
+            // GPT-5.6 explicit caching (prompt_cache_options / breakpoints) is
+            // platform-API-only — this route 400s on both. Implicit + cache key is all.
             // Codex WS delta: once a response.id is held on a live WS session,
             // send previous_response_id + only the items the server does not yet
             // hold, instead of the full history (avoids the huge frame that the
@@ -240,13 +244,10 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             try s.endArray();
             try s.objectField("store");
             try s.write(false);
-            // Do NOT send a top-level `max_output_tokens` on the Codex Responses
-            // request. The chatgpt.com/backend-api/codex/responses backend rejects
-            // it ("Unsupported parameter: max_output_tokens") on gpt-5.6-* models,
-            // which hard-fails every turn (incl. the title task). openai/codex
-            // itself never puts it at the request top level — there it is only a
-            // tool argument (exec_command/wait output truncation). Output length is
-            // bounded by the model's own cap and our prompts instead.
+            server_compact.noteExposure(self);
+            try server_compact.writeContextManagement(self, &s);
+            // No top-level max_output_tokens: the codex backend rejects it
+            // ("Unsupported parameter") on gpt-5.6-* — codex sets it only as a tool argument.
             try s.objectField("stream");
             try s.write(true);
         },
@@ -494,7 +495,7 @@ test "retained reasoning: codex full resend keeps encrypted reasoning items and 
         .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 272_000 },
         .messages = messages,
         .sub = false,
-        .label = "",
+        .label = "main",
         .out = null,
         .sys_normal = "system",
     };

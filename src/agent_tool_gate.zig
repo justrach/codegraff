@@ -318,7 +318,10 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         else => {},
     };
     return .{
-        .text = try self.arena.dupe(u8, "user declined this tool call — try another approach or ask them how to proceed"),
+        // Narrow the recovery space on purpose: a declined call invites the
+        // model to invent a different detour every run (measured as turn-count
+        // variance on identical tasks, #476). Point at the deterministic exits.
+        .text = try self.arena.dupe(u8, "user declined this tool call — do not retry it or a reworded equivalent; the answer will not change. Continue with what is already approved, delegate the declined work to a subagent, or report the blocker plainly."),
         .is_error = true,
     };
 }

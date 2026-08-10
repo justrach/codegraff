@@ -26,6 +26,7 @@ import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -146,6 +147,24 @@ def tool_names(request: RecordedRequest) -> list[str]:
     return [t.get("name") for t in tools] if isinstance(tools, list) else []
 
 
+def catalog_names(request: RecordedRequest) -> list[str]:
+    """Wire tools plus the deferred catalog: zero-stub deferral (a14bdf2) and
+    the native fold moved names out of the wire tools array into
+    load_tool_schemas' description — 'server (a, b)' MCP groups and the static
+    folded-native prose ('native tools (workflow, ...)')."""
+    names = list(tool_names(request))
+    tools = request.body.get("tools")
+    if isinstance(tools, list):
+        for tool in tools:
+            if isinstance(tool, dict) and tool.get("name") == "load_tool_schemas":
+                for server, group in re.findall(r"([a-z0-9_]+) \(([^)]*)\)", tool.get("description", "")):
+                    for n in group.split(","):
+                        n = n.strip()
+                        if n and re.fullmatch(r"[a-z0-9_]+", n):  # prose parens carry spaces
+                            names.append(n if server == "tools" else f"mcp__{server}__{n}")
+    return names
+
+
 def mcp_tool_name(names: list[str]) -> str:
     remote = [n for n in names if isinstance(n, str) and n.startswith("mcp__")]
     if len(remote) != 1:
@@ -162,7 +181,7 @@ def script(request: RecordedRequest) -> list[dict]:
     names = tool_names(request)
     seen = json.dumps(request.body.get("input"), separators=(",", ":"))
     tag = f"resp_{request.ordinal}"
-    if "subagent" not in names:  # a child: its catalog is base tools only
+    if "load_tool_schemas" not in names:  # a child: the root-only meta tool is absent
         if CHILD_BASH_CALL not in seen:
             return response_events(
                 call_item("bash", CHILD_BASH_CALL, {"command": BASH_COMMAND}), tag
@@ -186,7 +205,7 @@ def script(request: RecordedRequest) -> list[dict]:
         )
     if MCP_CALL not in seen:
         return response_events(
-            call_item(mcp_tool_name(names), MCP_CALL, {"command": "ls /"}), tag
+            call_item(mcp_tool_name(catalog_names(request)), MCP_CALL, {"command": "ls /"}), tag
         )
     return response_events(message_item(FINAL_TEXT, f"msg_{tag}"), tag)
 
@@ -277,8 +296,8 @@ def tool_results(events: list[dict], name: str) -> list[dict]:
 
 
 def assert_gated(requests: list[RecordedRequest], events: list[dict]) -> None:
-    root = [r for r in requests if "subagent" in tool_names(r)]
-    child = [r for r in requests if "subagent" not in tool_names(r)]
+    root = [r for r in requests if "load_tool_schemas" in tool_names(r)]
+    child = [r for r in requests if "load_tool_schemas" not in tool_names(r)]
     if not root or not child:
         raise AssertionError(
             f"expected both root and child requests, saw {len(root)}/{len(child)}"
@@ -286,10 +305,11 @@ def assert_gated(requests: list[RecordedRequest], events: list[dict]) -> None:
 
     # Layer 1, root: nothing local advertised; webfetch, orchestration and the
     # MCP-sourced sandbox tool all survive.
-    names = tool_names(root[0])
-    leaked = [n for n in names if n in GATED_TOOLS]
+    wire = tool_names(root[0])
+    leaked = [n for n in wire if n in GATED_TOOLS]
     if leaked:
         raise AssertionError(f"root catalog still advertises {leaked!r}")
+    names = catalog_names(root[0])
     for expected in ("webfetch", "subagent", "workflow", "todo_write"):
         if expected not in names:
             raise AssertionError(f"root catalog lost {expected}: {names!r}")

@@ -63,6 +63,8 @@ pub const errorMessage = responses.errorMessage;
 
 pub const buildBody = @import("agent_request_body.zig").buildBody;
 
+const req_stats = @import("req_stats.zig"); // GRAFF_REQ_STATS anatomy (session_settings arms req_stats.g_armed)
+
 /// Keep the normal request hot path allocation-free while avoiding a permanent
 /// RSS high-water mark after one anomalously large stream. Small scratch arenas
 /// retain their pages for the next request; large ones return all pages to the
@@ -190,6 +192,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         self.streamed_args = .none;
         const body = try self.buildBody(tools, force, live, stream_usage);
         defer self.gpa.free(body);
+        // GRAFF_REQ_STATS=1: per-call request anatomy + body dumps (req_stats.zig).
+        req_stats.report(self.io, body, tools, self.sys_normal);
         const t0: Io.Timestamp = .now(self.io, .awake);
         if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_started", .provider = self.provider.id, .model = self.provider.model });
         // HTTP calls are flaky: a kept-alive connection the server closed

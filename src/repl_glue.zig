@@ -1,15 +1,12 @@
 //! The `graff repl` (chat-mode) bridge — run a full root-agent turn (tools +
 //! MCP) per repl.TurnFn call, plus the model-switch/cancel adapters — and the
 //! goal/eval steering-note assembly shared by both the REPL and interactive
-//! loops. Also the Codex-style steering queue drain (popSteer/
-//! resetSteerPartial/steerEcho) and the /effort /fast /ultracode persistence
-//! (save/loadThinkingSettings). Split out of main.zig (600-line goal, #123).
+//! loops. Also the steering queue drain and /effort /fast /ultracode
+//! persistence (save/loadThinkingSettings). Split out of main.zig (#123).
 //!
 //! The mutable steer/thinking globals (g_steer_buf, g_steer_queue,
-//! g_steer_echoed, g_steer_visible, g_out) stay declared in main.zig — shared
-//! live with agent_interrupt.zig/agent_stream.zig via the same `main_mod.g_x`
-//! pattern those files already use, so every access here goes through
-//! `main_mod.g_x`, never a local alias (would freeze its value at import time).
+//! g_steer_echoed, g_steer_visible, g_out) stay declared in main.zig and are
+//! reached via `main_mod.g_x`, never a local alias (would freeze its value).
 //!
 //! parseEvalScore/steerEcho/saveThinkingSettings stay pub — subagent.zig,
 //! agent_compact.zig, agent_interrupt.zig, commands_model.zig back-import them.
@@ -569,6 +566,9 @@ pub fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
     if (v.object.get("ai_title")) |tv| if (tv == .bool) {
         root.ai_title = tv.bool;
     };
+    if (v.object.get("session_recap")) |rv| {
+        if (rv == .bool) root.ai_recap = rv.bool;
+    }
 }
 
 /// REPL slash commands share the leading `/` with absolute POSIX paths. Only

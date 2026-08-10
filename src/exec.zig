@@ -65,12 +65,14 @@ const read_file = @import("read_file.zig");
 // #337: edit_file's verified write path, plus the file-tool helpers that moved
 // out with it (this file is at the 600-line ceiling).
 const edit_verify = @import("edit_verify.zig");
+const edit_batch = @import("edit_batch.zig"); // batched edit_file spans (#476)
 const fsErrorText = edit_verify.fsErrorText;
 const preserveMode = edit_verify.preserveMode;
 const hooks = @import("hooks.zig");
 const telemetry = @import("telemetry.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-local-tools gate
+const native_fold = @import("native_fold.zig"); // folded native power tools: layer-2 refusal until load_tool_schemas unfolds
 const vision = @import("vision.zig"); // read_file stages images like MCP image results (#249)
 const input_util = @import("input_util.zig");
 const imagegen = @import("imagegen.zig"); // #352: the codex-gated image tool (advertising lives in schema.zig/tool_gates.zig)
@@ -157,7 +159,7 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     // #255: reserved before any gate/dispatch runs so tool_started/
     // tool_finished bracket the whole call, including a gate denial below.
     const call_id: u64 = if (ctx.tracer) |tr| tr.toolStarted(call.name, call.input) else 0;
-    if (noLocalToolsGate(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call) orelse licensedNativeGate(ctx, call)) |blocked| {
+    if (noLocalToolsGate(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call) orelse codedbpro_report.licensedGate(ctx, call) orelse native_fold.gateExec(ctx.gpa, call.name, ctx.from_sub)) |blocked| {
         var out = blocked;
         out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
         if (ctx.tracer) |tr| {
@@ -193,18 +195,6 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     }
     runPostToolHooks(ctx, call, out);
     return out;
-}
-
-/// Licensed codedb-pro in charge: the natives the suite replaced are refused
-/// until a pro failure opens the fallback (plan mode exempt — it denies MCP
-/// outright). Lives in the OUTER gate chain: still downstream of
-/// agent_tool_gate like every gate here, and the refusal path returns before
-/// tool_balance.record, so a blocked native counts as a REFUSAL — /tools
-/// never mistakes a block for native usage.
-fn licensedNativeGate(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
-    const refusal = codedbpro_report.nativeRefusal(ctx, call) orelse return null;
-    tool_balance.recordRefusal();
-    return refusal;
 }
 
 /// #330 layer 2: refuse a host-touching built-in even if a provider hallucinates
@@ -245,13 +235,11 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             .text = try gpa.dupe(u8, "MCP not available in this context"),
             .is_error = true,
         };
-        // #416 layer 2. Deliberately HERE, inside execToolInner: this runs
-        // downstream of agent_tool_gate.gateTool, so the consent prompt is
-        // still reached in exactly the cases (and the order) it was before —
-        // deferral can only subtract a call consent already allowed, never
-        // add one, and never short-circuits an approval check.
-        if (mcp_schema_gate.blocked(reg.tools, call.name))
-            return .{ .text = try mcp_schema_gate.refusalText(gpa, call.name), .is_error = true };
+        // #416 layer 2, auto-load era: a confident call to a deferred tool
+        // loads its schema inline and runs — the refusal round trip is gone
+        // (same user direction as the native fold). Still downstream of
+        // agent_tool_gate.gateTool: consent is already settled.
+        mcp_schema_gate.autoLoad(gpa, reg.tools, call.name);
         const r = reg.call(gpa, call.name, call.input) catch |err| {
             codedbpro_report.onFailure(ctx, call.name, @errorName(err));
             return failure(gpa, err);
@@ -507,7 +495,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     // #337: the read/splice/write/VERIFY path lives in edit_verify.zig, where
     // the post-edit check sits ON the success path — a write that did not land
     // can no longer be reported as `replaced N occurrence(s)`.
-    if (std.mem.eql(u8, call.name, "edit_file")) return edit_verify.execEdit(ctx, input);
+    if (std.mem.eql(u8, call.name, "edit_file")) return if (input == .object and input.object.get("edits") != null) edit_batch.execBatch(ctx, input) else edit_verify.execEdit(ctx, input);
     if (std.mem.eql(u8, call.name, "write_file")) {
         const path = strField(input, "path") orelse return missingArg(gpa, "path");
         const content = strField(input, "content") orelse return missingArg(gpa, "content");

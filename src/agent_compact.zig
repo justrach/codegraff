@@ -18,6 +18,7 @@ const goal_flow = @import("goal_flow.zig");
 const prompts = @import("prompts.zig");
 const handoff_note = @import("compact_handoff_note.zig"); // #411: both halves of "what survives a compaction"
 const compact_note_glue = @import("compact_note_glue.zig"); // #391
+const server_compact = @import("agent_server_compact.zig"); // #compact-ab telemetry
 
 const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
@@ -222,6 +223,10 @@ pub fn compact(self: *Agent) anyerror!usize {
     // prefix, so mutating the system prompt here costs nothing extra. Root-only
     // and once per session — prompts.noteSessionCompacted owns both rules.
     prompts.noteSessionCompacted(self, self.arena);
+    // A/B control arm doing work (#compact-ab): a client-side summary on the
+    // Responses wire. Manual /compact on codex lands here too — correctly
+    // labeled, since it IS a client compaction.
+    if (self.provider.kind == .responses) server_compact.noteClientSummary(summary.len);
     if (!main_mod.json_mode) try self.say("[history compacted to a {d}-char summary]\n", .{summary.len});
     return summary.len;
 }

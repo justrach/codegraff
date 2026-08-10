@@ -522,6 +522,14 @@ pub const Telemetry = struct {
             } else {
                 if (e.kind.len > 0) try attr(&s, "kind", .{ .str = e.kind });
                 if (e.detail.len > 0) try attr(&s, "detail", .{ .str = e.detail });
+                if (std.mem.eql(u8, e.body, "task")) {
+                    // task_outcome.zig goal events: effort rides as numeric
+                    // attrs; the worker stores the attrs JSON verbatim.
+                    try attr(&s, "turns", .{ .int = e.tasks });
+                    try attr(&s, "calls", .{ .int = e.phases });
+                    try attr(&s, "compactions", .{ .int = e.failed });
+                    try attr(&s, "duration_ms", .{ .int = e.ms });
+                }
                 if (std.mem.eql(u8, e.body, "workflow")) {
                     try attr(&s, "phases", .{ .int = e.phases });
                     try attr(&s, "tasks", .{ .int = e.tasks });

@@ -354,6 +354,11 @@ pub fn buildSystemPrompt(
     if (append_system_flag) |extra| {
         sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, extra });
     }
+    // Repo map (repo_map.zig): the top of the working tree, so the model reads
+    // the files it needs instead of spending opening turns on ls/find.
+    if (environ.get("GRAFF_NO_REPO_MAP") == null) {
+        if (@import("repo_map.zig").segment(io, arena)) |map| sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, map });
+    }
     if (unattended) sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, prompts.unattended_note });
     // Codex-style skills: one capability line per installed optional
     // companion (skills_registry) — metadata in context, --help on demand.
@@ -429,6 +434,10 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // and every later reader (startup, /login, the mid-turn refresh, subagents)
     // resolves through this one answer instead of guessing.
     oauth.initCodexHome(arena, init.environ_map.get("CODEX_HOME"), keys_cli.homeEnv(init.environ_map));
+    // #477: same pin for the kimi/xai credential files, so home-less side
+    // agents (the pre-compaction note, title, reflect) resolve the ONE file
+    // the login flow writes instead of "/.kimi/...".
+    oauth.initHome(keys_cli.homeEnv(init.environ_map) orelse "");
 
     // `harness key set <provider> <key>` / `harness key list`: safe key store
     // (macOS Keychain, else a 0600 file). Exits after.

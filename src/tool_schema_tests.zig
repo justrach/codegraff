@@ -232,15 +232,18 @@ test "#416: deferring a real MCP server's schemas cuts the served catalog in hal
     }
     const tools = try realServerTools(arena);
     try testing.expectEqual(@as(usize, 13), tools.len);
+    // Include the meta tool spec so its deferred-listing description renders.
+    const meta_spec = [_]schema.ToolSpec{.{ .name = gate.tool_name, .desc = gate.tool_desc, .schema = gate.tool_schema }};
 
     // Pre-#416 behavior, still reachable with the escape-hatch pin.
     gate.g_policy = .{ .eager = &.{"*"} };
     const eager = try schema.renderRootTools(arena, .anthropic, &.{}, tools);
 
-    // The default: this server is 2.3x over the 4 KiB budget, so it defers.
+    // The default: every server defers (budget 0, #476) — this one is 2.3x
+    // over even the old 4 KiB budget, so it deferred under that policy too.
     gate.g_policy = .{};
     try testing.expect(gate.serverCost(tools, "smolify") > gate.default_budget);
-    const deferred = try schema.renderRootTools(arena, .anthropic, &.{}, tools);
+    const deferred = try schema.renderRootTools(arena, .anthropic, &meta_spec, tools);
 
     // The measurement this issue exists for: the MCP half of the catalog on
     // its own (no built-in specs), so the number is the saving and nothing
@@ -250,11 +253,14 @@ test "#416: deferring a real MCP server's schemas cuts the served catalog in hal
     // that grows a little does not turn the guard red.
     try testing.expect(deferred.len * 2 < eager.len);
 
-    // Every tool is still REGISTERED — deferral hides schemas, not tools.
-    for (tools) |t| try testing.expect(std.mem.indexOf(u8, deferred, t.qualified_name) != null);
-    // ...with a one-line description, and no schema body. These property names
-    // appear in the real schemas and in no description, so finding one would
-    // mean a schema leaked through.
+    // Deferred tools ship NO catalog entries of their own (codex tool_search
+    // pattern, #476): their qualified names appear nowhere in the catalog,
+    // and discovery rides the meta tool's description listing (short names).
+    for (tools) |t| try testing.expect(std.mem.indexOf(u8, deferred, t.qualified_name) == null);
+    try testing.expect(std.mem.indexOf(u8, deferred, gate.tool_name) != null);
+    try testing.expect(std.mem.indexOf(u8, deferred, "search_docs") != null); // short name in the listing
+    // ...and no schema body leaks. These property names appear in the real
+    // schemas and in no description, so finding one would mean a leak.
     for ([_][]const u8{ "pathHints", "maxTokens", "lineCount" }) |only_in_schema| {
         try testing.expect(std.mem.indexOf(u8, eager, only_in_schema) != null);
         try testing.expect(std.mem.indexOf(u8, deferred, only_in_schema) == null);
@@ -265,7 +271,18 @@ test "#416: deferring a real MCP server's schemas cuts the served catalog in hal
     try testing.expect(std.mem.indexOf(u8, with_specs, gate.tool_name) != null);
     gate.g_policy = .{ .eager = &.{"*"} };
     const eager_specs = try schema.renderRootTools(arena, .anthropic, &schema.root_specs, tools);
-    try testing.expect(std.mem.indexOf(u8, eager_specs, gate.tool_name) == null);
+    // With folded natives the meta arm still earns its slot — folded tools
+    // need it even when every MCP server is eager. With the fold off, the
+    // original "all eager, nothing to undo" rule holds unchanged.
+    const fold = @import("native_fold.zig");
+    const saved_fold = fold.enabled;
+    defer fold.enabled = saved_fold;
+    fold.enabled = true;
+    try testing.expect(std.mem.indexOf(u8, eager_specs, gate.tool_name) != null);
+    fold.enabled = false;
+    const eager_specs_nofold = try schema.renderRootTools(arena, .anthropic, &schema.root_specs, tools);
+    try testing.expect(std.mem.indexOf(u8, eager_specs_nofold, gate.tool_name) == null);
+    fold.enabled = saved_fold;
     gate.g_policy = .{};
 
     // Loading one tool restores that tool's schema to the catalog and nothing
@@ -274,7 +291,7 @@ test "#416: deferring a real MCP server's schemas cuts the served catalog in hal
     const loaded = try gate.loadInto(arena, tools, req);
     try testing.expect(!loaded.is_error);
     try testing.expectEqual(@as(usize, 1), loaded.loaded);
-    const after = try schema.renderRootTools(arena, .anthropic, &.{}, tools);
+    const after = try schema.renderRootTools(arena, .anthropic, &meta_spec, tools);
     try testing.expect(std.mem.indexOf(u8, after, "lineCount") != null); // read_public_source's own schema is back
     try testing.expect(std.mem.indexOf(u8, after, "pathHints") == null); // build_docs_context's is not
     try testing.expect(after.len > deferred.len and after.len < eager.len);

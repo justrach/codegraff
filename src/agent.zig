@@ -57,6 +57,11 @@ pub const Goal = struct {
     standing: bool = false, // seeded by --goal: steering policy for the WHOLE session that the model can never retire; only the user can, with /goal clear|pause|<new> (#318)
     created_ms: i64 = 0,
     updated_ms: i64 = 0,
+    // Effort snapshots for task-outcome telemetry (task_outcome.zig): session
+    // counters at goal-set time, diffed at completion/abandon.
+    turns_at_set: u64 = 0,
+    calls_at_set: u64 = 0,
+    compacts_at_set: u64 = 0,
 };
 /// One agent: a message history plus the POST/tool-dispatch loop. The root
 /// agent prints to stdout; subagents (sub = true) run on pool threads and
@@ -141,6 +146,7 @@ pub const Agent = struct {
     review_mode: bool = false,
     show_thinking: bool = true, // stream the model's reasoning live in the TUI (/thinking); off = spinner only
     ai_title: bool = true, // AI-generate the tab/session title from the first prompt (/title)
+    ai_recap: bool = true, // AI one-line status recap at turn end (settings: session_recap)
     goal: ?Goal = null, // structured objective + status lifecycle (/goal, #223)
     goal_note_fp: u64 = 0, // last-injected standing-goal note fingerprint (goal_state.steeringGate, #318)
     goal_note_age: u32 = 0, // turns since that note was last injected (refresh interval)
@@ -353,7 +359,7 @@ pub const Agent = struct {
                 // threshold, a transient/empty summary must not immediately drop
                 // real history. Destructive recovery is reserved for >=95%.
                 const recovery_meter = self.effectiveContextTokens();
-                self.compactOrRecover(self.provider.nearContextLimit(recovery_meter));
+                self.autocompact(recovery_meter);
                 self.closeCodexWs();
             }
             const root = try self.request(if (self.text_only) null else self.toolsJson());
@@ -427,6 +433,7 @@ pub const Agent = struct {
     pub const emergencyCutIndex = @import("agent_compact.zig").emergencyCutIndex;
     pub const emergencyTrim = @import("agent_compact.zig").emergencyTrim;
     pub const compactOrRecover = @import("agent_compact.zig").compactOrRecover;
+    pub const autocompact = @import("agent_server_compact.zig").autocompact;
     pub const capOversizedToolOutputs = @import("agent_compact.zig").capOversizedToolOutputs;
 
     // The live streaming path (thinking spinner, live "Thinking" reasoning

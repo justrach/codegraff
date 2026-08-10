@@ -19,6 +19,7 @@ const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-loc
 const tool_gates = @import("tool_gates.zig"); // #352: the additive twin — optional tools that only exist when startup found their backing capability
 const imagegen = @import("imagegen.zig"); // #352: name/desc/schema as plain strings, like skill_docs, so this catalog needs one entry and no import cycle
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: which MCP tools are served schema-first vs description-only, and the `load_tool_schemas` strings
+const native_fold = @import("native_fold.zig"); // folded native power tools: same two-phase pattern for the harness's own catalog
 const render = @import("schema_render.zig"); // the comptime provider-tool renderers moved out when #352's optional-tool catalogs doubled the number held here (600-line ceiling)
 const anthropicToolsJson = render.anthropicToolsJson;
 const openaiToolsJson = render.openaiToolsJson;
@@ -40,7 +41,7 @@ const schema_serve_json = @import("schema_serve.zig").json;
 /// Launch flags for SDK clients (schema_protocol.zig, alongside the protocol
 /// doc it is emitted with), re-exported here as the `--schema` field name.
 pub const schema_flags_json = @import("schema_protocol.zig").flags;
-const ToolSpec = struct {
+pub const ToolSpec = struct {
     name: []const u8,
     desc: []const u8, // no characters needing JSON escapes
     schema: []const u8, // raw JSON Schema string
@@ -81,9 +82,9 @@ const base_specs = [_]ToolSpec{
     },
     .{
         .name = "edit_file",
-        .desc = "Replace an exact string in a file. old_string must match exactly one spot unless replace_all is set. Prefer this over write_file when changing an existing file.",
+        .desc = "Replace exact strings in a file. One span: old_string + new_string (old_string must match exactly one spot unless replace_all is set). Many spans: pass edits, an array of {old_string, new_string, replace_all?} applied in order — PREFER one batched call over several edit_file calls to the same file. Prefer this over write_file when changing an existing file.",
         .schema =
-        \\{"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string", "description": "Exact existing text to find"}, "new_string": {"type": "string", "description": "Replacement text"}, "replace_all": {"type": "boolean", "description": "Replace every occurrence (default: require a unique match)"}}, "required": ["path", "old_string", "new_string"]}
+        \\{"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string", "description": "Exact existing text to find (single-span form)"}, "new_string": {"type": "string", "description": "Replacement text (single-span form)"}, "replace_all": {"type": "boolean", "description": "Replace every occurrence (default: require a unique match)"}, "edits": {"type": "array", "items": {"type": "object", "properties": {"old_string": {"type": "string"}, "new_string": {"type": "string"}, "replace_all": {"type": "boolean"}}, "required": ["old_string", "new_string"]}, "description": "Batch form: several spans applied in order in one call"}}}
         ,
     },
     .{
@@ -298,28 +299,29 @@ pub fn renderRootTools(
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginArray();
     for (specs) |t| {
-        if (mcp_schema_gate.hiddenSpec(t.name, mcp_tools)) continue; // #416: load_tool_schemas is pointless with nothing deferred
-        try writeToolEntry(&s, kind, t.name, t.desc, .{ .raw = t.schema });
+        if (mcp_schema_gate.hiddenSpec(t.name, mcp_tools) and !native_fold.anyFolded()) continue; // #416: load_tool_schemas hides only with nothing deferred OR folded
+        if (native_fold.catalogSkips(t.name)) continue; // zero-stub like the MCP half: folded natives ride the meta tool's listing (#476)
+        if (std.mem.eql(u8, t.name, mcp_schema_gate.tool_name))
+            try writeToolEntry(&s, kind, t.name, try mcp_schema_gate.descWithListing(out, mcp_tools), .{ .raw = t.schema })
+        else
+            try writeToolEntry(&s, kind, t.name, t.desc, .{ .raw = t.schema });
     }
-    // #416 layer 1: a deferred tool is still REGISTERED (name + a one-line
-    // description, so the model knows it exists and can ask for it), but its
-    // schema is a placeholder until load_tool_schemas enables it. exec.zig is
-    // layer 2, and refuses a call that arrives before that.
-    for (mcp_tools) |m| if (mcp_schema_gate.isDeferred(mcp_tools, m))
-        try writeToolEntry(&s, kind, m.qualified_name, mcp_schema_gate.shortDesc(m.description), .{ .raw = mcp_schema_gate.placeholder_schema })
-    else
+    // Deferred tools ship no entries (codex tool_search pattern); the meta
+    // tool's desc lists them, exec.zig layer 2 guards premature calls.
+    for (mcp_tools) |m| if (!mcp_schema_gate.isDeferred(mcp_tools, m) and !(mcp_schema_gate.g_stable_catalog and mcp_schema_gate.policyDeferred(mcp_tools, m)))
         try writeToolEntry(&s, kind, m.qualified_name, m.description, .{ .value = m.input_schema });
+    // GRAFF_STABLE_CATALOG (#476): loaded tools append in LOAD ORDER after the
+    // stable head — loads change only tail bytes, the prefix cache survives.
+    if (mcp_schema_gate.g_stable_catalog) try native_fold.renderLoadedTail(&s, kind, out, mcp_tools);
     try s.endArray();
     return aw.toOwnedSlice();
 }
 
 /// Root tool catalog for the current session: optional tools are absent unless
 /// enabled and usable, avoiding schema tokens for calls that cannot succeed.
-/// #330 layer 1, root half: the gate then drops the host-touching tools from
-/// whichever catalog was chosen, so they are never advertised to a provider.
-/// MCP tools are appended afterwards by renderRootTools and stay untouched.
-/// #352 layer 1, root half: the additive gate then appends each optional tool
-/// whose backing capability startup actually found on this machine.
+/// #330 drops host-touching tools from the chosen catalog; #352 appends each
+/// optional tool whose backing capability startup found. MCP tools are
+/// appended afterwards by renderRootTools and stay untouched.
 pub fn effectiveRootSpecs(arena: Allocator) ![]const ToolSpec {
     const chosen: []const ToolSpec = if (root.g_clock_sleep)
         (if (learn_store.active_agent_loaded) &root_specs else &root_specs_without_learning)
@@ -338,7 +340,7 @@ fn writeSchema(s: *std.json.Stringify, schema: Schema) !void {
     }
 }
 
-fn writeToolEntry(s: *std.json.Stringify, kind: Provider.Kind, name: []const u8, desc: []const u8, schema: Schema) !void {
+pub fn writeToolEntry(s: *std.json.Stringify, kind: Provider.Kind, name: []const u8, desc: []const u8, schema: Schema) !void {
     switch (kind) {
         .anthropic => {
             try s.beginObject();
