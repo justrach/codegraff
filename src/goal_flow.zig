@@ -11,6 +11,7 @@ const agent_mod = @import("agent.zig");
 const goal_state = @import("goal_state.zig");
 const repl_glue = @import("repl_glue.zig");
 const presence = @import("presence.zig");
+const task_outcome = @import("task_outcome.zig");
 const utf8Prefix = @import("util.zig").utf8Prefix;
 const Agent = agent_mod.Agent;
 const TodoItem = agent_mod.TodoItem;
@@ -56,6 +57,7 @@ pub fn reapplyFlagGoal(arena: Allocator, root: *Agent, objective: []const u8, no
     }
     const displaced: ?agent_mod.Goal = if (root.goal) |old| (if (old.status == .complete) null else old) else null;
     root.goal = standingGoalFromFlag(objective, root.goal, root.todos.items, now_ms);
+    task_outcome.noteGoalSet(root);
     presence.noteGoal(root.io, root.gpa, root.arena, objective); // #469: co-resident sessions read our goal off the presence record
     root.goal_note_fp = 0; // re-state the (now standing) note on the next turn
     goal_state.resetCompletionGate(root); // a new objective is fresh evidence for the double-check
@@ -150,6 +152,7 @@ pub fn applyGoalSet(root: *Agent, objective: []const u8, now_ms: i64) GoalSetRes
         goal_state.adoptTodos(root.todos.items, goal_state.currentEpoch(root.goal), epoch);
     const parked_open = goal_state.parkedOpenCount(root.todos.items, epoch);
     root.goal = .{ .objective = objective, .status = .active, .epoch = epoch, .created_ms = now_ms, .updated_ms = now_ms };
+    task_outcome.noteGoalSet(root);
     presence.noteGoal(root.io, root.gpa, root.arena, objective); // #469: keep the presence record's goal current for peers
     root.goal_note_fp = 0; // re-state the note on the next turn, not a stale-suppressed repeat
     goal_state.resetCompletionGate(root); // a new objective is new evidence for the completion double-check

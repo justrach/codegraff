@@ -373,6 +373,9 @@ pub fn compactResumedSession(root: *agent_mod.Agent) void {
 /// final turn left uncommitted. Moved out of main() verbatim (600-line
 /// goal); `root` is already stable main()-owned storage.
 pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, json_mode: bool) !void {
+    // Task-outcome telemetry: a working goal that never completed counts as
+    // abandoned. Before presence.retire so the event can't outlive the flush.
+    @import("task_outcome.zig").noteSessionEnd(root);
     // #469: our presence record leaves the registry with us; a crashed session
     // skips this and gets reaped by the next reader's liveness probe instead.
     presence.retire(io);

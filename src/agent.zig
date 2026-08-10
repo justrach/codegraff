@@ -57,6 +57,11 @@ pub const Goal = struct {
     standing: bool = false, // seeded by --goal: steering policy for the WHOLE session that the model can never retire; only the user can, with /goal clear|pause|<new> (#318)
     created_ms: i64 = 0,
     updated_ms: i64 = 0,
+    // Effort snapshots for task-outcome telemetry (task_outcome.zig): session
+    // counters at goal-set time, diffed at completion/abandon.
+    turns_at_set: u64 = 0,
+    calls_at_set: u64 = 0,
+    compacts_at_set: u64 = 0,
 };
 /// One agent: a message history plus the POST/tool-dispatch loop. The root
 /// agent prints to stdout; subagents (sub = true) run on pool threads and

@@ -306,7 +306,6 @@ pub fn main(init: std.process.Init) !void {
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
     const out = &stdout_writer.interface;
     g_out = out;
-
     if (try session_start.runTitleCommand(io, gpa, arena, &client, default_provider, out, flags, &invocation_budget)) return;
     // Generate identity before opening either JSONL. The score channel and both
     // files share this run id; session_id is a separate runtime correlation id.
@@ -589,6 +588,7 @@ test { // pull in tests from imported modules (mcp.zig)
     _ = @import("test_hooks.zig"); // unreached modules; their tests were silently skipped
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
+    _ = @import("task_outcome.zig"); // goal-outcome telemetry events
     _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here
     _ = @import("readline_history.zig");
     _ = @import("goal_pacing_autonomous_test.zig");

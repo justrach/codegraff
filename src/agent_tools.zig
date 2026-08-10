@@ -35,6 +35,7 @@ const schema = @import("schema.zig");
 const isMetaName = schema.isMetaName;
 const eval_control = @import("agent_eval_control.zig");
 const goal_state = @import("goal_state.zig");
+const task_outcome = @import("task_outcome.zig");
 const goal_todo = @import("goal_todo.zig"); // todo_write's replace path + the omitted-completed preserve rule
 const peer_channel = @import("peer_channel.zig"); // #469: peer_message's handler
 pub const toolInvalidatesEval = eval_control.toolInvalidatesEval;
@@ -315,6 +316,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         }
         const result = if (tools_mod.json_args.object(call.input)) |o| (tools_mod.json_args.str(o, "result") orelse "") else "";
         self.completed = try self.arena.dupe(u8, result);
+        if (!self.sub) task_outcome.noteGoalCompleted(self);
         // .complete retires the epoch (goal_state.currentEpoch) and the checklist parks - readable, no longer current, never deleted (#318).
         // A --goal standing objective is exempt: the completion is recorded above, the steering stays, and only /goal clear|pause|<new> retires it.
         if (goal_state.retireOnCompletion(self, util.unixMs(self.io))) {

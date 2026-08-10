@@ -83,8 +83,14 @@ pub fn noteExposure(self: *Agent) void {
     pushExp(if (enabled(self.provider)) "arm=server" else "arm=client");
 }
 
+/// Session compaction counters (all providers) for per-goal effort diffs in
+/// task_outcome.zig. Monotonic per process; saturating adds, never reset.
+pub var session_prunes: u64 = 0;
+pub var session_summaries: u64 = 0;
+
 /// Record a successful server-side prune (the treatment arm doing work).
 fn notePrune(dropped: usize) void {
+    session_prunes +|= 1;
     var buf: [24]u8 = undefined;
     const d = std.fmt.bufPrint(&buf, "prune_items={d}", .{dropped}) catch return;
     pushExp(d);
@@ -93,6 +99,7 @@ fn notePrune(dropped: usize) void {
 /// Record a successful client-side summary on a .responses provider — the
 /// control arm doing work (auto at >=95%, or manual /compact on codex).
 pub fn noteClientSummary(chars: usize) void {
+    session_summaries +|= 1;
     var buf: [28]u8 = undefined;
     const d = std.fmt.bufPrint(&buf, "summary_chars={d}", .{chars}) catch return;
     pushExp(d);
