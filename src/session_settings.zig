@@ -95,6 +95,9 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     if (environ_map.get("GRAFF_LEAN") != null) no_local_tools.lean = true;
     // GRAFF_REQ_STATS: presence-based request-anatomy print (agent_request).
     agent_request.g_req_stats = environ_map.get("GRAFF_REQ_STATS") != null;
+    // GRAFF_CODEX_FULL_RESEND: presence-based — never chain previous_response_id
+    // (codex_chain); the opencode-shape experiment for cache-hit measurement.
+    if (environ_map.get("GRAFF_CODEX_FULL_RESEND") != null) @import("codex_chain.zig").g_force_full_resend = true;
     // GRAFF_NO_NATIVE_FOLD: presence-based — restore full power-tool schemas
     // in every request (the pre-fold interactive surface).
     if (environ_map.get("GRAFF_NO_NATIVE_FOLD") != null) native_fold.enabled = false;

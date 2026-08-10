@@ -33,8 +33,16 @@ pub fn propsFor(self: *const Agent) u64 {
     return propsFp(self.provider.model, @tagName(self.reasoning), self.fast, self.toolsJson(), self.systemPrompt());
 }
 
+/// GRAFF_CODEX_FULL_RESEND=1 (armed by session_settings.applyEnvKnobs):
+/// never chain — every turn sends the full input, opencode's only shape
+/// (they carry no previous_response_id at all). Experiment flag for the
+/// cache-hit work: chained turns read back ~0 cached tokens, so the delta
+/// optimization trades cheap cache reads for full-price re-uploads.
+pub var g_force_full_resend = false;
+
 /// May this request chain onto the held response instead of re-anchoring?
 pub fn chainUsable(self: *const Agent) bool {
+    if (g_force_full_resend) return false;
     return usable(
         self.codex_ws != null,
         self.codex_prev_id != null,

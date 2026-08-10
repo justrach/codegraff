@@ -205,6 +205,15 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         // json_mode's stdout.
         if (reqStatsArmed()) {
             std.debug.print("  [req] body={d}B tools={d}B system={d}B messages~={d}B\n", .{ body.len, if (tools) |t| t.len else 0, self.sys_normal.len, body.len -| (if (tools) |t| t.len else 0) -| self.sys_normal.len });
+            // Per-call body dump, for byte-diffing consecutive requests (cache-prefix forensics).
+            const dump_seq = struct {
+                var n: usize = 0;
+            };
+            dump_seq.n += 1;
+            var dpath: [64]u8 = undefined;
+            if (std.fmt.bufPrint(&dpath, "/tmp/graff-body-{d:0>3}.json", .{dump_seq.n})) |p| {
+                Io.Dir.cwd().writeFile(self.io, .{ .sub_path = p, .data = body }) catch {};
+            } else |_| {}
             // One dump per process: the assembled system prompt, for offline segment attribution (#476).
             const dumped = struct {
                 var done: bool = false;
