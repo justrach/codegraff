@@ -196,6 +196,91 @@ pub fn nativeRefusal(ctx: tools.ToolCtx, call: tools.ToolCall) ?tools.ToolOutput
     return .{ .text = text, .is_error = true };
 }
 
+/// exec.zig's guard-chain entry for the licensed suite: replaced natives
+/// REDIRECT to their pro equivalents inline; untranslatable calls keep the
+/// refusal; a failed pro call opens the fallback and the native proceeds.
+pub fn licensedGate(ctx: tools.ToolCtx, call: tools.ToolCall) ?tools.ToolOutput {
+    if (redirect(ctx, call)) |target| {
+        const r = ctx.registry.?.call(ctx.gpa, target.name, target.input) catch |err| {
+            onFailure(ctx, target.name, @errorName(err));
+            return null; // fallback opened — let the native run
+        };
+        if (r.is_error) {
+            onFailure(ctx, target.name, r.text);
+            return null;
+        }
+        return .{ .text = r.text, .is_error = false };
+    }
+    const refusal = nativeRefusal(ctx, call) orelse return null;
+    @import("tool_balance.zig").recordRefusal();
+    return refusal;
+}
+
+pub const Redirect = struct { name: []const u8, input: std.json.Value };
+
+fn readRedirect(gpa: Allocator, file: []const u8, mode: []const u8) ?Redirect {
+    var obj: std.json.ObjectMap = .empty;
+    obj.put(gpa, "file", .{ .string = file }) catch return null;
+    obj.put(gpa, "mode", .{ .string = mode }) catch return null;
+    return .{ .name = "mcp__codedbpro__read", .input = .{ .object = obj } };
+}
+
+fn searchRedirect(gpa: Allocator, pattern: []const u8) ?Redirect {
+    if (pattern.len == 0) return null;
+    var obj: std.json.ObjectMap = .empty;
+    obj.put(gpa, "pattern", .{ .string = pattern }) catch return null;
+    return .{ .name = "mcp__codedbpro__faster_search", .input = .{ .object = obj } };
+}
+
+/// exec.zig consults this BEFORE nativeRefusal — the guard's premise made
+/// executable (user direction): a blocked native read/search becomes its
+/// codedb-pro equivalent inline, skipping the refuse → load → re-call round
+/// trip. null = no clean translation; the caller keeps the refusal. Edits
+/// never redirect (native edit tools own /rewind). The dispatch site skips
+/// the schema gate: arguments are harness-built on the daemon's contract.
+pub fn redirect(ctx: tools.ToolCtx, call: tools.ToolCall) ?Redirect {
+    if (!enforcementActive(ctx)) return null;
+    const gpa = ctx.gpa;
+    if (std.mem.eql(u8, call.name, "read_file")) {
+        const path = tools.strField(call.input, "path") orelse return null;
+        if (tools.intField(call.input, "start_line")) |s| {
+            // lines mode takes a "N-M" range string (handler_read.zig).
+            const e = tools.intField(call.input, "end_line") orelse s + 400;
+            var obj: std.json.ObjectMap = .empty;
+            obj.put(gpa, "file", .{ .string = path }) catch return null;
+            obj.put(gpa, "mode", .{ .string = "lines" }) catch return null;
+            obj.put(gpa, "range", .{ .string = std.fmt.allocPrint(gpa, "{d}-{d}", .{ s, e }) catch return null }) catch return null;
+            return .{ .name = "mcp__codedbpro__read", .input = .{ .object = obj } };
+        }
+        return readRedirect(gpa, path, "full");
+    }
+    if (std.mem.eql(u8, call.name, "codedb")) {
+        const cmd = tools.strField(call.input, "command") orelse return null;
+        const sub_end = std.mem.indexOfAny(u8, cmd, " \t") orelse cmd.len;
+        const sub = cmd[0..sub_end];
+        const rest = std.mem.trim(u8, cmd[sub_end..], " \t");
+        if (std.mem.eql(u8, sub, "outline")) return readRedirect(gpa, rest, "outline");
+        if (std.mem.eql(u8, sub, "read")) return readRedirect(gpa, rest, "full");
+        if (std.mem.eql(u8, sub, "search")) return searchRedirect(gpa, rest);
+        return null; // symbol/callers/deps/tree have no lossless map — refusal stays
+    }
+    if (std.mem.eql(u8, call.name, "bash")) {
+        const cmd = tools.strField(call.input, "command") orelse return null;
+        if (!leadingSearchCommand(cmd)) return null;
+        // grep/rg: first bare (non-flag) token after the command is the pattern.
+        var it = std.mem.tokenizeAny(u8, cmd, " \t");
+        _ = it.next(); // the command itself (leadingSearchCommand already vetted it)
+        if (std.mem.startsWith(u8, std.mem.trimStart(u8, cmd, " \t"), "find")) return null; // filename semantics ≠ content search
+        while (it.next()) |tok| {
+            if (tok[0] == '-') continue;
+            const pat = std.mem.trim(u8, tok, "\"'");
+            return searchRedirect(gpa, pat);
+        }
+        return null;
+    }
+    return null;
+}
+
 /// The splice request body, factored out so a test can pin the contract the
 /// live benchmark validated: op MUST be "str_replace" — without it the
 /// daemon answers "no content provided" (is_error) and every edit silently
@@ -383,6 +468,50 @@ test "nativeRefusal: licensed pro tools block the natives they replaced" {
     try std.testing.expect(nativeRefusal(ctx, namedCall("edit_file")) == null);
     try std.testing.expect(nativeRefusal(ctx, bashCall(a, "git status")) == null);
     try std.testing.expect(nativeRefusal(ctx, bashCall(a, "curl -s x | grep err")) == null);
+}
+
+fn jsonCall(a: Allocator, name: []const u8, body: []const u8) tools.ToolCall {
+    return .{ .id = "t", .name = name, .input = std.json.parseFromSliceLeaky(std.json.Value, a, body, .{}) catch unreachable };
+}
+
+test "redirect: blocked natives translate to their codedb-pro equivalents" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var reg = licensedRegistry();
+    const ctx = gateTestCtx(a, &reg);
+    const saved_licensed = main_mod.g_codedbpro_licensed;
+    const saved_plan = main_mod.plan_mode;
+    const saved_fallback = fallbackOpen();
+    defer {
+        main_mod.g_codedbpro_licensed = saved_licensed;
+        main_mod.plan_mode = saved_plan;
+        g_fallback_open.store(saved_fallback, .release);
+    }
+    main_mod.g_codedbpro_licensed = true;
+    main_mod.plan_mode = false;
+    g_fallback_open.store(false, .release);
+
+    const r1 = redirect(ctx, jsonCall(a, "read_file", "{\"path\":\"src/main.zig\"}")).?;
+    try std.testing.expectEqualStrings("mcp__codedbpro__read", r1.name);
+    try std.testing.expectEqualStrings("full", r1.input.object.get("mode").?.string);
+    try std.testing.expectEqualStrings("src/main.zig", r1.input.object.get("file").?.string);
+    const r2 = redirect(ctx, jsonCall(a, "read_file", "{\"path\":\"a.zig\",\"start_line\":10,\"end_line\":40}")).?;
+    try std.testing.expectEqualStrings("lines", r2.input.object.get("mode").?.string);
+    try std.testing.expectEqualStrings("10-40", r2.input.object.get("range").?.string);
+    const r3 = redirect(ctx, jsonCall(a, "codedb", "{\"command\":\"outline src/main.zig\"}")).?;
+    try std.testing.expectEqualStrings("outline", r3.input.object.get("mode").?.string);
+    const r4 = redirect(ctx, jsonCall(a, "codedb", "{\"command\":\"search parseHeader\"}")).?;
+    try std.testing.expectEqualStrings("mcp__codedbpro__faster_search", r4.name);
+    try std.testing.expectEqualStrings("parseHeader", r4.input.object.get("pattern").?.string);
+    try std.testing.expect(redirect(ctx, jsonCall(a, "codedb", "{\"command\":\"callers foo\"}")) == null);
+    // leading grep/rg → faster_search on the first bare token; find and piped grep stay out
+    const r5 = redirect(ctx, bashCall(a, "rg TODO src")).?;
+    try std.testing.expectEqualStrings("TODO", r5.input.object.get("pattern").?.string);
+    try std.testing.expect(redirect(ctx, bashCall(a, "find . -name '*.zig'")) == null);
+    try std.testing.expect(redirect(ctx, bashCall(a, "curl -s x | grep err")) == null);
+    // edits never redirect — native edit tools own the /rewind snapshots
+    try std.testing.expect(redirect(ctx, namedCall("edit_file")) == null);
 }
 
 test "nativeRefusal stands down: unlicensed, plan mode, fallback open, server gone" {

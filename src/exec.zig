@@ -159,7 +159,7 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     // #255: reserved before any gate/dispatch runs so tool_started/
     // tool_finished bracket the whole call, including a gate denial below.
     const call_id: u64 = if (ctx.tracer) |tr| tr.toolStarted(call.name, call.input) else 0;
-    if (noLocalToolsGate(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call) orelse licensedNativeGate(ctx, call) orelse native_fold.gateExec(ctx.gpa, call.name, ctx.from_sub)) |blocked| {
+    if (noLocalToolsGate(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call) orelse codedbpro_report.licensedGate(ctx, call) orelse native_fold.gateExec(ctx.gpa, call.name, ctx.from_sub)) |blocked| {
         var out = blocked;
         out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
         if (ctx.tracer) |tr| {
@@ -195,18 +195,6 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     }
     runPostToolHooks(ctx, call, out);
     return out;
-}
-
-/// Licensed codedb-pro in charge: the natives the suite replaced are refused
-/// until a pro failure opens the fallback (plan mode exempt — it denies MCP
-/// outright). Lives in the OUTER gate chain: still downstream of
-/// agent_tool_gate like every gate here, and the refusal path returns before
-/// tool_balance.record, so a blocked native counts as a REFUSAL — /tools
-/// never mistakes a block for native usage.
-fn licensedNativeGate(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
-    const refusal = codedbpro_report.nativeRefusal(ctx, call) orelse return null;
-    tool_balance.recordRefusal();
-    return refusal;
 }
 
 /// #330 layer 2: refuse a host-touching built-in even if a provider hallucinates

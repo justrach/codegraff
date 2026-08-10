@@ -154,18 +154,22 @@ pub fn refusalText(gpa: Allocator, name: []const u8) ![]u8 {
     );
 }
 
-/// exec.zig layer 2 as one expression for the guard chain: the refusal when
-/// the call is blocked, else null. `gpa` is the exec context's result
-/// allocator. Deliberately positioned alongside the #416 refusal — both run
-/// downstream of agent_tool_gate.gateTool, so the fold can only subtract a
-/// call consent already allowed, never add one. Yields in plan mode: the
-/// read-only policy is the stronger reason, and its gate must deliver its
-/// own refusal rather than the model hearing "schema not loaded".
+/// exec.zig layer 2 as one expression for the guard chain. A call to a
+/// folded, not-yet-loaded tool AUTO-LOADS it and proceeds (user direction):
+/// the tool is advertised in the deferred listing, the call itself shows the
+/// model's intent, and the old refusal → load_tool_schemas → retry dance cost
+/// a full round trip per tool per session. The load appends the spec to the
+/// next request's catalog exactly as an explicit load would. Deliberately
+/// positioned alongside the #416 refusal — downstream of
+/// agent_tool_gate.gateTool, so consent is already settled either way. Yields
+/// in plan mode: the read-only policy's gate must deliver its own refusal.
 pub fn gateExec(gpa: Allocator, name: []const u8, from_sub: bool) ?@import("tools.zig").ToolOutput {
-    if (from_sub) return null; // subs are served comptime-baked full catalogs — refusing them would be incoherent
+    _ = gpa;
+    if (from_sub) return null; // subs are served comptime-baked full catalogs — nothing is folded for them
     if (@import("main.zig").plan_mode) return null;
     if (!blocked(name)) return null;
-    return .{ .text = refusalText(gpa, name) catch return null, .is_error = true };
+    markLoaded(name);
+    return null;
 }
 
 /// The result half of a native load: the tool's REAL spec schema, rendered
@@ -272,6 +276,14 @@ test "fold: the listed tools are blocked until loaded, everything else flows" {
     }
     // Subagents are exempt: their catalogs are comptime-baked full surfaces.
     try std.testing.expect(gateExec(std.testing.allocator, "workflow", true) == null);
+    // A confident call to a folded tool auto-loads it instead of refusing
+    // (user direction: the refuse → load → retry dance cost a round trip).
+    if (!isLoaded("peer_message")) {
+        try std.testing.expect(blocked("peer_message"));
+        try std.testing.expect(gateExec(std.testing.allocator, "peer_message", false) == null);
+        try std.testing.expect(isLoaded("peer_message"));
+        try std.testing.expect(!blocked("peer_message"));
+    }
     // A loaded name never double-registers.
     const before = g_loaded_len;
     markLoaded("clock_sleep");
