@@ -154,6 +154,14 @@ pub fn refusalText(gpa: Allocator, name: []const u8) ![]u8 {
     );
 }
 
+/// agent_tools' meta path and exec's gateExec share this: a confident call
+/// to a folded tool loads it in place of the old refusal (user direction —
+/// the refuse → load → retry dance cost a round trip, and the eval/review
+/// flows' blind eval calls starved on it: test-review-mode RunBudgetExhausted).
+pub fn markIfFolded(name: []const u8) void {
+    if (blocked(name)) markLoaded(name);
+}
+
 /// exec.zig layer 2 as one expression for the guard chain. A call to a
 /// folded, not-yet-loaded tool AUTO-LOADS it and proceeds (user direction):
 /// the tool is advertised in the deferred listing, the call itself shows the
