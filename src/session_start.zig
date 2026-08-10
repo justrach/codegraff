@@ -92,6 +92,9 @@ pub fn setupWorktreeAndBanner(
     preferred_provider: ?[]const u8,
     default_provider: provider_mod.Provider,
 ) !void {
+    // The main chat loop does not pass through repl_run.run(), so initialize
+    // its runtime diagnostics gate here alongside the startup diagnostics.
+    repl.g_debug = environ_map.get("GRAFF_REPL_DEBUG") != null;
     // Color only on an interactive terminal, and honor NO_COLOR. The palette
     // itself is a sink concern (#429); this only decides whether there is one.
     if (environ_map.get("NO_COLOR") == null and (Io.File.stdout().isTty(io) catch false)) {
