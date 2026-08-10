@@ -353,7 +353,7 @@ pub const Agent = struct {
                 // threshold, a transient/empty summary must not immediately drop
                 // real history. Destructive recovery is reserved for >=95%.
                 const recovery_meter = self.effectiveContextTokens();
-                self.compactOrRecover(self.provider.nearContextLimit(recovery_meter));
+                self.autocompact(recovery_meter);
                 self.closeCodexWs();
             }
             const root = try self.request(if (self.text_only) null else self.toolsJson());
@@ -427,6 +427,7 @@ pub const Agent = struct {
     pub const emergencyCutIndex = @import("agent_compact.zig").emergencyCutIndex;
     pub const emergencyTrim = @import("agent_compact.zig").emergencyTrim;
     pub const compactOrRecover = @import("agent_compact.zig").compactOrRecover;
+    pub const autocompact = @import("agent_server_compact.zig").autocompact;
     pub const capOversizedToolOutputs = @import("agent_compact.zig").capOversizedToolOutputs;
 
     // The live streaming path (thinking spinner, live "Thinking" reasoning

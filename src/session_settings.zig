@@ -130,6 +130,12 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
             if (pct > 0) provider_mod.g_compact_pct_override = @min(pct, 100);
         } else |_| {}
     }
+    // GRAFF_SERVER_COMPACT=0/false/off: opt .responses providers (codex) out of
+    // server-side compaction back to client-side summaries. Default on.
+    if (environ_map.get("GRAFF_SERVER_COMPACT")) |v| {
+        const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off");
+        @import("agent_server_compact.zig").g_server_compact_override = !off;
+    }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
     // GRAFF_WS_FORCE_FAIL_ONCE proves a clean retry; the counted sibling proves
     // that two consecutive failures latch the SSE fallback. Test seams only.

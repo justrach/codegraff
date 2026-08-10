@@ -10,6 +10,7 @@ const Agent = @import("agent.zig").Agent;
 const serde = @import("serde.zig");
 const http_headers = @import("http_headers.zig");
 const codex_chain = @import("codex_chain.zig");
+const server_compact = @import("agent_server_compact.zig");
 const pricing = @import("pricing.zig");
 const writeAnthropicMessages = serde.writeAnthropicMessages;
 const writeAnthropicTools = serde.writeAnthropicTools;
@@ -240,13 +241,10 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             try s.endArray();
             try s.objectField("store");
             try s.write(false);
-            // Do NOT send a top-level `max_output_tokens` on the Codex Responses
-            // request. The chatgpt.com/backend-api/codex/responses backend rejects
-            // it ("Unsupported parameter: max_output_tokens") on gpt-5.6-* models,
-            // which hard-fails every turn (incl. the title task). openai/codex
-            // itself never puts it at the request top level — there it is only a
-            // tool argument (exec_command/wait output truncation). Output length is
-            // bounded by the model's own cap and our prompts instead.
+            try server_compact.writeContextManagement(self, &s);
+            // No top-level max_output_tokens: the codex backend rejects it
+            // ("Unsupported parameter") on gpt-5.6-* models, hard-failing every
+            // turn; codex itself only sets it as a tool argument.
             try s.objectField("stream");
             try s.write(true);
         },
