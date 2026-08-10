@@ -160,6 +160,8 @@ pub const work_note =
     \\tokens, and diff noise the user did not order. And never repeat a tool
     \\call with identical parameters once you have a usable result — the answer
     \\will not change; reread only on stale source, ambiguity, or failure.
+    \\When a Project layout segment is present, it is the tree — read the
+    \\files you need straight from it instead of ls/find exploration turns.
 ;
 
 /// Always present: narration is a habit, not a capability.

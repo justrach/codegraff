@@ -116,6 +116,8 @@ const golden_full_prompt =
     \\tokens, and diff noise the user did not order. And never repeat a tool
     \\call with identical parameters once you have a usable result — the answer
     \\will not change; reread only on stale source, ambiguity, or failure.
+    \\When a Project layout segment is present, it is the tree — read the
+    \\files you need straight from it instead of ls/find exploration turns.
     \\
     \\Before a large chunk of work, give a one- or two-sentence heads-up on what
     \\you are about to do; on long tasks, drop a brief note as each phase lands.
