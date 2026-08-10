@@ -24,6 +24,7 @@ const engine_sink = @import("engine_sink.zig");
 const presence = @import("presence.zig");
 const presence_chan = @import("presence_chan.zig");
 const worktree_lease = @import("worktree_lease.zig");
+const repl = @import("repl.zig");
 
 const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
@@ -222,14 +223,14 @@ pub fn deliverInbound(root: *Agent) void {
     if (note) |n| {
         buf.appendSlice(root.arena, n) catch {};
         buf.append(root.arena, '\n') catch {};
-        sink.emit(root.io, .{ .session_notice = .{ .text = n, .tone = .plain } });
+        if (repl.g_debug) sink.emit(root.io, .{ .session_notice = .{ .text = n, .tone = .plain } });
     }
     if (omitted > 0) {
         const marker = std.fmt.allocPrint(root.arena, "[#469 channel: {d} older message(s) predating this session omitted]", .{omitted}) catch "";
         if (marker.len > 0) {
             buf.appendSlice(root.arena, marker) catch {};
             buf.append(root.arena, '\n') catch {};
-            sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
+            if (repl.g_debug) sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
         }
     }
     if (skipped > 0) {
@@ -237,7 +238,7 @@ pub fn deliverInbound(root: *Agent) void {
         if (marker.len > 0) {
             buf.appendSlice(root.arena, marker) catch {};
             buf.append(root.arena, '\n') catch {};
-            sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
+            if (repl.g_debug) sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
         }
     }
     var lines: std.ArrayList([]const u8) = .empty;
@@ -259,7 +260,7 @@ pub fn deliverInbound(root: *Agent) void {
     const window = displayWindow(is_backlog_drain, lines.items.len);
     if (window.hidden > 0) {
         const marker = std.fmt.allocPrint(root.arena, "[#469 channel: {d} backlog message(s) delivered to context — showing last {d}]", .{ window.hidden, backlog_repl_show }) catch "";
-        if (marker.len > 0) sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
+        if (marker.len > 0 and repl.g_debug) sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
     }
     for (lines.items[window.start..]) |line|
         sink.emit(root.io, .{ .session_notice = .{ .text = line, .tone = .plain } });

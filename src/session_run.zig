@@ -205,7 +205,7 @@ pub fn initApprovalsHooksFleet(io: Io, gpa: Allocator, arena: Allocator, environ
     fleet.g_home = keys_cli.homeEnv(environ_map); // for /agents promote's personal tier
     fleet.g_agent_types = fleet.loadAgentTypes(io, arena, fleet.g_home); // builtin < ~/.harness/agents (personal) < ./.harness/agents (private)
     const sink = engine_sink.writerSink(out);
-    const speak = !json_mode and flags.oneshot_prompt == null;
+    const speak = !json_mode and flags.oneshot_prompt == null and environ_map.get("GRAFF_REPL_DEBUG") != null;
     if (persisted_approvals > 0 and speak)
         sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "loaded {d} saved approval(s) from {s}", .{ persisted_approvals, harness_policy.settings_path })));
     // Lifecycle hooks (pre_tool/post_tool/turn_end) from the same file.
@@ -291,8 +291,16 @@ pub fn buildRootAgent(
     // #469: register this root session so co-resident graffs see it (and it
     // them) BEFORE anyone touches the shared tree — a live co-owner is named
     // at birth here, not discovered mid-collision.
-    if (presence.announce(io, gpa, arena, root.home, root.session_name, if (root.goal) |g| g.objective else "")) |warning| {
-        if (!main_mod.json_mode and flags.oneshot_prompt == null) try out.print("{s}", .{warning});
+    if (presence.announce(io, gpa, arena, root.home, root.session_name, if (root.goal) |g| g.objective else "")) |owner| {
+        if (!main_mod.json_mode and flags.oneshot_prompt == null) {
+            const age_ms = util.unixMs(io) - owner.last_seen_ms;
+            engine_sink.writerSink(out).emit(io, .{ .shared_worktree_owner = .{
+                .session_id = owner.session_id,
+                .pid = owner.pid,
+                .active_minutes = @divTrunc(if (age_ms > 0) age_ms else 0, std.time.ms_per_min),
+                .goal = owner.goal,
+            } });
+        }
     }
     if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
     if (flags.eval_target_flag) |t| root.eval_target = t;

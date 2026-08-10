@@ -13,6 +13,7 @@ const Agent = agent_mod.Agent;
 const engine_events = @import("engine_events.zig");
 const EngineEvent = engine_events.EngineEvent;
 const protocol_seq = @import("protocol_seq.zig");
+const repl = @import("repl.zig");
 const engine_sink = @import("engine_sink.zig");
 const EngineSink = engine_sink.EngineSink;
 const VTable = engine_sink.VTable;
@@ -255,13 +256,16 @@ test "a frontendless agent's wire sink burns no ids for the lines it cannot writ
     try std.testing.expectEqual(@as(u64, 0), protocol_seq.current());
 }
 
-test "TuiSink draws the ⚙ and ✓ lines and nothing for the brackets (slice 1c)" {
+test "TuiSink keeps tool diagnostics behind REPL debug mode (slice 1c)" {
     const saved_color = main_mod.use_color;
     main_mod.use_color = false;
     defer main_mod.use_color = saved_color;
     const saved_json = main_mod.json_mode; // sayText's root gate reads it
     main_mod.json_mode = false;
     defer main_mod.json_mode = saved_json;
+    const saved_debug = repl.g_debug;
+    repl.g_debug = false;
+    defer repl.g_debug = saved_debug;
     const ansi = @import("ansi.zig");
     const saved_style = ansi.style;
     ansi.style = .{}; // assert the text, not the palette
@@ -277,11 +281,15 @@ test "TuiSink draws the ⚙ and ✓ lines and nothing for the brackets (slice 1c
     const call: engine_events.ToolInvocation = .{ .name = "read_file", .input = input };
     const done: engine_events.ToolOutcome = .{ .name = "read_file", .text = "line one\nline two\n", .is_error = false };
     s.emit(undefined, .{ .tool_call_announced = call });
+    s.emit(undefined, .{ .tool_result = done });
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+
+    repl.g_debug = true;
+    s.emit(undefined, .{ .tool_call_announced = call });
     s.emit(undefined, .{ .tool_call_started = call }); // silent: the ⚙ line already said it
     s.emit(undefined, .{ .tool_result = done });
     s.emit(undefined, .{ .tool_call_finished = done }); // silent
     s.emit(undefined, .{ .tool_rejected = .{ .name = "bash", .input = input, .reason = "budget", .message = "no" } }); // silent
-    // Exactly the two lines the eval golden's tool turn shows.
     try std.testing.expectEqualStrings("⚙ read_file {\"path\":\"fixture.txt\"}\n  ✓ line one…\n", aw.writer.buffered());
 }
 

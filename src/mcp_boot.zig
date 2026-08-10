@@ -34,7 +34,7 @@ fn startServerTask(reg: *Registry, name: []const u8, cfg: std.json.ObjectMap) St
     var servers: std.ArrayList(*mcp_rpc.Server) = .empty;
     var tools: std.ArrayList(mcp.Tool) = .empty;
     reg.startServer(a, &servers, &tools, name, cfg) catch |err| {
-        std.debug.print("  [mcp:{s}] failed to start: {t}\n", .{ name, err });
+        if (reg.show_diagnostics) std.debug.print("  [mcp:{s}] failed to start: {t}\n", .{ name, err });
         arena_state.deinit();
         return outcome;
     };
@@ -48,13 +48,14 @@ fn startServerTask(reg: *Registry, name: []const u8, cfg: std.json.ObjectMap) St
 /// then handshake every server CONCURRENTLY. Returns null (no error) when
 /// neither file exists — MCP is optional. `global_path` is borrowed: it must
 /// outlive the registry, which re-reads it on `/mcp trust`.
-pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]const u8, home: []const u8, environ_map: anytype) !?Registry {
+pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]const u8, home: []const u8, show_diagnostics: bool, environ_map: anytype) !?Registry {
     var reg: Registry = .{
         .gpa = gpa,
         .io = io,
         .home = home,
         .arena_state = std.heap.ArenaAllocator.init(gpa),
         .stdio_probe = if (environ_map.get("GRAFF_MCP_PROBE")) |v| !std.mem.eql(u8, v, "0") else true,
+        .show_diagnostics = show_diagnostics,
         .global_config_path = global_path,
     };
     mcp_rpc.applyHandshakeTimeoutEnv(environ_map); // #275 GRAFF_MCP_HANDSHAKE_SECS + #327 GRAFF_MCP_PROBE_MS, on the same pass as the probe flag

@@ -144,7 +144,7 @@ pub fn setupWorktreeAndBanner(
 
     if (!main_mod.json_mode and flags.oneshot_prompt == null) {
         sink.emit(io, .{ .session_banner = .{ .cwd = main_mod.g_cwd_display, .trace_path = trace_path } });
-        if (codex_account) |acct| sink.emit(io, .{ .session_notice = .{
+        if (environ_map.get("GRAFF_REPL_DEBUG") != null) if (codex_account) |acct| sink.emit(io, .{ .session_notice = .{
             .text = try std.fmt.allocPrint(arena, "logged into Codex (ChatGPT account {s}…) — /model codex", .{acct[0..@min(acct.len, 8)]}),
         } });
         if (flags.effectiveYolo()) sink.emit(io, .{ .session_notice = .{
@@ -380,7 +380,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     // --json's stdout is a JSONL stream and a one-shot's is the answer; neither
     // can carry chatter. With a global config `mcp_count > 0` in every project,
     // so an unguarded line here would corrupt the head of every --json run.
-    const quiet = json_mode or flags.oneshot_prompt != null;
+    const quiet = json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") == null;
     const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path);
     // #416: resolve eager-vs-deferred BEFORE anything connects, so the first
     // catalog render already knows which servers pay their schemas up front.
@@ -407,7 +407,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
         const ans = in.takeDelimiter('\n') catch null;
         connect_mcp = ans != null and ans.?.len > 0 and (ans.?[0] == 'y' or ans.?[0] == 'Y');
     }
-    var registry: mcp.Registry = if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, environ_map) catch |err| inner: {
+    var registry: mcp.Registry = if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") != null, environ_map) catch |err| inner: {
         sink.emit(io, .{ .session_notice = .{ .text = try std.fmt.allocPrint(arena, "[mcp] init failed: {t} — continuing without MCP", .{err}) } });
         if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;
@@ -420,6 +420,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     // file precisely when consent was declined and no `init` ever ran. `arena`
     // is the session arena, so the path outlives the registry.
     registry.global_config_path = global_path;
+    registry.show_diagnostics = json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") != null;
     return registry;
 }
 
@@ -445,7 +446,7 @@ pub fn probeLicensed(gpa: Allocator, io: Io) bool {
 /// is all that's needed — no return-by-value trickery here).
 pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags: args.Flags, out: *Io.Writer, json_mode: bool, environ_map: anytype) !void {
     const sink = engine_sink.writerSink(out);
-    const speak = !json_mode and flags.oneshot_prompt == null;
+    const speak = !json_mode and flags.oneshot_prompt == null and environ_map.get("GRAFF_REPL_DEBUG") != null;
     connect: {
         for (skills.companion_servers) |c| if (skills.mcpServerConnected(registry.tools, c.server)) break :connect;
         for (skills.companion_servers) |c| {

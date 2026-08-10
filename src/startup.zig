@@ -299,9 +299,9 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
 /// then project instructions from the first of AGENTS.md/HARNESS.md/
 /// CLAUDE.md found in the cwd, then --append-system-prompt text, then one
 /// capability line per active optional skill, then one usage note per
-/// connected MCP server. `quiet` suppresses the "loaded project
-/// instructions..." status line (set by callers the same way main() used
-/// to gate it: json_mode or a one-shot prompt). Carved out of main()'s
+/// connected MCP server. `quiet` suppresses startup diagnostics; interactive
+/// callers clear it only for GRAFF_REPL_DEBUG, while JSON and one-shot modes
+/// always keep stdout clean. Carved out of main()'s
 /// former inline block verbatim — pure over io/arena, returns everything by
 /// value, so it's safe to call from outside main()'s own stack frame.
 /// The last edge of the learning loop: a genome this workspace actually

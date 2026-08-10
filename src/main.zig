@@ -407,7 +407,7 @@ pub fn main(init: std.process.Init) !void {
     // Root system-prompt layering (base + AGENTS.md/HARNESS.md/CLAUDE.md + --append-system-prompt + active-skill lines + connected-MCP notes) lives
     // in startup.zig as buildSystemPrompt() — pure over io/arena, returns the composed base by value. buildRootAgent derives every prompt variant
     // from it via prompts.setSystemPrompts() (#326).
-    const sys_normal = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null, (flags.oneshot_prompt != null or !(Io.File.stdin().isTty(io) catch true)) and !flags.effectiveYolo(), mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"), init.environ_map);
+    const sys_normal = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null or init.environ_map.get("GRAFF_REPL_DEBUG") == null, (flags.oneshot_prompt != null or !(Io.File.stdin().isTty(io) catch true)) and !flags.effectiveYolo(), mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"), init.environ_map);
     boot.mark(io, "system prompt");
     session_run.learningNotice(io, arena, init.environ_map, out, json_mode or flags.oneshot_prompt != null);
 

@@ -54,6 +54,8 @@ pub const Registry = struct {
     mutex: Io.Mutex = .init,
     servers: []*Server = &.{},
     tools: []Tool = &.{},
+    /// Startup connection/failure lines are developer diagnostics, not normal REPL output.
+    show_diagnostics: bool = false,
     /// The stdio spec's backward-compatibility SHOULD: a dual-era client
     /// probes `server/discover` before assuming legacy. ON by default;
     /// `GRAFF_MCP_PROBE=0` opts out.
@@ -233,7 +235,7 @@ pub const Registry = struct {
             };
             if (present) continue;
             reg.startServer(a, &servers, &tools, try a.dupe(u8, name), entry.value_ptr.*.object) catch |err| {
-                std.debug.print("  [mcp:{s}] failed to start: {t}\n", .{ name, err });
+                if (reg.show_diagnostics) std.debug.print("  [mcp:{s}] failed to start: {t}\n", .{ name, err });
             };
         }
         reg.servers = try a.dupe(*Server, servers.items);
@@ -438,7 +440,7 @@ pub const Registry = struct {
         try servers.append(a, server);
         registry_owns_server = true;
         const probe_note = if (server.probe_fallback) |reason| reason.note() else ""; // #327: a downgrade is never silent
-        std.debug.print("  [mcp:{s}] connected (mcp {s}) — {d} tool(s){s}\n", .{ name, server.protocol_version, tools_v.array.items.len, probe_note });
+        if (reg.show_diagnostics) std.debug.print("  [mcp:{s}] connected (mcp {s}) — {d} tool(s){s}\n", .{ name, server.protocol_version, tools_v.array.items.len, probe_note });
     }
 
     /// One shared window bounds the whole teardown: the loop is sequential, so

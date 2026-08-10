@@ -45,6 +45,7 @@ const tool_render = @import("agent_tool_render.zig"); // slice 1c: the tool clus
 const session_render = @import("session_render.zig"); // slice 2: the lifecycle cluster's terminal half
 const prompt_render = @import("agent_prompt_render.zig"); // batch 3: the status line's terminal half
 const tick_gate = @import("tick_gate.zig"); // #tui-tick: child ticks wait for a foreground line boundary
+const repl = @import("repl.zig");
 
 /// An event plus its position, as delivered to a sink.
 pub const Stamped = struct {
@@ -236,11 +237,11 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         // the one file down here that still reaches the palette; the moments
         // the terminal never drew (the dispatch/close brackets, refusals) are
         // silent rather than absent from the vocabulary.
-        .tool_call_announced => |t| tool_render.toolUseLine(a, t),
-        .tool_result => |r| tool_render.toolResultLine(a, r),
+        .tool_call_announced => |t| if (repl.g_debug) tool_render.toolUseLine(a, t),
+        .tool_result => |r| if (repl.g_debug) tool_render.toolResultLine(a, r),
         .tool_call_started, .tool_call_finished, .tool_rejected => {},
-        .parallel_batch_started => |b| tool_render.parallelBatchStarted(a, b.count),
-        .parallel_batch_finished => |b| tool_render.parallelBatchFinished(a, b),
+        .parallel_batch_started => |b| if (repl.g_debug) tool_render.parallelBatchStarted(a, b.count),
+        .parallel_batch_finished => |b| if (repl.g_debug) tool_render.parallelBatchFinished(a, b),
         .completion_deferred => tool_render.completionDeferred(a),
         .goal_completed => tool_render.goalCompleted(a),
         .completion_text, .todo_list_updated => |t| tool_render.toolTextLine(a, t.text),
@@ -251,6 +252,7 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         .session_notice,
         .session_banner,
         .worktree_entered,
+        .shared_worktree_owner,
         .saved_model_unavailable,
         .mcp_consent_prompt,
         .provider_fallback,
