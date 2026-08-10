@@ -24,6 +24,7 @@ const native_fold = @import("native_fold.zig"); // GRAFF_NO_NATIVE_FOLD → enab
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // GRAFF_STABLE_CATALOG → g_stable_catalog
 const no_local_tools = @import("no_local_tools.zig"); // #330: GRAFF_NO_LOCAL_TOOLS
 const tool_handle = @import("tool_handle.zig"); // #440: GRAFF_TOOL_HANDLE_BYTES
+const server_compact = @import("agent_server_compact.zig"); // GRAFF_SERVER_COMPACT + #compact-ab assignment
 const provider_mod = @import("provider.zig");
 const skills = @import("skills.zig");
 const anim = @import("anim.zig");
@@ -93,8 +94,8 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // GRAFF_LEAN: presence-based, exactly matching session_start.leanSkipsMcp
     // (the MCP half of the same switch) — a "0" still means lean, by design.
     if (environ_map.get("GRAFF_LEAN") != null) no_local_tools.lean = true;
-    // GRAFF_REQ_STATS: presence-based request-anatomy print (agent_request).
-    agent_request.g_req_stats = environ_map.get("GRAFF_REQ_STATS") != null;
+    // GRAFF_REQ_STATS: presence-based request-anatomy print (req_stats).
+    @import("req_stats.zig").g_armed = environ_map.get("GRAFF_REQ_STATS") != null;
     // GRAFF_CODEX_FULL_RESEND: presence-based — never chain previous_response_id
     // (codex_chain); the opencode-shape experiment for cache-hit measurement.
     if (environ_map.get("GRAFF_CODEX_FULL_RESEND") != null) @import("codex_chain.zig").g_force_full_resend = true;
@@ -133,11 +134,11 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
             if (pct > 0) provider_mod.g_compact_pct_override = @min(pct, 100);
         } else |_| {}
     }
-    // GRAFF_SERVER_COMPACT=0/false/off: opt .responses providers (codex) out of
-    // server-side compaction back to client-side summaries. Default on.
+    // GRAFF_SERVER_COMPACT=0/false/off: force the client arm; =1/true/on:
+    // force the server arm. Unset → #compact-ab assignment decides.
     if (environ_map.get("GRAFF_SERVER_COMPACT")) |v| {
         const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off");
-        @import("agent_server_compact.zig").g_server_compact_override = !off;
+        server_compact.g_server_compact_override = !off;
     }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
     // GRAFF_WS_FORCE_FAIL_ONCE proves a clean retry; the counted sibling proves
@@ -152,6 +153,9 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
 
 pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool, cwd_display: []const u8) !ThemeSetup {
     try applyEnvKnobs(arena, environ_map);
+    // #compact-ab: bucket this install into a compaction arm once per process.
+    // After applyEnvKnobs so GRAFF_SERVER_COMPACT wins and skips assignment.
+    server_compact.assignArm(io, arena, @import("keys_cli.zig").homeEnv(environ_map) orelse "");
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
     anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme

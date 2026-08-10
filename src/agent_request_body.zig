@@ -22,17 +22,6 @@ pub fn responsesOutputLimit(self: *const Agent) u32 {
     return self.responses_output_limit orelse max_tokens;
 }
 
-/// The cache-affinity partition for this agent. opencode keys per SESSION for
-/// the same reason: every agent in the process used to share the session id,
-/// so interleaved root/sub requests — completely different prefixes under one
-/// key — evicted each other (root cache_read measured ~35% in benchmarks).
-/// Root keeps the bare session id; every other agent gets its own suffix.
-fn promptCacheKey(self: *const Agent, buf: []u8) []const u8 {
-    const base = http_headers.sessionId(self.io);
-    if (std.mem.eql(u8, self.label, "main")) return base;
-    return std.fmt.bufPrint(buf, "{s}-{x}", .{ base, @intFromPtr(self) }) catch base;
-}
-
 pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: bool, stream_usage: bool) ![]u8 {
     var aw: Io.Writer.Allocating = .init(self.gpa);
     errdefer aw.deinit();
@@ -182,7 +171,7 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             if (is_kimi) {
                 var ckbuf: [96]u8 = undefined;
                 try s.objectField("prompt_cache_key");
-                try s.write(promptCacheKey(self, &ckbuf));
+                try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
             }
             // Reasoning-effort hint for OpenAI-compatible providers that
             // honor it (codegraff gateway, deepseek). Mirrors the
@@ -193,10 +182,9 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             }
         },
         .responses => {
-            // Codex / ChatGPT Responses API. system prompt → instructions;
-            // history items are valid input items; stream is required by
-            // the backend (we buffer + parse the SSE). reasoning items are
-            // returned encrypted and passed back for cross-turn continuity.
+            // Codex / ChatGPT Responses API. system prompt → instructions; history
+            // items are valid input items; stream is required (we buffer + parse the
+            // SSE); reasoning items return encrypted and are passed back per turn.
             try s.objectField("instructions");
             try s.write(self.systemPrompt());
             // Pin our full resends to a per-session cache partition, the way
@@ -205,13 +193,9 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             // affinity hint for a prefix we re-upload every turn.
             var ckbuf: [96]u8 = undefined;
             try s.objectField("prompt_cache_key");
-            try s.write(promptCacheKey(self, &ckbuf));
-            // GPT-5.6 explicit caching (prompt_cache_options + per-item
-            // prompt_cache_breakpoint, openai-docs upgrading-to-gpt-5p6-sol.md)
-            // was probed here and is NOT shippable: the ChatGPT-codex route
-            // rejects both ("Unsupported parameter: prompt_cache_options",
-            // "Unknown parameter: input[0].prompt_cache_breakpoint"). Implicit
-            // caching + prompt_cache_key affinity is all this backend offers.
+            try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
+            // GPT-5.6 explicit caching (prompt_cache_options / breakpoints) is
+            // platform-API-only — this route 400s on both. Implicit + cache key is all.
             // Codex WS delta: once a response.id is held on a live WS session,
             // send previous_response_id + only the items the server does not yet
             // hold, instead of the full history (avoids the huge frame that the
@@ -260,6 +244,7 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             try s.endArray();
             try s.objectField("store");
             try s.write(false);
+            server_compact.noteExposure(self);
             try server_compact.writeContextManagement(self, &s);
             // No top-level max_output_tokens: the codex backend rejects it
             // ("Unsupported parameter") on gpt-5.6-* models, hard-failing every
