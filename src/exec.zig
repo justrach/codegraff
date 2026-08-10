@@ -235,13 +235,11 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             .text = try gpa.dupe(u8, "MCP not available in this context"),
             .is_error = true,
         };
-        // #416 layer 2. Deliberately HERE, inside execToolInner: this runs
-        // downstream of agent_tool_gate.gateTool, so the consent prompt is
-        // still reached in exactly the cases (and the order) it was before —
-        // deferral can only subtract a call consent already allowed, never
-        // add one, and never short-circuits an approval check.
-        if (mcp_schema_gate.blocked(reg.tools, call.name))
-            return .{ .text = try mcp_schema_gate.refusalText(gpa, call.name), .is_error = true };
+        // #416 layer 2, auto-load era: a confident call to a deferred tool
+        // loads its schema inline and runs — the refusal round trip is gone
+        // (same user direction as the native fold). Still downstream of
+        // agent_tool_gate.gateTool: consent is already settled.
+        mcp_schema_gate.autoLoad(gpa, reg.tools, call.name);
         const r = reg.call(gpa, call.name, call.input) catch |err| {
             codedbpro_report.onFailure(ctx, call.name, @errorName(err));
             return failure(gpa, err);

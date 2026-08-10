@@ -191,14 +191,8 @@ test "load_tool_schemas returns the full schemas and enables the tools" {
     const arena = arena_state.allocator();
     const fat = try fixture(arena, "fat", 4, 2000);
 
-    // Before: every tool blocked, with an actionable refusal.
+    // Before: every tool blocked (the refusal itself is gone — auto-load).
     try testing.expect(gate.blocked(fat, "mcp__fat__t0"));
-    const refusal = try gate.refusalText(testing.allocator, "mcp__fat__t0");
-    defer testing.allocator.free(refusal);
-    try testing.expect(std.mem.indexOf(u8, refusal, gate.tool_name) != null);
-    try testing.expect(std.mem.indexOf(u8, refusal, "mcp__fat__t0") != null);
-    try testing.expect(std.mem.indexOf(u8, refusal, "does not change approvals") != null);
-    try testing.expect(std.mem.indexOf(u8, refusal, "unknown") == null); // never a bare unknown-tool
 
     const req = try std.json.parseFromSliceLeaky(Value, arena, "{\"tools\":[\"mcp__fat__t0\"]}", .{ .allocate = .alloc_always });
     const r = try gate.loadInto(arena, fat, req);

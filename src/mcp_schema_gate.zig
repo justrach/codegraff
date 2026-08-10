@@ -304,6 +304,20 @@ pub fn shortDesc(desc: []const u8) []const u8 {
 
 // --- layer 2: refuse a call whose schema was never loaded -------------------
 
+/// exec.zig's MCP dispatch calls this where it used to refuse: a confident
+/// call to a deferred tool renders + publishes its schema and proceeds (user
+/// direction — same rule as the native fold's markIfFolded). The catalog's
+/// zero-stub listing is unchanged; the call itself was already provider-legal.
+pub fn autoLoad(arena: Allocator, all: []const mcp.Tool, qualified: []const u8) void {
+    if (!blocked(all, qualified)) return;
+    for (all) |t| {
+        if (std.mem.eql(u8, t.qualified_name, qualified)) {
+            _ = enable(arena, t) catch {};
+            return;
+        }
+    }
+}
+
 /// Whether calling `qualified` right now must be refused. False for an eager
 /// tool, for one already loaded, and for a name the registry does not know
 /// (mcp.Registry.call owns that error, unchanged).
@@ -313,19 +327,6 @@ pub fn blocked(all: []const mcp.Tool, qualified: []const u8) bool {
         return isDeferred(all, t);
     }
     return false;
-}
-
-/// The refusal a blocked call gets: never a bare "unknown tool", always the
-/// exact next action.
-pub fn refusalText(gpa: Allocator, qualified: []const u8) ![]u8 {
-    return std.fmt.allocPrint(
-        gpa,
-        "{s} is registered but its schema is not loaded, so it cannot be called yet. " ++
-            "Call {s} with {{\"tools\": [\"{s}\"]}} first — that returns the full input schema and enables the tool " ++
-            "for the rest of this session — then call {s} again with arguments matching that schema. " ++
-            "This is a context-cost deferral only; it does not change approvals or trust.",
-        .{ qualified, tool_name, qualified, qualified },
-    );
 }
 
 // --- the load tool ---------------------------------------------------------
