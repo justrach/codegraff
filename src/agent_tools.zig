@@ -404,9 +404,6 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
     if (tools_mod.json_args.object(call.input)) |o| if (tools_mod.json_args.arrayOf(o, "options")) |opts| {
         for (opts, 1..) |opt, n| try w.print("   {d}) {s}\n", .{ n, tools_mod.json_args.text(opt) orelse "(non-text option)" });
     };
-    try w.writeAll("   your answer › ");
-    try w.flush();
-
     // Route the reply through the same full-line editor as the main prompt:
     // cursor editing, bracketed paste, the `@` file picker, and Ctrl-V
     // clipboard images. A bare takeDelimiter here stripped all of that from
@@ -416,7 +413,7 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
     defer answer_history.deinit(self.arena);
     var answer_buf: std.ArrayList(u8) = .empty;
     defer answer_buf.deinit(self.arena);
-    const raw = (try readline.readLine(self, in, w, self.arena, &answer_history, &answer_buf)) orelse return .{
+    const raw = (try readline.readLine(self, in, w, self.arena, &answer_history, &answer_buf, "   your answer › ")) orelse return .{
         .text = "user ended input without answering",
         .is_error = true,
     };

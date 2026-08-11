@@ -69,20 +69,18 @@ pub fn readLine(
     gpa: Allocator,
     history: *std.ArrayList([]const u8),
     buf: *std.ArrayList(u8),
+    prompt_text: ?[]const u8,
 ) !?[]const u8 {
     const raw_state = tty.enterRaw(true) orelse return in.takeDelimiter('\n');
     defer tty.restore(raw_state);
-
     buf.clearRetainingCapacity();
     var cur: usize = 0; // cursor index within buf
     var nav: HistoryNav = .init(history.items.len); // history + unsent-draft nav (#101)
     defer if (nav.draft) |d| gpa.free(d);
-    out.writeAll("\x1b[?2004h") catch {}; // enable bracketed paste (terminal wraps pastes in ESC[200~ … ESC[201~)
+    out.writeAll("\x1b[?2004h") catch {}; // terminal wraps pastes in ESC[200~ … ESC[201~
     defer out.writeAll("\x1b[?2004l") catch {};
     out.flush() catch {};
-
-    // Where does input start? Ask the terminal (DSR 6) for the column right
-    // after the prompt; the renderer treats those columns as a fixed prefix
+    // Ask the terminal (DSR 6) where input starts; the renderer treats those columns as a fixed prefix
     // and wraps the input across rows below it. Cursor moves in redraw are all
     // relative (never an absolute DECSC anchor), so a wrap-induced scroll
     // shifts the whole block together and never strands the prompt. Typed-
@@ -138,16 +136,17 @@ pub fn readLine(
             }
         }
     }
-    // Narrow terminal: when the prompt leaves too little room (the token-
-    // stats prompt nearly fills a small window), give the input its own
-    // row — what shells do — rather than wrapping in a sliver beside the
-    // prompt.
+    if (prompt_text) |text| {
+        out.writeAll(text) catch {};
+        prompt_col += std.unicode.utf8CountCodepoints(text) catch text.len;
+        out.flush() catch {};
+    }
+    // Narrow terminal: put input on its own row rather than wrapping in a sliver.
     if (termCols() < prompt_col + 16) {
         out.writeAll("\r\n") catch {};
         out.flush() catch {};
         prompt_col = 1;
     }
-
     // Tab-completion cycle state.
     var comp_items: std.ArrayList([]const u8) = .empty;
     defer comp_items.deinit(gpa);
