@@ -44,6 +44,8 @@ TRANSACTIONAL_FINAL = "done after transactional compaction failure"
 TRANSACTIONAL_REASONING_MARKER = "transactional-active-reasoning:"
 TRANSACTIONAL_CALL_ID = "call_transactional_1"
 
+CONCURRENT_FINAL = "done after concurrent websocket tool loop"
+
 # #391: compaction now spends one extra quiet turn writing a note to self
 # before the summary. Both synthetic turns are identified by the head of their
 # instruction so the fixtures below can be keyed on CONTENT rather than on a
@@ -226,6 +228,41 @@ def transactional_events(request: RecordedRequest) -> list[dict]:
         f"resp_transactional_{request.ordinal}",
         1_300,
     )
+
+
+def concurrent_tool_events(request: RecordedRequest) -> list[dict]:
+    """One native tool round-trip per independent WS connection.
+
+    The second request on a chained connection contains only the new
+    function_call_output, so key on that content instead of the mock's global
+    ordinal: concurrent handlers may interleave in any order.
+    """
+    instructions = request.body.get("instructions", "")
+    if "You summarize what a coding session is about" in instructions:
+        return response_events(
+            message_item("Concurrent websocket session", f"msg_title_{request.ordinal}"),
+            f"resp_title_{request.ordinal}",
+            200,
+        )
+    input_items = request.body.get("input") or []
+    if any(
+        isinstance(item, dict) and item.get("type") == "function_call_output"
+        for item in input_items
+    ):
+        return response_events(
+            message_item(CONCURRENT_FINAL, f"msg_concurrent_{request.ordinal}"),
+            f"resp_concurrent_{request.ordinal}",
+            1_300,
+        )
+    call = {
+        "type": "function_call",
+        "id": f"fc_concurrent_{request.ordinal}",
+        "call_id": f"call_concurrent_{request.ordinal}",
+        "name": "todo_read",
+        "arguments": "{}",
+        "status": "completed",
+    }
+    return response_events(call, f"resp_concurrent_{request.ordinal}", 1_200)
 
 
 def assert_compaction_meter(label: str, rendered: str) -> None:
