@@ -201,7 +201,9 @@ pub fn nativeRefusal(ctx: tools.ToolCtx, call: tools.ToolCall) ?tools.ToolOutput
 /// refusal; a failed pro call opens the fallback and the native proceeds.
 pub fn licensedGate(ctx: tools.ToolCtx, call: tools.ToolCall) ?tools.ToolOutput {
     if (redirect(ctx, call)) |target| {
-        const r = ctx.registry.?.call(ctx.gpa, target.name, target.input) catch |err| {
+        var prepared = @import("codedbpro_paths.zig").prepareInput(ctx.gpa, ctx.io, ctx.agent_cwd, target.name, target.input) catch return null;
+        defer prepared.deinit(ctx.gpa);
+        const r = ctx.registry.?.call(ctx.gpa, target.name, prepared.value) catch |err| {
             onFailure(ctx, target.name, @errorName(err));
             return null; // fallback opened — let the native run
         };
@@ -332,7 +334,7 @@ pub fn spliceViaDaemon(gpa: Allocator, ctx: tools.ToolCtx, file: []const u8, dis
 /// resolve against the daemon's launch cwd — not a tool bug, so they never
 /// reach the issue filer (#475).
 fn callerError(err_text: []const u8) bool {
-    return std.mem.indexOf(u8, err_text, "file not found") != null;
+    return @import("codedbpro_paths.zig").callerError(err_text);
 }
 
 /// exec.zig's MCP branch calls this on any failed mcp__codedbpro__* call
