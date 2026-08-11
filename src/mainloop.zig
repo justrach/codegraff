@@ -15,6 +15,7 @@ const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
 const pricing = @import("pricing.zig");
+const turn_event = @import("turn_event.zig");
 const prompts = @import("prompts.zig");
 const providers = @import("providers.zig");
 const pickers = @import("pickers.zig");
@@ -457,7 +458,7 @@ pub fn run(ctx: *Ctx) !void {
                     if (partial.len > 0) {
                         ctx.root.emit(.{ .type = "finalizing" });
                         const context_tokens = ctx.root.effectiveContextTokens();
-                        ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = context_tokens > 0 });
+                        ctx.root.emit(turn_event.fromTally(&pricing.g_cost, ctx.io, partial, context_tokens, false));
                     }
                 }
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
@@ -479,7 +480,7 @@ pub fn run(ctx: *Ctx) !void {
                     if (partial.len > 0) {
                         ctx.root.emit(.{ .type = "finalizing" });
                         const context_tokens = ctx.root.effectiveContextTokens();
-                        ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = context_tokens > 0 });
+                        ctx.root.emit(turn_event.fromTally(&pricing.g_cost, ctx.io, partial, context_tokens, false));
                     }
                 }
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
@@ -493,7 +494,7 @@ pub fn run(ctx: *Ctx) !void {
                     if (partial.len > 0) {
                         ctx.root.emit(.{ .type = "finalizing" });
                         const context_tokens = ctx.root.effectiveContextTokens();
-                        ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = context_tokens > 0 });
+                        ctx.root.emit(turn_event.fromTally(&pricing.g_cost, ctx.io, partial, context_tokens, false));
                     }
                 }
                 // A turn can fail because the context window overflowed; if we're
@@ -540,7 +541,7 @@ pub fn run(ctx: *Ctx) !void {
                 .session_arena_kb = if (main_mod.g_session_arena) |a| a.queryCapacity() / 1024 else 0,
                 .scratch_arena_kb = if (ctx.root.scratch_arena) |a| a.queryCapacity() / 1024 else 0,
             });
-            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = session_context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = isolated_review or !ctx.root.eval_repair_pending, .metadata_complete = session_context_tokens > 0 });
+            ctx.root.emit(turn_event.fromTally(&pricing.g_cost, ctx.io, emitted_text, session_context_tokens, isolated_review or !ctx.root.eval_repair_pending));
         }
         // Apply only if already complete; poll never waits for title generation.
         title_jobs.poll(ctx);
