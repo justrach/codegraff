@@ -50,7 +50,7 @@ pub const json =
     \\    {"type": "agent_usage", "id": "sa-...", "ok": true, "duration_ms": 0, "tool_calls": 0, "context_tokens": 0, "cache_read_tokens": 0},
     \\    {"type": "finalizing"},
     \\    {"type": "session_recap", "text": "one-line session summary", "status": "needs_input|completed|failed", "source": "heuristic|model (heuristic precedes every completed turn's terminal event; a model recap may follow later)"},
-    \\    {"type": "turn", "text": "final assistant text", "context_tokens": 0, "cost_usd": 0.0, "complete": true, "metadata_complete": true},
+    \\    {"type": "turn", "text": "final assistant text", "context_tokens": 0, "cost_usd": 0.0, "input_tokens": 0, "uncached_input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0, "api_calls": 0, "subscription_calls": 0, "unpriced_calls": 0, "complete": true, "metadata_complete": true},
     \\    {"type": "system_prompt", "ok": true, "append": false, "chars": 0},
     \\    {"type": "model", "ok": true, "provider": "provider", "model": "model", "context": 0, "note": "context kept"},
     \\    {"type": "compact", "ok": true, "chars": 0},

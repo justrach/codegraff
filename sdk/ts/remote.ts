@@ -35,7 +35,7 @@ export type Event =
   | { seq: number; type: "agent_usage"; id: string; ok: boolean; duration_ms: number; tool_calls: number; context_tokens: number; cache_read_tokens: number }
   | { seq: number; type: "finalizing" }
   | { seq: number; type: "session_recap"; text: string; status: "needs_input" | "completed" | "failed"; source: "heuristic" | "model" }
-  | { seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }
+  | { seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; input_tokens: number; uncached_input_tokens: number; cache_read_tokens: number; output_tokens: number; api_calls: number; subscription_calls: number; unpriced_calls: number; complete?: boolean; metadata_complete?: boolean }
   | { seq: number; type: "system_prompt"; ok: boolean; append: boolean; chars: number }
   | { seq: number; type: "score"; ok: boolean; prompt_sha: string }
   | { seq: number; type: "error"; message: string };
