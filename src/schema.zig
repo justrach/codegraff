@@ -75,9 +75,9 @@ const base_specs = [_]ToolSpec{
     },
     .{
         .name = "read_file",
-        .desc = "Read a UTF-8 text file. Call this before editing any file. Whole-file reads over 256 KiB return a short preview; pass start_line/end_line (1-based, inclusive) for a byte-exact window from any size file.",
+        .desc = "Read a UTF-8 text file. Call this before editing any file. For a read-only exact-key lookup, pass contains to return only matching numbered lines instead of the whole file. Whole-file reads over 256 KiB return a short preview; pass start_line/end_line (1-based, inclusive) for a byte-exact window from any size file.",
         .schema =
-        \\{"type": "object", "properties": {"path": {"type": "string", "description": "File path, relative to the working directory"}, "start_line": {"type": "integer", "description": "Optional 1-based first line to return (byte-exact slice; omit for whole file)"}, "end_line": {"type": "integer", "description": "Optional 1-based last line to return, inclusive"}, "compact": {"type": "boolean", "description": "Exploratory only: return a comment/blank-stripped view via codedb (line numbers shown). NEVER use before an edit — re-read without compact to copy exact text."}}, "required": ["path"]}
+        \\{"type": "object", "properties": {"path": {"type": "string", "description": "File path, relative to the working directory"}, "start_line": {"type": "integer", "description": "Optional 1-based first line to return (byte-exact slice; omit for whole file)"}, "end_line": {"type": "integer", "description": "Optional 1-based last line to return, inclusive"}, "contains": {"type": "string", "description": "Optional exact literal; return only matching lines with line numbers instead of the whole file. Prefer this for exact-key read-only lookups. Cannot combine with start_line, end_line, or compact."}, "compact": {"type": "boolean", "description": "Exploratory only: return a comment/blank-stripped view via codedb (line numbers shown). NEVER use before an edit — re-read without compact to copy exact text."}}, "required": ["path"]}
         ,
     },
     .{
