@@ -16,6 +16,7 @@ const Allocator = std.mem.Allocator;
 const main_mod = @import("main.zig");
 const util = @import("util.zig");
 const codedbpro_report = @import("codedbpro_report.zig"); // licensed-companion failure → redacted issue filer
+const codedbpro_paths = @import("codedbpro_paths.zig"); // session-cwd paths for the resident companion daemon
 const tool_balance = @import("tool_balance.zig"); // session-wide tool-class tally (/tools)
 const ToolCall = tools.ToolCall;
 
@@ -240,7 +241,12 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         // (same user direction as the native fold). Still downstream of
         // agent_tool_gate.gateTool: consent is already settled.
         mcp_schema_gate.autoLoad(gpa, reg.tools, call.name);
-        const r = reg.call(gpa, call.name, call.input) catch |err| {
+        var prepared = codedbpro_paths.prepareInput(gpa, io, ctx.agent_cwd, call.name, call.input) catch |err| {
+            codedbpro_report.onFailure(ctx, call.name, @errorName(err));
+            return failure(gpa, err);
+        };
+        defer prepared.deinit(gpa);
+        const r = reg.call(gpa, call.name, prepared.value) catch |err| {
             codedbpro_report.onFailure(ctx, call.name, @errorName(err));
             return failure(gpa, err);
         };

@@ -590,7 +590,7 @@ test { // pull in tests from imported modules (mcp.zig)
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events
     _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here
-    _ = @import("readline_history.zig");
+    _ = @import("additional_tests.zig");
     _ = @import("goal_pacing_autonomous_test.zig");
     _ = @import("goal_state.zig");
     _ = @import("goal_persist_tests.zig");
