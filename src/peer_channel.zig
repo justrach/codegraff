@@ -24,6 +24,7 @@ const engine_sink = @import("engine_sink.zig");
 const presence = @import("presence.zig");
 const presence_chan = @import("presence_chan.zig");
 const worktree_lease = @import("worktree_lease.zig");
+const repl = @import("repl.zig");
 
 const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
@@ -218,18 +219,25 @@ pub fn deliverInbound(root: *Agent) void {
         if (deviceHears(m, own)) heard.append(root.arena, m) catch break else skipped += 1;
     }
     device_msgs = heard.items;
+    // A blank line of air on either side of the visible block: peer lines
+    // land mid-stream at a step boundary and used to butt straight against
+    // the assistant text above and whatever follows below — one clump.
+    const window = displayWindow(is_backlog_drain, local_msgs.len + device_msgs.len);
+    const any_visible = local_msgs.len + device_msgs.len > window.start or
+        (repl.g_debug and (note != null or omitted > 0 or skipped > 0 or window.hidden > 0));
+    if (any_visible) sink.emit(root.io, .{ .session_notice = .{ .text = "", .tone = .plain } });
     var buf: std.ArrayList(u8) = .empty;
     if (note) |n| {
         buf.appendSlice(root.arena, n) catch {};
         buf.append(root.arena, '\n') catch {};
-        sink.emit(root.io, .{ .session_notice = .{ .text = n, .tone = .plain } });
+        if (repl.g_debug) sink.emit(root.io, .{ .session_notice = .{ .text = n, .tone = .plain } });
     }
     if (omitted > 0) {
         const marker = std.fmt.allocPrint(root.arena, "[#469 channel: {d} older message(s) predating this session omitted]", .{omitted}) catch "";
         if (marker.len > 0) {
             buf.appendSlice(root.arena, marker) catch {};
             buf.append(root.arena, '\n') catch {};
-            sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
+            if (repl.g_debug) sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
         }
     }
     if (skipped > 0) {
@@ -237,7 +245,7 @@ pub fn deliverInbound(root: *Agent) void {
         if (marker.len > 0) {
             buf.appendSlice(root.arena, marker) catch {};
             buf.append(root.arena, '\n') catch {};
-            sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
+            if (repl.g_debug) sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
         }
     }
     var lines: std.ArrayList([]const u8) = .empty;
@@ -256,13 +264,13 @@ pub fn deliverInbound(root: *Agent) void {
     // History gets every line (the model coordinates from it); the REPL prints
     // only the tail of a first-drain backlog so a resume is not a wall of
     // text. Live incremental drains render every line — those are new.
-    const window = displayWindow(is_backlog_drain, lines.items.len);
     if (window.hidden > 0) {
         const marker = std.fmt.allocPrint(root.arena, "[#469 channel: {d} backlog message(s) delivered to context — showing last {d}]", .{ window.hidden, backlog_repl_show }) catch "";
-        if (marker.len > 0) sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
+        if (marker.len > 0 and repl.g_debug) sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
     }
     for (lines.items[window.start..]) |line|
         sink.emit(root.io, .{ .session_notice = .{ .text = line, .tone = .plain } });
+    if (any_visible) sink.emit(root.io, .{ .session_notice = .{ .text = "", .tone = .plain } });
     if (buf.items.len == 0) return;
     buf.appendSlice(root.arena, "(reply with the peer_message tool — queued, one-way; everyone here hears it)") catch {};
     var obj: std.json.ObjectMap = .empty;
