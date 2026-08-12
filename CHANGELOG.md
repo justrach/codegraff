@@ -10,6 +10,23 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.249 (2026-08-12)
+
+- Folded native tools become callable immediately after their schemas load
+  (#492). The active catalog is rebuilt from the loaded schemas instead of
+  continuing to advertise tools that can never enter dispatch.
+- Turn events expose cumulative input, output, cache-read, and cache-write
+  token usage, with the TypeScript SDKs regenerated from the same schema
+  source (#491).
+- codedb-pro tool paths resolve from the active session worktree rather than
+  the daemon's startup directory, preventing false missing-path reports when
+  Graff changes projects.
+- Piped sessions end an unanswered `ask_user` cleanly at EOF instead of
+  spinning or hanging (#478).
+- The default prompt carries a capped skills catalog, and the release suite
+  now exercises concurrent interactive WebSocket tool loops across multiple
+  sessions (#480).
+
 ## v0.0.245 (2026-08-09)
 
 - Licensed codedb-pro is now the default toolset, not an ornament. The license

@@ -21,6 +21,12 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.249
+    \\  • Folded native tools become callable as soon as their schemas load; the active catalog now rebuilds instead of advertising unreachable tools
+    \\  • Turn events and generated TypeScript SDKs expose cumulative input, output, cache-read, and cache-write token usage
+    \\  • codedb-pro paths resolve from the active session worktree, and piped ask_user sessions end cleanly at EOF
+    \\  • The default prompt carries a capped skills catalog, with concurrent interactive WebSocket tool loops covered by the release suite
+    \\
     \\0.0.247
     \\  • Interactive startup is quiet by default; `GRAFF_REPL_DEBUG=1` restores launch and runtime diagnostics, and `/debug` still toggles them live
     \\  • Shared-worktree ownership is a structured callout with the active session, goal, and `graff -w` isolation action
