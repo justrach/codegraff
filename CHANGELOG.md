@@ -10,6 +10,13 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.251 (2026-08-13)
+
+- Peer messages get breathing room in the REPL: the `#469 channel` block used
+  to render mid-stream with no spacing, clumped against the text above and
+  below; it is now bracketed by a blank line on either side. Render-only —
+  history bytes and the GUI are unchanged.
+
 ## v0.0.250 (2026-08-12)
 
 - First-party OpenAI server compaction now installs the complete canonical
