@@ -17,6 +17,7 @@ const args = @import("args.zig");
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const http = @import("http.zig");
+const http_stall = @import("http_stall.zig");
 const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig"); // codex_ws_idle_ms override (#codex-ws)
 const agent_request = @import("agent_request.zig"); // GRAFF_REQ_STATS → g_req_stats (token-diet measurement)
@@ -71,7 +72,18 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // unparseable or 0. A stall is never a user interrupt regardless of the value.
     if (environ_map.get("GRAFF_STREAM_STALL_SECS")) |v| {
         if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
-            if (secs > 0) http.stream_stall_ms = @min(secs, 86_400) * 1000; // clamp: <=1 day, no u64 overflow
+            if (secs > 0) {
+                http.stream_stall_ms = @min(secs, 86_400) * 1000; // clamp: <=1 day, no u64 overflow
+                http_stall.head_ceiling_ms = http.stream_stall_ms; // an explicit budget wins both regimes
+            }
+        } else |_| {}
+    }
+    // The pre-first-token ceiling alone (http_stall.head_ceiling_ms): for a
+    // provider that buffers a long reasoning phase in total silence BEFORE
+    // the first token. Seconds; ignored if unparseable or 0.
+    if (environ_map.get("GRAFF_STREAM_HEAD_STALL_SECS")) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
+            if (secs > 0) http_stall.head_ceiling_ms = @min(secs, 86_400) * 1000;
         } else |_| {}
     }
     // #codex-ws: GRAFF_CODEX_WS=off|0|false|no (case-insensitive, the

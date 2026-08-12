@@ -22,6 +22,7 @@ const std = @import("std");
 const Io = std.Io;
 
 const main_mod = @import("main.zig");
+const repl = @import("repl.zig"); // g_debug gate for the spill notice
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 const agent_output = @import("agent_output.zig");
@@ -63,9 +64,40 @@ pub fn toolUseLine(a: *Agent, t: ToolInvocation) void {
     sayText(a, line.writer.buffered());
 }
 
+/// The #440 marker prefixes forResult tags oversized results with. Detected
+/// off the result text itself, so the badge needs no new field on the event
+/// vocabulary (and no SDK schema change).
+const handle_marker = "[tool result handle: ";
+const truncated_marker = "[tool result truncated to ";
+
+const HandleBadge = struct { bytes: usize, truncated: bool };
+
+/// Parse the spill size out of a #440 marker line, null for ordinary results.
+fn handleBadge(text: []const u8) ?HandleBadge {
+    if (std.mem.startsWith(u8, text, handle_marker)) {
+        const rest = text[handle_marker.len..];
+        const end = std.mem.indexOf(u8, rest, " bytes") orelse return null;
+        const n = std.fmt.parseInt(usize, rest[0..end], 10) catch return null;
+        return .{ .bytes = n, .truncated = false };
+    }
+    // "[tool result truncated to {shown} bytes: {total} bytes total, …"
+    if (std.mem.startsWith(u8, text, truncated_marker)) {
+        const rest = text[truncated_marker.len..];
+        const cut = std.mem.indexOf(u8, rest, " bytes: ") orelse return null;
+        const rest2 = rest[cut + " bytes: ".len ..];
+        const end = std.mem.indexOf(u8, rest2, " bytes total") orelse return null;
+        const n = std.fmt.parseInt(usize, rest2[0..end], 10) catch return null;
+        return .{ .bytes = n, .truncated = true };
+    }
+    return null;
+}
+
 /// Compact result feedback for one finished tool call: a green ✓ / red ✗ /
-/// yellow ⊘ and a one-line preview of what it returned. Root only (subagents
-/// have no writer); meta tools render their own UX, so skip them. This one
+/// yellow ⊘ and a one-line preview of what it returned. A result that spilled
+/// to a #440 handle (or was truncated without one) also badges the spill size —
+/// the handle costs the model a follow-up read round-trip, and that cost
+/// should be visible to the human, not silent. Root only (subagents have no
+/// writer); meta tools render their own UX, so skip them. This one
 /// writes straight to the writer — it never ended a tick-gate row.
 pub fn toolResultLine(a: *Agent, r: ToolOutcome) void {
     const w = a.out orelse return;
@@ -83,12 +115,56 @@ pub fn toolResultLine(a: *Agent, r: ToolOutcome) void {
         (std.fmt.bufPrint(&tbuf, " ({d}ms)", .{r.ms}) catch "")
     else
         "";
-    w.print("  {s}{s}{s}{s}{s}{s} {s}{s}{s}{s}\n", .{
-        mc,          mark,  style.reset, style.dim, timing, style.reset,
-        style.dim,   shown,
+    // Self-contained: colors and the trailing reset ride inside the badge, so
+    // an empty badge leaves the line byte-identical to the pre-badge format.
+    var bbuf: [48]u8 = undefined;
+    const badge = if (handleBadge(all)) |h| blk: {
+        const kib = @as(f64, @floatFromInt(h.bytes)) / 1024.0;
+        break :blk if (h.truncated)
+            std.fmt.bufPrint(&bbuf, "{s}⇠ {d:.1} KiB lost{s} ", .{ style.yellow, kib, style.reset }) catch ""
+        else
+            std.fmt.bufPrint(&bbuf, "{s}⇢ {d:.1} KiB handle{s} ", .{ style.accent, kib, style.reset }) catch "";
+    } else "";
+    w.print("  {s}{s}{s}{s}{s}{s} {s}{s}{s}{s}{s}\n", .{
+        mc,          mark,      style.reset, style.dim, timing, style.reset,
+        badge,       style.dim, shown,
         if (truncated) "…" else "",
         style.reset,
     }) catch return;
+    w.flush() catch return;
+}
+
+/// Normal-mode spill notice (#440): the one tool-result moment the terminal
+/// draws outside debug mode. A spilled result costs the model a follow-up
+/// read round-trip, and that cost should be visible rather than silent —
+/// debug mode already shows it as the badge on the full ✓ line, so this
+/// stays quiet there (and in --json, where the wire event carries it).
+pub fn handleSpillLine(a: *Agent, bytes: usize, has_handle: bool) void {
+    if (main_mod.json_mode) return;
+    if (repl.g_debug) return;
+    const w = a.out orelse return;
+    const kib = @as(f64, @floatFromInt(bytes)) / 1024.0;
+    var buf: [72]u8 = undefined;
+    const line = if (has_handle)
+        std.fmt.bufPrint(&buf, "  {s}⇢ {d:.1} KiB handle{s}\n", .{ style.accent, kib, style.reset }) catch return
+    else
+        std.fmt.bufPrint(&buf, "  {s}⇠ {d:.1} KiB lost{s}\n", .{ style.yellow, kib, style.reset }) catch return;
+    w.writeAll(line) catch return;
+    w.flush() catch return;
+}
+
+/// Turn-start note when effort routing (effort_route.zig) moved a
+/// lookup-shaped turn to low effort: the prompt line was drawn before the
+/// prompt existed, so it still shows the session knob — this one dim line is
+/// what the turn actually ran at. Normal mode only; debug and --json already
+/// carry the truth (the request's thinking.effort / the event stream).
+pub fn routedEffortLine(a: *Agent) void {
+    if (main_mod.json_mode) return;
+    if (repl.g_debug) return;
+    const w = a.out orelse return;
+    var buf: [80]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "  {s}⇣ lookup turn — routed to effort low for this turn{s}\n", .{ style.dim, style.reset }) catch return;
+    w.writeAll(line) catch return;
     w.flush() catch return;
 }
 
@@ -216,6 +292,57 @@ test "the result line marks success, failure and cancellation and previews one l
     main_mod.show_timing = true;
     toolResultLine(&a, .{ .name = "bash", .text = "ok", .is_error = false, .ms = 42 });
     try std.testing.expectEqualStrings("  ✓ (42ms) ok\n", aw.writer.buffered());
+
+    // A #440 handle spill badges its size between the timing slot and the
+    // preview (which still leads with the marker, so the path stays visible).
+    aw.clearRetainingCapacity();
+    main_mod.show_timing = false;
+    toolResultLine(&a, .{ .name = "bash", .text = "[tool result handle: 44690 bytes, JSON object — the COMPLETE result is at /tmp/h-0.txt. Slice what you need out of that file (read_file with start_line/end_line, a grep-style bash command, codedb) instead of re-running the tool (#440).]", .is_error = false });
+    const hline = aw.writer.buffered();
+    try std.testing.expect(std.mem.startsWith(u8, hline, "  ✓ ⇢ 43.6 KiB handle [tool result handle: 44690 bytes"));
+
+    // The no-handle truncation variant badges the loss instead.
+    aw.clearRetainingCapacity();
+    toolResultLine(&a, .{ .name = "bash", .text = "[tool result truncated to 16384 bytes: 90000 bytes total, JSON object. No handle could be written, so the rest is gone — narrow the command and run it again (#440).]", .is_error = false });
+    try std.testing.expect(std.mem.startsWith(u8, aw.writer.buffered(), "  ✓ ⇠ 87.9 KiB lost [tool result truncated"));
+}
+
+test "the spill notice draws in normal mode and stays quiet in debug mode" {
+    const saved = ansi.style;
+    ansi.style = .{};
+    defer ansi.style = saved;
+    const saved_json = main_mod.json_mode;
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
+    const saved_debug = repl.g_debug;
+    repl.g_debug = false;
+    defer repl.g_debug = saved_debug;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+
+    handleSpillLine(&a, 44690, true);
+    try std.testing.expectEqualStrings("  ⇢ 43.6 KiB handle\n", aw.writer.buffered());
+
+    aw.clearRetainingCapacity();
+    handleSpillLine(&a, 90000, false);
+    try std.testing.expectEqualStrings("  ⇠ 87.9 KiB lost\n", aw.writer.buffered());
+
+    // Debug mode already draws the badge on the full ✓ line — no double draw.
+    aw.clearRetainingCapacity();
+    repl.g_debug = true;
+    handleSpillLine(&a, 44690, true);
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+
+    // The effort-routing note follows the same gates: normal mode only.
+    repl.g_debug = false;
+    aw.clearRetainingCapacity();
+    routedEffortLine(&a);
+    try std.testing.expectEqualStrings("  ⇣ lookup turn — routed to effort low for this turn\n", aw.writer.buffered());
+    aw.clearRetainingCapacity();
+    repl.g_debug = true;
+    routedEffortLine(&a);
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
 }
 
 test "batch tallies and meta notices render the old wording verbatim" {

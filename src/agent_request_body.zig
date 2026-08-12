@@ -167,11 +167,11 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 }
                 try s.endObject();
             }
-            // kimi-code pins each request to its session id for prompt-cache affinity (same partition trick as codex below).
+            // Kimi pins each request for prompt-cache affinity; graff sends the durable per-PROJECT key (http_headers.projectCacheKey).
             if (is_kimi) {
                 var ckbuf: [96]u8 = undefined;
                 try s.objectField("prompt_cache_key");
-                try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
+                try s.write(http_headers.projectCacheKey(self.io, self.label, self, &ckbuf));
             }
             // Reasoning-effort hint for OpenAI-compatible providers that
             // honor it (codegraff gateway, deepseek). Mirrors the
