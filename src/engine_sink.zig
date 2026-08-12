@@ -237,8 +237,8 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         // the one file down here that still reaches the palette; the moments
         // the terminal never drew (the dispatch/close brackets, refusals) are
         // silent rather than absent from the vocabulary.
-        .tool_call_announced => |t| if (repl.g_debug) tool_render.toolUseLine(a, t),
-        .tool_result => |r| if (repl.g_debug) tool_render.toolResultLine(a, r),
+        .tool_call_announced => |t| tool_render.toolUseLine(a, t),
+        .tool_result => |r| tool_render.toolResultLine(a, r),
         .tool_call_started, .tool_call_finished, .tool_rejected => {},
         .parallel_batch_started => |b| if (repl.g_debug) tool_render.parallelBatchStarted(a, b.count),
         .parallel_batch_finished => |b| if (repl.g_debug) tool_render.parallelBatchFinished(a, b),

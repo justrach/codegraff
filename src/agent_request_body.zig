@@ -182,9 +182,9 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             }
         },
         .responses => {
-            // Codex / ChatGPT Responses API. system prompt → instructions; history
-            // items are valid input items; stream is required (we buffer + parse the
-            // SSE); reasoning items return encrypted and are passed back per turn.
+            // First-party OpenAI Responses API. system prompt → instructions;
+            // history items are valid input items; stream is required (we buffer +
+            // parse SSE); reasoning items return encrypted and pass back per turn.
             try s.objectField("instructions");
             try s.write(self.systemPrompt());
             // Pin our full resends to a per-session cache partition, the way
@@ -223,10 +223,9 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 try s.objectField("parallel_tool_calls");
                 try s.write(true);
             }
-            // Codex "fast" mode (/fast): request the priority service
-            // tier for lower latency. This branch is codex-only, so it is
-            // never emitted for other providers.
-            if (self.fast) {
+            // Codex "fast" mode (/fast): request the priority service tier for
+            // lower latency. The Platform key route does not inherit this mode.
+            if (self.fast and std.mem.eql(u8, self.provider.id, "codex")) {
                 try s.objectField("service_tier");
                 try s.write("priority");
             }
@@ -246,8 +245,8 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             try s.write(false);
             server_compact.noteExposure(self);
             try server_compact.writeContextManagement(self, &s);
-            // No top-level max_output_tokens: the codex backend rejects it
-            // ("Unsupported parameter") on gpt-5.6-* — codex sets it only as a tool argument.
+            // No top-level max_output_tokens: the Codex backend rejects it on
+            // gpt-5.6-*; leaving it absent is also valid on the Platform route.
             try s.objectField("stream");
             try s.write(true);
         },

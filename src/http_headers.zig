@@ -93,7 +93,9 @@ pub fn providerHeaders(io: Io, provider: Provider, bearer: []const u8, buf: *[12
         const identity = kimi_catalog.identityHeaders(buf[count..]);
         count += identity.len;
     }
-    if (provider.kind == .responses) {
+    // These identify the ChatGPT/Codex backend. The official Platform Responses
+    // endpoint needs only normal bearer auth and rejects backend-only identity.
+    if (std.mem.eql(u8, provider.id, "codex")) {
         buf[count] = .{ .name = "chatgpt-account-id", .value = provider.account };
         count += 1;
         buf[count] = .{ .name = "OpenAI-Beta", .value = "responses=experimental" };
@@ -134,6 +136,16 @@ test "session_id is a stable per-process UUIDv4, not a shared constant" {
         }
     }
     return error.SessionIdHeaderMissing;
+}
+
+test "official OpenAI Responses uses Platform headers, not ChatGPT backend identity" {
+    const io = std.testing.io;
+    var buf: [12]std.http.Header = undefined;
+    const p: Provider = .{ .id = "openai", .kind = .responses, .auth = .bearer, .url = "https://api.openai.com/v1/responses", .api_key = "k", .model = "gpt-5.6", .context = 272_000 };
+    const headers = providerHeaders(io, p, "Bearer k", &buf);
+    try std.testing.expectEqual(@as(usize, 1), headers.len);
+    try std.testing.expectEqualStrings("authorization", headers[0].name);
+    try std.testing.expectEqualStrings("Bearer k", headers[0].value);
 }
 
 test "adoptSessionId validates length and never overwrites a minted id" {

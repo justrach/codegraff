@@ -21,6 +21,11 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.250
+    \\  • First-party OpenAI compaction preserves the complete canonical compact output on both Codex subscription and official Platform Responses routes
+    \\  • Invalid remote compaction falls back locally without mutating history; non-OpenAI providers remain local-only
+    \\  • REPL tool calls use stable terse start/result rows with readable previews instead of raw JSON
+    \\
     \\0.0.249
     \\  • Folded native tools become callable as soon as their schemas load; the active catalog now rebuilds instead of advertising unreachable tools
     \\  • Turn events and generated TypeScript SDKs expose cumulative input, output, cache-read, and cache-write token usage

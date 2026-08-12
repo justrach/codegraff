@@ -371,7 +371,7 @@ pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod
 /// overflow can still override this.
 pub fn compactResumedSession(root: *agent_mod.Agent) void {
     if (root.inputOverCompactThreshold()) {
-        root.compactOrRecover(false);
+        root.autocompactResumed();
     }
 }
 

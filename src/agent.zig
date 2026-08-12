@@ -434,6 +434,7 @@ pub const Agent = struct {
     pub const emergencyTrim = @import("agent_compact.zig").emergencyTrim;
     pub const compactOrRecover = @import("agent_compact.zig").compactOrRecover;
     pub const autocompact = @import("agent_server_compact.zig").autocompact;
+    pub const autocompactResumed = @import("agent_server_compact.zig").autocompactResumed;
     pub const capOversizedToolOutputs = @import("agent_compact.zig").capOversizedToolOutputs;
 
     // The live streaming path (thinking spinner, live "Thinking" reasoning

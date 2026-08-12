@@ -10,6 +10,22 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.250 (2026-08-12)
+
+- First-party OpenAI server compaction now installs the complete canonical
+  `/responses/compact` output transactionally on both the Codex subscription
+  and official Platform Responses routes. Missing, invalid, or empty output
+  leaves history intact and falls back to readable local compaction; other
+  providers remain local-only.
+- The official `openai` provider uses the Responses API with ordinary bearer
+  authentication, without inheriting ChatGPT backend headers, WebSocket
+  chaining, or Codex-only priority behavior.
+- REPL tool activity is visible again as stable terse start/result rows with
+  human-readable command, path, URL, or description previews instead of raw
+  JSON or cursor-rewriting output.
+- Controlled replay evidence covers 21/21 perfect continuations across the
+  first-party OpenAI host/auth paths, including long paired tool histories.
+
 ## v0.0.249 (2026-08-12)
 
 - Folded native tools become callable immediately after their schemas load

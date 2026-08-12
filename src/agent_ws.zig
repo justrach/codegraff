@@ -57,7 +57,8 @@ const drainSteerStdin = Agent.drainSteerStdin;
 /// back this session. Subagents/quiet turns keep the non-streaming SSE path.
 pub fn wsEligible(self: *Agent) bool {
     return main_mod.g_codex_ws and !self.ws_off and !self.sub and
-        self.provider.kind == .responses and self.out != null and !self.stream_quiet;
+        self.provider.kind == .responses and std.mem.eql(u8, self.provider.id, "codex") and
+        self.out != null and !self.stream_quiet;
 }
 
 /// (#codex-ws) Client-side idle limit on the held codex WS, opencode's

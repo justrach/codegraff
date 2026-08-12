@@ -281,16 +281,12 @@ test "TuiSink keeps tool diagnostics behind REPL debug mode (slice 1c)" {
     const call: engine_events.ToolInvocation = .{ .name = "read_file", .input = input };
     const done: engine_events.ToolOutcome = .{ .name = "read_file", .text = "line one\nline two\n", .is_error = false };
     s.emit(undefined, .{ .tool_call_announced = call });
-    s.emit(undefined, .{ .tool_result = done });
-    try std.testing.expectEqualStrings("", aw.writer.buffered());
-
-    repl.g_debug = true;
-    s.emit(undefined, .{ .tool_call_announced = call });
     s.emit(undefined, .{ .tool_call_started = call }); // silent: the ⚙ line already said it
     s.emit(undefined, .{ .tool_result = done });
     s.emit(undefined, .{ .tool_call_finished = done }); // silent
     s.emit(undefined, .{ .tool_rejected = .{ .name = "bash", .input = input, .reason = "budget", .message = "no" } }); // silent
-    try std.testing.expectEqualStrings("⚙ read_file {\"path\":\"fixture.txt\"}\n  ✓ line one…\n", aw.writer.buffered());
+    // Exactly the two lines the eval golden's tool turn shows, even without debug diagnostics.
+    try std.testing.expectEqualStrings("⚙ read_file · fixture.txt\n  ✓ read_file · line one…\n", aw.writer.buffered());
 }
 
 test "TuiSink renders a plain text delta exactly as the no-color TTY did" {
