@@ -438,6 +438,31 @@ pub fn probeLicensed(gpa: Allocator, io: Io) bool {
     return skills.probeCodedbproLicensed(gpa, io);
 }
 
+/// A licensed codedb-pro is IN CHARGE of reads/searches (its guard refuses
+/// the native codedb/read_file and points at these tools), which inverts the
+/// #416 deferral premise: this is not a server "most sessions never call" —
+/// the guard makes it mandatory, and the load_tool_schemas discovery dance is
+/// a measured ~2 model round-trips (~8-12s) per task on K3. Pin it eager.
+/// (#476 kept it deferred on a "zero discovery turns" claim; the benchmark
+/// traces show every code-reading run paying the dance.)
+pub fn pinCompanionEager(arena: Allocator) void {
+    if (mcp_schema_gate.pinnedEager("codedbpro")) return; // env/config already pinned
+    const gate = &mcp_schema_gate.g_policy;
+    const eager = arena.alloc([]const u8, gate.eager.len + 1) catch return;
+    @memcpy(eager[0..gate.eager.len], gate.eager);
+    eager[gate.eager.len] = "codedbpro";
+    gate.eager = eager;
+}
+
+/// The startup license probe plus its one side effect: a licensed companion
+/// is pinned eager so its full schemas ride the first catalog render instead
+/// of arriving via a load_tool_schemas discovery turn.
+pub fn probeLicensedPinningEager(gpa: Allocator, io: Io, arena: Allocator) bool {
+    const licensed = probeLicensed(gpa, io);
+    if (licensed) pinCompanionEager(arena);
+    return licensed;
+}
+
 /// Companion auto-activation: if the metered code-intelligence companion
 /// (codedb-pro, formerly muonry) is installed but nothing connected it (no
 /// workspace .mcp.json entry, or consent declined), spawn it directly — a
@@ -506,4 +531,20 @@ test "core Smolify registration is offline and lazy" {
     defer full.deinit();
     try std.testing.expectEqual(@as(usize, 13), try full.connectSmolify(true));
     try std.testing.expectEqualStrings("/not-read-during-registration", full.servers[0].transport.http.oauth_home.?);
+}
+
+test "a licensed companion is pinned eager, once, so no discovery round-trip is needed" {
+    const saved = mcp_schema_gate.g_policy;
+    defer mcp_schema_gate.g_policy = saved;
+    mcp_schema_gate.g_policy = .{};
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    try std.testing.expect(!mcp_schema_gate.pinnedEager("codedbpro"));
+    pinCompanionEager(arena);
+    try std.testing.expect(mcp_schema_gate.pinnedEager("codedbpro"));
+    // Idempotent, and an env/config pin is respected rather than duplicated.
+    pinCompanionEager(arena);
+    try std.testing.expectEqual(@as(usize, 1), mcp_schema_gate.g_policy.eager.len);
 }
