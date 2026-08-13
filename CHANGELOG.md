@@ -10,6 +10,18 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.252 (2026-08-13)
+
+- Grok models are discovered live: xAI joins the generic `/v1/models`
+  catalog discovery (6h disk cache, offline fallback, demand-gated), so new
+  Grok rollouts no longer need a release to become routable — the
+  grok-build parity model.
+- The #469 peer-message spacing bracket is pinned by a unit test on the
+  emitted event sequence, plus a CI-wired PTY smoke test for device-room
+  delivery.
+- release.yml uploads assets onto an existing release instead of failing
+  into an untagged draft (the v0.0.251 updater-404 race).
+
 ## v0.0.251 (2026-08-13)
 
 - Peer messages get breathing room in the REPL: the `#469 channel` block used
