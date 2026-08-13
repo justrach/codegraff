@@ -13,9 +13,10 @@ current is part of cutting a release.
 ## v0.0.252 (2026-08-13)
 
 - Grok models are discovered live: xAI joins the generic `/v1/models`
-  catalog discovery (6h disk cache, offline fallback, demand-gated), so new
-  Grok rollouts no longer need a release to become routable — the
-  grok-build parity model.
+  catalog and always fetches `api.x.ai` (disk cache is offline fallback
+  only), so new Grok rollouts become routable without a release. SuperGrok
+  login tokens send `X-XAI-Token-Auth` on chat and catalog requests, matching
+  grok-build.
 - The #469 peer-message spacing bracket is pinned by a unit test on the
   emitted event sequence, plus a CI-wired PTY smoke test for device-room
   delivery.

@@ -21,6 +21,10 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.252
+    \\  • Grok models come from a live api.x.ai /v1/models fetch every load — new rollouts no longer wait for a release
+    \\  • SuperGrok OAuth tokens send X-XAI-Token-Auth like grok-build, so login sessions can actually call the API
+    \\
     \\0.0.250
     \\  • First-party OpenAI compaction preserves the complete canonical compact output on both Codex subscription and official Platform Responses routes
     \\  • Invalid remote compaction falls back locally without mutating history; non-OpenAI providers remain local-only

@@ -13,6 +13,7 @@ const rc = @import("router_catalog.zig");
 const parseModels = rc.parseModels;
 const modelsUrl = rc.modelsUrl;
 const dynamic = rc.dynamic;
+const alwaysLive = rc.alwaysLive;
 const catalogHeaders = rc.catalogHeaders;
 const cacheDocument = rc.cacheDocument;
 const pageUrl = rc.pageUrl;
@@ -114,8 +115,8 @@ test "Anthropic catalog is live and authenticates like Messages" {
     try std.testing.expectEqualStrings("https://api.anthropic.com/v1/models?limit=1000", modelsUrl(spec));
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
-    var buf: [3]std.http.Header = undefined;
-    const headers = catalogHeaders(state.allocator(), spec, "sk-test", &buf) orelse
+    var buf: [4]std.http.Header = undefined;
+    const headers = catalogHeaders(state.allocator(), spec, "sk-test", .none, &buf) orelse
         return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(usize, 3), headers.len);
     try std.testing.expectEqualStrings("x-api-key", headers[1].name);
@@ -123,7 +124,7 @@ test "Anthropic catalog is live and authenticates like Messages" {
     try std.testing.expectEqualStrings("anthropic-version", headers[2].name);
     // Bearer routers are unchanged by the x-api-key branch.
     const router = provider.specFor("codegraff") orelse return error.TestUnexpectedResult;
-    const bearer = catalogHeaders(state.allocator(), router, "key", &buf) orelse
+    const bearer = catalogHeaders(state.allocator(), router, "key", .none, &buf) orelse
         return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(usize, 2), bearer.len);
     try std.testing.expectEqualStrings("Authorization", bearer[1].name);
@@ -133,16 +134,29 @@ test "xAI catalog is live (grok-build parity: fetch /v1/models, never a baked-on
     const spec = provider.specFor("xai") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(provider.ProviderSpec.CatalogKind.openai, spec.catalog);
     try std.testing.expect(dynamic(spec));
+    try std.testing.expect(alwaysLive(spec));
     try std.testing.expectEqualStrings("https://api.x.ai/v1/models", modelsUrl(spec));
     // Catalog GET auth mirrors chat auth: plain bearer, like every OpenAI router.
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
-    var buf: [3]std.http.Header = undefined;
-    const headers = catalogHeaders(state.allocator(), spec, "xai-test", &buf) orelse
+    var buf: [4]std.http.Header = undefined;
+    const headers = catalogHeaders(state.allocator(), spec, "xai-test", .environment, &buf) orelse
         return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(usize, 2), headers.len);
     try std.testing.expectEqualStrings("Authorization", headers[1].name);
     try std.testing.expectEqualStrings("Bearer xai-test", headers[1].value);
+    const login_headers = catalogHeaders(state.allocator(), spec, "oauth-tok", .login, &buf) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 3), login_headers.len);
+    try std.testing.expectEqualStrings("X-XAI-Token-Auth", login_headers[2].name);
+    try std.testing.expectEqualStrings("xai-grok-cli", login_headers[2].value);
+}
+
+test "alwaysLive is xAI-only so other OpenAI routers keep the disk TTL" {
+    try std.testing.expect(alwaysLive(provider.specFor("xai").?));
+    try std.testing.expect(!alwaysLive(provider.specFor("codegraff").?));
+    try std.testing.expect(!alwaysLive(provider.specFor("anthropic").?));
+    try std.testing.expect(!alwaysLive(provider.specFor("fireworks").?));
 }
 
 test "xAI /v1/models rows inherit baked context windows" {

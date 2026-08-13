@@ -375,8 +375,9 @@ const xai_oauth_host = "https://auth.x.ai";
 const xai_device_auth_url = xai_oauth_host ++ "/oauth2/device/code";
 const xai_token_url = xai_oauth_host ++ "/oauth2/token";
 const xai_client_id = "b1a00492-073a-47ea-816f-4c329264a828";
-const xai_scope = "openid profile email offline_access grok-cli:access api:access";
+const xai_scope_form = "openid+profile+email+offline_access+grok-cli:access+api:access+conversations:read+conversations:write+workspaces:read+workspaces:write";
 const xai_user_agent = "grok-cli/1.0";
+const xai_referrer = "grok-build";
 
 /// POST a form body to an xAI OAuth endpoint (with a CLI User-Agent); return the
 /// parsed JSON object.
@@ -416,7 +417,7 @@ pub fn xaiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !voi
     var ow = Io.File.stdout().writer(io, &obuf);
     const out = &ow.interface;
 
-    const da_body = try std.fmt.allocPrint(arena, "client_id={s}&scope={s}", .{ xai_client_id, xai_scope });
+    const da_body = try std.fmt.allocPrint(arena, "client_id={s}&scope={s}&referrer={s}", .{ xai_client_id, xai_scope_form, xai_referrer });
     const da = xaiOAuthPost(io, gpa, arena, xai_device_auth_url, da_body) catch |err| {
         try out.print("✗ xAI device authorization failed: {t}\n", .{err});
         try out.flush();

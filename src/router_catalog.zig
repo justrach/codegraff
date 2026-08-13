@@ -1,7 +1,8 @@
-//! Model discovery for Codegraff, Anthropic, and the optional workspace router.
+//! Model discovery for Codegraff, Anthropic, xAI, and the optional workspace router.
 //!
 //! The workspace router is declared by `.graff/.config.router`; its catalog
-//! cache stays beside that config. Catalog failures never prevent startup.
+//! cache stays beside that config. xAI is always-live (never TTL-short-circuits).
+//! Catalog failures never prevent startup.
 //! Anthropic's `/v1/models` (catalog kind `.anthropic`) rides the same
 //! machinery so new Claude releases appear without a rebuild. It differs in
 //! auth (x-api-key + anthropic-version, like Messages) and in pagination:
@@ -28,6 +29,13 @@ const util = @import("util.zig");
 const cache_ttl_ms: i64 = 6 * 60 * 60 * 1000;
 var attempted: [provider.provider_specs.len]bool = @splat(false);
 var additional_attempted = false;
+
+/// Providers whose live /models list must win over a disk cache every load.
+/// xAI ships new Grok ids often enough that a 6h snapshot is actively wrong;
+/// always hit api.x.ai and only fall back to cache/baked when offline.
+pub fn alwaysLive(spec: provider.ProviderSpec) bool {
+    return std.mem.eql(u8, spec.id, "xai");
+}
 
 pub const Snapshot = struct {
     models: []const pricing.ModelInfo,
@@ -176,7 +184,7 @@ pub fn parseModels(arena: Allocator, provider_id: []const u8, data: []const u8) 
 /// Catalog GET auth mirrors the provider's chat auth: OpenAI-style routers
 /// take a bearer token; Anthropic's /v1/models wants the same x-api-key +
 /// anthropic-version pair as the Messages endpoint itself.
-pub fn catalogHeaders(arena: Allocator, spec: provider.ProviderSpec, key: []const u8, buf: *[3]std.http.Header) ?[]const std.http.Header {
+pub fn catalogHeaders(arena: Allocator, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource, buf: *[4]std.http.Header) ?[]const std.http.Header {
     buf[0] = .{ .name = "Accept", .value = "application/json" };
     if (spec.auth == .x_api_key) {
         buf[1] = .{ .name = "x-api-key", .value = key };
@@ -185,6 +193,10 @@ pub fn catalogHeaders(arena: Allocator, spec: provider.ProviderSpec, key: []cons
     }
     const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{key}) catch return null;
     buf[1] = .{ .name = "Authorization", .value = bearer };
+    if (std.mem.eql(u8, spec.id, "xai") and source == .login) {
+        buf[2] = .{ .name = "X-XAI-Token-Auth", .value = "xai-grok-cli" };
+        return buf[0..3];
+    }
     return buf[0..2];
 }
 
@@ -208,12 +220,12 @@ fn containsName(rows: []const pricing.ModelInfo, name: []const u8) bool {
     return false;
 }
 
-fn fetchPage(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, key: []const u8, url: []const u8) ?Snapshot {
+fn fetchPage(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource, url: []const u8) ?Snapshot {
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
     var aw: Io.Writer.Allocating = .init(arena);
-    var headers_buf: [3]std.http.Header = undefined;
-    const headers = catalogHeaders(arena, spec, key, &headers_buf) orelse return null;
+    var headers_buf: [4]std.http.Header = undefined;
+    const headers = catalogHeaders(arena, spec, key, source, &headers_buf) orelse return null;
     const res = client.fetch(.{
         .location = .{ .url = url },
         .method = .GET,
@@ -230,7 +242,7 @@ fn fetchPage(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSp
 /// A failed later page keeps the rows already gathered rather than
 /// discarding a valid prefix; the page cap only guards against a server
 /// that always answers has_more.
-fn fetch(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, key: []const u8) ?Snapshot {
+fn fetch(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource) ?Snapshot {
     const base = modelsUrl(spec);
     if (base.len == 0) return null;
     var rows: std.ArrayList(pricing.ModelInfo) = .empty;
@@ -238,7 +250,7 @@ fn fetch(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, 
     var pages: usize = 0;
     while (pages < 16) : (pages += 1) {
         const url = pageUrl(arena, base, cursor) orelse break;
-        const page = fetchPage(io, gpa, arena, spec, key, url) orelse break;
+        const page = fetchPage(io, gpa, arena, spec, key, source, url) orelse break;
         for (page.models) |m| {
             if (containsName(rows.items, m.name)) continue;
             rows.append(arena, m) catch return null;
@@ -298,14 +310,15 @@ pub fn activate(arena: Allocator, spec: provider.ProviderSpec, discovered: []con
     return pricing.activateProviderModels(arena, spec.id, discovered);
 }
 
-fn loadSpec(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, force_refresh: bool) bool {
+fn loadSpec(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource, force_refresh: bool) bool {
     if (!dynamic(spec) or key.len == 0) return false;
     const cached = cachedSnapshot(io, arena, home, spec);
-    if (!force_refresh) if (cached) |snapshot| {
+    const skip_cache = force_refresh or alwaysLive(spec);
+    if (!skip_cache) if (cached) |snapshot| {
         const age = util.unixMs(io) - snapshot.fetched_at_ms;
         if (age >= 0 and age <= cache_ttl_ms and activate(arena, spec, snapshot.models)) return true;
     };
-    if (fetch(io, gpa, arena, spec, key)) |snapshot| {
+    if (fetch(io, gpa, arena, spec, key, source)) |snapshot| {
         if (activate(arena, spec, snapshot.models)) {
             if (home.len != 0 or isAdditional(spec)) writeCache(io, arena, home, spec, snapshot.models);
             return true;
@@ -315,10 +328,13 @@ fn loadSpec(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, spec: pr
     return false;
 }
 
-fn ensureAt(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, index: usize, key: []const u8) void {
-    if (attempted[index] or key.len == 0) return;
+fn ensureAt(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, index: usize) void {
+    if (attempted[index]) return;
+    const spec = provider.provider_specs[index];
+    const key = keys.get(spec.id) orelse return;
+    if (key.len == 0) return;
     attempted[index] = true;
-    _ = loadSpec(io, gpa, arena, home, provider.provider_specs[index], key, false);
+    _ = loadSpec(io, gpa, arena, home, spec, key, keys.source(spec.id), false);
 }
 
 fn ensureAdditional(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys) void {
@@ -326,13 +342,13 @@ fn ensureAdditional(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, 
     const spec = provider.additional_router orelse return;
     const key = keys.get(spec.id) orelse return;
     additional_attempted = true;
-    _ = loadSpec(io, gpa, arena, home, spec, key, false);
+    _ = loadSpec(io, gpa, arena, home, spec, key, keys.source(spec.id), false);
 }
 
 pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) void {
     for (provider.provider_specs, 0..) |spec, index| {
         if (!dynamic(spec) or !catalog_selection.startupMayUse(keys, spec.id, model_flag, saved)) continue;
-        ensureAt(io, gpa, arena, home, index, keys.get(spec.id) orelse "");
+        ensureAt(io, gpa, arena, home, keys, index);
     }
     if (provider.additional_router) |spec|
         if (catalog_selection.startupMayUse(keys, spec.id, model_flag, saved))
@@ -342,7 +358,7 @@ pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const 
 pub fn ensureForQuery(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, query: []const u8) void {
     for (provider.provider_specs, 0..) |spec, index| {
         if (!dynamic(spec) or !catalog_selection.queryMayUse(spec.id, query)) continue;
-        ensureAt(io, gpa, arena, home, index, keys.get(spec.id) orelse "");
+        ensureAt(io, gpa, arena, home, keys, index);
     }
     if (provider.additional_router) |spec|
         if (catalog_selection.queryMayUse(spec.id, query))
@@ -353,11 +369,11 @@ pub fn loadAll(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys:
     for (provider.provider_specs, 0..) |spec, index| {
         if (!dynamic(spec)) continue;
         attempted[index] = true;
-        _ = loadSpec(io, gpa, arena, home, spec, keys.get(spec.id) orelse "", force_refresh);
+        _ = loadSpec(io, gpa, arena, home, spec, keys.get(spec.id) orelse "", keys.source(spec.id), force_refresh);
     }
     if (provider.additional_router) |spec| {
         additional_attempted = true;
-        _ = loadSpec(io, gpa, arena, home, spec, keys.get(spec.id) orelse "", force_refresh);
+        _ = loadSpec(io, gpa, arena, home, spec, keys.get(spec.id) orelse "", keys.source(spec.id), force_refresh);
     }
 }
 
@@ -372,6 +388,32 @@ pub fn loadCachedAll(io: Io, arena: Allocator, home: []const u8) void {
     if (provider.additional_router) |spec| {
         const snapshot = cachedSnapshot(io, arena, home, spec) orelse return;
         _ = activate(arena, spec, snapshot.models);
+    }
+}
+
+pub fn fillDynamicKeys(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, environ_map: anytype, keys: *provider.Keys) void {
+    const oauth = @import("oauth.zig");
+    const keys_cli = @import("keys_cli.zig");
+    for (provider.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
+        if (!dynamic(spec)) continue;
+        const login = switch (spec.login) {
+            .xai_device => oauth.loadXaiOAuth(io, gpa, arena, home, false, null),
+            .kimi_device => oauth.loadKimiOAuth(io, gpa, arena, home, false, null),
+            .codegraff_device => oauth.loadCodegraffKey(io, arena, home),
+            else => null,
+        };
+        if (login) |tok| {
+            value.* = tok;
+            source.* = .login;
+            continue;
+        }
+        if (environ_map.get(spec.env_key)) |env_key| {
+            value.* = env_key;
+            source.* = .environment;
+        } else if (keys_cli.loadStoredKey(io, arena, home, spec.id)) |stored| {
+            value.* = stored;
+            source.* = .stored;
+        }
     }
 }
 

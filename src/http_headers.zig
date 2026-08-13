@@ -85,6 +85,11 @@ pub fn providerHeaders(io: Io, provider: Provider, bearer: []const u8, buf: *[12
             count += 1;
         },
     }
+    // SuperGrok user tokens need the grok-build routing header.
+    if (std.mem.eql(u8, provider.id, "xai") and provider.source == .login) {
+        buf[count] = .{ .name = "X-XAI-Token-Auth", .value = "xai-grok-cli" };
+        count += 1;
+    }
     if (provider.kind == .anthropic) {
         buf[count] = .{ .name = "anthropic-version", .value = root.anthropic_version };
         count += 1;
@@ -154,4 +159,43 @@ test "adoptSessionId validates length and never overwrites a minted id" {
     adoptSessionId("too-short");
     adoptSessionId("00000000-0000-4000-8000-000000000000");
     try std.testing.expectEqualStrings(before, sessionId(io));
+}
+
+test "xai login tokens send X-XAI-Token-Auth; API keys do not" {
+    const io = std.testing.io;
+    var buf: [12]std.http.Header = undefined;
+    const login: Provider = .{
+        .id = "xai",
+        .kind = .openai,
+        .auth = .bearer,
+        .url = "",
+        .api_key = "oauth-tok",
+        .model = "grok-4.3",
+        .context = 256_000,
+        .source = .login,
+    };
+    const login_headers = providerHeaders(io, login, "Bearer oauth-tok", &buf);
+    var saw_token_auth = false;
+    for (login_headers) |h| {
+        if (std.mem.eql(u8, h.name, "X-XAI-Token-Auth")) {
+            try std.testing.expectEqualStrings("xai-grok-cli", h.value);
+            saw_token_auth = true;
+        }
+    }
+    try std.testing.expect(saw_token_auth);
+
+    const env_key: Provider = .{
+        .id = "xai",
+        .kind = .openai,
+        .auth = .bearer,
+        .url = "",
+        .api_key = "xai-api-key",
+        .model = "grok-4.3",
+        .context = 256_000,
+        .source = .environment,
+    };
+    const env_headers = providerHeaders(io, env_key, "Bearer xai-api-key", &buf);
+    for (env_headers) |h| {
+        try std.testing.expect(!std.mem.eql(u8, h.name, "X-XAI-Token-Auth"));
+    }
 }
