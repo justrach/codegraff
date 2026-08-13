@@ -1,25 +1,25 @@
 {
   "name": "@codegraff/sdk",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "TypeScript / Node SDK for the codegraff agent — drives `graff --json` over stdio. Types auto-generated from `graff --schema`.",
   "type": "module",
-  "main": "harness.ts",
-  "types": "harness.ts",
+  "main": "dist/harness.js",
+  "types": "dist/harness.d.ts",
   "exports": {
     ".": {
-      "types": "./harness.ts",
-      "import": "./harness.ts",
-      "default": "./harness.ts"
+      "types": "./dist/harness.d.ts",
+      "import": "./dist/harness.js",
+      "default": "./dist/harness.js"
     },
     "./remote": {
-      "types": "./remote.ts",
-      "import": "./remote.ts",
-      "default": "./remote.ts"
+      "types": "./dist/remote.d.ts",
+      "import": "./dist/remote.js",
+      "default": "./dist/remote.js"
     },
     "./orchestrate": {
-      "types": "./orchestrate.ts",
-      "import": "./orchestrate.ts",
-      "default": "./orchestrate.ts"
+      "types": "./dist/orchestrate.d.ts",
+      "import": "./dist/orchestrate.js",
+      "default": "./dist/orchestrate.js"
     },
     "./package.json": "./package.json"
   },
@@ -30,12 +30,24 @@
   },
   "homepage": "https://codegraff.com",
   "keywords": ["codegraff", "graff", "agent", "llm", "harness", "sdk"],
-  "files": ["harness.ts", "remote.ts", "orchestrate.ts", "README.md"],
+  "files": ["dist", "README.md"],
   "engines": { "node": ">=18" },
   "license": "Apache-2.0",
+  "optionalDependencies": {
+    "@codegraff/graff-darwin-arm64": "0.4.0",
+    "@codegraff/graff-darwin-x64": "0.4.0",
+    "@codegraff/graff-linux-arm64": "0.4.0",
+    "@codegraff/graff-linux-x64": "0.4.0",
+    "@codegraff/graff-win32-arm64": "0.4.0",
+    "@codegraff/graff-win32-x64": "0.4.0"
+  },
   "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "version:sync": "node scripts/set-version.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "bun test"
+    "test": "bun test",
+    "test:packed": "node scripts/test-packed-install.mjs",
+    "prepack": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

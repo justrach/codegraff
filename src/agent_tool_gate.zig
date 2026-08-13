@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const main_mod = @import("main.zig");
+const json_inbox = @import("json_inbox.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 const tools_mod = @import("tools.zig");
@@ -92,7 +93,7 @@ fn gatePrivateTemplateSharing(self: *Agent, call: ToolCall) !?ExecResult {
     try w.writeAll("  Sends: exact reusable system/persona text. Excludes: task prompt, bindings, code, paths, reports, and tool results.\n");
     try w.writeAll("  [y] share exact template version(s) this session · [l] run locally · [n] cancel child › ");
     try w.flush();
-    const raw: []const u8 = (try in.takeDelimiter('\n')) orelse "";
+    const raw: []const u8 = (try json_inbox.reply(self.arena, in)) orelse "";
     const answer = std.mem.trim(u8, raw, " \t\r");
     if (answer.len > 0 and (answer[0] == 'y' or answer[0] == 'Y')) {
         for (candidates.items[0..candidates.len]) |prompt| {
@@ -187,7 +188,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
                 if (self.in) |in| if (self.out) |w| {
                     try w.print("  ⚠ plan mode — read outside the project: {s}\n  [a]llow read-only access to these paths this session · [n]o › ", .{cmd});
                     try w.flush();
-                    const raw: []const u8 = (try in.takeDelimiter('\n')) orelse "";
+                    const raw: []const u8 = (try json_inbox.reply(self.arena, in)) orelse "";
                     const answer = std.mem.trim(u8, raw, " \t\r");
                     if (answer.len > 0 and (answer[0] == 'a' or answer[0] == 'A' or answer[0] == 'y' or answer[0] == 'Y')) {
                         try approvals.approvePlanRead(self.io, self.gpa, cmd);
@@ -265,7 +266,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
                     "  [y] run + send once · [n] cancel › ",
             );
             try w.flush();
-            const raw: []const u8 = (try in.takeDelimiter('\n')) orelse "";
+            const raw: []const u8 = (try json_inbox.reply(self.arena, in)) orelse "";
             const answer = std.mem.trim(u8, raw, " \t\r");
             if (answer.len > 0 and (answer[0] == 'y' or answer[0] == 'Y')) {
                 learning_privacy.authorizeAggregateOnce(self.io);
@@ -303,7 +304,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
     };
     try w.print("  ⚠ {s}\n  [y]es once · [a]lways allow \"{s}\" (saved to {s}) · [n]o › ", .{ prompt_line, key, Approvals.settings_path });
     try w.flush();
-    const raw: []const u8 = (try in.takeDelimiter('\n')) orelse "";
+    const raw: []const u8 = (try json_inbox.reply(self.arena, in)) orelse "";
     const answer = std.mem.trim(u8, raw, " \t\r");
     if (answer.len > 0) switch (answer[0]) {
         'y', 'Y' => return null,

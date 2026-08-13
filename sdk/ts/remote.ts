@@ -7,7 +7,7 @@
 // `harness --json` child over there, and one POST = one protocol request,
 // streamed back as NDJSON until that request's terminal event.
 
-export const HARNESS_VERSION = "0.11";
+export const HARNESS_VERSION = "0.12";
 
 export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "accounts/fireworks/models/deepseek-v4-flash" | "accounts/fireworks/models/deepseek-v4-pro" | "accounts/fireworks/models/glm-5p2" | "accounts/fireworks/models/gpt-oss-120b" | "accounts/fireworks/models/kimi-k2p6" | "accounts/fireworks/models/kimi-k2p7-code" | "accounts/fireworks/models/minimax-m3" | "accounts/fireworks/models/qwen3p7-plus" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-opus-5" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "claude-sonnet-5" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "fugu" | "fugu-ultra" | "fugu-ultra-20260615" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5.2" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.3-codex-spark" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "grok-4.3" | "grok-build" | "k3" | "kilo-auto/small" | "kimi-for-coding" | "kimi-for-coding-highspeed" | "kimi-k2.6" | "kimi-latest" | "lmstudio" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3" | "mistral-medium-latest" | "mlx-community/Qwen3.6-27B-OptiQ-4bit" | "openai/gpt-oss-120b" | (string & {});
 export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "skill" | "codedb" | "todo_write" | "todo_read" | "eval" | "note_constraint" | "ask_user" | "attempt_completion" | "load_tool_schemas" | "clock_sleep" | "subagent" | "workflow" | "agent_output" | "learn_candidate" | "peer_message" | "imagegen";
@@ -37,6 +37,9 @@ export type Event =
   | { seq: number; type: "session_recap"; text: string; status: "needs_input" | "completed" | "failed"; source: "heuristic" | "model" }
   | { seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; input_tokens: number; uncached_input_tokens: number; cache_read_tokens: number; output_tokens: number; api_calls: number; subscription_calls: number; unpriced_calls: number; complete?: boolean; metadata_complete?: boolean }
   | { seq: number; type: "system_prompt"; ok: boolean; append: boolean; chars: number }
+  | { seq: number; type: "model"; ok: boolean; provider: string; model: string; context: number; note: string }
+  | { seq: number; type: "compact"; ok: boolean; chars: number }
+  | { seq: number; type: "effort"; ok: boolean; level: string; applies: boolean }
   | { seq: number; type: "score"; ok: boolean; prompt_sha: string }
   | { seq: number; type: "error"; message: string };
 
@@ -94,12 +97,44 @@ export interface ChatOptions {
   review?: boolean;
   /** Replay persisted events with seq >= from before this turn's live ones. */
   from?: number;
+  /** Abort the turn mid-flight: on abort the SDK POSTs {"type":"cancel"}
+   *  (the bridge answers it ahead of the session's busy lock); the stream
+   *  still runs to the cancelled turn's terminal event — an `error` event
+   *  ("turn cancelled"). */
+  signal?: AbortSignal;
 }
 
 export interface AnswerOptions {
   text?: string;
   cancelled?: boolean;
   callId?: string;
+}
+
+/** Reasoning effort levels accepted by setEffort (protocol set_effort). */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
+/** Structured result of one turn: the final assistant text plus the usage
+ *  the harness reported on the terminal `turn` event. */
+export interface AskResult {
+  /** Final assistant text. */
+  text: string;
+  /** Server-reported context size at turn end. */
+  contextTokens: number;
+  /** Turn cost in USD. */
+  costUsd: number;
+  inputTokens: number;
+  uncachedInputTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  /** Provider API calls made this turn. */
+  apiCalls: number;
+  /** Calls served under a subscription (unmetered) login. */
+  subscriptionCalls: number;
+  /** Calls with no pricing data. */
+  unpricedCalls: number;
+  /** False when the turn finished incomplete (interrupted/stalled). */
+  complete?: boolean;
+  metadataComplete?: boolean;
 }
 
 export interface RunAgentRemoteOptions extends RemoteOptions {
@@ -113,19 +148,26 @@ async function* ndjson(res: Response): AsyncGenerator<Event> {
   const reader = body.getReader();
   const dec = new TextDecoder();
   let buf = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let i: number;
-    while ((i = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, i).trim();
-      buf = buf.slice(i + 1);
-      if (line) { try { yield JSON.parse(line) as Event; } catch { /* skip noise */ } }
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i: number;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (line) { try { yield JSON.parse(line) as Event; } catch { /* skip noise */ } }
+      }
     }
+    const tail = buf.trim();
+    if (tail) { try { yield JSON.parse(tail) as Event; } catch { /* skip noise */ } }
+  } finally {
+    // Release the body however the consumer left — terminal event, break,
+    // or throw — so the connection drains back to keep-alive and the
+    // server-side stream never dangles.
+    await reader.cancel().catch(() => {});
   }
-  const tail = buf.trim();
-  if (tail) { try { yield JSON.parse(tail) as Event; } catch { /* skip noise */ } }
 }
 
 const HEX16 = /^[0-9a-f]{16}$/;
@@ -142,6 +184,9 @@ const HEX16 = /^[0-9a-f]{16}$/;
 export class RemoteHarness {
   private base: string;
   private token?: string;
+  /** Tail of the operation chain (see acquireOp). Always resolves. */
+  private opTail: Promise<void> = Promise.resolve();
+  private closed = false;
   /** Resolves to the session id (creation is lazy-started in the constructor). */
   readonly sessionId: Promise<string>;
   /** Resolves to the bridge's create/resume report; null when attaching by
@@ -159,8 +204,15 @@ export class RemoteHarness {
       this.info = Promise.resolve(null);
     } else {
       const created = this.create(opts);
+      // Observe BOTH derived promises up front: a caller that only ever
+      // awaits one of info/sessionId must not trip an unhandled rejection on
+      // the other when creation fails — awaiting either still rejects with
+      // the original cause.
+      created.catch(() => {});
       this.info = created;
-      this.sessionId = created.then((d) => d.session_id);
+      const sid = created.then((d) => d.session_id);
+      sid.catch(() => {});
+      this.sessionId = sid;
     }
   }
 
@@ -209,6 +261,29 @@ export class RemoteHarness {
     return ev;
   }
 
+  /** Operation chain, the client-side mirror of the bridge's
+   *  one-non-answer-request-in-flight rule: turns and acked controls run one
+   *  at a time. The tail always RESOLVES, so one operation's failure cannot
+   *  poison the queue behind it. answer(), cancel(), and reconnect() bypass
+   *  it — the bridge handles all three without taking the protocol lock. */
+  private acquireOp(): Promise<() => void> {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const acquired = this.opTail.then(() => release);
+    this.opTail = this.opTail.then(() => gate);
+    return acquired;
+  }
+
+  /** Run `op` holding the operation lock (see acquireOp). */
+  private async runOp<T>(op: () => Promise<T>): Promise<T> {
+    const release = await this.acquireOp();
+    try {
+      return await op();
+    } finally {
+      release();
+    }
+  }
+
   /** Send one protocol request; stream its events. */
   private async *send(payload: Record<string, unknown>, from?: number): AsyncGenerator<Event> {
     const id = await this.sessionId;
@@ -217,17 +292,41 @@ export class RemoteHarness {
     for await (const ev of ndjson(res)) yield this.note(ev);
   }
 
-  /** Run one turn; async-iterate events up to and including `turn`/`error`. */
+  /** Run one turn; async-iterate events up to and including `turn`/`error`.
+   *  Holds the operation slot until the terminal event (the bridge itself
+   *  allows one non-answer request in flight per session). Pass `signal` to
+   *  cancel the turn (see ChatOptions.signal / cancel()). */
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {
     const prompt = typeof input === "string" ? input : input.prompt;
     const type = typeof input === "string" || !input.review ? "user" : "review";
     const from = typeof input === "string" ? undefined : input.from;
-    let terminal = false;
-    for await (const ev of this.send({ type, text: prompt }, from)) {
-      yield ev;
-      if (ev.type === "turn" || ev.type === "error") { terminal = true; break; }
+    const signal = typeof input === "string" ? undefined : input.signal;
+    signal?.throwIfAborted();
+    const release = await this.acquireOp();
+    let aborted = false;
+    const onAbort = () => { if (aborted) return; aborted = true; void this.cancel(); };
+    try {
+      // Wait until the bridge has accepted the turn and returned stream headers
+      // before arming cancel. Otherwise an immediately-aborted signal can POST
+      // cancel first, receive 409, and leave the following turn running.
+      const id = await this.sessionId;
+      const q = from === undefined ? "" : `?from=${from}`;
+      const res = await this.req("POST", `/v1/sessions/${id}${q}`, { type, text: prompt });
+      if (signal) {
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      }
+      let terminal = false;
+      for await (const raw of ndjson(res)) {
+        const ev = this.note(raw);
+        yield ev;
+        if (ev.type === "turn" || ev.type === "error") { terminal = true; break; }
+      }
+      if (!terminal) throw new Error("bridge stream ended mid-turn (session process died?)");
+    } finally {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      release();
     }
-    if (!terminal) throw new Error("bridge stream ended mid-turn (session process died?)");
   }
 
   /** Re-attach to a session after losing the stream: replay persisted events
@@ -242,20 +341,43 @@ export class RemoteHarness {
     for await (const ev of ndjson(res)) yield this.note(ev);
   }
 
-  /** Run a turn and return just the final assistant text. */
-  async ask(input: string | ChatOptions): Promise<string> {
-    let final = "";
+  /** Run a turn and return its final text plus the usage the harness
+   *  reported on the terminal `turn` event (tokens, cost, call breakdown).
+   *  Rejects on an `error` event — including a cancelled turn. */
+  async askResult(input: string | ChatOptions): Promise<AskResult> {
+    let result: AskResult | null = null;
     for await (const ev of this.chat(input)) {
-      if (ev.type === "turn") final = ev.text;
+      if (ev.type === "turn") {
+        result = {
+          text: ev.text,
+          contextTokens: ev.context_tokens,
+          costUsd: ev.cost_usd,
+          inputTokens: ev.input_tokens,
+          uncachedInputTokens: ev.uncached_input_tokens,
+          cacheReadTokens: ev.cache_read_tokens,
+          outputTokens: ev.output_tokens,
+          apiCalls: ev.api_calls,
+          subscriptionCalls: ev.subscription_calls,
+          unpricedCalls: ev.unpriced_calls,
+          complete: ev.complete,
+          metadataComplete: ev.metadata_complete,
+        };
+      }
       if (ev.type === "error") throw new Error(ev.message);
     }
-    return final;
+    if (!result) throw new Error("turn ended without a terminal event");
+    return result;
+  }
+
+  /** Run a turn and return just the final assistant text. */
+  async ask(input: string | ChatOptions): Promise<string> {
+    return (await this.askResult(input)).text;
   }
 
   /** Run one isolated, read-only review turn and return its final report. */
   review(input: string | ChatOptions): Promise<string> {
-    const prompt = typeof input === "string" ? input : input.prompt;
-    return this.ask({ prompt, review: true });
+    const options = typeof input === "string" ? { prompt: input } : input;
+    return this.ask({ ...options, review: true });
   }
 
   /** Answer an in-flight ask_user event. The original chat() stream continues
@@ -268,17 +390,69 @@ export class RemoteHarness {
     await res.text();
   }
 
+  /** Cancel the in-flight turn (REPL Esc equivalent): POSTs
+   *  {"type":"cancel"} to the bridge, which answers it AHEAD of the
+   *  session's busy lock and forwards it down the child's out-of-band cancel
+   *  path — so it bypasses the client operation queue too. Best-effort: the
+   *  bridge 409s when no request is in flight, which is not an error here. */
+  async cancel(): Promise<void> {
+    const id = await this.sessionId.catch(() => null);
+    if (id === null) return; // no live session: nothing to cancel
+    const res = await this.req("POST", `/v1/sessions/${id}`, { type: "cancel" }).catch(() => null);
+    if (res) await res.text().catch(() => {});
+  }
+
+  /** Switch provider/model mid-session — the provider-qualified form of the
+   *  protocol's set_model control. Resolves on the `model` ack, rejects on
+   *  the `error` event; serialized with chat() and the other controls. */
+  setModel(provider: ProviderId | string, model: ModelName | string): Promise<void> {
+    return this.runOp(async () => {
+      for await (const ev of this.send({ type: "set_model", provider, model })) {
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "model") return;
+      }
+      throw new Error("bridge stream ended before acking set_model");
+    });
+  }
+
+  /** Set the reasoning effort for later turns (protocol set_effort).
+   *  Resolves on the `effort` ack; serialized like the other controls. */
+  setEffort(level: EffortLevel): Promise<void> {
+    return this.runOp(async () => {
+      for await (const ev of this.send({ type: "set_effort", level })) {
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "effort") return;
+      }
+      throw new Error("bridge stream ended before acking set_effort");
+    });
+  }
+
+  /** Compact the conversation history now (protocol compact). Resolves on
+   *  the `compact` ack; rejects when compaction fails (history is left
+   *  unchanged in that case). Serialized like the other controls. */
+  compact(): Promise<void> {
+    return this.runOp(async () => {
+      for await (const ev of this.send({ type: "compact" })) {
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "compact") return;
+      }
+      throw new Error("bridge stream ended before acking compact");
+    });
+  }
+
 
   /** Replace (or with append=true, extend) the system prompt for later turns.
    *  Same KV-cache warning as the stdio SDK: any mutation invalidates the
    *  cached prefix for the whole conversation — prefer the creation-time
    *  options; mutate only at task boundaries. */
   async setSystemPrompt(text: string, append = false): Promise<void> {
-    for await (const ev of this.send({ type: "set_system_prompt", text, append })) {
-      if (ev.type === "error") throw new Error(ev.message);
-      if (ev.type === "system_prompt") return;
-    }
-    throw new Error("bridge stream ended before acking set_system_prompt");
+    return this.runOp(async () => {
+      for await (const ev of this.send({ type: "set_system_prompt", text, append })) {
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "system_prompt") return;
+      }
+      throw new Error("bridge stream ended before acking set_system_prompt");
+    });
   }
 
   appendSystemPrompt(text: string): Promise<void> { return this.setSystemPrompt(text, true); }
@@ -295,22 +469,32 @@ export class RemoteHarness {
     // champion for the role; the remote harness reads it from the request and
     // tags its own score/submit. (Genome capture rides the harness process,
     // which holds the persona text the remote bridge only references by sha.)
-    for await (const ev of this.send({ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale })) {
-      if (ev.type === "error") throw new Error(ev.message);
-      if (ev.type === "score") return;
-    }
-    throw new Error("bridge stream ended before acking score");
+    return this.runOp(async () => {
+      for await (const ev of this.send({ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale })) {
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "score") return;
+      }
+      throw new Error("bridge stream ended before acking score");
+    });
   }
 
   /** The harness schema version this client was generated from. */
   version(): string { return HARNESS_VERSION; }
 
   /** Close the remote session (graceful: the bridge EOFs the child's stdin
-   *  so it flushes telemetry/trajectory on the way out). */
+   *  so it flushes telemetry/trajectory on the way out). Idempotent and
+   *  never throws — safe even when session creation failed. */
   async close(): Promise<void> {
-    const id = await this.sessionId;
-    await this.req("DELETE", `/v1/sessions/${id}`).catch(() => {});
+    if (this.closed) return;
+    this.closed = true;
+    const id = await this.sessionId.catch(() => null);
+    if (id === null) return; // creation failed or no session: nothing to close
+    const res = await this.req("DELETE", `/v1/sessions/${id}`).catch(() => null);
+    if (res) await res.text().catch(() => {});
   }
+
+  /** Alias for close(). */
+  dispose(): Promise<void> { return this.close(); }
 }
 
 /** Create a remote session, run a single turn, stream its events, close. */

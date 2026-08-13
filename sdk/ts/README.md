@@ -10,16 +10,19 @@ types are auto-generated from `graff --schema`.
 npm install @codegraff/sdk
 ```
 
-### Prerequisite: the `graff` binary
+### Native binary included
 
-The SDK spawns the `graff` binary as a subprocess, so it must be installed:
+npm installs the matching native `graff` executable through an optional platform
+package, so a separate CLI install or `PATH` setup is not required on supported
+macOS, Linux, and Windows arm64/x64 systems. Provider authentication is still
+required through the normal environment variables or `graff login` credentials.
 
-```sh
-curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
+If optional dependencies are disabled, the SDK falls back to `graff` on `PATH`.
+Development and custom builds can always set an explicit binary:
+
+```ts
+const graff = Harness.init({ binary: "./zig-out/bin/graff" });
 ```
-
-If `graff` isn't on your `PATH`, point at it explicitly with the `binary` option
-(`Harness.init({ binary: "./zig-out/bin/graff" })`).
 
 ## Quick start
 
@@ -37,17 +40,41 @@ for await (const ev of runAgent({ prompt: "summarize README.md", model: "gpt-5.5
 const harness = Harness.init({ model: "claude-opus-4-8", yolo: true });
 const session = harness.session();
 console.log(await session.ask("what files are here?")); // returns final text
+const result = await session.askResult("summarize the changes");
+console.log(result.text, result.inputTokens, result.costUsd);
 console.log(await session.review("review HEAD against main")); // isolated + read-only
 for await (const ev of session.send("ask me a follow-up before continuing")) {
   if (ev.type === "ask_user") session.answer({ text: "continue", callId: ev.call_id });
 }
-session.close();
+await session.close();
 ```
 
 `Harness.init` accepts `{ model, yolo, cwd, env, binary, systemPrompt,
 maxToolCalls, maxModelCalls, dedupeToolCalls, args }`.
 `model` may be a model name **or** a provider id (e.g. `"codex"`, `"moonshot"`).
 Also exported: `MODELS` and `PROVIDERS`.
+
+## Runtime controls and cancellation
+
+Turns and acknowledged controls are serialized per session, so overlapping calls
+cannot steal each other's events. `answer()` remains out-of-band so it can answer
+an active `ask_user` prompt.
+
+```ts
+await session.setModel("codex", "gpt-5.6-luna");
+await session.setEffort("high");
+await session.compact();
+
+const controller = new AbortController();
+const pending = session.ask({ prompt: "long task", signal: controller.signal });
+controller.abort(); // interrupts the active model/tool turn
+await pending;      // rejects with the terminal cancellation error
+```
+
+`askResult()` returns final text plus context, token, cache, cost, and provider-call
+usage. `ask()` remains the compatibility shorthand that returns only final text.
+The same controls, abort behavior, structured results, and out-of-band answers are
+available on `RemoteHarness`.
 
 ## Events
 

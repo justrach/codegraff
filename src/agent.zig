@@ -321,7 +321,7 @@ pub const Agent = struct {
         try self.ensureRootTools(self.provider.kind);
         // No per-turn teardown: the socket and the chain span user turns, guarded by codex_chain.usable instead.
         self.completed = null;
-        if (!self.sub) esc_cancel.store(false, .release); // fresh turn, no stale cancel
+        if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) esc_cancel.store(false, .release);
         while (true) {
             // Esc during a tool join (set by escWatchTask) lands here: the
             // root consumes the flag and aborts before the next request;
@@ -475,7 +475,15 @@ pub const Agent = struct {
     /// turn iterations, and the root consumes at its next loop head as
     /// error.Interrupted.
     pub var esc_cancel: std.atomic.Value(bool) = .init(false);
+    var root_turn_prepared: std.atomic.Value(bool) = .init(false);
     pub var esc_watch_done: std.atomic.Value(bool) = .init(true);
+
+    /// Clear stale cancellation before the root becomes externally cancellable;
+    /// runTurn consumes the marker without erasing a cancellation arriving later.
+    pub fn prepareRootTurn() void {
+        esc_cancel.store(false, .release);
+        root_turn_prepared.store(true, .release);
+    }
 
     // Esc-cancel handling (the stdin scanner + steering-buffer capture +
     // interruptible sleep) lives in agent_interrupt.zig (#123, 600-line
