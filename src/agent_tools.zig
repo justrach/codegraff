@@ -11,6 +11,7 @@ const Io = std.Io;
 const Value = std.json.Value;
 
 const main_mod = @import("main.zig");
+const json_inbox = @import("json_inbox.zig");
 const review = @import("review.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
@@ -370,9 +371,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     return .{ .text = self.renderTodos(goal_state.currentEpoch(self.goal)), .is_error = false };
 }
 
-/// The "user message as a tool" half of the loop: the agent calls
-/// ask_user, we block for a typed reply, and hand it back as the tool
-/// result. Only the root agent has stdin; subagents must self-decide.
+/// Block the root agent for an ask_user reply; subagents have no stdin.
 pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
     const in = self.in orelse return .{
         .text = "no human is attached — make a reasonable assumption and continue",
@@ -387,7 +386,7 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
             break :blk id;
         };
         try self.emitAskUser(call_id, question, call.input);
-        const raw = (try in.takeDelimiter('\n')) orelse return .{
+        const raw = (try json_inbox.reply(self.arena, in)) orelse return .{
             .text = "user ended input without answering",
             .is_error = true,
         };

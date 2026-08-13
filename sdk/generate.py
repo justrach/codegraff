@@ -59,11 +59,12 @@ def gen_ts(schema):
     return header + f'''
 import {{ spawn, type ChildProcessByStdio }} from "node:child_process";
 import {{ createHash, randomBytes }} from "node:crypto";
-import type {{ Readable, Writable }} from "node:stream";
-import {{ existsSync, readFileSync, writeFileSync }} from "node:fs";
+import {{ accessSync, constants, existsSync, readFileSync, writeFileSync }} from "node:fs";
+import {{ createRequire }} from "node:module";
 import {{ homedir }} from "node:os";
-import {{ join }} from "node:path";
+import {{ delimiter, dirname, join }} from "node:path";
 import {{ createInterface }} from "node:readline";
+import type {{ Readable, Writable }} from "node:stream";
 
 export const HARNESS_VERSION = "{version}";
 
@@ -97,6 +98,9 @@ export type Event =
   | {{ seq: number; type: "session_recap"; text: string; status: "needs_input" | "completed" | "failed"; source: "heuristic" | "model" }}
   | {{ seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; input_tokens: number; uncached_input_tokens: number; cache_read_tokens: number; output_tokens: number; api_calls: number; subscription_calls: number; unpriced_calls: number; complete?: boolean; metadata_complete?: boolean }}
   | {{ seq: number; type: "system_prompt"; ok: boolean; append: boolean; chars: number }}
+  | {{ seq: number; type: "model"; ok: boolean; provider: string; model: string; context: number; note: string }}
+  | {{ seq: number; type: "compact"; ok: boolean; chars: number }}
+  | {{ seq: number; type: "effort"; ok: boolean; level: string; applies: boolean }}
   | {{ seq: number; type: "score"; ok: boolean; prompt_sha: string }}
   | {{ seq: number; type: "error"; message: string }};
 
@@ -110,8 +114,8 @@ export function promptFingerprint(text: string): string {{
 // ── Options ──────────────────────────────────────────────────────────────
 
 export interface HarnessOptions {{
-  /** Path to the CLI binary (default: "graff" on PATH, falling back to its
-   *  old name "harness"). */
+  /** Path to the CLI binary. Defaults to the matching optional
+   *  `@codegraff/graff-*` package, then `graff` on PATH. */
   binary?: string;
   /** Working directory for the agent. Defaults to the parent process cwd. */
   cwd?: string;
@@ -139,12 +143,43 @@ export interface ChatOptions {{
   prompt: string;
   /** Run this turn in isolated, read-only review mode. */
   review?: boolean;
+  /** Abort the turn mid-flight: on abort the SDK writes {{"type":"cancel"}}
+   *  out-of-band (the REPL's Esc path); the stream still runs to the
+   *  cancelled turn's terminal event — an `error` event ("turn cancelled"). */
+  signal?: AbortSignal;
 }}
 
 export interface AnswerOptions {{
   text?: string;
   cancelled?: boolean;
   callId?: string;
+}}
+
+/** Reasoning effort levels accepted by setEffort (protocol set_effort). */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
+/** Structured result of one turn: the final assistant text plus the usage
+ *  the harness reported on the terminal `turn` event. */
+export interface AskResult {{
+  /** Final assistant text. */
+  text: string;
+  /** Server-reported context size at turn end. */
+  contextTokens: number;
+  /** Turn cost in USD. */
+  costUsd: number;
+  inputTokens: number;
+  uncachedInputTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  /** Provider API calls made this turn. */
+  apiCalls: number;
+  /** Calls served under a subscription (unmetered) login. */
+  subscriptionCalls: number;
+  /** Calls with no pricing data. */
+  unpricedCalls: number;
+  /** False when the turn finished incomplete (interrupted/stalled). */
+  complete?: boolean;
+  metadataComplete?: boolean;
 }}
 
 export interface RunAgentOptions extends HarnessOptions {{
@@ -181,13 +216,53 @@ function sdkInstallId(): string {{
   return id;
 }}
 
-/** The CLI is `graff` (renamed from `harness`); prefer it when on PATH,
- *  fall back to the old name so pre-rename installs keep working. */
-function defaultBinary(): string {{
-  for (const dir of (process.env.PATH ?? "").split(":")) {{
-    if (dir && existsSync(join(dir, "graff"))) return "graff";
+const PLATFORM_PACKAGES: Readonly<Record<string, string>> = {{
+  "darwin-arm64": "@codegraff/graff-darwin-arm64",
+  "darwin-x64": "@codegraff/graff-darwin-x64",
+  "linux-arm64": "@codegraff/graff-linux-arm64",
+  "linux-x64": "@codegraff/graff-linux-x64",
+  "win32-arm64": "@codegraff/graff-win32-arm64",
+  "win32-x64": "@codegraff/graff-win32-x64",
+}};
+
+/** Resolve the binary bundled by npm. `createRequire` anchors lookup beside
+ *  this installed SDK, so hoisted and nested optional dependencies both work. */
+function packagedBinary(): {{ path?: string; packageName?: string }} {{
+  const packageName = PLATFORM_PACKAGES[`${{process.platform}}-${{process.arch}}`];
+  if (!packageName) return {{}};
+  const require = createRequire(import.meta.url);
+  let manifest: string;
+  try {{ manifest = require.resolve(`${{packageName}}/package.json`); }} catch {{
+    return {{ packageName }};
   }}
-  return "harness";
+  let protocol: unknown;
+  try {{ protocol = JSON.parse(readFileSync(manifest, "utf8")).graffProtocol; }} catch {{}}
+  if (protocol !== HARNESS_VERSION) {{
+    throw new Error(`${{packageName}} uses graff protocol ${{String(protocol ?? "unknown")}}, but @codegraff/sdk requires ${{HARNESS_VERSION}}. Reinstall @codegraff/sdk without disabling optional dependencies.`);
+  }}
+  const binary = process.platform === "win32" ? "graff.exe" : "graff";
+  const path = join(dirname(manifest), "bin", binary);
+  return existsSync(path) ? {{ path, packageName }} : {{ packageName }};
+}}
+
+/** Prefer the version-pinned npm binary, then a caller-supplied PATH. Return
+ *  an absolute path so probing and spawning cannot disagree. */
+function defaultBinary(env: NodeJS.ProcessEnv): string {{
+  const packaged = packagedBinary();
+  if (packaged.path) return packaged.path;
+  const binary = process.platform === "win32" ? "graff.exe" : "graff";
+  for (const dir of (env.PATH ?? env.Path ?? env.path ?? "").split(delimiter)) {{
+    if (!dir) continue;
+    const path = join(dir, binary);
+    try {{
+      accessSync(path, process.platform === "win32" ? constants.F_OK : constants.X_OK);
+      return path;
+    }} catch {{}}
+  }}
+  const install = packaged.packageName
+    ? `Reinstall @codegraff/sdk so npm can install ${{packaged.packageName}}, or install graff on PATH.`
+    : "Install graff on PATH or pass Harness.init({{ binary: ... }}).";
+  throw new Error(`No graff binary is available for ${{process.platform}}-${{process.arch}}. ${{install}}`);
 }}
 
 const TELEMETRY_DEFAULT = "https://harness-telemetry.rachpradhan.workers.dev";
@@ -290,11 +365,16 @@ export class Harness {{
   private proc: ChildProcessByStdio<Writable, Readable, null>;
   private queue: ((e: Event | null) => void)[] = [];
   private buffer: Event[] = [];
+  /** Tail of the operation chain (see acquireOp). Always resolves. */
+  private opTail: Promise<void> = Promise.resolve();
+  private closed = false;
+  private closePromise?: Promise<void>;
 
   constructor(opts: HarnessOptions = {{}}) {{
-    this.proc = spawn(opts.binary ?? defaultBinary(), spawnArgs(opts), {{
+    const env = sdkEnv(opts.env);
+    this.proc = spawn(opts.binary ?? defaultBinary(env), spawnArgs(opts), {{
       cwd: opts.cwd,
-      env: sdkEnv(opts.env),
+      env,
       stdio: ["pipe", "pipe", "inherit"],
     }});
     const rl = createInterface({{ input: this.proc.stdout }});
@@ -313,6 +393,9 @@ export class Harness {{
       for (const w of this.queue) w(null);
       this.queue = [];
     }});
+    // cancel()/answer() are lock-free, so their writes can race process
+    // death: swallow stdin stream errors instead of crashing the host.
+    this.proc.stdin.on("error", () => {{}});
   }}
 
   /** Start a long-lived agent (codegraff parity for `Graff.init`). */
@@ -323,38 +406,106 @@ export class Harness {{
     return new Promise((resolve) => this.queue.push(resolve));
   }}
 
-  /** Run one turn; async-iterate events up to and including `turn`/`error`. */
+  /** Operation chain: turns (chat) and acked controls (setSystemPrompt,
+   *  setModel, setEffort, compact, score) run one at a time, so a control
+   *  can never steal a chat's terminal event off the shared event queue.
+   *  The tail always RESOLVES — an operation's error goes only to its own
+   *  caller and can never poison the queue behind it. answer() and cancel()
+   *  bypass the chain on purpose: the harness reads both out-of-band. */
+  private acquireOp(): Promise<() => void> {{
+    if (this.closed) return Promise.reject(new Error("harness is closed"));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {{ release = resolve; }});
+    const acquired = this.opTail.then(() => release);
+    this.opTail = this.opTail.then(() => gate);
+    return acquired;
+  }}
+
+  /** Run `op` holding the operation lock (see acquireOp). */
+  private async runOp<T>(op: () => Promise<T>): Promise<T> {{
+    const release = await this.acquireOp();
+    try {{
+      return await op();
+    }} finally {{
+      release();
+    }}
+  }}
+
+  /** Run one turn; async-iterate events up to and including `turn`/`error`.
+   *  Holds the operation lock until the terminal event, so a control issued
+   *  mid-turn (setSystemPrompt, setModel, …) queues BEHIND the turn instead
+   *  of stealing its events off the shared queue. Pass `signal` to cancel
+   *  the turn (see ChatOptions.signal / cancel()). */
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {{
     const prompt = typeof input === "string" ? input : input.prompt;
     const type = typeof input === "string" || !input.review ? "user" : "review";
-    this.proc.stdin.write(JSON.stringify({{ type, text: prompt }}) + "\\n");
-    while (true) {{
-      const ev = await this.next();
-      if (ev === null) {{
-        // Process closed without a terminal event: died mid-turn. Reported
-        // to telemetry and thrown instead of silently ending the stream.
-        reportError("died", `harness exited mid-turn (code=${{this.proc.exitCode}})`);
-        throw new Error(`harness exited mid-turn (code=${{this.proc.exitCode}})`);
+    const signal = typeof input === "string" ? undefined : input.signal;
+    // Already aborted: send nothing — a cancel written before the turn's
+    // first line would be cleared again when the turn starts.
+    signal?.throwIfAborted();
+    const release = await this.acquireOp();
+    let aborted = false;
+    const onAbort = () => {{ if (aborted) return; aborted = true; this.cancel(); }};
+    try {{
+      this.proc.stdin.write(JSON.stringify({{ type, text: prompt }}) + "\\n");
+      if (signal) {{
+        signal.addEventListener("abort", onAbort, {{ once: true }});
+        if (signal.aborted) onAbort(); // aborted between the entry check and here
       }}
-      yield ev;
-      if (ev.type === "turn" || ev.type === "error") return;
+      while (true) {{
+        const ev = await this.next();
+        if (ev === null) {{
+          // Process closed without a terminal event: died mid-turn. Reported
+          // to telemetry and thrown instead of silently ending the stream.
+          reportError("died", `harness exited mid-turn (code=${{this.proc.exitCode}})`);
+          throw new Error(`harness exited mid-turn (code=${{this.proc.exitCode}})`);
+        }}
+        yield ev;
+        if (ev.type === "turn" || ev.type === "error") return;
+      }}
+    }} finally {{
+      if (signal) signal.removeEventListener("abort", onAbort);
+      release();
     }}
+  }}
+
+  /** Run a turn and return its final text plus the usage the harness
+   *  reported on the terminal `turn` event (tokens, cost, call breakdown).
+   *  Rejects on an `error` event — including a cancelled turn. */
+  async askResult(input: string | ChatOptions): Promise<AskResult> {{
+    let result: AskResult | null = null;
+    for await (const ev of this.chat(input)) {{
+      if (ev.type === "turn") {{
+        result = {{
+          text: ev.text,
+          contextTokens: ev.context_tokens,
+          costUsd: ev.cost_usd,
+          inputTokens: ev.input_tokens,
+          uncachedInputTokens: ev.uncached_input_tokens,
+          cacheReadTokens: ev.cache_read_tokens,
+          outputTokens: ev.output_tokens,
+          apiCalls: ev.api_calls,
+          subscriptionCalls: ev.subscription_calls,
+          unpricedCalls: ev.unpriced_calls,
+          complete: ev.complete,
+          metadataComplete: ev.metadata_complete,
+        }};
+      }}
+      if (ev.type === "error") throw new Error(ev.message);
+    }}
+    if (!result) throw new Error("turn ended without a terminal event");
+    return result;
   }}
 
   /** Run a turn and return just the final assistant text. */
   async ask(input: string | ChatOptions): Promise<string> {{
-    let final = "";
-    for await (const ev of this.chat(input)) {{
-      if (ev.type === "turn") final = ev.text;
-      if (ev.type === "error") throw new Error(ev.message);
-    }}
-    return final;
+    return (await this.askResult(input)).text;
   }}
 
   /** Run one isolated, read-only review turn and return its final report. */
   review(input: string | ChatOptions): Promise<string> {{
-    const prompt = typeof input === "string" ? input : input.prompt;
-    return this.ask({{ prompt, review: true }});
+    const options = typeof input === "string" ? {{ prompt: input }} : input;
+    return this.ask({{ ...options, review: true }});
   }}
 
   /** Answer an in-flight ask_user event. Call this while consuming chat()
@@ -376,20 +527,77 @@ export class Harness {{
    *  `appendSystemPrompt` options; mutate only at task boundaries, never
    *  back-and-forth inside a loop. */
   async setSystemPrompt(text: string, append = false): Promise<void> {{
-    this.proc.stdin.write(JSON.stringify({{ type: "set_system_prompt", text, append }}) + "\\n");
-    // Edge-version durability: a newer harness may emit event types this
-    // client predates — skip them while waiting for the ack (the chat loop
-    // already tolerates unknowns the same way) instead of throwing.
-    while (true) {{
-      const ev = await this.next();
-      if (ev === null) {{ reportError("died", "harness closed before acking set_system_prompt"); throw new Error("harness closed"); }}
-      if (ev.type === "error") throw new Error(ev.message);
-      if (ev.type === "system_prompt") return;
-    }}
+    return this.runOp(async () => {{
+      this.proc.stdin.write(JSON.stringify({{ type: "set_system_prompt", text, append }}) + "\\n");
+      // Edge-version durability: a newer harness may emit event types this
+      // client predates — skip them while waiting for the ack (the chat loop
+      // already tolerates unknowns the same way) instead of throwing.
+      while (true) {{
+        const ev = await this.next();
+        if (ev === null) {{ reportError("died", "harness closed before acking set_system_prompt"); throw new Error("harness closed"); }}
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "system_prompt") return;
+      }}
+    }});
   }}
 
   /** Tack extra instructions onto the current system prompt. */
   appendSystemPrompt(text: string): Promise<void> {{ return this.setSystemPrompt(text, true); }}
+
+  /** Cancel the in-flight turn — the SDK analogue of the REPL's Esc. Writes
+   *  {{"type":"cancel"}} straight to stdin, which the harness inbox reads
+   *  OUT-OF-BAND (ahead of any queued request), so this deliberately does
+   *  NOT join the operation queue: a cancel queued behind the turn it means
+   *  to stop would fire too late. Lock-free like answer(). The active
+   *  chat() stream still runs to the cancelled turn's terminal event. */
+  cancel(): void {{
+    this.proc.stdin.write(JSON.stringify({{ type: "cancel" }}) + "\\n");
+  }}
+
+  /** Switch provider/model mid-session — the provider-qualified form of the
+   *  protocol's set_model control. Call between turns; resolves on the
+   *  `model` ack, rejects on the harness's `error` event (unknown model,
+   *  missing key/login, …). Serialized with chat() and the other controls. */
+  setModel(provider: ProviderId | string, model: ModelName | string): Promise<void> {{
+    return this.runOp(async () => {{
+      this.proc.stdin.write(JSON.stringify({{ type: "set_model", provider, model }}) + "\\n");
+      while (true) {{
+        const ev = await this.next();
+        if (ev === null) {{ reportError("died", "harness closed before acking set_model"); throw new Error("harness closed"); }}
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "model") return;
+      }}
+    }});
+  }}
+
+  /** Set the reasoning effort for later turns (protocol set_effort).
+   *  Resolves on the `effort` ack; serialized like the other controls. */
+  setEffort(level: EffortLevel): Promise<void> {{
+    return this.runOp(async () => {{
+      this.proc.stdin.write(JSON.stringify({{ type: "set_effort", level }}) + "\\n");
+      while (true) {{
+        const ev = await this.next();
+        if (ev === null) {{ reportError("died", "harness closed before acking set_effort"); throw new Error("harness closed"); }}
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "effort") return;
+      }}
+    }});
+  }}
+
+  /** Compact the conversation history now (protocol compact). Resolves on
+   *  the `compact` ack; rejects when compaction fails — the harness leaves
+   *  history unchanged in that case. Serialized like the other controls. */
+  compact(): Promise<void> {{
+    return this.runOp(async () => {{
+      this.proc.stdin.write(JSON.stringify({{ type: "compact" }}) + "\\n");
+      while (true) {{
+        const ev = await this.next();
+        if (ev === null) {{ reportError("died", "harness closed before acking compact"); throw new Error("harness closed"); }}
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "compact") return;
+      }}
+    }});
+  }}
 
   /** Record an evaluation score for an agent/prompt variant in the
    *  aggregate `.graff/trajectories` archive — the DGM evaluation
@@ -414,15 +622,17 @@ export class Harness {{
       : /^[0-9a-f]{{16}}$/.test(parent) ? parent : promptFingerprint(parent);
     // The SDK emitter strips prompt_text until it has an interactive review UI.
     if (niche && !/^[0-9a-f]{{16}}$/.test(promptOrSha)) fleetSignal("propose", {{ niche, prompt_sha: sha, parent_sha: parent_sha ?? "", prompt_text: promptOrSha }});
-    this.proc.stdin.write(JSON.stringify({{ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale }}) + "\\n");
-    // Same edge-version tolerance as setSystemPrompt: skip unknown events
-    // while waiting for the ack.
-    while (true) {{
-      const ev = await this.next();
-      if (ev === null) {{ reportError("died", "harness closed before acking score"); throw new Error("harness closed"); }}
-      if (ev.type === "error") throw new Error(ev.message);
-      if (ev.type === "score") {{ fleetSignal("submit", {{ prompt_sha: sha, parent_sha: parent_sha ?? "", niche: niche ?? "" }}); return; }}
-    }}
+    return this.runOp(async () => {{
+      this.proc.stdin.write(JSON.stringify({{ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale }}) + "\\n");
+      // Same edge-version tolerance as setSystemPrompt: skip unknown events
+      // while waiting for the ack.
+      while (true) {{
+        const ev = await this.next();
+        if (ev === null) {{ reportError("died", "harness closed before acking score"); throw new Error("harness closed"); }}
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "score") {{ fleetSignal("submit", {{ prompt_sha: sha, parent_sha: parent_sha ?? "", niche: niche ?? "" }}); return; }}
+      }}
+    }});
   }}
 
   /** Pull the fleet's live champion personas (GET /v1/elites). Local mode
@@ -451,15 +661,27 @@ export class Harness {{
   /** The harness schema version this client was generated from. */
   version(): string {{ return HARNESS_VERSION; }}
 
-  /** Close stdin and give the harness a moment to exit cleanly — it flushes
-   *  telemetry and trajectory records on the way out; killing immediately
-   *  would race (and lose) that flush. */
-  close(): void {{
+  /** Cancel active work, close stdin, and await the child's clean exit so its
+   *  telemetry and trajectory flushes are durable. Idempotent; force-kills
+   *  only after the graceful deadline. */
+  close(): Promise<void> {{
+    if (this.closePromise) return this.closePromise;
+    this.cancel();
+    this.closed = true;
     this.proc.stdin.end();
-    const t = setTimeout(() => this.proc.kill(), 15000);
-    t.unref?.();
-    this.proc.on("close", () => clearTimeout(t));
+    this.closePromise = new Promise((resolve) => {{
+      if (this.proc.exitCode !== null) return resolve();
+      const timer = setTimeout(() => this.proc.kill(), 15000);
+      timer.unref?.();
+      const finish = () => {{ clearTimeout(timer); resolve(); }};
+      this.proc.once("close", finish);
+      this.proc.once("error", finish);
+    }});
+    return this.closePromise;
   }}
+
+  /** Alias for close(). */
+  dispose(): Promise<void> {{ return this.close(); }}
 }}
 
 // ── HarnessSession (parallel to codegraff's `GraffSession`) ────────────────
@@ -471,10 +693,16 @@ export class HarnessSession {{
   /** Send a user turn; async-iterate its events. */
   send(input: string | ChatOptions): AsyncGenerator<Event> {{ return this.agent.chat(input); }}
   ask(input: string | ChatOptions): Promise<string> {{ return this.agent.ask(input); }}
+  askResult(input: string | ChatOptions): Promise<AskResult> {{ return this.agent.askResult(input); }}
   review(input: string | ChatOptions): Promise<string> {{ return this.agent.review(input); }}
   answer(input: string | AnswerOptions): void {{ return this.agent.answer(input); }}
+  cancel(): void {{ this.agent.cancel(); }}
   setSystemPrompt(text: string, append = false): Promise<void> {{ return this.agent.setSystemPrompt(text, append); }}
-  close(): void {{ this.agent.close(); }}
+  setModel(provider: ProviderId | string, model: ModelName | string): Promise<void> {{ return this.agent.setModel(provider, model); }}
+  setEffort(level: EffortLevel): Promise<void> {{ return this.agent.setEffort(level); }}
+  compact(): Promise<void> {{ return this.agent.compact(); }}
+  close(): Promise<void> {{ return this.agent.close(); }}
+  dispose(): Promise<void> {{ return this.agent.dispose(); }}
 }}
 
 // ── Top-level one-shot (parallel to codegraff's `runAgent`) ────────────────
@@ -485,7 +713,7 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<Event> {{
   try {{
     yield* h.chat({{ prompt: opts.prompt }});
   }} finally {{
-    h.close();
+    await h.close();
   }}
 }}
 
@@ -548,6 +776,9 @@ export type Event =
   | {{ seq: number; type: "session_recap"; text: string; status: "needs_input" | "completed" | "failed"; source: "heuristic" | "model" }}
   | {{ seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; input_tokens: number; uncached_input_tokens: number; cache_read_tokens: number; output_tokens: number; api_calls: number; subscription_calls: number; unpriced_calls: number; complete?: boolean; metadata_complete?: boolean }}
   | {{ seq: number; type: "system_prompt"; ok: boolean; append: boolean; chars: number }}
+  | {{ seq: number; type: "model"; ok: boolean; provider: string; model: string; context: number; note: string }}
+  | {{ seq: number; type: "compact"; ok: boolean; chars: number }}
+  | {{ seq: number; type: "effort"; ok: boolean; level: string; applies: boolean }}
   | {{ seq: number; type: "score"; ok: boolean; prompt_sha: string }}
   | {{ seq: number; type: "error"; message: string }};
 
@@ -605,12 +836,44 @@ export interface ChatOptions {{
   review?: boolean;
   /** Replay persisted events with seq >= from before this turn's live ones. */
   from?: number;
+  /** Abort the turn mid-flight: on abort the SDK POSTs {{"type":"cancel"}}
+   *  (the bridge answers it ahead of the session's busy lock); the stream
+   *  still runs to the cancelled turn's terminal event — an `error` event
+   *  ("turn cancelled"). */
+  signal?: AbortSignal;
 }}
 
 export interface AnswerOptions {{
   text?: string;
   cancelled?: boolean;
   callId?: string;
+}}
+
+/** Reasoning effort levels accepted by setEffort (protocol set_effort). */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
+/** Structured result of one turn: the final assistant text plus the usage
+ *  the harness reported on the terminal `turn` event. */
+export interface AskResult {{
+  /** Final assistant text. */
+  text: string;
+  /** Server-reported context size at turn end. */
+  contextTokens: number;
+  /** Turn cost in USD. */
+  costUsd: number;
+  inputTokens: number;
+  uncachedInputTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  /** Provider API calls made this turn. */
+  apiCalls: number;
+  /** Calls served under a subscription (unmetered) login. */
+  subscriptionCalls: number;
+  /** Calls with no pricing data. */
+  unpricedCalls: number;
+  /** False when the turn finished incomplete (interrupted/stalled). */
+  complete?: boolean;
+  metadataComplete?: boolean;
 }}
 
 export interface RunAgentRemoteOptions extends RemoteOptions {{
@@ -624,19 +887,26 @@ async function* ndjson(res: Response): AsyncGenerator<Event> {{
   const reader = body.getReader();
   const dec = new TextDecoder();
   let buf = "";
-  while (true) {{
-    const {{ done, value }} = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, {{ stream: true }});
-    let i: number;
-    while ((i = buf.indexOf("\\n")) >= 0) {{
-      const line = buf.slice(0, i).trim();
-      buf = buf.slice(i + 1);
-      if (line) {{ try {{ yield JSON.parse(line) as Event; }} catch {{ /* skip noise */ }} }}
+  try {{
+    while (true) {{
+      const {{ done, value }} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {{ stream: true }});
+      let i: number;
+      while ((i = buf.indexOf("\\n")) >= 0) {{
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (line) {{ try {{ yield JSON.parse(line) as Event; }} catch {{ /* skip noise */ }} }}
+      }}
     }}
+    const tail = buf.trim();
+    if (tail) {{ try {{ yield JSON.parse(tail) as Event; }} catch {{ /* skip noise */ }} }}
+  }} finally {{
+    // Release the body however the consumer left — terminal event, break,
+    // or throw — so the connection drains back to keep-alive and the
+    // server-side stream never dangles.
+    await reader.cancel().catch(() => {{}});
   }}
-  const tail = buf.trim();
-  if (tail) {{ try {{ yield JSON.parse(tail) as Event; }} catch {{ /* skip noise */ }} }}
 }}
 
 const HEX16 = /^[0-9a-f]{{16}}$/;
@@ -653,6 +923,9 @@ const HEX16 = /^[0-9a-f]{{16}}$/;
 export class RemoteHarness {{
   private base: string;
   private token?: string;
+  /** Tail of the operation chain (see acquireOp). Always resolves. */
+  private opTail: Promise<void> = Promise.resolve();
+  private closed = false;
   /** Resolves to the session id (creation is lazy-started in the constructor). */
   readonly sessionId: Promise<string>;
   /** Resolves to the bridge's create/resume report; null when attaching by
@@ -670,8 +943,15 @@ export class RemoteHarness {{
       this.info = Promise.resolve(null);
     }} else {{
       const created = this.create(opts);
+      // Observe BOTH derived promises up front: a caller that only ever
+      // awaits one of info/sessionId must not trip an unhandled rejection on
+      // the other when creation fails — awaiting either still rejects with
+      // the original cause.
+      created.catch(() => {{}});
       this.info = created;
-      this.sessionId = created.then((d) => d.session_id);
+      const sid = created.then((d) => d.session_id);
+      sid.catch(() => {{}});
+      this.sessionId = sid;
     }}
   }}
 
@@ -720,6 +1000,29 @@ export class RemoteHarness {{
     return ev;
   }}
 
+  /** Operation chain, the client-side mirror of the bridge's
+   *  one-non-answer-request-in-flight rule: turns and acked controls run one
+   *  at a time. The tail always RESOLVES, so one operation's failure cannot
+   *  poison the queue behind it. answer(), cancel(), and reconnect() bypass
+   *  it — the bridge handles all three without taking the protocol lock. */
+  private acquireOp(): Promise<() => void> {{
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {{ release = resolve; }});
+    const acquired = this.opTail.then(() => release);
+    this.opTail = this.opTail.then(() => gate);
+    return acquired;
+  }}
+
+  /** Run `op` holding the operation lock (see acquireOp). */
+  private async runOp<T>(op: () => Promise<T>): Promise<T> {{
+    const release = await this.acquireOp();
+    try {{
+      return await op();
+    }} finally {{
+      release();
+    }}
+  }}
+
   /** Send one protocol request; stream its events. */
   private async *send(payload: Record<string, unknown>, from?: number): AsyncGenerator<Event> {{
     const id = await this.sessionId;
@@ -728,17 +1031,41 @@ export class RemoteHarness {{
     for await (const ev of ndjson(res)) yield this.note(ev);
   }}
 
-  /** Run one turn; async-iterate events up to and including `turn`/`error`. */
+  /** Run one turn; async-iterate events up to and including `turn`/`error`.
+   *  Holds the operation slot until the terminal event (the bridge itself
+   *  allows one non-answer request in flight per session). Pass `signal` to
+   *  cancel the turn (see ChatOptions.signal / cancel()). */
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {{
     const prompt = typeof input === "string" ? input : input.prompt;
     const type = typeof input === "string" || !input.review ? "user" : "review";
     const from = typeof input === "string" ? undefined : input.from;
-    let terminal = false;
-    for await (const ev of this.send({{ type, text: prompt }}, from)) {{
-      yield ev;
-      if (ev.type === "turn" || ev.type === "error") {{ terminal = true; break; }}
+    const signal = typeof input === "string" ? undefined : input.signal;
+    signal?.throwIfAborted();
+    const release = await this.acquireOp();
+    let aborted = false;
+    const onAbort = () => {{ if (aborted) return; aborted = true; void this.cancel(); }};
+    try {{
+      // Wait until the bridge has accepted the turn and returned stream headers
+      // before arming cancel. Otherwise an immediately-aborted signal can POST
+      // cancel first, receive 409, and leave the following turn running.
+      const id = await this.sessionId;
+      const q = from === undefined ? "" : `?from=${{from}}`;
+      const res = await this.req("POST", `/v1/sessions/${{id}}${{q}}`, {{ type, text: prompt }});
+      if (signal) {{
+        signal.addEventListener("abort", onAbort, {{ once: true }});
+        if (signal.aborted) onAbort();
+      }}
+      let terminal = false;
+      for await (const raw of ndjson(res)) {{
+        const ev = this.note(raw);
+        yield ev;
+        if (ev.type === "turn" || ev.type === "error") {{ terminal = true; break; }}
+      }}
+      if (!terminal) throw new Error("bridge stream ended mid-turn (session process died?)");
+    }} finally {{
+      if (signal) signal.removeEventListener("abort", onAbort);
+      release();
     }}
-    if (!terminal) throw new Error("bridge stream ended mid-turn (session process died?)");
   }}
 
   /** Re-attach to a session after losing the stream: replay persisted events
@@ -753,20 +1080,43 @@ export class RemoteHarness {{
     for await (const ev of ndjson(res)) yield this.note(ev);
   }}
 
-  /** Run a turn and return just the final assistant text. */
-  async ask(input: string | ChatOptions): Promise<string> {{
-    let final = "";
+  /** Run a turn and return its final text plus the usage the harness
+   *  reported on the terminal `turn` event (tokens, cost, call breakdown).
+   *  Rejects on an `error` event — including a cancelled turn. */
+  async askResult(input: string | ChatOptions): Promise<AskResult> {{
+    let result: AskResult | null = null;
     for await (const ev of this.chat(input)) {{
-      if (ev.type === "turn") final = ev.text;
+      if (ev.type === "turn") {{
+        result = {{
+          text: ev.text,
+          contextTokens: ev.context_tokens,
+          costUsd: ev.cost_usd,
+          inputTokens: ev.input_tokens,
+          uncachedInputTokens: ev.uncached_input_tokens,
+          cacheReadTokens: ev.cache_read_tokens,
+          outputTokens: ev.output_tokens,
+          apiCalls: ev.api_calls,
+          subscriptionCalls: ev.subscription_calls,
+          unpricedCalls: ev.unpriced_calls,
+          complete: ev.complete,
+          metadataComplete: ev.metadata_complete,
+        }};
+      }}
       if (ev.type === "error") throw new Error(ev.message);
     }}
-    return final;
+    if (!result) throw new Error("turn ended without a terminal event");
+    return result;
+  }}
+
+  /** Run a turn and return just the final assistant text. */
+  async ask(input: string | ChatOptions): Promise<string> {{
+    return (await this.askResult(input)).text;
   }}
 
   /** Run one isolated, read-only review turn and return its final report. */
   review(input: string | ChatOptions): Promise<string> {{
-    const prompt = typeof input === "string" ? input : input.prompt;
-    return this.ask({{ prompt, review: true }});
+    const options = typeof input === "string" ? {{ prompt: input }} : input;
+    return this.ask({{ ...options, review: true }});
   }}
 
   /** Answer an in-flight ask_user event. The original chat() stream continues
@@ -779,17 +1129,69 @@ export class RemoteHarness {{
     await res.text();
   }}
 
+  /** Cancel the in-flight turn (REPL Esc equivalent): POSTs
+   *  {{"type":"cancel"}} to the bridge, which answers it AHEAD of the
+   *  session's busy lock and forwards it down the child's out-of-band cancel
+   *  path — so it bypasses the client operation queue too. Best-effort: the
+   *  bridge 409s when no request is in flight, which is not an error here. */
+  async cancel(): Promise<void> {{
+    const id = await this.sessionId.catch(() => null);
+    if (id === null) return; // no live session: nothing to cancel
+    const res = await this.req("POST", `/v1/sessions/${{id}}`, {{ type: "cancel" }}).catch(() => null);
+    if (res) await res.text().catch(() => {{}});
+  }}
+
+  /** Switch provider/model mid-session — the provider-qualified form of the
+   *  protocol's set_model control. Resolves on the `model` ack, rejects on
+   *  the `error` event; serialized with chat() and the other controls. */
+  setModel(provider: ProviderId | string, model: ModelName | string): Promise<void> {{
+    return this.runOp(async () => {{
+      for await (const ev of this.send({{ type: "set_model", provider, model }})) {{
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "model") return;
+      }}
+      throw new Error("bridge stream ended before acking set_model");
+    }});
+  }}
+
+  /** Set the reasoning effort for later turns (protocol set_effort).
+   *  Resolves on the `effort` ack; serialized like the other controls. */
+  setEffort(level: EffortLevel): Promise<void> {{
+    return this.runOp(async () => {{
+      for await (const ev of this.send({{ type: "set_effort", level }})) {{
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "effort") return;
+      }}
+      throw new Error("bridge stream ended before acking set_effort");
+    }});
+  }}
+
+  /** Compact the conversation history now (protocol compact). Resolves on
+   *  the `compact` ack; rejects when compaction fails (history is left
+   *  unchanged in that case). Serialized like the other controls. */
+  compact(): Promise<void> {{
+    return this.runOp(async () => {{
+      for await (const ev of this.send({{ type: "compact" }})) {{
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "compact") return;
+      }}
+      throw new Error("bridge stream ended before acking compact");
+    }});
+  }}
+
 
   /** Replace (or with append=true, extend) the system prompt for later turns.
    *  Same KV-cache warning as the stdio SDK: any mutation invalidates the
    *  cached prefix for the whole conversation — prefer the creation-time
    *  options; mutate only at task boundaries. */
   async setSystemPrompt(text: string, append = false): Promise<void> {{
-    for await (const ev of this.send({{ type: "set_system_prompt", text, append }})) {{
-      if (ev.type === "error") throw new Error(ev.message);
-      if (ev.type === "system_prompt") return;
-    }}
-    throw new Error("bridge stream ended before acking set_system_prompt");
+    return this.runOp(async () => {{
+      for await (const ev of this.send({{ type: "set_system_prompt", text, append }})) {{
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "system_prompt") return;
+      }}
+      throw new Error("bridge stream ended before acking set_system_prompt");
+    }});
   }}
 
   appendSystemPrompt(text: string): Promise<void> {{ return this.setSystemPrompt(text, true); }}
@@ -806,22 +1208,32 @@ export class RemoteHarness {{
     // champion for the role; the remote harness reads it from the request and
     // tags its own score/submit. (Genome capture rides the harness process,
     // which holds the persona text the remote bridge only references by sha.)
-    for await (const ev of this.send({{ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale }})) {{
-      if (ev.type === "error") throw new Error(ev.message);
-      if (ev.type === "score") return;
-    }}
-    throw new Error("bridge stream ended before acking score");
+    return this.runOp(async () => {{
+      for await (const ev of this.send({{ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale }})) {{
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "score") return;
+      }}
+      throw new Error("bridge stream ended before acking score");
+    }});
   }}
 
   /** The harness schema version this client was generated from. */
   version(): string {{ return HARNESS_VERSION; }}
 
   /** Close the remote session (graceful: the bridge EOFs the child's stdin
-   *  so it flushes telemetry/trajectory on the way out). */
+   *  so it flushes telemetry/trajectory on the way out). Idempotent and
+   *  never throws — safe even when session creation failed. */
   async close(): Promise<void> {{
-    const id = await this.sessionId;
-    await this.req("DELETE", `/v1/sessions/${{id}}`).catch(() => {{}});
+    if (this.closed) return;
+    this.closed = true;
+    const id = await this.sessionId.catch(() => null);
+    if (id === null) return; // creation failed or no session: nothing to close
+    const res = await this.req("DELETE", `/v1/sessions/${{id}}`).catch(() => null);
+    if (res) await res.text().catch(() => {{}});
   }}
+
+  /** Alias for close(). */
+  dispose(): Promise<void> {{ return this.close(); }}
 }}
 
 /** Create a remote session, run a single turn, stream its events, close. */

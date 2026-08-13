@@ -59,6 +59,7 @@ test { // unit_tests' root is main.zig only, so reference every split-out module
     _ = models_cache;
     _ = ansi;
     _ = serve;
+    _ = @import("json_inbox.zig");
     _ = util;
     _ = learn_store;
     _ = learn_eval;

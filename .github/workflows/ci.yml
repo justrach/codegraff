@@ -33,11 +33,12 @@ jobs:
       - name: TypeScript SDK test, typecheck, build, and package smoke
         working-directory: sdk/ts
         run: |
-          npm install --ignore-scripts
+          npm install --ignore-scripts --workspaces=false
           bun test
           npm run typecheck
           npm run build
           npm pack --dry-run
+          npm run test:packed
           node -e "import('./dist/harness.js').then(m => { if (!m.Harness || !m.runAgent || !m.MODELS) throw new Error('missing exports'); console.log('ts sdk ok:', m.MODELS.length, 'models'); })"
 
   # Zig build / fmt / test + SDK drift, pinned to the exact 0.17 dev build the
