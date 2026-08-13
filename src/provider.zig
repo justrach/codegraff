@@ -88,7 +88,7 @@ pub const provider_specs = [_]ProviderSpec{
     .{ .id = "moonshot", .display_name = "Moonshot", .kind = .openai, .auth = .bearer, .url = "https://api.moonshot.ai/v1/chat/completions", .env_key = "MOONSHOT_API_KEY", .default_model = "kimi-latest" },
     // `graff login xai` is a real device-code OAuth flow (oauth.zig), so xAI's
     // login is a SuperGrok plan while XAI_API_KEY is metered api.x.ai access.
-    .{ .id = "xai", .display_name = "xAI", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3", .login = .xai_device, .sub_login = true },
+    .{ .id = "xai", .display_name = "xAI", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3", .login = .xai_device, .sub_login = true, .catalog = .openai, .models_url = "https://api.x.ai/v1/models" },
     .{ .id = "zai", .display_name = "Z.AI", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
     .{ .id = "fugu", .display_name = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
     // Fireworks serves its serverless catalog live (AIP gateway shape:
