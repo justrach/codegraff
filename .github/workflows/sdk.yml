@@ -12,7 +12,87 @@ permissions:
   contents: read
 
 jobs:
+  native:
+    name: native ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-macos
+            asset: graff-aarch64-macos.tar.gz
+            package_dir: graff-darwin-arm64
+          - target: x86_64-macos
+            asset: graff-x86_64-macos.tar.gz
+            package_dir: graff-darwin-x64
+          - target: aarch64-linux
+            asset: graff-aarch64-linux.tar.gz
+            package_dir: graff-linux-arm64
+          - target: x86_64-linux
+            asset: graff-x86_64-linux.tar.gz
+            package_dir: graff-linux-x64
+          - target: aarch64-windows
+            asset: graff-aarch64-windows.tar.gz
+            package_dir: graff-win32-arm64
+          - target: x86_64-windows
+            asset: graff-x86_64-windows.tar.gz
+            package_dir: graff-win32-x64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - name: Package and publish release binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GRAFF_NATIVE_RELEASE: ${{ vars.GRAFF_NATIVE_RELEASE }}
+        run: |
+          set -euo pipefail
+          [ -n "$GRAFF_NATIVE_RELEASE" ] || {
+            echo "set the GRAFF_NATIVE_RELEASE repository variable to the compatible v* release" >&2
+            exit 1
+          }
+          npm install -g npm@latest
+          git fetch --no-tags origin "refs/tags/$GRAFF_NATIVE_RELEASE:refs/tags/$GRAFF_NATIVE_RELEASE"
+          sdk_protocol="$(sed -n 's/^export const HARNESS_VERSION = "\([^"]*\)";.*/\1/p' sdk/ts/harness.ts)"
+          release_protocol="$(git show "$GRAFF_NATIVE_RELEASE:sdk/ts/harness.ts" | sed -n 's/^export const HARNESS_VERSION = "\([^"]*\)";.*/\1/p')"
+          [ -n "$sdk_protocol" ] && [ "$release_protocol" = "$sdk_protocol" ] || {
+            echo "$GRAFF_NATIVE_RELEASE uses protocol ${release_protocol:-unknown}; SDK requires $sdk_protocol" >&2
+            exit 1
+          }
+          is_draft="$(gh release view "$GRAFF_NATIVE_RELEASE" --json isDraft --jq .isDraft)"
+          [ "$is_draft" = false ] || {
+            echo "$GRAFF_NATIVE_RELEASE is still a draft; publish and sign its final assets before the SDK" >&2
+            exit 1
+          }
+          gh release download "$GRAFF_NATIVE_RELEASE" --pattern "${{ matrix.asset }}" --pattern SHA256SUMS
+          grep -F "${{ matrix.asset }}" SHA256SUMS | sha256sum -c -
+          mkdir native-unpack native-packages
+          tar -xzf "${{ matrix.asset }}" -C native-unpack
+          binary_name=graff
+          case "${{ matrix.target }}" in *-windows) binary_name=graff.exe ;; esac
+          binary="$(find native-unpack -type f -name "$binary_name" -print -quit)"
+          [ -n "$binary" ] || { echo "archive contains no $binary_name" >&2; exit 1; }
+          version="${GITHUB_REF_NAME#sdk-v}"
+          node sdk/ts/scripts/package-platform.mjs \
+            --target "${{ matrix.target }}" --binary "$binary" \
+            --version "$version" --out native-packages
+          package="$(node -p "require('./native-packages/${{ matrix.package_dir }}/package.json').name")"
+          published_version="$(npm view "$package@$version" version 2>/dev/null || true)"
+          if [ -n "$published_version" ]; then
+            published_protocol="$(npm view "$package@$version" graffProtocol 2>/dev/null || true)"
+            [ "$published_protocol" = "$sdk_protocol" ] || {
+              echo "$package@$version already exists with protocol ${published_protocol:-unknown}" >&2
+              exit 1
+            }
+            echo "$package@$version already published; keeping immutable package"
+          else
+            npm publish "native-packages/${{ matrix.package_dir }}" --access public
+          fi
+
   publish:
+    needs: native
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -36,9 +116,15 @@ jobs:
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
-      - name: Publish @codegraff/sdk (npm, OIDC + provenance)
+      - uses: oven-sh/setup-bun@v2
+      - name: Test and publish @codegraff/sdk (npm, OIDC + provenance)
         working-directory: sdk/ts
         run: |
           npm install -g npm@latest
-          npm version "${GITHUB_REF_NAME#sdk-v}" --no-git-tag-version --allow-same-version
+          npm run version:sync -- "${GITHUB_REF_NAME#sdk-v}"
+          npm install --ignore-scripts --workspaces=false
+          bun test
+          npm run typecheck
+          npm run build
+          npm run test:packed
           npm publish --access public

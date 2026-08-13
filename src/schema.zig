@@ -390,7 +390,7 @@ pub fn writeToolEntry(s: *std.json.Stringify, kind: Provider.Kind, name: []const
 /// a per-commit git describe) — bump this only when the schema or JSONL
 /// protocol changes shape, so SDK regeneration stays byte-stable across
 /// commits.
-pub const schema_version = "0.11"; // #419: session_recap event (one-line session summary + status, heuristic/model)
+pub const schema_version = "0.12"; // cancel request interrupts active stdio/serve turns
 
 /// Emit the machine-readable interface description for `harness --schema`:
 /// providers, models, built-in tools (name/description/parameters), and the

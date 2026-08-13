@@ -28,10 +28,18 @@ jobs:
         with:
           node-version: 22
 
-      - name: TypeScript SDK validation
+      - uses: oven-sh/setup-bun@v2
+
+      - name: TypeScript SDK test, typecheck, build, and package smoke
+        working-directory: sdk/ts
         run: |
-          node -e "JSON.parse(require('fs').readFileSync('sdk/ts/package.json','utf8')); console.log('package.json ok')"
-          node --experimental-strip-types -e "import('./sdk/ts/harness.ts').then(m => { if (!m.Harness || !m.runAgent || !m.MODELS) throw new Error('missing exports'); console.log('ts sdk ok:', m.MODELS.length, 'models'); })"
+          npm install --ignore-scripts --workspaces=false
+          bun test
+          npm run typecheck
+          npm run build
+          npm pack --dry-run
+          npm run test:packed
+          node -e "import('./dist/harness.js').then(m => { if (!m.Harness || !m.runAgent || !m.MODELS) throw new Error('missing exports'); console.log('ts sdk ok:', m.MODELS.length, 'models'); })"
 
   # Zig build / fmt / test + SDK drift, pinned to the exact 0.17 dev build the
   # codebase targets.

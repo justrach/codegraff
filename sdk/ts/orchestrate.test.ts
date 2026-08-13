@@ -5,7 +5,7 @@
 // binary and is exercised structurally by the pure-helper tests instead).
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -225,6 +225,54 @@ describe("Run budget admission", () => {
       expect(results.filter((r) => r && r.ok).length).toBe(2);
       expect(results.filter((r) => r && !r.ok)[0]?.text).toMatch(/budget exhausted/i);
       expect(run.budget.spent()).toEqual({ calls: 2, tokens: 20 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a runner that throws releases its reservation instead of draining the calls budget", async () => {
+    const dir = tmpJournalDir();
+    try {
+      let fail = true;
+      const runner = new FakeRunner(() => {
+        if (fail) throw new Error("transport down");
+        return ok("recovered", 10);
+      });
+      const run = new Run({ dir, budget: { maxCalls: 1 }, runner });
+
+      await expect(run.agent("attempt")).rejects.toThrow("transport down");
+      // The failed call never ran: nothing spent, and the slot is back — a
+      // healthy retry with the same maxCalls:1 ceiling is still admitted.
+      expect(run.budget.spent()).toEqual({ calls: 0, tokens: 0 });
+
+      fail = false;
+      const retry = await run.agent("attempt");
+      expect(retry.ok).toBe(true);
+      expect(retry.text).toBe("recovered");
+      expect(run.budget.spent()).toEqual({ calls: 1, tokens: 10 });
+
+      // A thrown call is NOT journaled (one record per LIVE call — file
+      // header), so a later resume re-runs from the failed key. The single
+      // record is the retry at key a1; a0 was consumed by the failed attempt.
+      const lines = readFileSync(run.journalPath, "utf8").trim().split("\n");
+      expect(lines.length).toBe(1);
+      expect(JSON.parse(lines[0]).key).toBe("a1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("budget-exhaustion results do not share one mutable usage object", async () => {
+    const dir = tmpJournalDir();
+    try {
+      const run = new Run({ dir, budget: { maxCalls: 0 }, runner: new FakeRunner(() => ok("never runs")) });
+      const r1 = await run.agent("x");
+      const r2 = await run.agent("y");
+      expect(r1.ok).toBe(false);
+      expect(r2.ok).toBe(false);
+      expect(r1.usage).not.toBe(r2.usage);
+      r1.usage.contextTokens = 999;
+      expect(r2.usage.contextTokens).toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

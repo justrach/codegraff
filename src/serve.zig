@@ -66,6 +66,7 @@ pub const ServeSession = struct {
     rbuf: []u8, // gpa-owned backing buffer for rdr
     busy: Io.Mutex = .init, // one in-flight protocol request per session
     in_flight: std.atomic.Value(bool) = .init(false), // a request is streaming: followers keep tailing
+    stdin_mu: Io.Mutex = .init, // answer/cancel bypass busy but never interleave child writes
     answer_mu: Io.Mutex = .init,
     awaiting_answer: bool = false,
     answer_call_id: [128]u8 = undefined,
@@ -140,7 +141,7 @@ fn serveConn(st: *ServeState, stream: std.Io.net.Stream) void {
     var http_server = std.http.Server.init(&sr.interface, &sw.interface);
     while (true) {
         var req = http_server.receiveHead() catch return;
-        serveRequest(st, &req) catch return;
+        serveRequest(st, &req, &sw.interface) catch return;
     }
 }
 
@@ -183,7 +184,7 @@ pub fn respondJson(st: *ServeState, req: *std.http.Server.Request, status: std.h
     try req.respond(body, .{ .status = status, .keep_alive = keep, .extra_headers = serveJsonHeaders(st) });
 }
 
-fn serveRequest(st: *ServeState, req: *std.http.Server.Request) !void {
+fn serveRequest(st: *ServeState, req: *std.http.Server.Request, transport: *Io.Writer) !void {
     const io = st.io;
     const gpa = st.gpa;
     // head strings are invalidated once the body reader starts — copy now.
@@ -237,9 +238,9 @@ fn serveRequest(st: *ServeState, req: *std.http.Server.Request) !void {
         const events_suffix = "/events";
         if (method == .GET and std.mem.endsWith(u8, id, events_suffix)) {
             id = id[0 .. id.len - events_suffix.len];
-            return serveFollow(st, req, id, from_query orelse 1);
+            return serveFollow(st, req, transport, id, from_query orelse 1);
         }
-        if (method == .POST) return serveMessage(st, req, id, from_query);
+        if (method == .POST) return serveMessage(st, req, transport, id, from_query);
         if (method == .DELETE) return serveDelete(st, req, id);
     }
     return respondJson(st, req, .not_found, "{\"error\":\"not found — see /v1/schema\"}");
@@ -258,7 +259,7 @@ pub fn freeSession(st: *ServeState, sess: *ServeSession) void {
 /// for that request (every type in serve_events.terminal_events).
 /// `?from=N` (or `"resume_from": N` in the body) replays persisted events with
 /// seq >= N first, so a reconnecting supervisor never has a hole.
-fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8, from_query: ?u64) !void {
+fn serveMessage(st: *ServeState, req: *std.http.Server.Request, transport: *Io.Writer, id: []const u8, from_query: ?u64) !void {
     const io = st.io;
     const gpa = st.gpa;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -283,13 +284,14 @@ fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8, 
     // A pure reconnect: replay + tail, send nothing new to the child. Answered
     // before the live-session lookup, because the session this client is
     // catching up on may belong to a bridge that is already dead.
-    if (std.mem.eql(u8, rtype, "reattach")) return serveFollow(st, req, id, from orelse 1);
+    if (std.mem.eql(u8, rtype, "reattach")) return serveFollow(st, req, transport, id, from orelse 1);
 
     st.mutex.lockUncancelable(io);
     const sess = st.find(id);
     st.mutex.unlock(io);
     const s = sess orelse return respondJson(st, req, .not_found, "{\"error\":\"no such session\"}");
     if (std.mem.eql(u8, rtype, "answer")) return serveAnswer(st, req, s, line, parsed.object);
+    if (std.mem.eql(u8, rtype, "cancel")) return serveCancel(st, req, s, line);
 
     // `dead` rather than dropping inline: serveDrop FREES the session, and the
     // busy/in_flight defers below would then run through a dangling pointer.
@@ -297,19 +299,16 @@ fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8, 
     {
         s.busy.lockUncancelable(io); // serialize requests per session
         defer s.busy.unlock(io);
+        s.in_flight.store(true, .release);
+        defer s.in_flight.store(false, .release);
 
-        {
-            var wb: [1024]u8 = undefined;
-            var cw = s.child.stdin.?.writerStreaming(io, &wb);
-            cw.interface.writeAll(line) catch return respondJson(st, req, .bad_gateway, "{\"error\":\"session process is gone\"}");
-            cw.interface.writeByte('\n') catch return error.WriteFailed;
-            cw.interface.flush() catch return respondJson(st, req, .bad_gateway, "{\"error\":\"session process is gone\"}");
-        }
+        writeChildLine(io, s, line) catch return respondJson(st, req, .bad_gateway, "{\"error\":\"session process is gone\"}");
 
         var stream_buf: [16 * 1024]u8 = undefined;
         var bw = req.respondStreaming(&stream_buf, .{
             .respond_options = .{ .extra_headers = serveNdjsonHeaders(st) },
         }) catch return error.WriteFailed;
+        transport.flush() catch return error.WriteFailed;
         // Replayed events all predate the request we just sent, so the client
         // sees one ordered, gap-free sequence: the tail it missed, then the
         // live turn.
@@ -319,14 +318,18 @@ fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8, 
                 _ = events.replay(&bw.writer, data, n) catch {
                     client_alive = false;
                 };
-                bw.flush() catch {
+                bw.writer.flush() catch {
+                    client_alive = false;
+                };
+                if (client_alive) bw.flush() catch {
+                    client_alive = false;
+                };
+                if (client_alive) transport.flush() catch {
                     client_alive = false;
                 };
             } else |_| {}
         }
 
-        s.in_flight.store(true, .release);
-        defer s.in_flight.store(false, .release);
         while (true) {
             const ev_line = s.rdr.interface.takeDelimiter('\n') catch |err| switch (err) {
                 error.StreamTooLong => break serveAbort(s, &bw, client_alive, "event line exceeded the 1 MiB serve cap — session closed", &dead),
@@ -347,7 +350,13 @@ fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8, 
                 if (client_alive) bw.writer.writeByte('\n') catch {
                     client_alive = false;
                 };
+                if (client_alive) bw.writer.flush() catch {
+                    client_alive = false;
+                };
                 if (client_alive) bw.flush() catch {
+                    client_alive = false;
+                };
+                if (client_alive) transport.flush() catch {
                     client_alive = false;
                 }; // deliver each event as it happens
             }
@@ -356,7 +365,10 @@ fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8, 
                 break;
             }
         }
-        if (client_alive and !dead) bw.end() catch {};
+        if (client_alive and !dead) {
+            bw.end() catch {};
+            transport.flush() catch {};
+        }
     }
     if (dead) serveDrop(st, s); // after the defers above are done with `s`
 }
@@ -384,7 +396,7 @@ fn serveAbort(s: *ServeSession, bw: anytype, client_alive: bool, message: []cons
 /// request is in flight. Takes no protocol lock and never writes to the child,
 /// so it works while another connection is mid-turn — that connection keeps
 /// draining the child into the log even after ITS socket dies.
-fn serveFollow(st: *ServeState, req: *std.http.Server.Request, id: []const u8, from: u64) !void {
+fn serveFollow(st: *ServeState, req: *std.http.Server.Request, transport: *Io.Writer, id: []const u8, from: u64) !void {
     const io = st.io;
     const gpa = st.gpa;
     if (!events.validName(id)) return respondJson(st, req, .bad_request, "{\"error\":\"bad session id\"}");
@@ -412,6 +424,7 @@ fn serveFollow(st: *ServeState, req: *std.http.Server.Request, id: []const u8, f
     var bw = req.respondStreaming(&stream_buf, .{
         .respond_options = .{ .extra_headers = serveNdjsonHeaders(st) },
     }) catch return error.WriteFailed;
+    transport.flush() catch return error.WriteFailed;
     var next_from = from;
     var idle: usize = 0;
     // A terminal event ends this client's watch, but only once the tape is
@@ -425,7 +438,9 @@ fn serveFollow(st: *ServeState, req: *std.http.Server.Request, id: []const u8, f
             const replayed = events.replay(&bw.writer, chunk, next_from) catch break;
             if (replayed.emitted > 0) {
                 next_from = replayed.last_seq + 1;
+                bw.writer.flush() catch break;
                 bw.flush() catch break;
+                transport.flush() catch break;
                 ended = replayed.terminal;
             }
             idle = 0;
@@ -439,6 +454,7 @@ fn serveFollow(st: *ServeState, req: *std.http.Server.Request, id: []const u8, f
         io.sleep(.fromMilliseconds(follow_poll_ms), .awake) catch break;
     }
     bw.end() catch return;
+    transport.flush() catch return;
 }
 
 /// Is a request streaming on this session right now? Read under the session
@@ -465,14 +481,28 @@ fn serveAnswer(st: *ServeState, req: *std.http.Server.Request, s: *ServeSession,
         return respondJson(st, req, .conflict, "{\"error\":\"answer call_id does not match active ask_user prompt\"}");
     }
 
-    var wb: [1024]u8 = undefined;
-    var cw = s.child.stdin.?.writerStreaming(io, &wb);
-    cw.interface.writeAll(line) catch return respondJson(st, req, .bad_gateway, "{\"error\":\"session process is gone\"}");
-    cw.interface.writeByte('\n') catch return error.WriteFailed;
-    cw.interface.flush() catch return respondJson(st, req, .bad_gateway, "{\"error\":\"session process is gone\"}");
+    writeChildLine(io, s, line) catch return respondJson(st, req, .bad_gateway, "{\"error\":\"session process is gone\"}");
     s.awaiting_answer = false;
     s.answer_call_id_len = 0;
     return respondJson(st, req, .ok, "{\"ok\":true,\"type\":\"answer\"}");
+}
+
+fn serveCancel(st: *ServeState, req: *std.http.Server.Request, s: *ServeSession, line: []const u8) !void {
+    if (!s.in_flight.load(.acquire))
+        return respondJson(st, req, .conflict, "{\"error\":\"no request is in flight\"}");
+    writeChildLine(st.io, s, line) catch
+        return respondJson(st, req, .bad_gateway, "{\"error\":\"session process is gone\"}");
+    return respondJson(st, req, .ok, "{\"ok\":true,\"type\":\"cancel\"}");
+}
+
+fn writeChildLine(io: Io, s: *ServeSession, line: []const u8) !void {
+    s.stdin_mu.lockUncancelable(io);
+    defer s.stdin_mu.unlock(io);
+    var buf: [1024]u8 = undefined;
+    var writer = s.child.stdin.?.writerStreaming(io, &buf);
+    try writer.interface.writeAll(line);
+    try writer.interface.writeByte('\n');
+    try writer.interface.flush();
 }
 
 fn serveUpdateAnswerState(io: Io, s: *ServeSession, line: []const u8) void {
