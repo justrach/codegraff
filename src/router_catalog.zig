@@ -29,7 +29,7 @@ const cache_ttl_ms: i64 = 6 * 60 * 60 * 1000;
 var attempted: [provider.provider_specs.len]bool = @splat(false);
 var additional_attempted = false;
 
-const Snapshot = struct {
+pub const Snapshot = struct {
     models: []const pricing.ModelInfo,
     fetched_at_ms: i64 = 0,
     // Models-API cursor pagination (after_id/has_more/last_id). Absent on
@@ -176,7 +176,7 @@ pub fn parseModels(arena: Allocator, provider_id: []const u8, data: []const u8) 
 /// Catalog GET auth mirrors the provider's chat auth: OpenAI-style routers
 /// take a bearer token; Anthropic's /v1/models wants the same x-api-key +
 /// anthropic-version pair as the Messages endpoint itself.
-fn catalogHeaders(arena: Allocator, spec: provider.ProviderSpec, key: []const u8, buf: *[3]std.http.Header) ?[]const std.http.Header {
+pub fn catalogHeaders(arena: Allocator, spec: provider.ProviderSpec, key: []const u8, buf: *[3]std.http.Header) ?[]const std.http.Header {
     buf[0] = .{ .name = "Accept", .value = "application/json" };
     if (spec.auth == .x_api_key) {
         buf[1] = .{ .name = "x-api-key", .value = key };
@@ -190,11 +190,11 @@ fn catalogHeaders(arena: Allocator, spec: provider.ProviderSpec, key: []const u8
 
 /// The two cursor spellings the catalog walk speaks: Anthropic's Models API
 /// pages with `after_id`, Fireworks' AIP gateway with `pageToken`.
-const Cursor = union(enum) { after_id: []const u8, page_token: []const u8 };
+pub const Cursor = union(enum) { after_id: []const u8, page_token: []const u8 };
 
 /// Next page of a catalog walk: the cursor rides alongside the base URL's own
 /// query (limit=1000, or filter/pageSize for the AIP gateway).
-fn pageUrl(arena: Allocator, base: []const u8, cursor: ?Cursor) ?[]const u8 {
+pub fn pageUrl(arena: Allocator, base: []const u8, cursor: ?Cursor) ?[]const u8 {
     const c = cursor orelse return base;
     const sep: u8 = if (std.mem.indexOfScalar(u8, base, '?') != null) '&' else '?';
     return switch (c) {
@@ -253,7 +253,7 @@ fn fetch(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, 
     return .{ .models = rows.toOwnedSlice(arena) catch return null };
 }
 
-fn cacheDocument(io: Io, arena: Allocator, spec: provider.ProviderSpec, models: []const pricing.ModelInfo) ?[]const u8 {
+pub fn cacheDocument(io: Io, arena: Allocator, spec: provider.ProviderSpec, models: []const pricing.ModelInfo) ?[]const u8 {
     var aw: Io.Writer.Allocating = .init(arena);
     aw.writer.writeAll("{\"source\":") catch return null;
     var source_stringify: std.json.Stringify = .{ .writer = &aw.writer };
@@ -294,7 +294,7 @@ fn cachedSnapshot(io: Io, arena: Allocator, home: []const u8, spec: provider.Pro
 /// Swap the provider's slice for the discovered rows — the active list stays
 /// 1:1 with the provider's own catalog; baked rows return only when no live
 /// or cached snapshot exists (no key, offline first run).
-fn activate(arena: Allocator, spec: provider.ProviderSpec, discovered: []const pricing.ModelInfo) bool {
+pub fn activate(arena: Allocator, spec: provider.ProviderSpec, discovered: []const pricing.ModelInfo) bool {
     return pricing.activateProviderModels(arena, spec.id, discovered);
 }
 
@@ -375,210 +375,6 @@ pub fn loadCachedAll(io: Io, arena: Allocator, home: []const u8) void {
     }
 }
 
-test "OpenAI catalog configuration carries its models endpoint" {
-    const spec = provider.specFor("codegraff") orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(provider.ProviderSpec.CatalogKind.openai, spec.catalog);
-    try std.testing.expectEqualStrings("https://gateway.codegraff.com/v1/models", modelsUrl(spec));
-    for (provider.provider_specs) |candidate| {
-        if (candidate.catalog != .openai) continue;
-        try std.testing.expect(candidate.kind == .openai);
-        try std.testing.expect(candidate.models_url.len != 0);
-    }
-}
-
-test "parseModels is reusable for a newly configured router" {
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const snapshot = parseModels(state.allocator(), "new-router",
-        \\{"object":"list","data":[
-        \\ {"id":"glm-5.2","context_length":1000000,"supported_parameters":["reasoning","tools"]},
-        \\ {"id":"openai/gpt-oss:free","context_length":131072},
-        \\ {"id":"no-window"},
-        \\ {"id":"glm-5.2","context_length":128000},
-        \\ {"id":"bad id!","context_length":999}
-        \\]}
-    ) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 3), snapshot.models.len);
-    try std.testing.expectEqualStrings("new-router", snapshot.models[0].provider);
-    try std.testing.expectEqual(@as(u64, 1_000_000), snapshot.models[0].context);
-    try std.testing.expect(snapshot.models[0].supports_reasoning);
-    try std.testing.expectEqualStrings("openai/gpt-oss:free", snapshot.models[1].name);
-    try std.testing.expectEqual(pricing.default_context, snapshot.models[2].context);
-}
-
-test "fireworks catalog is live and parses the AIP gateway shape" {
-    const spec = provider.specFor("fireworks") orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(provider.ProviderSpec.CatalogKind.openai, spec.catalog);
-    try std.testing.expect(std.mem.indexOf(u8, modelsUrl(spec), "accounts/fireworks/models") != null);
-
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const snapshot = parseModels(state.allocator(), "fireworks",
-        \\{"models":[
-        \\ {"name":"accounts/fireworks/models/glm-5p2","displayName":"GLM 5.2","contextLength":1048576},
-        \\ {"name":"accounts/fireworks/models/no-window"},
-        \\ {"name":"accounts/fireworks/models/glm-5p2","contextLength":128000}
-        \\],"nextPageToken":"tok-page-2","totalSize":3}
-    ) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 2), snapshot.models.len); // the duplicate id drops
-    try std.testing.expectEqualStrings("accounts/fireworks/models/glm-5p2", snapshot.models[0].name);
-    try std.testing.expectEqual(@as(u64, 1_048_576), snapshot.models[0].context); // camelCase contextLength read
-    try std.testing.expectEqual(pricing.default_context, snapshot.models[1].context); // omitted + no baked match → default
-    try std.testing.expect(snapshot.has_more);
-    try std.testing.expectEqualStrings("tok-page-2", snapshot.page_token.?);
-
-    // The walk spells the cursor the gateway's way, not Anthropic's.
-    const url = pageUrl(state.allocator(), modelsUrl(spec), .{ .page_token = "tok-page-2" }).?;
-    try std.testing.expect(std.mem.indexOf(u8, url, "&pageToken=tok-page-2") != null);
-    try std.testing.expect(std.mem.indexOf(u8, url, "after_id") == null);
-}
-
-test "parseModels round-trips the generic cache shape" {
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const snapshot = parseModels(state.allocator(), "router",
-        \\{"fetched_at_ms":1700000000000,
-        \\ "models":[{"name":"minimax-m3","context":1000000,"supports_reasoning":true}]}
-    ) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(i64, 1_700_000_000_000), snapshot.fetched_at_ms);
-    try std.testing.expectEqualStrings("router", snapshot.models[0].provider);
-    try std.testing.expect(snapshot.models[0].supports_reasoning);
-}
-
-test "cache document serializes every model name as valid JSON" {
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const arena = state.allocator();
-    const spec = provider.specFor("codegraff") orelse return error.TestUnexpectedResult;
-    const models = [_]pricing.ModelInfo{
-        .{ .provider = spec.id, .name = "first", .context = 128_000 },
-        .{ .provider = spec.id, .name = "quote\"model", .context = 256_000, .supports_reasoning = true },
-    };
-    const document = cacheDocument(std.testing.io, arena, spec, &models) orelse
-        return error.TestUnexpectedResult;
-    const value = try std.json.parseFromSliceLeaky(Value, arena, document, .{});
-    const cached_models = value.object.get("models") orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 2), cached_models.array.items.len);
-    const second = cached_models.array.items[1].object;
-    try std.testing.expectEqualStrings("quote\"model", second.get("name").?.string);
-    try std.testing.expect(second.get("supports_reasoning").?.bool);
-}
-
-test "Anthropic catalog is live and authenticates like Messages" {
-    const spec = provider.specFor("anthropic") orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(provider.ProviderSpec.CatalogKind.anthropic, spec.catalog);
-    try std.testing.expect(dynamic(spec));
-    try std.testing.expectEqualStrings("https://api.anthropic.com/v1/models?limit=1000", modelsUrl(spec));
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    var buf: [3]std.http.Header = undefined;
-    const headers = catalogHeaders(state.allocator(), spec, "sk-test", &buf) orelse
-        return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 3), headers.len);
-    try std.testing.expectEqualStrings("x-api-key", headers[1].name);
-    try std.testing.expectEqualStrings("sk-test", headers[1].value);
-    try std.testing.expectEqualStrings("anthropic-version", headers[2].name);
-    // Bearer routers are unchanged by the x-api-key branch.
-    const router = provider.specFor("codegraff") orelse return error.TestUnexpectedResult;
-    const bearer = catalogHeaders(state.allocator(), router, "key", &buf) orelse
-        return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 2), bearer.len);
-    try std.testing.expectEqualStrings("Authorization", bearer[1].name);
-}
-
-test "Anthropic /v1/models rows inherit baked context windows" {
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    // A row declaring max_input_tokens uses it as the window — and never its
-    // sibling max_tokens, which is the OUTPUT cap (128k on Opus 5). A row
-    // without limits takes its alias family's baked window; an unknown family
-    // falls back to the conservative default.
-    const snapshot = parseModels(state.allocator(), "anthropic",
-        \\{"data":[
-        \\ {"type":"model","id":"claude-opus-5","display_name":"Claude Opus 5",
-        \\  "max_input_tokens":1000000,"max_tokens":128000},
-        \\ {"type":"model","id":"claude-opus-4-8-20260115","display_name":"Claude Opus 4.8"},
-        \\ {"type":"model","id":"claude-haiku-4-5-20251001","display_name":"Claude Haiku 4.5"},
-        \\ {"type":"model","id":"claude-nova-9","display_name":"Claude Nova 9"}
-        \\],"has_more":false}
-    ) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 4), snapshot.models.len);
-    try std.testing.expectEqual(@as(u64, 1_000_000), snapshot.models[0].context);
-    try std.testing.expectEqual(@as(u64, 1_000_000), snapshot.models[1].context);
-    try std.testing.expectEqual(@as(u64, 200_000), snapshot.models[2].context);
-    try std.testing.expectEqual(pricing.default_context, snapshot.models[3].context);
-}
-
-test "Anthropic discovery keeps the active slice 1:1 with the live list" {
-    const saved = pricing.active_model_table;
-    defer pricing.active_model_table = saved;
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const spec = provider.specFor("anthropic") orelse return error.TestUnexpectedResult;
-    const discovered = [_]pricing.ModelInfo{
-        .{ .provider = "anthropic", .name = "claude-opus-5", .context = 1_000_000 },
-        .{ .provider = "anthropic", .name = "claude-opus-4-8", .context = 1_000_000 },
-    };
-    try std.testing.expect(activate(state.allocator(), spec, &discovered));
-    // Exactly the live rows — a baked row the API no longer lists is gone,
-    // so the picker shows the official catalog and nothing else.
-    var count: usize = 0;
-    for (pricing.models()) |m| {
-        if (std.mem.eql(u8, m.provider, "anthropic")) count += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 2), count);
-    try std.testing.expect(pricing.providerModelInTable("anthropic", "claude-opus-5"));
-    try std.testing.expect(!pricing.providerModelInTable("anthropic", "claude-sonnet-4-5"));
-    try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("anthropic", "claude-opus-5"));
-    // Other providers' slices are untouched.
-    try std.testing.expect(pricing.providerModelInTable("codegraff", "claude-opus-4.8"));
-}
-
-test "Models-API cursor pagination is followed 1:1 with the docs" {
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const arena = state.allocator();
-    // parseModels surfaces the after_id/has_more/last_id scheme (the Models
-    // API does NOT use page/next_page — see "API overview → Pagination").
-    const page = parseModels(arena, "anthropic",
-        \\{"data":[{"type":"model","id":"claude-opus-5","max_input_tokens":1000000,"max_tokens":128000}],
-        \\ "has_more":true,"first_id":"claude-opus-5","last_id":"claude-opus-5"}
-    ) orelse return error.TestUnexpectedResult;
-    try std.testing.expect(page.has_more);
-    try std.testing.expectEqualStrings("claude-opus-5", page.last_id orelse return error.TestUnexpectedResult);
-    // A final page reports has_more:false; the cache shape carries neither.
-    const last = parseModels(arena, "anthropic",
-        \\{"data":[{"id":"claude-haiku-4-5"}],"has_more":false,"last_id":"claude-haiku-4-5"}
-    ) orelse return error.TestUnexpectedResult;
-    try std.testing.expect(!last.has_more);
-    const cache = parseModels(arena, "anthropic",
-        \\{"fetched_at_ms":1,"models":[{"name":"claude-opus-5","context":1000000}]}
-    ) orelse return error.TestUnexpectedResult;
-    try std.testing.expect(!cache.has_more);
-    try std.testing.expect(cache.last_id == null);
-    // after_id joins the base URL's existing query string.
-    try std.testing.expectEqualStrings(
-        "https://api.anthropic.com/v1/models?limit=1000&after_id=claude-opus-5",
-        pageUrl(arena, "https://api.anthropic.com/v1/models?limit=1000", .{ .after_id = "claude-opus-5" }) orelse return error.TestUnexpectedResult,
-    );
-    try std.testing.expectEqualStrings(
-        "https://example.com/models?after_id=m1",
-        pageUrl(arena, "https://example.com/models", .{ .after_id = "m1" }) orelse return error.TestUnexpectedResult,
-    );
-    try std.testing.expectEqualStrings("base", pageUrl(arena, "base", null) orelse return error.TestUnexpectedResult);
-}
-
-test "router discovery replaces only its provider slice" {
-    const saved = pricing.active_model_table;
-    defer pricing.active_model_table = saved;
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const discovered = [_]pricing.ModelInfo{
-        .{ .provider = "codegraff", .name = "kimi-k3", .context = 1_048_576 },
-    };
-    try std.testing.expect(pricing.activateProviderModels(state.allocator(), "codegraff", &discovered));
-    try std.testing.expect(pricing.providerModelInTable("codegraff", "kimi-k3"));
-    try std.testing.expect(!pricing.providerModelInTable("codegraff", "claude-opus-4.8"));
-    try std.testing.expect(pricing.providerModelInTable("anthropic", "claude-opus-4-8"));
-    try std.testing.expect(pricing.providerModelInTable("codex", "gpt-5.6-sol"));
+test {
+    _ = @import("router_catalog_tests.zig");
 }
