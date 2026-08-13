@@ -38,6 +38,7 @@ const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: which listed MC
 const subagent = @import("subagent.zig"); // #276 P0-3: g_agent_jobs, for /jobs
 
 const pricing = @import("pricing.zig");
+const obs = @import("obs.zig");
 const default_context = pricing.default_context;
 const g_cost = &pricing.g_cost;
 const models_cache = @import("models_cache.zig");
@@ -226,7 +227,12 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (std.mem.eql(u8, line, "/cost")) {
+    if (std.mem.eql(u8, line, "/debug")) {
+        try obs.renderHud(out);
+        try out.flush();
+        return true;
+    }
+    if (std.mem.eql(u8, line, "/cost") or std.mem.eql(u8, line, "/usage")) {
         const c = g_cost.snap(root.io);
         if (c.api_calls == 0) {
             try out.writeAll("no API calls yet this session\n");
@@ -255,6 +261,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.startsWith(u8, line, "/mcp")) {
         const arg = std.mem.trim(u8, line["/mcp".len..], " \t");
         const reg = root.registry.?; // always present now
+        if (@import("mcp_boot.zig").joinPending(reg)) {
+            root.invalidateRootTools();
+            try root.ensureRootTools(root.provider.kind);
+        }
         if (std.mem.startsWith(u8, arg, "add")) {
             // /mcp add <name> <command> [args...] or <name> --url <URL>
             var it = std.mem.tokenizeAny(u8, arg["add".len..], " \t");

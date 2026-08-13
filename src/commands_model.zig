@@ -234,8 +234,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.eql(u8, line, "/compact")) {
-        _ = root.compact() catch |err| switch (err) {
-            error.ApiError, error.EmptySummary, error.IncompleteSummary => {},
+        _ = root.manualCompact() catch |err| switch (err) {
+            error.ApiError, error.EmptySummary, error.IncompleteSummary, error.InvalidCompactionResponse => {},
             else => |e| return e,
         };
         return true;

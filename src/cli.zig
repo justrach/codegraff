@@ -21,6 +21,12 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.253
+    \\  • /compact uses first-party OpenAI compaction for direct API-key and Codex sessions, with transactional local fallback
+    \\  • Kimi cache affinity plus concurrent catalogs and MCP startup remove avoidable serial latency
+    \\  • @codegraff/sdk ships its platform binary and production Harness/Remote controls for npm embedding
+    \\  • The REPL gains quiet normal output, /debug and read_file contains=; desktop agents move into focused control with new branding
+    \\
     \\0.0.252
     \\  • Grok models come from a live api.x.ai /v1/models fetch every load — new rollouts no longer wait for a release
     \\  • SuperGrok OAuth tokens send X-XAI-Token-Auth like grok-build, so login sessions can actually call the API
@@ -167,7 +173,8 @@ pub const usage_text =
     \\native vision block on vision models; other files paste as their path),
     \\esc interrupts a streaming response, "always allow" persists to
     \\.harness/settings.json.
-    \\telemetry: anonymous OTLP usage stats are sent only when
+    \\telemetry: /debug is a local content-free HUD (session/turn/tool
+    \\decisions). Anonymous OTLP usage stats leave the process only when
     \\OTEL_EXPORTER_OTLP_ENDPOINT (or GRAFF_OTEL_ENDPOINT) is set; opt out
     \\with --no-telemetry or GRAFF_NO_TELEMETRY=1. GRAFF_TELEMETRY_KEY sends
     \\an optional x-harness-key token to the configured collector.

@@ -10,6 +10,28 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.253 (2026-08-14)
+
+- Explicit `/compact` uses OpenAI's standalone Responses compact endpoint for
+  direct API-key sessions and supported in-stream compaction for Codex, with
+  transactional history replacement and local fallback; non-OpenAI providers
+  remain local-only.
+- Kimi prompt-cache affinity, low-effort lookup routing, concurrent live-catalog
+  fetches, and concurrent/deferred MCP startup remove avoidable serial latency
+  while preserving deterministic catalog and tool ordering.
+- `@codegraff/sdk` ships its platform harness binary and production embedding
+  APIs for persistent turns, live events, controls, cancellation, and process
+  ownership, backed by packed-install and JSON integration coverage.
+- The normal REPL keeps recovered recap retries and verbose tool/startup details
+  out of the way; `/debug` provides a content-free HUD, `/usage` reports spend,
+  `read_file contains=` handles exact-key lookups in one bounded read, and
+  shared-worktree owners render as a structured callout.
+- The desktop app replaces the persistent agent overview column with compact
+  agent control and adopts the Codegraff emblem across web, desktop, Android,
+  and iOS assets.
+- Run-budget landing, Codex overload retry, xAI OAuth parity, and benchmark
+  fixture validation harden autonomous and release workflows.
+
 ## v0.0.252 (2026-08-13)
 
 - Grok models are discovered live: xAI joins the generic `/v1/models`

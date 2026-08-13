@@ -298,7 +298,7 @@ const LiveTurn = struct {
     fn run(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
         try self.root.messages.append(try messages_mod.textMessage(arena, "user", text));
-        if (telemetry.g_telem) |t| t.countTurn();
+        if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(text.len, std.math.maxInt(u32))), self.root.provider.model);
         return providers.runTurnWithFallback(self.root, self.keys, arena, null);
     }
 };

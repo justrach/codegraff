@@ -136,7 +136,7 @@ test "xAI catalog is live (grok-build parity: fetch /v1/models, never a baked-on
     try std.testing.expect(dynamic(spec));
     try std.testing.expect(alwaysLive(spec));
     try std.testing.expectEqualStrings("https://api.x.ai/v1/models", modelsUrl(spec));
-    // Catalog GET auth mirrors chat auth: plain bearer, like every OpenAI router.
+    // API-key catalog GET: plain bearer. OAuth login: + X-XAI-Token-Auth.
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
     var buf: [4]std.http.Header = undefined;
@@ -273,4 +273,11 @@ test "router discovery replaces only its provider slice" {
     try std.testing.expect(!pricing.providerModelInTable("codegraff", "claude-opus-4.8"));
     try std.testing.expect(pricing.providerModelInTable("anthropic", "claude-opus-4-8"));
     try std.testing.expect(pricing.providerModelInTable("codex", "gpt-5.6-sol"));
+}
+
+test "startup catalog loads fan out concurrently with Kimi" {
+    const src = @embedFile("router_catalog.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(fetchSpecTask") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(kimiFetchTask") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "fn spawnKimi") != null);
 }

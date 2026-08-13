@@ -235,7 +235,7 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             // Ultra preset → wire value `max`. #379: compaction summaries run
             // at low effort — a high-effort reasoner can complete with only
             // reasoning items and zero output text, i.e. an empty summary.
-            try s.write(if (self.compaction_request) "low" else if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
+            try s.write(if (self.compaction_request or self.server_compaction_request) "low" else if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
             try s.endObject();
             try s.objectField("include");
             try s.beginArray();

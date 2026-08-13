@@ -47,6 +47,7 @@ const tool_spill = @import("tool_spill.zig"); // #409: where an over-cap tool ou
 const trace = @import("trace.zig");
 const scoring = @import("scoring.zig");
 const telemetry = @import("telemetry.zig");
+const obs = @import("obs.zig");
 const util = @import("util.zig");
 const engine_sink = @import("engine_sink.zig"); // #429: startup's lines are typed events, not prints
 const engine_events = @import("engine_events.zig");
@@ -92,9 +93,6 @@ pub fn setupWorktreeAndBanner(
     preferred_provider: ?[]const u8,
     default_provider: provider_mod.Provider,
 ) !void {
-    // The main chat loop does not pass through repl_run.run(), so initialize
-    // its runtime diagnostics gate here alongside the startup diagnostics.
-    repl.g_debug = environ_map.get("GRAFF_REPL_DEBUG") != null;
     // Color only on an interactive terminal, and honor NO_COLOR. The palette
     // itself is a sink concern (#429); this only decides whether there is one.
     if (environ_map.get("NO_COLOR") == null and (Io.File.stdout().isTty(io) catch false)) {
@@ -342,6 +340,9 @@ pub fn initTelemetry(io: Io, gpa: Allocator, client: *std.http.Client, environ_m
             environ_map.get("GRAFF_OTEL_ENDPOINT") orelse
             default_telemetry_endpoint;
     const telem_home = keys_cli.homeEnv(environ_map) orelse "";
+    obs.reset();
+    obs.attach(io);
+    obs.export_endpoint = telem_endpoint;
     return .{
         .io = io,
         .gpa = gpa,
@@ -402,6 +403,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
             sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "ignoring ~/" ++ mcp_config.unsupported_rel_path ++ ": unsupported path — use ~/" ++ mcp_config.global_rel_path ++ " (global) or {s} (project)", .{mcp_config_path})));
     }
     const mcp_count = mcp_cli.countMcpServers(merged);
+    const defer_join = flags.effectiveYolo() and flags.oneshot_prompt == null and !json_mode;
     var connect_mcp = flags.yolo_flag or mcp_count == 0;
     if (mcp_count > 0 and !flags.yolo_flag and !json_mode and use_color) {
         sink.emit(io, .{ .mcp_consent_prompt = .{ .count = mcp_count } });
@@ -410,7 +412,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
         const ans = in.takeDelimiter('\n') catch null;
         connect_mcp = ans != null and ans.?.len > 0 and (ans.?[0] == 'y' or ans.?[0] == 'Y');
     }
-    var registry: mcp.Registry = if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") != null, environ_map) catch |err| inner: {
+    var registry: mcp.Registry = if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") != null, environ_map, defer_join) catch |err| inner: {
         sink.emit(io, .{ .session_notice = .{ .text = try std.fmt.allocPrint(arena, "[mcp] init failed: {t} — continuing without MCP", .{err}) } });
         if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;

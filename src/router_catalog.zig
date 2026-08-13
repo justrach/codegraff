@@ -2,7 +2,8 @@
 //!
 //! The workspace router is declared by `.graff/.config.router`; its catalog
 //! cache stays beside that config. xAI is always-live (never TTL-short-circuits).
-//! Catalog failures never prevent startup.
+//! Startup fans live GETs out concurrently (with Kimi) so REPL boot pays
+//! max(latency), not the sum. Catalog failures never prevent startup.
 //! Anthropic's `/v1/models` (catalog kind `.anthropic`) rides the same
 //! machinery so new Claude releases appear without a rebuild. It differs in
 //! auth (x-api-key + anthropic-version, like Messages) and in pagination:
@@ -20,6 +21,7 @@ const Value = std.json.Value;
 const root = @import("main.zig");
 const catalog_selection = @import("catalog_selection.zig");
 const credential_store = @import("credential_store.zig");
+const kimi_catalog = @import("kimi_catalog.zig");
 const pricing = @import("pricing.zig");
 const provider = @import("provider.zig");
 const serde = @import("serde.zig");
@@ -30,7 +32,7 @@ const cache_ttl_ms: i64 = 6 * 60 * 60 * 1000;
 var attempted: [provider.provider_specs.len]bool = @splat(false);
 var additional_attempted = false;
 
-/// Providers whose live /models list must win over a disk cache every load.
+/// Providers whose live `/models` list must win over a disk cache every load.
 /// xAI ships new Grok ids often enough that a 6h snapshot is actively wrong;
 /// always hit api.x.ai and only fall back to cache/baked when offline.
 pub fn alwaysLive(spec: provider.ProviderSpec) bool {
@@ -183,7 +185,8 @@ pub fn parseModels(arena: Allocator, provider_id: []const u8, data: []const u8) 
 
 /// Catalog GET auth mirrors the provider's chat auth: OpenAI-style routers
 /// take a bearer token; Anthropic's /v1/models wants the same x-api-key +
-/// anthropic-version pair as the Messages endpoint itself.
+/// anthropic-version pair as the Messages endpoint itself. xAI OAuth user
+/// tokens also need X-XAI-Token-Auth (same as chat — GrokAuthCredentials).
 pub fn catalogHeaders(arena: Allocator, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource, buf: *[4]std.http.Header) ?[]const std.http.Header {
     buf[0] = .{ .name = "Accept", .value = "application/json" };
     if (spec.auth == .x_api_key) {
@@ -313,6 +316,9 @@ pub fn activate(arena: Allocator, spec: provider.ProviderSpec, discovered: []con
 fn loadSpec(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource, force_refresh: bool) bool {
     if (!dynamic(spec) or key.len == 0) return false;
     const cached = cachedSnapshot(io, arena, home, spec);
+    // alwaysLive providers (xAI) never short-circuit on a fresh disk cache —
+    // every load tries the network so new Grok ids appear without waiting for
+    // TTL or `graff models refresh`. Cache remains offline fallback only.
     const skip_cache = force_refresh or alwaysLive(spec);
     if (!skip_cache) if (cached) |snapshot| {
         const age = util.unixMs(io) - snapshot.fetched_at_ms;
@@ -320,6 +326,8 @@ fn loadSpec(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, spec: pr
     };
     if (fetch(io, gpa, arena, spec, key, source)) |snapshot| {
         if (activate(arena, spec, snapshot.models)) {
+            // Still write for offline/`--schema` fallback, but never treat it as
+            // authoritative for alwaysLive providers on the next load.
             if (home.len != 0 or isAdditional(spec)) writeCache(io, arena, home, spec, snapshot.models);
             return true;
         }
@@ -345,14 +353,129 @@ fn ensureAdditional(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, 
     _ = loadSpec(io, gpa, arena, home, spec, key, keys.source(spec.id), false);
 }
 
+const FetchOutcome = struct {
+    spec: provider.ProviderSpec,
+    models: []const pricing.ModelInfo = &.{},
+    write_cache: bool = false,
+    arena_state: ?std.heap.ArenaAllocator = null,
+};
+
+fn retainModels(arena: Allocator, rows: []const pricing.ModelInfo) ?[]const pricing.ModelInfo {
+    const out = arena.alloc(pricing.ModelInfo, rows.len) catch return null;
+    for (rows, out) |src, *dst| {
+        dst.* = src;
+        dst.provider = arena.dupe(u8, src.provider) catch return null;
+        dst.name = arena.dupe(u8, src.name) catch return null;
+        if (src.support_efforts.len != 0) {
+            const efforts = arena.alloc([]const u8, src.support_efforts.len) catch return null;
+            for (src.support_efforts, efforts) |effort, *slot|
+                slot.* = arena.dupe(u8, effort) catch return null;
+            dst.support_efforts = efforts;
+        }
+        if (src.default_effort) |effort| dst.default_effort = arena.dupe(u8, effort) catch return null;
+    }
+    return out;
+}
+
+fn fetchSpecTask(io: Io, gpa: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource) FetchOutcome {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    const a = arena_state.allocator();
+    const snapshot = fetch(io, gpa, a, spec, key, source) orelse {
+        arena_state.deinit();
+        return .{ .spec = spec };
+    };
+    return .{
+        .spec = spec,
+        .models = snapshot.models,
+        .write_cache = home.len != 0 or isAdditional(spec),
+        .arena_state = arena_state,
+    };
+}
+
+fn spawnFetch(io: Io, gpa: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource) Io.Future(FetchOutcome) {
+    const args = .{ io, gpa, home, spec, key, source };
+    return io.concurrent(fetchSpecTask, args) catch io.async(fetchSpecTask, args);
+}
+
+fn finishFetch(io: Io, arena: Allocator, home: []const u8, outcome: FetchOutcome) void {
+    var task_arena = outcome.arena_state;
+    defer if (task_arena) |*ta| ta.deinit();
+    if (outcome.models.len > 0) {
+        const kept = retainModels(arena, outcome.models) orelse return;
+        if (activate(arena, outcome.spec, kept) and outcome.write_cache)
+            writeCache(io, arena, home, outcome.spec, kept);
+        return;
+    }
+    if (cachedSnapshot(io, arena, home, outcome.spec)) |snapshot|
+        _ = activate(arena, outcome.spec, snapshot.models);
+}
+
+fn cacheFresh(io: Io, arena: Allocator, home: []const u8, spec: provider.ProviderSpec) bool {
+    if (alwaysLive(spec)) return false;
+    const snapshot = cachedSnapshot(io, arena, home, spec) orelse return false;
+    const age = util.unixMs(io) - snapshot.fetched_at_ms;
+    return age >= 0 and age <= cache_ttl_ms and activate(arena, spec, snapshot.models);
+}
+
+const KimiOutcome = struct {
+    fetch: kimi_catalog.Fetch = .{},
+    arena_state: ?std.heap.ArenaAllocator = null,
+};
+
+fn kimiFetchTask(io: Io, gpa: Allocator, home: []const u8, access: []const u8) KimiOutcome {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    return .{
+        .fetch = kimi_catalog.fetch(io, gpa, arena_state.allocator(), home, access),
+        .arena_state = arena_state,
+    };
+}
+
+fn spawnKimi(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) ?Io.Future(KimiOutcome) {
+    if (!catalog_selection.startupMayUse(keys, "kimi", model_flag, saved)) return null;
+    if (!kimi_catalog.claimAttempt()) return null;
+    const access = keys.get("kimi") orelse "";
+    if (access.len == 0) {
+        kimi_catalog.commit(arena, &.{}, "baked fallback — no Kimi login");
+        return null;
+    }
+    const args = .{ io, gpa, home, access };
+    return io.concurrent(kimiFetchTask, args) catch io.async(kimiFetchTask, args);
+}
+
+/// Startup catalog load. Fresh disk caches activate inline; every live GET
+/// (xAI, stale Anthropic/Codegraff, Kimi, …) runs concurrently so boot pays
+/// the slowest host, not the sum. Table mutation stays on this thread.
 pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) void {
+    var kimi_task = spawnKimi(io, gpa, arena, home, keys, model_flag, saved);
+    defer if (kimi_task) |*fut| {
+        var outcome = fut.await(io);
+        defer if (outcome.arena_state) |*ta| ta.deinit();
+        kimi_catalog.commit(arena, outcome.fetch.rows, outcome.fetch.source);
+    };
+
+    var futures: [provider.provider_specs.len + 1]?Io.Future(FetchOutcome) = @splat(null);
     for (provider.provider_specs, 0..) |spec, index| {
         if (!dynamic(spec) or !catalog_selection.startupMayUse(keys, spec.id, model_flag, saved)) continue;
-        ensureAt(io, gpa, arena, home, keys, index);
+        if (attempted[index]) continue;
+        const key = keys.get(spec.id) orelse continue;
+        if (key.len == 0) continue;
+        attempted[index] = true;
+        if (cacheFresh(io, arena, home, spec)) continue;
+        futures[index] = spawnFetch(io, gpa, home, spec, key, keys.source(spec.id));
     }
-    if (provider.additional_router) |spec|
-        if (catalog_selection.startupMayUse(keys, spec.id, model_flag, saved))
-            ensureAdditional(io, gpa, arena, home, keys);
+    if (provider.additional_router) |spec| {
+        if (catalog_selection.startupMayUse(keys, spec.id, model_flag, saved) and !additional_attempted) {
+            if (keys.get(spec.id)) |key| if (key.len != 0) {
+                additional_attempted = true;
+                if (!cacheFresh(io, arena, home, spec))
+                    futures[provider.provider_specs.len] = spawnFetch(io, gpa, home, spec, key, keys.source(spec.id));
+            };
+        }
+    }
+    for (&futures) |*maybe| {
+        const outcome = if (maybe.*) |*fut| fut.await(io) else continue;
+        finishFetch(io, arena, home, outcome);
+    }
 }
 
 pub fn ensureForQuery(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, query: []const u8) void {
@@ -388,32 +511,6 @@ pub fn loadCachedAll(io: Io, arena: Allocator, home: []const u8) void {
     if (provider.additional_router) |spec| {
         const snapshot = cachedSnapshot(io, arena, home, spec) orelse return;
         _ = activate(arena, spec, snapshot.models);
-    }
-}
-
-pub fn fillDynamicKeys(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, environ_map: anytype, keys: *provider.Keys) void {
-    const oauth = @import("oauth.zig");
-    const keys_cli = @import("keys_cli.zig");
-    for (provider.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
-        if (!dynamic(spec)) continue;
-        const login = switch (spec.login) {
-            .xai_device => oauth.loadXaiOAuth(io, gpa, arena, home, false, null),
-            .kimi_device => oauth.loadKimiOAuth(io, gpa, arena, home, false, null),
-            .codegraff_device => oauth.loadCodegraffKey(io, arena, home),
-            else => null,
-        };
-        if (login) |tok| {
-            value.* = tok;
-            source.* = .login;
-            continue;
-        }
-        if (environ_map.get(spec.env_key)) |env_key| {
-            value.* = env_key;
-            source.* = .environment;
-        } else if (keys_cli.loadStoredKey(io, arena, home, spec.id)) |stored| {
-            value.* = stored;
-            source.* = .stored;
-        }
     }
 }
 

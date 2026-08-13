@@ -39,6 +39,7 @@ const Agent = agent_mod.Agent;
 
 const engine_events = @import("engine_events.zig");
 const EngineEvent = engine_events.EngineEvent;
+const obs = @import("obs.zig");
 const protocol_seq = @import("protocol_seq.zig");
 const render = @import("agent_stream_render.zig");
 const tool_render = @import("agent_tool_render.zig"); // slice 1c: the tool cluster's terminal half
@@ -75,6 +76,7 @@ pub const EngineSink = struct {
     /// construction — an agent with no writer gets a non-durable vtable — so
     /// emitters need no `out == null` guard of their own.
     pub fn emit(self: EngineSink, io: Io, ev: EngineEvent) void {
+        obs.note(ev);
         const reserve = self.vt.durable and engine_events.durable(ev);
         if (reserve and main_mod.json_mode) {
             // Reserving outside the lock could put a smaller seq on the wire
@@ -143,6 +145,10 @@ pub fn enableColor() void {
     session_render.enableColor();
 }
 
+/// Set by a fullscreen frontend (TUI/) so TuiSink never draws on stdout —
+/// that would fight the alt-screen. Text goes to `a.out` (the pane buffer).
+pub var hosted_frontend: bool = false;
+
 const tui_vtable: VTable = .{ .emit = tuiEmit, .durable = false };
 const json_vtable: VTable = .{ .emit = jsonEmit, .durable = true };
 /// Same writer, nothing to write to: see jsonSink.
@@ -163,6 +169,7 @@ fn lifecycleEmit(ctx: *anyopaque, ev: Stamped) void {
 /// branch is the old inline agent_stream.zig code path, gate for gate.
 fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
     const a: *Agent = @ptrCast(@alignCast(ctx));
+    if (hosted_frontend) return hostedEmit(a, ev.event);
     switch (ev.event) {
         .stream_begin => render.spinnerStart(a),
         // Reasoning streams into the live dimmed "Thinking" block when
@@ -237,8 +244,8 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         // the one file down here that still reaches the palette; the moments
         // the terminal never drew (the dispatch/close brackets, refusals) are
         // silent rather than absent from the vocabulary.
-        .tool_call_announced => |t| tool_render.toolUseLine(a, t),
-        .tool_result => |r| tool_render.toolResultLine(a, r),
+        .tool_call_announced => |t| if (repl.g_debug) tool_render.toolUseLine(a, t) else tool_render.toolCompactUse(a, t.name),
+        .tool_result => |r| if (repl.g_debug) tool_render.toolResultLine(a, r) else tool_render.toolCompactResult(a, r),
         .tool_call_started, .tool_call_finished, .tool_rejected => {},
         .parallel_batch_started => |b| if (repl.g_debug) tool_render.parallelBatchStarted(a, b.count),
         .parallel_batch_finished => |b| if (repl.g_debug) tool_render.parallelBatchFinished(a, b),
@@ -270,6 +277,30 @@ fn notice(a: *Agent, text: []const u8) void {
     const w = a.out orelse return;
     w.writeAll(text) catch return;
     w.flush() catch {};
+}
+
+fn hostedEmit(a: *Agent, ev: EngineEvent) void {
+    const w = a.out orelse return;
+    switch (ev) {
+        .text_delta, .tool_arg_delta => |d| {
+            w.writeAll(d.text) catch {};
+            w.flush() catch {};
+        },
+        .completion_text, .todo_list_updated => |t| {
+            w.writeAll(t.text) catch {};
+            w.writeAll("\n") catch {};
+            w.flush() catch {};
+        },
+        .tool_call_announced => |t| {
+            w.print("⚙ {s}\n", .{t.name}) catch {};
+            w.flush() catch {};
+        },
+        .tool_result => |r| {
+            w.print("{s} {s}\n", .{ if (r.is_error) "✗" else "✓", r.name }) catch {};
+            w.flush() catch {};
+        },
+        else => {},
+    }
 }
 
 /// The existing --json wire. Only the durable events have a shape; giving a

@@ -149,8 +149,8 @@ pub const Provider = struct {
     account: []const u8 = "", // ChatGPT account id, codex/responses only
     source: Keys.CredentialSource = .none, // #148: how api_key was obtained — only .login tokens auto-refresh
 
-    // Wire format. `responses` is the first-party OpenAI Responses API as served
-    // by both the Platform endpoint and ChatGPT backend — input items, not chat messages.
+    // Wire format. `responses` is the first-party OpenAI Responses API (direct
+    // API key or ChatGPT/Codex login) — input items, not chat messages.
     pub const Kind = enum { anthropic, openai, responses };
     pub const Auth = enum { x_api_key, bearer };
 

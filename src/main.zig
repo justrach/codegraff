@@ -113,9 +113,11 @@ test { // unit_tests' root is main.zig only, so reference every split-out module
     _ = mainloop;
     _ = args;
     _ = startup;
+    _ = @import("startup_keys.zig");
     _ = startup_timing;
     _ = session_start;
     _ = session_run;
+    _ = @import("obs_cost_test.zig");
     _ = provider_mod;
     _ = agent_mod;
 }
@@ -404,10 +406,7 @@ pub fn main(init: std.process.Init) !void {
         for (approvals.plan_read_roots.items) |p| gpa.free(p);
         approvals.plan_read_roots.deinit(gpa);
     }
-
-    // Root system-prompt layering (base + AGENTS.md/HARNESS.md/CLAUDE.md + --append-system-prompt + active-skill lines + connected-MCP notes) lives
-    // in startup.zig as buildSystemPrompt() — pure over io/arena, returns the composed base by value. buildRootAgent derives every prompt variant
-    // from it via prompts.setSystemPrompts() (#326).
+    // buildSystemPrompt layers the base, project instructions, overrides, skills, and MCP notes.
     const sys_normal = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null or init.environ_map.get("GRAFF_REPL_DEBUG") == null, (flags.oneshot_prompt != null or !(Io.File.stdin().isTty(io) catch true)) and !flags.effectiveYolo(), mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"), init.environ_map);
     boot.mark(io, "system prompt");
     session_run.learningNotice(io, arena, init.environ_map, out, json_mode or flags.oneshot_prompt != null);
