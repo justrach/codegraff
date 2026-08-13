@@ -28,10 +28,17 @@ jobs:
         with:
           node-version: 22
 
-      - name: TypeScript SDK validation
+      - uses: oven-sh/setup-bun@v2
+
+      - name: TypeScript SDK test, typecheck, build, and package smoke
+        working-directory: sdk/ts
         run: |
-          node -e "JSON.parse(require('fs').readFileSync('sdk/ts/package.json','utf8')); console.log('package.json ok')"
-          node --experimental-strip-types -e "import('./sdk/ts/harness.ts').then(m => { if (!m.Harness || !m.runAgent || !m.MODELS) throw new Error('missing exports'); console.log('ts sdk ok:', m.MODELS.length, 'models'); })"
+          npm install --ignore-scripts
+          bun test
+          npm run typecheck
+          npm run build
+          npm pack --dry-run
+          node -e "import('./dist/harness.js').then(m => { if (!m.Harness || !m.runAgent || !m.MODELS) throw new Error('missing exports'); console.log('ts sdk ok:', m.MODELS.length, 'models'); })"
 
   # Zig build / fmt / test + SDK drift, pinned to the exact 0.17 dev build the
   # codebase targets.
@@ -76,8 +83,10 @@ jobs:
       - name: Concurrent operational trace isolation and JSONL integrity
         run: python3 scripts/test-run-isolation.py zig-out/bin/graff
 
-      - name: JSON live-control protocol test
-        run: python3 scripts/test-json-controls.py zig-out/bin/graff
+      - name: JSON live-control and mid-turn cancellation tests
+        run: |
+          python3 scripts/test-json-controls.py zig-out/bin/graff
+          python3 scripts/test-json-cancel.py zig-out/bin/graff
 
       - name: Isolated read-only review regression
         run: python3 scripts/test-review-mode.py zig-out/bin/graff
@@ -135,6 +144,9 @@ jobs:
 
       - name: PTY /goal autonomous collapse wiring test
         run: python3 scripts/test-pty-goal-loop.py zig-out/bin/graff
+
+      - name: PTY peer-channel delivery smoke test (#469)
+        run: python3 scripts/test-pty-peer-channel.py zig-out/bin/graff
 
       - name: AI title and first turn run in parallel
         run: python3 scripts/test-title-parallel.py zig-out/bin/graff
