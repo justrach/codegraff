@@ -12,6 +12,7 @@ const render_mod = @import("render.zig");
 const theme_mod = @import("theme.zig");
 const turn = @import("turn.zig");
 const tty = @import("tty.zig");
+const traj = @import("traj.zig");
 const Model = app.Model;
 
 pub const RunOpts = struct {
@@ -57,10 +58,11 @@ pub fn run(
     const w = &stdout.interface;
     // 1000/1006: click + wheel as 64/65. Not 1003h — motion floods leak as text.
     // 2004: bracketed paste. 7l: no autowrap into the prompt.
-    // >11u: kitty disambiguate + event types + all-keys (Cmd+Delete / Super latch).
+    // >31u: kitty disambiguate + events + alternates + all-keys + text (Shift+9 is "(").
     // >4;2m: xterm modifyOtherKeys so Super+Backspace also arrives as CSI 27;9;127~.
-    w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l\x1b[>11u\x1b[>4;2m") catch {};
+    w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l\x1b[>31u\x1b[>4;2m") catch {};
     w.flush() catch {};
+    traj.open(io);
     defer {
         w.writeAll("\x1b[>4;0m\x1b[<u\x1b[?7h\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l") catch {};
         w.flush() catch {};
@@ -107,6 +109,7 @@ pub fn run(
         if (!tty.poll(wait)) continue;
         const got = tty.readStdin(inbuf[pending_len..]);
         const n = pending_len + got;
+        if (got > 0) traj.note(io, m.now_ms, inbuf[pending_len..n]);
         if (n == 0) {
             pending_len = 0;
             continue;
@@ -128,6 +131,11 @@ pub fn run(
             pending_len = rest;
         } else pending_len = 0;
     }
+    if (prev.len != 0) {
+        const vis = @import("dump.zig").visible(gpa, prev) catch prev;
+        defer if (vis.ptr != prev.ptr) gpa.free(vis);
+        traj.snap(io, m.now_ms, vis);
+    }
 }
 
 fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
@@ -138,7 +146,7 @@ fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
         std.posix.raise(std.posix.SIG.TSTP) catch {};
     }
     raw.* = tty.enterRaw() orelse raw.*;
-    w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l\x1b[>11u\x1b[>4;2m") catch {};
+    w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l\x1b[>31u\x1b[>4;2m") catch {};
     w.flush() catch {};
     _ = io;
 }
@@ -210,7 +218,7 @@ test "run loop enables click tracking and bracketed paste" {
     const sgr_on = [_]u8{ '?', '1', '0', '0', '6', 'h' };
     const paste_on = [_]u8{ '?', '2', '0', '0', '4', 'h' };
     const hover_on = [_]u8{ '?', '1', '0', '0', '3', 'h' };
-    const kitty_on = [_]u8{ '>', '1', '1', 'u' };
+    const kitty_on = [_]u8{ '>', '3', '1', 'u' };
     const wrap_off = [_]u8{ '?', '7', 'l' };
     try std.testing.expect(std.mem.indexOf(u8, src, &mouse_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &sgr_on) != null);

@@ -10,6 +10,17 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.256 (2026-08-15)
+
+- Leftover Kitty keyboard CSI (`3u7444;9u`) is ignored instead of typed or
+  turned into Escape/Ctrl+C (which cancelled the turn).
+- Shift+number keys type the punctuation they should (`Shift+9` is `(`,
+  `Shift+0` is `)`), including via Kitty CSI-u and modifyOtherKeys.
+- Interrupting a turn collapses Thinking immediately (Grok ❙ + static
+  "Thinking"; no leftover spinner next to ■ interrupted).
+- The pager appends raw stdin hex to `.graff/tui-traj.jsonl` and the last
+  visible frame on exit so the next leak can be replayed.
+
 ## v0.0.255 (2026-08-14)
 
 - The fullscreen pager no longer prints raw SGR mouse reports

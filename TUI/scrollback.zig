@@ -43,14 +43,16 @@ pub fn render(self: *const Model, a: std.mem.Allocator, width: usize, now_ms: u6
         i += 1;
     }
     if (self.pending) |job| {
-        if (job.stream.snapshot(a)) |live| {
-            if (!first) try out.append('\n');
-            first = false;
-            try out.appendSlice(try theme_mod.paint(a, self.theme().muted, try tail(a, strip(a, live), width, 4)));
-        }
-        if (self.steer_queue.items.len > 0) {
-            if (!first) try out.append('\n');
-            try out.appendSlice(try theme_mod.paint(a, self.theme().muted, try std.fmt.allocPrint(a, "  ↳ {d} queued · empty Enter sends now", .{self.steer_queue.items.len})));
+        if (!self.cancel_requested) {
+            if (job.stream.snapshot(a)) |live| {
+                if (!first) try out.append('\n');
+                first = false;
+                try out.appendSlice(try theme_mod.paint(a, self.theme().muted, try tail(a, strip(a, live), width, 4)));
+            }
+            if (self.steer_queue.items.len > 0) {
+                if (!first) try out.append('\n');
+                try out.appendSlice(try theme_mod.paint(a, self.theme().muted, try std.fmt.allocPrint(a, "  ↳ {d} queued · empty Enter sends now", .{self.steer_queue.items.len})));
+            }
         }
     }
     return out.items;
@@ -127,7 +129,7 @@ fn summary(self: *const Model, a: std.mem.Allocator, start: usize, end: usize, s
         if (isSearch(t)) searches += 1 else calls += 1;
     }
     const sel: []const u8 = if (selected) "› " else "  ";
-    const live = if (self.pending != null)
+    const live = if (self.pending != null and !self.cancel_requested)
         try std.fmt.allocPrint(a, "{s}❙{s} ", .{ if (flickerOn(self.now_ms)) th.accent else th.muted, theme_mod.reset })
     else
         "";
@@ -288,8 +290,9 @@ fn thinkingGlyph(now_ms: u64) []const u8 {
 }
 
 fn thinkingLabel(now_ms: u64) []const u8 {
-    const frames = [_][]const u8{ "thinking   ", "thinking.  ", "thinking.. ", "thinking..." };
-    return frames[(now_ms / 320) % frames.len];
+    _ = now_ms;
+    // Grok: static "Thinking" — motion is only the ❙ flicker.
+    return "Thinking";
 }
 
 fn firstLine(s: []const u8) []const u8 {
@@ -337,9 +340,9 @@ test "firstLine stops at newline" {
     try std.testing.expectEqualStrings("ab", firstLine("ab\ncd"));
 }
 
-test "thinking animation is a word, not a lone spinner" {
-    try std.testing.expect(std.mem.startsWith(u8, thinkingLabel(0), "thinking"));
-    try std.testing.expect(!std.mem.eql(u8, thinkingLabel(0), thinkingLabel(320)));
+test "thinking animation is Grok ❙ flicker plus static Thinking" {
+    try std.testing.expectEqualStrings("Thinking", thinkingLabel(0));
+    try std.testing.expectEqualStrings(thinkingLabel(0), thinkingLabel(320));
     try std.testing.expectEqualStrings("❙", thinkingGlyph(0));
     try std.testing.expect(flickerOn(0) != flickerOn(140));
 }
