@@ -7,7 +7,7 @@
     },
     "gui": {
       "name": "codegraff-gui",
-      "version": "0.0.166",
+      "version": "0.0.254",
       "dependencies": {
         "@base-ui/react": "^1.4.0",
         "@codegraff/diffs": "workspace:*",

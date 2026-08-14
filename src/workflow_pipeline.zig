@@ -313,7 +313,7 @@ pub fn run(ctx: ToolCtx, pv: Value, outer_context: []const u8) !ToolOutput {
 test "pipelineEstimate prices a chain per item, so a wide pipeline is not free" {
     // The study's refactor run: 4 items x 2 off-vocabulary stages. At the
     // median role cost that is 24 calls, which does not fit a cap-30 pool
-    // once the landing reserve (6) is held back from the ~27 that remain.
+    // once the landing reserve (7) is held back from the ~27 that remain.
     const roles = [_][]const u8{ "", "" };
     try std.testing.expectEqual(@as(u64, 24), pipelineEstimate(4, &roles));
     try std.testing.expect(!phase_budget.Ledger.init(30).fits(27, 24));

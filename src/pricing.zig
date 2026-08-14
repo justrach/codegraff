@@ -270,7 +270,7 @@ pub const model_table = [_]ModelInfo{
     // Kimi Code offline fallback. Authenticated startup replaces this slice
     // from /coding/v1/models; K3 is the current explicit generation while the
     // two compatibility aliases keep their smaller advertised window.
-    .{ .provider = "kimi", .name = "k3", .context = 1_048_576, .protocol = .kimi, .supports_reasoning = true, .support_efforts = &.{"max"}, .default_effort = "max" },
+    .{ .provider = "kimi", .name = "k3", .context = 1_048_576, .protocol = .kimi, .supports_reasoning = true, .support_efforts = &.{ "low", "high", "max" }, .default_effort = "high" },
     .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
     .{ .provider = "kimi", .name = "kimi-for-coding-highspeed", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
     .{ .provider = "moonshot", .name = "kimi-latest", .context = 131_072 },

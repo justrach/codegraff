@@ -6,6 +6,43 @@
 - **The font is not ours.** The terminal emulator owns the typeface — it loads the font, measures the cell grid, and rasterizes glyphs itself; the wire protocol has no sequence for an app to request a font. (xterm's legacy `OSC 50` is unimplemented by modern emulators and would hijack the user's whole terminal — do not emit it.) If a user asks to "change the REPL font," the answer is their terminal's config, e.g. `font-family = Geist Mono` (the site's typeface) in Ghostty — never a code change here.
 - **HDR/wide-gamut color is not ours either.** Truecolor SGR is 8-bit sRGB per channel — the protocol's ceiling; no sequence expresses Display P3 or EDR headroom, and macOS terminals clip app colors to SDR regardless of the panel. Pick values that look right on both P3 and sRGB displays (as `#059669` does); that's the whole lever.
 
+## Driving the pager (no PTY, no Ghostty window)
+
+Do not spawn `graff tui` or a terminal emulator to inspect or click the pager.
+The headless session is `TUI/sim.zig` (`Term`): the same `key.next` → `keys.handle`
+→ `render` → `dump.visible` path Ghostty uses on a real TTY.
+
+```zig
+var term: @import("sim.zig").Term = undefined;
+term.init(alloc, 80, 24);
+defer term.deinit();
+_ = term.typeText("/help");
+_ = term.enter();
+const vis = try term.screen();          // glyphs a user would see (no SGR)
+const rows = try term.annotated();      // " 12|  ◆ Called 2 tools"
+_ = try term.clickText("Called");       // click the first matching glyph
+_ = try term.hoverText("[Image #1]");   // hover an image chip
+const lay = try term.layout();          // overlay / focus / origins / images / pending
+```
+
+High-level helpers (`typeText`, `enter`, `clickText`, `hoverText`, `clickAt`,
+`hoverAt`) are enough for most work. When you must speak Ghostty's wire:
+
+| input | bytes |
+|---|---|
+| printable | the UTF-8 itself |
+| Enter | `\r` |
+| click at (col, row) | `ESC [ < 0 ; COL ; ROW M` (1-based cells) |
+| hover | `ESC [ < 35 ; COL ; ROW M` |
+| bracketed paste | `ESC [ 200 ~` … body … `ESC [ 201 ~` |
+| CSI-u (Ctrl+P) | `ESC [ 112 ; 5 u` |
+
+Feed those with `term.feed(bytes)`. Coordinates are 1-based screen cells, same
+as SGR mouse. Read `term.annotated()` to pick a row, then `clickAt(x, y)`.
+
+`/debug` stays the observability HUD; `term.layout()` is how you see why a
+click missed (overlay, prompt-origin, mid-origin).
+
 ## File size
 
 - Keep every hand-written source file at or below 600 lines of code.

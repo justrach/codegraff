@@ -10,6 +10,103 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.255 (2026-08-14)
+
+- The fullscreen pager no longer prints raw SGR mouse reports
+  (`39;33;23M`) into the thinking line. Hover-motion tracking is off;
+  split/orphan mouse sequences are consumed instead of typed.
+
+## v0.0.254 (2026-08-14)
+
+- `graff tui` (and TTY `graff repl`) is a Grok-style fullscreen pager: wrapped
+  composer with Ctrl+Z undo, folded multi-tool cards that click open, image
+  chips, a searchable effort picker, markdown tables, and a headless Term
+  driver for tests. Bare `graff` stays the line REPL.
+- `/import-claude` copies Claude/Cursor MCP servers, skills, and hooks into
+  `~/.codegraff` and the current repo; first start adopts automatically, the
+  command remains for a later rescan.
+- Hosted TUI tool rows carry the path or a one-line preview so live `⚙`/`✓`
+  lines stay inspectable without dumping raw JSON.
+- macOS CLI and desktop assets are Developer ID signed and Apple notarized
+  (`notary-local`); the `.dmg` and updater tarball ship beside the CLI
+  tarballs.
+
+## v0.0.253 (2026-08-14)
+
+- Explicit `/compact` uses OpenAI's standalone Responses compact endpoint for
+  direct API-key sessions and supported in-stream compaction for Codex, with
+  transactional history replacement and local fallback; non-OpenAI providers
+  remain local-only.
+- Measured interactive yolo startup falls from 5.85s to 2.76s—53% less waiting,
+  or about 2.1x faster—through Kimi prompt-cache affinity, low-effort lookup
+  routing, concurrent live-catalog fetches, and concurrent/deferred MCP startup,
+  while preserving deterministic catalog and tool ordering.
+- `@codegraff/sdk` ships its platform harness binary and production embedding
+  APIs for persistent turns, live events, controls, cancellation, and process
+  ownership, backed by packed-install and JSON integration coverage.
+- The normal REPL keeps recovered recap retries and verbose tool/startup details
+  out of the way; `/debug` provides a content-free HUD, `/usage` reports spend,
+  `read_file contains=` handles exact-key lookups in one bounded read, and
+  shared-worktree owners render as a structured callout.
+- The desktop app replaces the persistent agent overview column with compact
+  agent control and adopts the Codegraff emblem across web, desktop, Android,
+  and iOS assets.
+- Run-budget landing, Codex overload retry, xAI OAuth parity, and benchmark
+  fixture validation harden autonomous and release workflows.
+
+## v0.0.252 (2026-08-13)
+
+- Grok models are discovered live: xAI joins the generic `/v1/models`
+  catalog and always fetches `api.x.ai` (disk cache is offline fallback
+  only), so new Grok rollouts become routable without a release. SuperGrok
+  login tokens send `X-XAI-Token-Auth` on chat and catalog requests, matching
+  grok-build.
+- The #469 peer-message spacing bracket is pinned by a unit test on the
+  emitted event sequence, plus a CI-wired PTY smoke test for device-room
+  delivery.
+- release.yml uploads assets onto an existing release instead of failing
+  into an untagged draft (the v0.0.251 updater-404 race).
+
+## v0.0.251 (2026-08-13)
+
+- Peer messages get breathing room in the REPL: the `#469 channel` block used
+  to render mid-stream with no spacing, clumped against the text above and
+  below; it is now bracketed by a blank line on either side. Render-only —
+  history bytes and the GUI are unchanged.
+
+## v0.0.250 (2026-08-12)
+
+- First-party OpenAI server compaction now installs the complete canonical
+  `/responses/compact` output transactionally on both the Codex subscription
+  and official Platform Responses routes. Missing, invalid, or empty output
+  leaves history intact and falls back to readable local compaction; other
+  providers remain local-only.
+- The official `openai` provider uses the Responses API with ordinary bearer
+  authentication, without inheriting ChatGPT backend headers, WebSocket
+  chaining, or Codex-only priority behavior.
+- REPL tool activity is visible again as stable terse start/result rows with
+  human-readable command, path, URL, or description previews instead of raw
+  JSON or cursor-rewriting output.
+- Controlled replay evidence covers 21/21 perfect continuations across the
+  first-party OpenAI host/auth paths, including long paired tool histories.
+
+## v0.0.249 (2026-08-12)
+
+- Folded native tools become callable immediately after their schemas load
+  (#492). The active catalog is rebuilt from the loaded schemas instead of
+  continuing to advertise tools that can never enter dispatch.
+- Turn events expose cumulative input, output, cache-read, and cache-write
+  token usage, with the TypeScript SDKs regenerated from the same schema
+  source (#491).
+- codedb-pro tool paths resolve from the active session worktree rather than
+  the daemon's startup directory, preventing false missing-path reports when
+  Graff changes projects.
+- Piped sessions end an unanswered `ask_user` cleanly at EOF instead of
+  spinning or hanging (#478).
+- The default prompt carries a capped skills catalog, and the release suite
+  now exercises concurrent interactive WebSocket tool loops across multiple
+  sessions (#480).
+
 ## v0.0.245 (2026-08-09)
 
 - Licensed codedb-pro is now the default toolset, not an ornament. The license

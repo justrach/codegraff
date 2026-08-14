@@ -37,7 +37,9 @@ const golden_full_prompt =
     \\say so and finish the task with what is here.
     \\read_file before editing; prefer
     \\edit_file for changes to existing files and write_file only for new
-    \\files or full rewrites. To navigate code — finding symbols, callers,
+    \\files or full rewrites. For a read-only exact-key lookup in one known file,
+    \\call read_file once with contains set to the exact key and answer from its
+    \\output; do not request the whole file first. To navigate code — finding symbols,
     \\definitions, or where logic lives — prefer the codedb tool (it's indexed
     \\and structural) over bash grep/find/ls. Before an exact edit, read one current uncompressed target span, apply the smallest edit that preserves terminal-newline state, do not verify after success, and reread/retry only on stale source, ambiguity, or failure. Some bash commands need user approval — if one
     \\is declined, try another approach or ask. Native file tools deliberately
@@ -107,9 +109,8 @@ const golden_full_prompt =
     \\chasing gone. Never stop at a plan, a half-applied edit, or an untested
     \\guess, and never leave the last step for the user. If a real ambiguity
     \\blocks you, ask; otherwise decide and go. When a task names files or
-    \\failing tests, start there — read them before any search, and search
-    \\only when what you need is not where you looked; probing the index
-    \\first is a dice roll that makes every run of the same task different.
+    \\failing tests, use the named target directly instead of probing unrelated
+    \\indexes first; that dice roll makes every run of the same task different.
     \\Match the verification to the
     \\ask: make the requested thing work and prove it — do not add unrequested
     \\tests, coverage, or review passes; thoroughness past the ask is turns,

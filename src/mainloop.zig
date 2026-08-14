@@ -15,6 +15,7 @@ const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
 const pricing = @import("pricing.zig");
+const turn_event = @import("turn_event.zig");
 const prompts = @import("prompts.zig");
 const providers = @import("providers.zig");
 const pickers = @import("pickers.zig");
@@ -27,6 +28,7 @@ const goal_flow = @import("goal_flow.zig");
 const goal_pacing = @import("goal_pacing.zig");
 const eval_memory = @import("eval_memory.zig");
 const json_controls = @import("json_controls.zig"); // #415: the --json controls that never become a turn
+const json_inbox = @import("json_inbox.zig");
 const mainloop_score = @import("mainloop_score.zig");
 const mainloop_trace = @import("mainloop_trace.zig");
 const scoring = @import("scoring.zig");
@@ -60,6 +62,8 @@ pub const Ctx = struct {
 
 /// Run turns until EOF/quit; main then performs final save/worktree cleanup.
 pub fn run(ctx: *Ctx) !void {
+    if (main_mod.json_mode) json_inbox.start(ctx.gpa, ctx.io, ctx.in);
+    defer if (main_mod.json_mode) json_inbox.stop();
     var title_jobs: mainloop_title.Jobs = .{};
     defer title_jobs.deinit(ctx);
     var recap_jobs: mainloop_recap.Jobs = .{};
@@ -113,10 +117,8 @@ pub fn run(ctx: *Ctx) !void {
             break :blk try std.fmt.allocPrint(ctx.arena, "/loop {s}\n{s}", .{ note, pace });
         } else if (ctx.interactive) blk: {
             try ctx.root.prompt();
-            break :blk (try readline.readLine(ctx.root, ctx.in, ctx.out, ctx.gpa, ctx.history, ctx.linebuf)) orelse break;
-        } else (try ctx.in.takeDelimiter('\n')) orelse break;
-        // The title may have completed while readline was waiting. Apply it
-        // before starting the newly-entered turn, still without ever waiting.
+            break :blk (try readline.readLine(ctx.root, ctx.in, ctx.out, ctx.gpa, ctx.history, ctx.linebuf, null)) orelse break;
+        } else (try json_inbox.request(ctx.arena, ctx.in)) orelse break;
         title_jobs.poll(ctx);
         recap_jobs.poll(ctx);
         const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -188,10 +190,10 @@ pub fn run(ctx: *Ctx) !void {
                 continue;
             }
             if (std.mem.eql(u8, rtype, "compact")) {
-                const chars = ctx.root.compact() catch |err| {
+                const chars = ctx.root.manualCompact() catch |err| {
                     const message = switch (err) {
                         error.EmptySummary => "compaction failed: empty summary, history unchanged",
-                        error.IncompleteSummary => "compaction failed: incomplete summary, history unchanged",
+                        error.IncompleteSummary, error.InvalidCompactionResponse => "compaction failed: incomplete or invalid compacted history, history unchanged",
                         else => try std.fmt.allocPrint(ctx.arena, "compaction failed: {s}", .{@errorName(err)}),
                     };
                     ctx.root.emit(.{ .type = "error", .message = message });
@@ -305,10 +307,11 @@ pub fn run(ctx: *Ctx) !void {
             }
             continue;
         }
+        if (main_mod.json_mode and !json_inbox.beginTurn(ctx.root)) continue;
+        if (!main_mod.json_mode) agent_mod.Agent.prepareRootTurn();
 
-        // Persistent goal steering (#318): the diff-gated standing-goal note
-        // plus one-shot notes (/goal replace|clear, and the standing state an
-        // emergency trim re-queues). Compaction restates the checklist itself.
+        // Persistent goal steering (#318): diff-gated standing-goal plus one-shot
+        // notes (/goal replace|clear, emergency trim). Compaction restates the list.
         var goal_msg: []const u8 = try goal_state.applyGoalSteering(ctx.arena, ctx.root, base_msg);
         const eval_note = if (ctx.root.review_mode) "" else try repl_glue.evalSteeringNote(
             ctx.arena,
@@ -392,7 +395,7 @@ pub fn run(ctx: *Ctx) !void {
         } else try ctx.root.messages.append(try messages.textMessage(ctx.arena, "user", ultracode_msg.text));
         ctx.root.snapshots.?.turn += 1; // tag file edits in this turn (matches /rewind numbering)
         ctx.root.recap_generation +%= 1; // #419: a starting turn supersedes any recap job still in flight
-        if (telemetry.g_telem) |t| t.countTurn();
+        if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(base_msg.len, std.math.maxInt(u32))), ctx.root.provider.model);
         // Trajectory: claim this turn's node id up front so subagents spawned during the turn can attach to it as their parent.
         const turn_id: u64 = if (trace.g_traj) |tj| blk: {
             const id = tj.nextId();
@@ -410,10 +413,9 @@ pub fn run(ctx: *Ctx) !void {
         }
         const turn_before = mainloop_trace.begin(ctx.root, ctx.io);
         const turn_started = Io.Timestamp.now(ctx.io, .awake);
-        // A failed turn must never kill the session: ApiError is already
-        // reported inside request(); anything else is surfaced here. Either
-        // way we drop back to the prompt (or emit a JSON error/turn event).
+        // Turn failures are surfaced without killing the session.
         const turn_result = providers.runTurnWithFallback(ctx.root, ctx.keys, ctx.arena, ctx.out);
+        if (main_mod.json_mode) json_inbox.endTurn();
         // Reuse one full-history scan for trace, terminal event, and compaction.
         const post_turn_context_tokens = ctx.root.effectiveContextTokens();
         mainloop_trace.record(ctx.root, ctx.io, ctx.arena, base_msg, turn_id, turn_started, turn_result, post_turn_context_tokens, turn_before, &prev_turn_id, &prev_prompt_fp);
@@ -426,9 +428,7 @@ pub fn run(ctx: *Ctx) !void {
         }
         const final_text = turn_result catch |err| switch (err) {
             error.Interrupted => {
-                // Esc: keep what streamed so far in history (as an assistant
-                // turn with an explicit marker) so the conversation stays
-                // coherent, then drop back to the prompt.
+                // Preserve streamed text and mark the saved assistant turn incomplete.
                 const partial = std.mem.trim(u8, ctx.root.partial_text.items, " \t\r\n");
                 const marker: []const u8 = if (partial.len > 0)
                     try std.fmt.allocPrint(ctx.arena, "{s}\n\n[response interrupted by user]", .{partial})
@@ -437,8 +437,12 @@ pub fn run(ctx: *Ctx) !void {
                 try ctx.root.messages.append(try messages.textMessage(ctx.arena, "assistant", marker));
                 const int_msg: []const u8 = if (main_mod.g_force_interrupt) "✗ interrupted (force)" else "✗ interrupted (esc)";
                 main_mod.g_force_interrupt = false;
-                try ctx.out.print("{s}{s}{s}\n", .{ style.yellow, int_msg, style.reset });
-                try ctx.out.flush();
+                if (main_mod.json_mode) {
+                    ctx.root.emit(.{ .type = "error", .message = "turn cancelled" });
+                } else {
+                    try ctx.out.print("{s}{s}{s}\n", .{ style.yellow, int_msg, style.reset });
+                    try ctx.out.flush();
+                }
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
                 continue;
             },
@@ -457,7 +461,7 @@ pub fn run(ctx: *Ctx) !void {
                     if (partial.len > 0) {
                         ctx.root.emit(.{ .type = "finalizing" });
                         const context_tokens = ctx.root.effectiveContextTokens();
-                        ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = context_tokens > 0 });
+                        ctx.root.emit(turn_event.fromTally(&pricing.g_cost, ctx.io, partial, context_tokens, false));
                     }
                 }
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
@@ -479,7 +483,7 @@ pub fn run(ctx: *Ctx) !void {
                     if (partial.len > 0) {
                         ctx.root.emit(.{ .type = "finalizing" });
                         const context_tokens = ctx.root.effectiveContextTokens();
-                        ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = context_tokens > 0 });
+                        ctx.root.emit(turn_event.fromTally(&pricing.g_cost, ctx.io, partial, context_tokens, false));
                     }
                 }
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
@@ -493,7 +497,7 @@ pub fn run(ctx: *Ctx) !void {
                     if (partial.len > 0) {
                         ctx.root.emit(.{ .type = "finalizing" });
                         const context_tokens = ctx.root.effectiveContextTokens();
-                        ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = context_tokens > 0 });
+                        ctx.root.emit(turn_event.fromTally(&pricing.g_cost, ctx.io, partial, context_tokens, false));
                     }
                 }
                 // A turn can fail because the context window overflowed; if we're
@@ -540,7 +544,7 @@ pub fn run(ctx: *Ctx) !void {
                 .session_arena_kb = if (main_mod.g_session_arena) |a| a.queryCapacity() / 1024 else 0,
                 .scratch_arena_kb = if (ctx.root.scratch_arena) |a| a.queryCapacity() / 1024 else 0,
             });
-            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = session_context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = isolated_review or !ctx.root.eval_repair_pending, .metadata_complete = session_context_tokens > 0 });
+            ctx.root.emit(turn_event.fromTally(&pricing.g_cost, ctx.io, emitted_text, session_context_tokens, isolated_review or !ctx.root.eval_repair_pending));
         }
         // Apply only if already complete; poll never waits for title generation.
         title_jobs.poll(ctx);
@@ -587,9 +591,6 @@ pub fn run(ctx: *Ctx) !void {
                 },
             }
         }
-        // opencode-style continuous autosave: persist after every turn so a crash or quit never loses the
-        // thread — last.session.json, the same file /resume reads. Best-effort; a write failure never breaks
-        // the loop. #273: unchanged history skips the save whole, and the write itself is queued.
         session.saveSessionAsync(ctx.root, ctx.arena, ctx.root.session_name) catch {};
 
         // --worktree checkpoint: commit this turn's edits to the scratch branch so the work is durable

@@ -21,6 +21,39 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.255
+    \\  • TUI no longer dumps mouse CSI (39;33;23M) into the thinking line
+    \\
+    \\0.0.254
+    \\  • graff tui is a Grok-style fullscreen pager (composer wrap, tool fold, effort picker, markdown tables); bare graff stays the line REPL
+    \\  • /import-claude copies Claude/Cursor MCP servers and skills into ~/.codegraff on first start or on demand
+    \\
+    \\0.0.253
+    \\  • /compact uses first-party OpenAI compaction for direct API-key and Codex sessions, with transactional local fallback
+    \\  • Kimi cache affinity plus concurrent catalogs and MCP startup remove avoidable serial latency
+    \\  • @codegraff/sdk ships its platform binary and production Harness/Remote controls for npm embedding
+    \\  • The REPL gains quiet normal output, /debug and read_file contains=; desktop agents move into focused control with new branding
+    \\
+    \\0.0.252
+    \\  • Grok models come from a live api.x.ai /v1/models fetch every load — new rollouts no longer wait for a release
+    \\  • SuperGrok OAuth tokens send X-XAI-Token-Auth like grok-build, so login sessions can actually call the API
+    \\
+    \\0.0.250
+    \\  • First-party OpenAI compaction preserves the complete canonical compact output on both Codex subscription and official Platform Responses routes
+    \\  • Invalid remote compaction falls back locally without mutating history; non-OpenAI providers remain local-only
+    \\  • REPL tool calls use stable terse start/result rows with readable previews instead of raw JSON
+    \\
+    \\0.0.249
+    \\  • Folded native tools become callable as soon as their schemas load; the active catalog now rebuilds instead of advertising unreachable tools
+    \\  • Turn events and generated TypeScript SDKs expose cumulative input, output, cache-read, and cache-write token usage
+    \\  • codedb-pro paths resolve from the active session worktree, and piped ask_user sessions end cleanly at EOF
+    \\  • The default prompt carries a capped skills catalog, with concurrent interactive WebSocket tool loops covered by the release suite
+    \\
+    \\0.0.247
+    \\  • Interactive startup is quiet by default; `GRAFF_REPL_DEBUG=1` restores launch and runtime diagnostics, and `/debug` still toggles them live
+    \\  • Shared-worktree ownership is a structured callout with the active session, goal, and `graff -w` isolation action
+    \\  • Immediate multiline pastes into `ask_user` preserve every line instead of submitting only the first
+    \\
     \\0.0.244
     \\  • Co-resident graff sessions now see each other: a startup warning names any live session already in your worktree, and the first git mutation, file write, or shell move against a peer's tree pauses once for a deliberate re-issue — two agents can no longer silently tear one tree
     \\  • Sessions can message each other: the peer_message tool and /tell post to a shared channel every co-resident session hears (address one by name, "all" reaches every session on the device), delivered mid-task at step boundaries with the sender's current goal attached
@@ -147,7 +180,8 @@ pub const usage_text =
     \\native vision block on vision models; other files paste as their path),
     \\esc interrupts a streaming response, "always allow" persists to
     \\.harness/settings.json.
-    \\telemetry: anonymous OTLP usage stats are sent only when
+    \\telemetry: /debug is a local content-free HUD (session/turn/tool
+    \\decisions). Anonymous OTLP usage stats leave the process only when
     \\OTEL_EXPORTER_OTLP_ENDPOINT (or GRAFF_OTEL_ENDPOINT) is set; opt out
     \\with --no-telemetry or GRAFF_NO_TELEMETRY=1. GRAFF_TELEMETRY_KEY sends
     \\an optional x-harness-key token to the configured collector.

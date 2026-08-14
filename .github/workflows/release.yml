@@ -61,5 +61,20 @@ jobs:
             printf '%s\n' "$section" > changelog-notes.md
             notes=(--notes-file changelog-notes.md)
           fi
-          gh release create "$GITHUB_REF_NAME" graff-*.tar.gz SHA256SUMS install.sh \
-            --title "$GITHUB_REF_NAME" --draft "${notes[@]}"
+          assets=(graff-*.tar.gz SHA256SUMS install.sh)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # A maintainer may publish the notes while cross-compilation is still
+            # running. Attach to that release instead of creating an untagged draft.
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --title "$GITHUB_REF_NAME" --draft "${notes[@]}"
+          fi
+
+          uploaded="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')"
+          for asset in "${assets[@]}"; do
+            grep -Fxq "$(basename "$asset")" <<<"$uploaded" || {
+              echo "release is missing asset: $asset" >&2
+              exit 1
+            }
+          done

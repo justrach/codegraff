@@ -53,6 +53,40 @@ pub fn promptCacheKey(io: Io, label: []const u8, agent: *const anyopaque, buf: [
     return std.fmt.bufPrint(buf, "{s}-{x}", .{ base, @intFromPtr(agent) }) catch base;
 }
 
+/// Kimi-only: a DURABLE per-project cache partition, derived from the cwd
+/// (UUIDv5-style, no state to persist). The kimi backend keys its prompt
+/// cache on prompt_cache_key, and a per-process random key made every new
+/// session's first call a cold partition — measured cache_read=0 on every
+/// first call in the k3 benchmark, where kimi-cli's fresh sessions hit ~19k.
+/// A per-project key lets the first call of a new session land on the warm
+/// shared system-prompt prefix (~2-4s). Same-project sessions share the
+/// partition: conversation tails evict each other, the expensive prefix still
+/// hits. Subagents keep a per-agent suffix (the eviction reasoning above).
+pub fn projectCacheKey(io: Io, label: []const u8, agent: *const anyopaque, buf: []u8) []const u8 {
+    var raw: [16]u8 = undefined;
+    {
+        var cwd_buf: [4096]u8 = undefined;
+        const n = Io.Dir.cwd().realPathFile(io, ".", &cwd_buf) catch blk: {
+            @memcpy(cwd_buf[0..1], ".");
+            break :blk 1;
+        };
+        const cwd = cwd_buf[0..n];
+        var digest: [32]u8 = undefined;
+        var h = std.crypto.hash.sha2.Sha256.init(.{});
+        h.update("graff-kimi-project-cache-v1");
+        h.update(cwd);
+        h.final(&digest);
+        @memcpy(&raw, digest[0..16]);
+        raw[6] = (raw[6] & 0x0f) | 0x50; // version 5: name-derived
+        raw[8] = (raw[8] & 0x3f) | 0x80; // variant 1
+    }
+    const hex = std.fmt.bytesToHex(raw, .lower);
+    const base = std.fmt.bufPrint(buf, "{s}-{s}-{s}-{s}-{s}", .{ hex[0..8], hex[8..12], hex[12..16], hex[16..20], hex[20..32] }) catch unreachable;
+    if (std.mem.eql(u8, label, "main")) return base;
+    const suffix = std.fmt.bufPrint(buf[base.len..], "-{x}", .{@intFromPtr(agent)}) catch return base;
+    return buf[0 .. base.len + suffix.len];
+}
+
 /// /resume adopts the persisted key so k3/codex prompt-cache affinity survives
 /// the process boundary — both upstreams key the cache on the durable
 /// conversation id (kimi-code's sessionContext.sessionId; codex's ModelClient
@@ -85,6 +119,11 @@ pub fn providerHeaders(io: Io, provider: Provider, bearer: []const u8, buf: *[12
             count += 1;
         },
     }
+    // SuperGrok user tokens need the grok-build routing header.
+    if (std.mem.eql(u8, provider.id, "xai") and provider.source == .login) {
+        buf[count] = .{ .name = "X-XAI-Token-Auth", .value = "xai-grok-cli" };
+        count += 1;
+    }
     if (provider.kind == .anthropic) {
         buf[count] = .{ .name = "anthropic-version", .value = root.anthropic_version };
         count += 1;
@@ -93,7 +132,9 @@ pub fn providerHeaders(io: Io, provider: Provider, bearer: []const u8, buf: *[12
         const identity = kimi_catalog.identityHeaders(buf[count..]);
         count += identity.len;
     }
-    if (provider.kind == .responses) {
+    // These identify the ChatGPT/Codex backend. The official Platform Responses
+    // endpoint needs only normal bearer auth and rejects backend-only identity.
+    if (std.mem.eql(u8, provider.id, "codex")) {
         buf[count] = .{ .name = "chatgpt-account-id", .value = provider.account };
         count += 1;
         buf[count] = .{ .name = "OpenAI-Beta", .value = "responses=experimental" };
@@ -136,10 +177,75 @@ test "session_id is a stable per-process UUIDv4, not a shared constant" {
     return error.SessionIdHeaderMissing;
 }
 
+test "official OpenAI Responses uses Platform headers, not ChatGPT backend identity" {
+    const io = std.testing.io;
+    var buf: [12]std.http.Header = undefined;
+    const p: Provider = .{ .id = "openai", .kind = .responses, .auth = .bearer, .url = "https://api.openai.com/v1/responses", .api_key = "k", .model = "gpt-5.6", .context = 272_000 };
+    const headers = providerHeaders(io, p, "Bearer k", &buf);
+    try std.testing.expectEqual(@as(usize, 1), headers.len);
+    try std.testing.expectEqualStrings("authorization", headers[0].name);
+    try std.testing.expectEqualStrings("Bearer k", headers[0].value);
+}
+
+test "projectCacheKey is a durable per-project v5 UUID, stable across calls" {
+    var fake: usize = 0;
+    const agent: *const anyopaque = @ptrCast(&fake);
+    var buf: [96]u8 = undefined;
+    const a = projectCacheKey(std.testing.io, "main", agent, &buf);
+    try std.testing.expectEqual(@as(usize, 36), a.len);
+    try std.testing.expectEqual(@as(u8, '5'), a[14]); // version nibble: name-derived
+    var buf2: [96]u8 = undefined;
+    const b = projectCacheKey(std.testing.io, "main", agent, &buf2);
+    try std.testing.expectEqualStrings(a, b); // durable: no per-process randomness
+    // Subagents get a per-agent suffix off the same partition (eviction rule).
+    var buf3: [96]u8 = undefined;
+    const sub = projectCacheKey(std.testing.io, "sub", agent, &buf3);
+    try std.testing.expect(std.mem.startsWith(u8, sub, a));
+}
+
 test "adoptSessionId validates length and never overwrites a minted id" {
     const io = std.testing.io;
     const before = sessionId(io); // minted by whichever test ran first
     adoptSessionId("too-short");
     adoptSessionId("00000000-0000-4000-8000-000000000000");
     try std.testing.expectEqualStrings(before, sessionId(io));
+}
+
+test "xai login tokens send X-XAI-Token-Auth; API keys do not" {
+    const io = std.testing.io;
+    var buf: [12]std.http.Header = undefined;
+    const login: Provider = .{
+        .id = "xai",
+        .kind = .openai,
+        .auth = .bearer,
+        .url = "",
+        .api_key = "oauth-tok",
+        .model = "grok-4.3",
+        .context = 256_000,
+        .source = .login,
+    };
+    const login_headers = providerHeaders(io, login, "Bearer oauth-tok", &buf);
+    var saw_token_auth = false;
+    for (login_headers) |h| {
+        if (std.mem.eql(u8, h.name, "X-XAI-Token-Auth")) {
+            try std.testing.expectEqualStrings("xai-grok-cli", h.value);
+            saw_token_auth = true;
+        }
+    }
+    try std.testing.expect(saw_token_auth);
+
+    const env_key: Provider = .{
+        .id = "xai",
+        .kind = .openai,
+        .auth = .bearer,
+        .url = "",
+        .api_key = "xai-api-key",
+        .model = "grok-4.3",
+        .context = 256_000,
+        .source = .environment,
+    };
+    const env_headers = providerHeaders(io, env_key, "Bearer xai-api-key", &buf);
+    for (env_headers) |h| {
+        try std.testing.expect(!std.mem.eql(u8, h.name, "X-XAI-Token-Auth"));
+    }
 }

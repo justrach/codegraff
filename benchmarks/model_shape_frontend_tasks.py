@@ -148,7 +148,7 @@ class ModalTests(unittest.TestCase):
 
     def test_opener_announces_dialog(self):
         text = source()
-        self.assertIn("aria-haspopup=\"dialog\"", text)
+        self.assertIn('aria-haspopup="dialog"', text)
         self.assertRegex(text, r'aria-controls=["\\']modal["\\']')
 
     def test_escape_closes_and_focus_returns(self):
@@ -160,7 +160,7 @@ class ModalTests(unittest.TestCase):
         text = source()
         self.assertIn("queryselectorall", text)
         self.assertIn("document.activeelement", text)
-        self.assertRegex(text, r'key\\s*===?\\s*["\\']tab["\\']')
+        self.assertRegex(text, r'key\\s*[!=]==?\\s*["\\']tab["\\']')
 
 
 if __name__ == "__main__":
@@ -175,10 +175,21 @@ from pathlib import Path
 s = Path("modal.html").read_text().lower()
 c = re.sub(r"\\s+", "", s)
 label = re.search(r'aria-labelledby=["\\']([^"\\']+)["\\']', s)
+inert_set = (
+    ".inert=true" in c
+    or '.setattribute("inert"' in c
+    or ".setattribute('inert'" in c
+)
+inert_restored = (
+    ".inert=false" in c
+    or bool(re.search(r"\\.inert=(?:was|previous|prior|original)[a-z0-9_$]*", c))
+    or '.removeattribute("inert")' in c
+    or ".removeattribute('inert')" in c
+)
 results = {
     "label_target": bool(label and re.search(r'id=["\\']' + re.escape(label.group(1)) + r'["\\']', s)),
     "named_close": bool(re.search(r'<button[^>]+(aria-label=["\\'][^"\\']+["\\']|id=["\\']cancel["\\'])', s)),
-    "background_inert": ".inert=true" in c and ".inert=false" in c,
+    "background_inert": inert_set and inert_restored,
     "backdrop_close": (".target===modal" in c or ".target==modal" in c),
     "scroll_lock": "body.style.overflow" in c,
 }

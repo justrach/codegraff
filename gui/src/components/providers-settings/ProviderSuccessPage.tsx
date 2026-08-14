@@ -23,7 +23,7 @@ export function ProviderSuccessPage() {
 
       <section className="provider-success-card" aria-labelledby="provider-success-title">
         <div className="provider-success-brand">
-          <img src="/codegraff-logo.svg" alt="Codegraff" />
+          <img src="/codegraff-emblem.png" alt="Codegraff" />
         </div>
 
         <div className="provider-success-badge" aria-hidden="true">

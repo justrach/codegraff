@@ -5,7 +5,7 @@ import type {
   SessionMessage,
 } from "@/services/desktop/types/contracts";
 
-import { buildAgentOverview } from "./agentOverview";
+import { buildAgentOverview, formatAgentActivityLabel } from "./agents";
 
 function view(messages: SessionMessage[]): ConversationViewSnapshot {
   return {
@@ -117,6 +117,7 @@ describe("buildAgentOverview", () => {
 
     expect(overview.needsInput).toBe(1);
     expect(overview.active[0].status).toBe("needs-input");
+    expect(overview.active[0].followup?.followupId).toBe("followup-1");
   });
 
   test("marks failed subagent calls truthfully", () => {
@@ -135,5 +136,108 @@ describe("buildAgentOverview", () => {
       status: "failed",
       detail: "Review failed",
     });
+  });
+
+  // #419: the harness session_recap feeds the settled orchestrator's chip
+  // and one-line detail; live signals always outrank it.
+  test("uses the harness recap for a settled orchestrator", () => {
+    const settled = view([
+      { kind: "user", id: "u1", requestId: "request-1", text: "ship it" },
+    ]);
+    settled.recap = {
+      text: "Fixed the login redirect loop",
+      status: "completed",
+      source: "model",
+    };
+
+    const overview = buildAgentOverview({
+      views: { settled },
+      summaries: {},
+      currentConversationKey: null,
+    });
+
+    // not the current conversation: the settled session shows in recent
+    // activity with its recap text and completed chip
+    expect(overview.active).toHaveLength(0);
+    expect(overview.recent[0]).toMatchObject({
+      status: "completed",
+      detail: "Fixed the login redirect loop",
+    });
+
+    // the current conversation stays in the active list, recap included
+    const current = buildAgentOverview({
+      views: { settled },
+      summaries: {},
+      currentConversationKey: "settled",
+    });
+    expect(current.active[0]).toMatchObject({
+      status: "completed",
+      detail: "Fixed the login redirect loop",
+    });
+  });
+
+  test("maps a needs_input recap to the needs-input chip", () => {
+    const waiting = view([
+      { kind: "user", id: "u1", requestId: "request-1", text: "ship it" },
+    ]);
+    waiting.recap = {
+      text: "Waiting on the user to pick a layout",
+      status: "needs_input",
+      source: "heuristic",
+    };
+
+    const overview = buildAgentOverview({
+      views: { waiting },
+      summaries: {},
+      currentConversationKey: null,
+    });
+
+    expect(overview.needsInput).toBe(1);
+    expect(overview.active[0].status).toBe("needs-input");
+  });
+
+  test("live signals outrank a stale recap", () => {
+    const running = view([
+      { kind: "user", id: "u1", requestId: "request-1", text: "ship it" },
+    ]);
+    running.activeRequestIds = ["request-1"];
+    running.recap = {
+      text: "Fixed the login redirect loop",
+      status: "completed",
+      source: "heuristic",
+    };
+
+    const overview = buildAgentOverview({
+      views: { running },
+      summaries: {},
+      currentConversationKey: null,
+    });
+
+    expect(overview.active[0].status).toBe("running");
+    // the recap still describes what the session is about
+    expect(overview.active[0].detail).toBe("Fixed the login redirect loop");
+  });
+});
+
+describe("formatAgentActivityLabel", () => {
+  test("announces idle when nothing is active", () => {
+    expect(formatAgentActivityLabel({ totalActive: 0, needsInput: 0 })).toBe(
+      "Agent control — no active agents",
+    );
+  });
+
+  test("announces the active count", () => {
+    expect(formatAgentActivityLabel({ totalActive: 1, needsInput: 0 })).toBe(
+      "Agent control — 1 active",
+    );
+  });
+
+  test("announces how many agents need input", () => {
+    expect(formatAgentActivityLabel({ totalActive: 3, needsInput: 1 })).toBe(
+      "Agent control — 3 active, 1 needs input",
+    );
+    expect(formatAgentActivityLabel({ totalActive: 2, needsInput: 2 })).toBe(
+      "Agent control — 2 active, 2 need input",
+    );
   });
 });

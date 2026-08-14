@@ -11,6 +11,7 @@ const Io = std.Io;
 const Value = std.json.Value;
 
 const main_mod = @import("main.zig");
+const json_inbox = @import("json_inbox.zig");
 const review = @import("review.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
@@ -27,7 +28,7 @@ const parseAnswerRequest = tools_mod.parseAnswerRequest;
 // which belongs to the input-inversion issue (#430), not to this one.
 const engine_events = @import("engine_events.zig");
 const engine_sink = @import("engine_sink.zig");
-
+const tool_render = @import("agent_tool_render.zig");
 const terminal = @import("term.zig");
 const tty = terminal.tty;
 
@@ -184,6 +185,9 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             // the complete bytes go to a durable handle and the model gets a
             // bounded preview, that path, the byte count, and a shape hint.
             const handled = try tool_handle.forResult(self.gpa, self.arena, handle_target, output.text, handle_threshold);
+            // Surface spill round-trips in normal mode; debug already draws the badged ✓ line.
+            if (output.text.len > handle_threshold)
+                tool_render.handleSpillLine(self, output.text.len, handled.path != null);
             results[i] = .{ .text = handled.text, .is_error = output.is_error, .cancelled = output.cancelled, .ms = output.ms };
             if (self.eval_cmd != null and toolInvalidatesEval(calls[i])) {
                 self.eval_verified = false;
@@ -367,9 +371,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     return .{ .text = self.renderTodos(goal_state.currentEpoch(self.goal)), .is_error = false };
 }
 
-/// The "user message as a tool" half of the loop: the agent calls
-/// ask_user, we block for a typed reply, and hand it back as the tool
-/// result. Only the root agent has stdin; subagents must self-decide.
+/// Block the root agent for an ask_user reply; subagents have no stdin.
 pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
     const in = self.in orelse return .{
         .text = "no human is attached — make a reasonable assumption and continue",
@@ -384,7 +386,7 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
             break :blk id;
         };
         try self.emitAskUser(call_id, question, call.input);
-        const raw = (try in.takeDelimiter('\n')) orelse return .{
+        const raw = (try json_inbox.reply(self.arena, in)) orelse return .{
             .text = "user ended input without answering",
             .is_error = true,
         };
@@ -404,9 +406,6 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
     if (tools_mod.json_args.object(call.input)) |o| if (tools_mod.json_args.arrayOf(o, "options")) |opts| {
         for (opts, 1..) |opt, n| try w.print("   {d}) {s}\n", .{ n, tools_mod.json_args.text(opt) orelse "(non-text option)" });
     };
-    try w.writeAll("   your answer › ");
-    try w.flush();
-
     // Route the reply through the same full-line editor as the main prompt:
     // cursor editing, bracketed paste, the `@` file picker, and Ctrl-V
     // clipboard images. A bare takeDelimiter here stripped all of that from
@@ -416,7 +415,7 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
     defer answer_history.deinit(self.arena);
     var answer_buf: std.ArrayList(u8) = .empty;
     defer answer_buf.deinit(self.arena);
-    const raw = (try readline.readLine(self, in, w, self.arena, &answer_history, &answer_buf)) orelse return .{
+    const raw = (try readline.readLine(self, in, w, self.arena, &answer_history, &answer_buf, "   your answer › ")) orelse return .{
         .text = "user ended input without answering",
         .is_error = true,
     };

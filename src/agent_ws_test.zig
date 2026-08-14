@@ -85,6 +85,10 @@ test "the codex .responses arm refreshes auth and re-anchors before resending (#
     // Both wire formats go through the one helper — no second, drifting copy.
     try std.testing.expect(std.mem.indexOf(u8, src[arm_end..], "retryAfterAuthRefresh(self, msg, &auth_refreshed)") != null);
 
+    // A response.failed overload used to skip the shared transient retry path
+    // and surface immediately (most visibly from detached recap calls).
+    try std.testing.expect(std.mem.indexOf(u8, arm, "retryTransientServerError(self, \"\", failure.code, msg, &server_retries)") != null);
+
     // The guard bool is declared OUTSIDE `rebuild:`. Reset it inside the loop and a
     // permanently dead credential refresh-and-resends a full history forever, which
     // is strictly worse than the bug being fixed.

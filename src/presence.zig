@@ -237,11 +237,11 @@ fn writeOwn(io: Io, arena: Allocator) void {
 }
 
 /// Register this root session and report any LIVE co-owner already present —
-/// the #469 "see each other before, not mid-collision" moment. Returns an
-/// arena-owned warning for the caller to surface (null = alone, or registry
-/// unavailable). Never fails a session: every failure mode degrades to
-/// silence, because presence must never be the reason graff did not start.
-pub fn announce(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, session_id: []const u8, goal: []const u8) ?[]const u8 {
+/// the #469 "see each other before, not mid-collision" moment. Returns the
+/// owner for the caller to surface (null = alone, or registry unavailable).
+/// Never fails a session: every failure mode degrades to silence, because
+/// presence must never be the reason graff did not start.
+pub fn announce(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, session_id: []const u8, goal: []const u8) ?Owner {
     if (builtin.is_test) return null; // tests get the parameterized store, never the real registry
     if (home.len == 0) return null;
     const dir_path = std.fmt.allocPrint(gpa, "{s}/{s}", .{ home, registry_subdir }) catch return null;
@@ -259,16 +259,15 @@ pub fn announce(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, sess
     var chan_buf: [chan_name_max]u8 = undefined;
     g_chan = gpa.dupe(u8, chanName(&chan_buf, g_identity)) catch null;
     g_own_name = gpa.dupe(u8, name) catch return null;
-    // Peer check BEFORE writing our own record: the warning describes the tree as it was when we arrived.
-    const warning = blk: {
+    // Peer check BEFORE writing our own record: the callout describes the tree as it was when we arrived.
+    const duplicate = blk: {
         var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch break :blk null;
         defer dir.close(io);
         const peers = listPeers(io, arena, dir);
-        const dup = worktree_lease.duplicateOwner(peers.records, peers.probes, g_identity, self.pid) orelse break :blk null;
-        break :blk worktree_lease.duplicateOwnerWarning(arena, dup, unixMs(io) - dup.last_seen_ms);
+        break :blk worktree_lease.duplicateOwner(peers.records, peers.probes, g_identity, self.pid);
     };
     writeOwn(io, arena);
-    return warning;
+    return duplicate;
 }
 
 /// Remove our record. Best-effort: a crashed session leaves it behind and the

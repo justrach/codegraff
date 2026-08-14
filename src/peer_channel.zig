@@ -24,6 +24,7 @@ const engine_sink = @import("engine_sink.zig");
 const presence = @import("presence.zig");
 const presence_chan = @import("presence_chan.zig");
 const worktree_lease = @import("worktree_lease.zig");
+const repl = @import("repl.zig");
 
 const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
@@ -218,18 +219,26 @@ pub fn deliverInbound(root: *Agent) void {
         if (deviceHears(m, own)) heard.append(root.arena, m) catch break else skipped += 1;
     }
     device_msgs = heard.items;
+    // The visible block gets one blank line of air on either side: peer lines
+    // land mid-stream at a step boundary and used to butt straight against
+    // the assistant text above and whatever follows below — one clump.
+    const window = displayWindow(is_backlog_drain, local_msgs.len + device_msgs.len);
+    const any_visible = local_msgs.len + device_msgs.len > window.start or
+        (repl.g_debug and (note != null or omitted > 0 or skipped > 0 or window.hidden > 0));
     var buf: std.ArrayList(u8) = .empty;
+    // Debug-only notices ride inside the block's bracket, in drain order.
+    var markers: std.ArrayList([]const u8) = .empty;
     if (note) |n| {
         buf.appendSlice(root.arena, n) catch {};
         buf.append(root.arena, '\n') catch {};
-        sink.emit(root.io, .{ .session_notice = .{ .text = n, .tone = .plain } });
+        if (repl.g_debug) markers.append(root.arena, n) catch {};
     }
     if (omitted > 0) {
         const marker = std.fmt.allocPrint(root.arena, "[#469 channel: {d} older message(s) predating this session omitted]", .{omitted}) catch "";
         if (marker.len > 0) {
             buf.appendSlice(root.arena, marker) catch {};
             buf.append(root.arena, '\n') catch {};
-            sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
+            if (repl.g_debug) markers.append(root.arena, marker) catch {};
         }
     }
     if (skipped > 0) {
@@ -237,7 +246,7 @@ pub fn deliverInbound(root: *Agent) void {
         if (marker.len > 0) {
             buf.appendSlice(root.arena, marker) catch {};
             buf.append(root.arena, '\n') catch {};
-            sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
+            if (repl.g_debug) markers.append(root.arena, marker) catch {};
         }
     }
     var lines: std.ArrayList([]const u8) = .empty;
@@ -256,19 +265,31 @@ pub fn deliverInbound(root: *Agent) void {
     // History gets every line (the model coordinates from it); the REPL prints
     // only the tail of a first-drain backlog so a resume is not a wall of
     // text. Live incremental drains render every line — those are new.
-    const window = displayWindow(is_backlog_drain, lines.items.len);
     if (window.hidden > 0) {
         const marker = std.fmt.allocPrint(root.arena, "[#469 channel: {d} backlog message(s) delivered to context — showing last {d}]", .{ window.hidden, backlog_repl_show }) catch "";
-        if (marker.len > 0) sink.emit(root.io, .{ .session_notice = .{ .text = marker, .tone = .plain } });
+        if (marker.len > 0 and repl.g_debug) markers.append(root.arena, marker) catch {};
     }
-    for (lines.items[window.start..]) |line|
-        sink.emit(root.io, .{ .session_notice = .{ .text = line, .tone = .plain } });
+    renderPeerBlock(sink, root.io, any_visible, markers.items, lines.items[window.start..]);
     if (buf.items.len == 0) return;
     buf.appendSlice(root.arena, "(reply with the peer_message tool — queued, one-way; everyone here hears it)") catch {};
     var obj: std.json.ObjectMap = .empty;
     obj.put(root.arena, "role", .{ .string = "user" }) catch return;
     obj.put(root.arena, "content", .{ .string = buf.items }) catch return;
     root.messages.append(.{ .object = obj }) catch {};
+}
+
+/// Emit the drain's visible half as one bracketed unit: a blank notice, the
+/// debug markers and peer lines in drain order, a closing blank. Nothing at
+/// all when nothing is visible — a drain that only refreshed history must not
+/// paint. Pure aside from the sink, so the bracketing is unit-testable
+/// without a live presence registry (a PTY transcript can't tell the fix's
+/// blanks apart from a neighbor's, the event sequence can).
+fn renderPeerBlock(sink: engine_sink.EngineSink, io: Io, any_visible: bool, markers: []const []const u8, lines: []const []const u8) void {
+    if (!any_visible) return;
+    sink.emit(io, .{ .session_notice = .{ .text = "", .tone = .plain } });
+    for (markers) |m| sink.emit(io, .{ .session_notice = .{ .text = m, .tone = .plain } });
+    for (lines) |l| sink.emit(io, .{ .session_notice = .{ .text = l, .tone = .plain } });
+    sink.emit(io, .{ .session_notice = .{ .text = "", .tone = .plain } });
 }
 
 /// /tell <session|all> <text…>: the user's line into the channel. `all` (or a
@@ -527,4 +548,36 @@ test "displayWindow: only a backlog drain is windowed, to its trailing lines" {
     try std.testing.expectEqualDeep(DisplayWindow{ .start = 0, .hidden = 0 }, displayWindow(true, backlog_repl_show));
     // A longer backlog prints only the tail; the rest is context-only.
     try std.testing.expectEqualDeep(DisplayWindow{ .start = 8, .hidden = 8 }, displayWindow(true, 10));
+}
+
+fn recordNoticeText(ctx: *anyopaque, ev: engine_sink.Stamped) void {
+    const rec: *std.ArrayList([]const u8) = @ptrCast(@alignCast(ctx));
+    if (ev.event == .session_notice)
+        rec.append(std.testing.allocator, ev.event.session_notice.text) catch {};
+}
+
+test "renderPeerBlock: blank notices bracket the block; silence when nothing is visible" {
+    // emit(undefined, ...) is sound only while json_mode is false (no lock
+    // taken): pin it so a leaky earlier test can never turn this into UB.
+    const main_mod = @import("main.zig");
+    const protocol_seq = @import("protocol_seq.zig");
+    const saved_json = main_mod.json_mode;
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
+    protocol_seq.resetForTest();
+    defer protocol_seq.resetForTest();
+    var rec: std.ArrayList([]const u8) = .empty;
+    defer rec.deinit(std.testing.allocator);
+    const vt: engine_sink.VTable = .{ .emit = recordNoticeText, .durable = false };
+    const sink: engine_sink.EngineSink = .{ .ctx = &rec, .vt = &vt };
+    const markers = [_][]const u8{"[#469 presence] 1 other live session"};
+    const lines = [_][]const u8{ "[peer message from a — #469 channel]: one", "[peer message from b — #469 channel]: two" };
+    renderPeerBlock(sink, undefined, true, &markers, &lines);
+    try std.testing.expectEqualDeep(&[_][]const u8{
+        "", "[#469 presence] 1 other live session", lines[0], lines[1], "",
+    }, rec.items);
+    // A history-only drain paints nothing — no stray blank pair.
+    rec.clearRetainingCapacity();
+    renderPeerBlock(sink, undefined, false, &markers, &lines);
+    try std.testing.expectEqual(@as(usize, 0), rec.items.len);
 }

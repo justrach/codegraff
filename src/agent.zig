@@ -22,6 +22,8 @@ const trace = @import("trace.zig");
 const tools_mod = @import("tools.zig");
 const vision = @import("vision.zig");
 const prompts = @import("prompts.zig");
+const effort_route = @import("effort_route.zig");
+const tool_render = @import("agent_tool_render.zig");
 const schema = @import("schema.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: --no-local-tools picks the gated subagent catalogs
 const models_cache = @import("models_cache.zig");
@@ -190,6 +192,7 @@ pub const Agent = struct {
     partial_text: std.ArrayList(u8) = .empty,
     stream_quiet: bool = false, // suppress live streaming (one-shot and internal requests)
     compaction_request: bool = false, // the current model call is the synthetic compaction-summary request
+    server_compaction_request: bool = false, // force one explicit Codex in-stream compaction pass
     responses_output_limit: ?u32 = null, // auxiliary override (title=64); compaction always uses 4096
     last_request_context_overflow: bool = false, // explicit provider rejection, not an inferred meter threshold
     last_request_write_failed: bool = false, // transport gave up specifically with WriteFailed this request
@@ -315,13 +318,39 @@ pub const Agent = struct {
         self.codex_sent_upto = 0;
     }
 
+    /// The text of the newest user message, "" when there is none or it is
+    /// not a plain string (attachments/tool replies don't route).
+    fn lastUserText(self: *const Agent) []const u8 {
+        var i = self.messages.items.len;
+        while (i > 0) {
+            i -= 1;
+            const m = self.messages.items[i];
+            if (m != .object) continue;
+            const role = m.object.get("role") orelse continue;
+            if (role == .string and std.mem.eql(u8, role.string, "user")) {
+                const content = m.object.get("content") orelse return "";
+                return if (content == .string) content.string else "";
+            }
+        }
+        return "";
+    }
+
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
         // Defensive for restored/embedded agents whose provider was assigned
         // directly instead of going through providers.applyProvider.
         try self.ensureRootTools(self.provider.kind);
         // No per-turn teardown: the socket and the chain span user turns, guarded by codex_chain.usable instead.
         self.completed = null;
-        if (!self.sub) esc_cancel.store(false, .release); // fresh turn, no stale cancel
+        if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) esc_cancel.store(false, .release);
+        // Effort routing (effort_route.zig): a lookup-shaped turn runs at low
+        // effort while the session knob is the untouched default — an explicit
+        // /effort or a persisted setting always wins. Restored after the turn.
+        const saved_reasoning = self.reasoning;
+        if (!self.sub and self.reasoning == .medium and effort_route.routesToLowEffort(self.lastUserText())) {
+            self.reasoning = .low;
+            tool_render.routedEffortLine(self); // the prompt badge predates the prompt; this is the truth
+        }
+        defer self.reasoning = saved_reasoning;
         while (true) {
             // Esc during a tool join (set by escWatchTask) lands here: the
             // root consumes the flag and aborts before the next request;
@@ -433,7 +462,9 @@ pub const Agent = struct {
     pub const emergencyCutIndex = @import("agent_compact.zig").emergencyCutIndex;
     pub const emergencyTrim = @import("agent_compact.zig").emergencyTrim;
     pub const compactOrRecover = @import("agent_compact.zig").compactOrRecover;
+    pub const manualCompact = @import("agent_server_compact.zig").manualCompact;
     pub const autocompact = @import("agent_server_compact.zig").autocompact;
+    pub const autocompactResumed = @import("agent_server_compact.zig").autocompactResumed;
     pub const capOversizedToolOutputs = @import("agent_compact.zig").capOversizedToolOutputs;
 
     // The live streaming path (thinking spinner, live "Thinking" reasoning
@@ -474,7 +505,15 @@ pub const Agent = struct {
     /// turn iterations, and the root consumes at its next loop head as
     /// error.Interrupted.
     pub var esc_cancel: std.atomic.Value(bool) = .init(false);
+    var root_turn_prepared: std.atomic.Value(bool) = .init(false);
     pub var esc_watch_done: std.atomic.Value(bool) = .init(true);
+
+    /// Clear stale cancellation before the root becomes externally cancellable;
+    /// runTurn consumes the marker without erasing a cancellation arriving later.
+    pub fn prepareRootTurn() void {
+        esc_cancel.store(false, .release);
+        root_turn_prepared.store(true, .release);
+    }
 
     // Esc-cancel handling (the stdin scanner + steering-buffer capture +
     // interruptible sleep) lives in agent_interrupt.zig (#123, 600-line

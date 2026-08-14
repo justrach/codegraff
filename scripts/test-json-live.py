@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 
-from codex_ws_mock import CodexMock, REPLY_TEXT
+from codex_ws_mock import CodexMock, REPLY_TEXT, USAGE
 
 
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
@@ -27,6 +27,7 @@ def decode(line: str) -> dict | None:
 
 
 def main() -> None:
+    USAGE["input_tokens_details"]["cached_tokens"] = 400
     mock = CodexMock()
     port = mock.start()
     try:
@@ -127,6 +128,21 @@ def main() -> None:
                 for event in turns
             ):
                 raise AssertionError(f"bad terminal turn events: {turns!r}")
+            for call_count, event in enumerate(turns, 1):
+                expected_usage = {
+                    "input_tokens": 1200 * call_count,
+                    "uncached_input_tokens": 800 * call_count,
+                    "cache_read_tokens": 400 * call_count,
+                    "output_tokens": 300 * call_count,
+                    "api_calls": call_count,
+                    "subscription_calls": call_count,
+                    "unpriced_calls": 0,
+                }
+                actual_usage = {key: event.get(key) for key in expected_usage}
+                if actual_usage != expected_usage:
+                    raise AssertionError(
+                        f"bad cumulative usage for turn {call_count}: {actual_usage!r}"
+                    )
             if mock.ws_turns != 2:
                 raise AssertionError(f"expected two WS turns, got {mock.ws_turns}")
     finally:

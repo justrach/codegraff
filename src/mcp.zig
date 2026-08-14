@@ -24,6 +24,8 @@ const mcp_stdio = @import("mcp_stdio.zig");
 const mcp_teardown = @import("mcp_teardown.zig");
 const shutdown_trace = @import("shutdown_trace.zig"); // #364: teardown phase stamps
 const mcp_rpc = @import("mcp_rpc.zig");
+const mcp_cache = @import("mcp_cache.zig");
+const util = @import("util.zig");
 const smolify_manifest = @import("smolify_manifest.zig");
 const vision = @import("vision.zig"); // #249: MCP image results become staged vision blocks
 const renderContent = @import("mcp_content.zig").renderContent;
@@ -54,6 +56,8 @@ pub const Registry = struct {
     mutex: Io.Mutex = .init,
     servers: []*Server = &.{},
     tools: []Tool = &.{},
+    /// Startup connection/failure lines are developer diagnostics, not normal REPL output.
+    show_diagnostics: bool = false,
     /// The stdio spec's backward-compatibility SHOULD: a dual-era client
     /// probes `server/discover` before assuming legacy. ON by default;
     /// `GRAFF_MCP_PROBE=0` opts out.
@@ -87,6 +91,8 @@ pub const Registry = struct {
     /// registry arena is not thread-safe, so each task allocated its own).
     /// Freed in deinit AFTER the transports referencing them are torn down.
     task_arenas: []std.heap.ArenaAllocator = &.{},
+    /// Unjoined startServer futures from a deferred --yolo boot.
+    pending_starts: []Io.Future(mcp_boot.StartOutcome) = &.{},
 
     pub fn arena(self: *Registry) Allocator {
         return self.arena_state.allocator();
@@ -233,7 +239,7 @@ pub const Registry = struct {
             };
             if (present) continue;
             reg.startServer(a, &servers, &tools, try a.dupe(u8, name), entry.value_ptr.*.object) catch |err| {
-                std.debug.print("  [mcp:{s}] failed to start: {t}\n", .{ name, err });
+                if (reg.show_diagnostics) std.debug.print("  [mcp:{s}] failed to start: {t}\n", .{ name, err });
             };
         }
         reg.servers = try a.dupe(*Server, servers.items);
@@ -373,45 +379,52 @@ pub const Registry = struct {
         const tools_before = tools.items.len;
         errdefer tools.shrinkRetainingCapacity(tools_before);
 
-        // Probe-then-fallback for HTTP (mcp_rpc.connectHttp), the unchanged
-        // legacy handshake for stdio unless GRAFF_MCP_PROBE=1 opts into the
-        // gated server/discover probe (mcp_rpc.probeStdio) — either way,
-        // server.era and server.protocol_version are set by the time this
-        // returns, and the model sees whichever revision was negotiated.
-        const listed = switch (server.transport) {
-            .http => try mcp_rpc.connectHttp(server, a, a),
-            .stdio => stdio_listed: {
-                if (!reg.stdio_probe) break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
-                // #327: every legacy landing records WHY (and a probe that
-                // could not run is retried before it is allowed to downgrade
-                // anything), so a fallback shows up in the connect line and
-                // `/mcp` instead of being indistinguishable from a server
-                // that genuinely speaks only the legacy protocol.
-                switch (try mcp_rpc.probeStdioResilient(server, a, reg.io)) {
-                    .modern => break :stdio_listed try mcp_rpc.finishModernStdio(server, a, a, reg.io),
-                    .legacy => |reason| {
-                        server.probe_fallback = reason;
-                        break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
-                    },
-                    .closed => {
-                        // The probe write/read found a dead process (some
-                        // legacy SDK servers exit on an unrecognized
-                        // pre-initialize message) — respawn once and go
-                        // straight to legacy on the fresh process, no
-                        // second probe against a server that already
-                        // proved it can't tolerate one.
-                        server.probe_fallback = .server_exited;
-                        mcp_stdio.stopChild(reg.io, &server.transport.stdio.child);
-                        server.transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map);
-                        break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
-                    },
-                }
-            },
+        // A fresh process can reuse last session's tools/list (MCP 2026-07-28
+        // CacheableResult). HTTP hits skip the network; call() initializes a
+        // 2025-11-25 session on first tools/call. Live stdio still handshakes.
+        const cache_key = mcp_cache.keyFor(a, cfg);
+        const now_ms = util.unixMs(reg.io);
+        const looked = mcp_cache.lookup(reg.io, a, reg.home, cache_key, now_ms);
+        const era_hint = looked.era;
+        var listed_result: ?Value = null;
+        const tools_v: Value = if (looked.hit) |hit| blk: {
+            server.era = hit.era;
+            server.protocol_version = try a.dupe(u8, hit.protocol_version);
+            // HTTP: advertise the cached catalog and let call() initialize.
+            // stdio legacy: the child is already live, so complete the session.
+            if (mcp_cache.handshakeOnCacheHit(hit.era, server.transport == .http)) {
+                try mcp_rpc.initializeServer(server, a, a, reg.io);
+            } else {
+                server.initialized = hit.era == .modern;
+            }
+            break :blk hit.tools;
+        } else blk: {
+            const listed = switch (server.transport) {
+                .http => try mcp_rpc.connectHttp(server, a, a, era_hint),
+                .stdio => stdio_listed: {
+                    if (!reg.stdio_probe) break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
+                    switch (try mcp_rpc.probeStdioResilient(server, a, reg.io)) {
+                        .modern => break :stdio_listed try mcp_rpc.finishModernStdio(server, a, a, reg.io),
+                        .legacy => |reason| {
+                            server.probe_fallback = reason;
+                            break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
+                        },
+                        .closed => {
+                            server.probe_fallback = .server_exited;
+                            mcp_stdio.stopChild(reg.io, &server.transport.stdio.child);
+                            server.transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map);
+                            break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
+                        },
+                    }
+                },
+            };
+            const result_v = listed.object.get("result") orelse return error.BadMcpResponse;
+            if (result_v != .object) return error.BadMcpResponse;
+            const tv = result_v.object.get("tools") orelse return error.BadMcpResponse;
+            if (tv != .array) return error.BadMcpResponse;
+            listed_result = result_v;
+            break :blk tv;
         };
-        const result_v = listed.object.get("result") orelse return error.BadMcpResponse;
-        if (result_v != .object) return error.BadMcpResponse;
-        const tools_v = result_v.object.get("tools") orelse return error.BadMcpResponse;
-        if (tools_v != .array) return error.BadMcpResponse;
         for (tools_v.array.items) |t| {
             if (t != .object) continue;
             const name_v = t.object.get("name") orelse continue;
@@ -437,8 +450,9 @@ pub const Registry = struct {
         }
         try servers.append(a, server);
         registry_owns_server = true;
+        if (listed_result) |rv| mcp_cache.store(reg.io, a, reg.home, cache_key, server.era, server.protocol_version, rv, now_ms);
         const probe_note = if (server.probe_fallback) |reason| reason.note() else ""; // #327: a downgrade is never silent
-        std.debug.print("  [mcp:{s}] connected (mcp {s}) — {d} tool(s){s}\n", .{ name, server.protocol_version, tools_v.array.items.len, probe_note });
+        if (reg.show_diagnostics) std.debug.print("  [mcp:{s}] connected (mcp {s}) — {d} tool(s){s}\n", .{ name, server.protocol_version, tools_v.array.items.len, probe_note });
     }
 
     /// One shared window bounds the whole teardown: the loop is sequential, so
@@ -454,6 +468,7 @@ pub const Registry = struct {
     }
 
     pub fn deinit(reg: *Registry) void {
+        _ = mcp_boot.joinPending(reg);
         const budget: mcp_teardown.Budget = .init(reg.io, mcp_teardown.teardown_grace);
         for (reg.servers) |server| deinitServer(server, reg.io, budget);
         for (reg.task_arenas) |*ta| ta.deinit();
@@ -564,3 +579,8 @@ pub const Registry = struct {
         return .{ .text = try ow.toOwnedSlice(), .is_error = is_error };
     }
 };
+
+test {
+    _ = @import("mcp_cache.zig");
+    _ = @import("mcp_boot.zig");
+}

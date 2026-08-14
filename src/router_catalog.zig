@@ -1,7 +1,9 @@
-//! Model discovery for Codegraff, Anthropic, and the optional workspace router.
+//! Model discovery for Codegraff, Anthropic, xAI, and the optional workspace router.
 //!
 //! The workspace router is declared by `.graff/.config.router`; its catalog
-//! cache stays beside that config. Catalog failures never prevent startup.
+//! cache stays beside that config. xAI is always-live (never TTL-short-circuits).
+//! Startup fans live GETs out concurrently (with Kimi) so REPL boot pays
+//! max(latency), not the sum. Catalog failures never prevent startup.
 //! Anthropic's `/v1/models` (catalog kind `.anthropic`) rides the same
 //! machinery so new Claude releases appear without a rebuild. It differs in
 //! auth (x-api-key + anthropic-version, like Messages) and in pagination:
@@ -19,6 +21,7 @@ const Value = std.json.Value;
 const root = @import("main.zig");
 const catalog_selection = @import("catalog_selection.zig");
 const credential_store = @import("credential_store.zig");
+const kimi_catalog = @import("kimi_catalog.zig");
 const pricing = @import("pricing.zig");
 const provider = @import("provider.zig");
 const serde = @import("serde.zig");
@@ -29,7 +32,14 @@ const cache_ttl_ms: i64 = 6 * 60 * 60 * 1000;
 var attempted: [provider.provider_specs.len]bool = @splat(false);
 var additional_attempted = false;
 
-const Snapshot = struct {
+/// Providers whose live `/models` list must win over a disk cache every load.
+/// xAI ships new Grok ids often enough that a 6h snapshot is actively wrong;
+/// always hit api.x.ai and only fall back to cache/baked when offline.
+pub fn alwaysLive(spec: provider.ProviderSpec) bool {
+    return std.mem.eql(u8, spec.id, "xai");
+}
+
+pub const Snapshot = struct {
     models: []const pricing.ModelInfo,
     fetched_at_ms: i64 = 0,
     // Models-API cursor pagination (after_id/has_more/last_id). Absent on
@@ -175,8 +185,9 @@ pub fn parseModels(arena: Allocator, provider_id: []const u8, data: []const u8) 
 
 /// Catalog GET auth mirrors the provider's chat auth: OpenAI-style routers
 /// take a bearer token; Anthropic's /v1/models wants the same x-api-key +
-/// anthropic-version pair as the Messages endpoint itself.
-fn catalogHeaders(arena: Allocator, spec: provider.ProviderSpec, key: []const u8, buf: *[3]std.http.Header) ?[]const std.http.Header {
+/// anthropic-version pair as the Messages endpoint itself. xAI OAuth user
+/// tokens also need X-XAI-Token-Auth (same as chat — GrokAuthCredentials).
+pub fn catalogHeaders(arena: Allocator, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource, buf: *[4]std.http.Header) ?[]const std.http.Header {
     buf[0] = .{ .name = "Accept", .value = "application/json" };
     if (spec.auth == .x_api_key) {
         buf[1] = .{ .name = "x-api-key", .value = key };
@@ -185,16 +196,20 @@ fn catalogHeaders(arena: Allocator, spec: provider.ProviderSpec, key: []const u8
     }
     const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{key}) catch return null;
     buf[1] = .{ .name = "Authorization", .value = bearer };
+    if (std.mem.eql(u8, spec.id, "xai") and source == .login) {
+        buf[2] = .{ .name = "X-XAI-Token-Auth", .value = "xai-grok-cli" };
+        return buf[0..3];
+    }
     return buf[0..2];
 }
 
 /// The two cursor spellings the catalog walk speaks: Anthropic's Models API
 /// pages with `after_id`, Fireworks' AIP gateway with `pageToken`.
-const Cursor = union(enum) { after_id: []const u8, page_token: []const u8 };
+pub const Cursor = union(enum) { after_id: []const u8, page_token: []const u8 };
 
 /// Next page of a catalog walk: the cursor rides alongside the base URL's own
 /// query (limit=1000, or filter/pageSize for the AIP gateway).
-fn pageUrl(arena: Allocator, base: []const u8, cursor: ?Cursor) ?[]const u8 {
+pub fn pageUrl(arena: Allocator, base: []const u8, cursor: ?Cursor) ?[]const u8 {
     const c = cursor orelse return base;
     const sep: u8 = if (std.mem.indexOfScalar(u8, base, '?') != null) '&' else '?';
     return switch (c) {
@@ -208,12 +223,12 @@ fn containsName(rows: []const pricing.ModelInfo, name: []const u8) bool {
     return false;
 }
 
-fn fetchPage(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, key: []const u8, url: []const u8) ?Snapshot {
+fn fetchPage(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource, url: []const u8) ?Snapshot {
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
     var aw: Io.Writer.Allocating = .init(arena);
-    var headers_buf: [3]std.http.Header = undefined;
-    const headers = catalogHeaders(arena, spec, key, &headers_buf) orelse return null;
+    var headers_buf: [4]std.http.Header = undefined;
+    const headers = catalogHeaders(arena, spec, key, source, &headers_buf) orelse return null;
     const res = client.fetch(.{
         .location = .{ .url = url },
         .method = .GET,
@@ -230,7 +245,7 @@ fn fetchPage(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSp
 /// A failed later page keeps the rows already gathered rather than
 /// discarding a valid prefix; the page cap only guards against a server
 /// that always answers has_more.
-fn fetch(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, key: []const u8) ?Snapshot {
+fn fetch(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource) ?Snapshot {
     const base = modelsUrl(spec);
     if (base.len == 0) return null;
     var rows: std.ArrayList(pricing.ModelInfo) = .empty;
@@ -238,7 +253,7 @@ fn fetch(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, 
     var pages: usize = 0;
     while (pages < 16) : (pages += 1) {
         const url = pageUrl(arena, base, cursor) orelse break;
-        const page = fetchPage(io, gpa, arena, spec, key, url) orelse break;
+        const page = fetchPage(io, gpa, arena, spec, key, source, url) orelse break;
         for (page.models) |m| {
             if (containsName(rows.items, m.name)) continue;
             rows.append(arena, m) catch return null;
@@ -253,7 +268,7 @@ fn fetch(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, 
     return .{ .models = rows.toOwnedSlice(arena) catch return null };
 }
 
-fn cacheDocument(io: Io, arena: Allocator, spec: provider.ProviderSpec, models: []const pricing.ModelInfo) ?[]const u8 {
+pub fn cacheDocument(io: Io, arena: Allocator, spec: provider.ProviderSpec, models: []const pricing.ModelInfo) ?[]const u8 {
     var aw: Io.Writer.Allocating = .init(arena);
     aw.writer.writeAll("{\"source\":") catch return null;
     var source_stringify: std.json.Stringify = .{ .writer = &aw.writer };
@@ -294,19 +309,25 @@ fn cachedSnapshot(io: Io, arena: Allocator, home: []const u8, spec: provider.Pro
 /// Swap the provider's slice for the discovered rows — the active list stays
 /// 1:1 with the provider's own catalog; baked rows return only when no live
 /// or cached snapshot exists (no key, offline first run).
-fn activate(arena: Allocator, spec: provider.ProviderSpec, discovered: []const pricing.ModelInfo) bool {
+pub fn activate(arena: Allocator, spec: provider.ProviderSpec, discovered: []const pricing.ModelInfo) bool {
     return pricing.activateProviderModels(arena, spec.id, discovered);
 }
 
-fn loadSpec(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, force_refresh: bool) bool {
+fn loadSpec(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource, force_refresh: bool) bool {
     if (!dynamic(spec) or key.len == 0) return false;
     const cached = cachedSnapshot(io, arena, home, spec);
-    if (!force_refresh) if (cached) |snapshot| {
+    // alwaysLive providers (xAI) never short-circuit on a fresh disk cache —
+    // every load tries the network so new Grok ids appear without waiting for
+    // TTL or `graff models refresh`. Cache remains offline fallback only.
+    const skip_cache = force_refresh or alwaysLive(spec);
+    if (!skip_cache) if (cached) |snapshot| {
         const age = util.unixMs(io) - snapshot.fetched_at_ms;
         if (age >= 0 and age <= cache_ttl_ms and activate(arena, spec, snapshot.models)) return true;
     };
-    if (fetch(io, gpa, arena, spec, key)) |snapshot| {
+    if (fetch(io, gpa, arena, spec, key, source)) |snapshot| {
         if (activate(arena, spec, snapshot.models)) {
+            // Still write for offline/`--schema` fallback, but never treat it as
+            // authoritative for alwaysLive providers on the next load.
             if (home.len != 0 or isAdditional(spec)) writeCache(io, arena, home, spec, snapshot.models);
             return true;
         }
@@ -315,10 +336,13 @@ fn loadSpec(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, spec: pr
     return false;
 }
 
-fn ensureAt(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, index: usize, key: []const u8) void {
-    if (attempted[index] or key.len == 0) return;
+fn ensureAt(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, index: usize) void {
+    if (attempted[index]) return;
+    const spec = provider.provider_specs[index];
+    const key = keys.get(spec.id) orelse return;
+    if (key.len == 0) return;
     attempted[index] = true;
-    _ = loadSpec(io, gpa, arena, home, provider.provider_specs[index], key, false);
+    _ = loadSpec(io, gpa, arena, home, spec, key, keys.source(spec.id), false);
 }
 
 fn ensureAdditional(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys) void {
@@ -326,23 +350,138 @@ fn ensureAdditional(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, 
     const spec = provider.additional_router orelse return;
     const key = keys.get(spec.id) orelse return;
     additional_attempted = true;
-    _ = loadSpec(io, gpa, arena, home, spec, key, false);
+    _ = loadSpec(io, gpa, arena, home, spec, key, keys.source(spec.id), false);
 }
 
+const FetchOutcome = struct {
+    spec: provider.ProviderSpec,
+    models: []const pricing.ModelInfo = &.{},
+    write_cache: bool = false,
+    arena_state: ?std.heap.ArenaAllocator = null,
+};
+
+fn retainModels(arena: Allocator, rows: []const pricing.ModelInfo) ?[]const pricing.ModelInfo {
+    const out = arena.alloc(pricing.ModelInfo, rows.len) catch return null;
+    for (rows, out) |src, *dst| {
+        dst.* = src;
+        dst.provider = arena.dupe(u8, src.provider) catch return null;
+        dst.name = arena.dupe(u8, src.name) catch return null;
+        if (src.support_efforts.len != 0) {
+            const efforts = arena.alloc([]const u8, src.support_efforts.len) catch return null;
+            for (src.support_efforts, efforts) |effort, *slot|
+                slot.* = arena.dupe(u8, effort) catch return null;
+            dst.support_efforts = efforts;
+        }
+        if (src.default_effort) |effort| dst.default_effort = arena.dupe(u8, effort) catch return null;
+    }
+    return out;
+}
+
+fn fetchSpecTask(io: Io, gpa: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource) FetchOutcome {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    const a = arena_state.allocator();
+    const snapshot = fetch(io, gpa, a, spec, key, source) orelse {
+        arena_state.deinit();
+        return .{ .spec = spec };
+    };
+    return .{
+        .spec = spec,
+        .models = snapshot.models,
+        .write_cache = home.len != 0 or isAdditional(spec),
+        .arena_state = arena_state,
+    };
+}
+
+fn spawnFetch(io: Io, gpa: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource) Io.Future(FetchOutcome) {
+    const args = .{ io, gpa, home, spec, key, source };
+    return io.concurrent(fetchSpecTask, args) catch io.async(fetchSpecTask, args);
+}
+
+fn finishFetch(io: Io, arena: Allocator, home: []const u8, outcome: FetchOutcome) void {
+    var task_arena = outcome.arena_state;
+    defer if (task_arena) |*ta| ta.deinit();
+    if (outcome.models.len > 0) {
+        const kept = retainModels(arena, outcome.models) orelse return;
+        if (activate(arena, outcome.spec, kept) and outcome.write_cache)
+            writeCache(io, arena, home, outcome.spec, kept);
+        return;
+    }
+    if (cachedSnapshot(io, arena, home, outcome.spec)) |snapshot|
+        _ = activate(arena, outcome.spec, snapshot.models);
+}
+
+fn cacheFresh(io: Io, arena: Allocator, home: []const u8, spec: provider.ProviderSpec) bool {
+    if (alwaysLive(spec)) return false;
+    const snapshot = cachedSnapshot(io, arena, home, spec) orelse return false;
+    const age = util.unixMs(io) - snapshot.fetched_at_ms;
+    return age >= 0 and age <= cache_ttl_ms and activate(arena, spec, snapshot.models);
+}
+
+const KimiOutcome = struct {
+    fetch: kimi_catalog.Fetch = .{},
+    arena_state: ?std.heap.ArenaAllocator = null,
+};
+
+fn kimiFetchTask(io: Io, gpa: Allocator, home: []const u8, access: []const u8) KimiOutcome {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    return .{
+        .fetch = kimi_catalog.fetch(io, gpa, arena_state.allocator(), home, access),
+        .arena_state = arena_state,
+    };
+}
+
+fn spawnKimi(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) ?Io.Future(KimiOutcome) {
+    if (!catalog_selection.startupMayUse(keys, "kimi", model_flag, saved)) return null;
+    if (!kimi_catalog.claimAttempt()) return null;
+    const access = keys.get("kimi") orelse "";
+    if (access.len == 0) {
+        kimi_catalog.commit(arena, &.{}, "baked fallback — no Kimi login");
+        return null;
+    }
+    const args = .{ io, gpa, home, access };
+    return io.concurrent(kimiFetchTask, args) catch io.async(kimiFetchTask, args);
+}
+
+/// Startup catalog load. Fresh disk caches activate inline; every live GET
+/// (xAI, stale Anthropic/Codegraff, Kimi, …) runs concurrently so boot pays
+/// the slowest host, not the sum. Table mutation stays on this thread.
 pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) void {
+    var kimi_task = spawnKimi(io, gpa, arena, home, keys, model_flag, saved);
+    defer if (kimi_task) |*fut| {
+        var outcome = fut.await(io);
+        defer if (outcome.arena_state) |*ta| ta.deinit();
+        kimi_catalog.commit(arena, outcome.fetch.rows, outcome.fetch.source);
+    };
+
+    var futures: [provider.provider_specs.len + 1]?Io.Future(FetchOutcome) = @splat(null);
     for (provider.provider_specs, 0..) |spec, index| {
         if (!dynamic(spec) or !catalog_selection.startupMayUse(keys, spec.id, model_flag, saved)) continue;
-        ensureAt(io, gpa, arena, home, index, keys.get(spec.id) orelse "");
+        if (attempted[index]) continue;
+        const key = keys.get(spec.id) orelse continue;
+        if (key.len == 0) continue;
+        attempted[index] = true;
+        if (cacheFresh(io, arena, home, spec)) continue;
+        futures[index] = spawnFetch(io, gpa, home, spec, key, keys.source(spec.id));
     }
-    if (provider.additional_router) |spec|
-        if (catalog_selection.startupMayUse(keys, spec.id, model_flag, saved))
-            ensureAdditional(io, gpa, arena, home, keys);
+    if (provider.additional_router) |spec| {
+        if (catalog_selection.startupMayUse(keys, spec.id, model_flag, saved) and !additional_attempted) {
+            if (keys.get(spec.id)) |key| if (key.len != 0) {
+                additional_attempted = true;
+                if (!cacheFresh(io, arena, home, spec))
+                    futures[provider.provider_specs.len] = spawnFetch(io, gpa, home, spec, key, keys.source(spec.id));
+            };
+        }
+    }
+    for (&futures) |*maybe| {
+        const outcome = if (maybe.*) |*fut| fut.await(io) else continue;
+        finishFetch(io, arena, home, outcome);
+    }
 }
 
 pub fn ensureForQuery(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, query: []const u8) void {
     for (provider.provider_specs, 0..) |spec, index| {
         if (!dynamic(spec) or !catalog_selection.queryMayUse(spec.id, query)) continue;
-        ensureAt(io, gpa, arena, home, index, keys.get(spec.id) orelse "");
+        ensureAt(io, gpa, arena, home, keys, index);
     }
     if (provider.additional_router) |spec|
         if (catalog_selection.queryMayUse(spec.id, query))
@@ -353,11 +492,11 @@ pub fn loadAll(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys:
     for (provider.provider_specs, 0..) |spec, index| {
         if (!dynamic(spec)) continue;
         attempted[index] = true;
-        _ = loadSpec(io, gpa, arena, home, spec, keys.get(spec.id) orelse "", force_refresh);
+        _ = loadSpec(io, gpa, arena, home, spec, keys.get(spec.id) orelse "", keys.source(spec.id), force_refresh);
     }
     if (provider.additional_router) |spec| {
         additional_attempted = true;
-        _ = loadSpec(io, gpa, arena, home, spec, keys.get(spec.id) orelse "", force_refresh);
+        _ = loadSpec(io, gpa, arena, home, spec, keys.get(spec.id) orelse "", keys.source(spec.id), force_refresh);
     }
 }
 
@@ -375,210 +514,6 @@ pub fn loadCachedAll(io: Io, arena: Allocator, home: []const u8) void {
     }
 }
 
-test "OpenAI catalog configuration carries its models endpoint" {
-    const spec = provider.specFor("codegraff") orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(provider.ProviderSpec.CatalogKind.openai, spec.catalog);
-    try std.testing.expectEqualStrings("https://gateway.codegraff.com/v1/models", modelsUrl(spec));
-    for (provider.provider_specs) |candidate| {
-        if (candidate.catalog != .openai) continue;
-        try std.testing.expect(candidate.kind == .openai);
-        try std.testing.expect(candidate.models_url.len != 0);
-    }
-}
-
-test "parseModels is reusable for a newly configured router" {
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const snapshot = parseModels(state.allocator(), "new-router",
-        \\{"object":"list","data":[
-        \\ {"id":"glm-5.2","context_length":1000000,"supported_parameters":["reasoning","tools"]},
-        \\ {"id":"openai/gpt-oss:free","context_length":131072},
-        \\ {"id":"no-window"},
-        \\ {"id":"glm-5.2","context_length":128000},
-        \\ {"id":"bad id!","context_length":999}
-        \\]}
-    ) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 3), snapshot.models.len);
-    try std.testing.expectEqualStrings("new-router", snapshot.models[0].provider);
-    try std.testing.expectEqual(@as(u64, 1_000_000), snapshot.models[0].context);
-    try std.testing.expect(snapshot.models[0].supports_reasoning);
-    try std.testing.expectEqualStrings("openai/gpt-oss:free", snapshot.models[1].name);
-    try std.testing.expectEqual(pricing.default_context, snapshot.models[2].context);
-}
-
-test "fireworks catalog is live and parses the AIP gateway shape" {
-    const spec = provider.specFor("fireworks") orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(provider.ProviderSpec.CatalogKind.openai, spec.catalog);
-    try std.testing.expect(std.mem.indexOf(u8, modelsUrl(spec), "accounts/fireworks/models") != null);
-
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const snapshot = parseModels(state.allocator(), "fireworks",
-        \\{"models":[
-        \\ {"name":"accounts/fireworks/models/glm-5p2","displayName":"GLM 5.2","contextLength":1048576},
-        \\ {"name":"accounts/fireworks/models/no-window"},
-        \\ {"name":"accounts/fireworks/models/glm-5p2","contextLength":128000}
-        \\],"nextPageToken":"tok-page-2","totalSize":3}
-    ) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 2), snapshot.models.len); // the duplicate id drops
-    try std.testing.expectEqualStrings("accounts/fireworks/models/glm-5p2", snapshot.models[0].name);
-    try std.testing.expectEqual(@as(u64, 1_048_576), snapshot.models[0].context); // camelCase contextLength read
-    try std.testing.expectEqual(pricing.default_context, snapshot.models[1].context); // omitted + no baked match → default
-    try std.testing.expect(snapshot.has_more);
-    try std.testing.expectEqualStrings("tok-page-2", snapshot.page_token.?);
-
-    // The walk spells the cursor the gateway's way, not Anthropic's.
-    const url = pageUrl(state.allocator(), modelsUrl(spec), .{ .page_token = "tok-page-2" }).?;
-    try std.testing.expect(std.mem.indexOf(u8, url, "&pageToken=tok-page-2") != null);
-    try std.testing.expect(std.mem.indexOf(u8, url, "after_id") == null);
-}
-
-test "parseModels round-trips the generic cache shape" {
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const snapshot = parseModels(state.allocator(), "router",
-        \\{"fetched_at_ms":1700000000000,
-        \\ "models":[{"name":"minimax-m3","context":1000000,"supports_reasoning":true}]}
-    ) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(i64, 1_700_000_000_000), snapshot.fetched_at_ms);
-    try std.testing.expectEqualStrings("router", snapshot.models[0].provider);
-    try std.testing.expect(snapshot.models[0].supports_reasoning);
-}
-
-test "cache document serializes every model name as valid JSON" {
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const arena = state.allocator();
-    const spec = provider.specFor("codegraff") orelse return error.TestUnexpectedResult;
-    const models = [_]pricing.ModelInfo{
-        .{ .provider = spec.id, .name = "first", .context = 128_000 },
-        .{ .provider = spec.id, .name = "quote\"model", .context = 256_000, .supports_reasoning = true },
-    };
-    const document = cacheDocument(std.testing.io, arena, spec, &models) orelse
-        return error.TestUnexpectedResult;
-    const value = try std.json.parseFromSliceLeaky(Value, arena, document, .{});
-    const cached_models = value.object.get("models") orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 2), cached_models.array.items.len);
-    const second = cached_models.array.items[1].object;
-    try std.testing.expectEqualStrings("quote\"model", second.get("name").?.string);
-    try std.testing.expect(second.get("supports_reasoning").?.bool);
-}
-
-test "Anthropic catalog is live and authenticates like Messages" {
-    const spec = provider.specFor("anthropic") orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(provider.ProviderSpec.CatalogKind.anthropic, spec.catalog);
-    try std.testing.expect(dynamic(spec));
-    try std.testing.expectEqualStrings("https://api.anthropic.com/v1/models?limit=1000", modelsUrl(spec));
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    var buf: [3]std.http.Header = undefined;
-    const headers = catalogHeaders(state.allocator(), spec, "sk-test", &buf) orelse
-        return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 3), headers.len);
-    try std.testing.expectEqualStrings("x-api-key", headers[1].name);
-    try std.testing.expectEqualStrings("sk-test", headers[1].value);
-    try std.testing.expectEqualStrings("anthropic-version", headers[2].name);
-    // Bearer routers are unchanged by the x-api-key branch.
-    const router = provider.specFor("codegraff") orelse return error.TestUnexpectedResult;
-    const bearer = catalogHeaders(state.allocator(), router, "key", &buf) orelse
-        return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 2), bearer.len);
-    try std.testing.expectEqualStrings("Authorization", bearer[1].name);
-}
-
-test "Anthropic /v1/models rows inherit baked context windows" {
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    // A row declaring max_input_tokens uses it as the window — and never its
-    // sibling max_tokens, which is the OUTPUT cap (128k on Opus 5). A row
-    // without limits takes its alias family's baked window; an unknown family
-    // falls back to the conservative default.
-    const snapshot = parseModels(state.allocator(), "anthropic",
-        \\{"data":[
-        \\ {"type":"model","id":"claude-opus-5","display_name":"Claude Opus 5",
-        \\  "max_input_tokens":1000000,"max_tokens":128000},
-        \\ {"type":"model","id":"claude-opus-4-8-20260115","display_name":"Claude Opus 4.8"},
-        \\ {"type":"model","id":"claude-haiku-4-5-20251001","display_name":"Claude Haiku 4.5"},
-        \\ {"type":"model","id":"claude-nova-9","display_name":"Claude Nova 9"}
-        \\],"has_more":false}
-    ) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 4), snapshot.models.len);
-    try std.testing.expectEqual(@as(u64, 1_000_000), snapshot.models[0].context);
-    try std.testing.expectEqual(@as(u64, 1_000_000), snapshot.models[1].context);
-    try std.testing.expectEqual(@as(u64, 200_000), snapshot.models[2].context);
-    try std.testing.expectEqual(pricing.default_context, snapshot.models[3].context);
-}
-
-test "Anthropic discovery keeps the active slice 1:1 with the live list" {
-    const saved = pricing.active_model_table;
-    defer pricing.active_model_table = saved;
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const spec = provider.specFor("anthropic") orelse return error.TestUnexpectedResult;
-    const discovered = [_]pricing.ModelInfo{
-        .{ .provider = "anthropic", .name = "claude-opus-5", .context = 1_000_000 },
-        .{ .provider = "anthropic", .name = "claude-opus-4-8", .context = 1_000_000 },
-    };
-    try std.testing.expect(activate(state.allocator(), spec, &discovered));
-    // Exactly the live rows — a baked row the API no longer lists is gone,
-    // so the picker shows the official catalog and nothing else.
-    var count: usize = 0;
-    for (pricing.models()) |m| {
-        if (std.mem.eql(u8, m.provider, "anthropic")) count += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 2), count);
-    try std.testing.expect(pricing.providerModelInTable("anthropic", "claude-opus-5"));
-    try std.testing.expect(!pricing.providerModelInTable("anthropic", "claude-sonnet-4-5"));
-    try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("anthropic", "claude-opus-5"));
-    // Other providers' slices are untouched.
-    try std.testing.expect(pricing.providerModelInTable("codegraff", "claude-opus-4.8"));
-}
-
-test "Models-API cursor pagination is followed 1:1 with the docs" {
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const arena = state.allocator();
-    // parseModels surfaces the after_id/has_more/last_id scheme (the Models
-    // API does NOT use page/next_page — see "API overview → Pagination").
-    const page = parseModels(arena, "anthropic",
-        \\{"data":[{"type":"model","id":"claude-opus-5","max_input_tokens":1000000,"max_tokens":128000}],
-        \\ "has_more":true,"first_id":"claude-opus-5","last_id":"claude-opus-5"}
-    ) orelse return error.TestUnexpectedResult;
-    try std.testing.expect(page.has_more);
-    try std.testing.expectEqualStrings("claude-opus-5", page.last_id orelse return error.TestUnexpectedResult);
-    // A final page reports has_more:false; the cache shape carries neither.
-    const last = parseModels(arena, "anthropic",
-        \\{"data":[{"id":"claude-haiku-4-5"}],"has_more":false,"last_id":"claude-haiku-4-5"}
-    ) orelse return error.TestUnexpectedResult;
-    try std.testing.expect(!last.has_more);
-    const cache = parseModels(arena, "anthropic",
-        \\{"fetched_at_ms":1,"models":[{"name":"claude-opus-5","context":1000000}]}
-    ) orelse return error.TestUnexpectedResult;
-    try std.testing.expect(!cache.has_more);
-    try std.testing.expect(cache.last_id == null);
-    // after_id joins the base URL's existing query string.
-    try std.testing.expectEqualStrings(
-        "https://api.anthropic.com/v1/models?limit=1000&after_id=claude-opus-5",
-        pageUrl(arena, "https://api.anthropic.com/v1/models?limit=1000", .{ .after_id = "claude-opus-5" }) orelse return error.TestUnexpectedResult,
-    );
-    try std.testing.expectEqualStrings(
-        "https://example.com/models?after_id=m1",
-        pageUrl(arena, "https://example.com/models", .{ .after_id = "m1" }) orelse return error.TestUnexpectedResult,
-    );
-    try std.testing.expectEqualStrings("base", pageUrl(arena, "base", null) orelse return error.TestUnexpectedResult);
-}
-
-test "router discovery replaces only its provider slice" {
-    const saved = pricing.active_model_table;
-    defer pricing.active_model_table = saved;
-    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer state.deinit();
-    const discovered = [_]pricing.ModelInfo{
-        .{ .provider = "codegraff", .name = "kimi-k3", .context = 1_048_576 },
-    };
-    try std.testing.expect(pricing.activateProviderModels(state.allocator(), "codegraff", &discovered));
-    try std.testing.expect(pricing.providerModelInTable("codegraff", "kimi-k3"));
-    try std.testing.expect(!pricing.providerModelInTable("codegraff", "claude-opus-4.8"));
-    try std.testing.expect(pricing.providerModelInTable("anthropic", "claude-opus-4-8"));
-    try std.testing.expect(pricing.providerModelInTable("codex", "gpt-5.6-sol"));
+test {
+    _ = @import("router_catalog_tests.zig");
 }

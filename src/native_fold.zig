@@ -203,6 +203,15 @@ pub fn findRootSpec(arena: Allocator, name: []const u8) !?@import("schema.zig").
     return null;
 }
 
+/// Loading a folded native changes the provider-visible tool surface. Root
+/// catalogs are cached on Agent, so mutating g_loaded alone leaves the model
+/// with the stale pre-load array (#492). Mirror mcp_schema_gate.handleLoad:
+/// invalidate every provider encoding and eagerly rebuild the active one.
+fn refreshAgentCatalog(agent: anytype) void {
+    agent.invalidateRootTools();
+    agent.ensureRootTools(agent.provider.kind) catch {};
+}
+
 /// The native half of load_tool_schemas, called from agent_tools before the
 /// MCP handler: an input naming folded native tools loads them (real schema
 /// in the result, enabled for the session). Returns null when the input
@@ -232,6 +241,7 @@ pub fn handleLoadNative(agent: anytype, input: @import("std").json.Value) !?@imp
             aw.writer.print("{s}: {s}\n", .{ name, spec.schema }) catch return null;
         }
         if (matched == 0) return null; // no native match: the MCP half answers the query
+        refreshAgentCatalog(agent);
         const head = try std.fmt.allocPrint(agent.arena, "{d} native tool schema(s) below are now loaded and callable for the rest of this session. Call them with arguments matching input_schema.\n", .{matched});
         return .{ .text = try std.fmt.allocPrint(agent.arena, "{s}{s}", .{ head, aw.writer.buffered() }), .is_error = false };
     }
@@ -256,6 +266,7 @@ pub fn handleLoadNative(agent: anytype, input: @import("std").json.Value) !?@imp
         aw.writer.print("{s}: {s}\n", .{ item.string, spec.schema }) catch return null;
     }
     if (total == 0) return null;
+    if (fresh > 0) refreshAgentCatalog(agent);
     var head: Io.Writer.Allocating = .init(agent.arena);
     head.writer.print("{d} native tool schema(s) below are now loaded and callable for the rest of this session ({d} newly enabled). Call them with arguments matching input_schema.\n", .{ total, fresh }) catch return null;
     return .{ .text = try agent.arena.dupe(u8, try std.fmt.allocPrint(agent.arena, "{s}{s}", .{ head.writer.buffered(), aw.writer.buffered() })), .is_error = false };
@@ -309,4 +320,46 @@ test "fold refusal text names the load call, not just the block" {
     const loaded = try loadResultText(a, "eval", "{\"type\":\"object\"}");
     try std.testing.expect(std.mem.indexOf(u8, loaded, "{\"type\":\"object\"}") != null);
     try std.testing.expect(isLoaded("eval"));
+}
+
+test "explicit native loads rebuild the active provider catalog (#492)" {
+    const provider_mod = @import("provider.zig");
+    const FakeAgent = struct {
+        arena: Allocator,
+        provider: struct { kind: provider_mod.Provider.Kind } = .{ .kind = .anthropic },
+        invalidations: usize = 0,
+        rebuilds: usize = 0,
+
+        fn invalidateRootTools(self: *@This()) void {
+            self.invalidations += 1;
+        }
+
+        fn ensureRootTools(self: *@This(), kind: provider_mod.Provider.Kind) !void {
+            try std.testing.expectEqual(provider_mod.Provider.Kind.anthropic, kind);
+            self.rebuilds += 1;
+        }
+    };
+
+    const saved_enabled = enabled;
+    const saved_loaded = g_loaded;
+    const saved_loaded_len = g_loaded_len;
+    defer {
+        enabled = saved_enabled;
+        g_loaded = saved_loaded;
+        g_loaded_len = saved_loaded_len;
+    }
+    enabled = true;
+    g_loaded_len = 0;
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var agent: FakeAgent = .{ .arena = arena };
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"tools\":[\"workflow\"]}", .{});
+    const result = (try handleLoadNative(&agent, input)) orelse return error.TestExpectedLoadResult;
+
+    try std.testing.expect(!result.is_error);
+    try std.testing.expect(isLoaded("workflow"));
+    try std.testing.expectEqual(@as(usize, 1), agent.invalidations);
+    try std.testing.expectEqual(@as(usize, 1), agent.rebuilds);
 }

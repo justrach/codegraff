@@ -33,6 +33,28 @@ NOTARY_PROFILE="${NOTARY_PROFILE:-notary-local}"
 export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 
+# The .app embeds the harness as a Tauri sidecar (bundle.externalBin =
+# binaries/graff, resolved as binaries/graff-<triple>). binaries/ is gitignored
+# and nothing else rebuilds it, so a skipped refresh silently ships a stale
+# harness — and the model picker AND the provider settings page are both derived
+# from `graff --schema`, so the UI freezes at whatever catalog that old binary
+# knows. Rebuild it from source every time, then prove it took.
+command -v zig >/dev/null || { echo "zig not found — needed to rebuild the harness sidecar" >&2; exit 1; }
+TRIPLE="${SIDECAR_TRIPLE:-$(rustc -vV | sed -n 's/^host: //p')}"
+SIDECAR="$GUI/src-tauri/binaries/graff-$TRIPLE"
+HARNESS_VER="$(git -C "$ROOT" describe --tags --always --dirty | sed 's/^v//')"
+echo ">> rebuilding harness sidecar for $TRIPLE (graff $HARNESS_VER)"
+(cd "$ROOT" && zig build -Doptimize=ReleaseFast -Dversion="$HARNESS_VER")
+mkdir -p "$(dirname "$SIDECAR")"
+cp "$ROOT/zig-out/bin/graff" "$SIDECAR"
+chmod +x "$SIDECAR"
+BUNDLED="$("$SIDECAR" --version 2>/dev/null | head -1 || true)"
+[ "$BUNDLED" = "graff $HARNESS_VER" ] || {
+  echo "sidecar mismatch: bundled '$BUNDLED', expected 'graff $HARNESS_VER'" >&2
+  exit 1
+}
+echo "   sidecar: $BUNDLED ($("$SIDECAR" --schema | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d["models"]), "models, schema", d["version"])'))"
+
 cd "$GUI"
 VER="$(grep -m1 '"version"' src-tauri/tauri.conf.json | sed -E 's/.*"version" *: *"([^"]+)".*/\1/')"
 echo ">> building Codegraff $VER (this signs the app with Developer ID + the updater payload with minisign)"

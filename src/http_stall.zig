@@ -24,8 +24,19 @@ pub var idle_floor_ms: u64 = 15 * 1000;
 /// How long a stream read may sit silent before the watchdog calls it dead.
 /// `base_ms` is the configured budget (http.stream_stall_ms); `tokens_flowing`
 /// says whether THIS stream has already emitted tokens.
+/// Pre-first-token ceiling. The full budget used to stand before the first
+/// byte "because a reasoning model can be silent for minutes" — but with
+/// thinking STREAMED (kimi keep:"all", codex reasoning deltas) a healthy
+/// request emits its first token in seconds, and a totally silent socket is
+/// dead, not thinking: the k3 benchmark watched a stalled first call burn
+/// 127s before the watchdog retried, after which it completed in 6s.
+/// GRAFF_STREAM_STALL_SECS (or GRAFF_STREAM_HEAD_STALL_SECS) still overrides
+/// for a provider that genuinely buffers in silence. Mutable for tests, like
+/// idle_floor_ms; production writes it only from session_settings.
+pub var head_ceiling_ms: u64 = 45 * 1000;
+
 pub fn budgetMs(base_ms: u64, tokens_flowing: bool) u64 {
-    if (!tokens_flowing) return base_ms; // pre-first-token: a legit long reasoning pause
+    if (!tokens_flowing) return @min(base_ms, head_ceiling_ms);
     return @min(base_ms, @max(idle_floor_ms, base_ms / idle_divisor));
 }
 
@@ -38,11 +49,11 @@ pub fn expired(waited_ms: u64, base_ms: u64, tokens_flowing: bool) bool {
 test "stall budget (#56): between-lines silence trips sooner than a pre-first-token pause" {
     const base: u64 = 120 * 1000; // the shipped http.stream_stall_ms default
 
-    // Before the first token the full budget stands: a reasoning model can be
-    // silent for minutes before it emits anything, so nothing shorter is safe.
-    try std.testing.expectEqual(base, budgetMs(base, false));
-    try std.testing.expect(!expired(base - 1, base, false));
-    try std.testing.expect(expired(base, base, false));
+    // Before the first token the head ceiling applies: with thinking streamed,
+    // a silent socket past it is dead, not reasoning.
+    try std.testing.expectEqual(head_ceiling_ms, budgetMs(base, false));
+    try std.testing.expect(!expired(head_ceiling_ms - 1, base, false));
+    try std.testing.expect(expired(head_ceiling_ms, base, false));
 
     // Tokens already flowed: a quarter of it (30s), so a dead stream is given
     // up on 4x sooner instead of holding the turn for another 90s of silence.
@@ -53,8 +64,12 @@ test "stall budget (#56): between-lines silence trips sooner than a pre-first-to
     // is done and the pre-first-token one is still waiting.
     try std.testing.expect(expired(30 * 1000, base, true) and !expired(30 * 1000, base, false));
 
-    // GRAFF_STREAM_STALL_SECS (session_run writes http.stream_stall_ms, which
-    // arrives here as base_ms) keeps scaling both regimes.
+    // GRAFF_STREAM_STALL_SECS (session_settings writes http.stream_stall_ms,
+    // which arrives here as base_ms) still wins BOTH regimes when set high —
+    // simulated by raising the ceiling the way the env knob does.
+    const saved_ceiling = head_ceiling_ms;
+    head_ceiling_ms = 600 * 1000;
+    defer head_ceiling_ms = saved_ceiling;
     try std.testing.expectEqual(@as(u64, 600 * 1000), budgetMs(600 * 1000, false));
     try std.testing.expectEqual(@as(u64, 150 * 1000), budgetMs(600 * 1000, true));
 

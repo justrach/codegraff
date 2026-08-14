@@ -217,7 +217,7 @@ export class HarnessRunner implements AgentRunner {
    *  tool_result — and whatever agent_usage event preceded it — have been
    *  seen. Never waits for the dispatcher's own turn/attempt_completion. */
   private async drive(h: Harness, prompt: string, toolName: string): Promise<{ result: AgentResult | null; usage: AgentUsage }> {
-    let usage = zeroUsage;
+    let usage = { ...zeroUsage };
     let result: AgentResult | null = null;
     for await (const ev of h.chat(prompt)) {
       if (ev.type === "agent_usage") usage = usageFromEvent(ev);
@@ -282,7 +282,8 @@ export class Budget {
   }
 
   /** Record one live agent() call. Internal bookkeeping — agent()/Run.agent
-   *  call this; nothing else should. */
+   *  call reserveCall()/chargeReserved() instead; nothing outside a Run
+   *  should call any of the three. */
   charge(usage: AgentUsage): void {
     this._calls += 1;
     this._tokens += usage.contextTokens;
@@ -300,6 +301,13 @@ export class Budget {
   /** Complete a previously reserved call with its measured token usage. */
   chargeReserved(usage: AgentUsage): void {
     this._tokens += usage.contextTokens;
+  }
+
+  /** Undo a reservation whose runner never produced a result (transport
+   *  error): the call never happened, so it must not count in spent() or
+   *  drain the calls ceiling. Tokens are untouched — none were charged. */
+  releaseCall(): void {
+    this._calls -= 1;
   }
 }
 
@@ -520,11 +528,22 @@ export class Run {
     }
 
     if (!this.budget.reserveCall()) {
-      return { ok: false, text: "agent(): budget exhausted, call not admitted", usage: zeroUsage, cached: false };
+      return { ok: false, text: "agent(): budget exhausted, call not admitted", usage: { ...zeroUsage }, cached: false };
     }
 
     const runner = opts.runner ?? this.runner;
-    const result = await runner.run(spec, { model: opts.model, harness: opts.harness });
+    let result: AgentResult;
+    try {
+      result = await runner.run(spec, { model: opts.model, harness: opts.harness });
+    } catch (err) {
+      // Transport failure: the call never ran. Release its reservation so a
+      // flaky runner can't drain the calls budget (making later calls fail
+      // with a misleading "budget exhausted"), and leave the journal
+      // untouched — resume re-runs from this key. Rethrow so callers and
+      // parallel()/pipeline() keep their reject/null-on-failure contract.
+      this.budget.releaseCall();
+      throw err;
+    }
     this.budget.chargeReserved(result.usage);
     this.appendJournal({ key, promptHash, optsHash, ok: result.ok, text: result.text, usage: result.usage, ts: Date.now() });
     return result;
