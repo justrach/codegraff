@@ -121,7 +121,6 @@ test { // unit_tests' root is main.zig only, so reference every split-out module
     _ = provider_mod;
     _ = agent_mod;
 }
-// System-prompt text (main_system_prompt, strict_note, main_system_prompt_strict, sub_system_prompt, compact_instruction) lives in prompts.zig.
 const prompts = @import("prompts.zig");
 // Tool-schema + provider-tool JSON emission lives in schema.zig; serve.zig/startup.zig import it directly. Kept here to pull in its test{} block.
 const schema = @import("schema.zig");
