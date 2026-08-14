@@ -380,18 +380,23 @@ pub const Registry = struct {
         errdefer tools.shrinkRetainingCapacity(tools_before);
 
         // A fresh process can reuse last session's tools/list (MCP 2026-07-28
-        // CacheableResult). Modern HTTP is stateless: a hit skips the network.
-        // Legacy still initializes so session-scoped servers keep working.
+        // CacheableResult). HTTP hits skip the network; call() initializes a
+        // 2025-11-25 session on first tools/call. Live stdio still handshakes.
         const cache_key = mcp_cache.keyFor(a, cfg);
         const now_ms = util.unixMs(reg.io);
-        const cached = mcp_cache.load(reg.io, a, reg.home, cache_key, now_ms);
-        const era_hint = mcp_cache.loadEra(reg.io, a, reg.home, cache_key);
+        const looked = mcp_cache.lookup(reg.io, a, reg.home, cache_key, now_ms);
+        const era_hint = looked.era;
         var listed_result: ?Value = null;
-        const tools_v: Value = if (cached) |hit| blk: {
+        const tools_v: Value = if (looked.hit) |hit| blk: {
             server.era = hit.era;
             server.protocol_version = try a.dupe(u8, hit.protocol_version);
-            server.initialized = true;
-            if (hit.era == .legacy) try mcp_rpc.initializeServer(server, a, a, if (server.transport == .stdio) reg.io else null);
+            // HTTP: advertise the cached catalog and let call() initialize.
+            // stdio legacy: the child is already live, so complete the session.
+            if (mcp_cache.handshakeOnCacheHit(hit.era, server.transport == .http)) {
+                try mcp_rpc.initializeServer(server, a, a, reg.io);
+            } else {
+                server.initialized = hit.era == .modern;
+            }
             break :blk hit.tools;
         } else blk: {
             const listed = switch (server.transport) {

@@ -72,14 +72,24 @@ fn eraName(e: mcp_rpc.Era) []const u8 {
     };
 }
 
-pub fn load(io: Io, arena: Allocator, home: []const u8, key: []const u8, now_ms: i64) ?Hit {
-    if (key.len == 0) return null;
-    const data = readFile(io, arena, home) orelse return null;
-    const root = parseRoot(arena, data) orelse return null;
-    const servers = root.get("servers") orelse return null;
-    if (servers != .object) return null;
-    const entry = servers.object.get(key) orelse return null;
-    if (entry != .object) return null;
+pub const Lookup = struct {
+    hit: ?Hit = null,
+    era: mcp_rpc.Era = .unknown,
+};
+
+/// One disk read: fresh `tools/list` if the TTL still holds, plus the era even
+/// when the catalog is stale (so Auto can skip the modern probe).
+pub fn lookup(io: Io, arena: Allocator, home: []const u8, key: []const u8, now_ms: i64) Lookup {
+    var out: Lookup = .{};
+    if (key.len == 0) return out;
+    const data = readFile(io, arena, home) orelse return out;
+    const root = parseRoot(arena, data) orelse return out;
+    const servers = root.get("servers") orelse return out;
+    if (servers != .object) return out;
+    const entry = servers.object.get(key) orelse return out;
+    if (entry != .object) return out;
+    const era_s = if (entry.object.get("era")) |v| (if (v == .string) v.string else "") else "";
+    out.era = eraFrom(era_s);
     const fetched = if (entry.object.get("fetched_unix_ms")) |v|
         (if (v == .integer) v.integer else 0)
     else
@@ -88,29 +98,31 @@ pub fn load(io: Io, arena: Allocator, home: []const u8, key: []const u8, now_ms:
         (if (v == .integer and v.integer > 0) @as(u64, @intCast(v.integer)) else default_ttl_ms)
     else
         default_ttl_ms;
-    if (fetched <= 0 or now_ms < fetched) return null;
-    if (@as(u64, @intCast(now_ms - fetched)) > ttl) return null;
-    const era_s = if (entry.object.get("era")) |v| (if (v == .string) v.string else "") else "";
-    const era = eraFrom(era_s);
-    if (era == .unknown) return null;
+    if (fetched <= 0 or now_ms < fetched) return out;
+    if (@as(u64, @intCast(now_ms - fetched)) > ttl) return out;
+    if (out.era == .unknown) return out;
     const ver = if (entry.object.get("protocol_version")) |v| (if (v == .string) v.string else "?") else "?";
-    const tools = entry.object.get("tools") orelse return null;
-    if (tools != .array) return null;
-    return .{ .era = era, .protocol_version = ver, .tools = tools };
+    const tools = entry.object.get("tools") orelse return out;
+    if (tools != .array) return out;
+    out.hit = .{ .era = out.era, .protocol_version = ver, .tools = tools };
+    return out;
+}
+
+pub fn load(io: Io, arena: Allocator, home: []const u8, key: []const u8, now_ms: i64) ?Hit {
+    return lookup(io, arena, home, key, now_ms).hit;
 }
 
 /// Era only — ignores tools TTL. A 2025-11-25 URL stays legacy across cache
 /// expiry so Auto can skip the modern probe (~0.7s) on the next cold-ish run.
 pub fn loadEra(io: Io, arena: Allocator, home: []const u8, key: []const u8) mcp_rpc.Era {
-    if (key.len == 0) return .unknown;
-    const data = readFile(io, arena, home) orelse return .unknown;
-    const root = parseRoot(arena, data) orelse return .unknown;
-    const servers = root.get("servers") orelse return .unknown;
-    if (servers != .object) return .unknown;
-    const entry = servers.object.get(key) orelse return .unknown;
-    if (entry != .object) return .unknown;
-    const era_s = if (entry.object.get("era")) |v| (if (v == .string) v.string else "") else "";
-    return eraFrom(era_s);
+    return lookup(io, arena, home, key, 0).era;
+}
+
+/// rust-sdk / 2026-07-28: a cached catalog is enough to advertise tools.
+/// HTTP is stateless enough that `call()` can `initialize` on first use.
+/// A live stdio child still needs the session handshake now.
+pub fn handshakeOnCacheHit(era: mcp_rpc.Era, is_http: bool) bool {
+    return era == .legacy and !is_http;
 }
 
 pub fn ttlFromResult(result: Value) u64 {
@@ -242,4 +254,11 @@ test "loadEra survives tools TTL so Auto can skip the modern probe" {
     store(io, a, home, key, .legacy, "2025-11-25", .{ .object = result }, 1_000);
     try std.testing.expect(load(io, a, home, key, 1_000 + 70_000) == null);
     try std.testing.expectEqual(mcp_rpc.Era.legacy, loadEra(io, a, home, key));
+}
+
+test "HTTP cache hit skips handshake; stdio legacy still initializes" {
+    try std.testing.expect(!handshakeOnCacheHit(.modern, true));
+    try std.testing.expect(!handshakeOnCacheHit(.modern, false));
+    try std.testing.expect(!handshakeOnCacheHit(.legacy, true));
+    try std.testing.expect(handshakeOnCacheHit(.legacy, false));
 }

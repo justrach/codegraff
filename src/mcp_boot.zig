@@ -32,14 +32,33 @@ pub const StartOutcome = struct {
     arena_state: ?std.heap.ArenaAllocator = null,
 };
 
-fn startServerTask(reg: *Registry, name: []const u8, cfg: std.json.ObjectMap) StartOutcome {
+const StartCtx = struct {
+    gpa: Allocator,
+    io: Io,
+    home: []const u8,
+    show_diagnostics: bool,
+    stdio_probe: bool,
+};
+
+fn startServerTask(ctx: StartCtx, name: []const u8, cfg: std.json.ObjectMap) StartOutcome {
     var outcome: StartOutcome = .{};
-    var arena_state = std.heap.ArenaAllocator.init(reg.gpa);
+    var arena_state = std.heap.ArenaAllocator.init(ctx.gpa);
     const a = arena_state.allocator();
     var servers: std.ArrayList(*mcp_rpc.Server) = .empty;
     var tools: std.ArrayList(mcp.Tool) = .empty;
-    reg.startServer(a, &servers, &tools, name, cfg) catch |err| {
-        if (reg.show_diagnostics) std.debug.print("  [mcp:{s}] failed to start: {t}\n", .{ name, err });
+    // Task-local Registry: only gpa/io/home/flags are read by startServer.
+    // Must not point at init()'s stack `reg` — that dies when defer_join returns.
+    var tmp: Registry = .{
+        .gpa = ctx.gpa,
+        .io = ctx.io,
+        .home = ctx.home,
+        .arena_state = std.heap.ArenaAllocator.init(ctx.gpa),
+        .stdio_probe = ctx.stdio_probe,
+        .show_diagnostics = ctx.show_diagnostics,
+    };
+    defer tmp.arena_state.deinit();
+    tmp.startServer(a, &servers, &tools, name, cfg) catch |err| {
+        if (ctx.show_diagnostics) std.debug.print("  [mcp:{s}] failed to start: {t}\n", .{ name, err });
         arena_state.deinit();
         return outcome;
     };
@@ -48,7 +67,6 @@ fn startServerTask(reg: *Registry, name: []const u8, cfg: std.json.ObjectMap) St
     outcome.arena_state = arena_state;
     return outcome;
 }
-
 /// Load the workspace `.mcp.json` merged with the user-level global config,
 /// then handshake every server CONCURRENTLY. Returns null (no error) when
 /// neither file exists — MCP is optional. `global_path` is borrowed: it must
@@ -91,8 +109,15 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
     const futures = try gpa.alloc(Io.Future(StartOutcome), entries.items.len);
     // concurrent, not async: io.async may run the handshake inline, so two
     // remote servers paid SUM(latency) instead of max(latency) at REPL start.
+    const ctx = StartCtx{
+        .gpa = gpa,
+        .io = io,
+        .home = home,
+        .show_diagnostics = show_diagnostics,
+        .stdio_probe = reg.stdio_probe,
+    };
     for (entries.items, futures) |e, *fut| {
-        const args = .{ &reg, e.name, e.cfg };
+        const args = .{ ctx, e.name, e.cfg };
         fut.* = io.concurrent(startServerTask, args) catch io.async(startServerTask, args);
     }
     if (defer_join) {
