@@ -16,6 +16,8 @@ current is part of cutting a release.
   turned into Escape/Ctrl+C (which cancelled the turn).
 - Shift+number keys type the punctuation they should (`Shift+9` is `(`,
   `Shift+0` is `)`), including via Kitty CSI-u and modifyOtherKeys.
+- Interrupting a turn collapses Thinking immediately (Grok ❙ + static
+  "Thinking"; no leftover spinner next to ■ interrupted).
 - The pager appends raw stdin hex to `.graff/tui-traj.jsonl` and the last
   visible frame on exit so the next leak can be replayed.
 
