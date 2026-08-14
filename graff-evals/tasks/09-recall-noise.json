@@ -1,0 +1,10 @@
+{
+  "id": "recall-noise",
+  "category": "long-context",
+  "prompt": "Read briefing.txt carefully, then answer: what is the launch code word? Reply with just the code word.",
+  "files": {
+    "briefing.txt": "OPS BRIEFING (rev 7)\nThe launch code word is MARIGOLD-7. Memorize it; it appears once.\nSection 1: logistics. The venue changed twice. Catering settled on the northern hall after the flood assessment, which itself took three weeks longer than planned because the inspector was reassigned. Section 2: staffing. Rotations follow the summer schedule; exceptions require two approvals and a written rationale filed before Thursday. Section 3: comms. All updates go through the liaison desk; direct pings to the program office are discouraged and will be redirected. Section 4: budget. The Q3 envelope held despite the vendor reprice; contingency remains untouched. Section 5: schedule. Dry runs happen weekly; the full rehearsal lands two weeks before the window opens. Section 6: risks. Weather remains the dominant variable, followed by supplier slippage and the certification backlog. Section 7: misc. Badge renewals are due; parking permits roll over automatically. End of briefing.\n"
+  },
+  "check": "grep -q 'MARIGOLD-7' \"$ANSWER_FILE\"",
+  "timeout_s": 240
+}

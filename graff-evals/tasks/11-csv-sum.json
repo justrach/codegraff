@@ -1,0 +1,10 @@
+{
+  "id": "csv-sum",
+  "category": "data",
+  "prompt": "Sum the amount column of data.csv and write the exact total (no currency sign, keep the decimal) to total.txt.",
+  "files": {
+    "data.csv": "id,amount,note\n1,10.5,first\n2,2,second\n3,7.25,third\n4,30,fourth\n"
+  },
+  "check": "python3 -c \"t=open('total.txt').read().strip().rstrip('0').rstrip('.'); assert t == '49.75', t\"",
+  "timeout_s": 240
+}

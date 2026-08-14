@@ -1,0 +1,10 @@
+{
+  "id": "regex-count",
+  "category": "text",
+  "prompt": "Count how many lines in app.log start with the severity token ERROR (exactly that token, not WARN or INFO, not ERRORS_TOTAL, not lowercase). Write just that number to count.txt.",
+  "files": {
+    "app.log": "INFO boot ok\nERROR db timeout\nWARN slow query\nERROR cache miss storm\nINFO tick\nERRORS_TOTAL 99\nERROR disk full\nINFO tick\nerror lowercase noise\nERROR net reset\n"
+  },
+  "check": "test \"$(tr -d '[:space:]' < count.txt)\" = 4",
+  "timeout_s": 240
+}

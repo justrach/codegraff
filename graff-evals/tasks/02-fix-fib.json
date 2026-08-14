@@ -1,0 +1,11 @@
+{
+  "id": "fix-fib",
+  "category": "debugging",
+  "prompt": "Run `python3 test_fib.py`. It fails because fib.py has an off-by-one bug. Fix fib.py, rerun the test, and confirm it prints OK.",
+  "files": {
+    "fib.py": "def fib(n):\n    a, b = 0, 1\n    for _ in range(n - 1):\n        a, b = b, a + b\n    return a\n",
+    "test_fib.py": "from fib import fib\nassert fib(10) == 55, f\"fib(10) = {fib(10)}, expected 55\"\nassert fib(1) == 1, f\"fib(1) = {fib(1)}, expected 1\"\nprint(\"OK\")\n"
+  },
+  "check": "python3 test_fib.py | grep -q OK",
+  "timeout_s": 240
+}
