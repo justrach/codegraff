@@ -127,7 +127,10 @@ pub fn providerHeaders(io: Io, provider: Provider, bearer: []const u8, buf: *[12
         const identity = kimi_catalog.identityHeaders(buf[count..]);
         count += identity.len;
     }
-    if (provider.kind == .responses) {
+    // The ChatGPT-backend identity headers are codex-only: another Responses
+    // provider (xAI, #502) authenticates with the bearer alone and must not
+    // impersonate codex_cli_rs.
+    if (provider.kind == .responses and std.mem.eql(u8, provider.id, "codex")) {
         buf[count] = .{ .name = "chatgpt-account-id", .value = provider.account };
         count += 1;
         buf[count] = .{ .name = "OpenAI-Beta", .value = "responses=experimental" };

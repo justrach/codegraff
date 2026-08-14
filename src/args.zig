@@ -65,6 +65,7 @@ pub const Flags = struct {
     worktree_flag: ?[]const u8 = null, // --worktree/-w: isolate this session in a git worktree (parallel agents, no file collisions)
     eval_target_flag: ?u8 = null, // --until: target score 0-100 for the eval loop
     eval_niche_flag: ?[]const u8 = null, // --niche: fleet niche this eval-driven session optimizes (tags submitted scores)
+    output_schema_flag: ?[]const u8 = null, // --output-schema: JSON schema (inline or @file) the final answer must satisfy (#502)
     no_resume_flag: bool = false, // start without auto-loading last.session.json
     new_session_flag: bool = false, // start a fresh autosaved session
     positionals: std.ArrayList([]const u8) = .empty,
@@ -138,6 +139,8 @@ pub fn parse(init: std.process.Init) !Flags {
                     flags.eval_target_flag = std.fmt.parseInt(u8, uv, 10) catch std.process.fatal("--until must be a number 0-100", .{});
                 } else if (std.mem.eql(u8, arg, "--niche")) {
                     flags.eval_niche_flag = it.next() orelse std.process.fatal("--niche needs a name (e.g. --niche reviewer)", .{});
+                } else if (std.mem.eql(u8, arg, "--output-schema")) {
+                    flags.output_schema_flag = it.next() orelse std.process.fatal("--output-schema needs a JSON schema or @file", .{});
                 } else if (std.mem.eql(u8, arg, "--no-telemetry")) {
                     flags.no_telemetry_flag = true;
                 } else if (std.mem.eql(u8, arg, "--learning-privacy")) {
@@ -245,6 +248,12 @@ pub fn parse(init: std.process.Init) !Flags {
     // MCP half reads effectiveLean through session_start.leanMode; env
     // GRAFF_LEAN sets the same global in session_settings.applyEnvKnobs).
     if (flags.effectiveLean()) no_local_tools.lean = true;
+
+    // #502: GRAFF_XAI_WIRE=responses must land before the initial Keys.build
+    // (startup.resolveKeys) or the xAI provider is built on the chat wire and
+    // the knob silently no-ops; applyEnvKnobs re-parses the same value later.
+    if (init.environ_map.get("GRAFF_XAI_WIRE")) |xw|
+        @import("provider.zig").g_xai_responses = std.ascii.eqlIgnoreCase(std.mem.trim(u8, xw, " \t"), "responses");
 
     return flags;
 }
