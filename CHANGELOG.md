@@ -13,14 +13,17 @@ current is part of cutting a release.
 ## v0.0.254 (2026-08-14)
 
 - `graff tui` (and TTY `graff repl`) is a Grok-style fullscreen pager: wrapped
-  composer, folded multi-tool cards, click-to-expand, image chips, a searchable
-  effort picker, markdown tables, and a headless Term driver for tests. Bare
-  `graff` stays the line REPL.
+  composer with Ctrl+Z undo, folded multi-tool cards that click open, image
+  chips, a searchable effort picker, markdown tables, and a headless Term
+  driver for tests. Bare `graff` stays the line REPL.
 - `/import-claude` copies Claude/Cursor MCP servers, skills, and hooks into
   `~/.codegraff` and the current repo; first start adopts automatically, the
   command remains for a later rescan.
 - Hosted TUI tool rows carry the path or a one-line preview so live `⚙`/`✓`
   lines stay inspectable without dumping raw JSON.
+- macOS CLI and desktop assets are Developer ID signed and Apple notarized
+  (`notary-local`); the `.dmg` and updater tarball ship beside the CLI
+  tarballs.
 
 ## v0.0.253 (2026-08-14)
 
