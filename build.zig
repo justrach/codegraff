@@ -54,6 +54,12 @@ pub fn build(b: *std.Build) void {
     // standalone graff-repl exe below). The repo's first dependency.
     const zigzag = b.dependency("zigzag", .{ .target = target, .optimize = optimize });
     exe.root_module.addImport("zigzag", zigzag.module("zigzag"));
+    const tui_mod = b.createModule(.{
+        .root_source_file = b.path("TUI/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("tui", tui_mod);
     const install_graff = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&install_graff.step);
     const graff_step = b.step("graff", "Build and install only the release CLI");
@@ -84,6 +90,7 @@ pub fn build(b: *std.Build) void {
     });
     unit_tests.root_module.addOptions("build_options", opts);
     unit_tests.root_module.addImport("zigzag", zigzag.module("zigzag"));
+    unit_tests.root_module.addImport("tui", tui_mod);
     const run_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
@@ -147,4 +154,26 @@ pub fn build(b: *std.Build) void {
     repl_tests.root_module.addImport("zigzag", zigzag.module("zigzag"));
     const repl_test_step = b.step("repl-test", "Run zigzag REPL unit tests");
     repl_test_step.dependOn(&b.addRunArtifact(repl_tests).step);
+
+    const tui_exe = b.addExecutable(.{
+        .name = "graff-tui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("TUI/root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .strip = lean_release,
+        }),
+    });
+    b.installArtifact(tui_exe);
+
+    const tui_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("TUI/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    
+    const tui_test_step = b.step("tui-test", "Run fullscreen TUI unit tests");
+    tui_test_step.dependOn(&b.addRunArtifact(tui_tests).step);
 }

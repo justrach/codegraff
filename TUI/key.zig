@@ -1,0 +1,282 @@
+//! Keyboard tokens. Understands classic CSI and kitty CSI-u (Ghostty).
+
+const std = @import("std");
+
+/// Super/alt currently held, from kitty modifier-key events (Ghostty Cmd+Delete
+/// often arrives as a bare DEL after Super-down).
+var held: u32 = 0;
+
+pub const Key = union(enum) {
+    char: u8,
+    ctrl: u8,
+    ignore,
+    enter,
+    shift_enter,
+    tab,
+    shift_tab,
+    backspace,
+    escape,
+    up,
+    down,
+    left,
+    right,
+    page_up,
+    page_down,
+    home,
+    end,
+    f1,
+    f2,
+    paste_start,
+    paste_end,
+    delete_word,
+    delete_to_start,
+    delete_to_end,
+    word_left,
+    word_right,
+    prev_turn,
+    next_turn,
+    delete,
+    undo,
+    mouse: Mouse,
+};
+
+pub const Mouse = struct {
+    btn: u8,
+    x: u16,
+    y: u16,
+    down: bool,
+};
+
+pub fn next(bytes: []const u8, i: *usize) ?Key {
+    if (i.* >= bytes.len) return null;
+    const b = bytes[i.*];
+    i.* += 1;
+    if (b == 0x1b) return escapeSeq(bytes, i);
+    if (b == 0x0d or b == 0x0a) return .enter;
+    if (b == 0x09) return .tab;
+    if (b == 0x7f or b == 0x08) {
+        if (held & 8 != 0) return .delete_to_start;
+        if (held & 2 != 0) return .delete_word;
+        return .backspace;
+    }
+    if (b >= 1 and b <= 26) return .{ .ctrl = 'a' + (b - 1) };
+    if (b >= 32) return .{ .char = b };
+    return next(bytes, i);
+}
+
+fn escapeSeq(bytes: []const u8, i: *usize) ?Key {
+    if (i.* >= bytes.len) return .escape;
+    const c0 = bytes[i.*];
+    if (c0 == 0x7f or c0 == 0x08) {
+        i.* += 1;
+        return .delete_word;
+    }
+    if (c0 == 'b') {
+        i.* += 1;
+        return .word_left;
+    }
+    if (c0 == 'f') {
+        i.* += 1;
+        return .word_right;
+    }
+    if (c0 == 0x0d or c0 == 0x0a) {
+        i.* += 1;
+        return .shift_enter;
+    }
+    if (c0 != '[') return .escape;
+    i.* += 1;
+    const start = i.*;
+    while (i.* < bytes.len) : (i.* += 1) {
+        const c = bytes[i.*];
+        if (c >= 0x40 and c <= 0x7e) {
+            const final = c;
+            const params = bytes[start..i.*];
+            i.* += 1;
+            return decodeCsi(params, final);
+        }
+    }
+    // Incomplete CSI (split paste / arrow) — rewind so the next read can finish it.
+    i.* = start - 2;
+    return null;
+}
+
+fn decodeCsi(params: []const u8, final: u8) Key {
+    const mods = csiMods(params);
+    const alt = mods & 2 != 0;
+    const ctrl = mods & 4 != 0;
+    const super = mods & 8 != 0;
+    return switch (final) {
+        'A' => .up,
+        'B' => .down,
+        'C' => if (mods & 1 != 0) .next_turn else if (alt or ctrl) .word_right else if (super) .end else .right,
+        'D' => if (mods & 1 != 0) .prev_turn else if (alt or ctrl) .word_left else if (super) .home else .left,
+        'H' => .home,
+        'F' => .end,
+        'Z' => .shift_tab,
+        '~' => switch (leadingInt(params)) {
+            1, 7 => .home,
+            3 => if (super) .delete_to_end else .delete,
+            4, 8 => .end,
+            5 => .page_up,
+            6 => .page_down,
+            200 => .paste_start,
+            201 => .paste_end,
+            27 => fixterms(params),
+            else => .escape,
+        },
+        'u' => kitty(params),
+        'P' => .f1,
+        'Q' => .f2,
+        'M', 'm' => sgrMouse(params, final == 'M'),
+        else => .escape,
+    };
+}
+
+fn csiMods(params: []const u8) u32 {
+    const s = std.mem.indexOfScalar(u8, params, ';') orelse return 0;
+    var mods = leadingInt(params[s + 1 ..]);
+    if (mods > 0) mods -= 1;
+    return mods;
+}
+
+/// CSI unicode ; mods u  — kitty/ghostty. mods bit 2 = ctrl, 1 = shift.
+fn kitty(params: []const u8) Key {
+    const code = leadingInt(params);
+    var mods: u32 = 0;
+    if (std.mem.indexOfScalar(u8, params, ';')) |s| {
+        mods = leadingInt(params[s + 1 ..]);
+        if (mods > 0) mods -= 1; // kitty encodes mods+1
+    }
+    const ev = kittyEvent(params);
+    if (code == 57444 or code == 57448) {
+        if (ev == 3) held &= ~@as(u32, 8) else held |= 8;
+        return .ignore;
+    }
+    if (code == 57443 or code == 57447) {
+        if (ev == 3) held &= ~@as(u32, 2) else held |= 2;
+        return .ignore;
+    }
+    if (code >= 57441 and code <= 57448) return .ignore;
+    if (ev == 3) return .ignore;
+    return mapCode(code, mods);
+}
+
+fn kittyEvent(params: []const u8) u32 {
+    const s = std.mem.indexOfScalar(u8, params, ';') orelse return 1;
+    const rest = params[s + 1 ..];
+    const c = std.mem.indexOfScalar(u8, rest, ':') orelse return 1;
+    return leadingInt(rest[c + 1 ..]);
+}
+
+fn fixterms(params: []const u8) Key {
+    var it = std.mem.splitScalar(u8, params, ';');
+    _ = it.next();
+    var mods = leadingInt(it.next() orelse "1");
+    if (mods > 0) mods -= 1;
+    return mapCode(leadingInt(it.next() orelse "0"), mods);
+}
+
+fn mapCode(code: u32, mods: u32) Key {
+    const ctrl = mods & 4 != 0;
+    const shift = mods & 1 != 0;
+    const alt = mods & 2 != 0;
+    const super = mods & 8 != 0 or held & 8 != 0;
+    if (code == 13 or code == 10) return if (shift or alt) .shift_enter else .enter;
+    if (code == 9) return if (shift) .shift_tab else .tab;
+    if (code == 27) return .escape;
+    if (code == 127 or code == 8) {
+        if (super or ctrl) return .delete_to_start;
+        if (alt or held & 2 != 0) return .delete_word;
+        return .backspace;
+    }
+    if (code >= 1 and code <= 26) return .{ .ctrl = 'a' + @as(u8, @intCast(code - 1)) };
+    if (code >= 32 and code < 127) {
+        const ch: u8 = @intCast(code);
+        if ((ctrl or super) and !shift and (ch == 'z' or ch == 'Z')) return .undo;
+        if (ctrl and ch >= 'a' and ch <= 'z') return .{ .ctrl = ch };
+        if (ctrl and ch >= 'A' and ch <= 'Z') return .{ .ctrl = ch + 32 };
+        return .{ .char = ch };
+    }
+    return .escape;
+}
+
+fn sgrMouse(params: []const u8, down: bool) Key {
+    if (params.len == 0 or params[0] != '<') return .escape;
+    var it = std.mem.splitScalar(u8, params[1..], ';');
+    const btn = leadingInt(it.next() orelse "0");
+    const x = leadingInt(it.next() orelse "1");
+    const y = leadingInt(it.next() orelse "1");
+    return .{ .mouse = .{
+        .btn = @intCast(@min(btn, 255)),
+        .x = @intCast(@min(x, 999)),
+        .y = @intCast(@min(y, 999)),
+        .down = down,
+    } };
+}
+
+fn leadingInt(s: []const u8) u32 {
+    var n: u32 = 0;
+    for (s) |c| {
+        if (c < '0' or c > '9') break;
+        n = n * 10 + (c - '0');
+    }
+    return n;
+}
+
+test "next: letters, enter, ctrl-c, arrows, kitty ctrl-p" {
+    var i: usize = 0;
+    try std.testing.expectEqual(Key{ .char = 'a' }, next("a", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.enter, next("\r", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .ctrl = 'c' }, next("\x03", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.up, next("\x1b[A", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.shift_tab, next("\x1b[Z", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .ctrl = 'p' }, next("\x1b[112;5u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '/' }, next("/", &i).?);
+    i = 0;
+    const click = next("\x1b[<0;12;8M", &i).?;
+    try std.testing.expect(click == .mouse);
+    try std.testing.expectEqual(@as(u8, 0), click.mouse.btn);
+    try std.testing.expectEqual(@as(u16, 12), click.mouse.x);
+    try std.testing.expectEqual(@as(u16, 8), click.mouse.y);
+    try std.testing.expect(click.mouse.down);
+    i = 0;
+    try std.testing.expectEqual(Key.paste_start, next("\x1b[200~", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.paste_end, next("\x1b[201~", &i).?);
+    i = 0;
+    try std.testing.expect(next("\x1b[20", &i) == null);
+    try std.testing.expectEqual(@as(usize, 0), i);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = 0xc3 }, next("\xc3\xa9", &i).?);
+    try std.testing.expectEqual(Key{ .char = 0xa9 }, next("\xc3\xa9", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.delete_to_start, next("\x1b[127;9u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.delete_word, next("\x1b\x7f", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.prev_turn, next("\x1b[1;2D", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.next_turn, next("\x1b[1;2C", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.word_left, next("\x1b[1;3D", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.home, next("\x1b[1;9D", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.shift_enter, next("\x1b[13;2u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.shift_enter, next("\x1b\r", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.delete_to_start, next("\x1b[27;9;127~", &i).?);
+    i = 0;
+    held = 0;
+    try std.testing.expectEqual(Key.ignore, next("\x1b[57444;1:1u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.delete_to_start, next("\x7f", &i).?);
+    held = 0;
+}

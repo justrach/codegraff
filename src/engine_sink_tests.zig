@@ -13,6 +13,7 @@ const Agent = agent_mod.Agent;
 const engine_events = @import("engine_events.zig");
 const EngineEvent = engine_events.EngineEvent;
 const protocol_seq = @import("protocol_seq.zig");
+const repl = @import("repl.zig");
 const engine_sink = @import("engine_sink.zig");
 const EngineSink = engine_sink.EngineSink;
 const VTable = engine_sink.VTable;
@@ -255,13 +256,16 @@ test "a frontendless agent's wire sink burns no ids for the lines it cannot writ
     try std.testing.expectEqual(@as(u64, 0), protocol_seq.current());
 }
 
-test "TuiSink draws the ⚙ and ✓ lines and nothing for the brackets (slice 1c)" {
+test "TuiSink shows compact tool lines; debug adds args/preview (slice 1c)" {
     const saved_color = main_mod.use_color;
     main_mod.use_color = false;
     defer main_mod.use_color = saved_color;
     const saved_json = main_mod.json_mode; // sayText's root gate reads it
     main_mod.json_mode = false;
     defer main_mod.json_mode = saved_json;
+    const saved_debug = repl.g_debug;
+    repl.g_debug = false;
+    defer repl.g_debug = saved_debug;
     const ansi = @import("ansi.zig");
     const saved_style = ansi.style;
     ansi.style = .{}; // assert the text, not the palette
@@ -277,11 +281,16 @@ test "TuiSink draws the ⚙ and ✓ lines and nothing for the brackets (slice 1c
     const call: engine_events.ToolInvocation = .{ .name = "read_file", .input = input };
     const done: engine_events.ToolOutcome = .{ .name = "read_file", .text = "line one\nline two\n", .is_error = false };
     s.emit(undefined, .{ .tool_call_announced = call });
+    s.emit(undefined, .{ .tool_result = done });
+    try std.testing.expectEqualStrings("⚙ read_file\n  ✓ read_file\n", aw.writer.buffered());
+
+    aw.clearRetainingCapacity();
+    repl.g_debug = true;
+    s.emit(undefined, .{ .tool_call_announced = call });
     s.emit(undefined, .{ .tool_call_started = call }); // silent: the ⚙ line already said it
     s.emit(undefined, .{ .tool_result = done });
     s.emit(undefined, .{ .tool_call_finished = done }); // silent
     s.emit(undefined, .{ .tool_rejected = .{ .name = "bash", .input = input, .reason = "budget", .message = "no" } }); // silent
-    // Exactly the two lines the eval golden's tool turn shows.
     try std.testing.expectEqualStrings("⚙ read_file {\"path\":\"fixture.txt\"}\n  ✓ line one…\n", aw.writer.buffered());
 }
 
@@ -376,4 +385,23 @@ test "slice 2: forSession picks the wire in --json and the caller's writer other
     defer rec.deinit(std.testing.allocator);
     a.sink = .{ .ctx = &rec, .vt = &vt };
     try std.testing.expectEqual(@as(*const VTable, &vt), engine_sink.forSession(&a, null).vt);
+}
+
+test "hosted frontend announces read path and result preview" {
+    const saved = engine_sink.hosted_frontend;
+    engine_sink.hosted_frontend = true;
+    defer engine_sink.hosted_frontend = saved;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+    const sink = tuiSink(&a);
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"path\":\"src/foo.zig\"}", .{});
+    sink.emit(undefined, .{ .tool_call_announced = .{ .name = "read_file", .input = input } });
+    sink.emit(undefined, .{ .tool_result = .{ .name = "read_file", .text = "const std = @import(\"std\");\nmore", .is_error = false } });
+    const got = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, got, "⚙ read src/foo.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "✓ read | const std") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "read_file") == null);
 }

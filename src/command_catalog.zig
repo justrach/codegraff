@@ -54,7 +54,7 @@ pub const commands = [_]Item{
     .{ .name = "/hooks", .desc = "list lifecycle hooks and the built-in codedb guard" },
     .{ .name = "/doctor", .desc = "read-only health check: goal/todo invariants, and why steering will or will not be appended" },
     .{ .name = "/btw", .usage = "/btw <question>", .desc = "ask one side question about this conversation — no tools, billed, never added to the session" },
-    .{ .name = "/compact", .desc = "summarize history into a fresh context" },
+    .{ .name = "/compact", .desc = "compact history into a fresh context (OpenAI server-side when available)" },
     .{ .name = "/rewind", .usage = "/rewind [n]", .desc = "list past prompts; /rewind <n> drops prompt n+after & reverts its file edits" },
     .{ .name = "/image", .usage = "/image <path>", .desc = "attach an image to your next message (vision models only)" },
     .{ .name = "/images", .desc = "open image URLs from the last response (e.g. issue attachments) in your browser" },
@@ -66,11 +66,14 @@ pub const commands = [_]Item{
     .{ .name = "/todo", .desc = "show the current task list" },
     .{ .name = "/jobs", .desc = "list background jobs" },
     .{ .name = "/cost", .desc = "session token usage and cost" },
+    .{ .name = "/usage", .desc = "alias for /cost" },
+    .{ .name = "/debug", .desc = "live content-free observability HUD (turns, tokens, tools, last events)" },
     .{ .name = "/tools", .desc = "session tool balance: codedb-pro vs zigrep vs native usage, gate refusals, skew" },
     .{ .name = "/animation", .desc = "pick the thinking animation; persists to settings" },
     .{ .name = "/theme", .usage = "/theme [name]", .desc = "pick a color theme; /theme off resets to your terminal default; persists" },
     .{ .name = "/fleet", .usage = "/fleet [on|off]", .desc = "federated DGM contribution (propose/submit/elite_pull)" },
     .{ .name = "/mcp", .usage = "/mcp [add …]", .desc = "list MCP servers/tools; /mcp add <name> <cmd> [args...] connects one live" },
+    .{ .name = "/import-claude", .desc = "copy Claude/Cursor MCP servers and skills into ~/.codegraff and this repo" },
     .{ .name = "/help", .desc = "list every command" },
 };
 
