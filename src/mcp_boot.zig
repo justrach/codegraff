@@ -2,9 +2,14 @@
 //! mcp.zig under the 600-line ceiling (#123). The fan-out is the point: each
 //! server's handshake is a network or process round trip, so connecting them
 //! serially charged every startup the SUM of the latencies. They now run
-//! concurrently (one task per server) and merge in config order, so the
+//! concurrently (one `io.concurrent` task per server — `io.async` can run
+//! inline and would serialize again) and merge in config order, so the
 //! resulting tool list is identical to the serial build — only the wait is
 //! shorter: max(latency) instead of sum(latency).
+//!
+//! Interactive `--yolo` sets `defer_join`: tasks start immediately but the
+//! REPL prompt is not blocked. `joinPending` merges them before the first
+//! model call, `/mcp`, or teardown.
 
 const std = @import("std");
 
@@ -21,20 +26,39 @@ const Registry = mcp.Registry;
 /// PER-TASK arena — the registry arena is not thread-safe — and the arena
 /// travels with the outcome so the registry can free it at deinit, after the
 /// transports referencing it are torn down.
-const StartOutcome = struct {
+pub const StartOutcome = struct {
     server: ?*mcp_rpc.Server = null,
     tools: []mcp.Tool = &.{},
     arena_state: ?std.heap.ArenaAllocator = null,
 };
 
-fn startServerTask(reg: *Registry, name: []const u8, cfg: std.json.ObjectMap) StartOutcome {
+const StartCtx = struct {
+    gpa: Allocator,
+    io: Io,
+    home: []const u8,
+    show_diagnostics: bool,
+    stdio_probe: bool,
+};
+
+fn startServerTask(ctx: StartCtx, name: []const u8, cfg: std.json.ObjectMap) StartOutcome {
     var outcome: StartOutcome = .{};
-    var arena_state = std.heap.ArenaAllocator.init(reg.gpa);
+    var arena_state = std.heap.ArenaAllocator.init(ctx.gpa);
     const a = arena_state.allocator();
     var servers: std.ArrayList(*mcp_rpc.Server) = .empty;
     var tools: std.ArrayList(mcp.Tool) = .empty;
-    reg.startServer(a, &servers, &tools, name, cfg) catch |err| {
-        std.debug.print("  [mcp:{s}] failed to start: {t}\n", .{ name, err });
+    // Task-local Registry: only gpa/io/home/flags are read by startServer.
+    // Must not point at init()'s stack `reg` — that dies when defer_join returns.
+    var tmp: Registry = .{
+        .gpa = ctx.gpa,
+        .io = ctx.io,
+        .home = ctx.home,
+        .arena_state = std.heap.ArenaAllocator.init(ctx.gpa),
+        .stdio_probe = ctx.stdio_probe,
+        .show_diagnostics = ctx.show_diagnostics,
+    };
+    defer tmp.arena_state.deinit();
+    tmp.startServer(a, &servers, &tools, name, cfg) catch |err| {
+        if (ctx.show_diagnostics) std.debug.print("  [mcp:{s}] failed to start: {t}\n", .{ name, err });
         arena_state.deinit();
         return outcome;
     };
@@ -43,18 +67,19 @@ fn startServerTask(reg: *Registry, name: []const u8, cfg: std.json.ObjectMap) St
     outcome.arena_state = arena_state;
     return outcome;
 }
-
 /// Load the workspace `.mcp.json` merged with the user-level global config,
 /// then handshake every server CONCURRENTLY. Returns null (no error) when
 /// neither file exists — MCP is optional. `global_path` is borrowed: it must
 /// outlive the registry, which re-reads it on `/mcp trust`.
-pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]const u8, home: []const u8, environ_map: anytype) !?Registry {
+/// `defer_join` starts the handshakes but returns before they finish.
+pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]const u8, home: []const u8, show_diagnostics: bool, environ_map: anytype, defer_join: bool) !?Registry {
     var reg: Registry = .{
         .gpa = gpa,
         .io = io,
         .home = home,
         .arena_state = std.heap.ArenaAllocator.init(gpa),
         .stdio_probe = if (environ_map.get("GRAFF_MCP_PROBE")) |v| !std.mem.eql(u8, v, "0") else true,
+        .show_diagnostics = show_diagnostics,
         .global_config_path = global_path,
     };
     mcp_rpc.applyHandshakeTimeoutEnv(environ_map); // #275 GRAFF_MCP_HANDSHAKE_SECS + #327 GRAFF_MCP_PROBE_MS, on the same pass as the probe flag
@@ -81,27 +106,73 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
         try entries.append(a, .{ .name = try a.dupe(u8, entry.key_ptr.*), .cfg = entry.value_ptr.*.object });
     }
 
+    const futures = try gpa.alloc(Io.Future(StartOutcome), entries.items.len);
+    // concurrent, not async: io.async may run the handshake inline, so two
+    // remote servers paid SUM(latency) instead of max(latency) at REPL start.
+    const ctx = StartCtx{
+        .gpa = gpa,
+        .io = io,
+        .home = home,
+        .show_diagnostics = show_diagnostics,
+        .stdio_probe = reg.stdio_probe,
+    };
+    for (entries.items, futures) |e, *fut| {
+        const args = .{ ctx, e.name, e.cfg };
+        fut.* = io.concurrent(startServerTask, args) catch io.async(startServerTask, args);
+    }
+    if (defer_join) {
+        reg.pending_starts = futures;
+        return reg;
+    }
+    defer gpa.free(futures);
+    mergeOutcomes(&reg, futures);
+    return reg;
+}
+
+fn mergeOutcomes(reg: *Registry, futures: []Io.Future(StartOutcome)) void {
+    const a = reg.arena();
     var servers: std.ArrayList(*mcp_rpc.Server) = .empty;
     var tools: std.ArrayList(mcp.Tool) = .empty;
     var task_arenas: std.ArrayList(std.heap.ArenaAllocator) = .empty;
-
-    const futures = try gpa.alloc(Io.Future(StartOutcome), entries.items.len);
-    defer gpa.free(futures);
-    for (entries.items, futures) |e, *fut| fut.* = io.async(startServerTask, .{ &reg, e.name, e.cfg });
-    // Join in config order: every tool's server_index is rewritten to its
-    // server's final slot, so the merged lists match the serial build exactly.
+    servers.appendSlice(a, reg.servers) catch {};
+    tools.appendSlice(a, reg.tools) catch {};
+    task_arenas.appendSlice(a, reg.task_arenas) catch {};
     for (futures) |*fut| {
-        const outcome = fut.await(io);
+        const outcome = fut.await(reg.io);
         const server = outcome.server orelse continue;
         const server_index = servers.items.len;
-        try servers.append(a, server);
-        for (outcome.tools) |*t| t.server_index = server_index;
-        try tools.appendSlice(a, outcome.tools);
-        if (outcome.arena_state) |ta| try task_arenas.append(a, ta);
+        servers.append(a, server) catch continue;
+        for (outcome.tools) |*tool| tool.server_index = server_index;
+        tools.appendSlice(a, outcome.tools) catch {};
+        if (outcome.arena_state) |ta| task_arenas.append(a, ta) catch {};
     }
+    reg.servers = a.dupe(*mcp_rpc.Server, servers.items) catch reg.servers;
+    reg.tools = a.dupe(mcp.Tool, tools.items) catch reg.tools;
+    reg.task_arenas = a.dupe(std.heap.ArenaAllocator, task_arenas.items) catch reg.task_arenas;
+}
 
-    reg.servers = try a.dupe(*mcp_rpc.Server, servers.items);
-    reg.tools = try a.dupe(mcp.Tool, tools.items);
-    reg.task_arenas = try a.dupe(std.heap.ArenaAllocator, task_arenas.items);
-    return reg;
+/// Await deferred startServer tasks and append them to the live registry
+/// (companion servers may already be present). Idempotent. Returns true
+/// when this call actually merged something, so the agent can rebuild catalogs.
+pub fn joinPending(reg: *Registry) bool {
+    if (reg.pending_starts.len == 0) return false;
+    const futures = reg.pending_starts;
+    reg.pending_starts = &.{};
+    mergeOutcomes(reg, futures);
+    reg.gpa.free(futures);
+    return true;
+}
+
+test "MCP boot fans server handshakes out with io.concurrent" {
+    const src = @embedFile("mcp_boot.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(startServerTask") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "io.async(startServerTask") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "defer_join") != null);
+}
+
+test "joinPending is a no-op on an empty registry" {
+    const io = std.testing.io;
+    var reg = Registry.empty(std.testing.allocator, io);
+    defer reg.deinit();
+    try std.testing.expect(!joinPending(&reg));
 }
