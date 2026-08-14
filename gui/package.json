@@ -1,7 +1,7 @@
 {
   "name": "codegraff-gui",
   "private": true,
-  "version": "0.0.166",
+  "version": "0.0.253",
   "license": "Apache-2.0",
   "packageManager": "bun@1.3.10",
   "type": "module",
