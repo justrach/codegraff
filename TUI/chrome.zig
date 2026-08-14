@@ -24,7 +24,8 @@ pub fn topBar(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u
 pub fn promptBox(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
     const th = self.theme();
     const cols = if (width < 24) @as(usize, 80) else width;
-    const inner = if (cols > 4) cols - 4 else cols;
+    // Between the │ │. Top/footer use the same inner so corners line up.
+    const inner = if (cols > 2) cols - 2 else cols;
     const focused = self.focus == .prompt and self.overlay == .none;
     const border = if (focused) th.focus else th.border;
     var out = std.array_list.Managed(u8).init(a);
@@ -46,7 +47,7 @@ pub fn promptBox(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
         try body.appendSlice("  ");
     }
     try body.appendSlice(try self.input.view(a));
-    const wrapped = try theme_mod.wrapToWidth(a, body.items, inner);
+    const wrapped = try theme_mod.wrapPreferWords(a, body.items, inner);
     var lines = std.array_list.Managed([]const u8).init(a);
     var it = std.mem.splitScalar(u8, wrapped, '\n');
     while (it.next()) |ln| try lines.append(ln);
@@ -80,7 +81,7 @@ fn rowInner(a: std.mem.Allocator, border: []const u8, fg: []const u8, text: []co
     try pad.appendSlice(theme_mod.reset);
     const cols = theme_mod.visibleLen(shown);
     if (cols < inner) try pad.appendNTimes(' ', inner - cols);
-    return std.fmt.allocPrint(a, "{s}│{s} {s} {s}│{s}", .{ border, theme_mod.reset, pad.items, border, theme_mod.reset });
+    return std.fmt.allocPrint(a, "{s}│{s}{s}{s}│{s}", .{ border, theme_mod.reset, pad.items, border, theme_mod.reset });
 }
 
 fn footer(a: std.mem.Allocator, border: []const u8, muted: []const u8, label: []const u8, inner: usize) ![]const u8 {
@@ -110,13 +111,13 @@ pub fn statusBar(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
     if (self.now_ms < self.toast_until_ms and self.toast.len > 0) {
         return theme_mod.paint(a, th.accent, self.toast);
     }
-    _ = width;
     if (self.pending != null) {
-        return std.fmt.allocPrint(a, "{s} Enter:queue  |  Shift+Tab:mode  |  Esc:cancel  |  {s}[stop]{s}", .{
+        const raw = try std.fmt.allocPrint(a, "{s} Enter:queue  ·  Shift+Tab:mode  ·  Esc:cancel  ·  {s}[stop]{s}", .{
             th.muted, th.error_fg, theme_mod.reset,
         });
+        return theme_mod.takeCols(raw, if (width == 0) 80 else width);
     }
-    return theme_mod.paint(a, th.muted, " Enter:send now  |  Shift+Tab:mode  |  Esc");
+    return theme_mod.paint(a, th.muted, theme_mod.takeCols(" Enter:send  ·  Shift+Enter:newline  ·  Shift+Tab:mode", if (width == 0) 80 else width));
 }
 
 pub fn overlay(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
@@ -273,8 +274,8 @@ test "composer footer shows the live agent mode" {
     try std.testing.expect(std.mem.indexOf(u8, try promptBox(&m, a, 80), "plan") != null);
     m.mode = .always_approve;
     try std.testing.expect(std.mem.indexOf(u8, try promptBox(&m, a, 80), "always-approve") != null);
-    try std.testing.expect(std.mem.indexOf(u8, try statusBar(&m, a, 80), "Enter:send now") != null);
-    try std.testing.expect(std.mem.indexOf(u8, try statusBar(&m, a, 80), "|") != null);
+    try std.testing.expect(std.mem.indexOf(u8, try statusBar(&m, a, 80), "Enter:send") != null);
+    try std.testing.expect(std.mem.indexOf(u8, try statusBar(&m, a, 80), "Shift+Tab") != null);
 }
 
 test "status paints coral [stop] while a turn is pending" {
