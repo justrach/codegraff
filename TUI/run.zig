@@ -55,14 +55,14 @@ pub fn run(
     var out_buf: [64 * 1024]u8 = undefined;
     var stdout = Io.File.stdout().writer(io, &out_buf);
     const w = &stdout.interface;
-    // 1000/1003/1006: click + hover + wheel as buttons 64/65 (not arrows).
+    // 1000/1006: click + wheel as 64/65. Not 1003h — motion floods leak as text.
     // 2004: bracketed paste. 7l: no autowrap into the prompt.
     // >11u: kitty disambiguate + event types + all-keys (Cmd+Delete / Super latch).
     // >4;2m: xterm modifyOtherKeys so Super+Backspace also arrives as CSI 27;9;127~.
-    w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?7l\x1b[>11u\x1b[>4;2m") catch {};
+    w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l\x1b[>11u\x1b[>4;2m") catch {};
     w.flush() catch {};
     defer {
-        w.writeAll("\x1b[>4;0m\x1b[<u\x1b[?7h\x1b[?1006l\x1b[?1003l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l") catch {};
+        w.writeAll("\x1b[>4;0m\x1b[<u\x1b[?7h\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l") catch {};
         w.flush() catch {};
     }
 
@@ -131,14 +131,14 @@ pub fn run(
 }
 
 fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
-    w.writeAll("\x1b[>4;0m\x1b[<u\x1b[?7h\x1b[?1006l\x1b[?1003l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l") catch {};
+    w.writeAll("\x1b[>4;0m\x1b[<u\x1b[?7h\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l") catch {};
     w.flush() catch {};
     tty.restore(raw.*);
     if (builtin.os.tag != .windows) {
         std.posix.raise(std.posix.SIG.TSTP) catch {};
     }
     raw.* = tty.enterRaw() orelse raw.*;
-    w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?7l\x1b[>11u\x1b[>4;2m") catch {};
+    w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l\x1b[>11u\x1b[>4;2m") catch {};
     w.flush() catch {};
     _ = io;
 }
@@ -215,7 +215,7 @@ test "run loop enables click tracking and bracketed paste" {
     try std.testing.expect(std.mem.indexOf(u8, src, &mouse_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &sgr_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &paste_on) != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, &hover_on) != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, &hover_on) == null);
     try std.testing.expect(std.mem.indexOf(u8, src, &[_]u8{ '?', '1', '0', '0', '7', 'h' }) == null);
     try std.testing.expect(std.mem.indexOf(u8, src, &kitty_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &wrap_off) != null);

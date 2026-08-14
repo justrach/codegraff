@@ -49,6 +49,7 @@ pub const Mouse = struct {
 
 pub fn next(bytes: []const u8, i: *usize) ?Key {
     if (i.* >= bytes.len) return null;
+    if (takeOrphanMouse(bytes, i)) |k| return k;
     const b = bytes[i.*];
     i.* += 1;
     if (b == 0x1b) return escapeSeq(bytes, i);
@@ -65,7 +66,13 @@ pub fn next(bytes: []const u8, i: *usize) ?Key {
 }
 
 fn escapeSeq(bytes: []const u8, i: *usize) ?Key {
-    if (i.* >= bytes.len) return .escape;
+    // Lone ESC at the end of a read is almost always a split CSI (mouse
+    // flood, arrow). Do not treat it as the Escape key or the rest of the
+    // sequence is inserted as letters on the next read.
+    if (i.* >= bytes.len) {
+        i.* -= 1;
+        return null;
+    }
     const c0 = bytes[i.*];
     if (c0 == 0x7f or c0 == 0x08) {
         i.* += 1;
@@ -85,6 +92,26 @@ fn escapeSeq(bytes: []const u8, i: *usize) ?Key {
     }
     if (c0 != '[') return .escape;
     i.* += 1;
+    // X10 mouse (1000h without 1006): CSI M + 3 raw bytes.
+    if (i.* < bytes.len and bytes[i.*] == 'M' and (i.* + 1 >= bytes.len or bytes[i.* + 1] != ';')) {
+        if (i.* + 3 >= bytes.len) {
+            i.* -= 2;
+            return null;
+        }
+        i.* += 1;
+        const btn = bytes[i.*];
+        i.* += 1;
+        const x = bytes[i.*];
+        i.* += 1;
+        const y = bytes[i.*];
+        i.* += 1;
+        return .{ .mouse = .{
+            .btn = if (btn >= 32) btn - 32 else btn,
+            .x = if (x >= 32) @as(u16, x) - 32 else x,
+            .y = if (y >= 32) @as(u16, y) - 32 else y,
+            .down = true,
+        } };
+    }
     const start = i.*;
     while (i.* < bytes.len) : (i.* += 1) {
         const c = bytes[i.*];
@@ -214,6 +241,40 @@ fn sgrMouse(params: []const u8, down: bool) Key {
     } };
 }
 
+/// `<b;x;yM` or `b;x;yM` with no ESC — leftover after a split CSI.
+fn takeOrphanMouse(bytes: []const u8, i: *usize) ?Key {
+    const start = i.*;
+    if (start >= bytes.len) return null;
+    var j = start;
+    if (bytes[j] == '<') j += 1;
+    if (j >= bytes.len or bytes[j] < '0' or bytes[j] > '9') return null;
+    var semis: u8 = 0;
+    var k = j;
+    while (k < bytes.len) : (k += 1) {
+        const c = bytes[k];
+        if (c >= '0' and c <= '9') continue;
+        if (c == ';') {
+            semis += 1;
+            continue;
+        }
+        if ((c == 'M' or c == 'm') and semis >= 2) {
+            var it = std.mem.splitScalar(u8, bytes[j..k], ';');
+            const btn = leadingInt(it.next() orelse "0");
+            const x = leadingInt(it.next() orelse "1");
+            const y = leadingInt(it.next() orelse "1");
+            i.* = k + 1;
+            return .{ .mouse = .{
+                .btn = @intCast(@min(btn, 255)),
+                .x = @intCast(@min(x, 999)),
+                .y = @intCast(@min(y, 999)),
+                .down = c == 'M',
+            } };
+        }
+        return null;
+    }
+    return null;
+}
+
 fn leadingInt(s: []const u8) u32 {
     var n: u32 = 0;
     for (s) |c| {
@@ -279,4 +340,36 @@ test "next: letters, enter, ctrl-c, arrows, kitty ctrl-p" {
     i = 0;
     try std.testing.expectEqual(Key.delete_to_start, next("\x7f", &i).?);
     held = 0;
+}
+
+test "split ESC does not become Escape" {
+    var i: usize = 0;
+    try std.testing.expect(next("\x1b", &i) == null);
+    try std.testing.expectEqual(@as(usize, 0), i);
+}
+
+test "orphan SGR mouse is never inserted as letters" {
+    var i: usize = 0;
+    const k = next("39;33;23M", &i).?;
+    try std.testing.expect(k == .mouse);
+    try std.testing.expectEqual(@as(u8, 39), k.mouse.btn);
+    try std.testing.expectEqual(@as(u16, 33), k.mouse.x);
+    try std.testing.expectEqual(@as(usize, 9), i);
+    i = 0;
+    const k2 = next("<64;4;8Mhi", &i).?;
+    try std.testing.expect(k2 == .mouse);
+    try std.testing.expectEqual(@as(u8, 64), k2.mouse.btn);
+    try std.testing.expectEqual(Key{ .char = 'h' }, next("<64;4;8Mhi", &i).?);
+}
+
+test "SGR mouse flood does not leak digits" {
+    const seq = "\x1b[<39;33;23M\x1b[<39;26;20M\x1b[<39;25;19M";
+    var i: usize = 0;
+    var n: usize = 0;
+    while (next(seq, &i)) |k| {
+        try std.testing.expect(k == .mouse);
+        n += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expectEqual(seq.len, i);
 }

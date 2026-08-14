@@ -21,6 +21,9 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.255
+    \\  • TUI no longer dumps mouse CSI (39;33;23M) into the thinking line
+    \\
     \\0.0.254
     \\  • graff tui is a Grok-style fullscreen pager (composer wrap, tool fold, effort picker, markdown tables); bare graff stays the line REPL
     \\  • /import-claude copies Claude/Cursor MCP servers and skills into ~/.codegraff on first start or on demand

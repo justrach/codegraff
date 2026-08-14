@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.255 (2026-08-14)
+
+- The fullscreen pager no longer prints raw SGR mouse reports
+  (`39;33;23M`) into the thinking line. Hover-motion tracking is off;
+  split/orphan mouse sequences are consumed instead of typed.
+
 ## v0.0.254 (2026-08-14)
 
 - `graff tui` (and TTY `graff repl`) is a Grok-style fullscreen pager: wrapped
