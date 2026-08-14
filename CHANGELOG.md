@@ -16,8 +16,9 @@ current is part of cutting a release.
   direct API-key sessions and supported in-stream compaction for Codex, with
   transactional history replacement and local fallback; non-OpenAI providers
   remain local-only.
-- Kimi prompt-cache affinity, low-effort lookup routing, concurrent live-catalog
-  fetches, and concurrent/deferred MCP startup remove avoidable serial latency
+- Measured interactive yolo startup falls from 5.85s to 2.76s—53% less waiting,
+  or about 2.1x faster—through Kimi prompt-cache affinity, low-effort lookup
+  routing, concurrent live-catalog fetches, and concurrent/deferred MCP startup,
   while preserving deterministic catalog and tool ordering.
 - `@codegraff/sdk` ships its platform harness binary and production embedding
   APIs for persistent turns, live events, controls, cancellation, and process
