@@ -21,6 +21,10 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.254
+    \\  • graff tui is a Grok-style fullscreen pager (composer wrap, tool fold, effort picker, markdown tables); bare graff stays the line REPL
+    \\  • /import-claude copies Claude/Cursor MCP servers and skills into ~/.codegraff on first start or on demand
+    \\
     \\0.0.253
     \\  • /compact uses first-party OpenAI compaction for direct API-key and Codex sessions, with transactional local fallback
     \\  • Kimi cache affinity plus concurrent catalogs and MCP startup remove avoidable serial latency

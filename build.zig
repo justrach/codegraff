@@ -173,7 +173,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    
+
     const tui_test_step = b.step("tui-test", "Run fullscreen TUI unit tests");
     tui_test_step.dependOn(&b.addRunArtifact(tui_tests).step);
 }

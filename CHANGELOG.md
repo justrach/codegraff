@@ -10,6 +10,18 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.254 (2026-08-14)
+
+- `graff tui` (and TTY `graff repl`) is a Grok-style fullscreen pager: wrapped
+  composer, folded multi-tool cards, click-to-expand, image chips, a searchable
+  effort picker, markdown tables, and a headless Term driver for tests. Bare
+  `graff` stays the line REPL.
+- `/import-claude` copies Claude/Cursor MCP servers, skills, and hooks into
+  `~/.codegraff` and the current repo; first start adopts automatically, the
+  command remains for a later rescan.
+- Hosted TUI tool rows carry the path or a one-line preview so live `⚙`/`✓`
+  lines stay inspectable without dumping raw JSON.
+
 ## v0.0.253 (2026-08-14)
 
 - Explicit `/compact` uses OpenAI's standalone Responses compact endpoint for
