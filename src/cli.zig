@@ -21,6 +21,9 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.257
+    \\  • Composer box aligns and wraps on words, not mid-letter
+    \\
     \\0.0.256
     \\  • TUI swallows leftover Kitty CSI-u, types Shift+9 as (, logs stdin to .graff/tui-traj.jsonl
     \\

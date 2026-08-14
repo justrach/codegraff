@@ -213,9 +213,62 @@ pub fn wrapToWidth(a: std.mem.Allocator, s: []const u8, width: usize) ![]const u
     return out.toOwnedSlice();
 }
 
+/// Like wrapToWidth, but breaks at the last space on the line when it can.
+pub fn wrapPreferWords(a: std.mem.Allocator, s: []const u8, width: usize) ![]const u8 {
+    if (width == 0) return a.dupe(u8, s);
+    var out = std.array_list.Managed(u8).init(a);
+    var col: usize = 0;
+    var last_sp: ?usize = null;
+    var i: usize = 0;
+    while (i < s.len) {
+        if (s[i] == '\n') {
+            try out.append('\n');
+            col = 0;
+            last_sp = null;
+            i += 1;
+            continue;
+        }
+        if (s[i] == 0x1b) {
+            const start = i;
+            i += 1;
+            if (i < s.len and s[i] == '[') {
+                i += 1;
+                while (i < s.len and (s[i] < 0x40 or s[i] > 0x7e)) : (i += 1) {}
+                if (i < s.len) i += 1;
+            }
+            try out.appendSlice(s[start..i]);
+            continue;
+        }
+        const w = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
+        const step = @min(w, s.len - i);
+        if (col + 1 > width) {
+            if (last_sp) |sp| {
+                out.items[sp] = '\n';
+                col = visibleLen(out.items[sp + 1 ..]);
+                last_sp = null;
+            } else {
+                try out.append('\n');
+                col = 0;
+            }
+        }
+        if (s[i] == ' ') last_sp = out.items.len;
+        try out.appendSlice(s[i .. i + step]);
+        col += 1;
+        i += step;
+    }
+    return out.toOwnedSlice();
+}
+
 test "visibleLen counts glyphs not UTF-8 bytes or SGR" {
     try std.testing.expectEqual(@as(usize, 3), visibleLen("\x1b[32mhi!\x1b[0m"));
     try std.testing.expectEqual(@as(usize, 3), visibleLen("a ·"));
+}
+
+test "wrapPreferWords breaks on spaces not mid-word" {
+    const got = try wrapPreferWords(std.testing.allocator, "little bit weird", 10);
+    defer std.testing.allocator.free(got);
+    try std.testing.expect(std.mem.indexOf(u8, got, "bit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "b\nit") == null);
 }
 
 test "wrapToWidth splits a long line and keeps SGR" {

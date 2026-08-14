@@ -10,6 +10,11 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.257 (2026-08-15)
+
+- Composer box corners line up with the sides, wrap at word boundaries, and
+  the hint row is clipped so it no longer ends on a stray "E".
+
 ## v0.0.256 (2026-08-15)
 
 - Leftover Kitty keyboard CSI (`3u7444;9u`) is ignored instead of typed or
