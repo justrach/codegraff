@@ -50,6 +50,7 @@ test {
     _ = @import("render.zig");
     _ = @import("tty.zig");
     _ = run_mod;
+    _ = @import("traj.zig");
 }
 
 pub fn main(init: std.process.Init) !void {

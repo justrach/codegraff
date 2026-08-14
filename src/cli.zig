@@ -21,6 +21,9 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.256
+    \\  • TUI swallows leftover Kitty CSI-u (3u7444;9u) and logs stdin to .graff/tui-traj.jsonl
+    \\
     \\0.0.255
     \\  • TUI no longer dumps mouse CSI (39;33;23M) into the thinking line
     \\

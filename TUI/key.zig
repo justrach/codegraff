@@ -49,7 +49,7 @@ pub const Mouse = struct {
 
 pub fn next(bytes: []const u8, i: *usize) ?Key {
     if (i.* >= bytes.len) return null;
-    if (takeOrphanMouse(bytes, i)) |k| return k;
+    if (takeOrphanCsi(bytes, i)) |k| return k;
     const b = bytes[i.*];
     i.* += 1;
     if (b == 0x1b) return escapeSeq(bytes, i);
@@ -241,34 +241,35 @@ fn sgrMouse(params: []const u8, down: bool) Key {
     } };
 }
 
-/// `<b;x;yM` or `b;x;yM` with no ESC — leftover after a split CSI.
-fn takeOrphanMouse(bytes: []const u8, i: *usize) ?Key {
+/// CSI debris after a split ESC (`7444;9u`, `39;33;23M`, `3u`). Never a
+/// letter and never Escape/Ctrl-C — those cancel or kill the turn.
+fn takeOrphanCsi(bytes: []const u8, i: *usize) ?Key {
     const start = i.*;
     if (start >= bytes.len) return null;
     var j = start;
     if (bytes[j] == '<') j += 1;
     if (j >= bytes.len or bytes[j] < '0' or bytes[j] > '9') return null;
-    var semis: u8 = 0;
     var k = j;
     while (k < bytes.len) : (k += 1) {
         const c = bytes[k];
         if (c >= '0' and c <= '9') continue;
-        if (c == ';') {
-            semis += 1;
-            continue;
-        }
-        if ((c == 'M' or c == 'm') and semis >= 2) {
-            var it = std.mem.splitScalar(u8, bytes[j..k], ';');
-            const btn = leadingInt(it.next() orelse "0");
-            const x = leadingInt(it.next() orelse "1");
-            const y = leadingInt(it.next() orelse "1");
+        if (c == ';' or c == ':') continue;
+        if (c >= 0x40 and c <= 0x7e) {
             i.* = k + 1;
-            return .{ .mouse = .{
-                .btn = @intCast(@min(btn, 255)),
-                .x = @intCast(@min(x, 999)),
-                .y = @intCast(@min(y, 999)),
-                .down = c == 'M',
-            } };
+            if (c == 'M' or c == 'm') {
+                const body = bytes[j..k];
+                var it = std.mem.splitScalar(u8, body, ';');
+                const btn = leadingInt(it.next() orelse "0");
+                const x = leadingInt(it.next() orelse "1");
+                const y = leadingInt(it.next() orelse "1");
+                return .{ .mouse = .{
+                    .btn = @intCast(@min(btn, 255)),
+                    .x = @intCast(@min(x, 999)),
+                    .y = @intCast(@min(y, 999)),
+                    .down = c == 'M',
+                } };
+            }
+            return .ignore;
         }
         return null;
     }
@@ -372,4 +373,18 @@ test "SGR mouse flood does not leak digits" {
     }
     try std.testing.expectEqual(@as(usize, 3), n);
     try std.testing.expectEqual(seq.len, i);
+}
+
+test "orphan kitty CSI-u is ignore, never letters or Escape" {
+    var i: usize = 0;
+    const seq = "3u7444;9u7441;10u";
+    var n: usize = 0;
+    while (next(seq, &i)) |k| {
+        try std.testing.expect(k == .ignore);
+        n += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expectEqual(seq.len, i);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = 'h' }, next("hi", &i).?);
 }

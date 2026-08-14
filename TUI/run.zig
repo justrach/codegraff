@@ -12,6 +12,7 @@ const render_mod = @import("render.zig");
 const theme_mod = @import("theme.zig");
 const turn = @import("turn.zig");
 const tty = @import("tty.zig");
+const traj = @import("traj.zig");
 const Model = app.Model;
 
 pub const RunOpts = struct {
@@ -61,6 +62,7 @@ pub fn run(
     // >4;2m: xterm modifyOtherKeys so Super+Backspace also arrives as CSI 27;9;127~.
     w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l\x1b[>11u\x1b[>4;2m") catch {};
     w.flush() catch {};
+    traj.open(io);
     defer {
         w.writeAll("\x1b[>4;0m\x1b[<u\x1b[?7h\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l") catch {};
         w.flush() catch {};
@@ -107,6 +109,7 @@ pub fn run(
         if (!tty.poll(wait)) continue;
         const got = tty.readStdin(inbuf[pending_len..]);
         const n = pending_len + got;
+        if (got > 0) traj.note(io, m.now_ms, inbuf[pending_len..n]);
         if (n == 0) {
             pending_len = 0;
             continue;
@@ -127,6 +130,11 @@ pub fn run(
             std.mem.copyForwards(u8, inbuf[0..rest], inbuf[i..n]);
             pending_len = rest;
         } else pending_len = 0;
+    }
+    if (prev.len != 0) {
+        const vis = @import("dump.zig").visible(gpa, prev) catch prev;
+        defer if (vis.ptr != prev.ptr) gpa.free(vis);
+        traj.snap(io, m.now_ms, vis);
     }
 }
 
