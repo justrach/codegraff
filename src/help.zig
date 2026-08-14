@@ -32,7 +32,7 @@ pub const sections = [_]Section{
     .{ .title = "the model", .names = &.{ "/model", "/models", "/effort", "/reasoning", "/fast", "/thinking", "/keepcontext", "/fallback", "/routes" } },
     .{ .title = "working autonomously", .names = &.{ "/goal", "/loop", "/review", "/plan", "/todo", "/jobs", "/ultracode", "/strict", "/yolo", "/never" } },
     .{ .title = "talking to other graffs", .names = &.{ "/tell", "/peek" }, .blurb = peers_blurb },
-    .{ .title = "your setup", .names = &.{ "/login", "/key", "/cost", "/privacy", "/mcp", "/import-claude", "/skills", "/agents", "/hooks", "/tools", "/fleet" } },
+    .{ .title = "your setup", .names = &.{ "/login", "/key", "/cost", "/usage", "/privacy", "/mcp", "/import-claude", "/skills", "/agents", "/hooks", "/tools", "/fleet" } },
     .{ .title = "context & history", .names = &.{ "/compact", "/btw", "/doctor", "/debug", "/trace", "/trajectory" } },
     .{ .title = "shell & images", .names = &.{ "/bash", "/image", "/images", "/paste" } },
     .{ .title = "look & feel", .names = &.{ "/theme", "/animation", "/title" } },

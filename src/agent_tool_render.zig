@@ -64,6 +64,24 @@ pub fn toolUseLine(a: *Agent, t: ToolInvocation) void {
     sayText(a, line.writer.buffered());
 }
 
+/// Normal-mode announcement: name only. The JSON preview stays behind
+/// GRAFF_REPL_DEBUG so the default session is not a dump.
+pub fn toolCompactUse(a: *Agent, name: []const u8) void {
+    var buf: [160]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "{s}⚙{s} {s}\n", .{ style.dim, style.reset, name }) catch return;
+    sayText(a, line);
+}
+
+/// Normal-mode result: mark + name. The one-line preview stays in debug.
+pub fn toolCompactResult(a: *Agent, r: ToolOutcome) void {
+    if (r.meta) return;
+    const w = a.out orelse return;
+    const mark = if (r.cancelled) "⊘" else if (r.is_error) "✗" else "✓";
+    const mc = if (r.cancelled) style.yellow else if (r.is_error) style.red else style.green;
+    w.print("  {s}{s}{s} {s}\n", .{ mc, mark, style.reset, r.name }) catch return;
+    w.flush() catch {};
+}
+
 /// The #440 marker prefixes forResult tags oversized results with. Detected
 /// off the result text itself, so the badge needs no new field on the event
 /// vocabulary (and no SDK schema change).

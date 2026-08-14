@@ -591,9 +591,6 @@ pub fn run(ctx: *Ctx) !void {
                 },
             }
         }
-        // opencode-style continuous autosave: persist after every turn so a crash or quit never loses the
-        // thread — last.session.json, the same file /resume reads. Best-effort; a write failure never breaks
-        // the loop. #273: unchanged history skips the save whole, and the write itself is queued.
         session.saveSessionAsync(ctx.root, ctx.arena, ctx.root.session_name) catch {};
 
         // --worktree checkpoint: commit this turn's edits to the scratch branch so the work is durable

@@ -142,7 +142,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     var oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
     if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
     try root.messages.append(try messages_mod.textMessage(arena, "user", oneshot_user));
-    if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(prompt_text.len, std.math.maxInt(u32))), root.provider.model);
+    if (telemetry.g_telem) |t| t.countTurn();
     const final_text = providers.runTurnWithFallback(root, keys, arena, null) catch |err| {
         // std.process.fatal does not unwind main's defers. Mirror their order:
         // join the fleet, reap jobs/pumps, then the terminal behavioral event.
@@ -293,16 +293,8 @@ pub fn buildRootAgent(
     // #469: register this root session so co-resident graffs see it (and it
     // them) BEFORE anyone touches the shared tree — a live co-owner is named
     // at birth here, not discovered mid-collision.
-    if (presence.announce(io, gpa, arena, root.home, root.session_name, if (root.goal) |g| g.objective else "")) |owner| {
-        if (!main_mod.json_mode and flags.oneshot_prompt == null) {
-            const age_ms = util.unixMs(io) - owner.last_seen_ms;
-            engine_sink.writerSink(out).emit(io, .{ .shared_worktree_owner = .{
-                .session_id = owner.session_id,
-                .pid = owner.pid,
-                .active_minutes = @divTrunc(if (age_ms > 0) age_ms else 0, std.time.ms_per_min),
-                .goal = owner.goal,
-            } });
-        }
+    if (presence.announce(io, gpa, arena, root.home, root.session_name, if (root.goal) |g| g.objective else "")) |warning| {
+        if (!main_mod.json_mode and flags.oneshot_prompt == null) try out.print("{s}", .{warning});
     }
     if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
     if (flags.eval_target_flag) |t| root.eval_target = t;
