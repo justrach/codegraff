@@ -14,6 +14,8 @@ current is part of cutting a release.
 
 - Leftover Kitty keyboard CSI (`3u7444;9u`) is ignored instead of typed or
   turned into Escape/Ctrl+C (which cancelled the turn).
+- Shift+number keys type the punctuation they should (`Shift+9` is `(`,
+  `Shift+0` is `)`), including via Kitty CSI-u and modifyOtherKeys.
 - The pager appends raw stdin hex to `.graff/tui-traj.jsonl` and the last
   visible frame on exit so the next leak can be replayed.
 

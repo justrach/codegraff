@@ -58,9 +58,9 @@ pub fn run(
     const w = &stdout.interface;
     // 1000/1006: click + wheel as 64/65. Not 1003h — motion floods leak as text.
     // 2004: bracketed paste. 7l: no autowrap into the prompt.
-    // >11u: kitty disambiguate + event types + all-keys (Cmd+Delete / Super latch).
+    // >31u: kitty disambiguate + events + alternates + all-keys + text (Shift+9 is "(").
     // >4;2m: xterm modifyOtherKeys so Super+Backspace also arrives as CSI 27;9;127~.
-    w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l\x1b[>11u\x1b[>4;2m") catch {};
+    w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l\x1b[>31u\x1b[>4;2m") catch {};
     w.flush() catch {};
     traj.open(io);
     defer {
@@ -146,7 +146,7 @@ fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
         std.posix.raise(std.posix.SIG.TSTP) catch {};
     }
     raw.* = tty.enterRaw() orelse raw.*;
-    w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l\x1b[>11u\x1b[>4;2m") catch {};
+    w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l\x1b[>31u\x1b[>4;2m") catch {};
     w.flush() catch {};
     _ = io;
 }
@@ -218,7 +218,7 @@ test "run loop enables click tracking and bracketed paste" {
     const sgr_on = [_]u8{ '?', '1', '0', '0', '6', 'h' };
     const paste_on = [_]u8{ '?', '2', '0', '0', '4', 'h' };
     const hover_on = [_]u8{ '?', '1', '0', '0', '3', 'h' };
-    const kitty_on = [_]u8{ '>', '1', '1', 'u' };
+    const kitty_on = [_]u8{ '>', '3', '1', 'u' };
     const wrap_off = [_]u8{ '?', '7', 'l' };
     try std.testing.expect(std.mem.indexOf(u8, src, &mouse_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &sgr_on) != null);

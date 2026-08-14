@@ -166,14 +166,19 @@ fn csiMods(params: []const u8) u32 {
     return mods;
 }
 
-/// CSI unicode ; mods u  — kitty/ghostty. mods bit 2 = ctrl, 1 = shift.
+/// CSI unicode[:shifted[:base]] ; mods[:event] ; text u
 fn kitty(params: []const u8) Key {
-    const code = leadingInt(params);
+    var it = std.mem.splitScalar(u8, params, ';');
+    const keys = it.next() orelse "";
+    const code = leadingInt(keys);
+    var shifted: u32 = 0;
+    if (std.mem.indexOfScalar(u8, keys, ':')) |c| shifted = leadingInt(keys[c + 1 ..]);
     var mods: u32 = 0;
-    if (std.mem.indexOfScalar(u8, params, ';')) |s| {
-        mods = leadingInt(params[s + 1 ..]);
-        if (mods > 0) mods -= 1; // kitty encodes mods+1
+    if (it.next()) |m| {
+        mods = leadingInt(m);
+        if (mods > 0) mods -= 1;
     }
+    const text = leadingInt(it.next() orelse "");
     const ev = kittyEvent(params);
     if (code == 57444 or code == 57448) {
         if (ev == 3) held &= ~@as(u32, 8) else held |= 8;
@@ -185,6 +190,9 @@ fn kitty(params: []const u8) Key {
     }
     if (code >= 57441 and code <= 57448) return .ignore;
     if (ev == 3) return .ignore;
+    const shift = mods & 1 != 0;
+    if (text >= 32 and text < 127) return mapCode(text, mods & ~@as(u32, 1));
+    if (shift and shifted >= 32 and shifted < 127) return mapCode(shifted, mods & ~@as(u32, 1));
     return mapCode(code, mods);
 }
 
@@ -222,9 +230,39 @@ fn mapCode(code: u32, mods: u32) Key {
         if ((ctrl or super) and !shift and (ch == 'z' or ch == 'Z')) return .undo;
         if (ctrl and ch >= 'a' and ch <= 'z') return .{ .ctrl = ch };
         if (ctrl and ch >= 'A' and ch <= 'Z') return .{ .ctrl = ch + 32 };
+        if (shift) return .{ .char = shiftedAscii(ch) };
         return .{ .char = ch };
     }
     return .escape;
+}
+
+/// Kitty/modifyOtherKeys report the unshifted key + Shift. US layout.
+fn shiftedAscii(ch: u8) u8 {
+    return switch (ch) {
+        'a'...'z' => ch - 32,
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        '-' => '_',
+        '=' => '+',
+        '[' => '{',
+        ']' => '}',
+        '\\' => '|',
+        ';' => ':',
+        '\'' => '"',
+        ',' => '<',
+        '.' => '>',
+        '/' => '?',
+        '`' => '~',
+        else => ch,
+    };
 }
 
 fn sgrMouse(params: []const u8, down: bool) Key {
@@ -387,4 +425,21 @@ test "orphan kitty CSI-u is ignore, never letters or Escape" {
     try std.testing.expectEqual(seq.len, i);
     i = 0;
     try std.testing.expectEqual(Key{ .char = 'h' }, next("hi", &i).?);
+}
+
+test "Shift+9 is open-paren, Shift+0 is close-paren" {
+    var i: usize = 0;
+    try std.testing.expectEqual(Key{ .char = '(' }, next("\x1b[57;2u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = ')' }, next("\x1b[48;2u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '(' }, next("\x1b[57:40;2u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '(' }, next("\x1b[57;2;40u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '!' }, next("\x1b[49;2u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = 'A' }, next("\x1b[97;2u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '(' }, next("\x1b[27;2;57~", &i).?);
 }
