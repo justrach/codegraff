@@ -45,6 +45,7 @@ const engine_events = @import("engine_events.zig");
 const harness_policy = @import("harness_policy.zig");
 const title_mod = @import("title.zig");
 const repl = @import("repl.zig");
+const tui_launch = @import("tui_launch.zig");
 const shapes = @import("shapes.zig"); // applyUltracodeSteering lives here (#326)
 const repl_glue = @import("repl_glue.zig");
 const eval_memory = @import("eval_memory.zig");
@@ -64,15 +65,19 @@ const learning_privacy = @import("learning_privacy.zig");
 const commands_privacy = @import("commands_privacy.zig");
 const prompts = @import("prompts.zig");
 
-/// `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL
-/// agent loop — each prompt runs a full root turn (tools + MCP) via
-/// replTurnCb, reusing the root agent's tool set + registry + system prompt.
+/// `graff repl`: interactive chat on the Grok-style TUI (same as `graff tui`).
+/// Piped/non-TTY stdin still drives the old scripted zigzag Model so CI
+/// (`printf ... | graff repl`) keeps a stable headless path.
 /// Self-contained — exits after. Moved out of main() (600-line goal).
 /// `root` is already a stable, fully-constructed main()-owned Agent by the
 /// time this is called, so taking its address here is safe (this helper
 /// only reads through the pointer, it never owns or returns Agent storage).
 pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, keys: *provider_mod.Keys, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags) !bool {
     if (!(flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "repl"))) return false;
+    if (Io.File.stdin().isTty(io) catch true) {
+        try tui_launch.run(gpa, io, environ_map, root, keys, client, arena, main_mod.g_cwd_display, flags.yolo_flag);
+        return true;
+    }
     root.ensureStoredKeys(keys);
     providers.ensureModelQueryCatalogs(root, keys.*, "");
     // The standalone chat REPL can switch wire formats inside its own model
@@ -103,10 +108,7 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
         if (models_buf.items.len != 0) models_buf.appendSlice(", ") catch {};
         models_buf.appendSlice(mi.name) catch {};
     }
-    if (Io.File.stdin().isTty(io) catch true)
-        try repl.run(gpa, io, environ_map, &repl_ctx, repl_glue.replTurnCb, repl_glue.replModelCb, repl_glue.replCancelCb, root.provider.model, models_buf.items)
-    else
-        try repl.runScripted(gpa, io, environ_map, in, out, &repl_ctx, repl_glue.replTurnCb, repl_glue.replModelCb, repl_glue.replCancelCb, root.provider.model, models_buf.items);
+    try repl.runScripted(gpa, io, environ_map, in, out, &repl_ctx, repl_glue.replTurnCb, repl_glue.replModelCb, repl_glue.replCancelCb, root.provider.model, models_buf.items);
     return true;
 }
 

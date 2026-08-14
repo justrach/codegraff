@@ -41,6 +41,7 @@ const skills = @import("skills.zig");
 const mcp = @import("mcp.zig");
 const mcp_cli = @import("mcp_cli.zig");
 const mcp_config = @import("mcp_config.zig");
+const adopt = @import("adopt.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: the eager-vs-deferred policy for MCP tool schemas
 const jobs = @import("jobs.zig");
 const tool_spill = @import("tool_spill.zig"); // #409: where an over-cap tool output's full bytes go
@@ -143,7 +144,9 @@ pub fn setupWorktreeAndBanner(
     // pre-#409 plain truncation.
     tool_spill.enable(.{ .io = io, .dir = .cwd(), .base_abs = main_mod.g_cwd_display });
 
-    if (!main_mod.json_mode and flags.oneshot_prompt == null) {
+    // The pager owns the screen. Dumping the line-REPL banner first makes
+    // `graff tui --yolo` look like bare `graff` never left.
+    if (!main_mod.json_mode and flags.oneshot_prompt == null and !flags.isPager()) {
         sink.emit(io, .{ .session_banner = .{ .cwd = main_mod.g_cwd_display, .trace_path = trace_path } });
         if (environ_map.get("GRAFF_REPL_DEBUG") != null) if (codex_account) |acct| sink.emit(io, .{ .session_notice = .{
             .text = try std.fmt.allocPrint(arena, "logged into Codex (ChatGPT account {s}…) — /model codex", .{acct[0..@min(acct.len, 8)]}),
@@ -381,6 +384,19 @@ pub fn leanMode(effective_lean: bool, environ_map: anytype) bool {
 pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Writer, in: *Io.Reader, flags: args.Flags, mcp_config_path: []const u8, home: []const u8, use_color: bool, json_mode: bool, environ_map: anytype) !mcp.Registry {
     const global_path = mcp_config.globalPath(arena, home, environ_map);
     const sink = engine_sink.writerSink(out);
+    // First interactive session copies Claude/Cursor MCP into ~/.codegraff once.
+    // One-shots/--json skip it so CI does not rewrite a checkout. Re-run with
+    // `graff mcp import` / `/import-claude`. GRAFF_NO_ADOPT=1 disables.
+    if (!json_mode and flags.oneshot_prompt == null and environ_map.get("GRAFF_NO_ADOPT") == null) {
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cwd_n = Io.Dir.cwd().realPath(io, &cwd_buf) catch 0;
+        const cwd = if (cwd_n > 0) cwd_buf[0..cwd_n] else ".";
+        if (adopt.maybeFirstRun(io, arena, home, cwd) catch null) |r| {
+            if (r.added_user + r.added_project + r.skills > 0) {
+                sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "adopted {d} Claude/Cursor MCP server(s) into ~/" ++ mcp_config.global_rel_path ++ " — /mcp trust to connect (or graff mcp import to refresh)", .{r.added_user + r.added_project})));
+            }
+        }
+    }
     // --json's stdout is a JSONL stream and a one-shot's is the answer; neither
     // can carry chatter. With a global config `mcp_count > 0` in every project,
     // so an unguarded line here would corrupt the head of every --json run.

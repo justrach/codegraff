@@ -157,7 +157,7 @@ fn scan(io: Io, arena: Allocator, home: ?[]const u8) []const Skill {
 fn collect(io: Io, arena: Allocator, home: ?[]const u8) std.ArrayList(Skill) {
     var list: std.ArrayList(Skill) = .empty;
     list.appendSlice(arena, &builtins) catch {};
-    if (home) |h| for ([_][]const u8{ compat_dir, project_dir }) |dir| {
+    if (home) |h| for ([_][]const u8{ compat_dir, ".codegraff/skills", project_dir }) |dir| {
         const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ h, dir }) catch continue;
         loadDir(io, arena, &list, path, .personal);
     };

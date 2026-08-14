@@ -156,6 +156,7 @@ fn ownedSessionName(arena: Allocator, arg: []const u8, fallback: []const u8) All
 /// `line` doesn't match any command in this file — the caller falls through
 /// to handleRest() for the unknown-command/help terminal stage.
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
+    if (try @import("adopt.zig").trySlash(root.io, arena, root.home, line, out)) return true;
     if (try commands_privacy.tryHandle(root, line, out)) return true;
     if (try playbook_glue.command(root, arena, line, out)) return true; // #381 /never | /constraint
     if (try side_question.command(root, arena, line, out)) return true; // #415 /btw

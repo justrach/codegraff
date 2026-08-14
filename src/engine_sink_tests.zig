@@ -387,3 +387,22 @@ test "slice 2: forSession picks the wire in --json and the caller's writer other
     a.sink = .{ .ctx = &rec, .vt = &vt };
     try std.testing.expectEqual(@as(*const VTable, &vt), engine_sink.forSession(&a, null).vt);
 }
+
+test "hosted frontend announces read path and result preview" {
+    const saved = engine_sink.hosted_frontend;
+    engine_sink.hosted_frontend = true;
+    defer engine_sink.hosted_frontend = saved;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+    const sink = tuiSink(&a);
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"path\":\"src/foo.zig\"}", .{});
+    sink.emit(undefined, .{ .tool_call_announced = .{ .name = "read_file", .input = input } });
+    sink.emit(undefined, .{ .tool_result = .{ .name = "read_file", .text = "const std = @import(\"std\");\nmore", .is_error = false } });
+    const got = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, got, "⚙ read src/foo.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "✓ read | const std") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "read_file") == null);
+}

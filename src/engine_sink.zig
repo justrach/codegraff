@@ -292,11 +292,20 @@ fn hostedEmit(a: *Agent, ev: EngineEvent) void {
             w.flush() catch {};
         },
         .tool_call_announced => |t| {
-            w.print("⚙ {s}\n", .{t.name}) catch {};
+            const arg = compactArg(t.input);
+            if (arg.len > 0)
+                w.print("⚙ {s} {s}\n", .{ shortTool(t.name), arg }) catch {}
+            else
+                w.print("⚙ {s}\n", .{shortTool(t.name)}) catch {};
             w.flush() catch {};
         },
         .tool_result => |r| {
-            w.print("{s} {s}\n", .{ if (r.is_error) "✗" else "✓", r.name }) catch {};
+            const mark: []const u8 = if (r.is_error) "✗" else "✓";
+            const preview = firstLineCap(r.text, 80);
+            if (preview.len > 0)
+                w.print("{s} {s} | {s}\n", .{ mark, shortTool(r.name), preview }) catch {}
+            else
+                w.print("{s} {s}\n", .{ mark, shortTool(r.name) }) catch {};
             w.flush() catch {};
         },
         else => {},
@@ -358,6 +367,32 @@ fn jsonLine(w: *Io.Writer, cursor: engine_events.Cursor, payload: anytype) void 
     protocol_seq.writeEventStamped(w, cursor.sequence, payload) catch return;
     w.writeByte('\n') catch return;
     w.flush() catch return;
+}
+
+fn shortTool(name: []const u8) []const u8 {
+    if (std.mem.eql(u8, name, "read_file")) return "read";
+    if (std.mem.eql(u8, name, "write_file")) return "write";
+    return name;
+}
+
+fn compactArg(input: std.json.Value) []const u8 {
+    const obj = switch (input) {
+        .object => |o| o,
+        else => return "",
+    };
+    const keys = [_][]const u8{ "path", "target_file", "file", "filename", "command", "cmd", "query", "q", "pattern", "url", "symbol" };
+    for (keys) |k| {
+        const v = obj.get(k) orelse continue;
+        if (v == .string and v.string.len > 0) return v.string;
+    }
+    return "";
+}
+
+fn firstLineCap(text: []const u8, cap: usize) []const u8 {
+    var s = std.mem.trim(u8, text, " \t\r\n");
+    if (std.mem.indexOfScalar(u8, s, '\n')) |i| s = std.mem.trim(u8, s[0..i], " \t\r");
+    if (s.len > cap) return s[0..cap];
+    return s;
 }
 
 test {

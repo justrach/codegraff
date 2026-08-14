@@ -73,6 +73,7 @@ pub const commands = [_]Item{
     .{ .name = "/theme", .usage = "/theme [name]", .desc = "pick a color theme; /theme off resets to your terminal default; persists" },
     .{ .name = "/fleet", .usage = "/fleet [on|off]", .desc = "federated DGM contribution (propose/submit/elite_pull)" },
     .{ .name = "/mcp", .usage = "/mcp [add …]", .desc = "list MCP servers/tools; /mcp add <name> <cmd> [args...] connects one live" },
+    .{ .name = "/import-claude", .desc = "copy Claude/Cursor MCP servers and skills into ~/.codegraff and this repo" },
     .{ .name = "/help", .desc = "list every command" },
 };
 
