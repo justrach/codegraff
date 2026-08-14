@@ -45,6 +45,13 @@ pub const ModelFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, na
 pub const CancelFn = *const fn (turn_ctx: ?*anyopaque) void;
 /// Fill dest with a staged image path (return >0) or an error line (return <0).
 pub const PasteFn = *const fn (turn_ctx: ?*anyopaque, dest: []u8) isize;
+/// Run a user-typed `!` shell line in the session cwd; return combined
+/// output (caller frees) or null when the spawn itself failed.
+pub const BashFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, cmd: []const u8) ?[]const u8;
+/// Newline-joined repo-relative paths for @-search (caller frees), or null.
+pub const FilesFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator) ?[]const u8;
+/// Copy text to the system clipboard; true on success.
+pub const CopyFn = *const fn (turn_ctx: ?*anyopaque, text: []const u8) bool;
 
 pub const Job = struct {
     thread: std.Thread = undefined,
@@ -66,6 +73,9 @@ pub var g_model_fn: ?ModelFn = null;
 pub var g_cancel_fn: ?CancelFn = null;
 pub var g_hud_fn: ?HudFn = null;
 pub var g_paste_fn: ?PasteFn = null;
+pub var g_bash_fn: ?BashFn = null;
+pub var g_files_fn: ?FilesFn = null;
+pub var g_copy_fn: ?CopyFn = null;
 pub var g_model_name: []const u8 = "";
 pub var g_models: []const u8 = "";
 pub var g_cwd: []const u8 = ".";

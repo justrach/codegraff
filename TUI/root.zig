@@ -49,6 +49,9 @@ test {
     _ = @import("sim.zig");
     _ = @import("render.zig");
     _ = @import("tty.zig");
+    _ = @import("restore.zig");
+    _ = @import("files.zig");
+    _ = @import("overlays.zig");
     _ = run_mod;
 }
 

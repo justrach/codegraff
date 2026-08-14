@@ -94,18 +94,44 @@ pub fn next(id: Id) Id {
     return @enumFromInt((@intFromEnum(id) + 1) % all.len);
 }
 
+/// Index just past the escape sequence starting at `start` (s[start] == 0x1b).
+/// Skips CSI, OSC/DCS/APC/PM/SOS (to BEL or ST), SS3, and ESC+char — a
+/// truncation mid-sequence would emit broken escapes into the frame.
+pub fn skipEsc(s: []const u8, start: usize) usize {
+    var i = start + 1;
+    if (i >= s.len) return i;
+    switch (s[i]) {
+        '[' => {
+            i += 1;
+            while (i < s.len and (s[i] < 0x40 or s[i] > 0x7e)) : (i += 1) {}
+            if (i < s.len) i += 1;
+        },
+        ']', 'P', '_', '^', 'X' => {
+            i += 1;
+            while (i < s.len) : (i += 1) {
+                if (s[i] == 0x07) {
+                    i += 1;
+                    break;
+                }
+                if (s[i] == 0x1b) {
+                    i += if (i + 1 < s.len and s[i + 1] == '\\') 2 else 1;
+                    break;
+                }
+            }
+        },
+        'O' => i = @min(i + 2, s.len),
+        else => i += 1,
+    }
+    return i;
+}
+
 /// Columns in `s`, skipping SGR. Assumes 1-col codepoints (no CJK/emoji width).
 pub fn visibleLen(s: []const u8) usize {
     var n: usize = 0;
     var i: usize = 0;
     while (i < s.len) {
         if (s[i] == 0x1b) {
-            i += 1;
-            if (i < s.len and s[i] == '[') {
-                i += 1;
-                while (i < s.len and (s[i] < 0x40 or s[i] > 0x7e)) : (i += 1) {}
-                if (i < s.len) i += 1;
-            }
+            i = skipEsc(s, i);
             continue;
         }
         const w = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
@@ -120,12 +146,7 @@ pub fn takeCols(s: []const u8, max: usize) []const u8 {
     var i: usize = 0;
     while (i < s.len and n < max) {
         if (s[i] == 0x1b) {
-            i += 1;
-            if (i < s.len and s[i] == '[') {
-                i += 1;
-                while (i < s.len and (s[i] < 0x40 or s[i] > 0x7e)) : (i += 1) {}
-                if (i < s.len) i += 1;
-            }
+            i = skipEsc(s, i);
             continue;
         }
         const w = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
@@ -191,12 +212,7 @@ pub fn wrapToWidth(a: std.mem.Allocator, s: []const u8, width: usize) ![]const u
         }
         if (s[i] == 0x1b) {
             const start = i;
-            i += 1;
-            if (i < s.len and s[i] == '[') {
-                i += 1;
-                while (i < s.len and (s[i] < 0x40 or s[i] > 0x7e)) : (i += 1) {}
-                if (i < s.len) i += 1;
-            }
+            i = skipEsc(s, i);
             try out.appendSlice(s[start..i]);
             continue;
         }
@@ -227,4 +243,11 @@ test "wrapToWidth splits a long line and keeps SGR" {
     while (it.next()) |ln| {
         try std.testing.expect(visibleLen(ln) <= 4);
     }
+}
+
+test "visibleLen and takeCols treat OSC/APC as invisible" {
+    try std.testing.expectEqual(@as(usize, 4), visibleLen("\x1b]8;;http://x\x07link\x1b]8;;\x07"));
+    try std.testing.expectEqual(@as(usize, 2), visibleLen("\x1b_Ga=d,d=A\x1b\\ok"));
+    const cut = takeCols("\x1b]8;;u\x07ab", 1);
+    try std.testing.expectEqualStrings("\x1b]8;;u\x07a", cut);
 }
