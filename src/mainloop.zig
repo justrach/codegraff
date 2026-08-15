@@ -10,7 +10,6 @@ const main_mod = @import("main.zig");
 const util = @import("util.zig");
 const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
-
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
