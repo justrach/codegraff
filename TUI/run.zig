@@ -245,18 +245,24 @@ fn rowChanged(prev: []const u8, frame: []const u8, row: usize) bool {
     return !std.mem.eql(u8, nthLine(prev, row), nthLine(frame, row));
 }
 
-test "run loop enables click tracking and bracketed paste" {
+test "run loop enables click+hover tracking and bracketed paste" {
     const src = @embedFile("run.zig");
     const mouse_on = [_]u8{ '?', '1', '0', '0', '0', 'h' };
     const sgr_on = [_]u8{ '?', '1', '0', '0', '6', 'h' };
     const paste_on = [_]u8{ '?', '2', '0', '0', '4', 'h' };
+    // 1003 (motion) is back ON for image-chip hover previews. The v0.0.255
+    // leak (raw SGR typed into the thinking line) stays pinned by key.zig's
+    // flood/orphan tests; the restore seq must pop it so the shell never
+    // inherits motion tracking.
     const hover_on = [_]u8{ '?', '1', '0', '0', '3', 'h' };
-    const kitty_on = [_]u8{ '>', '3', '1', 'u' };
+    const hover_off = [_]u8{ '?', '1', '0', '0', '3', 'l' };
+    const kitty_on = [_]u8{ '>', '1', '1', 'u' };
     const wrap_off = [_]u8{ '?', '7', 'l' };
     try std.testing.expect(std.mem.indexOf(u8, src, &mouse_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &sgr_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &paste_on) != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, &hover_on) == null);
+    try std.testing.expect(std.mem.indexOf(u8, src, &hover_on) != null);
+    try std.testing.expect(std.mem.indexOf(u8, restore_mod.seq, &hover_off) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &[_]u8{ '?', '1', '0', '0', '7', 'h' }) == null);
     try std.testing.expect(std.mem.indexOf(u8, src, &kitty_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &wrap_off) != null);
