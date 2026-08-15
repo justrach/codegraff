@@ -46,7 +46,8 @@ properties are load-bearing, and a missed combination is a real bug.
 | `provider` | live | 18 baked rows over 3 wire kinds. |
 | `goal_loop` | live | 360 gate cells. Empty ≠ done. Standing does not retire. |
 | `path_confine` | live | Lexical cwd jail, symlink prefixes, 80 lease verdicts. |
-| `shape` | live | 1152 ladder cells. Explicit never below R2. Audit beats bugfix. |
+| `shape` | live | 1728 cells. Hand ladder + explicit arm. Budget from remaining/cap/floor. |
+| `score` | live | 1210 filing cells. Uncelled/all-fail never accrue. Scale is `[0,1]`. |
 | TUI, prompts, SSE bytes | never | Eval, don't prove. |
 
 ## Run

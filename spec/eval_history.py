@@ -20,6 +20,7 @@ KERNELS = {
     "goal": ("src/goal_state.zig", "src/goal_todo.zig", "src/goal_flow.zig"),
     "path": ("src/harness_policy.zig", "src/worktree_lease.zig"),
     "shape": ("src/escalation.zig", "src/shapes.zig", "src/route_policy.zig"),
+    "score": ("src/scoring.zig", "src/pipeline_score.zig", "src/shapes.zig"),
 }
 
 
@@ -41,7 +42,7 @@ def main() -> int:
     ts = tags(n)
     hits: dict[str, int] = defaultdict(int)
     spec_hit = tui_only = other = 0
-    print(f"{'ver':<10} {'cat':>3} {'ws':>3} {'prov':>4} {'goal':>4} {'path':>4} {'shp':>3}  TUI  hit")
+    print(f"{'ver':<10} {'cat':>3} {'ws':>3} {'prov':>4} {'goal':>4} {'path':>4} {'shp':>3} {'sc':>3}  TUI  hit")
     for a, b in zip(ts, ts[1:]):
         files = changed(a, b)
         flagged = [k for k, paths in KERNELS.items() if any(f in paths for f in files)]
@@ -61,7 +62,7 @@ def main() -> int:
         print(
             f"{b:<10} {cells['catalog']:>3} {cells['transport']:>3} "
             f"{cells['provider']:>4} {cells['goal']:>4} {cells['path']:>4} "
-            f"{cells['shape']:>3}  {'Y' if tui else '.':>3}  {label}"
+            f"{cells['shape']:>3} {cells['score']:>3}  {'Y' if tui else '.':>3}  {label}"
         )
     total = spec_hit + tui_only + other
     print()

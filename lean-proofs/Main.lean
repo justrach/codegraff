@@ -4,6 +4,7 @@ import Graff.Provider
 import Graff.GoalLoop
 import Graff.PathConfine
 import Graff.Shape
+import Graff.Score
 
 open Graff
 
@@ -18,4 +19,5 @@ def main : IO Unit := do
   IO.println s!"goal         {GoalLoop.goalCells}  refuse_open={GoalLoop.refuseOpenCells}  refuse_no_plan={GoalLoop.refuseNoPlanCells}"
   IO.println s!"lease        {PathConfine.leaseCells}  warns={PathConfine.warnCells}"
   IO.println s!"shape        {Shape.shapeCells}  R0={Shape.r0Cells}  R3={Shape.r3Cells}"
-  IO.println s!"cells_total  {ToolCatalog.catalogCells + Transport.transportCells + Provider.providerRows + GoalLoop.goalCells + PathConfine.leaseCells + Shape.shapeCells}"
+  IO.println s!"score        {Score.scoreCells}  filed={Score.filedCells}"
+  IO.println s!"cells_total  {ToolCatalog.catalogCells + Transport.transportCells + Provider.providerRows + GoalLoop.goalCells + PathConfine.leaseCells + Shape.shapeCells + Score.scoreCells}"

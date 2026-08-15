@@ -53,16 +53,10 @@ from ref.goal_loop import (
     goal_active,
     retires_on_accept,
 )
-from ref.shape import (
-    CLASS_CASES,
-    Cues,
-    all_observables,
-    class_of,
-    honour_explicit,
-    ladder_rung,
-    level,
-    parse_shape,
-)
+from ref.shape import check_properties as shape_check_properties
+from ref.shape import payload as shape_model_payload
+from ref.score import check_properties as score_check_properties
+from ref.score import payload as score_model_payload
 
 ROOT = Path(__file__).resolve().parent
 KERNELS = ROOT / "kernels"
@@ -72,6 +66,7 @@ PROVIDER_FIXTURE = KERNELS / "providers.json"
 GOAL_FIXTURE = KERNELS / "goal_loop.json"
 PATH_FIXTURE = KERNELS / "path_confine.json"
 SHAPE_FIXTURE = KERNELS / "shape.json"
+SCORE_FIXTURE = KERNELS / "score.json"
 LEAN_DIR = ROOT.parent / "lean-proofs"
 
 
@@ -305,27 +300,11 @@ def path_payload() -> dict:
 
 
 def shape_payload() -> dict:
-    cases = []
-    for o in all_observables():
-        r = ladder_rung(o)
-        cases.append(
-            {
-                "id": o.case_id(),
-                "obs": {
-                    "shape": o.shape,
-                    "files_lt3": o.files_lt3,
-                    "widest_ge2": o.widest_ge2,
-                    "audit": o.audit,
-                    "prior_failure": o.prior_failure,
-                    "prior_count": o.prior_count,
-                    "has_verifier": o.has_verifier,
-                    "fleet_affordable": o.fleet_affordable,
-                },
-                "ladder": r,
-                "explicit": honour_explicit(r),
-            }
-        )
-    return {"kernel": "shape", "version": 1, "cases": cases, "class_cases": list(CLASS_CASES)}
+    return shape_model_payload()
+
+
+def score_payload() -> dict:
+    return score_model_payload()
 
 
 def check_provider() -> int:
@@ -411,42 +390,21 @@ def check_path_confine() -> int:
 
 
 def check_shape() -> int:
-    n = 0
-    for o in all_observables():
-        n += 1
-        r = ladder_rung(o)
-        if o.prior_failure and not o.audit and o.prior_count == 1 and o.files_lt3 and o.has_verifier:
-            if r != "R0d":
-                raise Counterexample("first-fail-small-verified-is-R0d", o, r)
-        elif (o.audit or o.prior_failure) and o.fleet_affordable:
-            if r != "R3":
-                raise Counterexample("audit-or-fail-affordable-is-R3", o, r)
-        elif o.shape == "research" and not o.audit:
-            if r != "R1":
-                raise Counterexample("research-is-R1", o, r)
-        elif (not o.files_lt3) and o.widest_ge2 and o.fleet_affordable:
-            if r != "R2":
-                raise Counterexample("three-files-is-R2", o, r)
-        elif r != "R0":
-            raise Counterexample("floor-is-R0", o, r)
-        hon = honour_explicit(r)
-        if level(hon) < 3:
-            raise Counterexample("explicit-at-least-R2", o, hon)
-        if r == "R3" and hon != "R3":
-            raise Counterexample("explicit-keeps-R3", o, hon)
-        if level(r) < 3 and hon != "R2":
-            raise Counterexample("explicit-lifts-below-R2", o, hon)
-    if n != 1152:
-        raise Counterexample("shape-cube", None, f"n={n} want=1152")
-    if class_of(Cues(audit=True, bugfix=True)) != "review":
-        raise Counterexample("audit-beats-bugfix", None, class_of(Cues(audit=True, bugfix=True)))
-    if class_of(Cues(bugfix=True, review=True)) != "bugfix":
-        raise Counterexample("repair-beats-review-word", None, class_of(Cues(bugfix=True, review=True)))
-    if class_of(Cues()) != "other":
-        raise Counterexample("no-needles-is-other", None, class_of(Cues()))
-    if parse_shape("ponder") != "adhoc" or parse_shape("review") != "review":
-        raise Counterexample("parse-shape", None, f"{parse_shape('ponder')} {parse_shape('review')}")
-    return n
+    try:
+        return shape_check_properties()
+    except ValueError as e:
+        msg = str(e)
+        prop, _, detail = msg.partition(": ")
+        raise Counterexample(prop, None, detail or msg) from e
+
+
+def check_score() -> int:
+    try:
+        return score_check_properties()
+    except ValueError as e:
+        msg = str(e)
+        prop, _, detail = msg.partition(": ")
+        raise Counterexample(prop, None, detail or msg) from e
 
 
 def prefixes_first(p: str) -> list[str]:
@@ -468,6 +426,7 @@ def export() -> list[Path]:
         _write(GOAL_FIXTURE, goal_payload()),
         _write(PATH_FIXTURE, path_payload()),
         _write(SHAPE_FIXTURE, shape_payload()),
+        _write(SCORE_FIXTURE, score_payload()),
     ]
 
 
@@ -485,6 +444,7 @@ def check_fixtures() -> None:
     _same(GOAL_FIXTURE, goal_payload(), "goal_loop")
     _same(PATH_FIXTURE, path_payload(), "path_confine")
     _same(SHAPE_FIXTURE, shape_payload(), "shape")
+    _same(SCORE_FIXTURE, score_payload(), "score")
 
 
 def break_model(kind: str) -> None:
@@ -565,15 +525,16 @@ def main() -> int:
         n_gl = check_goal_loop()
         n_pc = check_path_confine()
         n_sh = check_shape()
+        n_sc = check_score()
         if args.export:
             paths = export()
             rel = ", ".join(p.relative_to(ROOT.parent).as_posix() for p in paths)
-            print(f"exported catalog={n_cat} transport={n_tr} provider={n_pr} goal={n_gl} path={n_pc} shape={n_sh} → {rel}")
+            print(f"exported catalog={n_cat} transport={n_tr} provider={n_pr} goal={n_gl} path={n_pc} shape={n_sh} score={n_sc} → {rel}")
         else:
             check_fixtures()
             print(
                 f"ok  tool_catalog {n_cat}  transport {n_tr} (1 ws)  "
-                f"provider {n_pr}  goal_loop {n_gl}  path_confine {n_pc}  shape {n_sh}"
+                f"provider {n_pr}  goal_loop {n_gl}  path_confine {n_pc}  shape {n_sh}  score {n_sc}"
             )
         if args.lean:
             try_lean()

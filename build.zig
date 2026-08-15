@@ -99,6 +99,7 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addAnonymousImport("spec_goal_loop", .{ .root_source_file = b.path("spec/kernels/goal_loop.json") });
     unit_tests.root_module.addAnonymousImport("spec_path_confine", .{ .root_source_file = b.path("spec/kernels/path_confine.json") });
     unit_tests.root_module.addAnonymousImport("spec_shape", .{ .root_source_file = b.path("spec/kernels/shape.json") });
+    unit_tests.root_module.addAnonymousImport("spec_score", .{ .root_source_file = b.path("spec/kernels/score.json") });
     const run_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);

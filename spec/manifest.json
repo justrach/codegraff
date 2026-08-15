@@ -65,7 +65,17 @@
       "fixture": "spec/kernels/shape.json",
       "zig": "src/spec_shape_conformance.zig",
       "impl": "src/escalation.zig:ladderRung+src/shapes.zig:classOf",
-      "cells_floor": 1152,
+      "cells_floor": 1728,
+      "cells_key": "cases"
+    },
+    {
+      "id": "score",
+      "lean": "lean-proofs/Graff/Score.lean",
+      "ref": "spec/ref/score.py",
+      "fixture": "spec/kernels/score.json",
+      "zig": "src/spec_score_conformance.zig",
+      "impl": "src/pipeline_score.zig:stageScore+src/route_policy.zig:roleOf+src/scoring.zig:normalizeOutboundScore",
+      "cells_floor": 1210,
       "cells_key": "cases"
     }
   ]

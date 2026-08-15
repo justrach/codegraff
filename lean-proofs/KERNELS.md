@@ -10,7 +10,8 @@ the reachable cells, (3) the Zig implementation matches the export.
 | `Provider` | live | 18 baked rows | live `/models` overlay, Kimi protocol flip |
 | `GoalLoop` | live | 360 gate cells; empty ≠ done; standing does not retire | model wording, whether the work is correct |
 | `PathConfine` | live | 16 lexical paths + 80 lease cells; yolo does not free a sub | OS errno, Windows drives |
-| `Shape` | live | 1152 ladder cells; explicit never below R2; audit beats bugfix | model wording, learned override, ε-explore |
+| `Shape` | live | 1728 ladder cells (derived budget); hand ladder + explicit arm only | `admit`, learned override, ε-explore, `observe` |
+| `Score` | live | 1210 filing cells; uncelled/all-fail never accrue; scale is `[0,1]` | HMAC, providerClass price fallback |
 | TUI, prompts, SSE bytes | never | — | eval / tier 2 |
 
 The discrete kernels we set out to write are all live. Next additions would

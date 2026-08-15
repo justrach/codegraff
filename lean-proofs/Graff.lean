@@ -4,3 +4,4 @@ import Graff.Provider
 import Graff.GoalLoop
 import Graff.PathConfine
 import Graff.Shape
+import Graff.Score

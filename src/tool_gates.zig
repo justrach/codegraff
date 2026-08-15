@@ -99,6 +99,7 @@ test { // the served catalogs' wire-compatibility guard (an unreferenced module'
     _ = @import("spec_goal_loop_conformance.zig");
     _ = @import("spec_path_confine_conformance.zig");
     _ = @import("spec_shape_conformance.zig");
+    _ = @import("spec_score_conformance.zig");
 }
 
 test "#352: an optional tool is advertised only while its flag is set; other names are unaffected" {
