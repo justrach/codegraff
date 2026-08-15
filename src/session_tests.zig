@@ -19,7 +19,11 @@ const session_writer = @import("session_writer.zig");
 // state is per-PROCESS. Every test that reaches saveSessionTo resets it, or the
 // digests it holds outlive the testing allocator that owns them.
 const session_transcript = @import("session_transcript.zig");
+const prompts = @import("prompts.zig");
+const protocol_seq = @import("protocol_seq.zig");
+const builtin = @import("builtin");
 const Agent = agent_mod.Agent;
+const util = @import("util.zig");
 
 test "todos round-trip: appendTodosFromValue parses content/status/epoch, skips junk (#318)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -364,4 +368,131 @@ test "cache_key round-trips: parsed on load, garbage and absence rejected" {
         \\{"cache_key":42}
     , .{});
     try std.testing.expect(session.cacheKeyFromSession(wrong_type.object) == null);
+}
+
+test "session context meter restores hidden delta and legacy sessions re-estimate" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const current = try std.json.parseFromSliceLeaky(Value, a, "{\"context_tokens\":90000,\"context_local_tokens\":20000}", .{});
+    try std.testing.expectEqual(@as(u64, 90_000), session.contextTokensFromSession(current.object));
+    try std.testing.expectEqual(@as(u64, 20_000), session.contextLocalTokensFromSession(current.object).?);
+    const legacy = try std.json.parseFromSliceLeaky(Value, a, "{}", .{});
+    try std.testing.expectEqual(@as(u64, 0), session.contextTokensFromSession(legacy.object));
+    try std.testing.expect(session.contextLocalTokensFromSession(legacy.object) == null);
+    const invalid = try std.json.parseFromSliceLeaky(Value, a, "{\"context_tokens\":-1}", .{});
+    try std.testing.expectEqual(@as(u64, 0), session.contextTokensFromSession(invalid.object));
+    const invalid_local = try std.json.parseFromSliceLeaky(Value, a, "{\"context_local_tokens\":-1}", .{});
+    try std.testing.expect(session.contextLocalTokensFromSession(invalid_local.object) == null);
+
+    // Model a resumed Responses history whose compact encrypted-reasoning handle
+    // serializes much smaller than the authoritative server token reading.
+    var msgs = std.json.Array.init(a);
+    const reasoning = "{\"type\":\"reasoning\",\"encrypted_content\":\"" ++ util.repeatBytes("x", 8192) ++ "\"}";
+    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, reasoning, .{}));
+    var root: Agent = undefined;
+    root.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100_000 };
+    root.messages = msgs;
+    root.sub = false;
+    root.strict = false;
+    root.sys_normal = "";
+    root.sys_strict = "";
+    root.tools_responses = "";
+    root.last_cache_read = 12_345;
+
+    const local_estimate = root.fullRequestEstimateTokens();
+    try std.testing.expect(local_estimate < 90_000);
+    session.restoreContextMeter(&root, session.contextTokensFromSession(current.object), session.contextLocalTokensFromSession(current.object));
+    try std.testing.expectEqual(local_estimate + 70_000, root.last_context_tokens);
+    try std.testing.expectEqual(@as(u64, 0), root.last_cache_read);
+    try std.testing.expect(root.last_context_tokens > local_estimate);
+
+    // A legitimate over-window reading remains evidence when its paired local
+    // estimate matches the current request.
+    session.restoreContextMeter(&root, 150_000, local_estimate);
+    try std.testing.expectEqual(@as(u64, 150_000), root.last_context_tokens);
+
+    // An unknown window still preserves the paired hidden delta; no clamping is
+    // needed or safe.
+    root.provider.context = 0;
+    session.restoreContextMeter(&root, 90_000, local_estimate);
+    try std.testing.expectEqual(root.fullRequestEstimateTokens() + (90_000 - local_estimate), root.last_context_tokens);
+    root.provider.context = 100_000;
+
+    // A legacy session has no saved meter, but non-empty restored history must
+    // still produce a live local reading rather than resetting to zero.
+    root.last_cache_read = 99;
+    session.restoreContextMeter(&root, session.contextTokensFromSession(legacy.object), session.contextLocalTokensFromSession(legacy.object));
+    try std.testing.expectEqual(local_estimate, root.last_context_tokens);
+    try std.testing.expectEqual(@as(u64, 0), root.last_cache_read);
+
+    // A meter from an intermediate build without the paired local component is
+    // also ungrounded and must not force destructive recovery after resume.
+    const unpaired = try std.json.parseFromSliceLeaky(Value, a, "{\"context_tokens\":99000}", .{});
+    session.restoreContextMeter(&root, session.contextTokensFromSession(unpaired.object), session.contextLocalTokensFromSession(unpaired.object));
+    try std.testing.expectEqual(local_estimate, root.last_context_tokens);
+}
+
+test "event_seq round-trips so a replacement graff continues the sequence (#330)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const saved = try std.json.parseFromSliceLeaky(Value, a, "{\"event_seq\":41}", .{});
+    try std.testing.expectEqual(@as(u64, 41), session.eventSeqFromSession(saved.object));
+    // Legacy sessions and corrupt values leave the live counter alone.
+    const legacy = try std.json.parseFromSliceLeaky(Value, a, "{}", .{});
+    try std.testing.expectEqual(@as(u64, 0), session.eventSeqFromSession(legacy.object));
+    const bad = try std.json.parseFromSliceLeaky(Value, a, "{\"event_seq\":-3}", .{});
+    try std.testing.expectEqual(@as(u64, 0), session.eventSeqFromSession(bad.object));
+
+    protocol_seq.resetForTest();
+    defer protocol_seq.resetForTest();
+    protocol_seq.restore(session.eventSeqFromSession(saved.object));
+    try std.testing.expectEqual(@as(u64, 42), protocol_seq.next()); // no id is ever reissued
+    protocol_seq.restore(session.eventSeqFromSession(legacy.object));
+    try std.testing.expectEqual(@as(u64, 43), protocol_seq.next());
+}
+
+test "#453: renameSession re-arms the transcript line to the live session file" {
+    if (builtin.os.tag == .windows) return;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    session_writer.resetForTest();
+    defer session_writer.resetForTest();
+    session_transcript.resetForTest();
+    defer session_transcript.resetForTest();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var orig_dir = try Io.Dir.cwd().openDir(io, ".", .{});
+    defer orig_dir.close(io);
+    defer _ = std.posix.system.fchdir(orig_dir.handle);
+    if (std.posix.system.fchdir(tmp.dir.handle) != 0) return error.ChdirFailed;
+
+    const f = try fixture(gpa, arena, io);
+    defer gpa.destroy(f);
+    f.root.session_name = "session-1234567890";
+    prompts.g_session_compacted = true;
+    defer {
+        prompts.g_session_compacted = false;
+        prompts.armSessionTranscript(arena, "", .{}, false);
+    }
+    prompts.armSessionTranscript(arena, f.root.session_name, .{ .local_tools = true }, true);
+    const before = prompts.transcriptNoteForTest();
+    try std.testing.expect(std.mem.indexOf(u8, before, "session-1234567890") != null);
+
+    session.renameSession(&f.root, arena, "hello-world");
+    try std.testing.expectEqualStrings("hello-world", f.root.session_name);
+    const after = prompts.transcriptNoteForTest();
+    try std.testing.expect(std.mem.indexOf(u8, after, "hello-world") != null);
+    try std.testing.expect(std.mem.indexOf(u8, after, "session-1234567890") == null);
+
+    try prompts.setSystemPrompts(&f.root, "BASE", arena);
+    try std.testing.expect(std.mem.indexOf(u8, f.root.sys_normal, "hello-world") != null);
+    try std.testing.expect(std.mem.indexOf(u8, f.root.sys_normal, "session-1234567890") == null);
 }

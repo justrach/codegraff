@@ -335,6 +335,18 @@ pub fn armSessionTranscript(arena: Allocator, session_name: []const u8, caps: Ca
     g_transcript_note = if (transcriptLineWanted(caps, compacted)) sessionTranscriptNote(arena, session_name) else "";
 }
 
+/// #453: rename deletes the old .session.json; refresh the armed line so it
+/// names the live file. No-op when the line was gated off.
+pub fn rearmAfterRename(arena: Allocator, session_name: []const u8) void {
+    if (g_transcript_note.len == 0) return;
+    g_transcript_note = sessionTranscriptNote(arena, session_name);
+}
+
+/// Test seam: the armed line, or "" when gated off.
+pub fn transcriptNoteForTest() []const u8 {
+    return g_transcript_note;
+}
+
 /// #445: the transcript line's gate, in one predicate, ANDing two conditions
 /// that are different in kind and neither of which is sufficient alone:
 ///
