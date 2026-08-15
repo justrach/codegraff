@@ -484,6 +484,19 @@ test "wrapToWidth splits a long line and keeps SGR" {
     }
 }
 
+test "visibleLen/wrapToWidth count CJK and emoji as two columns (#518)" {
+    try std.testing.expectEqual(@as(usize, 4), visibleLen("日本"));
+    try std.testing.expectEqual(@as(usize, 7), visibleLen("ab 🐉 c"));
+    try std.testing.expectEqualStrings("日", takeCols("日本", 3));
+    const got = try wrapToWidth(std.testing.allocator, "日本語のテキスト", 6);
+    defer std.testing.allocator.free(got);
+    try std.testing.expect(std.mem.count(u8, got, "\n") >= 1);
+    var it = std.mem.splitScalar(u8, got, '\n');
+    while (it.next()) |ln| {
+        try std.testing.expect(visibleLen(ln) <= 6);
+    }
+}
+
 test "visibleLen and takeCols treat OSC/APC as invisible" {
     try std.testing.expectEqual(@as(usize, 4), visibleLen("\x1b]8;;http://x\x07link\x1b]8;;\x07"));
     try std.testing.expectEqual(@as(usize, 2), visibleLen("\x1b_Ga=d,d=A\x1b\\ok"));

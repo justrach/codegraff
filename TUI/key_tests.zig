@@ -380,3 +380,23 @@ test "a plain CSI-u keypress clears a stale super latch — Backspace stays Back
     try std.testing.expectEqual(Key.backspace, next("\x7f", &i).?);
     key.held = 0;
 }
+
+test "typed text behind an Alt+] chord recovers instead of wedging (#516)" {
+    // CR proves it is not a reply: the introducer is swallowed as a chord
+    // and the sentence reparses as ordinary keys, Enter included.
+    var i: usize = 0;
+    const bytes = "\x1b]fix it\r";
+    try std.testing.expectEqual(Key.ignore, next(bytes, &i).?);
+    try std.testing.expectEqual(Key{ .char = 'f' }, next(bytes, &i).?);
+    var last: Key = .ignore;
+    while (next(bytes, &i)) |k| last = k;
+    try std.testing.expectEqual(Key.enter, last);
+    // Longer than any real reply — recover even without CR/LF.
+    var big: [140]u8 = undefined;
+    big[0] = 0x1b;
+    big[1] = 'P';
+    @memset(big[2..], 'a');
+    i = 0;
+    try std.testing.expectEqual(Key.ignore, next(&big, &i).?);
+    try std.testing.expectEqual(Key{ .char = 'a' }, next(&big, &i).?);
+}

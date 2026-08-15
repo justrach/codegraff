@@ -36,6 +36,7 @@ pub const RunOpts = struct {
     bash_fn: ?engine.BashFn = null,
     files_fn: ?engine.FilesFn = null,
     copy_fn: ?engine.CopyFn = null,
+    compact_fn: ?engine.CompactFn = null,
 };
 
 pub fn run(
@@ -54,6 +55,7 @@ pub fn run(
     engine.g_bash_fn = opts.bash_fn;
     engine.g_files_fn = opts.files_fn;
     engine.g_copy_fn = opts.copy_fn;
+    engine.g_compact_fn = opts.compact_fn;
     engine.g_model_name = opts.model_name;
     engine.g_models = opts.models;
     engine.g_cwd = opts.cwd;
@@ -138,26 +140,33 @@ pub fn run(
         if (!tty.poll(wait)) {
             if (pending_len > 0) {
                 esc_stall += 1;
-                if (esc_stall >= 2) {
-                    switch (stalledPending(inbuf[0..pending_len])) {
-                        .escape_key => if (keys.handle(&m, .escape) == .quit) {
-                            m.running = false;
-                        },
-                        // A sequence the terminal never finished. Delivering
-                        // Escape here cancelled the running turn on a
-                        // half-arrived mouse report; dropping it silently
-                        // leaves its tail to arrive alone on the next read, so
+                switch (stallVerdict(inbuf[0..pending_len], esc_stall)) {
+                    .wait => {},
+                    .escape_key => {
+                        if (keys.handle(&m, .escape) == .quit) m.running = false;
+                        pending_len = 0;
+                        esc_stall = 0;
+                    },
+                    .drop => {
+                        // A sequence the terminal never finished, waited out.
+                        // Its tail may still arrive alone on a later read —
                         // tell key.zig to expect orphan debris there.
-                        .truncated_sequence => key_mod.orphan_armed = true,
-                        .discard => {},
-                    }
-                    pending_len = 0;
-                    esc_stall = 0;
+                        key_mod.orphan_armed = true;
+                        pending_len = 0;
+                        esc_stall = 0;
+                    },
                 }
             }
             continue;
         }
         esc_stall = 0;
+        if (pending_len == inbuf.len) {
+            // A stuck head has filled the whole buffer: that is a parser
+            // wedge, not a dead tty. Drop it rather than letting the
+            // zero-length read below masquerade as a hangup and kill the
+            // TUI mid-session (#517).
+            pending_len = 0;
+        }
         const got = tty.readStdin(inbuf[pending_len..]);
         if (got > 0) traj.note(io, m.now_ms, inbuf[pending_len .. pending_len + got]);
         if (got == 0) {
@@ -199,18 +208,18 @@ pub fn run(
     }
 }
 
-/// What to do with bytes still pending after the input stalled (#94). A LONE
-/// ESC that nothing followed is the Escape KEY. Anything longer is a real
-/// escape sequence the terminal never finished — a half-arrived SGR mouse
-/// report under 1003 hover tracking is the common one, and reading it as
-/// Escape cancelled the user's running turn while its tail leaked into the
-/// composer as `39;7;32M`-shaped text on the next read.
-pub const StallAction = enum { escape_key, truncated_sequence, discard };
+/// What to do with input bytes stuck mid-sequence after quiet polls (~25ms
+/// each). Exactly one pending ESC byte is the Escape key after the #94 grace.
+/// A longer prefix is a truncated CSI/OSC split by link latency (ssh/tmux):
+/// delivering Escape cancelled live turns and typing the late tail sprayed
+/// "2;39M"-style debris into the transcript — wait for the tail instead, and
+/// only silently drop once it is clearly never coming.
+pub const StallVerdict = enum { wait, escape_key, drop };
 
-pub fn stalledPending(pending: []const u8) StallAction {
-    if (pending.len == 0) return .discard;
-    if (pending[0] != 0x1b) return .truncated_sequence;
-    return if (pending.len == 1) .escape_key else .truncated_sequence;
+pub fn stallVerdict(pending: []const u8, stalls: u8) StallVerdict {
+    if (pending.len == 0) return .wait;
+    if (pending.len == 1 and pending[0] == 0x1b) return if (stalls >= 2) .escape_key else .wait;
+    return if (stalls >= 20) .drop else .wait;
 }
 
 fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
@@ -317,6 +326,24 @@ test "run loop enables click+hover tracking and bracketed paste" {
     try std.testing.expect(std.mem.indexOf(u8, src, &kitty_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &wrap_off) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "a=d,d=A") != null);
+    // #517: a buffer-filling parser wedge must be cleared before the read,
+    // or the zero-length read reads as a hangup and kills the TUI.
+    try std.testing.expect(std.mem.indexOf(u8, src, "pending_len == inbuf.len") != null);
+}
+
+test "a truncated CSI never becomes Escape or typed debris; a lone ESC still does (#94)" {
+    try std.testing.expectEqual(StallVerdict.wait, stallVerdict("\x1b", 1));
+    try std.testing.expectEqual(StallVerdict.escape_key, stallVerdict("\x1b", 2));
+    // Split SGR mouse / kitty CSI-u: never Escape, wait for the tail...
+    try std.testing.expectEqual(StallVerdict.wait, stallVerdict("\x1b[<65;2;3", 2));
+    try std.testing.expectEqual(StallVerdict.wait, stallVerdict("\x1b[5744", 19));
+    // ...and silently drop once it is clearly lost, so it is never typed.
+    try std.testing.expectEqual(StallVerdict.drop, stallVerdict("\x1b[<65;2;3", 20));
+    // Half-arrived shapes from 1003 hover tracking — never the Escape key.
+    try std.testing.expectEqual(StallVerdict.drop, stallVerdict("\x1b[", 20));
+    try std.testing.expectEqual(StallVerdict.drop, stallVerdict("\x1bO", 20));
+    try std.testing.expectEqual(StallVerdict.drop, stallVerdict("39;7", 20));
+    try std.testing.expectEqual(StallVerdict.wait, stallVerdict("", 5));
 }
 
 fn paintToBuf(a: std.mem.Allocator, frame: []const u8, rows: usize, cols: usize, prev: []const u8) ![]u8 {
@@ -350,20 +377,6 @@ test "paint erases a row whose glyphs are ambiguous width" {
     const out = try paintToBuf(a, frame, 1, 21, "RESIDUE RESIDUE RESIDU");
     defer a.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[K") != null);
-}
-
-test "stalled pending: only a LONE ESC is the Escape key" {
-    // #94: a bare ESC nothing followed is the Escape keypress.
-    try std.testing.expectEqual(StallAction.escape_key, stalledPending("\x1b"));
-    // A half-arrived SGR mouse report under 1003 hover tracking. Reading these
-    // as Escape cancelled the running turn, and dropping them silently left
-    // `39;7;32M`-shaped debris to land alone on the next read.
-    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("\x1b["));
-    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("\x1b[<"));
-    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("\x1b[<39;7"));
-    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("\x1bO"));
-    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("39;7"));
-    try std.testing.expectEqual(StallAction.discard, stalledPending(""));
 }
 
 test "rowChanged only flags the line that actually moved" {

@@ -203,21 +203,19 @@ fn summary(self: *const Model, a: std.mem.Allocator, start: usize, end: usize, s
         if (isSearch(t)) searches += 1 else calls += 1;
     }
     const sel: []const u8 = if (selected) "› " else "  ";
-    const live = if (self.pending != null and !self.cancel_requested)
-        try std.fmt.allocPrint(a, "{s}❙{s} ", .{ if (flickerOn(self.now_ms)) th.accent else th.muted, theme_mod.reset })
-    else
-        "";
+    // No live bar here: liveness belongs to the pending row alone. A bar on
+    // every summary made the whole transcript pulse and shift while thinking.
     var out = std.array_list.Managed(u8).init(a);
     if (calls > 0) {
         const label = if (mcp_n == calls + searches)
-            try std.fmt.allocPrint(a, "{s}{s}◆ Called {d} MCP tool{s}", .{ sel, live, calls, if (calls == 1) "" else "s" })
+            try std.fmt.allocPrint(a, "{s}◆ Called {d} MCP tool{s}", .{ sel, calls, if (calls == 1) "" else "s" })
         else
-            try std.fmt.allocPrint(a, "{s}{s}◆ Called {d} tool{s}", .{ sel, live, calls, if (calls == 1) "" else "s" });
+            try std.fmt.allocPrint(a, "{s}◆ Called {d} tool{s}", .{ sel, calls, if (calls == 1) "" else "s" });
         try out.appendSlice(try theme_mod.paint(a, if (selected) th.accent else th.muted, label));
     }
     if (searches > 0) {
         if (out.items.len > 0) try out.append('\n');
-        const label = try std.fmt.allocPrint(a, "{s}{s}◆ Searched {d} MCP tool{s}", .{ sel, live, searches, if (searches == 1) "" else "s" });
+        const label = try std.fmt.allocPrint(a, "{s}◆ Searched {d} MCP tool{s}", .{ sel, searches, if (searches == 1) "" else "s" });
         try out.appendSlice(try theme_mod.paint(a, if (selected) th.accent else th.muted, label));
     }
     return out.items;
@@ -258,8 +256,8 @@ fn row(self: *const Model, a: std.mem.Allocator, idx: usize, e: app.Entry, width
         return theme_mod.wrapToWidth(a, line, width);
     }
     if (e.kind == .pending) {
-        const fg = if (flickerOn(now_ms)) th.accent else th.muted;
-        const line = try std.fmt.allocPrint(a, "{s}{s}❙{s}{s} {s}{s}", .{ sel, fg, theme_mod.reset, th.muted, body, theme_mod.reset });
+        // Steady accent bar (no flicker); the animated dots carry the motion.
+        const line = try std.fmt.allocPrint(a, "{s}{s}❙{s}{s} {s}{s}", .{ sel, th.accent, theme_mod.reset, th.muted, body, theme_mod.reset });
         return theme_mod.wrapToWidth(a, line, width);
     }
     const body_fg = if (e.kind == .err) th.error_fg else th.text;
@@ -355,10 +353,6 @@ fn toolCard(a: std.mem.Allocator, th: theme_mod.Theme, start_text: []const u8, d
     return joined;
 }
 
-fn flickerOn(now_ms: u64) bool {
-    return (now_ms / 140) % 2 == 0;
-}
-
 fn thinkingGlyph(now_ms: u64) []const u8 {
     _ = now_ms;
     return "❙";
@@ -414,7 +408,42 @@ test "thinking animation is Grok ❙ flicker plus static Thinking" {
     try std.testing.expectEqualStrings("Thinking", thinkingLabel(0));
     try std.testing.expectEqualStrings(thinkingLabel(0), thinkingLabel(320));
     try std.testing.expectEqualStrings("❙", thinkingGlyph(0));
-    try std.testing.expect(flickerOn(0) != flickerOn(140));
+}
+
+test "a live turn never pulses or shifts historical rows" {
+    const engine = @import("engine.zig");
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.push(.user, "hi");
+    try m.push(.tool, "⚙ bash");
+    try m.push(.tool, "✓ bash");
+    try m.push(.assistant, "done");
+    try m.push(.pending, "");
+    var sbuf: [16]u8 = undefined;
+    var none: [0]engine.Turn = .{};
+    var job: engine.Job = .{
+        .gpa = std.testing.allocator,
+        .history = &none,
+        .params = .{},
+        .stream = .{ .buf = &sbuf },
+    };
+    m.pending = &job;
+    defer m.pending = null;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const t0 = try render(&m, arena.allocator(), 80, 0);
+    const t140 = try render(&m, arena.allocator(), 80, 140);
+    var it = std.mem.splitScalar(u8, t0, '\n');
+    var saw_summary = false;
+    while (it.next()) |ln| {
+        if (std.mem.indexOf(u8, ln, "Called") != null) {
+            saw_summary = true;
+            try std.testing.expect(std.mem.indexOf(u8, ln, "❙") == null);
+        }
+    }
+    try std.testing.expect(saw_summary);
+    try std.testing.expectEqualStrings(t0, t140);
 }
 
 test "prettyTool strips mcp prefix" {

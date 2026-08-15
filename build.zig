@@ -91,6 +91,14 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addOptions("build_options", opts);
     unit_tests.root_module.addImport("zigzag", zigzag.module("zigzag"));
     unit_tests.root_module.addImport("tui", tui_mod);
+    // spec/ fixtures live outside src/; importing them here makes @embedFile
+    // legal and rebuilds the suite when the exported semantics change.
+    unit_tests.root_module.addAnonymousImport("spec_tool_catalog", .{ .root_source_file = b.path("spec/kernels/tool_catalog.json") });
+    unit_tests.root_module.addAnonymousImport("spec_transport", .{ .root_source_file = b.path("spec/kernels/transport.json") });
+    unit_tests.root_module.addAnonymousImport("spec_providers", .{ .root_source_file = b.path("spec/kernels/providers.json") });
+    unit_tests.root_module.addAnonymousImport("spec_goal_loop", .{ .root_source_file = b.path("spec/kernels/goal_loop.json") });
+    unit_tests.root_module.addAnonymousImport("spec_path_confine", .{ .root_source_file = b.path("spec/kernels/path_confine.json") });
+    unit_tests.root_module.addAnonymousImport("spec_shape", .{ .root_source_file = b.path("spec/kernels/shape.json") });
     const run_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);

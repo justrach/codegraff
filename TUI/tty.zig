@@ -14,6 +14,8 @@ pub fn enterRaw() ?RawState {
     raw.lflag.ICANON = false;
     raw.lflag.ECHO = false;
     raw.lflag.ISIG = false;
+    raw.lflag.IEXTEN = false; // ^V (0x16) reaches us, not the tty's lnext (#523)
+    raw.iflag.IXON = false; // ^S/^Q are keys, not XOFF/XON flow control (#523)
     raw.cc[@intFromEnum(std.posix.V.MIN)] = 0;
     raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
     std.posix.tcsetattr(fd, .NOW, raw) catch return null;
@@ -35,6 +37,12 @@ pub fn poll(timeout_ms: i32) bool {
 pub fn readStdin(buf: []u8) usize {
     if (builtin.os.tag == .windows) return 0;
     return std.posix.read(std.posix.STDIN_FILENO, buf) catch 0;
+}
+
+test "raw mode surrenders ^V and ^S to the app, not the line discipline (#523)" {
+    const src = @embedFile("tty.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "IEXTEN = false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "IXON = false") != null);
 }
 
 pub fn cols() usize {
