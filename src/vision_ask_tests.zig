@@ -421,3 +421,81 @@ test "#471 the #291 ladder descent is not a human pin, so a tier ask still reach
     const free = va.forSpawn(deepseek(), obj(a, "{\"tier\":\"small\"}"), false, .{}, "extract the imports");
     try std.testing.expectEqual(pin_mod.Outcome.sub_routed, free.pin.outcome);
 }
+
+test "#385: appendTask stages a named png onto a grok-4.6 worker message" {
+    const testing = std.testing;
+    const io = testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const png = [_]u8{
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+        0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00,
+        0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+        0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xdd, 0x8d, 0xb0, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    };
+    const path = "TUI/testdata-vision-ask-1x1.png";
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = &png });
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+
+    const Agent = @import("agent.zig").Agent;
+    var dummy_client: std.http.Client = undefined;
+    var agent: Agent = .{
+        .gpa = testing.allocator,
+        .arena = arena,
+        .io = io,
+        .client = &dummy_client,
+        .provider = .{
+            .id = "xai",
+            .kind = .openai,
+            .auth = .bearer,
+            .url = "",
+            .api_key = "",
+            .model = "grok-4.6",
+            .context = 500_000,
+        },
+        .messages = std.json.Array.init(arena),
+        .sub = true,
+        .label = "vision",
+        .out = null,
+    };
+    const brief = try std.fmt.allocPrint(arena, "extract the palette from {s}", .{path});
+    try va.appendTask(&agent, brief, brief);
+    try testing.expectEqual(@as(usize, 1), agent.messages.items.len);
+    const content = agent.messages.items[0].object.get("content").?;
+    try testing.expect(content == .array);
+    try testing.expectEqual(@as(usize, 2), content.array.items.len);
+    try testing.expectEqualStrings("image_url", content.array.items[1].object.get("type").?.string);
+}
+
+test "#385: a missing path stays text so a worker brief is not dropped" {
+    const testing = std.testing;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const Agent = @import("agent.zig").Agent;
+    var dummy_client: std.http.Client = undefined;
+    var agent: Agent = .{
+        .gpa = testing.allocator,
+        .arena = arena,
+        .io = testing.io,
+        .client = &dummy_client,
+        .provider = .{
+            .id = "xai",
+            .kind = .openai,
+            .auth = .bearer,
+            .url = "",
+            .api_key = "",
+            .model = "grok-4.6",
+            .context = 500_000,
+        },
+        .messages = std.json.Array.init(arena),
+        .sub = true,
+        .label = "vision",
+        .out = null,
+    };
+    try va.appendTask(&agent, "look at /no/such/shot.png", "look at /no/such/shot.png");
+    try testing.expect(agent.messages.items[0].object.get("content").? == .string);
+}

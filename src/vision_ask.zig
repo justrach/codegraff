@@ -50,7 +50,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const Provider = @import("provider.zig").Provider;
+const Agent = @import("agent.zig").Agent;
 const vision = @import("vision.zig");
+const textMessage = @import("messages.zig").textMessage;
 const pricing = @import("pricing.zig");
 const bench_priors = @import("bench_priors.zig");
 const selection = @import("subagent_selection.zig");
@@ -139,6 +141,21 @@ pub fn imagePathIn(text: []const u8) ?[]const u8 {
         return token;
     }
     return null;
+}
+
+/// Stage a local image named in `source_text` onto the worker's first
+/// message. Missing files and non-vision seats stay text-only (#385).
+pub fn appendTask(agent: *Agent, task_prompt: []const u8, source_text: []const u8) !void {
+    if (imagePathIn(source_text)) |path| {
+        if (vision.stageImagePath(agent, path).isOk()) {
+            if (agent.pending_image) |img| {
+                try agent.messages.append(try vision.imageMessage(agent.arena, agent.provider.kind, task_prompt, img));
+                agent.pending_image = null;
+                return;
+            }
+        }
+    }
+    try agent.messages.append(try textMessage(agent.arena, "user", task_prompt));
 }
 
 // ── The spawn-time decision ────────────────────────────────────────────────

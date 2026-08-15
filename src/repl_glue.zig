@@ -28,8 +28,7 @@ const mcp = @import("mcp.zig");
 const repl = @import("repl.zig");
 const approvals_mod = @import("approvals.zig");
 const Approvals = approvals_mod.Approvals;
-const messages_mod = @import("messages.zig");
-const textMessage = messages_mod.textMessage;
+const repl_vision = @import("repl_vision.zig");
 const pricing = @import("pricing.zig");
 const providers = @import("providers.zig");
 const trace = @import("trace.zig");
@@ -365,7 +364,7 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
             .user => "user",
             .assistant => "assistant",
         };
-        agent.messages.append(textMessage(arena, role, t.text) catch return null) catch return null;
+        repl_vision.appendTurn(&agent, role, t.text) catch return null;
     }
     defer {
         c.provider = agent.provider;

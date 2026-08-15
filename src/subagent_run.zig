@@ -25,7 +25,7 @@ const learning_privacy = @import("learning_privacy.zig");
 const jobs = @import("jobs.zig");
 const cards = @import("cards.zig");
 const trace = @import("trace.zig");
-const textMessage = @import("messages.zig").textMessage;
+const vision_ask = @import("vision_ask.zig");
 const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
 const subagent_retry = @import("subagent_retry.zig"); // bounded in-worker re-ask: the failover the root has and a worker did not
 
@@ -345,7 +345,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     // never a copy held in the parent's conversation, which is exactly why a
     // compacted (or brand-new) session still carries the user's "no"s.
     const task_prompt = playbook.rideBrief(ctx.io, arena, try goal_pacing.childTaskPrompt(arena, prompt, ctx.loop_deadline_ms, util.unixMs(ctx.io)));
-    try agent.messages.append(try textMessage(arena, "user", task_prompt));
+    try vision_ask.appendTask(&agent, task_prompt, prompt);
     defer agent.tools_used.deinit(gpa);
     // Bounded in-worker re-ask. The ROOT has failover (runTurnWithFallback);
     // a worker had one shot, so a single flaky response cost a whole report
