@@ -231,8 +231,6 @@ fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
     return .stay;
 }
 
-
-
 fn slashOpen(self: *const Model) bool {
     const v = self.input.getValue();
     return self.focus == .prompt and v.len > 0 and v[0] == '/';

@@ -46,19 +46,18 @@ const watchdogError = http.watchdogError;
 const signal = @import("agent_ws_signal.zig");
 pub const frameHasOutputText = signal.frameHasOutputText;
 pub const TokenSignal = signal.TokenSignal;
-
 const isStreamEnd = @import("agent_stream.zig").isStreamEnd;
-
 const escPressed = Agent.escPressed;
 const rawNonblockStdin = Agent.rawNonblockStdin;
 const drainSteerStdin = Agent.drainSteerStdin;
 
-/// Codex ws applies to root Responses turns when enabled and not already fallen
-/// back this session. Subagents/quiet turns keep the non-streaming SSE path.
+/// WS applies to root Responses turns when enabled and not already fallen back
+/// this session; subagents/quiet turns keep SSE. Only providers with a real WS
+/// endpoint qualify — Platform OpenAI is Responses-kind but has no WS server.
 pub fn wsEligible(self: *Agent) bool {
-    return main_mod.g_codex_ws and !self.ws_off and !self.sub and
-        self.provider.kind == .responses and std.mem.eql(u8, self.provider.id, "codex") and
-        self.out != null and !self.stream_quiet;
+    const has_ws = std.mem.eql(u8, self.provider.id, "codex") or std.mem.eql(u8, self.provider.id, "xai");
+    return main_mod.g_codex_ws and !self.ws_off and !self.sub and has_ws and
+        self.provider.kind == .responses and self.out != null and !self.stream_quiet;
 }
 
 /// (#codex-ws) Client-side idle limit on the held codex WS, opencode's

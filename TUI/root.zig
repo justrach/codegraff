@@ -34,6 +34,7 @@ test {
     _ = app;
     _ = @import("dispatch.zig");
     _ = @import("key.zig");
+    _ = @import("key_tests.zig");
     _ = @import("input.zig");
     _ = @import("keys.zig");
     _ = @import("nav.zig");
