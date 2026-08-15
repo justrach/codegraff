@@ -337,9 +337,11 @@ pub fn armSessionTranscript(arena: Allocator, session_name: []const u8, caps: Ca
 
 /// #453: rename deletes the old .session.json; refresh the armed line so it
 /// names the live file. No-op when the line was gated off.
-pub fn rearmAfterRename(arena: Allocator, session_name: []const u8) void {
+pub fn rearmAfterRename(agent: *Agent, arena: Allocator) void {
     if (g_transcript_note.len == 0) return;
-    g_transcript_note = sessionTranscriptNote(arena, session_name);
+    g_transcript_note = sessionTranscriptNote(arena, agent.session_name);
+    if (agent.sys_base.len == 0) return;
+    setSystemPrompts(agent, agent.sys_base, arena) catch {};
 }
 
 /// Test seam: the armed line, or "" when gated off.

@@ -89,7 +89,7 @@ pub fn renameSession(root: *Agent, arena: Allocator, slug: []const u8) void {
     root.session_name = arena.dupe(u8, name) catch return;
     saveSession(root, arena, root.session_name) catch {};
     if (sessionPath(arena, old_name)) |op| (Io.Dir.cwd().deleteFile(root.io, op) catch {}) else |_| {}
-    prompts.rearmAfterRename(arena, root.session_name);
+    prompts.rearmAfterRename(root, arena);
 }
 
 pub fn sessionTitle(root: *Agent) []const u8 {

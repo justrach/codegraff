@@ -483,16 +483,16 @@ test "#453: renameSession re-arms the transcript line to the live session file" 
         prompts.armSessionTranscript(arena, "", .{}, false);
     }
     prompts.armSessionTranscript(arena, f.root.session_name, .{ .local_tools = true }, true);
-    const before = prompts.transcriptNoteForTest();
-    try std.testing.expect(std.mem.indexOf(u8, before, "session-1234567890") != null);
+    try prompts.setSystemPrompts(&f.root, "BASE", arena);
+    try std.testing.expect(std.mem.indexOf(u8, f.root.sys_normal, "session-1234567890") != null);
 
     session.renameSession(&f.root, arena, "hello-world");
     try std.testing.expectEqualStrings("hello-world", f.root.session_name);
     const after = prompts.transcriptNoteForTest();
     try std.testing.expect(std.mem.indexOf(u8, after, "hello-world") != null);
     try std.testing.expect(std.mem.indexOf(u8, after, "session-1234567890") == null);
-
-    try prompts.setSystemPrompts(&f.root, "BASE", arena);
+    // Production apply() never calls setSystemPrompts after renameSession.
+    // sys_normal must already name the live file.
     try std.testing.expect(std.mem.indexOf(u8, f.root.sys_normal, "hello-world") != null);
     try std.testing.expect(std.mem.indexOf(u8, f.root.sys_normal, "session-1234567890") == null);
 }
