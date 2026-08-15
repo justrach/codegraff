@@ -188,6 +188,12 @@ fn collapseWs(s: []const u8) []const u8 {
     return std.mem.trimEnd(u8, S.buf[0..n], " ");
 }
 
+/// Prepend an ignored-pin line to the caller-visible tool result (#470).
+pub fn withPinNote(gpa: Allocator, text: []const u8, pin_note: []const u8) ![]u8 {
+    if (pin_note.len == 0) return gpa.dupe(u8, text);
+    return std.fmt.allocPrint(gpa, "{s}\n\n{s}", .{ pin_note, text });
+}
+
 /// Persist a subagent's final report + metadata under .graff/subagents/<id>.md
 /// and return the relative path (arena-owned) for the inspect: link, or null
 /// if the write failed (best-effort — never blocks the run).
@@ -202,6 +208,7 @@ pub fn writeSubagentDetail(
     ok: bool,
     run_ms: i64,
     tools: []const u8,
+    pin_note: []const u8,
 ) ?[]const u8 {
     Io.Dir.cwd().createDir(io, ".graff", .default_dir) catch {}; // exists is fine
     Io.Dir.cwd().createDir(io, subagents_dir, .default_dir) catch {};
@@ -214,6 +221,7 @@ pub fn writeSubagentDetail(
     w.print("- status: {s}\n", .{if (ok) "ok" else "failed"}) catch return null;
     w.print("- elapsed_ms: {d}\n", .{run_ms}) catch return null;
     w.print("- tools: {s}\n", .{if (tools.len > 0) tools else "(none)"}) catch return null;
+    if (pin_note.len > 0) w.print("- pin: {s}\n", .{pin_note}) catch return null;
     w.writeAll("\n## task\n\n") catch return null;
     w.writeAll(prompt) catch return null;
     w.writeAll("\n\n## report\n\n") catch return null;
@@ -247,4 +255,32 @@ test "collapseWs flattens newlines/tabs to single spaces (#51)" {
     try std.testing.expectEqualStrings("hello world", collapseWs("  hello   world  ")); // trimmed + interior run collapsed
     try std.testing.expectEqualStrings("line one line two", collapseWs("line one\n\nline two"));
     try std.testing.expectEqualStrings("a b", collapseWs("a\t \n b\n"));
+}
+
+test "#470: withPinNote and writeSubagentDetail carry Outcome.describe verbatim" {
+    const testing = std.testing;
+    const io = testing.io;
+    const gpa = testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const note = @import("subagent_pin.zig").Outcome.unknown_model.describe();
+
+    const prefixed = try withPinNote(gpa, "worker report", note);
+    defer gpa.free(prefixed);
+    try testing.expect(std.mem.indexOf(u8, prefixed, note) != null);
+    try testing.expect(std.mem.endsWith(u8, prefixed, "worker report"));
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var orig_dir = try Io.Dir.cwd().openDir(io, ".", .{});
+    defer orig_dir.close(io);
+    defer _ = std.posix.system.fchdir(orig_dir.handle);
+    if (std.posix.system.fchdir(tmp.dir.handle) != 0) return error.ChdirFailed;
+
+    const path = writeSubagentDetail(io, arena, "sa-001-abcd", "review", "subagent", "look", "ok", true, 10, "read_file", note) orelse return error.DetailWriteFailed;
+    const body = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(16 * 1024));
+    defer gpa.free(body);
+    try testing.expect(std.mem.indexOf(u8, body, note) != null);
+    try testing.expect(std.mem.indexOf(u8, body, "- pin: ") != null);
 }

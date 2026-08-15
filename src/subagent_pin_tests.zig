@@ -548,3 +548,15 @@ test "effort pin: off-vocabulary (incl. ultra) is reported and never guessed" {
     try std.testing.expect(pin_mod.parseEffort("ultra") == null);
     try std.testing.expect(pin_mod.parseEffort("") == null);
 }
+
+test "#470: forSpawn ignoredNote is Outcome.describe, not a new string" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const got = pin_mod.forSpawn(codexBase(), obj(a, "{\"model\":\"not-a-real-model\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.unknown_model, got.outcome);
+    try std.testing.expectEqualStrings(pin_mod.Outcome.unknown_model.describe(), got.ignoredNote());
+    try std.testing.expect(got.ignoredNote().len > 0);
+    const honoured = pin_mod.Resolved{ .outcome = .pinned };
+    try std.testing.expectEqualStrings("", honoured.ignoredNote());
+}

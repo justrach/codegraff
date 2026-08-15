@@ -336,10 +336,10 @@ test "#372/#376 firewall: a phase task takes the PHASE's seat, and still no per-
     const src = @embedFile("subagent.zig");
     const wf = std.mem.indexOf(u8, src, "pub fn workflowTask(").?;
     const wf_end = std.mem.indexOf(u8, src[wf..], "\n}").?;
-    try std.testing.expect(std.mem.indexOf(u8, src[wf .. wf + wf_end], "isolation_fallback, seat, null)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src[wf .. wf + wf_end], "isolation_fallback, seat, null, \"\")") != null);
     const rt = std.mem.indexOf(u8, src, "pub fn workflowRetryTask(").?;
     const rt_end = std.mem.indexOf(u8, src[rt..], "\n}").?;
-    try std.testing.expect(std.mem.indexOf(u8, src[rt .. rt + rt_end], "isolation_fallback, seat, null)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src[rt .. rt + rt_end], "isolation_fallback, seat, null, \"\")") != null);
     // `seat` is a parameter of both, never derived from the task's own fields.
     try std.testing.expect(std.mem.indexOf(u8, src[wf .. wf + wf_end], "isolation_fallback: bool, seat: ?Provider)") != null);
     try std.testing.expect(std.mem.indexOf(u8, src[rt .. rt + rt_end], "isolation_fallback: bool, seat: ?Provider)") != null);

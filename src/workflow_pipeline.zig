@@ -119,7 +119,7 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec, stat
         // Counters only — the fitness fold happens per STAGE after run()'s
         // join (#296), never here where it would be a per-item row (#290).
         stat.noteAttempt();
-        var out = if (runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, st.seat.pin, null)) |r| r.output else |e| failure(gpa, e);
+        var out = if (runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, st.seat.pin, null, "")) |r| r.output else |e| failure(gpa, e);
         if (out.is_error) {
             // Only spend the one retry (#2) when the harness's own
             // classification hasn't already ruled it out (auth, invalid
@@ -129,7 +129,7 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec, stat
                 gpa.free(out.text);
                 // The SAME seat: a retry that changed model would break the
                 // stage uniformity the fitness row attributes to.
-                out = if (runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, st.seat.pin, null)) |r| r.output else |e| failure(gpa, e);
+                out = if (runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, st.seat.pin, null, "")) |r| r.output else |e| failure(gpa, e);
             }
             if (out.is_error) {
                 // #248 — excerpt the stage's own error BEFORE freeing it, so

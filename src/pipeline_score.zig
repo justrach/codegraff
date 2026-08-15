@@ -182,5 +182,5 @@ test "#296/#290 firewall: capture is per STAGE after the join, and every item ru
     const seat_at = std.mem.indexOf(u8, src, "sp.seat = route_phase.forPhase(").?;
     try std.testing.expect(seat_at < std.mem.indexOf(u8, src, "ctx.io.async(pipelineChain").?);
     // Both spawn attempts — first try and retry — receive that seat verbatim.
-    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, src, "st.isolation_fallback, st.seat.pin, null)"));
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, src, "st.isolation_fallback, st.seat.pin, null, \"\")"));
 }

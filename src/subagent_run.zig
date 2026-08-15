@@ -248,7 +248,7 @@ pub const SubRun = struct { output: ToolOutput, usage: AgentUsage };
 /// `effort` is the same story on the reasoning axis (#292 follow-up):
 /// forSpawn's resolved per-spawn/per-persona depth; null keeps the worker
 /// default (medium — a child never inherits the root's /effort implicitly).
-pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, pin: ?Provider, effort: ?main_mod.ReasoningEffort) !SubRun {
+pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, pin: ?Provider, effort: ?main_mod.ReasoningEffort, pin_note: []const u8) !SubRun {
     const gpa = ctx.gpa;
     if (ctx.run_budget) |budget| if (ctx.depth >= budget.max_depth) return .{
         .output = .{
@@ -426,7 +426,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     // this worker was ACTUALLY sent, so it has to show the deadline note and
     // the #381 constraint block too. Reading a report against the raw prompt
     // is how "the subagent ignored my instruction" becomes unfalsifiable.
-    const detail = cards.writeSubagentDetail(ctx.io, arena, sub_id, label, kind, task_prompt, report_body, !empty, run_ms, used_tools);
+    const detail = cards.writeSubagentDetail(ctx.io, arena, sub_id, label, kind, task_prompt, report_body, !empty, run_ms, used_tools, pin_note);
     cards.subagentDoneCard(arena, sub_id, sprite, label, !empty, run_ms, used_tools, detail);
 
     var extra: []const u8 = isolation_note;
@@ -441,14 +441,14 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     defer if (extra_owned) gpa.free(extra);
 
     if (empty) return .{
-        .output = .{ .text = try std.fmt.allocPrint(gpa, "{s}{s}", .{ report_body, extra }), .is_error = true },
+        .output = .{ .text = try cards.withPinNote(gpa, try std.fmt.allocPrint(gpa, "{s}{s}", .{ report_body, extra }), pin_note), .is_error = true },
         .usage = usage,
     };
     if (detail) |p| return .{
-        .output = .{ .text = try std.fmt.allocPrint(gpa, "{s}\n\n[subagent {s} · inspect: {s}]{s}", .{ text, sub_id, p, extra }) },
+        .output = .{ .text = try cards.withPinNote(gpa, try std.fmt.allocPrint(gpa, "{s}\n\n[subagent {s} · inspect: {s}]{s}", .{ text, sub_id, p, extra }), pin_note) },
         .usage = usage,
     };
-    return .{ .output = .{ .text = try std.fmt.allocPrint(gpa, "{s}{s}", .{ text, extra }) }, .usage = usage };
+    return .{ .output = .{ .text = try cards.withPinNote(gpa, try std.fmt.allocPrint(gpa, "{s}{s}", .{ text, extra }), pin_note) }, .usage = usage };
 }
 
 test "child model pin crosses the current root provider only with consent" {

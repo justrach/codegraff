@@ -76,7 +76,7 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     const ask = vision_ask.seat(ctx, base, obj, cell, label, prompt, sys_override, niche);
     if (ask.blocked) return .{ .text = try vision_ask.blockMessage(ctx.gpa, ask), .is_error = true };
     if (tools.json_args.flag(input, "run_in_background")) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback, ask.pin.provider, ask.pin.effort, ask);
-    const run = try runSub(ctx, "subagent", label, prompt, sys_override, niche, isolation, isolation_fallback, ask.pin.provider, ask.pin.effort);
+    const run = try runSub(ctx, "subagent", label, prompt, sys_override, niche, isolation, isolation_fallback, ask.pin.provider, ask.pin.effort, ask.pin.ignoredNote());
     return vision_ask.flagReport(ctx.gpa, run.output, ask);
 }
 
@@ -210,7 +210,7 @@ fn admitNext(gpa: Allocator, io: Io) void {
 /// shape in jobs.zig.
 fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
     const t0: Io.Timestamp = .now(io, .awake);
-    const run = runSub(job.ctx, "subagent", job.label, job.prompt, job.sys_override, job.niche, job.isolation, job.isolation_fallback, job.pin, job.effort) catch |err| SubRun{
+    const run = runSub(job.ctx, "subagent", job.label, job.prompt, job.sys_override, job.niche, job.isolation, job.isolation_fallback, job.pin, job.effort, job.ask.pin.ignoredNote()) catch |err| SubRun{
         .output = failure(gpa, err),
         .usage = .{ .duration_ms = @intCast(@max(0, t0.untilNow(io, .awake).toMilliseconds())) },
     };
@@ -409,7 +409,7 @@ pub fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_ove
     // `seat` is the PHASE's one model (route_phase.forPhase, resolved once and
     // handed to every task alike), never a per-task pin: the variants still
     // share one configuration (#290). The effort axis stays unpinned.
-    const run = runSub(ctx, "workflow_task", label, prompt, sys_override, niche, isolation, isolation_fallback, seat, null) catch |err| return failure(ctx.gpa, err);
+    const run = runSub(ctx, "workflow_task", label, prompt, sys_override, niche, isolation, isolation_fallback, seat, null, "") catch |err| return failure(ctx.gpa, err);
     return run.output;
 }
 
@@ -417,7 +417,7 @@ pub fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_ove
 /// the same invocation-wide atomic ceiling and concurrency limiter.
 pub fn workflowRetryTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, seat: ?Provider) ToolOutput {
     // The SAME phase seat: a retry that changed model would break uniformity.
-    const run = runSub(ctx, "workflow_retry", label, prompt, sys_override, niche, isolation, isolation_fallback, seat, null) catch |err| return failure(ctx.gpa, err);
+    const run = runSub(ctx, "workflow_retry", label, prompt, sys_override, niche, isolation, isolation_fallback, seat, null, "") catch |err| return failure(ctx.gpa, err);
     return run.output;
 }
 
@@ -427,7 +427,7 @@ pub fn workflowRetryTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sy
 /// on a pool thread. Never worktree-isolated: a judge only reads/reasons over
 /// text handed to it, never the filesystem, so there's nothing to isolate.
 pub fn judgeTask(ctx: ToolCtx, prompt: []const u8) ToolOutput {
-    const run = runSub(ctx, "judge_task", "judge", prompt, null, "", .shared_cwd, false, null, null) catch |err| return failure(ctx.gpa, err);
+    const run = runSub(ctx, "judge_task", "judge", prompt, null, "", .shared_cwd, false, null, null, "") catch |err| return failure(ctx.gpa, err);
     return run.output;
 }
 

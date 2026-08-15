@@ -132,6 +132,14 @@ pub const Outcome = enum {
             .model_sub_routed => "model pin routed to a logged-in flat-rate subscription that serves it — the child's provider does not; the login is the user's standing consent for that vendor",
         };
     }
+
+    /// The caller-visible ignored cases (#470). Applied / routed / none stay quiet.
+    pub fn ignored(self: Outcome) bool {
+        return switch (self) {
+            .unknown_model, .unknown_tier, .no_ladder, .no_rung, .rung_pricier => true,
+            else => false,
+        };
+    }
 };
 
 /// The effort half of Outcome — its own enum because the axes resolve
@@ -158,7 +166,21 @@ pub const EffortOutcome = enum {
 /// when the (shape, role) cell re-seated the rung and ladder when it did not.
 /// A no-opinion Resolved keeps the default, and the caller reports the
 /// session-level decision it fell back to.
-pub const Resolved = struct { provider: ?Provider = null, outcome: Outcome = .none, effort: ?Effort = null, effort_outcome: EffortOutcome = .none, source: Source = .session_default };
+pub const Resolved = struct {
+    provider: ?Provider = null,
+    outcome: Outcome = .none,
+    effort: ?Effort = null,
+    effort_outcome: EffortOutcome = .none,
+    source: Source = .session_default,
+
+    /// Existing describe strings — never a new vocabulary. Empty when the pin
+    /// was honoured or never requested (#470).
+    pub fn ignoredNote(self: Resolved) []const u8 {
+        if (self.outcome.ignored()) return self.outcome.describe();
+        if (self.effort_outcome == .unknown_effort) return self.effort_outcome.describe();
+        return "";
+    }
+};
 
 fn trimmed(v: std.json.Value) ?[]const u8 {
     if (v != .string) return null;
