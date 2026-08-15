@@ -10,6 +10,13 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.260 (2026-08-15)
+
+- Fixed the composer silently wiping mid-typing: switching apps with Cmd+Tab
+  latched a phantom Super modifier (the release went to the other app), so
+  the next Backspace acted as Cmd+Backspace and deleted to the start of the
+  line. A plain keypress now clears stale modifier latches.
+
 ## v0.0.259 (2026-08-15)
 
 - Grok now defaults to xAI's Responses wire: WebSocket turns (with the SSE
