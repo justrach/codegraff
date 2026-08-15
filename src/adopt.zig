@@ -69,7 +69,11 @@ pub fn maybeFirstRun(io: Io, arena: Allocator, home: []const u8, cwd: []const u8
 
 pub fn alreadyAdopted(io: Io, arena: Allocator, home: []const u8) bool {
     const path = markerPath(arena, home) orelse return false;
-    return (Io.Dir.cwd().statFile(io, path, .{}) catch null) != null;
+    if ((Io.Dir.cwd().statFile(io, path, .{}) catch null) != null) return true;
+    // #462: a write-only handle's File.stat is ACCESS_DENIED on Windows; the
+    // path-based read is the same fallback session_transcript.appendWhole uses.
+    const body = Io.Dir.cwd().readFileAlloc(io, path, arena, file_cap) catch return false;
+    return body.len > 0;
 }
 
 fn markAdopted(io: Io, arena: Allocator, home: []const u8) void {
@@ -80,7 +84,7 @@ fn markAdopted(io: Io, arena: Allocator, home: []const u8) void {
 
 fn markerPath(arena: Allocator, home: []const u8) ?[]const u8 {
     if (home.len == 0) return null;
-    return std.fmt.allocPrint(arena, "{s}/" ++ marker_rel, .{home}) catch null;
+    return std.fs.path.join(arena, &.{ home, marker_rel }) catch null;
 }
 
 pub fn run(io: Io, arena: Allocator, home: []const u8, cwd: []const u8) !Report {
@@ -89,21 +93,21 @@ pub fn run(io: Io, arena: Allocator, home: []const u8, cwd: []const u8) !Report 
     var proj_add: std.json.ObjectMap = .empty;
 
     if (home.len > 0) {
-        takeFile(io, arena, &user_add, &r, try std.fmt.allocPrint(arena, "{s}/.claude.json", .{home}), .user_root, cwd);
-        takeFile(io, arena, &user_add, &r, try std.fmt.allocPrint(arena, "{s}/.claude/settings.json", .{home}), .plain, cwd);
-        takeFile(io, arena, &user_add, &r, try std.fmt.allocPrint(arena, "{s}/.claude/settings.local.json", .{home}), .plain, cwd);
-        takeFile(io, arena, &user_add, &r, try std.fmt.allocPrint(arena, "{s}/.cursor/mcp.json", .{home}), .plain, cwd);
+        takeFile(io, arena, &user_add, &r, try std.fs.path.join(arena, &.{ home, ".claude.json" }), .user_root, cwd);
+        takeFile(io, arena, &user_add, &r, try std.fs.path.join(arena, &.{ home, ".claude", "settings.json" }), .plain, cwd);
+        takeFile(io, arena, &user_add, &r, try std.fs.path.join(arena, &.{ home, ".claude", "settings.local.json" }), .plain, cwd);
+        takeFile(io, arena, &user_add, &r, try std.fs.path.join(arena, &.{ home, ".cursor", "mcp.json" }), .plain, cwd);
         if (builtin_desktop(arena, home)) |p| takeFile(io, arena, &user_add, &r, p, .plain, cwd);
     }
     takeFile(io, arena, &proj_add, &r, join(arena, cwd, ".claude/settings.json"), .plain, cwd);
     takeFile(io, arena, &proj_add, &r, join(arena, cwd, ".claude/settings.local.json"), .plain, cwd);
     takeFile(io, arena, &proj_add, &r, join(arena, cwd, ".cursor/mcp.json"), .plain, cwd);
     if (home.len > 0) {
-        takeFile(io, arena, &proj_add, &r, try std.fmt.allocPrint(arena, "{s}/.claude.json", .{home}), .user_project, cwd);
+        takeFile(io, arena, &proj_add, &r, try std.fs.path.join(arena, &.{ home, ".claude.json" }), .user_project, cwd);
     }
 
     const user_path = if (home.len > 0)
-        try std.fmt.allocPrint(arena, "{s}/" ++ mcp_config.global_rel_path, .{home})
+        try std.fs.path.join(arena, &.{ home, ".codegraff", "mcp.json" })
     else
         null;
     if (user_path) |p| r.added_user = try mergeWrite(io, arena, p, user_add, &r.skipped);
@@ -113,8 +117,8 @@ pub fn run(io: Io, arena: Allocator, home: []const u8, cwd: []const u8) !Report 
         r.skills += copySkillDir(
             io,
             arena,
-            try std.fmt.allocPrint(arena, "{s}/.claude/skills", .{home}),
-            try std.fmt.allocPrint(arena, "{s}/.codegraff/skills", .{home}),
+            try std.fs.path.join(arena, &.{ home, ".claude", "skills" }),
+            try std.fs.path.join(arena, &.{ home, ".codegraff", "skills" }),
         );
     }
     r.skills += copySkillDir(io, arena, join(arena, cwd, skill_docs.compat_dir), join(arena, cwd, skill_docs.project_dir));
@@ -202,7 +206,7 @@ fn mergeWrite(io: Io, arena: Allocator, path: []const u8, incoming: std.json.Obj
     var aw: Io.Writer.Allocating = .init(arena);
     var s: std.json.Stringify = .{ .writer = &aw.writer, .options = .{ .whitespace = .indent_2 } };
     s.write(Value{ .object = root }) catch return added;
-    Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = aw.writer.buffered() }) catch return 0;
+    Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = aw.writer.buffered(), .flags = .{ .read = true } }) catch return 0;
     return added;
 }
 
@@ -253,17 +257,20 @@ fn copyTree(io: Io, arena: Allocator, src: []const u8, dest: []const u8, depth: 
 
 fn join(arena: Allocator, cwd: []const u8, rel: []const u8) []const u8 {
     if (cwd.len == 0 or std.mem.eql(u8, cwd, ".")) return rel;
-    return std.fmt.allocPrint(arena, "{s}/{s}", .{ cwd, rel }) catch rel;
+    return std.fs.path.join(arena, &.{ cwd, rel }) catch rel;
+}
+
+fn sep(c: u8) bool {
+    return c == '/' or c == '\\';
 }
 
 fn pathEq(a: []const u8, b: []const u8) bool {
     if (std.mem.eql(u8, a, b)) return true;
-    const aa = if (a.len > 0 and a[a.len - 1] == '/') a[0 .. a.len - 1] else a;
-    const bb = if (b.len > 0 and b[b.len - 1] == '/') b[0 .. b.len - 1] else b;
+    const aa = if (a.len > 0 and sep(a[a.len - 1])) a[0 .. a.len - 1] else a;
+    const bb = if (b.len > 0 and sep(b[b.len - 1])) b[0 .. b.len - 1] else b;
     if (std.mem.eql(u8, aa, bb)) return true;
-    // Worktrees and moved checkouts: match if either path ends with the other.
-    if (aa.len > bb.len) return std.mem.endsWith(u8, aa, bb) and aa[aa.len - bb.len - 1] == '/';
-    if (bb.len > aa.len) return std.mem.endsWith(u8, bb, aa) and bb[bb.len - aa.len - 1] == '/';
+    if (aa.len > bb.len) return std.mem.endsWith(u8, aa, bb) and sep(aa[aa.len - bb.len - 1]);
+    if (bb.len > aa.len) return std.mem.endsWith(u8, bb, aa) and sep(bb[bb.len - aa.len - 1]);
     return false;
 }
 
@@ -385,19 +392,19 @@ test "adopt writes missing Claude MCP into graff folders and skips existing name
     const io = testing.io;
     var real_buf: [std.fs.max_path_bytes]u8 = undefined;
     const base = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
-    const home = try std.fmt.allocPrint(arena, "{s}/home", .{base});
-    const cwd = try std.fmt.allocPrint(arena, "{s}/proj", .{base});
+    const home = try std.fs.path.join(arena, &.{ base, "home" });
+    const cwd = try std.fs.path.join(arena, &.{ base, "proj" });
 
-    try Io.Dir.cwd().createDirPath(io, try std.fmt.allocPrint(arena, "{s}/.claude/skills/demo", .{home}));
+    try Io.Dir.cwd().createDirPath(io, try std.fs.path.join(arena, &.{ home, ".claude", "skills", "demo" }));
     try Io.Dir.cwd().createDirPath(io, cwd);
     const payload = try std.fmt.allocPrint(
         arena,
         "{{\"mcpServers\":{{\"codedb\":{{\"command\":\"/bin/codedb\",\"args\":[]}},\"smolify\":{{\"command\":\"x\"}},\"deepwiki\":{{\"url\":\"https://mcp.deepwiki.com/mcp\"}}}},\"projects\":{{\"{s}\":{{\"mcpServers\":{{\"relay\":{{\"command\":\"relay\",\"args\":[\"-s\"]}}}}}}}}}}",
         .{cwd},
     );
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/.claude.json", .{home}), .data = payload });
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/.claude/skills/demo/SKILL.md", .{home}), .data = "---\nname: demo\ndescription: d\n---\nbody\n" });
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/.mcp.json", .{cwd}), .data = "{\"mcpServers\":{\"deepwiki\":{\"url\":\"https://keep.example/mcp\"}}}" });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fs.path.join(arena, &.{ home, ".claude.json" }), .data = payload });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fs.path.join(arena, &.{ home, ".claude", "skills", "demo", "SKILL.md" }), .data = "---\nname: demo\ndescription: d\n---\nbody\n" });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fs.path.join(arena, &.{ cwd, ".mcp.json" }), .data = "{\"mcpServers\":{\"deepwiki\":{\"url\":\"https://keep.example/mcp\"}}}" });
 
     const r = try run(io, arena, home, cwd);
     try testing.expectEqual(@as(usize, 2), r.added_user);
@@ -405,10 +412,10 @@ test "adopt writes missing Claude MCP into graff folders and skips existing name
     try testing.expectEqual(@as(usize, 0), r.skipped);
     try testing.expectEqual(@as(usize, 1), r.skills);
 
-    const global = try Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(arena, "{s}/.codegraff/mcp.json", .{home}), arena, file_cap);
+    const global = try Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ home, ".codegraff", "mcp.json" }), arena, file_cap);
     try testing.expect(std.mem.indexOf(u8, global, "codedb") != null);
     try testing.expect(std.mem.indexOf(u8, global, "smolify") == null);
-    const project = try Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(arena, "{s}/.mcp.json", .{cwd}), arena, file_cap);
+    const project = try Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ cwd, ".mcp.json" }), arena, file_cap);
     try testing.expect(std.mem.indexOf(u8, project, "relay") != null);
     try testing.expect(std.mem.indexOf(u8, project, "keep.example") != null);
 
@@ -427,11 +434,11 @@ test "first-run adopt writes a marker and does not run again" {
     const io = testing.io;
     var real_buf: [std.fs.max_path_bytes]u8 = undefined;
     const base = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
-    const home = try std.fmt.allocPrint(arena, "{s}/home", .{base});
+    const home = try std.fs.path.join(arena, &.{ base, "home" });
     try Io.Dir.cwd().createDirPath(io, home);
 
     try testing.expect(!alreadyAdopted(io, arena, home));
-    const first = try maybeFirstRun(io, arena, home, try std.fmt.allocPrint(arena, "{s}/proj", .{base}));
+    const first = try maybeFirstRun(io, arena, home, try std.fs.path.join(arena, &.{ base, "proj" }));
     try testing.expect(first != null);
     try testing.expect(alreadyAdopted(io, arena, home));
     try testing.expect(try maybeFirstRun(io, arena, home, ".") == null);
