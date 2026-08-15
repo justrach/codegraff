@@ -144,7 +144,29 @@ pub fn skipEsc(s: []const u8, start: usize) usize {
     return i;
 }
 
-/// Columns in `s`, skipping SGR. Assumes 1-col codepoints (no CJK/emoji width).
+/// Terminal column width of one codepoint: 2 for East Asian Wide/Fullwidth
+/// and emoji presentation, 0 for combining marks and zero-width joiners, 1
+/// otherwise. Coarse ranges, but every box border and pad in the TUI keys on
+/// this — counting 🚀 as one column pushed the composer's right wall two
+/// cells past its corners.
+pub fn charWidth(cp: u21) u2 {
+    return switch (cp) {
+        0x0300...0x036F, 0x1AB0...0x1AFF, 0x1DC0...0x1DFF, 0x20D0...0x20FF, 0xFE20...0xFE2F => 0, // combining
+        0x200B...0x200D, 0xFE0E...0xFE0F, 0x2060 => 0, // zero-width + variation selectors
+        0x1100...0x115F, 0x2E80...0x303E, 0x3041...0x33FF, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xA000...0xA4CF, 0xAC00...0xD7A3, 0xF900...0xFAFF, 0xFE30...0xFE4F, 0xFF00...0xFF60, 0xFFE0...0xFFE6 => 2, // East Asian Wide
+        0x1F300...0x1FAFF, 0x2600...0x27BF, 0x2B00...0x2BFF, 0x20000...0x3FFFD => 2, // emoji + supplementary ideographs
+        else => 1,
+    };
+}
+
+fn cpAt(s: []const u8, i: usize) struct { w: u2, step: usize } {
+    const len = std.unicode.utf8ByteSequenceLength(s[i]) catch return .{ .w = 1, .step = 1 };
+    const step = @min(@as(usize, len), s.len - i);
+    const cp = std.unicode.utf8Decode(s[i .. i + step]) catch return .{ .w = 1, .step = step };
+    return .{ .w = charWidth(cp), .step = step };
+}
+
+/// Columns in `s`, skipping SGR; CJK/emoji count 2, combining marks 0.
 pub fn visibleLen(s: []const u8) usize {
     var n: usize = 0;
     var i: usize = 0;
@@ -153,9 +175,9 @@ pub fn visibleLen(s: []const u8) usize {
             i = skipEsc(s, i);
             continue;
         }
-        const w = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
-        i += @min(w, s.len - i);
-        n += 1;
+        const c = cpAt(s, i);
+        i += c.step;
+        n += c.w;
     }
     return n;
 }
@@ -163,15 +185,15 @@ pub fn visibleLen(s: []const u8) usize {
 pub fn takeCols(s: []const u8, max: usize) []const u8 {
     var n: usize = 0;
     var i: usize = 0;
-    while (i < s.len and n < max) {
+    while (i < s.len) {
         if (s[i] == 0x1b) {
             i = skipEsc(s, i);
             continue;
         }
-        const w = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
-        const step = @min(w, s.len - i);
-        i += step;
-        n += 1;
+        const c = cpAt(s, i);
+        if (n + c.w > max) break; // a wide glyph that would straddle the edge stays out
+        i += c.step;
+        n += c.w;
     }
     return s[0..i];
 }
@@ -216,15 +238,33 @@ test "day uses the Codegraff light palette; dark themes match their tokens" {
     try std.testing.expectEqualStrings("\x1b[38;2;155;126;206m", of(.oscura).accent);
 }
 
-/// Wrap `s` so no row is wider than `width` columns. SGR is preserved.
+/// Active-SGR tracker for the wrappers: remember styling since the last full
+/// reset so an inserted line break can re-open it — the diff painter repaints
+/// rows independently, so a continuation row with no SGR of its own renders
+/// in whatever style the previous paint left behind.
+fn trackSgr(active: *std.array_list.Managed(u8), seq: []const u8) void {
+    if (seq.len < 3 or seq[1] != '[' or seq[seq.len - 1] != 'm') return;
+    if (std.mem.eql(u8, seq, "\x1b[0m") or std.mem.eql(u8, seq, "\x1b[m")) {
+        active.clearRetainingCapacity();
+        return;
+    }
+    if (active.items.len > 96) active.clearRetainingCapacity(); // bound pathological runs
+    active.appendSlice(seq) catch {};
+}
+
+/// Wrap `s` so no row is wider than `width` columns. SGR is preserved AND
+/// re-emitted on continuation rows; wide glyphs never straddle the edge.
 pub fn wrapToWidth(a: std.mem.Allocator, s: []const u8, width: usize) ![]const u8 {
     if (width == 0) return a.dupe(u8, s);
     var out = std.array_list.Managed(u8).init(a);
+    var active = std.array_list.Managed(u8).init(a);
+    defer active.deinit();
     var col: usize = 0;
     var i: usize = 0;
     while (i < s.len) {
         if (s[i] == '\n') {
             try out.append('\n');
+            try out.appendSlice(active.items);
             col = 0;
             i += 1;
             continue;
@@ -233,17 +273,18 @@ pub fn wrapToWidth(a: std.mem.Allocator, s: []const u8, width: usize) ![]const u
             const start = i;
             i = skipEsc(s, i);
             try out.appendSlice(s[start..i]);
+            trackSgr(&active, s[start..i]);
             continue;
         }
-        const w = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
-        const step = @min(w, s.len - i);
-        if (col >= width) {
+        const c = cpAt(s, i);
+        if (col + c.w > width and col > 0) {
             try out.append('\n');
+            try out.appendSlice(active.items);
             col = 0;
         }
-        try out.appendSlice(s[i .. i + step]);
-        col += 1;
-        i += step;
+        try out.appendSlice(s[i .. i + c.step]);
+        col += c.w;
+        i += c.step;
     }
     return out.toOwnedSlice();
 }
@@ -252,12 +293,15 @@ pub fn wrapToWidth(a: std.mem.Allocator, s: []const u8, width: usize) ![]const u
 pub fn wrapPreferWords(a: std.mem.Allocator, s: []const u8, width: usize) ![]const u8 {
     if (width == 0) return a.dupe(u8, s);
     var out = std.array_list.Managed(u8).init(a);
+    var active = std.array_list.Managed(u8).init(a);
+    defer active.deinit();
     var col: usize = 0;
     var last_sp: ?usize = null;
     var i: usize = 0;
     while (i < s.len) {
         if (s[i] == '\n') {
             try out.append('\n');
+            try out.appendSlice(active.items);
             col = 0;
             last_sp = null;
             i += 1;
@@ -265,31 +309,28 @@ pub fn wrapPreferWords(a: std.mem.Allocator, s: []const u8, width: usize) ![]con
         }
         if (s[i] == 0x1b) {
             const start = i;
-            i += 1;
-            if (i < s.len and s[i] == '[') {
-                i += 1;
-                while (i < s.len and (s[i] < 0x40 or s[i] > 0x7e)) : (i += 1) {}
-                if (i < s.len) i += 1;
-            }
+            i = skipEsc(s, i); // full skip: hand-rolled CSI-only parsing broke a \n INTO an OSC hyperlink
             try out.appendSlice(s[start..i]);
+            trackSgr(&active, s[start..i]);
             continue;
         }
-        const w = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
-        const step = @min(w, s.len - i);
-        if (col + 1 > width) {
+        const c = cpAt(s, i);
+        if (col + c.w > width) {
             if (last_sp) |sp| {
                 out.items[sp] = '\n';
+                try out.insertSlice(sp + 1, active.items);
                 col = visibleLen(out.items[sp + 1 ..]);
                 last_sp = null;
             } else {
                 try out.append('\n');
+                try out.appendSlice(active.items);
                 col = 0;
             }
         }
         if (s[i] == ' ') last_sp = out.items.len;
-        try out.appendSlice(s[i .. i + step]);
-        col += 1;
-        i += step;
+        try out.appendSlice(s[i .. i + c.step]);
+        col += c.w;
+        i += c.step;
     }
     return out.toOwnedSlice();
 }
@@ -322,4 +363,27 @@ test "visibleLen and takeCols treat OSC/APC as invisible" {
     try std.testing.expectEqual(@as(usize, 2), visibleLen("\x1b_Ga=d,d=A\x1b\\ok"));
     const cut = takeCols("\x1b]8;;u\x07ab", 1);
     try std.testing.expectEqualStrings("\x1b]8;;u\x07a", cut);
+}
+
+test "wide glyphs: 2 columns, never straddling a wrap or a takeCols edge" {
+    try std.testing.expectEqual(@as(usize, 2), visibleLen("\u{1F680}"));
+    try std.testing.expectEqual(@as(usize, 4), visibleLen("\u{4F60}\u{597D}"));
+    try std.testing.expectEqual(@as(usize, 1), visibleLen("e\u{0301}"));
+    try std.testing.expectEqualStrings("a", takeCols("a\u{1F680}", 2)); // rocket won't fit in 1 col
+}
+
+test "wrap re-emits active SGR on continuation rows" {
+    const got = try wrapToWidth(std.testing.allocator, "\x1b[32mabcdefgh\x1b[0m", 4);
+    defer std.testing.allocator.free(got);
+    var it = std.mem.splitScalar(u8, got, '\n');
+    _ = it.next();
+    const row2 = it.next().?;
+    try std.testing.expect(std.mem.startsWith(u8, row2, "\x1b[32m"));
+}
+
+test "wrapPreferWords keeps OSC strings intact" {
+    const link = "\x1b]8;;http://example.com/long/url\x07go\x1b]8;;\x07 tail words here";
+    const got = try wrapPreferWords(std.testing.allocator, link, 10);
+    defer std.testing.allocator.free(got);
+    try std.testing.expect(std.mem.indexOf(u8, got, "http://example.com/long/url") != null); // URL unbroken
 }

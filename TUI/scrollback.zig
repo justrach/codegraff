@@ -100,6 +100,7 @@ pub fn totalVisualLines(self: *const Model, width: usize) usize {
     var arena = std.heap.ArenaAllocator.init(self.alloc);
     defer arena.deinit();
     const text = render(self, arena.allocator(), width, self.now_ms) catch return 0;
+    if (text.len == 0) return 0; // render.zig pops the empty tail; agree with it
     return lineCount(text);
 }
 
@@ -247,7 +248,7 @@ fn row(self: *const Model, a: std.mem.Allocator, idx: usize, e: app.Entry, width
     else
         e.text;
     const body = switch (e.kind) {
-        .assistant => try @import("markdown.zig").renderThemed(a, raw, th, width),
+        .assistant => try @import("markdown.zig").renderThemed(a, raw, th, width -| 4), // the "  ● " gutter costs 4 cols
         .user => try @import("markdown.zig").renderUser(a, raw, th.accent, th.text),
         else => raw,
     };
@@ -258,10 +259,11 @@ fn row(self: *const Model, a: std.mem.Allocator, idx: usize, e: app.Entry, width
     }
     if (e.kind == .pending) {
         const fg = if (flickerOn(now_ms)) th.accent else th.muted;
-        const line = try std.fmt.allocPrint(a, "{s}{s}❙{s} {s}{s}", .{ sel, fg, theme_mod.reset, body, theme_mod.reset });
+        const line = try std.fmt.allocPrint(a, "{s}{s}❙{s}{s} {s}{s}", .{ sel, fg, theme_mod.reset, th.muted, body, theme_mod.reset });
         return theme_mod.wrapToWidth(a, line, width);
     }
-    const line = try std.fmt.allocPrint(a, "{s}{s}{s}{s} {s}{s}", .{ sel, color, mark, theme_mod.reset, body, theme_mod.reset });
+    const body_fg = if (e.kind == .err) th.error_fg else th.text;
+    const line = try std.fmt.allocPrint(a, "{s}{s}{s}{s}{s} {s}{s}", .{ sel, color, mark, theme_mod.reset, body_fg, body, theme_mod.reset });
     return theme_mod.wrapToWidth(a, line, width);
 }
 
@@ -346,7 +348,7 @@ fn toolCard(a: std.mem.Allocator, th: theme_mod.Theme, start_text: []const u8, d
     const sel: []const u8 = if (selected) "› " else "  ";
     const title = try toolTitle(a, start_text);
     const preview = toolPreview(done_text);
-    const head = try std.fmt.allocPrint(a, "{s}{s}◆{s} {s}", .{ sel, if (selected) th.accent else th.muted, theme_mod.reset, title });
+    const head = try std.fmt.allocPrint(a, "{s}{s}◆{s}{s} {s}", .{ sel, if (selected) th.accent else th.muted, theme_mod.reset, th.text, title });
     if (preview == null) return theme_mod.wrapToWidth(a, head, width);
     const body = try std.fmt.allocPrint(a, "{s}{s}│  {s}{s}", .{ sel, th.muted, preview.?, theme_mod.reset });
     const joined = try std.fmt.allocPrint(a, "{s}\n{s}", .{ try theme_mod.wrapToWidth(a, head, width), try theme_mod.wrapToWidth(a, body, width) });

@@ -230,8 +230,13 @@ fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
         return .stay;
     }
     if (y < self.mid_origin) return .stay;
+    // Sticky-header chrome occludes the top content rows — a click there must
+    // not toggle whatever is hidden underneath it.
+    if (y < self.mid_origin + self.sticky_rows) return .stay;
     const vis = y - self.mid_origin + self.mid_skip;
-    const idx = scrollback.indexAtVisual(self, vis, self.last_term_width) orelse lastToolIdx(self);
+    // No fallback on a miss: clicking blank space below the transcript used to
+    // silently expand the LAST tool run (audit: easiest bug to hit).
+    const idx = scrollback.indexAtVisual(self, vis, self.last_term_width);
     self.focus = .scrollback;
     if (idx) |i| {
         self.selected = i;

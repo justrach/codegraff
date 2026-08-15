@@ -51,6 +51,7 @@ pub fn renderThemed(a: std.mem.Allocator, src: []const u8, th: theme_mod.Theme, 
                 try out.appendSlice(line);
             }
             try out.appendSlice(theme_mod.reset);
+            try out.appendSlice(th.bg); // the no-49 reset keeps codeBg alive — restore the canvas
             i += 1;
             continue;
         }
@@ -196,6 +197,7 @@ fn inlineSpans(out: *std.array_list.Managed(u8), line: []const u8, accent: []con
             if (std.mem.indexOfPos(u8, line, i + 2, "**")) |end| {
                 try out.appendSlice(theme_mod.bold);
                 try out.appendSlice(line[i + 2 .. end]);
+                try out.appendSlice("\x1b[22m"); // bold OFF — a 38;2 fg alone cannot clear SGR 1
                 try out.appendSlice(text);
                 i = end + 2;
                 continue;
@@ -249,23 +251,14 @@ fn splitCells(line: []const u8, out: [][]const u8) usize {
     return n;
 }
 
-fn cellWidth(s: []const u8) usize {
-    var n: usize = 0;
-    var i: usize = 0;
-    while (i < s.len) {
-        if (s[i] == '`') {
-            i += 1;
-            continue;
-        }
-        if (s[i] == '*' and i + 1 < s.len and s[i + 1] == '*') {
-            i += 2;
-            continue;
-        }
-        const w = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
-        i += @min(w, s.len - i);
-        n += 1;
-    }
-    return n;
+/// Visible width of a cell AS RENDERED: run it through inlineSpans and count.
+/// Guessing at markers went wrong on every unmatched ` or ** (the render kept
+/// them, the measure dropped them, the pad math sheared the grid).
+fn cellWidth(a: std.mem.Allocator, s: []const u8) usize {
+    var scratch = std.array_list.Managed(u8).init(a);
+    defer scratch.deinit();
+    inlineSpans(&scratch, s, "", "") catch return s.len;
+    return theme_mod.visibleLen(scratch.items);
 }
 
 fn emitRule(out: *std.array_list.Managed(u8), muted: []const u8, widths: []const usize, left: []const u8, mid: []const u8, right: []const u8) !void {
@@ -298,7 +291,7 @@ fn emitTable(
         if (n > ncol) ncol = n;
         var c: usize = 0;
         while (c < n) : (c += 1) {
-            const w = @min(cellWidth(cells[c]), @as(usize, 36));
+            const w = @min(cellWidth(a, cells[c]), @as(usize, 36));
             if (w > widths[c]) widths[c] = w;
         }
     }
@@ -350,7 +343,7 @@ fn emitTable(
                 try scratch.appendSlice(text);
                 try inlineSpans(&scratch, cell, accent, text);
             }
-            const vis = cellWidth(cell);
+            const vis = cellWidth(a, cell);
             if (vis > want) {
                 try out.appendSlice(theme_mod.takeCols(scratch.items, if (want > 1) want - 1 else want));
                 if (want > 1) try out.appendSlice("\u{2026}");

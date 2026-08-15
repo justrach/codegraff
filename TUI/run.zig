@@ -88,6 +88,8 @@ pub fn run(
     var saw_gfx: bool = false;
     var prev: []u8 = &.{};
     var prev_rows: usize = 0;
+    var prev_cols: usize = 0;
+    var prev_theme = m.theme_id;
     defer if (prev.len != 0) gpa.free(prev);
     while (m.running and !m.quit_requested) {
         m.now_ms = @intCast(@divTrunc(@max(@as(i128, 0), Io.Timestamp.now(io, .real).nanoseconds), 1_000_000));
@@ -104,7 +106,12 @@ pub fn run(
         const hash = std.hash.Wyhash.hash(0, frame);
         if (hash != last_hash) {
             const has_gfx = std.mem.indexOf(u8, frame, "\x1b_G") != null;
-            const full = prev.len == 0 or rows != prev_rows or saw_gfx or has_gfx;
+            // The theme bg is painted per ROW, not baked into the frame, and
+            // blank rows are byte-identical across themes/widths — the diff
+            // path skips them, stranding old-bg rows after /theme or the
+            // startup OSC-11 polarity flip, and stale columns after a
+            // width-only resize. Both must force a full paint.
+            const full = prev.len == 0 or rows != prev_rows or cols != prev_cols or m.theme_id != prev_theme or saw_gfx or has_gfx;
             // Kitty images sit above the cell grid and survive \x1b[K / dirty
             // paints — delete before every redraw that might have shown one.
             // ?2026 synchronized output: the terminal buffers everything
@@ -119,6 +126,8 @@ pub fn run(
             if (prev.len != 0) gpa.free(prev);
             prev = gpa.dupe(u8, frame) catch &.{};
             prev_rows = rows;
+            prev_cols = cols;
+            prev_theme = m.theme_id;
             last_hash = hash;
             saw_gfx = has_gfx;
         }
@@ -227,7 +236,14 @@ fn paint(w: *Io.Writer, frame: []const u8, rows: usize, cols: usize, prev: []con
         try w.writeAll(bg);
         const ln = nthLine(frame, row);
         try w.writeAll(ln);
-        try fillRow(w, ln, cols);
+        const vis = theme_mod.visibleLen(ln);
+        if (vis < cols) {
+            try fillRow(w, ln, cols);
+        } else {
+            // Row is exactly full: the cursor is ON the last column and EL
+            // erases it inclusive — that ate the composer's right border.
+            continue;
+        }
         try w.writeAll(bg);
         try w.writeAll("\x1b[K");
     }

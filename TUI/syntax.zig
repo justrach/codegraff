@@ -150,7 +150,7 @@ const langs = [_]*const Lang{ &zig_lang, &rust_lang, &py_lang, &js_lang, &go_lan
 /// (extension lookup), then the whole info string as a token. Unknown → null
 /// (the fence still gets the background band, just uncolored text).
 pub fn resolve(fence_info: []const u8) ?*const Lang {
-    const info = std.mem.trim(u8, fence_info, " \t");
+    const info = std.mem.trim(u8, fence_info, " \t\r"); // CRLF fences must still resolve
     if (info.len == 0) return null;
     blk: {
         var it = std.mem.splitScalar(u8, info, ':');
@@ -223,9 +223,13 @@ pub fn highlightLine(out: *std.array_list.Managed(u8), line: []const u8, lang: *
             var j = i + 1;
             try emit(out, &cls, .string, line[i .. i + 1], light);
             while (j < line.len) {
-                if (line[j] == '\\' and j + 1 < line.len) {
-                    try emit(out, &cls, .escape, line[j .. j + 2], light);
-                    j += 2;
+                if (line[j] == '\\') {
+                    // A trailing backslash (shell continuation) has no pair —
+                    // consume it alone or the scanner loops forever (P0: froze
+                    // the whole TUI at 100% CPU on `echo "a \` fences).
+                    const esc_end = @min(j + 2, line.len);
+                    try emit(out, &cls, .escape, line[j..esc_end], light);
+                    j = esc_end;
                     continue;
                 }
                 if (line[j] == quote) break;
@@ -344,4 +348,14 @@ test "strings color their escapes separately" {
     // the opening quote and 'a' share one string span; 'b' re-opens it after the escape
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\x1b[38;2;158;206;106m\"a") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\x1b[38;2;158;206;106mb") != null);
+}
+
+test "P0 regression: a trailing backslash inside a string terminates" {
+    var out = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer out.deinit();
+    var st: State = .{};
+    try highlightLine(&out, "echo \"hello \\", &sh_lang, &st, false);
+    try highlightLine(&out, "s = 'unterminated \\", &py_lang, &st, false);
+    try std.testing.expect(out.items.len > 0);
+    try std.testing.expect(resolve("zig\r") == &zig_lang);
 }

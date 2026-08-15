@@ -48,7 +48,10 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
 
     const bottom_lines = countLines(bottom.items);
     const top_lines = countLines(top);
-    const card_lines = countLines(image_card);
+    // countLines counts a trailing '\n' as an extra line but the append below
+    // adds no newline of its own — the off-by-one shifted the whole frame up
+    // one row and broke composer clicks (prompt_origin pointed past the box).
+    const card_lines = if (image_card.len == 0) 0 else countLines(image_card) - @intFromBool(image_card[image_card.len - 1] == '\n');
     self.preview_rows = card_lines;
     self.mid_origin = top_lines;
     self.prompt_origin = if (height > bottom_lines) height - bottom_lines else 0;
@@ -65,6 +68,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     if (top.len > 0 and top[top.len - 1] != '\n') try out.append('\n');
 
     const n = mid_lines.items.len;
+    self.sticky_rows = 0;
     if (n <= view_h) {
         self.scroll = 0;
         self.mid_skip = 0;
@@ -102,6 +106,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
                 try out.append('\n');
                 try out.append('\n');
                 chrome_rows = 2;
+                self.sticky_rows = 2;
             }
         }
         for (mid_lines.items[start + chrome_rows .. start + view_h]) |ln| {
