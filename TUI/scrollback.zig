@@ -95,6 +95,45 @@ pub fn indexAtVisual(self: *const Model, visual_row: usize, width: usize) ?usize
     return null;
 }
 
+/// Total visual rows of the transcript at `width` (mirrors render()).
+pub fn totalVisualLines(self: *const Model, width: usize) usize {
+    var arena = std.heap.ArenaAllocator.init(self.alloc);
+    defer arena.deinit();
+    const text = render(self, arena.allocator(), width, self.now_ms) catch return 0;
+    return lineCount(text);
+}
+
+/// First visual row of entry `idx` (a collapsed group maps to its start).
+pub fn visualOfIndex(self: *const Model, idx: usize, width: usize) ?usize {
+    var arena = std.heap.ArenaAllocator.init(self.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var v: usize = 0;
+    var i: usize = 0;
+    while (i < self.history.items.len) {
+        if (self.history.items[i].kind == .tool) {
+            const run = self.toolRun(i);
+            if (idx >= run.start and idx < run.end) return v;
+            const collapsed = self.history.items[run.start].folded;
+            if (collapsed) {
+                v += lineCount(summary(self, a, run.start, run.end, false) catch "");
+            } else {
+                var t = run.start;
+                while (t < run.end) {
+                    v += lineCount(toolVisual(self, a, t, run.end, width, self.now_ms, false) catch "");
+                    t = nextTool(self, t, run.end);
+                }
+            }
+            i = run.end;
+            continue;
+        }
+        if (i == idx) return v;
+        v += lineCount(row(self, a, i, self.history.items[i], width, self.now_ms, false) catch "");
+        i += 1;
+    }
+    return null;
+}
+
 fn lineCount(s: []const u8) usize {
     if (s.len == 0) return 1;
     return std.mem.count(u8, s, "\n") + 1;
@@ -305,12 +344,7 @@ fn strip(a: std.mem.Allocator, s: []const u8) []const u8 {
     var i: usize = 0;
     while (i < s.len) {
         if (s[i] == 0x1b) {
-            i += 1;
-            if (i < s.len and s[i] == '[') {
-                i += 1;
-                while (i < s.len and (s[i] < 0x40 or s[i] > 0x7e)) : (i += 1) {}
-                if (i < s.len) i += 1;
-            }
+            i = theme_mod.skipEsc(s, i);
             continue;
         }
         out.append(s[i]) catch {};

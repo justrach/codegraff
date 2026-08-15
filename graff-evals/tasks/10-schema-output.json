@@ -1,0 +1,20 @@
+{
+  "id": "schema-output",
+  "category": "structured-output",
+  "prompt": "Inspect inventory.txt and report: how many distinct SKUs are listed, and which SKU has the highest total quantity? Fill the schema.",
+  "requires": ["output-schema"],
+  "schema": {
+    "type": "object",
+    "properties": {
+      "distinct_skus": {"type": "integer"},
+      "top_sku": {"type": "string"}
+    },
+    "required": ["distinct_skus", "top_sku"],
+    "additionalProperties": false
+  },
+  "files": {
+    "inventory.txt": "SKU-A 12\nSKU-B 40\nSKU-C 7\nSKU-B 5\nSKU-D 19\n"
+  },
+  "check": "python3 -c \"import json,os; d=json.load(open(os.environ['ANSWER_FILE'])); assert d['distinct_skus']==4, d; assert d['top_sku']=='SKU-B', d\"",
+  "timeout_s": 240
+}

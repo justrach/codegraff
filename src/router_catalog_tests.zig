@@ -281,3 +281,54 @@ test "startup catalog loads fan out concurrently with Kimi" {
     try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(kimiFetchTask") != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "fn spawnKimi") != null);
 }
+
+// ── provider.zig routing tests parked here under its 600-line ceiling ──────
+
+test "providerFor (#377): family-prefixed spelling routes to the direct provider, not the gateway" {
+    // kimi's catalog row is `k3`; gateways catalog the same model as `kimi-k3`.
+    // The prefixed spelling must seat the keyed direct provider on its NATIVE
+    // name — before this fix it fell through to the codegraff gateway and a
+    // flat-rate subscription silently became metered/licensed usage.
+    const Keys = provider.Keys;
+    const all = Keys{ .values = @splat("k") };
+    const p = try all.providerFor("kimi-k3");
+    try std.testing.expectEqualStrings("kimi", p.id);
+    try std.testing.expectEqualStrings("k3", p.model);
+    // Exact catalog names keep absolute priority over the family alias.
+    try std.testing.expectEqualStrings("gpt-5.6-sol", (try all.providerFor("gpt-5.6-sol")).model);
+    // Without the kimi credential the prefixed spelling behaves exactly as
+    // before: uncatalogued in the compiled table, so the gateway fallback.
+    var values: [provider.provider_specs.len]?[]const u8 = @splat("k");
+    for (provider.provider_specs, 0..) |spec, i| {
+        if (std.mem.eql(u8, spec.id, "kimi")) values[i] = null;
+    }
+    const no_kimi = Keys{ .values = values };
+    try std.testing.expectEqualStrings("codegraff", (try no_kimi.providerFor("kimi-k3")).id);
+}
+
+test "GRAFF_XAI_WIRE=responses moves xAI onto the Responses wire (#502)" {
+    const Keys = provider.Keys;
+    const Provider = provider.Provider;
+    const all = Keys{ .values = @splat("k") };
+    const chat = try all.providerById("xai", "grok-4.3");
+    try std.testing.expectEqual(Provider.Kind.openai, chat.kind);
+    try std.testing.expect(chat.serverCompactUrl() == null); // chat wire: no blob replay path
+    provider.g_xai_responses = true;
+    defer provider.g_xai_responses = false;
+    const resp = try all.providerById("xai", "grok-4.3");
+    try std.testing.expectEqual(Provider.Kind.responses, resp.kind);
+    try std.testing.expectEqualStrings(provider.xai_responses_url, resp.url);
+    try std.testing.expectEqualStrings(provider.xai_compact_url, resp.serverCompactUrl().?);
+    // withModel keeps the wire choice.
+    const moved = resp.withModel("grok-4.6");
+    try std.testing.expectEqual(Provider.Kind.responses, moved.kind);
+    try std.testing.expectEqualStrings(provider.xai_responses_url, moved.url);
+    // codex keeps in-stream compaction — never the explicit endpoint.
+    const codex = try all.providerById("codex", "gpt-5.6-sol");
+    try std.testing.expect(codex.serverCompactUrl() == null);
+    // every other provider is untouched by the knob: openai keeps its native
+    // Responses wire (default since v0.0.250) and its own endpoint.
+    const oai = try all.providerById("openai", "gpt-5.6");
+    try std.testing.expectEqual(Provider.Kind.responses, oai.kind);
+    try std.testing.expect(std.mem.indexOf(u8, oai.url, "api.openai.com") != null);
+}

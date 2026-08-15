@@ -9,7 +9,7 @@ const theme_mod = @import("theme.zig");
 
 pub const Screen = enum { welcome, agent };
 pub const Focus = enum { prompt, scrollback };
-pub const Overlay = enum { none, palette, help, theme, model, effort, settings, rewind, slash, debug, image };
+pub const Overlay = enum { none, palette, help, theme, model, effort, settings, rewind, slash, debug, image, file, jump };
 pub const AgentMode = enum { normal, plan, always_approve };
 pub const EscArm = enum { none, clear, rewind };
 pub const EntryKind = enum { user, assistant, tool, system, err, pending };
@@ -71,6 +71,8 @@ pub const Model = struct {
     mid_skip: usize = 0,
     now_ms: u64 = 0,
     hist_idx: ?usize = null,
+    /// Newline-joined paths for the @-file picker, loaded once per session.
+    files_cache: ?[]const u8 = null,
 
     toast: []const u8 = "",
     toast_until_ms: u64 = 0,
@@ -112,6 +114,7 @@ pub const Model = struct {
         if (self.goal) |g| self.alloc.free(g);
         if (self.session_name) |s| self.alloc.free(s);
         if (self.overlay_filter.len > 0) self.alloc.free(self.overlay_filter);
+        if (self.files_cache) |f| self.alloc.free(f);
         self.input.deinit();
     }
 
@@ -130,7 +133,7 @@ pub const Model = struct {
     }
 
     pub fn push(self: *Model, kind: EntryKind, text: []const u8) !void {
-        const owned = try self.alloc.dupe(u8, text);
+        const owned = try sanitized(self.alloc, text);
         errdefer self.alloc.free(owned);
         try self.history.append(.{ .kind = kind, .text = owned, .folded = kind == .tool });
         if (kind == .user or kind == .assistant) {
@@ -141,7 +144,9 @@ pub const Model = struct {
     }
 
     pub fn pushFmt(self: *Model, kind: EntryKind, comptime fmt: []const u8, args: anytype) !void {
-        const text = try std.fmt.allocPrint(self.alloc, fmt, args);
+        const raw = try std.fmt.allocPrint(self.alloc, fmt, args);
+        defer self.alloc.free(raw);
+        const text = try sanitized(self.alloc, raw);
         errdefer self.alloc.free(text);
         try self.history.append(.{ .kind = kind, .text = text });
     }
@@ -282,6 +287,30 @@ pub const Model = struct {
     }
 };
 
+/// History entries render verbatim inside the alt screen — drop escape
+/// sequences and stray C0 controls a tool result (or the model) may carry.
+fn sanitized(alloc: std.mem.Allocator, text: []const u8) ![]u8 {
+    if (std.mem.indexOfScalar(u8, text, 0x1b) == null and
+        std.mem.indexOfScalar(u8, text, '\r') == null) return alloc.dupe(u8, text);
+    var out = std.array_list.Managed(u8).init(alloc);
+    errdefer out.deinit();
+    var i: usize = 0;
+    while (i < text.len) {
+        const c = text[i];
+        if (c == 0x1b) {
+            i = theme_mod.skipEsc(text, i);
+            continue;
+        }
+        if ((c < 0x20 and c != '\n' and c != '\t') or c == 0x7f) {
+            i += 1;
+            continue;
+        }
+        try out.append(c);
+        i += 1;
+    }
+    return out.toOwnedSlice();
+}
+
 test "cycleMode walks Normal → Plan → Always-approve" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
@@ -300,4 +329,12 @@ test "push user flips welcome to agent" {
     try std.testing.expectEqual(Screen.welcome, m.screen);
     try m.push(.user, "hi");
     try std.testing.expectEqual(Screen.agent, m.screen);
+}
+
+test "push strips raw ANSI, OSC, and CR from tool text" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.push(.tool, "⚙ bash | \x1b[31mred\x1b[0m\x1b]0;title\x07 done\r");
+    try std.testing.expectEqualStrings("⚙ bash | red done", m.history.items[0].text);
 }

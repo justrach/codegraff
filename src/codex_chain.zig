@@ -43,6 +43,11 @@ pub var g_force_full_resend = false;
 /// May this request chain onto the held response instead of re-anchoring?
 pub fn chainUsable(self: *const Agent) bool {
     if (g_force_full_resend) return false;
+    // codex-only: xAI's Responses WS accepts previous_response_id only with
+    // store:true — under store:false the chained turn stalls silently with no
+    // error event (probed live 2026-08-15). graff sends store:false, so xai
+    // turns always carry full input over the held socket.
+    if (!std.mem.eql(u8, self.provider.id, "codex")) return false;
     return usable(
         self.codex_ws != null,
         self.codex_prev_id != null,

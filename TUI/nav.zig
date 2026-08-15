@@ -60,6 +60,24 @@ fn ctrlN(self: *Model) void {
     self.setToast("press Ctrl+N again to start a new session");
 }
 
+/// Land the viewport on history entry `idx` (used by /jump).
+pub fn jumpTo(self: *Model, idx: usize) void {
+    self.selected = idx;
+    self.focus = .scrollback;
+    self.follow = false;
+    const sb = @import("scrollback.zig");
+    const width = if (self.last_term_width == 0) 80 else self.last_term_width;
+    const total = sb.totalVisualLines(self, width);
+    const at = sb.visualOfIndex(self, idx, width) orelse return;
+    const view_h = if (self.prompt_origin > self.mid_origin) self.prompt_origin - self.mid_origin else 8;
+    if (total <= view_h) {
+        self.scroll = 0;
+        return;
+    }
+    const max_scroll = total - view_h;
+    self.scroll = if (at >= max_scroll) 0 else max_scroll - at;
+}
+
 fn jumpTurn(self: *Model, dir: i32) void {
     if (self.history.items.len == 0) return;
     var i = self.selected;

@@ -209,6 +209,7 @@ fn expectDecision(body: []const u8, status: u16, want: std.meta.Tag(Decision)) !
     try std.testing.expectEqual(want, std.meta.activeTag(got));
 }
 
+
 test "Auto: server/discover listing 2026-07-28 is modern_list" {
     try expectDecision(
         \\{"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2026-07-28","2025-11-25"]}}

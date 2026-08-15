@@ -24,6 +24,18 @@ pub var g_context_override: ?u64 = null;
 /// (default 80). null → 80. Unlike codex we allow lowering AND raising (1..100).
 pub var g_compact_pct_override: ?u8 = null;
 
+/// #502: GRAFF_XAI_WIRE=responses (session_settings.applyEnvKnobs) serves xAI
+/// over the OpenAI Responses wire at api.x.ai/v1/responses instead of chat
+/// completions — the prerequisite for first-party server compaction and
+/// Responses-WebSocket turns. Verified live on the SuperGrok OAuth path.
+pub var g_xai_responses: bool = false;
+
+pub const xai_responses_url = "https://api.x.ai/v1/responses";
+/// xAI's explicit compaction endpoint (POST {model, input} → one opaque
+/// compaction item). Unlike codex there is no in-stream compaction — api.x.ai
+/// silently ignores the context_management directive (probed 2026-08-15).
+pub const xai_compact_url = "https://api.x.ai/v1/responses/compact";
+
 /// The context window for a provider+model, honoring g_context_override for an
 /// unknown/local model — i.e. only when contextFor returns the conservative default,
 /// never overriding a known window (#203).
@@ -162,6 +174,14 @@ pub const Provider = struct {
         return p.context / 100 * pct;
     }
 
+    /// The provider's explicit server-side compaction endpoint, if it has one
+    /// (#502). codex compacts in-stream via context_management and returns null.
+    pub fn serverCompactUrl(p: Provider) ?[]const u8 {
+        if (p.kind != .responses) return null;
+        if (std.mem.eql(u8, p.id, "xai")) return xai_compact_url;
+        return null;
+    }
+
     /// Whether a failed compaction may safely fall back to destructive trimming.
     /// Keep this stricter than compactAt(): at 80-95% a transient summary failure
     /// should leave history intact and retry later. Subtraction avoids overflow for
@@ -212,11 +232,12 @@ pub const Provider = struct {
         };
         const is_codex = std.mem.eql(u8, spec.id, "codex");
         const is_kimi_anthropic = std.mem.eql(u8, spec.id, "kimi") and pricing.kimiProtocol(model) == .anthropic;
+        const is_xai_responses = std.mem.eql(u8, spec.id, "xai") and g_xai_responses;
         return .{
             .id = spec.id,
-            .kind = if (is_kimi_anthropic) .anthropic else spec.kind,
+            .kind = if (is_kimi_anthropic) .anthropic else if (is_xai_responses) .responses else spec.kind,
             .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
-            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else spec.url,
+            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (is_xai_responses) xai_responses_url else spec.url,
             .api_key = base.api_key,
             .model = model,
             .context = contextWindowFor(spec.id, model),
@@ -307,11 +328,12 @@ pub const Keys = struct {
     pub fn build(keys: Keys, spec: ProviderSpec, key: []const u8, model: []const u8) Provider {
         const is_codex = std.mem.eql(u8, spec.id, "codex");
         const is_kimi_anthropic = std.mem.eql(u8, spec.id, "kimi") and pricing.kimiProtocol(model) == .anthropic;
+        const is_xai_responses = std.mem.eql(u8, spec.id, "xai") and g_xai_responses;
         return .{
             .id = spec.id,
-            .kind = if (is_kimi_anthropic) .anthropic else spec.kind,
+            .kind = if (is_kimi_anthropic) .anthropic else if (is_xai_responses) .responses else spec.kind,
             .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
-            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else spec.url,
+            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (is_xai_responses) xai_responses_url else spec.url,
             .api_key = key,
             .model = model,
             .context = contextWindowFor(spec.id, model),
@@ -443,27 +465,6 @@ test "providerFor (#294): a catalogued model with no keyed provider fails instea
     try std.testing.expect(!pricing.modelInTable("totally-made-up-model"));
     try std.testing.expectEqualStrings("codegraff", (try no_codex.providerFor("totally-made-up-model")).id);
     try std.testing.expectEqualStrings("anthropic", (try no_codex.providerFor("claude-does-not-exist")).id);
-}
-
-test "providerFor (#377): family-prefixed spelling routes to the direct provider, not the gateway" {
-    // kimi's catalog row is `k3`; gateways catalog the same model as `kimi-k3`.
-    // The prefixed spelling must seat the keyed direct provider on its NATIVE
-    // name — before this fix it fell through to the codegraff gateway and a
-    // flat-rate subscription silently became metered/licensed usage.
-    const all = Keys{ .values = @splat("k") };
-    const p = try all.providerFor("kimi-k3");
-    try std.testing.expectEqualStrings("kimi", p.id);
-    try std.testing.expectEqualStrings("k3", p.model);
-    // Exact catalog names keep absolute priority over the family alias.
-    try std.testing.expectEqualStrings("gpt-5.6-sol", (try all.providerFor("gpt-5.6-sol")).model);
-    // Without the kimi credential the prefixed spelling behaves exactly as
-    // before: uncatalogued in the compiled table, so the gateway fallback.
-    var values: [provider_specs.len]?[]const u8 = @splat("k");
-    for (provider_specs, 0..) |spec, i| {
-        if (std.mem.eql(u8, spec.id, "kimi")) values[i] = null;
-    }
-    const no_kimi = Keys{ .values = values };
-    try std.testing.expectEqualStrings("codegraff", (try no_kimi.providerFor("kimi-k3")).id);
 }
 
 test "Keys.providerById: exact id wins, unknown id falls back to model routing" {

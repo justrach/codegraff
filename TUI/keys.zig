@@ -41,13 +41,20 @@ pub fn handle(self: *Model, k: Key) Effect {
         switch (k) {
             .enter => self.input.handle(.{ .char = '\n' }),
             .char => |c| self.input.handle(.{ .char = c }),
+            .codepoint => self.input.handle(k),
             else => {},
         }
         return .stay;
     }
 
-    if (self.overlay != .none) return overlayKey(self, k);
+    if (self.overlay != .none) return @import("overlays.zig").key(self, k);
     if (slashOpen(self) and slashKey(self, k)) return .stay;
+    if (isChar(k, '@') and self.focus == .prompt and !slashOpen(self)) {
+        // Grok-style file mention: keep the typed @, open the fuzzy picker.
+        self.input.handle(.{ .char = '@' });
+        @import("overlays.zig").openFiles(self);
+        return .stay;
+    }
 
     if (k == .escape) return esc(self);
     if (isCtrl(k, 'p') or (isChar(k, '?') and std.mem.trim(u8, self.input.getValue(), " \t").len == 0)) {
@@ -176,7 +183,7 @@ fn scrollbackKey(self: *Model, k: Key) Effect {
         return .stay;
     }
     if (!self.vim_mode) {
-        if (k == .char or k == .ctrl) {
+        if (k == .char or k == .codepoint or k == .ctrl) {
             self.focus = .prompt;
             return promptKey(self, k);
         }
@@ -224,97 +231,7 @@ fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
     return .stay;
 }
 
-fn overlayKey(self: *Model, k: Key) Effect {
-    if (@import("image.zig").key(self, k)) return .stay;
-    if (k == .escape) {
-        self.closeOverlay();
-        return .stay;
-    }
-    if (k == .up) {
-        self.overlay_sel -|= 1;
-        return .stay;
-    }
-    if (k == .down) {
-        self.overlay_sel += 1;
-        return .stay;
-    }
-    if (k == .enter) return activateOverlay(self);
-    if (self.overlay == .model or self.overlay == .effort) {
-        switch (k) {
-            .char => |c| self.typeOverlayFilter(c),
-            .backspace => self.backspaceOverlayFilter(),
-            else => {},
-        }
-        return .stay;
-    }
-    if (self.overlay == .palette or self.overlay == .theme) {
-        self.input.handle(k);
-    }
-    return .stay;
-}
 
-fn activateOverlay(self: *Model) Effect {
-    switch (self.overlay) {
-        .palette => {
-            var idx: [catalog.items.len]usize = undefined;
-            const n = catalog.filter(self.input.getValue(), &idx);
-            if (n == 0) return .stay;
-            const pick = catalog.items[idx[@min(self.overlay_sel, n - 1)]];
-            self.closeOverlay();
-            self.input.setValue("") catch {};
-            return dispatch.runCommand(self, pick.name);
-        },
-        .theme => {
-            const id: theme_mod.Id = @enumFromInt(self.overlay_sel % theme_mod.all.len);
-            self.theme_id = id;
-            self.closeOverlay();
-            self.setToast(id.label());
-        },
-        .rewind => {
-            self.closeOverlay();
-            dispatch.rewind(self);
-        },
-        .model => {
-            const models = @import("models.zig");
-            var names: [models.max_models][]const u8 = undefined;
-            const n = models.filterModels(engine.g_models, self.overlay_filter, &names);
-            const sel = if (n == 0) 0 else self.overlay_sel % n;
-            self.closeOverlay();
-            if (n == 0) return .stay;
-            const pick = names[sel];
-            if (engine.g_model_fn) |f| {
-                if (f(engine.g_turn_ctx, self.alloc, pick)) |nm| {
-                    engine.g_model_name = nm;
-                    self.setToast(nm);
-                } else self.setToast("couldn't switch");
-            } else {
-                engine.g_model_name = pick;
-                self.setToast(pick);
-            }
-        },
-        .effort => {
-            if (@import("effort.zig").pick(self)) |e| {
-                self.effort = e;
-                self.setToast(@tagName(e));
-            }
-            self.closeOverlay();
-        },
-        .settings => {
-            const which = self.overlay_sel % 4;
-            switch (which) {
-                0 => self.openOverlay(.model),
-                1 => {
-                    self.openOverlay(.effort);
-                    self.overlay_sel = @intFromEnum(self.effort);
-                },
-                2 => self.cycleMode(),
-                else => self.openOverlay(.theme),
-            }
-        },
-        else => self.closeOverlay(),
-    }
-    return .stay;
-}
 
 fn slashOpen(self: *const Model) bool {
     const v = self.input.getValue();

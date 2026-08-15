@@ -29,6 +29,7 @@ const Provider = @import("provider.zig").Provider;
 const http = @import("http.zig");
 const telemetry = @import("telemetry.zig");
 const keys_cli = @import("keys_cli.zig");
+const goal_flow = @import("goal_flow.zig");
 
 /// GRAFF_SERVER_COMPACT=0/false/off forces the client arm, =1 forces the
 /// server arm (session_settings.applyEnvKnobs). Default: A/B assignment.
@@ -111,6 +112,9 @@ pub fn noteClientSummary(chars: usize) void {
 /// of 1,000 guarantees every real graff context crosses it; the flag is route-
 /// gated so a non-OpenAI Responses provider can never enter this path.
 pub fn writeContextManagement(self: *const Agent, s: anytype) !void {
+    // #502: an explicit-compact provider (xAI) ignores the in-stream directive
+    // — probed live; compaction goes through explicitCompact instead.
+    if (self.provider.serverCompactUrl() != null) return;
     const threshold = if (self.server_compaction_request and manualRoute(self.provider) == .in_stream)
         @as(u64, 1_000)
     else if (enabled(self.provider))
@@ -367,6 +371,15 @@ pub fn autocompactResumed(self: *Agent) void {
 }
 
 fn autocompactIf(self: *Agent, recovery_meter: u64, server_arm: bool) void {
+    // #502: an explicit-compact provider (xAI) gets first-party compaction —
+    // one POST folds the whole history into an opaque blob, no summary model
+    // call. Any failure falls through to the client policy so a broken
+    // endpoint can never wedge the session.
+    if (self.provider.serverCompactUrl() != null) {
+        if (explicitCompact(self)) return;
+        self.compactOrRecover(self.provider.nearContextLimit(recovery_meter));
+        return;
+    }
     if (!server_arm or self.provider.kind != .responses) {
         self.compactOrRecover(self.provider.nearContextLimit(recovery_meter));
         return;
@@ -378,6 +391,80 @@ fn autocompactIf(self: *Agent, recovery_meter: u64, server_arm: bool) void {
     // shipping the request itself would risk an over-cap hard failure (#163).
     if (self.provider.nearContextLimit(recovery_meter))
         self.compactOrRecover(true);
+}
+
+fn buildCompactBody(self: *Agent) ![]u8 {
+    var aw: Io.Writer.Allocating = .init(self.gpa);
+    errdefer aw.deinit();
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try s.beginObject();
+    try s.objectField("model");
+    try s.write(self.provider.model);
+    try s.objectField("input");
+    try s.write(std.json.Value{ .array = self.messages });
+    try s.endObject();
+    return aw.toOwnedSlice();
+}
+
+/// #502: explicit first-party compaction (xAI POST /v1/responses/compact):
+/// ship the current input items, then restart history from the returned
+/// opaque compaction item — the docs' "treat the compaction as the new
+/// start". True when history was replaced; ANY failure leaves it untouched
+/// so the caller can fall back to the client-side summary.
+pub fn explicitCompact(self: *Agent) bool {
+    const compact_url = self.provider.serverCompactUrl() orelse return false;
+    if (self.messages.items.len == 0) return false;
+    // Anti-thrash: a history already anchored on a blob with only a few items
+    // after it cannot meaningfully shrink — when the threshold sits below the
+    // standing prompt overhead (a tiny GRAFF_COMPACT_PCT), re-compacting every
+    // step pays one API call per step forever. Let the client policy decide.
+    const items = self.messages.items;
+    if (items.len < 8 and items[0] == .object) {
+        if (items[0].object.get("type")) |t| {
+            if (t == .string and std.mem.eql(u8, t.string, "compaction")) return false;
+        }
+    }
+    const body = buildCompactBody(self) catch return false;
+    defer self.gpa.free(body);
+    var cp = self.provider;
+    cp.url = compact_url;
+    if (!main_mod.json_mode) self.say("[compacting server-side: {d} item(s)…]\n", .{self.messages.items.len}) catch {};
+    const resp = http.postWatched(self.gpa, self.io, self.client, cp, body) catch |err| {
+        if (self.tracer) |tr| tr.note("compact", @errorName(err));
+        return false;
+    };
+    defer self.gpa.free(resp);
+    return installCompactionItem(self, resp);
+}
+
+/// Parse a compact-endpoint response and restart history from output[0].
+/// Split from explicitCompact so a fixture response drives it in tests.
+pub fn installCompactionItem(self: *Agent, resp: []const u8) bool {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, self.arena, resp, .{ .allocate = .alloc_always }) catch return false;
+    if (parsed != .object) return false;
+    const output = parsed.object.get("output") orelse return false;
+    if (output != .array or output.array.items.len == 0) return false;
+    const blob = output.array.items[0];
+    if (blob != .object) return false;
+    const t = blob.object.get("type") orelse return false;
+    if (t != .string or !std.mem.eql(u8, t.string, "compaction")) return false;
+    if (blob.object.get("encrypted_content") == null) return false;
+    const dropped = self.messages.items.len;
+    var fresh = std.json.Array.init(self.arena);
+    fresh.append(blob) catch return false;
+    self.messages = fresh;
+    // Mirror pruneIf's meter/goal reset: both anchors recompute lazily, the
+    // goal note died with the folded history (#318), and pasted-state readers
+    // re-carry off history_rewrites.
+    self.last_context_tokens = 0;
+    self.context_local_tokens = 0;
+    self.goal_note_fp = 0;
+    self.history_rewrites +%= 1;
+    if (self.pending_goal_note == null)
+        self.pending_goal_note = goal_flow.compactionSnapshot(self.arena, self) catch null;
+    notePrune(dropped);
+    if (!main_mod.json_mode) self.say("[server compacted context: {d} item(s) folded into the model's compaction state]\n", .{dropped}) catch {};
+    return true;
 }
 
 const test_support = @import("agent_compact_test_support.zig");
@@ -596,5 +683,61 @@ test "autocompact: responses providers hold at the ordinary threshold without a 
     // would have run a summary here).
     autocompactIf(&agent, 85_000, true);
     try std.testing.expectEqual(@as(usize, 1), agent.messages.items.len);
+    try std.testing.expectEqual(@as(u32, 0), agent.history_rewrites);
+}
+
+test "installCompactionItem restarts history from the blob and resets the meters (#502)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = testAgent(a, .responses);
+    agent.arena = a;
+    try agent.messages.append(try item(a, "message", null));
+    try agent.messages.append(try item(a, "function_call", "c1"));
+    try agent.messages.append(try item(a, "function_call_output", "c1"));
+    agent.last_context_tokens = 400_000;
+    const resp =
+        \\{"id":"cmp_1","object":"response.compaction","output":[{"type":"compaction","id":"cmp_1","encrypted_content":"BLOB"}],
+        \\ "usage":{"input_tokens":9000,"output_tokens":400,"dropped_message_count":3}}
+    ;
+    try std.testing.expect(installCompactionItem(&agent, resp));
+    try std.testing.expectEqual(@as(usize, 1), agent.messages.items.len);
+    try std.testing.expectEqualStrings("compaction", agent.messages.items[0].object.get("type").?.string);
+    try std.testing.expectEqualStrings("BLOB", agent.messages.items[0].object.get("encrypted_content").?.string);
+    try std.testing.expectEqual(@as(u64, 0), agent.last_context_tokens);
+    try std.testing.expectEqual(@as(u32, 1), agent.history_rewrites);
+}
+
+test "installCompactionItem refuses malformed responses and leaves history intact (#502)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = testAgent(a, .responses);
+    agent.arena = a;
+    try agent.messages.append(try item(a, "message", null));
+    for ([_][]const u8{
+        "not json",
+        "{\"output\":[]}",
+        "{\"output\":[{\"type\":\"message\"}]}",
+        "{\"output\":[{\"type\":\"compaction\"}]}", // no encrypted_content
+    }) |bad| {
+        try std.testing.expect(!installCompactionItem(&agent, bad));
+        try std.testing.expectEqual(@as(usize, 1), agent.messages.items.len);
+        try std.testing.expectEqual(@as(u32, 0), agent.history_rewrites);
+    }
+}
+
+test "explicitCompact anti-thrash: a fresh blob head with little growth refuses (#502)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = testAgent(a, .responses);
+    agent.arena = a;
+    agent.provider.id = "xai"; // serverCompactUrl fires for xai + .responses
+    try agent.messages.append(try item(a, "compaction", null));
+    try agent.messages.append(try item(a, "message", null));
+    // Guard trips BEFORE any network I/O — false, history untouched.
+    try std.testing.expect(!explicitCompact(&agent));
+    try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
     try std.testing.expectEqual(@as(u32, 0), agent.history_rewrites);
 }

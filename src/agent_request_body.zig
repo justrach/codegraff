@@ -146,7 +146,7 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             try s.objectField("role");
             try s.write("system");
             try s.objectField("content");
-            try s.write(self.systemPrompt());
+            try s.write(try @import("agent_request_body_responses.zig").schemaAwarePrompt(self));
             try s.endObject();
             for (self.messages.items) |m| try writeOpenAIMessageNormalized(&s, m);
             try s.endArray();
@@ -180,76 +180,13 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 try s.objectField("reasoning_effort");
                 try s.write(if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
             }
+            // --output-schema: structured outputs (xAI docs' response_format).
+            if (self.output_schema) |schema_json|
+                try @import("agent_request_body_responses.zig").writeResponseFormat(&s, schema_json);
         },
-        .responses => {
-            // First-party OpenAI Responses API. system prompt → instructions;
-            // history items are valid input items; stream is required (we buffer +
-            // parse SSE); reasoning items return encrypted and pass back per turn.
-            try s.objectField("instructions");
-            try s.write(self.systemPrompt());
-            // Pin our full resends to a per-session cache partition, the way
-            // openai/codex does (it defaults this to the same session UUID it
-            // puts in the `session_id` header). Without it the backend has no
-            // affinity hint for a prefix we re-upload every turn.
-            var ckbuf: [96]u8 = undefined;
-            try s.objectField("prompt_cache_key");
-            try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
-            // GPT-5.6 explicit caching (prompt_cache_options / breakpoints) is
-            // platform-API-only — this route 400s on both. Implicit + cache key is all.
-            // Codex WS delta: once a response.id is held on a live WS session,
-            // send previous_response_id + only the items the server does not yet
-            // hold, instead of the full history (avoids the huge frame that the
-            // backend rejects → WriteFailed). Full input otherwise (first turn/SSE).
-            // ONE gate for both fields: emitting previous_response_id beside a full
-            // input would make the server re-prepend a history we also sent.
-            const chain = codex_chain.chainUsable(self);
-            if (chain) {
-                try s.objectField("previous_response_id");
-                try s.write(self.codex_prev_id.?);
-            }
-            try s.objectField("input");
-            if (chain) {
-                var delta = std.json.Array.init(self.arena);
-                for (self.messages.items[self.codex_sent_upto..]) |m| try delta.append(m);
-                try s.write(Value{ .array = delta });
-            } else {
-                try s.write(Value{ .array = self.messages });
-            }
-            if (tools) |t| {
-                try s.objectField("tools");
-                try serde.writeOpenAITools(&s, self.scratchAlloc(), t); // #261 follow-up
-                try s.objectField("tool_choice");
-                try s.write(if (force_tool) "required" else "auto");
-                try s.objectField("parallel_tool_calls");
-                try s.write(true);
-            }
-            // Codex "fast" mode (/fast): request the priority service tier for
-            // lower latency. The Platform key route does not inherit this mode.
-            if (self.fast and std.mem.eql(u8, self.provider.id, "codex")) {
-                try s.objectField("service_tier");
-                try s.write("priority");
-            }
-            try s.objectField("reasoning");
-            try s.beginObject();
-            try s.objectField("effort");
-            // Ultra preset → wire value `max`. #379: compaction summaries run
-            // at low effort — a high-effort reasoner can complete with only
-            // reasoning items and zero output text, i.e. an empty summary.
-            try s.write(if (self.compaction_request or self.server_compaction_request) "low" else if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
-            try s.endObject();
-            try s.objectField("include");
-            try s.beginArray();
-            try s.write("reasoning.encrypted_content");
-            try s.endArray();
-            try s.objectField("store");
-            try s.write(false);
-            server_compact.noteExposure(self);
-            try server_compact.writeContextManagement(self, &s);
-            // No top-level max_output_tokens: the Codex backend rejects it on
-            // gpt-5.6-*; leaving it absent is also valid on the Platform route.
-            try s.objectField("stream");
-            try s.write(true);
-        },
+        // The Responses-wire body (codex / xAI #502) lives in its own module
+        // under the 600-line ceiling; structured-output writers ride along.
+        .responses => try @import("agent_request_body_responses.zig").write(self, &s, tools, force_tool),
     }
     try s.endObject();
     return aw.toOwnedSlice();
