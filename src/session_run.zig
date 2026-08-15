@@ -64,6 +64,8 @@ const run_budget_mod = @import("run_budget.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const commands_privacy = @import("commands_privacy.zig");
 const prompts = @import("prompts.zig");
+const view_image = @import("view_image.zig");
+const vision = @import("vision.zig");
 
 /// `graff repl`: interactive chat on the Grok-style TUI (same as `graff tui`).
 /// Piped/non-TTY stdin still drives the old scripted zigzag Model so CI
@@ -305,6 +307,8 @@ pub fn buildRootAgent(
     const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}-{d}", .{ util.unixMs(io), proc_identity.selfPid() });
     root.session_name = if (flags.resume_flag) |name| (if (!flags.new_session_flag and !flags.no_resume_flag) name else fresh_session_name) else fresh_session_name;
     try prompts.setRootSystemPrompts(&root, sys_normal, arena); // #381: same funnel + the live .graff/playbook.jsonl constraint block
+    // #249: advertise view_image only when this session's model can take pixels.
+    view_image.available = vision.visionCapable(default_provider);
     // Startup pays for one provider format, not all three. Other formats are
     // rendered on first switch with the same built-in + live MCP inputs.
     try root.ensureRootTools(default_provider.kind);

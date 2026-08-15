@@ -26,6 +26,7 @@
 //! edited their copy keeps their edits until Codex itself ships a new version.
 
 const std = @import("std");
+const oauth_helpers = @import("oauth_helpers.zig");
 const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -45,9 +46,7 @@ pub fn codexHomeDir(arena: Allocator, codex_home: ?[]const u8, home: ?[]const u8
     if (codex_home) |value| {
         if (value.len > 0) return value;
     }
-    const h = home orelse return null;
-    if (h.len == 0) return null;
-    return std.fmt.allocPrint(arena, "{s}/.codex", .{h}) catch null;
+    return oauth_helpers.codexHomeDir(arena, home orelse "");
 }
 
 /// `$CODEX_HOME/skills/.system/imagegen`.

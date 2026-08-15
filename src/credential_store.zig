@@ -31,7 +31,9 @@ pub const private_dir: Io.File.Permissions = if (Io.File.Permissions.has_executa
 /// `private_file` for anything holding a secret; pass `.default_file` to keep
 /// the ordinary umask-governed behaviour of a plain `createFile`.
 pub fn replaceFile(io: Io, dir: Io.Dir, sub_path: []const u8, bytes: []const u8, permissions: Io.File.Permissions) !void {
-    var atomic = try dir.createFileAtomic(io, sub_path, .{ .permissions = permissions, .replace = true });
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dest = if (dir.readLink(io, sub_path, &path_buf)) |n| path_buf[0..n] else |_| sub_path;
+    var atomic = try dir.createFileAtomic(io, dest, .{ .permissions = permissions, .replace = true });
     defer atomic.deinit(io);
     if (Io.File.Permissions.has_executable_bit) {
         if (permissions != .default_file) {
@@ -195,4 +197,23 @@ test "writeOAuth: the credential file is 0600 inside 0700 directories" {
     try std.testing.expectEqualStrings("access-1", parsed.object.get("access_token").?.string);
     try std.testing.expectEqualStrings("refresh-1", parsed.object.get("refresh_token").?.string);
     try std.testing.expectEqual(@as(i64, 1234), parsed.object.get("expires_at").?.integer);
+}
+
+test "#405: replaceFile writes through a symlink instead of replacing it" {
+    if (@import("builtin").os.tag == .windows) return;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
+    const target = try std.fmt.allocPrint(std.testing.allocator, "{s}/real.json", .{base});
+    defer std.testing.allocator.free(target);
+    const link = try std.fmt.allocPrint(std.testing.allocator, "{s}/settings.json", .{base});
+    defer std.testing.allocator.free(link);
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = target, .data = "old\n" });
+    try Io.Dir.cwd().symLink(io, target, link, .{});
+    try replaceFile(io, Io.Dir.cwd(), link, "new\n", .default_file);
+    const through = try Io.Dir.cwd().readFileAlloc(io, target, std.testing.allocator, .limited(64));
+    defer std.testing.allocator.free(through);
+    try std.testing.expectEqualStrings("new\n", through);
 }

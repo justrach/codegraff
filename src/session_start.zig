@@ -51,6 +51,7 @@ const telemetry = @import("telemetry.zig");
 const obs = @import("obs.zig");
 const util = @import("util.zig");
 const engine_sink = @import("engine_sink.zig"); // #429: startup's lines are typed events, not prints
+const worktree_lease = @import("worktree_lease.zig");
 const engine_events = @import("engine_events.zig");
 const title_mod = @import("title.zig");
 const fallback_config = @import("fallback_config.zig");
@@ -101,6 +102,7 @@ pub fn setupWorktreeAndBanner(
         engine_sink.enableColor();
     }
     const sink = engine_sink.writerSink(out);
+    if (worktree_lease.preflight(gpa, io, arena, trace_path, util.unixMs(io))) |warn| sink.emit(io, .{ .session_notice = .{ .text = warn, .tone = .warn } });
     // --worktree/-w: run this session in an isolated git worktree so parallel
     // agents don't collide on files. Creates .graff/worktrees/<name> on branch
     // worktree-<name> (from HEAD) and enters it; reuses it if it already exists.

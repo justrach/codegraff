@@ -200,6 +200,25 @@ fn refund(len: usize) ?[]const u8 {
 /// line count of anything else. A payload that merely starts with `{` is not
 /// called JSON — `jsonShape` scans it to `end_of_document` first — so the hint
 /// never sends the model looking for a key that is not there.
+/// #452: drop handle files whose owning session is gone. Same trigger as
+/// #409's session sweep. Files whose name starts with the live run id stay.
+pub fn sweepOrphans(io: Io, dir: Io.Dir, arena: Allocator, current: []const u8) void {
+    var it_dir = dir.openDir(io, handles_dir, .{ .iterate = true }) catch return;
+    defer it_dir.close(io);
+    var it = it_dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind == .directory) continue;
+        const name = entry.name;
+        if (current.len > 0 and std.mem.startsWith(u8, name, current)) continue;
+        const owner_end = std.mem.indexOfScalar(u8, name, '-') orelse continue;
+        const owner = name[0..owner_end];
+        const session_file = std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ @import("session_index.zig").sessions_dir, owner, @import("session_index.zig").session_ext }) catch continue;
+        if (dir.statFile(io, session_file, .{})) |_| continue else |_| {}
+        const rel = std.fmt.allocPrint(arena, "{s}/{s}", .{ handles_dir, name }) catch continue;
+        dir.deleteFile(io, rel) catch {};
+    }
+}
+
 pub fn shapeHint(gpa: Allocator, arena: Allocator, text: []const u8) []const u8 {
     if (jsonShape(gpa, arena, text)) |hint| return hint;
     return std.fmt.allocPrint(arena, "{d} lines", .{lineCount(text)}) catch "shape unknown";
@@ -464,4 +483,26 @@ test "#440: the run byte budget bounds the handle dir, and over it the result is
     try std.testing.expect(std.mem.indexOf(u8, second.text, "No handle could be written") != null);
     try std.testing.expect(second.text.len <= 1024);
     try std.testing.expect(tmp.dir.statFile(io, handles_dir ++ "/run-1.txt", .{}) == error.FileNotFound);
+}
+
+test "#452: sweepOrphans drops handles whose session file is gone" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try tmp.dir.createDirPath(io, handles_dir);
+    try tmp.dir.createDirPath(io, @import("session_index.zig").sessions_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = handles_dir ++ "/dead-0.txt", .data = "gone" });
+    try tmp.dir.writeFile(io, .{ .sub_path = handles_dir ++ "/kept-0.txt", .data = "keep" });
+    try tmp.dir.writeFile(io, .{ .sub_path = handles_dir ++ "/now-0.txt", .data = "live" });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = @import("session_index.zig").sessions_dir ++ "/kept" ++ @import("session_index.zig").session_ext,
+        .data = "{}",
+    });
+    sweepOrphans(io, tmp.dir, a, "now");
+    try std.testing.expect(tmp.dir.statFile(io, handles_dir ++ "/dead-0.txt", .{}) == error.FileNotFound);
+    _ = try tmp.dir.statFile(io, handles_dir ++ "/kept-0.txt", .{});
+    _ = try tmp.dir.statFile(io, handles_dir ++ "/now-0.txt", .{});
 }

@@ -67,6 +67,7 @@ pub const initCodexHome = helpers.initCodexHome;
 pub const initHome = credential_store.initHome; // #477: the kimi/xai half of the one-resolver pin
 pub const FreshKey = helpers.FreshKey;
 pub const takePersistError = helpers.takePersistError;
+pub const persistFailed = helpers.persistFailed;
 
 // #148: how long before an OAuth access token's expiry to proactively refresh
 // it — wider than the old 60s so a mid-session refresh has headroom before a

@@ -84,7 +84,10 @@ pub const Snapshots = struct {
             if (seen) continue; // earliest snapshot per path wins (= state before turn n)
             done.append(self.gpa, snap.path) catch {};
             switch (snap.before) {
-                .content => |b| Io.Dir.cwd().writeFile(self.io, .{ .sub_path = snap.path, .data = b }) catch continue,
+                .content => |b| Io.Dir.cwd().writeFile(self.io, .{ .sub_path = snap.path, .data = b }) catch {
+                    out.skipped += 1;
+                    continue;
+                },
                 // A delete that FAILED left the file exactly as the rewound
                 // turns wrote it, so it must not be counted as restored.
                 // FileNotFound is the one exception: something else already

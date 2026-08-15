@@ -485,3 +485,8 @@ test "openai and responses tools give a typeless MCP root schema type object (#2
     try std.testing.expectEqualStrings(composed, try renderOpenAITools(arena, composed));
     try std.testing.expectEqualStrings("not json", try renderOpenAITools(arena, "not json"));
 }
+
+test "#108: a composer line that names @[path] is persisted in input history" {
+    try std.testing.expect(util.rememberInput("@[/tmp/shot.png] look at this"));
+    try std.testing.expect(util.rememberInput("go on"));
+}

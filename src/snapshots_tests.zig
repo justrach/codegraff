@@ -162,3 +162,16 @@ test "/rewind: a file already gone when the rewind runs still counts as restored
     try std.testing.expectEqual(@as(usize, 1), rw.restored);
     try std.testing.expectEqual(@as(usize, 0), rw.skipped);
 }
+
+test "#406: a failed content write-back is skipped, not silently dropped from the tally" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var snaps = snapshots.Snapshots{ .gpa = gpa, .io = io };
+    defer snaps.deinit();
+    snaps.turn = 1;
+    // A path that cannot be written (empty name) fails writeFile.
+    snaps.record("", .{ .content = "x" });
+    const rw = snaps.restore(1);
+    try std.testing.expectEqual(@as(usize, 0), rw.restored);
+    try std.testing.expectEqual(@as(usize, 1), rw.skipped);
+}

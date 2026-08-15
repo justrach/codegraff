@@ -122,7 +122,16 @@ pub fn writeCodexAuthAt(io: Io, arena: Allocator, codex_home: []const u8, id_tok
         if (existing.get("tokens")) |t| if (t == .object) {
             tokens = t.object;
         };
-    }
+    } else if (Io.Dir.cwd().statFile(io, path, .{})) |_| {
+        // File exists but was unreadable (torn write, EIO). Retry once, then
+        // refuse a destructive empty rewrite that would drop co-owned fields.
+        if (readCodexJson(io, arena, path)) |existing| {
+            object = existing;
+            if (existing.get("tokens")) |t| if (t == .object) {
+                tokens = t.object;
+            };
+        } else return error.CodexAuthUnreadable;
+    } else |_| {}
     try tokens.put(arena, "id_token", .{ .string = id_token });
     try tokens.put(arena, "access_token", .{ .string = access });
     try tokens.put(arena, "refresh_token", .{ .string = refresh });
@@ -250,6 +259,10 @@ pub var persist_error: ?[]const u8 = null;
 pub fn takePersistError() ?[]const u8 {
     defer persist_error = null;
     return persist_error;
+}
+
+pub fn persistFailed() bool {
+    return persist_error != null;
 }
 
 /// Persist a refreshed credential, retrying once. The failures that reach here
@@ -543,4 +556,27 @@ pub fn openBrowser(io: Io, url: []const u8) void {
         &.{ "xdg-open", url };
     var child = std.process.spawn(io, .{ .argv = argv, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch return;
     _ = child.wait(io) catch {};
+}
+
+test "#404: persistFailed stays set until takePersistError drains it" {
+    persist_error = "AccessDenied";
+    try std.testing.expect(persistFailed());
+    try std.testing.expectEqualStrings("AccessDenied", takePersistError().?);
+    try std.testing.expect(!persistFailed());
+}
+
+test "#404: writeCodexAuthAt refuses to clobber an unreadable existing auth.json" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
+    const home = try std.fs.path.join(arena, &.{ base, "codex" });
+    try Io.Dir.cwd().createDirPath(io, home);
+    const path = try codexAuthPath(arena, home);
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "{not-json" });
+    try std.testing.expectError(error.CodexAuthUnreadable, writeCodexAuthAt(io, arena, home, "id", "acc", "ref", "acct"));
 }

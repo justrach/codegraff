@@ -54,6 +54,7 @@ const noSymlinkEscape = approvals_mod.noSymlinkEscape;
 const jobs = @import("jobs.zig");
 const runCapped = jobs.runCapped;
 const runCappedWithOptions = jobs.runCappedWithOptions;
+const exec_bash_stream = @import("exec_bash_stream.zig");
 const toolRunOptions = jobs.toolRunOptions; // #266/#198: own the child's process group
 const spawnJob = jobs.spawnJob;
 const jobOutput = jobs.jobOutput;
@@ -76,7 +77,8 @@ const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-loc
 const native_fold = @import("native_fold.zig"); // folded native power tools: layer-2 refusal until load_tool_schemas unfolds
 const vision = @import("vision.zig"); // read_file stages images like MCP image results (#249)
 const input_util = @import("input_util.zig");
-const imagegen = @import("imagegen.zig"); // #352: the codex-gated image tool (advertising lives in schema.zig/tool_gates.zig)
+const imagegen = @import("imagegen.zig");
+const view_image = @import("view_image.zig");
 
 /// Wall-clock ceiling for one *subagent* bash command. Subagents run on pool
 /// threads with no TTY, so there is no Esc to kill a runaway command — without
@@ -325,13 +327,11 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         }
         const sh = shellArgv(cmd);
         const deadline: u64 = if (ctx.from_sub) subagent_bash_deadline_ms else 0;
-        // #276 P0-1: a worktree-isolated agent's bash calls run pinned to its
-        // own worktree — via std.process.Child.Cwd, per spawn, never a
-        // process-wide chdir — so parallel siblings never share a cwd.
-        // #266/#198: toolRunOptions also gives the command its own process
-        // group, so an Esc cancel or the deadline kills what it spawned (ssh,
-        // xcodebuild) instead of leaving it running against a dead turn.
-        const run = try runCappedWithOptions(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, deadline, toolRunOptions(ctx.agent_cwd));
+        // Isolated cwd + process group.
+        var opts = toolRunOptions(ctx.agent_cwd);
+        var stream = exec_bash_stream.Ctx{ .io = io, .w = ctx.out };
+        exec_bash_stream.attach(&opts, !ctx.from_sub, &stream);
+        const run = try runCappedWithOptions(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, deadline, opts);
         defer gpa.free(run.stdout);
         defer gpa.free(run.stderr);
 
@@ -545,9 +545,8 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     // Loads one SKILL.md body (or lists them). Rescans on every call, so a
     // skill written this session is loadable without a restart.
     if (std.mem.eql(u8, call.name, "skill")) return skill_docs.execSkill(gpa, io, input);
-    // #352: codex-gated. execImagegen answers a call that was never advertised
-    // (an unavailable session) with the same honest error it gives the model.
     if (std.mem.eql(u8, call.name, imagegen.tool_name)) return imagegen.execImagegen(ctx, input);
+    if (std.mem.eql(u8, call.name, view_image.name)) return view_image.exec(ctx, input);
     if (std.mem.eql(u8, call.name, "subagent")) return execSubagent(ctx, input);
     if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
     if (std.mem.eql(u8, call.name, "agent_output")) {
@@ -594,6 +593,7 @@ test "internal learning respects the parent privacy ceiling" {
 }
 
 test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, so the compiled-in references live here (the reach check diffs the test binary, not which file holds the line)
+    _ = exec_bash_stream;
     _ = @import("codedbpro_report.zig");
     _ = @import("tool_balance.zig");
 }

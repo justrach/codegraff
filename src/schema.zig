@@ -17,7 +17,8 @@ const skill_docs = @import("skill_docs.zig"); // SKILL.md playbooks: the `skill`
 const peer_channel = @import("peer_channel.zig"); // #469: the peer_message tool's name/desc/schema live there
 const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-local-tools gate (layer 1 lives here, layer 2 in exec.zig)
 const tool_gates = @import("tool_gates.zig"); // #352: the additive twin — optional tools that only exist when startup found their backing capability
-const imagegen = @import("imagegen.zig"); // #352: name/desc/schema as plain strings, like skill_docs, so this catalog needs one entry and no import cycle
+const imagegen = @import("imagegen.zig");
+const view_image = @import("view_image.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: which MCP tools are served schema-first vs description-only, and the `load_tool_schemas` strings
 const native_fold = @import("native_fold.zig"); // folded native power tools: same two-phase pattern for the harness's own catalog
 const render = @import("schema_render.zig"); // the comptime provider-tool renderers moved out when #352's optional-tool catalogs doubled the number held here (600-line ceiling)
@@ -239,6 +240,7 @@ pub fn isMetaName(name: []const u8) bool {
 // several images is one subagent per image, each calling `imagegen` once.
 const optional_specs = [_]ToolSpec{
     .{ .name = imagegen.tool_name, .desc = imagegen.tool_desc, .schema = imagegen.tool_schema },
+    .{ .name = view_image.name, .desc = view_image.desc, .schema = view_image.schema },
 };
 
 // Comptime-rendered tool lists for subagents (base only, both formats).

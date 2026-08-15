@@ -225,10 +225,13 @@ pub fn find(items: []const Item, id: []const u8) ?Item {
 /// of file so a whole line lands at once (serve_events.EventLog's shape).
 fn appendLine(io: Io, line: []const u8) bool {
     Io.Dir.cwd().createDirPath(io, dir) catch {};
-    const f = Io.Dir.cwd().createFile(io, path, .{ .truncate = false }) catch return false;
+    const f = Io.Dir.cwd().createFile(io, path, .{ .truncate = false, .read = true }) catch return false;
     defer f.close(io);
-    const st = f.stat(io) catch return false;
-    f.writePositionalAll(io, line, st.size) catch return false;
+    const end: u64 = if (f.stat(io)) |st| st.size else |_| blk: {
+        const st = Io.Dir.cwd().statFile(io, path, .{}) catch return false;
+        break :blk st.size;
+    };
+    f.writePositionalAll(io, line, end) catch return false;
     return true;
 }
 

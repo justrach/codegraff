@@ -83,10 +83,8 @@ pub fn passEnvFor(arena: Allocator, provider_id: []const u8) ![]const []const u8
 }
 
 fn codexHome(io: Io, arena: Allocator, environ: *const std.process.Environ.Map, home: []const u8) ?[]const u8 {
-    const path = environ.get("CODEX_HOME") orelse blk: {
-        if (home.len == 0) return null;
-        break :blk std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch return null;
-    };
+    if (environ.get("CODEX_HOME")) |v| oauth.initCodexHome(arena, v, home);
+    const path = oauth.codexHomeDir(arena, home) orelse return null;
     _ = oauth.loadCodexAuthFrom(io, arena, path) orelse return null;
     return path;
 }

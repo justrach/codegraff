@@ -201,6 +201,7 @@ const Leftover = struct { name: []const u8, owner: []const u8, is_dir: bool };
 /// the session, and the next run collects what the rename left behind.
 pub fn sweepSessionsOnce(io: Io, dir: Io.Dir, arena: Allocator, current: []const u8) void {
     sweepOnce(.{ .io = io, .dir = dir, .base_abs = "" }, arena, current);
+    @import("tool_handle.zig").sweepOrphans(io, dir, arena, current);
 }
 
 fn sweepOnce(sink: Sink, arena: Allocator, current: []const u8) void {

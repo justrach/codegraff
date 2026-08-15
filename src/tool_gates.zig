@@ -22,6 +22,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const imagegen = @import("imagegen.zig");
+const view_image = @import("view_image.zig");
 
 /// One optional built-in and the flag that decides whether it is advertised.
 pub const Gate = struct {
@@ -35,6 +36,7 @@ pub const gates = [_]Gate{
     // only engine that actually renders an image — the hosted `image_gen`
     // tool is server-side and never fires outside the Codex app).
     .{ .name = imagegen.tool_name, .flag = &imagegen.available },
+    .{ .name = view_image.name, .flag = &view_image.available },
 };
 
 /// A name test only, independent of whether the tool is currently available.
@@ -97,13 +99,19 @@ test { // the served catalogs' wire-compatibility guard (an unreferenced module'
 
 test "#352: an optional tool is advertised only while its flag is set; other names are unaffected" {
     const saved = imagegen.available;
-    defer imagegen.available = saved;
+    const saved_view = view_image.available;
+    defer {
+        imagegen.available = saved;
+        view_image.available = saved_view;
+    }
 
     try std.testing.expect(isOptional("imagegen"));
+    try std.testing.expect(isOptional("view_image"));
     try std.testing.expect(!isOptional("bash"));
     try std.testing.expect(!isOptional("skill"));
 
     imagegen.available = false;
+    view_image.available = false;
     try std.testing.expect(!advertised("imagegen"));
     try std.testing.expect(!anyAvailable());
     try std.testing.expect(blocks("imagegen"));
@@ -149,11 +157,16 @@ test "#352: neither the root nor the SUBAGENT catalog mentions imagegen until it
     const arena = arena_state.allocator();
 
     const saved = imagegen.available;
-    defer imagegen.available = saved;
+    const saved_view = view_image.available;
+    defer {
+        imagegen.available = saved;
+        view_image.available = saved_view;
+    }
 
     const kinds = [_]@import("provider.zig").Provider.Kind{ .anthropic, .openai, .responses };
 
     imagegen.available = false;
+    view_image.available = false;
     const closed = try schema.effectiveRootSpecs(arena);
     for (closed) |spec| try std.testing.expect(!std.mem.eql(u8, spec.name, "imagegen"));
     // The subagent fan-out is the documented way to make several images, so a

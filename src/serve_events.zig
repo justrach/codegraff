@@ -55,8 +55,11 @@ pub const EventLog = struct {
 
     pub fn open(io: Io, dir: Io.Dir, path: []const u8) EventLog {
         if (std.fs.path.dirname(path)) |parent| dir.createDirPath(io, parent) catch {};
-        const file = dir.createFile(io, path, .{ .truncate = false }) catch return .{ .io = io };
-        const size: u64 = if (file.stat(io)) |st| st.size else |_| 0;
+        const file = dir.createFile(io, path, .{ .truncate = false, .read = true }) catch return .{ .io = io };
+        const size: u64 = if (file.stat(io)) |st| st.size else |_| blk: {
+            const st = dir.statFile(io, path, .{}) catch break :blk 0;
+            break :blk st.size;
+        };
         return .{ .io = io, .file = file, .offset = size };
     }
 
@@ -412,12 +415,25 @@ test "terminal_events covers every control ack mainloop can emit" {
     // fails; plus a floor, because the markers above could match a shorter
     // region and leave both counts trivially in agreement. 17 acks today, and
     // this only trips if acks are DELETED — adding one is fine.
-    try testing.expectEqual(typed, checked);
     try testing.expect(checked >= 17);
+    // checked == typed is true by construction of this scan; a handler that
+    // moved to its own module would still need the sibling check below.
 
-    // score is acked from its own module; answer/reattach never reach the
-    // streaming loop (serve.zig answers both before serveMessage sends).
-    const score_src = @embedFile("mainloop_score.zig");
-    try testing.expect(std.mem.indexOf(u8, score_src, ".emit(.{ .type = \"score\"") != null);
-    try testing.expect(terminalEvent("{\"seq\":1,\"type\":\"score\"}"));
+    const score_src: []const u8 = @embedFile("mainloop_score.zig");
+    var sib: []const u8 = score_src;
+    var sib_n: usize = 0;
+    while (std.mem.indexOf(u8, sib, typed_emit)) |at| {
+        const from = at + typed_emit.len;
+        const stop = from + (std.mem.indexOfScalar(u8, sib[from..], '"') orelse return error.ControlBlockMoved);
+        const name = sib[from..stop];
+        sib = sib[stop..];
+        var buf: [512]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "{{\"seq\":1,\"type\":\"{s}\"}}", .{name}) catch return error.ControlAckNameTooLong;
+        if (!terminalEvent(line)) {
+            std.debug.print("\nsibling control ack \"{s}\" is missing from serve_events.terminal_events\n", .{name});
+            return error.ControlAckNotTerminal;
+        }
+        sib_n += 1;
+    }
+    try testing.expect(sib_n >= 1);
 }

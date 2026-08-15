@@ -186,6 +186,58 @@ pub fn currentIdentity(gpa: Allocator, io: Io, arena: Allocator) Identity {
     return canonicalIdentity(git_dir, common, cwd);
 }
 
+const lease_rel = ".graff/owner.json";
+
+pub fn loadOwner(io: Io, arena: Allocator) ?Owner {
+    const body = Io.Dir.cwd().readFileAlloc(io, lease_rel, arena, .limited(4096)) catch return null;
+    const v = std.json.parseFromSliceLeaky(std.json.Value, arena, body, .{ .allocate = .alloc_always }) catch return null;
+    if (v != .object) return null;
+    const o = v.object;
+    const pid = o.get("pid") orelse return null;
+    if (pid != .integer) return null;
+    return .{
+        .pid = @intCast(pid.integer),
+        .start_id = if (o.get("start_id")) |s| (if (s == .integer) @intCast(s.integer) else 0) else 0,
+        .session_id = if (o.get("session_id")) |s| (if (s == .string) s.string else "") else "",
+        .identity = if (o.get("identity")) |s| (if (s == .string) s.string else "") else "",
+        .goal = if (o.get("goal")) |s| (if (s == .string) s.string else "") else "",
+        .last_seen_ms = if (o.get("last_seen_ms")) |s| (if (s == .integer) s.integer else 0) else 0,
+    };
+}
+
+pub fn saveOwner(io: Io, arena: Allocator, rec: Owner) void {
+    Io.Dir.cwd().createDirPath(io, ".graff") catch {};
+    var aw: Io.Writer.Allocating = .init(arena);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    s.write(.{
+        .pid = rec.pid,
+        .start_id = rec.start_id,
+        .session_id = rec.session_id,
+        .identity = rec.identity,
+        .goal = rec.goal,
+        .last_seen_ms = rec.last_seen_ms,
+    }) catch return;
+    Io.Dir.cwd().writeFile(io, .{ .sub_path = lease_rel, .data = aw.writer.buffered(), .flags = .{ .read = true } }) catch {};
+}
+
+pub fn preflight(gpa: Allocator, io: Io, arena: Allocator, session_id: []const u8, now_ms: i64) ?[]const u8 {
+    const id = currentIdentity(gpa, io, arena);
+    if (id.id.len == 0) return null;
+    const me = selfOwner(io, id.id, session_id, now_ms);
+    if (loadOwner(io, arena)) |rec| {
+        const live = proc_identity.probe(io, rec.pid);
+        switch (ownerVerdict(rec, id.id, me.pid, live)) {
+            .live_foreign, .live_unverified => {
+                saveOwner(io, arena, me);
+                return duplicateOwnerWarning(arena, rec, now_ms - rec.last_seen_ms);
+            },
+            else => {},
+        }
+    }
+    saveOwner(io, arena, me);
+    return null;
+}
+
 pub fn identityLine(arena: Allocator, id: Identity) []const u8 {
     const kind = switch (id.kind) {
         .main_checkout => "main checkout",
@@ -304,4 +356,21 @@ test "identityLine: says which kind of checkout, and stays honest when unknown" 
     try std.testing.expect(std.mem.indexOf(u8, identityLine(a, .{ .id = "/repo/.git", .kind = .main_checkout }), "main checkout") != null);
     try std.testing.expect(std.mem.indexOf(u8, identityLine(a, .{ .id = "/repo/.git/worktrees/w", .kind = .linked_worktree }), "linked worktree") != null);
     try std.testing.expect(std.mem.indexOf(u8, identityLine(a, .{}), "unknown") != null);
+}
+
+test "#320: preflight records this process and is silent when we are the owner" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var orig = try Io.Dir.cwd().openDir(io, ".", .{});
+    defer orig.close(io);
+    defer _ = std.posix.system.fchdir(orig.handle);
+    if (std.posix.system.fchdir(tmp.dir.handle) != 0) return error.ChdirFailed;
+    try std.testing.expect(preflight(gpa, io, arena, "sess-a", 1_000) == null);
+    try std.testing.expect(preflight(gpa, io, arena, "sess-a", 2_000) == null);
+    try std.testing.expect(loadOwner(io, arena) != null);
 }

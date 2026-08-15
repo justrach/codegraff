@@ -92,6 +92,9 @@ pub fn refreshLoginKeyBeforeSend(self: *Agent) void {
     // Only adopt on a real CHANGE: an unchanged credential must not churn the
     // session arena, nor hand the WS transport latch back on every request.
     if (std.mem.eql(u8, fresh.key, self.provider.api_key)) return;
+    // #404: a failed persist left the live token only in memory. Do not
+    // replace it with an older on-disk credential.
+    if (oauth.persistFailed() and !std.mem.eql(u8, fresh.key, self.provider.api_key)) return;
     adoptFreshAuth(self, fresh);
 }
 

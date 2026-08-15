@@ -16,8 +16,8 @@
 //! finished and there is a real outcome to distil. Not every turn, not every
 //! eval, not every subagent report. The call carries no tools (`request(null)`
 //! — the title-generation shape), so it cannot fan out, and it runs on the
-//! WORKER seat (childProvider), inheriting the same routing every subagent
-//! gets rather than reserving a model of its own.
+//! ROOT seat (self.provider). A worker pin that is a different provider used
+//! to refuse the call and look like a 0 ms success (#388).
 //!
 //! SCOPE CUT, stated: distilling from FAILED runs, and per-item fitness
 //! attribution (retiring bullets whose attributed score goes negative), are
@@ -32,7 +32,6 @@ const Allocator = std.mem.Allocator;
 const Agent = @import("agent.zig").Agent;
 const playbook = @import("playbook.zig");
 const playbook_glue = @import("playbook_glue.zig");
-const subagent_run = @import("subagent_run.zig");
 const title = @import("title.zig");
 const trace = @import("trace.zig");
 const util = @import("util.zig");
@@ -118,7 +117,10 @@ fn askModel(self: *Agent, prompt: []const u8) ?[]const u8 {
     var arena_state = std.heap.ArenaAllocator.init(self.gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const seat = subagent_run.childProvider(self.provider, self.subagent_provider, self.subagent_cross_provider);
+    // #388: reflect ON the root seat. A worker-tier pin that is a different
+    // provider (and is refused without --allow-cross-provider-subagents) used
+    // to fail before any HTTP call and look like a 0ms success on the wrong model.
+    const seat = self.provider;
     var agent: Agent = .{
         .gpa = self.gpa,
         .arena = arena,
@@ -137,7 +139,10 @@ fn askModel(self: *Agent, prompt: []const u8) ?[]const u8 {
     };
     defer agent.tools_used.deinit(self.gpa);
     agent.messages.append(textMessage(arena, "user", prompt) catch return null) catch return null;
-    const root = agent.request(null) catch return null;
+    const root = agent.request(null) catch {
+        if (self.tracer) |tr| tr.note("playbook", "reflector call failed");
+        return null;
+    };
     return self.arena.dupe(u8, title.assistantText(seat.kind, root)) catch null;
 }
 
@@ -172,4 +177,10 @@ pub fn afterEval(self: *Agent, note: []const u8, score: f64, output: []const u8)
     if (kept == 0) return;
     playbook_glue.refreshRoot(self, self.arena);
     self.say("  📗 playbook: kept {d} learned insight(s) from this run\n", .{kept}) catch {};
+}
+
+test "#388: reflector seats the root provider, not a worker pin" {
+    const src = @embedFile("playbook_reflect.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "const seat = self.provider;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "reflector call failed") != null);
 }
