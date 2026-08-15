@@ -1,0 +1,8 @@
+{
+  "id": "exact-reply",
+  "category": "instruction-following",
+  "prompt": "Reply with exactly: pong",
+  "files": {},
+  "check": "grep -qi pong \"$ANSWER_FILE\"",
+  "timeout_s": 120
+}

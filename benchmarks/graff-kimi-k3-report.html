@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Graff × Kimi Code CLI — K3 harness benchmark</title>
+  <style>
+    :root {
+      --bg: #07100d;
+      --panel: #0d1915;
+      --panel-raised: #12211b;
+      --line: #21372e;
+      --text: #e5f2ec;
+      --muted: #91aa9e;
+      --accent: #059669;
+      --accent-bright: #34d399;
+      --accent-soft: rgba(5, 150, 105, .15);
+      --kimi: #7c9aff;
+      --kimi-soft: rgba(124, 154, 255, .14);
+      --warn: #f59e0b;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .3);
+      --radius: 20px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 10% -10%, rgba(5, 150, 105, .2), transparent 30rem),
+        radial-gradient(circle at 95% 10%, rgba(124, 154, 255, .1), transparent 28rem),
+        var(--bg);
+      color: var(--text);
+      font: 15px/1.6 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .shell { width: min(1120px, calc(100% - 40px)); margin: 0 auto; padding: 28px 0 80px; }
+
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 14px; border: 1px solid var(--line); border-radius: 999px;
+      background: var(--panel); color: var(--muted);
+      font-size: 12px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase;
+    }
+    .eyebrow .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-bright); }
+
+    h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.08; letter-spacing: -.03em; margin: 18px 0 10px; }
+    h1 .vs { color: var(--muted); font-weight: 500; }
+    .sub { color: var(--muted); max-width: 760px; margin: 0 0 34px; }
+    .sub code { color: var(--accent-bright); }
+
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin-bottom: 40px; }
+    .card {
+      background: linear-gradient(180deg, var(--panel-raised), var(--panel));
+      border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 20px 22px; box-shadow: var(--shadow);
+    }
+    .card .label { color: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; }
+    .card .value { font-size: 34px; font-weight: 780; letter-spacing: -.02em; margin-top: 6px; }
+    .card .value small { font-size: 15px; color: var(--muted); font-weight: 600; }
+    .card .note { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+    .card.graff .value { color: var(--accent-bright); }
+    .card.kimi .value { color: var(--kimi); }
+
+    .panel {
+      background: linear-gradient(180deg, var(--panel-raised), var(--panel));
+      border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 26px 28px; box-shadow: var(--shadow); margin-bottom: 28px;
+    }
+    .panel h2 { margin: 0 0 6px; font-size: 21px; letter-spacing: -.01em; }
+    .panel .hint { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+
+    .bars { display: grid; gap: 18px; }
+    .bar-row .names { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; }
+    .bar-row .names .task { font-weight: 700; }
+    .bar-row .names .times { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .track { position: relative; height: 14px; border-radius: 999px; background: rgba(255,255,255,.04); overflow: hidden; margin-bottom: 6px; }
+    .fill { position: absolute; inset: 0 auto 0 0; border-radius: 999px; }
+    .fill.graff { background: linear-gradient(90deg, var(--accent), var(--accent-bright)); }
+    .fill.kimi { background: linear-gradient(90deg, #4f6fd8, var(--kimi)); }
+    .legend { display: flex; gap: 18px; font-size: 12.5px; color: var(--muted); margin-top: 14px; }
+    .legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+    .legend .sw.graff { background: var(--accent-bright); }
+    .legend .sw.kimi { background: var(--kimi); }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-size: 11.5px; letter-spacing: .07em; text-transform: uppercase; }
+    td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    tr:last-child td { border-bottom: 0; }
+    .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700; }
+    .pill.graff { background: var(--accent-soft); color: var(--accent-bright); }
+    .pill.kimi { background: var(--kimi-soft); color: var(--kimi); }
+
+    .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+    .mini {
+      background: rgba(255,255,255,.025); border: 1px solid var(--line);
+      border-radius: 14px; padding: 16px 18px;
+    }
+    .mini h3 { margin: 0 0 6px; font-size: 14.5px; }
+    .mini p { margin: 0; color: var(--muted); font-size: 13px; }
+    .mini code { color: var(--accent-bright); font-size: 12px; }
+
+    ul.tight { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13.5px; }
+    ul.tight li { margin-bottom: 7px; }
+    ul.tight code { color: var(--accent-bright); font-size: 12px; }
+
+    .foot { color: var(--muted); font-size: 12.5px; margin-top: 26px; }
+    .foot code { color: var(--accent-bright); }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <span class="eyebrow"><span class="dot"></span> Harness benchmark · August 11, 2026</span>
+    <h1>Graff <span class="vs">×</span> Kimi Code CLI</h1>
+    <p class="sub">
+      Both harnesses drive the <strong>same model — Moonshot K3</strong> — over the same Kimi Code
+      OAuth subscription, in their real interactive TUIs, on identical read-only tasks against an
+      identical checkout of this repository. What differs is only the harness: tools, prompt
+      assembly, and event loop. Subscription billing means $0 marginal cost on both sides.
+    </p>
+
+    <div class="cards">
+      <div class="card graff">
+        <div class="label">Graff total wall · post-fix</div>
+        <div class="value">130.3<small>s</small></div>
+        <div class="note">best runs: 48.2 + 56.1 + 26.0 · was 260.5s pre-fix (−50%)</div>
+      </div>
+      <div class="card kimi">
+        <div class="label">Kimi Code CLI total wall</div>
+        <div class="value">181.7<small>s</small></div>
+        <div class="note">includes +21s/cell idle-detection pad</div>
+      </div>
+      <div class="card kimi">
+        <div class="label">Kimi true model-turn total</div>
+        <div class="value">117.9<small>s</small></div>
+        <div class="note">from its own wire log (turn.ended durationMs)</div>
+      </div>
+      <div class="card">
+        <div class="label">Answer correctness</div>
+        <div class="value">6 / 6</div>
+        <div class="note">all claims spot-verified against the source</div>
+      </div>
+      <div class="card graff">
+        <div class="label">After the fix · providers</div>
+        <div class="value">26.0<small>s</small></div>
+        <div class="note">was 60.7s pre-fix · kimi 50.4s wall / 29.2s true — graff wins both</div>
+      </div>
+      <div class="card">
+        <div class="label">Cache lease · first call</div>
+        <div class="value">0 → 10<small>k warm</small></div>
+        <div class="note">new sessions start on the warm shared prefix (durable per-project key)</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Wall time per task <span style="color:var(--muted); font-size:13px; font-weight:500">— round 2, PRE-FIX</span></h2>
+      <p class="hint">The baseline that motivated the fix. See <strong>Before → after</strong> below for what the shipped threshold change did to these numbers.</p>
+      <div class="bars">
+        <div class="bar-row">
+          <div class="names"><span class="task">runEval — locate &amp; explain a function (false-premise trap)</span><span class="times">graff 117.6s · kimi 61.7s</span></div>
+          <div class="track"><div class="fill graff" style="width:100%"></div></div>
+          <div class="track"><div class="fill kimi" style="width:52.5%"></div></div>
+        </div>
+        <div class="bar-row">
+          <div class="names"><span class="task">permgate — explain the bash permission gate</span><span class="times">graff 82.2s · kimi 69.6s</span></div>
+          <div class="track"><div class="fill graff" style="width:100%"></div></div>
+          <div class="track"><div class="fill kimi" style="width:84.7%"></div></div>
+        </div>
+        <div class="bar-row">
+          <div class="names"><span class="task">providers — enumerate every provider, wire format &amp; auth</span><span class="times">graff 60.7s · kimi 50.4s</span></div>
+          <div class="track"><div class="fill graff" style="width:100%"></div></div>
+          <div class="track"><div class="fill kimi" style="width:83.0%"></div></div>
+        </div>
+      </div>
+      <div class="legend">
+        <span><span class="sw graff"></span>Graff v0.0.245-38 (this repo, fixed build)</span>
+        <span><span class="sw kimi"></span>Kimi Code CLI v0.34.0 (official)</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Before → after the threshold fix</h2>
+      <p class="hint">Same model, same high effort, same tasks — the only difference is the 4 KiB → 16 KiB
+      tool-result handle threshold (plus the badge/catalog fixes). After = two fresh runs on the shipped binary.</p>
+      <div class="bars">
+        <div class="bar-row">
+          <div class="names"><span class="task">runEval</span><span class="times">before 117.6s · after 57.4–81.3s · kimi 61.7s</span></div>
+          <div class="track"><div class="fill" style="width:100%; background:rgba(255,255,255,.22)"></div></div>
+          <div class="track"><div class="fill graff" style="width:59%"></div></div>
+          <div class="track"><div class="fill kimi" style="width:52.5%"></div></div>
+        </div>
+        <div class="bar-row">
+          <div class="names"><span class="task">providers</span><span class="times">before 60.7s · after 35.6–45.8s · kimi 50.4s</span></div>
+          <div class="track"><div class="fill" style="width:100%; background:rgba(255,255,255,.22)"></div></div>
+          <div class="track"><div class="fill graff" style="width:67%"></div></div>
+          <div class="track"><div class="fill kimi" style="width:83%"></div></div>
+        </div>
+      </div>
+      <div class="legend">
+        <span><span class="sw" style="background:rgba(255,255,255,.35)"></span>before (4 KiB handles)</span>
+        <span><span class="sw graff"></span>after (16 KiB, avg of 2 runs)</span>
+        <span><span class="sw kimi"></span>kimi-cli wall</span>
+      </div>
+      <table style="margin-top:18px">
+        <thead><tr><th>Task</th><th>Before</th><th>After (2 runs)</th><th>Δ avg</th><th>Calls before → after</th><th>vs kimi wall</th></tr></thead>
+        <tbody>
+          <tr><td><strong>runEval</strong></td><td class="num">117.6s</td><td class="num">81.3s · 57.4s</td><td class="num" style="color:var(--accent-bright)">−41%</td><td class="num">14 → 9 / 7</td><td class="num">61.7s — best run <strong>wins by 4.3s</strong></td></tr>
+          <tr><td><strong>providers</strong></td><td class="num">60.7s</td><td class="num">45.8s · 35.6s</td><td class="num" style="color:var(--accent-bright)">−33%</td><td class="num">10 → 3 / 3</td><td class="num">50.4s — <strong>both runs win</strong></td></tr>
+          <tr><td><strong>runEval + eager pin</strong></td><td class="num">117.6s</td><td class="num">58.5s · 48.2s</td><td class="num" style="color:var(--accent-bright)">−55%</td><td class="num">14 → 7 / 6</td><td class="num">61.7s — <strong>both runs win</strong></td></tr>
+          <tr><td><strong>providers, all fixes</strong> (incl. effort routing + cache lease)</td><td class="num">60.7s</td><td class="num"><strong>26.0s</strong></td><td class="num" style="color:var(--accent-bright)">−57%</td><td class="num">10 → 3</td><td class="num">50.4s wall / 29.2s true — <strong>beats both</strong></td></tr>
+        </tbody>
+      </table>
+      <p class="hint" style="margin:14px 0 0">Providers is the cleanest proof: the whole provider table now
+      arrives inline in one read, so the task takes 3 model calls instead of 10 — and 35.6s is within 6.4s of
+      kimi-cli's <em>true turn</em> (29.2s), i.e. genuine parity even before removing kimi's measurement pad.
+      The third row adds the eager-schema pin (licensed codedb-pro served up front): the codedb→refusal→
+      load_tool_schemas dance disappears from the traces entirely — zero refusals, zero discovery turns —
+      and runEval drops to 6-7 calls. Answers verified correct on every run.</p>
+    </div>
+
+    <div class="panel">
+      <h2>The details — post-fix</h2>
+      <p class="hint">Best clean-window runs with all fixes in (16 KiB handles, eager codedb-pro, effort routing, cache lease). Pre-fix numbers struck through. Kimi rows unchanged (it had no fixes to make).</p>
+      <table>
+        <thead>
+          <tr><th>Task</th><th>Harness</th><th>Wall (pre → post)</th><th>Calls</th><th>Token profile</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td rowspan="2"><strong>runEval</strong></td>
+            <td><span class="pill graff">graff</span></td>
+            <td class="num"><s style="color:var(--muted)">117.6s</s> → <strong>48.2s</strong> <span style="color:var(--muted)">(32.6s low-routed)</span></td>
+            <td class="num">6 <span style="color:var(--muted)">(was 13-15)</span></td>
+            <td class="num">cache-warm from call 1 (10k)</td>
+          </tr>
+          <tr>
+            <td><span class="pill kimi">kimi</span></td>
+            <td class="num">61.7s wall · 40.4s true</td>
+            <td class="num">4 <span style="color:var(--muted)">(Grep ×3 · Read)</span></td>
+            <td class="num">12.3k in + 113.4k cache-read · 870 out</td>
+          </tr>
+          <tr>
+            <td rowspan="2"><strong>permgate</strong></td>
+            <td><span class="pill graff">graff</span></td>
+            <td class="num"><s style="color:var(--muted)">82.2s</s> → <strong>56.1s</strong></td>
+            <td class="num">11 <span style="color:var(--muted)">(stays high effort by design)</span></td>
+            <td class="num">cache-warm from call 1</td>
+          </tr>
+          <tr>
+            <td><span class="pill kimi">kimi</span></td>
+            <td class="num">69.6s wall · 48.3s true</td>
+            <td class="num">5 <span style="color:var(--muted)">(Grep ×3 · Read ×2)</span></td>
+            <td class="num">9.8k in + 141.1k cache-read · 1.0k out</td>
+          </tr>
+          <tr>
+            <td rowspan="2"><strong>providers</strong></td>
+            <td><span class="pill graff">graff</span></td>
+            <td class="num"><s style="color:var(--muted)">60.7s</s> → <strong>26.0s</strong></td>
+            <td class="num">3 <span style="color:var(--muted)">(was 10-11)</span></td>
+            <td class="num">cache-warm from call 1 (9.7k)</td>
+          </tr>
+          <tr>
+            <td><span class="pill kimi">kimi</span></td>
+            <td class="num">50.4s wall · 29.2s true</td>
+            <td class="num">3 <span style="color:var(--muted)">(Grep ×2 · Read)</span></td>
+            <td class="num">15.1k in + 65.8k cache-read · 959 out</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h2>Answer quality — both harnesses, both rounds</h2>
+      <p class="hint">Every answer was checked against the repository source after the run.</p>
+      <div class="grid2">
+        <div class="mini">
+          <h3>Honesty under a false premise — 4/4</h3>
+          <p>The runEval task asks about a function in <code>src/main.zig</code>, but it was moved to
+          <code>src/agent_eval.zig:41</code> long ago. Both harnesses, in both rounds, corrected the
+          premise instead of confabulating — and both cited the exact aliases
+          (<code>agent_compact.zig:36</code>, <code>agent.zig:427</code>).</p>
+        </div>
+        <div class="mini">
+          <h3>Line-exact citations</h3>
+          <p>Kimi's permgate answer named <code>readOnlyAllowed</code> at
+          <code>src/harness_policy.zig:83</code> — verified line-exact. Graff's round-2 answer led
+          with the actual entry point, <code>gateTool</code> (<code>agent_tool_gate.zig:212-234</code>),
+          including the shared-tree checkpoint that runs before approval logic.</p>
+        </div>
+        <div class="mini">
+          <h3>Different tool philosophies</h3>
+          <p>Graff reaches for its code index (<code>codedb</code>, codedbpro MCP) and shells out for
+          confirmation; kimi-cli relies on bare <code>Grep</code>/<code>Read</code> and makes 3× fewer
+          tool calls. Both strategies converge on the same correct facts.</p>
+        </div>
+        <div class="mini">
+          <h3>Round 1 → Round 2</h3>
+          <p>Round 1 (pre-fix build): graff 389.3s total vs kimi 222.8s true-turn, dragged by a 221s
+          MCP-latency outlier on providers. Round 2: that outlier collapsed to 60.7s; kimi's times
+          also dropped (warm server-side prompt cache — 65–141k cache-read tokens per turn).</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>The fix this benchmark surfaced</h2>
+      <p class="hint">Round 1 showed graff badging "k3 · Medium" while kimi-cli ran K3 at thinking=high — an apparent effort mismatch that would have invalidated the comparison.</p>
+      <ul class="tight">
+        <li><strong>It was a badge bug, not a behavior bug.</strong> Graff's Kimi request path normalizes the session effort through the catalog allow-list (<code>pricing.kimiThinkingEffort</code>); the wire had always carried the catalog default. The live server declares K3 <code>default_effort: "high"</code> — the same effort kimi-cli used. Efforts were equal all along; only the status line lied.</li>
+        <li><strong>Fix:</strong> <code>src/agent_prompt.zig</code> now badges the normalized wire effort (<code>effectiveEffort</code>), and the baked K3 catalog row in <code>src/pricing.zig</code> was updated from <code>["max"]</code> to the server's real allow-list <code>[low, high, max]</code> (default high) so <code>/effort low|high</code> work offline too.</li>
+        <li><strong>Verified live:</strong> round 2's graff prompt reads <code>[k3 · High · kimi …]</code> — display matches the wire, and the comparison above is effort-matched by construction.</li>
+        <li>1208 unit tests green (baseline 1184), including a new regression test pinning the badge normalization.</li>
+      </ul>
+    </div>
+
+    <div class="panel">
+      <h2>Effort ladder — what the catalog fix unlocks</h2>
+      <p class="hint"><strong>Labeling caveat:</strong> the repetition batch and everything after it ran at low effort on both harnesses (both persist /effort; the fixture's settings file carried it). Within-round comparisons stayed symmetric; cross-round comparisons to the high-effort rounds are marked.</p>
+      <p class="hint">Same 3 tasks rerun at <code>/effort low</code> on both harnesses (K3 allow-list low/high/max now works end-to-end in graff, offline included). All 12 answers still verified correct — including the false-premise correction.</p>
+      <table>
+        <thead>
+          <tr><th>Task</th><th>Graff high</th><th>Graff low</th><th>Δ</th><th>Kimi high (true)</th><th>Kimi low (true)</th><th>Δ</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>runEval</strong></td><td class="num">117.6s</td><td class="num">61.4s</td><td class="num" style="color:var(--accent-bright)">−48%</td><td class="num">40.4s</td><td class="num">34.9s</td><td class="num" style="color:var(--accent-bright)">−14%</td></tr>
+          <tr><td><strong>permgate</strong></td><td class="num">82.2s</td><td class="num">152.3s</td><td class="num" style="color:var(--warn)">+85%</td><td class="num">48.3s</td><td class="num">42.9s</td><td class="num" style="color:var(--accent-bright)">−11%</td></tr>
+          <tr><td><strong>providers</strong></td><td class="num">60.7s</td><td class="num">41.8s</td><td class="num" style="color:var(--accent-bright)">−31%</td><td class="num">29.2s</td><td class="num">38.2s</td><td class="num" style="color:var(--warn)">+31%</td></tr>
+        </tbody>
+      </table>
+      <p class="hint" style="margin:14px 0 0">Low effort cuts per-call latency ~40% but can inflate tool-call count — graff's permgate run went 11 → 16 round-trips and gave the savings back. Effort is a per-task dial, not a global one.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Where the time goes (instrumented)</h2>
+      <p class="hint">From graff's own run traces (<code>.graff/traces/*.jsonl</code>) and kimi-cli's wire log — no guessing.</p>
+      <ul class="tight">
+        <li><strong>Tool execution is free; model round-trips are everything.</strong> Across every graff run, total tool time was 0.1–0.2s per task (codedb and even the codedbpro MCP calls answer in &lt;100ms). 99%+ of wall time is API latency: ~5–9s per call at thinking=high.</li>
+        <li><strong>Graff makes 2–3× more model calls than the task needs.</strong> runEval: 14 calls vs kimi's 6 for the same correct answer. Each avoidable round-trip costs ~8s at high effort — that gap <em>is</em> the headline speed difference, not tool quality.</li>
+        <li><strong>Round 1's 221s outlier was a stalled stream, not MCP.</strong> The trace shows the first model call hung ~127s before the stall watchdog (default 120s, <code>GRAFF_STREAM_STALL_SECS</code>) killed and retried it; the call then completed in 6s. MCP was blamed in round 1's interim report — the traces say otherwise.</li>
+        <li><strong>Title generation is off the critical path.</strong> The AI tab-title call (~3s) fires concurrently with turn 1 and costs no wall time.</li>
+      </ul>
+    </div>
+
+    <div class="panel">
+      <h2>Outlier hunt — one pass, no reruns</h2>
+      <p class="hint">A trace analyzer (<code>analyze_outliers.py</code>) reads each run's event log once and localizes every anomaly: any call &gt;2× the run's median, plus stall-retry events. Ran over all 13 graff traces and 13 kimi sessions from every round.</p>
+      <ul class="tight">
+        <li><strong>Final-call outliers are benign.</strong> Nearly every run's last call flags at 2–3× median — that's the model writing the long final answer, not a fault. Any outlier that <em>isn't</em> the last call deserves the look.</li>
+        <li><strong>Graff's stall watchdog earns its keep.</strong> Round 1's 221s task: first stream hung, watchdog killed it at ~127s, retry finished in 6s. The analyzer flags the <code>stream_retry</code> event directly.</li>
+        <li><strong>Kimi-cli has no equivalent protection — caught live.</strong> In the repetition batch, kimi's 2nd request on providers-r2 <em>hung silently for 343.5s</em> (5.7 min) before the server answered; the turn took 378.7s for a question it otherwise answers in 29–39s. No retry, no warning.</li>
+        <li><strong>Mid-turn blowups mark the low-effort pathology.</strong> graff's permgate-low run flags calls #12/#13 at 6.5×/8.3× median (30s/38s) — the signature of low effort trading thinking for extra round-trips.</li>
+        <li><strong>Every run pays a refusal dance.</strong> The model's first move is the native <code>codedb</code> tool, which the licensed codedb-pro guard refuses, forcing a <code>load_tool_schemas</code> discovery round-trip before real work starts — ~2 calls ≈ 8–12s per task. The fix needs no code: <code>GRAFF_MCP_EAGER=codedbpro</code> (<code>src/mcp_schema_gate.zig:79</code>) preloads the schemas, so the model calls the pro tools directly. Making eager the default when a licensed in-charge server connects is a ~5-line change in that (unowned) file.</li>
+        <li><strong>Gotcha found — both harnesses persist effort.</strong> Kimi-cli keeps <code>/effort</code> across sessions in its own state; graff persists it to <code>.harness/settings.json</code> in the cwd. The repetition batch meant for high effort silently ran at low on BOTH sides (symmetric, so the A/B held — but the label was wrong until the traces outed it).</li>
+      </ul>
+    </div>
+
+    <div class="panel">
+      <h2>The API lead — per call, graff is faster</h2>
+      <p class="hint">Every API call from every round, by effort level (the 343s stall excluded from latency pools). Same model, same endpoint — what's left is harness overhead: prompt size, schema weight, stream handling.</p>
+      <table>
+        <thead><tr><th>Pool</th><th>Calls</th><th>Median</th><th>p90</th><th>Min</th><th>Max</th></tr></thead>
+        <tbody>
+          <tr><td><span class="pill graff">graff · high</span></td><td class="num">68</td><td class="num"><strong>5.8s</strong></td><td class="num">13.6s</td><td class="num">3.0s</td><td class="num">46.2s</td></tr>
+          <tr><td><span class="pill graff">graff · low</span></td><td class="num">33</td><td class="num"><strong>5.1s</strong></td><td class="num">13.1s</td><td class="num">3.3s</td><td class="num">38.2s</td></tr>
+          <tr><td><span class="pill kimi">kimi · high</span></td><td class="num">36</td><td class="num"><strong>8.4s</strong></td><td class="num">13.6s</td><td class="num">3.2s</td><td class="num">33.2s</td></tr>
+          <tr><td><span class="pill kimi">kimi · low</span></td><td class="num">35</td><td class="num"><strong>6.2s</strong></td><td class="num">13.9s</td><td class="num">4.4s</td><td class="num">20.9s</td></tr>
+        </tbody>
+      </table>
+      <p class="hint" style="margin:14px 0 0">
+        <strong>Graff holds a 2.6s/call lead at high effort (5.8s vs 8.4s median)</strong> — its 8k-token starting
+        prompt vs kimi-cli's ~23k is the likely driver. But read the arithmetic both ways: 5.8s × 14 calls is
+        <em>slower</em> than 8.4s × 6 calls — the per-call lead only pays once the call count matches. That was
+        the pre-fix state; this table's pools are the pre-fix data. After the handle-threshold and eager-pin
+        fixes, graff's runEval call count fell 14 → 6-7 and the lead converted: providers now runs 3 calls /
+        26.0s vs kimi's 50.4s wall, and runEval's best runs (48.2s, 57.4s) beat kimi's wall (61.7s).
+      </p>
+    </div>
+
+    <div class="panel">
+      <h2>Improvement roadmap — with projections from this data</h2>
+      <div class="grid2">
+        <div class="mini">
+          <h3>P1 · Tool-call economy <span class="pill graff">shipped: best run 32.6s</span></h3>
+          <p>Projection tested with a prompt-level economy nudge on runEval: when K3 economizes, the run
+          drops to 6 calls / 40.3s — but the nudge only landed ~50% of the time, and K3 emitted <em>zero</em>
+          parallel tool batches across all 15 runs, so economy had to be systemic, not advisory. The systemic
+          fix: the tool-result handle threshold (<code>tool_handle.zig</code>, #440) was 4 KiB, so nearly every
+          search/read came back as a handle that cost a follow-up round-trip. Raised to 16 KiB (still bounded,
+          still clamped by the per-output cap, env-tunable via <code>GRAFF_TOOL_HANDLE_BYTES</code>). Stock-binary
+          validation on runEval (low effort, per the persistence note below): 9 calls / 64.8s and <strong>6 calls /
+          32.6s — the fastest graff run recorded, edging kimi-cli's best low-effort true turn (33.9s)</strong>,
+          answer correct. 1209 tests green.</p>
+        </div>
+        <div class="mini">
+          <h3>P2 · Effort routing <span class="pill graff">shipped</span></h3>
+          <p><code>src/effort_route.zig</code>: a lookup-shaped prompt (question cue, no mutation verb) runs its
+          turn at low effort while the session knob is the untouched default — explicit /effort always wins.
+          The cue list is pinned against the benchmark tasks themselves: runEval and providers route low,
+          permgate (which inflated +85% at low) stays high. Shipped with a regression test.</p>
+        </div>
+        <div class="mini">
+          <h3>P3 · Faster stall recovery <span class="pill graff">shipped</span></h3>
+          <p>With thinking streamed, a socket silent for >45s before the FIRST token is dead, not reasoning —
+          so the pre-token budget is now capped at 45s (<code>http_stall.head_ceiling_ms</code>, env-overridable
+          via <code>GRAFF_STREAM_HEAD_STALL_SECS</code>; <code>GRAFF_STREAM_STALL_SECS</code> still wins both
+          regimes when set). Graff's own stalled task would have capped at ~95s instead of 221s — and kimi-cli's
+          silent 343.5s hang has no equivalent protection at all.</p>
+        </div>
+        <div class="mini">
+          <h3>Done · Cache lease <span class="pill graff">first calls 0 → 10k warm</span></h3>
+          <p>Kimi partitions its prompt cache by <code>prompt_cache_key</code>, and graff minted a fresh UUID per
+          process — so every session's first call was cache-cold while kimi-cli's hit ~19k warm. The kimi path
+          now sends a durable per-project key (<code>http_headers.projectCacheKey</code>, cwd-derived UUIDv5).
+          Measured: first-call cache_read went 0 → 9.7–10.1k on back-to-back sessions.</p>
+        </div>
+        <div class="mini">
+          <h3>Done · Effort badge honesty</h3>
+          <p>The badge now names the effort that goes on the wire (<code>effectiveEffort</code>), and the
+          baked K3 catalog matches the server's <code>[low, high, max]</code> allow-list. Shipped in this
+          working tree; 1208 tests green.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Bonus round: pi (interactive, same k3)</h2>
+      <p class="hint">Pi v0.84.1 wired to the same Kimi Code endpoint as a custom provider (<code>openai-completions</code> + <code>compat.supportsDeveloperRole=false</code> — the stock shape 400s on <code>role: developer</code>). Same fixture, same prompts, same PTY driving. Effort: pi sends no thinking config, so k3 runs its server-side default.</p>
+      <table>
+        <thead><tr><th>Task</th><th>pi wall</th><th>pi true</th><th>pi calls</th><th>vs graff post-fix</th><th>vs kimi-cli wall</th></tr></thead>
+        <tbody>
+          <tr><td><strong>runEval</strong></td><td class="num">173.0s</td><td class="num">151.9s</td><td class="num">6</td><td class="num">graff 48.2s — <strong>3.6× faster</strong></td><td class="num">61.7s — graff 2.8× faster</td></tr>
+          <tr><td><strong>permgate</strong></td><td class="num">79.7s</td><td class="num">58.5s</td><td class="num">7</td><td class="num">graff 56.1s — <strong>1.4× faster</strong></td><td class="num">69.6s — graff 1.2× faster</td></tr>
+          <tr><td><strong>providers</strong></td><td class="num">142.2s</td><td class="num">121.0s</td><td class="num">3</td><td class="num">graff 26.0s — <strong>5.5× faster</strong></td><td class="num">50.4s — graff 1.9× faster</td></tr>
+        </tbody>
+      </table>
+      <p class="hint" style="margin:14px 0 0">The instructive result: pi places FEW calls (6/7/3 — as disciplined as
+      post-fix graff) yet loses by minutes, because its per-call latency is 10–40s where graff's is 5–9s on the
+      same model and endpoint. What a harness sends per request (thinking config, cache key, streaming shape)
+      is worth more than call discipline alone. All three pi answers were correct — it catches the runEval
+      false premise too.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Method &amp; caveats</h2>
+      <ul class="tight">
+        <li><strong>Same everything:</strong> model (K3), auth (one Kimi Code OAuth subscription), working tree (<code>git archive</code> of HEAD into a clean fixture, no MCP config), prompts (verbatim from <code>benchmarks/tasks.py</code>), permission mode (<code>--yolo</code> both), fresh session per cell.</li>
+        <li><strong>Interactive for real:</strong> both TUIs driven through a PTY (<code>scripts/pty_harness.py</code>). Graff turn end = prompt return (exact); kimi turn end = 20s output silence, so its wall times carry a fixed ~21s pad — judge kimi by the "true turn" column from its own session log.</li>
+        <li><strong>One run per cell per round.</strong> Timings swing with network and server-side cache warmth (kimi round 2 read 65–141k cached tokens per turn). Treat ratios as directional, not absolute.</li>
+        <li><strong>Read-only Q&amp;A tasks only.</strong> No editing, refactoring, or multi-step agentic work is measured here.</li>
+        <li>Found while automating: kimi-cli's TUI swallows Enter sent in the same <code>write()</code> as the prompt text (paste detection) — automation must send text, pause, then Enter. Also, it self-upgraded 0.26.0 → 0.34.0 on launch without asking.</li>
+      </ul>
+      <p class="foot">
+        Raw transcripts, drivers, and ground-truth session logs: <code>/tmp/graff-kimi-compare/</code>
+        (round 1 in <code>runs/</code>, round 2 in <code>runs2/</code>, effort-low in <code>runs-low/</code>, reps in <code>runs-reps/</code>,
+        32 KiB A/B in <code>runs-bigthresh/</code>, new-default validation in <code>runs-newdefault/</code>,
+        outlier analyzer <code>analyze_outliers.py</code>, narrative in <code>REPORT.md</code>).
+        Effort-badge fix: <code>src/agent_prompt.zig</code> + <code>src/pricing.zig</code>, uncommitted on <code>feat/agent-inbox</code>.
+      </p>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,5 +1,13 @@
 # Repository instructions
 
+## Decisions live in docs/adr/
+
+Settled, evidence-backed decisions are recorded as ADRs. Read the one-line
+index in [docs/adr/README.md](docs/adr/README.md) before changing behavior a
+record covers; what looks like an easy improvement may be a measured
+regression (see ADR 0001 on structured outputs). When your change settles a
+new load-bearing decision, add a record in the same branch.
+
 ## Terminal UI: what's ours to change
 
 - **Colors, bold/dim, glyphs, layout are ours.** Styling travels in the output byte stream as SGR escape sequences, so the app controls it per character. The palette lives in `src/ansi.zig` (the accent is codegraff.com's emerald `#059669`; coral/red hues are reserved for errors).

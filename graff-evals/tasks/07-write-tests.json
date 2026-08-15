@@ -1,0 +1,10 @@
+{
+  "id": "write-tests",
+  "category": "testing",
+  "prompt": "Write test_calc.py for calc.py with at least 4 assert statements covering both add() and mul(), including at least one negative-number case. Run it with python3 to prove it passes.",
+  "files": {
+    "calc.py": "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
+  },
+  "check": "python3 test_calc.py && test \"$(grep -c 'assert' test_calc.py)\" -ge 4 && grep -q add test_calc.py && grep -q mul test_calc.py",
+  "timeout_s": 240
+}

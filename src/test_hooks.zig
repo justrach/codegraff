@@ -127,6 +127,7 @@ const compact_note_glue = @import("compact_note_glue.zig");
 // decls, but the hook makes the coverage explicit rather than contingent on
 // that staying true.
 const mcp_config = @import("mcp_config.zig");
+const effort_route = @import("effort_route.zig");
 
 // #416: two-phase MCP tool exposure. schema.zig/exec.zig reach the gate, but
 // its tests live in a sibling file that nothing in production imports.
@@ -264,4 +265,5 @@ test {
     _ = agent_compact_summary_test;
     _ = side_question_tests;
     _ = json_controls;
+    _ = effort_route;
 }

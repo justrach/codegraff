@@ -9,11 +9,18 @@ const engine = @import("engine.zig");
 const key_mod = @import("key.zig");
 const keys = @import("keys.zig");
 const render_mod = @import("render.zig");
+const restore_mod = @import("restore.zig");
 const theme_mod = @import("theme.zig");
 const turn = @import("turn.zig");
 const tty = @import("tty.zig");
 const traj = @import("traj.zig");
 const Model = app.Model;
+
+// 1000/1003/1006: click + hover + wheel as buttons 64/65 (not arrows).
+// 2004: bracketed paste. 7l: no autowrap into the prompt.
+// >11u: kitty disambiguate + event types + all-keys (Cmd+Delete / Super latch).
+// >4;2m: xterm modifyOtherKeys so Super+Backspace also arrives as CSI 27;9;127~.
+const enable_seq = "\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?7l\x1b[>11u\x1b[>4;2m";
 
 pub const RunOpts = struct {
     turn_ctx: ?*anyopaque = null,
@@ -26,6 +33,9 @@ pub const RunOpts = struct {
     yolo: bool = false,
     hud_fn: ?engine.HudFn = null,
     paste_fn: ?engine.PasteFn = null,
+    bash_fn: ?engine.BashFn = null,
+    files_fn: ?engine.FilesFn = null,
+    copy_fn: ?engine.CopyFn = null,
 };
 
 pub fn run(
@@ -41,6 +51,9 @@ pub fn run(
     engine.g_cancel_fn = opts.cancel_fn;
     engine.g_hud_fn = opts.hud_fn;
     engine.g_paste_fn = opts.paste_fn;
+    engine.g_bash_fn = opts.bash_fn;
+    engine.g_files_fn = opts.files_fn;
+    engine.g_copy_fn = opts.copy_fn;
     engine.g_model_name = opts.model_name;
     engine.g_models = opts.models;
     engine.g_cwd = opts.cwd;
@@ -51,25 +64,25 @@ pub fn run(
     if (opts.yolo) m.mode = .always_approve;
 
     var raw = tty.enterRaw() orelse return error.NotATty;
+    restore_mod.arm(raw);
+    defer restore_mod.disarm();
     defer tty.restore(raw);
 
     var out_buf: [64 * 1024]u8 = undefined;
     var stdout = Io.File.stdout().writer(io, &out_buf);
     const w = &stdout.interface;
-    // 1000/1006: click + wheel as 64/65. Not 1003h — motion floods leak as text.
-    // 2004: bracketed paste. 7l: no autowrap into the prompt.
-    // >31u: kitty disambiguate + events + alternates + all-keys + text (Shift+9 is "(").
-    // >4;2m: xterm modifyOtherKeys so Super+Backspace also arrives as CSI 27;9;127~.
-    w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l\x1b[>31u\x1b[>4;2m") catch {};
+    w.writeAll(enable_seq) catch {};
     w.flush() catch {};
     traj.open(io);
     defer {
-        w.writeAll("\x1b[>4;0m\x1b[<u\x1b[?7h\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l") catch {};
+        w.writeAll(restore_mod.seq) catch {};
         w.flush() catch {};
     }
 
     var inbuf: [4096]u8 = undefined;
     var pending_len: usize = 0;
+    var esc_stall: u8 = 0;
+    var zero_reads: u8 = 0;
     var last_hash: u64 = 0;
     var saw_gfx: bool = false;
     var prev: []u8 = &.{};
@@ -85,9 +98,6 @@ pub fn run(
         }
         const cols = @max(tty.cols(), @as(usize, 40));
         const rows = @max(tty.rows(), @as(usize, 12));
-        // Always drop leftover Kitty layers — they outlive cell redraws.
-        w.writeAll("\x1b_Ga=d,d=A,q=2\x1b\\") catch {};
-        w.flush() catch {};
         const frame = render_mod.render(&m, gpa, cols, rows, m.now_ms) catch "tui: render error";
         defer gpa.free(frame);
         const hash = std.hash.Wyhash.hash(0, frame);
@@ -105,15 +115,32 @@ pub fn run(
             saw_gfx = has_gfx;
         }
 
-        const wait: i32 = if (m.pending != null) 50 else 200;
-        if (!tty.poll(wait)) continue;
-        const got = tty.readStdin(inbuf[pending_len..]);
-        const n = pending_len + got;
-        if (got > 0) traj.note(io, m.now_ms, inbuf[pending_len..n]);
-        if (n == 0) {
-            pending_len = 0;
+        // Short wait while an unfinished escape sequence is pending: if
+        // nothing follows, the lone ESC was a real Escape keypress (#94).
+        const wait: i32 = if (pending_len > 0) 25 else if (m.pending != null) 50 else 200;
+        if (!tty.poll(wait)) {
+            if (pending_len > 0) {
+                esc_stall += 1;
+                if (esc_stall >= 2) {
+                    if (inbuf[0] == 0x1b and keys.handle(&m, .escape) == .quit) m.running = false;
+                    pending_len = 0;
+                    esc_stall = 0;
+                }
+            }
             continue;
         }
+        esc_stall = 0;
+        const got = tty.readStdin(inbuf[pending_len..]);
+        if (got > 0) traj.note(io, m.now_ms, inbuf[pending_len .. pending_len + got]);
+        if (got == 0) {
+            // poll says readable but read gives nothing: hangup or transient
+            // error. Three in a row means the TTY is gone.
+            zero_reads += 1;
+            if (zero_reads >= 3) m.running = false;
+            continue;
+        }
+        zero_reads = 0;
+        const n = pending_len + got;
         var i: usize = 0;
         while (key_mod.next(inbuf[0..n], &i)) |k| {
             switch (keys.handle(&m, k)) {
@@ -122,7 +149,13 @@ pub fn run(
                     m.running = false;
                     break;
                 },
-                .background => parkToShell(io, w, &raw),
+                .background => {
+                    parkToShell(io, w, &raw);
+                    // Full repaint after fg — the diff baseline is stale.
+                    last_hash = 0;
+                    if (prev.len != 0) gpa.free(prev);
+                    prev = &.{};
+                },
             }
         }
         if (i < n) {
@@ -139,14 +172,14 @@ pub fn run(
 }
 
 fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
-    w.writeAll("\x1b[>4;0m\x1b[<u\x1b[?7h\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l") catch {};
+    w.writeAll(restore_mod.seq) catch {};
     w.flush() catch {};
     tty.restore(raw.*);
     if (builtin.os.tag != .windows) {
         std.posix.raise(std.posix.SIG.TSTP) catch {};
     }
     raw.* = tty.enterRaw() orelse raw.*;
-    w.writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l\x1b[>31u\x1b[>4;2m") catch {};
+    w.writeAll(enable_seq) catch {};
     w.flush() catch {};
     _ = io;
 }
@@ -212,18 +245,24 @@ fn rowChanged(prev: []const u8, frame: []const u8, row: usize) bool {
     return !std.mem.eql(u8, nthLine(prev, row), nthLine(frame, row));
 }
 
-test "run loop enables click tracking and bracketed paste" {
+test "run loop enables click+hover tracking and bracketed paste" {
     const src = @embedFile("run.zig");
     const mouse_on = [_]u8{ '?', '1', '0', '0', '0', 'h' };
     const sgr_on = [_]u8{ '?', '1', '0', '0', '6', 'h' };
     const paste_on = [_]u8{ '?', '2', '0', '0', '4', 'h' };
+    // 1003 (motion) is back ON for image-chip hover previews. The v0.0.255
+    // leak (raw SGR typed into the thinking line) stays pinned by key.zig's
+    // flood/orphan tests; the restore seq must pop it so the shell never
+    // inherits motion tracking.
     const hover_on = [_]u8{ '?', '1', '0', '0', '3', 'h' };
-    const kitty_on = [_]u8{ '>', '3', '1', 'u' };
+    const hover_off = [_]u8{ '?', '1', '0', '0', '3', 'l' };
+    const kitty_on = [_]u8{ '>', '1', '1', 'u' };
     const wrap_off = [_]u8{ '?', '7', 'l' };
     try std.testing.expect(std.mem.indexOf(u8, src, &mouse_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &sgr_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &paste_on) != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, &hover_on) == null);
+    try std.testing.expect(std.mem.indexOf(u8, src, &hover_on) != null);
+    try std.testing.expect(std.mem.indexOf(u8, restore_mod.seq, &hover_off) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &[_]u8{ '?', '1', '0', '0', '7', 'h' }) == null);
     try std.testing.expect(std.mem.indexOf(u8, src, &kitty_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &wrap_off) != null);

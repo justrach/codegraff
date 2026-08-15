@@ -215,6 +215,26 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
     return final_text;
 }
 
+/// Trailing sampler markers some models leak into chat content (grok-4.6
+/// emits `<|eos|>` after strict-schema JSON — caught by graff-evals).
+pub fn stripEosSuffix(text: []const u8) []const u8 {
+    var t = std.mem.trimEnd(u8, text, " \t\r\n");
+    for ([_][]const u8{ "<|eos|>", "<|eot|>", "<|endoftext|>" }) |marker| {
+        if (std.mem.endsWith(u8, t, marker)) {
+            t = std.mem.trimEnd(u8, t[0 .. t.len - marker.len], " \t\r\n");
+            break;
+        }
+    }
+    return t;
+}
+
+test "stripEosSuffix drops a leaked trailing sampler marker, nothing else" {
+    try std.testing.expectEqualStrings("{\"a\":1}", stripEosSuffix("{\"a\":1}<|eos|>"));
+    try std.testing.expectEqualStrings("{\"a\":1}", stripEosSuffix("{\"a\":1}<|eos|>\n"));
+    try std.testing.expectEqualStrings("done", stripEosSuffix("done"));
+    try std.testing.expectEqualStrings("say <|eos|> mid-text", stripEosSuffix("say <|eos|> mid-text"));
+}
+
 pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
     const choices = root.get("choices");
     // #287/#299: same as the anthropic step — the parent only ever sees what
@@ -236,8 +256,11 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
 
     var final_text: []const u8 = "";
     if (msg_obj.get("content")) |c| if (c == .string and c.string.len > 0) {
-        final_text = c.string;
-        try surfaceUnstreamedText(self, c.string);
+        // grok-4.6 structured outputs (response_format) leak a literal
+        // sampler end marker after the JSON on the chat wire (#502) — a
+        // trailing `<|eos|>` is never legitimate answer text.
+        final_text = stripEosSuffix(c.string);
+        try surfaceUnstreamedText(self, final_text);
     };
 
     var calls: std.ArrayList(ToolCall) = .empty;

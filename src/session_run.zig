@@ -143,7 +143,15 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
     try root.messages.append(try messages_mod.textMessage(arena, "user", oneshot_user));
     if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(prompt_text.len, std.math.maxInt(u32))), root.provider.model);
-    const final_text = providers.runTurnWithFallback(root, keys, arena, null) catch |err| {
+    // #502: --output-schema runs TWO-PHASE. A strict grammar on every message
+    // pulls the model into answering immediately instead of touching tools
+    // (graff-evals caught grok-4.6 guessing a file-inspection answer), so the
+    // agentic phase runs unconstrained and one tools-off formatting turn then
+    // restates the final answer under the schema — same conversation, so it
+    // reads the real evidence.
+    const pending_schema = root.output_schema;
+    root.output_schema = null;
+    var final_text = providers.runTurnWithFallback(root, keys, arena, null) catch |err| {
         // std.process.fatal does not unwind main's defers. Mirror their order:
         // join the fleet, reap jobs/pumps, then the terminal behavioral event.
         fleet.joinElites(io);
@@ -160,6 +168,21 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
             else => |e| std.process.fatal("turn failed: {t}", .{e}),
         }
     };
+    if (pending_schema) |schema_json| {
+        root.output_schema = schema_json;
+        root.text_only = true;
+        defer {
+            root.text_only = false;
+            root.output_schema = null;
+        }
+        try root.messages.append(try messages_mod.textMessage(arena, "user", "Return ONLY the final answer as a single JSON object matching the enforced output schema. No prose."));
+        if (telemetry.g_telem) |t| t.countTurn();
+        final_text = providers.runTurnWithFallback(root, keys, arena, null) catch blk: {
+            // Best-effort: schema-shaping must never lose a finished answer.
+            std.debug.print("warning: output-schema formatting call failed — printing the unshaped answer\n", .{});
+            break :blk final_text;
+        };
+    }
     try out.print("{s}\n", .{final_text});
     try out.flush();
     // Usage summary → stderr, so stdout stays exactly the answer.
@@ -305,6 +328,17 @@ pub fn buildRootAgent(
         }
     }
     if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
+    // #502: --output-schema (inline JSON or @file) → structured outputs.
+    if (flags.output_schema_flag) |schema_arg| {
+        const trimmed = std.mem.trim(u8, schema_arg, " \t");
+        root.output_schema = if (std.mem.startsWith(u8, trimmed, "@"))
+            std.Io.Dir.cwd().readFileAlloc(io, trimmed[1..], arena, .limited(1024 * 1024)) catch |e| blk: {
+                if (!main_mod.json_mode) try out.print("warning: --output-schema {s}: {t} — ignored\n", .{ trimmed[1..], e });
+                break :blk null;
+            }
+        else
+            try arena.dupe(u8, trimmed);
+    }
     if (flags.eval_target_flag) |t| root.eval_target = t;
     if (flags.eval_niche_flag) |n| root.eval_niche = try arena.dupe(u8, n);
     _ = recipe.record(tracer, trace.g_traj, root.provider.id, root.provider.model, @tagName(root.reasoning), root.systemPrompt(), root.toolsJson(), if (root.eval_niche.len > 0) root.eval_niche else "interactive");

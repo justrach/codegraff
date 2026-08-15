@@ -1,0 +1,8 @@
+{
+  "id": "file-ops",
+  "category": "shell",
+  "prompt": "Create a file hello.txt containing exactly: hi\nThen rename hello.txt to greeting.txt. Confirm with ls.",
+  "files": {},
+  "check": "test ! -e hello.txt && test \"$(cat greeting.txt)\" = hi",
+  "timeout_s": 180
+}

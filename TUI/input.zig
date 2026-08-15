@@ -77,6 +77,11 @@ pub const Input = struct {
                 self.buf.insert(self.cursor, c) catch return;
                 self.cursor += 1;
             },
+            .codepoint => |cp| {
+                var b: [4]u8 = undefined;
+                const n = std.unicode.utf8Encode(cp, &b) catch return;
+                self.insertSlice(b[0..n]);
+            },
             .backspace => {
                 if (self.cursor == 0) return;
                 self.pushUndo();
@@ -184,4 +189,11 @@ test "ctrl-z undoes the last edit" {
     try std.testing.expect(in.undo());
     try std.testing.expectEqualStrings("", in.getValue());
     try std.testing.expect(!in.undo());
+}
+
+test "kitty codepoint inserts UTF-8" {
+    var in = Input.init(std.testing.allocator);
+    defer in.deinit();
+    in.handle(.{ .codepoint = 0xe9 });
+    try std.testing.expectEqualStrings("é", in.getValue());
 }

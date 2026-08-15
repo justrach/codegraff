@@ -10,6 +10,30 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.258 (2026-08-15)
+
+- Full Grok support on a SuperGrok subscription (#502): opt into xAI's
+  Responses wire with `GRAFF_XAI_WIRE=responses` for first-party server-side
+  compaction (encrypted blob; measured −80% follow-up input tokens on a 9.3k
+  conversation, with the client summary kept as automatic fallback), WebSocket
+  turns over the held socket, and `--output-schema '<json>'`/`@file`
+  structured outputs on both wires. grok-4.6's stray `<|eos|>` after
+  strict-schema JSON is stripped, and structured output runs two-phase — an
+  unconstrained agentic run, then one tools-off formatting turn — so a strict
+  grammar can no longer talk the model out of using its tools.
+- graff-evals: an in-repo, RL-style eval environment — 12 deterministic
+  agentic tasks (debugging, shell, git, refactor, long-context recall,
+  structured output …) with sandboxed checks; `run.py --harness graff,grok`
+  prints a side-by-side pass/wall/latency/token table.
+- Kitty keyboard overhaul: the real kitty modifier table (Right-Alt/Right-Cmd
+  no longer type Escape), key-release events never double-fire, a stale
+  alt/super latch resyncs, and terminal state (kitty pop, alt-screen, mouse)
+  is restored even on SIGTERM/SIGHUP. Shift+number punctuation and mouse
+  hover for image chips both keep working.
+- REPL parity commands from the grok-build gap review: `!` shell prefix, `@`
+  file mentions, `/jump`, `/copy`, `/btw`, `/vim-mode`.
+- Fewer discovery rounds when a prompt names its target file/symbol (#489).
+
 ## v0.0.257 (2026-08-15)
 
 - Composer box corners line up with the sides, wrap at word boundaries, and

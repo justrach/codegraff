@@ -16,6 +16,7 @@ pub fn applyLine(self: *Model, raw: []const u8) Effect {
     if (line.len == 0 and self.images.items.len == 0) return .stay;
     if (line.len > 0) rememberPrompt(self, line);
     if (line.len > 0 and line[0] == '/') return runCommand(self, line);
+    if (line.len > 1 and line[0] == '!') return bang(self, std.mem.trim(u8, line[1..], " \t"));
     const prefix = self.takeImagesPrefix(self.alloc);
     const payload = if (prefix.len == 0) line else (std.fmt.allocPrint(self.alloc, "{s}{s}", .{ prefix, line }) catch line);
     if (prefix.len > 0) self.alloc.free(prefix);
@@ -153,10 +154,75 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.pushFmt(.system, "ok · model={s} · cwd={s} · theme={s} · vim={s}", .{ engine.g_model_name, engine.g_cwd, @tagName(self.theme_id), onOff(self.vim_mode) }) catch {};
     } else if (std.mem.eql(u8, canon, "/import-claude")) {
         self.push(.system, "adopting Claude/Cursor MCP writes ~/.codegraff — run `graff mcp import` from this repo") catch {};
+    } else if (std.mem.eql(u8, canon, "/jump")) {
+        if (self.userTurnCount() == 0) {
+            self.push(.system, "nothing to jump to yet") catch {};
+        } else self.openOverlay(.jump);
+    } else if (std.mem.eql(u8, canon, "/vim-mode")) {
+        self.vim_mode = !self.vim_mode;
+        self.pushFmt(.system, "vim scrollback: {s}", .{onOff(self.vim_mode)}) catch {};
+    } else if (std.mem.eql(u8, canon, "/copy")) {
+        copyLastReply(self);
+    } else if (std.mem.eql(u8, canon, "/btw")) {
+        if (arg.len == 0) {
+            self.push(.system, "usage: /btw <aside> — queue a note without interrupting") catch {};
+        } else if (self.pending != null) {
+            if (self.alloc.dupe(u8, arg)) |dup| {
+                self.steer_queue.append(dup) catch self.alloc.free(dup);
+                self.pushFmt(.system, "↳ aside queued ({d} waiting)", .{self.steer_queue.items.len}) catch {};
+            } else |_| {}
+        } else {
+            return applyLine(self, arg);
+        }
     } else {
         self.pushFmt(.err, "unknown command: {s} — try /help", .{cmd}) catch {};
     }
     return if (self.quit_requested) .quit else .stay;
+}
+
+/// `!cmd` — run a shell line locally (grok-style bash mode). Output stays
+/// out of the model history: EntryKind.system never reaches startJob.
+fn bang(self: *Model, cmd: []const u8) Effect {
+    if (cmd.len == 0) return .stay;
+    self.pushFmt(.system, "$ {s}", .{cmd}) catch {};
+    if (engine.g_bash_fn == null) {
+        self.push(.err, "! needs a live session (offline)") catch {};
+        return .stay;
+    }
+    if (engine.g_bash_fn.?(engine.g_turn_ctx, self.alloc, cmd)) |out| {
+        defer self.alloc.free(out);
+        self.push(.system, lastLines(out, 40)) catch {};
+    } else {
+        self.push(.err, "command failed to start") catch {};
+    }
+    return .stay;
+}
+
+/// Tail of `s` capped to `max` lines, for `!` output in the scrollback.
+fn lastLines(s: []const u8, max: usize) []const u8 {
+    var count: usize = 0;
+    var i = s.len;
+    while (i > 0) {
+        i -= 1;
+        if (s[i] == '\n') {
+            count += 1;
+            if (count == max) return s[i + 1 ..];
+        }
+    }
+    return s;
+}
+
+fn copyLastReply(self: *Model) void {
+    var i = self.history.items.len;
+    const text: ?[]const u8 = while (i > 0) {
+        i -= 1;
+        if (self.history.items[i].kind == .assistant) break self.history.items[i].text;
+    } else null;
+    if (text == null) {
+        self.push(.system, "nothing to copy yet") catch {};
+    } else if (engine.g_copy_fn) |f| {
+        self.setToast(if (f(engine.g_turn_ctx, text.?)) "copied last reply" else "copy failed");
+    } else self.setToast("clipboard needs a live session");
 }
 
 pub fn rewind(self: *Model) void {
@@ -423,4 +489,59 @@ test "/effort with no arg opens the effort menu" {
     try std.testing.expectEqual(@as(usize, @intFromEnum(engine.Effort.high)), m.overlay_sel);
     try std.testing.expectEqual(app.Effect.stay, applyLine(&m, "/effort low"));
     try std.testing.expectEqual(engine.Effort.low, m.effort);
+}
+
+test "! runs through the bash callback and lands in the scrollback" {
+    engine.g_bash_fn = struct {
+        fn f(_: ?*anyopaque, gpa: std.mem.Allocator, cmd: []const u8) ?[]const u8 {
+            return std.fmt.allocPrint(gpa, "ran: {s}", .{cmd}) catch null;
+        }
+    }.f;
+    defer engine.g_bash_fn = null;
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    _ = applyLine(&m, "!git status");
+    try std.testing.expectEqual(@as(usize, 2), m.history.items.len);
+    try std.testing.expectEqualStrings("$ git status", m.history.items[0].text);
+    try std.testing.expectEqualStrings("ran: git status", m.history.items[1].text);
+    try std.testing.expectEqual(app.EntryKind.system, m.history.items[1].kind);
+}
+
+test "/vim-mode toggles and /jump without turns explains" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try std.testing.expect(!m.vim_mode);
+    _ = applyLine(&m, "/vim-mode");
+    try std.testing.expect(m.vim_mode);
+    _ = applyLine(&m, "/vim");
+    try std.testing.expect(!m.vim_mode);
+    _ = applyLine(&m, "/jump");
+    const last = m.history.items[m.history.items.len - 1].text;
+    try std.testing.expect(std.mem.indexOf(u8, last, "nothing to jump") != null);
+    try m.push(.user, "hi");
+    _ = applyLine(&m, "/jump");
+    try std.testing.expectEqual(app.Overlay.jump, m.overlay);
+}
+
+test "/btw queues an aside while a turn is pending" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    const job = try std.testing.allocator.create(engine.Job);
+    job.* = .{ .gpa = std.testing.allocator, .history = &.{}, .params = .{}, .stream = .{}, .threaded = false };
+    m.pending = job;
+    defer {
+        m.pending = null;
+        std.testing.allocator.destroy(job);
+    }
+    _ = applyLine(&m, "/btw remember the tests");
+    try std.testing.expectEqual(@as(usize, 1), m.steer_queue.items.len);
+    try std.testing.expectEqualStrings("remember the tests", m.steer_queue.items[0]);
+}
+
+test "lastLines caps ! output to the tail" {
+    try std.testing.expectEqualStrings("c\nd", lastLines("a\nb\nc\nd", 2));
+    try std.testing.expectEqualStrings("a\nb", lastLines("a\nb", 5));
 }

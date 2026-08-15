@@ -46,19 +46,18 @@ const watchdogError = http.watchdogError;
 const signal = @import("agent_ws_signal.zig");
 pub const frameHasOutputText = signal.frameHasOutputText;
 pub const TokenSignal = signal.TokenSignal;
-
 const isStreamEnd = @import("agent_stream.zig").isStreamEnd;
-
 const escPressed = Agent.escPressed;
 const rawNonblockStdin = Agent.rawNonblockStdin;
 const drainSteerStdin = Agent.drainSteerStdin;
 
-/// Codex ws applies to root Responses turns when enabled and not already fallen
-/// back this session. Subagents/quiet turns keep the non-streaming SSE path.
+/// WS applies to root Responses turns when enabled and not already fallen back
+/// this session; subagents/quiet turns keep SSE. Only providers with a real WS
+/// endpoint qualify — Platform OpenAI is Responses-kind but has no WS server.
 pub fn wsEligible(self: *Agent) bool {
-    return main_mod.g_codex_ws and !self.ws_off and !self.sub and
-        self.provider.kind == .responses and std.mem.eql(u8, self.provider.id, "codex") and
-        self.out != null and !self.stream_quiet;
+    const has_ws = std.mem.eql(u8, self.provider.id, "codex") or std.mem.eql(u8, self.provider.id, "xai");
+    return main_mod.g_codex_ws and !self.ws_off and !self.sub and has_ws and
+        self.provider.kind == .responses and self.out != null and !self.stream_quiet;
 }
 
 /// (#codex-ws) Client-side idle limit on the held codex WS, opencode's
@@ -368,15 +367,16 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     // The SAME per-process session id the HTTP path sends, not a fresh one per
     // connect: this is what the backend partitions its prompt cache on, so a
     // new id per socket handed every re-anchor a cold partition.
-    const sid = http_headers.sessionId(self.io);
-    const headers = [_]ws.Header{
+    // The ChatGPT identity tail is codex-only — xAI's WS authenticates with the bearer alone (#502).
+    const all_headers = [_]ws.Header{
         .{ .name = "Authorization", .value = bearer },
+        .{ .name = "session_id", .value = http_headers.sessionId(self.io) },
         .{ .name = "chatgpt-account-id", .value = provider.account },
         .{ .name = "OpenAI-Beta", .value = "responses_websockets=2026-02-06" },
         .{ .name = "originator", .value = "codex_cli_rs" },
-        .{ .name = "session_id", .value = sid },
         .{ .name = "User-Agent", .value = "codex_cli_rs/0.1 (graff)" },
     };
+    const headers: []const ws.Header = if (std.mem.eql(u8, provider.id, "codex")) &all_headers else all_headers[0..2];
     const url = try wssUrl(arena, provider.url);
 
     // Esc watching (root TTY), same gate as postStream.
@@ -430,7 +430,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     // socket held since the last request has proved nothing since.
     const reused = self.codex_ws != null;
     if (self.codex_ws == null) {
-        self.codex_ws = connectWatched(gpa, self.io, url, &headers, orig_tio != null) catch |e| {
+        self.codex_ws = connectWatched(gpa, self.io, url, headers, orig_tio != null) catch |e| {
             // HungRequest, matching connectWatched's deadline error — NOT
             // StreamStalled, which the guard stopped returning when it moved to
             // the SSE guard's transport-flake semantics. An arm naming the wrong

@@ -21,6 +21,12 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.258
+    \\  • Full Grok on a SuperGrok sub: GRAFF_XAI_WIRE=responses gets server-side compaction (lossless blob), WebSocket turns, and --output-schema structured outputs
+    \\  • /compact on the xAI wire uses the first-party endpoint; strict schemas run two-phase so they never suppress tool use
+    \\  • Kitty keyboard overhaul: right-side modifiers fixed, no release double-fires, terminal state restored even on SIGTERM
+    \\  • graff-evals: in-repo eval suite (12 tasks) with side-by-side harness comparison
+    \\
     \\0.0.257
     \\  • Composer box aligns and wraps on words, not mid-letter
     \\

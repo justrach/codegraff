@@ -132,6 +132,8 @@ pub fn overlay(self: *const Model, a: std.mem.Allocator, width: usize) ![]const 
         .effort => try @import("effort.zig").render(self, a),
         .settings => try settingsOverlay(self, a),
         .image => try @import("image.zig").render(self, a, width),
+        .file => try @import("files.zig").render(self, a),
+        .jump => try jumpOverlay(self, a),
         .slash => "",
     };
 }
@@ -199,6 +201,34 @@ fn themeOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
     return out.items;
 }
 
+fn jumpOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
+    const th = self.theme();
+    var out = std.array_list.Managed(u8).init(a);
+    try out.appendSlice(try theme_mod.paint(a, th.accent, "Jump to turn"));
+    try out.appendSlice("\n\n");
+    const total = self.userTurnCount();
+    if (total == 0) {
+        try out.appendSlice(try theme_mod.paint(a, th.muted, "no turns yet\n"));
+        return out.items;
+    }
+    const sel = self.overlay_sel % total;
+    var no: usize = 0;
+    for (self.history.items) |e| {
+        if (e.kind != .user) continue;
+        const nl = std.mem.indexOfScalar(u8, e.text, '\n') orelse e.text.len;
+        const clip = e.text[0..@min(nl, 60)];
+        const mark: []const u8 = if (no == sel) "› " else "  ";
+        const line = try std.fmt.allocPrint(a, "{s}#{d}  {s}", .{ mark, no + 1, clip });
+        try out.appendSlice(if (no == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
+        try out.append('\n');
+        no += 1;
+    }
+    try out.append('\n');
+    try out.appendSlice(try theme_mod.paint(a, th.muted, "↑↓ move · Enter jump · Esc"));
+    try out.append('\n');
+    return out.items;
+}
+
 fn helpOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
     return theme_mod.paint(a, self.theme().text,
         \\Shortcuts
@@ -226,6 +256,8 @@ fn helpOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
         \\  Ctrl+V         attach clipboard image
         \\  Ctrl+R         prompt history
         \\  /              slash menu
+        \\  @              fuzzy file mention
+        \\  !cmd           run a shell command
         \\
         \\Commands
         \\  /quit /exit /q    leave the pager
@@ -240,6 +272,10 @@ fn helpOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
         \\  /plan             toggle plan mode
         \\  /always-approve   skip permission prompts
         \\  /import-claude    copy Claude and Cursor MCP + skills
+        \\  /jump             jump to a previous turn
+        \\  /copy             copy the last reply
+        \\  /btw              queue an aside mid-turn
+        \\  /vim-mode         vim keys in the scrollback
     );
 }
 

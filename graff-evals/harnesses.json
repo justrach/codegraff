@@ -1,0 +1,40 @@
+{
+  "graff": {
+    "cmd": ["graff", "-p", "{prompt}", "--model", "{model}", "--yolo"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": ["output-schema"],
+    "schema_args": ["--output-schema", "{schema}"],
+    "default_model": "grok-4.6"
+  },
+  "graff-full": {
+    "cmd": ["graff", "-p", "{prompt}", "--model", "{model}", "--yolo", "--no-lean"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": ["output-schema"],
+    "schema_args": ["--output-schema", "{schema}"],
+    "default_model": "grok-4.6"
+  },
+  "graff-dev": {
+    "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": ["output-schema"],
+    "schema_args": ["--output-schema", "{schema}"],
+    "default_model": "grok-4.6"
+  },
+  "grok": {
+    "cmd": ["grok", "-p", "{prompt}", "-m", "{model}", "--always-approve", "--output-format", "streaming-messages-json"],
+    "answer": "grok-stream",
+    "usage": "grok-stream",
+    "capabilities": [],
+    "default_model": "grok-4.6"
+  },
+  "claude": {
+    "cmd": ["claude", "-p", "{prompt}", "--model", "{model}", "--dangerously-skip-permissions"],
+    "answer": "stdout",
+    "usage": null,
+    "capabilities": [],
+    "default_model": "claude-sonnet-5"
+  }
+}
