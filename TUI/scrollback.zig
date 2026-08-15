@@ -247,7 +247,7 @@ fn row(self: *const Model, a: std.mem.Allocator, idx: usize, e: app.Entry, width
     else
         e.text;
     const body = switch (e.kind) {
-        .assistant => try @import("markdown.zig").renderThemed(a, raw, th),
+        .assistant => try @import("markdown.zig").renderThemed(a, raw, th, width),
         .user => try @import("markdown.zig").renderUser(a, raw, th.accent, th.text),
         else => raw,
     };

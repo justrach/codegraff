@@ -13,7 +13,7 @@ pub fn render(a: std.mem.Allocator, src: []const u8, accent: []const u8) ![]cons
 /// separator row, a full-width background band (clear-to-EOL under the code
 /// bg), and token colors from syntax.zig in the theme's polarity. Everything
 /// else matches renderTinted.
-pub fn renderThemed(a: std.mem.Allocator, src: []const u8, th: theme_mod.Theme) ![]const u8 {
+pub fn renderThemed(a: std.mem.Allocator, src: []const u8, th: theme_mod.Theme, width: usize) ![]const u8 {
     const light = th.id == .day;
     var lines = std.array_list.Managed([]const u8).init(a);
     defer lines.deinit();
@@ -55,7 +55,7 @@ pub fn renderThemed(a: std.mem.Allocator, src: []const u8, th: theme_mod.Theme) 
             continue;
         }
         if (tableLen(lines.items[i..])) |n| {
-            try emitTable(&out, a, lines.items[i .. i + n], th.accent, th.muted, th.text);
+            try emitTable(&out, a, lines.items[i .. i + n], th.accent, th.muted, th.text, width);
             i += n;
             continue;
         }
@@ -116,7 +116,7 @@ pub fn renderTinted(a: std.mem.Allocator, src: []const u8, accent: []const u8, m
             continue;
         }
         if (tableLen(lines.items[i..])) |n| {
-            try emitTable(&out, a, lines.items[i .. i + n], accent, muted, text);
+            try emitTable(&out, a, lines.items[i .. i + n], accent, muted, text, 0);
             i += n;
             continue;
         }
@@ -287,8 +287,8 @@ fn emitTable(
     accent: []const u8,
     muted: []const u8,
     text: []const u8,
+    width: usize,
 ) !void {
-    _ = a;
     var widths: [max_table_cols]usize = @splat(0);
     var ncol: usize = 0;
     for (rows, 0..) |row, ri| {
@@ -304,6 +304,24 @@ fn emitTable(
     }
     if (ncol == 0) return;
     const cols = widths[0..ncol];
+    // Fit the grid into the terminal: every row costs ncol*3+1 border/pad
+    // columns on top of the content. Shave the widest column until it fits
+    // (floor 5), then clamp each CELL to its column so an over-long cell can
+    // never blow the grid — before this, content was emitted unclamped and
+    // the line-wrapper sheared tables apart at narrow widths.
+    const chrome_cost = ncol * 3 + 1;
+    const budget = if (width == 0) 76 else if (width > chrome_cost) width - chrome_cost else ncol * 5;
+    var total: usize = 0;
+    for (cols) |w| total += w;
+    while (total > budget) {
+        var widest: usize = 0;
+        for (cols, 0..) |w, ci| {
+            if (w > cols[widest]) widest = ci;
+        }
+        if (cols[widest] <= 5) break;
+        cols[widest] -= 1;
+        total -= 1;
+    }
     try emitRule(out, muted, cols, "┌", "┬", "┐");
     try out.append('\n');
     for (rows, 0..) |row, ri| {
@@ -321,21 +339,27 @@ fn emitTable(
             try out.appendSlice(theme_mod.reset);
             try out.append(' ');
             const cell = if (c < n) cells[c] else "";
+            const want = cols[c];
+            var scratch = std.array_list.Managed(u8).init(a);
+            defer scratch.deinit();
             if (ri == 0) {
-                try out.appendSlice(theme_mod.bold);
-                try out.appendSlice(accent);
-                try inlineSpans(out, cell, accent, accent);
-                try out.appendSlice(theme_mod.reset);
+                try scratch.appendSlice(theme_mod.bold);
+                try scratch.appendSlice(accent);
+                try inlineSpans(&scratch, cell, accent, accent);
             } else {
-                try out.appendSlice(text);
-                try inlineSpans(out, cell, accent, text);
+                try scratch.appendSlice(text);
+                try inlineSpans(&scratch, cell, accent, text);
             }
             const vis = cellWidth(cell);
-            const want = cols[c];
-            if (vis < want) {
+            if (vis > want) {
+                try out.appendSlice(theme_mod.takeCols(scratch.items, if (want > 1) want - 1 else want));
+                if (want > 1) try out.appendSlice("\u{2026}");
+            } else {
+                try out.appendSlice(scratch.items);
                 var p: usize = 0;
                 while (p < want - vis) : (p += 1) try out.append(' ');
             }
+            try out.appendSlice(theme_mod.reset);
             try out.append(' ');
         }
         try out.appendSlice(muted);
@@ -379,4 +403,18 @@ test "render paints a Grok-style box table and hides raw pipes" {
     try std.testing.expect(std.mem.indexOf(u8, text, "pager") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "| --- |") == null);
     try std.testing.expect(std.mem.indexOf(u8, text, "| Path |") == null);
+}
+
+test "a wide table fits the terminal: grid intact, one visual line per row (#tables)" {
+    const th = theme_mod.of(.night);
+    const md = "| Transport | Grok (this wire) | Codex / Claude |\n|---|---|---|\n| Item delta (previous_response_id) with a very long explanation cell that used to blow the grid | no (stalls) everywhere on narrow terminals | yes, if props match and the moon is right |";
+    const out = try renderThemed(std.testing.allocator, md, th, 60);
+    defer std.testing.allocator.free(out);
+    var it = std.mem.splitScalar(u8, out, '\n');
+    var rows: usize = 0;
+    while (it.next()) |ln| : (rows += 1) {
+        try std.testing.expect(theme_mod.visibleLen(ln) <= 60);
+    }
+    try std.testing.expectEqual(@as(usize, 5), rows); // top rule, header, mid rule, body, bottom rule
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{2026}") != null); // over-long cells clip with an ellipsis
 }
