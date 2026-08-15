@@ -10,6 +10,16 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.259 (unreleased)
+
+- Grok now defaults to xAI's Responses wire: WebSocket turns (with the SSE
+  fallback ladder), lossless first-party server compaction, and structured
+  outputs work out of the box on a SuperGrok subscription. Set
+  `GRAFF_XAI_WIRE=chat` to return to chat completions.
+- Fixed duplicate MCP tool definitions when a deferred server start raced the
+  eager codedb-pro companion; strict Responses endpoints rejected every turn
+  over the duplicate.
+
 ## v0.0.258 (2026-08-15)
 
 - Full Grok support on a SuperGrok subscription (#502): opt into xAI's
