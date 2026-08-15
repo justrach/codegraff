@@ -2,10 +2,97 @@
 
 const std = @import("std");
 const theme_mod = @import("theme.zig");
+const syntax = @import("syntax.zig");
 
 /// Headers, fences, bullets, `code`, **bold**, and `/slash` tokens.
 pub fn render(a: std.mem.Allocator, src: []const u8, accent: []const u8) ![]const u8 {
     return renderTinted(a, src, accent, theme_mod.zinc400, theme_mod.zinc200);
+}
+
+/// Theme-aware render: grok-style code fences — markers hidden behind a blank
+/// separator row, a full-width background band (clear-to-EOL under the code
+/// bg), and token colors from syntax.zig in the theme's polarity. Everything
+/// else matches renderTinted.
+pub fn renderThemed(a: std.mem.Allocator, src: []const u8, th: theme_mod.Theme, width: usize) ![]const u8 {
+    const light = th.id == .day;
+    var lines = std.array_list.Managed([]const u8).init(a);
+    defer lines.deinit();
+    var split = std.mem.splitScalar(u8, src, '\n');
+    while (split.next()) |line| try lines.append(line);
+
+    var out = std.array_list.Managed(u8).init(a);
+    var in_fence = false;
+    var lang: ?*const syntax.Lang = null;
+    var lex: syntax.State = .{};
+    var first = true;
+    // The previous line ended inside the code band, so codeBg is still the
+    // active canvas and the next line that is NOT band content has to reclaim
+    // it. Restoring on the fence line's own tail instead ended the band at the
+    // last code glyph: run.zig pads the rest of the row from wherever the line
+    // left the background, so the band has to stay open until the row ends.
+    var band = false;
+    var i: usize = 0;
+    while (i < lines.items.len) {
+        const line = lines.items[i];
+        if (!first) try out.append('\n');
+        first = false;
+        const t = std.mem.trimStart(u8, line, " ");
+        const marker = std.mem.startsWith(u8, t, "```");
+        if (band and !(in_fence and !marker)) {
+            try out.appendSlice(th.bg); // leave the band before anything paints
+            band = false;
+        }
+        if (marker) {
+            in_fence = !in_fence;
+            if (in_fence) {
+                lang = syntax.resolve(t[3..]);
+                lex = .{};
+            }
+            // Hidden fence markers; the empty row is the grok separator.
+            i += 1;
+            continue;
+        }
+        if (in_fence) {
+            try out.appendSlice(syntax.codeBg(light));
+            try out.appendSlice("\x1b[K");
+            if (lang) |l| {
+                try syntax.highlightLine(&out, line, l, &lex, light);
+            } else {
+                try out.appendSlice(th.text);
+                try out.appendSlice(line);
+            }
+            try out.appendSlice(theme_mod.reset); // fg/weight only: the band survives to the row end
+            band = true;
+            i += 1;
+            continue;
+        }
+        if (tableLen(lines.items[i..])) |n| {
+            try emitTable(&out, a, lines.items[i .. i + n], th.accent, th.muted, th.text, width);
+            i += n;
+            continue;
+        }
+        if (std.mem.startsWith(u8, t, "#")) {
+            var h = t;
+            while (h.len > 0 and h[0] == '#') h = h[1..];
+            try out.appendSlice(theme_mod.bold);
+            try out.appendSlice(th.accent);
+            try out.appendSlice(std.mem.trimStart(u8, h, " "));
+            try out.appendSlice(theme_mod.reset);
+            i += 1;
+            continue;
+        }
+        try out.appendSlice(th.text);
+        var rest = line;
+        if (std.mem.startsWith(u8, t, "- ") or std.mem.startsWith(u8, t, "* ")) {
+            try out.appendSlice(th.accent);
+            try out.appendSlice("  • ");
+            try out.appendSlice(th.text);
+            rest = t[2..];
+        }
+        try inlineSpans(&out, rest, th.accent, th.text);
+        i += 1;
+    }
+    return out.toOwnedSlice();
 }
 
 pub fn renderTinted(a: std.mem.Allocator, src: []const u8, accent: []const u8, muted: []const u8, text: []const u8) ![]const u8 {
@@ -41,7 +128,7 @@ pub fn renderTinted(a: std.mem.Allocator, src: []const u8, accent: []const u8, m
             continue;
         }
         if (tableLen(lines.items[i..])) |n| {
-            try emitTable(&out, a, lines.items[i .. i + n], accent, muted, text);
+            try emitTable(&out, a, lines.items[i .. i + n], accent, muted, text, 0);
             i += n;
             continue;
         }
@@ -121,6 +208,7 @@ fn inlineSpans(out: *std.array_list.Managed(u8), line: []const u8, accent: []con
             if (std.mem.indexOfPos(u8, line, i + 2, "**")) |end| {
                 try out.appendSlice(theme_mod.bold);
                 try out.appendSlice(line[i + 2 .. end]);
+                try out.appendSlice("\x1b[22m"); // bold OFF — a 38;2 fg alone cannot clear SGR 1
                 try out.appendSlice(text);
                 i = end + 2;
                 continue;
@@ -174,23 +262,14 @@ fn splitCells(line: []const u8, out: [][]const u8) usize {
     return n;
 }
 
-fn cellWidth(s: []const u8) usize {
-    var n: usize = 0;
-    var i: usize = 0;
-    while (i < s.len) {
-        if (s[i] == '`') {
-            i += 1;
-            continue;
-        }
-        if (s[i] == '*' and i + 1 < s.len and s[i + 1] == '*') {
-            i += 2;
-            continue;
-        }
-        const w = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
-        i += @min(w, s.len - i);
-        n += 1;
-    }
-    return n;
+/// Visible width of a cell AS RENDERED: run it through inlineSpans and count.
+/// Guessing at markers went wrong on every unmatched ` or ** (the render kept
+/// them, the measure dropped them, the pad math sheared the grid).
+fn cellWidth(a: std.mem.Allocator, s: []const u8) usize {
+    var scratch = std.array_list.Managed(u8).init(a);
+    defer scratch.deinit();
+    inlineSpans(&scratch, s, "", "") catch return s.len;
+    return theme_mod.visibleLen(scratch.items);
 }
 
 fn emitRule(out: *std.array_list.Managed(u8), muted: []const u8, widths: []const usize, left: []const u8, mid: []const u8, right: []const u8) !void {
@@ -212,8 +291,8 @@ fn emitTable(
     accent: []const u8,
     muted: []const u8,
     text: []const u8,
+    width: usize,
 ) !void {
-    _ = a;
     var widths: [max_table_cols]usize = @splat(0);
     var ncol: usize = 0;
     for (rows, 0..) |row, ri| {
@@ -223,12 +302,30 @@ fn emitTable(
         if (n > ncol) ncol = n;
         var c: usize = 0;
         while (c < n) : (c += 1) {
-            const w = @min(cellWidth(cells[c]), @as(usize, 36));
+            const w = @min(cellWidth(a, cells[c]), @as(usize, 36));
             if (w > widths[c]) widths[c] = w;
         }
     }
     if (ncol == 0) return;
     const cols = widths[0..ncol];
+    // Fit the grid into the terminal: every row costs ncol*3+1 border/pad
+    // columns on top of the content. Shave the widest column until it fits
+    // (floor 5), then clamp each CELL to its column so an over-long cell can
+    // never blow the grid — before this, content was emitted unclamped and
+    // the line-wrapper sheared tables apart at narrow widths.
+    const chrome_cost = ncol * 3 + 1;
+    const budget = if (width == 0) 76 else if (width > chrome_cost) width - chrome_cost else ncol * 5;
+    var total: usize = 0;
+    for (cols) |w| total += w;
+    while (total > budget) {
+        var widest: usize = 0;
+        for (cols, 0..) |w, ci| {
+            if (w > cols[widest]) widest = ci;
+        }
+        if (cols[widest] <= 5) break;
+        cols[widest] -= 1;
+        total -= 1;
+    }
     try emitRule(out, muted, cols, "┌", "┬", "┐");
     try out.append('\n');
     for (rows, 0..) |row, ri| {
@@ -246,21 +343,27 @@ fn emitTable(
             try out.appendSlice(theme_mod.reset);
             try out.append(' ');
             const cell = if (c < n) cells[c] else "";
-            if (ri == 0) {
-                try out.appendSlice(theme_mod.bold);
-                try out.appendSlice(accent);
-                try inlineSpans(out, cell, accent, accent);
-                try out.appendSlice(theme_mod.reset);
-            } else {
-                try out.appendSlice(text);
-                try inlineSpans(out, cell, accent, text);
-            }
-            const vis = cellWidth(cell);
             const want = cols[c];
-            if (vis < want) {
+            var scratch = std.array_list.Managed(u8).init(a);
+            defer scratch.deinit();
+            if (ri == 0) {
+                try scratch.appendSlice(theme_mod.bold);
+                try scratch.appendSlice(accent);
+                try inlineSpans(&scratch, cell, accent, accent);
+            } else {
+                try scratch.appendSlice(text);
+                try inlineSpans(&scratch, cell, accent, text);
+            }
+            const vis = cellWidth(a, cell);
+            if (vis > want) {
+                try out.appendSlice(theme_mod.takeCols(scratch.items, if (want > 1) want - 1 else want));
+                if (want > 1) try out.appendSlice("\u{2026}");
+            } else {
+                try out.appendSlice(scratch.items);
                 var p: usize = 0;
                 while (p < want - vis) : (p += 1) try out.append(' ');
             }
+            try out.appendSlice(theme_mod.reset);
             try out.append(' ');
         }
         try out.appendSlice(muted);
@@ -286,6 +389,88 @@ test "render paints headers, code, bold, and bullets" {
     try std.testing.expect(std.mem.indexOf(u8, text, theme_mod.emerald) != null);
 }
 
+test "the code band stays open to the row end and is released on the next line" {
+    const th = theme_mod.of(.night);
+    const code_bg = syntax.codeBg(false);
+    const out = try renderThemed(std.testing.allocator, "intro\n```\nabc\ndef\n```\nafter", th, 40);
+    defer std.testing.allocator.free(out);
+    var it = std.mem.splitScalar(u8, out, '\n');
+    var rows: usize = 0;
+    var was_band = false;
+    var band_rows: usize = 0;
+    while (it.next()) |ln| : (rows += 1) {
+        const band = std.mem.indexOf(u8, ln, code_bg) != null;
+        if (band) {
+            // run.zig pads a row from whatever background the line left active,
+            // so a band row must NOT hand the canvas back before it ends.
+            try std.testing.expect(std.mem.indexOf(u8, ln, th.bg) == null);
+            band_rows += 1;
+        } else if (was_band) {
+            // The first row off the band reclaims the theme canvas up front.
+            try std.testing.expect(std.mem.startsWith(u8, ln, th.bg));
+        }
+        was_band = band;
+    }
+    try std.testing.expectEqual(@as(usize, 2), band_rows); // abc, def
+    // intro, opening separator, abc, def, closing separator, after
+    try std.testing.expectEqual(@as(usize, 6), rows);
+}
+
+test "a wrapped fence line carries its band onto every continuation row" {
+    const th = theme_mod.of(.night);
+    const bg = syntax.codeBg(false);
+    const src =
+        \\```zig
+        \\const message = try std.fmt.allocPrint(gpa, "hello {s} world", .{name});
+        \\```
+    ;
+    const body = try renderThemed(std.testing.allocator, src, th, 36);
+    defer std.testing.allocator.free(body);
+    const wrapped = try theme_mod.wrapToWidth(std.testing.allocator, body, 36);
+    defer std.testing.allocator.free(wrapped);
+    var it = std.mem.splitScalar(u8, wrapped, '\n');
+    var code_rows: usize = 0;
+    while (it.next()) |ln| {
+        if (theme_mod.visibleLen(ln) == 0) continue; // fence separators
+        code_rows += 1;
+        // A syntax-coloured line spends an SGR per token; the old byte-capped
+        // tracker had dropped the background long before the wrap point.
+        try std.testing.expect(std.mem.indexOf(u8, ln, bg) != null);
+    }
+    try std.testing.expect(code_rows > 1); // it really did wrap
+}
+
+test "no code background leaks past a closed fence or off the last fence row" {
+    const th = theme_mod.of(.night);
+    const code_bg = syntax.codeBg(false);
+    const closed = try renderThemed(std.testing.allocator, "```\nx\n```\ntail", th, 40);
+    defer std.testing.allocator.free(closed);
+    // The band ends with the fence, the next row takes the canvas back, and no
+    // later row re-opens codeBg.
+    var it = std.mem.splitScalar(u8, closed, '\n');
+    var seen_band = false;
+    var restored = false;
+    while (it.next()) |ln| {
+        const band = std.mem.indexOf(u8, ln, code_bg) != null;
+        if (band) {
+            try std.testing.expect(!restored); // never re-opened
+            seen_band = true;
+            continue;
+        }
+        if (seen_band and !restored) {
+            try std.testing.expect(std.mem.startsWith(u8, ln, th.bg));
+            restored = true;
+        }
+    }
+    try std.testing.expect(seen_band and restored);
+    // A message that ends mid-fence keeps its band (that row IS code) and adds
+    // no stray row after it for the theme bg to land on.
+    const open = try renderThemed(std.testing.allocator, "```\nx", th, 40);
+    defer std.testing.allocator.free(open);
+    try std.testing.expect(std.mem.indexOf(u8, open, th.bg) == null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, open, "\n"));
+}
+
 test "renderUser chips @[path] and paints slash commands" {
     const text = try renderUser(std.testing.allocator, "@[/tmp/a.png] /goal look at this", theme_mod.emerald, theme_mod.zinc200);
     defer std.testing.allocator.free(text);
@@ -304,4 +489,18 @@ test "render paints a Grok-style box table and hides raw pipes" {
     try std.testing.expect(std.mem.indexOf(u8, text, "pager") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "| --- |") == null);
     try std.testing.expect(std.mem.indexOf(u8, text, "| Path |") == null);
+}
+
+test "a wide table fits the terminal: grid intact, one visual line per row (#tables)" {
+    const th = theme_mod.of(.night);
+    const md = "| Transport | Grok (this wire) | Codex / Claude |\n|---|---|---|\n| Item delta (previous_response_id) with a very long explanation cell that used to blow the grid | no (stalls) everywhere on narrow terminals | yes, if props match and the moon is right |";
+    const out = try renderThemed(std.testing.allocator, md, th, 60);
+    defer std.testing.allocator.free(out);
+    var it = std.mem.splitScalar(u8, out, '\n');
+    var rows: usize = 0;
+    while (it.next()) |ln| : (rows += 1) {
+        try std.testing.expect(theme_mod.visibleLen(ln) <= 60);
+    }
+    try std.testing.expectEqual(@as(usize, 5), rows); // top rule, header, mid rule, body, bottom rule
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{2026}") != null); // over-long cells clip with an ellipsis
 }

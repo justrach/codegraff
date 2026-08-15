@@ -424,3 +424,31 @@ test "prompt box wraps a long draft onto several rows" {
     try std.testing.expect(std.mem.count(u8, box, "│") >= 6);
     try std.testing.expect(std.mem.indexOf(u8, box, "can we make") != null);
 }
+
+test "the composer's right border holds its column for ambiguous and wide glyphs" {
+    // rowInner pads from visibleLen, so a mis-measured glyph moves the wall.
+    // ✓/⚙ draw one cell (they used to claim two, pulling the border in); emoji
+    // and CJK draw two and must not push it out.
+    const drafts = [_][]const u8{
+        "✓ done ⚙ running ✗ failed ❯ next",
+        "🚀 ship it 🚀🚀 and keep typing until this wraps onto another row 🚀",
+        "你好世界你好世界你好世界你好世界你好世界你好世界你好世界你好世界",
+        "mixed ✓ 🚀 漢字 tail",
+    };
+    for (drafts) |draft| {
+        for ([_]usize{ 40, 41, 57, 80 }) |w| {
+            var m: Model = undefined;
+            m.setup(std.testing.allocator);
+            defer m.deinit();
+            try m.input.setValue(draft);
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const box = try promptBox(&m, arena.allocator(), w);
+            var it = std.mem.splitScalar(u8, box, '\n');
+            while (it.next()) |ln| {
+                if (ln.len == 0) continue;
+                try std.testing.expectEqual(w, theme_mod.visibleLen(ln));
+            }
+        }
+    }
+}

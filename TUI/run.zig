@@ -72,6 +72,7 @@ pub fn run(
     var stdout = Io.File.stdout().writer(io, &out_buf);
     const w = &stdout.interface;
     w.writeAll(enable_seq) catch {};
+    w.writeAll("\x1b]11;?\x07") catch {}; // background query -> auto light/dark (key.zig bg_report)
     w.flush() catch {};
     traj.open(io);
     defer {
@@ -87,6 +88,8 @@ pub fn run(
     var saw_gfx: bool = false;
     var prev: []u8 = &.{};
     var prev_rows: usize = 0;
+    var prev_cols: usize = 0;
+    var prev_theme = m.theme_id;
     defer if (prev.len != 0) gpa.free(prev);
     while (m.running and !m.quit_requested) {
         m.now_ms = @intCast(@divTrunc(@max(@as(i128, 0), Io.Timestamp.now(io, .real).nanoseconds), 1_000_000));
@@ -103,14 +106,28 @@ pub fn run(
         const hash = std.hash.Wyhash.hash(0, frame);
         if (hash != last_hash) {
             const has_gfx = std.mem.indexOf(u8, frame, "\x1b_G") != null;
-            const full = prev.len == 0 or rows != prev_rows or saw_gfx or has_gfx;
+            // The theme bg is painted per ROW, not baked into the frame, and
+            // blank rows are byte-identical across themes/widths — the diff
+            // path skips them, stranding old-bg rows after /theme or the
+            // startup OSC-11 polarity flip, and stale columns after a
+            // width-only resize. Both must force a full paint.
+            const full = prev.len == 0 or rows != prev_rows or cols != prev_cols or m.theme_id != prev_theme or saw_gfx or has_gfx;
             // Kitty images sit above the cell grid and survive \x1b[K / dirty
             // paints — delete before every redraw that might have shown one.
+            // ?2026 synchronized output: the terminal buffers everything
+            // between begin/end and swaps atomically, so a diff paint can
+            // never show a half-updated frame (grok-build does the same).
+            // Terminals without it ignore the pair — strictly no worse.
+            w.writeAll("\x1b[?2026h") catch {};
             if (saw_gfx or has_gfx) w.writeAll("\x1b_Ga=d,d=A,q=2\x1b\\") catch {};
             paint(w, frame, rows, cols, if (full) &.{} else prev, m.theme().bg) catch {};
+            w.writeAll("\x1b[?2026l") catch {};
+            w.flush() catch {};
             if (prev.len != 0) gpa.free(prev);
             prev = gpa.dupe(u8, frame) catch &.{};
             prev_rows = rows;
+            prev_cols = cols;
+            prev_theme = m.theme_id;
             last_hash = hash;
             saw_gfx = has_gfx;
         }
@@ -122,7 +139,18 @@ pub fn run(
             if (pending_len > 0) {
                 esc_stall += 1;
                 if (esc_stall >= 2) {
-                    if (inbuf[0] == 0x1b and keys.handle(&m, .escape) == .quit) m.running = false;
+                    switch (stalledPending(inbuf[0..pending_len])) {
+                        .escape_key => if (keys.handle(&m, .escape) == .quit) {
+                            m.running = false;
+                        },
+                        // A sequence the terminal never finished. Delivering
+                        // Escape here cancelled the running turn on a
+                        // half-arrived mouse report; dropping it silently
+                        // leaves its tail to arrive alone on the next read, so
+                        // tell key.zig to expect orphan debris there.
+                        .truncated_sequence => key_mod.orphan_armed = true,
+                        .discard => {},
+                    }
                     pending_len = 0;
                     esc_stall = 0;
                 }
@@ -171,6 +199,20 @@ pub fn run(
     }
 }
 
+/// What to do with bytes still pending after the input stalled (#94). A LONE
+/// ESC that nothing followed is the Escape KEY. Anything longer is a real
+/// escape sequence the terminal never finished — a half-arrived SGR mouse
+/// report under 1003 hover tracking is the common one, and reading it as
+/// Escape cancelled the user's running turn while its tail leaked into the
+/// composer as `39;7;32M`-shaped text on the next read.
+pub const StallAction = enum { escape_key, truncated_sequence, discard };
+
+pub fn stalledPending(pending: []const u8) StallAction {
+    if (pending.len == 0) return .discard;
+    if (pending[0] != 0x1b) return .truncated_sequence;
+    return if (pending.len == 1) .escape_key else .truncated_sequence;
+}
+
 fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
     w.writeAll(restore_mod.seq) catch {};
     w.flush() catch {};
@@ -180,6 +222,7 @@ fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
     }
     raw.* = tty.enterRaw() orelse raw.*;
     w.writeAll(enable_seq) catch {};
+    w.writeAll("\x1b]11;?\x07") catch {}; // background query -> auto light/dark (key.zig bg_report)
     w.flush() catch {};
     _ = io;
 }
@@ -218,7 +261,14 @@ fn paint(w: *Io.Writer, frame: []const u8, rows: usize, cols: usize, prev: []con
         try w.writeAll(bg);
         const ln = nthLine(frame, row);
         try w.writeAll(ln);
-        try fillRow(w, ln, cols);
+        const vis = theme_mod.visibleLen(ln);
+        if (vis < cols) {
+            try fillRow(w, ln, cols);
+        } else {
+            // Row is exactly full: the cursor is ON the last column and EL
+            // erases it inclusive — that ate the composer's right border.
+            continue;
+        }
         try w.writeAll(bg);
         try w.writeAll("\x1b[K");
     }
@@ -267,6 +317,53 @@ test "run loop enables click+hover tracking and bracketed paste" {
     try std.testing.expect(std.mem.indexOf(u8, src, &kitty_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &wrap_off) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "a=d,d=A") != null);
+}
+
+fn paintToBuf(a: std.mem.Allocator, frame: []const u8, rows: usize, cols: usize, prev: []const u8) ![]u8 {
+    var aw = Io.Writer.Allocating.init(a);
+    errdefer aw.deinit();
+    try paint(&aw.writer, frame, rows, cols, prev, "\x1b[48;2;20;20;20m");
+    return aw.toOwnedSlice();
+}
+
+test "paint keeps a full row's last glyph but still erases every shorter row" {
+    const a = std.testing.allocator;
+    // Row 0 is exactly 10 columns: ESC[K sits ON the last cell and would eat
+    // the composer's right border, so a full row gets neither pad nor erase.
+    // Row 1 is short and must get both.
+    const out = try paintToBuf(a, "╭────────╮\nshort", 2, 10, "XXXXXXXXXX\nold row!!");
+    defer a.free(out);
+    const border = std.mem.indexOf(u8, out, "╭────────╮").?;
+    const short = std.mem.indexOf(u8, out, "short").?;
+    const erase = std.mem.indexOfPos(u8, out, border, "\x1b[K");
+    try std.testing.expect(erase != null and erase.? > short);
+    try std.testing.expect(std.mem.indexOfPos(u8, out, short, "     ") != null);
+}
+
+test "paint erases a row whose glyphs are ambiguous width" {
+    const a = std.testing.allocator;
+    // "  ✓ bash finished ok" draws 20 cells. When visibleLen claimed 21 it
+    // measured full at cols=21, so paint skipped the pad AND the erase and the
+    // 21st cell kept the previous frame. Both must still happen.
+    const frame = "  \u{2713} bash finished ok";
+    try std.testing.expectEqual(@as(usize, 20), theme_mod.visibleLen(frame));
+    const out = try paintToBuf(a, frame, 1, 21, "RESIDUE RESIDUE RESIDU");
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[K") != null);
+}
+
+test "stalled pending: only a LONE ESC is the Escape key" {
+    // #94: a bare ESC nothing followed is the Escape keypress.
+    try std.testing.expectEqual(StallAction.escape_key, stalledPending("\x1b"));
+    // A half-arrived SGR mouse report under 1003 hover tracking. Reading these
+    // as Escape cancelled the running turn, and dropping them silently left
+    // `39;7;32M`-shaped debris to land alone on the next read.
+    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("\x1b["));
+    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("\x1b[<"));
+    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("\x1b[<39;7"));
+    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("\x1bO"));
+    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("39;7"));
+    try std.testing.expectEqual(StallAction.discard, stalledPending(""));
 }
 
 test "rowChanged only flags the line that actually moved" {

@@ -6,10 +6,38 @@ const std = @import("std");
 /// often arrives as a bare DEL after Super-down).
 pub var held: u32 = 0;
 
+/// Armed by the read loop when it throws away a partial escape sequence that
+/// never finished (run.zig's stall path) — the NEXT read can then legitimately
+/// open with that sequence's orphaned tail. Cleared by the first token that is
+/// not orphan debris.
+pub var orphan_armed: bool = false;
+
+/// End offset of the last orphan fragment consumed from the buffer currently
+/// being parsed, so back-to-back debris keeps being eaten while a digit run
+/// that follows real input never is. `maxInt` = no run in progress.
+var orphan_end: usize = std.math.maxInt(usize);
+
+/// Inside `CSI 200~ … CSI 201~`. Every byte between them is literal text by
+/// definition, and a long paste spans several reads — so the debris guard must
+/// stay out of it or a chunk that happens to start `39;7;32M` gets eaten.
+var in_paste: bool = false;
+
+/// Drop every latched parser bit. The globals live for one input loop, so a
+/// fresh session (or a headless sim.Term) must not inherit a held modifier, an
+/// unclosed bracketed paste, or an arm from whatever ran before it.
+pub fn resetInputState() void {
+    held = 0;
+    orphan_armed = false;
+    orphan_end = std.math.maxInt(usize);
+    in_paste = false;
+}
+
 pub const Key = union(enum) {
     char: u8,
     /// Non-ASCII codepoint delivered via kitty CSI-u (é and friends).
     codepoint: u21,
+    /// OSC 11 reply: the terminal's background RGB (auto light/dark).
+    bg_report: [3]u8,
     ctrl: u8,
     ignore,
     enter,
@@ -51,7 +79,29 @@ pub const Mouse = struct {
 
 pub fn next(bytes: []const u8, i: *usize) ?Key {
     if (i.* >= bytes.len) return null;
-    if (takeOrphanCsi(bytes, i)) |k| return k;
+    // Orphan CSI debris can only ever be the HEAD of a read: the ESC that
+    // opened the sequence was lost BETWEEN reads (the loop dropped a truncated
+    // pending head, or the tty input queue overflowed while a slow frame
+    // painted). A digit run anywhere else is typed or pasted TEXT — swallowing
+    // it ate `0x1f`, `[12]`, `1e5` and every version string.
+    if (!in_paste and (i.* == 0 or i.* == orphan_end)) {
+        switch (takeOrphanCsi(bytes, i)) {
+            .took => |k| {
+                orphan_end = i.*;
+                return k;
+            },
+            // Debris cut short at the read boundary: hold the bytes so the loop
+            // carries them into the next read instead of typing the digits. The
+            // held bytes ARE the carry-over, so the arm has done its job.
+            .partial => {
+                orphan_armed = false;
+                return null;
+            },
+            .none => {},
+        }
+    }
+    orphan_end = std.math.maxInt(usize);
+    orphan_armed = false;
     const b = bytes[i.*];
     i.* += 1;
     if (b == 0x1b) return escapeSeq(bytes, i);
@@ -141,17 +191,24 @@ fn escapeSeq(bytes: []const u8, i: *usize) ?Key {
 /// OSC/DCS/APC/PM/SOS reply on stdin (e.g. a color query answer) — consume
 /// through BEL or ST so the payload is never typed into the prompt.
 fn stringSeq(bytes: []const u8, i: *usize) ?Key {
+    const start = i.*; // bytes[start] is ']' for OSC
     var j = i.* + 1;
     while (j < bytes.len) : (j += 1) {
         if (bytes[j] == 0x07) {
+            const body = bytes[start + 1 .. j];
             i.* = j + 1;
-            return .ignore;
+            return oscReply(bytes[start], body);
         }
         if (bytes[j] == 0x1b) {
             if (j + 1 < bytes.len) {
                 // ST (ESC \) ends the string; any other ESC starts a new
                 // sequence — leave it for the next parse.
-                i.* = if (bytes[j + 1] == '\\') j + 2 else j;
+                if (bytes[j + 1] == '\\') {
+                    const body = bytes[start + 1 .. j];
+                    i.* = j + 2;
+                    return oscReply(bytes[start], body);
+                }
+                i.* = j;
                 return .ignore;
             }
             break; // ST split across reads — wait for the backslash
@@ -159,6 +216,30 @@ fn stringSeq(bytes: []const u8, i: *usize) ?Key {
     }
     i.* -= 1; // rewind to the ESC; the terminator is still in flight
     return null;
+}
+
+/// A terminated OSC body. The only reply we act on is OSC 11 (background
+/// color, answering run.zig's startup query) — everything else stays inert.
+fn oscReply(kind: u8, body: []const u8) Key {
+    if (kind != ']') return .ignore;
+    if (!std.mem.startsWith(u8, body, "11;")) return .ignore;
+    const rgb = parseXColor(body[3..]) orelse return .ignore;
+    return .{ .bg_report = rgb };
+}
+
+/// `rgb:RRRR/GGGG/BBBB` (high byte) or `rgb:RR/GG/BB`.
+fn parseXColor(s: []const u8) ?[3]u8 {
+    if (!std.mem.startsWith(u8, s, "rgb:")) return null;
+    var out: [3]u8 = undefined;
+    var it = std.mem.splitScalar(u8, s[4..], '/');
+    for (0..3) |n| {
+        const part = it.next() orelse return null;
+        if (part.len != 2 and part.len != 4) return null;
+        const v = std.fmt.parseInt(u16, part, 16) catch return null;
+        out[n] = if (part.len == 4) @intCast(v >> 8) else @intCast(v);
+    }
+    if (it.next() != null) return null;
+    return out;
 }
 
 /// ESC O <final> — SS3 application keys (tmux/screen, macOS Terminal).
@@ -222,8 +303,14 @@ fn decodeCsi(params: []const u8, final: u8) Key {
             6 => .page_down,
             11 => .f1,
             12 => .f2,
-            200 => .paste_start,
-            201 => .paste_end,
+            200 => blk: {
+                in_paste = true;
+                break :blk .paste_start;
+            },
+            201 => blk: {
+                in_paste = false;
+                break :blk .paste_end;
+            },
             27 => fixterms(params),
             // 2 (Insert), 13-24 (F3-F12) and friends: inert, never Escape.
             else => .ignore,
@@ -392,20 +479,41 @@ fn sgrMouse(params: []const u8, down: bool) Key {
     } };
 }
 
-/// CSI debris after a split ESC (`7444;9u`, `39;33;23M`, `3u`). Never a
+const Orphan = union(enum) {
+    /// Not debris — hand the bytes to the normal parser (typed text).
+    none,
+    /// Debris shape, cut short by the read boundary: hold, do not type it.
+    partial,
+    took: Key,
+};
+
+/// CSI debris after a lost ESC (`7444;9u`, `39;33;23M`, `<35;80;24M`). Never a
 /// letter and never Escape/Ctrl-C — those cancel or kill the turn.
-fn takeOrphanCsi(bytes: []const u8, i: *usize) ?Key {
+///
+/// Strictly shaped, because this runs against text a human may have typed: an
+/// optional `<`, then digits with `;`/`:` separators, then a MOUSE or CSI-u
+/// final (`M`/`m`/`u`/`~`). Any other terminator is text — accepting the whole
+/// 0x40..0x7e range ate `0x1f` (final `x`), `[12]` (final `]`) and `1e5`
+/// (final `e`). A run with neither `<` nor a separator (`3u`) is debris only
+/// while `orphan_armed` says the loop really did drop a truncated sequence.
+fn takeOrphanCsi(bytes: []const u8, i: *usize) Orphan {
     const start = i.*;
-    if (start >= bytes.len) return null;
+    if (start >= bytes.len) return .none;
     var j = start;
-    if (bytes[j] == '<') j += 1;
-    if (j >= bytes.len or bytes[j] < '0' or bytes[j] > '9') return null;
+    const lt = bytes[j] == '<';
+    if (lt) j += 1;
+    if (j >= bytes.len or bytes[j] < '0' or bytes[j] > '9') return .none;
+    var sep = false;
     var k = j;
     while (k < bytes.len) : (k += 1) {
         const c = bytes[k];
         if (c >= '0' and c <= '9') continue;
-        if (c == ';' or c == ':') continue;
-        if (c >= 0x40 and c <= 0x7e) {
+        if (c == ';' or c == ':') {
+            sep = true;
+            continue;
+        }
+        if (c == 'M' or c == 'm' or c == 'u' or c == '~') {
+            if (!lt and !sep and !orphan_armed) return .none;
             i.* = k + 1;
             if (c == 'M' or c == 'm') {
                 const body = bytes[j..k];
@@ -413,18 +521,21 @@ fn takeOrphanCsi(bytes: []const u8, i: *usize) ?Key {
                 const btn = leadingInt(it.next() orelse "0");
                 const x = leadingInt(it.next() orelse "1");
                 const y = leadingInt(it.next() orelse "1");
-                return .{ .mouse = .{
+                return .{ .took = .{ .mouse = .{
                     .btn = @intCast(@min(btn, 255)),
                     .x = @intCast(@min(x, 999)),
                     .y = @intCast(@min(y, 999)),
                     .down = c == 'M',
-                } };
+                } } };
             }
-            return .ignore;
+            return .{ .took = .ignore };
         }
-        return null;
+        return .none;
     }
-    return null;
+    // Ran off the end mid-fragment. Hold it when it already reads as a CSI
+    // parameter list, or when the loop armed us; a bare unarmed digit run is
+    // somebody typing, and holding it would strand the keystrokes.
+    return if (lt or sep or orphan_armed) .partial else .none;
 }
 
 fn leadingInt(s: []const u8) u32 {

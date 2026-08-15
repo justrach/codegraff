@@ -69,13 +69,22 @@ pub fn jumpTo(self: *Model, idx: usize) void {
     const width = if (self.last_term_width == 0) 80 else self.last_term_width;
     const total = sb.totalVisualLines(self, width);
     const at = sb.visualOfIndex(self, idx, width) orelse return;
-    const view_h = if (self.prompt_origin > self.mid_origin) self.prompt_origin - self.mid_origin else 8;
+    // prompt_origin - mid_origin includes the image-card rows render subtracts
+    // from the transcript, and the sticky header occludes the top two viewport
+    // rows — without both corrections /jump parked the target off-screen or
+    // exactly under the pinned chrome (audit: the jumped-to turn was ALWAYS
+    // hidden, with the PREVIOUS prompt pinned above it).
+    const gross = if (self.prompt_origin > self.mid_origin) self.prompt_origin - self.mid_origin else 8;
+    const view_h = gross -| self.preview_rows;
     if (total <= view_h) {
         self.scroll = 0;
         return;
     }
     const max_scroll = total - view_h;
-    self.scroll = if (at >= max_scroll) 0 else max_scroll - at;
+    // Land the target at the row below the sticky slot (row 2) so it is the
+    // first fully visible line; at the extremes fall back to the edges.
+    const want = at -| 2;
+    self.scroll = if (want >= max_scroll) 0 else max_scroll - want;
 }
 
 fn jumpTurn(self: *Model, dir: i32) void {

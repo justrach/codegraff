@@ -199,7 +199,7 @@ pub fn mouse(self: *Model, ev: key_mod.Mouse) bool {
         }
         return false;
     };
-    const hist = if (y >= self.prompt_origin) null else @import("scrollback.zig").indexAtVisual(self, y -| self.mid_origin + self.mid_skip, self.last_term_width);
+    const hist = if (y >= self.prompt_origin or y < self.mid_origin + self.sticky_rows) null else @import("scrollback.zig").indexAtVisual(self, y -| self.mid_origin + self.mid_skip, self.last_term_width);
     const path = pathForChip(self, n, hist);
     show(self, path, n, click);
     return true;
@@ -220,6 +220,7 @@ fn chipAt(self: *const Model, x: usize, y: usize) ?u32 {
     }
     if (y >= self.prompt_origin) return null;
     if (y < self.mid_origin) return null;
+    if (y < self.mid_origin + self.sticky_rows) return null; // sticky chrome is inert
     const vis = y - self.mid_origin + self.mid_skip;
     const idx = @import("scrollback.zig").indexAtVisual(self, vis, self.last_term_width) orelse return null;
     if (self.history.items[idx].kind != .user) return null;
