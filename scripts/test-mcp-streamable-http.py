@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Offline end-to-end smoke for Graff's modern (2026-07-28) Streamable HTTP
-MCP probe: a server that answers the first, handshake-free `tools/list`
-request costs exactly one POST — no `initialize`, no
-`notifications/initialized`. See test-mcp-legacy-fallback.py for the
-backward-compat proof (a server that rejects the modern probe)."""
+"""Offline end-to-end smoke for Graff's Streamable HTTP MCP first-launch
+handshake. Deferred startup overlaps `server/discover` + `tools/list` + at
+most one `initialize` (mcp_lifecycle.zig). A modern `tools/list` result is
+enough to mark the era; a second initialize is a bug, not a fixture gap.
+See test-mcp-legacy-fallback.py for the backward-compat proof.
+"""
 
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ class McpFixture(BaseHTTPRequestHandler):
     requests: list[dict[str, Any]] = []
     failure: BaseException | None = None
     lock = threading.Lock()
+    seen: dict[str, int] = {}
 
     def log_message(self, _format: str, *_args: object) -> None:
         pass
@@ -44,6 +46,10 @@ class McpFixture(BaseHTTPRequestHandler):
         if body:
             self.wfile.write(body)
 
+    def _json(self, payload: dict[str, Any]) -> None:
+        raw = json.dumps(payload, separators=(",", ":")).encode()
+        self._respond(200, raw, "application/json")
+
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -56,8 +62,13 @@ class McpFixture(BaseHTTPRequestHandler):
             assert "text/event-stream" in accept
             assert self.headers.get("Authorization") is None
 
+            method = message["method"]
             with self.lock:
-                ordinal = len(self.requests) + 1
+                self.seen[method] = self.seen.get(method, 0) + 1
+                if method == "initialize" and self.seen[method] > 1:
+                    raise AssertionError(
+                        f"duplicate initialize (id {message.get('id')}): first-launch may overlap one handshake, not two"
+                    )
                 self.requests.append(
                     {
                         "message": message,
@@ -69,44 +80,67 @@ class McpFixture(BaseHTTPRequestHandler):
                     }
                 )
 
-            assert ordinal == 1, f"expected exactly one request, saw a {ordinal}th"
-            assert message["method"] == "tools/list"
-            assert message["id"] == 1
-            meta = message["params"]["_meta"]
-            for key in RESERVED_META_KEYS:
-                assert key in meta, f"missing reserved _meta key {key}"
-            assert meta["io.modelcontextprotocol/protocolVersion"] == MODERN_PROTOCOL
-            assert self.headers.get("Mcp-Protocol-Version") == MODERN_PROTOCOL
-            assert self.headers.get("Mcp-Method") == "tools/list"
-            assert self.headers.get("Mcp-Session-Id") is None
-
-            body = json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "result": {
-                        "tools": [
-                            {
-                                "name": "fixture_search",
-                                "description": "Search public fixture docs.",
-                                "inputSchema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "query": {
-                                            "oneOf": [
-                                                {"type": "string"},
-                                                {"type": "null"},
-                                            ]
-                                        }
+            req_id = message["id"]
+            if method == "tools/list":
+                meta = message["params"]["_meta"]
+                for key in RESERVED_META_KEYS:
+                    assert key in meta, f"missing reserved _meta key {key}"
+                assert meta["io.modelcontextprotocol/protocolVersion"] == MODERN_PROTOCOL
+                assert self.headers.get("Mcp-Protocol-Version") == MODERN_PROTOCOL
+                assert self.headers.get("Mcp-Method") == "tools/list"
+                assert self.headers.get("Mcp-Session-Id") is None
+                self._json(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "tools": [
+                                {
+                                    "name": "fixture_search",
+                                    "description": "Search public fixture docs.",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "query": {
+                                                "oneOf": [
+                                                    {"type": "string"},
+                                                    {"type": "null"},
+                                                ]
+                                            }
+                                        },
                                     },
-                                },
-                            }
-                        ]
-                    },
-                },
-                separators=(",", ":"),
-            ).encode()
-            self._respond(200, body, "application/json")
+                                }
+                            ]
+                        },
+                    }
+                )
+                return
+            if method == "server/discover":
+                self._json(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {"supportedVersions": [MODERN_PROTOCOL, "2025-11-25"]},
+                    }
+                )
+                return
+            if method == "initialize":
+                self._json(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "protocolVersion": message["params"].get("protocolVersion", "2025-11-25"),
+                            "capabilities": {},
+                            "serverInfo": {"name": "fixture", "version": "0"},
+                        },
+                    }
+                )
+                return
+            if method == "notifications/initialized":
+                self._respond(202)
+                return
+            raise AssertionError(f"unexpected MCP method {method}")
         except BaseException as exc:
             self.failure = exc
             self._respond(500)
@@ -115,6 +149,7 @@ class McpFixture(BaseHTTPRequestHandler):
 def run(graff: Path) -> None:
     McpFixture.requests = []
     McpFixture.failure = None
+    McpFixture.seen = {}
     server = ThreadingHTTPServer(("127.0.0.1", 0), McpFixture)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -168,7 +203,10 @@ def run(graff: Path) -> None:
                 )
             if McpFixture.failure is not None:
                 raise AssertionError("MCP fixture rejected a request") from McpFixture.failure
-            assert len(McpFixture.requests) == 1, McpFixture.requests
+            methods = [r["message"]["method"] for r in McpFixture.requests]
+            assert "server/discover" in methods, methods
+            assert "tools/list" in methods, methods
+            assert methods.count("initialize") <= 1, methods
             assert (
                 f"[mcp:fixture] connected (mcp {MODERN_PROTOCOL}) — 1 tool(s)"
                 in completed.stderr
