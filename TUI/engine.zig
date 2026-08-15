@@ -52,6 +52,13 @@ pub const BashFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, cmd
 pub const FilesFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator) ?[]const u8;
 /// Copy text to the system clipboard; true on success.
 pub const CopyFn = *const fn (turn_ctx: ?*anyopaque, text: []const u8) bool;
+/// Engine-owned history compaction. Fills `out` with gpa-owned note + turns
+/// (caller frees). Returns false when history is unchanged.
+pub const CompactOut = struct {
+    note: []const u8 = "",
+    turns: []Turn = &.{},
+};
+pub const CompactFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, history: []const Turn, out: *CompactOut) bool;
 
 pub const Job = struct {
     thread: std.Thread = undefined,
@@ -76,6 +83,7 @@ pub var g_paste_fn: ?PasteFn = null;
 pub var g_bash_fn: ?BashFn = null;
 pub var g_files_fn: ?FilesFn = null;
 pub var g_copy_fn: ?CopyFn = null;
+pub var g_compact_fn: ?CompactFn = null;
 pub var g_model_name: []const u8 = "";
 pub var g_models: []const u8 = "";
 pub var g_cwd: []const u8 = ".";

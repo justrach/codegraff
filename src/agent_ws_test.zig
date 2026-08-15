@@ -42,6 +42,13 @@ test "postLive's delta-body detection matches the key buildBody emits (codex-ws)
 // expire (only strictly past it), and a WS used moments ago must survive.
 // opencode pools at 5 min; ours defaults to 4 (the backend killed a real
 // session within 8.5 min idle).
+test "wssUrl: https->wss, http->ws" {
+    var a = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a.deinit();
+    try std.testing.expectEqualStrings("wss://chatgpt.com/backend-api/codex/responses", try agent_ws.wssUrl(a.allocator(), "https://chatgpt.com/backend-api/codex/responses"));
+    try std.testing.expectEqualStrings("ws://localhost:1234/x", try agent_ws.wssUrl(a.allocator(), "http://localhost:1234/x"));
+}
+
 test "codexWsIdleExpired: fires only strictly past the idle limit (codex-ws)" {
     const limit = agent_ws.codex_ws_idle_ms;
     try std.testing.expectEqual(@as(i64, 4 * std.time.ms_per_min), limit); // default: stay under the observed server kill

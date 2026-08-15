@@ -200,15 +200,6 @@ fn scrollbackKey(self: *Model, k: Key) Effect {
     return .stay;
 }
 
-fn lastToolIdx(self: *const Model) ?usize {
-    var i = self.history.items.len;
-    while (i > 0) {
-        i -= 1;
-        if (self.history.items[i].kind == .tool) return i;
-    }
-    return null;
-}
-
 fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
     if (ev.btn == 64) {
         scrollBy(self, 3);
@@ -234,14 +225,12 @@ fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
     // not toggle whatever is hidden underneath it.
     if (y < self.mid_origin + self.sticky_rows) return .stay;
     const vis = y - self.mid_origin + self.mid_skip;
-    // No fallback on a miss: clicking blank space below the transcript used to
-    // silently expand the LAST tool run (audit: easiest bug to hit).
-    const idx = scrollback.indexAtVisual(self, vis, self.last_term_width);
     self.focus = .scrollback;
-    if (idx) |i| {
-        self.selected = i;
-        if (self.history.items[i].kind == .tool) self.toggleToolGroup(i);
-    }
+    // A click on blank padding maps to no entry — it must not select or
+    // toggle anything (#519).
+    const i = scrollback.indexAtVisual(self, vis, self.last_term_width) orelse return .stay;
+    self.selected = i;
+    if (self.history.items[i].kind == .tool) self.toggleToolGroup(i);
     return .stay;
 }
 
@@ -252,7 +241,11 @@ fn slashOpen(self: *const Model) bool {
 
 fn slashKey(self: *Model, k: Key) bool {
     if (k == .down) {
-        self.slash_sel += 1;
+        // Clamp to the filtered list so the highlight and the Enter target
+        // can never diverge onto an invisible command (#522).
+        var idx: [catalog.items.len]usize = undefined;
+        const n = catalog.filter(self.input.getValue(), &idx);
+        if (n > 0 and self.slash_sel + 1 < n) self.slash_sel += 1;
         return true;
     }
     if (k == .up) {
@@ -450,6 +443,41 @@ test "Cmd+Delete and Ctrl+U kill the draft, not the viewport" {
     _ = handle(&m, .{ .ctrl = 'u' });
     try std.testing.expectEqualStrings("", m.input.getValue());
     try std.testing.expect(m.follow);
+}
+
+test "click on blank padding selects and toggles nothing (#519)" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.push(.user, "hi");
+    try m.push(.tool, "⚙ bash");
+    try m.push(.tool, "✓ bash");
+    m.last_term_height = 24;
+    m.last_term_width = 80;
+    m.mid_origin = 0;
+    m.mid_skip = 0;
+    m.prompt_origin = 20;
+    try std.testing.expect(m.history.items[1].folded);
+    _ = handle(&m, .{ .mouse = .{ .btn = 0, .x = 2, .y = 15, .down = true } });
+    try std.testing.expect(m.history.items[1].folded);
+    try std.testing.expectEqual(app.Focus.scrollback, m.focus);
+}
+
+test "slash selection clamps to the filtered list and stays visible (#522)" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.input.setValue("/");
+    var idx: [catalog.items.len]usize = undefined;
+    const n = catalog.filter("/", &idx);
+    try std.testing.expect(n > 8); // the bug needs more commands than visible rows
+    var presses: usize = 0;
+    while (presses < n + 10) : (presses += 1) _ = handle(&m, .down);
+    try std.testing.expectEqual(n - 1, m.slash_sel);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const menu = try @import("chrome.zig").slashMenu(&m, arena.allocator(), 80);
+    try std.testing.expect(std.mem.indexOf(u8, menu, "› ") != null);
 }
 
 test "click on a folded tool row expands it" {

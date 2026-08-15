@@ -190,6 +190,11 @@ fn escapeSeq(bytes: []const u8, i: *usize) ?Key {
 
 /// OSC/DCS/APC/PM/SOS reply on stdin (e.g. a color query answer) — consume
 /// through BEL or ST so the payload is never typed into the prompt.
+/// Longest stdin reply we ever solicit (OSC 10/11 color answers are ~25
+/// bytes; kitty acks are shorter). Anything bigger behind an unterminated
+/// introducer is typed text, not a reply (#516).
+const max_reply_pending = 128;
+
 fn stringSeq(bytes: []const u8, i: *usize) ?Key {
     const start = i.*; // bytes[start] is ']' for OSC
     var j = i.* + 1;
@@ -213,6 +218,18 @@ fn stringSeq(bytes: []const u8, i: *usize) ?Key {
             }
             break; // ST split across reads — wait for the backslash
         }
+        if (bytes[j] == 0x0d or bytes[j] == 0x0a) {
+            // Replies never carry CR/LF: this is typed text behind an
+            // Alt+]/P/X/^/_ chord. Swallow only the introducer — like any
+            // unbound alt-chord — so the text reparses instead of the
+            // keyboard wedging until it is destroyed (#516).
+            i.* += 1;
+            return .ignore;
+        }
+    }
+    if (bytes.len - i.* > max_reply_pending) {
+        i.* += 1; // over any real reply's size — same chord recovery (#516)
+        return .ignore;
     }
     i.* -= 1; // rewind to the ESC; the terminator is still in flight
     return null;

@@ -146,10 +146,13 @@ pub fn slashMenu(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
     if (n == 0) return "";
     const th = self.theme();
     var out = std.array_list.Managed(u8).init(a);
+    // Clamped selection + a window that follows it, so the highlighted row is
+    // always visible and always the row Enter fires (#522).
     const show = @min(n, @as(usize, 8));
-    const sel = if (n == 0) 0 else self.slash_sel % n;
-    var i: usize = 0;
-    while (i < show) : (i += 1) {
+    const sel = @min(self.slash_sel, n - 1);
+    const first = if (sel >= show) sel + 1 - show else 0;
+    var i: usize = first;
+    while (i < first + show) : (i += 1) {
         const it = catalog.items[idx[i]];
         const mark: []const u8 = if (i == sel) "› " else "  ";
         const line = try std.fmt.allocPrint(a, "{s}{s}  {s}", .{ mark, it.name, it.desc });
