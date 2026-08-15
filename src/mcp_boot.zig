@@ -121,6 +121,12 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
         fut.* = io.concurrent(startServerTask, args) catch io.async(startServerTask, args);
     }
     if (defer_join) {
+        const names = a.alloc([]const u8, entries.items.len) catch {
+            reg.pending_starts = futures;
+            return reg;
+        };
+        for (entries.items, names) |e, *n| n.* = e.name;
+        reg.pending_names = names;
         reg.pending_starts = futures;
         return reg;
     }
@@ -140,6 +146,13 @@ fn mergeOutcomes(reg: *Registry, futures: []Io.Future(StartOutcome)) void {
     for (futures) |*fut| {
         const outcome = fut.await(reg.io);
         const server = outcome.server orelse continue;
+        const exists = for (servers.items) |s| {
+            if (std.mem.eql(u8, s.name, server.name)) break true;
+        } else false;
+        if (exists) {
+            mcp_rpc.deinitServer(server, reg.io, .init(reg.io, @import("mcp_teardown.zig").teardown_grace));
+            continue;
+        }
         const server_index = servers.items.len;
         servers.append(a, server) catch continue;
         for (outcome.tools) |*tool| tool.server_index = server_index;
@@ -158,6 +171,7 @@ pub fn joinPending(reg: *Registry) bool {
     if (reg.pending_starts.len == 0) return false;
     const futures = reg.pending_starts;
     reg.pending_starts = &.{};
+    reg.pending_names = &.{};
     mergeOutcomes(reg, futures);
     reg.gpa.free(futures);
     return true;
@@ -175,4 +189,12 @@ test "joinPending is a no-op on an empty registry" {
     var reg = Registry.empty(std.testing.allocator, io);
     defer reg.deinit();
     try std.testing.expect(!joinPending(&reg));
+}
+
+test "addServer refuses a name a deferred yolo handshake still owns" {
+    const io = std.testing.io;
+    var reg = Registry.empty(std.testing.allocator, io);
+    defer reg.deinit();
+    reg.pending_names = &.{"codedbpro"};
+    try std.testing.expectError(error.McpServerAlreadyConnected, reg.addServer("codedbpro", "codedb-pro", &.{"--mcp"}));
 }

@@ -383,3 +383,41 @@ test "note_constraint (#381): root-only, append-only, and a valid one-property s
     try std.testing.expect(std.mem.indexOf(u8, schema.tools_openai_sub, "note_constraint") == null);
     try std.testing.expect(std.mem.indexOf(u8, schema.tools_anthropic_sub, "note_constraint") == null);
 }
+
+fn countNeedle(hay: []const u8, needle: []const u8) usize {
+    var n: usize = 0;
+    var rest = hay;
+    while (std.mem.indexOf(u8, rest, needle)) |i| {
+        n += 1;
+        rest = rest[i + needle.len ..];
+    }
+    return n;
+}
+
+test "renderRootTools emits a duplicate MCP qualified name only once" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    gate.reset();
+    gate.g_policy = .{};
+    defer {
+        gate.reset();
+        gate.g_policy = .{};
+    }
+    const tools = [_]mcp.Tool{
+        .{ .server_index = 0, .original_name = "read", .qualified_name = "mcp__codedbpro__read", .description = "one", .input_schema = .{ .object = .empty } },
+        .{ .server_index = 1, .original_name = "read", .qualified_name = "mcp__codedbpro__read", .description = "two", .input_schema = .{ .object = .empty } },
+    };
+    // Default policy defers both copies. Unfolding used to write BOTH, and
+    // xAI/Kimi rejected the next request: "Duplicate function definition".
+    const before = try schema.renderRootTools(arena, .openai, &.{}, &tools);
+    try testing.expect(std.mem.indexOf(u8, before, "mcp__codedbpro__read") == null);
+    const req = try std.json.parseFromSliceLeaky(Value, arena, "{\"tools\":[\"mcp__codedbpro__read\"]}", .{ .allocate = .alloc_always });
+    const loaded = try gate.loadInto(arena, &tools, req);
+    try testing.expect(!loaded.is_error);
+    const after = try schema.renderRootTools(arena, .openai, &.{}, &tools);
+    try testing.expectEqual(@as(usize, 1), countNeedle(after, "mcp__codedbpro__read"));
+    gate.g_policy = .{ .eager = &.{"*"} };
+    const eager = try schema.renderRootTools(arena, .openai, &.{}, &tools);
+    try testing.expectEqual(@as(usize, 1), countNeedle(eager, "mcp__codedbpro__read"));
+}

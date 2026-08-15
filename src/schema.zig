@@ -306,10 +306,9 @@ pub fn renderRootTools(
         else
             try writeToolEntry(&s, kind, t.name, t.desc, .{ .raw = t.schema });
     }
-    // Deferred tools ship no entries (codex tool_search pattern); the meta
-    // tool's desc lists them, exec.zig layer 2 guards premature calls.
-    for (mcp_tools) |m| if (!mcp_schema_gate.isDeferred(mcp_tools, m) and !(mcp_schema_gate.g_stable_catalog and mcp_schema_gate.policyDeferred(mcp_tools, m)))
-        try writeToolEntry(&s, kind, m.qualified_name, m.description, .{ .value = m.input_schema });
+    // Deferred tools ship no entries; writeMcpCatalog also drops a second
+    // copy of the same qualified name (yolo companion + mcp.json codedbpro).
+    try native_fold.writeMcpCatalog(&s, kind, mcp_tools);
     // GRAFF_STABLE_CATALOG (#476): loaded tools append in LOAD ORDER after the
     // stable head — loads change only tail bytes, the prefix cache survives.
     if (mcp_schema_gate.g_stable_catalog) try native_fold.renderLoadedTail(&s, kind, out, mcp_tools);

@@ -93,6 +93,9 @@ pub const Registry = struct {
     task_arenas: []std.heap.ArenaAllocator = &.{},
     /// Unjoined startServer futures from a deferred --yolo boot.
     pending_starts: []Io.Future(mcp_boot.StartOutcome) = &.{},
+    /// Server names those futures will merge — companion auto-connect must
+    /// not spawn a second codedb-pro under the same name while they run.
+    pending_names: []const []const u8 = &.{},
 
     pub fn arena(self: *Registry) Allocator {
         return self.arena_state.allocator();
@@ -127,6 +130,7 @@ pub const Registry = struct {
     /// (no tool calls in flight).
     pub fn addServer(reg: *Registry, name: []const u8, command: []const u8, args: []const []const u8) !usize {
         for (reg.servers) |server| if (std.mem.eql(u8, server.name, name)) return error.McpServerAlreadyConnected;
+        for (reg.pending_names) |pending| if (std.mem.eql(u8, pending, name)) return error.McpServerAlreadyConnected;
         if (std.mem.eql(u8, name, "smolify")) return error.ReservedMcpServerName;
         const a = reg.arena();
         var servers: std.ArrayList(*Server) = .empty;
@@ -151,6 +155,7 @@ pub const Registry = struct {
     /// registry storage and sent on every request (for example Authorization).
     pub fn addRemoteServer(reg: *Registry, name: []const u8, url: []const u8, headers: []const std.http.Header) !usize {
         for (reg.servers) |server| if (std.mem.eql(u8, server.name, name)) return error.McpServerAlreadyConnected;
+        for (reg.pending_names) |pending| if (std.mem.eql(u8, pending, name)) return error.McpServerAlreadyConnected;
         if (std.mem.eql(u8, name, "smolify") and (!std.mem.eql(u8, url, smolify_url) or headers.len != 0)) return error.ReservedMcpServerName;
         const a = reg.arena();
         var servers: std.ArrayList(*Server) = .empty;
@@ -440,6 +445,10 @@ pub const Registry = struct {
             // whole request over one, so a single server advertising it would
             // break every turn (codedbpro's `replace`, "path or paths").
             try mcp_protocol.flattenTopLevel(a, &schema);
+            const already = for (tools.items) |prev| {
+                if (std.mem.eql(u8, prev.qualified_name, qualified)) break true;
+            } else false;
+            if (already) continue;
             try tools.append(a, .{
                 .server_index = server_index,
                 .original_name = orig,

@@ -494,7 +494,10 @@ pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags
     const sink = engine_sink.writerSink(out);
     const speak = !json_mode and flags.oneshot_prompt == null and environ_map.get("GRAFF_REPL_DEBUG") != null;
     connect: {
-        for (skills.companion_servers) |c| if (skills.mcpServerConnected(registry.tools, c.server)) break :connect;
+        for (skills.companion_servers) |c| {
+            if (skills.mcpServerConnected(registry.tools, c.server) or skills.mcpServerPending(registry.pending_names, c.server))
+                break :connect;
+        }
         for (skills.companion_servers) |c| {
             if (skills.companionDisabled(c.server) or !skills.binOnPath(io, c.bin)) continue;
             if (registry.addServer(c.server, c.bin, &.{"--mcp"})) |_| {

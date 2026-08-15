@@ -151,6 +151,14 @@ pub fn mcpServerConnected(tools: []const mcp.Tool, server: []const u8) bool {
     return false;
 }
 
+/// True when a --yolo deferred handshake will merge this server. Companion
+/// auto-connect must treat that as already claimed so it does not spawn a
+/// second codedb-pro that later unfolds as a duplicate tool name.
+pub fn mcpServerPending(pending_names: []const []const u8, server: []const u8) bool {
+    for (pending_names) |n| if (std.mem.eql(u8, n, server)) return true;
+    return false;
+}
+
 pub fn binOnPath(io: Io, name: []const u8) bool {
     var it = std.mem.splitScalar(u8, main_mod.g_path_env, ':');
     var buf: [1024]u8 = undefined;
@@ -355,6 +363,13 @@ test "mcpServerConnected: prefix match on qualified names" {
     try std.testing.expect(!mcpServerConnected(&tools, "muon")); // no partial server names
     try std.testing.expect(!mcpServerConnected(&tools, "codedb"));
     try std.testing.expect(!mcpServerConnected(&.{}, "muonry"));
+}
+
+test "mcpServerPending: a yolo handshake claims the companion name" {
+    const pending = [_][]const u8{ "deepwiki", "codedbpro" };
+    try std.testing.expect(mcpServerPending(&pending, "codedbpro"));
+    try std.testing.expect(!mcpServerPending(&pending, "muonry"));
+    try std.testing.expect(!mcpServerPending(&.{}, "codedbpro"));
 }
 
 test "skillDisabled: registry lookup and toggle" {

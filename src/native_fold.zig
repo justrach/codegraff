@@ -107,6 +107,23 @@ pub fn loadedNames() []const []const u8 {
     return g_loaded[0..g_loaded_len];
 }
 
+fn mcpNameSeen(tools: []const @import("mcp.zig").Tool, name: []const u8) bool {
+    for (tools) |t| if (std.mem.eql(u8, t.qualified_name, name)) return true;
+    return false;
+}
+
+/// Eager (or already-loaded) MCP entries. A second Tool with the same
+/// qualified_name is dropped — Kimi and xAI reject the whole request (#505).
+pub fn writeMcpCatalog(s: *std.json.Stringify, kind: @import("provider.zig").Provider.Kind, mcp_tools: []const @import("mcp.zig").Tool) !void {
+    const schema_mod = @import("schema.zig");
+    for (mcp_tools, 0..) |m, i| {
+        if (mcp_schema_gate.isDeferred(mcp_tools, m)) continue;
+        if (mcp_schema_gate.g_stable_catalog and mcp_schema_gate.policyDeferred(mcp_tools, m)) continue;
+        if (mcpNameSeen(mcp_tools[0..i], m.qualified_name)) continue;
+        try schema_mod.writeToolEntry(s, kind, m.qualified_name, m.description, .{ .value = m.input_schema });
+    }
+}
+
 /// GRAFF_STABLE_CATALOG tail (schema.zig renderRootTools, #476): every tool
 /// whose schema has loaded this session, appended in LOAD ORDER after the
 /// stable catalog head — folded natives first, then MCP tools by gate seq.
@@ -121,8 +138,11 @@ pub fn renderLoadedTail(s: *std.json.Stringify, kind: @import("provider.zig").Pr
         try schema_mod.writeToolEntry(s, kind, spec.name, spec.desc, .{ .raw = spec.schema });
     }
     var loaded: std.ArrayList(mcp.Tool) = .empty;
-    for (mcp_tools) |m| if (mcp_schema_gate.policyDeferred(mcp_tools, m) and mcp_schema_gate.loadSeq(m.qualified_name) != null)
+    for (mcp_tools) |m| {
+        if (!(mcp_schema_gate.policyDeferred(mcp_tools, m) and mcp_schema_gate.loadSeq(m.qualified_name) != null)) continue;
+        if (mcpNameSeen(loaded.items, m.qualified_name)) continue;
         try loaded.append(out, m);
+    }
     std.mem.sort(mcp.Tool, loaded.items, {}, struct {
         fn lt(_: void, a: mcp.Tool, b: mcp.Tool) bool {
             return mcp_schema_gate.loadSeq(a.qualified_name).? < mcp_schema_gate.loadSeq(b.qualified_name).?;
