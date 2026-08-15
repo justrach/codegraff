@@ -16,6 +16,15 @@ set -uo pipefail
 repo_root=$(git -C "$(dirname "${BASH_SOURCE[0]}")/.." rev-parse --show-toplevel)
 cd "$repo_root"
 
+# git exports GIT_DIR (and friends) to hooks. Anything this script spawns —
+# the test suite's git-fixture tests, graff itself in the sdk check — inherits
+# them, and a child's `git init`/`git commit` in its OWN tmpdir then operates
+# on THIS repo instead: `git init` re-marks the checkout bare (core.bare=true)
+# and `git commit` lands a stray "fixture" commit on the current branch, with
+# the tmpdir as the work tree. Scrub the hook environment so child git
+# processes discover their repo from their cwd like they expect.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
+
 CHECKS=(fmt lines reach build tests invariants sdk)
 
 usage() {
