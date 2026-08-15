@@ -159,6 +159,9 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         provider_mod.g_xai_responses = std.ascii.eqlIgnoreCase(std.mem.trim(u8, v, " \t"), "responses");
     }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
+    // #502 follow-up: opt-in xAI on-socket chaining (see codex_chain.g_xai_ws_chain).
+    if (environ_map.get("GRAFF_XAI_WS_CHAIN")) |v|
+        @import("codex_chain.zig").g_xai_ws_chain = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "true");
     // GRAFF_WS_FORCE_FAIL_ONCE proves a clean retry; the counted sibling proves
     // that two consecutive failures latch the SSE fallback. Test seams only.
     if (environ_map.get("GRAFF_WS_FORCE_FAIL_ONCE")) |v| {
