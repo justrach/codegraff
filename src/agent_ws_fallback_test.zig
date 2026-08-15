@@ -196,3 +196,34 @@ test "#427: a non-426 handshake failure keeps the ladder's free retry, then latc
     try std.testing.expect(!traced(&tw, "\"detail\":\"426 upgrade required"));
     try std.testing.expect(!sawTransportAbort(rec.items));
 }
+
+// #502 regression: the codex-only gate (correct for Platform OpenAI, which has
+// no WS server to probe) must not swallow xAI — both serve a real WS endpoint,
+// and the v0.0.25x release line's gate silently killed xAI WS turns once.
+test "wsEligible: codex and xai qualify; Platform OpenAI and chat wires never do" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    const saved_ws = main_mod.g_codex_ws;
+    main_mod.g_codex_ws = true;
+    defer main_mod.g_codex_ws = saved_ws;
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+
+    var agent = mockAgent(gpa, arena_state.allocator(), io, "https://chatgpt.com/x");
+    agent.out = &aw.writer;
+    try std.testing.expect(agent_ws.wsEligible(&agent)); // codex baseline
+
+    agent.provider.id = "xai";
+    try std.testing.expect(agent_ws.wsEligible(&agent)); // #502: xai rides WS
+
+    agent.provider.id = "openai";
+    try std.testing.expect(!agent_ws.wsEligible(&agent)); // Platform: no WS server
+
+    agent.provider.id = "xai";
+    agent.provider.kind = .openai;
+    try std.testing.expect(!agent_ws.wsEligible(&agent)); // chat wire: never WS
+}

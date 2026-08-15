@@ -282,6 +282,30 @@ fn fallbackLocal(self: *Agent, err: anyerror) anyerror!usize {
 /// exists. A failed or malformed server result never touches live history and
 /// falls back to the existing inspectable local summary.
 pub fn manualCompact(self: *Agent) anyerror!usize {
+    // #503: an explicit-compact provider (xAI, #502) serves manual /compact
+    // from its first-party endpoint too — the same one-POST blob as the
+    // autocompaction path, with the client summary as the fallback.
+    if (self.provider.serverCompactUrl() != null) {
+        self.closeCodexWs();
+        if (self.messages.items.len == 0) {
+            if (!main_mod.json_mode) try self.say("nothing to compact\n", .{});
+            return 0;
+        }
+        if (explicitCompact(self)) return self.messages.items.len;
+        // Refused (anti-thrash: already blob-anchored) or failed. Never
+        // client-summarize a blob-anchored history — the summary model can't
+        // see inside the opaque item, so everything in it would be dropped.
+        const items = self.messages.items;
+        if (items[0] == .object) {
+            if (items[0].object.get("type")) |t| {
+                if (t == .string and std.mem.eql(u8, t.string, "compaction")) {
+                    if (!main_mod.json_mode) try self.say("[history already anchored on a server compaction blob]\n", .{});
+                    return 0;
+                }
+            }
+        }
+        return self.compact();
+    }
     const route = manualRoute(self.provider);
     if (route == .local) return self.compact();
     self.closeCodexWs();

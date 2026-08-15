@@ -7,6 +7,7 @@ const Value = std.json.Value;
 const main_mod = @import("main.zig");
 const Agent = @import("agent.zig").Agent;
 const Provider = @import("provider.zig").Provider;
+const provider = @import("provider.zig");
 const asc = @import("agent_server_compact.zig");
 const enabled = asc.enabled;
 const noteExposure = asc.noteExposure;
@@ -301,4 +302,25 @@ test "explicitCompact anti-thrash: a fresh blob head with little growth refuses 
     try std.testing.expect(!explicitCompact(&agent));
     try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
     try std.testing.expectEqual(@as(u32, 0), agent.history_rewrites);
+}
+
+test "manualCompact (#503): a blob-anchored history on an explicit-compact provider no-ops instead of client-summarizing the blob" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = testAgent(a, .responses);
+    provider.g_xai_responses = true;
+    defer provider.g_xai_responses = false;
+    agent.provider = .{ .id = "xai", .kind = .responses, .auth = .bearer, .url = provider.xai_responses_url, .api_key = "k", .model = "grok-4.6", .context = 100_000 };
+    // History = one opaque compaction item + one turn: small and blob-anchored,
+    // so the anti-thrash guard refuses the endpoint before any POST — and the
+    // fallback must NOT be a client summary (it cannot see inside the blob).
+    var blob: std.json.ObjectMap = .empty;
+    try blob.put(a, "type", .{ .string = "compaction" });
+    try blob.put(a, "encrypted_content", .{ .string = "opaque" });
+    try agent.messages.append(.{ .object = blob });
+    try agent.messages.append(try item(a, "message", null));
+    const n = try manualCompact(&agent);
+    try std.testing.expectEqual(@as(usize, 0), n);
+    try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len); // untouched
 }
