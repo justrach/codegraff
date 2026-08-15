@@ -134,6 +134,40 @@ pub fn visualOfIndex(self: *const Model, idx: usize, width: usize) ?usize {
     return null;
 }
 
+/// The last user prompt whose first visual row sits strictly above
+/// `top_line` — the grok sticky-header candidate. Same row math as
+/// visualOfIndex so the pin agrees with what the viewport actually shows.
+pub fn stickyUserAbove(self: *const Model, top_line: usize, width: usize) ?[]const u8 {
+    if (top_line == 0) return null;
+    var arena = std.heap.ArenaAllocator.init(self.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var best: ?[]const u8 = null;
+    var v: usize = 0;
+    var i: usize = 0;
+    while (i < self.history.items.len and v < top_line) {
+        const e = self.history.items[i];
+        if (e.kind == .tool) {
+            const run = self.toolRun(i);
+            if (self.history.items[run.start].folded) {
+                v += lineCount(summary(self, a, run.start, run.end, false) catch "");
+            } else {
+                var t = run.start;
+                while (t < run.end) {
+                    v += lineCount(toolVisual(self, a, t, run.end, width, self.now_ms, false) catch "");
+                    t = nextTool(self, t, run.end);
+                }
+            }
+            i = run.end;
+            continue;
+        }
+        if (e.kind == .user and v < top_line) best = e.text;
+        v += lineCount(row(self, a, i, e, width, self.now_ms, false) catch "");
+        i += 1;
+    }
+    return best;
+}
+
 fn lineCount(s: []const u8) usize {
     if (s.len == 0) return 1;
     return std.mem.count(u8, s, "\n") + 1;
@@ -213,7 +247,7 @@ fn row(self: *const Model, a: std.mem.Allocator, idx: usize, e: app.Entry, width
     else
         e.text;
     const body = switch (e.kind) {
-        .assistant => try @import("markdown.zig").renderTinted(a, raw, th.accent, th.muted, th.text),
+        .assistant => try @import("markdown.zig").renderThemed(a, raw, th),
         .user => try @import("markdown.zig").renderUser(a, raw, th.accent, th.text),
         else => raw,
     };

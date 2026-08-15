@@ -2,10 +2,85 @@
 
 const std = @import("std");
 const theme_mod = @import("theme.zig");
+const syntax = @import("syntax.zig");
 
 /// Headers, fences, bullets, `code`, **bold**, and `/slash` tokens.
 pub fn render(a: std.mem.Allocator, src: []const u8, accent: []const u8) ![]const u8 {
     return renderTinted(a, src, accent, theme_mod.zinc400, theme_mod.zinc200);
+}
+
+/// Theme-aware render: grok-style code fences — markers hidden behind a blank
+/// separator row, a full-width background band (clear-to-EOL under the code
+/// bg), and token colors from syntax.zig in the theme's polarity. Everything
+/// else matches renderTinted.
+pub fn renderThemed(a: std.mem.Allocator, src: []const u8, th: theme_mod.Theme) ![]const u8 {
+    const light = th.id == .day;
+    var lines = std.array_list.Managed([]const u8).init(a);
+    defer lines.deinit();
+    var split = std.mem.splitScalar(u8, src, '\n');
+    while (split.next()) |line| try lines.append(line);
+
+    var out = std.array_list.Managed(u8).init(a);
+    var in_fence = false;
+    var lang: ?*const syntax.Lang = null;
+    var lex: syntax.State = .{};
+    var first = true;
+    var i: usize = 0;
+    while (i < lines.items.len) {
+        const line = lines.items[i];
+        if (!first) try out.append('\n');
+        first = false;
+        const t = std.mem.trimStart(u8, line, " ");
+        if (std.mem.startsWith(u8, t, "```")) {
+            in_fence = !in_fence;
+            if (in_fence) {
+                lang = syntax.resolve(t[3..]);
+                lex = .{};
+            }
+            // Hidden fence markers; the empty row is the grok separator.
+            i += 1;
+            continue;
+        }
+        if (in_fence) {
+            try out.appendSlice(syntax.codeBg(light));
+            try out.appendSlice("\x1b[K");
+            if (lang) |l| {
+                try syntax.highlightLine(&out, line, l, &lex, light);
+            } else {
+                try out.appendSlice(th.text);
+                try out.appendSlice(line);
+            }
+            try out.appendSlice(theme_mod.reset);
+            i += 1;
+            continue;
+        }
+        if (tableLen(lines.items[i..])) |n| {
+            try emitTable(&out, a, lines.items[i .. i + n], th.accent, th.muted, th.text);
+            i += n;
+            continue;
+        }
+        if (std.mem.startsWith(u8, t, "#")) {
+            var h = t;
+            while (h.len > 0 and h[0] == '#') h = h[1..];
+            try out.appendSlice(theme_mod.bold);
+            try out.appendSlice(th.accent);
+            try out.appendSlice(std.mem.trimStart(u8, h, " "));
+            try out.appendSlice(theme_mod.reset);
+            i += 1;
+            continue;
+        }
+        try out.appendSlice(th.text);
+        var rest = line;
+        if (std.mem.startsWith(u8, t, "- ") or std.mem.startsWith(u8, t, "* ")) {
+            try out.appendSlice(th.accent);
+            try out.appendSlice("  • ");
+            try out.appendSlice(th.text);
+            rest = t[2..];
+        }
+        try inlineSpans(&out, rest, th.accent, th.text);
+        i += 1;
+    }
+    return out.toOwnedSlice();
 }
 
 pub fn renderTinted(a: std.mem.Allocator, src: []const u8, accent: []const u8, muted: []const u8, text: []const u8) ![]const u8 {

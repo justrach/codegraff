@@ -10,6 +10,8 @@ pub const Key = union(enum) {
     char: u8,
     /// Non-ASCII codepoint delivered via kitty CSI-u (é and friends).
     codepoint: u21,
+    /// OSC 11 reply: the terminal's background RGB (auto light/dark).
+    bg_report: [3]u8,
     ctrl: u8,
     ignore,
     enter,
@@ -141,17 +143,24 @@ fn escapeSeq(bytes: []const u8, i: *usize) ?Key {
 /// OSC/DCS/APC/PM/SOS reply on stdin (e.g. a color query answer) — consume
 /// through BEL or ST so the payload is never typed into the prompt.
 fn stringSeq(bytes: []const u8, i: *usize) ?Key {
+    const start = i.*; // bytes[start] is ']' for OSC
     var j = i.* + 1;
     while (j < bytes.len) : (j += 1) {
         if (bytes[j] == 0x07) {
+            const body = bytes[start + 1 .. j];
             i.* = j + 1;
-            return .ignore;
+            return oscReply(bytes[start], body);
         }
         if (bytes[j] == 0x1b) {
             if (j + 1 < bytes.len) {
                 // ST (ESC \) ends the string; any other ESC starts a new
                 // sequence — leave it for the next parse.
-                i.* = if (bytes[j + 1] == '\\') j + 2 else j;
+                if (bytes[j + 1] == '\\') {
+                    const body = bytes[start + 1 .. j];
+                    i.* = j + 2;
+                    return oscReply(bytes[start], body);
+                }
+                i.* = j;
                 return .ignore;
             }
             break; // ST split across reads — wait for the backslash
@@ -159,6 +168,30 @@ fn stringSeq(bytes: []const u8, i: *usize) ?Key {
     }
     i.* -= 1; // rewind to the ESC; the terminator is still in flight
     return null;
+}
+
+/// A terminated OSC body. The only reply we act on is OSC 11 (background
+/// color, answering run.zig's startup query) — everything else stays inert.
+fn oscReply(kind: u8, body: []const u8) Key {
+    if (kind != ']') return .ignore;
+    if (!std.mem.startsWith(u8, body, "11;")) return .ignore;
+    const rgb = parseXColor(body[3..]) orelse return .ignore;
+    return .{ .bg_report = rgb };
+}
+
+/// `rgb:RRRR/GGGG/BBBB` (high byte) or `rgb:RR/GG/BB`.
+fn parseXColor(s: []const u8) ?[3]u8 {
+    if (!std.mem.startsWith(u8, s, "rgb:")) return null;
+    var out: [3]u8 = undefined;
+    var it = std.mem.splitScalar(u8, s[4..], '/');
+    for (0..3) |n| {
+        const part = it.next() orelse return null;
+        if (part.len != 2 and part.len != 4) return null;
+        const v = std.fmt.parseInt(u16, part, 16) catch return null;
+        out[n] = if (part.len == 4) @intCast(v >> 8) else @intCast(v);
+    }
+    if (it.next() != null) return null;
+    return out;
 }
 
 /// ESC O <final> — SS3 application keys (tmux/screen, macOS Terminal).

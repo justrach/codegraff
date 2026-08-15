@@ -41,6 +41,8 @@ pub const Model = struct {
     slash_sel: usize = 0,
 
     theme_id: theme_mod.Id = .night,
+    /// Set once the user picks a theme; blocks the OSC-11 auto polarity.
+    theme_explicit: bool = false,
     mode: AgentMode = .normal,
     effort: engine.Effort = .medium,
     fast: bool = false,

@@ -23,6 +23,15 @@ pub fn handle(self: *Model, k: Key) Effect {
         if (self.input.undo()) self.setToast("undone");
         return .stay;
     }
+    if (k == .bg_report) {
+        // Startup OSC 11 reply: adopt the terminal's polarity unless the user
+        // explicitly picked a theme. Fixed palettes, 1-bit decision (grok).
+        if (!self.theme_explicit) {
+            const want: @import("theme.zig").Id = if (@import("theme.zig").classifyLight(k.bg_report[0], k.bg_report[1], k.bg_report[2])) .day else .night;
+            self.theme_id = want;
+        }
+        return .stay;
+    }
     if (k == .mouse) return mouseKey(self, k.mouse);
     if (k == .paste_start) {
         self.pasting = true;

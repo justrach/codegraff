@@ -94,6 +94,25 @@ pub fn next(id: Id) Id {
     return @enumFromInt((@intFromEnum(id) + 1) % all.len);
 }
 
+/// grok's polarity test: BT.709 luminance over sRGB-linearized channels,
+/// light at >= 0.5. Only the 1-bit answer is kept — the palette stays fixed.
+pub fn classifyLight(r: u8, g: u8, b: u8) bool {
+    const lum = 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+    return lum >= 0.5;
+}
+
+fn linear(c: u8) f64 {
+    const s = @as(f64, @floatFromInt(c)) / 255.0;
+    return if (s <= 0.04045) s / 12.92 else std.math.pow(f64, (s + 0.055) / 1.055, 2.4);
+}
+
+test "classifyLight: grok-night bg is dark, grok-day bg is light" {
+    try std.testing.expect(!classifyLight(0x14, 0x14, 0x14));
+    try std.testing.expect(!classifyLight(0x24, 0x28, 0x3b)); // tokyo storm
+    try std.testing.expect(classifyLight(0xf6, 0xf6, 0xf6));
+    try std.testing.expect(classifyLight(0xee, 0xee, 0xee));
+}
+
 /// Index just past the escape sequence starting at `start` (s[start] == 0x1b).
 /// Skips CSI, OSC/DCS/APC/PM/SOS (to BEL or ST), SS3, and ESC+char — a
 /// truncation mid-sequence would emit broken escapes into the frame.

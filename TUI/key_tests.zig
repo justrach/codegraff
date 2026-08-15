@@ -176,8 +176,14 @@ test "non-ASCII CSI-u codepoints type text instead of Escape" {
 
 test "OSC and APC replies on stdin are consumed, never typed" {
     var i: usize = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b]11;rgb:14/14/14\x07", &i).?);
+    // OSC 11 replies now carry the terminal background (auto light/dark).
+    try std.testing.expectEqual(Key{ .bg_report = .{ 0x14, 0x14, 0x14 } }, next("\x1b]11;rgb:14/14/14\x07", &i).?);
     try std.testing.expectEqual(@as(usize, 18), i);
+    i = 0;
+    // 4-digit form takes the high byte; other OSC bodies stay inert.
+    try std.testing.expectEqual(Key{ .bg_report = .{ 0xf6, 0xf6, 0xf6 } }, next("\x1b]11;rgb:f6f6/f6f6/f6f6\x1b\\", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.ignore, next("\x1b]10;rgb:14/14/14\x07", &i).?);
     i = 0;
     try std.testing.expectEqual(Key.ignore, next("\x1b_Gi=1;OK\x1b\\", &i).?);
     try std.testing.expectEqual(@as(usize, 11), i);

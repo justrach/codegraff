@@ -72,6 +72,7 @@ pub fn run(
     var stdout = Io.File.stdout().writer(io, &out_buf);
     const w = &stdout.interface;
     w.writeAll(enable_seq) catch {};
+    w.writeAll("\x1b]11;?\x07") catch {}; // background query -> auto light/dark (key.zig bg_report)
     w.flush() catch {};
     traj.open(io);
     defer {
@@ -106,8 +107,15 @@ pub fn run(
             const full = prev.len == 0 or rows != prev_rows or saw_gfx or has_gfx;
             // Kitty images sit above the cell grid and survive \x1b[K / dirty
             // paints — delete before every redraw that might have shown one.
+            // ?2026 synchronized output: the terminal buffers everything
+            // between begin/end and swaps atomically, so a diff paint can
+            // never show a half-updated frame (grok-build does the same).
+            // Terminals without it ignore the pair — strictly no worse.
+            w.writeAll("\x1b[?2026h") catch {};
             if (saw_gfx or has_gfx) w.writeAll("\x1b_Ga=d,d=A,q=2\x1b\\") catch {};
             paint(w, frame, rows, cols, if (full) &.{} else prev, m.theme().bg) catch {};
+            w.writeAll("\x1b[?2026l") catch {};
+            w.flush() catch {};
             if (prev.len != 0) gpa.free(prev);
             prev = gpa.dupe(u8, frame) catch &.{};
             prev_rows = rows;
@@ -180,6 +188,7 @@ fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
     }
     raw.* = tty.enterRaw() orelse raw.*;
     w.writeAll(enable_seq) catch {};
+    w.writeAll("\x1b]11;?\x07") catch {}; // background query -> auto light/dark (key.zig bg_report)
     w.flush() catch {};
     _ = io;
 }
