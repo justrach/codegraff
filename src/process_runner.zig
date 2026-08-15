@@ -328,6 +328,36 @@ test "#253: fdLimitSnapshot observes a real NOFILE soft limit" {
     try std.testing.expect(lim.hard >= lim.soft);
 }
 
+/// Git exports these to hooks. A child `git init`/`commit` in a tmpdir that
+/// inherits them operates on the enclosing repo instead (core.bare=true, stray
+/// fixture commits). fixtureCmd and any other in-suite git spawn must drop them.
+pub const git_hook_env_keys = [_][]const u8{
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+};
+
+pub fn stripGitHookEnv(map: *std.process.Environ.Map) void {
+    for (git_hook_env_keys) |k| _ = map.swapRemove(k);
+}
+
+test "#504: stripGitHookEnv drops hook-exported git keys and keeps PATH" {
+    var map = std.process.Environ.Map.init(std.testing.allocator);
+    defer map.deinit();
+    try map.put("PATH", "/bin");
+    try map.put("HOME", "/tmp/home");
+    try map.put("GIT_DIR", "/tmp/evil.git");
+    try map.put("GIT_PREFIX", "");
+    stripGitHookEnv(&map);
+    try std.testing.expectEqualStrings("/bin", map.get("PATH").?);
+    try std.testing.expectEqualStrings("/tmp/home", map.get("HOME").?);
+    try std.testing.expect(map.get("GIT_DIR") == null);
+    try std.testing.expect(map.get("GIT_PREFIX") == null);
+}
+
 test "#253: fdQuotaNote names the error and the observed limit" {
     var buf: [160]u8 = undefined;
     const with = fdQuotaNote(&buf, "ProcessFdQuotaExceeded", .{ .soft = 256, .hard = 10240 });

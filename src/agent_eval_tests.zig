@@ -137,11 +137,39 @@ test "runEval: commits before the command runs, mispredicts on a missed target, 
 /// The #412 test needs a REAL git repo: reading git is the whole feature, and
 /// a mocked probe would prove nothing about the porcelain/diff/untracked split.
 fn fixtureCmd(gpa: std.mem.Allocator, io: Io, argv: []const []const u8) !void {
-    const r = process_runner.runCapped(gpa, io, argv, 1 << 16, 1 << 16, 60_000) catch
+    // #504: hooks export GIT_DIR and friends. `env -u` drops them so a
+    // `GIT_DIR=… zig build test` cannot retarget `git init` at this repo.
+    var list: std.ArrayList([]const u8) = .empty;
+    defer list.deinit(gpa);
+    try list.appendSlice(gpa, &.{
+        "env",
+        "-u",
+        "GIT_DIR",
+        "-u",
+        "GIT_WORK_TREE",
+        "-u",
+        "GIT_INDEX_FILE",
+        "-u",
+        "GIT_COMMON_DIR",
+        "-u",
+        "GIT_OBJECT_DIRECTORY",
+        "-u",
+        "GIT_PREFIX",
+    });
+    try list.appendSlice(gpa, argv);
+    const r = process_runner.runCapped(gpa, io, list.items, 1 << 16, 1 << 16, 60_000) catch
         return error.SkipZigTest; // no git on this machine: skip rather than fail on the environment
     defer gpa.free(r.stdout);
     defer gpa.free(r.stderr);
     if (!process_runner.ranOk(r)) return error.FixtureCommandFailed;
+}
+
+test "#504: fixtureCmd scrubs GIT_DIR before spawning git" {
+    const src = @embedFile("agent_eval_tests.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "GIT_DIR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "GIT_WORK_TREE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "GIT_PREFIX") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "env") != null);
 }
 
 /// How many times the --eval command was actually SPAWNED. The counter lives
