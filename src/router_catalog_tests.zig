@@ -169,13 +169,19 @@ test "xAI /v1/models rows inherit baked context windows" {
         \\{"object":"list","data":[
         \\ {"id":"grok-4.3","object":"model","created":1,"owned_by":"xai"},
         \\ {"id":"grok-4.3-fast","object":"model","created":1,"owned_by":"xai"},
-        \\ {"id":"grok-nova-9","object":"model","created":1,"owned_by":"xai"}
+        \\ {"id":"grok-4.6","object":"model","created":1,"owned_by":"xai"},
+        \\ {"id":"grok-4.6-build","object":"model","created":1,"owned_by":"xai"},
+        \\ {"id":"grok-nova-9","object":"model","created":1,"owned_by":"xai"},
+        \\ {"id":"grok-from-header","object":"model","context_window":2000000}
         \\]}
     ) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 3), snapshot.models.len);
+    try std.testing.expectEqual(@as(usize, 6), snapshot.models.len);
     try std.testing.expectEqual(@as(u64, 1_000_000), snapshot.models[0].context);
     try std.testing.expectEqual(@as(u64, 1_000_000), snapshot.models[1].context);
-    try std.testing.expectEqual(pricing.default_context, snapshot.models[2].context);
+    try std.testing.expectEqual(@as(u64, 500_000), snapshot.models[2].context);
+    try std.testing.expectEqual(@as(u64, 500_000), snapshot.models[3].context);
+    try std.testing.expectEqual(pricing.default_context, snapshot.models[4].context);
+    try std.testing.expectEqual(@as(u64, 2_000_000), snapshot.models[5].context);
 }
 
 test "Anthropic /v1/models rows inherit baked context windows" {

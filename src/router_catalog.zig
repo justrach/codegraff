@@ -153,6 +153,7 @@ pub fn parseModels(arena: Allocator, provider_id: []const u8, data: []const u8) 
         if (duplicate) continue;
         var context = positiveInt(item.object, "context_length");
         if (context == 0) context = positiveInt(item.object, "context");
+        if (context == 0) context = positiveInt(item.object, "context_window"); // grok-build / xAI
         // Fireworks declares the window in camelCase (AIP gateway shape).
         if (context == 0) context = positiveInt(item.object, "contextLength");
         // Anthropic declares the input window as max_input_tokens. Its sibling

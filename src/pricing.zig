@@ -145,12 +145,8 @@ pub fn printUsageFooter(io: Io) void {
     } else |_| {}
 }
 
-// Known models per provider: context window in tokens. Direct-provider
-// numbers from models.dev/api.json, codegraff numbers from the gateway's
-// /v1/models endpoint (both snapshot 2026-06-10). The same model name can
-// appear under several providers with different limits — routing picks the
-// first row whose provider has an API key. Compaction triggers at 80% of
-// the context; unknown models fall back to a conservative 200k.
+// Known models per provider: context window in tokens (models.dev / gateway
+// /v1/models). Compaction is 80% of the window; unknown models use 200k.
 pub const ModelInfo = struct {
     provider: []const u8,
     name: []const u8,
@@ -275,6 +271,8 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "kimi", .name = "kimi-for-coding-highspeed", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
     .{ .provider = "moonshot", .name = "kimi-latest", .context = 131_072 },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
+    .{ .provider = "xai", .name = "grok-4.5", .context = 500_000 },
+    .{ .provider = "xai", .name = "grok-4.6", .context = 500_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
     .{ .provider = "zai", .name = "glm-5.2", .context = 204_800 },
     .{ .provider = "zai", .name = "glm-5", .context = 204_800 },
@@ -505,6 +503,7 @@ pub fn providerModelInTable(provider_id: []const u8, model: []const u8) bool {
 
 test "contextFor known model and default fallback" {
     try std.testing.expectEqual(@as(u64, 1_048_576), contextFor("kimi", "k3"));
+    try std.testing.expectEqual(@as(u64, 500_000), contextFor("xai", "grok-4.6"));
     try std.testing.expectEqual(@as(u64, default_context), contextFor("nope", "unknown-xyz"));
 }
 
