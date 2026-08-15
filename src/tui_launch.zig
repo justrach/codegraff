@@ -108,6 +108,7 @@ pub fn run(
         .bash_fn = bashCb,
         .files_fn = filesCb,
         .copy_fn = copyCb,
+        .compact_fn = compactCb,
     });
 }
 
@@ -169,6 +170,42 @@ fn modelCb(ctx: ?*anyopaque, gpa: Allocator, name: []const u8) ?[]const u8 {
     const nm = repl_glue.replModelCb(ctx, gpa, name);
     if (nm) |n| obs.modelSwitch(n);
     return nm;
+}
+
+fn compactCb(ctx: ?*anyopaque, gpa: Allocator, history: []const tui.Turn, out: *tui.CompactOut) bool {
+    var turns = std.array_list.Managed(repl.Turn).init(gpa);
+    defer {
+        for (turns.items) |t| gpa.free(t.text);
+        turns.deinit();
+    }
+    for (history) |t| {
+        const text = gpa.dupe(u8, t.text) catch continue;
+        turns.append(.{ .role = switch (t.role) {
+            .user => .user,
+            .assistant => .assistant,
+        }, .text = text }) catch gpa.free(text);
+    }
+    var raw: @import("repl_compact.zig").CompactOut = .{};
+    const ok = @import("repl_compact.zig").replCompactCb(ctx, gpa, turns.items, &raw);
+    out.note = raw.note;
+    if (raw.turns.len == 0) {
+        out.turns = &.{};
+        return ok;
+    }
+    const converted = gpa.alloc(tui.Turn, raw.turns.len) catch {
+        for (raw.turns) |t| gpa.free(t.text);
+        gpa.free(raw.turns);
+        return ok;
+    };
+    for (raw.turns, 0..) |t, i| {
+        converted[i] = .{ .role = switch (t.role) {
+            .user => .user,
+            .assistant => .assistant,
+        }, .text = t.text };
+    }
+    gpa.free(raw.turns);
+    out.turns = converted;
+    return ok;
 }
 
 fn cancelCb(ctx: ?*anyopaque) void {

@@ -46,6 +46,15 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
     const item = catalog.lookup(cmd);
     const canon = if (item) |it| it.name else cmd;
 
+    // #521: history-destroying commands must not run under a live job — the
+    // steer guard in promptKey only covers plain text, and the slash menu,
+    // palette, and steer drain all land here.
+    const destroys = std.mem.eql(u8, canon, "/new") or std.mem.eql(u8, canon, "/compact") or std.mem.eql(u8, canon, "/rewind");
+    if (self.pending != null and destroys) {
+        self.push(.system, "a turn is still running — press Esc to cancel it first") catch {};
+        return .stay;
+    }
+
     if (std.mem.eql(u8, canon, "/quit")) {
         self.quit_requested = true;
         return .quit;
@@ -241,18 +250,45 @@ pub fn rewind(self: *Model) void {
 }
 
 pub fn compact(self: *Model) void {
-    const keep = 6;
-    const n = self.history.items.len;
-    if (n <= keep) {
-        self.push(.system, "nothing to compact") catch {};
+    const f = engine.g_compact_fn orelse {
+        self.push(.system, "compaction needs a live session") catch {};
+        return;
+    };
+    var turns = std.array_list.Managed(engine.Turn).init(self.alloc);
+    defer {
+        for (turns.items) |t| self.alloc.free(t.text);
+        turns.deinit();
+    }
+    for (self.history.items) |e| {
+        const role: ?engine.Turn.Role = switch (e.kind) {
+            .user => .user,
+            .assistant => .assistant,
+            else => null,
+        };
+        if (role) |r| {
+            const t = self.alloc.dupe(u8, e.text) catch continue;
+            turns.append(.{ .role = r, .text = t }) catch self.alloc.free(t);
+        }
+    }
+    var out: engine.CompactOut = .{};
+    const ok = f(engine.g_turn_ctx, self.alloc, turns.items, &out);
+    defer {
+        if (out.note.len > 0) self.alloc.free(out.note);
+        for (out.turns) |t| self.alloc.free(t.text);
+        if (out.turns.len > 0) self.alloc.free(out.turns);
+    }
+    if (!ok) {
+        self.push(.system, if (out.note.len > 0) out.note else "compaction failed, history unchanged") catch {};
         return;
     }
-    const drop_to = n - keep;
-    var k: usize = 0;
-    while (k < drop_to) : (k += 1) self.alloc.free(self.history.items[k].text);
-    std.mem.copyForwards(app.Entry, self.history.items[0..], self.history.items[drop_to..]);
-    self.history.shrinkRetainingCapacity(n - drop_to);
-    self.push(.system, "compacted — kept recent turns") catch {};
+    self.clearHistory();
+    if (out.note.len > 0) self.push(.system, out.note) catch {};
+    for (out.turns) |t| {
+        self.push(switch (t.role) {
+            .user => .user,
+            .assistant => .assistant,
+        }, t.text) catch {};
+    }
 }
 
 pub fn recallPrev(self: *Model) void {
@@ -544,4 +580,8 @@ test "/btw queues an aside while a turn is pending" {
 test "lastLines caps ! output to the tail" {
     try std.testing.expectEqualStrings("c\nd", lastLines("a\nb\nc\nd", 2));
     try std.testing.expectEqualStrings("a\nb", lastLines("a\nb", 5));
+}
+
+test {
+    _ = @import("dispatch_tests.zig"); // overflow tests (600-line cap)
 }

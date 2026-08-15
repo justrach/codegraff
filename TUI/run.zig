@@ -35,6 +35,7 @@ pub const RunOpts = struct {
     bash_fn: ?engine.BashFn = null,
     files_fn: ?engine.FilesFn = null,
     copy_fn: ?engine.CopyFn = null,
+    compact_fn: ?engine.CompactFn = null,
 };
 
 pub fn run(
@@ -53,6 +54,7 @@ pub fn run(
     engine.g_bash_fn = opts.bash_fn;
     engine.g_files_fn = opts.files_fn;
     engine.g_copy_fn = opts.copy_fn;
+    engine.g_compact_fn = opts.compact_fn;
     engine.g_model_name = opts.model_name;
     engine.g_models = opts.models;
     engine.g_cwd = opts.cwd;
@@ -119,15 +121,29 @@ pub fn run(
         if (!tty.poll(wait)) {
             if (pending_len > 0) {
                 esc_stall += 1;
-                if (esc_stall >= 2) {
-                    if (inbuf[0] == 0x1b and keys.handle(&m, .escape) == .quit) m.running = false;
-                    pending_len = 0;
-                    esc_stall = 0;
+                switch (stallVerdict(inbuf[0..pending_len], esc_stall)) {
+                    .wait => {},
+                    .escape_key => {
+                        if (keys.handle(&m, .escape) == .quit) m.running = false;
+                        pending_len = 0;
+                        esc_stall = 0;
+                    },
+                    .drop => {
+                        pending_len = 0;
+                        esc_stall = 0;
+                    },
                 }
             }
             continue;
         }
         esc_stall = 0;
+        if (pending_len == inbuf.len) {
+            // A stuck head has filled the whole buffer: that is a parser
+            // wedge, not a dead tty. Drop it rather than letting the
+            // zero-length read below masquerade as a hangup and kill the
+            // TUI mid-session (#517).
+            pending_len = 0;
+        }
         const got = tty.readStdin(inbuf[pending_len..]);
         if (got == 0) {
             // poll says readable but read gives nothing: hangup or transient
@@ -161,6 +177,20 @@ pub fn run(
             pending_len = rest;
         } else pending_len = 0;
     }
+}
+
+/// What to do with input bytes stuck mid-sequence after quiet polls (~25ms
+/// each). Exactly one pending ESC byte is the Escape key after the #94 grace.
+/// A longer prefix is a truncated CSI/OSC split by link latency (ssh/tmux):
+/// delivering Escape cancelled live turns and typing the late tail sprayed
+/// "2;39M"-style debris into the transcript — wait for the tail instead, and
+/// only silently drop once it is clearly never coming.
+pub const StallVerdict = enum { wait, escape_key, drop };
+
+pub fn stallVerdict(pending: []const u8, stalls: u8) StallVerdict {
+    if (pending.len == 0) return .wait;
+    if (pending.len == 1 and pending[0] == 0x1b) return if (stalls >= 2) .escape_key else .wait;
+    return if (stalls >= 20) .drop else .wait;
 }
 
 fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
@@ -253,6 +283,20 @@ test "run loop enables click tracking and bracketed paste" {
     try std.testing.expect(std.mem.indexOf(u8, src, &kitty_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &wrap_off) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "a=d,d=A") != null);
+    // #517: a buffer-filling parser wedge must be cleared before the read,
+    // or the zero-length read reads as a hangup and kills the TUI.
+    try std.testing.expect(std.mem.indexOf(u8, src, "pending_len == inbuf.len") != null);
+}
+
+test "a truncated CSI never becomes Escape or typed debris; a lone ESC still does (#94)" {
+    try std.testing.expectEqual(StallVerdict.wait, stallVerdict("\x1b", 1));
+    try std.testing.expectEqual(StallVerdict.escape_key, stallVerdict("\x1b", 2));
+    // Split SGR mouse / kitty CSI-u: never Escape, wait for the tail...
+    try std.testing.expectEqual(StallVerdict.wait, stallVerdict("\x1b[<65;2;3", 2));
+    try std.testing.expectEqual(StallVerdict.wait, stallVerdict("\x1b[5744", 19));
+    // ...and silently drop once it is clearly lost, so it is never typed.
+    try std.testing.expectEqual(StallVerdict.drop, stallVerdict("\x1b[<65;2;3", 20));
+    try std.testing.expectEqual(StallVerdict.wait, stallVerdict("", 5));
 }
 
 test "rowChanged only flags the line that actually moved" {

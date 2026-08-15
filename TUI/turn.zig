@@ -57,11 +57,7 @@ pub fn finishJob(self: *Model) void {
     if (!job.done.load(.acquire)) return;
     if (job.threaded) job.thread.join();
 
-    const n = self.history.items.len;
-    if (n > 0 and self.history.items[n - 1].kind == .pending) {
-        self.alloc.free(self.history.items[n - 1].text);
-        self.history.shrinkRetainingCapacity(n - 1);
-    }
+    _ = removePendingRows(self);
     // The live stream carries ⚙/✓/✗ lines; the result is only the final
     // answer. Keep the tool rows so they don't vanish with the pending entry.
     if (job.stream.snapshot(self.alloc)) |live| {
@@ -127,14 +123,26 @@ pub fn harvestLiveTools(self: *Model) void {
     const job = self.pending orelse return;
     const live = job.stream.snapshot(self.alloc) orelse return;
     defer self.alloc.free(live);
-    var held: ?app.Entry = null;
-    const n = self.history.items.len;
-    if (n > 0 and self.history.items[n - 1].kind == .pending) {
-        held = self.history.items[n - 1];
-        self.history.shrinkRetainingCapacity(n - 1);
-    }
+    const had_pending = removePendingRows(self);
     persistToolLines(self, live);
-    if (held) |e| self.history.append(e) catch {};
+    if (had_pending) self.push(.pending, "") catch {};
+}
+
+/// Remove every .pending row wherever it sits. Steering pushes "↳ queued"
+/// rows after the pending entry, so "pending is last" is not an invariant —
+/// assuming it stranded a permanent thinking row in the transcript (#520).
+fn removePendingRows(self: *Model) bool {
+    var had = false;
+    var i: usize = self.history.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (self.history.items[i].kind == .pending) {
+            self.alloc.free(self.history.items[i].text);
+            _ = self.history.orderedRemove(i);
+            had = true;
+        }
+    }
+    return had;
 }
 
 fn persistToolLines(self: *Model, stream: []const u8) void {
@@ -273,4 +281,26 @@ test "Ctrl+C during a turn cancels once then quits" {
     try std.testing.expect(m.cancel_requested);
     try std.testing.expect(m.pending != null);
     try std.testing.expectEqual(@import("app.zig").Effect.quit, keys.handle(&m, .{ .ctrl = 'c' }));
+}
+
+test "finishJob strips a pending row buried under steer echoes (#520)" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.push(.user, "hi");
+    try m.push(.pending, "");
+    try m.push(.system, "↳ queued (1 waiting)");
+    const job = try std.testing.allocator.create(engine.Job);
+    job.* = .{
+        .threaded = false,
+        .gpa = std.testing.allocator,
+        .history = try std.testing.allocator.alloc(engine.Turn, 0),
+        .params = .{},
+        .stream = .{},
+    };
+    job.done.store(true, .release);
+    m.pending = job;
+    finishJob(&m);
+    try std.testing.expect(m.pending == null);
+    for (m.history.items) |e| try std.testing.expect(e.kind != .pending);
 }

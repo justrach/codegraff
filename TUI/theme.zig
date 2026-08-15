@@ -1,6 +1,7 @@
 //! Theme slots as fixed SGR string literals (never padded rgb buffers).
 
 const std = @import("std");
+const width_mod = @import("width.zig");
 
 pub const Id = enum {
     night,
@@ -125,7 +126,7 @@ pub fn skipEsc(s: []const u8, start: usize) usize {
     return i;
 }
 
-/// Columns in `s`, skipping SGR. Assumes 1-col codepoints (no CJK/emoji width).
+/// Columns in `s`, skipping SGR. CJK/emoji count 2, combining marks 0 (#518).
 pub fn visibleLen(s: []const u8) usize {
     var n: usize = 0;
     var i: usize = 0;
@@ -134,9 +135,9 @@ pub fn visibleLen(s: []const u8) usize {
             i = skipEsc(s, i);
             continue;
         }
-        const w = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
-        i += @min(w, s.len - i);
-        n += 1;
+        const g = width_mod.glyph(s, i);
+        i += g.step;
+        n += g.cols;
     }
     return n;
 }
@@ -149,10 +150,10 @@ pub fn takeCols(s: []const u8, max: usize) []const u8 {
             i = skipEsc(s, i);
             continue;
         }
-        const w = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
-        const step = @min(w, s.len - i);
-        i += step;
-        n += 1;
+        const g = width_mod.glyph(s, i);
+        if (n + g.cols > max) break; // a wide glyph never straddles the cut
+        i += g.step;
+        n += g.cols;
     }
     return s[0..i];
 }
@@ -216,15 +217,14 @@ pub fn wrapToWidth(a: std.mem.Allocator, s: []const u8, width: usize) ![]const u
             try out.appendSlice(s[start..i]);
             continue;
         }
-        const w = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
-        const step = @min(w, s.len - i);
-        if (col >= width) {
+        const g = width_mod.glyph(s, i);
+        if (col + g.cols > width and col > 0) {
             try out.append('\n');
             col = 0;
         }
-        try out.appendSlice(s[i .. i + step]);
-        col += 1;
-        i += step;
+        try out.appendSlice(s[i .. i + g.step]);
+        col += g.cols;
+        i += g.step;
     }
     return out.toOwnedSlice();
 }
@@ -242,6 +242,19 @@ test "wrapToWidth splits a long line and keeps SGR" {
     var it = std.mem.splitScalar(u8, got, '\n');
     while (it.next()) |ln| {
         try std.testing.expect(visibleLen(ln) <= 4);
+    }
+}
+
+test "visibleLen/wrapToWidth count CJK and emoji as two columns (#518)" {
+    try std.testing.expectEqual(@as(usize, 4), visibleLen("日本"));
+    try std.testing.expectEqual(@as(usize, 7), visibleLen("ab 🐉 c"));
+    try std.testing.expectEqualStrings("日", takeCols("日本", 3));
+    const got = try wrapToWidth(std.testing.allocator, "日本語のテキスト", 6);
+    defer std.testing.allocator.free(got);
+    try std.testing.expect(std.mem.count(u8, got, "\n") >= 1);
+    var it = std.mem.splitScalar(u8, got, '\n');
+    while (it.next()) |ln| {
+        try std.testing.expect(visibleLen(ln) <= 6);
     }
 }
 
