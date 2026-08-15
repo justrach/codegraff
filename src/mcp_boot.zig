@@ -19,6 +19,7 @@ const Allocator = std.mem.Allocator;
 const mcp = @import("mcp.zig");
 const mcp_config = @import("mcp_config.zig");
 const mcp_rpc = @import("mcp_rpc.zig");
+const mcp_teardown = @import("mcp_teardown.zig");
 
 const Registry = mcp.Registry;
 
@@ -140,6 +141,24 @@ fn mergeOutcomes(reg: *Registry, futures: []Io.Future(StartOutcome)) void {
     for (futures) |*fut| {
         const outcome = fut.await(reg.io);
         const server = outcome.server orelse continue;
+        // A companion (eager codedb-pro) or /mcp trust can connect this server
+        // while its deferred start is still in flight. Appending the outcome
+        // anyway advertises every tool twice, and a strict Responses endpoint
+        // (xAI) rejects the whole request over one duplicate (#505). First
+        // registration wins; tear the latecomer down but keep its arena in
+        // task_arenas so its memory follows the normal teardown lifecycle.
+        var already_connected = false;
+        for (servers.items) |existing| {
+            if (std.mem.eql(u8, existing.name, server.name)) {
+                already_connected = true;
+                break;
+            }
+        }
+        if (already_connected) {
+            mcp_rpc.deinitServer(server, reg.io, .init(reg.io, mcp_teardown.teardown_grace));
+            if (outcome.arena_state) |ta| task_arenas.append(a, ta) catch {};
+            continue;
+        }
         const server_index = servers.items.len;
         servers.append(a, server) catch continue;
         for (outcome.tools) |*tool| tool.server_index = server_index;
