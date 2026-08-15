@@ -309,8 +309,9 @@ test "manualCompact (#503): a blob-anchored history on an explicit-compact provi
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var agent = testAgent(a, .responses);
+    const saved_wire = provider.g_xai_responses;
     provider.g_xai_responses = true;
-    defer provider.g_xai_responses = false;
+    defer provider.g_xai_responses = saved_wire;
     agent.provider = .{ .id = "xai", .kind = .responses, .auth = .bearer, .url = provider.xai_responses_url, .api_key = "k", .model = "grok-4.6", .context = 100_000 };
     // History = one opaque compaction item + one turn: small and blob-anchored,
     // so the anti-thrash guard refuses the endpoint before any POST — and the

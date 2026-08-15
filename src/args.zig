@@ -249,7 +249,7 @@ pub fn parse(init: std.process.Init) !Flags {
     // GRAFF_LEAN sets the same global in session_settings.applyEnvKnobs).
     if (flags.effectiveLean()) no_local_tools.lean = true;
 
-    // #502: GRAFF_XAI_WIRE=responses must land before the initial Keys.build
+    // #502: GRAFF_XAI_WIRE (default responses; =chat opts out) must land before the initial Keys.build
     // (startup.resolveKeys) or the xAI provider is built on the chat wire and
     // the knob silently no-ops; applyEnvKnobs re-parses the same value later.
     if (init.environ_map.get("GRAFF_XAI_WIRE")) |xw|

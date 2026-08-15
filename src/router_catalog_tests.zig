@@ -306,15 +306,21 @@ test "providerFor (#377): family-prefixed spelling routes to the direct provider
     try std.testing.expectEqualStrings("codegraff", (try no_kimi.providerFor("kimi-k3")).id);
 }
 
-test "GRAFF_XAI_WIRE=responses moves xAI onto the Responses wire (#502)" {
+test "xAI defaults to the Responses wire; GRAFF_XAI_WIRE=chat opts out (#502)" {
     const Keys = provider.Keys;
     const Provider = provider.Provider;
     const all = Keys{ .values = @splat("k") };
+    const saved = provider.g_xai_responses;
+    defer provider.g_xai_responses = saved;
+    // The compiled-in default IS the responses wire — a regression here means
+    // grok silently loses server compaction, WS turns, and structured outputs.
+    try std.testing.expect(provider.g_xai_responses);
+    // GRAFF_XAI_WIRE=chat (any non-"responses" value) restores chat completions.
+    provider.g_xai_responses = false;
     const chat = try all.providerById("xai", "grok-4.3");
     try std.testing.expectEqual(Provider.Kind.openai, chat.kind);
     try std.testing.expect(chat.serverCompactUrl() == null); // chat wire: no blob replay path
     provider.g_xai_responses = true;
-    defer provider.g_xai_responses = false;
     const resp = try all.providerById("xai", "grok-4.3");
     try std.testing.expectEqual(Provider.Kind.responses, resp.kind);
     try std.testing.expectEqualStrings(provider.xai_responses_url, resp.url);

@@ -24,11 +24,13 @@ pub var g_context_override: ?u64 = null;
 /// (default 80). null → 80. Unlike codex we allow lowering AND raising (1..100).
 pub var g_compact_pct_override: ?u8 = null;
 
-/// #502: GRAFF_XAI_WIRE=responses (session_settings.applyEnvKnobs) serves xAI
-/// over the OpenAI Responses wire at api.x.ai/v1/responses instead of chat
-/// completions — the prerequisite for first-party server compaction and
-/// Responses-WebSocket turns. Verified live on the SuperGrok OAuth path.
-pub var g_xai_responses: bool = false;
+/// #502: xAI rides the OpenAI Responses wire at api.x.ai/v1/responses BY
+/// DEFAULT — that unlocks first-party server compaction (lossless blob;
+/// recall A/B: blob 12/12 vs client summary 11/12 on buried facts) and
+/// WebSocket turns with the SSE/full-resend fallback ladder. Verified live
+/// on the SuperGrok OAuth path. GRAFF_XAI_WIRE=chat (or anything other than
+/// "responses") opts back into chat completions.
+pub var g_xai_responses: bool = true;
 
 pub const xai_responses_url = "https://api.x.ai/v1/responses";
 /// xAI's explicit compaction endpoint (POST {model, input} → one opaque
