@@ -10,6 +10,27 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.261 (2026-08-15)
+
+- The TUI looks and behaves like grok-build where it counts: syntax-highlighted
+  code fences (grok-night/grok-day token colors on a full-width band, hidden
+  markers), a sticky header pinning the prompt you scrolled past, automatic
+  light/dark from the terminal's reported background, and flicker-free
+  synchronized painting.
+- Two dozen rendering and input bugs found by a three-pass audit and a live
+  visual-capture pipeline, headlined by: a half-arrived mouse-hover report
+  could fire a phantom Escape that silently cancelled the running turn and
+  then type its debris (`39;7;32M…`) into the composer; the orphan-sequence
+  sweeper ate pasted text like `0x1f` and `1e5`; the first `**bold**` made the
+  rest of the message bold; emoji and CJK widths bent every box border;
+  `/theme` left most rows in the old background; `/jump` hid the very turn it
+  jumped to; clicking blank space toggled the last tool run.
+- Grok requests carry `x-grok-conv-id` and `prompt_cache_key` on every wire so
+  xAI's automatic prompt caching actually hits; WebSocket sessions retire
+  before the server's 25-minute cap and classify its error frames instead of
+  burning the stall budget. `GRAFF_XAI_WS_CHAIN=1` opts into on-socket
+  delta chaining (experimental).
+
 ## v0.0.260 (2026-08-15)
 
 - Fixed the composer silently wiping mid-typing: switching apps with Cmd+Tab

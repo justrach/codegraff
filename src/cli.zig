@@ -21,6 +21,11 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.261
+    \\  • Grok-style TUI: syntax-highlighted fences, sticky prompt header, auto light/dark, flicker-free paints
+    \\  • ~24 rendering/input fixes: phantom-Escape turn cancels, debris typed into the composer, bold bleed, emoji-bent borders, /theme half-repaints
+    \\  • xAI KV-cache affinity headers + WebSocket 25-min limit handling
+    \\
     \\0.0.260
     \\  • Fixed the composer wiping itself mid-typing after a Cmd+Tab (stale Super latch made Backspace act as Cmd+Backspace)
     \\
