@@ -269,9 +269,14 @@ fn kitty(params: []const u8) Key {
     const ev = eventOf(params);
     if (code >= 57344 and code <= 57454) return functional(code, mods, ev);
     if (ev == 3) return .ignore;
-    // A live key with an explicit mods field is ground truth for held
-    // modifiers — resync so a missed release can't latch alt/super forever.
-    if (has_mods) held = mods & 10;
+    // A live key is ground truth for held modifiers — resync so a missed
+    // release can't latch alt/super forever. The ABSENT mods field is ground
+    // truth too: kitty omits it exactly when no modifiers are down, so a
+    // plain keypress must clear the latch. Before this, Cmd+Tab-ing away
+    // mid-composition latched super (the release went to the other app) and
+    // the next plain Backspace became Cmd+Backspace = delete-to-start,
+    // silently wiping the composer.
+    held = if (has_mods) mods & 10 else 0;
     return mapCode(code, mods);
 }
 

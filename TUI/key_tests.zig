@@ -243,3 +243,23 @@ test "Shift+9 is open-paren, Shift+0 is close-paren" {
     i = 0;
     try std.testing.expectEqual(Key{ .char = '(' }, next("\x1b[27;2;57~", &i).?);
 }
+
+test "a plain CSI-u keypress clears a stale super latch — Backspace stays Backspace" {
+    // Cmd+Tab mid-composition: the super PRESS arrives, focus leaves, the
+    // RELEASE goes to the other app. Typing resumes with plain CSI-u keys
+    // (no mods field). Those must resync held to 0, or the next Backspace
+    // reads as Cmd+Backspace = delete_to_start and wipes the composer.
+    key.held = 8; // stale Super
+    var i: usize = 0;
+    try std.testing.expectEqual(Key{ .char = 'h' }, next("\x1b[104u", &i).?);
+    try std.testing.expectEqual(@as(u32, 0), key.held);
+    i = 0;
+    try std.testing.expectEqual(Key.backspace, next("\x7f", &i).?);
+    // Stale alt is the same class of bug (backspace -> delete_word).
+    key.held = 2;
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = 'a' }, next("\x1b[97u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.backspace, next("\x7f", &i).?);
+    key.held = 0;
+}
