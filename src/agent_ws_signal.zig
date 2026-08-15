@@ -122,3 +122,43 @@ pub const TokenSignal = struct {
         return d == .string and d.string.len != 0;
     }
 };
+
+/// xAI WS error frames ({"type":"error"}) are terminal for the turn but not in
+/// isStreamEnd's completed/failed set, so without classification they burn the
+/// whole stall budget on a doomed socket.
+pub const ErrorFrameAction = enum { none, retire, chain_lost };
+
+pub fn errorFrameAction(frame: []const u8) ErrorFrameAction {
+    if (std.mem.indexOf(u8, frame, "\"type\":\"error\"") == null) return .none;
+    // The server sends this right before closing a 25-minute-old socket.
+    if (std.mem.indexOf(u8, frame, "websocket_connection_limit_reached") != null) return .retire;
+    // Our chain anchor is gone (evicted / never cached under store:false).
+    if (std.mem.indexOf(u8, frame, "previous_response_not_found") != null) return .chain_lost;
+    return .none;
+}
+
+/// xAI closes a WS after 25 minutes regardless of activity. Retire ours a
+/// minute early so a turn never starts on a socket the server is about to
+/// kill. Root-only state (wsEligible excludes subagents), set on connect.
+pub var ws_born_ms: i64 = 0;
+pub const ws_max_age_ms: i64 = 24 * std.time.ms_per_min;
+
+pub fn ageExpired(now_ms: i64) bool {
+    return ws_born_ms != 0 and now_ms - ws_born_ms > ws_max_age_ms;
+}
+
+test "errorFrameAction classifies the two xAI ws error codes, ignores prose" {
+    try std.testing.expectEqual(ErrorFrameAction.retire, errorFrameAction("{\"type\":\"error\",\"error\":{\"code\":\"websocket_connection_limit_reached\"}}"));
+    try std.testing.expectEqual(ErrorFrameAction.chain_lost, errorFrameAction("{\"type\":\"error\",\"error\":{\"code\":\"previous_response_not_found\"}}"));
+    try std.testing.expectEqual(ErrorFrameAction.none, errorFrameAction("{\"type\":\"response.output_text.delta\",\"delta\":\"websocket_connection_limit_reached\"}"));
+    try std.testing.expectEqual(ErrorFrameAction.none, errorFrameAction("{\"type\":\"error\",\"error\":{\"code\":\"other\"}}"));
+}
+
+test "ageExpired: fresh and unset sockets pass, 25-minute ones retire" {
+    ws_born_ms = 0;
+    try std.testing.expect(!ageExpired(100));
+    ws_born_ms = 1000;
+    try std.testing.expect(!ageExpired(1000 + 20 * std.time.ms_per_min));
+    try std.testing.expect(ageExpired(1000 + 25 * std.time.ms_per_min));
+    ws_born_ms = 0;
+}

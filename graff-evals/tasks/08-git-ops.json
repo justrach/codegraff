@@ -1,0 +1,16 @@
+{
+  "id": "git-ops",
+  "category": "git",
+  "prompt": "This directory is a git repo with an uncommitted change to note.txt. Create a branch named feature/notes, switch to it, and commit the change there with the message 'add note'. main must stay clean.",
+  "files": {
+    "note.txt": "original\n"
+  },
+  "setup": [
+    "git init -q -b main .",
+    "git -c user.email=e@x -c user.name=eval add note.txt",
+    "git -c user.email=e@x -c user.name=eval commit -qm init",
+    "printf 'edited\\n' > note.txt"
+  ],
+  "check": "git rev-parse --verify -q feature/notes >/dev/null && git log feature/notes --oneline | grep -q 'add note' && test \"$(git show main:note.txt)\" = original",
+  "timeout_s": 240
+}

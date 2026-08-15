@@ -36,6 +36,7 @@ const knobs = [_]Knob{
     .{ .name = "GRAFF_FORCE_STALL_ALWAYS", .value = "1" },
     .{ .name = "GRAFF_FORCE_DROP_ALWAYS", .value = "1" },
     .{ .name = "GRAFF_STREAM_STALL_SECS", .value = "7" },
+    .{ .name = "GRAFF_STREAM_HEAD_STALL_SECS", .value = "9" },
     .{ .name = "GRAFF_CODEX_WS", .value = "off" },
     .{ .name = "GRAFF_CLOCK_SLEEP", .value = "1" },
     .{ .name = "GRAFF_NO_LOCAL_TOOLS", .value = "1" },

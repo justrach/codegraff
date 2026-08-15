@@ -41,12 +41,14 @@ const skills = @import("skills.zig");
 const mcp = @import("mcp.zig");
 const mcp_cli = @import("mcp_cli.zig");
 const mcp_config = @import("mcp_config.zig");
+const adopt = @import("adopt.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: the eager-vs-deferred policy for MCP tool schemas
 const jobs = @import("jobs.zig");
 const tool_spill = @import("tool_spill.zig"); // #409: where an over-cap tool output's full bytes go
 const trace = @import("trace.zig");
 const scoring = @import("scoring.zig");
 const telemetry = @import("telemetry.zig");
+const obs = @import("obs.zig");
 const util = @import("util.zig");
 const engine_sink = @import("engine_sink.zig"); // #429: startup's lines are typed events, not prints
 const engine_events = @import("engine_events.zig");
@@ -142,9 +144,11 @@ pub fn setupWorktreeAndBanner(
     // pre-#409 plain truncation.
     tool_spill.enable(.{ .io = io, .dir = .cwd(), .base_abs = main_mod.g_cwd_display });
 
-    if (!main_mod.json_mode and flags.oneshot_prompt == null) {
+    // The pager owns the screen. Dumping the line-REPL banner first makes
+    // `graff tui --yolo` look like bare `graff` never left.
+    if (!main_mod.json_mode and flags.oneshot_prompt == null and !flags.isPager()) {
         sink.emit(io, .{ .session_banner = .{ .cwd = main_mod.g_cwd_display, .trace_path = trace_path } });
-        if (codex_account) |acct| sink.emit(io, .{ .session_notice = .{
+        if (environ_map.get("GRAFF_REPL_DEBUG") != null) if (codex_account) |acct| sink.emit(io, .{ .session_notice = .{
             .text = try std.fmt.allocPrint(arena, "logged into Codex (ChatGPT account {s}…) — /model codex", .{acct[0..@min(acct.len, 8)]}),
         } });
         if (flags.effectiveYolo()) sink.emit(io, .{ .session_notice = .{
@@ -339,6 +343,9 @@ pub fn initTelemetry(io: Io, gpa: Allocator, client: *std.http.Client, environ_m
             environ_map.get("GRAFF_OTEL_ENDPOINT") orelse
             default_telemetry_endpoint;
     const telem_home = keys_cli.homeEnv(environ_map) orelse "";
+    obs.reset();
+    obs.attach(io);
+    obs.export_endpoint = telem_endpoint;
     return .{
         .io = io,
         .gpa = gpa,
@@ -377,10 +384,23 @@ pub fn leanMode(effective_lean: bool, environ_map: anytype) bool {
 pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Writer, in: *Io.Reader, flags: args.Flags, mcp_config_path: []const u8, home: []const u8, use_color: bool, json_mode: bool, environ_map: anytype) !mcp.Registry {
     const global_path = mcp_config.globalPath(arena, home, environ_map);
     const sink = engine_sink.writerSink(out);
+    // First interactive session copies Claude/Cursor MCP into ~/.codegraff once.
+    // One-shots/--json skip it so CI does not rewrite a checkout. Re-run with
+    // `graff mcp import` / `/import-claude`. GRAFF_NO_ADOPT=1 disables.
+    if (!json_mode and flags.oneshot_prompt == null and environ_map.get("GRAFF_NO_ADOPT") == null) {
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cwd_n = Io.Dir.cwd().realPath(io, &cwd_buf) catch 0;
+        const cwd = if (cwd_n > 0) cwd_buf[0..cwd_n] else ".";
+        if (adopt.maybeFirstRun(io, arena, home, cwd) catch null) |r| {
+            if (r.added_user + r.added_project + r.skills > 0) {
+                sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "adopted {d} Claude/Cursor MCP server(s) into ~/" ++ mcp_config.global_rel_path ++ " — /mcp trust to connect (or graff mcp import to refresh)", .{r.added_user + r.added_project})));
+            }
+        }
+    }
     // --json's stdout is a JSONL stream and a one-shot's is the answer; neither
     // can carry chatter. With a global config `mcp_count > 0` in every project,
     // so an unguarded line here would corrupt the head of every --json run.
-    const quiet = json_mode or flags.oneshot_prompt != null;
+    const quiet = json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") == null;
     const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path);
     // #416: resolve eager-vs-deferred BEFORE anything connects, so the first
     // catalog render already knows which servers pay their schemas up front.
@@ -399,6 +419,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
             sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "ignoring ~/" ++ mcp_config.unsupported_rel_path ++ ": unsupported path — use ~/" ++ mcp_config.global_rel_path ++ " (global) or {s} (project)", .{mcp_config_path})));
     }
     const mcp_count = mcp_cli.countMcpServers(merged);
+    const defer_join = flags.effectiveYolo() and flags.oneshot_prompt == null and !json_mode;
     var connect_mcp = flags.yolo_flag or mcp_count == 0;
     if (mcp_count > 0 and !flags.yolo_flag and !json_mode and use_color) {
         sink.emit(io, .{ .mcp_consent_prompt = .{ .count = mcp_count } });
@@ -407,7 +428,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
         const ans = in.takeDelimiter('\n') catch null;
         connect_mcp = ans != null and ans.?.len > 0 and (ans.?[0] == 'y' or ans.?[0] == 'Y');
     }
-    var registry: mcp.Registry = if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, environ_map) catch |err| inner: {
+    var registry: mcp.Registry = if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") != null, environ_map, defer_join) catch |err| inner: {
         sink.emit(io, .{ .session_notice = .{ .text = try std.fmt.allocPrint(arena, "[mcp] init failed: {t} — continuing without MCP", .{err}) } });
         if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;
@@ -420,6 +441,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     // file precisely when consent was declined and no `init` ever ran. `arena`
     // is the session arena, so the path outlives the registry.
     registry.global_config_path = global_path;
+    registry.show_diagnostics = json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") != null;
     return registry;
 }
 
@@ -434,6 +456,31 @@ pub fn probeLicensed(gpa: Allocator, io: Io) bool {
     return skills.probeCodedbproLicensed(gpa, io);
 }
 
+/// A licensed codedb-pro is IN CHARGE of reads/searches (its guard refuses
+/// the native codedb/read_file and points at these tools), which inverts the
+/// #416 deferral premise: this is not a server "most sessions never call" —
+/// the guard makes it mandatory, and the load_tool_schemas discovery dance is
+/// a measured ~2 model round-trips (~8-12s) per task on K3. Pin it eager.
+/// (#476 kept it deferred on a "zero discovery turns" claim; the benchmark
+/// traces show every code-reading run paying the dance.)
+pub fn pinCompanionEager(arena: Allocator) void {
+    if (mcp_schema_gate.pinnedEager("codedbpro")) return; // env/config already pinned
+    const gate = &mcp_schema_gate.g_policy;
+    const eager = arena.alloc([]const u8, gate.eager.len + 1) catch return;
+    @memcpy(eager[0..gate.eager.len], gate.eager);
+    eager[gate.eager.len] = "codedbpro";
+    gate.eager = eager;
+}
+
+/// The startup license probe plus its one side effect: a licensed companion
+/// is pinned eager so its full schemas ride the first catalog render instead
+/// of arriving via a load_tool_schemas discovery turn.
+pub fn probeLicensedPinningEager(gpa: Allocator, io: Io, arena: Allocator) bool {
+    const licensed = probeLicensed(gpa, io);
+    if (licensed) pinCompanionEager(arena);
+    return licensed;
+}
+
 /// Companion auto-activation: if the metered code-intelligence companion
 /// (codedb-pro, formerly muonry) is installed but nothing connected it (no
 /// workspace .mcp.json entry, or consent declined), spawn it directly — a
@@ -445,7 +492,7 @@ pub fn probeLicensed(gpa: Allocator, io: Io) bool {
 /// is all that's needed — no return-by-value trickery here).
 pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags: args.Flags, out: *Io.Writer, json_mode: bool, environ_map: anytype) !void {
     const sink = engine_sink.writerSink(out);
-    const speak = !json_mode and flags.oneshot_prompt == null;
+    const speak = !json_mode and flags.oneshot_prompt == null and environ_map.get("GRAFF_REPL_DEBUG") != null;
     connect: {
         for (skills.companion_servers) |c| if (skills.mcpServerConnected(registry.tools, c.server)) break :connect;
         for (skills.companion_servers) |c| {
@@ -502,4 +549,20 @@ test "core Smolify registration is offline and lazy" {
     defer full.deinit();
     try std.testing.expectEqual(@as(usize, 13), try full.connectSmolify(true));
     try std.testing.expectEqualStrings("/not-read-during-registration", full.servers[0].transport.http.oauth_home.?);
+}
+
+test "a licensed companion is pinned eager, once, so no discovery round-trip is needed" {
+    const saved = mcp_schema_gate.g_policy;
+    defer mcp_schema_gate.g_policy = saved;
+    mcp_schema_gate.g_policy = .{};
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    try std.testing.expect(!mcp_schema_gate.pinnedEager("codedbpro"));
+    pinCompanionEager(arena);
+    try std.testing.expect(mcp_schema_gate.pinnedEager("codedbpro"));
+    // Idempotent, and an env/config pin is respected rather than duplicated.
+    pinCompanionEager(arena);
+    try std.testing.expectEqual(@as(usize, 1), mcp_schema_gate.g_policy.eager.len);
 }

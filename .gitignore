@@ -35,3 +35,14 @@ dist/
 
 # surfer lives in its own repo (~/surfer, github.com/justrach/surfer) — never track it here
 surfer/
+graff-evals/results/
+graff-evals/.sandboxes/
+
+# optional Lean build (lean-proofs is source; lake is not required)
+lean-proofs/.lake/
+lean-proofs/lake-manifest.json
+spec/lean/.lake/
+spec/lean/lake-manifest.json
+
+# session-local stores
+.engram/

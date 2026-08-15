@@ -100,7 +100,7 @@ pub fn runCommand(self: *Model, line: []const u8) void {
     } else if (std.mem.eql(u8, cmd, "/debug")) {
         repl.g_debug = !repl.g_debug;
         self.dump_next = repl.g_debug;
-        self.pushFmt(.info, "debug: {s} — run `graff repl 2>/tmp/repl.log` to capture (raw agent stream per turn + frames → stderr)", .{onOff(repl.g_debug)}) catch {};
+        self.pushFmt(.info, "debug: {s} — tool/presence diagnostics follow this toggle; set GRAFF_REPL_DEBUG=1 before launch for startup diagnostics + raw frames", .{onOff(repl.g_debug)}) catch {};
     } else if (std.mem.eql(u8, cmd, "/bash")) {
         self.push(.info, "running shell commands needs the agent loop — use the main `graff` session, or your shell") catch {};
     } else if (std.mem.eql(u8, cmd, "/mcp")) {

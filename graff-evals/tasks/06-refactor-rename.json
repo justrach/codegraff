@@ -1,0 +1,11 @@
+{
+  "id": "refactor-rename",
+  "category": "refactor",
+  "prompt": "Rename the function `calc_total` to `sum_amounts` everywhere in this project (definition and all call sites), keeping behavior identical. Then run `python3 main.py` to confirm it still prints 42.",
+  "files": {
+    "lib.py": "def calc_total(items):\n    return sum(items)\n\n\ndef unrelated():\n    return 1\n",
+    "main.py": "from lib import calc_total\n\nprint(calc_total([40, 2]))\n"
+  },
+  "check": "python3 main.py | grep -q 42 && ! grep -q calc_total lib.py && ! grep -q calc_total main.py && grep -q sum_amounts lib.py && grep -q sum_amounts main.py",
+  "timeout_s": 240
+}

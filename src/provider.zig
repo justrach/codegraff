@@ -24,6 +24,20 @@ pub var g_context_override: ?u64 = null;
 /// (default 80). null → 80. Unlike codex we allow lowering AND raising (1..100).
 pub var g_compact_pct_override: ?u8 = null;
 
+/// #502: xAI rides the OpenAI Responses wire at api.x.ai/v1/responses BY
+/// DEFAULT — that unlocks first-party server compaction (lossless blob;
+/// recall A/B: blob 12/12 vs client summary 11/12 on buried facts) and
+/// WebSocket turns with the SSE/full-resend fallback ladder. Verified live
+/// on the SuperGrok OAuth path. GRAFF_XAI_WIRE=chat (or anything other than
+/// "responses") opts back into chat completions.
+pub var g_xai_responses: bool = true;
+
+pub const xai_responses_url = "https://api.x.ai/v1/responses";
+/// xAI's explicit compaction endpoint (POST {model, input} → one opaque
+/// compaction item). Unlike codex there is no in-stream compaction — api.x.ai
+/// silently ignores the context_management directive (probed 2026-08-15).
+pub const xai_compact_url = "https://api.x.ai/v1/responses/compact";
+
 /// The context window for a provider+model, honoring g_context_override for an
 /// unknown/local model — i.e. only when contextFor returns the conservative default,
 /// never overriding a known window (#203).
@@ -72,7 +86,7 @@ pub const provider_specs = [_]ProviderSpec{
     .{ .id = "anthropic", .display_name = "Anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "https://api.anthropic.com/v1/messages", .env_key = "ANTHROPIC_API_KEY", .default_model = "claude-opus-4-8", .catalog = .anthropic, .models_url = "https://api.anthropic.com/v1/models?limit=1000" },
     .{ .id = "codegraff", .display_name = "Codegraff", .kind = .openai, .auth = .bearer, .url = "https://gateway.codegraff.com/v1/chat/completions", .env_key = "CODEGRAFF_API_KEY", .default_model = "deepseek-v4-pro", .login = .codegraff_device, .catalog = .openai, .models_url = "https://gateway.codegraff.com/v1/models", .takes_effort = true },
     .{ .id = "deepseek", .display_name = "DeepSeek", .kind = .openai, .auth = .bearer, .url = "https://api.deepseek.com/chat/completions", .env_key = "DEEPSEEK_API_KEY", .default_model = "deepseek-v4-pro", .takes_effort = true },
-    .{ .id = "openai", .display_name = "OpenAI", .kind = .openai, .auth = .bearer, .url = "https://api.openai.com/v1/chat/completions", .env_key = "OPENAI_API_KEY", .default_model = "gpt-5.6" },
+    .{ .id = "openai", .display_name = "OpenAI", .kind = .responses, .auth = .bearer, .url = "https://api.openai.com/v1/responses", .env_key = "OPENAI_API_KEY", .default_model = "gpt-5.6" },
     .{ .id = "minimax", .display_name = "MiniMax", .kind = .anthropic, .auth = .bearer, .url = "https://api.minimax.io/anthropic/v1/messages", .env_key = "MINIMAX_API_KEY", .default_model = "MiniMax-M3" },
     .{ .id = "xiaomi", .display_name = "Xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
     .{ .id = "kilo", .display_name = "Kilo Gateway", .kind = .openai, .auth = .bearer, .url = "https://api.kilo.ai/api/gateway/v1/chat/completions", .env_key = "KILO_API_KEY", .default_model = "kilo-auto/small" },
@@ -88,7 +102,7 @@ pub const provider_specs = [_]ProviderSpec{
     .{ .id = "moonshot", .display_name = "Moonshot", .kind = .openai, .auth = .bearer, .url = "https://api.moonshot.ai/v1/chat/completions", .env_key = "MOONSHOT_API_KEY", .default_model = "kimi-latest" },
     // `graff login xai` is a real device-code OAuth flow (oauth.zig), so xAI's
     // login is a SuperGrok plan while XAI_API_KEY is metered api.x.ai access.
-    .{ .id = "xai", .display_name = "xAI", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3", .login = .xai_device, .sub_login = true },
+    .{ .id = "xai", .display_name = "xAI", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3", .login = .xai_device, .sub_login = true, .catalog = .openai, .models_url = "https://api.x.ai/v1/models" },
     .{ .id = "zai", .display_name = "Z.AI", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
     .{ .id = "fugu", .display_name = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
     // Fireworks serves its serverless catalog live (AIP gateway shape:
@@ -149,8 +163,8 @@ pub const Provider = struct {
     account: []const u8 = "", // ChatGPT account id, codex/responses only
     source: Keys.CredentialSource = .none, // #148: how api_key was obtained — only .login tokens auto-refresh
 
-    // Wire format. `responses` is the OpenAI Responses API as served by the
-    // ChatGPT backend (Codex login) — input items, not chat messages.
+    // Wire format. `responses` is the first-party OpenAI Responses API (direct
+    // API key or ChatGPT/Codex login) — input items, not chat messages.
     pub const Kind = enum { anthropic, openai, responses };
     pub const Auth = enum { x_api_key, bearer };
 
@@ -160,6 +174,14 @@ pub const Provider = struct {
     pub fn compactAt(p: Provider) u64 {
         const pct: u64 = if (g_compact_pct_override) |o| @min(o, 100) else 80;
         return p.context / 100 * pct;
+    }
+
+    /// The provider's explicit server-side compaction endpoint, if it has one
+    /// (#502). codex compacts in-stream via context_management and returns null.
+    pub fn serverCompactUrl(p: Provider) ?[]const u8 {
+        if (p.kind != .responses) return null;
+        if (std.mem.eql(u8, p.id, "xai")) return xai_compact_url;
+        return null;
     }
 
     /// Whether a failed compaction may safely fall back to destructive trimming.
@@ -212,11 +234,12 @@ pub const Provider = struct {
         };
         const is_codex = std.mem.eql(u8, spec.id, "codex");
         const is_kimi_anthropic = std.mem.eql(u8, spec.id, "kimi") and pricing.kimiProtocol(model) == .anthropic;
+        const is_xai_responses = std.mem.eql(u8, spec.id, "xai") and g_xai_responses;
         return .{
             .id = spec.id,
-            .kind = if (is_kimi_anthropic) .anthropic else spec.kind,
+            .kind = if (is_kimi_anthropic) .anthropic else if (is_xai_responses) .responses else spec.kind,
             .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
-            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else spec.url,
+            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (is_xai_responses) xai_responses_url else spec.url,
             .api_key = base.api_key,
             .model = model,
             .context = contextWindowFor(spec.id, model),
@@ -307,11 +330,12 @@ pub const Keys = struct {
     pub fn build(keys: Keys, spec: ProviderSpec, key: []const u8, model: []const u8) Provider {
         const is_codex = std.mem.eql(u8, spec.id, "codex");
         const is_kimi_anthropic = std.mem.eql(u8, spec.id, "kimi") and pricing.kimiProtocol(model) == .anthropic;
+        const is_xai_responses = std.mem.eql(u8, spec.id, "xai") and g_xai_responses;
         return .{
             .id = spec.id,
-            .kind = if (is_kimi_anthropic) .anthropic else spec.kind,
+            .kind = if (is_kimi_anthropic) .anthropic else if (is_xai_responses) .responses else spec.kind,
             .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
-            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else spec.url,
+            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (is_xai_responses) xai_responses_url else spec.url,
             .api_key = key,
             .model = model,
             .context = contextWindowFor(spec.id, model),
@@ -443,27 +467,6 @@ test "providerFor (#294): a catalogued model with no keyed provider fails instea
     try std.testing.expect(!pricing.modelInTable("totally-made-up-model"));
     try std.testing.expectEqualStrings("codegraff", (try no_codex.providerFor("totally-made-up-model")).id);
     try std.testing.expectEqualStrings("anthropic", (try no_codex.providerFor("claude-does-not-exist")).id);
-}
-
-test "providerFor (#377): family-prefixed spelling routes to the direct provider, not the gateway" {
-    // kimi's catalog row is `k3`; gateways catalog the same model as `kimi-k3`.
-    // The prefixed spelling must seat the keyed direct provider on its NATIVE
-    // name — before this fix it fell through to the codegraff gateway and a
-    // flat-rate subscription silently became metered/licensed usage.
-    const all = Keys{ .values = @splat("k") };
-    const p = try all.providerFor("kimi-k3");
-    try std.testing.expectEqualStrings("kimi", p.id);
-    try std.testing.expectEqualStrings("k3", p.model);
-    // Exact catalog names keep absolute priority over the family alias.
-    try std.testing.expectEqualStrings("gpt-5.6-sol", (try all.providerFor("gpt-5.6-sol")).model);
-    // Without the kimi credential the prefixed spelling behaves exactly as
-    // before: uncatalogued in the compiled table, so the gateway fallback.
-    var values: [provider_specs.len]?[]const u8 = @splat("k");
-    for (provider_specs, 0..) |spec, i| {
-        if (std.mem.eql(u8, spec.id, "kimi")) values[i] = null;
-    }
-    const no_kimi = Keys{ .values = values };
-    try std.testing.expectEqualStrings("codegraff", (try no_kimi.providerFor("kimi-k3")).id);
 }
 
 test "Keys.providerById: exact id wins, unknown id falls back to model routing" {

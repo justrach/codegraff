@@ -116,7 +116,7 @@ pub fn run(ctx: *Ctx) !void {
             break :blk try std.fmt.allocPrint(ctx.arena, "/loop {s}\n{s}", .{ note, pace });
         } else if (ctx.interactive) blk: {
             try ctx.root.prompt();
-            break :blk (try readline.readLine(ctx.root, ctx.in, ctx.out, ctx.gpa, ctx.history, ctx.linebuf)) orelse break;
+            break :blk (try readline.readLine(ctx.root, ctx.in, ctx.out, ctx.gpa, ctx.history, ctx.linebuf, null)) orelse break;
         } else (try json_inbox.request(ctx.arena, ctx.in)) orelse break;
         title_jobs.poll(ctx);
         recap_jobs.poll(ctx);
@@ -189,10 +189,10 @@ pub fn run(ctx: *Ctx) !void {
                 continue;
             }
             if (std.mem.eql(u8, rtype, "compact")) {
-                const chars = ctx.root.compact() catch |err| {
+                const chars = ctx.root.manualCompact() catch |err| {
                     const message = switch (err) {
                         error.EmptySummary => "compaction failed: empty summary, history unchanged",
-                        error.IncompleteSummary => "compaction failed: incomplete summary, history unchanged",
+                        error.IncompleteSummary, error.InvalidCompactionResponse => "compaction failed: incomplete or invalid compacted history, history unchanged",
                         else => try std.fmt.allocPrint(ctx.arena, "compaction failed: {s}", .{@errorName(err)}),
                     };
                     ctx.root.emit(.{ .type = "error", .message = message });
@@ -308,8 +308,9 @@ pub fn run(ctx: *Ctx) !void {
         }
         if (main_mod.json_mode and !json_inbox.beginTurn(ctx.root)) continue;
         if (!main_mod.json_mode) agent_mod.Agent.prepareRootTurn();
-        // Persistent goal steering (#318): diff-gated standing goal and one-shot notes;
-        // compaction restates the list.
+
+        // Persistent goal steering (#318): diff-gated standing-goal plus one-shot
+        // notes (/goal replace|clear, emergency trim). Compaction restates the list.
         var goal_msg: []const u8 = try goal_state.applyGoalSteering(ctx.arena, ctx.root, base_msg);
         const eval_note = if (ctx.root.review_mode) "" else try repl_glue.evalSteeringNote(
             ctx.arena,
@@ -393,7 +394,7 @@ pub fn run(ctx: *Ctx) !void {
         } else try ctx.root.messages.append(try messages.textMessage(ctx.arena, "user", ultracode_msg.text));
         ctx.root.snapshots.?.turn += 1; // tag file edits in this turn (matches /rewind numbering)
         ctx.root.recap_generation +%= 1; // #419: a starting turn supersedes any recap job still in flight
-        if (telemetry.g_telem) |t| t.countTurn();
+        if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(base_msg.len, std.math.maxInt(u32))), ctx.root.provider.model);
         // Trajectory: claim this turn's node id up front so subagents spawned during the turn can attach to it as their parent.
         const turn_id: u64 = if (trace.g_traj) |tj| blk: {
             const id = tj.nextId();
@@ -411,6 +412,7 @@ pub fn run(ctx: *Ctx) !void {
         }
         const turn_before = mainloop_trace.begin(ctx.root, ctx.io);
         const turn_started = Io.Timestamp.now(ctx.io, .awake);
+        // Turn failures are surfaced without killing the session.
         const turn_result = providers.runTurnWithFallback(ctx.root, ctx.keys, ctx.arena, ctx.out);
         if (main_mod.json_mode) json_inbox.endTurn();
         // Reuse one full-history scan for trace, terminal event, and compaction.
@@ -588,9 +590,6 @@ pub fn run(ctx: *Ctx) !void {
                 },
             }
         }
-        // opencode-style continuous autosave: persist after every turn so a crash or quit never loses the
-        // thread — last.session.json, the same file /resume reads. Best-effort; a write failure never breaks
-        // the loop. #273: unchanged history skips the save whole, and the write itself is queued.
         session.saveSessionAsync(ctx.root, ctx.arena, ctx.root.session_name) catch {};
 
         // --worktree checkpoint: commit this turn's edits to the scratch branch so the work is durable

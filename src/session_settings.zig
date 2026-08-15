@@ -17,6 +17,7 @@ const args = @import("args.zig");
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const http = @import("http.zig");
+const http_stall = @import("http_stall.zig");
 const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig"); // codex_ws_idle_ms override (#codex-ws)
 const agent_request = @import("agent_request.zig"); // GRAFF_REQ_STATS → g_req_stats (token-diet measurement)
@@ -71,7 +72,18 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // unparseable or 0. A stall is never a user interrupt regardless of the value.
     if (environ_map.get("GRAFF_STREAM_STALL_SECS")) |v| {
         if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
-            if (secs > 0) http.stream_stall_ms = @min(secs, 86_400) * 1000; // clamp: <=1 day, no u64 overflow
+            if (secs > 0) {
+                http.stream_stall_ms = @min(secs, 86_400) * 1000; // clamp: <=1 day, no u64 overflow
+                http_stall.head_ceiling_ms = http.stream_stall_ms; // an explicit budget wins both regimes
+            }
+        } else |_| {}
+    }
+    // The pre-first-token ceiling alone (http_stall.head_ceiling_ms): for a
+    // provider that buffers a long reasoning phase in total silence BEFORE
+    // the first token. Seconds; ignored if unparseable or 0.
+    if (environ_map.get("GRAFF_STREAM_HEAD_STALL_SECS")) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
+            if (secs > 0) http_stall.head_ceiling_ms = @min(secs, 86_400) * 1000;
         } else |_| {}
     }
     // #codex-ws: GRAFF_CODEX_WS=off|0|false|no (case-insensitive, the
@@ -140,7 +152,16 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off");
         server_compact.g_server_compact_override = !off;
     }
+    // #502: xAI defaults to the Responses wire (api.x.ai/v1/responses) —
+    // first-party server compaction + WS turns. GRAFF_XAI_WIRE=chat (anything
+    // but "responses") moves it back to chat completions; unset keeps the default.
+    if (environ_map.get("GRAFF_XAI_WIRE")) |v| {
+        provider_mod.g_xai_responses = std.ascii.eqlIgnoreCase(std.mem.trim(u8, v, " \t"), "responses");
+    }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
+    // #502 follow-up: opt-in xAI on-socket chaining (see codex_chain.g_xai_ws_chain).
+    if (environ_map.get("GRAFF_XAI_WS_CHAIN")) |v|
+        @import("codex_chain.zig").g_xai_ws_chain = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "true");
     // GRAFF_WS_FORCE_FAIL_ONCE proves a clean retry; the counted sibling proves
     // that two consecutive failures latch the SSE fallback. Test seams only.
     if (environ_map.get("GRAFF_WS_FORCE_FAIL_ONCE")) |v| {

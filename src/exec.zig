@@ -16,6 +16,7 @@ const Allocator = std.mem.Allocator;
 const main_mod = @import("main.zig");
 const util = @import("util.zig");
 const codedbpro_report = @import("codedbpro_report.zig"); // licensed-companion failure → redacted issue filer
+const codedbpro_paths = @import("codedbpro_paths.zig"); // session-cwd paths for the resident companion daemon
 const tool_balance = @import("tool_balance.zig"); // session-wide tool-class tally (/tools)
 const ToolCall = tools.ToolCall;
 
@@ -240,7 +241,12 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         // (same user direction as the native fold). Still downstream of
         // agent_tool_gate.gateTool: consent is already settled.
         mcp_schema_gate.autoLoad(gpa, reg.tools, call.name);
-        const r = reg.call(gpa, call.name, call.input) catch |err| {
+        var prepared = codedbpro_paths.prepareInput(gpa, io, ctx.agent_cwd, call.name, call.input) catch |err| {
+            codedbpro_report.onFailure(ctx, call.name, @errorName(err));
+            return failure(gpa, err);
+        };
+        defer prepared.deinit(gpa);
+        const r = reg.call(gpa, call.name, prepared.value) catch |err| {
             codedbpro_report.onFailure(ctx, call.name, @errorName(err));
             return failure(gpa, err);
         };
@@ -395,7 +401,12 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
         const start_line = intField(input, "start_line");
         const end_line = intField(input, "end_line");
+        const contains = strField(input, "contains");
         const want_compact = tools.json_args.flag(input, "compact");
+        if (contains) |needle| {
+            if (needle.len == 0) return .{ .text = try gpa.dupe(u8, "read_file: contains must not be empty"), .is_error = true };
+            if (start_line != null or end_line != null or want_compact) return .{ .text = try gpa.dupe(u8, "read_file: contains cannot be combined with start_line, end_line, or compact"), .is_error = true };
+        }
         // #66: opt-in compact view routes to `codedb read <path> [-L a-b] --compact`
         // when codedb is present and this file is indexed. Lossy (strips comments/
         // blanks, shows line numbers) so it is NEVER the default and is labeled
@@ -415,7 +426,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         // absolute path.
         const resolved: []const u8 = if (ctx.agent_cwd) |base| try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, path }) else path;
         defer if (ctx.agent_cwd != null) gpa.free(resolved);
-        const outcome = read_file.read(io, gpa, .cwd(), resolved, start_line, end_line) catch |err| {
+        const outcome = read_file.read(io, gpa, .cwd(), resolved, start_line, end_line, contains) catch |err| {
             if (fsErrorText(gpa, .read, path, err)) |t| return .{ .text = t, .is_error = true };
             return err;
         };
@@ -445,6 +456,9 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             .start_past_end => .{
                 .text = try std.fmt.allocPrint(gpa, "start_line {?d} is past the end of {s}", .{ start_line, path }),
                 .is_error = true,
+            },
+            .no_match => .{
+                .text = try std.fmt.allocPrint(gpa, "No lines in {s} contain the exact literal {s}.", .{ path, contains orelse "" }),
             },
         };
     }

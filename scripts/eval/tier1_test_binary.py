@@ -52,25 +52,65 @@ class ArtifactError(Exception):
     """No usable test artifact, or one that would not say how many tests it holds."""
 
 
+def _names_in(path: pathlib.Path) -> list[str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    # The source carries Zig escapes; the binary carries the resolved bytes.
+    # Unescape so a name containing a quote still matches.
+    return [
+        m.group(1).replace('\\"', '"').replace("\\\\", "\\")
+        for m in TEST_NAME.finditer(text)
+    ]
+
+
 def declared_tests() -> dict[str, str]:
     """Every `test "name"` in src/*.zig, mapped to the file that declares it."""
     out: dict[str, str] = {}
     for path in sorted(SRC.glob("*.zig")):
-        for match in TEST_NAME.finditer(path.read_text(encoding="utf-8")):
-            # The source carries Zig escapes; the binary carries the resolved
-            # bytes. Unescape so a name containing a quote still matches.
-            name = match.group(1).replace('\\"', '"').replace("\\\\", "\\")
+        for name in _names_in(path):
             out[name] = path.name
     return out
+
+
+def foreign_tests(declared: dict[str, str]) -> set[str]:
+    """Test names that belong to a DIFFERENT test root than src/.
+
+    The name set alone cannot tell the src floor build (a filter matching
+    nothing, so zero declared names survive) apart from a `zig build tui-test`
+    artifact, which also holds zero src names - and being newer, the TUI binary
+    won the tie and reported its 138 tests as the floor. Tier 1 then measured
+    9 invariants against a 138 floor and called a green suite red.
+
+    Any name declared outside src/ is proof the artifact is not the src root,
+    whatever the filters were, so it settles that tie the other way.
+    """
+    out: set[str] = set()
+    for path in sorted(ROOT.rglob("*.zig")):
+        rel = path.relative_to(ROOT)
+        if rel.parts[0] in ("src", "vendor", ".zig-cache", "zig-out"):
+            continue
+        out.update(_names_in(path))
+    return out - set(declared)
 
 
 class Selection:
     """One candidate artifact, scored against the build we asked for."""
 
-    def __init__(self, path: pathlib.Path, present: set[str], expected: set[str]):
+    def __init__(
+        self,
+        path: pathlib.Path,
+        present: set[str],
+        expected: set[str],
+        foreign: set[str] | None = None,
+    ):
         self.path = path
         self.present = present
         self.expected = expected
+        # Names from another test root found in this binary: nonzero means the
+        # artifact is not a build of src/ at all.
+        self.foreign = foreign or set()
         self.considered = 1
         self.was_newest = True
 
@@ -102,13 +142,17 @@ def select(filters: list[str], declared: dict[str, str] | None = None) -> Select
 
     Zig's filters are substring matches on the test name, so the set of declared
     names a filtered build keeps is computable from the source alone. Rank every
-    candidate by how far it is from that set - missing names first, then names it
-    should not have - and the full build wins the unfiltered question even when a
-    filtered build is newer.
+    candidate by how far it is from that set - missing names first, then names
+    from a foreign test root, then names it should not have - and the full build
+    wins the unfiltered question even when a filtered build is newer.
+
+    The foreign term is what keeps a `zig build tui-test` artifact out of the
+    answer when `expected` is empty and every candidate ties at zero missing.
     """
     if declared is None:
         declared = declared_tests()
     expected = {n for n in declared if not filters or any(f in n for f in filters)}
+    outsiders = foreign_tests(declared)
 
     ranked: list[Selection] = []
     # candidates() is newest first and sort() below is stable, so ties stay in
@@ -116,14 +160,15 @@ def select(filters: list[str], declared: dict[str, str] | None = None) -> Select
     for path in candidates():
         blob = path.read_bytes()
         present = {n for n in declared if n.encode("utf-8") in blob}
-        ranked.append(Selection(path, present, expected))
+        alien = {n for n in outsiders if n.encode("utf-8") in blob}
+        ranked.append(Selection(path, present, expected, alien))
     if not ranked:
         raise ArtifactError(
             "no compiled test binary under .zig-cache/o - run `zig build test` first"
         )
 
     newest = ranked[0].path
-    ranked.sort(key=lambda s: (len(s.missing), len(s.extra)))
+    ranked.sort(key=lambda s: (len(s.missing), len(s.foreign), len(s.extra)))
     best = ranked[0]
     best.considered = len(ranked)
     best.was_newest = best.path == newest

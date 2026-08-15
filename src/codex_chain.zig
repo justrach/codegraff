@@ -40,9 +40,19 @@ pub fn propsFor(self: *const Agent) u64 {
 /// optimization trades cheap cache reads for full-price re-uploads.
 pub var g_force_full_resend = false;
 
+/// GRAFF_XAI_WS_CHAIN=1 (session_settings.applyEnvKnobs): experiment — xAI
+/// documents on-socket chaining with store:false via a per-connection cache,
+/// and a live probe chained successfully, but a second probe reproduced the
+/// original silent multi-minute stall (both 2026-08-15). Off until the
+/// service is consistent; the errorFrameAction/reanchor ladder contains the
+/// blast radius when it is on.
+pub var g_xai_ws_chain = false;
+
 /// May this request chain onto the held response instead of re-anchoring?
 pub fn chainUsable(self: *const Agent) bool {
     if (g_force_full_resend) return false;
+    const xai_chain = g_xai_ws_chain and std.mem.eql(u8, self.provider.id, "xai");
+    if (!std.mem.eql(u8, self.provider.id, "codex") and !xai_chain) return false;
     return usable(
         self.codex_ws != null,
         self.codex_prev_id != null,

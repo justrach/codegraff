@@ -58,7 +58,8 @@ test { // unit_tests' root is main.zig only, so reference every split-out module
     _ = pricing;
     _ = models_cache;
     _ = ansi;
-    _ = .{ serve, @import("json_inbox.zig") };
+    _ = serve;
+    _ = @import("json_inbox.zig");
     _ = util;
     _ = learn_store;
     _ = learn_eval;
@@ -80,6 +81,7 @@ test { // unit_tests' root is main.zig only, so reference every split-out module
     _ = title_mod;
     _ = serde;
     _ = mcp_cli;
+    _ = @import("adopt.zig");
     _ = cli;
     _ = prompts;
     _ = session;
@@ -112,15 +114,16 @@ test { // unit_tests' root is main.zig only, so reference every split-out module
     _ = mainloop;
     _ = args;
     _ = startup;
+    _ = @import("startup_keys.zig");
     _ = startup_timing;
     _ = session_start;
     _ = session_run;
+    _ = @import("obs_cost_test.zig");
+    _ = @import("tui_launch.zig");
     _ = provider_mod;
     _ = agent_mod;
 }
-// System-prompt text (main_system_prompt, strict_note, main_system_prompt_strict, sub_system_prompt, compact_instruction) lives in prompts.zig.
 const prompts = @import("prompts.zig");
-// Tool-schema + provider-tool JSON emission lives in schema.zig; serve.zig/startup.zig import it directly. Kept here to pull in its test{} block.
 const schema = @import("schema.zig");
 // The provider/keys core (ProviderSpec/provider_specs, Provider, Keys) lives in provider.zig; provider_specs/Keys stay local aliases for main()'s credential setup and tests.
 const provider_mod = @import("provider.zig");
@@ -167,7 +170,7 @@ const skills = @import("skills.zig");
 const skills_registry = skills.skills_registry;
 const companion_servers = skills.companion_servers;
 const mcpServerConnected = skills.mcpServerConnected;
-const probeLicensed = session_start.probeLicensed; // license probe only — schemas stay deferred; the guard enforces routing (#476)
+const probeLicensed = session_start.probeLicensedPinningEager; // probe + pin: a licensed suite's guard FORCES its tools, so its schemas ride the first catalog — deferral was a measured ~2 discovery round-trips per task
 /// PATH captured at startup for skill detection (PATH won't change mid-run).
 pub var g_path_env: []const u8 = "";
 /// Human-facing current workspace folder shown in the REPL prompt.
@@ -391,7 +394,7 @@ pub fn main(init: std.process.Init) !void {
     try session_start.connectCompanion(io, arena, &registry_storage, flags, out, json_mode, init.environ_map);
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
     // If the metered companion connected, probe its license once so the note below can lean into paid tools (vs the conservative free-codedb note).
-    if (!session_start.leanMode(flags.effectiveLean(), init.environ_map) and mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeLicensed(gpa, io);
+    if (!session_start.leanMode(flags.effectiveLean(), init.environ_map) and mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeLicensed(gpa, io, arena);
     boot.mark(io, "companion");
 
     var approvals: Approvals = undefined;
@@ -403,11 +406,8 @@ pub fn main(init: std.process.Init) !void {
         for (approvals.plan_read_roots.items) |p| gpa.free(p);
         approvals.plan_read_roots.deinit(gpa);
     }
-
-    // Root system-prompt layering (base + AGENTS.md/HARNESS.md/CLAUDE.md + --append-system-prompt + active-skill lines + connected-MCP notes) lives
-    // in startup.zig as buildSystemPrompt() — pure over io/arena, returns the composed base by value. buildRootAgent derives every prompt variant
-    // from it via prompts.setSystemPrompts() (#326).
-    const sys_normal = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null, (flags.oneshot_prompt != null or !(Io.File.stdin().isTty(io) catch true)) and !flags.effectiveYolo(), mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"), init.environ_map);
+    // buildSystemPrompt layers the base, project instructions, overrides, skills, and MCP notes.
+    const sys_normal = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null or init.environ_map.get("GRAFF_REPL_DEBUG") == null, (flags.oneshot_prompt != null or !(Io.File.stdin().isTty(io) catch true)) and !flags.effectiveYolo(), mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"), init.environ_map);
     boot.mark(io, "system prompt");
     session_run.learningNotice(io, arena, init.environ_map, out, json_mode or flags.oneshot_prompt != null);
 
@@ -482,9 +482,9 @@ pub fn main(init: std.process.Init) !void {
     // Closing the learning loop: this session counts toward the next trial.
     defer session_run.startBackgroundLearning(gpa, arena, startup_timing.shutdown_trace.at(io, "background-learning"), init.environ_map, &invocation_budget, !flags.no_telemetry_flag);
 
-    // `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL agent loop — each prompt runs a full root turn (tools + MCP) via
-    // replTurnCb. `graff acp` (acp.zig) is the same idea over Zed's stdio Agent Client Protocol. Both self-contained — each exits after.
-    if (try session_run.runReplCommand(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), &client, in, out, arena, flags) or try @import("acp.zig").runAcpCommand(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), &client, in, out, arena, flags)) return;
+    // `graff` is the default session. TTY `graff repl` / `graff tui` open the Grok-style pager.
+    // `graff acp` (acp.zig) is the same idea over Zed's stdio Agent Client Protocol. Both self-contained — each exits after.
+    if (try session_run.runReplCommand(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), &client, in, out, arena, flags) or try @import("acp.zig").runAcpCommand(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), &client, in, out, arena, flags) or try @import("tui_launch.zig").maybeRun(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), &client, arena, flags, json_mode, g_cwd_display)) return;
     // One-shot print mode: run the single prompt to completion, print the final text to stdout, exit.
     if (flags.oneshot_prompt) |prompt_text| {
         try session_run.runOneshotPrompt(gpa, io, arena, &root, @import("bench_priors.zig").noteKeys(&keys), &tracer, out, prompt_text); // one-shot exits before loop_ctx below — capture keys for sub-first routing here too
@@ -581,7 +581,7 @@ const workflow = @import("workflow_test.zig"); // the engine's tests live here (
 const exec = @import("exec.zig");
 // ── Unit tests (`zig build test`) ──────────────────────────────────────────
 test { // pull in tests from imported modules (mcp.zig)
-    _ = mcp;
+    _ = @import("mcp.zig");
     _ = @import("mcp_rpc.zig");
     _ = @import("main_test.zig");
     // A module whose tests must run needs an explicit reference here (a plain @import elsewhere compiles to nothing); scripts/eval-tier1.sh --only reach catches one.
@@ -590,7 +590,7 @@ test { // pull in tests from imported modules (mcp.zig)
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events
     _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here
-    _ = @import("readline_history.zig");
+    _ = @import("additional_tests.zig");
     _ = @import("goal_pacing_autonomous_test.zig");
     _ = @import("goal_state.zig");
     _ = @import("goal_persist_tests.zig");

@@ -1,0 +1,11 @@
+{
+  "id": "dead-code",
+  "category": "comprehension",
+  "prompt": "One function defined in utils.py is never used anywhere in this project (not imported, not called, including inside utils.py itself). Name it — reply with just the function name.",
+  "files": {
+    "utils.py": "def parse_row(row):\n    return row.split(',')\n\n\ndef normalize(text):\n    return text.strip().lower()\n\n\ndef legacy_export(rows):\n    return '\\n'.join(','.join(r) for r in rows)\n\n\ndef validate(row):\n    return len(parse_row(row)) == 3\n",
+    "main.py": "from utils import parse_row, normalize, validate\n\nrow = ' A,B,C '\nprint(validate(normalize(row)), parse_row(normalize(row)))\n"
+  },
+  "check": "grep -q legacy_export \"$ANSWER_FILE\"",
+  "timeout_s": 240
+}

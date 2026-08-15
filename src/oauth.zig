@@ -360,23 +360,23 @@ pub fn refreshOAuthKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u
     return .{ .key = key };
 }
 
-// xAI (Grok) OAuth — device-code flow against auth.x.ai. The OIDC discovery
-// doc (auth.x.ai/.well-known/openid-configuration) advertises the device_code
-// grant + a public ("none") client, so no secret/PKCE is needed. `graff login
-// xai` runs the flow and writes the token to ~/.xai/credentials/graff-oauth.json;
-// loadXaiOAuth reads it at startup and refreshes near expiry. The access token
-// is sent as a plain bearer to the existing xai provider row
-// (api.x.ai/v1/chat/completions, kind=.openai). client_id is xAI's shared Grok
-// CLI client — the consent screen shows "Grok Build" — same posture as the
-// Codex/Kimi logins. NOTE: xAI gates api.x.ai per account, so a valid login can
-// still 403 on inference until the account is allowlisted (env XAI_API_KEY wins
-// and always works). User-Agent is set on all requests (Cloudflare-fronted).
+// xAI (Grok) OAuth — device-code flow against auth.x.ai. Parity with
+// xai-org/grok-build (device_code.rs + config.rs): same public client_id, issuer,
+// frozen 10-scope set, referrer, and device-code endpoint. No secret/PKCE —
+// the OIDC discovery doc advertises a public ("none") client. `graff login xai`
+// writes ~/.xai/credentials/graff-oauth.json; loadXaiOAuth refreshes near
+// expiry. Inference uses api.x.ai with Bearer + X-XAI-Token-Auth (http_headers)
+// for login tokens; bare Bearer for XAI_API_KEY. User-Agent on OAuth posts
+// (Cloudflare-fronted).
 const xai_oauth_host = "https://auth.x.ai";
 const xai_device_auth_url = xai_oauth_host ++ "/oauth2/device/code";
 const xai_token_url = xai_oauth_host ++ "/oauth2/token";
 const xai_client_id = "b1a00492-073a-47ea-816f-4c329264a828";
-const xai_scope = "openid profile email offline_access grok-cli:access api:access";
+// Frozen OAuth client scope contract (grok-build default_oauth2_scopes). Form
+// body uses `+` for spaces (application/x-www-form-urlencoded).
+const xai_scope_form = "openid+profile+email+offline_access+grok-cli:access+api:access+conversations:read+conversations:write+workspaces:read+workspaces:write";
 const xai_user_agent = "grok-cli/1.0";
+const xai_referrer = "grok-build";
 
 /// POST a form body to an xAI OAuth endpoint (with a CLI User-Agent); return the
 /// parsed JSON object.
@@ -416,7 +416,7 @@ pub fn xaiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !voi
     var ow = Io.File.stdout().writer(io, &obuf);
     const out = &ow.interface;
 
-    const da_body = try std.fmt.allocPrint(arena, "client_id={s}&scope={s}", .{ xai_client_id, xai_scope });
+    const da_body = try std.fmt.allocPrint(arena, "client_id={s}&scope={s}&referrer={s}", .{ xai_client_id, xai_scope_form, xai_referrer });
     const da = xaiOAuthPost(io, gpa, arena, xai_device_auth_url, da_body) catch |err| {
         try out.print("✗ xAI device authorization failed: {t}\n", .{err});
         try out.flush();

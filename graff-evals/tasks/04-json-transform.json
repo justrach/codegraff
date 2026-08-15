@@ -1,0 +1,10 @@
+{
+  "id": "json-transform",
+  "category": "data",
+  "prompt": "Read data.json (a list of people). Write adults.json containing only the entries with age >= 18, sorted by name ascending, same object shape, as a JSON array.",
+  "files": {
+    "data.json": "[{\"name\": \"Cy\", \"age\": 18}, {\"name\": \"Bo\", \"age\": 12}, {\"name\": \"Ada\", \"age\": 31}, {\"name\": \"Dee\", \"age\": 7}]\n"
+  },
+  "check": "python3 -c \"import json; d=json.load(open('adults.json')); assert [p['name'] for p in d]==['Ada','Cy'], d; assert all(p['age']>=18 for p in d)\"",
+  "timeout_s": 240
+}

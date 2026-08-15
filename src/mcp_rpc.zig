@@ -45,11 +45,14 @@ pub const Server = struct {
     /// Set when the modern probe ran and the connection landed on the legacy
     /// protocol anyway: WHY it did. Rendered on the connect line and in
     /// `/mcp` — a downgrade the user cannot see is the whole of #327. Null
-    /// when no probe ran (probe disabled, HTTP) or when it found modern.
+    /// when no probe ran (probe disabled) or when it found modern.
     probe_fallback: ?LegacyReason = null,
+    /// In-flight HTTP `notifications/initialized` (not awaited before tools/list).
+    pending_initialized: ?Io.Future(void) = null,
 };
 
 pub fn deinitServer(server: *Server, io: Io, budget: mcp_teardown.Budget) void {
+    finishInitialized(server);
     switch (server.transport) {
         .stdio => |*stdio| mcp_stdio.stopChild(io, &stdio.child),
         .http => |*http| { // never waits on a peer: bounded by `budget` (#305)
@@ -152,7 +155,12 @@ pub fn initializeServer(server: *Server, response_alloc: Allocator, session_allo
     };
     const protocol_version = try mcp_protocol.negotiatedProtocol(init_resp, protocol_transport);
     server.protocol_version = try session_alloc.dupe(u8, protocol_version);
-    try notify(server, response_alloc, "notifications/initialized");
+    // HTTP: do not wait for the initialized 202 before tools/list (~0.6s on
+    // DeepWiki). stdio notify is already a non-blocking write.
+    if (server.transport == .http)
+        kickHttpInitialized(server)
+    else
+        try notify(server, response_alloc, "notifications/initialized");
     server.initialized = true;
     server.era = .legacy;
 }
@@ -227,9 +235,61 @@ pub fn notify(server: *Server, response_alloc: Allocator, method: []const u8) !v
     }
 }
 
-fn connectLegacy(server: *Server, a: Allocator, session_alloc: Allocator, bound_io: ?Io) !Value {
+pub fn connectLegacy(server: *Server, a: Allocator, session_alloc: Allocator, bound_io: ?Io) !Value {
     try initializeServer(server, a, session_alloc, bound_io); // sets server.era = .legacy
-    return handshakeRequest(server, a, bound_io, "{}", "tools/list");
+    const listed = handshakeRequest(server, a, bound_io, "{}", "tools/list");
+    finishInitialized(server);
+    return listed;
+}
+
+const InitializedJob = struct {
+    url: []const u8,
+    headers: []const std.http.Header,
+    oauth_home: ?[]const u8,
+    protocol_version: []const u8,
+    gpa: Allocator,
+};
+
+fn httpInitializedTask(io: Io, job: InitializedJob) void {
+    var transport: mcp_http.HttpTransport = .{
+        .url = job.url,
+        .client = .{ .allocator = job.gpa, .io = io },
+        .headers = job.headers,
+        .oauth_home = job.oauth_home,
+    };
+    defer transport.client.deinit();
+    const body = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}";
+    if (mcp_http.post(&transport, body, .{
+        .protocol_version = job.protocol_version,
+        .method = "notifications/initialized",
+        .modern = false,
+    }, null)) |maybe| {
+        if (maybe) |b| job.gpa.free(b);
+    } else |_| {}
+}
+
+fn kickHttpInitialized(server: *Server) void {
+    const http = &server.transport.http;
+    const job = InitializedJob{
+        .url = http.url,
+        .headers = http.headers,
+        .oauth_home = http.oauth_home,
+        .protocol_version = server.protocol_version,
+        .gpa = http.client.allocator,
+    };
+    server.pending_initialized = http.client.io.concurrent(httpInitializedTask, .{ http.client.io, job }) catch
+        http.client.io.async(httpInitializedTask, .{ http.client.io, job });
+}
+
+pub fn finishInitialized(server: *Server) void {
+    if (server.pending_initialized) |*fut| {
+        const io = switch (server.transport) {
+            .http => |*http| http.client.io,
+            .stdio => return,
+        };
+        fut.await(io);
+        server.pending_initialized = null;
+    }
 }
 
 /// How long the `server/discover` probe waits before calling a stdio server
@@ -298,6 +358,8 @@ pub const LegacyReason = enum {
     /// The child exited or closed stdout during the probe; the caller
     /// respawned it and connected legacy on the fresh process.
     server_exited,
+    /// Disk cache already recorded 2025-11-25 for this URL; Auto probe skipped.
+    cached_legacy,
 
     /// Suffix for the connect line / `/mcp`, empty-safe to concatenate. A
     /// legacy landing is never invisible: #327 was exactly a fallback nobody
@@ -309,6 +371,7 @@ pub const LegacyReason = enum {
             .timeout => " [legacy: no server/discover answer before the probe deadline; raise GRAFF_MCP_PROBE_MS]",
             .probe_unavailable => " [legacy: graff could not run the modern probe]",
             .server_exited => " [legacy: server exited during the probe, respawned]",
+            .cached_legacy => " [legacy: cached 2025-11-25, skipped modern probe]",
         };
     }
 };
@@ -445,74 +508,14 @@ pub fn finishModernStdio(server: *Server, a: Allocator, session_alloc: Allocator
 }
 
 /// Connect a Streamable HTTP server: attempt a modern (2026-07-28)
-/// `tools/list` first — it doubles as the discovery call graff needs
-/// anyway, so a modern server costs one POST where the legacy handshake
-/// costs three. Falls back to the legacy `initialize` ->
-/// `notifications/initialized` -> `tools/list` handshake on anything that
-/// is not a recognized modern error (versioning § Backward Compatibility).
-/// See mcp_protocol.classifyProbe for the exact classification rules.
-pub fn connectHttp(server: *Server, a: Allocator, session_alloc: Allocator) !Value {
-    return connectHttpAttempt(server, a, session_alloc, false);
-}
-
-fn connectHttpAttempt(server: *Server, a: Allocator, session_alloc: Allocator, retried: bool) !Value {
-    const http = &server.transport.http;
-    const probe_id = server.next_id;
-    server.next_id += 1;
-    const probe_body = try mcp_protocol.buildRequest(a, probe_id, "tools/list", "{}", true);
-    const reply = try mcp_http.probe(http, probe_body, .{
-        .protocol_version = modern_protocol,
-        .method = "tools/list",
-        .modern = true,
-    });
-    defer if (reply.body) |b| http.client.allocator.free(b);
-
-    // A 2xx alone does NOT mean modern. JSON-RPC carries application errors in
-    // a 200 body, and a legacy server that enforces "initialize first" answers
-    // this probe with exactly that: 200 plus an error object. Treating it as
-    // modern skipped the fallback and broke every such server. Only a real
-    // `result` proves the server understood a request sent with no handshake.
-    if (reply.status >= 200 and reply.status < 300) modern: {
-        const body = reply.body orelse break :modern;
-        const parsed = mcp_http.parseHttpResponse(a, body, probe_id) orelse break :modern;
-        if (parsed != .object or parsed.object.get("result") == null) break :modern;
-        server.era = .modern;
-        server.protocol_version = try session_alloc.dupe(u8, modern_protocol);
-        server.initialized = true;
-        return parsed;
-    }
-
-    switch (mcp_protocol.classifyProbe(a, reply.body orelse &.{})) {
-        .legacy => return connectLegacy(server, a, session_alloc, null),
-        // -32020/-32021: graff's own request was malformed. That is a graff
-        // bug, not a version mismatch — surface it loudly rather than
-        // falling back and hiding it behind a legacy handshake that will
-        // just fail differently.
-        .modern => return error.McpModernRequestRejected,
-        .incompatible => return error.McpIncompatibleProtocolVersion,
-        .unsupported_version => |supported| {
-            var has_modern = false;
-            for (supported) |v| if (v == .string and std.mem.eql(u8, v.string, modern_protocol)) {
-                has_modern = true;
-            };
-            if (has_modern) {
-                // We asked for modern_protocol and the server both rejected
-                // it AND claims to support it — contradictory, but retry
-                // once (single-shot: this is idempotent, so a second
-                // identical answer means give up, not loop).
-                if (!retried) return connectHttpAttempt(server, a, session_alloc, true);
-                return error.McpIncompatibleProtocolVersion;
-            }
-            // No overlap with modern_protocol, but classifyProbe only
-            // returns this variant when `supported` overlaps something we
-            // speak — so it must be a legacy revision: dual-era server.
-            return connectLegacy(server, a, session_alloc, null); // HTTP: bounded by the client's own timeouts
-        },
-    }
-}
+/// rust-sdk `ClientLifecycleMode::Auto` (see mcp_lifecycle.zig): parallel
+/// `server/discover` + `tools/list`, then the legacy initialize handshake
+/// only when the peer proves it is not 2026-07-28.
+pub const connectHttp = @import("mcp_lifecycle.zig").connectHttp;
 
 test { // #327 probe-classification/fallback coverage (this file is at the 600-line cap)
     _ = @import("mcp_rpc_tests.zig");
+    _ = @import("mcp_lifecycle.zig");
 }
 
 // #275: a stdio server that accepts the connection and then never answers must

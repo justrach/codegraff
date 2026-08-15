@@ -45,6 +45,7 @@ const engine_events = @import("engine_events.zig");
 const harness_policy = @import("harness_policy.zig");
 const title_mod = @import("title.zig");
 const repl = @import("repl.zig");
+const tui_launch = @import("tui_launch.zig");
 const shapes = @import("shapes.zig"); // applyUltracodeSteering lives here (#326)
 const repl_glue = @import("repl_glue.zig");
 const eval_memory = @import("eval_memory.zig");
@@ -64,15 +65,19 @@ const learning_privacy = @import("learning_privacy.zig");
 const commands_privacy = @import("commands_privacy.zig");
 const prompts = @import("prompts.zig");
 
-/// `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL
-/// agent loop — each prompt runs a full root turn (tools + MCP) via
-/// replTurnCb, reusing the root agent's tool set + registry + system prompt.
+/// `graff repl`: interactive chat on the Grok-style TUI (same as `graff tui`).
+/// Piped/non-TTY stdin still drives the old scripted zigzag Model so CI
+/// (`printf ... | graff repl`) keeps a stable headless path.
 /// Self-contained — exits after. Moved out of main() (600-line goal).
 /// `root` is already a stable, fully-constructed main()-owned Agent by the
 /// time this is called, so taking its address here is safe (this helper
 /// only reads through the pointer, it never owns or returns Agent storage).
 pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, keys: *provider_mod.Keys, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags) !bool {
     if (!(flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "repl"))) return false;
+    if (Io.File.stdin().isTty(io) catch true) {
+        try tui_launch.run(gpa, io, environ_map, root, keys, client, arena, main_mod.g_cwd_display, flags.yolo_flag);
+        return true;
+    }
     root.ensureStoredKeys(keys);
     providers.ensureModelQueryCatalogs(root, keys.*, "");
     // The standalone chat REPL can switch wire formats inside its own model
@@ -103,10 +108,7 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
         if (models_buf.items.len != 0) models_buf.appendSlice(", ") catch {};
         models_buf.appendSlice(mi.name) catch {};
     }
-    if (Io.File.stdin().isTty(io) catch true)
-        try repl.run(gpa, io, environ_map, &repl_ctx, repl_glue.replTurnCb, repl_glue.replModelCb, repl_glue.replCancelCb, root.provider.model, models_buf.items)
-    else
-        try repl.runScripted(gpa, io, environ_map, in, out, &repl_ctx, repl_glue.replTurnCb, repl_glue.replModelCb, repl_glue.replCancelCb, root.provider.model, models_buf.items);
+    try repl.runScripted(gpa, io, environ_map, in, out, &repl_ctx, repl_glue.replTurnCb, repl_glue.replModelCb, repl_glue.replCancelCb, root.provider.model, models_buf.items);
     return true;
 }
 
@@ -140,8 +142,16 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     var oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
     if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
     try root.messages.append(try messages_mod.textMessage(arena, "user", oneshot_user));
-    if (telemetry.g_telem) |t| t.countTurn();
-    const final_text = providers.runTurnWithFallback(root, keys, arena, null) catch |err| {
+    if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(prompt_text.len, std.math.maxInt(u32))), root.provider.model);
+    // #502: --output-schema runs TWO-PHASE. A strict grammar on every message
+    // pulls the model into answering immediately instead of touching tools
+    // (graff-evals caught grok-4.6 guessing a file-inspection answer), so the
+    // agentic phase runs unconstrained and one tools-off formatting turn then
+    // restates the final answer under the schema — same conversation, so it
+    // reads the real evidence.
+    const pending_schema = root.output_schema;
+    root.output_schema = null;
+    var final_text = providers.runTurnWithFallback(root, keys, arena, null) catch |err| {
         // std.process.fatal does not unwind main's defers. Mirror their order:
         // join the fleet, reap jobs/pumps, then the terminal behavioral event.
         fleet.joinElites(io);
@@ -158,6 +168,21 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
             else => |e| std.process.fatal("turn failed: {t}", .{e}),
         }
     };
+    if (pending_schema) |schema_json| {
+        root.output_schema = schema_json;
+        root.text_only = true;
+        defer {
+            root.text_only = false;
+            root.output_schema = null;
+        }
+        try root.messages.append(try messages_mod.textMessage(arena, "user", "Return ONLY the final answer as a single JSON object matching the enforced output schema. No prose."));
+        if (telemetry.g_telem) |t| t.countTurn();
+        final_text = providers.runTurnWithFallback(root, keys, arena, null) catch blk: {
+            // Best-effort: schema-shaping must never lose a finished answer.
+            std.debug.print("warning: output-schema formatting call failed — printing the unshaped answer\n", .{});
+            break :blk final_text;
+        };
+    }
     try out.print("{s}\n", .{final_text});
     try out.flush();
     // Usage summary → stderr, so stdout stays exactly the answer.
@@ -205,7 +230,7 @@ pub fn initApprovalsHooksFleet(io: Io, gpa: Allocator, arena: Allocator, environ
     fleet.g_home = keys_cli.homeEnv(environ_map); // for /agents promote's personal tier
     fleet.g_agent_types = fleet.loadAgentTypes(io, arena, fleet.g_home); // builtin < ~/.harness/agents (personal) < ./.harness/agents (private)
     const sink = engine_sink.writerSink(out);
-    const speak = !json_mode and flags.oneshot_prompt == null;
+    const speak = !json_mode and flags.oneshot_prompt == null and environ_map.get("GRAFF_REPL_DEBUG") != null;
     if (persisted_approvals > 0 and speak)
         sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "loaded {d} saved approval(s) from {s}", .{ persisted_approvals, harness_policy.settings_path })));
     // Lifecycle hooks (pre_tool/post_tool/turn_end) from the same file.
@@ -291,10 +316,29 @@ pub fn buildRootAgent(
     // #469: register this root session so co-resident graffs see it (and it
     // them) BEFORE anyone touches the shared tree — a live co-owner is named
     // at birth here, not discovered mid-collision.
-    if (presence.announce(io, gpa, arena, root.home, root.session_name, if (root.goal) |g| g.objective else "")) |warning| {
-        if (!main_mod.json_mode and flags.oneshot_prompt == null) try out.print("{s}", .{warning});
+    if (presence.announce(io, gpa, arena, root.home, root.session_name, if (root.goal) |g| g.objective else "")) |owner| {
+        if (!main_mod.json_mode and flags.oneshot_prompt == null) {
+            const age_ms = util.unixMs(io) - owner.last_seen_ms;
+            engine_sink.writerSink(out).emit(io, .{ .shared_worktree_owner = .{
+                .session_id = owner.session_id,
+                .pid = owner.pid,
+                .active_minutes = @divTrunc(if (age_ms > 0) age_ms else 0, std.time.ms_per_min),
+                .goal = owner.goal,
+            } });
+        }
     }
     if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
+    // #502: --output-schema (inline JSON or @file) → structured outputs.
+    if (flags.output_schema_flag) |schema_arg| {
+        const trimmed = std.mem.trim(u8, schema_arg, " \t");
+        root.output_schema = if (std.mem.startsWith(u8, trimmed, "@"))
+            std.Io.Dir.cwd().readFileAlloc(io, trimmed[1..], arena, .limited(1024 * 1024)) catch |e| blk: {
+                if (!main_mod.json_mode) try out.print("warning: --output-schema {s}: {t} — ignored\n", .{ trimmed[1..], e });
+                break :blk null;
+            }
+        else
+            try arena.dupe(u8, trimmed);
+    }
     if (flags.eval_target_flag) |t| root.eval_target = t;
     if (flags.eval_niche_flag) |n| root.eval_niche = try arena.dupe(u8, n);
     _ = recipe.record(tracer, trace.g_traj, root.provider.id, root.provider.model, @tagName(root.reasoning), root.systemPrompt(), root.toolsJson(), if (root.eval_niche.len > 0) root.eval_niche else "interactive");
@@ -363,7 +407,7 @@ pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod
 /// overflow can still override this.
 pub fn compactResumedSession(root: *agent_mod.Agent) void {
     if (root.inputOverCompactThreshold()) {
-        root.compactOrRecover(false);
+        root.autocompactResumed();
     }
 }
 

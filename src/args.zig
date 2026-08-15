@@ -65,16 +65,24 @@ pub const Flags = struct {
     worktree_flag: ?[]const u8 = null, // --worktree/-w: isolate this session in a git worktree (parallel agents, no file collisions)
     eval_target_flag: ?u8 = null, // --until: target score 0-100 for the eval loop
     eval_niche_flag: ?[]const u8 = null, // --niche: fleet niche this eval-driven session optimizes (tags submitted scores)
+    output_schema_flag: ?[]const u8 = null, // --output-schema: JSON schema (inline or @file) the final answer must satisfy (#502)
     no_resume_flag: bool = false, // start without auto-loading last.session.json
     new_session_flag: bool = false, // start a fresh autosaved session
     positionals: std.ArrayList([]const u8) = .empty,
     /// True when positionals[0] is a known subcommand (login/key/mcp/serve/
-    /// update/title/repl/acp/worktree/sandboxes/cube) — those aren't a one-shot
+    /// update/title/repl/tui/acp/worktree/sandboxes/cube) — those aren't a one-shot
     /// prompt even with no --print/-p flag.
     is_subcommand: bool = false,
     /// The joined positional args as a one-shot prompt (`harness "say hi"`
     /// or `harness -p "..."`), or null when positionals[0] is a subcommand.
     oneshot_prompt: ?[]const u8 = null,
+
+    /// `graff tui` / `graff repl` — fullscreen pager, not the line REPL.
+    pub fn isPager(self: Flags) bool {
+        if (self.positionals.items.len == 0) return false;
+        const c = self.positionals.items[0];
+        return std.mem.eql(u8, c, "tui") or std.mem.eql(u8, c, "repl");
+    }
 
     /// One-shot is autonomous by default: -p implies --yolo — the typed-out
     /// invocation IS the consent, and a no-stdin approval prompt can only
@@ -131,6 +139,8 @@ pub fn parse(init: std.process.Init) !Flags {
                     flags.eval_target_flag = std.fmt.parseInt(u8, uv, 10) catch std.process.fatal("--until must be a number 0-100", .{});
                 } else if (std.mem.eql(u8, arg, "--niche")) {
                     flags.eval_niche_flag = it.next() orelse std.process.fatal("--niche needs a name (e.g. --niche reviewer)", .{});
+                } else if (std.mem.eql(u8, arg, "--output-schema")) {
+                    flags.output_schema_flag = it.next() orelse std.process.fatal("--output-schema needs a JSON schema or @file", .{});
                 } else if (std.mem.eql(u8, arg, "--no-telemetry")) {
                     flags.no_telemetry_flag = true;
                 } else if (std.mem.eql(u8, arg, "--learning-privacy")) {
@@ -226,7 +236,7 @@ pub fn parse(init: std.process.Init) !Flags {
     // (`harness "say hi"`). Subcommands (login/key) are not prompts.
     flags.is_subcommand = flags.positionals.items.len > 0 and
         (std.mem.eql(u8, flags.positionals.items[0], "login") or std.mem.eql(u8, flags.positionals.items[0], "key") or std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "learn") or
-            std.mem.eql(u8, flags.positionals.items[0], "serve") or std.mem.eql(u8, flags.positionals.items[0], "update") or std.mem.eql(u8, flags.positionals.items[0], "title") or std.mem.eql(u8, flags.positionals.items[0], "repl") or
+            std.mem.eql(u8, flags.positionals.items[0], "serve") or std.mem.eql(u8, flags.positionals.items[0], "update") or std.mem.eql(u8, flags.positionals.items[0], "title") or std.mem.eql(u8, flags.positionals.items[0], "repl") or std.mem.eql(u8, flags.positionals.items[0], "tui") or
             std.mem.eql(u8, flags.positionals.items[0], "worktree") or std.mem.eql(u8, flags.positionals.items[0], "sandboxes") or std.mem.eql(u8, flags.positionals.items[0], "cube") or std.mem.eql(u8, flags.positionals.items[0], "models") or @import("acp.zig").isAcpSubcommand(flags.positionals.items[0])); // `acp` also arms ACP's stdout discipline (json_mode) — see acp.isAcpSubcommand
     if (!flags.is_subcommand and flags.positionals.items.len > 0) {
         flags.oneshot_prompt = try std.mem.join(arena, " ", flags.positionals.items);
@@ -239,7 +249,23 @@ pub fn parse(init: std.process.Init) !Flags {
     // GRAFF_LEAN sets the same global in session_settings.applyEnvKnobs).
     if (flags.effectiveLean()) no_local_tools.lean = true;
 
+    // #502: GRAFF_XAI_WIRE (default responses; =chat opts out) must land before the initial Keys.build
+    // (startup.resolveKeys) or the xAI provider is built on the chat wire and
+    // the knob silently no-ops; applyEnvKnobs re-parses the same value later.
+    if (init.environ_map.get("GRAFF_XAI_WIRE")) |xw|
+        @import("provider.zig").g_xai_responses = std.ascii.eqlIgnoreCase(std.mem.trim(u8, xw, " \t"), "responses");
+
     return flags;
+}
+
+test "tui and repl are pager subcommands, not one-shot prompts" {
+    var tui_pos = std.ArrayList([]const u8).empty;
+    defer tui_pos.deinit(std.testing.allocator);
+    try tui_pos.append(std.testing.allocator, "tui");
+    const tui_flags = Flags{ .positionals = tui_pos, .yolo_flag = true, .is_subcommand = true };
+    try std.testing.expect(tui_flags.isPager());
+    try std.testing.expect(tui_flags.yolo_flag);
+    try std.testing.expect(tui_flags.oneshot_prompt == null);
 }
 
 test "effectiveYolo: -p implies yolo, --safe opts out, interactive untouched" {

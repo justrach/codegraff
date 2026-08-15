@@ -1,0 +1,1254 @@
+{
+  "kernel": "transport",
+  "version": 1,
+  "cases": [
+    {
+      "id": "anthropic.root.ws0.off0.out0.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws0.off0.out0.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws0.off0.out1.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws0.off0.out1.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws0.off1.out0.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws0.off1.out0.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws0.off1.out1.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws0.off1.out1.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws1.off0.out0.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws1.off0.out0.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws1.off0.out1.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws1.off0.out1.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws1.off1.out0.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws1.off1.out0.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws1.off1.out1.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.root.ws1.off1.out1.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws0.off0.out0.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws0.off0.out0.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws0.off0.out1.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws0.off0.out1.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws0.off1.out0.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws0.off1.out0.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws0.off1.out1.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws0.off1.out1.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws1.off0.out0.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws1.off0.out0.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws1.off0.out1.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws1.off0.out1.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws1.off1.out0.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws1.off1.out0.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws1.off1.out1.q0",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "anthropic.sub.ws1.off1.out1.q1",
+      "turn": {
+        "kind": "anthropic",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws0.off0.out0.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws0.off0.out0.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws0.off0.out1.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws0.off0.out1.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws0.off1.out0.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws0.off1.out0.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws0.off1.out1.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws0.off1.out1.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws1.off0.out0.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws1.off0.out0.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws1.off0.out1.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws1.off0.out1.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws1.off1.out0.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws1.off1.out0.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws1.off1.out1.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.root.ws1.off1.out1.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws0.off0.out0.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws0.off0.out0.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws0.off0.out1.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws0.off0.out1.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws0.off1.out0.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws0.off1.out0.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws0.off1.out1.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws0.off1.out1.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws1.off0.out0.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws1.off0.out0.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws1.off0.out1.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws1.off0.out1.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws1.off1.out0.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws1.off1.out0.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws1.off1.out1.q0",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "openai.sub.ws1.off1.out1.q1",
+      "turn": {
+        "kind": "openai",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws0.off0.out0.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws0.off0.out0.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws0.off0.out1.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws0.off0.out1.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws0.off1.out0.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws0.off1.out0.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws0.off1.out1.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws0.off1.out1.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws1.off0.out0.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws1.off0.out0.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws1.off0.out1.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": true,
+      "pipe": "ws"
+    },
+    {
+      "id": "responses.root.ws1.off0.out1.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws1.off1.out0.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws1.off1.out0.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws1.off1.out1.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.root.ws1.off1.out1.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": false,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws0.off0.out0.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws0.off0.out0.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws0.off0.out1.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws0.off0.out1.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws0.off1.out0.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws0.off1.out0.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws0.off1.out1.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws0.off1.out1.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": false,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws1.off0.out0.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws1.off0.out0.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws1.off0.out1.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws1.off0.out1.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": false,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws1.off1.out0.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws1.off1.out0.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": false,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws1.off1.out1.q0",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": false
+      },
+      "eligible": false,
+      "pipe": "sse"
+    },
+    {
+      "id": "responses.sub.ws1.off1.out1.q1",
+      "turn": {
+        "kind": "responses",
+        "is_sub": true,
+        "codex_ws": true,
+        "ws_off": true,
+        "has_out": true,
+        "quiet": true
+      },
+      "eligible": false,
+      "pipe": "sse"
+    }
+  ]
+}

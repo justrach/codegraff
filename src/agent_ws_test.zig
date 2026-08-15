@@ -42,6 +42,13 @@ test "postLive's delta-body detection matches the key buildBody emits (codex-ws)
 // expire (only strictly past it), and a WS used moments ago must survive.
 // opencode pools at 5 min; ours defaults to 4 (the backend killed a real
 // session within 8.5 min idle).
+test "wssUrl: https->wss, http->ws" {
+    var a = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a.deinit();
+    try std.testing.expectEqualStrings("wss://chatgpt.com/backend-api/codex/responses", try agent_ws.wssUrl(a.allocator(), "https://chatgpt.com/backend-api/codex/responses"));
+    try std.testing.expectEqualStrings("ws://localhost:1234/x", try agent_ws.wssUrl(a.allocator(), "http://localhost:1234/x"));
+}
+
 test "codexWsIdleExpired: fires only strictly past the idle limit (codex-ws)" {
     const limit = agent_ws.codex_ws_idle_ms;
     try std.testing.expectEqual(@as(i64, 4 * std.time.ms_per_min), limit); // default: stay under the observed server kill
@@ -84,6 +91,10 @@ test "the codex .responses arm refreshes auth and re-anchors before resending (#
 
     // Both wire formats go through the one helper — no second, drifting copy.
     try std.testing.expect(std.mem.indexOf(u8, src[arm_end..], "retryAfterAuthRefresh(self, msg, &auth_refreshed)") != null);
+
+    // A response.failed overload used to skip the shared transient retry path
+    // and surface immediately (most visibly from detached recap calls).
+    try std.testing.expect(std.mem.indexOf(u8, arm, "retryTransientServerError(self, \"\", failure.code, msg, &server_retries)") != null);
 
     // The guard bool is declared OUTSIDE `rebuild:`. Reset it inside the loop and a
     // permanently dead credential refresh-and-resends a full history forever, which
