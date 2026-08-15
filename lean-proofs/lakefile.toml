@@ -1,0 +1,9 @@
+name = "GraffSpec"
+defaultTargets = ["Graff", "graff-spec-report"]
+
+[[lean_lib]]
+name = "Graff"
+
+[[lean_exe]]
+name = "graff-spec-report"
+root = "Main"

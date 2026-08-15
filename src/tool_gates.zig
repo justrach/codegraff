@@ -93,6 +93,12 @@ pub fn withAvailable(comptime Spec: type, arena: Allocator, base: []const Spec, 
 
 test { // the served catalogs' wire-compatibility guard (an unreferenced module's tests never run)
     _ = @import("tool_schema_tests.zig");
+    _ = @import("spec_catalog_conformance.zig");
+    _ = @import("spec_transport_conformance.zig");
+    _ = @import("spec_provider_conformance.zig");
+    _ = @import("spec_goal_loop_conformance.zig");
+    _ = @import("spec_path_confine_conformance.zig");
+    _ = @import("spec_shape_conformance.zig");
 }
 
 test "#352: an optional tool is advertised only while its flag is set; other names are unaffected" {

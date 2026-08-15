@@ -26,6 +26,7 @@ const Agent = agent_mod.Agent;
 
 const ws = @import("ws.zig");
 const http_headers = @import("http_headers.zig");
+const transport_gate = @import("transport_gate.zig");
 
 // #422 slice 1b: this file draws nothing. Wait/cut moments are typed events
 // through the sink; the spinner and the ⚠ notices are TuiSink's rendering.
@@ -56,8 +57,7 @@ const drainSteerStdin = Agent.drainSteerStdin;
 /// Codex ws applies to root Responses turns when enabled and not already fallen
 /// back this session. Subagents/quiet turns keep the non-streaming SSE path.
 pub fn wsEligible(self: *Agent) bool {
-    return main_mod.g_codex_ws and !self.ws_off and !self.sub and
-        self.provider.kind == .responses and self.out != null and !self.stream_quiet;
+    return transport_gate.eligible(.{ .kind = self.provider.kind, .is_sub = self.sub, .codex_ws = main_mod.g_codex_ws, .ws_off = self.ws_off, .has_out = self.out != null, .quiet = self.stream_quiet });
 }
 
 /// (#codex-ws) Client-side idle limit on the held codex WS, opencode's
@@ -166,7 +166,7 @@ fn emitAbort(self: *Agent, reason: engine_events.StreamAbort, turn_ending: bool)
     engine_sink.forAgent(self).emit(self.io, .{ .transport_aborted = cut });
 }
 
-fn wssUrl(arena: std.mem.Allocator, https_url: []const u8) ![]u8 {
+pub fn wssUrl(arena: std.mem.Allocator, https_url: []const u8) ![]u8 {
     if (std.mem.startsWith(u8, https_url, "https://"))
         return std.fmt.allocPrint(arena, "wss://{s}", .{https_url["https://".len..]});
     if (std.mem.startsWith(u8, https_url, "http://"))
@@ -590,11 +590,4 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     }
     self.codex_ws_used_ms = nowAwakeMs(self.io); // completed turn — restart the idle window (#codex-ws)
     return full.toOwnedSlice();
-}
-
-test "wssUrl: https->wss, http->ws" {
-    var a = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer a.deinit();
-    try std.testing.expectEqualStrings("wss://chatgpt.com/backend-api/codex/responses", try wssUrl(a.allocator(), "https://chatgpt.com/backend-api/codex/responses"));
-    try std.testing.expectEqualStrings("ws://localhost:1234/x", try wssUrl(a.allocator(), "http://localhost:1234/x"));
 }
