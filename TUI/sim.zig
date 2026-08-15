@@ -38,6 +38,8 @@ pub const Term = struct {
     rows: usize = 24,
     now_ms: u64 = 0,
     last_effect: Effect = .stay,
+    inbuf: [4096]u8 = undefined,
+    pending: usize = 0,
 
     pub fn init(self: *Term, alloc: std.mem.Allocator, cols: usize, rows: usize) void {
         self.alloc = alloc;
@@ -45,6 +47,8 @@ pub const Term = struct {
         self.rows = if (rows < 12) 24 else rows;
         self.now_ms = 0;
         self.last_effect = .stay;
+        self.pending = 0;
+        key_mod.resetInputState();
         self.model.setup(alloc);
     }
 
@@ -52,16 +56,36 @@ pub const Term = struct {
         self.model.deinit();
     }
 
-    /// Raw Ghostty/xterm bytes. Incomplete CSI is left unconsumed (same as the live loop).
+    /// Raw Ghostty/xterm bytes. An incomplete sequence is CARRIED into the next
+    /// feed, exactly like run.zig's pending buffer — dropping it here let a
+    /// split CSI vanish, which is the one thing these harness tests exist to
+    /// catch.
     pub fn feed(self: *Term, bytes: []const u8) Effect {
+        const room = self.inbuf.len - self.pending;
+        const take = @min(bytes.len, room);
+        @memcpy(self.inbuf[self.pending .. self.pending + take], bytes[0..take]);
+        const n = self.pending + take;
         var i: usize = 0;
         var last: Effect = .stay;
-        while (key_mod.next(bytes, &i)) |k| {
+        while (key_mod.next(self.inbuf[0..n], &i)) |k| {
             last = keys.handle(&self.model, k);
             if (last != .stay) break;
         }
+        self.pending = if (i < n) blk: {
+            const rest = n - i;
+            std.mem.copyForwards(u8, self.inbuf[0..rest], self.inbuf[i..n]);
+            break :blk rest;
+        } else 0;
         self.last_effect = last;
         return last;
+    }
+
+    /// The live loop gives up on a pending sequence that never finished and
+    /// tells key.zig to expect its orphaned tail (run.zig's stall path).
+    pub fn stallDropPending(self: *Term) void {
+        if (self.pending == 0) return;
+        self.pending = 0;
+        key_mod.orphan_armed = true;
     }
 
     pub fn press(self: *Term, k: Key) Effect {
@@ -226,6 +250,50 @@ test "hoverText on an image chip opens the preview" {
     try std.testing.expect(try term.hoverText("[Image #1]"));
     try std.testing.expectEqual(app.Overlay.image, term.model.overlay);
     try std.testing.expectEqualStrings("/tmp/shot.png", term.model.preview_path);
+}
+
+test "a 1003 hover flood during a live turn never types itself into the frame" {
+    const engine = @import("engine.zig");
+    key_mod.orphan_armed = false;
+    defer key_mod.orphan_armed = false;
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    try term.model.push(.user, "explain this");
+    const job = try std.testing.allocator.create(engine.Job);
+    defer std.testing.allocator.destroy(job);
+    job.* = .{
+        .gpa = std.testing.allocator,
+        .history = &.{},
+        .params = .{},
+        .stream = .{},
+        .threaded = false,
+    };
+    try term.model.push(.pending, "");
+    term.model.pending = job;
+    defer term.model.pending = null;
+
+    // The exact bytes off the user's terminal: SGR motion reports under
+    // ?1003h, arriving in ragged chunks while a slow frame paints, with the
+    // loop giving up on the head that never finished.
+    const flood = "\x1b[<39;7;32M\x1b[<39;4;32M\x1b[<39;3;33M\x1b[<39;1;33M";
+    var cut: usize = 1;
+    while (cut < flood.len) : (cut += 1) {
+        _ = term.feed(flood[0..cut]);
+        _ = term.feed(flood[cut..]);
+        term.stallDropPending();
+        _ = term.feed(flood);
+    }
+    try std.testing.expectEqualStrings("", term.model.input.getValue());
+    try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
+    // A half-arrived report must not read as Escape either — that cancelled
+    // the turn under the user.
+    try std.testing.expect(!term.model.cancel_requested);
+    const vis = try term.screen();
+    defer std.testing.allocator.free(vis);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "39;7;32M") == null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, ";32M") == null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "Enter:queue") != null);
 }
 
 test "annotated dump prefixes 1-based rows" {

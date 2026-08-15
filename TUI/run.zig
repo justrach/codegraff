@@ -139,7 +139,18 @@ pub fn run(
             if (pending_len > 0) {
                 esc_stall += 1;
                 if (esc_stall >= 2) {
-                    if (inbuf[0] == 0x1b and keys.handle(&m, .escape) == .quit) m.running = false;
+                    switch (stalledPending(inbuf[0..pending_len])) {
+                        .escape_key => if (keys.handle(&m, .escape) == .quit) {
+                            m.running = false;
+                        },
+                        // A sequence the terminal never finished. Delivering
+                        // Escape here cancelled the running turn on a
+                        // half-arrived mouse report; dropping it silently
+                        // leaves its tail to arrive alone on the next read, so
+                        // tell key.zig to expect orphan debris there.
+                        .truncated_sequence => key_mod.orphan_armed = true,
+                        .discard => {},
+                    }
                     pending_len = 0;
                     esc_stall = 0;
                 }
@@ -186,6 +197,20 @@ pub fn run(
         defer if (vis.ptr != prev.ptr) gpa.free(vis);
         traj.snap(io, m.now_ms, vis);
     }
+}
+
+/// What to do with bytes still pending after the input stalled (#94). A LONE
+/// ESC that nothing followed is the Escape KEY. Anything longer is a real
+/// escape sequence the terminal never finished — a half-arrived SGR mouse
+/// report under 1003 hover tracking is the common one, and reading it as
+/// Escape cancelled the user's running turn while its tail leaked into the
+/// composer as `39;7;32M`-shaped text on the next read.
+pub const StallAction = enum { escape_key, truncated_sequence, discard };
+
+pub fn stalledPending(pending: []const u8) StallAction {
+    if (pending.len == 0) return .discard;
+    if (pending[0] != 0x1b) return .truncated_sequence;
+    return if (pending.len == 1) .escape_key else .truncated_sequence;
 }
 
 fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
@@ -292,6 +317,20 @@ test "run loop enables click+hover tracking and bracketed paste" {
     try std.testing.expect(std.mem.indexOf(u8, src, &kitty_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &wrap_off) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "a=d,d=A") != null);
+}
+
+test "stalled pending: only a LONE ESC is the Escape key" {
+    // #94: a bare ESC nothing followed is the Escape keypress.
+    try std.testing.expectEqual(StallAction.escape_key, stalledPending("\x1b"));
+    // A half-arrived SGR mouse report under 1003 hover tracking. Reading these
+    // as Escape cancelled the running turn, and dropping them silently left
+    // `39;7;32M`-shaped debris to land alone on the next read.
+    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("\x1b["));
+    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("\x1b[<"));
+    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("\x1b[<39;7"));
+    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("\x1bO"));
+    try std.testing.expectEqual(StallAction.truncated_sequence, stalledPending("39;7"));
+    try std.testing.expectEqual(StallAction.discard, stalledPending(""));
 }
 
 test "rowChanged only flags the line that actually moved" {
