@@ -10,6 +10,38 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.262 (2026-08-15)
+
+- A formal conformance corpus now guards the harness's decision procedures:
+  six Lean kernels (tool catalog, transport, provider table, goal loop,
+  path confinement, routing shapes) prove the invariants, an executable
+  reference model exports every reachable cell (1,770 of them), and
+  `zig build test` diffs the live implementation against the export —
+  a wrong flag combination fails with the exact counterexample cell.
+  `scripts/eval-spec.sh` runs the whole triangle offline; `lake` is
+  optional and never on the test path.
+- TUI `/compact` now runs the engine's real compaction (same summarizer as
+  the REPL) instead of silently cropping to the last few rows; the model's
+  context and the transcript finally agree about what survived.
+- Thinking no longer pulses the transcript: the flickering live bar is gone
+  from every collapsed "Called N tools" row; liveness is the pending row's
+  steady bar and animated dots.
+- Split escape sequences get a second hardening pass: the input loop now
+  waits ~500ms for a truncated sequence's tail (slow ssh/tmux links
+  complete instead of losing input), and only then drops it — still arming
+  the orphan-debris sweeper. An unterminated OSC/DCS introducer (Alt+] in
+  meta-sends-ESC terminals) recovers the text typed behind it instead of
+  wedging the keyboard until it is destroyed (#516), and a buffer-filling
+  wedge can no longer masquerade as a TTY hangup that exits the TUI
+  mid-session (#517).
+- Mid-turn safety: /new, /compact and /rewind are refused while a turn is
+  running instead of wiping history under the live job (#521); the
+  slash-menu selection clamps to the filtered list and scrolls with the
+  highlight, so Enter always fires the row you see (#522); steering can no
+  longer strand a permanent "thinking" row (#520).
+- Raw mode clears IEXTEN and IXON: Ctrl+V pastes as advertised and Ctrl+S
+  cannot freeze the whole TUI (#523).
+
 ## v0.0.261 (2026-08-15)
 
 - The TUI looks and behaves like grok-build where it counts: syntax-highlighted
