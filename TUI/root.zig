@@ -31,6 +31,9 @@ pub const CompactOut = engine.CompactOut;
 pub const CompactFn = engine.CompactFn;
 pub const HistoryOp = engine.HistoryOp;
 pub const HistoryFn = engine.HistoryFn;
+pub const SessionsFn = engine.SessionsFn;
+pub const ResumeOut = engine.ResumeOut;
+pub const ResumeFn = engine.ResumeFn;
 pub const RunOpts = run_mod.RunOpts;
 pub const run = run_mod.run;
 pub const restore = @import("restore.zig");
@@ -93,6 +96,7 @@ test {
     _ = @import("tty.zig");
     _ = @import("restore.zig");
     _ = @import("files.zig");
+    _ = @import("resume.zig");
     _ = @import("overlays.zig");
     _ = run_mod;
     _ = @import("paint.zig");

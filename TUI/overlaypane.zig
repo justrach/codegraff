@@ -82,6 +82,11 @@ fn spec(self: *const Model, a: std.mem.Allocator) !panel.Spec {
             const head = try files.head(self, a);
             break :blk .{ .title = head.title, .note = head.note, .footer = files.hint, .body = try files.render(self, a) };
         },
+        .resume_pick => blk: {
+            const pick = @import("resume.zig");
+            const head = try pick.head(self, a);
+            break :blk .{ .title = head.title, .note = head.note, .footer = pick.hint, .body = try pick.render(self, a) };
+        },
         .settings => .{
             .title = "Settings",
             .footer = "↑↓ move · click or Enter changes · Esc",
@@ -351,6 +356,7 @@ test "every overlay is a bordered panel with its name in the frame" {
         .{ .o = .model, .name = "Model" },
         .{ .o = .effort, .name = "Effort" },
         .{ .o = .file, .name = "File" },
+        .{ .o = .resume_pick, .name = "Resume" },
         .{ .o = .settings, .name = "Settings" },
         .{ .o = .jump, .name = "Jump to turn" },
     };

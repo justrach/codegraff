@@ -144,6 +144,16 @@ pub const CompactOut = struct {
     turns: []Turn = &.{},
 };
 pub const CompactFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, history: []const Turn, out: *CompactOut) bool;
+/// Newline-joined "base\ttitle\tage" rows of saved sessions, gpa-owned —
+/// the /resume picker's list (same store the line REPL's /resume reads).
+pub const SessionsFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator) ?[]const u8;
+/// Fill `out` with a saved session's user/assistant turns and its saved
+/// model name (all gpa-owned; caller frees). False when the load fails.
+pub const ResumeOut = struct {
+    turns: []Turn = &.{},
+    model: []const u8 = "",
+};
+pub const ResumeFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, base: []const u8, out: *ResumeOut) bool;
 
 /// The frontend just discarded part of its transcript. The engine owns the
 /// conversation the model actually sees (#551), so it has to be told: without
@@ -234,6 +244,8 @@ pub const RunOpts = struct {
     copy_fn: ?CopyFn = null,
     compact_fn: ?CompactFn = null,
     history_fn: ?HistoryFn = null,
+    sessions_fn: ?SessionsFn = null,
+    resume_fn: ?ResumeFn = null,
 };
 
 pub var g_turn_fn: ?TurnFn = null;
@@ -247,6 +259,8 @@ pub var g_files_fn: ?FilesFn = null;
 pub var g_copy_fn: ?CopyFn = null;
 pub var g_compact_fn: ?CompactFn = null;
 pub var g_history_fn: ?HistoryFn = null;
+pub var g_sessions_fn: ?SessionsFn = null;
+pub var g_resume_fn: ?ResumeFn = null;
 
 /// Tell the engine the transcript was cut. Silent when nothing is wired
 /// (offline TUI, unit tests).

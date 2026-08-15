@@ -55,6 +55,8 @@ pub fn run(
     engine.g_copy_fn = opts.copy_fn;
     engine.g_compact_fn = opts.compact_fn;
     engine.g_history_fn = opts.history_fn;
+    engine.g_sessions_fn = opts.sessions_fn;
+    engine.g_resume_fn = opts.resume_fn;
     engine.g_model_name = opts.model_name;
     engine.g_model_provider = opts.model_provider;
     engine.g_model_entries = opts.model_entries;

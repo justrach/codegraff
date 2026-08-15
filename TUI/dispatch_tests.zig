@@ -63,7 +63,7 @@ test "a model turn cannot start while /compact is rewriting the history (#533)" 
     try std.testing.expect(m.bg == null);
 }
 
-test "/new /compact /rewind are blocked while a job is pending (#521)" {
+test "/new /compact /rewind /resume are blocked while a job is pending (#521)" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
@@ -83,6 +83,7 @@ test "/new /compact /rewind are blocked while a job is pending (#521)" {
     try std.testing.expect(std.mem.indexOf(u8, m.history.items[1].text, "still running") != null);
     _ = dispatch.runCommand(&m, "/rewind");
     _ = dispatch.runCommand(&m, "/compact");
+    _ = dispatch.runCommand(&m, "/resume");
     try std.testing.expectEqualStrings("hi", m.history.items[0].text);
 }
 

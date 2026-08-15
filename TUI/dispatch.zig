@@ -60,7 +60,7 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
     // #521: history-destroying commands must not run under a live job — the
     // steer guard in promptKey only covers plain text, and the slash menu,
     // palette, and steer drain all land here.
-    const destroys = std.mem.eql(u8, canon, "/new") or std.mem.eql(u8, canon, "/compact") or std.mem.eql(u8, canon, "/rewind");
+    const destroys = std.mem.eql(u8, canon, "/new") or std.mem.eql(u8, canon, "/compact") or std.mem.eql(u8, canon, "/rewind") or std.mem.eql(u8, canon, "/resume");
     if (self.pending != null and destroys) {
         self.push(.system, "a turn is still running — press Esc to cancel it first") catch {};
         return .stay;
@@ -83,6 +83,9 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.focus = .prompt;
     } else if (std.mem.eql(u8, canon, "/rewind")) {
         rewind(self);
+    } else if (std.mem.eql(u8, canon, "/resume")) {
+        const res = @import("resume.zig");
+        if (arg.len == 0) res.open(self) else res.resumeByName(self, arg);
     } else if (std.mem.eql(u8, canon, "/compact")) {
         compact(self);
     } else if (std.mem.eql(u8, canon, "/help")) {

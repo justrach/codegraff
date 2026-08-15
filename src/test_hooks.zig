@@ -279,4 +279,5 @@ test {
     _ = sandbox_docker;
     _ = commands_sandbox;
     _ = sandbox_tests;
+    _ = @import("tui_resume.zig");
 }

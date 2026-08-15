@@ -57,7 +57,7 @@ pub fn key(self: *Model, k: Key) Effect {
         return .stay;
     }
     if (k == .enter) return activate(self);
-    if (self.overlay == .model or self.overlay == .effort or self.overlay == .file) {
+    if (self.overlay == .model or self.overlay == .effort or self.overlay == .file or self.overlay == .resume_pick) {
         switch (k) {
             .char => |c| self.typeOverlayFilter(c),
             .backspace => self.backspaceOverlayFilter(),
@@ -169,6 +169,13 @@ pub fn rowSpan(self: *const Model) ?Span {
             if (n == 0) return null;
             return windowed(frame_rows, n, self.overlay_sel % n, files_mod.visible_rows);
         },
+        .resume_pick => {
+            const pick = @import("resume.zig");
+            var rows: [pick.max_rows]pick.Row = undefined;
+            const n = pick.filterRows(self.sessions_cache orelse "", self.overlay_filter, &rows);
+            if (n == 0) return null;
+            return windowed(frame_rows, n, self.overlay_sel % n, pick.visible_rows);
+        },
         else => return null,
     }
 }
@@ -277,6 +284,7 @@ pub fn activate(self: *Model) Effect {
             self.input.handle(.{ .char = ' ' });
             self.focus = .prompt;
         },
+        .resume_pick => @import("resume.zig").pick(self),
         .jump => {
             const total = self.userTurnCount();
             const sel = if (total == 0) 0 else self.overlay_sel % total;
