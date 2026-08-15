@@ -10,7 +10,7 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.0.259 (unreleased)
+## v0.0.259 (2026-08-15)
 
 - Grok now defaults to xAI's Responses wire: WebSocket turns (with the SSE
   fallback ladder), lossless first-party server compaction, and structured

@@ -21,6 +21,10 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.259
+    \\  • Grok defaults to xAI's Responses wire: WebSocket turns, lossless server-side compaction, structured outputs — no env needed (GRAFF_XAI_WIRE=chat opts out)
+    \\  • Fixed duplicate MCP tool definitions that made strict Responses endpoints reject every turn
+    \\
     \\0.0.258
     \\  • Full Grok on a SuperGrok sub: GRAFF_XAI_WIRE=responses gets server-side compaction (lossless blob), WebSocket turns, and --output-schema structured outputs
     \\  • /compact on the xAI wire uses the first-party endpoint; strict schemas run two-phase so they never suppress tool use
