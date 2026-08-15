@@ -51,22 +51,18 @@ const escPressed = Agent.escPressed;
 const rawNonblockStdin = Agent.rawNonblockStdin;
 const drainSteerStdin = Agent.drainSteerStdin;
 
-/// WS applies to root Responses turns when enabled and not already fallen back
-/// this session; subagents/quiet turns keep SSE. Only providers with a real WS
-/// endpoint qualify — Platform OpenAI is Responses-kind but has no WS server.
+/// WS: root Responses turns when enabled and not fallen back this session;
+/// only codex + xai have real WS endpoints (Platform OpenAI has none).
 pub fn wsEligible(self: *Agent) bool {
     const has_ws = std.mem.eql(u8, self.provider.id, "codex") or std.mem.eql(u8, self.provider.id, "xai");
     return main_mod.g_codex_ws and !self.ws_off and !self.sub and has_ws and
         self.provider.kind == .responses and self.out != null and !self.stream_quiet;
 }
 
-/// (#codex-ws) Client-side idle limit on the held codex WS, opencode's
-/// OpenAIWebSocketPool design: never reuse a socket the server may already
-/// have killed. A real trace showed the backend closing ours somewhere
-/// within 8.5 min idle (user parked on an ask_user prompt) — 4 min stays
-/// comfortably under (opencode uses 5). Overridable via
-/// GRAFF_CODEX_WS_IDLE_SECS (parsed in session_run.zig beside the other
-/// codex transport knobs).
+/// (#codex-ws) Client-side idle limit on the held WS (opencode's pool
+/// design: never reuse a socket the server may have killed; backend closed
+/// ours within 8.5 min idle, 4 min stays under). GRAFF_CODEX_WS_IDLE_SECS
+/// overrides (parsed in session_run.zig).
 pub var codex_ws_idle_ms: i64 = 4 * std.time.ms_per_min;
 
 /// (#codex-ws) The idle-reanchor decision, pure so the regression test can
@@ -359,24 +355,28 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     const arena = self.arena;
     const provider = self.provider;
 
-    // Wrap graff's Responses body ({"model":…}) with the ws envelope.
     const frame = try std.fmt.allocPrint(gpa, "{{\"type\":\"response.create\",{s}", .{body[1..]});
     defer gpa.free(frame);
 
     const bearer = try std.fmt.allocPrint(arena, "Bearer {s}", .{provider.api_key});
-    // The SAME per-process session id the HTTP path sends, not a fresh one per
-    // connect: this is what the backend partitions its prompt cache on, so a
-    // new id per socket handed every re-anchor a cold partition.
-    // The ChatGPT identity tail is codex-only — xAI's WS authenticates with the bearer alone (#502).
+    // SAME per-process session id as the HTTP path (cache partitions on it).
+    // ChatGPT identity tail is codex-only (#502); xAI instead takes
+    // x-grok-conv-id, its documented prompt-cache affinity header.
+    const sid = http_headers.sessionId(self.io);
     const all_headers = [_]ws.Header{
         .{ .name = "Authorization", .value = bearer },
-        .{ .name = "session_id", .value = http_headers.sessionId(self.io) },
+        .{ .name = "session_id", .value = sid },
         .{ .name = "chatgpt-account-id", .value = provider.account },
         .{ .name = "OpenAI-Beta", .value = "responses_websockets=2026-02-06" },
         .{ .name = "originator", .value = "codex_cli_rs" },
         .{ .name = "User-Agent", .value = "codex_cli_rs/0.1 (graff)" },
     };
-    const headers: []const ws.Header = if (std.mem.eql(u8, provider.id, "codex")) &all_headers else all_headers[0..2];
+    const xai_headers = [_]ws.Header{
+        .{ .name = "Authorization", .value = bearer },
+        .{ .name = "session_id", .value = sid },
+        .{ .name = "x-grok-conv-id", .value = sid },
+    };
+    const headers: []const ws.Header = if (std.mem.eql(u8, provider.id, "codex")) &all_headers else &xai_headers;
     const url = try wssUrl(arena, provider.url);
 
     // Esc watching (root TTY), same gate as postStream.
