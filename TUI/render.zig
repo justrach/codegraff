@@ -27,7 +27,10 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
         try chrome.overlay(self, a, width)
     else
         "";
-    const mid = if (self.overlay != .none and self.overlay != .image)
+    // The image overlay is a card ABOVE the composer, so `mid` stays the
+    // transcript; every other overlay replaces it with its own body.
+    const overlay_body = self.overlay != .none and self.overlay != .image;
+    const mid = if (overlay_body)
         try chrome.overlay(self, a, width)
     else if (self.screen == .welcome and self.userTurnCount() == 0)
         try welcome.render(self, a, width)
@@ -90,7 +93,10 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
         // two top content lines instead of shifting them, so the row↔line map
         // for everything below is unchanged and the bottom line stays put.
         var chrome_rows: usize = 0;
-        if (view_h >= 5) {
+        // Only the transcript gets a pinned prompt. On an overlay screen `mid`
+        // is the overlay's own body, and a long one (/help, /models) scrolls
+        // too — ungated, this pinned a user prompt over its first two rows.
+        if (!overlay_body and view_h >= 5) {
             if (scrollback.stickyUserAbove(self, start, width)) |utext| {
                 const th = self.theme();
                 var head = std.array_list.Managed(u8).init(a);
@@ -257,6 +263,34 @@ test "debug overlay keeps the observability HUD and adds layout" {
     try std.testing.expect(std.mem.indexOf(u8, text, "mid-origin") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "images") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "pending") != null);
+}
+
+test "the sticky header never pins a prompt over an overlay" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.push(.user, "SECRETPROMPT about widgets");
+    var i: usize = 0;
+    while (i < 40) : (i += 1) try m.push(.assistant, "filler assistant prose to make the transcript long");
+    // It engages on the transcript...
+    const transcript = try render(&m, std.testing.allocator, 80, 24, 0);
+    std.testing.allocator.free(transcript);
+    try std.testing.expectEqual(@as(usize, 2), m.sticky_rows);
+    // ...and stands down once `mid` is an overlay body long enough to scroll:
+    // ungated, the pin ate the overlay's own first two rows.
+    m.openOverlay(.help);
+    const overlay_frame = try render(&m, std.testing.allocator, 80, 24, 0);
+    defer std.testing.allocator.free(overlay_frame);
+    try std.testing.expectEqual(@as(usize, 0), m.sticky_rows);
+    try std.testing.expect(std.mem.indexOf(u8, overlay_frame, "SECRETPROMPT") == null);
+    // The image overlay is a card, not a body: the transcript keeps its pin.
+    m.closeOverlay();
+    m.preview_path = "/tmp/shot.png";
+    m.preview_n = 1;
+    m.openOverlay(.image);
+    const card_frame = try render(&m, std.testing.allocator, 80, 24, 0);
+    defer std.testing.allocator.free(card_frame);
+    try std.testing.expectEqual(@as(usize, 2), m.sticky_rows);
 }
 
 test "sticky header pins the last scrolled-past user prompt with a blank separator" {

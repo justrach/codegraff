@@ -25,13 +25,24 @@ pub fn renderThemed(a: std.mem.Allocator, src: []const u8, th: theme_mod.Theme, 
     var lang: ?*const syntax.Lang = null;
     var lex: syntax.State = .{};
     var first = true;
+    // The previous line ended inside the code band, so codeBg is still the
+    // active canvas and the next line that is NOT band content has to reclaim
+    // it. Restoring on the fence line's own tail instead ended the band at the
+    // last code glyph: run.zig pads the rest of the row from wherever the line
+    // left the background, so the band has to stay open until the row ends.
+    var band = false;
     var i: usize = 0;
     while (i < lines.items.len) {
         const line = lines.items[i];
         if (!first) try out.append('\n');
         first = false;
         const t = std.mem.trimStart(u8, line, " ");
-        if (std.mem.startsWith(u8, t, "```")) {
+        const marker = std.mem.startsWith(u8, t, "```");
+        if (band and !(in_fence and !marker)) {
+            try out.appendSlice(th.bg); // leave the band before anything paints
+            band = false;
+        }
+        if (marker) {
             in_fence = !in_fence;
             if (in_fence) {
                 lang = syntax.resolve(t[3..]);
@@ -50,8 +61,8 @@ pub fn renderThemed(a: std.mem.Allocator, src: []const u8, th: theme_mod.Theme, 
                 try out.appendSlice(th.text);
                 try out.appendSlice(line);
             }
-            try out.appendSlice(theme_mod.reset);
-            try out.appendSlice(th.bg); // the no-49 reset keeps codeBg alive — restore the canvas
+            try out.appendSlice(theme_mod.reset); // fg/weight only: the band survives to the row end
+            band = true;
             i += 1;
             continue;
         }
@@ -376,6 +387,88 @@ test "render paints headers, code, bold, and bullets" {
     try std.testing.expect(std.mem.indexOf(u8, text, "bold") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "▏ ") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, theme_mod.emerald) != null);
+}
+
+test "the code band stays open to the row end and is released on the next line" {
+    const th = theme_mod.of(.night);
+    const code_bg = syntax.codeBg(false);
+    const out = try renderThemed(std.testing.allocator, "intro\n```\nabc\ndef\n```\nafter", th, 40);
+    defer std.testing.allocator.free(out);
+    var it = std.mem.splitScalar(u8, out, '\n');
+    var rows: usize = 0;
+    var was_band = false;
+    var band_rows: usize = 0;
+    while (it.next()) |ln| : (rows += 1) {
+        const band = std.mem.indexOf(u8, ln, code_bg) != null;
+        if (band) {
+            // run.zig pads a row from whatever background the line left active,
+            // so a band row must NOT hand the canvas back before it ends.
+            try std.testing.expect(std.mem.indexOf(u8, ln, th.bg) == null);
+            band_rows += 1;
+        } else if (was_band) {
+            // The first row off the band reclaims the theme canvas up front.
+            try std.testing.expect(std.mem.startsWith(u8, ln, th.bg));
+        }
+        was_band = band;
+    }
+    try std.testing.expectEqual(@as(usize, 2), band_rows); // abc, def
+    // intro, opening separator, abc, def, closing separator, after
+    try std.testing.expectEqual(@as(usize, 6), rows);
+}
+
+test "a wrapped fence line carries its band onto every continuation row" {
+    const th = theme_mod.of(.night);
+    const bg = syntax.codeBg(false);
+    const src =
+        \\```zig
+        \\const message = try std.fmt.allocPrint(gpa, "hello {s} world", .{name});
+        \\```
+    ;
+    const body = try renderThemed(std.testing.allocator, src, th, 36);
+    defer std.testing.allocator.free(body);
+    const wrapped = try theme_mod.wrapToWidth(std.testing.allocator, body, 36);
+    defer std.testing.allocator.free(wrapped);
+    var it = std.mem.splitScalar(u8, wrapped, '\n');
+    var code_rows: usize = 0;
+    while (it.next()) |ln| {
+        if (theme_mod.visibleLen(ln) == 0) continue; // fence separators
+        code_rows += 1;
+        // A syntax-coloured line spends an SGR per token; the old byte-capped
+        // tracker had dropped the background long before the wrap point.
+        try std.testing.expect(std.mem.indexOf(u8, ln, bg) != null);
+    }
+    try std.testing.expect(code_rows > 1); // it really did wrap
+}
+
+test "no code background leaks past a closed fence or off the last fence row" {
+    const th = theme_mod.of(.night);
+    const code_bg = syntax.codeBg(false);
+    const closed = try renderThemed(std.testing.allocator, "```\nx\n```\ntail", th, 40);
+    defer std.testing.allocator.free(closed);
+    // The band ends with the fence, the next row takes the canvas back, and no
+    // later row re-opens codeBg.
+    var it = std.mem.splitScalar(u8, closed, '\n');
+    var seen_band = false;
+    var restored = false;
+    while (it.next()) |ln| {
+        const band = std.mem.indexOf(u8, ln, code_bg) != null;
+        if (band) {
+            try std.testing.expect(!restored); // never re-opened
+            seen_band = true;
+            continue;
+        }
+        if (seen_band and !restored) {
+            try std.testing.expect(std.mem.startsWith(u8, ln, th.bg));
+            restored = true;
+        }
+    }
+    try std.testing.expect(seen_band and restored);
+    // A message that ends mid-fence keeps its band (that row IS code) and adds
+    // no stray row after it for the theme bg to land on.
+    const open = try renderThemed(std.testing.allocator, "```\nx", th, 40);
+    defer std.testing.allocator.free(open);
+    try std.testing.expect(std.mem.indexOf(u8, open, th.bg) == null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, open, "\n"));
 }
 
 test "renderUser chips @[path] and paints slash commands" {

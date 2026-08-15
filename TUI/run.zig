@@ -294,6 +294,39 @@ test "run loop enables click+hover tracking and bracketed paste" {
     try std.testing.expect(std.mem.indexOf(u8, src, "a=d,d=A") != null);
 }
 
+fn paintToBuf(a: std.mem.Allocator, frame: []const u8, rows: usize, cols: usize, prev: []const u8) ![]u8 {
+    var aw = Io.Writer.Allocating.init(a);
+    errdefer aw.deinit();
+    try paint(&aw.writer, frame, rows, cols, prev, "\x1b[48;2;20;20;20m");
+    return aw.toOwnedSlice();
+}
+
+test "paint keeps a full row's last glyph but still erases every shorter row" {
+    const a = std.testing.allocator;
+    // Row 0 is exactly 10 columns: ESC[K sits ON the last cell and would eat
+    // the composer's right border, so a full row gets neither pad nor erase.
+    // Row 1 is short and must get both.
+    const out = try paintToBuf(a, "╭────────╮\nshort", 2, 10, "XXXXXXXXXX\nold row!!");
+    defer a.free(out);
+    const border = std.mem.indexOf(u8, out, "╭────────╮").?;
+    const short = std.mem.indexOf(u8, out, "short").?;
+    const erase = std.mem.indexOfPos(u8, out, border, "\x1b[K");
+    try std.testing.expect(erase != null and erase.? > short);
+    try std.testing.expect(std.mem.indexOfPos(u8, out, short, "     ") != null);
+}
+
+test "paint erases a row whose glyphs are ambiguous width" {
+    const a = std.testing.allocator;
+    // "  ✓ bash finished ok" draws 20 cells. When visibleLen claimed 21 it
+    // measured full at cols=21, so paint skipped the pad AND the erase and the
+    // 21st cell kept the previous frame. Both must still happen.
+    const frame = "  \u{2713} bash finished ok";
+    try std.testing.expectEqual(@as(usize, 20), theme_mod.visibleLen(frame));
+    const out = try paintToBuf(a, frame, 1, 21, "RESIDUE RESIDUE RESIDU");
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[K") != null);
+}
+
 test "rowChanged only flags the line that actually moved" {
     const prev = "top\nmiddle\nbottom";
     const next = "top\nmiddle\nBOTTOM";
