@@ -59,6 +59,16 @@ pub const CompactOut = struct {
     turns: []Turn = &.{},
 };
 pub const CompactFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, history: []const Turn, out: *CompactOut) bool;
+/// Newline-joined "base\ttitle\tage" rows of saved sessions, gpa-owned —
+/// the /resume picker's list (same store the line REPL's /resume reads).
+pub const SessionsFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator) ?[]const u8;
+/// Fill `out` with a saved session's user/assistant turns and its saved
+/// model name (all gpa-owned; caller frees). False when the load fails.
+pub const ResumeOut = struct {
+    turns: []Turn = &.{},
+    model: []const u8 = "",
+};
+pub const ResumeFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, base: []const u8, out: *ResumeOut) bool;
 
 pub const Job = struct {
     thread: std.Thread = undefined,
@@ -84,6 +94,8 @@ pub var g_bash_fn: ?BashFn = null;
 pub var g_files_fn: ?FilesFn = null;
 pub var g_copy_fn: ?CopyFn = null;
 pub var g_compact_fn: ?CompactFn = null;
+pub var g_sessions_fn: ?SessionsFn = null;
+pub var g_resume_fn: ?ResumeFn = null;
 pub var g_model_name: []const u8 = "";
 pub var g_models: []const u8 = "";
 pub var g_cwd: []const u8 = ".";

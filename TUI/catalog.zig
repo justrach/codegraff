@@ -13,6 +13,7 @@ pub const items = [_]Item{
     .{ .name = "/new", .desc = "Start a fresh session", .aliases = &.{"/clear"} },
     .{ .name = "/home", .desc = "Return to the welcome screen", .aliases = &.{"/welcome"} },
     .{ .name = "/compact", .desc = "Engine-compact model-visible history" },
+    .{ .name = "/resume", .desc = "Resume a saved session", .aliases = &.{"/sessions"} },
     .{ .name = "/context", .desc = "Show context-window use" },
     .{ .name = "/session-info", .desc = "Session details", .aliases = &.{ "/status", "/info" } },
     .{ .name = "/usage", .desc = "Token usage and cost", .aliases = &.{"/cost"} },

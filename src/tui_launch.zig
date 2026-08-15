@@ -109,6 +109,8 @@ pub fn run(
         .files_fn = filesCb,
         .copy_fn = copyCb,
         .compact_fn = compactCb,
+        .sessions_fn = @import("tui_resume.zig").sessionsCb,
+        .resume_fn = @import("tui_resume.zig").resumeCb,
     });
 }
 

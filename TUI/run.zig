@@ -37,6 +37,8 @@ pub const RunOpts = struct {
     files_fn: ?engine.FilesFn = null,
     copy_fn: ?engine.CopyFn = null,
     compact_fn: ?engine.CompactFn = null,
+    sessions_fn: ?engine.SessionsFn = null,
+    resume_fn: ?engine.ResumeFn = null,
 };
 
 pub fn run(
@@ -56,6 +58,8 @@ pub fn run(
     engine.g_files_fn = opts.files_fn;
     engine.g_copy_fn = opts.copy_fn;
     engine.g_compact_fn = opts.compact_fn;
+    engine.g_sessions_fn = opts.sessions_fn;
+    engine.g_resume_fn = opts.resume_fn;
     engine.g_model_name = opts.model_name;
     engine.g_models = opts.models;
     engine.g_cwd = opts.cwd;

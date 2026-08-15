@@ -134,6 +134,7 @@ pub fn overlay(self: *const Model, a: std.mem.Allocator, width: usize) ![]const 
         .image => try @import("image.zig").render(self, a, width),
         .file => try @import("files.zig").render(self, a),
         .jump => try jumpOverlay(self, a),
+        .resume_pick => try @import("resume.zig").render(self, a),
         .slash => "",
     };
 }

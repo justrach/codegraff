@@ -9,7 +9,7 @@ const theme_mod = @import("theme.zig");
 
 pub const Screen = enum { welcome, agent };
 pub const Focus = enum { prompt, scrollback };
-pub const Overlay = enum { none, palette, help, theme, model, effort, settings, rewind, slash, debug, image, file, jump };
+pub const Overlay = enum { none, palette, help, theme, model, effort, settings, rewind, slash, debug, image, file, jump, resume_pick };
 pub const AgentMode = enum { normal, plan, always_approve };
 pub const EscArm = enum { none, clear, rewind };
 pub const EntryKind = enum { user, assistant, tool, system, err, pending };
@@ -78,6 +78,7 @@ pub const Model = struct {
     hist_idx: ?usize = null,
     /// Newline-joined paths for the @-file picker, loaded once per session.
     files_cache: ?[]const u8 = null,
+    sessions_cache: ?[]const u8 = null,
 
     toast: []const u8 = "",
     toast_until_ms: u64 = 0,
@@ -120,6 +121,7 @@ pub const Model = struct {
         if (self.session_name) |s| self.alloc.free(s);
         if (self.overlay_filter.len > 0) self.alloc.free(self.overlay_filter);
         if (self.files_cache) |f| self.alloc.free(f);
+        if (self.sessions_cache) |s| self.alloc.free(s);
         self.input.deinit();
     }
 

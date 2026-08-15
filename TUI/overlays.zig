@@ -28,7 +28,7 @@ pub fn key(self: *Model, k: Key) Effect {
         return .stay;
     }
     if (k == .enter) return activate(self);
-    if (self.overlay == .model or self.overlay == .effort or self.overlay == .file) {
+    if (self.overlay == .model or self.overlay == .effort or self.overlay == .file or self.overlay == .resume_pick) {
         switch (k) {
             .char => |c| self.typeOverlayFilter(c),
             .backspace => self.backspaceOverlayFilter(),
@@ -119,6 +119,7 @@ fn activate(self: *Model) Effect {
             self.input.handle(.{ .char = ' ' });
             self.focus = .prompt;
         },
+        .resume_pick => @import("resume.zig").pick(self),
         .jump => {
             const total = self.userTurnCount();
             const sel = if (total == 0) 0 else self.overlay_sel % total;

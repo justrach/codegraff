@@ -266,4 +266,5 @@ test {
     _ = side_question_tests;
     _ = json_controls;
     _ = effort_route;
+    _ = @import("tui_resume.zig");
 }
