@@ -21,6 +21,9 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.260
+    \\  • Fixed the composer wiping itself mid-typing after a Cmd+Tab (stale Super latch made Backspace act as Cmd+Backspace)
+    \\
     \\0.0.259
     \\  • Grok defaults to xAI's Responses wire: WebSocket turns, lossless server-side compaction, structured outputs — no env needed (GRAFF_XAI_WIRE=chat opts out)
     \\  • Fixed duplicate MCP tool definitions that made strict Responses endpoints reject every turn
