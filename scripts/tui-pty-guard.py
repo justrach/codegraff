@@ -133,13 +133,29 @@ def quit_seq(fd):
     os.write(fd, b"\x11")  # Ctrl+Q — single byte, parser-independent
 
 
+def quit_and_reap(fd, pid, collected):
+    """Escalating quit: Ctrl+Q, then Escape+Ctrl+Q (a toast or composer text
+    occasionally swallows the first one under load — the ~10% flake), then
+    double Ctrl+C. Returns (status_or_None, all_bytes)."""
+    out = collected
+    for attempt in (b"\x11", b"\x1b\x1b\x11", b"\x03\x03"):
+        os.write(fd, attempt)
+        out += drain(fd, QUIT_WAIT)
+        end = time.time() + 2.0
+        while time.time() < end:
+            r, status = os.waitpid(pid, os.WNOHANG)
+            if r != 0:
+                return status, out
+            time.sleep(0.1)
+    status = reap(pid)
+    return status, out
+
+
 def check_a():
     ws, env = fresh_ws()
     pid, fd = spawn(ws, env)
     out = boot(fd)
-    quit_seq(fd)
-    out += drain(fd, QUIT_WAIT)
-    status = reap(pid)
+    status, out = quit_and_reap(fd, pid, out)
     latched, depth = mode_imbalance(out)
     if status is None:
         return "A: quit did not exit within the window"
@@ -189,9 +205,7 @@ def check_b():
         return "B: process died on the hostile corpus"
     if b"MARKER42" not in out:
         return "B: composer did not recover after the split paste (echo lost)"
-    quit_seq(fd)
-    out += drain(fd, QUIT_WAIT)
-    status = reap(pid)
+    status, out = quit_and_reap(fd, pid, out)
     if status is None:
         return "B: quit did not exit after hostile input"
     latched, depth = mode_imbalance(out)
