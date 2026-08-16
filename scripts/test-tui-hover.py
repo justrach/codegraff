@@ -8,10 +8,11 @@ SCREEN (scripts/ptyharness.py) and reads CELLS back — glyph plus the pen that
 wrote it — so every assertion is about what a terminal would actually show:
 
   1. a real tool loop against the codex mock (no network, no model) leaves one
-     COLLAPSED tool summary row on screen,
+     COLLAPSED fold header on screen (its › disclosure chevron is always
+     there — foldhdr.zig owns it, hover does not reveal it),
   2. a motion report over that row repaints it: its cells take the theme's
-     hover background, one step off the canvas, and its leading ◆ becomes the
-     chevron › that announces the row opens,
+     hover background, one step off the canvas, and its TEXT is untouched —
+     hover changes a row's colour and never its glyphs,
   3. the row BELOW it is untouched — hover highlights a row, not a region,
   4. moving the pointer away restores the row cell for cell,
   5. a SINGLE click still expands the group, exactly as before,
@@ -43,8 +44,10 @@ ANSWER_MAX = 30.0
 NOTE_BODY = "hover-probe payload"
 FINAL_REPLY = "HOVER_OK the run is done"
 
-TOOL_MARK = "◆"  # ◆ glyphs.tool
-EXPAND_MARK = "›"  # › glyphs.expand
+TOOL_MARK = "◆"  # ◆ glyphs.tool — the marks on the OPEN card's rows
+EXPAND_MARK = "›"  # › glyphs.expand — the closed header's disclosure chevron
+CHEV_OPEN = "⌄"  # U+2304 — the open header's chevron (foldhdr.zig)
+HEADER = "Read 1 file"  # the settled verb header for this session's one read
 STATS = re.compile(r"tui-paint-stats:((?: \w+=\d+)+)")
 
 # TUI/theme_tint.zig: one step per channel, in the direction the canvas's own
@@ -79,9 +82,10 @@ def row_bgs(h, y):
 
 
 def summary_row(h):
+    """The FOLDED header's row, or None while the group is open (⌄) or gone."""
     for i, ln in enumerate(h.screen_lines()):
-        if "Called" in ln and "tool" in ln:
-            return i
+        if HEADER in ln:
+            return None if CHEV_OPEN in ln else i
     return None
 
 
@@ -182,8 +186,8 @@ def check_affordance(h):
     if y is None:
         return f"no folded tool summary on screen\n{h.screen_contents()}"
     line = h.screen_lines()[y]
-    if TOOL_MARK not in line:
-        return f"the folded summary carries no tool mark: {line!r}"
+    if EXPAND_MARK not in line:
+        return f"the folded header carries no disclosure chevron: {line!r}"
     base_bgs = row_bgs(h, y)
     if len(base_bgs) != 1:
         return f"the resting row has {len(base_bgs)} backgrounds, expected the canvas alone: {base_bgs}"
@@ -201,10 +205,8 @@ def check_affordance(h):
     if not stepped(base, tint):
         return f"the hovered row's background is not one step off the canvas: {base} -> {tint}"
     hot_line = h.screen_lines()[y]
-    if EXPAND_MARK not in hot_line:
-        return f"the hovered collapsed row never announced that it opens: {hot_line!r}"
-    if TOOL_MARK in hot_line:
-        return f"the tool mark survived the swap: {hot_line!r}"
+    if hot_line != line:
+        return f"hover edited the row's text:\n  was {line!r}\n  now {hot_line!r}"
 
     # (3) a row is a row: the one under it is untouched, cell for cell.
     if [c.tuple() for c in row_cells(h, below)] != below_before:
@@ -377,7 +379,7 @@ def main():
         return 1
     control, swept = stats
     print(
-        f"  ✓ hover: the row tints and its ◆ becomes › under the pointer, restores on leave, "
+        f"  ✓ hover: the row tints under the pointer with its text untouched, restores on leave, "
         f"single click expands and a double click is one net toggle; "
         f"120 hover reports cost {swept['paints'] - control['paints']} paints "
         f"({time.time() - started:.0f}s)"

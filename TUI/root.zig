@@ -76,7 +76,6 @@ test {
     _ = @import("models.zig");
     _ = @import("markdown.zig");
     _ = @import("markdown_stream_tests.zig");
-    _ = @import("table.zig");
     _ = @import("syntax.zig");
     _ = @import("diff.zig");
     _ = @import("dump.zig");

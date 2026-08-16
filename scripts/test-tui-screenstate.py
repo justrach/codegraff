@@ -20,23 +20,15 @@ OUTSIDE the child and watching whether the TUI paints its way back.
   3. repaint-heals  positive control: a resize forces graff's full repaint,
                     and the grid must come back clean. Without this, check 4's
                     failure could just mean "the harness never updates".
-  4. self-heal      XFAIL TODAY. Corrupt the frame, then poke the TUI so it
-                    paints again, and require screen_contents() to be the
-                    pre-corruption frame. graff repaints only rows whose
-                    rendered text CHANGED (TUI/run.zig paint()), so out-of-band
-                    damage to an unchanged row survives every diff paint. The
-                    self-heal repaint lives on the sibling branch
-                    fix/tui-painter; until that merges this check reports
-                    expected-fail and does not break the build. When it starts
-                    passing, delete the XFAIL branch below and make it a hard
-                    assert. The assertion is known to be measuring healing and
-                    not the harness: swap poke() for a repaint-forcing resize
-                    and it flips to pass on this very branch (check 3 is that
-                    control, inline).
+  4. self-heal      HARD ASSERT. Corrupt the frame, then wait on idle only,
+                    and require screen_contents() to be the pre-corruption
+                    frame. The painter's heal heartbeat (TUI/run.zig, from
+                    fix/tui-painter) rewrites every row on a clock, so
+                    out-of-band damage must not survive it. Check 3 is the
+                    inline control proving the harness itself sees repaints.
 
 Usage: python3 scripts/test-tui-screenstate.py [path/to/graff]  (default zig-out/bin/graff)
-Exit 0 = pass (an expected-fail on check 4 is a pass). Skips (exit 0, notice)
-when no pty can be allocated.
+Exit 0 = pass. Skips (exit 0, notice) when no pty can be allocated.
 """
 import os
 import sys
@@ -195,14 +187,10 @@ def main():
     else:
         print(f"  ✓ corruption: out-of-band {MARK} landed on the grid, a full repaint clears it")
         if healed:
-            # See the header: flip this to a hard assert once fix/tui-painter
-            # is in and delete the XFAIL wording.
-            print("  ✓ self-heal: XPASS — the painter repairs out-of-band damage now.")
-            print("    fix/tui-painter has landed: make this a hard assert.")
+            print("  ✓ self-heal: the painter repairs out-of-band damage on its own clock")
         else:
-            print("  ~ self-heal: XFAIL (expected on this branch) — a diff paint leaves")
-            print(f"    out-of-band damage in place: {detail}")
-            print("    The repair lives on fix/tui-painter; the harness proves the damage is visible.")
+            failures.append("self-heal")
+            print(f"  ✗ self-heal: a diff paint left out-of-band damage in place: {detail}")
 
     if failures:
         print(f"tui-screenstate: {len(failures)} check(s) failed")

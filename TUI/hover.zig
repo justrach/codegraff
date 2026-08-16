@@ -6,8 +6,9 @@
 //! image chip was DROPPED — the TUI knew where the pointer was and said
 //! nothing. This is the other half: the row under the pointer is looked up in
 //! the same map a click uses, and if it is a target it is painted with a
-//! background one step off the canvas and, when it is a collapsed group, with
-//! its leading mark swapped for the chevron that announces expandability.
+//! background one step off the canvas. The tint is the whole affordance: fold
+//! headers already carry their ›/⌄ disclosure chevron in both states
+//! (foldhdr.zig), so hover changes a row's colour and NEVER its text.
 //!
 //! ONE HIT TEST. `hitTest` is the single answer to "what is on screen row y",
 //! and keys.mouseKey routes its click through the same function. Hover and
@@ -36,7 +37,6 @@
 const std = @import("std");
 
 const app = @import("app.zig");
-const glyphs = @import("glyphs.zig");
 const key_mod = @import("key.zig");
 const layout_cache = @import("layout_cache.zig");
 const theme_mod = @import("theme.zig");
@@ -229,24 +229,10 @@ pub fn paint(m: *Model, a: std.mem.Allocator, frame: []const u8, width: usize) !
         }
         found = true;
         try out.appendSlice(bg);
-        if (m.hover.hit.collapsed) {
-            try out.appendSlice(try swapMark(a, ln));
-        } else try out.appendSlice(ln);
+        try out.appendSlice(ln);
     }
     // The pointer is parked on a row the frame no longer reaches (the transcript
     // shrank under it). Nothing to tint, and the stale row must not paint.
     if (!found) return frame;
     return out.items;
-}
-
-/// The affordance swap: a collapsed row's tool mark becomes the chevron, so
-/// "this opens" is said before the click rather than after it. Both glyphs are
-/// registered one-column (glyphs.zig), so nothing beside the mark moves.
-fn swapMark(a: std.mem.Allocator, ln: []const u8) ![]const u8 {
-    const at = std.mem.indexOf(u8, ln, glyphs.tool) orelse return ln;
-    return std.fmt.allocPrint(a, "{s}{s}{s}", .{
-        ln[0..at],
-        glyphs.expand,
-        ln[at + glyphs.tool.len ..],
-    });
 }

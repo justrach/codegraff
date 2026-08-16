@@ -106,7 +106,7 @@ test "the hovered row is repainted with the theme's hover background" {
     const cold = try render_mod.render(&m, testing.allocator, 80, 24, 0);
     defer testing.allocator.free(cold);
     try testing.expect(std.mem.indexOf(u8, cold, bg) == null);
-    const summary: u16 = @intCast(rowOf(cold, "Called").? + 1);
+    const summary: u16 = @intCast(rowOf(cold, "Ran bash").? + 1);
 
     motion(&m, 4, summary);
     const warm = try render_mod.render(&m, testing.allocator, 80, 24, 0);
@@ -126,25 +126,33 @@ test "the hovered row is repainted with the theme's hover background" {
     try testing.expectEqualStrings(cold, cooled);
 }
 
-test "a collapsed row under the pointer swaps its tool mark for the chevron" {
+/// Screen row `want` of the composed frame, verbatim.
+fn nthRow(frame: []const u8, want: usize) []const u8 {
+    var r: usize = 0;
+    var it = std.mem.splitScalar(u8, frame, '\n');
+    while (it.next()) |ln| : (r += 1) if (r == want) return ln;
+    return "";
+}
+
+test "hover tints a collapsed row and never edits its text" {
     var m: Model = undefined;
     try folded(&m);
     defer m.deinit();
     const cold = try render_mod.render(&m, testing.allocator, 80, 24, 0);
     defer testing.allocator.free(cold);
-    try testing.expect(std.mem.indexOf(u8, cold, glyphs.tool) != null);
+    const row = rowOf(cold, "Ran bash").?;
+    // Disclosure is not a hover reveal: the closed chevron is already on the
+    // cold header (foldhdr.zig owns it), so hover has nothing to swap.
+    try testing.expect(std.mem.indexOf(u8, nthRow(cold, row), glyphs.expand) != null);
 
-    motion(&m, 4, @intCast(rowOf(cold, "Called").? + 1));
+    motion(&m, 4, @intCast(row + 1));
     const warm = try render_mod.render(&m, testing.allocator, 80, 24, 0);
     defer testing.allocator.free(warm);
-    // The one folded group's mark is gone, replaced by the expand chevron.
-    try testing.expect(std.mem.indexOf(u8, warm, glyphs.tool) == null);
-    try testing.expect(std.mem.indexOf(u8, warm, glyphs.expand) != null);
-    // The swap costs no columns, so nothing beside the mark steps sideways.
-    try testing.expectEqual(
-        @import("theme.zig").visibleLen(glyphs.tool),
-        @import("theme.zig").visibleLen(glyphs.expand),
-    );
+    // The tint opens the row; every byte after it is the untouched cold row.
+    const bg = tint.hoverBg(m.theme_id);
+    const warm_row = nthRow(warm, row);
+    try testing.expect(std.mem.startsWith(u8, warm_row, bg));
+    try testing.expectEqualStrings(nthRow(cold, row), warm_row[bg.len..]);
 }
 
 test "an expanded row keeps its tool mark under the pointer" {
@@ -283,7 +291,7 @@ test "content arriving under a still pointer clears the hover instead of lying" 
     defer m.deinit();
     const cold = try render_mod.render(&m, testing.allocator, 80, 24, 0);
     defer testing.allocator.free(cold);
-    motion(&m, 4, @intCast(rowOf(cold, "Called").? + 1));
+    motion(&m, 4, @intCast(rowOf(cold, "Ran bash").? + 1));
     try testing.expectEqual(hover.Target.tool, m.hover.hit.target);
 
     // Enough answer to overflow the viewport: following the tail slides the
