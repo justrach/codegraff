@@ -32,7 +32,11 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     const overlay_body = self.overlay != .none and self.overlay != .image;
     const mid = if (overlay_body)
         try chrome.overlay(self, a, width)
-    else if (self.screen == .welcome and self.userTurnCount() == 0)
+    else if (self.screen == .welcome and self.history.items.len == 0 and self.pending == null)
+        // Anything in the transcript — including a live background op's
+        // pending row — outranks the welcome pane: keeping it up hid a
+        // running `!cmd`/@-list entirely and froze the paint loop (the
+        // welcome frame is static, so the hash-diff suppressed every paint).
         try welcome.render(self, a, width)
     else
         try scrollback.render(self, a, width, now_ms);

@@ -141,8 +141,16 @@ fn onStop(sig: std.posix.SIG) callconv(.c) void {
         .flags = 0,
     };
     std.posix.sigaction(sig, &dfl, null);
+    // The kernel blocks the delivered signal for the handler's duration, so a
+    // bare raise() only marks it PENDING: it would deliver on handler RETURN —
+    // AFTER installStopHandlers() below re-armed us — and re-enter this
+    // handler forever (a measured 12 MB/s restore/enable flood at 99% CPU,
+    // never reaching state T). Unblock it so the raise stops the process HERE.
+    var only_stop = std.posix.sigemptyset();
+    std.posix.sigaddset(&only_stop, sig);
+    std.posix.sigprocmask(std.posix.SIG.UNBLOCK, &only_stop, null);
     std.posix.raise(sig) catch {};
-    // --- continued here ---
+    // --- genuinely continued here (SIGCONT) ---
     installStopHandlers();
     if (!was_fullscreen) return;
     if (tty.enterRaw()) |_| {}

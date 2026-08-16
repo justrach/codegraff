@@ -258,8 +258,7 @@ fn row(self: *const Model, a: std.mem.Allocator, idx: usize, e: app.Entry, width
         return theme_mod.wrapToWidth(a, line, width);
     }
     if (e.kind == .pending) {
-        // Steady accent bar (no flicker); the animated dots carry the motion.
-        const line = try std.fmt.allocPrint(a, "{s}{s}❙{s}{s} {s}{s}", .{ sel, th.accent, theme_mod.reset, th.muted, body, theme_mod.reset });
+        const line = try std.fmt.allocPrint(a, "{s}{s}{s}{s}{s} {s}{s}", .{ sel, th.accent, thinkingGlyph(now_ms), theme_mod.reset, th.muted, body, theme_mod.reset });
         return theme_mod.wrapToWidth(a, line, width);
     }
     const body_fg = if (e.kind == .err) th.error_fg else th.text;
@@ -356,8 +355,12 @@ fn toolCard(a: std.mem.Allocator, th: theme_mod.Theme, start_text: []const u8, d
 }
 
 fn thinkingGlyph(now_ms: u64) []const u8 {
-    _ = now_ms;
-    return "❙";
+    // A soft 1s blink on the PENDING row only. A fully static frame made
+    // run.zig's hash-diff suppress every paint for a background op's whole
+    // duration — 8s of literally zero terminal output read as a freeze. One
+    // changing glyph on one line keeps the paints flowing while historical
+    // rows stay byte-identical (the earlier full-transcript pulse bug).
+    return if ((now_ms / 500) % 2 == 0) "❙" else "❘";
 }
 
 fn thinkingLabel(now_ms: u64) []const u8 {
@@ -410,6 +413,11 @@ test "thinking animation is Grok ❙ flicker plus static Thinking" {
     try std.testing.expectEqualStrings("Thinking", thinkingLabel(0));
     try std.testing.expectEqualStrings(thinkingLabel(0), thinkingLabel(320));
     try std.testing.expectEqualStrings("❙", thinkingGlyph(0));
+    // The glyph must actually FLICKER across a half-period, and be stable
+    // within one — a fully static pending row suppressed every paint for a
+    // background op's whole duration (verified live: 8s of zero output).
+    try std.testing.expectEqualStrings(thinkingGlyph(0), thinkingGlyph(140));
+    try std.testing.expect(!std.mem.eql(u8, thinkingGlyph(0), thinkingGlyph(500)));
 }
 
 test "a live turn never pulses or shifts historical rows" {
@@ -446,6 +454,22 @@ test "a live turn never pulses or shifts historical rows" {
     }
     try std.testing.expect(saw_summary);
     try std.testing.expectEqualStrings(t0, t140);
+    // Across a blink half-period exactly ONE line — the pending row — may
+    // change; every historical row stays byte-identical. (Full staticness
+    // went the other way into a paint freeze; full pulsing was the original
+    // bug. The contract is: motion exists, and it is confined.)
+    const t500 = try render(&m, arena.allocator(), 80, 500);
+    var it0 = std.mem.splitScalar(u8, t0, '\n');
+    var it5 = std.mem.splitScalar(u8, t500, '\n');
+    var changed: usize = 0;
+    while (it0.next()) |a0| {
+        const a5 = it5.next() orelse "";
+        if (!std.mem.eql(u8, a0, a5)) {
+            changed += 1;
+            try std.testing.expect(std.mem.indexOf(u8, a0, "Thinking") != null);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), changed);
 }
 
 test "prettyTool strips mcp prefix" {
