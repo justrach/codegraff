@@ -556,10 +556,37 @@ fn takeOrphanCsi(bytes: []const u8, i: *usize) Orphan {
 }
 
 fn leadingInt(s: []const u8) u32 {
+    // Saturating (#545): params come raw off stdin, and a 10+-digit run —
+    // hostile or corrupt input, never a real key — overflowed u32 and aborted
+    // the whole TUI. maxInt decodes as .ignore / clamped coords everywhere.
     var n: u32 = 0;
     for (s) |c| {
         if (c < '0' or c > '9') break;
-        n = n * 10 + (c - '0');
+        n = n *| 10 +| (c - '0');
     }
     return n;
+}
+
+test "#545: 10+-digit CSI params saturate instead of aborting the TUI" {
+    try std.testing.expectEqual(std.math.maxInt(u32), leadingInt("99999999999999999999"));
+    try std.testing.expectEqual(std.math.maxInt(u32), leadingInt("9999999999")); // 10 digits — the shortest crasher
+    try std.testing.expectEqual(@as(u32, 4294967295), leadingInt("4294967295")); // exact maxInt still parses
+    try std.testing.expectEqual(@as(u32, 200), leadingInt("200~tail")); // normal params unchanged
+    // End-to-end: the fleet's four crashing payloads decode without a panic.
+    resetInputState();
+    defer resetInputState();
+    const payloads = [_][]const u8{
+        "\x1b[99999999999999999999;1u",
+        "\x1b[9999999999;1u",
+        "\x1b[<0;9999999999;5M",
+        "\x1b[200~hello \x1b[99999999999999999999;1u world\x1b[201~",
+    };
+    for (payloads) |p| {
+        var i: usize = 0;
+        while (i < p.len) {
+            const before = i;
+            _ = next(p, &i);
+            if (i <= before) break; // trailing partial rewound — this payload is done
+        }
+    }
 }
