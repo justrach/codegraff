@@ -421,7 +421,9 @@ test "a live tool row is visible mid-turn, straight off the event queue" {
     defer arena_state.deinit();
     drainEvents(&m);
     const harvested = try scrollback.render(&m, arena_state.allocator(), 80, 0);
-    try std.testing.expect(std.mem.indexOf(u8, harvested, "Called") != null);
+    // Mid-turn: the call is announced and has not come back, so the header
+    // reads present-progressive.
+    try std.testing.expect(std.mem.indexOf(u8, harvested, "Running bash\u{2026}") != null);
 
     Hold.release.store(true, .release);
     spins = 0;

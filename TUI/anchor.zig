@@ -254,7 +254,7 @@ test "a collapsed tool run anchors as one block" {
         // indexAtVisual maps anywhere in the run to its start — the anchored
         // block is the run, and the run is still what the top row shows.
         try testing.expectEqual(idx, scrollback.indexAtVisual(&m, m.mid_skip, w).?);
-        try testing.expect(std.mem.indexOf(u8, frame, "Called") != null);
+        try testing.expect(std.mem.indexOf(u8, frame, "Ran bash") != null);
     }
 }
 

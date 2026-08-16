@@ -339,7 +339,7 @@ test "welcome frame has chrome, prompt, and no offline stub" {
     try std.testing.expect(std.mem.indexOf(u8, frame, "click") == null);
 }
 
-test "click on a painted Called row expands the tools" {
+test "click on a painted fold header expands the tools" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
@@ -352,7 +352,7 @@ test "click on a painted Called row expands the tools" {
     var hit: ?usize = null;
     var it = std.mem.splitScalar(u8, frame, '\n');
     while (it.next()) |ln| : (row += 1) {
-        if (std.mem.indexOf(u8, ln, "Called") != null) {
+        if (std.mem.indexOf(u8, ln, "Ran bash") != null) {
             hit = row;
             break;
         }
@@ -379,7 +379,7 @@ test "image overlay keeps the conversation and paints the Grok card" {
     try std.testing.expect(std.mem.indexOf(u8, frame, "y copy path") != null);
 }
 
-test "visible dump of a fixture frame shows chips, Called, composer, no CSI" {
+test "visible dump of a fixture frame shows chips, the fold header, composer, no CSI" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
@@ -392,7 +392,7 @@ test "visible dump of a fixture frame shows chips, Called, composer, no CSI" {
     const vis = try dump_mod.visible(std.testing.allocator, frame);
     defer std.testing.allocator.free(vis);
     try std.testing.expect(std.mem.indexOf(u8, vis, "[Image #1]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, vis, "Called") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "Ran bash") != null);
     try std.testing.expect(std.mem.indexOf(u8, vis, "╭") != null);
     try std.testing.expect(std.mem.indexOf(u8, vis, "›") != null);
     try std.testing.expect(std.mem.indexOf(u8, vis, "\x1b") == null);

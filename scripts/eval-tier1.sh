@@ -293,6 +293,14 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-screenstate.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+    # A tool run's fold header reads like grok-build's: present-progressive
+    # while the call is in flight, past tense on settle, tinted for a second.
+    # Drives a real `sleep` tool loop against the codex mock and reads the
+    # header row's TEXT and its cell BACKGROUNDS off a virtual screen. Both
+    # halves fail on their own when either is removed (verified).
+    if python3 scripts/test-tui-fold-headers.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
     # Streaming markdown: the answer arrives as 1-3 codepoint deltas whose
     # boundaries land mid-escape, mid-fence and mid-marker. Both the live tail
     # and the settled row must be free of the model's own CR/SGR bytes.

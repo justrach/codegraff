@@ -221,7 +221,7 @@ test "typeText lands in the composer dump" {
     try std.testing.expect(std.mem.indexOf(u8, vis, "›") != null);
 }
 
-test "clickText on Called expands the folded tools" {
+test "clickText on the verb header expands the folded tools" {
     var term: Term = undefined;
     term.init(std.testing.allocator, 80, 24);
     defer term.deinit();
@@ -230,12 +230,15 @@ test "clickText on Called expands the folded tools" {
     try term.model.pushTool(.{ .name = "bash", .detail = "ok", .done = true });
     const before = try term.screen();
     defer std.testing.allocator.free(before);
-    try std.testing.expect(std.mem.indexOf(u8, before, "Called") != null);
-    try std.testing.expect(try term.clickText("Called"));
+    // Closed: the chevron points right and the phrase is past tense.
+    try std.testing.expect(std.mem.indexOf(u8, before, "› Ran bash") != null);
+    try std.testing.expect(try term.clickText("Ran bash"));
     try std.testing.expect(!term.model.history.items[1].folded);
     const after = try term.screen();
     defer std.testing.allocator.free(after);
-    try std.testing.expect(std.mem.indexOf(u8, after, "Called") == null);
+    // Open: the SAME header, chevron flipped down — it does not vanish.
+    try std.testing.expect(std.mem.indexOf(u8, after, "⌄ Ran bash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, after, "› Ran bash") == null);
 }
 
 test "feed Ghostty SGR click matches clickAt" {
@@ -245,7 +248,7 @@ test "feed Ghostty SGR click matches clickAt" {
     try term.model.push(.assistant, "working");
     try term.model.pushTool(.{ .name = "bash" });
     try term.model.pushTool(.{ .name = "bash", .detail = "ok", .done = true });
-    const hit = try term.find("Called") orelse return error.NoCalled;
+    const hit = try term.find("Ran bash") orelse return error.NoHeader;
     var buf: [40]u8 = undefined;
     const seq = try std.fmt.bufPrint(&buf, "\x1b[<0;{d};{d}M", .{ hit.x, hit.y });
     _ = term.feed(seq);

@@ -6,6 +6,7 @@ const std = @import("std");
 
 const app = @import("app.zig");
 const diff_mod = @import("diff.zig");
+const foldhdr = @import("foldhdr.zig");
 const glyphs = @import("glyphs.zig");
 const theme_mod = @import("theme.zig");
 const Model = app.Model;
@@ -19,23 +20,9 @@ pub fn render(self: *const Model, a: std.mem.Allocator, width: usize, now_ms: u6
         const e = self.history.items[i];
         if (e.kind == .tool) {
             const run = self.toolRun(i);
-            const collapsed = self.history.items[run.start].folded;
-            if (collapsed) {
-                if (!first) try out.append('\n');
-                first = false;
-                const selected = self.focus == .scrollback and self.selected >= run.start and self.selected < run.end;
-                try out.appendSlice(try summary(self, a, run.start, run.end, selected));
-                i = run.end;
-                continue;
-            }
-            var t = run.start;
-            while (t < run.end) {
-                if (!first) try out.append('\n');
-                first = false;
-                const selected = self.focus == .scrollback and t == self.selected;
-                try out.appendSlice(try toolVisual(self, a, t, run.end, width, now_ms, selected));
-                t = nextTool(self, t, run.end);
-            }
+            if (!first) try out.append('\n');
+            first = false;
+            try out.appendSlice(try runVisual(self, a, run.start, run.end, width, now_ms));
             i = run.end;
             continue;
         }
@@ -71,19 +58,7 @@ pub fn indexAtVisual(self: *const Model, visual_row: usize, width: usize) ?usize
     while (i < self.history.items.len) {
         if (self.history.items[i].kind == .tool) {
             const run = self.toolRun(i);
-            const collapsed = self.history.items[run.start].folded;
-            var lines: usize = 0;
-            if (collapsed) {
-                const s = summary(self, a, run.start, run.end, false) catch "";
-                lines = lineCount(s);
-            } else {
-                var t = run.start;
-                while (t < run.end) {
-                    const s = toolVisual(self, a, t, run.end, width, self.now_ms, false) catch "";
-                    lines += lineCount(s);
-                    t = nextTool(self, t, run.end);
-                }
-            }
+            const lines = lineCount(runVisual(self, a, run.start, run.end, width, self.now_ms) catch "");
             if (visual_row >= v and visual_row < v + lines) return run.start;
             v += lines;
             i = run.end;
@@ -118,16 +93,7 @@ pub fn visualOfIndex(self: *const Model, idx: usize, width: usize) ?usize {
         if (self.history.items[i].kind == .tool) {
             const run = self.toolRun(i);
             if (idx >= run.start and idx < run.end) return v;
-            const collapsed = self.history.items[run.start].folded;
-            if (collapsed) {
-                v += lineCount(summary(self, a, run.start, run.end, false) catch "");
-            } else {
-                var t = run.start;
-                while (t < run.end) {
-                    v += lineCount(toolVisual(self, a, t, run.end, width, self.now_ms, false) catch "");
-                    t = nextTool(self, t, run.end);
-                }
-            }
+            v += lineCount(runVisual(self, a, run.start, run.end, width, self.now_ms) catch "");
             i = run.end;
             continue;
         }
@@ -153,15 +119,7 @@ pub fn stickyUserAbove(self: *const Model, top_line: usize, width: usize) ?[]con
         const e = self.history.items[i];
         if (e.kind == .tool) {
             const run = self.toolRun(i);
-            if (self.history.items[run.start].folded) {
-                v += lineCount(summary(self, a, run.start, run.end, false) catch "");
-            } else {
-                var t = run.start;
-                while (t < run.end) {
-                    v += lineCount(toolVisual(self, a, t, run.end, width, self.now_ms, false) catch "");
-                    t = nextTool(self, t, run.end);
-                }
-            }
+            v += lineCount(runVisual(self, a, run.start, run.end, width, self.now_ms) catch "");
             i = run.end;
             continue;
         }
@@ -180,62 +138,73 @@ pub fn lineCount(s: []const u8) usize {
 /// Is this a search-shaped tool? Answered from the tool NAME (#551). It used
 /// to be answered from the whole rendered line, so `bash` running a command
 /// that merely mentioned "find" counted as a search.
-fn isSearch(name: []const u8) bool {
-    return containsIgnoreCase(name, "search") or containsIgnoreCase(name, "grep") or containsIgnoreCase(name, "find");
-}
-
-fn isMcp(name: []const u8) bool {
-    return std.mem.startsWith(u8, name, "mcp__");
-}
-
-/// What a row's classification reads. A field-backed row answers with the
-/// engine's tool name; a legacy row restored from an old session has only its
-/// rendered text, and keeps the looser substring behavior it was written with.
-fn classifyOn(e: app.Entry) []const u8 {
-    if (e.tool) |t| return t.name;
-    return e.text;
-}
-
-fn rowIsMcp(e: app.Entry) bool {
-    if (e.tool) |t| return isMcp(t.name);
-    return std.mem.indexOf(u8, e.text, "mcp__") != null or containsIgnoreCase(e.text, "mcp");
-}
-
-fn containsIgnoreCase(hay: []const u8, needle: []const u8) bool {
-    if (needle.len > hay.len) return false;
-    var i: usize = 0;
-    while (i + needle.len <= hay.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(hay[i .. i + needle.len], needle)) return true;
+/// One whole tool run as the transcript shows it: grok's disclosure header,
+/// and — when the run is open — the cards under it, hanging off a light
+/// gutter. Every reader of the transcript's row math goes through here, so
+/// the header can never be counted by one and missed by another.
+pub fn runVisual(self: *const Model, a: std.mem.Allocator, start: usize, end: usize, width: usize, now_ms: u64) ![]const u8 {
+    if (start >= end) return "";
+    const open = !self.history.items[start].folded;
+    const in_run = self.focus == .scrollback and self.selected >= start and self.selected < end;
+    var out = std.array_list.Managed(u8).init(a);
+    try out.appendSlice(try header(self, a, start, end, width, now_ms, in_run));
+    if (!open) return out.items;
+    var t = start;
+    while (t < end) {
+        try out.append('\n');
+        const one = self.focus == .scrollback and t == self.selected;
+        const card = try toolVisual(self, a, t, end, width -| foldhdr.gutter_cols, now_ms, one);
+        try out.appendSlice(try indent(a, self.theme(), card));
+        t = nextTool(self, t, end);
     }
-    return false;
+    return out.items;
 }
 
-pub fn summary(self: *const Model, a: std.mem.Allocator, start: usize, end: usize, selected: bool) ![]const u8 {
+/// The run's own row: `[selection mark][chevron] [verb phrase]`. Always ONE
+/// line — a menu entry's rule, and what keeps the click math a straight
+/// screen-row → run mapping.
+pub fn header(self: *const Model, a: std.mem.Allocator, start: usize, end: usize, width: usize, now_ms: u64, selected: bool) ![]const u8 {
     const th = self.theme();
-    var searches: usize = 0;
-    var calls: usize = 0;
-    var mcp_n: usize = 0;
-    var i = start;
-    while (i < end) : (i += 1) {
-        const e = self.history.items[i];
-        if (rowIsMcp(e)) mcp_n += 1;
-        if (isSearch(classifyOn(e))) searches += 1 else calls += 1;
-    }
+    const r = foldhdr.scan(self, start, end);
+    if (r.calls == 0) return "";
+    const open = !self.history.items[start].folded;
     const sel = glyphs.frame(&glyphs.row_mark, @intFromBool(!selected));
     // No live bar here: liveness belongs to the pending row alone. A bar on
-    // every summary made the whole transcript pulse and shift while thinking.
+    // every header made the whole transcript pulse and shift while thinking —
+    // the settle flash below is a single bounded change, not a tick.
+    const plain = theme_mod.takeCols(
+        try std.fmt.allocPrint(a, "{s}{s} {s}", .{ sel, foldhdr.chevron(open), try foldhdr.phrase(a, r) }),
+        width,
+    );
+    const fg = if (selected or foldhdr.flashing(r, now_ms)) th.accent else th.muted;
+    if (!foldhdr.flashing(r, now_ms)) return theme_mod.paint(a, fg, plain);
+    // The settle tint is a FIELD, not a ribbon: padded out to the full width
+    // and closed back onto the canvas bg, so the row under it inherits
+    // nothing (the same rule diff.zig's bands follow).
     var out = std.array_list.Managed(u8).init(a);
-    if (calls > 0) {
-        const label = if (mcp_n == calls + searches)
-            try std.fmt.allocPrint(a, "{s}{s} Called {d} MCP tool{s}", .{ sel, glyphs.tool, calls, if (calls == 1) "" else "s" })
-        else
-            try std.fmt.allocPrint(a, "{s}{s} Called {d} tool{s}", .{ sel, glyphs.tool, calls, if (calls == 1) "" else "s" });
-        try out.appendSlice(try theme_mod.paint(a, if (selected) th.accent else th.muted, label));
-    }
-    if (searches > 0) {
-        if (out.items.len > 0) try out.append('\n');
-        const label = try std.fmt.allocPrint(a, "{s}{s} Searched {d} MCP tool{s}", .{ sel, glyphs.tool, searches, if (searches == 1) "" else "s" });
-        try out.appendSlice(try theme_mod.paint(a, if (selected) th.accent else th.muted, label));
+    try out.appendSlice(foldhdr.flashBg(th));
+    try out.appendSlice(fg);
+    try out.appendSlice(plain);
+    var pad = width -| theme_mod.visibleLen(plain);
+    while (pad > 0) : (pad -= 1) try out.append(' ');
+    try out.appendSlice(th.bg);
+    try out.appendSlice(theme_mod.reset);
+    return out.items;
+}
+
+/// Hang a card off the open run's gutter — every line of it, so a wrapped
+/// title and a banded diff stay inside the same rail.
+fn indent(a: std.mem.Allocator, th: theme_mod.Theme, card: []const u8) ![]const u8 {
+    var out = std.array_list.Managed(u8).init(a);
+    var it = std.mem.splitScalar(u8, card, '\n');
+    var first = true;
+    while (it.next()) |ln| {
+        if (!first) try out.append('\n');
+        first = false;
+        try out.appendSlice(th.muted);
+        try out.appendSlice(foldhdr.gutter);
+        try out.appendSlice(theme_mod.reset);
+        try out.appendSlice(ln);
     }
     return out.items;
 }
@@ -294,37 +263,13 @@ fn userNo(self: *const Model, idx: usize) u32 {
     return if (n == 0) 1 else n;
 }
 
-/// A tool row's start/done phase, straight off its typed payload. A legacy row
-/// (tool == null) is neither: it has no phase to read, so it renders alone.
-fn isStartTool(e: app.Entry) bool {
-    const t = e.tool orelse return false;
-    return !t.done;
-}
-
-fn isDoneTool(e: app.Entry) bool {
-    const t = e.tool orelse return false;
-    return t.done;
-}
-
-pub fn nextTool(self: *const Model, t: usize, end: usize) usize {
-    if (t + 1 < end and isStartTool(self.history.items[t]) and isDoneTool(self.history.items[t + 1]))
-        return t + 2;
-    return t + 1;
-}
-
-/// The display form of a tool NAME: the harness's internal names shortened,
-/// and an MCP tool shown by its leaf. Operates on the name alone — the old
-/// prettyTool did this by stripping a status glyph off a rendered line first.
-fn displayName(name: []const u8) []const u8 {
-    if (std.mem.eql(u8, name, "read_file")) return "read";
-    if (std.mem.eql(u8, name, "write_file")) return "write";
-    if (std.mem.startsWith(u8, name, "mcp__")) {
-        if (std.mem.lastIndexOf(u8, name, "__")) |u| {
-            if (u + 2 < name.len) return name[u + 2 ..];
-        }
-    }
-    return name;
-}
+// The run-walk primitives live in foldhdr.zig, which needs them to COUNT a
+// run before this file can draw one. Re-exported here so every caller (and
+// every test written against them) keeps one name for one rule.
+const isStartTool = foldhdr.isStartTool;
+const isDoneTool = foldhdr.isDoneTool;
+pub const nextTool = foldhdr.nextTool;
+const displayName = foldhdr.displayName;
 
 /// The head of a tool row: `[status mark] name  [argument preview]`, composed
 /// from FIELDS. On a paired card the name and its arguments come from the call
@@ -446,6 +391,10 @@ test "a live turn never pulses or shifts historical rows" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
+    // Pushed against a clock well past the settle window, so the fold header's
+    // one-second flash is already over and the only motion under test is the
+    // pending blink. The flash itself is exercised below.
+    m.now_ms = 100_000;
     try m.push(.user, "hi");
     try m.pushTool(.{ .name = "bash" });
     try m.pushTool(.{ .name = "bash", .detail = "ok", .done = true });
@@ -463,12 +412,12 @@ test "a live turn never pulses or shifts historical rows" {
     defer m.pending = null;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const t0 = try render(&m, arena.allocator(), 80, 0);
-    const t140 = try render(&m, arena.allocator(), 80, 140);
+    const t0 = try render(&m, arena.allocator(), 80, 200_000);
+    const t140 = try render(&m, arena.allocator(), 80, 200_140);
     var it = std.mem.splitScalar(u8, t0, '\n');
     var saw_summary = false;
     while (it.next()) |ln| {
-        if (std.mem.indexOf(u8, ln, "Called") != null) {
+        if (std.mem.indexOf(u8, ln, "Ran bash") != null) {
             saw_summary = true;
             try std.testing.expect(std.mem.indexOf(u8, ln, glyphs.thinking[0]) == null);
         }
@@ -479,7 +428,7 @@ test "a live turn never pulses or shifts historical rows" {
     // change; every historical row stays byte-identical. (Full staticness
     // went the other way into a paint freeze; full pulsing was the original
     // bug. The contract is: motion exists, and it is confined.)
-    const t500 = try render(&m, arena.allocator(), 80, 500);
+    const t500 = try render(&m, arena.allocator(), 80, 200_500);
     var it0 = std.mem.splitScalar(u8, t0, '\n');
     var it5 = std.mem.splitScalar(u8, t500, '\n');
     var changed: usize = 0;
@@ -491,6 +440,52 @@ test "a live turn never pulses or shifts historical rows" {
         }
     }
     try std.testing.expectEqual(@as(usize, 1), changed);
+}
+
+test "the settle flash is the ONE extra moving row, and it stops on its own" {
+    // A deliberate widening of the pin above. A tool run that has just settled
+    // owns a second moving row for one second — its header, tinted — and that
+    // is the whole of the allowance: the flash is a single on→off transition
+    // on a single row, not a tick, so the transcript still cannot pulse.
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    m.now_ms = 10_000;
+    try m.push(.user, "hi");
+    try m.pushTool(.{ .name = "bash" });
+    try m.pushTool(.{ .name = "bash", .detail = "ok", .done = true });
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const lit = try render(&m, arena.allocator(), 80, 10_000);
+    const mid = try render(&m, arena.allocator(), 80, 10_900);
+    const off = try render(&m, arena.allocator(), 80, 11_000);
+    const later = try render(&m, arena.allocator(), 80, 60_000);
+    // Nothing moves WITHIN the window...
+    try std.testing.expectEqualStrings(lit, mid);
+    // ...the tint is real while it is up...
+    try std.testing.expect(std.mem.indexOf(u8, lit, foldhdr.flashBg(m.theme())) != null);
+    try std.testing.expect(std.mem.indexOf(u8, off, foldhdr.flashBg(m.theme())) == null);
+    // ...it closes back onto the canvas so the row below inherits nothing...
+    var it = std.mem.splitScalar(u8, lit, '\n');
+    while (it.next()) |ln| {
+        if (std.mem.indexOf(u8, ln, foldhdr.flashBg(m.theme())) == null) continue;
+        try std.testing.expect(std.mem.endsWith(u8, ln, theme_mod.reset));
+        try std.testing.expect(std.mem.indexOf(u8, ln, m.theme().bg) != null);
+    }
+    // ...and exactly ONE row differs across the on→off edge.
+    var a0 = std.mem.splitScalar(u8, lit, '\n');
+    var a1 = std.mem.splitScalar(u8, off, '\n');
+    var changed: usize = 0;
+    while (a0.next()) |x| {
+        const y = a1.next() orelse "";
+        if (!std.mem.eql(u8, x, y)) {
+            changed += 1;
+            try std.testing.expect(std.mem.indexOf(u8, y, "Ran bash") != null);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), changed);
+    // After that the row is done moving for good.
+    try std.testing.expectEqualStrings(off, later);
 }
 
 test "displayName shortens an mcp tool to its leaf, reading the NAME" {
@@ -506,7 +501,7 @@ test {
     _ = @import("scrollback_tests.zig");
 }
 
-test "collapsed tool run is one Called summary" {
+test "a collapsed tool run is one verb header, and it flips open" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
@@ -518,12 +513,18 @@ test "collapsed tool run is one Called summary" {
     defer arena.deinit();
     const text = try render(&m, arena.allocator(), 80, 0);
     try std.testing.expect(std.mem.indexOf(u8, text, "#1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "Called 2") != null);
+    // One logical call — the announce and its outcome — read in past tense,
+    // behind a closed chevron.
+    try std.testing.expect(std.mem.indexOf(u8, text, "Ran bash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, glyphs.chev_closed ++ " Ran bash") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "⚙ bash") == null);
     m.toggleToolGroup(1);
     const open = try render(&m, arena.allocator(), 80, 0);
-    try std.testing.expect(std.mem.indexOf(u8, open, "bash") != null);
-    try std.testing.expect(std.mem.indexOf(u8, open, "Called 2") == null);
+    // Open: the same header, chevron flipped, cards under it on the gutter.
+    try std.testing.expect(std.mem.indexOf(u8, open, glyphs.chev_open ++ " Ran bash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, open, glyphs.chev_closed ++ " Ran bash") == null);
+    try std.testing.expect(std.mem.indexOf(u8, open, foldhdr.gutter) != null);
+    try std.testing.expect(std.mem.indexOf(u8, open, "Called") == null);
 }
 
 test "long assistant lines wrap to the terminal width" {
@@ -540,7 +541,7 @@ test "long assistant lines wrap to the terminal width" {
     }
 }
 
-test "Called summary visual row maps back to the tool group" {
+test "the header's visual row maps back to the tool group" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
@@ -554,7 +555,7 @@ test "Called summary visual row maps back to the tool group" {
     var hit: ?usize = null;
     var it = std.mem.splitScalar(u8, text, '\n');
     while (it.next()) |ln| : (vis += 1) {
-        if (std.mem.indexOf(u8, ln, "Called") != null) {
+        if (std.mem.indexOf(u8, ln, "Ran bash") != null) {
             hit = vis;
             break;
         }
@@ -563,7 +564,7 @@ test "Called summary visual row maps back to the tool group" {
     try std.testing.expectEqual(@as(usize, 1), indexAtVisual(&m, hit.?, 80).?);
 }
 
-test "collapsed search run is one Searched summary" {
+test "collapsed search run reads as a search, in past tense" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
@@ -572,7 +573,7 @@ test "collapsed search run is one Searched summary" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const text = try render(&m, arena.allocator(), 80, 0);
-    try std.testing.expect(std.mem.indexOf(u8, text, "Searched 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Searched 1 pattern") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "⚙ grep") == null);
     m.toggleToolGroup(0);
     const open = try render(&m, arena.allocator(), 80, 0);

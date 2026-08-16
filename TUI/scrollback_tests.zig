@@ -79,7 +79,7 @@ test "classification reads the tool name, not the whole row (#551)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const text = try scrollback.render(&m, arena.allocator(), 100, 0);
-    try std.testing.expect(std.mem.indexOf(u8, text, "Called 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Ran bash") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "Searched") == null);
     // And the argument survives the " | " that used to truncate the title.
     m.toggleToolGroup(0);
@@ -96,7 +96,9 @@ test "an mcp run summarises as MCP tools, off the name prefix" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const text = try scrollback.render(&m, arena.allocator(), 80, 0);
-    try std.testing.expect(std.mem.indexOf(u8, text, "Called 2 MCP tools") != null);
+    // One logical call, and the MCP wording survives the verb map: an MCP
+    // leaf with no family of its own has no better name to offer.
+    try std.testing.expect(std.mem.indexOf(u8, text, "Called 1 MCP tool") != null);
 }
 
 test "an assistant line that starts with a status glyph is NOT a tool row (#551)" {

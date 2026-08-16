@@ -42,6 +42,11 @@ pub const Entry = struct {
     /// those still render from `text` alone (see scrollback.zig), which is the
     /// whole reason this is optional rather than required.
     tool: ?ToolInfo = null,
+    /// The loop clock when this row was appended — the only thing the fold
+    /// header's settle flash needs (foldhdr.zig). Rows restored from a session
+    /// are pushed before the loop ever sets `now_ms`, so they carry 0 against
+    /// a boot-monotonic clock and a resumed transcript comes up quiet.
+    at_ms: u64 = 0,
 };
 
 pub const Effect = enum { stay, quit, background };
@@ -223,7 +228,7 @@ pub const Model = struct {
     pub fn push(self: *Model, kind: EntryKind, text: []const u8) !void {
         const owned = try sanitized(self.alloc, text);
         errdefer self.alloc.free(owned);
-        try self.history.append(.{ .kind = kind, .text = owned, .folded = kind == .tool });
+        try self.history.append(.{ .kind = kind, .text = owned, .folded = kind == .tool, .at_ms = self.now_ms });
         if (kind == .user or kind == .assistant) {
             self.screen = .agent;
             self.follow = true;
@@ -256,6 +261,7 @@ pub const Model = struct {
                 .is_error = info.is_error,
                 .denied = info.denied,
             },
+            .at_ms = self.now_ms,
         });
     }
 
