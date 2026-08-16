@@ -67,6 +67,20 @@ const Loop = struct {
             self.paste_ends += 1;
         }
     }
+
+    /// run.zig's carry window elapsing (`stall.carryExpired`): the head is
+    /// spent before the read, so it can no longer glue itself onto anything.
+    fn expireCarry(_: *Loop) void {
+        key.stashOrphanHead("");
+    }
+
+    /// run.zig's arm window elapsing (`stall.armExpired`): the loop disarms the
+    /// sweeper before parsing, because a claim that a head was "just" dropped
+    /// goes stale. Strictly the longer of the two windows.
+    fn expireArm(self: *Loop) void {
+        self.expireCarry();
+        key.armOrphan(false);
+    }
 };
 
 test "SGR motion flood chopped at every byte offset never types a character" {
@@ -291,4 +305,32 @@ test "a real multi-read paste is untouched by any of the recovery paths" {
     try std.testing.expectEqual(@as(usize, 1), loop.paste_ends);
     try std.testing.expectEqual(@as(usize, 0), loop.mice);
     try std.testing.expect(!key.inPaste());
+}
+
+test "a stale debris arm never eats the token the user types later" {
+    // The arm had no clock at all, so it stayed live until something happened
+    // to consume it: `3u apples` reached the composer as ` apples` twelve
+    // seconds after the head was dropped, from a keyboard (Alt+[ on a
+    // meta-sending terminal is enough to lose a head).
+    var loop = Loop.init(std.testing.allocator);
+    defer loop.deinit();
+    try loop.read("\x1b[<35;80");
+    loop.stallDrop();
+    loop.expireArm(); // ~1s later: the claim is stale
+    try loop.read("3u apples");
+    try std.testing.expectEqualStrings("3u apples", loop.typed.items);
+    try std.testing.expectEqual(@as(usize, 0), loop.mice);
+    try std.testing.expectEqual(@as(usize, 0), loop.pending);
+
+    // Human-speed typing lost even more, through the `.partial` hold: `2m
+    // later` arrived as `m later` with the `2m` swallowed as a mouse report.
+    var slow = Loop.init(std.testing.allocator);
+    defer slow.deinit();
+    try slow.read("\x1b[<35;80");
+    slow.stallDrop();
+    slow.expireArm();
+    for ("2m later") |c| try slow.read(&[_]u8{c});
+    try std.testing.expectEqualStrings("2m later", slow.typed.items);
+    try std.testing.expectEqual(@as(usize, 0), slow.mice);
+    try std.testing.expectEqual(@as(usize, 0), slow.pending);
 }

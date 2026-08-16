@@ -92,6 +92,7 @@ pub fn run(
     // plausibly BE paste content, never by mouse-motion noise (see below).
     var last_paste_ms: u64 = 0;
     var stash_ms: u64 = 0;
+    var arm_ms: u64 = 0;
     var last_hash: u64 = 0;
     var saw_gfx: bool = false;
     var prev: []u8 = &.{};
@@ -177,6 +178,7 @@ pub fn run(
                     key_mod.stashOrphanHead(inbuf[0..pending_len]);
                     stash_ms = m.now_ms;
                     key_mod.armOrphan(true);
+                    arm_ms = m.now_ms;
                     pending_len = 0;
                     esc_stall = 0;
                 }
@@ -207,6 +209,7 @@ pub fn run(
                         key_mod.stashOrphanHead(inbuf[0..pending_len]);
                         stash_ms = m.now_ms;
                         key_mod.armOrphan(true);
+                        arm_ms = m.now_ms;
                         pending_len = 0;
                         esc_stall = 0;
                         closePaste(&m);
@@ -242,8 +245,11 @@ pub fn run(
         // Spends any head the stall path carried: it is glued back on only
         // when these bytes really complete it (key_orphan.zig), and only while
         // the join can still plausibly be link jitter rather than a human
-        // resuming typing.
+        // resuming typing. The debris ARM is bounded on the same principle —
+        // left latched it ate the first token of whatever was typed next, at
+        // any later time.
         if (stall.carryExpired(m.now_ms, stash_ms)) key_mod.stashOrphanHead("");
+        if (stall.armExpired(m.now_ms, arm_ms)) key_mod.armOrphan(false);
         const n = key_mod.joinOrphanHead(&inbuf, pending_len + got);
         var i: usize = 0;
         while (key_mod.next(inbuf[0..n], &i)) |k| {
@@ -449,8 +455,10 @@ test "run loop enables click+hover tracking and bracketed paste" {
     const sweep_block = src[sweep_at..stall_at];
     try std.testing.expect(std.mem.indexOf(u8, sweep_block, "pending_len = 0;") != null);
     try std.testing.expect(std.mem.indexOf(u8, sweep_block, "armOrphan(true)") != null);
-    // A resting mouse must not keep the paste latch alive.
+    // Both unbounded holds are bounded: a resting mouse must not keep the paste
+    // latch alive, and the debris arm must go stale on its own clock.
     try std.testing.expect(std.mem.indexOf(u8, src, "if (!stall.onlyMouseReports(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "if (stall.armExpired(") != null);
 }
 
 // The stall-verdict / carry-window battery lives beside the policy it pins,

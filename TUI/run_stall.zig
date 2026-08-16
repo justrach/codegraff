@@ -32,6 +32,13 @@ pub const paste_idle_ms: u64 = 2000;
 /// that the next bytes are a human typing, and `\x1b[` + `Hello` would eat the
 /// H (`CSI H` is a legal Home).
 const carry_window_ms: u64 = 400;
+/// How long the orphan-debris sweeper stays armed. The arm says "the loop
+/// really did drop a head just now", and that claim goes stale: latched with no
+/// clock at all it ate the first token of whatever the user typed NEXT, at any
+/// later time (`3u apples` -> ` apples` twelve seconds after the drop). Slightly
+/// longer than the carry window, because a `.partial` fragment legitimately
+/// spans a read boundary or two before it completes.
+const arm_window_ms: u64 = 1000;
 
 /// What to do with input bytes stuck mid-sequence after quiet polls (~25ms
 /// each). Exactly one pending ESC byte is the Escape key after the #94 grace.
@@ -59,6 +66,10 @@ pub fn isPasteMarkerPrefix(pending: []const u8) bool {
 
 pub fn carryExpired(now_ms: u64, stash_ms: u64) bool {
     return now_ms -| stash_ms > carry_window_ms;
+}
+
+pub fn armExpired(now_ms: u64, arm_ms: u64) bool {
+    return now_ms -| arm_ms > arm_window_ms;
 }
 
 /// Is this read nothing but complete SGR mouse reports?
@@ -119,6 +130,18 @@ test "the carried head expires before it can reach a human keystroke (#530)" {
     try std.testing.expect(carryExpired(9000, 1000));
     // A clock that never ran (no stash yet) is expired, not live.
     try std.testing.expect(carryExpired(100_000, 0));
+}
+
+test "the debris arm expires too, so it can never eat a later keystroke" {
+    // Unbounded, the arm swallowed the first token of whatever was typed next
+    // at ANY later time — `3u apples` reached the composer as ` apples` twelve
+    // seconds after the head was dropped.
+    try std.testing.expect(!armExpired(1000, 1000));
+    try std.testing.expect(!armExpired(2000, 1000));
+    try std.testing.expect(armExpired(2001, 1000));
+    try std.testing.expect(armExpired(13_000, 1000));
+    // Outlives the carry window: a `.partial` fragment may span a read or two.
+    try std.testing.expect(carryExpired(1600, 1000) and !armExpired(1600, 1000));
 }
 
 test "a paste marker is never abandoned on the #94 timescale (#532)" {
