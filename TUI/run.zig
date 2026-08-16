@@ -223,7 +223,6 @@ pub fn run(
                 }
             }
         }
-        }
 
         // Short wait while an unfinished escape sequence is pending: if
         // nothing follows, the lone ESC was a real Escape keypress (#94).

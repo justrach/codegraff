@@ -153,7 +153,6 @@ test "a failed call is marked, a refused one is marked differently" {
 
 test "an edit result that is a unified diff renders banded, not quoted (#diff)" {
     const diff = @import("diff.zig");
-    const theme_mod = @import("theme.zig");
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
@@ -193,7 +192,6 @@ test "end to end: a wrapped diff keeps its band and bleeds onto nothing (#diff)"
     // active at a break, so a band left open at EOL is what used to paint the
     // equal line (and the prose) under a long deletion.
     const diff = @import("diff.zig");
-    const theme_mod = @import("theme.zig");
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
