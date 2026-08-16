@@ -158,9 +158,15 @@ pub fn run(
             // between begin/end and swaps atomically, so a diff paint can
             // never show a half-updated frame (grok-build does the same).
             // Terminals without it ignore the pair — strictly no worse.
+            // Scrolling the transcript moves CELLS, not the kitty images that
+            // sit above the cell grid — and the self-heal exists precisely to
+            // rewrite rows a scroll would skip. Both take the whole-screen
+            // paths, so neither may reach the scroll fast path; `full` already
+            // folds in graphics, resize and theme.
+            const hint = if (full or heal) null else m.paint_hint;
             w.writeAll("\x1b[?2026h") catch {};
             if (saw_gfx or has_gfx) w.writeAll("\x1b_Ga=d,d=A,q=2\x1b\\") catch {};
-            paint_mod.paint(w, frame, rows, cols, if (full) &.{} else prev, m.theme().bg, heal) catch {};
+            paint_mod.paint(w, frame, rows, cols, if (full) &.{} else prev, m.theme().bg, heal, hint) catch {};
             w.writeAll("\x1b[?2026l") catch {};
             w.flush() catch {};
             if (prev.len != 0) gpa.free(prev);
@@ -308,7 +314,7 @@ pub fn run(
         const rows = @max(tty.rows(), @as(usize, 12));
         if (render_mod.render(&m, gpa, cols, rows, m.now_ms)) |frame| {
             defer gpa.free(frame);
-            paint_mod.paint(w, frame, rows, cols, &.{}, m.theme().bg, true) catch {};
+            paint_mod.paint(w, frame, rows, cols, &.{}, m.theme().bg, true, null) catch {};
             w.flush() catch {};
         } else |_| {}
         const start = m.now_ms;
@@ -431,4 +437,9 @@ test "the loop self-heals: a resize EVENT and a periodic sweep force a repaint" 
     // to run even when the frame hash has not moved.
     try std.testing.expect(std.mem.indexOf(u8, src, "hash != last_hash or heal") != null);
     try std.testing.expect(heal_interval_ms > 0);
+    // ...and the self-heal must never be served by the scroll fast path, whose
+    // whole point is to SKIP rows that are already correct — which is exactly
+    // the set of rows a heal exists to rewrite. Same for `full`, which folds in
+    // kitty graphics (pixels do not move when cells scroll), resize and theme.
+    try std.testing.expect(std.mem.indexOf(u8, src, "if (full or heal) null else m.paint_hint") != null);
 }

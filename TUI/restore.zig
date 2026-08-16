@@ -8,11 +8,17 @@ const std = @import("std");
 const builtin = @import("builtin");
 const tty = @import("tty.zig");
 
-/// Inverse of run.zig's enable string: modifyOtherKeys off, kitty pop,
-/// autowrap on, mouse off (1006/1003/1000), bracketed paste off, cursor
-/// visible. The alt-screen exit stays last so everything lands on the
-/// primary screen.
-pub const seq = "\x1b[?2026l\x1b[>4;0m\x1b[<u\x1b[?7h\x1b[?1006l\x1b[?1003l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l";
+/// Inverse of run.zig's enable string: synchronized update closed, scroll
+/// margins dropped, modifyOtherKeys off, kitty pop, autowrap on, mouse off
+/// (1006/1003/1000), bracketed paste off, cursor visible. The alt-screen exit
+/// stays last so everything lands on the primary screen.
+///
+/// The first two are not inverses of anything in the enable string — they undo
+/// state a paint sets and clears WITHIN itself (scrollpaint.zig brackets a
+/// DECSTBM region exactly as run.zig brackets ?2026). A crash lands between the
+/// two halves often enough to matter, and margins left set turn every later
+/// newline in the user's shell into a scroll inside a window that is gone.
+pub const seq = "\x1b[?2026l\x1b[r\x1b[>4;0m\x1b[<u\x1b[?7h\x1b[?1006l\x1b[?1003l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l";
 
 /// Every signal that ends the process with the terminal still ours. The first
 /// `first_fault` are the polite ones (a human or an init system asking us to
