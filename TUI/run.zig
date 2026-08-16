@@ -162,6 +162,22 @@ pub fn run(
                 // (#532/#536/#548).
                 closePaste(&m);
                 last_input_ms = m.now_ms;
+                if (pending_len > 0) {
+                    // Whatever was stuck mid-sequence belongs to the paste
+                    // window this sweep just declared broken — debris, by
+                    // definition. Handing it back to the stall path let it be
+                    // re-classified as a KEY: a lone pending ESC (the head of
+                    // the `CSI 201~` that never came) became the Escape key the
+                    // instant the sweep cleared `in_paste`, cancelling a live
+                    // turn and wiping the composer with no user keypress at
+                    // all. Carry it for a late tail, arm the sweeper for a
+                    // headless one, and never let it become a keystroke.
+                    key_mod.stashOrphanHead(inbuf[0..pending_len]);
+                    stash_ms = m.now_ms;
+                    key_mod.armOrphan(true);
+                    pending_len = 0;
+                    esc_stall = 0;
+                }
             }
             if (pending_len > 0) {
                 esc_stall +|= 1;
@@ -417,6 +433,15 @@ test "run loop enables click+hover tracking and bracketed paste" {
     // #517: a buffer-filling parser wedge must be cleared before the read,
     // or the zero-length read reads as a hangup and kills the TUI.
     try std.testing.expect(std.mem.indexOf(u8, src, "pending_len == inbuf.len") != null);
+    // The idle paste sweep must DISCARD whatever was stuck mid-sequence before
+    // the stall path below can see it. Leaving it there let a lone pending ESC
+    // become the Escape KEY the instant `in_paste` cleared, cancelling a live
+    // turn and wiping the composer with no keypress at all.
+    const sweep_at = std.mem.indexOf(u8, src, "closePaste(&m);").?;
+    const stall_at = std.mem.indexOfPos(u8, src, sweep_at, "esc_stall +|= 1").?;
+    const sweep_block = src[sweep_at..stall_at];
+    try std.testing.expect(std.mem.indexOf(u8, sweep_block, "pending_len = 0;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sweep_block, "armOrphan(true)") != null);
 }
 
 // The stall-verdict / carry-window battery lives beside the policy it pins,

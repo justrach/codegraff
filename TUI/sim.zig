@@ -95,6 +95,21 @@ pub const Term = struct {
         }
     }
 
+    /// run.zig's `paste_idle_ms` sweep: the terminal has gone quiet far longer
+    /// than any paste keeps streaming, so the latch is force-closed. Anything
+    /// still stuck mid-sequence belongs to the paste window this just declared
+    /// broken — it is carried as DEBRIS and never handed back to the stall
+    /// path, which would re-classify it as a key.
+    pub fn idlePasteSweep(self: *Term) void {
+        if (!key_mod.inPaste()) return;
+        key_mod.endPaste();
+        _ = keys.handle(&self.model, .paste_end);
+        if (self.pending == 0) return;
+        key_mod.stashOrphanHead(self.inbuf[0..self.pending]);
+        self.pending = 0;
+        key_mod.armOrphan(true);
+    }
+
     pub fn press(self: *Term, k: Key) Effect {
         const last = keys.handle(&self.model, k);
         self.last_effect = last;
@@ -346,4 +361,49 @@ test "giving up on a split paste terminator closes the paste, tail and all (#532
     // The late `~` rejoins its carried head instead of typing itself.
     _ = term.feed("~");
     try std.testing.expectEqualStrings("hello", term.model.input.getValue());
+}
+
+test "the idle paste sweep never fires a phantom Escape at a live turn" {
+    const engine = @import("engine.zig");
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    defer key_mod.armOrphan(false);
+    try term.model.push(.user, "!sleep 30");
+    const job = try std.testing.allocator.create(engine.Job);
+    defer std.testing.allocator.destroy(job);
+    job.* = .{
+        .gpa = std.testing.allocator,
+        .history = &.{},
+        .params = .{},
+        .stream = .{},
+        .threaded = false,
+    };
+    try term.model.push(.pending, "");
+    term.model.pending = job;
+    defer term.model.pending = null;
+
+    // A paste opens, its terminator is cut in flight, and the ESC that opened
+    // `CSI 201~` is left sitting in the pending buffer.
+    _ = term.feed("\x1b[200~draft text");
+    _ = term.feed("\x1b");
+    try std.testing.expect(key_mod.inPaste());
+    try std.testing.expectEqual(@as(usize, 1), term.pending);
+
+    // Two seconds of quiet: the sweep closes the paste. The pending ESC must
+    // go with it. Handing it back to the stall path re-classified it as the
+    // Escape KEY the instant `in_paste` cleared, cancelling the live turn at
+    // t=2.03s with no user keypress at all — and the same path wiped a
+    // composer that had a draft in it.
+    term.idlePasteSweep();
+    try std.testing.expect(!key_mod.inPaste());
+    try std.testing.expect(!term.model.pasting);
+    try std.testing.expect(!term.model.cancel_requested);
+    try std.testing.expectEqual(@as(usize, 0), term.pending);
+    try std.testing.expectEqualStrings("draft text", term.model.input.getValue());
+
+    // ...and the late terminator still rejoins its carried head rather than
+    // typing `[201~` on the end of the draft.
+    _ = term.feed("[201~");
+    try std.testing.expectEqualStrings("draft text", term.model.input.getValue());
 }
