@@ -26,10 +26,30 @@ current is part of cutting a release.
 - TUI: crash/suspend/panic restore the terminal; SIGTSTP no longer livelocks
   a background op; in-app drag selection copies on release; quit cancels and
   settles the live turn before leaving fullscreen.
+- The TUI is a real client of the REPL engine now. Tool rows come from the
+  engine's typed events instead of re-parsing rendered text (no more phantom
+  tool rows when an answer starts with a status glyph), `/thinking` actually
+  streams reasoning, and denied tools, notices, and provider failovers show
+  up in the transcript.
+- `/plan` and `/strict` are enforced, not footer labels: plan mode denies
+  writes and `!` commands through the engine's own gate, and `!cmd` runs
+  under the same approvals, hooks, and accounting as the model's bash tool,
+  with its output entering the conversation.
+- The session conversation lives in the engine across turns, so a follow-up
+  request carries the previous turn's tool calls and results, and provider
+  prompt caching works again. `/context` and `/session-info` report the
+  engine's token meters instead of local character counts.
+- Input hardening: a split or unterminated bracketed paste recovers (bounded
+  holds everywhere, a resting mouse can't stall it), lost escape-sequence
+  debris no longer types itself or eats the next word, the kitty numeric
+  keypad works, and Ctrl+D quits from an empty composer.
+- `/models` pings every keyed provider catalog live on each listing, so new
+  gateway rollouts appear without a restart.
 - Structured outputs reach Anthropic (schema as a tool) and survive DeepSeek's
   json_schema reject by degrading to a `structured_output` tool.
 - Conformance corpus grew to ten Lean kernels (3,642 cells). TUI pty
-  lifecycle guards joined tier-1.
+  lifecycle guards joined tier-1, and the README documents the full
+  54-command catalog.
 
 ## v0.0.262 (2026-08-15)
 
