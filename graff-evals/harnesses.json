@@ -52,5 +52,21 @@
     "usage": "pi-json",
     "capabilities": [],
     "default_model": "gpt-5.6-luna"
+  },
+  "dsh-deepseek": {
+    "cmd": ["dsh", "--profile", "headless", "{prompt}"],
+    "answer": "stdout",
+    "usage": null,
+    "capabilities": [],
+    "env": {"DSH_PERMISSION_MODE": "danger-full-access"},
+    "default_model": "deepseek-v4-flash",
+    "note": "dsh's native default route (deepseek-official/deepseek-v4-flash); no patch layer"
+  },
+  "pi-deepseek": {
+    "cmd": ["pi", "-p", "--mode", "json", "--provider", "deepseek", "--model", "{model}", "--no-session", "{prompt}"],
+    "answer": "pi-json",
+    "usage": "pi-json",
+    "capabilities": [],
+    "default_model": "deepseek-v4-flash"
   }
 }
