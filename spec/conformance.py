@@ -57,6 +57,8 @@ from ref.shape import check_properties as shape_check_properties
 from ref.shape import payload as shape_model_payload
 from ref.score import check_properties as score_check_properties
 from ref.score import payload as score_model_payload
+from ref.bash_policy import check_properties as bash_check_properties
+from ref.bash_policy import payload as bash_model_payload
 
 ROOT = Path(__file__).resolve().parent
 KERNELS = ROOT / "kernels"
@@ -67,6 +69,7 @@ GOAL_FIXTURE = KERNELS / "goal_loop.json"
 PATH_FIXTURE = KERNELS / "path_confine.json"
 SHAPE_FIXTURE = KERNELS / "shape.json"
 SCORE_FIXTURE = KERNELS / "score.json"
+BASH_FIXTURE = KERNELS / "bash_policy.json"
 LEAN_DIR = ROOT.parent / "lean-proofs"
 
 
@@ -307,6 +310,10 @@ def score_payload() -> dict:
     return score_model_payload()
 
 
+def bash_payload() -> dict:
+    return bash_model_payload()
+
+
 def check_provider() -> int:
     ids = [r["id"] for r in PROVIDER_SPECS]
     if len(ids) != len(set(ids)):
@@ -407,6 +414,15 @@ def check_score() -> int:
         raise Counterexample(prop, None, detail or msg) from e
 
 
+def check_bash() -> int:
+    try:
+        return bash_check_properties()
+    except ValueError as e:
+        msg = str(e)
+        prop, _, detail = msg.partition(": ")
+        raise Counterexample(prop, None, detail or msg) from e
+
+
 def prefixes_first(p: str) -> list[str]:
     parts = [c for c in p.split("/") if c]
     return [parts[0]] if parts else []
@@ -427,6 +443,7 @@ def export() -> list[Path]:
         _write(PATH_FIXTURE, path_payload()),
         _write(SHAPE_FIXTURE, shape_payload()),
         _write(SCORE_FIXTURE, score_payload()),
+        _write(BASH_FIXTURE, bash_payload()),
     ]
 
 
@@ -445,6 +462,7 @@ def check_fixtures() -> None:
     _same(PATH_FIXTURE, path_payload(), "path_confine")
     _same(SHAPE_FIXTURE, shape_payload(), "shape")
     _same(SCORE_FIXTURE, score_payload(), "score")
+    _same(BASH_FIXTURE, bash_payload(), "bash_policy")
 
 
 def break_model(kind: str) -> None:
@@ -526,15 +544,16 @@ def main() -> int:
         n_pc = check_path_confine()
         n_sh = check_shape()
         n_sc = check_score()
+        n_ba = check_bash()
         if args.export:
             paths = export()
             rel = ", ".join(p.relative_to(ROOT.parent).as_posix() for p in paths)
-            print(f"exported catalog={n_cat} transport={n_tr} provider={n_pr} goal={n_gl} path={n_pc} shape={n_sh} score={n_sc} → {rel}")
+            print(f"exported catalog={n_cat} transport={n_tr} provider={n_pr} goal={n_gl} path={n_pc} shape={n_sh} score={n_sc} bash={n_ba} → {rel}")
         else:
             check_fixtures()
             print(
                 f"ok  tool_catalog {n_cat}  transport {n_tr} (1 ws)  "
-                f"provider {n_pr}  goal_loop {n_gl}  path_confine {n_pc}  shape {n_sh}  score {n_sc}"
+                f"provider {n_pr}  goal_loop {n_gl}  path_confine {n_pc}  shape {n_sh}  score {n_sc}  bash {n_ba}"
             )
         if args.lean:
             try_lean()

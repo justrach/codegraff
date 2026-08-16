@@ -1,7 +1,7 @@
 {
   "kernel": "score",
-  "version": 1,
-  "models": "stageScore+roleOf+normalizeOutboundScore",
+  "version": 2,
+  "models": "stageScore+roleOf+normalizeOutboundScore+providerClassNeedles",
   "out": [
     "HMAC",
     "providerClass-price",
@@ -13408,6 +13408,93 @@
     {
       "title": "",
       "slot": "none"
+    },
+    {
+      "title": "\u5b89\u5168 review",
+      "slot": "none"
     }
-  ]
+  ],
+  "classes": [
+    {
+      "id": "claude-opus-4-8",
+      "tier": "frontier",
+      "source": "needle"
+    },
+    {
+      "id": "gpt-5.5",
+      "tier": "frontier",
+      "source": "needle"
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "tier": "frontier",
+      "source": "needle"
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "tier": "mid",
+      "source": "needle"
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "tier": "small",
+      "source": "needle"
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "tier": "frontier",
+      "source": "needle"
+    },
+    {
+      "id": "grok-4.3",
+      "tier": "frontier",
+      "source": "needle"
+    },
+    {
+      "id": "claude-haiku-4-5",
+      "tier": "small",
+      "source": "needle"
+    },
+    {
+      "id": "gemini-3-flash",
+      "tier": "small",
+      "source": "needle"
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "tier": "mid",
+      "source": "needle"
+    },
+    {
+      "id": "some-unknown-model",
+      "tier": "unknown",
+      "source": "fallback"
+    },
+    {
+      "id": "grok-build",
+      "tier": "unknown",
+      "source": "fallback"
+    },
+    {
+      "id": "mimo-v2.5",
+      "tier": "unknown",
+      "source": "fallback"
+    },
+    {
+      "id": "minimax-m3",
+      "tier": "frontier",
+      "source": "needle"
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "tier": "small",
+      "source": "needle"
+    },
+    {
+      "id": "gemini-3",
+      "tier": "frontier",
+      "source": "needle"
+    }
+  ],
+  "filed": 240
 }

@@ -1,4 +1,5 @@
-//! Impl half of the score kernel: stageScore, roleOf/canonicalSlot, normalize.
+//! Impl half of the score kernel: stageScore, roleOf/canonicalSlot,
+//! normalizeOutboundScore, and the providerClass needle table.
 
 const std = @import("std");
 const scoring = @import("scoring.zig");
@@ -31,6 +32,7 @@ test "spec/score: filing gate matches stageScore + roleOf" {
     defer parsed.deinit();
     const cases = parsed.value.object.get("cases").?.array.items;
     try std.testing.expectEqual(@as(usize, 1210), cases.len);
+    var filed: usize = 0;
     for (cases) |case_v| {
         const case = case_v.object;
         const id = case.get("id").?.string;
@@ -47,7 +49,11 @@ test "spec/score: filing gate matches stageScore + roleOf" {
             std.debug.print("\ncounterexample {s}: files want={} got={} role want={s} got={s}\n", .{ id, want, got, case.get("role").?.string, slotName(role) });
             return error.CatalogMismatch;
         }
+        if (want) filed += 1;
     }
+    const want_filed: usize = @intCast(parsed.value.object.get("filed").?.integer);
+    try std.testing.expectEqual(want_filed, filed);
+    try std.testing.expectEqual(@as(usize, 240), filed);
 }
 
 test "spec/score: canonical slots and titles match the live scan" {
@@ -105,6 +111,29 @@ test "spec/score: normalizeOutboundScore matches the scale samples" {
             }
         } else {
             std.debug.print("\ncounterexample scale {s}: want={d} got reject\n", .{ id, want });
+            return error.CatalogMismatch;
+        }
+    }
+}
+
+test "spec/score: providerClass needles match; fallback stays unknown" {
+    const gpa = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, fixtures_json, .{});
+    defer parsed.deinit();
+    const classes = parsed.value.object.get("classes").?.array.items;
+    try std.testing.expectEqual(@as(usize, 16), classes.len);
+    for (classes) |cv| {
+        const c = cv.object;
+        const id = c.get("id").?.string;
+        const want = c.get("tier").?.string;
+        const source = c.get("source").?.string;
+        if (std.mem.eql(u8, source, "fallback")) {
+            try std.testing.expectEqualStrings("unknown", want);
+            continue;
+        }
+        const got = scoring.providerClass(id);
+        if (!std.mem.eql(u8, got, want)) {
+            std.debug.print("\ncounterexample class {s}: want={s} got={s}\n", .{ id, want, got });
             return error.CatalogMismatch;
         }
     }

@@ -47,8 +47,9 @@ properties are load-bearing, and a missed combination is a real bug.
 | `goal_loop` | live | 360 gate cells. Empty ≠ done. Standing does not retire. |
 | `path_confine` | live | Lexical cwd jail, symlink prefixes, 80 lease verdicts. |
 | `shape` | live | 1728 cells. Hand ladder + explicit arm. Budget from remaining/cap/floor. |
-| `score` | live | 1210 filing cells. Uncelled/all-fail never accrue. Scale is `[0,1]`. |
-| TUI, prompts, SSE bytes | never | Eval, don't prove. |
+| `score` | live | 1210 filing cells, 240 filed. First-word titles, needle class, `[0,1]` scale. |
+| `bash_policy` | live | 32 command cells. Simple + in-cwd + seed. External is never auto-allowed. |
+| TUI, prompts, SSE bytes | never | Eval, don't prove. Every other harness part is listed in `lean-proofs/KERNELS.md`. |
 
 ## Run
 

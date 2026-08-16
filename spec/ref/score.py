@@ -2,6 +2,8 @@
 
 A score is maintained (filed) iff fleet is on, roleOf(label, niche) is a
 canonical slot, and the stage carries a signal. HMAC is out of the model.
+stageScore is the same function; the Signal cube is just its five counts.
+providerClass needles are in; the price fallback is out (tier=unknown).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ Slot = Literal[
     "none",
 ]
 Signal = Literal["unreached", "allFail", "overflow", "clean", "someOk"]
+Tier = Literal["frontier", "mid", "small", "unknown"]
 SLOTS: tuple[Slot, ...] = (
     "find",
     "verify",
@@ -47,6 +50,7 @@ SIGNAL_COUNTS: dict[Signal, tuple[int, int]] = {
     "someOk": (3, 2),
 }
 CUBE = 1210  # 2 × 11 × 11 × 5
+FILED = 240  # 1 × 120 celled pairs × 2 live signals
 
 # normalizeOutboundScore samples: raw float → millipoints or None
 SCALE: tuple[dict, ...] = (
@@ -70,6 +74,49 @@ TITLES: tuple[tuple[str, Slot], ...] = (
     ("ponder", "none"),
     ("code review", "none"),
     ("", "none"),
+    ("安全 review", "none"),
+)
+
+# Most-specific first; matches scoring.providerClass needles.
+NEEDLES: tuple[tuple[str, Tier], ...] = (
+    ("haiku", "small"),
+    ("flash", "small"),
+    ("-mini", "small"),
+    ("lite", "small"),
+    ("nano", "small"),
+    ("terra", "mid"),
+    ("luna", "small"),
+    ("opus", "frontier"),
+    ("gpt-5", "frontier"),
+    ("deepseek-v4", "frontier"),
+    ("grok-4", "frontier"),
+    ("glm-5", "frontier"),
+    ("kimi-k2", "frontier"),
+    ("minimax-m", "frontier"),
+    ("mimo-v2.5-pro", "frontier"),
+    ("fugu", "frontier"),
+    ("gemini-3", "frontier"),
+    ("sonnet", "mid"),
+)
+
+# id, expected needle tier (unknown = price fallback, out of the cube)
+MODELS: tuple[tuple[str, Tier], ...] = (
+    ("claude-opus-4-8", "frontier"),
+    ("gpt-5.5", "frontier"),
+    ("gpt-5.6-sol", "frontier"),
+    ("gpt-5.6-terra", "mid"),
+    ("gpt-5.6-luna", "small"),
+    ("deepseek-v4-pro", "frontier"),
+    ("grok-4.3", "frontier"),
+    ("claude-haiku-4-5", "small"),
+    ("gemini-3-flash", "small"),
+    ("claude-sonnet-4-6", "mid"),
+    ("some-unknown-model", "unknown"),
+    ("grok-build", "unknown"),
+    ("mimo-v2.5", "unknown"),
+    ("minimax-m3", "frontier"),
+    ("deepseek-v4-flash", "small"),
+    ("gemini-3", "frontier"),
 )
 
 
@@ -92,12 +139,25 @@ def stage_score(attempted: int, ok: int) -> int | None:
     return (ok * 1000) // attempted
 
 
+def needle_tier(model: str) -> Tier | None:
+    low = model.lower()
+    for needle, tier in NEEDLES:
+        if needle in low:
+            return tier
+    return None
+
+
+def class_of(model: str) -> Tier:
+    return needle_tier(model) or "unknown"
+
+
 def all_file_cases() -> list[tuple[bool, Slot, Slot, Signal]]:
     return list(product((False, True), SLOTS, SLOTS, SIGNALS))
 
 
 def check_properties() -> int:
     n = 0
+    filed = 0
     for fleet, label, niche, sig in all_file_cases():
         n += 1
         got = files(fleet, label, niche, sig)
@@ -106,14 +166,22 @@ def check_properties() -> int:
         want = fleet and role_of(label, niche) != "none" and signal_ok
         if got != want:
             raise ValueError(f"files: fleet={fleet} {label}/{niche} {sig} got={got}")
+        if got:
+            filed += 1
         if not fleet and got:
             raise ValueError(f"fleet-off-never-files: {label} {sig}")
         if label == "none" and niche == "none" and got:
             raise ValueError(f"uncelled-never-files: {sig}")
         if not has_signal(sig) and got:
             raise ValueError(f"no-signal-never-files: {label} {sig}")
+        if got and role_of(label, niche) == "none":
+            raise ValueError(f"filed-not-celled: {label}/{niche} {sig}")
+        if has_signal(sig) != signal_ok:
+            raise ValueError(f"signal-is-stageScore: {sig} has={has_signal(sig)} stage={signal_ok}")
     if n != CUBE:
         raise ValueError(f"score-cube: n={n} want={CUBE}")
+    if filed != FILED:
+        raise ValueError(f"filed-count: filed={filed} want={FILED}")
     if role_of("none", "transform") != "transform":
         raise ValueError("role-fallback: niche must supply the slot")
     if role_of("review", "find") != "review":
@@ -126,6 +194,28 @@ def check_properties() -> int:
         raise ValueError("stage-score: clean fraction")
     if len(CANONICAL) != 10:
         raise ValueError(f"ten-slots: {len(CANONICAL)}")
+    if len(TITLES) != 11:
+        raise ValueError(f"title-cube: {len(TITLES)}")
+    if any(slot == "find" for title, slot in TITLES if title == "review the findings"):
+        raise ValueError("first-word-not-substring: review the findings must stay review")
+    if any(slot != "none" for title, slot in TITLES if title in ("code review", "安全 review")):
+        raise ValueError("off-vocab-titles-uncelled")
+    if len(MODELS) != 16:
+        raise ValueError(f"class-cube: {len(MODELS)}")
+    for mid, want in MODELS:
+        got = class_of(mid)
+        if got != want:
+            raise ValueError(f"classOf: {mid} got={got} want={want}")
+        if want == "unknown" and needle_tier(mid) is not None:
+            raise ValueError(f"fallback-unknown: {mid} hit a needle")
+        if want != "unknown" and needle_tier(mid) is None:
+            raise ValueError(f"needle-models-known: {mid} missed")
+    if class_of("gemini-3-flash") != "small":
+        raise ValueError("flash-beats-family")
+    if class_of("gpt-5.6-terra") != "mid":
+        raise ValueError("terra-beats-family")
+    if class_of("deepseek-v4-flash") != "small":
+        raise ValueError("deepseek-flash-small")
     return n
 
 
@@ -148,11 +238,20 @@ def payload() -> dict:
         )
     return {
         "kernel": "score",
-        "version": 1,
-        "models": "stageScore+roleOf+normalizeOutboundScore",
+        "version": 2,
+        "models": "stageScore+roleOf+normalizeOutboundScore+providerClassNeedles",
         "out": ["HMAC", "providerClass-price", "observe"],
         "slots": list(CANONICAL),
         "cases": cases,
         "scale": [dict(s) for s in SCALE],
         "titles": [{"title": t, "slot": sl} for t, sl in TITLES],
+        "classes": [
+            {
+                "id": mid,
+                "tier": tier,
+                "source": "fallback" if tier == "unknown" else "needle",
+            }
+            for mid, tier in MODELS
+        ],
+        "filed": FILED,
     }

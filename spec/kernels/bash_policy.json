@@ -1,0 +1,284 @@
+{
+  "kernel": "bash_policy",
+  "version": 1,
+  "models": "isSimple+escapesCwd+readOnlyAllowed+readOnlyExternal",
+  "out": [
+    "argv-quoting",
+    "cmd.exe",
+    "approvals-session"
+  ],
+  "seed": [
+    "ls",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "grep",
+    "rg",
+    "pwd",
+    "which",
+    "file",
+    "git status",
+    "git diff",
+    "git log",
+    "git show"
+  ],
+  "cases": [
+    {
+      "id": "'ls -la'",
+      "cmd": "ls -la",
+      "simple": true,
+      "escapes": false,
+      "allowed": true,
+      "external": false
+    },
+    {
+      "id": "'git status'",
+      "cmd": "git status",
+      "simple": true,
+      "escapes": false,
+      "allowed": true,
+      "external": false
+    },
+    {
+      "id": "'cat src/main.zig'",
+      "cmd": "cat src/main.zig",
+      "simple": true,
+      "escapes": false,
+      "allowed": true,
+      "external": false
+    },
+    {
+      "id": "'  grep foo bar  '",
+      "cmd": "  grep foo bar  ",
+      "simple": true,
+      "escapes": false,
+      "allowed": true,
+      "external": false
+    },
+    {
+      "id": "'rm -rf x'",
+      "cmd": "rm -rf x",
+      "simple": true,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'cat /etc/passwd'",
+      "cmd": "cat /etc/passwd",
+      "simple": true,
+      "escapes": true,
+      "allowed": false,
+      "external": true
+    },
+    {
+      "id": "'ls; rm x'",
+      "cmd": "ls; rm x",
+      "simple": false,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'git push'",
+      "cmd": "git push",
+      "simple": true,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'zig build'",
+      "cmd": "zig build",
+      "simple": true,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'zig fmt src'",
+      "cmd": "zig fmt src",
+      "simple": true,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'ls ~/projects'",
+      "cmd": "ls ~/projects",
+      "simple": true,
+      "escapes": true,
+      "allowed": false,
+      "external": true
+    },
+    {
+      "id": "'cat /abs/file'",
+      "cmd": "cat /abs/file",
+      "simple": true,
+      "escapes": true,
+      "allowed": false,
+      "external": true
+    },
+    {
+      "id": "'lsof'",
+      "cmd": "lsof",
+      "simple": true,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'echo $(whoami)'",
+      "cmd": "echo $(whoami)",
+      "simple": false,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'echo `id`'",
+      "cmd": "echo `id`",
+      "simple": false,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'foo > bar'",
+      "cmd": "foo > bar",
+      "simple": false,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'a && b'",
+      "cmd": "a && b",
+      "simple": false,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'echo $HOME'",
+      "cmd": "echo $HOME",
+      "simple": false,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'cat ../outside'",
+      "cmd": "cat ../outside",
+      "simple": true,
+      "escapes": true,
+      "allowed": false,
+      "external": true
+    },
+    {
+      "id": "'prog --file=/abs/path'",
+      "cmd": "prog --file=/abs/path",
+      "simple": true,
+      "escapes": true,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'prog --flag=value'",
+      "cmd": "prog --flag=value",
+      "simple": true,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'grep foo ./a/b.zig'",
+      "cmd": "grep foo ./a/b.zig",
+      "simple": true,
+      "escapes": false,
+      "allowed": true,
+      "external": false
+    },
+    {
+      "id": "''",
+      "cmd": "",
+      "simple": true,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'ls'",
+      "cmd": "ls",
+      "simple": true,
+      "escapes": false,
+      "allowed": true,
+      "external": false
+    },
+    {
+      "id": "'git status -s'",
+      "cmd": "git status -s",
+      "simple": true,
+      "escapes": false,
+      "allowed": true,
+      "external": false
+    },
+    {
+      "id": "'git statusx'",
+      "cmd": "git statusx",
+      "simple": true,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'cat a | sh'",
+      "cmd": "cat a | sh",
+      "simple": false,
+      "escapes": false,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'  ls  '",
+      "cmd": "  ls  ",
+      "simple": true,
+      "escapes": false,
+      "allowed": true,
+      "external": false
+    },
+    {
+      "id": "'git log'",
+      "cmd": "git log",
+      "simple": true,
+      "escapes": false,
+      "allowed": true,
+      "external": false
+    },
+    {
+      "id": "'zig fmt /x.zig'",
+      "cmd": "zig fmt /x.zig",
+      "simple": true,
+      "escapes": true,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'ls /x; rm y'",
+      "cmd": "ls /x; rm y",
+      "simple": false,
+      "escapes": true,
+      "allowed": false,
+      "external": false
+    },
+    {
+      "id": "'grep foo a/../../b'",
+      "cmd": "grep foo a/../../b",
+      "simple": true,
+      "escapes": true,
+      "allowed": false,
+      "external": true
+    }
+  ]
+}

@@ -21,6 +21,7 @@ KERNELS = {
     "path": ("src/harness_policy.zig", "src/worktree_lease.zig"),
     "shape": ("src/escalation.zig", "src/shapes.zig", "src/route_policy.zig"),
     "score": ("src/scoring.zig", "src/pipeline_score.zig", "src/shapes.zig"),
+    "bash": ("src/harness_policy.zig", "src/approvals.zig"),
 }
 
 
