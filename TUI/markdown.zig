@@ -10,15 +10,78 @@ pub fn render(a: std.mem.Allocator, src: []const u8, accent: []const u8) ![]cons
     return renderTinted(a, src, accent, theme_mod.zinc400, theme_mod.zinc200);
 }
 
+// ── Streaming contract ──────────────────────────────────────────────────────
+// Every renderer here is a PURE function of the accumulated message text: the
+// pager re-renders the whole entry each frame, so a document that arrived in
+// deltas lands on exactly the bytes a one-shot render produces. The only thing
+// a chunk boundary can hand us is a partial TAIL, and `sanitize` is what makes
+// that tail harmless — see markdown_stream_tests.zig for the pinned invariant.
+
+/// Is there anything in `src` a frame cannot carry? Model text goes to the
+/// terminal verbatim, so a C0 control (CR rewinds the row, BEL rings, ESC
+/// paints) or a byte sequence that is not valid UTF-8 (a delta split a glyph)
+/// has to be filtered first. The scan is the fast path: clean prose renders
+/// with no copy at all.
+fn needsClean(src: []const u8) bool {
+    for (src) |b| {
+        if (b < 0x20) {
+            if (b != '\n' and b != '\t') return true;
+        } else if (b == 0x7f) return true;
+    }
+    return !std.unicode.utf8ValidateSlice(src);
+}
+
+/// Drop what `needsClean` found: whole escape sequences (never just the ESC,
+/// or the parameter bytes would land as literal text), C0/DEL other than
+/// newline and tab, and any byte that is not part of a complete UTF-8
+/// codepoint. A glyph the delta cut in half is HELD BACK rather than painted
+/// as U+FFFD — the next delta completes it and the frame settles.
+pub fn sanitize(a: std.mem.Allocator, src: []const u8) ![]const u8 {
+    var out = std.array_list.Managed(u8).init(a);
+    errdefer out.deinit();
+    var i: usize = 0;
+    while (i < src.len) {
+        const b = src[i];
+        if (b == 0x1b) {
+            i = theme_mod.skipEsc(src, i); // a truncated sequence eats the rest
+            continue;
+        }
+        if (b < 0x20 or b == 0x7f) {
+            if (b == '\n' or b == '\t') try out.append(b);
+            i += 1;
+            continue;
+        }
+        if (b < 0x80) {
+            try out.append(b);
+            i += 1;
+            continue;
+        }
+        const len = std.unicode.utf8ByteSequenceLength(b) catch {
+            i += 1;
+            continue;
+        };
+        if (i + len > src.len) break; // the tail of a split glyph: wait for it
+        _ = std.unicode.utf8Decode(src[i .. i + len]) catch {
+            i += 1;
+            continue;
+        };
+        try out.appendSlice(src[i .. i + len]);
+        i += len;
+    }
+    return out.toOwnedSlice();
+}
+
 /// Theme-aware render: grok-style code fences — markers hidden behind a blank
 /// separator row, a full-width background band (clear-to-EOL under the code
 /// bg), and token colors from syntax.zig in the theme's polarity. Everything
 /// else matches renderTinted.
 pub fn renderThemed(a: std.mem.Allocator, src: []const u8, th: theme_mod.Theme, width: usize) ![]const u8 {
     const light = th.id == .day;
+    const clean = if (needsClean(src)) try sanitize(a, src) else src;
+    defer if (clean.ptr != src.ptr) a.free(clean);
     var lines = std.array_list.Managed([]const u8).init(a);
     defer lines.deinit();
-    var split = std.mem.splitScalar(u8, src, '\n');
+    var split = std.mem.splitScalar(u8, clean, '\n');
     while (split.next()) |line| try lines.append(line);
 
     var out = std.array_list.Managed(u8).init(a);
@@ -110,9 +173,11 @@ pub fn renderThemed(a: std.mem.Allocator, src: []const u8, th: theme_mod.Theme, 
 }
 
 pub fn renderTinted(a: std.mem.Allocator, src: []const u8, accent: []const u8, muted: []const u8, text: []const u8) ![]const u8 {
+    const clean = if (needsClean(src)) try sanitize(a, src) else src;
+    defer if (clean.ptr != src.ptr) a.free(clean);
     var lines = std.array_list.Managed([]const u8).init(a);
     defer lines.deinit();
-    var split = std.mem.splitScalar(u8, src, '\n');
+    var split = std.mem.splitScalar(u8, clean, '\n');
     while (split.next()) |line| try lines.append(line);
 
     var out = std.array_list.Managed(u8).init(a);
@@ -172,13 +237,15 @@ pub fn renderTinted(a: std.mem.Allocator, src: []const u8, accent: []const u8, m
 
 /// User-row display: `@[path]` → `[Image #n]`, `/cmd` in accent.
 pub fn renderUser(a: std.mem.Allocator, src: []const u8, accent: []const u8, text: []const u8) ![]const u8 {
+    const clean = if (needsClean(src)) try sanitize(a, src) else src;
+    defer if (clean.ptr != src.ptr) a.free(clean);
     var out = std.array_list.Managed(u8).init(a);
     try out.appendSlice(text);
     var img_n: u32 = 0;
     var i: usize = 0;
-    while (i < src.len) {
-        if (std.mem.startsWith(u8, src[i..], "@[")) {
-            if (std.mem.indexOfScalarPos(u8, src, i + 2, ']')) |close| {
+    while (i < clean.len) {
+        if (std.mem.startsWith(u8, clean[i..], "@[")) {
+            if (std.mem.indexOfScalarPos(u8, clean, i + 2, ']')) |close| {
                 img_n += 1;
                 var chip: [24]u8 = undefined;
                 const label = std.fmt.bufPrint(&chip, "[Image #{d}]", .{img_n}) catch "[Image]";
@@ -186,22 +253,22 @@ pub fn renderUser(a: std.mem.Allocator, src: []const u8, accent: []const u8, tex
                 try out.appendSlice(label);
                 try out.appendSlice(text);
                 i = close + 1;
-                if (i < src.len and src[i] == ' ') i += 1;
+                if (i < clean.len and clean[i] == ' ') i += 1;
                 continue;
             }
         }
-        if (src[i] == '/' and (i == 0 or isBreak(src[i - 1]))) {
+        if (clean[i] == '/' and (i == 0 or isBreak(clean[i - 1]))) {
             var j = i + 1;
-            while (j < src.len and (std.ascii.isAlphanumeric(src[j]) or src[j] == '-')) j += 1;
+            while (j < clean.len and (std.ascii.isAlphanumeric(clean[j]) or clean[j] == '-')) j += 1;
             if (j > i + 1) {
                 try out.appendSlice(accent);
-                try out.appendSlice(src[i..j]);
+                try out.appendSlice(clean[i..j]);
                 try out.appendSlice(text);
                 i = j;
                 continue;
             }
         }
-        try out.append(src[i]);
+        try out.append(clean[i]);
         i += 1;
     }
     return out.toOwnedSlice();
