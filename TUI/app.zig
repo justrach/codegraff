@@ -46,6 +46,21 @@ pub const Entry = struct {
 
 pub const Effect = enum { stay, quit, background };
 
+/// The rows of a composed frame that a scroll actually MOVES: content only, no
+/// chrome. `off` is the transcript line the first of them shows, so comparing
+/// two consecutive frames' bands says whether the viewport merely slid — which
+/// is the one thing a row-against-row diff can never see (perf/tui-scroll-paint).
+/// `live` is false whenever there is nothing scrollable: the welcome pane, a
+/// transcript shorter than the viewport.
+pub const Band = struct {
+    live: bool = false,
+    /// First screen row of the band, 0-based.
+    top: usize = 0,
+    len: usize = 0,
+    /// Index, in the composed mid-lines, of the line on `top`.
+    off: usize = 0,
+};
+
 pub const ESC_MS: u64 = 800;
 
 pub const Model = struct {
@@ -107,6 +122,12 @@ pub const Model = struct {
     prompt_origin: usize = 20,
     /// How many mid-lines were clipped above the viewport.
     mid_skip: usize = 0,
+    /// The scrollable band of the frame just composed, and the painter hint
+    /// derived from how it moved since the frame before it. Presentation state
+    /// for the diff painter's scroll fast path: render.zig is the only writer,
+    /// paint.zig the only reader, and both treat it as a claim to verify.
+    band: Band = .{},
+    paint_hint: ?@import("scrollpaint.zig").Hint = null,
     now_ms: u64 = 0,
     hist_idx: ?usize = null,
     /// Newline-joined paths for the @-file picker, loaded once per session.

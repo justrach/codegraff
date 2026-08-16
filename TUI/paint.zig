@@ -26,6 +26,7 @@
 const std = @import("std");
 const Io = std.Io;
 
+const scrollpaint = @import("scrollpaint.zig");
 const theme_mod = @import("theme.zig");
 
 /// Rewrite only rows that changed, so a drag-select on older transcript
@@ -39,6 +40,14 @@ const theme_mod = @import("theme.zig");
 ///                  under synchronized output (?2026) it is visually a no-op —
 ///                  but it is also the only thing that can repair a screen some
 ///                  other writer, or a terminal-side reflow, has disturbed.
+/// `hint` set     -> the composer believes the viewport merely SLID. Row i is
+///                  then the wrong thing to compare row i against, and every
+///                  row of the band reads as changed; scrollpaint.zig checks
+///                  the claim against both frames and, when it holds, has the
+///                  terminal do the sliding. It never writes on a refusal, so
+///                  falling through here is always safe. The self-heal MUST
+///                  bypass it: its whole job is to rewrite rows that are
+///                  already correct, which is precisely what a scroll skips.
 pub fn paint(
     w: *Io.Writer,
     frame: []const u8,
@@ -47,6 +56,7 @@ pub fn paint(
     prev: []const u8,
     bg: []const u8,
     force: bool,
+    hint: ?scrollpaint.Hint,
 ) !void {
     if (prev.len == 0) {
         try w.writeAll(bg);
@@ -66,6 +76,11 @@ pub fn paint(
         try w.flush();
         return;
     }
+    if (!force) {
+        if (hint) |h| {
+            if (try scrollpaint.tryPaint(w, frame, rows, cols, prev, bg, h)) return;
+        }
+    }
     var row: usize = 0;
     while (row < rows) : (row += 1) {
         if (!force and !rowChanged(prev, frame, row)) continue;
@@ -78,7 +93,7 @@ pub fn paint(
 /// One row, cursor already at its first column. See the file header: the
 /// prologue makes the row's style self-contained, and the two shapes below are
 /// the entire residue story.
-fn paintRow(w: *Io.Writer, ln: []const u8, cols: usize, bg: []const u8) !void {
+pub fn paintRow(w: *Io.Writer, ln: []const u8, cols: usize, bg: []const u8) !void {
     try w.writeAll(row_prologue);
     try w.writeAll(bg);
     const vis = theme_mod.visibleLen(ln);
@@ -132,7 +147,7 @@ fn paintToBuf(a: std.mem.Allocator, frame: []const u8, rows: usize, cols: usize,
 fn paintForced(a: std.mem.Allocator, frame: []const u8, rows: usize, cols: usize, prev: []const u8, force: bool) ![]u8 {
     var aw = Io.Writer.Allocating.init(a);
     errdefer aw.deinit();
-    try paint(&aw.writer, frame, rows, cols, prev, test_bg, force);
+    try paint(&aw.writer, frame, rows, cols, prev, test_bg, force, null);
     return aw.toOwnedSlice();
 }
 
