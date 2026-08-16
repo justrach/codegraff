@@ -4,16 +4,28 @@
 
 const std = @import("std");
 
+const anchor = @import("anchor.zig");
 const app = @import("app.zig");
 const chrome = @import("chrome.zig");
 const engine = @import("engine.zig");
-const scrollback = @import("scrollback.zig");
+const layout_cache = @import("layout_cache.zig");
 const selection = @import("selection.zig");
 const theme_mod = @import("theme.zig");
 const welcome = @import("welcome.zig");
 const Model = app.Model;
 
 pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize, now_ms: u64) ![]const u8 {
+    // A horizontal resize rewraps everything under the viewport, so the row
+    // count in `scroll` stops meaning what it meant. Take a LOGICAL anchor off
+    // the frame we last painted — read at the OLD width, before it is
+    // overwritten — and restore the viewport onto it below. Only the
+    // transcript is anchored this way: an overlay body scrolls too, but its
+    // rows are not history entries.
+    const rewrap: ?anchor.Anchor = if (width != self.last_term_width and
+        (self.overlay == .none or self.overlay == .image))
+        anchor.capture(self, self.last_term_width)
+    else
+        null;
     self.last_term_width = width;
     self.last_term_height = height;
     self.now_ms = now_ms;
@@ -38,16 +50,20 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     // The image overlay is a card ABOVE the composer, so `mid` stays the
     // transcript; every other overlay replaces it with its own body.
     const overlay_body = self.overlay != .none and self.overlay != .image;
+    // Anything in the transcript — including a live background op's pending
+    // row — outranks the welcome pane: keeping it up hid a running `!cmd`/
+    // @-list entirely and froze the paint loop (the welcome frame is static,
+    // so the hash-diff suppressed every paint).
+    const welcome_pane = self.screen == .welcome and self.history.items.len == 0 and self.pending == null;
     const mid = if (overlay_body)
         try theme_mod.wrapToWidth(a, try chrome.overlay(self, a, width), width)
-    else if (self.screen == .welcome and self.history.items.len == 0 and self.pending == null)
-        // Anything in the transcript — including a live background op's
-        // pending row — outranks the welcome pane: keeping it up hid a
-        // running `!cmd`/@-list entirely and froze the paint loop (the
-        // welcome frame is static, so the hash-diff suppressed every paint).
+    else if (welcome_pane)
         try welcome.render(self, a, width)
     else
-        try scrollback.render(self, a, width, now_ms);
+        "";
+    // The transcript is never composed whole: the layout cache holds its
+    // wrapped lines and the frame takes a SLICE of them (layout_cache.zig).
+    const cache: ?*layout_cache.Cache = if (overlay_body or welcome_pane) null else layout_cache.ensure(self, width);
     const slash = try chrome.slashMenu(self, a, width);
     const prompt = try chrome.promptBox(self, a, width);
     const status = try chrome.statusBar(self, a, width);
@@ -83,20 +99,22 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     const view_h: usize = if (height > used) height - used else 1;
 
     var mid_lines = std.array_list.Managed([]const u8).init(a);
-    var it = std.mem.splitScalar(u8, mid, '\n');
-    while (it.next()) |ln| try mid_lines.append(ln);
-    if (mid_lines.items.len > 0 and mid_lines.items[mid_lines.items.len - 1].len == 0) _ = mid_lines.pop();
+    if (cache == null) {
+        var it = std.mem.splitScalar(u8, mid, '\n');
+        while (it.next()) |ln| try mid_lines.append(ln);
+        if (mid_lines.items.len > 0 and mid_lines.items[mid_lines.items.len - 1].len == 0) _ = mid_lines.pop();
+    }
 
     var out = std.array_list.Managed(u8).init(a);
     try out.appendSlice(top);
     if (top.len > 0 and top[top.len - 1] != '\n') try out.append('\n');
 
-    const n = mid_lines.items.len;
+    const n = if (cache) |c| c.total else mid_lines.items.len;
     self.sticky_rows = 0;
     if (n <= view_h) {
         self.scroll = 0;
         self.mid_skip = 0;
-        for (mid_lines.items) |ln| {
+        for (try midSlice(a, cache, mid_lines.items, 0, n)) |ln| {
             try out.appendSlice(ln);
             try out.append('\n');
         }
@@ -105,6 +123,12 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     } else {
         const max_scroll = n - view_h;
         if (self.follow) self.scroll = 0;
+        // Put the anchored logical line back on the top row. Saturating: when
+        // the rewrap pushed it past the last possible top line the viewport
+        // parks at the bottom, which still shows it.
+        if (rewrap) |anc| {
+            if (cache) |c| self.scroll = max_scroll -| anchor.rowAt(self, c, anc);
+        }
         if (self.scroll > max_scroll) self.scroll = max_scroll;
         const start = max_scroll - self.scroll;
         self.mid_skip = start;
@@ -118,7 +142,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
         // is the overlay's own body, and a long one (/help, /models) scrolls
         // too — ungated, this pinned a user prompt over its first two rows.
         if (!overlay_body and view_h >= 5) {
-            if (scrollback.stickyUserAbove(self, start, width)) |utext| {
+            if (if (cache) |c| layout_cache.stickyUserAbove(c, start) else null) |utext| {
                 const th = self.theme();
                 var head = std.array_list.Managed(u8).init(a);
                 try head.appendSlice(th.accent);
@@ -136,7 +160,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
                 self.sticky_rows = 2;
             }
         }
-        for (mid_lines.items[start + chrome_rows .. start + view_h]) |ln| {
+        for (try midSlice(a, cache, mid_lines.items, start + chrome_rows, view_h - chrome_rows)) |ln| {
             try out.appendSlice(ln);
             try out.append('\n');
         }
@@ -150,6 +174,16 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     // unaware of it, and the band lands on screen rows exactly as the mouse
     // reported them (#529).
     return gpa.dupe(u8, try selection.paint(self, a, out.items, width));
+}
+
+/// `count` mid rows starting at `from`, taken from the layout cache when the
+/// mid IS the transcript and from the composed overlay/welcome lines otherwise.
+/// The cached path never materialises the rows outside the viewport, which is
+/// the whole point: a wheel tick copies a screenful, not a transcript.
+fn midSlice(a: std.mem.Allocator, cache: ?*layout_cache.Cache, lines: [][]const u8, from: usize, count: usize) ![]const []const u8 {
+    if (cache) |c| return layout_cache.window(c, a, from, count);
+    const end = @min(lines.len, from + count);
+    return lines[@min(from, end)..end];
 }
 
 fn countLines(s: []const u8) usize {

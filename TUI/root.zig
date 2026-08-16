@@ -60,6 +60,7 @@ test {
     _ = @import("bgop.zig");
     _ = @import("welcome.zig");
     _ = @import("scrollback.zig");
+    _ = @import("layout_cache.zig");
     _ = @import("selection.zig");
     _ = @import("selection_tests.zig");
     _ = @import("chrome.zig");
@@ -70,6 +71,7 @@ test {
     _ = @import("effort.zig");
     _ = @import("sim.zig");
     _ = @import("render.zig");
+    _ = @import("anchor.zig");
     _ = @import("tty.zig");
     _ = @import("restore.zig");
     _ = @import("files.zig");

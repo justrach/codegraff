@@ -5,7 +5,7 @@ const std = @import("std");
 const app = @import("app.zig");
 const catalog = @import("catalog.zig");
 const dispatch = @import("dispatch.zig");
-const scrollback = @import("scrollback.zig");
+const layout_cache = @import("layout_cache.zig");
 const selection = @import("selection.zig");
 const engine = @import("engine.zig");
 const key_mod = @import("key.zig");
@@ -245,7 +245,7 @@ fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
     self.focus = .scrollback;
     // A click on blank padding maps to no entry — it must not select or
     // toggle anything (#519).
-    const i = scrollback.indexAtVisual(self, vis, self.last_term_width) orelse return .stay;
+    const i = layout_cache.indexAtVisual(self, vis, self.last_term_width) orelse return .stay;
     self.selected = i;
     if (self.history.items[i].kind == .tool) {
         self.toggleToolGroup(i);
