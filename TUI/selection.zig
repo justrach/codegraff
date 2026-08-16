@@ -23,6 +23,7 @@ const builtin = @import("builtin");
 const app = @import("app.zig");
 const engine = @import("engine.zig");
 const key_mod = @import("key.zig");
+const osc52 = @import("osc52.zig");
 const theme_mod = @import("theme.zig");
 const Model = app.Model;
 
@@ -51,8 +52,9 @@ pub const Sel = struct {
     /// and calling them "lines copied" would inflate the number the user reads.
     text_rows: usize = 0,
     /// setToast BORROWS its slice — the copy toast has to outlive this call, so
-    /// it is formatted into model-owned storage.
-    toast_buf: [40]u8 = undefined,
+    /// it is formatted into model-owned storage. Wide enough for the longest
+    /// shape: a six-figure line count plus the OSC 52 note.
+    toast_buf: [64]u8 = undefined,
 };
 
 pub const Range = struct { r0: usize, c0: usize, r1: usize, c1: usize };
@@ -119,13 +121,48 @@ fn commit(self: *Model) void {
         return;
     }
     const lines = self.sel.text_rows;
-    if (copyText(text)) {
-        const s = std.fmt.bufPrint(&self.sel.toast_buf, "{d} line{s} copied", .{
-            lines,
-            if (lines == 1) "" else "s",
-        }) catch "copied";
-        self.setToast(s);
-    } else self.setToast("copy failed");
+    // Two channels, always both attempted, because they reach different
+    // machines. The local tool writes the clipboard of the host graff runs on;
+    // OSC 52 writes the clipboard of the TERMINAL, which over SSH is the only
+    // one the user can paste from. Neither is a fallback for the other — the
+    // local tool is what a clipboard manager sees, and OSC 52 is what survives
+    // the hop — so the emission is not gated on the local attempt failing.
+    const local = copyText(text);
+    const remote = armOsc52(self, text);
+    if (!local and !remote) {
+        self.setToast("copy failed");
+        return;
+    }
+    // What the toast has to be honest about: which channel actually carried
+    // it. "copied" with no local clipboard would be a lie on a plain terminal;
+    // "(OSC 52)" tells an SSH user their laptop has it. A selection past the
+    // cap is the one case that copies locally and NOT to the terminal.
+    const note: []const u8 = if (!local) " (OSC 52)" else if (!remote) " (too big for OSC 52)" else "";
+    const s = std.fmt.bufPrint(&self.sel.toast_buf, "{d} line{s} copied{s}", .{
+        lines,
+        if (lines == 1) "" else "s",
+        note,
+    }) catch "copied";
+    self.setToast(s);
+}
+
+/// Hand the run loop the escape to write. Presentation state, not a frame: a
+/// frame gets repainted and a clipboard write must happen exactly once, so it
+/// travels on its own one-shot slot (app.Model.osc_pending). Returns false
+/// when the payload is past the cap and nothing will be emitted.
+fn armOsc52(self: *Model, text: []const u8) bool {
+    const seq = (osc52.sequence(self.alloc, text) catch return false) orelse return false;
+    if (self.osc_pending.len > 0) self.alloc.free(self.osc_pending);
+    self.osc_pending = seq;
+    return true;
+}
+
+/// The one-shot the run loop owes the tty, handed over and cleared. Returns an
+/// empty slice when nothing is owed; the caller frees what it takes.
+pub fn takeOsc52(self: *Model) []const u8 {
+    const seq = self.osc_pending;
+    self.osc_pending = "";
+    return seq;
 }
 
 pub fn clear(self: *Model) void {
