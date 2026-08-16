@@ -149,13 +149,16 @@ pub fn muteStderr() void {
         .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true },
         0o644,
     ) catch return;
-    const saved_fd = std.posix.system.dup(std.posix.STDERR_FILENO);
-    if (saved_fd < 0) {
+    // The raw syscall layer returns usize on Linux and c_int through libc,
+    // so success is judged by errno, not by the sign of the return.
+    const saved_rc = std.posix.system.dup(std.posix.STDERR_FILENO);
+    if (std.posix.errno(saved_rc) != .SUCCESS) {
         _ = std.posix.system.close(log);
         return;
     }
-    real_stderr = saved_fd;
-    if (std.posix.system.dup2(log, std.posix.STDERR_FILENO) < 0) {
+    real_stderr = @intCast(saved_rc);
+    const swap_rc = std.posix.system.dup2(log, std.posix.STDERR_FILENO);
+    if (std.posix.errno(swap_rc) != .SUCCESS) {
         _ = std.posix.system.close(real_stderr);
         real_stderr = -1;
     }
