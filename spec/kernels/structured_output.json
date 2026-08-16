@@ -1,0 +1,197 @@
+{
+  "kernel": "structured_output",
+  "cells": [
+    {
+      "wire": "anthropic",
+      "schema": false,
+      "sox": false,
+      "tools": false,
+      "carrier": "none",
+      "prompt_schema": false
+    },
+    {
+      "wire": "anthropic",
+      "schema": false,
+      "sox": false,
+      "tools": true,
+      "carrier": "none",
+      "prompt_schema": false
+    },
+    {
+      "wire": "anthropic",
+      "schema": false,
+      "sox": true,
+      "tools": false,
+      "carrier": "none",
+      "prompt_schema": false
+    },
+    {
+      "wire": "anthropic",
+      "schema": false,
+      "sox": true,
+      "tools": true,
+      "carrier": "none",
+      "prompt_schema": false
+    },
+    {
+      "wire": "anthropic",
+      "schema": true,
+      "sox": false,
+      "tools": false,
+      "carrier": "toolAnthropic",
+      "prompt_schema": true
+    },
+    {
+      "wire": "anthropic",
+      "schema": true,
+      "sox": false,
+      "tools": true,
+      "carrier": "none",
+      "prompt_schema": true
+    },
+    {
+      "wire": "anthropic",
+      "schema": true,
+      "sox": true,
+      "tools": false,
+      "carrier": "toolAnthropic",
+      "prompt_schema": true
+    },
+    {
+      "wire": "anthropic",
+      "schema": true,
+      "sox": true,
+      "tools": true,
+      "carrier": "none",
+      "prompt_schema": true
+    },
+    {
+      "wire": "openai",
+      "schema": false,
+      "sox": false,
+      "tools": false,
+      "carrier": "none",
+      "prompt_schema": false
+    },
+    {
+      "wire": "openai",
+      "schema": false,
+      "sox": false,
+      "tools": true,
+      "carrier": "none",
+      "prompt_schema": false
+    },
+    {
+      "wire": "openai",
+      "schema": false,
+      "sox": true,
+      "tools": false,
+      "carrier": "none",
+      "prompt_schema": false
+    },
+    {
+      "wire": "openai",
+      "schema": false,
+      "sox": true,
+      "tools": true,
+      "carrier": "none",
+      "prompt_schema": false
+    },
+    {
+      "wire": "openai",
+      "schema": true,
+      "sox": false,
+      "tools": false,
+      "carrier": "jsonSchema",
+      "prompt_schema": false
+    },
+    {
+      "wire": "openai",
+      "schema": true,
+      "sox": false,
+      "tools": true,
+      "carrier": "jsonSchema",
+      "prompt_schema": false
+    },
+    {
+      "wire": "openai",
+      "schema": true,
+      "sox": true,
+      "tools": false,
+      "carrier": "toolOpenai",
+      "prompt_schema": true
+    },
+    {
+      "wire": "openai",
+      "schema": true,
+      "sox": true,
+      "tools": true,
+      "carrier": "jsonObject",
+      "prompt_schema": true
+    },
+    {
+      "wire": "responses",
+      "schema": false,
+      "sox": false,
+      "tools": false,
+      "carrier": "none",
+      "prompt_schema": false
+    },
+    {
+      "wire": "responses",
+      "schema": false,
+      "sox": false,
+      "tools": true,
+      "carrier": "none",
+      "prompt_schema": false
+    },
+    {
+      "wire": "responses",
+      "schema": false,
+      "sox": true,
+      "tools": false,
+      "carrier": "none",
+      "prompt_schema": false
+    },
+    {
+      "wire": "responses",
+      "schema": false,
+      "sox": true,
+      "tools": true,
+      "carrier": "none",
+      "prompt_schema": false
+    },
+    {
+      "wire": "responses",
+      "schema": true,
+      "sox": false,
+      "tools": false,
+      "carrier": "textFormat",
+      "prompt_schema": false
+    },
+    {
+      "wire": "responses",
+      "schema": true,
+      "sox": false,
+      "tools": true,
+      "carrier": "textFormat",
+      "prompt_schema": false
+    },
+    {
+      "wire": "responses",
+      "schema": true,
+      "sox": true,
+      "tools": false,
+      "carrier": "textFormat",
+      "prompt_schema": false
+    },
+    {
+      "wire": "responses",
+      "schema": true,
+      "sox": true,
+      "tools": true,
+      "carrier": "textFormat",
+      "prompt_schema": false
+    }
+  ]
+}

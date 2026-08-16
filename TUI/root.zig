@@ -42,6 +42,7 @@ test {
     _ = @import("key.zig");
     _ = @import("key_orphan.zig");
     _ = @import("key_tests.zig");
+    _ = @import("spec_terminal_modes_conformance.zig");
     _ = @import("key_loop_tests.zig");
     _ = @import("input.zig");
     _ = @import("keys.zig");

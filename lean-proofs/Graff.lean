@@ -6,3 +6,5 @@ import Graff.PathConfine
 import Graff.Shape
 import Graff.Score
 import Graff.BashPolicy
+import Graff.StructuredOutput
+import Graff.TerminalModes

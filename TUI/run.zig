@@ -21,7 +21,7 @@ const Model = app.Model;
 // 2004: bracketed paste. 7l: no autowrap into the prompt.
 // >11u: kitty disambiguate + event types + all-keys (Cmd+Delete / Super latch).
 // >4;2m: xterm modifyOtherKeys so Super+Backspace also arrives as CSI 27;9;127~.
-const enable_seq = "\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?7l\x1b[>11u\x1b[>4;2m";
+pub const enable_seq = "\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?7l\x1b[>11u\x1b[>4;2m";
 
 pub const RunOpts = struct {
     turn_ctx: ?*anyopaque = null,

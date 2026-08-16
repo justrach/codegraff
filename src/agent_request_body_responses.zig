@@ -93,7 +93,9 @@ pub fn schemaAwarePrompt(self: *Agent) ![]const u8 {
     // response_format exists) — so the schema itself must reach the model:
     // through the structured_output tool when offered (the tools-off
     // formatting turn), else as the entire final message.
-    if (self.sox_json_object or self.provider.kind == .anthropic) return std.mem.concat(self.scratchAlloc(), u8, &.{
+    // Chat-wire only for sox: a stale learned flag must not perturb the
+    // responses wire's bytes (native text.format needs no prompt embed).
+    if ((self.provider.kind == .openai and self.sox_json_object) or self.provider.kind == .anthropic) return std.mem.concat(self.scratchAlloc(), u8, &.{
         base,
         "\n\nA JSON output schema is enforced on your final answer. Use tools first to gather every fact you need — never guess values. This provider cannot enforce the schema server-side, so satisfy it yourself: call the structured_output tool when it is offered, otherwise reply with a single JSON object, matching exactly this schema: ",
         self.output_schema.?,

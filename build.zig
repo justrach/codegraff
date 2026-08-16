@@ -101,6 +101,7 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addAnonymousImport("spec_shape", .{ .root_source_file = b.path("spec/kernels/shape.json") });
     unit_tests.root_module.addAnonymousImport("spec_score", .{ .root_source_file = b.path("spec/kernels/score.json") });
     unit_tests.root_module.addAnonymousImport("spec_bash_policy", .{ .root_source_file = b.path("spec/kernels/bash_policy.json") });
+    unit_tests.root_module.addAnonymousImport("spec_structured_output", .{ .root_source_file = b.path("spec/kernels/structured_output.json") });
     const run_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
@@ -183,6 +184,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    tui_tests.root_module.addAnonymousImport("spec_terminal_modes", .{ .root_source_file = b.path("spec/kernels/terminal_modes.json") });
 
     const tui_test_step = b.step("tui-test", "Run fullscreen TUI unit tests");
     tui_test_step.dependOn(&b.addRunArtifact(tui_tests).step);

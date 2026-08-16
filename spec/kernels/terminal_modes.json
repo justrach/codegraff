@@ -1,0 +1,127 @@
+{
+  "kernel": "terminal_modes",
+  "graff_enable": "\u001b[?1049h\u001b[?25l\u001b[?2004h\u001b[?1000h\u001b[?1003h\u001b[?1006h\u001b[?7l\u001b[>11u\u001b[>4;2m",
+  "graff_restore": "\u001b[?2026l\u001b[>4;0m\u001b[<u\u001b[?7h\u001b[?1006l\u001b[?1003l\u001b[?1000l\u001b[?2004l\u001b[?25h\u001b[?1049l",
+  "cells": [
+    {
+      "name": "empty",
+      "stream": "",
+      "deviations": [],
+      "depth": 0,
+      "balanced": true
+    },
+    {
+      "name": "graff-enable",
+      "stream": "\u001b[?1049h\u001b[?25l\u001b[?2004h\u001b[?1000h\u001b[?1003h\u001b[?1006h\u001b[?7l\u001b[>11u\u001b[>4;2m",
+      "deviations": [
+        7,
+        25,
+        1000,
+        1003,
+        1006,
+        1049,
+        2004
+      ],
+      "depth": 1,
+      "balanced": false
+    },
+    {
+      "name": "graff-lifecycle",
+      "stream": "\u001b[?1049h\u001b[?25l\u001b[?2004h\u001b[?1000h\u001b[?1003h\u001b[?1006h\u001b[?7l\u001b[>11u\u001b[>4;2m\u001b[?2026l\u001b[>4;0m\u001b[<u\u001b[?7h\u001b[?1006l\u001b[?1003l\u001b[?1000l\u001b[?2004l\u001b[?25h\u001b[?1049l",
+      "deviations": [],
+      "depth": 0,
+      "balanced": true
+    },
+    {
+      "name": "alt-only",
+      "stream": "\u001b[?1049h",
+      "deviations": [
+        1049
+      ],
+      "depth": 0,
+      "balanced": false
+    },
+    {
+      "name": "paste-only",
+      "stream": "\u001b[?2004h",
+      "deviations": [
+        2004
+      ],
+      "depth": 0,
+      "balanced": false
+    },
+    {
+      "name": "paste-balanced",
+      "stream": "\u001b[?2004h\u001b[?2004l",
+      "deviations": [],
+      "depth": 0,
+      "balanced": true
+    },
+    {
+      "name": "cursor-hidden",
+      "stream": "\u001b[?25l",
+      "deviations": [
+        25
+      ],
+      "depth": 0,
+      "balanced": false
+    },
+    {
+      "name": "autowrap-off",
+      "stream": "\u001b[?7l",
+      "deviations": [
+        7
+      ],
+      "depth": 0,
+      "balanced": false
+    },
+    {
+      "name": "kitty-unpopped",
+      "stream": "\u001b[>1u",
+      "deviations": [],
+      "depth": 1,
+      "balanced": false
+    },
+    {
+      "name": "kitty-overpop",
+      "stream": "\u001b[<u\u001b[<u\u001b[>1u",
+      "deviations": [],
+      "depth": 1,
+      "balanced": false
+    },
+    {
+      "name": "multi-num",
+      "stream": "\u001b[?1000;1006h\u001b[?1000l",
+      "deviations": [
+        1006
+      ],
+      "depth": 0,
+      "balanced": false
+    },
+    {
+      "name": "relatch",
+      "stream": "\u001b[?1049h\u001b[?1049l\u001b[?1049h",
+      "deviations": [
+        1049
+      ],
+      "depth": 0,
+      "balanced": false
+    },
+    {
+      "name": "default-noise",
+      "stream": "\u001b[?2026l\u001b[?25h\u001b[?7h",
+      "deviations": [],
+      "depth": 0,
+      "balanced": true
+    },
+    {
+      "name": "mouse-partial",
+      "stream": "\u001b[?1000h\u001b[?1003h\u001b[?1003l",
+      "deviations": [
+        1000
+      ],
+      "depth": 0,
+      "balanced": false
+    }
+  ]
+}

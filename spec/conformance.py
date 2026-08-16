@@ -59,6 +59,10 @@ from ref.score import check_properties as score_check_properties
 from ref.score import payload as score_model_payload
 from ref.bash_policy import check_properties as bash_check_properties
 from ref.bash_policy import payload as bash_model_payload
+from ref.structured_output import check_properties as sox_check_properties
+from ref.structured_output import payload as sox_model_payload
+from ref.terminal_modes import check_properties as term_check_properties
+from ref.terminal_modes import payload as term_model_payload
 
 ROOT = Path(__file__).resolve().parent
 KERNELS = ROOT / "kernels"
@@ -70,6 +74,8 @@ PATH_FIXTURE = KERNELS / "path_confine.json"
 SHAPE_FIXTURE = KERNELS / "shape.json"
 SCORE_FIXTURE = KERNELS / "score.json"
 BASH_FIXTURE = KERNELS / "bash_policy.json"
+SOX_FIXTURE = KERNELS / "structured_output.json"
+TERM_FIXTURE = KERNELS / "terminal_modes.json"
 LEAN_DIR = ROOT.parent / "lean-proofs"
 
 
@@ -423,6 +429,24 @@ def check_bash() -> int:
         raise Counterexample(prop, None, detail or msg) from e
 
 
+def check_sox() -> int:
+    try:
+        return sox_check_properties()
+    except ValueError as e:
+        msg = str(e)
+        prop, _, detail = msg.partition(": ")
+        raise Counterexample(prop, None, detail or msg) from e
+
+
+def check_term() -> int:
+    try:
+        return term_check_properties()
+    except ValueError as e:
+        msg = str(e)
+        prop, _, detail = msg.partition(": ")
+        raise Counterexample(prop, None, detail or msg) from e
+
+
 def prefixes_first(p: str) -> list[str]:
     parts = [c for c in p.split("/") if c]
     return [parts[0]] if parts else []
@@ -444,6 +468,8 @@ def export() -> list[Path]:
         _write(SHAPE_FIXTURE, shape_payload()),
         _write(SCORE_FIXTURE, score_payload()),
         _write(BASH_FIXTURE, bash_payload()),
+        _write(SOX_FIXTURE, sox_model_payload()),
+        _write(TERM_FIXTURE, term_model_payload()),
     ]
 
 
@@ -463,6 +489,8 @@ def check_fixtures() -> None:
     _same(SHAPE_FIXTURE, shape_payload(), "shape")
     _same(SCORE_FIXTURE, score_payload(), "score")
     _same(BASH_FIXTURE, bash_payload(), "bash_policy")
+    _same(SOX_FIXTURE, sox_model_payload(), "structured_output")
+    _same(TERM_FIXTURE, term_model_payload(), "terminal_modes")
 
 
 def break_model(kind: str) -> None:
@@ -545,15 +573,18 @@ def main() -> int:
         n_sh = check_shape()
         n_sc = check_score()
         n_ba = check_bash()
+        n_sx = check_sox()
+        n_tm = check_term()
         if args.export:
             paths = export()
             rel = ", ".join(p.relative_to(ROOT.parent).as_posix() for p in paths)
-            print(f"exported catalog={n_cat} transport={n_tr} provider={n_pr} goal={n_gl} path={n_pc} shape={n_sh} score={n_sc} bash={n_ba} → {rel}")
+            print(f"exported catalog={n_cat} transport={n_tr} provider={n_pr} goal={n_gl} path={n_pc} shape={n_sh} score={n_sc} bash={n_ba} sox={n_sx} term={n_tm} → {rel}")
         else:
             check_fixtures()
             print(
                 f"ok  tool_catalog {n_cat}  transport {n_tr} (1 ws)  "
-                f"provider {n_pr}  goal_loop {n_gl}  path_confine {n_pc}  shape {n_sh}  score {n_sc}  bash {n_ba}"
+                f"provider {n_pr}  goal_loop {n_gl}  path_confine {n_pc}  shape {n_sh}  score {n_sc}  bash {n_ba}  "
+                f"structured_output {n_sx}  terminal_modes {n_tm}"
             )
         if args.lean:
             try_lean()

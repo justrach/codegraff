@@ -101,6 +101,7 @@ test { // the served catalogs' wire-compatibility guard (an unreferenced module'
     _ = @import("spec_shape_conformance.zig");
     _ = @import("spec_score_conformance.zig");
     _ = @import("spec_bash_policy_conformance.zig");
+    _ = @import("spec_structured_output_conformance.zig");
     _ = @import("grok_spec_conformance.zig");
     _ = @import("spec_prompt_cache_conformance.zig");
 }
