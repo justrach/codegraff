@@ -9,8 +9,12 @@ own), the probe:
      needed and the text on screen is known,
   3. sends an SGR mouse drag over the transcript — press, motions, release,
   4. asserts the frame that comes back carries inverse-video (SGR 7) spans,
-  5. asserts the system clipboard now holds the dragged text (pbpaste), and
-     that a following keystroke clears the band again.
+  5. asserts the system clipboard now holds exactly the dragged text (pbpaste),
+  6. asserts the CAPTURE CONTRACT against the live screen: a drag that runs off
+     the last text row and down through the blank screen below the transcript
+     copies the same thing the tight drag did, and a drag that covers nothing
+     but blank rows leaves a pre-seeded clipboard sentinel untouched, and
+  7. asserts a following keystroke clears the band again.
 
 Usage: python3 scripts/test-tui-selection.py [path/to/graff]  (default zig-out/bin/graff)
 Exit 0 = pass. Skips (exit 0, notice) with no pty or no clipboard tool.
@@ -27,6 +31,8 @@ BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "zig-out/bin/graff")
 BOOT_MAX = 15.0
 MARK = "SELECTME_ZULU"
 SENTINEL = "CLIPBOARD_SENTINEL_BEFORE_DRAG"
+# Returned instead of an error when the environment, not the TUI, is at fault.
+SKIP = "skip: the clipboard is being written by another app"
 
 
 def drain(fd, seconds):
@@ -112,6 +118,28 @@ def clipboard_get():
     return subprocess.run(["pbpaste"], capture_output=True, check=True).stdout.decode()
 
 
+def clipboard_after_copy(prev, tries=10):
+    """The clipboard once a copy has landed. pbpaste can observe the pasteboard
+    mid-write and come back empty, which would read as "copied nothing"."""
+    got = prev
+    for _ in range(tries):
+        got = clipboard_get()
+        if got and got != prev:
+            return got
+        time.sleep(0.2)
+    return got
+
+
+def seed_clipboard():
+    """Plant the sentinel and confirm it stuck. A clipboard manager writing in
+    the background must read as a skip, never as a failure of the TUI."""
+    for _ in range(3):
+        clipboard_set(SENTINEL)
+        if clipboard_get() == SENTINEL:
+            return True
+    return False
+
+
 def sgr(btn, col, row, press=True):
     return f"\x1b[<{btn};{col};{row}{'M' if press else 'm'}".encode()
 
@@ -139,6 +167,33 @@ def full_frame(fd, rows, cols):
 ROWS, COLS = 30, 100
 
 
+def drag_copy(fd, r0, r1):
+    """Press on row r0, drag through r1, release. Rows are 1-based, as SGR reports.
+
+    Returns (painted, after) — the stream while the button was down, and the
+    stream after the release, which is where the copy toast shows up.
+    """
+    os.write(fd, sgr(0, 1, r0))
+    drain(fd, 0.3)
+    os.write(fd, sgr(32, COLS, (r0 + r1) // 2))
+    drain(fd, 0.2)
+    os.write(fd, sgr(32, COLS, r1))
+    painted = drain(fd, 0.6)
+    os.write(fd, sgr(0, COLS, r1, press=False))
+    return painted, drain(fd, 1.0)
+
+
+def blank_run(rows, start):
+    """The contiguous run of blank screen rows at `start` — the empty screen
+    below the transcript, which a drag must be able to overshoot into."""
+    out = []
+    i = start
+    while i < len(rows) and rows[i].strip() == "":
+        out.append(i)
+        i += 1
+    return out
+
+
 def run():
     ws, env = fresh_ws()
     pid, fd = spawn(ws, env, ROWS, COLS)
@@ -159,29 +214,61 @@ def run():
         idle = drain(fd, 0.4)
         if b"\x1b[7m" in idle:
             return "the idle frame already carries an inverse-video band"
-        clipboard_set(SENTINEL)
-        # Press on the marked row, drag two rows down, release. SGR: button 0
-        # press, 32 = motion with the button held, final 'm' = release.
-        top = hit + 1  # screen rows are 1-based in the SGR report
-        os.write(fd, sgr(0, 3, top))
-        drain(fd, 0.3)
-        os.write(fd, sgr(32, 40, top + 1))
-        drain(fd, 0.3)
-        os.write(fd, sgr(32, 60, top + 2))
-        painted = drain(fd, 0.6)
+        # `hit` is the ECHOED command line — it carries the mark inside the
+        # printf argument. The output block is the rows after it, up to the last
+        # row still carrying the mark; the echo row is skipped because the TUI
+        # decorates it with a run marker that changes between frames.
+        first, last = hit + 1, max(i for i, ln in enumerate(rows) if MARK in ln)
+        if last <= first:
+            return "the printf output did not land on its own screen rows"
+        blanks = blank_run(rows, last + 1)
+        if len(blanks) < 4:
+            return "no blank screen region below the transcript to drag into"
+        if not seed_clipboard():
+            return SKIP
+        # A TIGHT drag: press on the marked row, release on the last text row.
+        # SGR: button 0 press, 32 = motion with the button held, final 'm'.
+        top = first + 1  # screen rows are 1-based in the SGR report
+        painted, _ = drag_copy(fd, top, last + 1)
         if b"\x1b[7m" not in painted:
             return "the drag painted no inverse-video band (no SGR 7 in the frame)"
         if b"\x1b[27m" not in painted:
             return "the band never emitted its SGR 27 terminator"
-        os.write(fd, sgr(0, 60, top + 2, press=False))
-        drain(fd, 1.0)
-        got = clipboard_get()
-        if got == SENTINEL:
+        tight = clipboard_after_copy(SENTINEL)
+        if tight == SENTINEL:
             return "the release did not reach the clipboard (still the sentinel)"
-        if f"{MARK}_ONE" not in got:
-            return f"the clipboard got {got!r}, which does not contain {MARK}_ONE"
-        if len(got.split("\n")) != 3:
-            return f"a 3-row drag copied {len(got.split(chr(10)))} row(s): {got!r}"
+        # Row bytes are asserted by shape, not compared to the pre-drag frame:
+        # the press moves scrollback focus, which puts a `›` marker in column 0
+        # of the pressed row. That marker is real screen text and is copied.
+        lines = tight.split("\n")
+        if len(lines) != last - first + 1:
+            return f"a {last - first + 1}-text-row drag copied {len(lines)} line(s): {tight!r}"
+        if not lines[0].endswith(f"{MARK}_ONE") or not lines[-1].endswith(f"{MARK}_TWO"):
+            return f"the tight drag copied {tight!r}, not the two marked rows"
+        if any(ln.strip() == "" for ln in lines):
+            return f"the tight drag copied a blank line: {tight!r}"
+        if any(ln != ln.rstrip() for ln in lines):
+            return f"a copied row kept its trailing padding: {tight!r}"
+        # OVERSHOOT: the same first row, released far down in the blank screen
+        # below the transcript. Blank rows are padding, not content, so this
+        # must land exactly what the tight drag did — no trailing empty lines.
+        if not seed_clipboard():
+            return SKIP
+        drag_copy(fd, top, blanks[-1] + 1)  # release deep in the blank screen
+        loose = clipboard_after_copy(SENTINEL)
+        if loose != tight:
+            return f"overshooting into the blank screen copied {loose!r}, wanted {tight!r}"
+        # BLANK-ONLY: a drag wholly inside the empty screen copies nothing at
+        # all — the clipboard keeps what the user had, and no toast claims a copy.
+        drain(fd, 2.0)  # let the previous copy toast expire first
+        if not seed_clipboard():
+            return SKIP
+        _, after_blank = drag_copy(fd, blanks[1] + 1, blanks[-2] + 1)
+        empty = clipboard_get()
+        if empty != SENTINEL:
+            return f"a drag over blank rows overwrote the clipboard with {empty!r}"
+        if b"copied" in after_blank:
+            return "a drag over blank rows still showed a 'copied' toast"
         # A following keystroke drops the band: the repaint that follows must
         # rewrite those rows WITHOUT inverse video.
         os.write(fd, b"z")
@@ -219,10 +306,13 @@ def main():
                 clipboard_set(saved)
             except Exception:
                 pass
+    if err == SKIP:
+        print(f"tui-selection: {err[6:]} — skipping")
+        return 0
     if err:
         print(f"  ✗ drag-select: {err}")
         return 1
-    print("  ✓ drag-select: inverse band painted, clipboard received the rows")
+    print("  ✓ drag-select: band painted, clipboard got the text rows and only those")
     return 0
 
 
