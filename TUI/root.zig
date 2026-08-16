@@ -61,6 +61,7 @@ test {
     _ = @import("welcome.zig");
     _ = @import("scrollback.zig");
     _ = @import("selection.zig");
+    _ = @import("selection_tests.zig");
     _ = @import("chrome.zig");
     _ = @import("models.zig");
     _ = @import("markdown.zig");

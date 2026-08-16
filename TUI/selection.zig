@@ -9,6 +9,11 @@
 //! with the rendered frame by construction — the band and the copied text come
 //! out of the same pass over the same bytes.
 //!
+//! What the band COVERS and what it CAPTURES differ on purpose: the band is a
+//! rectangle, but a screen row of nothing but layout padding is not text (see
+//! `Capture`), so a drag that overshoots into the empty screen below the
+//! transcript copies the transcript, not the emptiness.
+//!
 //! Presentation state only. This renders the engine's transcript; it does not
 //! fork engine behaviour, and nothing here reaches a provider.
 
@@ -41,6 +46,10 @@ pub const Sel = struct {
     /// that read before rendering — copying at release time would then ship the
     /// text of a frame the last motion never reached.
     copy_pending: bool = false,
+    /// Rows of the last capture that actually carried text. The toast counts
+    /// these, not the newlines in `sel_text`: collapsed blank runs are spacing,
+    /// and calling them "lines copied" would inflate the number the user reads.
+    text_rows: usize = 0,
     /// setToast BORROWS its slice — the copy toast has to outlive this call, so
     /// it is formatted into model-owned storage.
     toast_buf: [40]u8 = undefined,
@@ -99,7 +108,9 @@ fn finish(self: *Model) bool {
 }
 
 /// Runs inside the paint that captured the text, so the clipboard and the band
-/// can never disagree about which frame was selected.
+/// can never disagree about which frame was selected. A band over nothing but
+/// padding captures no text: the clipboard is left exactly as the user had it
+/// and no toast claims a copy that never happened.
 fn commit(self: *Model) void {
     self.sel.copy_pending = false;
     const text = self.sel_text;
@@ -107,7 +118,7 @@ fn commit(self: *Model) void {
         clear(self);
         return;
     }
-    const lines = std.mem.count(u8, text, "\n") + 1;
+    const lines = self.sel.text_rows;
     if (copyText(text)) {
         const s = std.fmt.bufPrint(&self.sel.toast_buf, "{d} line{s} copied", .{
             lines,
@@ -161,12 +172,43 @@ pub fn ordered(self: *const Model) ?Range {
     };
 }
 
+/// What the band COVERS and what it CAPTURES are deliberately different. The
+/// band is a rectangle over the frame, so it swallows the blank cells the
+/// layout uses for spacing; the capture is the text under it. A row with no
+/// glyphs contributes nothing, the blank rows at either end of the drag fall
+/// off, and a run of blank rows between two text rows collapses to a single
+/// empty line — paragraph separation survives, screens of padding do not.
+const Capture = struct {
+    text: *std.array_list.Managed(u8),
+    /// Rows that carried text. Blank rows, kept or dropped, never count.
+    rows: usize = 0,
+    /// A blank run is pending. It only becomes an empty line once a later row
+    /// proves it was INTERIOR, which is what drops the trailing blanks.
+    gap: bool = false,
+
+    fn push(self: *Capture, line: []const u8) !void {
+        if (line.len == 0) {
+            self.gap = self.rows > 0; // leading blanks never open the capture
+            return;
+        }
+        if (self.rows > 0) try self.text.append('\n');
+        if (self.gap) {
+            try self.text.append('\n');
+            self.gap = false;
+        }
+        try self.text.appendSlice(line);
+        self.rows += 1;
+    }
+};
+
 /// Post-pass over the COMPOSED frame: the row builders in scrollback.zig stay
 /// untouched, and the captured text is the same bytes the band covers.
 pub fn paint(self: *Model, a: std.mem.Allocator, frame: []const u8, width: usize) ![]const u8 {
     const r = ordered(self) orelse return frame;
     var out = std.array_list.Managed(u8).init(a);
     var text = std.array_list.Managed(u8).init(a);
+    var line = std.array_list.Managed(u8).init(a);
+    var cap: Capture = .{ .text = &text };
     var row: usize = 0;
     var it = std.mem.splitScalar(u8, frame, '\n');
     while (it.next()) |ln| : (row += 1) {
@@ -177,10 +219,14 @@ pub fn paint(self: *Model, a: std.mem.Allocator, frame: []const u8, width: usize
             try out.appendSlice(ln);
             continue;
         }
-        if (row > r.r0) try text.append('\n');
-        try band(&out, &text, ln, c0, c1);
+        line.clearRetainingCapacity();
+        try band(&out, &line, ln, c0, c1);
+        // Every row, column-bounded ends included, loses its trailing blanks —
+        // a row of nothing but them is then empty, and contributes nothing.
+        try cap.push(std.mem.trimEnd(u8, line.items, " \t"));
     }
     setText(self, text.items);
+    self.sel.text_rows = cap.rows;
     if (self.sel.copy_pending) commit(self);
     return out.items;
 }
@@ -195,6 +241,9 @@ fn setText(self: *Model, s: []const u8) void {
 /// SGR inside the band is dropped so the highlight is uniform (a stray `0m`
 /// would otherwise cancel it mid-band) and re-emitted at the far edge, or the
 /// rest of the row would paint in whatever style the band swallowed.
+///
+/// `text` is this ROW's capture buffer, emptied by the caller — the glyphs the
+/// band covers, and nothing the band merely pads over.
 fn band(out: *std.array_list.Managed(u8), text: *std.array_list.Managed(u8), ln: []const u8, c0: usize, c1: usize) !void {
     var sgr: theme_mod.Sgr = .{};
     var i: usize = 0;
@@ -216,7 +265,6 @@ fn band(out: *std.array_list.Managed(u8), text: *std.array_list.Managed(u8), ln:
     try pad(out, c0 -| col);
     col = @max(col, c0);
     try out.appendSlice("\x1b[7m");
-    const mark = text.items.len;
     while (i < ln.len and col < c1) {
         if (ln[i] == 0x1b) {
             const e = theme_mod.skipEsc(ln, i);
@@ -232,11 +280,8 @@ fn band(out: *std.array_list.Managed(u8), text: *std.array_list.Managed(u8), ln:
         i += c.n;
     }
     // The band covers blank cells too, exactly like a terminal's own selection.
-    // Those pad columns are not text: trim them back out of the capture.
+    // Those pad columns are painted, never captured.
     try pad(out, c1 -| col);
-    var end = text.items.len;
-    while (end > mark and text.items[end - 1] == ' ') end -= 1;
-    text.shrinkRetainingCapacity(end);
     try out.appendSlice("\x1b[27m");
     var buf: [theme_mod.Sgr.max_render]u8 = undefined;
     try out.appendSlice(sgr.render(&buf));
@@ -348,6 +393,13 @@ test "a drag paints an inverse band and copies the covered rows (#529)" {
     try std.testing.expect(std.mem.indexOf(u8, after, "\x1b[7m") != null);
     try std.testing.expect(std.mem.indexOf(u8, copied[0..copied_len], "SELECTME alpha") != null);
     try std.testing.expect(std.mem.indexOf(u8, m.toast, "copied") != null);
+    // The capture never opens or closes on the transcript's blank spacing rows,
+    // and the toast counts the rows that carried text.
+    try std.testing.expect(!std.mem.startsWith(u8, m.sel_text, "\n"));
+    try std.testing.expect(!std.mem.endsWith(u8, m.sel_text, "\n"));
+    var cnt: [8]u8 = undefined;
+    const head = try std.fmt.bufPrint(&cnt, "{d} line", .{m.sel.text_rows});
+    try std.testing.expect(std.mem.startsWith(u8, m.toast, head));
     // ...and the next ordinary keystroke drops it.
     _ = keys.handle(&m, .{ .char = 'x' });
     try std.testing.expect(!m.sel.active);
@@ -441,71 +493,13 @@ test "the wheel scrolls and drops the band instead of extending it" {
     try std.testing.expect(!m.follow);
 }
 
-test "column bounds hold on the first and last row; middle rows are whole" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    m.last_term_width = 10;
-    m.mid_origin = 0;
-    m.prompt_origin = 5;
-    m.sel = .{ .active = true, .a_row = 0, .a_col = 3, .h_row = 2, .h_col = 4 };
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const out = try paint(&m, arena.allocator(), "abcdefghij\nklmnopqrst\nuvwxyz\nTAIL", 10);
-    // First row starts at column 3, last row ends after column 4.
-    try std.testing.expect(std.mem.indexOf(u8, out, "abc\x1b[7mdefghij") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[7muvwxy\x1b[27m") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "TAIL") != null);
-    try std.testing.expectEqualStrings("defghij\nklmnopqrst\nuvwxy", m.sel_text);
-    // A row shorter than the band is padded, and the pad is not text.
-    m.sel = .{ .active = true, .a_row = 0, .a_col = 0, .h_row = 0, .h_col = 9 };
-    const short = try paint(&m, arena.allocator(), "hi", 10);
-    try std.testing.expect(std.mem.indexOf(u8, short, "\x1b[7mhi        \x1b[27m") != null);
-    try std.testing.expectEqualStrings("hi", m.sel_text);
-}
-
-test "the band drops SGR inside it and restores the style after it" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    m.last_term_width = 12;
-    m.mid_origin = 0;
-    m.prompt_origin = 4;
-    m.sel = .{ .active = true, .a_row = 0, .a_col = 2, .h_row = 0, .h_col = 5 };
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const out = try paint(&m, arena.allocator(), "ab\x1b[31mcdef\x1b[0mgh", 12);
-    // No reset survives inside the band...
-    const b0 = std.mem.indexOf(u8, out, "\x1b[7m").?;
-    const b1 = std.mem.indexOf(u8, out, "\x1b[27m").?;
-    try std.testing.expect(std.mem.indexOf(u8, out[b0..b1], "\x1b[") == 0);
-    try std.testing.expect(std.mem.indexOf(u8, out[b0 + 4 .. b1], "\x1b[") == null);
-    try std.testing.expectEqualStrings("cdef", m.sel_text);
-}
-
-test "a wide glyph never straddles a band edge" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    m.last_term_width = 10;
-    m.mid_origin = 0;
-    m.prompt_origin = 4;
-    // "a" + 世 (2 cols) + "b": a band ending mid-glyph must leave it out.
-    m.sel = .{ .active = true, .a_row = 0, .a_col = 0, .h_row = 0, .h_col = 1 };
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const out = try paint(&m, arena.allocator(), "a\u{4e16}b", 10);
-    try std.testing.expectEqualStrings("a", m.sel_text);
-    // The excluded glyph leaves a pad column so the band still measures 2, and
-    // the glyph itself paints outside it, whole.
-    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[7ma \x1b[27m") != null);
-    try std.testing.expect(std.mem.endsWith(u8, out, "\u{4e16}b"));
-}
-
-test "an empty drag copies nothing and leaves no band" {
+test "a drag over blank rows leaves the clipboard and the toast alone" {
     engine.g_copy_fn = fakeCopy;
     defer engine.g_copy_fn = null;
-    copied_len = 0;
+    // Seeded, not zeroed: the contract is that the user's clipboard SURVIVES a
+    // drag that found no text, not merely that nothing new was appended.
+    copied_len = @min("KEEPME".len, copied.len);
+    @memcpy(copied[0..copied_len], "KEEPME");
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
@@ -513,12 +507,13 @@ test "an empty drag copies nothing and leaves no band" {
     m.mid_origin = 1;
     m.prompt_origin = 20;
     press(&m, 4, 5);
-    drag(&m, 4, 5);
-    release(&m, 4, 5);
+    drag(&m, 40, 8);
+    release(&m, 40, 8);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    _ = try paint(&m, arena.allocator(), "\n\n\n\n\n\n", 80);
-    try std.testing.expectEqual(@as(usize, 0), copied_len);
+    _ = try paint(&m, arena.allocator(), "\n\n\n\n\n   \n\n\n\n", 80);
+    try std.testing.expectEqualStrings("KEEPME", copied[0..copied_len]);
+    try std.testing.expectEqualStrings("", m.toast);
     try std.testing.expect(!m.sel.active);
 }
 
