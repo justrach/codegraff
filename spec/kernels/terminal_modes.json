@@ -1,7 +1,7 @@
 {
   "kernel": "terminal_modes",
   "graff_enable": "\u001b[?1049h\u001b[?25l\u001b[?2004h\u001b[?1000h\u001b[?1003h\u001b[?1006h\u001b[?7l\u001b[>11u\u001b[>4;2m",
-  "graff_restore": "\u001b[?2026l\u001b[>4;0m\u001b[<u\u001b[?7h\u001b[?1006l\u001b[?1003l\u001b[?1000l\u001b[?2004l\u001b[?25h\u001b[?1049l",
+  "graff_restore": "\u001b[?2026l\u001b[r\u001b[>4;0m\u001b[<u\u001b[?7h\u001b[?1006l\u001b[?1003l\u001b[?1000l\u001b[?2004l\u001b[?25h\u001b[?1049l",
   "cells": [
     {
       "name": "empty",
@@ -27,7 +27,7 @@
     },
     {
       "name": "graff-lifecycle",
-      "stream": "\u001b[?1049h\u001b[?25l\u001b[?2004h\u001b[?1000h\u001b[?1003h\u001b[?1006h\u001b[?7l\u001b[>11u\u001b[>4;2m\u001b[?2026l\u001b[>4;0m\u001b[<u\u001b[?7h\u001b[?1006l\u001b[?1003l\u001b[?1000l\u001b[?2004l\u001b[?25h\u001b[?1049l",
+      "stream": "\u001b[?1049h\u001b[?25l\u001b[?2004h\u001b[?1000h\u001b[?1003h\u001b[?1006h\u001b[?7l\u001b[>11u\u001b[>4;2m\u001b[?2026l\u001b[r\u001b[>4;0m\u001b[<u\u001b[?7h\u001b[?1006l\u001b[?1003l\u001b[?1000l\u001b[?2004l\u001b[?25h\u001b[?1049l",
       "deviations": [],
       "depth": 0,
       "balanced": true

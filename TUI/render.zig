@@ -10,6 +10,7 @@ const chrome = @import("chrome.zig");
 const engine = @import("engine.zig");
 const glyphs = @import("glyphs.zig");
 const layout_cache = @import("layout_cache.zig");
+const scrollpaint = @import("scrollpaint.zig");
 const selection = @import("selection.zig");
 const theme_mod = @import("theme.zig");
 const welcome = @import("welcome.zig");
@@ -30,6 +31,11 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     self.last_term_width = width;
     self.last_term_height = height;
     self.now_ms = now_ms;
+    // Where the scrollable band was last time, so the painter can be told the
+    // viewport SLID rather than left to conclude every row changed. Presentation
+    // state, and only ever a hint: paint.zig verifies it against the bytes.
+    const prev_band = self.band;
+    self.band = .{};
     @import("turn.zig").drainEvents(self);
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -165,12 +171,23 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
             try out.appendSlice(ln);
             try out.append('\n');
         }
+        // The band is the part of the frame a wheel event MOVES: content rows
+        // only. The sticky header occludes the top of the viewport, so it is
+        // chrome that happens to sit inside it, and the composer, status bar
+        // and image card are below the end.
+        self.band = .{
+            .live = true,
+            .top = self.mid_origin + chrome_rows,
+            .len = view_h - chrome_rows,
+            .off = start + chrome_rows,
+        };
     }
     if (image_card.len > 0) {
         try out.appendSlice(image_card);
         if (image_card[image_card.len - 1] != '\n') try out.append('\n');
     }
     try out.appendSlice(bottom_block);
+    self.paint_hint = scrollHint(self, prev_band);
     // Selection is a post-pass over the finished frame: the row builders stay
     // unaware of it, and the band lands on screen rows exactly as the mouse
     // reported them (#529).
@@ -185,6 +202,26 @@ fn midSlice(a: std.mem.Allocator, cache: ?*layout_cache.Cache, lines: [][]const 
     if (cache) |c| return layout_cache.window(c, a, from, count);
     const end = @min(lines.len, from + count);
     return lines[@min(from, end)..end];
+}
+
+/// The delta the scrollable band moved by between the last frame and this one,
+/// when that is the ONLY thing that happened to it — the painter's scroll fast
+/// path. Null is always safe: it just means the ordinary row diff.
+fn scrollHint(self: *const Model, prev: app.Band) ?scrollpaint.Hint {
+    const cur = self.band;
+    if (!cur.live or !prev.live) return null;
+    // Geometry moved, so screen row N is not the same slot it was: a resize, an
+    // image card appearing, the sticky header engaging, an overlay opening.
+    if (cur.top != prev.top or cur.len != prev.len) return null;
+    if (cur.off == prev.off) return null;
+    // The drag-selection band is anchored to SCREEN rows (#529), so its
+    // inverse video does not travel with the content a hardware scroll moves.
+    // The wheel drops the band for exactly this reason; keyboard scrolling
+    // keeps it, and that case has to keep repainting.
+    if (self.sel.active or self.sel.pressed) return null;
+    const d = @as(isize, @intCast(cur.off)) - @as(isize, @intCast(prev.off));
+    if (@abs(d) >= cur.len) return null;
+    return .{ .top = cur.top, .len = cur.len, .delta = d };
 }
 
 fn countLines(s: []const u8) usize {
@@ -405,6 +442,64 @@ test "debug overlay keeps the observability HUD and adds layout" {
     try std.testing.expect(std.mem.indexOf(u8, text, "mid-origin") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "images") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "pending") != null);
+}
+
+test "a wheel notch reports a scroll hint; anything else about the frame refuses one" {
+    const keys = @import("keys.zig");
+    const a = std.testing.allocator;
+    var m: Model = undefined;
+    m.setup(a);
+    defer m.deinit();
+    try m.push(.user, "how do I frobnicate the widget?");
+    var i: usize = 0;
+    while (i < 60) : (i += 1)
+        try m.pushFmt(.assistant, "explanation line {d}, long enough to fill the transcript", .{i});
+
+    // A first frame has nothing to compare against, and an idle one has not moved.
+    for (0..2) |_| {
+        a.free(try render(&m, a, 80, 24, 0));
+        try std.testing.expect(m.paint_hint == null);
+    }
+
+    // One wheel notch. The band slides by exactly the three content lines
+    // keys.zig moved the viewport, and keeps its geometry — which is the whole
+    // claim paint.zig acts on. `top` clears the sticky header: those rows are
+    // chrome occluding the viewport, and a hardware scroll must not move them.
+    _ = keys.handle(&m, .{ .mouse = .{ .btn = 64, .x = 1, .y = 5, .down = true } });
+    a.free(try render(&m, a, 80, 24, 0));
+    const h = m.paint_hint orelse return error.NoScrollHint;
+    try std.testing.expectEqual(@as(isize, -3), h.delta);
+    try std.testing.expectEqual(m.mid_origin + m.sticky_rows, h.top);
+    try std.testing.expectEqual(@as(usize, 2), m.sticky_rows);
+    try std.testing.expect(h.len >= 2 and h.top + h.len <= 24);
+
+    // A resize on the same frame as a scroll: every row below rewraps, so the
+    // band is not the same band and nothing about it may be claimed to slide.
+    keys.scrollBy(&m, 3);
+    a.free(try render(&m, a, 79, 24, 0));
+    try std.testing.expect(m.paint_hint == null);
+
+    // A live drag-selection band is anchored to SCREEN rows, so its inverse
+    // video does not travel with the content a hardware scroll would move.
+    a.free(try render(&m, a, 79, 24, 0));
+    m.sel.active = true;
+    keys.scrollBy(&m, 3);
+    a.free(try render(&m, a, 79, 24, 0));
+    try std.testing.expect(m.paint_hint == null);
+    m.sel.active = false;
+
+    // Scrolling all the way to the top clamps: the viewport stops moving, and
+    // a band that did not move is not a scroll.
+    m.scroll = 1_000_000;
+    a.free(try render(&m, a, 79, 24, 0));
+    a.free(try render(&m, a, 79, 24, 0));
+    try std.testing.expect(m.paint_hint == null);
+
+    // An overlay replaces the whole viewport — no band at all, so no hint even
+    // though the frame changed completely.
+    m.openOverlay(.help);
+    a.free(try render(&m, a, 79, 24, 0));
+    try std.testing.expect(m.paint_hint == null);
 }
 
 test "the sticky header never pins a prompt over an overlay" {
