@@ -395,18 +395,11 @@ fn firstLine(s: []const u8) []const u8 {
     return s;
 }
 
+/// The live tail is raw model bytes: escapes, C0 controls (a CR would rewind
+/// the row) and the half glyph a delta boundary left behind all have to go
+/// before it reaches a frame. Same filter the finished message gets.
 fn strip(a: std.mem.Allocator, s: []const u8) []const u8 {
-    var out = std.array_list.Managed(u8).init(a);
-    var i: usize = 0;
-    while (i < s.len) {
-        if (s[i] == 0x1b) {
-            i = theme_mod.skipEsc(s, i);
-            continue;
-        }
-        out.append(s[i]) catch {};
-        i += 1;
-    }
-    return out.items;
+    return @import("markdown.zig").sanitize(a, s) catch s;
 }
 
 fn tail(a: std.mem.Allocator, s: []const u8, width: usize, max_lines: usize) ![]const u8 {
