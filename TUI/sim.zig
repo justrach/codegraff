@@ -64,7 +64,7 @@ pub const Term = struct {
         const room = self.inbuf.len - self.pending;
         const take = @min(bytes.len, room);
         @memcpy(self.inbuf[self.pending .. self.pending + take], bytes[0..take]);
-        const n = self.pending + take;
+        const n = key_mod.joinOrphanHead(&self.inbuf, self.pending + take);
         var i: usize = 0;
         var last: Effect = .stay;
         while (key_mod.next(self.inbuf[0..n], &i)) |k| {
@@ -80,12 +80,14 @@ pub const Term = struct {
         return last;
     }
 
-    /// The live loop gives up on a pending sequence that never finished and
-    /// tells key.zig to expect its orphaned tail (run.zig's stall path).
+    /// The live loop gives up on a pending sequence that never finished: it
+    /// carries the head for one more read and arms the debris
+    /// sweeper (run.zig's stall path).
     pub fn stallDropPending(self: *Term) void {
         if (self.pending == 0) return;
+        key_mod.stashOrphanHead(self.inbuf[0..self.pending]);
         self.pending = 0;
-        key_mod.orphan_armed = true;
+        key_mod.armOrphan(true);
     }
 
     pub fn press(self: *Term, k: Key) Effect {
@@ -254,8 +256,8 @@ test "hoverText on an image chip opens the preview" {
 
 test "a 1003 hover flood during a live turn never types itself into the frame" {
     const engine = @import("engine.zig");
-    key_mod.orphan_armed = false;
-    defer key_mod.orphan_armed = false;
+    key_mod.armOrphan(false);
+    defer key_mod.armOrphan(false);
     var term: Term = undefined;
     term.init(std.testing.allocator, 80, 24);
     defer term.deinit();
