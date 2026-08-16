@@ -374,11 +374,17 @@ fn csiMods(params: []const u8) u32 {
 }
 
 /// kitty event-type sub-param (field 2 after ':'): 1 press, 2 repeat, 3 release.
+///
+/// It lives in the MODIFIER field and nowhere else. Scanning the whole tail for
+/// the first ':' read field 3 instead — the associated-text codepoints, which
+/// are ':'-separated too — so `CSI 97;2;65:66u` reported event 66, and a text
+/// field ending `:3` silently swallowed a real keypress as a release (#549).
 fn eventOf(params: []const u8) u32 {
     const s = std.mem.indexOfScalar(u8, params, ';') orelse return 1;
-    const rest = params[s + 1 ..];
-    const c = std.mem.indexOfScalar(u8, rest, ':') orelse return 1;
-    return leadingInt(rest[c + 1 ..]);
+    var field = params[s + 1 ..];
+    if (std.mem.indexOfScalar(u8, field, ';')) |e| field = field[0..e];
+    const c = std.mem.indexOfScalar(u8, field, ':') orelse return 1;
+    return leadingInt(field[c + 1 ..]);
 }
 
 /// CSI unicode ; mods u  — kitty/ghostty. mods bit 2 = ctrl, 1 = shift.
@@ -437,7 +443,20 @@ fn functional(code: u32, mods: u32, ev: u32) Key {
         57355, 57422 => .page_down,
         57356, 57423 => .home,
         57357, 57424 => .end,
-        // Locks, PrintScreen, remaining keypad, media, F13+: inert.
+        // Numeric keypad. With `>11u` on, kitty reports these INSTEAD of the
+        // plain ASCII byte, so leaving them unmapped dropped every keypad
+        // digit and operator on the floor (#549).
+        57399...57408 => .{ .char = '0' + @as(u8, @intCast(code - 57399)) },
+        57409 => .{ .char = '.' },
+        57410 => .{ .char = '/' },
+        57411 => .{ .char = '*' },
+        57412 => .{ .char = '-' },
+        57413 => .{ .char = '+' },
+        57415 => .{ .char = '=' },
+        57416 => .{ .char = ',' },
+        // KP_Insert (57425) and KP_Begin (57427) have no binding here and stay
+        // inert exactly like CSI 2~ — never a phantom Escape. Locks,
+        // PrintScreen, media and F13+ likewise.
         else => .ignore,
     };
 }

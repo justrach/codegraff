@@ -294,3 +294,48 @@ test "typed text behind an Alt+] chord recovers instead of wedging (#516)" {
     try std.testing.expectEqual(Key.ignore, next(&big, &i).?);
     try std.testing.expectEqual(Key{ .char = 'a' }, next(&big, &i).?);
 }
+test "kitty numeric keypad types instead of vanishing (#549)" {
+    var i: usize = 0;
+    try std.testing.expectEqual(Key{ .char = '0' }, next("\x1b[57399u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '7' }, next("\x1b[57406u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '9' }, next("\x1b[57408u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '.' }, next("\x1b[57409u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '/' }, next("\x1b[57410u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '*' }, next("\x1b[57411u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '-' }, next("\x1b[57412u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '+' }, next("\x1b[57413u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '=' }, next("\x1b[57415u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = ',' }, next("\x1b[57416u", &i).?);
+    // Releases stay inert, and the unbound keypad keys are still never Escape.
+    i = 0;
+    try std.testing.expectEqual(Key.ignore, next("\x1b[57406;1:3u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.ignore, next("\x1b[57425u", &i).?); // KP_Insert
+    i = 0;
+    try std.testing.expectEqual(Key.ignore, next("\x1b[57427u", &i).?); // KP_Begin
+    key.held = 0;
+}
+
+test "the event type is read from the modifier field, not the text field (#549)" {
+    // `CSI code ; mods:event ; text:text u` — the associated-text codepoints in
+    // field 3 are ':'-separated too, and scanning the whole tail found those.
+    var i: usize = 0;
+    try std.testing.expectEqual(Key{ .char = 'A' }, next("\x1b[97;2;65:66u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = 'a' }, next("\x1b[97;1;97:3u", &i).?);
+    // A genuine release, in field 2, is still ignored.
+    i = 0;
+    try std.testing.expectEqual(Key.ignore, next("\x1b[97;1:3u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.ignore, next("\x1b[1;1:3A", &i).?);
+    key.held = 0;
+}
