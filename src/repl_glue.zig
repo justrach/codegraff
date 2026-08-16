@@ -28,14 +28,10 @@ const mcp = @import("mcp.zig");
 const repl = @import("repl.zig");
 const approvals_mod = @import("approvals.zig");
 const Approvals = approvals_mod.Approvals;
-const messages_mod = @import("messages.zig");
-const textMessage = messages_mod.textMessage;
 const pricing = @import("pricing.zig");
-const providers = @import("providers.zig");
 const trace = @import("trace.zig");
 const serde = @import("serde.zig");
 const fallback_config = @import("fallback_config.zig");
-const prompts = @import("prompts.zig");
 
 pub const ReplCtx = struct {
     io: Io,
