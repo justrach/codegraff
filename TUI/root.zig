@@ -80,6 +80,7 @@ test {
     _ = @import("overlays.zig");
     _ = run_mod;
     _ = @import("paint.zig");
+    _ = @import("scrollpaint.zig");
     _ = @import("run_stall.zig");
     _ = @import("traj.zig");
 }
