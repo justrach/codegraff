@@ -9,10 +9,10 @@ const bgop = @import("bgop.zig");
 const engine = @import("engine.zig");
 const key_mod = @import("key.zig");
 const keys = @import("keys.zig");
+const paint_mod = @import("paint.zig");
 const render_mod = @import("render.zig");
 const restore_mod = @import("restore.zig");
 const stall = @import("run_stall.zig");
-const theme_mod = @import("theme.zig");
 const turn = @import("turn.zig");
 const tty = @import("tty.zig");
 const traj = @import("traj.zig");
@@ -23,6 +23,11 @@ const Model = app.Model;
 // >11u: kitty disambiguate + event types + all-keys (Cmd+Delete / Super latch).
 // >4;2m: xterm modifyOtherKeys so Super+Backspace also arrives as CSI 27;9;127~.
 pub const enable_seq = "\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?7l\x1b[>11u\x1b[>4;2m";
+
+/// How long the screen may go without a full row-by-row rewrite. Short enough
+/// that nobody sits looking at damage, long enough to cost nothing: the frame
+/// is unchanged, so the repaint is the same bytes into a synchronized swap.
+pub const heal_interval_ms: u64 = 3000;
 
 pub const RunOpts = struct {
     turn_ctx: ?*anyopaque = null,
@@ -102,6 +107,7 @@ pub fn run(
     var stash_ms: u64 = 0;
     var arm_ms: u64 = 0;
     var last_hash: u64 = 0;
+    var last_heal_ms: u64 = 0;
     var saw_gfx: bool = false;
     var prev: []u8 = &.{};
     var prev_rows: usize = 0;
@@ -132,14 +138,26 @@ pub fn run(
         const frame = render_mod.render(&m, gpa, cols, rows, m.now_ms) catch "tui: render error";
         defer gpa.free(frame);
         const hash = std.hash.Wyhash.hash(0, frame);
-        if (hash != last_hash) {
+        // The diff painter trusts `prev` to be what is on screen. Two things
+        // can make that a lie without changing a single byte of the frame: a
+        // resize the loop never sees (SIGWINCH between tty.cols() and the
+        // paint, or one that ends on the dimensions it started from — the
+        // terminal still reflowed), and any async writer over the same tty (a
+        // kitty image delete redrawing late). Neither moves the hash, so
+        // neither would ever be repaired. A resize EVENT forces the full
+        // clear-and-lay-down; the heartbeat forces a cheaper every-row rewrite
+        // of the frame we already believe is up, which under ?2026 is
+        // byte-identical output into a synchronized swap — visually a no-op.
+        const resized = restore_mod.takeResized();
+        const heal = resized or m.now_ms -| last_heal_ms >= heal_interval_ms;
+        if (hash != last_hash or heal) {
             const has_gfx = std.mem.indexOf(u8, frame, "\x1b_G") != null;
             // The theme bg is painted per ROW, not baked into the frame, and
             // blank rows are byte-identical across themes/widths — the diff
             // path skips them, stranding old-bg rows after /theme or the
             // startup OSC-11 polarity flip, and stale columns after a
             // width-only resize. Both must force a full paint.
-            const full = prev.len == 0 or rows != prev_rows or cols != prev_cols or m.theme_id != prev_theme or saw_gfx or has_gfx;
+            const full = prev.len == 0 or rows != prev_rows or cols != prev_cols or m.theme_id != prev_theme or saw_gfx or has_gfx or resized;
             // Kitty images sit above the cell grid and survive \x1b[K / dirty
             // paints — delete before every redraw that might have shown one.
             // ?2026 synchronized output: the terminal buffers everything
@@ -148,7 +166,7 @@ pub fn run(
             // Terminals without it ignore the pair — strictly no worse.
             w.writeAll("\x1b[?2026h") catch {};
             if (saw_gfx or has_gfx) w.writeAll("\x1b_Ga=d,d=A,q=2\x1b\\") catch {};
-            paint(w, frame, rows, cols, if (full) &.{} else prev, m.theme().bg) catch {};
+            paint_mod.paint(w, frame, rows, cols, if (full) &.{} else prev, m.theme().bg, heal) catch {};
             w.writeAll("\x1b[?2026l") catch {};
             w.flush() catch {};
             if (prev.len != 0) gpa.free(prev);
@@ -158,6 +176,8 @@ pub fn run(
             prev_theme = m.theme_id;
             last_hash = hash;
             saw_gfx = has_gfx;
+            // Only a paint that rewrote EVERY row resets the heartbeat.
+            if (full or heal) last_heal_ms = m.now_ms;
         }
 
         // Short wait while an unfinished escape sequence is pending: if
@@ -294,7 +314,7 @@ pub fn run(
         const rows = @max(tty.rows(), @as(usize, 12));
         if (render_mod.render(&m, gpa, cols, rows, m.now_ms)) |frame| {
             defer gpa.free(frame);
-            paint(w, frame, rows, cols, &.{}, m.theme().bg) catch {};
+            paint_mod.paint(w, frame, rows, cols, &.{}, m.theme().bg, true) catch {};
             w.flush() catch {};
         } else |_| {}
         const start = m.now_ms;
@@ -363,78 +383,6 @@ fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
     _ = io;
 }
 
-/// Rewrite only rows that changed so a drag-select on older transcript survives
-/// a live token / thinking tick. Empty `prev` forces a full home+repaint.
-fn paint(w: *Io.Writer, frame: []const u8, rows: usize, cols: usize, prev: []const u8, bg: []const u8) !void {
-    if (prev.len == 0) {
-        try w.writeAll(bg);
-        try w.writeAll("\x1b[2J\x1b[H");
-        var row: usize = 0;
-        var it = std.mem.splitScalar(u8, frame, '\n');
-        while (it.next()) |ln| {
-            if (row >= rows) break;
-            try w.writeAll(bg);
-            try w.writeAll(ln);
-            try fillRow(w, ln, cols);
-            try w.writeAll(bg);
-            try w.writeAll("\x1b[K");
-            if (row + 1 < rows) try w.writeAll("\r\n");
-            row += 1;
-        }
-        while (row < rows) {
-            try w.writeAll(bg);
-            try w.writeAll("\x1b[K");
-            if (row + 1 < rows) try w.writeAll("\r\n");
-            row += 1;
-        }
-        // Erase below the last painted row too: if anything ever scrolled the
-        // alt screen (a resize race, a foreign write before stderr was
-        // parked), no stale row survives a full repaint.
-        try w.writeAll("\x1b[J");
-        try w.flush();
-        return;
-    }
-    var row: usize = 0;
-    while (row < rows) : (row += 1) {
-        if (!rowChanged(prev, frame, row)) continue;
-        try w.print("\x1b[{d};1H", .{row + 1});
-        try w.writeAll(bg);
-        const ln = nthLine(frame, row);
-        try w.writeAll(ln);
-        const vis = theme_mod.visibleLen(ln);
-        if (vis < cols) {
-            try fillRow(w, ln, cols);
-        } else {
-            // Row is exactly full: the cursor is ON the last column and EL
-            // erases it inclusive — that ate the composer's right border.
-            continue;
-        }
-        try w.writeAll(bg);
-        try w.writeAll("\x1b[K");
-    }
-    try w.flush();
-}
-
-fn fillRow(w: *Io.Writer, ln: []const u8, cols: usize) !void {
-    const vis = theme_mod.visibleLen(ln);
-    if (vis >= cols) return;
-    var n = cols - vis;
-    while (n > 0) : (n -= 1) try w.writeByte(' ');
-}
-
-fn nthLine(s: []const u8, row: usize) []const u8 {
-    var it = std.mem.splitScalar(u8, s, '\n');
-    var i: usize = 0;
-    while (it.next()) |ln| : (i += 1) {
-        if (i == row) return ln;
-    }
-    return "";
-}
-
-fn rowChanged(prev: []const u8, frame: []const u8, row: usize) bool {
-    return !std.mem.eql(u8, nthLine(prev, row), nthLine(frame, row));
-}
-
 test "run loop enables click+hover tracking and bracketed paste" {
     const src = @embedFile("run.zig");
     const mouse_on = [_]u8{ '?', '1', '0', '0', '0', 'h' };
@@ -476,46 +424,19 @@ test "run loop enables click+hover tracking and bracketed paste" {
 }
 
 // The stall-verdict / carry-window / arm-window battery lives beside the
-// policy it pins, in run_stall.zig.
+// policy it pins, in run_stall.zig; the frame painter's own battery (residue,
+// glyph torture, row-style isolation, the self-heal) lives in paint.zig.
 
-fn paintToBuf(a: std.mem.Allocator, frame: []const u8, rows: usize, cols: usize, prev: []const u8) ![]u8 {
-    var aw = Io.Writer.Allocating.init(a);
-    errdefer aw.deinit();
-    try paint(&aw.writer, frame, rows, cols, prev, "\x1b[48;2;20;20;20m");
-    return aw.toOwnedSlice();
-}
-
-test "paint keeps a full row's last glyph but still erases every shorter row" {
-    const a = std.testing.allocator;
-    // Row 0 is exactly 10 columns: ESC[K sits ON the last cell and would eat
-    // the composer's right border, so a full row gets neither pad nor erase.
-    // Row 1 is short and must get both.
-    const out = try paintToBuf(a, "╭────────╮\nshort", 2, 10, "XXXXXXXXXX\nold row!!");
-    defer a.free(out);
-    const border = std.mem.indexOf(u8, out, "╭────────╮").?;
-    const short = std.mem.indexOf(u8, out, "short").?;
-    const erase = std.mem.indexOfPos(u8, out, border, "\x1b[K");
-    try std.testing.expect(erase != null and erase.? > short);
-    try std.testing.expect(std.mem.indexOfPos(u8, out, short, "     ") != null);
-}
-
-test "paint erases a row whose glyphs are ambiguous width" {
-    const a = std.testing.allocator;
-    // "  ✓ bash finished ok" draws 20 cells. When visibleLen claimed 21 it
-    // measured full at cols=21, so paint skipped the pad AND the erase and the
-    // 21st cell kept the previous frame. Both must still happen.
-    const frame = "  \u{2713} bash finished ok";
-    try std.testing.expectEqual(@as(usize, 20), theme_mod.visibleLen(frame));
-    const out = try paintToBuf(a, frame, 1, 21, "RESIDUE RESIDUE RESIDU");
-    defer a.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[K") != null);
-}
-
-test "rowChanged only flags the line that actually moved" {
-    const prev = "top\nmiddle\nbottom";
-    const next = "top\nmiddle\nBOTTOM";
-    try std.testing.expect(!rowChanged(prev, next, 0));
-    try std.testing.expect(!rowChanged(prev, next, 1));
-    try std.testing.expect(rowChanged(prev, next, 2));
-    try std.testing.expect(!rowChanged(prev, prev, 2));
+test "the loop self-heals: a resize EVENT and a periodic sweep force a repaint" {
+    const src = @embedFile("run.zig");
+    // A SIGWINCH that starts and ends on the same dimensions is invisible to a
+    // dimension comparison, and one that lands between tty.cols() and the
+    // paint leaves the diff baseline describing a screen the terminal has
+    // already reflowed. Both are covered by the EVENT.
+    try std.testing.expect(std.mem.indexOf(u8, src, "restore_mod.takeResized()") != null);
+    // ...and anything else that writes over us (an async kitty image delete,
+    // a terminal-side redraw) is repaired on the heartbeat, which must be able
+    // to run even when the frame hash has not moved.
+    try std.testing.expect(std.mem.indexOf(u8, src, "hash != last_hash or heal") != null);
+    try std.testing.expect(heal_interval_ms > 0);
 }

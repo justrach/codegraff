@@ -23,16 +23,23 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
-    const top = try chrome.topBar(self, a, width);
+    // Nothing composed here may be wider than the screen. A row that is
+    // becomes a lie the painter has to clean up after: with autowrap off the
+    // terminal chops it, and on any terminal that does not honour ?7l it wraps
+    // and pushes every row below it down by one — which desyncs the row↔line
+    // map the composer's click math, the sticky header and the selection band
+    // all ride on. The chrome builders that take `width` clamp themselves; the
+    // overlay bodies and the image card historically did not.
+    const top = theme_mod.takeCols(try chrome.topBar(self, a, width), width);
     const image_card = if (self.overlay == .image)
-        try chrome.overlay(self, a, width)
+        try theme_mod.wrapToWidth(a, try chrome.overlay(self, a, width), width)
     else
         "";
     // The image overlay is a card ABOVE the composer, so `mid` stays the
     // transcript; every other overlay replaces it with its own body.
     const overlay_body = self.overlay != .none and self.overlay != .image;
     const mid = if (overlay_body)
-        try chrome.overlay(self, a, width)
+        try theme_mod.wrapToWidth(a, try chrome.overlay(self, a, width), width)
     else if (self.screen == .welcome and self.history.items.len == 0 and self.pending == null)
         // Anything in the transcript — including a live background op's
         // pending row — outranks the welcome pane: keeping it up hid a
@@ -54,12 +61,21 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     if (prompt.len == 0 or prompt[prompt.len - 1] != '\n') try bottom.append('\n');
     try bottom.appendSlice(status);
 
-    const bottom_lines = countLines(bottom.items);
     const top_lines = countLines(top);
     // countLines counts a trailing '\n' as an extra line but the append below
     // adds no newline of its own — the off-by-one shifted the whole frame up
     // one row and broke composer clicks (prompt_origin pointed past the box).
     const card_lines = if (image_card.len == 0) 0 else countLines(image_card) - @intFromBool(image_card[image_card.len - 1] == '\n');
+    // The bottom block owns the LAST rows of the screen, so when the chrome
+    // cannot all fit — a short terminal with the slash menu open — it is
+    // trimmed from the top, where the expendable rows (the menu, the paste
+    // hint) are. Untrimmed, the composed frame ran LONGER than the screen: the
+    // painter clipped it at the last row, so the composer and the status bar
+    // were simply never drawn, while prompt_origin went on claiming a row for
+    // a composer that was not on screen.
+    const room = if (height > top_lines + card_lines + 1) height - top_lines - card_lines - 1 else 1;
+    const bottom_block = lastLines(bottom.items, room);
+    const bottom_lines = countLines(bottom_block);
     self.preview_rows = card_lines;
     self.mid_origin = top_lines;
     self.prompt_origin = if (height > bottom_lines) height - bottom_lines else 0;
@@ -129,7 +145,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
         try out.appendSlice(image_card);
         if (image_card[image_card.len - 1] != '\n') try out.append('\n');
     }
-    try out.appendSlice(bottom.items);
+    try out.appendSlice(bottom_block);
     // Selection is a post-pass over the finished frame: the row builders stay
     // unaware of it, and the band lands on screen rows exactly as the mouse
     // reported them (#529).
@@ -139,6 +155,89 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
 fn countLines(s: []const u8) usize {
     if (s.len == 0) return 0;
     return std.mem.count(u8, s, "\n") + 1;
+}
+
+/// The last `n` lines of `s`, whole. Trimming a block that has to sit on the
+/// screen's last rows can only ever come off the top.
+fn lastLines(s: []const u8, n: usize) []const u8 {
+    if (n == 0) return "";
+    var have = countLines(s);
+    var i: usize = 0;
+    while (have > n) : (have -= 1) {
+        i = (std.mem.indexOfScalarPos(u8, s, i, '\n') orelse return s[i..]) + 1;
+    }
+    return s[i..];
+}
+
+test "lastLines keeps whole lines off the bottom" {
+    try std.testing.expectEqualStrings("c", lastLines("a\nb\nc", 1));
+    try std.testing.expectEqualStrings("b\nc", lastLines("a\nb\nc", 2));
+    try std.testing.expectEqualStrings("a\nb\nc", lastLines("a\nb\nc", 9));
+    try std.testing.expectEqualStrings("", lastLines("a\nb", 0));
+}
+
+test "a frame is exactly `height` rows of at most `width` columns" {
+    // The painter addresses screen row N as the Nth line of this string, and
+    // nothing else ever tells it where a row is. Every off-by-one in this
+    // file — the trailing-newline overcount that once shifted the whole frame
+    // up a row and broke composer clicks — shows up here first, and the
+    // occluding chrome rows (sticky header) and the image card are exactly the
+    // regions that write OUTSIDE the plain mid-lines flow.
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    // Model-owned: deinit frees it.
+    m.session_name = try std.testing.allocator.dupe(u8, "a session name for the top bar");
+    for ([_][2]usize{ .{ 40, 12 }, .{ 80, 24 }, .{ 100, 30 }, .{ 132, 60 }, .{ 200, 40 } }) |wh| {
+        const w = wh[0];
+        const h = wh[1];
+        // Welcome, then a short transcript, then one long enough to scroll (so
+        // the sticky header pins two chrome rows), then the same with the
+        // image card above the composer, then an overlay body.
+        for (0..7) |stage| {
+            switch (stage) {
+                1 => {
+                    try m.push(.user, "how do I frobnicate the widget?");
+                    try m.push(.assistant, "like this");
+                },
+                2 => for (0..60) |_| try m.push(.assistant, "filler prose that fills the scrollback with wrapped content"),
+                3 => {
+                    m.preview_path = "/tmp/shot.png";
+                    m.preview_n = 1;
+                    m.openOverlay(.image);
+                },
+                4 => {
+                    m.closeOverlay();
+                    m.openOverlay(.help);
+                },
+                5 => {
+                    m.closeOverlay();
+                    if (m.goal) |g| std.testing.allocator.free(g);
+                    m.goal = try std.testing.allocator.dupe(u8, "a standing goal long enough to overrun a narrow top bar");
+                },
+                6 => {
+                    m.focus = .prompt;
+                    try m.input.setValue("/");
+                },
+                else => {},
+            }
+            const frame = try render(&m, std.testing.allocator, w, h, 0);
+            defer std.testing.allocator.free(frame);
+            try std.testing.expectEqual(h, countLines(frame));
+            var it = std.mem.splitScalar(u8, frame, '\n');
+            var rown: usize = 0;
+            while (it.next()) |ln| : (rown += 1) {
+                if (theme_mod.visibleLen(ln) > w) {
+                    const dump = @import("dump.zig");
+                    const vis = try dump.visible(std.testing.allocator, ln);
+                    defer std.testing.allocator.free(vis);
+                    std.debug.print("w={d} h={d} stage={d} row={d} cols={d}: {s}\n", .{ w, h, stage, rown, theme_mod.visibleLen(ln), vis });
+                }
+                try std.testing.expect(theme_mod.visibleLen(ln) <= w);
+            }
+        }
+        m.closeOverlay();
+    }
 }
 
 test "countLines" {
