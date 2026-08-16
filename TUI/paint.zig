@@ -57,10 +57,12 @@ pub fn paint(
             try paintRow(w, if (it.next()) |ln| ln else "", cols, bg);
             if (row + 1 < rows) try w.writeAll("\r\n");
         }
-        // Erase below the last painted row too: if anything ever scrolled the
-        // alt screen (a resize race, a foreign write before stderr was
-        // parked), no stale row survives a full repaint.
-        try w.writeAll("\x1b[J");
+        // No trailing ED here. The release tip added one ("erase below, so a
+        // scrolled alt screen self-heals"), but the `\x1b[2J` above already
+        // clears the WHOLE display, scrolled rows included — while ED is
+        // cursor-INCLUSIVE, and with autowrap off the cursor sits ON the last
+        // column after a bottom row that measures full. It would erase the
+        // glyph the erase-first branch just drew. Pinned below.
         try w.flush();
         return;
     }
@@ -442,6 +444,23 @@ test "the self-heal rewrites every row and never flashes the screen" {
     try screen.expectMatches(&want);
     screen.feed(try paintForced(ar, frame, 3, 20, frame, true));
     try screen.expectMatches(&want);
+}
+
+test "a full repaint never ends with a cursor-inclusive erase" {
+    const a = std.testing.allocator;
+    // The bottom row measures EXACTLY the width, so the erase-first branch
+    // draws it and leaves the cursor ON the last column (autowrap is off).
+    // Any ED/EL emitted after that erases the glyph just drawn — which is the
+    // same class of loss the erase-first design exists to prevent, one row
+    // lower. The clear at the head of a full paint already covers the whole
+    // display, so nothing after the last row is needed OR safe.
+    const bar = "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}";
+    const frame = "top row\nmiddle\n" ++ bar;
+    try std.testing.expectEqual(@as(usize, 10), theme_mod.visibleLen(bar));
+    const out = try paintToBuf(a, frame, 3, 10, "");
+    defer a.free(out);
+    const last = std.mem.lastIndexOf(u8, out, "\u{2500}").? + 3;
+    try std.testing.expectEqualStrings("", out[last..]);
 }
 
 test "rows past the end of the frame are blanked, not left stale" {
