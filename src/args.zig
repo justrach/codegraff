@@ -254,6 +254,12 @@ pub fn parse(init: std.process.Init) !Flags {
     // the knob silently no-ops; applyEnvKnobs re-parses the same value later.
     if (init.environ_map.get("GRAFF_XAI_WIRE")) |xw|
         @import("provider.zig").g_xai_responses = std.ascii.eqlIgnoreCase(std.mem.trim(u8, xw, " \t"), "responses");
+    if (init.environ_map.get("GRAFF_XAI_URL")) |xu| {
+        if (xu.len > 0) {
+            const provider_mod = @import("provider.zig");
+            provider_mod.g_xai_url_override = xu;
+        }
+    }
 
     return flags;
 }

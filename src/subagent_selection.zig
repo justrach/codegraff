@@ -193,10 +193,11 @@ test "defaultLadderModel: descends one rung per provider, bottom rung inherits" 
     try std.testing.expectEqualStrings("claude-sonnet-5", defaultLadderModel(mk("anthropic", "claude-opus-5")).?);
     try std.testing.expect(defaultLadderModel(mk("anthropic", "claude-sonnet-5")) == null);
     try std.testing.expect(defaultLadderModel(mk("anthropic", "claude-opus-4-8")) == null);
-    // deepseek: flash overtook pro and is 3x cheaper too, so it is the whole
-    // ladder — one seat, nothing to descend to, and pro is not a rung at all.
+    // deepseek / codegraff: pro (the session default) descends to flash;
+    // a flash root is already the cheap seat and inherits.
+    try std.testing.expectEqualStrings("deepseek-v4-flash", defaultLadderModel(mk("deepseek", "deepseek-v4-pro")).?);
     try std.testing.expect(defaultLadderModel(mk("deepseek", "deepseek-v4-flash")) == null);
-    try std.testing.expect(defaultLadderModel(mk("deepseek", "deepseek-v4-pro")) == null);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", defaultLadderModel(mk("codegraff", "deepseek-v4-pro")).?);
     // unlisted provider -> no ladder at all
     try std.testing.expect(defaultLadderModel(mk("xai", "grok-4.3")) == null);
     // a real, catalogued model that just isn't a rung on its own provider's
@@ -285,14 +286,8 @@ test "ladder rungs vs providerClass: documented, intentional disagreement (#291)
     try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("gpt-5.6-sol"));
     try std.testing.expectEqualStrings("mid", @import("scoring.zig").providerClass("gpt-5.6-terra")); // ladder rung: mid
     try std.testing.expectEqualStrings("small", @import("scoring.zig").providerClass("gpt-5.6-luna")); // ladder rung: small
-    // The one remaining disagreement, still reported rather than papered
-    // over: the ladder treats deepseek-v4-flash as deepseek's only cheaper
-    // rung (mid), while providerClass's "flash" needle states its absolute
-    // capability (small). Relative-vs-absolute semantics, not a bug — the
-    // needle table's other callers (DGM fitness scoring/fleet niche gating)
-    // want the absolute answer.
     try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("deepseek-v4-pro"));
-    try std.testing.expectEqualStrings("small", @import("scoring.zig").providerClass("deepseek-v4-flash")); // ladder rung: mid
+    try std.testing.expectEqualStrings("small", @import("scoring.zig").providerClass("deepseek-v4-flash")); // ladder rung: small
     // Claude agrees end-to-end (opus/sonnet/haiku are tier-distinct needles
     // in providerClass, matching the ladder one-for-one).
     try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("claude-opus-4-8"));

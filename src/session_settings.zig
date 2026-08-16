@@ -158,6 +158,9 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     if (environ_map.get("GRAFF_XAI_WIRE")) |v| {
         provider_mod.g_xai_responses = std.ascii.eqlIgnoreCase(std.mem.trim(u8, v, " \t"), "responses");
     }
+    if (environ_map.get("GRAFF_XAI_URL")) |v| {
+        if (v.len > 0) provider_mod.g_xai_url_override = v;
+    }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
     // #502 follow-up: opt-in xAI on-socket chaining (see codex_chain.g_xai_ws_chain).
     if (environ_map.get("GRAFF_XAI_WS_CHAIN")) |v|

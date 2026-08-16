@@ -85,7 +85,7 @@ pub const changelog_text =
     \\  • /peek <session> shows what a live co-resident session is doing right now — its last prompt, last action, last tool
     \\  • Session recaps ride the event stream: settled turns carry a Completed or Needs-input status with a one-line recap for the GUI agent overview
     \\  • Subscriptions are billed and routed as subscriptions: a flat-rate login (Codex, Kimi, SuperGrok) now outranks an API key on the same provider instead of losing to it, costs $0 in /cost, and the key it displaced is parked and takes over — announced — only if the plan runs out of quota
-    \\  • Worker tiers land on seats you already pay for: an explicit tier ask crosses to a logged-in plan (mid → k3, small → gpt-5.6-luna) rather than a metered rung, which the #291 ladder descent used to block by looking like a manual pin
+    \\  • Worker tiers land on seats you already pay for: an explicit tier ask crosses to a logged-in plan (mid → k3, small → gpt-5.6-luna) rather than a metered rung — except a DeepSeek session (direct or via codegraff), which stays on flash instead of dropping to luna
     \\  • A tier rung must now be a genuinely cheaper SEAT, so anthropic descends opus-5 → sonnet-5 instead of to an equally-priced older opus, and deepseek-v4-flash replaces pro outright
     \\  • `graff route` with no model lists every provider you can reach, what it bills, and the tiers it offers
     \\  • Anthropic serves its live model list, so new Claude releases arrive without a rebuild

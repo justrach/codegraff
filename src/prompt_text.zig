@@ -110,10 +110,11 @@ pub const harness_issue_note =
     \\...`), never in the current working repository's issue tracker.
 ;
 
-/// Always present. Deliberately NOT gated on `caps.local_tools`: an embedder
-/// that removed the local tools still reaches a sandbox where git may run, and
-/// "never discard the user's work" is the wrong instruction to make optional.
-pub const git_note =
+/// Gate: `caps.git_repo`. Commit-identity and PR-description discipline only
+/// earn their tokens where a repository exists to commit to — a scratch-dir
+/// one-shot or an eval run pays ~250 tokens/call for guidance it can never
+/// act on. The SAFETY rule stays in `git_safety_note` below, unconditional.
+pub const git_authoring_note =
     \\
     \\
     \\When making git commits on behalf of the user, commit as the USER's own git
@@ -133,6 +134,15 @@ pub const git_note =
     \\never pad a small change with boilerplate headings. Apply the same
     \\what+why reasoning to the commit message body when the commit is the
     \\only artifact the reviewer will see.
+;
+
+/// Always present. Deliberately NOT gated on `caps.local_tools` OR
+/// `caps.git_repo`: an embedder that removed the local tools still reaches a
+/// sandbox where git may run, a repo can appear mid-session (`git clone`),
+/// and "never discard the user's work" is the wrong instruction to make
+/// optional either way.
+pub const git_safety_note =
+    \\
     \\
     \\Never run git commands that discard work — `reset --hard`, `clean -f`,
     \\`checkout --`/`restore`, force-push, or `branch -D` — unless the user

@@ -343,13 +343,13 @@ pub const Agent = struct {
         // No per-turn teardown: the socket and the chain span user turns, guarded by codex_chain.usable instead.
         self.completed = null;
         if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) esc_cancel.store(false, .release);
-        // Effort routing (effort_route.zig): a lookup-shaped turn runs at low
-        // effort while the session knob is the untouched default — an explicit
-        // /effort or a persisted setting always wins. Restored after the turn.
+        // Effort routing: lookup-shaped SUBAGENT turns only. Flipping the
+        // root's reasoning_effort mid-conversation misses the prompt cache
+        // and drops the WS chain. Children have their own conv id.
         const saved_reasoning = self.reasoning;
-        if (!self.sub and self.reasoning == .medium and effort_route.routesToLowEffort(self.lastUserText())) {
+        if (effort_route.shouldRouteLookupLow(self.sub, self.reasoning == .medium, self.lastUserText())) {
             self.reasoning = .low;
-            tool_render.routedEffortLine(self); // the prompt badge predates the prompt; this is the truth
+            tool_render.routedEffortLine(self);
         }
         defer self.reasoning = saved_reasoning;
         while (true) {

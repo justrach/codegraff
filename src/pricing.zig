@@ -260,6 +260,7 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "codegraff", .name = "claude-opus-4.8", .context = 1_000_000 },
     .{ .provider = "codegraff", .name = "claude-sonnet-4.6", .context = 1_000_000 },
     .{ .provider = "codegraff", .name = "deepseek-v4-pro", .context = 1_000_000 },
+    .{ .provider = "codegraff", .name = "deepseek-v4-flash", .context = 1_000_000 },
     .{ .provider = "codegraff", .name = "minimax-m3", .context = 1_000_000 },
     .{ .provider = "codegraff", .name = "gpt-5.5", .context = 400_000 },
     .{ .provider = "codegraff", .name = "kimi-k2.6", .context = 262_144 },

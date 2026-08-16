@@ -34,6 +34,7 @@ class ScriptedModel:
         self.script = script
         self.exhausted_text = exhausted_text
         self.requests: list[dict[str, Any]] = []
+        self.request_headers: list[dict[str, str]] = []
         self._lock = threading.Lock()
         self._server: http.server.ThreadingHTTPServer | None = None
 
@@ -72,6 +73,7 @@ class ScriptedModel:
 
             def do_POST(self) -> None:  # noqa: N802
                 body = self._body()
+                model.request_headers.append({k.lower(): v for k, v in self.headers.items()})
                 reply = model.next_reply(body)
                 if body.get("stream"):
                     self._stream(reply)

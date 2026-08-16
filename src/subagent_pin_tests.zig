@@ -171,10 +171,10 @@ test "graceful fallback: every unhonorable pin keeps the session default, never 
     // A provider with no ladder at all: a tier pin is a no-op, not a crash.
     const xai: Provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "grok-4.3", .context = 256_000 };
     try std.testing.expectEqual(pin_mod.Outcome.no_ladder, pin_mod.forSpawn(xai, obj(a, "{\"tier\":\"small\"}"), true).outcome);
-    // A ladder without that rung (deepseek is frontier-only, anthropic has no
-    // `mid`) — never rounds to the nearest rung.
+    // A ladder without that rung (deepseek has no mid) — never rounds to
+    // the nearest rung.
     const deepseek: Provider = .{ .id = "deepseek", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-flash", .context = 128_000 };
-    try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(deepseek, obj(a, "{\"tier\":\"small\"}"), true).outcome);
+    try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(deepseek, obj(a, "{\"tier\":\"mid\"}"), true).outcome);
     const opus: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude-opus-5", .context = 1_000_000 };
     try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(opus, obj(a, "{\"tier\":\"mid\"}"), true).outcome);
     try std.testing.expectEqualStrings("claude-sonnet-5", pin_mod.forSpawn(opus, obj(a, "{\"tier\":\"small\"}"), true).provider.?.model);
@@ -215,18 +215,18 @@ test "sub-first routing: a logged-in flat-rate sub outranks metered for explicit
         if (std.mem.eql(u8, spec.id, "codex")) keys.values[i] = "tok";
     }
     bench.g_keys = &keys;
-    // A deepseek session asking tier:"small": the codex sub is logged in and
-    // luna is the better pick — of course it goes to luna, on the sub.
+    // A DeepSeek session asking tier:"small" stays on DeepSeek flash even
+    // when Codex is logged in — luna is the worse seat, not a free upgrade.
     const dsv: Provider = .{ .id = "deepseek", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-pro", .context = 128_000 };
     const routed = pin_mod.forSpawn(dsv, obj(a, "{\"tier\":\"small\"}"), true);
-    try std.testing.expectEqual(pin_mod.Outcome.sub_routed, routed.outcome);
-    try std.testing.expectEqualStrings("codex", routed.provider.?.id);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", routed.provider.?.model);
-    try std.testing.expect(routed.outcome.describe().len > 0);
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, routed.outcome);
+    try std.testing.expectEqualStrings("deepseek", routed.provider.?.id);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", routed.provider.?.model);
     // An explicit --subagent-provider (sub_ok=false) is a human choice no
-    // auto-route may override: back to the provider-local path (deepseek has
-    // no small rung → no_rung, session default kept).
-    try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(dsv, obj(a, "{\"tier\":\"small\"}"), false).outcome);
+    // auto-route may override: the provider-local flash rung still applies.
+    const local = pin_mod.forSpawn(dsv, obj(a, "{\"tier\":\"small\"}"), false);
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, local.outcome);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", local.provider.?.model);
     // Exact model pins: provider-local first, but a name the child's provider
     // does not serve falls through to a logged-in sub that serves it exactly
     // — the same standing consent as the tier path, rescuing a pin that used
@@ -242,10 +242,21 @@ test "sub-first routing: a logged-in flat-rate sub outranks metered for explicit
     // …and the match is strictly exact/alias — a substring must NOT cross a
     // provider boundary to find a model the pin did not name.
     try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"luna\"}"), true).outcome);
-    // No login (g_keys null) → no candidates → the metered ceiling rules.
+    // No login (g_keys null) → no subscription hop; DeepSeek still has a
+    // local flash rung. An exact luna pin with no login stays unknown.
     bench.g_keys = null;
-    try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(dsv, obj(a, "{\"tier\":\"small\"}"), true).outcome);
+    const nologin = pin_mod.forSpawn(dsv, obj(a, "{\"tier\":\"small\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, nologin.outcome);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", nologin.provider.?.model);
     try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), true).outcome);
+
+    // Same family through a codegraff login: stay on gateway flash, not luna.
+    bench.g_keys = &keys;
+    const cg: Provider = .{ .id = "codegraff", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-pro", .context = 1_000_000 };
+    const cg_small = pin_mod.forSpawn(cg, obj(a, "{\"tier\":\"small\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, cg_small.outcome);
+    try std.testing.expectEqualStrings("codegraff", cg_small.provider.?.id);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", cg_small.provider.?.model);
 }
 
 test "exact pin: the child's own provider wins over a logged-in sub serving the same name" {

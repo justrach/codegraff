@@ -151,6 +151,7 @@ pub const kimi_anthropic_url = "https://api.kimi.com/coding/v1/messages?beta=tru
 /// provider (re)build path (startup, /model switches, session restore) goes
 /// through Keys.build; both the WS and SSE transports read provider.url.
 pub var g_codex_url_override: ?[]const u8 = null;
+pub var g_xai_url_override: ?[]const u8 = null; // GRAFF_XAI_URL (chat or Responses path)
 
 pub const Provider = struct {
     id: []const u8,
@@ -239,7 +240,7 @@ pub const Provider = struct {
             .id = spec.id,
             .kind = if (is_kimi_anthropic) .anthropic else if (is_xai_responses) .responses else spec.kind,
             .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
-            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (is_xai_responses) xai_responses_url else spec.url,
+            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (std.mem.eql(u8, spec.id, "xai")) (g_xai_url_override orelse if (is_xai_responses) xai_responses_url else spec.url) else spec.url,
             .api_key = base.api_key,
             .model = model,
             .context = contextWindowFor(spec.id, model),
@@ -335,7 +336,7 @@ pub const Keys = struct {
             .id = spec.id,
             .kind = if (is_kimi_anthropic) .anthropic else if (is_xai_responses) .responses else spec.kind,
             .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
-            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (is_xai_responses) xai_responses_url else spec.url,
+            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (std.mem.eql(u8, spec.id, "xai")) (g_xai_url_override orelse if (is_xai_responses) xai_responses_url else spec.url) else spec.url,
             .api_key = key,
             .model = model,
             .context = contextWindowFor(spec.id, model),

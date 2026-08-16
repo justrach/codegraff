@@ -1,15 +1,13 @@
-//! Per-turn effort routing (k3 benchmark, 2026-08): a lookup/Q&A-shaped prompt
-//! runs its turn at low effort when the session knob is still the untouched
-//! default. Measured on the graff×kimi-cli k3 benchmark: lookup tasks at low
-//! effort lose no answer quality (12/12 correct, false-premise corrections
-//! included) and cut wall time ~40-50% (runEval 32.6s vs 57.4-81.3s), because
-//! per-call thinking dominates and low effort thinks less. Edit-shaped prompts
-//! keep the default: low effort there INFLATES tool-call count (permgate went
-//! 11→16 calls and +85% wall), so anything that smells like mutation is never
-//! routed down.
+//! Per-turn effort routing (k3 benchmark, 2026-08): a lookup/Q&A-shaped
+//! SUBAGENT turn runs at low effort when that child inherited the stock
+//! `.medium` default (no effort pin). Root never routes: `reasoning_effort`
+//! / `reasoning.effort` sits in the cached prefix, and flipping it mid-
+//! conversation misses the prompt cache and breaks the WS chain fingerprint
+//! (codex_chain.propsFp). Children already have their own conv id.
 //!
-//! An explicit user choice always wins: routing only fires while the session
-//! effort is the stock `.medium` default (see the runTurn call site).
+//! Edit-shaped prompts keep the default: low effort there INFLATES tool-
+//! call count (permgate went 11→16 calls and +85% wall). An explicit
+//! /effort or a worker `effort:` pin always wins.
 
 const std = @import("std");
 
@@ -50,6 +48,12 @@ pub fn routesToLowEffort(prompt: []const u8) bool {
     return false;
 }
 
+/// Root stays sticky for cache. Only an unpinned child (default medium) may
+/// drop a lookup-shaped task to low.
+pub fn shouldRouteLookupLow(is_sub: bool, default_medium: bool, prompt: []const u8) bool {
+    return is_sub and default_medium and routesToLowEffort(prompt);
+}
+
 test "lookup prompts route low, mutation prompts and bare commands do not" {
     // The three benchmark tasks are the pinned shape: two route low, and the
     // one that REGRESSED at low effort (permgate) must not route.
@@ -60,4 +64,9 @@ test "lookup prompts route low, mutation prompts and bare commands do not" {
     try std.testing.expect(!routesToLowEffort("implement the feature and update the docs"));
     try std.testing.expect(!routesToLowEffort("hi"));
     try std.testing.expect(routesToLowEffort("Explain how the permission gate works here?"));
+    const q = "Explain how the permission gate works here?";
+    try std.testing.expect(!shouldRouteLookupLow(false, true, q)); // root: keep the cached prefix
+    try std.testing.expect(shouldRouteLookupLow(true, true, q)); // unpinned child
+    try std.testing.expect(!shouldRouteLookupLow(true, false, q)); // explicit effort pin
+    try std.testing.expect(!shouldRouteLookupLow(true, true, "fix the failing test"));
 }

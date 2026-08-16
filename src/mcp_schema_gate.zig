@@ -83,7 +83,7 @@ pub const env_eager = "GRAFF_MCP_EAGER"; // comma-separated server names; "*" pi
 /// entry and no import cycle. The description is spliced into a raw JSON
 /// string, so it must stay free of characters needing JSON escapes.
 pub const tool_name = "load_tool_schemas";
-pub const tool_desc = "Load the full JSON input schemas for deferred tools and enable them for the rest of this session. Deferred MCP tools — and folded native tools (workflow, imagegen, learn_candidate, eval, clock_sleep, subagent, todo_write, todo_read, peer_message, note_constraint, agent_output, skill, webfetch) — ship no schemas up front, so that thousands of tokens of JSON Schema stay out of every request; any deferred servers and their tool names are listed at the end of this description. A tool whose schema has not been loaded CANNOT be called: calling it returns an error telling you to load it first. Pass tools with exact names (mcp__server__tool for MCP, or a folded native name like workflow), pass server to load every deferred tool on one MCP server, or pass query with keywords to search deferred tools by name and description. Call it with no arguments to list what is currently deferred. Loading is permanent for this session and free to repeat, because the schemas are cached.";
+pub const tool_desc = "Load the full JSON input schemas for deferred tools and enable them for the rest of this session. Deferred tools — MCP and folded native — ship without their schemas so those bytes stay out of every request; what is deferred right now is listed at the end of this description. A tool whose schema has not been loaded CANNOT be called: load it first. Pass tools with exact names (mcp__server__tool for MCP, a bare name like workflow for native), server to load one whole MCP server, or query with keywords to search deferred tools; no arguments lists everything deferred. Loading is permanent for this session and free to repeat.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"tools": {"type": "array", "items": {"type": "string"}, "description": "Exact qualified MCP tool names to load, e.g. mcp__deepwiki__ask_question"}, "server": {"type": "string", "description": "Load every deferred tool on this MCP server instead of naming them one by one"}, "query": {"type": "string", "description": "Search deferred tools by keyword (matches name and description, loads the top 8 matches) — use when you know what you need but not the exact tool name"}}}
 ;
@@ -487,7 +487,19 @@ fn matchQuery(arena: Allocator, all: []const mcp.Tool, query: []const u8) ![]usi
 /// listing is how the model learns what exists (codex's tool_search source
 /// listing), and `query` covers discovery beyond it (#476).
 pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
-    if (!anyDeferred(all)) return tool_desc;
+    // Folded NATIVES ride this listing too (#476, the schema.zig zero-stub
+    // rule): their names live here, once, instead of a static enumeration
+    // every session re-pays after the tools load. Same stable-catalog rule
+    // as the MCP half — stable mode lists by policy, never by load state.
+    const native_fold = @import("native_fold.zig");
+    var natives: std.ArrayList([]const u8) = .empty;
+    if (native_fold.anyFolded()) {
+        for (native_fold.folded) |name| {
+            if (!g_stable_catalog and native_fold.isLoaded(name)) continue;
+            try natives.append(arena, name);
+        }
+    }
+    if (!anyDeferred(all) and natives.items.len == 0) return tool_desc;
     // Stable-catalog mode lists by POLICY, not load state: a listing that
     // shrinks as tools load would change the prefix this mode exists to fix.
     const deferredRule: *const fn ([]const mcp.Tool, mcp.Tool) bool = if (g_stable_catalog) &policyDeferred else &isDeferred;
@@ -502,7 +514,12 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
     }
     var aw: Io.Writer.Allocating = .init(arena);
     try aw.writer.writeAll(tool_desc);
-    try aw.writer.writeAll(" Deferred now:");
+    if (natives.items.len > 0) {
+        try aw.writer.writeAll(" Folded native:");
+        for (natives.items, 0..) |name, i| try aw.writer.print("{s}{s}", .{ if (i == 0) " " else ", ", name });
+        try aw.writer.writeAll(";");
+    }
+    if (servers.items.len > 0) try aw.writer.writeAll(" Deferred now:");
     for (servers.items) |sv| {
         try aw.writer.print(" {s} (", .{sv});
         var first = true;
@@ -558,42 +575,9 @@ pub fn handleLoad(agent: anytype, input: Value) ExecResult {
 
 // --- size accounting -------------------------------------------------------
 
-const max_depth = 32;
-
-/// Serialized byte count of a JSON value, near enough for a budget decision
-/// (escapes and float formatting are approximated). Depth-capped: the value
-/// comes from an MCP server, so it is untrusted input.
-pub fn jsonBytes(v: Value, depth: u8) usize {
-    if (depth >= max_depth) return 0;
-    return switch (v) {
-        .null => 4,
-        .bool => |b| if (b) @as(usize, 4) else 5,
-        .integer => |i| blk: {
-            var buf: [24]u8 = undefined;
-            const printed = std.fmt.bufPrint(&buf, "{d}", .{i}) catch break :blk 1;
-            break :blk printed.len;
-        },
-        .float => 8,
-        .number_string => |s| s.len,
-        .string => |s| s.len + 2,
-        .array => |a| blk: {
-            var n: usize = 2;
-            for (a.items, 0..) |item, i| n += jsonBytes(item, depth + 1) + @intFromBool(i > 0);
-            break :blk n;
-        },
-        .object => |o| blk: {
-            var n: usize = 2;
-            var it = o.iterator();
-            var first = true;
-            while (it.next()) |e| {
-                n += e.key_ptr.len + 3 + jsonBytes(e.value_ptr.*, depth + 1);
-                if (!first) n += 1;
-                first = false;
-            }
-            break :blk n;
-        },
-    };
-}
+/// Body in util.zig (600-line cap); re-exported so serverCost and the tests
+/// keep naming this module.
+pub const jsonBytes = util.jsonBytes;
 // Tests live in mcp_schema_gate_tests.zig (both files answer to the 600-line
 // ceiling); the catalog-level half is in tool_schema_tests.zig, next to
 // renderRootTools.

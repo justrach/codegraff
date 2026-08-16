@@ -105,6 +105,44 @@ pub fn unixMs(io: Io) i64 {
     return @intCast(@divTrunc(ts.nanoseconds, 1_000_000));
 }
 
+const json_bytes_max_depth = 32;
+
+/// Serialized byte count of a JSON value, near enough for a budget decision
+/// (escapes and float formatting are approximated). Depth-capped: values may
+/// come from an MCP server, so they are untrusted input. Lives here (not
+/// mcp_schema_gate.zig, at the 600-line cap); that module re-exports it.
+pub fn jsonBytes(v: Value, depth: u8) usize {
+    if (depth >= json_bytes_max_depth) return 0;
+    return switch (v) {
+        .null => 4,
+        .bool => |b| if (b) @as(usize, 4) else 5,
+        .integer => |i| blk: {
+            var buf: [24]u8 = undefined;
+            const printed = std.fmt.bufPrint(&buf, "{d}", .{i}) catch break :blk 1;
+            break :blk printed.len;
+        },
+        .float => 8,
+        .number_string => |s| s.len,
+        .string => |s| s.len + 2,
+        .array => |a| blk: {
+            var n: usize = 2;
+            for (a.items, 0..) |item, i| n += jsonBytes(item, depth + 1) + @intFromBool(i > 0);
+            break :blk n;
+        },
+        .object => |o| blk: {
+            var n: usize = 2;
+            var it = o.iterator();
+            var first = true;
+            while (it.next()) |e| {
+                n += e.key_ptr.len + 3 + jsonBytes(e.value_ptr.*, depth + 1);
+                if (!first) n += 1;
+                first = false;
+            }
+            break :blk n;
+        },
+    };
+}
+
 test "utf8Prefix truncates without splitting codepoints" {
     try std.testing.expectEqualStrings("abc", utf8Prefix("abc", 10));
     const s = [_]u8{ 'a', 'b', 0xC3, 0xA9, 'c' }; // "abéc"

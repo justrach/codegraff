@@ -153,7 +153,8 @@ const matrix = [_]struct { name: []const u8, caps: prompts.Caps }{
     .{ .name = "no-subagents", .caps = .{ .subagents = false } },
     .{ .name = "no-todos", .caps = .{ .todos = false } },
     .{ .name = "no-constraints", .caps = .{ .constraints = false } },
-    .{ .name = "floor", .caps = .{ .local_tools = false, .subagents = false, .todos = false, .constraints = false } },
+    .{ .name = "no-git-repo (scratch cwd)", .caps = .{ .git_repo = false } },
+    .{ .name = "floor", .caps = .{ .local_tools = false, .subagents = false, .todos = false, .constraints = false, .git_repo = false } },
 };
 
 test "#421 golden: the full-capability root prompt is exactly this, byte for byte" {
@@ -225,16 +226,20 @@ test "#421: a gated-off capability's tool names disappear from the prompt entire
     const no_constraints = try prompts.composeSegments(a, .{ .constraints = false });
     try std.testing.expect(std.mem.indexOf(u8, no_constraints, "note_constraint") == null);
 
+    // Outside a git repo, the AUTHORING guidance goes — commit identity and
+    // PR discipline have nothing to act on — while the safety rail stays.
+    const no_git = try prompts.composeSegments(a, .{ .git_repo = false });
+    for ([_][]const u8{ "## What changed", "Co-Authored-By: Codegraff", "GIT_AUTHOR_" }) |dead|
+        try std.testing.expect(std.mem.indexOf(u8, no_git, dead) == null);
+
     // What survives EVERY gate: identity, the two prompt-doctrine lines, the
-    // git/PR discipline, the do-not-discard-work rail, and the closing style.
+    // do-not-discard-work rail, and the closing style.
     for (matrix) |row| {
         const out = try prompts.composeSegments(a, row.caps);
         for ([_][]const u8{
             "You are a coding agent",
             "never invent", // #421 doctrine 1: no wrapper APIs, no assumed capabilities
             "its OWN environment", // #421 doctrine 2: verify where the project lives
-            "## What changed",
-            "Co-Authored-By: Codegraff",
             "Never run git commands that discard work",
             "Parallelize tool calls",
             "Be direct and concise",

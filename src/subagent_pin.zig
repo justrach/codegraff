@@ -288,15 +288,23 @@ pub const subscription_providers = blk: {
     break :blk frozen;
 };
 
+/// Direct DeepSeek, or the same family through the codegraff gateway.
+/// Both DeepSeek seats outclass gpt-5.6-luna; hopping a DeepSeek session
+/// onto Codex's small rung is a capability drop, not a free upgrade.
+fn deepseekFamily(p: Provider) bool {
+    return std.mem.eql(u8, p.id, "deepseek") or std.mem.startsWith(u8, p.model, "deepseek");
+}
+
 /// SUB-FIRST TIER ROUTING (explicit `tier` asks only — the silent no-tier
 /// default still inherits the user's chosen family): a logged-in flat-rate
-/// subscription is marginal-cost-zero, so its rung outranks ANY metered
-/// model — a deepseek session's tier:"small" goes to luna on the codex sub,
-/// not to a metered gateway row — and the login itself is the user's
-/// standing consent for that vendor. Metered cross-provider routing keeps
-/// the explicit --subagent-provider + --allow-cross-provider-subagents bar.
+/// subscription is marginal-cost-zero, so its rung outranks a metered
+/// model — except a DeepSeek session (direct or via codegraff), which
+/// already sits on seats better than luna and must not be dumped there.
+/// The login is still standing consent for an *exact* model pin. Metered
+/// cross-provider routing keeps the explicit --subagent-provider bar.
 /// When several subs serve the rung, the bench sheet's score picks.
 fn subscriptionRung(tier: Tier, base: Provider) ?Resolved {
+    if (deepseekFamily(base)) return null;
     const keys = bench_priors.g_keys orelse return null;
     var best: ?Resolved = null;
     var best_score: f64 = -1;

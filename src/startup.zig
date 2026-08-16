@@ -89,6 +89,9 @@ pub fn buildSystemPrompt(
     learned_policy_env: ?[]const u8,
     environ: anytype,
 ) ![]const u8 {
+    // #421: settle the git_repo gate before the base composes — commit/PR
+    // authoring guidance is only sent where a repository exists to act on.
+    prompts.probeGitRepo(io);
     // A learned policy is used unless this session opted out of it.
     const learned: ?learn_store.ActiveAgent = if (system_prompt_flag == null and learn_auto.enabled(learned_policy_env)) learnedRootPolicy(io, arena) else null;
     if (learned) |policy| if (!quiet) {

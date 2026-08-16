@@ -402,13 +402,12 @@ test "#471 the #291 ladder descent is not a human pin, so a tier ask still reach
     var keys: provider_mod.Keys = undefined;
     withKeys(&keys, &.{"codex"});
 
-    // Seated by the automatic ladder: an explicit tier:"small" crosses to the
-    // codex plan, because nothing here was a human decision.
+    // A DeepSeek session's tier:"small" stays on flash — luna is a drop.
     selection.g_default_from_ladder = true;
     const auto = va.forSpawn(deepseek(), obj(a, "{\"tier\":\"small\"}"), true, .{}, "extract the imports");
-    try std.testing.expectEqual(pin_mod.Outcome.sub_routed, auto.pin.outcome);
-    try std.testing.expectEqualStrings("codex", auto.pin.provider.?.id);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", auto.pin.provider.?.model);
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, auto.pin.outcome);
+    try std.testing.expectEqualStrings("deepseek", auto.pin.provider.?.id);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", auto.pin.provider.?.model);
 
     // A real --subagent-model session is still untouchable: the user picked
     // the workers, and no auto-route may override that.
@@ -416,8 +415,9 @@ test "#471 the #291 ladder descent is not a human pin, so a tier ask still reach
     const pinned = va.forSpawn(deepseek(), obj(a, "{\"tier\":\"small\"}"), true, .{}, "extract the imports");
     try std.testing.expect(pinned.pin.outcome != .sub_routed);
 
-    // And an unpinned session behaves as it always did.
+    // Unpinned still stays on DeepSeek flash, not luna.
     selection.g_default_from_ladder = false;
     const free = va.forSpawn(deepseek(), obj(a, "{\"tier\":\"small\"}"), false, .{}, "extract the imports");
-    try std.testing.expectEqual(pin_mod.Outcome.sub_routed, free.pin.outcome);
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, free.pin.outcome);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", free.pin.provider.?.model);
 }

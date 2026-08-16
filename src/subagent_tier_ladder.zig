@@ -12,9 +12,8 @@
 //! `frontier`/`mid`/`small` here are the ladder's OWN rung labels; they are
 //! NOT guaranteed to equal scoring.providerClass(name) for that literal
 //! model string — see the "ladder rungs vs providerClass" pinned test in
-//! subagent_selection.zig: the gpt-5.6 family now agrees end-to-end, leaving
-//! deepseek-v4-flash as the documented (intentional, not papered over)
-//! disagreement.
+//! subagent_selection.zig: the gpt-5.6 family and DeepSeek flash now agree
+//! end-to-end with providerClass.
 const std = @import("std");
 
 const pricing = @import("pricing.zig");
@@ -50,7 +49,7 @@ pub const TierLadder = struct {
     small: ?[]const u8 = null,
 
     /// The model this provider serves at `tier`, or null when the family has
-    /// no such rung (deepseek has no `small`). Never falls through to a
+    /// no such rung (deepseek has no `mid`). Never falls through to a
     /// neighbouring rung — an absent rung means "no opinion", which the
     /// caller turns into the session default rather than a guess.
     pub fn modelFor(self: TierLadder, tier: Tier) ?[]const u8 {
@@ -71,10 +70,14 @@ pub const ladders = [_]TierLadder{
     // it is the same seat, one generation older. sonnet-5 at $2/$10 is the
     // real cheap rung, 2.5x under opus on both halves of the bill.
     .{ .provider = "anthropic", .frontier = "claude-opus-5", .small = "claude-sonnet-5" },
-    // deepseek-v4-flash overtook pro: better AND $0.14/$0.28 against pro's
-    // $0.435/$0.87. Pro is dominated on both axes, so it is not a rung under
-    // flash — it is just worse. One seat, no descent.
-    .{ .provider = "deepseek", .frontier = "deepseek-v4-flash" },
+    // Flash is the cheaper DeepSeek seat ($0.14/$0.28 vs pro $1.1/$2.2) and
+    // still outclasses luna. Pro stays the frontier name a codegraff/direct
+    // session actually starts on; small descends to flash instead of hopping
+    // to Codex luna. Flash-as-root is off-ladder and inherits.
+    .{ .provider = "deepseek", .frontier = "deepseek-v4-pro", .small = "deepseek-v4-flash" },
+    // Same family through the gateway login: stay on DeepSeek, do not dump
+    // mechanical workers onto a logged-in Codex luna.
+    .{ .provider = "codegraff", .frontier = "deepseek-v4-pro", .small = "deepseek-v4-flash" },
     // Kimi's plan is one flagship. k3 is the MID-tier subscription seat —
     // sub-first routing sends `tier:"mid"` here (codex has no mid rung) while
     // `tier:"small"` still lands on codex's luna, which is what the cheap
@@ -159,7 +162,8 @@ fn inShippedTable(provider_id: []const u8, model: []const u8) bool {
 
 test "forProvider: known providers found, others null" {
     try std.testing.expectEqualStrings("gpt-5.6-sol", forProvider("codex").?.frontier);
-    try std.testing.expect(forProvider("deepseek").?.small == null);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", forProvider("deepseek").?.small.?);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", forProvider("codegraff").?.small.?);
     try std.testing.expect(forProvider("xai") == null);
 }
 
@@ -179,7 +183,8 @@ test "Tier.parse/modelFor: the rung vocabulary #292 pins against (#291 names)" {
     try std.testing.expectEqualStrings("gpt-5.6-terra", codex.modelFor(.mid).?);
     try std.testing.expectEqualStrings("gpt-5.6-luna", codex.modelFor(.small).?);
     // A family with no such rung answers null rather than the nearest rung.
-    try std.testing.expect(forProvider("deepseek").?.modelFor(.small) == null);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", forProvider("deepseek").?.modelFor(.small).?);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", forProvider("codegraff").?.modelFor(.small).?);
 }
 
 test "#471 a rung must be a cheaper SEAT, not merely a terser one" {

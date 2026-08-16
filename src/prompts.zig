@@ -45,7 +45,7 @@ const session_index = @import("session_index.zig"); // #410: where the durable t
 pub const parallel_tools_note = text.parallel_tools_note;
 
 /// The capability a segment needs. `.always` is what survives every gate.
-pub const Gate = enum { always, local_tools, subagents, todos, constraints };
+pub const Gate = enum { always, local_tools, subagents, todos, constraints, git_repo };
 
 /// `name` exists for the snapshot tests: it lets an assertion say WHICH
 /// segment a gate dropped instead of only how many bytes went missing.
@@ -62,7 +62,8 @@ pub const segments = [_]Segment{
     .{ .name = "todo", .text = text.todo_note, .gate = .todos },
     .{ .name = "trace", .text = text.trace_note, .gate = .local_tools },
     .{ .name = "harness_issue", .text = text.harness_issue_note, .gate = .local_tools },
-    .{ .name = "git", .text = text.git_note, .gate = .always },
+    .{ .name = "git_authoring", .text = text.git_authoring_note, .gate = .git_repo },
+    .{ .name = "git_safety", .text = text.git_safety_note, .gate = .always },
     .{ .name = "work", .text = text.work_note, .gate = .always },
     .{ .name = "headsup", .text = text.headsup_note, .gate = .always },
     .{ .name = "todo_progress", .text = text.todo_progress_note, .gate = .todos },
@@ -104,6 +105,10 @@ pub const Caps = struct {
     todos: bool = true,
     /// `note_constraint`.
     constraints: bool = true,
+    /// The cwd is inside a git repository, so commit/PR authoring guidance
+    /// has something to act on. Session state like the others: settled once
+    /// at startup (probeGitRepo), before buildSystemPrompt composes.
+    git_repo: bool = true,
 
     pub fn has(self: Caps, gate: Gate) bool {
         return switch (gate) {
@@ -112,12 +117,13 @@ pub const Caps = struct {
             .subagents => self.subagents,
             .todos => self.todos,
             .constraints => self.constraints,
+            .git_repo => self.git_repo,
         };
     }
 
     /// Nothing gated: composeBase may hand back the comptime constant.
     pub fn full(self: Caps) bool {
-        return self.local_tools and self.subagents and self.todos and self.constraints;
+        return self.local_tools and self.subagents and self.todos and self.constraints and self.git_repo;
     }
 };
 
@@ -138,7 +144,27 @@ pub fn detectCaps() Caps {
         .subagents = toolAdvertised("subagent"),
         .todos = toolAdvertised("todo_write") and !no_local_tools.lean,
         .constraints = toolAdvertised("note_constraint") and !no_local_tools.lean,
+        .git_repo = g_git_repo,
     };
+}
+
+/// Whether the cwd sits inside a git repository — the `git_repo` gate's
+/// backing state. Defaults TRUE so an embedder (or a test) that never probes
+/// keeps the full prompt; startup.buildSystemPrompt is the one prober.
+pub var g_git_repo: bool = true;
+
+/// Walk up from the cwd looking for `.git` — access(), not a dir stat,
+/// because a worktree checkout keeps `.git` as a FILE. Bounded: 32 levels
+/// covers any real checkout, and the filesystem root just fails access.
+pub fn probeGitRepo(io: Io) void {
+    var buf: [128]u8 = undefined;
+    var prefix: usize = 0;
+    g_git_repo = while (prefix + 4 <= buf.len) {
+        @memcpy(buf[prefix..][0..4], ".git");
+        if (Io.Dir.cwd().access(io, buf[0 .. prefix + 4], .{})) |_| break true else |_| {}
+        @memcpy(buf[prefix..][0..3], "../");
+        prefix += 3;
+    } else false;
 }
 
 /// The segment list in `main_system_prompt` order, minus every segment whose
