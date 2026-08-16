@@ -15,6 +15,7 @@ const repl = @import("repl.zig");
 const repl_glue = @import("repl_glue.zig");
 const tui = @import("tui");
 const engine_sink = @import("engine_sink.zig");
+const tui_sink = @import("tui_sink.zig");
 const obs = @import("obs.zig");
 const telemetry = @import("telemetry.zig");
 const vision = @import("vision.zig");
@@ -131,6 +132,7 @@ fn turnCb(
     history: []const tui.Turn,
     params: tui.Params,
     stream: *tui.StreamBuf,
+    events: *tui.EventQueue,
 ) ?[]const u8 {
     var turns = std.array_list.Managed(repl.Turn).init(gpa);
     defer {
@@ -152,7 +154,19 @@ fn turnCb(
     obs.prompt(last_len, model);
     // Same buf AND the same atomic len — a fresh repl.StreamBuf around
     // stream.buf left job.stream.len at 0 for the whole turn, so the live
-    // tail never showed hosted tool lines until finishJob copied them.
+    // tail never showed streamed prose until finishJob copied it.
+    //
+    // #551: the TUI's own EngineSink for the duration of this turn. Prose goes
+    // to the live buffer, structure goes to the typed queue; nothing renders
+    // tool activity into text for the frontend to parse back out. The bridge
+    // lives on THIS frame, which outlives the turn it wraps.
+    var bridge: tui_sink.Bridge = .{
+        .queue = events,
+        .stream = liveStream(stream),
+        .show_thinking = params.thinking,
+    };
+    engine_sink.bindTurnSink(tui_sink.forBridge(&bridge));
+    defer engine_sink.unbindTurnSink();
     const result = repl_glue.replTurnCb(ctx, gpa, turns.items, .{
         .effort = @enumFromInt(@intFromEnum(params.effort)),
         .fast = params.fast,
@@ -315,6 +329,7 @@ fn hudCb(kind: tui.HudKind, buf: []u8) usize {
 
 test {
     _ = tui;
+    _ = tui_sink;
 }
 
 test "hudCb usage/debug use the cost-tally renderer, not chars" {

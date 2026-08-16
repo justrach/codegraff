@@ -147,7 +147,36 @@ pub fn enableColor() void {
 
 /// Set by a fullscreen frontend (TUI/) so TuiSink never draws on stdout —
 /// that would fight the alt-screen. Text goes to `a.out` (the pane buffer).
+///
+/// This only ever gated hostedEmit, which renders the tool cluster back into
+/// "⚙ /✓ " TEXT for a frontend to parse out again and silently drops every
+/// other event. It survives as the fallback for a hosted agent that has NO
+/// sink of its own — a subagent, a one-shot — while a frontend that installs
+/// one (see `bindTurnSink`) never goes through it (#551).
 pub var hosted_frontend: bool = false;
+
+/// The sink a frontend wants the next Agent built on THIS thread to use.
+///
+/// The turn constructors (repl_glue.replTurnCb) are shared by every frontend
+/// and know nothing about any of them, so the frontend leaves its sink here
+/// before handing the turn over and takes it back after. Thread-local because
+/// one turn thread runs one turn: a background subagent pool thread building
+/// its own Agent finds nothing here and keeps the process-mode default, which
+/// is exactly right — a child's output is not the frontend's transcript.
+threadlocal var g_turn_sink: ?EngineSink = null;
+
+pub fn bindTurnSink(s: EngineSink) void {
+    g_turn_sink = s;
+}
+
+pub fn unbindTurnSink() void {
+    g_turn_sink = null;
+}
+
+/// The bound sink, or null when no frontend claimed this turn.
+pub fn turnSink() ?EngineSink {
+    return g_turn_sink;
+}
 
 const tui_vtable: VTable = .{ .emit = tuiEmit, .durable = false };
 const json_vtable: VTable = .{ .emit = jsonEmit, .durable = true };
@@ -279,6 +308,11 @@ fn notice(a: *Agent, text: []const u8) void {
     w.flush() catch {};
 }
 
+/// The fallback for a HOSTED agent with no sink of its own — a subagent, a
+/// one-shot under a fullscreen frontend. It renders the tool cluster back into
+/// "⚙ /✓ " text and drops everything else, which is why a real frontend must
+/// install a sink instead of reading these bytes back (#551). Nothing new goes
+/// in here: a new event gets a surface on a real sink, not a glyph line.
 fn hostedEmit(a: *Agent, ev: EngineEvent) void {
     const w = a.out orelse return;
     switch (ev) {
@@ -369,13 +403,16 @@ fn jsonLine(w: *Io.Writer, cursor: engine_events.Cursor, payload: anytype) void 
     w.flush() catch return;
 }
 
-fn shortTool(name: []const u8) []const u8 {
+pub fn shortTool(name: []const u8) []const u8 {
     if (std.mem.eql(u8, name, "read_file")) return "read";
     if (std.mem.eql(u8, name, "write_file")) return "write";
     return name;
 }
 
-fn compactArg(input: std.json.Value) []const u8 {
+/// The one argument worth showing beside a tool name — the path it touches,
+/// the command it runs, the query it asks. Shared with the TUI's typed sink
+/// (tui_sink.zig) so both frontends pick the same field.
+pub fn compactArg(input: std.json.Value) []const u8 {
     const obj = switch (input) {
         .object => |o| o,
         else => return "",
@@ -388,7 +425,7 @@ fn compactArg(input: std.json.Value) []const u8 {
     return "";
 }
 
-fn firstLineCap(text: []const u8, cap: usize) []const u8 {
+pub fn firstLineCap(text: []const u8, cap: usize) []const u8 {
     var s = std.mem.trim(u8, text, " \t\r\n");
     if (std.mem.indexOfScalar(u8, s, '\n')) |i| s = std.mem.trim(u8, s[0..i], " \t\r");
     if (s.len > cap) return s[0..cap];

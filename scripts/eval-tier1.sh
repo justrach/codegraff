@@ -235,6 +235,13 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-selection.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+    # #551: the TUI renders tool activity from the engine's TYPED events. Drives
+    # a real tool loop against the codex mock (no network, no model) and reads
+    # the screen back: one folded summary, a field-backed card under it, and an
+    # answer line that starts with "✓ " staying an answer.
+    if python3 scripts/test-tui-typed-events.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
   fi
 fi
 

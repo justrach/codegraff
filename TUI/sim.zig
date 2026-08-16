@@ -226,8 +226,8 @@ test "clickText on Called expands the folded tools" {
     term.init(std.testing.allocator, 80, 24);
     defer term.deinit();
     try term.model.push(.assistant, "working");
-    try term.model.push(.tool, "⚙ bash");
-    try term.model.push(.tool, "✓ bash");
+    try term.model.pushTool(.{ .name = "bash" });
+    try term.model.pushTool(.{ .name = "bash", .detail = "ok", .done = true });
     const before = try term.screen();
     defer std.testing.allocator.free(before);
     try std.testing.expect(std.mem.indexOf(u8, before, "Called") != null);
@@ -243,8 +243,8 @@ test "feed Ghostty SGR click matches clickAt" {
     term.init(std.testing.allocator, 80, 24);
     defer term.deinit();
     try term.model.push(.assistant, "working");
-    try term.model.push(.tool, "⚙ bash");
-    try term.model.push(.tool, "✓ bash");
+    try term.model.pushTool(.{ .name = "bash" });
+    try term.model.pushTool(.{ .name = "bash", .detail = "ok", .done = true });
     const hit = try term.find("Called") orelse return error.NoCalled;
     var buf: [40]u8 = undefined;
     const seq = try std.fmt.bufPrint(&buf, "\x1b[<0;{d};{d}M", .{ hit.x, hit.y });

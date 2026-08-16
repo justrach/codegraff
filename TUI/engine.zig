@@ -3,6 +3,12 @@
 
 const std = @import("std");
 
+const events_mod = @import("events.zig");
+
+pub const Event = events_mod.Event;
+pub const EventQueue = events_mod.Queue;
+pub const ToolEvent = events_mod.Tool;
+
 pub const Effort = enum { low, medium, high, xhigh, max, ultra };
 
 pub const Turn = struct {
@@ -40,7 +46,12 @@ pub const StreamBuf = struct {
     }
 };
 
-pub const TurnFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, history: []const Turn, params: Params, stream: *StreamBuf) ?[]const u8;
+/// A turn backend gets the live text buffer AND the typed event queue (#551):
+/// prose streams into `stream` for the pending row's tail view, while every
+/// structured moment (tool call, outcome, refusal, notice, failover) is PUSHED
+/// as an event. The TUI used to recover the second kind by parsing the first,
+/// which is the defect this seam removes.
+pub const TurnFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, history: []const Turn, params: Params, stream: *StreamBuf, events: *events_mod.Queue) ?[]const u8;
 pub const ModelFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, name: []const u8) ?[]const u8;
 pub const CancelFn = *const fn (turn_ctx: ?*anyopaque) void;
 /// Fill dest with a staged image path (return >0) or an error line (return <0).
@@ -69,6 +80,10 @@ pub const Job = struct {
     history: []Turn,
     params: Params,
     stream: StreamBuf,
+    /// Typed engine events for this turn (#551). Attached to the model's
+    /// allocator by startJob; a Job literal that leaves it unattached simply
+    /// carries no events.
+    events: events_mod.Queue = .{},
 };
 
 /// A background engine op: `/compact`, `!cmd`, or the @-file list. Same
@@ -130,7 +145,7 @@ pub var g_models: []const u8 = "";
 pub var g_cwd: []const u8 = ".";
 
 pub fn jobRun(job: *Job) void {
-    const reply = if (g_turn_fn) |f| f(g_turn_ctx, job.gpa, job.history, job.params, &job.stream) else null;
+    const reply = if (g_turn_fn) |f| f(g_turn_ctx, job.gpa, job.history, job.params, &job.stream, &job.events) else null;
     job.result = reply;
     job.done.store(true, .release);
 }
