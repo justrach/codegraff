@@ -3,7 +3,9 @@
 //!
 //! Everything in this file is a PURE decision about bytes that are stuck
 //! mid-sequence, plus the clocks that bound how long the loop is allowed to
-//! hold on to them.
+//! hold on to them. The rule throughout is grok-build's `XT_MAX_HOLD`: every
+//! hold is bounded, because an unbounded latch is how a terminal hiccup turns
+//! into a session that never accepts input again.
 
 const std = @import("std");
 

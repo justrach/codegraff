@@ -461,8 +461,8 @@ test "run loop enables click+hover tracking and bracketed paste" {
     try std.testing.expect(std.mem.indexOf(u8, src, "if (stall.armExpired(") != null);
 }
 
-// The stall-verdict / carry-window battery lives beside the policy it pins,
-// in run_stall.zig.
+// The stall-verdict / carry-window / arm-window battery lives beside the
+// policy it pins, in run_stall.zig.
 
 fn paintToBuf(a: std.mem.Allocator, frame: []const u8, rows: usize, cols: usize, prev: []const u8) ![]u8 {
     var aw = Io.Writer.Allocating.init(a);
