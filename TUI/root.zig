@@ -64,6 +64,7 @@ test {
     _ = @import("chrome.zig");
     _ = @import("models.zig");
     _ = @import("markdown.zig");
+    _ = @import("markdown_stream_tests.zig");
     _ = @import("syntax.zig");
     _ = @import("dump.zig");
     _ = @import("effort.zig");
