@@ -6,8 +6,67 @@
 const std = @import("std");
 
 const app = @import("app.zig");
+const glyphs = @import("glyphs.zig");
 const scrollback = @import("scrollback.zig");
+const theme_mod = @import("theme.zig");
 const Model = app.Model;
+
+/// The COLUMN `needle` starts at on its rendered row — SGR and glyph widths
+/// resolved, which is the only measure a terminal agrees with.
+fn labelCol(text: []const u8, needle: []const u8) ?usize {
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |ln| {
+        const at = std.mem.indexOf(u8, ln, needle) orelse continue;
+        return theme_mod.visibleLen(ln[0..at]);
+    }
+    return null;
+}
+
+test "the pending label holds its column across every blink frame" {
+    // grok-build's rule: animated chrome is exactly one column, so the label
+    // and any timer beside it never step sideways as the animation ticks.
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.push(.pending, "");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var col: ?usize = null;
+    var seen = std.mem.zeroes([glyphs.thinking.len]bool);
+    // Six samples across three blink periods: more than the four frames the
+    // live pty proof watches, and enough to see both frames twice.
+    for ([_]u64{ 0, 500, 1000, 1500, 2000, 2500 }) |now_ms| {
+        const text = try scrollback.render(&m, arena.allocator(), 80, now_ms);
+        const at = labelCol(text, "Thinking") orelse return error.NoPendingLabel;
+        if (col) |want| try std.testing.expectEqual(want, at) else col = at;
+        for (glyphs.thinking, 0..) |f, i| {
+            if (std.mem.indexOf(u8, text, f) != null) seen[i] = true;
+        }
+    }
+    for (seen) |s| try std.testing.expect(s); // it really animated
+    // Two columns of selection field, one of glyph, one of space.
+    try std.testing.expectEqual(@as(usize, 4), col.?);
+}
+
+test "a settled row's body starts in the same column the pending row used" {
+    // The gutter is shared: the blink is replaced by a static mark when the
+    // turn lands, and a mark of a different width would jerk the whole answer
+    // sideways at exactly the moment the reader starts reading it.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var live_m: Model = undefined;
+    live_m.setup(std.testing.allocator);
+    defer live_m.deinit();
+    try live_m.push(.pending, "");
+    const live = try scrollback.render(&live_m, arena.allocator(), 80, 0);
+    const pending_col = labelCol(live, "Thinking") orelse return error.NoPendingLabel;
+    var done_m: Model = undefined;
+    done_m.setup(std.testing.allocator);
+    defer done_m.deinit();
+    try done_m.push(.assistant, "Landed");
+    const done = try scrollback.render(&done_m, arena.allocator(), 80, 0);
+    try std.testing.expectEqual(pending_col, labelCol(done, "Landed") orelse return error.NoBody);
+}
 
 test "classification reads the tool name, not the whole row (#551)" {
     // `bash` running a command that merely mentions a search word is a call,

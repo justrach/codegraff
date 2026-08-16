@@ -59,6 +59,7 @@ test {
     _ = @import("turn.zig");
     _ = @import("bgop.zig");
     _ = @import("welcome.zig");
+    _ = @import("glyphs.zig");
     _ = @import("scrollback.zig");
     _ = @import("selection.zig");
     _ = @import("chrome.zig");
