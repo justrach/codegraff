@@ -66,7 +66,7 @@ pub fn run(
     if (opts.yolo) m.mode = .always_approve;
 
     var raw = tty.enterRaw() orelse return error.NotATty;
-    restore_mod.arm(raw);
+    restore_mod.arm(raw, enable_seq);
     defer restore_mod.disarm();
     defer tty.restore(raw);
 
@@ -94,7 +94,15 @@ pub fn run(
     var prev_theme = m.theme_id;
     defer if (prev.len != 0) gpa.free(prev);
     while (m.running and !m.quit_requested) {
-        m.now_ms = @intCast(@divTrunc(@max(@as(i128, 0), Io.Timestamp.now(io, .real).nanoseconds), 1_000_000));
+        m.now_ms = nowMs(io);
+        if (restore_mod.takeResumed()) {
+            // SIGTSTP took the terminal back to the shell and SIGCONT handed
+            // it over again: the alt screen is blank, so the diff baseline
+            // would leave the frame half-drawn. Force a full repaint.
+            last_hash = 0;
+            if (prev.len != 0) gpa.free(prev);
+            prev = &.{};
+        }
         if (m.pending) |job| {
             if (job.done.load(.acquire)) {
                 turn.finishJob(&m);
@@ -214,6 +222,10 @@ pub fn run(
 /// delivering Escape cancelled live turns and typing the late tail sprayed
 /// "2;39M"-style debris into the transcript — wait for the tail instead, and
 /// only silently drop once it is clearly never coming.
+fn nowMs(io: Io) u64 {
+    return @intCast(@divTrunc(@max(@as(i128, 0), Io.Timestamp.now(io, .real).nanoseconds), 1_000_000));
+}
+
 pub const StallVerdict = enum { wait, escape_key, drop };
 
 pub fn stallVerdict(pending: []const u8, stalls: u8) StallVerdict {

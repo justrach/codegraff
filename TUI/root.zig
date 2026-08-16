@@ -24,6 +24,10 @@ pub const CompactOut = engine.CompactOut;
 pub const CompactFn = engine.CompactFn;
 pub const RunOpts = run_mod.RunOpts;
 pub const run = run_mod.run;
+pub const restore = @import("restore.zig");
+/// Restore the terminal BEFORE std prints a panic, or the alt-screen exit in
+/// the restore sequence erases the message and the stack trace (#535).
+pub const panic = restore.Panic;
 pub const theme = @import("theme.zig");
 pub const catalog = @import("catalog.zig");
 pub const dump = @import("dump.zig");
