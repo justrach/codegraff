@@ -215,17 +215,24 @@ fn scrollbackKey(self: *Model, k: Key) Effect {
     return .stay;
 }
 
+/// Apply `notches` of wheel scroll. One report and a whole coalesced momentum
+/// run go through the SAME door (pacing.zig folds consecutive reports into one
+/// delta), so a storm can never mean something a single report does not.
+pub fn wheelScroll(self: *Model, notches: i32) Effect {
+    if (notches == 0) return .stay;
+    // The band is anchored to screen rows, so scrolling it would slide it onto
+    // other content — drop it and scroll.
+    selection.clear(self);
+    // An open picker or the completion menu owns the wheel: one notch is one
+    // ITEM there, never a scroll of the transcript underneath. A coalesced run
+    // still moves item by item, so momentum cannot skip a selection.
+    if (@import("overlays.zig").wheel(self, notches > 0)) return .stay;
+    scrollBy(self, notches *| @import("pacing.zig").lines_per_notch);
+    return .stay;
+}
+
 fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
-    if (ev.btn == 64 or ev.btn == 65) {
-        // The band is anchored to screen rows, so scrolling it would slide it
-        // onto other content — drop it and scroll.
-        selection.clear(self);
-        // An open picker or the completion menu owns the wheel: one notch is
-        // one ITEM there, never a scroll of the transcript underneath.
-        if (@import("overlays.zig").wheel(self, ev.btn == 64)) return .stay;
-        scrollBy(self, if (ev.btn == 64) 3 else -3);
-        return .stay;
-    }
+    if (@import("pacing.zig").wheelNotch(.{ .mouse = ev })) |n| return wheelScroll(self, n);
     // A drag or its release belongs to the selection; a press only ANCHORS one
     // and falls through, so a plain click keeps its meaning (#529).
     if (selection.mouse(self, ev)) return .stay;

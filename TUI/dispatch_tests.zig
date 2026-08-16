@@ -208,3 +208,123 @@ test "/compact never crops locally; engine stub rewrites history" {
     try std.testing.expectEqual(app.EntryKind.user, m.history.items[1].kind);
     try std.testing.expectEqualStrings("Context: earlier work", m.history.items[1].text);
 }
+
+// --- input pacing: what one tick of a wheel storm dispatches ---------------
+// The batch is built exactly as run.zig builds it and applied through the real
+// keys.zig door, so these pin the DISPATCHED behaviour, not just the struct.
+
+const key_mod = @import("key.zig");
+const keys = @import("keys.zig");
+const pacing = @import("pacing.zig");
+
+fn wheelUp() key_mod.Key {
+    return .{ .mouse = .{ .btn = 64, .x = 4, .y = 4, .down = true } };
+}
+
+fn wheelDown() key_mod.Key {
+    return .{ .mouse = .{ .btn = 65, .x = 4, .y = 4, .down = true } };
+}
+
+/// Feed a tick's worth of events through the coalescer and apply the batch the
+/// way run.zig does.
+fn tick(m: *Model, evs: []const key_mod.Key) void {
+    var b: pacing.Batch = .{};
+    for (evs) |k| std.debug.assert(b.push(k) == .ok);
+    for (b.items()) |item| {
+        _ = switch (item) {
+            .key => |k| keys.handle(m, k),
+            .wheel => |d| keys.wheelScroll(m, d),
+        };
+    }
+}
+
+test "5 wheel-up + a key + 3 wheel-down coalesce to +5, the key, then -3" {
+    var b: pacing.Batch = .{};
+    for (0..5) |_| _ = b.push(wheelUp());
+    _ = b.push(.{ .char = 'z' });
+    for (0..3) |_| _ = b.push(wheelDown());
+
+    const it = b.items();
+    try std.testing.expectEqual(@as(usize, 3), it.len);
+    try std.testing.expectEqual(@as(i32, 5), it[0].wheel);
+    try std.testing.expectEqual(@as(u8, 'z'), it[1].key.char);
+    try std.testing.expectEqual(@as(i32, -3), it[2].wheel);
+}
+
+test "a coalesced tick lands on the same scroll a report-at-a-time tick would" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    var evs: [9]key_mod.Key = undefined;
+    for (0..5) |k| evs[k] = wheelUp();
+    evs[5] = .{ .char = 'z' };
+    for (6..9) |k| evs[k] = wheelDown();
+    tick(&m, &evs);
+    // 5 notches back, 3 forward, 3 lines a notch: +6 lines, and the keystroke
+    // reached the composer in its own place in the stream.
+    try std.testing.expectEqual(@as(usize, 6), m.scroll);
+    try std.testing.expect(!m.follow);
+    try std.testing.expectEqualStrings("z", m.input.getValue());
+}
+
+test "typing is never starved behind a wheel flood" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    // 400 reports with three keystrokes buried in the middle of them — one
+    // tick, and every character still arrives, in order.
+    var b: pacing.Batch = .{};
+    for (0..200) |_| _ = b.push(wheelUp());
+    _ = b.push(.{ .char = 'h' });
+    for (0..100) |_| _ = b.push(wheelUp());
+    _ = b.push(.{ .char = 'i' });
+    for (0..100) |_| _ = b.push(wheelDown());
+    _ = b.push(.{ .char = '!' });
+    // 400 wheel reports collapse into 3 units of scroll work.
+    try std.testing.expectEqual(@as(usize, 6), b.len);
+    for (b.items()) |item| {
+        _ = switch (item) {
+            .key => |k| keys.handle(&m, k),
+            .wheel => |d| keys.wheelScroll(&m, d),
+        };
+    }
+    try std.testing.expectEqualStrings("hi!", m.input.getValue());
+    try std.testing.expectEqual(@as(usize, 600), m.scroll); // (200+100-100)*3
+}
+
+test "a mixed run at the bottom edge does not re-latch follow mid-tick" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    // Two notches from the bottom, then down-down-up: a net notch back. Applied
+    // report by report the second down clamps at 0 and turns `follow` on, and
+    // the trailing up then scrolls away from where the fingers stopped.
+    keys.scrollBy(&m, 6);
+    tick(&m, &.{ wheelDown(), wheelDown(), wheelUp() });
+    try std.testing.expectEqual(@as(usize, 3), m.scroll);
+    try std.testing.expect(!m.follow);
+}
+
+test "the same run reaching the bottom still lands there and follows" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    keys.scrollBy(&m, 3);
+    tick(&m, &.{ wheelDown(), wheelDown() });
+    try std.testing.expectEqual(@as(usize, 0), m.scroll);
+    try std.testing.expect(m.follow);
+}
+
+test "a single wheel report is unchanged by the coalescer" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    tick(&m, &.{wheelUp()});
+    try std.testing.expectEqual(@as(usize, 3), m.scroll);
+    var direct: Model = undefined;
+    direct.setup(std.testing.allocator);
+    defer direct.deinit();
+    _ = keys.handle(&direct, wheelUp());
+    try std.testing.expectEqual(m.scroll, direct.scroll);
+    try std.testing.expectEqual(m.follow, direct.follow);
+}
