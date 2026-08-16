@@ -21,6 +21,9 @@ jobs:
       - name: Model-shape benchmark integrity
         run: python3 benchmarks/test_model_shape.py
 
+      - name: Spec kernel conformance (properties + fixture staleness)
+        run: python3 spec/conformance.py
+
       - name: Python SDK import smoke
         run: python3 -c "import sys; sys.path.insert(0, 'sdk/py'); import harness_sdk; assert harness_sdk.MODELS and harness_sdk.TOOLS; print('py sdk ok:', len(harness_sdk.MODELS), 'models')"
 

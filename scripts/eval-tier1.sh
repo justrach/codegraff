@@ -25,7 +25,7 @@ cd "$repo_root"
 # processes discover their repo from their cwd like they expect.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
 
-CHECKS=(fmt lines reach build tests invariants sdk)
+CHECKS=(fmt lines spec reach build tests invariants sdk)
 
 usage() {
   cat <<'EOF'
@@ -34,6 +34,7 @@ usage: scripts/eval-tier1.sh [--only <check>] [--list]
 checks, in order:
   fmt         zig fmt --check src build.zig
   lines       scripts/check-zig-lines.sh (600-line ceiling, AGENTS.md)
+  spec        spec/conformance.py (kernel properties + fixture staleness)
   reach       every file that declares tests is reachable from the test root
   build       zig build
   tests       zig build test, and the suite count never shrinks
@@ -100,6 +101,19 @@ if wanted lines; then
   if bash scripts/check-zig-lines.sh; then :; else
     printf '    fix: split the file above into focused sibling modules.\n'
     record_fail lines
+  fi
+fi
+
+# --- spec --------------------------------------------------------------
+if wanted spec; then
+  announce spec "spec/conformance.py — kernel properties + fixture staleness"
+  # The Zig leg of the corpus already gates via `tests` (the conformance tests
+  # embed the fixtures); this closes the triangle's other side pre-push: the
+  # executable model's properties, and that the committed fixtures match it.
+  if python3 spec/conformance.py; then :; else
+    printf '    a kernel drifted: ratchet the model (lean-proofs/ + spec/ref/) or the impl,\n'
+    printf '    then regenerate fixtures: python3 spec/conformance.py --export\n'
+    record_fail spec
   fi
 fi
 
