@@ -42,6 +42,33 @@ pub fn key(self: *Model, k: Key) Effect {
     return .stay;
 }
 
+/// One wheel notch moves the highlighted row of an open list by EXACTLY one
+/// item — the same step the arrow keys take, so a trackpad that emits a burst
+/// of notches walks the list one row per notch instead of skipping three at a
+/// time (the transcript's scroll step) or scrolling the transcript out from
+/// under the picker, which is what the wheel used to do here. Returns true when
+/// a list consumed the event.
+pub fn wheel(self: *Model, up: bool) bool {
+    // The image card is a preview above the composer, not a list; it keeps its
+    // own key handling and the transcript keeps the wheel.
+    if (self.overlay != .none and self.overlay != .image) {
+        if (up) self.overlay_sel -|= 1 else self.overlay_sel += 1;
+        return true;
+    }
+    const v = self.input.getValue();
+    if (self.focus != .prompt or v.len == 0 or v[0] != '/') return false;
+    if (up) {
+        self.slash_sel -|= 1;
+        return true;
+    }
+    // Clamped exactly as the Down key is: the highlight and the row Enter
+    // fires can never diverge onto an invisible command (#522).
+    var idx: [catalog.items.len]usize = undefined;
+    const n = catalog.filter(v, &idx);
+    if (n > 0 and self.slash_sel + 1 < n) self.slash_sel += 1;
+    return true;
+}
+
 /// Open the @-picker immediately and load the session file list in the
 /// background. Loading it inline blocked the render+input thread for up to the
 /// runCapped 10s cap on the first @ of a session (#533).
@@ -139,6 +166,65 @@ fn activate(self: *Model) Effect {
         else => self.closeOverlay(),
     }
     return .stay;
+}
+
+/// One SGR wheel report. 64 is a notch up, 65 a notch down.
+fn notch(m: *Model, up: bool) void {
+    _ = @import("keys.zig").handle(m, .{ .mouse = .{ .btn = if (up) 64 else 65, .x = 10, .y = 5, .down = true } });
+}
+
+test "a wheel notch moves an open picker by exactly one item" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    m.openOverlay(.model);
+    // Four notches down is four items — not twelve, and not one coalesced move.
+    // A trackpad delivers a flick as a BURST of reports and run.zig hands every
+    // one of them to keys.handle, so the per-event step is the whole contract.
+    for (0..4) |i| {
+        try std.testing.expectEqual(i, m.overlay_sel);
+        notch(&m, false);
+    }
+    try std.testing.expectEqual(@as(usize, 4), m.overlay_sel);
+    for (0..4) |_| notch(&m, true);
+    try std.testing.expectEqual(@as(usize, 0), m.overlay_sel);
+    notch(&m, true); // already at the top: saturates, never wraps to a huge index
+    try std.testing.expectEqual(@as(usize, 0), m.overlay_sel);
+    // ...and the transcript underneath never moved.
+    try std.testing.expectEqual(@as(usize, 0), m.scroll);
+    try std.testing.expect(m.follow);
+}
+
+test "a wheel notch moves the completion menu one command, clamped to the list" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    m.focus = .prompt;
+    try m.input.setValue("/");
+    var idx: [catalog.items.len]usize = undefined;
+    const n = catalog.filter("/", &idx);
+    try std.testing.expect(n > 2);
+    notch(&m, false);
+    try std.testing.expectEqual(@as(usize, 1), m.slash_sel);
+    notch(&m, false);
+    try std.testing.expectEqual(@as(usize, 2), m.slash_sel);
+    notch(&m, true);
+    try std.testing.expectEqual(@as(usize, 1), m.slash_sel);
+    // Spinning past the end parks on the last row rather than selecting a
+    // command the menu is not showing.
+    for (0..n + 8) |_| notch(&m, false);
+    try std.testing.expectEqual(n - 1, m.slash_sel);
+    try std.testing.expectEqual(@as(usize, 0), m.scroll);
+}
+
+test "with no list open the wheel still scrolls the transcript" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    notch(&m, true);
+    try std.testing.expect(m.scroll > 0);
+    try std.testing.expect(!m.follow);
+    try std.testing.expectEqual(@as(usize, 0), m.overlay_sel);
 }
 
 test "file overlay Enter inserts the picked path after the @" {
