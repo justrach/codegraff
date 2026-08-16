@@ -31,6 +31,15 @@ const first_fault = 4;
 /// alt screen up and termios raw hands the user a dead-looking shell (#549).
 pub const stop_signals = [_]std.posix.SIG{.TSTP};
 
+/// Window-size changes. SIGWINCH's default disposition is "ignore", so without
+/// a handler the loop only ever learns about a resize by comparing the
+/// dimensions it read on two successive iterations — which misses a resize
+/// that lands between the size read and the paint, and misses one that ends on
+/// the size it started from even though the terminal reflowed the screen in
+/// between. Both leave the diff painter's baseline describing a screen that no
+/// longer exists, and no frame byte changes, so nothing would ever repair it.
+pub const size_signals = [_]std.posix.SIG{.WINCH};
+
 var armed = std.atomic.Value(bool).init(false);
 var saved: tty.RawState = undefined;
 var prev_fatal: [fatal.len]std.posix.Sigaction = undefined;
@@ -41,6 +50,9 @@ var enable: []const u8 = "";
 /// Set by the stop handler once the process is continued: the paint diff
 /// baseline is stale after a suspend, so run.zig must repaint in full.
 var resumed = std.atomic.Value(bool).init(false);
+/// Set by the window-size handler: run.zig turns it into a forced full
+/// repaint, so a reflowed or cleared screen is never left half-drawn.
+var resized = std.atomic.Value(bool).init(false);
 
 /// Remember the pre-raw termios and hook fatal signals. Test builds skip the
 /// signal hooks so the test runner's dispositions stay untouched.
@@ -51,6 +63,7 @@ pub fn arm(orig: tty.RawState, enable_seq: []const u8) void {
     if (builtin.os.tag == .windows or builtin.is_test) return;
     installFatalHandlers();
     installStopHandlers();
+    installSizeHandlers();
 }
 
 pub fn disarm() void {
@@ -61,6 +74,29 @@ pub fn disarm() void {
 /// baseline so the first frame after `fg` is a full repaint.
 pub fn takeResumed() bool {
     return resumed.swap(false, .acq_rel);
+}
+
+/// True once per window-size change since the last call.
+pub fn takeResized() bool {
+    return resized.swap(false, .acq_rel);
+}
+
+fn installSizeHandlers() void {
+    if (builtin.os.tag == .windows) return;
+    var sa = std.posix.Sigaction{
+        .handler = .{ .handler = onWinch },
+        .mask = std.posix.sigemptyset(),
+        // std.posix.poll/read both retry on EINTR, so an arriving SIGWINCH
+        // costs the loop nothing beyond one restarted wait — the latch is
+        // read on the next pass, at most one idle timeout later.
+        .flags = std.posix.SA.ONSTACK,
+    };
+    for (size_signals) |sig| std.posix.sigaction(sig, &sa, null);
+}
+
+/// Async-signal-safe: one relaxed store, nothing else.
+fn onWinch(_: std.posix.SIG) callconv(.c) void {
+    resized.store(true, .release);
 }
 
 fn installFatalHandlers() void {
@@ -269,4 +305,16 @@ test "resumed latch fires exactly once per continue" {
     resumed.store(true, .release);
     try std.testing.expect(takeResumed());
     try std.testing.expect(!takeResumed());
+}
+
+test "the window-size latch fires once per resize and starts down" {
+    // The painter's diff baseline is only as good as the claim that nothing
+    // else touched the screen; a resize breaks that claim without changing a
+    // single byte of the frame, so the loop needs an EVENT, not a comparison.
+    try std.testing.expect(!takeResized());
+    onWinch(.WINCH);
+    try std.testing.expect(takeResized());
+    try std.testing.expect(!takeResized());
+    try std.testing.expectEqual(@as(usize, 1), size_signals.len);
+    try std.testing.expectEqual(std.posix.SIG.WINCH, size_signals[0]);
 }

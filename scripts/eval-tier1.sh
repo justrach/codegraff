@@ -242,6 +242,13 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-typed-events.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+    # The frame painter may never show anything but the current frame. Storms
+    # the window size, fills the screen with glyphs terminals measure
+    # differently from us, then reads the SCREEN back and compares it cell for
+    # cell against a forced full repaint of the same frame.
+    if python3 scripts/test-tui-painter.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
   fi
 fi
 
