@@ -183,6 +183,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
+        // Same -Dtest-filter as `zig build test`: the layout benchmark needs to
+        // be runnable on its own, ReleaseFast, without the rest of the suite.
+        .filters = test_filters,
     });
     tui_tests.root_module.addAnonymousImport("spec_terminal_modes", .{ .root_source_file = b.path("spec/kernels/terminal_modes.json") });
 
