@@ -88,7 +88,9 @@ pub fn run(
     var pending_len: usize = 0;
     var esc_stall: u8 = 0;
     var zero_reads: u8 = 0;
-    var last_input_ms: u64 = 0;
+    // Clock for the bracketed-paste latch only: refreshed by bytes that could
+    // plausibly BE paste content, never by mouse-motion noise (see below).
+    var last_paste_ms: u64 = 0;
     var stash_ms: u64 = 0;
     var last_hash: u64 = 0;
     var saw_gfx: bool = false;
@@ -153,7 +155,7 @@ pub fn run(
         // nothing follows, the lone ESC was a real Escape keypress (#94).
         const wait: i32 = if (pending_len > 0) 25 else if (m.pending != null or m.bg != null) 50 else 200;
         if (!tty.poll(wait)) {
-            if (key_mod.inPaste() and m.now_ms -| last_input_ms >= stall.paste_idle_ms) {
+            if (key_mod.inPaste() and m.now_ms -| last_paste_ms >= stall.paste_idle_ms) {
                 // A `CSI 200~` whose `CSI 201~` never arrives latches the
                 // composer into literal mode for the rest of the session:
                 // Enter only inserts a newline, and Escape, Tab and every
@@ -161,7 +163,7 @@ pub fn run(
                 // has been quiet far longer than any paste keeps streaming
                 // (#532/#536/#548).
                 closePaste(&m);
-                last_input_ms = m.now_ms;
+                last_paste_ms = m.now_ms;
                 if (pending_len > 0) {
                     // Whatever was stuck mid-sequence belongs to the paste
                     // window this sweep just declared broken — debris, by
@@ -231,7 +233,12 @@ pub fn run(
             continue;
         }
         zero_reads = 0;
-        last_input_ms = m.now_ms;
+        // ?1003h is on for image-chip hover, so a pointer merely RESTING over
+        // the terminal emits a motion report roughly twice a second. Counting
+        // those as paste activity postponed the idle sweep above forever: a
+        // wedged paste never released while the mouse sat still anywhere over
+        // the window. Only bytes that could be paste content run the clock.
+        if (!stall.onlyMouseReports(inbuf[pending_len .. pending_len + got])) last_paste_ms = m.now_ms;
         // Spends any head the stall path carried: it is glued back on only
         // when these bytes really complete it (key_orphan.zig), and only while
         // the join can still plausibly be link jitter rather than a human
@@ -442,6 +449,8 @@ test "run loop enables click+hover tracking and bracketed paste" {
     const sweep_block = src[sweep_at..stall_at];
     try std.testing.expect(std.mem.indexOf(u8, sweep_block, "pending_len = 0;") != null);
     try std.testing.expect(std.mem.indexOf(u8, sweep_block, "armOrphan(true)") != null);
+    // A resting mouse must not keep the paste latch alive.
+    try std.testing.expect(std.mem.indexOf(u8, src, "if (!stall.onlyMouseReports(") != null);
 }
 
 // The stall-verdict / carry-window battery lives beside the policy it pins,

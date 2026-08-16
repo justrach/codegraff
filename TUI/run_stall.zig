@@ -61,6 +61,28 @@ pub fn carryExpired(now_ms: u64, stash_ms: u64) bool {
     return now_ms -| stash_ms > carry_window_ms;
 }
 
+/// Is this read nothing but complete SGR mouse reports?
+///
+/// ?1003h is on by default for image-chip hover, and a pointer merely RESTING
+/// over the window makes the terminal emit a motion report roughly twice a
+/// second. Those bytes are not paste content and must not count as paste
+/// activity: while they did, a mouse sitting still over the terminal postponed
+/// the #548 idle recovery indefinitely and an unterminated paste NEVER
+/// released. Deliberately strict — only whole `CSI < params M|m` reports, so a
+/// read that carries any real pasted byte keeps the latch alive.
+pub fn onlyMouseReports(bytes: []const u8) bool {
+    if (bytes.len == 0) return false;
+    var i: usize = 0;
+    while (i < bytes.len) {
+        if (i + 3 > bytes.len or bytes[i] != 0x1b or bytes[i + 1] != '[' or bytes[i + 2] != '<') return false;
+        var j = i + 3;
+        while (j < bytes.len and ((bytes[j] >= '0' and bytes[j] <= '9') or bytes[j] == ';')) : (j += 1) {}
+        if (j >= bytes.len or (bytes[j] != 'M' and bytes[j] != 'm')) return false;
+        i = j + 1;
+    }
+    return true;
+}
+
 test "a truncated CSI never becomes Escape or typed debris; a lone ESC still does (#94)" {
     const idle: StallCtx = .{};
     try std.testing.expectEqual(StallVerdict.wait, stallVerdict("\x1b", 1, idle));
@@ -113,4 +135,19 @@ test "a paste marker is never abandoned on the #94 timescale (#532)" {
     try std.testing.expectEqual(StallVerdict.drop, stallVerdict("\x1b[<65;2;3", 20, p));
     try std.testing.expect(isPasteMarkerPrefix("\x1b[201~"));
     try std.testing.expect(!isPasteMarkerPrefix("\x1b[202"));
+}
+
+test "a resting mouse is not paste activity (#548 starvation)" {
+    // Hover reports under ?1003h arrive while the pointer does not move at all.
+    try std.testing.expect(onlyMouseReports("\x1b[<35;80;24M"));
+    try std.testing.expect(onlyMouseReports("\x1b[<35;80;24M\x1b[<35;80;24M"));
+    try std.testing.expect(onlyMouseReports("\x1b[<0;4;9m"));
+    // Anything that could be paste content keeps the latch's clock running.
+    try std.testing.expect(!onlyMouseReports(""));
+    try std.testing.expect(!onlyMouseReports("hello"));
+    try std.testing.expect(!onlyMouseReports("\x1b[<35;80;24Mhello"));
+    try std.testing.expect(!onlyMouseReports("hello\x1b[<35;80;24M"));
+    try std.testing.expect(!onlyMouseReports("\x1b[<35;80;24")); // split: not complete
+    try std.testing.expect(!onlyMouseReports("\x1b[201~"));
+    try std.testing.expect(!onlyMouseReports("\x1b[A"));
 }
