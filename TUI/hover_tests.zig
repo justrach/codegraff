@@ -274,6 +274,47 @@ test "a double click on the sticky pin scrolls its prompt back onto the screen" 
     try testing.expect(m.mid_skip < after_single);
 }
 
+test "content arriving under a still pointer clears the hover instead of lying" {
+    // The pointer never moves; the transcript grows under it. The remembered
+    // row now names a different entry, so an unverified highlight would be
+    // announcing a click that lands somewhere else entirely.
+    var m: Model = undefined;
+    try folded(&m);
+    defer m.deinit();
+    const cold = try render_mod.render(&m, testing.allocator, 80, 24, 0);
+    defer testing.allocator.free(cold);
+    motion(&m, 4, @intCast(rowOf(cold, "Called").? + 1));
+    try testing.expectEqual(hover.Target.tool, m.hover.hit.target);
+
+    // Enough answer to overflow the viewport: following the tail slides the
+    // group off the row the pointer is parked on, without the pointer moving.
+    var i: usize = 0;
+    while (i < 40) : (i += 1) try m.push(.assistant, "a streamed answer line");
+    const moved = try render_mod.render(&m, testing.allocator, 80, 24, 0);
+    defer testing.allocator.free(moved);
+    try testing.expectEqual(@as(?usize, null), m.hover.row);
+    try testing.expect(std.mem.indexOf(u8, moved, tint.hoverBg(m.theme_id)) == null);
+}
+
+test "a group that folds under the pointer starts announcing that it opens" {
+    var m: Model = undefined;
+    try folded(&m);
+    defer m.deinit();
+    m.toggleToolGroup(1); // open it first
+    const open = try render_mod.render(&m, testing.allocator, 80, 24, 0);
+    defer testing.allocator.free(open);
+    motion(&m, 4, @intCast(rowOf(open, "bash").? + 1));
+    try testing.expect(!m.hover.hit.collapsed);
+
+    // Folded by the keyboard, with the pointer still parked on the row: the
+    // mark has to start announcing the expansion without a new motion report.
+    m.toggleToolGroup(1);
+    const shut = try render_mod.render(&m, testing.allocator, 80, 24, 0);
+    defer testing.allocator.free(shut);
+    try testing.expect(m.hover.hit.collapsed);
+    try testing.expect(std.mem.indexOf(u8, shut, glyphs.expand) != null);
+}
+
 test "hover clears when the pointer is over an overlay, which has no row targets" {
     var m: Model = undefined;
     try folded(&m);

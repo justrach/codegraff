@@ -204,6 +204,18 @@ pub fn paint(m: *Model, a: std.mem.Allocator, frame: []const u8, width: usize) !
     _ = width;
     const row = m.hover.row orelse return frame;
     if (m.hover.hit.target == .none) return frame;
+    // Re-ask, every frame. An explicit scroll drops the hover outright
+    // (`scrolled`), but content can also arrive under a pointer that never
+    // moved — a streaming answer, a tool card opening above. The remembered
+    // hit is then a claim about a row that has changed hands, so it is
+    // verified rather than trusted, and a stale one clears itself instead of
+    // announcing a click that would land somewhere else.
+    const now = hitTest(m, row);
+    if (now.target != m.hover.hit.target or now.idx != m.hover.hit.idx) {
+        clear(m);
+        return frame;
+    }
+    m.hover.hit = now; // the group may have folded or opened under the pointer
     const bg = tint.hoverBg(m.theme_id);
     var out = std.array_list.Managed(u8).init(a);
     var r: usize = 0;
