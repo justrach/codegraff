@@ -242,6 +242,7 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-typed-events.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+<<<<<<< HEAD
     # The frame painter may never show anything but the current frame. Storms
     # the window size, fills the screen with glyphs terminals measure
     # differently from us, then reads the SCREEN back and compares it cell for
@@ -254,6 +255,13 @@ if wanted tuiguard; then
     # the logical scroll anchor removed the marker leaves the screen on the
     # FIRST width change, so this is a real gate, not a smoke test.
     if python3 scripts/test-tui-resize-anchor.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # grok-build's one-column rule for ANIMATED chrome: watches the live blink
+    # on a background op's pending row and fails if the label beside it moves a
+    # column, or if a frame is not East-Asian-Narrow. TUI/glyphs.zig holds the
+    # same law for the frame sets; this is the pixels.
+    if python3 scripts/test-tui-chrome-width.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
   fi
