@@ -50,7 +50,10 @@ fn fixture(m: *Model) !void {
     try m.push(.assistant, "done");
 }
 
-const widths = [_]usize{ 28, 41, 60, 80, 100, 132 };
+// 44/80/120 are the audited trio (narrow, default, wide); the rest surround
+// them so an off-by-one in the wrap math cannot hide between two sampled
+// widths.
+const widths = [_]usize{ 28, 41, 44, 60, 80, 100, 120, 132 };
 
 test "cached layout is byte-identical to the uncached render over widths, themes and folds" {
     var m: Model = undefined;
