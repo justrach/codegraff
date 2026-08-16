@@ -21,6 +21,16 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.263
+    \\  • grok-4.6 is the xAI default: 500k window, published dual-band prices
+    \\  • /effort low|medium|high|xhigh on native Grok (gateway grok-build still ignores it)
+    \\  • Per-project prompt cache key survives a new session in the same cwd
+    \\  • TUI: crash/suspend restore, in-app drag selection, SIGTSTP/quit livelock gone
+    \\
+    \\0.0.262
+    \\  • Formal conformance corpus (Lean kernels + executable reference)
+    \\  • TUI /compact runs the real engine compaction; mid-turn /new|/compact|/rewind refused
+    \\
     \\0.0.261
     \\  • Grok-style TUI: syntax-highlighted fences, sticky prompt header, auto light/dark, flicker-free paints
     \\  • ~24 rendering/input fixes: phantom-Escape turn cancels, debris typed into the composer, bold bleed, emoji-bent borders, /theme half-repaints

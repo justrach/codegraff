@@ -10,6 +10,27 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.263 (2026-08-17)
+
+- grok-4.6 is the xAI default: 500k context, compact at 400k, published
+  dual-band prices (`$2/$0.50/$6` under 200k prompt tokens, `$4/$1/$12`
+  at or above). SuperGrok login stays $0; metered `XAI_API_KEY` uses the
+  bands. grok-4.3 is unchanged.
+- `/effort low|medium|high|xhigh` now applies on native Grok. The default
+  Responses wire already sent `reasoning.effort`; the UI no longer claims
+  the model ignores it, and `GRAFF_XAI_WIRE=chat` sends `reasoning_effort`.
+  `grok-build` via the Codegraff gateway still rejects the hint.
+- Prompt-cache affinity is durable per project: a new session in the same
+  cwd reuses `prompt_cache_key` / `x-grok-conv-id` instead of minting a
+  process-local id.
+- TUI: crash/suspend/panic restore the terminal; SIGTSTP no longer livelocks
+  a background op; in-app drag selection copies on release; quit cancels and
+  settles the live turn before leaving fullscreen.
+- Structured outputs reach Anthropic (schema as a tool) and survive DeepSeek's
+  json_schema reject by degrading to a `structured_output` tool.
+- Conformance corpus grew to ten Lean kernels (3,642 cells). TUI pty
+  lifecycle guards joined tier-1.
+
 ## v0.0.262 (2026-08-15)
 
 - A formal conformance corpus now guards the harness's decision procedures:
