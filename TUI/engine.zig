@@ -47,9 +47,29 @@ pub const StreamBuf = struct {
     pub fn appendBytes(self: *StreamBuf, bytes: []const u8) void {
         const cur = self.len.load(.monotonic);
         if (cur >= self.buf.len) return;
-        const n = @min(bytes.len, self.buf.len - cur);
+        var n = @min(bytes.len, self.buf.len - cur);
+        // Overflow drops the tail for good, so a clip must not land INSIDE a
+        // codepoint: the missing bytes never arrive and the live row would
+        // paint replacement garbage that persists for the rest of the turn.
+        if (n < bytes.len) n = utf8Floor(bytes, n);
+        if (n == 0) return;
         @memcpy(self.buf[cur .. cur + n], bytes[0..n]);
         self.len.store(cur + n, .release);
+    }
+
+    /// Largest k <= n where `s[0..k]` ends on a whole UTF-8 codepoint.
+    fn utf8Floor(s: []const u8, n: usize) usize {
+        if (n == 0 or n >= s.len) return n;
+        var k = n;
+        while (k > 0) : (k -= 1) {
+            const b = s[k - 1];
+            if (b < 0x80) return k; // ASCII byte ends a codepoint
+            if (b >= 0xc0) { // lead byte: does its whole sequence fit?
+                const len = std.unicode.utf8ByteSequenceLength(b) catch return k - 1;
+                return if (k - 1 + len <= n) n else k - 1;
+            }
+        }
+        return 0; // all continuation bytes: nothing whole to keep
     }
 
     pub fn snapshot(self: *StreamBuf, gpa: std.mem.Allocator) ?[]u8 {
@@ -190,4 +210,22 @@ test "StreamBuf: append then snapshot, overflow is silent" {
     try std.testing.expectEqualStrings("hello", snap);
     s.appendBytes(" world!!!!");
     try std.testing.expectEqual(@as(usize, 8), s.len.load(.acquire));
+}
+
+test "StreamBuf: an overflow clip lands on a codepoint boundary" {
+    // The dropped tail never arrives, so a clip inside 🚀 would leave the live
+    // row painting replacement garbage for the rest of the turn.
+    var buf: [8]u8 = undefined;
+    var s: StreamBuf = .{ .buf = &buf };
+    s.appendBytes("ab");
+    s.appendBytes("🚀🚀"); // 8 bytes: only the first fits whole
+    const snap = s.snapshot(std.testing.allocator).?;
+    defer std.testing.allocator.free(snap);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(snap));
+    try std.testing.expectEqualStrings("ab🚀", snap);
+    // A chunk that cannot contribute even one whole glyph writes nothing.
+    var tiny: [2]u8 = undefined;
+    var t: StreamBuf = .{ .buf = &tiny };
+    t.appendBytes("日");
+    try std.testing.expectEqual(@as(usize, 0), t.len.load(.acquire));
 }

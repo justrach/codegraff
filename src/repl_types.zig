@@ -49,9 +49,29 @@ pub const StreamBuf = struct {
     pub fn appendBytes(self: *StreamBuf, bytes: []const u8) void {
         const cur = self.len.load(.monotonic);
         if (cur >= self.buf.len) return;
-        const n = @min(bytes.len, self.buf.len - cur);
+        var n = @min(bytes.len, self.buf.len - cur);
+        // The dropped tail never comes back, so a clip must not land INSIDE a
+        // codepoint or the live preview keeps half a glyph for the whole turn.
+        // Mirrors TUI/engine.zig's StreamBuf — tui_launch.liveStream overlays
+        // one struct on the other, so their semantics have to match too.
+        if (n < bytes.len) n = utf8Floor(bytes, n);
+        if (n == 0) return;
         @memcpy(self.buf[cur .. cur + n], bytes[0..n]);
         self.len.store(cur + n, .release);
+    }
+    /// Largest k <= n where `s[0..k]` ends on a whole UTF-8 codepoint.
+    fn utf8Floor(s: []const u8, n: usize) usize {
+        if (n == 0 or n >= s.len) return n;
+        var k = n;
+        while (k > 0) : (k -= 1) {
+            const b = s[k - 1];
+            if (b < 0x80) return k;
+            if (b >= 0xc0) {
+                const len = std.unicode.utf8ByteSequenceLength(b) catch return k - 1;
+                return if (k - 1 + len <= n) n else k - 1;
+            }
+        }
+        return 0;
     }
     pub fn snapshot(self: *StreamBuf, gpa: std.mem.Allocator) ?[]u8 {
         const n = self.len.load(.acquire);

@@ -263,6 +263,12 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-chrome-width.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+    # Streaming markdown: the answer arrives as 1-3 codepoint deltas whose
+    # boundaries land mid-escape, mid-fence and mid-marker. Both the live tail
+    # and the settled row must be free of the model's own CR/SGR bytes.
+    if python3 scripts/test-tui-stream-markdown.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
   fi
 fi
 
