@@ -69,13 +69,11 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                     try s.print("{s}", .{thinking_obj});
                 }
             }
-            // Prompt caching (Anthropic): a cache_control breakpoint on the
-            // system block caches the whole stable prefix (system + tools).
-            // Must be block-level — a top-level cache_control is invalid.
-            // Other anthropic-format providers (minimax) get a plain string,
-            // since cache_control isn't part of their API. Kimi's official
-            // Anthropic adapter uses the same cached text-block shape.
+            // Prompt caching (Anthropic): a block-level cache_control breakpoint
+            // on the system block caches the whole stable prefix (system+tools);
+            // other anthropic-format providers (minimax) get a plain string.
             try s.objectField("system");
+            const sys = try @import("agent_request_body_responses.zig").schemaAwarePrompt(self);
             const cc = "{\"type\":\"ephemeral\"}";
             if (std.mem.eql(u8, self.provider.id, "anthropic") or is_kimi) {
                 try s.beginArray();
@@ -83,13 +81,13 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 try s.objectField("type");
                 try s.write("text");
                 try s.objectField("text");
-                try s.write(self.systemPrompt());
+                try s.write(sys);
                 try s.objectField("cache_control");
                 try s.print("{s}", .{cc});
                 try s.endObject();
                 try s.endArray();
             } else {
-                try s.write(self.systemPrompt());
+                try s.write(sys);
             }
             if (tools) |t| {
                 try s.objectField("tools");
@@ -98,6 +96,10 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                     try s.objectField("tool_choice");
                     try s.print("{s}", .{"{\"type\":\"any\"}"});
                 }
+            } else if (self.output_schema != null) {
+                // #543: this wire has no response_format at all — the schema is
+                // ALWAYS delivered as the structured_output tool (dsh pattern).
+                try @import("agent_request_body_responses.zig").writeAnthropicStructuredTool(&s, self.output_schema.?);
             }
             try s.objectField("messages");
             // Cache the conversation prefix too (not just system) on the real
