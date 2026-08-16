@@ -220,6 +220,9 @@ fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
         // The band is anchored to screen rows, so scrolling it would slide it
         // onto other content — drop it and scroll.
         selection.clear(self);
+        // An open picker or the completion menu owns the wheel: one notch is
+        // one ITEM there, never a scroll of the transcript underneath.
+        if (@import("overlays.zig").wheel(self, ev.btn == 64)) return .stay;
         scrollBy(self, if (ev.btn == 64) 3 else -3);
         return .stay;
     }

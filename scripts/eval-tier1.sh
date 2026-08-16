@@ -256,6 +256,13 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-resize-anchor.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+    # grok-build's one-column rule for ANIMATED chrome: watches the live blink
+    # on a background op's pending row and fails if the label beside it moves a
+    # column, or if a frame is not East-Asian-Narrow. TUI/glyphs.zig holds the
+    # same law for the frame sets; this is the pixels.
+    if python3 scripts/test-tui-chrome-width.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
   fi
 fi
 

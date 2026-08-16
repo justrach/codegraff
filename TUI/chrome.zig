@@ -5,6 +5,7 @@ const std = @import("std");
 const app = @import("app.zig");
 const catalog = @import("catalog.zig");
 const engine = @import("engine.zig");
+const glyphs = @import("glyphs.zig");
 const theme_mod = @import("theme.zig");
 const Model = app.Model;
 
@@ -41,7 +42,7 @@ pub fn promptBox(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
     try out.appendSlice(theme_mod.reset);
     try out.append('\n');
     var body = std.array_list.Managed(u8).init(a);
-    try body.appendSlice("› ");
+    try body.appendSlice(glyphs.caret ++ " ");
     if (self.images.items.len > 0) {
         try body.appendSlice(try imageChips(self, a));
         try body.appendSlice("  ");
@@ -61,9 +62,13 @@ pub fn promptBox(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
     // The context share comes from the engine's meter and appears only once a
     // turn has reported usage — a "0%" before the first response would be the
     // char-counter's old habit of showing a number it had not measured (#551).
+    // The share is right-aligned in a THREE-column field. The footer label is
+    // centred, so a meter ticking 9% → 10% used to widen the label by one and
+    // slide every character of the footer half a cell sideways mid-turn — the
+    // same class of jitter a two-column spinner frame causes (glyphs.zig).
     var pct_buf: [16]u8 = undefined;
     const pct: []const u8 = if (self.contextPercent()) |p|
-        (std.fmt.bufPrint(&pct_buf, " · {d}%", .{p}) catch "")
+        (std.fmt.bufPrint(&pct_buf, " · {d: >3}%", .{p}) catch "")
     else
         "";
     const label = try std.fmt.allocPrint(a, " {s} ({s}) · {s}{s} ", .{ model, @tagName(self.effort), self.modeSlug(), pct });
@@ -162,7 +167,7 @@ pub fn slashMenu(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
     var i: usize = first;
     while (i < first + show) : (i += 1) {
         const it = catalog.items[idx[i]];
-        const mark: []const u8 = if (i == sel) "› " else "  ";
+        const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(i != sel));
         // One menu entry is one ROW: a click maps a screen row straight back to
         // an item, so a long description is CUT, never wrapped — wrapping
         // would slide every entry below it off its own row.
@@ -189,7 +194,7 @@ fn listOverlay(self: *const Model, a: std.mem.Allocator, width: usize) ![]const 
     var i: usize = 0;
     while (i < show) : (i += 1) {
         const it = catalog.items[idx[i]];
-        const mark: []const u8 = if (i == sel) "› " else "  ";
+        const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(i != sel));
         // Same rule as the inline menu: one entry, one row, cut to fit.
         const line = theme_mod.takeCols(try std.fmt.allocPrint(a, "{s}{s}  {s}", .{ mark, it.name, it.desc }), width);
         try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
@@ -205,7 +210,7 @@ fn themeOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
     try out.append('\n');
     const sel = self.overlay_sel % theme_mod.all.len;
     for (theme_mod.all, 0..) |id, i| {
-        const mark: []const u8 = if (i == sel) "› " else "  ";
+        const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(i != sel));
         const cur: []const u8 = if (id == self.theme_id) "  (current)" else "";
         const line = try std.fmt.allocPrint(a, "{s}{s}{s}", .{ mark, id.label(), cur });
         try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
@@ -230,7 +235,7 @@ fn jumpOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
         if (e.kind != .user) continue;
         const nl = std.mem.indexOfScalar(u8, e.text, '\n') orelse e.text.len;
         const clip = e.text[0..@min(nl, 60)];
-        const mark: []const u8 = if (no == sel) "› " else "  ";
+        const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(no != sel));
         const line = try std.fmt.allocPrint(a, "{s}#{d}  {s}", .{ mark, no + 1, clip });
         try out.appendSlice(if (no == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
         try out.append('\n');
@@ -404,7 +409,7 @@ fn settingsOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
     };
     const sel = self.overlay_sel % rows.len;
     for (rows, 0..) |r, i| {
-        const mark: []const u8 = if (i == sel) "› " else "  ";
+        const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(i != sel));
         const line = try std.fmt.allocPrint(a, "{s}{s:<10}  {s}", .{ mark, r[0], r[1] });
         try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
         try out.append('\n');
@@ -424,6 +429,33 @@ fn debugOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
     return std.fmt.allocPrint(a, "{s}{s}Observability{s}\n{s}{s}{s}\n{s}Esc close{s}\n", .{
         theme_mod.bold, th.text, theme_mod.reset, th.text, body, lay, th.muted, theme_mod.reset,
     });
+}
+
+test "the composer footer holds its columns as the context meter ticks" {
+    // The footer label is CENTRED, so a share that widened from 9% to 10%
+    // shifted every character of it one column mid-turn. Same class of defect
+    // as a two-column animation frame, same rule: the field is fixed-width.
+    engine.g_model_name = "grok-4";
+    defer engine.g_model_name = "";
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var col: ?usize = null;
+    for ([_]u64{ 5, 9, 10, 99, 100 }) |pct| {
+        m.setStatus(.{ .model = "grok-4", .provider_id = "xai", .has_context = true, .tokens = pct, .window = 100 });
+        const box = try promptBox(&m, arena.allocator(), 80);
+        var it = std.mem.splitScalar(u8, box, '\n');
+        var footer_row: []const u8 = "";
+        while (it.next()) |ln| {
+            if (std.mem.indexOf(u8, ln, "╰") != null) footer_row = ln;
+        }
+        const at = std.mem.indexOf(u8, footer_row, "grok-4") orelse return error.NoFooterLabel;
+        const start = theme_mod.visibleLen(footer_row[0..at]);
+        if (col) |want| try std.testing.expectEqual(want, start) else col = start;
+        try std.testing.expectEqual(@as(usize, 80), theme_mod.visibleLen(footer_row));
+    }
 }
 
 test "prompt box wraps a long draft onto several rows" {
