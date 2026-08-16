@@ -25,7 +25,7 @@ cd "$repo_root"
 # processes discover their repo from their cwd like they expect.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
 
-CHECKS=(fmt lines spec reach build tests invariants sdk)
+CHECKS=(fmt lines spec reach build tests tui tuiguard invariants sdk)
 
 usage() {
   cat <<'EOF'
@@ -38,6 +38,8 @@ checks, in order:
   reach       every file that declares tests is reachable from the test root
   build       zig build
   tests       zig build test, and the suite count never shrinks
+  tui         zig build tui-test (the TUI suite was ungated until the 2026-08 bug wave)
+  tuiguard    scripts/tui-pty-guard.py — real-binary pty lifecycle invariants
   invariants  the named goal/loop/todo tests actually ran, not just compiled
   sdk         the committed SDKs match `graff --schema`
 EOF
@@ -195,6 +197,37 @@ if wanted tests; then
           *) record_fail tests ;;
         esac
       fi
+    fi
+  fi
+fi
+
+# --- tui ---------------------------------------------------------------
+if wanted tui; then
+  if ((!build_ok)); then
+    skip_dependent tui
+  else
+    announce tui "zig build tui-test — the TUI parser/render suite"
+    out=$(zig build tui-test --summary all 2>&1)
+    if (($? != 0)); then
+      printf '%s\n' "$out" | tail -8
+      record_fail tui
+    else
+      printf '%s\n' "$out" | sed -n 's/.*Build Summary: .*; \([0-9/]* tests passed.*\)/  \1/p' | tail -1
+    fi
+  fi
+fi
+
+# --- tuiguard ----------------------------------------------------------
+if wanted tuiguard; then
+  if ((!build_ok)); then
+    skip_dependent tuiguard
+  else
+    announce tuiguard "tui-pty-guard.py — mode-balance / hostile-input / kill-restore on the real binary"
+    # grok-build's discipline as a gate: every latched DEC mode is reset on
+    # every exit path, the historical crasher corpus cannot kill a session,
+    # and SIGTERM never strands a raw terminal. Skips itself without a pty.
+    if python3 scripts/tui-pty-guard.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
     fi
   fi
 fi
