@@ -77,6 +77,7 @@ test {
     _ = run_mod;
     _ = @import("paint.zig");
     _ = @import("run_stall.zig");
+    _ = @import("pacing.zig");
     _ = @import("traj.zig");
 }
 
