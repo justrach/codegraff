@@ -465,35 +465,75 @@ overridden, and `NO_COLOR` is respected. The quiet `enso` thinking animation is
 the stable default; `/animation random` restores per-request variety and the
 other animation names remain available.
 
+The full catalog, straight from the `/` menu (a bare `/` opens it as a
+filterable full-screen picker; `/help` prints this same list in the REPL).
+`/models` pings every keyed provider catalog live on each listing, so new
+gateway rollouts appear without a restart.
+
 ```
-/model [name]   no arg → interactive fuzzy picker; or /model <name|provider|provider model>
-/models         list known models, context windows, compaction points
-/clear          wipe the conversation and start fresh
-/plan           toggle plan mode: read-only explore + propose; writes/edits denied
-/key [p k]      show API-key status; /key <provider> <key> adds one live (+ Keychain)
-/keepcontext    toggle keeping the conversation when /model switches wire format (default on)
-/reasoning      reasoning picker: low|medium|high|xhigh|max|ultra (persists)
-/fast           toggle Codex priority service tier for lower latency
-/ultracode      toggle persistent multi-agent workflow mode
-/animation      choose a thinking animation (`/animation` lists every option)
-/goal [30m] <text>  set a standing objective and work it autonomously; /goal pause|resume|status|clear
-/loop [30m] <text>  the same autonomous run, without adopting a standing objective
-/review <target> one read-only review pass; no edits, delegation, workflows, or web access
-/rewind [n]     list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
-/image <path>   attach an image to your next message (vision models only)
-/paste          attach the clipboard image (macOS); also Ctrl-V (⌘V can't be captured)
-/images         open image URLs from the last response (e.g. issue attachments) in your browser
-/strict         toggle "every message is a tool" mode
-/yolo           toggle bash auto-approval (skip permission prompts)
-/trace          toggle this run's JSONL event trace and show its path
-/compact        summarize history into a fresh context
-/btw <question> one side question about this conversation: no tools, billed, never added to the session
-/save | /resume | /sessions   session persistence; bare /resume → interactive picker
-/todo           show the current task list
-/skills         list SKILL.md playbooks + companion tools; add/remove toggles one
-/mcp [add …]    list MCP servers/tools; /mcp add <name> <cmd> connects one live
-/help           list commands
-exit | /exit | ctrl-d | ctrl-c(empty)   quit
+/model <name>             switch model/provider, fuzzy match (e.g. "sonnet", "opus")
+/models [health]          list known models, context windows, compaction points; health shows live state
+/clear                    wipe the conversation and start fresh
+/new                      start a fresh autosaved session
+/rename <title>           set the current session title
+/goal [30m] [text|pause|resume|status|clear]
+                          set a standing objective and work it autonomously; an optional 30s/30m/2h budget paces the run; pause/resume steering, status shows state, clear removes it
+/loop [30m] <prompt>      the same autonomous run as /goal, without adopting a standing objective
+/review <target or instructions>
+                          run one isolated read-only review pass; no edits, delegation, or workflows
+/never [<text>|rm <id>]   standing constraints that ride every subagent brief and survive compaction; bare lists them, rm <id> retires one (alias /constraint)
+/tell <session|all> <text>
+                          message a running graff: <session> is a DM (only it hears, any folder); all broadcasts to every graff on this device; /sessions lists who's around
+/peek <session>           see what a live co-resident session is doing right now (its transcript tail)
+/routes [<set>|add <set> <frontier|mid|small> <provider/model>]
+                          your own priced model lanes across providers: view the set and which seat wins each lane now
+/plan                     toggle plan mode: read-only explore + propose; writes/edits denied
+/ultracode                toggle persistent workflow mode; bare opens an on/off picker, or /ultracode on|off
+/fallback [allow|remove|off]
+                          opt-in cross-provider fallback for this workspace (same-provider rollout stays on)
+/key [provider secret]    show API-key status; /key <provider> <secret> adds one live (+ Keychain)
+/login [codegraff|codex|kimi]
+                          OAuth sign-in (no key to paste); bare opens a picker (codex alias: oai)
+/keepcontext              toggle keeping the conversation when /model switches wire format (default on)
+/effort                   reasoning depth: low|medium|high|... (codex, deepseek, codegraff; persists)
+/reasoning                alias for /effort
+/fast                     codex only: priority service tier for lower latency (toggle, persists)
+/thinking                 stream reasoning live vs spinner only (toggle, persists)
+/title                    name the tab from your first prompt (AI session title; toggle, persists)
+/strict                   toggle "every message is a tool" mode
+/yolo                     toggle bash auto-approval (skip permission prompts)
+/trace                    toggle this run's JSONL event trace (and show its path)
+/privacy [local|aggregate|templates|examples]
+                          control prompt-learning data egress for this session
+/trajectory               show this session's agent tree: turns + spawned subagents
+/agents                   list agent types: builtin personas + .harness/agents/*.md
+/skills [add|remove <name>]
+                          list SKILL.md playbooks + companion tools; add/remove enables or disables one
+/hooks                    list lifecycle hooks and the built-in codedb guard
+/doctor                   read-only health check: goal/todo invariants, and why steering will or will not be appended
+/btw <question>           ask one side question about this conversation: no tools, billed, never added to the session
+/compact                  compact history into a fresh context (OpenAI server-side when available)
+/rewind [n]               list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
+/image <path>             attach an image to your next message (vision models only)
+/images                   open image URLs from the last response (e.g. issue attachments) in your browser
+/paste                    attach the clipboard image: macOS; also Ctrl-V (⌘V can't be captured)
+/bash <command>           run a shell command directly
+/save [name]              write the conversation to <name>.session.json (default: current)
+/resume [name]            restore a saved conversation (no arg → interactive picker)
+/sessions                 list saved sessions in the cwd
+/todo                     show the current task list
+/jobs                     list background jobs
+/cost                     session token usage and cost
+/usage                    alias for /cost
+/debug                    live content-free observability HUD (turns, tokens, tools, last events)
+/tools                    session tool balance: codedb-pro vs zigrep vs native usage, gate refusals, skew
+/animation                pick the thinking animation; persists to settings
+/theme [name]             pick a color theme; /theme off resets to your terminal default; persists
+/fleet [on|off]           federated DGM contribution (propose/submit/elite_pull)
+/mcp [add …]              list MCP servers/tools; /mcp add <name> <cmd> [args...] connects one live
+/import-claude            copy Claude/Cursor MCP servers and skills into ~/.codegraff and this repo
+/help                     list every command
+exit | ctrl-d             quit (also /exit; ctrl-c on an empty line)
 ```
 
 `/plan`, `/yolo`, and `/strict` change how the permission gate behaves for the
