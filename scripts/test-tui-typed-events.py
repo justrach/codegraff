@@ -209,8 +209,15 @@ def workspace(tmp, port):
     return env, unset
 
 
-def summary_rows(rows):
-    return [i for i, ln in enumerate(rows) if "Called" in ln and "tool" in ln]
+CHEV_CLOSED = "›"
+CHEV_OPEN = "⌄"
+
+
+def summary_rows(rows, chevron=CHEV_CLOSED):
+    """Rows carrying a fold HEADER in the given disclosure state. The header
+    survives expansion now — only its chevron flips — so the state has to be
+    read off the glyph rather than off the header's presence."""
+    return [i for i, ln in enumerate(rows) if f"{chevron} Read " in ln]
 
 
 def check_folded(rows):
@@ -218,14 +225,19 @@ def check_folded(rows):
     if "TYPEDEV_OK" not in body:
         return "the final answer never rendered"
     # 1. The real tool run folded into exactly ONE summary row, counting the
-    #    two typed rows of one call (invocation + outcome) and nothing else.
-    #    The scraping path counted the answer's "✓ " line as a third row.
+    #    two typed rows of one call (invocation + outcome) as the ONE logical
+    #    call they are. The scraping path counted the answer's "✓ " line as a
+    #    third row; the pre-verb header counted the pair as two.
     hits = summary_rows(rows)
     if len(hits) != 1:
         return f"expected exactly one folded tool summary, got {[rows[i] for i in hits]!r}"
     summary = rows[hits[0]].strip()
-    if not re.search(r"Called 2 tools\b", summary):
-        return f"the summary counted something other than the one real call: {summary!r}"
+    # Past tense: the run settled before the answer landed. `read_file` is the
+    # read family, so the object is a file, not a bare "tool".
+    if not re.search(r"Read 1 file\b", summary):
+        return f"the header did not read as a settled single read: {summary!r}"
+    if "Called" in summary:
+        return f"the run was homogeneous and should not fall back: {summary!r}"
     # 2. The answer's status-glyph line is on screen exactly once...
     answers = [ln for ln in rows if GLYPH_LINE in ln]
     if len(answers) != 1:
@@ -245,13 +257,19 @@ def check_expanded(rows):
     """The card the fold opens onto is built from FIELDS: the engine's tool
     name, its argument, and the result preview — none of it recovered by
     splitting a rendered line."""
-    if summary_rows(rows):
+    if summary_rows(rows, CHEV_CLOSED):
         return "the click did not expand the tool group"
+    # The header stays put and flips its chevron down; it does not vanish.
+    if len(summary_rows(rows, CHEV_OPEN)) != 1:
+        return f"the open run lost its header: {rows[:12]!r}"
     # The head is `◆ <displayName(name)>  <compactArg(input)>`: read_file
     # shortened to "read", the path taken from the call's JSON argument.
     head = next((i for i, ln in enumerate(rows) if re.search(r"◆\s+read {2}note\.txt\s*$", ln)), None)
     if head is None:
         return f"no field-backed card head on screen: {rows[:8]!r}"
+    # ...hanging off the open run's gutter.
+    if "│" not in rows[head]:
+        return f"the card head is not on the open run's gutter: {rows[head]!r}"
     # The body under it is the outcome's result preview, in the card gutter.
     if head + 1 >= len(rows) or "│" not in rows[head + 1] or NOTE_BODY not in rows[head + 1]:
         return f"the card body is not the result preview: {rows[head:head + 2]!r}"

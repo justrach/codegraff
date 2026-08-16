@@ -29,6 +29,7 @@
 const std = @import("std");
 
 const app = @import("app.zig");
+const foldhdr = @import("foldhdr.zig");
 const scrollback = @import("scrollback.zig");
 const theme_mod = @import("theme.zig");
 const Model = app.Model;
@@ -211,20 +212,11 @@ fn steerText(m: *Model, a: std.mem.Allocator) ![]const u8 {
 /// tool run.
 fn blockText(m: *const Model, a: std.mem.Allocator, start: usize, end: usize, width: usize, users: u32) ![]const u8 {
     const e = m.history.items[start];
-    const sel = m.focus == .scrollback and m.selected >= start and m.selected < end;
-    if (e.kind != .tool) return scrollback.row(m, a, users, e, width, m.now_ms, sel);
-    if (e.folded) return scrollback.summary(m, a, start, end, sel);
-    var out = std.array_list.Managed(u8).init(a);
-    var first = true;
-    var t = start;
-    while (t < end) {
-        if (!first) try out.append('\n');
-        first = false;
-        const one = m.focus == .scrollback and t == m.selected;
-        try out.appendSlice(try scrollback.toolVisual(m, a, t, end, width, m.now_ms, one));
-        t = scrollback.nextTool(m, t, end);
+    if (e.kind != .tool) {
+        const sel = m.focus == .scrollback and m.selected >= start and m.selected < end;
+        return scrollback.row(m, a, users, e, width, m.now_ms, sel);
     }
-    return out.items;
+    return scrollback.runVisual(m, a, start, end, width, m.now_ms);
 }
 
 /// Everything the block's bytes are a function of. Entry identity is the
@@ -239,6 +231,15 @@ fn blockKey(m: *const Model, start: usize, end: usize, width: usize, th: u8, use
     h.update(std.mem.asBytes(&users));
     const sel: usize = if (m.focus == .scrollback and m.selected >= start and m.selected < end) m.selected + 1 else 0;
     h.update(std.mem.asBytes(&sel));
+    // A tool run's header carries a settle FLASH that turns itself off a
+    // second after the last call lands (foldhdr.zig). Nothing else about the
+    // block moves when it does, so without this the cache would keep serving
+    // the tinted row forever — the one place where these bytes are a function
+    // of the clock as well as of the entries.
+    if (m.history.items[start].kind == .tool) {
+        const flash = @intFromBool(foldhdr.flashing(foldhdr.scan(m, start, end), m.now_ms));
+        h.update(std.mem.asBytes(&flash));
+    }
     var i = start;
     while (i < end) : (i += 1) {
         const e = m.history.items[i];

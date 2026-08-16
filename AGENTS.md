@@ -27,8 +27,8 @@ defer term.deinit();
 _ = term.typeText("/help");
 _ = term.enter();
 const vis = try term.screen();          // glyphs a user would see (no SGR)
-const rows = try term.annotated();      // " 12|  ◆ Called 2 tools"
-_ = try term.clickText("Called");       // click the first matching glyph
+const rows = try term.annotated();      // " 12|  › Ran bash"
+_ = try term.clickText("Ran bash");     // click the first matching glyph
 _ = try term.hoverText("[Image #1]");   // hover an image chip
 const lay = try term.layout();          // overlay / focus / origins / images / pending
 ```

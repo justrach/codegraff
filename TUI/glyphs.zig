@@ -33,7 +33,8 @@
 //!
 //!   U+2759 ❙  N  pending blink, frame 0        one column everywhere
 //!   U+2758 ❘  N  pending blink, frame 1        one column everywhere
-//!   U+203A ›  N  selection mark, composer caret
+//!   U+203A ›  N  selection mark, composer caret, folded-run chevron
+//!   U+2304 ⌄  N  open-run chevron
 //!   U+276F ❯  N  sticky header prompt mark
 //!   U+2298 ⊘  N  denied tool
 //!   U+2717 ✗  N  failed tool
@@ -42,7 +43,8 @@
 //!   U+25C6 ◆  A  tool mark                     static, box-class
 //!   U+00B7 ·  A  system mark, meter separator  static, box-class
 //!   U+258B ▋  A  composer cursor               static, box-class
-//!   U+25A0 ■  A  stopped/interrupted row       static, box-class
+//!   U+25A0 ■  A  stopped/interrupted row        static, box-class
+//!   U+2026 …  A  live-header ellipsis           static, box-class
 //!
 //! The two blink frames were the suspect ones — they read like the ambiguous
 //! Geometric Shapes neighbours — but Dingbats U+2758..U+2767 are Neutral, so
@@ -66,7 +68,8 @@ pub const Glyph = struct {
 pub const registry = [_]Glyph{
     .{ .cp = 0x2759, .cols = 1, .class = .narrow, .role = "pending blink, frame 0" },
     .{ .cp = 0x2758, .cols = 1, .class = .narrow, .role = "pending blink, frame 1" },
-    .{ .cp = 0x203A, .cols = 1, .class = .narrow, .role = "selection mark / composer caret" },
+    .{ .cp = 0x203A, .cols = 1, .class = .narrow, .role = "selection mark / composer caret / folded-run chevron" },
+    .{ .cp = 0x2304, .cols = 1, .class = .narrow, .role = "open-run chevron" },
     .{ .cp = 0x276F, .cols = 1, .class = .narrow, .role = "sticky header prompt mark" },
     .{ .cp = 0x2298, .cols = 1, .class = .narrow, .role = "denied tool" },
     .{ .cp = 0x2717, .cols = 1, .class = .narrow, .role = "failed tool" },
@@ -76,6 +79,7 @@ pub const registry = [_]Glyph{
     .{ .cp = 0x00B7, .cols = 1, .class = .ambiguous, .role = "system mark / meter separator" },
     .{ .cp = 0x258B, .cols = 1, .class = .ambiguous, .role = "composer cursor" },
     .{ .cp = 0x25A0, .cols = 1, .class = .ambiguous, .role = "stopped / interrupted row" },
+    .{ .cp = 0x2026, .cols = 1, .class = .ambiguous, .role = "live fold-header ellipsis" },
 };
 
 // ── animated ────────────────────────────────────────────────────────────────
@@ -89,11 +93,18 @@ pub const thinking = [_][]const u8{ "\u{2759}", "\u{2758}" };
 /// row's body starts at the same column selected or not.
 pub const row_mark = [_][]const u8{ "\u{203A} ", "  " };
 
+/// The tool-run fold chevron, closed then open. Not a tick — it flips on a
+/// click — but it is registered as a frame SET for exactly the same reason:
+/// both states must measure one column, or opening a run steps its verb
+/// sideways.
+pub const chev_flip = [_][]const u8{ chev_closed, chev_open };
+
 pub const Animation = struct { name: []const u8, frames: []const []const u8 };
 
 pub const animations = [_]Animation{
     .{ .name = "pending-blink", .frames = &thinking },
     .{ .name = "row-mark", .frames = &row_mark },
+    .{ .name = "chev-flip", .frames = &chev_flip },
 };
 
 /// Frame `i` of an animation, wrapping — call sites index by time, never by a
@@ -112,6 +123,14 @@ pub const system = "\u{00B7}";
 pub const denied = "\u{2298}";
 pub const failed = "\u{2717}";
 pub const cursor = "\u{258B}";
+
+/// The tool-run disclosure pair. Both are EAW-Narrow — ONE column in every
+/// terminal, ambiguous-wide setting included — so flipping a run open cannot
+/// shift the verb beside it by a column. The `chev_flip` animation below is
+/// what asserts that; the pair is a state change, not a tick, but the width
+/// law it has to obey is the animated one.
+pub const chev_closed = "\u{203A}";
+pub const chev_open = "\u{2304}";
 
 fn lookup(cp: u21) ?Glyph {
     for (registry) |g| {

@@ -271,19 +271,6 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-chrome-width.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
-    # Streaming markdown: the answer arrives as 1-3 codepoint deltas whose
-    # boundaries land mid-escape, mid-fence and mid-marker. Both the live tail
-    # and the settled row must be free of the model's own CR/SGR bytes.
-    if python3 scripts/test-tui-stream-markdown.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # Same invariants, read off a VIRTUAL SCREEN instead of raw bytes
-    # (scripts/ptyharness.py): the VT interpreter's own selftest, the ported
-    # mode-balance check, and out-of-band screen corruption fed straight to the
-    # tty. The self-heal assertion is expected-fail until fix/tui-painter lands.
-    if python3 scripts/test-tui-screenstate.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
     # A wheel notch must be a scroll region + SU, not a screen rewrite — and a
     # storm of them must still leave the screen equal to a forced full repaint.
     # With the hint refused the probe fails on the FIRST notch (verified), so
@@ -297,6 +284,27 @@ if wanted tuiguard; then
     # With the frame budget removed the paced storm paints 503 times instead of
     # ~105, so this is a real gate, not a smoke test.
     if python3 scripts/test-tui-event-pacing.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # Same invariants, read off a VIRTUAL SCREEN instead of raw bytes
+    # (scripts/ptyharness.py): the VT interpreter's own selftest, the ported
+    # mode-balance check, and out-of-band screen corruption fed straight to the
+    # tty.
+    if python3 scripts/test-tui-screenstate.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # A tool run's fold header reads like grok-build's: present-progressive
+    # while the call is in flight, past tense on settle, tinted for a second.
+    # Drives a real `sleep` tool loop against the codex mock and reads the
+    # header row's TEXT and its cell BACKGROUNDS off a virtual screen. Both
+    # halves fail on their own when either is removed (verified).
+    if python3 scripts/test-tui-fold-headers.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # Streaming markdown: the answer arrives as 1-3 codepoint deltas whose
+    # boundaries land mid-escape, mid-fence and mid-marker. Both the live tail
+    # and the settled row must be free of the model's own CR/SGR bytes.
+    if python3 scripts/test-tui-stream-markdown.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
   fi

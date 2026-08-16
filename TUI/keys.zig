@@ -220,6 +220,14 @@ fn scrollbackKey(self: *Model, k: Key) Effect {
 /// delta), so a storm can never mean something a single report does not.
 pub fn wheelScroll(self: *Model, notches: i32) Effect {
     if (notches == 0) return .stay;
+    // An open picker or the completion menu owns the wheel: one notch is one
+    // ITEM there, never a scroll of the transcript underneath. A folded batch
+    // carries N notches, so replay it one item at a time.
+    var n = @abs(notches);
+    if (@import("overlays.zig").wheel(self, notches > 0)) {
+        while (n > 1) : (n -= 1) _ = @import("overlays.zig").wheel(self, notches > 0);
+        return .stay;
+    }
     // The band is anchored to screen rows, so scrolling it would slide it onto
     // other content — drop it and scroll.
     selection.clear(self);
