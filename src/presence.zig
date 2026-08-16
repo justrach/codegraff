@@ -245,6 +245,8 @@ pub fn announce(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, sess
     if (builtin.is_test) return null; // tests get the parameterized store, never the real registry
     if (home.len == 0) return null;
     const dir_path = std.fmt.allocPrint(gpa, "{s}/{s}", .{ home, registry_subdir }) catch return null;
+    var dir_owned = true; // deinit frees only what the globals point at, so every bail before `g_dir` is set owns dir_path — it used to leak (#549)
+    defer if (dir_owned) gpa.free(dir_path);
     Io.Dir.cwd().createDirPath(io, dir_path) catch return null;
     const identity = worktree_lease.currentIdentity(gpa, io, arena);
     if (identity.id.len == 0) return null;
@@ -252,6 +254,7 @@ pub fn announce(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, sess
     var name_buf: [64]u8 = undefined;
     const name = std.fmt.bufPrint(&name_buf, "{d}-{x}.json", .{ self.pid, self.start_id }) catch return null;
     g_dir = dir_path;
+    dir_owned = false;
     g_identity = gpa.dupe(u8, identity.id) catch return null;
     g_session = gpa.dupe(u8, session_id) catch "";
     g_goal = gpa.dupe(u8, goal) catch "";

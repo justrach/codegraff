@@ -65,6 +65,7 @@ pub fn handle(self: *Model, k: Key) Effect {
         return .stay;
     }
 
+    if (isCtrl(k, 'd')) return ctrlD(self);
     if (k == .escape) return esc(self);
     if (isCtrl(k, 'p') or (isChar(k, '?') and std.mem.trim(u8, self.input.getValue(), " \t").len == 0)) {
         self.openOverlay(.palette);
@@ -310,6 +311,14 @@ fn esc(self: *Model) Effect {
     return .stay;
 }
 
+/// The line REPL advertises "ctrl-d quits" but the fullscreen TUI swallowed it
+/// silently (#549). Empty composer quits, exactly like Ctrl+Q; with a draft in
+/// hand it stays ignored, so a stray ^D can never throw work away.
+fn ctrlD(self: *Model) Effect {
+    if (std.mem.trim(u8, self.input.getValue(), " \t\r\n").len > 0) return .stay;
+    return .quit;
+}
+
 fn ctrlC(self: *Model) Effect {
     if (self.bg) |op| {
         if (!op.cancelled) {
@@ -363,6 +372,19 @@ test "Ctrl+C quits when idle" {
     _ = handle(&m, .{ .char = 'x' });
     try std.testing.expectEqual(Effect.stay, handle(&m, .{ .ctrl = 'z' }));
     try std.testing.expectEqualStrings("ab", m.input.getValue());
+}
+
+test "Ctrl+D quits an empty composer and is ignored with a draft (#549)" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.input.setValue("half a thought");
+    try std.testing.expectEqual(Effect.stay, handle(&m, .{ .ctrl = 'd' }));
+    try std.testing.expectEqualStrings("half a thought", m.input.getValue());
+    try m.input.setValue("   ");
+    try std.testing.expectEqual(Effect.quit, handle(&m, .{ .ctrl = 'd' }));
+    try m.input.setValue("");
+    try std.testing.expectEqual(Effect.quit, handle(&m, .{ .ctrl = 'd' }));
 }
 
 test "Tab toggles focus" {
