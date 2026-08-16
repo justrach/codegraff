@@ -246,8 +246,15 @@ if wanted tuiguard; then
     # Same invariants, read off a VIRTUAL SCREEN instead of raw bytes
     # (scripts/ptyharness.py): the VT interpreter's own selftest, the ported
     # mode-balance check, and out-of-band screen corruption fed straight to the
-    # tty. The self-heal assertion is expected-fail until fix/tui-painter lands.
+    # tty.
     if python3 scripts/test-tui-screenstate.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # The frame painter may never show anything but the current frame. Storms
+    # the window size, fills the screen with glyphs terminals measure
+    # differently from us, then reads the SCREEN back and compares it cell for
+    # cell against a forced full repaint of the same frame.
+    if python3 scripts/test-tui-painter.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
   fi
