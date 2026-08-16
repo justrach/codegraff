@@ -209,6 +209,45 @@ pub fn run(
             pending_len = rest;
         } else pending_len = 0;
     }
+    // Quitting with a turn still live: cancel FIRST — Ctrl+Q (nav.zig) and the
+    // palette's /quit never did — then wait for the thread here, with the alt
+    // screen still up and a frame explaining the wait, instead of joining from
+    // Model.deinit after the terminal has already been handed back (#534).
+    if (m.pending != null) {
+        turn.cancelTurn(&m);
+        m.push(.system, "■ stopping the model…") catch {};
+        const cols = @max(tty.cols(), @as(usize, 40));
+        const rows = @max(tty.rows(), @as(usize, 12));
+        if (render_mod.render(&m, gpa, cols, rows, m.now_ms)) |frame| {
+            defer gpa.free(frame);
+            paint(w, frame, rows, cols, &.{}, m.theme().bg) catch {};
+            w.flush() catch {};
+        } else |_| {}
+        const start = m.now_ms;
+        var forced = false;
+        while (!forced and turn.quitStep(&m, m.now_ms -| start) == .wait) {
+            if (tty.poll(50)) {
+                const got = tty.readStdin(&inbuf);
+                // A second Ctrl+C / Esc during the wait means "go now".
+                for (inbuf[0..got]) |b| {
+                    if (b == 0x03 or b == 0x1b) forced = true;
+                }
+            }
+            m.now_ms = nowMs(io);
+        }
+        const elapsed = if (forced) turn.quit_drain_ms else m.now_ms -| start;
+        if (turn.quitStep(&m, elapsed) == .reap) {
+            turn.finishJob(&m);
+        } else {
+            turn.abandonJob(&m);
+            // The thread is still writing into the job, so the process must
+            // not outlive the restore: put the terminal back with the same
+            // bytes the defers would have written, then leave.
+            w.flush() catch {};
+            restore_mod.emergency();
+            std.process.exit(0);
+        }
+    }
     if (prev.len != 0) {
         const vis = @import("dump.zig").visible(gpa, prev) catch prev;
         defer if (vis.ptr != prev.ptr) gpa.free(vis);

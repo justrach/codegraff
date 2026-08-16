@@ -83,6 +83,32 @@ pub fn finishJob(self: *Model) void {
     self.follow = true;
 }
 
+/// How long quit waits for a cancelled turn to unwind. The cancel normally
+/// lands between two SSE chunks (~50-250 ms), so this only bites on a socket
+/// that has stopped delivering bytes entirely.
+pub const quit_drain_ms: u64 = 3000;
+
+pub const QuitStep = enum { wait, reap, abandon };
+
+/// One step of the quit-time settle. The TUI must never join a live turn
+/// thread from Model.deinit: deinit runs AFTER the terminal defers have left
+/// the alt screen and restored termios, so that join made graff look exited
+/// while it silently held the tty for the rest of a stalled call (#534).
+pub fn quitStep(self: *Model, elapsed_ms: u64) QuitStep {
+    const job = self.pending orelse return .reap;
+    if (!job.threaded or job.done.load(.acquire)) return .reap;
+    return if (elapsed_ms >= quit_drain_ms) .abandon else .wait;
+}
+
+/// Give up on a turn thread that ignored the cancel. The job, its history and
+/// its stream buffer are deliberately LEAKED: the detached thread still writes
+/// job.result and job.done into them, so freeing here would hand it a
+/// dangling pointer. The caller exits the process immediately after.
+pub fn abandonJob(self: *Model) void {
+    self.pending = null;
+    self.cancel_requested = false;
+}
+
 pub fn drainSteer(self: *Model) Effect {
     if (self.steer_queue.items.len == 0) return .stay;
     const text = self.steer_queue.orderedRemove(0);
@@ -329,6 +355,71 @@ test "cancelTurn collapses thinking immediately" {
         if (std.mem.eql(u8, e.text, "■ interrupted")) n += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), n);
+}
+
+test "quit waits for a live turn, then abandons it instead of joining forever (#534)" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    const job = try std.testing.allocator.create(engine.Job);
+    defer std.testing.allocator.destroy(job); // the real path leaks it on purpose
+    job.* = .{
+        .gpa = std.testing.allocator,
+        .history = &.{},
+        .params = .{},
+        .stream = .{},
+        .threaded = true, // pretend a thread is still in the provider call
+    };
+    m.pending = job;
+    // Inside the drain window the quit path keeps painting instead of joining.
+    try std.testing.expectEqual(QuitStep.wait, quitStep(&m, 0));
+    try std.testing.expectEqual(QuitStep.wait, quitStep(&m, quit_drain_ms - 1));
+    // Past it the job is given up on, never joined.
+    try std.testing.expectEqual(QuitStep.abandon, quitStep(&m, quit_drain_ms));
+    abandonJob(&m);
+    try std.testing.expect(m.pending == null);
+    // A turn that DID unwind is reaped normally, however long quit waited.
+    m.pending = job;
+    job.done.store(true, .release);
+    try std.testing.expectEqual(QuitStep.reap, quitStep(&m, quit_drain_ms * 10));
+    m.pending = null;
+}
+
+test "Model.deinit never joins a running turn thread (#534)" {
+    const Hold = struct {
+        var release: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+        var started: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+        fn f(_: ?*anyopaque, gpa: std.mem.Allocator, _: []const engine.Turn, _: engine.Params, _: *engine.StreamBuf) ?[]const u8 {
+            started.store(true, .release);
+            while (!release.load(.acquire)) std.Thread.yield() catch {};
+            return gpa.dupe(u8, "late") catch null;
+        }
+    };
+    Hold.release.store(false, .release);
+    Hold.started.store(false, .release);
+    engine.g_turn_fn = Hold.f;
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    try m.push(.user, "hi");
+    startJob(&m);
+    const job = m.pending orelse return error.NoJob;
+    var spins: usize = 0;
+    while (!Hold.started.load(.acquire)) : (spins += 1) {
+        if (spins > 1_000_000) return error.TurnNeverStarted;
+        std.Thread.yield() catch {};
+    }
+    // deinit must return while the turn thread is still inside the call.
+    m.deinit();
+    try std.testing.expect(!job.done.load(.acquire));
+    // Now let the thread finish and clean up what deinit deliberately left.
+    Hold.release.store(true, .release);
+    job.thread.join();
+    engine.g_turn_fn = null;
+    if (job.result) |r| std.testing.allocator.free(r);
+    for (job.history) |t| std.testing.allocator.free(t.text);
+    std.testing.allocator.free(job.history);
+    if (job.stream.buf.len > 0) std.testing.allocator.free(job.stream.buf);
+    std.testing.allocator.destroy(job);
 }
 
 test "finishJob strips a pending row buried under steer echoes (#520)" {

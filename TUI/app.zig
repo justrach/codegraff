@@ -107,7 +107,14 @@ pub const Model = struct {
     }
 
     pub fn deinit(self: *Model) void {
-        if (self.pending) |job| self.destroyJob(job);
+        // Never an unbounded join in a destructor (#534): by the time deinit
+        // runs, run.zig's terminal defers have already handed the shell back,
+        // so joining a stalled provider call here hangs invisibly. run.zig
+        // settles the job while the alt screen is still up; a thread still
+        // running at this point is abandoned, leak and all.
+        if (self.pending) |job| {
+            if (!job.threaded or job.done.load(.acquire)) self.destroyJob(job) else self.pending = null;
+        }
         for (self.history.items) |e| self.alloc.free(e.text);
         self.history.deinit();
         for (self.prompt_hist.items) |s| self.alloc.free(s);
