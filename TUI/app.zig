@@ -91,6 +91,11 @@ pub const Model = struct {
     preview_n: u32 = 0,
     preview_pin: bool = false,
     preview_rows: usize = 0,
+    /// Drag-selection band over the composed frame (#529) — presentation only.
+    sel: @import("selection.zig").Sel = .{},
+    /// Text the band currently covers, captured by the same pass that paints
+    /// it, so what the clipboard gets is exactly what the user saw highlighted.
+    sel_text: []const u8 = "",
     cancel_requested: bool = false,
     quit_requested: bool = false,
     chat: bool = false,
@@ -133,6 +138,7 @@ pub const Model = struct {
         if (self.session_name) |s| self.alloc.free(s);
         if (self.overlay_filter.len > 0) self.alloc.free(self.overlay_filter);
         if (self.files_cache) |f| self.alloc.free(f);
+        if (self.sel_text.len > 0) self.alloc.free(self.sel_text);
         self.input.deinit();
     }
 

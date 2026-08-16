@@ -229,6 +229,12 @@ if wanted tuiguard; then
     if python3 scripts/tui-pty-guard.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+    # #529: the drag gesture the mouse-tracking modes above swallow. Paints an
+    # inverse band and lands on the real clipboard (restored afterwards);
+    # skips itself off macOS, where there is no pbcopy/pbpaste.
+    if python3 scripts/test-tui-selection.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
   fi
 fi
 

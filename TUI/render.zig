@@ -8,6 +8,7 @@ const app = @import("app.zig");
 const chrome = @import("chrome.zig");
 const engine = @import("engine.zig");
 const scrollback = @import("scrollback.zig");
+const selection = @import("selection.zig");
 const theme_mod = @import("theme.zig");
 const welcome = @import("welcome.zig");
 const Model = app.Model;
@@ -129,7 +130,10 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
         if (image_card[image_card.len - 1] != '\n') try out.append('\n');
     }
     try out.appendSlice(bottom.items);
-    return gpa.dupe(u8, out.items);
+    // Selection is a post-pass over the finished frame: the row builders stay
+    // unaware of it, and the band lands on screen rows exactly as the mouse
+    // reported them (#529).
+    return gpa.dupe(u8, try selection.paint(self, a, out.items, width));
 }
 
 fn countLines(s: []const u8) usize {
