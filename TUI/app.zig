@@ -136,6 +136,11 @@ pub const Model = struct {
     /// viewport this many milliseconds later (scrollbar.zig); zero means the
     /// session has never scrolled, so no gutter has ever been earned.
     scroll_seen_ms: u64 = 0,
+    /// Did the frame just composed carry the scroll gutter? Two consecutive
+    /// frames that both did are shaped the same way, which is what lets the
+    /// painter scroll the band and patch the gutter cell (scrollpaint.zig)
+    /// instead of refusing the fast path outright.
+    gutter_on: bool = false,
     /// A one-shot byte string the run loop owes the TERMINAL, not the screen:
     /// the OSC 52 clipboard write a copy just produced. Deliberately not part
     /// of the frame — a frame is re-painted (the self-heal rewrites it every

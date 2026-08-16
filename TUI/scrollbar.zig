@@ -88,9 +88,24 @@ pub fn current(self: *const Model) ?Thumb {
 /// stay unaware of the gutter, and the selection capture never sees the glyph.
 /// Returns `frame` untouched whenever the thumb is hidden, which is what makes
 /// hiding self-healing rather than a second code path.
+///
+/// While it IS showing, EVERY band row gets the gutter shape — content cut to
+/// `width - 1`, padded to it, then the cell — and rows off the thumb carry a
+/// space there. That uniformity is not cosmetic: it is what lets the painter's
+/// scroll fast path keep working. A hardware scroll slides the whole row, but
+/// the gutter's position comes from the scroll OFFSET and does not travel with
+/// the lines under it; with every band row the same shape, scrollpaint.zig can
+/// compare the content halves (which do slide) and patch the one cell that
+/// does not. Reshape only the thumb rows and every notch would look like a
+/// band whose rows changed for their own reasons, and the fast path would be
+/// refused on exactly the frames it exists for.
 pub fn paint(self: *Model, a: std.mem.Allocator, frame: []const u8, width: usize) ![]const u8 {
-    if (width == 0) return frame;
-    const t = current(self) orelse return frame;
+    if (width < 2) return frame;
+    const t = current(self) orelse {
+        self.gutter_on = false;
+        return frame;
+    };
+    self.gutter_on = true;
     const first = self.band.top + t.top;
     const last = first + t.len; // exclusive
     var out = std.array_list.Managed(u8).init(a);
@@ -99,20 +114,20 @@ pub fn paint(self: *Model, a: std.mem.Allocator, frame: []const u8, width: usize
     const style = self.theme().muted;
     while (it.next()) |ln| : (row += 1) {
         if (row > 0) try out.append('\n');
-        if (row < first or row >= last) {
+        if (row < self.band.top or row >= self.band.top + self.band.len) {
             try out.appendSlice(ln);
             continue;
         }
-        try overlayLast(&out, ln, width, style);
+        try gutterRow(&out, ln, width, style, row >= first and row < last);
     }
     return out.items;
 }
 
-/// One row with its last column replaced by the thumb. The body is cut to
-/// `width - 1` columns and padded out to them, so the glyph always lands on the
-/// last cell whatever the row measured — and the row ends on a reset, so the
-/// gutter's colour cannot leak into the next row a diff paint touches.
-fn overlayLast(out: *std.array_list.Managed(u8), ln: []const u8, width: usize, style: []const u8) !void {
+/// One band row in the gutter shape: `content ++ pad ++ reset ++ style ++ cell`.
+/// The reset is the SPLIT MARKER the painter looks for (scrollpaint.zig takes
+/// everything from the last one as the cell), and it also stops the gutter's
+/// colour leaking into the next row a diff paint touches.
+fn gutterRow(out: *std.array_list.Managed(u8), ln: []const u8, width: usize, style: []const u8, thumb_here: bool) !void {
     const keep = width - 1;
     const body = theme_mod.takeCols(ln, keep);
     try out.appendSlice(body);
@@ -120,8 +135,7 @@ fn overlayLast(out: *std.array_list.Managed(u8), ln: []const u8, width: usize, s
     while (pad > 0) : (pad -= 1) try out.append(' ');
     try out.appendSlice(theme_mod.reset);
     try out.appendSlice(style);
-    try out.appendSlice(glyphs.scroll_thumb);
-    try out.appendSlice(theme_mod.reset);
+    try out.appendSlice(if (thumb_here) glyphs.scroll_thumb else " ");
 }
 
 // ------------------------------------------------------------------ tests
@@ -265,7 +279,7 @@ test "the overlay lands on the last column of exactly the thumb's rows" {
         if (!marked) continue;
         // Exactly `width` columns, with the glyph on the last one.
         try testing.expectEqual(width, theme_mod.visibleLen(ln));
-        try testing.expect(std.mem.endsWith(u8, ln, glyphs.scroll_thumb ++ theme_mod.reset));
+        try testing.expect(std.mem.endsWith(u8, ln, glyphs.scroll_thumb));
     }
     try testing.expectEqual(@as(usize, 16), row);
 }
@@ -307,6 +321,6 @@ test "a row already at full width keeps its width when the thumb lands on it" {
     for ([_][]const u8{ "0123456789", "ab", "12345678\u{1F409}" }) |body| {
         const out = try paint(&m, ar, body, 10);
         try testing.expectEqual(@as(usize, 10), theme_mod.visibleLen(out));
-        try testing.expect(std.mem.endsWith(u8, out, glyphs.scroll_thumb ++ theme_mod.reset));
+        try testing.expect(std.mem.endsWith(u8, out, glyphs.scroll_thumb));
     }
 }

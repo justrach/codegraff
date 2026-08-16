@@ -190,7 +190,6 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
         if (image_card[image_card.len - 1] != '\n') try out.append('\n');
     }
     try out.appendSlice(bottom_block);
-    self.paint_hint = scrollHint(self, prev_band);
     // Selection is a post-pass over the finished frame: the row builders stay
     // unaware of it, and the band lands on screen rows exactly as the mouse
     // reported them (#529).
@@ -198,7 +197,13 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     // The scroll gutter goes LAST, after the capture: the thumb is chrome the
     // selection must never copy, and it hides for the duration of a drag
     // anyway (scrollbar.zig owns both halves of that rule).
-    return gpa.dupe(u8, try scrollbar.paint(self, a, banded, width));
+    const had_gutter = self.gutter_on;
+    const painted = try scrollbar.paint(self, a, banded, width);
+    // The hint describes the FINISHED frames, so it is taken after both
+    // post-passes: the gutter reshapes every band row, and whether the painter
+    // may scroll them depends on the two frames having the same shape.
+    self.paint_hint = scrollHint(self, prev_band, had_gutter and self.gutter_on);
+    return gpa.dupe(u8, painted);
 }
 
 /// `count` mid rows starting at `from`, taken from the layout cache when the
@@ -214,7 +219,7 @@ fn midSlice(a: std.mem.Allocator, cache: ?*layout_cache.Cache, lines: [][]const 
 /// The delta the scrollable band moved by between the last frame and this one,
 /// when that is the ONLY thing that happened to it — the painter's scroll fast
 /// path. Null is always safe: it just means the ordinary row diff.
-fn scrollHint(self: *const Model, prev: app.Band) ?scrollpaint.Hint {
+fn scrollHint(self: *const Model, prev: app.Band, gutter: bool) ?scrollpaint.Hint {
     const cur = self.band;
     if (!cur.live or !prev.live) return null;
     // Geometry moved, so screen row N is not the same slot it was: a resize, an
@@ -228,7 +233,7 @@ fn scrollHint(self: *const Model, prev: app.Band) ?scrollpaint.Hint {
     if (self.sel.active or self.sel.pressed) return null;
     const d = @as(isize, @intCast(cur.off)) - @as(isize, @intCast(prev.off));
     if (@abs(d) >= cur.len) return null;
-    return .{ .top = cur.top, .len = cur.len, .delta = d };
+    return .{ .top = cur.top, .len = cur.len, .delta = d, .gutter = gutter };
 }
 
 fn countLines(s: []const u8) usize {
