@@ -39,7 +39,8 @@ checks, in order:
   build       zig build
   tests       zig build test, and the suite count never shrinks
   tui         zig build tui-test (the TUI suite was ungated until the 2026-08 bug wave)
-  tuiguard    scripts/tui-pty-guard.py — real-binary pty lifecycle invariants
+  tuiguard    real-binary pty probes: lifecycle invariants (tui-pty-guard.py)
+              and virtual-screen checks (test-tui-screenstate.py)
   invariants  the named goal/loop/todo tests actually ran, not just compiled
   sdk         the committed SDKs match `graff --schema`
 EOF
@@ -267,6 +268,13 @@ if wanted tuiguard; then
     # boundaries land mid-escape, mid-fence and mid-marker. Both the live tail
     # and the settled row must be free of the model's own CR/SGR bytes.
     if python3 scripts/test-tui-stream-markdown.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # Same invariants, read off a VIRTUAL SCREEN instead of raw bytes
+    # (scripts/ptyharness.py): the VT interpreter's own selftest, the ported
+    # mode-balance check, and out-of-band screen corruption fed straight to the
+    # tty. The self-heal assertion is expected-fail until fix/tui-painter lands.
+    if python3 scripts/test-tui-screenstate.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
   fi
