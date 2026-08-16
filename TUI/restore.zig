@@ -130,6 +130,10 @@ fn onFatal(sig: std.posix.SIG) callconv(.c) void {
 /// `raise` returns once SIGCONT arrives, so the whole suspend/continue cycle
 /// is this one handler — no SIGCONT hook needed.
 fn onStop(sig: std.posix.SIG) callconv(.c) void {
+    // Only a suspend that interrupted the fullscreen TUI gets the screen back:
+    // the handlers outlive run(), and re-entering raw mode after the TUI is
+    // gone would hijack the shell we just handed over.
+    const was_fullscreen = armed.load(.acquire);
     emergency();
     var dfl = std.posix.Sigaction{
         .handler = .{ .handler = std.posix.SIG.DFL },
@@ -140,6 +144,7 @@ fn onStop(sig: std.posix.SIG) callconv(.c) void {
     std.posix.raise(sig) catch {};
     // --- continued here ---
     installStopHandlers();
+    if (!was_fullscreen) return;
     if (tty.enterRaw()) |_| {}
     if (enable.len > 0) _ = std.posix.system.write(std.posix.STDOUT_FILENO, enable.ptr, enable.len);
     armed.store(true, .release);
