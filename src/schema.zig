@@ -412,12 +412,12 @@ fn providerLoginKind(id: []const u8) []const u8 {
 /// Whether a model exposes a user-selectable reasoning effort. Kimi maps the
 /// setting through its live effort list into `thinking`; the other listed
 /// providers use reasoning_effort / Responses reasoning.effort.
-/// Grok models reject the hint even through the codegraff gateway, so they are
-/// excluded up front (mirrors how opencode gates effort per-model) — the
-/// reactive drop-and-retry in request() still covers any other model that
+/// Native xAI grok honors low|medium|high|xhigh. grok-build and Codegraff-
+/// routed grok still reject the hint, so they stay excluded — the reactive
+/// drop-and-retry in request() still covers any other model that
 /// turns out to reject it.
 pub fn providerTakesEffort(kind: Provider.Kind, id: []const u8, model: []const u8) bool {
-    if (std.mem.startsWith(u8, model, "grok")) return false;
+    if (std.mem.startsWith(u8, model, "grok")) return std.mem.eql(u8, id, "xai");
     return kind == .responses or
         (std.mem.eql(u8, id, "kimi") and pricing.kimiSupportsThinking(model)) or
         (if (provider_mod.specFor(id)) |spec| spec.takes_effort else false);
@@ -564,14 +564,14 @@ test "learn_candidate is root-only and cannot become a subagent tool" {
     try std.testing.expect(std.mem.indexOf(u8, learn_candidate_spec.desc, "adapters may send it") != null);
     try std.testing.expect(std.mem.indexOf(u8, tools_openai_sub, "learn_candidate") == null);
 }
-test "providerTakesEffort: effort-honoring providers, but never for grok models" {
+test "providerTakesEffort: native xAI grok takes effort; gateway grok does not" {
     try std.testing.expect(providerTakesEffort(.responses, "codex", "gpt-5.5"));
     try std.testing.expect(providerTakesEffort(.openai, "codegraff", "deepseek-v4-pro"));
     try std.testing.expect(providerTakesEffort(.openai, "deepseek", "deepseek-v4-pro"));
     try std.testing.expect(providerTakesEffort(.openai, "kimi", "k3"));
     try std.testing.expect(!providerTakesEffort(.openai, "openai", "gpt-5.5")); // direct openai chat
-    try std.testing.expect(!providerTakesEffort(.openai, "xai", "grok-4.3")); // xai not in the list
-    // grok via the codegraff gateway must NOT get reasoning_effort (grok rejects it)
+    try std.testing.expect(providerTakesEffort(.responses, "xai", "grok-4.6"));
+    try std.testing.expect(providerTakesEffort(.openai, "xai", "grok-4.6")); // chat opt-out
     try std.testing.expect(!providerTakesEffort(.openai, "codegraff", "grok-build"));
 }
 test "agent_output: root-only (subagent/workflow's run_in_background has nothing to poll from inside a child), never doubles as a meta tool" {

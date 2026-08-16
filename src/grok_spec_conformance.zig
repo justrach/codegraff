@@ -183,6 +183,32 @@ test "grok spec: Responses body has a stable prompt_cache_key; Anthropic does no
     try std.testing.expect(cacheKeyIn(abody) == null);
 }
 
+test "grok spec: native grok-4.6 sends effort; gateway grok-build does not" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var resp = try xaiAgent(a, "main", .responses);
+    resp.reasoning = .xhigh;
+    const rb = try resp.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(rb);
+    try std.testing.expect(std.mem.indexOf(u8, rb, "\"effort\":\"xhigh\"") != null);
+
+    var chat = try xaiAgent(a, "main", .openai);
+    chat.reasoning = .xhigh;
+    const cb = try chat.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(cb);
+    try std.testing.expect(std.mem.indexOf(u8, cb, "\"reasoning_effort\":\"xhigh\"") != null);
+
+    var gw = try xaiAgent(a, "main", .openai);
+    gw.provider.id = "codegraff";
+    gw.provider.model = "grok-build";
+    gw.reasoning = .xhigh;
+    const gb = try gw.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(gb);
+    try std.testing.expect(std.mem.indexOf(u8, gb, "\"reasoning_effort\"") == null);
+}
+
 test "grok spec: held xAI WS chains previous_response_id + delta; drop rebuilds full input" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

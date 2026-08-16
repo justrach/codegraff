@@ -383,7 +383,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("reasoning effort: {s}{s}\n", .{
             reasoning_levels[@intFromEnum(root.reasoning)].name,
-            if (!root.effortApplies()) " (current model ignores it — applies to codex, deepseek, codegraff)" else "",
+            if (!root.effortApplies()) " (current model ignores it — applies to xai, codex, deepseek, codegraff)" else "",
         });
         try out.flush();
         return true;

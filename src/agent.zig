@@ -139,7 +139,7 @@ pub const Agent = struct {
     model_catalog: ?models_cache.LazyCodexCatalog = null, // demand-loaded dynamic Codex rows (root only)
     stored_keys_loaded: bool = true, // false after an explicit-provider launch; model surfaces fill the remaining Keychain slots
     keep_context: bool = true, // carry the conversation across wire-format model switches (/keepcontext)
-    reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — codex, deepseek, codegraff (/effort, /reasoning)
+    reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — xai, codex, deepseek, codegraff (/effort, /reasoning)
     fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
     fallback_allow: []const []const u8 = &.{}, // explicit cross-provider allowlist from .harness/settings.json
     fallback_active: bool = false, // current provider/model is a temporary fallback, not the saved preference
@@ -242,9 +242,9 @@ pub const Agent = struct {
     }
 
     /// Whether the active provider honors a reasoning-effort hint: the
-    /// Responses API (codex) via reasoning.effort, and the OpenAI-compatible
-    /// providers we know normalize a top-level reasoning_effort — the
-    /// codegraff gateway and deepseek. Everything else ignores it.
+    /// Responses API (codex, native xAI) via reasoning.effort, and the
+    /// OpenAI-compatible providers that normalize reasoning_effort — native
+    /// xAI chat, the codegraff gateway, and deepseek. Everything else ignores it.
     pub fn effortApplies(self: *const Agent) bool {
         return schema.providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
     }
