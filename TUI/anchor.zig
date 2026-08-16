@@ -13,7 +13,7 @@
 const std = @import("std");
 
 const app = @import("app.zig");
-const scrollback = @import("scrollback.zig");
+const layout = @import("layout_cache.zig");
 const Model = app.Model;
 
 /// Where the viewport was parked, in transcript terms rather than screen rows:
@@ -25,20 +25,23 @@ pub const Anchor = struct { idx: usize, ordinal: usize };
 /// `width`. Null when there is nothing to hold: an empty transcript, or a user
 /// who is tailing — follow mode is already an anchor, and a better one (the
 /// bottom), so a rewrap must not drag the viewport off it.
-pub fn capture(self: *const Model, width: usize) ?Anchor {
+pub fn capture(self: *Model, width: usize) ?Anchor {
     if (self.follow or width == 0 or self.history.items.len == 0) return null;
+    // One layout pass, not two: at capture time the cache still holds the OLD
+    // width, so this is a validating walk and both reads come off it.
+    const c = layout.ensure(self, width);
     const top = self.mid_skip;
-    const idx = scrollback.indexAtVisual(self, top, width) orelse return null;
-    const base = scrollback.visualOfIndex(self, idx, width) orelse return null;
+    const idx = layout.indexAt(c, top) orelse return null;
+    const base = layout.lineOf(c, idx) orelse return null;
     return .{ .idx = idx, .ordinal = top -| base };
 }
 
 /// The transcript row that shows the anchored logical line at `width`. A block
 /// that rewrapped SHORTER clamps to its own last line, so the anchor stays
 /// inside the entry it was taken from instead of sliding into the next one.
-pub fn rowAt(self: *const Model, anc: Anchor, width: usize) usize {
-    const base = scrollback.visualOfIndex(self, anc.idx, width) orelse return 0;
-    const span = blockSpan(self, anc.idx, width, base);
+pub fn rowAt(self: *const Model, c: *const layout.Cache, anc: Anchor) usize {
+    const base = layout.lineOf(c, anc.idx) orelse return 0;
+    const span = blockSpan(self, c, anc.idx, base);
     if (span == 0) return base;
     return base + @min(anc.ordinal, span - 1);
 }
@@ -47,10 +50,10 @@ pub fn rowAt(self: *const Model, anc: Anchor, width: usize) usize {
 /// the gap to the next block rather than by re-rendering the entry, so a
 /// collapsed or expanded tool RUN — which the row math treats as one unit —
 /// is measured the same way the viewport lays it out.
-fn blockSpan(self: *const Model, idx: usize, width: usize, base: usize) usize {
+fn blockSpan(self: *const Model, c: *const layout.Cache, idx: usize, base: usize) usize {
     const nxt = nextBlock(self, idx);
-    if (nxt >= self.history.items.len) return scrollback.totalVisualLines(self, width) -| base;
-    const nb = scrollback.visualOfIndex(self, nxt, width) orelse return 1;
+    if (nxt >= self.history.items.len) return c.total -| base;
+    const nb = layout.lineOf(c, nxt) orelse return 1;
     return nb -| base;
 }
 
@@ -63,6 +66,7 @@ fn nextBlock(self: *const Model, idx: usize) usize {
 // ---------------------------------------------------------------------------
 
 const render_mod = @import("render.zig");
+const scrollback = @import("scrollback.zig");
 const testing = std.testing;
 
 /// Park the viewport so entry `idx`'s first row is the top visible line, using

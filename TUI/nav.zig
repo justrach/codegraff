@@ -64,7 +64,7 @@ pub fn jumpTo(self: *Model, idx: usize) void {
     self.selected = idx;
     self.focus = .scrollback;
     self.follow = false;
-    const sb = @import("scrollback.zig");
+    const sb = @import("layout_cache.zig");
     const width = if (self.last_term_width == 0) 80 else self.last_term_width;
     const total = sb.totalVisualLines(self, width);
     const at = sb.visualOfIndex(self, idx, width) orelse return;
