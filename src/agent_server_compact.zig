@@ -28,37 +28,18 @@ const Agent = @import("agent.zig").Agent;
 const Provider = @import("provider.zig").Provider;
 const http = @import("http.zig");
 const telemetry = @import("telemetry.zig");
-const keys_cli = @import("keys_cli.zig");
 const goal_flow = @import("goal_flow.zig");
 
-/// GRAFF_SERVER_COMPACT=0/false/off forces the client arm, =1 forces the
-/// server arm (session_settings.applyEnvKnobs). Default: A/B assignment.
+/// GRAFF_SERVER_COMPACT=0/false/off forces the client arm, =1 the server arm
+/// (session_settings.applyEnvKnobs). Default: server. The #compact-ab
+/// experiment concluded — the server blob is recall-safe — so every eligible
+/// provider takes the server path unless this knob opts out.
 pub var g_server_compact_override: ?bool = null;
-
-/// A/B assignment (#compact-ab): 50/50, bucketed by the anonymous install id
-/// so a person's arm is stable across sessions and machines stay whole-user
-/// consistent. Set once per process by assignArm (startup); null means
-/// unassigned, which behaves as the client arm (the pre-feature default).
-var g_ab_arm: ?bool = null;
-
-/// Pure bucketing: true = server arm. Deterministic on the install id.
-pub fn armForId(id: *const [32]u8) bool {
-    return (std.hash.Wyhash.hash(0, id) & 1) == 0;
-}
-
-/// Startup hook (session_settings.setupSkillsAndTheme): bucket this install.
-/// The env override wins outright, so no assignment is made when it is set.
-pub fn assignArm(io: Io, arena: std.mem.Allocator, home: []const u8) void {
-    if (g_server_compact_override != null or g_ab_arm != null) return;
-    const id = keys_cli.loadOrCreateId(io, arena, home, ".simple-harness-install-id");
-    g_ab_arm = armForId(&id);
-}
 
 /// Is the server-compaction path active for this provider?
 pub fn enabled(p: Provider) bool {
     if (manualRoute(p) == .local) return false;
-    if (g_server_compact_override) |o| return o;
-    return g_ab_arm orelse false;
+    return g_server_compact_override orelse true;
 }
 
 /// One OTLP log record: body="experiment", kind="compact_ab", detail carries

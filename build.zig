@@ -102,6 +102,7 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addAnonymousImport("spec_score", .{ .root_source_file = b.path("spec/kernels/score.json") });
     unit_tests.root_module.addAnonymousImport("spec_bash_policy", .{ .root_source_file = b.path("spec/kernels/bash_policy.json") });
     unit_tests.root_module.addAnonymousImport("spec_structured_output", .{ .root_source_file = b.path("spec/kernels/structured_output.json") });
+    unit_tests.root_module.addAnonymousImport("spec_prompt_cache", .{ .root_source_file = b.path("spec/kernels/prompt_cache.json") });
     const run_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
@@ -183,6 +184,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
+        // Same -Dtest-filter as `zig build test`: the layout benchmark needs to
+        // be runnable on its own, ReleaseFast, without the rest of the suite.
+        .filters = test_filters,
     });
     tui_tests.root_module.addAnonymousImport("spec_terminal_modes", .{ .root_source_file = b.path("spec/kernels/terminal_modes.json") });
 

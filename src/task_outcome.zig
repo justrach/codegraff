@@ -109,7 +109,7 @@ pub fn noteSessionEnd(root: *Agent) void {
 
 test "armLabel: responses follows the arm, others are out of the experiment" {
     var p: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "m", .context = 272_000 };
-    try std.testing.expectEqualStrings("client", armLabel(p)); // unassigned in tests → client
+    try std.testing.expectEqualStrings("server", armLabel(p)); // server is the default arm
     p.kind = .anthropic;
     try std.testing.expectEqualStrings("other", armLabel(p));
     p.kind = .openai;

@@ -39,7 +39,8 @@ checks, in order:
   build       zig build
   tests       zig build test, and the suite count never shrinks
   tui         zig build tui-test (the TUI suite was ungated until the 2026-08 bug wave)
-  tuiguard    scripts/tui-pty-guard.py — real-binary pty lifecycle invariants
+  tuiguard    real-binary pty probes: lifecycle invariants (tui-pty-guard.py)
+              and virtual-screen checks (test-tui-screenstate.py)
   invariants  the named goal/loop/todo tests actually ran, not just compiled
   sdk         the committed SDKs match `graff --schema`
 EOF
@@ -240,6 +241,89 @@ if wanted tuiguard; then
     # the screen back: one folded summary, a field-backed card under it, and an
     # answer line that starts with "✓ " staying an answer.
     if python3 scripts/test-tui-typed-events.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # The frame painter may never show anything but the current frame. Storms
+    # the window size, fills the screen with glyphs terminals measure
+    # differently from us, then reads the SCREEN back and compares it cell for
+    # cell against a forced full repaint of the same frame.
+    if python3 scripts/test-tui-painter.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # Scrolling is a viewport SLICE of one cached layout, not a re-layout
+    # (TUI/layout_cache.zig). Reads the screen back on every scroll step and
+    # after every width change: the markers on screen must be a contiguous
+    # ascending run, which a stale block or a mis-offset slice cannot fake.
+    if python3 scripts/test-tui-layout-cache.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # The viewport must not jump when the terminal changes width: drives
+    # TIOCSWINSZ across five widths mid-scroll and reads the screen back. With
+    # the logical scroll anchor removed the marker leaves the screen on the
+    # FIRST width change, so this is a real gate, not a smoke test.
+    if python3 scripts/test-tui-resize-anchor.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # grok-build's one-column rule for ANIMATED chrome: watches the live blink
+    # on a background op's pending row and fails if the label beside it moves a
+    # column, or if a frame is not East-Asian-Narrow. TUI/glyphs.zig holds the
+    # same law for the frame sets; this is the pixels.
+    if python3 scripts/test-tui-chrome-width.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # A wheel notch must be a scroll region + SU, not a screen rewrite — and a
+    # storm of them must still leave the screen equal to a forced full repaint.
+    # With the hint refused the probe fails on the FIRST notch (verified), so
+    # this is a gate on both halves, not a smoke test.
+    if python3 scripts/test-tui-scroll-paint.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # Trackpad momentum must be COALESCED and BUDGETED, not queued. Drives 500
+    # SGR wheel reports twice — all at once, then spread over ~1s the way
+    # momentum really arrives — and reads the loop's own paint counters back.
+    # With the frame budget removed the paced storm paints 503 times instead of
+    # ~105, so this is a real gate, not a smoke test.
+    if python3 scripts/test-tui-event-pacing.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # Same invariants, read off a VIRTUAL SCREEN instead of raw bytes
+    # (scripts/ptyharness.py): the VT interpreter's own selftest, the ported
+    # mode-balance check, and out-of-band screen corruption fed straight to the
+    # tty.
+    if python3 scripts/test-tui-screenstate.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # A tool run's fold header reads like grok-build's: present-progressive
+    # while the call is in flight, past tense on settle, tinted for a second.
+    # Drives a real `sleep` tool loop against the codex mock and reads the
+    # header row's TEXT and its cell BACKGROUNDS off a virtual screen. Both
+    # halves fail on their own when either is removed (verified).
+    if python3 scripts/test-tui-fold-headers.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # Streaming markdown: the answer arrives as 1-3 codepoint deltas whose
+    # boundaries land mid-escape, mid-fence and mid-marker. Both the live tail
+    # and the settled row must be free of the model's own CR/SGR bytes.
+    if python3 scripts/test-tui-stream-markdown.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # A clickable row has to LOOK clickable. Runs a real tool loop against the
+    # codex mock, then reads CELLS off a virtual screen: the hovered summary
+    # takes the theme's hover background and its ◆ becomes ›, its neighbour is
+    # untouched, leaving restores it, a single click still expands, and a
+    # double click is one net toggle. With the post-pass refused the probe
+    # fails on the tint (verified), so this is a gate on both halves.
+    if python3 scripts/test-tui-hover.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # The scroll gutter has to land on a CELL and then leave no trace, and the
+    # OSC 52 copy has to leave the process — neither is visible to a unit test.
+    # Reads the thumb off the last column of the virtual screen, compares that
+    # column against a forced full repaint once it fades, and matches the
+    # base64 on the wire against the rows the drag covered. Each of the three
+    # is a verified gate: removing the fade rule, the fade EXPIRY, or the tty
+    # write each fails a different check.
+    if python3 scripts/test-tui-scrollbar-osc52.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
   fi

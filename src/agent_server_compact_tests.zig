@@ -27,7 +27,6 @@ const autocompact = asc.autocompact;
 const autocompactIf = asc.autocompactIf;
 const explicitCompact = asc.explicitCompact;
 const installCompactionItem = asc.installCompactionItem;
-const armForId = asc.armForId;
 const ManualRoute = asc.ManualRoute;
 const test_support = @import("agent_compact_test_support.zig");
 
@@ -123,26 +122,24 @@ test "installCompactedOutput transactionally replaces history and resets meters"
     try std.testing.expectEqual(@as(u64, 2), agent.history_rewrites);
 }
 
-test "enabled: responses-only; unassigned defaults to client; override wins" {
+test "enabled: responses-only; server is the default; override wins" {
     var p: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "m", .context = 272_000 };
-    try std.testing.expect(!enabled(p)); // no assignment in tests → client arm
+    try std.testing.expect(enabled(p)); // server arm by default
     p.kind = .anthropic;
     try std.testing.expect(!enabled(p));
     p.kind = .openai;
     try std.testing.expect(!enabled(p));
     p.kind = .responses;
-    asc.g_server_compact_override = true;
+    p.id = "openai";
     try std.testing.expect(enabled(p));
+    p.id = "kilo"; // third-party Responses hosts keep the local summary
+    try std.testing.expect(!enabled(p));
+    p.id = "codex";
     asc.g_server_compact_override = false;
     try std.testing.expect(!enabled(p));
+    asc.g_server_compact_override = true;
+    try std.testing.expect(enabled(p));
     asc.g_server_compact_override = null;
-}
-
-test "armForId: deterministic bucketing of the install id" {
-    const id: [32]u8 = "0123456789abcdef0123456789abcdef".*;
-    try std.testing.expectEqual(armForId(&id), armForId(&id));
-    const other: [32]u8 = "ffffffffffffffffffffffffffffffff".*;
-    _ = armForId(&other); // both buckets are reachable outcomes; no crash, pure
 }
 
 test "writeContextManagement: automatic threshold and forced Codex pass stay OpenAI-only" {

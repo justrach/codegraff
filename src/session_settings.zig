@@ -186,9 +186,6 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
 
 pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool, cwd_display: []const u8) !ThemeSetup {
     try applyEnvKnobs(arena, environ_map);
-    // #compact-ab: bucket this install into a compaction arm once per process.
-    // After applyEnvKnobs so GRAFF_SERVER_COMPACT wins and skips assignment.
-    server_compact.assignArm(io, arena, @import("keys_cli.zig").homeEnv(environ_map) orelse "");
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
     anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme

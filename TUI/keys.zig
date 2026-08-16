@@ -5,7 +5,8 @@ const std = @import("std");
 const app = @import("app.zig");
 const catalog = @import("catalog.zig");
 const dispatch = @import("dispatch.zig");
-const scrollback = @import("scrollback.zig");
+const hover = @import("hover.zig");
+const layout_cache = @import("layout_cache.zig");
 const selection = @import("selection.zig");
 const engine = @import("engine.zig");
 const key_mod = @import("key.zig");
@@ -169,6 +170,15 @@ fn pageSize(self: *const Model) u32 {
 }
 
 pub fn scrollBy(self: *Model, delta: i32) void {
+    // The content slid out from under a pointer that never moved: the hovered
+    // row now names a different entry, so the affordance is dropped and the
+    // next motion report re-arms it.
+    hover.scrolled(self);
+    // Every door into the viewport comes through here — wheel, arrows, page
+    // keys — so this is the one place the scrollbar's fade clock has to be
+    // wound (scrollbar.zig). A tail-parked viewport shows the gutter for a
+    // moment after the last movement and then lets it go.
+    self.scroll_seen_ms = @max(self.now_ms, 1);
     if (delta > 0) {
         self.scroll +|= @as(usize, @intCast(delta));
         self.follow = false;
@@ -215,14 +225,42 @@ fn scrollbackKey(self: *Model, k: Key) Effect {
     return .stay;
 }
 
-fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
-    if (ev.btn == 64 or ev.btn == 65) {
-        // The band is anchored to screen rows, so scrolling it would slide it
-        // onto other content — drop it and scroll.
-        selection.clear(self);
-        scrollBy(self, if (ev.btn == 64) 3 else -3);
+/// Apply `notches` of wheel scroll. One report and a whole coalesced momentum
+/// run go through the SAME door (pacing.zig folds consecutive reports into one
+/// delta), so a storm can never mean something a single report does not.
+pub fn wheelScroll(self: *Model, notches: i32) Effect {
+    if (notches == 0) return .stay;
+    // An open picker or the completion menu owns the wheel: one notch is one
+    // ITEM there, never a scroll of the transcript underneath. A folded batch
+    // carries N notches, so replay it one item at a time.
+    var n = @abs(notches);
+    if (@import("overlays.zig").wheel(self, notches > 0)) {
+        while (n > 1) : (n -= 1) _ = @import("overlays.zig").wheel(self, notches > 0);
         return .stay;
     }
+    // The band is anchored to screen rows, so scrolling it would slide it onto
+    // other content — drop it and scroll.
+    selection.clear(self);
+    // An open picker or the completion menu owns the wheel: one notch is one
+    // ITEM there, never a scroll of the transcript underneath. A coalesced run
+    // steps once per notch, so a flick lands where the same notches typed
+    // slowly would.
+    const overlays = @import("overlays.zig");
+    const up = notches > 0;
+    if (overlays.wheel(self, up)) {
+        var left: u32 = @as(u32, @intCast(@abs(notches))) -| 1;
+        while (left > 0) : (left -= 1) _ = overlays.wheel(self, up);
+        return .stay;
+    }
+    scrollBy(self, notches *| @import("pacing.zig").lines_per_notch);
+    return .stay;
+}
+
+fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
+    if (@import("pacing.zig").wheelNotch(.{ .mouse = ev })) |n| return wheelScroll(self, n);
+    // Pure motion under ?1003h: track the row so the frame can announce that it
+    // is clickable. Never consumed — the image-chip preview reads it too.
+    _ = hover.mouse(self, ev);
     // A drag or its release belongs to the selection; a press only ANCHORS one
     // and falls through, so a plain click keeps its meaning (#529).
     if (selection.mouse(self, ev)) return .stay;
@@ -233,21 +271,32 @@ fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
         return .stay;
     }
     const y: usize = if (ev.y > 0) ev.y - 1 else 0;
+    const x: usize = if (ev.x > 0) ev.x - 1 else 0;
+    // Two presses on one cell inside the window. The FIRST is always today's
+    // click, unchanged; the second replaces it rather than repeating it.
+    const dbl = hover.press(self, y, x);
     if (y >= self.prompt_origin) {
         self.focus = .prompt;
         return .stay;
     }
     if (y < self.mid_origin) return .stay;
     // Sticky-header chrome occludes the top content rows — a click there must
-    // not toggle whatever is hidden underneath it.
-    if (y < self.mid_origin + self.sticky_rows) return .stay;
+    // not toggle whatever is hidden underneath it. A DOUBLE click on the pin
+    // scrolls the prompt it is pinning back onto the screen.
+    if (y < self.mid_origin + self.sticky_rows) {
+        if (dbl) hover.jumpToSticky(self);
+        return .stay;
+    }
     const vis = y - self.mid_origin + self.mid_skip;
     self.focus = .scrollback;
     // A click on blank padding maps to no entry — it must not select or
     // toggle anything (#519).
-    const i = scrollback.indexAtVisual(self, vis, self.last_term_width) orelse return .stay;
+    const i = layout_cache.indexAtVisual(self, vis, self.last_term_width) orelse return .stay;
     self.selected = i;
-    if (self.history.items[i].kind == .tool) {
+    if (self.history.items[i].kind == .tool and !dbl) {
+        // A double click is ONE net toggle of the whole group: the first press
+        // already toggled it, so toggling again would only put it back and the
+        // gesture would look like it did nothing at all.
         self.toggleToolGroup(i);
         // Remembered so the fold can be put back if this press turns out to be
         // the start of a drag — selecting text must not restructure the view.
@@ -370,210 +419,8 @@ fn isChar(k: Key, c: u8) bool {
     };
 }
 
-test "Esc on a draft arms clear, second press clears" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    m.now_ms = 1000;
-    m.input.setValue("draft") catch {};
-    _ = esc(&m);
-    try std.testing.expectEqual(app.EscArm.clear, m.esc_arm);
-    try std.testing.expectEqualStrings("draft", m.input.getValue());
-    m.now_ms = 1200;
-    _ = esc(&m);
-    try std.testing.expectEqualStrings("", m.input.getValue());
-}
-
-test "Ctrl+C quits when idle" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    try std.testing.expectEqual(Effect.quit, handle(&m, .{ .ctrl = 'c' }));
-    try m.input.setValue("ab");
-    _ = handle(&m, .{ .char = 'x' });
-    try std.testing.expectEqual(Effect.stay, handle(&m, .{ .ctrl = 'z' }));
-    try std.testing.expectEqualStrings("ab", m.input.getValue());
-}
-
-test "Ctrl+D quits an empty composer and is ignored with a draft (#549)" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    try m.input.setValue("half a thought");
-    try std.testing.expectEqual(Effect.stay, handle(&m, .{ .ctrl = 'd' }));
-    try std.testing.expectEqualStrings("half a thought", m.input.getValue());
-    try m.input.setValue("   ");
-    try std.testing.expectEqual(Effect.quit, handle(&m, .{ .ctrl = 'd' }));
-    try m.input.setValue("");
-    try std.testing.expectEqual(Effect.quit, handle(&m, .{ .ctrl = 'd' }));
-}
-
-test "Tab toggles focus" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    try std.testing.expectEqual(app.Focus.prompt, m.focus);
-    _ = handle(&m, .tab);
-    try std.testing.expectEqual(app.Focus.scrollback, m.focus);
-    _ = handle(&m, .tab);
-    try std.testing.expectEqual(app.Focus.prompt, m.focus);
-}
-
-test "Shift+Tab cycles Normal Plan Always-approve" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    try std.testing.expectEqual(app.AgentMode.normal, m.mode);
-    _ = handle(&m, .shift_tab);
-    try std.testing.expectEqual(app.AgentMode.plan, m.mode);
-    _ = handle(&m, .shift_tab);
-    try std.testing.expectEqual(app.AgentMode.always_approve, m.mode);
-    _ = handle(&m, .shift_tab);
-    try std.testing.expectEqual(app.AgentMode.normal, m.mode);
-}
-
-test "model overlay Enter picks the selected name" {
-    engine.g_models = "grok-4, gpt-5.5";
-    engine.g_model_name = "grok-4";
-    defer {
-        engine.g_models = "";
-        engine.g_model_name = "";
-        engine.g_model_fn = null;
-    }
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    m.openOverlay(.model);
-    m.overlay_sel = 1;
-    _ = handle(&m, .enter);
-    try std.testing.expectEqual(app.Overlay.none, m.overlay);
-    try std.testing.expectEqualStrings("gpt-5.5", engine.g_model_name);
-}
-
-test "model overlay type-to-search picks the filtered name" {
-    engine.g_models = "grok-4, gpt-5.5, deepseek-v4-pro";
-    engine.g_model_name = "grok-4";
-    defer {
-        engine.g_models = "";
-        engine.g_model_name = "";
-        engine.g_model_fn = null;
-    }
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    m.openOverlay(.model);
-    _ = handle(&m, .{ .char = 'd' });
-    _ = handle(&m, .{ .char = 'e' });
-    _ = handle(&m, .{ .char = 'e' });
-    try std.testing.expectEqualStrings("dee", m.overlay_filter);
-    _ = handle(&m, .enter);
-    try std.testing.expectEqual(app.Overlay.none, m.overlay);
-    try std.testing.expectEqualStrings("deepseek-v4-pro", engine.g_model_name);
-}
-
-test "PgUp leaves follow; PgDn returns to the live tail" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    m.last_term_height = 24;
-    try std.testing.expect(m.follow);
-    _ = handle(&m, .page_up);
-    try std.testing.expect(!m.follow);
-    try std.testing.expect(m.scroll > 0);
-    _ = handle(&m, .page_down);
-    try std.testing.expect(m.follow);
-    try std.testing.expectEqual(@as(usize, 0), m.scroll);
-}
-
-test "Cmd+Delete and Ctrl+U kill the draft, not the viewport" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    m.last_term_height = 24;
-    try m.input.setValue("keep scrolling separate");
-    m.input.cursor = m.input.getValue().len;
-    _ = handle(&m, .delete_to_start);
-    try std.testing.expectEqualStrings("", m.input.getValue());
-    try std.testing.expect(m.follow);
-    try m.input.setValue("word two");
-    m.input.cursor = m.input.getValue().len;
-    _ = handle(&m, .{ .ctrl = 'u' });
-    try std.testing.expectEqualStrings("", m.input.getValue());
-    try std.testing.expect(m.follow);
-}
-
-// The click-behaviour tests live beside the drag tests in selection.zig: a
-// click and a drag are two readings of the same press, and they only stay
-// separable if they are pinned together.
-
-test "slash selection clamps to the filtered list and stays visible (#522)" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    try m.input.setValue("/");
-    var idx: [catalog.items.len]usize = undefined;
-    const n = catalog.filter("/", &idx);
-    try std.testing.expect(n > 8); // the bug needs more commands than visible rows
-    var presses: usize = 0;
-    while (presses < n + 10) : (presses += 1) _ = handle(&m, .down);
-    try std.testing.expectEqual(n - 1, m.slash_sel);
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const menu = try @import("chrome.zig").slashMenu(&m, arena.allocator(), 80);
-    try std.testing.expect(std.mem.indexOf(u8, menu, "› ") != null);
-}
-
-test "empty Up scrolls transcript and keeps prompt focus" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    m.last_term_height = 24;
-    try std.testing.expect(m.focus == .prompt);
-    _ = handle(&m, .up);
-    try std.testing.expect(!m.follow);
-    try std.testing.expect(m.scroll > 0);
-    try std.testing.expect(m.focus == .prompt);
-    _ = handle(&m, .down);
-    try std.testing.expect(m.follow);
-    try std.testing.expectEqual(@as(usize, 0), m.scroll);
-}
-
-test "bracketed paste lands in the prompt as text" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    m.focus = .scrollback;
-    _ = handle(&m, .paste_start);
-    _ = handle(&m, .{ .char = 'h' });
-    _ = handle(&m, .{ .char = 'i' });
-    _ = handle(&m, .enter);
-    _ = handle(&m, .{ .char = '!' });
-    _ = handle(&m, .paste_end);
-    try std.testing.expectEqualStrings("hi\n!", m.input.getValue());
-    try std.testing.expect(m.focus == .prompt);
-    try std.testing.expect(!m.pasting);
-}
-
-test "pasted image path becomes an attachment chip" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    _ = handle(&m, .paste_start);
-    for ("/tmp/pic.png") |c| _ = handle(&m, .{ .char = c });
-    _ = handle(&m, .paste_end);
-    try std.testing.expectEqual(@as(usize, 1), m.images.items.len);
-    try std.testing.expectEqualStrings("/tmp/pic.png", m.images.items[0]);
-    try std.testing.expectEqualStrings("", m.input.getValue());
-}
-
-test "Ctrl+R walks prompt history" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    try m.prompt_hist.append(try std.testing.allocator.dupe(u8, "older"));
-    try m.prompt_hist.append(try std.testing.allocator.dupe(u8, "newer"));
-    _ = handle(&m, .{ .ctrl = 'r' });
-    try std.testing.expectEqualStrings("newer", m.input.getValue());
-    _ = handle(&m, .up);
-    try std.testing.expectEqualStrings("older", m.input.getValue());
+test {
+    // The tests live next door (this file is at the line ceiling). Without this
+    // reference they compile for nobody and silently never run.
+    _ = @import("keys_tests.zig");
 }

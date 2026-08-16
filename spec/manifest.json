@@ -56,7 +56,10 @@
       "zig": "src/spec_path_confine_conformance.zig",
       "impl": "src/harness_policy.zig:confinedPath+src/worktree_lease.zig:ownerVerdict",
       "cells_floor": 96,
-      "cells_key": ["paths", "leases"]
+      "cells_key": [
+        "paths",
+        "leases"
+      ]
     },
     {
       "id": "shape",
@@ -86,6 +89,16 @@
       "zig": "src/spec_bash_policy_conformance.zig",
       "impl": "src/harness_policy.zig:isSimple+escapesCwd+readOnlyAllowed",
       "cells_floor": 32,
+      "cells_key": "cases"
+    },
+    {
+      "id": "prompt_cache",
+      "lean": "lean-proofs/Graff/PromptCache.lean",
+      "ref": "spec/ref/prompt_cache.py",
+      "fixture": "spec/kernels/prompt_cache.json",
+      "zig": "src/spec_prompt_cache_kernel_conformance.zig",
+      "impl": "src/http_headers.zig:promptCacheKey+src/subagent_spawn.zig:allowed",
+      "cells_floor": 48,
       "cells_key": "cases"
     }
   ]

@@ -10,6 +10,53 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.264 (2026-08-17)
+
+- The frame painter now guarantees screen == frame: rows that measure full
+  are erased before they are written, every repainted row re-establishes its
+  own style, no frame row can exceed the screen's width or height, and a
+  latched SIGWINCH plus an idle self-heal repair anything that repaints the
+  terminal behind graff's back. stderr is parked on `.graff/tui-stderr.log`
+  while fullscreen, so nothing can scribble on the alt screen.
+- Scrolling is 120fps-class: the transcript is laid out once and scrolled as
+  a slice (frame build p95 0.23ms on a 10k-line transcript, ~78x faster), a
+  one-line scroll emits one hardware scroll plus the exposed rows, and wheel
+  storms coalesce to one paint per 8ms with typing echoed in under 30ms
+  throughout. A 500-report burst settles in 3 paints.
+- Tool folds read like sentences: "Reading 2 files…" counts up while the run
+  streams and settles to "Read 3 files", with a ›/⌄ disclosure chevron, an
+  indented card gutter when open, and a brief settle flash when the run
+  finishes. "Called N tools" survives only for mixed runs.
+- Clickable rows look clickable: the row under the pointer takes a hover
+  tint one step off the canvas (text untouched) and restores on leave. A
+  double click is one net toggle on a fold header, and a double click on the
+  sticky prompt pin jumps the viewport back to that prompt.
+- A scroll position thumb rides the right edge while scrolled and fades at
+  the tail, and drag-copy also reaches the terminal's own clipboard via
+  OSC 52, so copying works over SSH. Both respect the selection band.
+- Drag-selection copies text rows only: blank screen padding contributes
+  nothing, leading/trailing blanks drop, an interior blank run collapses to
+  one empty line, the toast counts text rows, and a drag over nothing leaves
+  the clipboard untouched.
+- A width resize keeps your place: the entry on the top visible line is
+  re-anchored after the rewrap, and height changes keep bottom-follow while
+  tailing.
+- Unified diffs in tool results and ```diff fences render with add/delete
+  background bands that survive wrapping without bleeding into the next row.
+- Streaming markdown is boundary-proof: carriage returns, raw escape
+  sequences from the model, and UTF-8 glyphs split across deltas are held or
+  stripped, so a chunked answer always lands on the one-shot render.
+- Every animated chrome glyph is pinned to one terminal column, and an open
+  picker or slash menu owns the wheel, one item per notch.
+- Compaction on the Responses route (codex/OpenAI) now defaults to the
+  server-side path for every install: the A/B concluded recall-safe, so the
+  bucketing is retired. GRAFF_SERVER_COMPACT=0 still forces the client
+  summary, and the near-the-wall client fallback is unchanged.
+- Testing: a stdlib-only virtual-screen pty harness (scripts/ptyharness.py)
+  renders the byte stream into a cell grid and can corrupt the screen behind
+  the child to prove self-healing; fourteen live pty probes now gate tier-1,
+  and the spec corpus grew GoalLoop and PromptCache process kernels.
+
 ## v0.0.263 (2026-08-17)
 
 - grok-4.6 is the xAI default: 500k context, compact at 400k, published

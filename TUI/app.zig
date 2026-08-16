@@ -42,9 +42,32 @@ pub const Entry = struct {
     /// those still render from `text` alone (see scrollback.zig), which is the
     /// whole reason this is optional rather than required.
     tool: ?ToolInfo = null,
+    /// The loop clock when this row was appended — the only thing the fold
+    /// header's settle flash needs (foldhdr.zig). Rows restored from a session
+    /// are pushed before the loop ever sets `now_ms`, so they carry 0 against
+    /// a boot-monotonic clock and a resumed transcript comes up quiet.
+    at_ms: u64 = 0,
 };
 
 pub const Effect = enum { stay, quit, background };
+
+/// The rows of a composed frame that a scroll actually MOVES: content only, no
+/// chrome. `off` is the transcript line the first of them shows, so comparing
+/// two consecutive frames' bands says whether the viewport merely slid — which
+/// is the one thing a row-against-row diff can never see (perf/tui-scroll-paint).
+/// `live` is false whenever there is nothing scrollable: the welcome pane, a
+/// transcript shorter than the viewport.
+pub const Band = struct {
+    live: bool = false,
+    /// First screen row of the band, 0-based.
+    top: usize = 0,
+    len: usize = 0,
+    /// Index, in the composed mid-lines, of the line on `top`.
+    off: usize = 0,
+    /// Visual lines the band is a window ONTO — the whole wrapped transcript,
+    /// not the screenful of it. The scrollbar's proportions come from here.
+    total: usize = 0,
+};
 
 pub const ESC_MS: u64 = 800;
 
@@ -107,7 +130,27 @@ pub const Model = struct {
     prompt_origin: usize = 20,
     /// How many mid-lines were clipped above the viewport.
     mid_skip: usize = 0,
+    /// The scrollable band of the frame just composed, and the painter hint
+    /// derived from how it moved since the frame before it. Presentation state
+    /// for the diff painter's scroll fast path: render.zig is the only writer,
+    /// paint.zig the only reader, and both treat it as a claim to verify.
+    band: Band = .{},
+    paint_hint: ?@import("scrollpaint.zig").Hint = null,
     now_ms: u64 = 0,
+    /// When the viewport last MOVED. The scrollbar fades out of a tail-parked
+    /// viewport this many milliseconds later (scrollbar.zig); zero means the
+    /// session has never scrolled, so no gutter has ever been earned.
+    scroll_seen_ms: u64 = 0,
+    /// Did the frame just composed carry the scroll gutter? Two consecutive
+    /// frames that both did are shaped the same way, which is what lets the
+    /// painter scroll the band and patch the gutter cell (scrollpaint.zig)
+    /// instead of refusing the fast path outright.
+    gutter_on: bool = false,
+    /// A one-shot byte string the run loop owes the TERMINAL, not the screen:
+    /// the OSC 52 clipboard write a copy just produced. Deliberately not part
+    /// of the frame — a frame is re-painted (the self-heal rewrites it every
+    /// few seconds), and a clipboard write must happen exactly once.
+    osc_pending: []const u8 = "",
     hist_idx: ?usize = null,
     /// Newline-joined paths for the @-file picker, loaded once per session.
     files_cache: ?[]const u8 = null,
@@ -123,6 +166,14 @@ pub const Model = struct {
     preview_rows: usize = 0,
     /// Drag-selection band over the composed frame (#529) — presentation only.
     sel: @import("selection.zig").Sel = .{},
+    /// Row under the pointer and the double-click window (hover.zig). Screen
+    /// state: which row is hovered is never an engine fact, and the affordance
+    /// it paints is derived from the typed entries the Model already holds.
+    hover: @import("hover.zig").State = .{},
+    /// Wrapped-line layout of the transcript, keyed by width/theme/fold/entry
+    /// identity (layout_cache.zig). Presentation state: a pure memo of what the
+    /// row builders would produce, so scrolling is a slice and not a re-layout.
+    layout: @import("layout_cache.zig").Cache = .{},
     /// Text the band currently covers, captured by the same pass that paints
     /// it, so what the clipboard gets is exactly what the user saw highlighted.
     sel_text: []const u8 = "",
@@ -156,6 +207,7 @@ pub const Model = struct {
         if (self.bg) |op| {
             if (!op.threaded or op.done.load(.acquire)) @import("bgop.zig").reap(self) else self.bg = null;
         }
+        self.layout.deinit(self.alloc);
         for (self.history.items) |e| self.freeEntry(e);
         self.history.deinit();
         for (self.prompt_hist.items) |s| self.alloc.free(s);
@@ -176,6 +228,7 @@ pub const Model = struct {
         if (self.overlay_filter.len > 0) self.alloc.free(self.overlay_filter);
         if (self.files_cache) |f| self.alloc.free(f);
         if (self.sel_text.len > 0) self.alloc.free(self.sel_text);
+        if (self.osc_pending.len > 0) self.alloc.free(self.osc_pending);
         self.input.deinit();
     }
 
@@ -197,7 +250,7 @@ pub const Model = struct {
     pub fn push(self: *Model, kind: EntryKind, text: []const u8) !void {
         const owned = try sanitized(self.alloc, text);
         errdefer self.alloc.free(owned);
-        try self.history.append(.{ .kind = kind, .text = owned, .folded = kind == .tool });
+        try self.history.append(.{ .kind = kind, .text = owned, .folded = kind == .tool, .at_ms = self.now_ms });
         if (kind == .user or kind == .assistant) {
             self.screen = .agent;
             self.follow = true;
@@ -230,6 +283,7 @@ pub const Model = struct {
                 .is_error = info.is_error,
                 .denied = info.denied,
             },
+            .at_ms = self.now_ms,
         });
     }
 
@@ -257,6 +311,9 @@ pub const Model = struct {
     }
 
     pub fn clearHistory(self: *Model) void {
+        // Before the entries go: the layout holds wrapped bytes for them and a
+        // back-pointer into their text.
+        self.layout.invalidate(self.alloc);
         for (self.history.items) |e| self.freeEntry(e);
         self.history.clearRetainingCapacity();
         self.turns = 0;

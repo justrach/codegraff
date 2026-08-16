@@ -46,13 +46,12 @@ from ref.path_confine import (
     owner_verdict,
     warns,
 )
-from ref.goal_loop import (
-    all_states as all_goal_states,
-    checklist_finished,
-    completion_gate,
-    goal_active,
-    retires_on_accept,
-)
+from ref.goal_loop import check_properties as goal_check_properties
+from ref.goal_loop import payload as goal_payload
+from ref.prompt_cache import check_properties as cache_check_properties
+from ref.prompt_cache import payload as cache_payload
+from ref.prompt_cache import write_kernel_md as write_cache_md
+from ref.prompt_cache import kernel_md as cache_kernel_md
 from ref.shape import check_properties as shape_check_properties
 from ref.shape import payload as shape_model_payload
 from ref.score import check_properties as score_check_properties
@@ -76,6 +75,7 @@ SCORE_FIXTURE = KERNELS / "score.json"
 BASH_FIXTURE = KERNELS / "bash_policy.json"
 SOX_FIXTURE = KERNELS / "structured_output.json"
 TERM_FIXTURE = KERNELS / "terminal_modes.json"
+CACHE_FIXTURE = KERNELS / "prompt_cache.json"
 LEAN_DIR = ROOT.parent / "lean-proofs"
 
 
@@ -264,28 +264,6 @@ def provider_payload() -> dict:
     return {"kernel": "provider", "version": 1, "rows": PROVIDER_SPECS}
 
 
-def goal_payload() -> dict:
-    cases = []
-    for s in all_goal_states():
-        cases.append(
-            {
-                "id": s.case_id(),
-                "state": {
-                    "seat": s.seat,
-                    "goal": s.goal,
-                    "standing": s.standing,
-                    "checklist": s.checklist,
-                    "dirty": s.dirty,
-                    "armed": s.armed,
-                },
-                "completion_gate": completion_gate(s),
-                "checklist_finished": checklist_finished(s),
-                "retires_on_accept": retires_on_accept(s),
-            }
-        )
-    return {"kernel": "goal_loop", "version": 1, "cases": cases}
-
-
 def path_payload() -> dict:
     return {
         "kernel": "path_confine",
@@ -337,32 +315,19 @@ def check_provider() -> int:
     return len(PROVIDER_SPECS)
 
 
+def _ref(fn, name: str) -> int:
+    try:
+        return fn()
+    except ValueError as e:
+        raise Counterexample(name, None, str(e)) from e
+
+
 def check_goal_loop() -> int:
-    n = 0
-    for s in all_goal_states():
-        n += 1
-        v = completion_gate(s)
-        if s.seat != "root" and v != "accept":
-            raise Counterexample("non-root-never-refuses", s, f"gate={v}")
-        if s.goal != "active" and v != "accept":
-            raise Counterexample("inactive-never-refuses", s, f"gate={v}")
-        if s.checklist == "none" and checklist_finished(s):
-            raise Counterexample("empty-never-done", s, "empty checklist counted as finished")
-        if goal_active(s) and not s.armed and s.checklist == "open" and v != "refuse_open":
-            raise Counterexample("open-refused", s, f"gate={v}")
-        if goal_active(s) and not s.armed and s.checklist == "none" and v != "refuse_no_plan":
-            raise Counterexample("empty-refused", s, f"gate={v}")
-        if goal_active(s) and not s.armed and s.checklist == "all_completed" and v != "accept":
-            raise Counterexample("done-accepted", s, f"gate={v}")
-        if s.armed and goal_active(s) and v != "accept":
-            raise Counterexample("armed-accepts", s, f"gate={v}")
-        if s.dirty is False and checklist_finished(s):
-            raise Counterexample("finished-needs-dirty", s, "restored all-[x] counted as done")
-        if s.standing and retires_on_accept(s):
-            raise Counterexample("standing-does-not-retire", s, "standing retired")
-        if goal_active(s) and not s.standing and not retires_on_accept(s):
-            raise Counterexample("active-retires", s, "active ordinary should retire")
-    return n
+    return _ref(goal_check_properties, "goal_loop")
+
+
+def check_prompt_cache() -> int:
+    return _ref(cache_check_properties, "prompt_cache")
 
 
 def check_path_confine() -> int:
@@ -403,48 +368,23 @@ def check_path_confine() -> int:
 
 
 def check_shape() -> int:
-    try:
-        return shape_check_properties()
-    except ValueError as e:
-        msg = str(e)
-        prop, _, detail = msg.partition(": ")
-        raise Counterexample(prop, None, detail or msg) from e
+    return _ref(shape_check_properties, 'shape')
 
 
 def check_score() -> int:
-    try:
-        return score_check_properties()
-    except ValueError as e:
-        msg = str(e)
-        prop, _, detail = msg.partition(": ")
-        raise Counterexample(prop, None, detail or msg) from e
+    return _ref(score_check_properties, 'score')
 
 
 def check_bash() -> int:
-    try:
-        return bash_check_properties()
-    except ValueError as e:
-        msg = str(e)
-        prop, _, detail = msg.partition(": ")
-        raise Counterexample(prop, None, detail or msg) from e
+    return _ref(bash_check_properties, 'bash')
 
 
 def check_sox() -> int:
-    try:
-        return sox_check_properties()
-    except ValueError as e:
-        msg = str(e)
-        prop, _, detail = msg.partition(": ")
-        raise Counterexample(prop, None, detail or msg) from e
+    return _ref(sox_check_properties, 'sox')
 
 
 def check_term() -> int:
-    try:
-        return term_check_properties()
-    except ValueError as e:
-        msg = str(e)
-        prop, _, detail = msg.partition(": ")
-        raise Counterexample(prop, None, detail or msg) from e
+    return _ref(term_check_properties, 'term')
 
 
 def prefixes_first(p: str) -> list[str]:
@@ -459,17 +399,21 @@ def _write(path: Path, payload: dict) -> Path:
 
 
 def export() -> list[Path]:
+    from ref.goal_loop import write_kernel_md
     return [
         _write(FIXTURE, cases_payload()),
         _write(TRANSPORT_FIXTURE, transport_payload()),
         _write(PROVIDER_FIXTURE, provider_payload()),
         _write(GOAL_FIXTURE, goal_payload()),
+        write_kernel_md(KERNELS / "goal_loop.md"),
         _write(PATH_FIXTURE, path_payload()),
         _write(SHAPE_FIXTURE, shape_payload()),
         _write(SCORE_FIXTURE, score_payload()),
         _write(BASH_FIXTURE, bash_payload()),
         _write(SOX_FIXTURE, sox_model_payload()),
         _write(TERM_FIXTURE, term_model_payload()),
+        _write(CACHE_FIXTURE, cache_payload()),
+        write_cache_md(KERNELS / "prompt_cache.md"),
     ]
 
 
@@ -491,6 +435,14 @@ def check_fixtures() -> None:
     _same(BASH_FIXTURE, bash_payload(), "bash_policy")
     _same(SOX_FIXTURE, sox_model_payload(), "structured_output")
     _same(TERM_FIXTURE, term_model_payload(), "terminal_modes")
+    _same(CACHE_FIXTURE, cache_payload(), "prompt_cache")
+    from ref.goal_loop import kernel_md
+    md = KERNELS / "goal_loop.md"
+    if not md.is_file() or md.read_text() != kernel_md():
+        raise Counterexample("fixtures-stale", None, "goal_loop.md does not match live step; run --export")
+    cmd = KERNELS / "prompt_cache.md"
+    if not cmd.is_file() or cmd.read_text() != cache_kernel_md():
+        raise Counterexample("fixtures-stale", None, "prompt_cache.md does not match live step; run --export")
 
 
 def break_model(kind: str) -> None:
@@ -547,6 +499,7 @@ def main() -> int:
     sys.path.insert(0, str(ROOT))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--export", action="store_true", help="write spec/kernels/*.json")
+    parser.add_argument("--diagram", metavar="KERNEL", help="print live Event/step projection")
     parser.add_argument("--break", dest="mutate", metavar="KIND", help="mutate the model to demo a counterexample")
     parser.add_argument("--lean", action="store_true", help="lake build lean-proofs if lake is installed")
     parser.add_argument("--impl", action="store_true", help="run the Zig fixture tests")
@@ -561,6 +514,15 @@ def main() -> int:
         print(json.dumps(inv, indent=2) if args.json else render(inv))
         return 0 if inv["ok"] else 1
 
+    if args.diagram:
+        mods = {"goal_loop": "ref.goal_loop", "prompt_cache": "ref.prompt_cache"}
+        path = mods.get(args.diagram)
+        if path is None:
+            print(f"no machine projection for {args.diagram}", file=sys.stderr)
+            return 2
+        sys.stdout.write(__import__(path, fromlist=["mermaid"]).mermaid())
+        return 0
+
     if args.mutate:
         break_model(args.mutate)
 
@@ -569,6 +531,7 @@ def main() -> int:
         n_tr = check_transport()
         n_pr = check_provider()
         n_gl = check_goal_loop()
+        n_ck = check_prompt_cache()
         n_pc = check_path_confine()
         n_sh = check_shape()
         n_sc = check_score()
@@ -578,12 +541,13 @@ def main() -> int:
         if args.export:
             paths = export()
             rel = ", ".join(p.relative_to(ROOT.parent).as_posix() for p in paths)
-            print(f"exported catalog={n_cat} transport={n_tr} provider={n_pr} goal={n_gl} path={n_pc} shape={n_sh} score={n_sc} bash={n_ba} sox={n_sx} term={n_tm} → {rel}")
+            print(f"exported catalog={n_cat} transport={n_tr} provider={n_pr} goal={n_gl} cache={n_ck} path={n_pc} shape={n_sh} score={n_sc} bash={n_ba} sox={n_sx} term={n_tm} → {rel}")
         else:
             check_fixtures()
             print(
                 f"ok  tool_catalog {n_cat}  transport {n_tr} (1 ws)  "
-                f"provider {n_pr}  goal_loop {n_gl}  path_confine {n_pc}  shape {n_sh}  score {n_sc}  bash {n_ba}  "
+                f"provider {n_pr}  goal_loop {n_gl}  prompt_cache {n_ck}  path_confine {n_pc}  "
+                f"shape {n_sh}  score {n_sc}  bash {n_ba}  "
                 f"structured_output {n_sx}  terminal_modes {n_tm}"
             )
         if args.lean:

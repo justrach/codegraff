@@ -3,6 +3,20 @@
 A kernel graduates when (1) Lean builds, (2) the reference model exhausts
 the reachable cells, (3) the Zig implementation matches the export.
 
+## Process vs cube
+
+A kernel is a **cube** (flag or table product; `native_decide` over the cells)
+or a **process** (a finite `Event` / `step` state diagram). Process kernels
+are not Turing machines: no tape, no halt state, no computability encoding.
+The diagram is the transition function. The cube, if the kernel has one, is
+the snapshot of that function.
+
+`GoalLoop` and `PromptCache` are the process kernels. GoalLoop: standing
+has no retire edge; harness-done needs a done write. PromptCache: sub never
+spawns; spawn isolates the child key; join restores the root partition;
+isolation does not mint a key. Score, Shape, Provider, and ToolCatalog stay cubes.
+
+
 ## Every harness part
 
 Every part is **live**, **new**, or **never**. Never is a classification,
@@ -15,7 +29,8 @@ not a skip: TUI, prompts, and SSE bytes stay out of Lean on purpose.
 | `ToolCatalog` | 64 flag cubes | MCP names, descriptions, JSON wrappers |
 | `Transport` | 96 turns; **1** WS cell | frames, TLS, idle-kill timing of the server |
 | `Provider` | 18 baked rows | live `/models` overlay, Kimi protocol flip |
-| `GoalLoop` | 360 gate cells | model wording, whether the work is correct |
+| `GoalLoop` | 360 gate cells + `Event`/`step` | model wording, whether the work is correct |
+| `PromptCache` | 48 cells + `Event`/`step` | provider cache HIT, uuid5 cwd bytes, vision pin |
 | `PathConfine` | 16 lexical paths + 80 lease cells | OS errno, Windows drives, live symlink walk |
 | `Shape` | 1728 ladder cells | `admit`, learned override, ε-explore, `observe` |
 | `Score` | 1210 filing cells (240 filed); 11 titles; 16 class samples | HMAC, providerClass price fallback |

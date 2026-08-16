@@ -48,8 +48,10 @@ const orch_rows = @import("orchestration_rows.zig"); // #290: a scored tournamen
 /// calls fan out further via io.async. `run_in_background:true` (#276 P0-3)
 /// instead registers the spawn and returns immediately — see
 /// spawnSubBackground below.
+const spawn_gate = @import("subagent_spawn.zig");
+
 pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
-    if (ctx.from_sub) return .{
+    if (!spawn_gate.allowed(ctx.from_sub)) return .{
         .text = try ctx.gpa.dupe(u8, "subagents cannot spawn subagents — do this work yourself"),
         .is_error = true,
     };
