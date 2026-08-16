@@ -36,6 +36,7 @@ test {
     _ = app;
     _ = @import("dispatch.zig");
     _ = @import("key.zig");
+    _ = @import("key_tests.zig");
     _ = @import("input.zig");
     _ = @import("keys.zig");
     _ = @import("nav.zig");
@@ -46,6 +47,7 @@ test {
     _ = @import("chrome.zig");
     _ = @import("models.zig");
     _ = @import("markdown.zig");
+    _ = @import("syntax.zig");
     _ = @import("dump.zig");
     _ = @import("effort.zig");
     _ = @import("sim.zig");
@@ -55,6 +57,7 @@ test {
     _ = @import("files.zig");
     _ = @import("overlays.zig");
     _ = run_mod;
+    _ = @import("traj.zig");
 }
 
 pub fn main(init: std.process.Init) !void {

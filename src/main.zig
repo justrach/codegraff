@@ -114,15 +114,16 @@ test { // unit_tests' root is main.zig only, so reference every split-out module
     _ = mainloop;
     _ = args;
     _ = startup;
+    _ = @import("startup_keys.zig");
     _ = startup_timing;
     _ = session_start;
     _ = session_run;
+    _ = @import("obs_cost_test.zig");
     _ = @import("tui_launch.zig");
     _ = provider_mod;
     _ = agent_mod;
 }
 const prompts = @import("prompts.zig");
-// Tool-schema + provider-tool JSON emission lives in schema.zig; serve.zig/startup.zig import it directly. Kept here to pull in its test{} block.
 const schema = @import("schema.zig");
 // The provider/keys core (ProviderSpec/provider_specs, Provider, Keys) lives in provider.zig; provider_specs/Keys stay local aliases for main()'s credential setup and tests.
 const provider_mod = @import("provider.zig");
@@ -405,7 +406,6 @@ pub fn main(init: std.process.Init) !void {
         for (approvals.plan_read_roots.items) |p| gpa.free(p);
         approvals.plan_read_roots.deinit(gpa);
     }
-
     // buildSystemPrompt layers the base, project instructions, overrides, skills, and MCP notes.
     const sys_normal = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null or init.environ_map.get("GRAFF_REPL_DEBUG") == null, (flags.oneshot_prompt != null or !(Io.File.stdin().isTty(io) catch true)) and !flags.effectiveYolo(), mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"), init.environ_map);
     boot.mark(io, "system prompt");

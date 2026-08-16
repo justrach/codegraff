@@ -385,6 +385,7 @@ pub const Registry = struct {
         const cache_key = mcp_cache.keyFor(a, cfg);
         const now_ms = util.unixMs(reg.io);
         const looked = mcp_cache.lookup(reg.io, a, reg.home, cache_key, now_ms);
+        const era_hint = looked.era;
         var listed_result: ?Value = null;
         const tools_v: Value = if (looked.hit) |hit| blk: {
             server.era = hit.era;
@@ -399,7 +400,7 @@ pub const Registry = struct {
             break :blk hit.tools;
         } else blk: {
             const listed = switch (server.transport) {
-                .http => try mcp_rpc.connectHttp(server, a, a),
+                .http => try mcp_rpc.connectHttp(server, a, a, era_hint),
                 .stdio => stdio_listed: {
                     if (!reg.stdio_probe) break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
                     switch (try mcp_rpc.probeStdioResilient(server, a, reg.io)) {

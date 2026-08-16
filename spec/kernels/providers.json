@@ -31,7 +31,7 @@
     },
     {
       "id": "openai",
-      "kind": "openai",
+      "kind": "responses",
       "auth": "bearer",
       "login": "api_key",
       "catalog": "baked",

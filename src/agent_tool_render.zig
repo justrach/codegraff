@@ -37,30 +37,59 @@ const ToolInvocation = engine_events.ToolInvocation;
 const ToolOutcome = engine_events.ToolOutcome;
 const BatchOutcome = engine_events.BatchOutcome;
 
-/// How much of a call's JSON arguments the ⚙ line shows. A byte cap, not a
-/// character one: the cut may split a UTF-8 sequence, exactly as before.
-const arg_preview_bytes: usize = 160;
+/// Keep tool activity useful without dumping model-facing JSON into the REPL.
+const detail_preview_bytes: usize = 96;
 /// How much of a result's first line the ✓ line shows.
 const result_preview_bytes: usize = 100;
 
-/// The ⚙ announcement line. Suppressed when the call's prose already streamed
-/// live out of its arguments — the line would just repeat what was read.
+fn stringField(input: std.json.Value, field: []const u8) ?[]const u8 {
+    if (input != .object) return null;
+    const value = input.object.get(field) orelse return null;
+    return if (value == .string) value.string else null;
+}
+
+/// Pick one human-readable field for tools whose intent is obvious from a path,
+/// command, URL, or short label. Unknown tools still get a name-only line.
+fn toolDetail(t: ToolInvocation) []const u8 {
+    const field = if (std.mem.eql(u8, t.name, "bash"))
+        "command"
+    else if (std.mem.eql(u8, t.name, "read_file") or
+        std.mem.eql(u8, t.name, "edit_file") or
+        std.mem.eql(u8, t.name, "write_file"))
+        "path"
+    else if (std.mem.eql(u8, t.name, "webfetch"))
+        "url"
+    else if (std.mem.eql(u8, t.name, "codedb"))
+        "command"
+    else if (std.mem.eql(u8, t.name, "subagent"))
+        "description"
+    else if (std.mem.eql(u8, t.name, "imagegen"))
+        "prompt"
+    else if (std.mem.eql(u8, t.name, "peer_message"))
+        "text"
+    else
+        return "";
+    const detail = stringField(t.input, field) orelse return "";
+    const end = std.mem.indexOfScalar(u8, detail, '\n') orelse detail.len;
+    return std.mem.trim(u8, detail[0..end], " \t\r");
+}
+
+/// A terse activity line: always show ordinary tool calls, but never their raw
+/// argument object. Suppress only user-facing prose that already streamed live.
 pub fn toolUseLine(a: *Agent, t: ToolInvocation) void {
     if (t.arg_streamed) return;
-    var args: Io.Writer.Allocating = .init(a.gpa);
-    defer args.deinit();
-    var s: std.json.Stringify = .{ .writer = &args.writer };
-    s.write(t.input) catch return;
-    const full = args.writer.buffered();
-    const shown = if (full.len > arg_preview_bytes) full[0..arg_preview_bytes] else full;
+    const detail = toolDetail(t);
+    const shown = if (detail.len > detail_preview_bytes) detail[0..detail_preview_bytes] else detail;
     var line: Io.Writer.Allocating = .init(a.gpa);
     defer line.deinit();
-    line.writer.print("{s}⚙{s} {s}{s} {s}{s}{s}{s}\n", .{
-        style.dim,   style.reset, style.accent, t.name,
-        style.dim,   shown,
-        if (full.len > arg_preview_bytes) "…" else "",
+    line.writer.print("{s}⚙{s} {s}{s}{s}", .{ style.dim, style.reset, style.accent, t.name, style.reset }) catch return;
+    if (shown.len > 0) line.writer.print("{s} · {s}{s}{s}", .{
+        style.dim,
+        shown,
+        if (shown.len < detail.len) "…" else "",
         style.reset,
     }) catch return;
+    line.writer.writeByte('\n') catch return;
     sayText(a, line.writer.buffered());
 }
 
@@ -133,22 +162,21 @@ pub fn toolResultLine(a: *Agent, r: ToolOutcome) void {
         (std.fmt.bufPrint(&tbuf, " ({d}ms)", .{r.ms}) catch "")
     else
         "";
-    // Self-contained: colors and the trailing reset ride inside the badge, so
-    // an empty badge leaves the line byte-identical to the pre-badge format.
+    // Badge colors are self-contained; ordinary result lines stay byte-identical.
     var bbuf: [48]u8 = undefined;
     const badge = if (handleBadge(all)) |h| blk: {
         const kib = @as(f64, @floatFromInt(h.bytes)) / 1024.0;
         break :blk if (h.truncated)
-            std.fmt.bufPrint(&bbuf, "{s}⇠ {d:.1} KiB lost{s} ", .{ style.yellow, kib, style.reset }) catch ""
+            std.fmt.bufPrint(&bbuf, "{s}⇠ {d:.1} KiB lost{s}", .{ style.yellow, kib, style.reset }) catch ""
         else
-            std.fmt.bufPrint(&bbuf, "{s}⇢ {d:.1} KiB handle{s} ", .{ style.accent, kib, style.reset }) catch "";
+            std.fmt.bufPrint(&bbuf, "{s}⇢ {d:.1} KiB handle{s}", .{ style.accent, kib, style.reset }) catch "";
     } else "";
-    w.print("  {s}{s}{s}{s}{s}{s} {s}{s}{s}{s}{s}\n", .{
-        mc,          mark,      style.reset, style.dim, timing, style.reset,
-        badge,       style.dim, shown,
-        if (truncated) "…" else "",
-        style.reset,
+    w.print("  {s}{s}{s} {s}{s}{s}{s}{s}{s}{s}{s}", .{
+        mc,          mark,                           style.reset, style.accent, r.name, style.reset, style.dim, timing,
+        style.reset, if (badge.len > 0) " " else "", badge,
     }) catch return;
+    if (shown.len > 0) w.print(" · {s}{s}", .{ shown, if (truncated) "…" else "" }) catch return;
+    w.print("{s}\n", .{style.reset}) catch return;
     w.flush() catch return;
 }
 
@@ -249,24 +277,27 @@ test "the ⚙ line reproduces the old inline announcement, cap and ellipsis incl
 
     const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"path\":\"fixture.txt\"}", .{});
     toolUseLine(&a, .{ .name = "read_file", .input = input });
-    try std.testing.expectEqualStrings("⚙ read_file {\"path\":\"fixture.txt\"}\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("⚙ read_file · fixture.txt\n", aw.writer.buffered());
 
     // Prose that already streamed live is not announced a second time.
     aw.clearRetainingCapacity();
     toolUseLine(&a, .{ .name = "attempt_completion", .input = input, .arg_streamed = true });
     try std.testing.expectEqualStrings("", aw.writer.buffered());
 
-    // Over the cap: exactly arg_preview_bytes of JSON, then the ellipsis.
+    // Unknown tools remain visible without leaking arbitrary argument JSON.
     aw.clearRetainingCapacity();
-    const long = try std.fmt.allocPrint(arena_state.allocator(), "{{\"q\":\"{s}\"}}", .{&util.repeatBytes("x", 400)});
+    toolUseLine(&a, .{ .name = "todo_write", .input = input });
+    try std.testing.expectEqualStrings("⚙ todo_write\n", aw.writer.buffered());
+
+    // Long readable details are capped to one terse line.
+    aw.clearRetainingCapacity();
+    const long = try std.fmt.allocPrint(arena_state.allocator(), "{{\"command\":\"{s}\"}}", .{&util.repeatBytes("x", 400)});
     const long_input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), long, .{});
-    toolUseLine(&a, .{ .name = "codedb", .input = long_input });
+    toolUseLine(&a, .{ .name = "bash", .input = long_input });
     const line = aw.writer.buffered();
-    try std.testing.expect(std.mem.startsWith(u8, line, "⚙ codedb {\"q\":\"xxx"));
+    try std.testing.expect(std.mem.startsWith(u8, line, "⚙ bash · xxx"));
     try std.testing.expect(std.mem.endsWith(u8, line, "…\n"));
-    // The literal, not arg_preview_bytes: this asserts the conversion kept the
-    // pre-#422 inline cap, and asserting the constant against itself would not.
-    try std.testing.expectEqual(@as(usize, 160), line.len - "⚙ codedb ".len - "…\n".len);
+    try std.testing.expectEqual(@as(usize, 96), line.len - "⚙ bash · ".len - "…\n".len);
 }
 
 test "the result line marks success, failure and cancellation and previews one line" {
@@ -281,15 +312,15 @@ test "the result line marks success, failure and cancellation and previews one l
     var a = testAgent(&aw.writer);
 
     toolResultLine(&a, .{ .name = "read_file", .text = "line one\nline two\n", .is_error = false });
-    try std.testing.expectEqualStrings("  ✓ line one…\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ read_file · line one…\n", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
     toolResultLine(&a, .{ .name = "bash", .text = "boom", .is_error = true });
-    try std.testing.expectEqualStrings("  ✗ boom\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✗ bash · boom\n", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
     toolResultLine(&a, .{ .name = "bash", .text = "stopped", .is_error = true, .cancelled = true });
-    try std.testing.expectEqualStrings("  ⊘ stopped\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ⊘ bash · stopped\n", aw.writer.buffered());
 
     // Meta tools draw their own UX; the ✓ line stays out of their way.
     aw.clearRetainingCapacity();
@@ -303,26 +334,26 @@ test "the result line marks success, failure and cancellation and previews one l
     toolResultLine(&a, .{ .name = "bash", .text = &long, .is_error = false });
     const rline = aw.writer.buffered();
     try std.testing.expect(std.mem.endsWith(u8, rline, "…\n"));
-    try std.testing.expectEqual(@as(usize, 100), rline.len - "  ✓ ".len - "…\n".len);
+    try std.testing.expectEqual(@as(usize, 100), rline.len - "  ✓ bash · ".len - "…\n".len);
 
     // --timing adds the measured duration between the mark and the preview.
     aw.clearRetainingCapacity();
     main_mod.show_timing = true;
     toolResultLine(&a, .{ .name = "bash", .text = "ok", .is_error = false, .ms = 42 });
-    try std.testing.expectEqualStrings("  ✓ (42ms) ok\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ bash (42ms) · ok\n", aw.writer.buffered());
 
-    // A #440 handle spill badges its size between the timing slot and the
-    // preview (which still leads with the marker, so the path stays visible).
+    // A #440 handle spill badges its size after the tool name while the preview
+    // still leads with the marker, so the handle path stays visible.
     aw.clearRetainingCapacity();
     main_mod.show_timing = false;
     toolResultLine(&a, .{ .name = "bash", .text = "[tool result handle: 44690 bytes, JSON object — the COMPLETE result is at /tmp/h-0.txt. Slice what you need out of that file (read_file with start_line/end_line, a grep-style bash command, codedb) instead of re-running the tool (#440).]", .is_error = false });
     const hline = aw.writer.buffered();
-    try std.testing.expect(std.mem.startsWith(u8, hline, "  ✓ ⇢ 43.6 KiB handle [tool result handle: 44690 bytes"));
+    try std.testing.expect(std.mem.startsWith(u8, hline, "  ✓ bash ⇢ 43.6 KiB handle · [tool result handle: 44690 bytes"));
 
     // The no-handle truncation variant badges the loss instead.
     aw.clearRetainingCapacity();
     toolResultLine(&a, .{ .name = "bash", .text = "[tool result truncated to 16384 bytes: 90000 bytes total, JSON object. No handle could be written, so the rest is gone — narrow the command and run it again (#440).]", .is_error = false });
-    try std.testing.expect(std.mem.startsWith(u8, aw.writer.buffered(), "  ✓ ⇠ 87.9 KiB lost [tool result truncated"));
+    try std.testing.expect(std.mem.startsWith(u8, aw.writer.buffered(), "  ✓ bash ⇠ 87.9 KiB lost · [tool result truncated"));
 }
 
 test "the spill notice draws in normal mode and stays quiet in debug mode" {

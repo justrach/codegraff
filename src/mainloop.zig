@@ -10,7 +10,6 @@ const main_mod = @import("main.zig");
 const util = @import("util.zig");
 const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
-
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
@@ -190,10 +189,10 @@ pub fn run(ctx: *Ctx) !void {
                 continue;
             }
             if (std.mem.eql(u8, rtype, "compact")) {
-                const chars = ctx.root.compact() catch |err| {
+                const chars = ctx.root.manualCompact() catch |err| {
                     const message = switch (err) {
                         error.EmptySummary => "compaction failed: empty summary, history unchanged",
-                        error.IncompleteSummary => "compaction failed: incomplete summary, history unchanged",
+                        error.IncompleteSummary, error.InvalidCompactionResponse => "compaction failed: incomplete or invalid compacted history, history unchanged",
                         else => try std.fmt.allocPrint(ctx.arena, "compaction failed: {s}", .{@errorName(err)}),
                     };
                     ctx.root.emit(.{ .type = "error", .message = message });
@@ -395,7 +394,7 @@ pub fn run(ctx: *Ctx) !void {
         } else try ctx.root.messages.append(try messages.textMessage(ctx.arena, "user", ultracode_msg.text));
         ctx.root.snapshots.?.turn += 1; // tag file edits in this turn (matches /rewind numbering)
         ctx.root.recap_generation +%= 1; // #419: a starting turn supersedes any recap job still in flight
-        if (telemetry.g_telem) |t| t.countTurn();
+        if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(base_msg.len, std.math.maxInt(u32))), ctx.root.provider.model);
         // Trajectory: claim this turn's node id up front so subagents spawned during the turn can attach to it as their parent.
         const turn_id: u64 = if (trace.g_traj) |tj| blk: {
             const id = tj.nextId();

@@ -43,14 +43,16 @@ pub fn render(self: *const Model, a: std.mem.Allocator, width: usize, now_ms: u6
         i += 1;
     }
     if (self.pending) |job| {
-        if (job.stream.snapshot(a)) |live| {
-            if (!first) try out.append('\n');
-            first = false;
-            try out.appendSlice(try theme_mod.paint(a, self.theme().muted, try tail(a, strip(a, live), width, 4)));
-        }
-        if (self.steer_queue.items.len > 0) {
-            if (!first) try out.append('\n');
-            try out.appendSlice(try theme_mod.paint(a, self.theme().muted, try std.fmt.allocPrint(a, "  ↳ {d} queued · empty Enter sends now", .{self.steer_queue.items.len})));
+        if (!self.cancel_requested) {
+            if (job.stream.snapshot(a)) |live| {
+                if (!first) try out.append('\n');
+                first = false;
+                try out.appendSlice(try theme_mod.paint(a, self.theme().muted, try tail(a, strip(a, live), width, 4)));
+            }
+            if (self.steer_queue.items.len > 0) {
+                if (!first) try out.append('\n');
+                try out.appendSlice(try theme_mod.paint(a, self.theme().muted, try std.fmt.allocPrint(a, "  ↳ {d} queued · empty Enter sends now", .{self.steer_queue.items.len})));
+            }
         }
     }
     return out.items;
@@ -98,6 +100,7 @@ pub fn totalVisualLines(self: *const Model, width: usize) usize {
     var arena = std.heap.ArenaAllocator.init(self.alloc);
     defer arena.deinit();
     const text = render(self, arena.allocator(), width, self.now_ms) catch return 0;
+    if (text.len == 0) return 0; // render.zig pops the empty tail; agree with it
     return lineCount(text);
 }
 
@@ -130,6 +133,40 @@ pub fn visualOfIndex(self: *const Model, idx: usize, width: usize) ?usize {
         i += 1;
     }
     return null;
+}
+
+/// The last user prompt whose first visual row sits strictly above
+/// `top_line` — the grok sticky-header candidate. Same row math as
+/// visualOfIndex so the pin agrees with what the viewport actually shows.
+pub fn stickyUserAbove(self: *const Model, top_line: usize, width: usize) ?[]const u8 {
+    if (top_line == 0) return null;
+    var arena = std.heap.ArenaAllocator.init(self.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var best: ?[]const u8 = null;
+    var v: usize = 0;
+    var i: usize = 0;
+    while (i < self.history.items.len and v < top_line) {
+        const e = self.history.items[i];
+        if (e.kind == .tool) {
+            const run = self.toolRun(i);
+            if (self.history.items[run.start].folded) {
+                v += lineCount(summary(self, a, run.start, run.end, false) catch "");
+            } else {
+                var t = run.start;
+                while (t < run.end) {
+                    v += lineCount(toolVisual(self, a, t, run.end, width, self.now_ms, false) catch "");
+                    t = nextTool(self, t, run.end);
+                }
+            }
+            i = run.end;
+            continue;
+        }
+        if (e.kind == .user and v < top_line) best = e.text;
+        v += lineCount(row(self, a, i, e, width, self.now_ms, false) catch "");
+        i += 1;
+    }
+    return best;
 }
 
 fn lineCount(s: []const u8) usize {
@@ -209,7 +246,7 @@ fn row(self: *const Model, a: std.mem.Allocator, idx: usize, e: app.Entry, width
     else
         e.text;
     const body = switch (e.kind) {
-        .assistant => try @import("markdown.zig").renderTinted(a, raw, th.accent, th.muted, th.text),
+        .assistant => try @import("markdown.zig").renderThemed(a, raw, th, width -| 4), // the "  ● " gutter costs 4 cols
         .user => try @import("markdown.zig").renderUser(a, raw, th.accent, th.text),
         else => raw,
     };
@@ -219,11 +256,12 @@ fn row(self: *const Model, a: std.mem.Allocator, idx: usize, e: app.Entry, width
         return theme_mod.wrapToWidth(a, line, width);
     }
     if (e.kind == .pending) {
-        // Steady bar; the animated dots in the label carry the motion.
-        const line = try std.fmt.allocPrint(a, "{s}{s}❙{s} {s}{s}", .{ sel, th.accent, theme_mod.reset, body, theme_mod.reset });
+        // Steady accent bar (no flicker); the animated dots carry the motion.
+        const line = try std.fmt.allocPrint(a, "{s}{s}❙{s}{s} {s}{s}", .{ sel, th.accent, theme_mod.reset, th.muted, body, theme_mod.reset });
         return theme_mod.wrapToWidth(a, line, width);
     }
-    const line = try std.fmt.allocPrint(a, "{s}{s}{s}{s} {s}{s}", .{ sel, color, mark, theme_mod.reset, body, theme_mod.reset });
+    const body_fg = if (e.kind == .err) th.error_fg else th.text;
+    const line = try std.fmt.allocPrint(a, "{s}{s}{s}{s}{s} {s}{s}", .{ sel, color, mark, theme_mod.reset, body_fg, body, theme_mod.reset });
     return theme_mod.wrapToWidth(a, line, width);
 }
 
@@ -308,7 +346,7 @@ fn toolCard(a: std.mem.Allocator, th: theme_mod.Theme, start_text: []const u8, d
     const sel: []const u8 = if (selected) "› " else "  ";
     const title = try toolTitle(a, start_text);
     const preview = toolPreview(done_text);
-    const head = try std.fmt.allocPrint(a, "{s}{s}◆{s} {s}", .{ sel, if (selected) th.accent else th.muted, theme_mod.reset, title });
+    const head = try std.fmt.allocPrint(a, "{s}{s}◆{s}{s} {s}", .{ sel, if (selected) th.accent else th.muted, theme_mod.reset, th.text, title });
     if (preview == null) return theme_mod.wrapToWidth(a, head, width);
     const body = try std.fmt.allocPrint(a, "{s}{s}│  {s}{s}", .{ sel, th.muted, preview.?, theme_mod.reset });
     const joined = try std.fmt.allocPrint(a, "{s}\n{s}", .{ try theme_mod.wrapToWidth(a, head, width), try theme_mod.wrapToWidth(a, body, width) });
@@ -321,8 +359,9 @@ fn thinkingGlyph(now_ms: u64) []const u8 {
 }
 
 fn thinkingLabel(now_ms: u64) []const u8 {
-    const frames = [_][]const u8{ "thinking   ", "thinking.  ", "thinking.. ", "thinking..." };
-    return frames[(now_ms / 320) % frames.len];
+    _ = now_ms;
+    // Grok: static "Thinking" — motion is only the ❙ flicker.
+    return "Thinking";
 }
 
 fn firstLine(s: []const u8) []const u8 {
@@ -365,9 +404,9 @@ test "firstLine stops at newline" {
     try std.testing.expectEqualStrings("ab", firstLine("ab\ncd"));
 }
 
-test "thinking animation is a word, not a lone spinner" {
-    try std.testing.expect(std.mem.startsWith(u8, thinkingLabel(0), "thinking"));
-    try std.testing.expect(!std.mem.eql(u8, thinkingLabel(0), thinkingLabel(320)));
+test "thinking animation is Grok ❙ flicker plus static Thinking" {
+    try std.testing.expectEqualStrings("Thinking", thinkingLabel(0));
+    try std.testing.expectEqualStrings(thinkingLabel(0), thinkingLabel(320));
     try std.testing.expectEqualStrings("❙", thinkingGlyph(0));
 }
 

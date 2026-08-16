@@ -22,6 +22,7 @@ pub const Result = union(enum) {
     binary: u64,
     range_too_large,
     start_past_end,
+    no_match,
 };
 
 fn normalizedBounds(start_opt: ?i64, end_opt: ?i64) ?struct { start: usize, end: usize } {
@@ -69,9 +70,51 @@ fn readWindow(io: Io, gpa: Allocator, file: Io.File, size: u64, start_opt: ?i64,
     return .{ .text = try output.toOwnedSlice(gpa) };
 }
 
-/// Reads from `dir` without ever retaining more than `max_bytes`. The caller
-/// owns `text` and `truncated.head` results.
-pub fn read(io: Io, gpa: Allocator, dir: Io.Dir, path: []const u8, start_line: ?i64, end_line: ?i64) !Result {
+fn appendLiteralMatch(gpa: Allocator, output: *std.ArrayList(u8), line_bytes: []const u8, line_number: usize, needle: []const u8) !bool {
+    if (std.mem.indexOf(u8, line_bytes, needle) == null) return true;
+    var prefix_buffer: [48]u8 = undefined;
+    const prefix = std.fmt.bufPrint(&prefix_buffer, "{d}: ", .{line_number}) catch return false;
+    const needed = prefix.len + line_bytes.len;
+    if (needed > max_bytes or output.items.len > max_bytes - needed) return false;
+    try output.appendSlice(gpa, prefix);
+    try output.appendSlice(gpa, line_bytes);
+    return true;
+}
+
+fn readMatches(io: Io, gpa: Allocator, file: Io.File, size: u64, needle: []const u8) !Result {
+    if (needle.len == 0 or size == 0) return .no_match;
+
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(gpa);
+    var current_line: std.ArrayList(u8) = .empty;
+    defer current_line.deinit(gpa);
+    var buffer: [16 * 1024]u8 = undefined;
+    var offset: u64 = 0;
+    var line_number: usize = 1;
+
+    while (offset < size) {
+        const want: usize = @intCast(@min(@as(u64, buffer.len), size - offset));
+        const got = try file.readPositionalAll(io, buffer[0..want], offset);
+        if (got != want) return error.UnexpectedEndOfFile;
+        offset += got;
+        for (buffer[0..got]) |byte| {
+            if (current_line.items.len == max_bytes) return .range_too_large;
+            try current_line.append(gpa, byte);
+            if (byte != '\n') continue;
+            if (!try appendLiteralMatch(gpa, &output, current_line.items, line_number, needle)) return .range_too_large;
+            current_line.clearRetainingCapacity();
+            line_number +|= 1;
+        }
+    }
+    if (current_line.items.len > 0 and !try appendLiteralMatch(gpa, &output, current_line.items, line_number, needle))
+        return .range_too_large;
+    if (output.items.len == 0) return .no_match;
+    return .{ .text = try output.toOwnedSlice(gpa) };
+}
+
+/// Reads from `dir` with bounded buffers. The caller owns `text` and
+/// `truncated.head` results.
+pub fn read(io: Io, gpa: Allocator, dir: Io.Dir, path: []const u8, start_line: ?i64, end_line: ?i64, contains: ?[]const u8) !Result {
     const file = try dir.openFile(io, path, .{});
     defer file.close(io);
     const before = try file.stat(io);
@@ -82,6 +125,7 @@ pub fn read(io: Io, gpa: Allocator, dir: Io.Dir, path: []const u8, start_line: ?
     const prefix = try readPrefix(io, file, before.size, &prefix_buffer);
     if (std.mem.indexOfScalar(u8, prefix, 0) != null) return .{ .binary = before.size };
 
+    if (contains) |needle| return readMatches(io, gpa, file, before.size, needle);
     if (start_line != null or end_line != null)
         return readWindow(io, gpa, file, before.size, start_line, end_line);
 
@@ -108,7 +152,7 @@ test "large whole reads preview while line windows stream byte-exactly" {
     @memcpy(large[large.len - 12 ..], "target\nlast\n");
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "large.txt", .data = large });
 
-    const whole = try read(std.testing.io, gpa, tmp.dir, "large.txt", null, null);
+    const whole = try read(std.testing.io, gpa, tmp.dir, "large.txt", null, null, null);
     switch (whole) {
         .truncated => |value| {
             defer gpa.free(value.head);
@@ -118,7 +162,7 @@ test "large whole reads preview while line windows stream byte-exactly" {
         else => return error.TestExpectedTruncated,
     }
 
-    const window = try read(std.testing.io, gpa, tmp.dir, "large.txt", 2, 3);
+    const window = try read(std.testing.io, gpa, tmp.dir, "large.txt", 2, 3, null);
     switch (window) {
         .text => |text| {
             defer gpa.free(text);
@@ -142,7 +186,7 @@ test "streamed windows preserve the original line-slice semantics" {
         .{ .start = 99, .end = 100, .expected = null },
     };
     for (cases) |case| {
-        const outcome = try read(std.testing.io, gpa, tmp.dir, "small.txt", case.start, case.end);
+        const outcome = try read(std.testing.io, gpa, tmp.dir, "small.txt", case.start, case.end, null);
         if (case.expected) |expected| switch (outcome) {
             .text => |text| {
                 defer gpa.free(text);
@@ -153,7 +197,7 @@ test "streamed windows preserve the original line-slice semantics" {
     }
 
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "unterminated.txt", .data = "x\ny" });
-    const final_line = try read(std.testing.io, gpa, tmp.dir, "unterminated.txt", 2, 2);
+    const final_line = try read(std.testing.io, gpa, tmp.dir, "unterminated.txt", 2, 2, null);
     switch (final_line) {
         .text => |text| {
             defer gpa.free(text);
@@ -171,5 +215,22 @@ test "oversized requested line fails bounded instead of StreamTooLong" {
     defer gpa.free(large);
     @memset(large, 'x');
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "one-line.txt", .data = large });
-    try std.testing.expect((try read(std.testing.io, gpa, tmp.dir, "one-line.txt", 1, 1)) == .range_too_large);
+    try std.testing.expect((try read(std.testing.io, gpa, tmp.dir, "one-line.txt", 1, 1, null)) == .range_too_large);
+}
+
+test "literal matching streams only numbered target lines" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "catalog.txt", .data = "alpha\nSKU0420 price=685 stock=105\nomega SKU0420\nlast" });
+
+    const matches = try read(std.testing.io, gpa, tmp.dir, "catalog.txt", null, null, "SKU0420");
+    switch (matches) {
+        .text => |text| {
+            defer gpa.free(text);
+            try std.testing.expectEqualStrings("2: SKU0420 price=685 stock=105\n3: omega SKU0420\n", text);
+        },
+        else => return error.TestExpectedText,
+    }
+    try std.testing.expect((try read(std.testing.io, gpa, tmp.dir, "catalog.txt", null, null, "missing")) == .no_match);
 }

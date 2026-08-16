@@ -259,6 +259,7 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         .session_notice,
         .session_banner,
         .worktree_entered,
+        .shared_worktree_owner,
         .saved_model_unavailable,
         .mcp_consent_prompt,
         .provider_fallback,

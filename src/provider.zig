@@ -24,11 +24,13 @@ pub var g_context_override: ?u64 = null;
 /// (default 80). null → 80. Unlike codex we allow lowering AND raising (1..100).
 pub var g_compact_pct_override: ?u8 = null;
 
-/// #502: GRAFF_XAI_WIRE=responses (session_settings.applyEnvKnobs) serves xAI
-/// over the OpenAI Responses wire at api.x.ai/v1/responses instead of chat
-/// completions — the prerequisite for first-party server compaction and
-/// Responses-WebSocket turns. Verified live on the SuperGrok OAuth path.
-pub var g_xai_responses: bool = false;
+/// #502: xAI rides the OpenAI Responses wire at api.x.ai/v1/responses BY
+/// DEFAULT — that unlocks first-party server compaction (lossless blob;
+/// recall A/B: blob 12/12 vs client summary 11/12 on buried facts) and
+/// WebSocket turns with the SSE/full-resend fallback ladder. Verified live
+/// on the SuperGrok OAuth path. GRAFF_XAI_WIRE=chat (or anything other than
+/// "responses") opts back into chat completions.
+pub var g_xai_responses: bool = true;
 
 pub const xai_responses_url = "https://api.x.ai/v1/responses";
 /// xAI's explicit compaction endpoint (POST {model, input} → one opaque
@@ -84,7 +86,7 @@ pub const provider_specs = [_]ProviderSpec{
     .{ .id = "anthropic", .display_name = "Anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "https://api.anthropic.com/v1/messages", .env_key = "ANTHROPIC_API_KEY", .default_model = "claude-opus-4-8", .catalog = .anthropic, .models_url = "https://api.anthropic.com/v1/models?limit=1000" },
     .{ .id = "codegraff", .display_name = "Codegraff", .kind = .openai, .auth = .bearer, .url = "https://gateway.codegraff.com/v1/chat/completions", .env_key = "CODEGRAFF_API_KEY", .default_model = "deepseek-v4-pro", .login = .codegraff_device, .catalog = .openai, .models_url = "https://gateway.codegraff.com/v1/models", .takes_effort = true },
     .{ .id = "deepseek", .display_name = "DeepSeek", .kind = .openai, .auth = .bearer, .url = "https://api.deepseek.com/chat/completions", .env_key = "DEEPSEEK_API_KEY", .default_model = "deepseek-v4-pro", .takes_effort = true },
-    .{ .id = "openai", .display_name = "OpenAI", .kind = .openai, .auth = .bearer, .url = "https://api.openai.com/v1/chat/completions", .env_key = "OPENAI_API_KEY", .default_model = "gpt-5.6" },
+    .{ .id = "openai", .display_name = "OpenAI", .kind = .responses, .auth = .bearer, .url = "https://api.openai.com/v1/responses", .env_key = "OPENAI_API_KEY", .default_model = "gpt-5.6" },
     .{ .id = "minimax", .display_name = "MiniMax", .kind = .anthropic, .auth = .bearer, .url = "https://api.minimax.io/anthropic/v1/messages", .env_key = "MINIMAX_API_KEY", .default_model = "MiniMax-M3" },
     .{ .id = "xiaomi", .display_name = "Xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
     .{ .id = "kilo", .display_name = "Kilo Gateway", .kind = .openai, .auth = .bearer, .url = "https://api.kilo.ai/api/gateway/v1/chat/completions", .env_key = "KILO_API_KEY", .default_model = "kilo-auto/small" },
@@ -161,8 +163,8 @@ pub const Provider = struct {
     account: []const u8 = "", // ChatGPT account id, codex/responses only
     source: Keys.CredentialSource = .none, // #148: how api_key was obtained — only .login tokens auto-refresh
 
-    // Wire format. `responses` is the OpenAI Responses API as served by the
-    // ChatGPT backend (Codex login) — input items, not chat messages.
+    // Wire format. `responses` is the first-party OpenAI Responses API (direct
+    // API key or ChatGPT/Codex login) — input items, not chat messages.
     pub const Kind = enum { anthropic, openai, responses };
     pub const Auth = enum { x_api_key, bearer };
 

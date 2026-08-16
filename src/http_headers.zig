@@ -131,6 +131,11 @@ pub fn providerHeadersWithConv(io: Io, provider: Provider, bearer: []const u8, b
             count += 1;
         },
     }
+    // SuperGrok user tokens need the grok-build routing header.
+    if (std.mem.eql(u8, provider.id, "xai") and provider.source == .login) {
+        buf[count] = .{ .name = "X-XAI-Token-Auth", .value = "xai-grok-cli" };
+        count += 1;
+    }
     if (provider.kind == .anthropic) {
         buf[count] = .{ .name = "anthropic-version", .value = root.anthropic_version };
         count += 1;
@@ -139,10 +144,9 @@ pub fn providerHeadersWithConv(io: Io, provider: Provider, bearer: []const u8, b
         const identity = kimi_catalog.identityHeaders(buf[count..]);
         count += identity.len;
     }
-    // The ChatGPT-backend identity headers are codex-only: another Responses
-    // provider (xAI, #502) authenticates with the bearer alone and must not
-    // impersonate codex_cli_rs.
-    if (provider.kind == .responses and std.mem.eql(u8, provider.id, "codex")) {
+    // These identify the ChatGPT/Codex backend. The official Platform Responses
+    // endpoint needs only normal bearer auth and rejects backend-only identity.
+    if (std.mem.eql(u8, provider.id, "codex")) {
         buf[count] = .{ .name = "chatgpt-account-id", .value = provider.account };
         count += 1;
         buf[count] = .{ .name = "OpenAI-Beta", .value = "responses=experimental" };
@@ -187,6 +191,16 @@ test "session_id is a stable per-process UUIDv4, not a shared constant" {
         }
     }
     return error.SessionIdHeaderMissing;
+}
+
+test "official OpenAI Responses uses Platform headers, not ChatGPT backend identity" {
+    const io = std.testing.io;
+    var buf: [12]std.http.Header = undefined;
+    const p: Provider = .{ .id = "openai", .kind = .responses, .auth = .bearer, .url = "https://api.openai.com/v1/responses", .api_key = "k", .model = "gpt-5.6", .context = 272_000 };
+    const headers = providerHeaders(io, p, "Bearer k", &buf);
+    try std.testing.expectEqual(@as(usize, 1), headers.len);
+    try std.testing.expectEqualStrings("authorization", headers[0].name);
+    try std.testing.expectEqualStrings("Bearer k", headers[0].value);
 }
 
 test "projectCacheKey is a durable per-project v5 UUID, stable across calls" {
@@ -249,4 +263,43 @@ test "xAI Chat Completions headers carry a stable per-conversation x-grok-conv-i
     var abuf: [12]std.http.Header = undefined;
     const ah = providerHeadersWithConv(io, anth, "", &abuf, root_id);
     try std.testing.expect(headerValue(ah, "x-grok-conv-id") == null);
+}
+
+test "xai login tokens send X-XAI-Token-Auth; API keys do not" {
+    const io = std.testing.io;
+    var buf: [12]std.http.Header = undefined;
+    const login: Provider = .{
+        .id = "xai",
+        .kind = .openai,
+        .auth = .bearer,
+        .url = "",
+        .api_key = "oauth-tok",
+        .model = "grok-4.3",
+        .context = 256_000,
+        .source = .login,
+    };
+    const login_headers = providerHeaders(io, login, "Bearer oauth-tok", &buf);
+    var saw_token_auth = false;
+    for (login_headers) |h| {
+        if (std.mem.eql(u8, h.name, "X-XAI-Token-Auth")) {
+            try std.testing.expectEqualStrings("xai-grok-cli", h.value);
+            saw_token_auth = true;
+        }
+    }
+    try std.testing.expect(saw_token_auth);
+
+    const env_key: Provider = .{
+        .id = "xai",
+        .kind = .openai,
+        .auth = .bearer,
+        .url = "",
+        .api_key = "xai-api-key",
+        .model = "grok-4.3",
+        .context = 256_000,
+        .source = .environment,
+    };
+    const env_headers = providerHeaders(io, env_key, "Bearer xai-api-key", &buf);
+    for (env_headers) |h| {
+        try std.testing.expect(!std.mem.eql(u8, h.name, "X-XAI-Token-Auth"));
+    }
 }

@@ -234,8 +234,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.eql(u8, line, "/compact")) {
-        _ = root.compact() catch |err| switch (err) {
-            error.ApiError, error.EmptySummary, error.IncompleteSummary => {},
+        _ = root.manualCompact() catch |err| switch (err) {
+            error.ApiError, error.EmptySummary, error.IncompleteSummary, error.InvalidCompactionResponse => {},
             else => |e| return e,
         };
         return true;
@@ -305,7 +305,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("fast mode: {s}{s}\n", .{
             if (root.fast) "on" else "off",
-            if (root.provider.kind != .responses) " (codex only — current model ignores it)" else "",
+            if (!std.mem.eql(u8, root.provider.id, "codex")) " (codex only — current model ignores it)" else "",
         });
         try out.flush();
         return true;

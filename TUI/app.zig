@@ -41,6 +41,11 @@ pub const Model = struct {
     slash_sel: usize = 0,
 
     theme_id: theme_mod.Id = .night,
+    /// Set once the user picks a theme; blocks the OSC-11 auto polarity.
+    theme_explicit: bool = false,
+    /// Rows of sticky-header chrome at the top of the viewport this frame —
+    /// keys.zig must treat them as inert instead of clicking what they occlude.
+    sticky_rows: usize = 0,
     mode: AgentMode = .normal,
     effort: engine.Effort = .medium,
     fast: bool = false,

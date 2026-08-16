@@ -102,6 +102,12 @@ def check_fixtures() -> None:
         for task in TASKS + FRONTEND_TASKS:
             root = base / task.name
             digest = model_shape.initialize_workspace(root, task)
+            public_test = root / "test_public.py"
+            compile(
+                public_test.read_text(encoding="utf-8"),
+                str(public_test),
+                "exec",
+            )
             grade = model_shape.run_checks(task, root, digest)
             assert grade["total"] == task.visible_count + task.hidden_count == 9
             assert grade["passed"] == expected_starter_scores[task.name]

@@ -142,7 +142,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     var oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
     if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
     try root.messages.append(try messages_mod.textMessage(arena, "user", oneshot_user));
-    if (telemetry.g_telem) |t| t.countTurn();
+    if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(prompt_text.len, std.math.maxInt(u32))), root.provider.model);
     // #502: --output-schema runs TWO-PHASE. A strict grammar on every message
     // pulls the model into answering immediately instead of touching tools
     // (graff-evals caught grok-4.6 guessing a file-inspection answer), so the
@@ -316,8 +316,16 @@ pub fn buildRootAgent(
     // #469: register this root session so co-resident graffs see it (and it
     // them) BEFORE anyone touches the shared tree — a live co-owner is named
     // at birth here, not discovered mid-collision.
-    if (presence.announce(io, gpa, arena, root.home, root.session_name, if (root.goal) |g| g.objective else "")) |warning| {
-        if (!main_mod.json_mode and flags.oneshot_prompt == null) try out.print("{s}", .{warning});
+    if (presence.announce(io, gpa, arena, root.home, root.session_name, if (root.goal) |g| g.objective else "")) |owner| {
+        if (!main_mod.json_mode and flags.oneshot_prompt == null) {
+            const age_ms = util.unixMs(io) - owner.last_seen_ms;
+            engine_sink.writerSink(out).emit(io, .{ .shared_worktree_owner = .{
+                .session_id = owner.session_id,
+                .pid = owner.pid,
+                .active_minutes = @divTrunc(if (age_ms > 0) age_ms else 0, std.time.ms_per_min),
+                .goal = owner.goal,
+            } });
+        }
     }
     if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
     // #502: --output-schema (inline JSON or @file) → structured outputs.
@@ -399,7 +407,7 @@ pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod
 /// overflow can still override this.
 pub fn compactResumedSession(root: *agent_mod.Agent) void {
     if (root.inputOverCompactThreshold()) {
-        root.compactOrRecover(false);
+        root.autocompactResumed();
     }
 }
 

@@ -152,13 +152,16 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off");
         server_compact.g_server_compact_override = !off;
     }
-    // #502: GRAFF_XAI_WIRE=responses moves xAI onto the OpenAI Responses wire
-    // (api.x.ai/v1/responses) — first-party server compaction + WS turns.
-    // Anything else (or unset) keeps the chat-completions wire.
+    // #502: xAI defaults to the Responses wire (api.x.ai/v1/responses) —
+    // first-party server compaction + WS turns. GRAFF_XAI_WIRE=chat (anything
+    // but "responses") moves it back to chat completions; unset keeps the default.
     if (environ_map.get("GRAFF_XAI_WIRE")) |v| {
         provider_mod.g_xai_responses = std.ascii.eqlIgnoreCase(std.mem.trim(u8, v, " \t"), "responses");
     }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
+    // #502 follow-up: opt-in xAI on-socket chaining (see codex_chain.g_xai_ws_chain).
+    if (environ_map.get("GRAFF_XAI_WS_CHAIN")) |v|
+        @import("codex_chain.zig").g_xai_ws_chain = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "true");
     // GRAFF_WS_FORCE_FAIL_ONCE proves a clean retry; the counted sibling proves
     // that two consecutive failures latch the SSE fallback. Test seams only.
     if (environ_map.get("GRAFF_WS_FORCE_FAIL_ONCE")) |v| {

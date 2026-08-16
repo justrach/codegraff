@@ -321,8 +321,8 @@ def check_provider() -> int:
     if len(PROVIDER_SPECS) != 18:
         raise Counterexample("provider-count", None, f"n={len(PROVIDER_SPECS)} want=18")
     responses = [r for r in PROVIDER_SPECS if r["kind"] == "responses"]
-    if [r["id"] for r in responses] != ["codex"]:
-        raise Counterexample("only-codex-responses", None, f"{responses}")
+    if [r["id"] for r in responses] != ["openai", "codex"]:
+        raise Counterexample("responses-vendors", None, f"{responses}")
     x_key = [r for r in PROVIDER_SPECS if r["auth"] == "x_api_key"]
     if [r["id"] for r in x_key] != ["anthropic"]:
         raise Counterexample("only-anthropic-x-api-key", None, f"{x_key}")

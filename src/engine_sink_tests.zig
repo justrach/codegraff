@@ -291,7 +291,8 @@ test "TuiSink shows compact tool lines; debug adds args/preview (slice 1c)" {
     s.emit(undefined, .{ .tool_result = done });
     s.emit(undefined, .{ .tool_call_finished = done }); // silent
     s.emit(undefined, .{ .tool_rejected = .{ .name = "bash", .input = input, .reason = "budget", .message = "no" } }); // silent
-    try std.testing.expectEqualStrings("⚙ read_file {\"path\":\"fixture.txt\"}\n  ✓ line one…\n", aw.writer.buffered());
+    // Debug adds the human-readable path and preview without dumping raw JSON.
+    try std.testing.expectEqualStrings("⚙ read_file · fixture.txt\n  ✓ read_file · line one…\n", aw.writer.buffered());
 }
 
 test "TuiSink renders a plain text delta exactly as the no-color TTY did" {

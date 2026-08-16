@@ -151,7 +151,7 @@ test "decideCalls (#391): the budget gate IS #390's landing reserve, not a secon
     // Derived, never hard-coded: the first `remaining` that admits a note is
     // one call above whatever phase_budget holds back for the root to land and
     // narrate the work. A parallel reserve of the note's own would move this.
-    const reserve = phase_budget.landingReserve(cap);
+    const reserve = phase_budget.totalReserve(cap);
     var in = baseInputs();
     in.cap = cap;
 

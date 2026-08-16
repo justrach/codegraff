@@ -15,6 +15,7 @@ const builtin = @import("builtin");
 
 const telemetry = @import("telemetry.zig");
 const behavior_upload = @import("behavior_upload.zig");
+const obs = @import("obs.zig");
 
 pub const traces_dir = ".graff/traces";
 pub const trajectories_dir = ".graff/trajectories";
@@ -117,6 +118,7 @@ pub const Tracer = struct {
 
     pub fn api(self: *Tracer, label: []const u8, from_subagent: bool, model: []const u8, ms: i64, req_bytes: usize, resp_bytes: usize, context_tokens: u64, cache_read: u64, is_error: bool) void {
         if (telemetry.g_telem) |t| t.countApi(model, is_error);
+        obs.api(model, ms, context_tokens, cache_read, is_error);
         const behavior_turn = if (self.behavior) |behavior|
             behavior.recordApiMetric(from_subagent, ms, req_bytes, resp_bytes, context_tokens, cache_read, is_error)
         else

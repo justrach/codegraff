@@ -184,19 +184,21 @@ pub fn parseModels(arena: Allocator, data: []const u8) ?[]const pricing.ModelInf
     return if (owned.len > 0) owned else null;
 }
 
-/// Fetch and activate the authenticated catalog. Any failure leaves the baked
-/// K3 rows intact, so offline runs and temporary Kimi outages still start.
-pub fn load(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, access: []const u8) bool {
+/// Network half of `load`, no table mutation. Startup fans this out beside
+/// the other live catalogs, then `commit`s on the joining thread so
+/// `pricing.active_model_table` stays single-writer.
+pub const Fetch = struct {
+    rows: []const pricing.ModelInfo = &.{},
+    source: []const u8 = "baked fallback — live refresh unavailable",
+};
+
+pub fn fetch(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, access: []const u8) Fetch {
     initIdentity(io, arena, home);
-    if (access.len == 0) {
-        catalog_source = "baked fallback — no Kimi login";
-        return false;
-    }
-    catalog_attempted = true;
+    if (access.len == 0) return .{ .source = "baked fallback — no Kimi login" };
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
     var aw: Io.Writer.Allocating = .init(arena);
-    const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{access}) catch return false;
+    const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{access}) catch return .{};
     var extra: [8]std.http.Header = undefined;
     extra[0] = .{ .name = "Authorization", .value = bearer };
     extra[1] = .{ .name = "Accept", .value = "application/json" };
@@ -207,26 +209,74 @@ pub fn load(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, access: 
         .response_writer = &aw.writer,
         .headers = .{ .user_agent = .{ .override = user_agent } },
         .extra_headers = &extra,
-    }) catch {
-        catalog_source = "baked fallback — live refresh unavailable";
-        return false;
+    }) catch return .{};
+    if (@intFromEnum(response.status) != 200) return .{};
+    const rows = parseModels(arena, aw.writer.buffered()) orelse
+        return .{ .source = "baked fallback — invalid live catalog" };
+    return .{ .rows = rows, .source = "live account catalog" };
+}
+
+fn retain(arena: Allocator, rows: []const pricing.ModelInfo) ?[]const pricing.ModelInfo {
+    const out = arena.alloc(pricing.ModelInfo, rows.len) catch return null;
+    for (rows, out) |src, *dst| {
+        dst.* = src;
+        dst.provider = arena.dupe(u8, src.provider) catch return null;
+        dst.name = arena.dupe(u8, src.name) catch return null;
+        if (src.support_efforts.len != 0) {
+            const efforts = arena.alloc([]const u8, src.support_efforts.len) catch return null;
+            for (src.support_efforts, efforts) |effort, *slot|
+                slot.* = arena.dupe(u8, effort) catch return null;
+            dst.support_efforts = efforts;
+        }
+        if (src.default_effort) |effort| dst.default_effort = arena.dupe(u8, effort) catch return null;
+    }
+    return out;
+}
+
+/// Install a `fetch` result into the session table. `rows`/`source` may live
+/// in a task arena; strings are copied before activate.
+pub fn commit(arena: Allocator, rows: []const pricing.ModelInfo, source: []const u8) void {
+    if (rows.len == 0) {
+        catalog_source = source;
+        return;
+    }
+    const kept = retain(arena, rows) orelse {
+        catalog_source = source;
+        return;
     };
-    if (@intFromEnum(response.status) != 200) {
-        catalog_source = "baked fallback — live refresh unavailable";
+    catalog_source = if (pricing.activateKimiModels(arena, kept)) "live account catalog" else source;
+}
+
+/// Claim the once-per-process fetch. Startup's fan-out calls this before
+/// spawning so a later `/model` `ensure` cannot start a second GET.
+pub fn claimAttempt() bool {
+    if (catalog_attempted) return false;
+    catalog_attempted = true;
+    return true;
+}
+
+/// Fetch and activate the authenticated catalog. Any failure leaves the baked
+/// K3 rows intact, so offline runs and temporary Kimi outages still start.
+pub fn load(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, access: []const u8) bool {
+    initIdentity(io, arena, home);
+    if (access.len == 0) {
+        catalog_source = "baked fallback — no Kimi login";
         return false;
     }
-    const rows = parseModels(arena, aw.writer.buffered()) orelse {
-        catalog_source = "baked fallback — invalid live catalog";
+    catalog_attempted = true;
+    const got = fetch(io, gpa, arena, home, access);
+    if (got.rows.len == 0) {
+        catalog_source = got.source;
         return false;
-    };
-    if (!pricing.activateKimiModels(arena, rows)) return false;
+    }
+    if (!pricing.activateKimiModels(arena, got.rows)) return false;
     catalog_source = "live account catalog";
     return true;
 }
 
-/// Demand-load the account catalog at most once per process. Startup calls
-/// this only when Kimi can actually win model selection; `/model` and
-/// `/models` call it when their catalog surfaces become visible.
+/// Demand-load the account catalog at most once per process. Startup fans
+/// the GET out via `claimAttempt` + `fetch`; `/model` and `/models` call
+/// this when their catalog surfaces become visible.
 pub fn ensure(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, access: []const u8) void {
     if (catalog_attempted) return;
     _ = load(io, gpa, arena, home, access);
@@ -250,4 +300,22 @@ test "parseModels accepts Kimi aliases and K3 context windows" {
     try std.testing.expectEqual(pricing.ThinkingSupport.only, rows[1].thinking_support);
     try std.testing.expectEqualStrings("max", rows[1].support_efforts[0]);
     try std.testing.expectEqualStrings("max", rows[1].default_effort.?);
+}
+
+test "commit installs fetched Kimi rows into the active table" {
+    const saved_table = pricing.active_model_table;
+    const saved_source = catalog_source;
+    defer {
+        pricing.active_model_table = saved_table;
+        catalog_source = saved_source;
+    }
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const rows = [_]pricing.ModelInfo{
+        .{ .provider = "kimi", .name = "k9-fanout", .context = 99_000, .protocol = .anthropic },
+    };
+    commit(state.allocator(), &rows, "live account catalog");
+    try std.testing.expectEqualStrings("live account catalog", catalog_source);
+    try std.testing.expect(pricing.providerModelInTable("kimi", "k9-fanout"));
+    try std.testing.expect(pricing.providerModelInTable("anthropic", "claude-opus-4-8"));
 }

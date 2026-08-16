@@ -122,3 +122,24 @@ pub const TokenSignal = struct {
         return d == .string and d.string.len != 0;
     }
 };
+
+/// xAI WS error frames ({"type":"error"}) are terminal for the turn but not in
+/// isStreamEnd's completed/failed set, so without classification they burn the
+/// whole stall budget on a doomed socket.
+pub const ErrorFrameAction = enum { none, retire, chain_lost };
+
+pub fn errorFrameAction(frame: []const u8) ErrorFrameAction {
+    if (std.mem.indexOf(u8, frame, "\"type\":\"error\"") == null) return .none;
+    // The server sends this right before closing a 25-minute-old socket.
+    if (std.mem.indexOf(u8, frame, "websocket_connection_limit_reached") != null) return .retire;
+    // Our chain anchor is gone (evicted / never cached under store:false).
+    if (std.mem.indexOf(u8, frame, "previous_response_not_found") != null) return .chain_lost;
+    return .none;
+}
+
+test "errorFrameAction classifies the two xAI ws error codes, ignores prose" {
+    try std.testing.expectEqual(ErrorFrameAction.retire, errorFrameAction("{\"type\":\"error\",\"error\":{\"code\":\"websocket_connection_limit_reached\"}}"));
+    try std.testing.expectEqual(ErrorFrameAction.chain_lost, errorFrameAction("{\"type\":\"error\",\"error\":{\"code\":\"previous_response_not_found\"}}"));
+    try std.testing.expectEqual(ErrorFrameAction.none, errorFrameAction("{\"type\":\"response.output_text.delta\",\"delta\":\"websocket_connection_limit_reached\"}"));
+    try std.testing.expectEqual(ErrorFrameAction.none, errorFrameAction("{\"type\":\"error\",\"error\":{\"code\":\"other\"}}"));
+}

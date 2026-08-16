@@ -69,7 +69,7 @@ pub fn finishJob(self: *Model) void {
         self.push(.assistant, r) catch {};
         self.alloc.free(r);
     } else if (self.cancel_requested) {
-        self.push(.system, "⏹ interrupted") catch {};
+        if (!hasInterrupted(self)) self.push(.system, "■ interrupted") catch {};
     } else {
         self.push(.err, "model call failed — check /model and your API key") catch {};
     }
@@ -108,6 +108,23 @@ pub fn cancelTurn(self: *Model) void {
     if (self.pending == null) return;
     self.cancel_requested = true;
     if (engine.g_cancel_fn) |f| f(engine.g_turn_ctx);
+    collapseThinking(self);
+}
+
+fn collapseThinking(self: *Model) void {
+    const n = self.history.items.len;
+    if (n == 0 or self.history.items[n - 1].kind != .pending) return;
+    self.alloc.free(self.history.items[n - 1].text);
+    const text = self.alloc.dupe(u8, "■ interrupted") catch {
+        self.history.shrinkRetainingCapacity(n - 1);
+        return;
+    };
+    self.history.items[n - 1] = .{ .kind = .system, .text = text, .folded = false };
+}
+
+fn hasInterrupted(self: *const Model) bool {
+    if (self.history.items.len == 0) return false;
+    return std.mem.eql(u8, self.history.items[self.history.items.len - 1].text, "■ interrupted");
 }
 
 pub fn isToolLine(line: []const u8) bool {
@@ -120,6 +137,7 @@ pub fn isToolLine(line: []const u8) bool {
 /// Pull new ⚙/✓/✗ lines out of the live stream so they become clickable
 /// folded history *during* the turn, not only after finishJob.
 pub fn harvestLiveTools(self: *Model) void {
+    if (self.cancel_requested) return;
     const job = self.pending orelse return;
     const live = job.stream.snapshot(self.alloc) orelse return;
     defer self.alloc.free(live);
@@ -281,6 +299,36 @@ test "Ctrl+C during a turn cancels once then quits" {
     try std.testing.expect(m.cancel_requested);
     try std.testing.expect(m.pending != null);
     try std.testing.expectEqual(@import("app.zig").Effect.quit, keys.handle(&m, .{ .ctrl = 'c' }));
+}
+
+test "cancelTurn collapses thinking immediately" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    const job = try std.testing.allocator.create(engine.Job);
+    job.* = .{
+        .gpa = std.testing.allocator,
+        .history = &.{},
+        .params = .{},
+        .stream = .{ .buf = &.{} },
+        .threaded = false,
+        .done = std.atomic.Value(bool).init(false),
+    };
+    try m.push(.pending, "");
+    m.pending = job;
+    cancelTurn(&m);
+    try std.testing.expect(m.cancel_requested);
+    try std.testing.expect(m.history.items.len == 1);
+    try std.testing.expect(m.history.items[0].kind == .system);
+    try std.testing.expectEqualStrings("■ interrupted", m.history.items[0].text);
+    job.done.store(true, .release);
+    finishJob(&m);
+    try std.testing.expect(m.pending == null);
+    var n: usize = 0;
+    for (m.history.items) |e| {
+        if (std.mem.eql(u8, e.text, "■ interrupted")) n += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), n);
 }
 
 test "finishJob strips a pending row buried under steer echoes (#520)" {

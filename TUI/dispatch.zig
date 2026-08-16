@@ -78,6 +78,7 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
             self.openOverlay(.theme);
         } else if (theme_mod.parse(arg)) |id| {
             self.theme_id = id;
+            self.theme_explicit = true;
             self.pushFmt(.system, "theme: {s}", .{id.label()}) catch {};
         } else {
             self.pushFmt(.err, "unknown theme '{s}' — night|day|tokyo|rose|oscura", .{arg}) catch {};

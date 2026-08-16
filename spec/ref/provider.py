@@ -34,7 +34,7 @@ SPECS: list[dict] = [
     row("anthropic", "anthropic", "x_api_key", catalog="anthropic"),
     row("codegraff", "openai", "bearer", login="codegraff_device", catalog="openai", takes_effort=True),
     row("deepseek", "openai", "bearer", takes_effort=True),
-    row("openai", "openai", "bearer"),
+    row("openai", "responses", "bearer"),
     row("minimax", "anthropic", "bearer"),
     row("xiaomi", "openai", "bearer"),
     row("kilo", "openai", "bearer"),
@@ -53,4 +53,5 @@ SPECS: list[dict] = [
 
 
 def ws_capable(r: dict) -> bool:
-    return r["kind"] == "responses"
+    # #514: only codex and xai serve a WS endpoint; platform OpenAI does not.
+    return r["id"] in ("codex", "xai") and r["kind"] == "responses"

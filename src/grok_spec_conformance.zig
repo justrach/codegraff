@@ -196,6 +196,11 @@ test "grok spec: held xAI WS chains previous_response_id + delta; drop rebuilds 
     agent.codex_prev_id = try std.testing.allocator.dupe(u8, "resp_live");
     agent.codex_sent_upto = 2;
     agent.codex_props_fp = codex_chain.propsFor(&agent);
+    // On-socket xAI chaining is opt-in (GRAFF_XAI_WS_CHAIN — a live probe
+    // reproduced a silent stall, so it is off by default); the contract
+    // being conformance-tested here is the opted-in behavior.
+    codex_chain.g_xai_ws_chain = true;
+    defer codex_chain.g_xai_ws_chain = false;
     try std.testing.expect(codex_chain.chainUsable(&agent));
 
     const delta = try agent.buildBody(null, false, false, false);

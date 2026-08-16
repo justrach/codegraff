@@ -47,7 +47,7 @@ def specs : List Row :=
   [ { id := "anthropic",  kind := .anthropic, auth := .xApiKey, catalog := .anthropic }
   , { id := "codegraff",  kind := .openai,    auth := .bearer,  login := .codegraffDevice, catalog := .openai, takesEffort := true }
   , { id := "deepseek",   kind := .openai,    auth := .bearer,  takesEffort := true }
-  , { id := "openai",     kind := .openai,    auth := .bearer }
+  , { id := "openai",     kind := .responses, auth := .bearer }
   , { id := "minimax",    kind := .anthropic, auth := .bearer }
   , { id := "xiaomi",     kind := .openai,    auth := .bearer }
   , { id := "kilo",       kind := .openai,    auth := .bearer }
@@ -68,7 +68,11 @@ def ids : List String := specs.map (·.id)
 
 def find (id : String) : Option Row := specs.find? (fun r => r.id == id)
 
-def wsCapable (r : Row) : Bool := r.kind == .responses
+/-- Production gates WS on provider id as well as wire kind (#514): only
+codex and xai actually serve a WebSocket endpoint — platform OpenAI's
+Responses wire has none. On the baked table that keeps codex the only
+WS row (xai's baked kind is openai; its Responses flip is runtime). -/
+def wsCapable (r : Row) : Bool := (r.id == "codex" || r.id == "xai") && r.kind == .responses
 
 def responsesCount : Nat := countWhere (fun r => r.kind == .responses) specs
 
@@ -77,7 +81,7 @@ def xApiKeyCount : Nat := countWhere (fun r => r.auth == .xApiKey) specs
 def providerRows : Nat := specs.length
 
 theorem provider_cube : providerRows = 18 := by native_decide
-theorem one_responses_vendor : responsesCount = 1 := by native_decide
+theorem responses_vendors : responsesCount = 2 := by native_decide
 theorem one_x_api_key : xApiKeyCount = 1 := by native_decide
 
 theorem unique_ids : unique ids = true := by native_decide

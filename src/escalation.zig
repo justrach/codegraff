@@ -461,7 +461,7 @@ pub fn decide(o: Observables, phases: []const Value, explicit: bool, arms: []con
         const rung: Rung = if (ladder.level() >= Rung.R2.level()) ladder else .R2;
         return .{ .rung = rung, .source = .explicit, .verdict = verdictFor(rung, o, phases) };
     }
-    const reserve = pb.landingReserve(o.cap);
+    const reserve = pb.totalReserve(o.cap); // landing work AND narration (#390)
     if (orch.override(arms, key, ladder, o.remaining, reserve)) |learned| {
         return .{ .rung = learned, .source = .learned, .verdict = learnedVerdict(learned, o, phases) };
     }
@@ -494,7 +494,7 @@ pub fn admit(c: Ctx, phases: []const Value, shape: route_policy.Shape) Decision 
     var d = decide(o, phases, userChoseShape(raw), armsFor(key), key);
     // No learned cell: fall back to the compiled bootstrap prior (study rows, n=2).
     if (d.source == .bootstrap and !userChoseShape(raw)) {
-        if (orch.learnedRung(key, d.rung, o.remaining, pb.landingReserve(o.cap))) |learned| {
+        if (orch.learnedRung(key, d.rung, o.remaining, pb.totalReserve(o.cap))) |learned| {
             d = .{ .rung = learned, .source = .learned, .verdict = learnedVerdict(learned, o, phases) };
         }
     }
@@ -523,7 +523,7 @@ pub fn admit(c: Ctx, phases: []const Value, shape: route_policy.Shape) Decision 
         var buf: [192]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "arm={s} source={s} class={s} files={d} tasks={d} band={s} plan={d} reserve={d}", .{
             d.rung.label(), d.source.label(),        o.task_class.label(), o.files,
-            o.tasks,        key.budget_band.label(), o.plan_estimate,      pb.landingReserve(o.cap),
+            o.tasks,        key.budget_band.label(), o.plan_estimate,      pb.totalReserve(o.cap),
         }) catch "";
         tr.note("escalation", line);
     }

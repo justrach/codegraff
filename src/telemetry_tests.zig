@@ -34,6 +34,40 @@ test "telemetry error events never retain or serialize raw detail" {
     try std.testing.expect(std.mem.indexOf(u8, out, "sk-proj-private-canary") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "/private/source.zig") == null);
 }
+
+test "beginTurn records prompt length and lands in the session OTLP payload" {
+    const obs = @import("obs.zig");
+    obs.reset();
+    defer obs.reset();
+    var t: Telemetry = .{
+        .io = std.testing.io,
+        .gpa = std.testing.allocator,
+        .endpoint = "http://127.0.0.1:1",
+        .install_id = @splat('0'),
+        .client_name = "harness",
+        .sdk_install_id = "",
+        .start = Io.Timestamp.now(std.testing.io, .awake),
+        .start_unix_ms = 0,
+    };
+    defer t.deinit();
+    t.beginTurn(11, "gpt-5.5");
+    try std.testing.expectEqual(@as(u64, 1), t.turns);
+    try std.testing.expectEqual(@as(u64, 1), obs.snapshot().turns);
+    var recs: [16]obs.Record = undefined;
+    const n = obs.recent(&recs);
+    try std.testing.expect(n >= 2);
+    try std.testing.expectEqual(obs.EventName.user_prompt, recs[0].name);
+    try std.testing.expectEqual(@as(u32, 11), recs[0].prompt_len);
+    try std.testing.expectEqualStrings("gpt-5.5", recs[0].modelSlice());
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try t.writeOtlp(&aw.writer, t.events.items, true);
+    const out = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "graff.user_prompt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "graff.turn_completed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "prompt_length") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "secret prompt text") == null);
+}
 test "telemetry writeOtlp emits a fleet record with kind + split prov attrs" {
     const io = std.testing.io;
     const previous_fleet = main_mod.g_fleet;

@@ -4,12 +4,40 @@ const std = @import("std");
 
 /// Super/alt currently held, from kitty modifier-key events (Ghostty Cmd+Delete
 /// often arrives as a bare DEL after Super-down).
-var held: u32 = 0;
+pub var held: u32 = 0;
+
+/// Armed by the read loop when it throws away a partial escape sequence that
+/// never finished (run.zig's stall path) — the NEXT read can then legitimately
+/// open with that sequence's orphaned tail. Cleared by the first token that is
+/// not orphan debris.
+pub var orphan_armed: bool = false;
+
+/// End offset of the last orphan fragment consumed from the buffer currently
+/// being parsed, so back-to-back debris keeps being eaten while a digit run
+/// that follows real input never is. `maxInt` = no run in progress.
+var orphan_end: usize = std.math.maxInt(usize);
+
+/// Inside `CSI 200~ … CSI 201~`. Every byte between them is literal text by
+/// definition, and a long paste spans several reads — so the debris guard must
+/// stay out of it or a chunk that happens to start `39;7;32M` gets eaten.
+var in_paste: bool = false;
+
+/// Drop every latched parser bit. The globals live for one input loop, so a
+/// fresh session (or a headless sim.Term) must not inherit a held modifier, an
+/// unclosed bracketed paste, or an arm from whatever ran before it.
+pub fn resetInputState() void {
+    held = 0;
+    orphan_armed = false;
+    orphan_end = std.math.maxInt(usize);
+    in_paste = false;
+}
 
 pub const Key = union(enum) {
     char: u8,
     /// Non-ASCII codepoint delivered via kitty CSI-u (é and friends).
     codepoint: u21,
+    /// OSC 11 reply: the terminal's background RGB (auto light/dark).
+    bg_report: [3]u8,
     ctrl: u8,
     ignore,
     enter,
@@ -51,6 +79,29 @@ pub const Mouse = struct {
 
 pub fn next(bytes: []const u8, i: *usize) ?Key {
     if (i.* >= bytes.len) return null;
+    // Orphan CSI debris can only ever be the HEAD of a read: the ESC that
+    // opened the sequence was lost BETWEEN reads (the loop dropped a truncated
+    // pending head, or the tty input queue overflowed while a slow frame
+    // painted). A digit run anywhere else is typed or pasted TEXT — swallowing
+    // it ate `0x1f`, `[12]`, `1e5` and every version string.
+    if (!in_paste and (i.* == 0 or i.* == orphan_end)) {
+        switch (takeOrphanCsi(bytes, i)) {
+            .took => |k| {
+                orphan_end = i.*;
+                return k;
+            },
+            // Debris cut short at the read boundary: hold the bytes so the loop
+            // carries them into the next read instead of typing the digits. The
+            // held bytes ARE the carry-over, so the arm has done its job.
+            .partial => {
+                orphan_armed = false;
+                return null;
+            },
+            .none => {},
+        }
+    }
+    orphan_end = std.math.maxInt(usize);
+    orphan_armed = false;
     const b = bytes[i.*];
     i.* += 1;
     if (b == 0x1b) return escapeSeq(bytes, i);
@@ -101,6 +152,26 @@ fn escapeSeq(bytes: []const u8, i: *usize) ?Key {
         return .ignore;
     }
     i.* += 1;
+    // X10 mouse (1000h without 1006): CSI M + 3 raw bytes.
+    if (i.* < bytes.len and bytes[i.*] == 'M' and (i.* + 1 >= bytes.len or bytes[i.* + 1] != ';')) {
+        if (i.* + 3 >= bytes.len) {
+            i.* -= 2;
+            return null;
+        }
+        i.* += 1;
+        const btn = bytes[i.*];
+        i.* += 1;
+        const x = bytes[i.*];
+        i.* += 1;
+        const y = bytes[i.*];
+        i.* += 1;
+        return .{ .mouse = .{
+            .btn = if (btn >= 32) btn - 32 else btn,
+            .x = if (x >= 32) @as(u16, x) - 32 else x,
+            .y = if (y >= 32) @as(u16, y) - 32 else y,
+            .down = true,
+        } };
+    }
     const start = i.*;
     while (i.* < bytes.len) : (i.* += 1) {
         const c = bytes[i.*];
@@ -125,17 +196,24 @@ fn escapeSeq(bytes: []const u8, i: *usize) ?Key {
 const max_reply_pending = 128;
 
 fn stringSeq(bytes: []const u8, i: *usize) ?Key {
+    const start = i.*; // bytes[start] is ']' for OSC
     var j = i.* + 1;
     while (j < bytes.len) : (j += 1) {
         if (bytes[j] == 0x07) {
+            const body = bytes[start + 1 .. j];
             i.* = j + 1;
-            return .ignore;
+            return oscReply(bytes[start], body);
         }
         if (bytes[j] == 0x1b) {
             if (j + 1 < bytes.len) {
                 // ST (ESC \) ends the string; any other ESC starts a new
                 // sequence — leave it for the next parse.
-                i.* = if (bytes[j + 1] == '\\') j + 2 else j;
+                if (bytes[j + 1] == '\\') {
+                    const body = bytes[start + 1 .. j];
+                    i.* = j + 2;
+                    return oscReply(bytes[start], body);
+                }
+                i.* = j;
                 return .ignore;
             }
             break; // ST split across reads — wait for the backslash
@@ -155,6 +233,30 @@ fn stringSeq(bytes: []const u8, i: *usize) ?Key {
     }
     i.* -= 1; // rewind to the ESC; the terminator is still in flight
     return null;
+}
+
+/// A terminated OSC body. The only reply we act on is OSC 11 (background
+/// color, answering run.zig's startup query) — everything else stays inert.
+fn oscReply(kind: u8, body: []const u8) Key {
+    if (kind != ']') return .ignore;
+    if (!std.mem.startsWith(u8, body, "11;")) return .ignore;
+    const rgb = parseXColor(body[3..]) orelse return .ignore;
+    return .{ .bg_report = rgb };
+}
+
+/// `rgb:RRRR/GGGG/BBBB` (high byte) or `rgb:RR/GG/BB`.
+fn parseXColor(s: []const u8) ?[3]u8 {
+    if (!std.mem.startsWith(u8, s, "rgb:")) return null;
+    var out: [3]u8 = undefined;
+    var it = std.mem.splitScalar(u8, s[4..], '/');
+    for (0..3) |n| {
+        const part = it.next() orelse return null;
+        if (part.len != 2 and part.len != 4) return null;
+        const v = std.fmt.parseInt(u16, part, 16) catch return null;
+        out[n] = if (part.len == 4) @intCast(v >> 8) else @intCast(v);
+    }
+    if (it.next() != null) return null;
+    return out;
 }
 
 /// ESC O <final> — SS3 application keys (tmux/screen, macOS Terminal).
@@ -218,8 +320,14 @@ fn decodeCsi(params: []const u8, final: u8) Key {
             6 => .page_down,
             11 => .f1,
             12 => .f2,
-            200 => .paste_start,
-            201 => .paste_end,
+            200 => blk: {
+                in_paste = true;
+                break :blk .paste_start;
+            },
+            201 => blk: {
+                in_paste = false;
+                break :blk .paste_end;
+            },
             27 => fixterms(params),
             // 2 (Insert), 13-24 (F3-F12) and friends: inert, never Escape.
             else => .ignore,
@@ -250,7 +358,11 @@ fn eventOf(params: []const u8) u32 {
 
 /// CSI unicode ; mods u  — kitty/ghostty. mods bit 2 = ctrl, 1 = shift.
 fn kitty(params: []const u8) Key {
-    const code = leadingInt(params);
+    var it = std.mem.splitScalar(u8, params, ';');
+    const keys = it.next() orelse "";
+    const code = leadingInt(keys);
+    var shifted: u32 = 0;
+    if (std.mem.indexOfScalar(u8, keys, ':')) |c| shifted = leadingInt(keys[c + 1 ..]);
     var mods: u32 = 0;
     var has_mods = false;
     if (std.mem.indexOfScalar(u8, params, ';')) |s| {
@@ -261,9 +373,14 @@ fn kitty(params: []const u8) Key {
     const ev = eventOf(params);
     if (code >= 57344 and code <= 57454) return functional(code, mods, ev);
     if (ev == 3) return .ignore;
-    // A live key with an explicit mods field is ground truth for held
-    // modifiers — resync so a missed release can't latch alt/super forever.
-    if (has_mods) held = mods & 10;
+    // A live key is ground truth for held modifiers — resync so a missed
+    // release can't latch alt/super forever. The ABSENT mods field is ground
+    // truth too: kitty omits it exactly when no modifiers are down, so a
+    // plain keypress must clear the latch. Before this, Cmd+Tab-ing away
+    // mid-composition latched super (the release went to the other app) and
+    // the next plain Backspace became Cmd+Backspace = delete-to-start,
+    // silently wiping the composer.
+    held = if (has_mods) mods & 10 else 0;
     return mapCode(code, mods);
 }
 
@@ -327,12 +444,42 @@ fn mapCode(code: u32, mods: u32) Key {
         if ((ctrl or super) and !shift and (ch == 'z' or ch == 'Z')) return .undo;
         if (ctrl and ch >= 'a' and ch <= 'z') return .{ .ctrl = ch };
         if (ctrl and ch >= 'A' and ch <= 'Z') return .{ .ctrl = ch + 32 };
+        if (shift) return .{ .char = shiftedAscii(ch) };
         return .{ .char = ch };
     }
     if (code >= 57344 and code <= 57454) return .ignore; // functional block, handled upstream
     if (code >= 128 and code <= 0x10ffff) return .{ .codepoint = @intCast(code) };
     // Unknown code: inert. Only a real Esc (27) may become .escape.
     return .ignore;
+}
+
+/// Kitty/modifyOtherKeys report the unshifted key + Shift. US layout.
+fn shiftedAscii(ch: u8) u8 {
+    return switch (ch) {
+        'a'...'z' => ch - 32,
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        '-' => '_',
+        '=' => '+',
+        '[' => '{',
+        ']' => '}',
+        '\\' => '|',
+        ';' => ':',
+        '\'' => '"',
+        ',' => '<',
+        '.' => '>',
+        '/' => '?',
+        '`' => '~',
+        else => ch,
+    };
 }
 
 fn sgrMouse(params: []const u8, down: bool) Key {
@@ -349,6 +496,65 @@ fn sgrMouse(params: []const u8, down: bool) Key {
     } };
 }
 
+const Orphan = union(enum) {
+    /// Not debris — hand the bytes to the normal parser (typed text).
+    none,
+    /// Debris shape, cut short by the read boundary: hold, do not type it.
+    partial,
+    took: Key,
+};
+
+/// CSI debris after a lost ESC (`7444;9u`, `39;33;23M`, `<35;80;24M`). Never a
+/// letter and never Escape/Ctrl-C — those cancel or kill the turn.
+///
+/// Strictly shaped, because this runs against text a human may have typed: an
+/// optional `<`, then digits with `;`/`:` separators, then a MOUSE or CSI-u
+/// final (`M`/`m`/`u`/`~`). Any other terminator is text — accepting the whole
+/// 0x40..0x7e range ate `0x1f` (final `x`), `[12]` (final `]`) and `1e5`
+/// (final `e`). A run with neither `<` nor a separator (`3u`) is debris only
+/// while `orphan_armed` says the loop really did drop a truncated sequence.
+fn takeOrphanCsi(bytes: []const u8, i: *usize) Orphan {
+    const start = i.*;
+    if (start >= bytes.len) return .none;
+    var j = start;
+    const lt = bytes[j] == '<';
+    if (lt) j += 1;
+    if (j >= bytes.len or bytes[j] < '0' or bytes[j] > '9') return .none;
+    var sep = false;
+    var k = j;
+    while (k < bytes.len) : (k += 1) {
+        const c = bytes[k];
+        if (c >= '0' and c <= '9') continue;
+        if (c == ';' or c == ':') {
+            sep = true;
+            continue;
+        }
+        if (c == 'M' or c == 'm' or c == 'u' or c == '~') {
+            if (!lt and !sep and !orphan_armed) return .none;
+            i.* = k + 1;
+            if (c == 'M' or c == 'm') {
+                const body = bytes[j..k];
+                var it = std.mem.splitScalar(u8, body, ';');
+                const btn = leadingInt(it.next() orelse "0");
+                const x = leadingInt(it.next() orelse "1");
+                const y = leadingInt(it.next() orelse "1");
+                return .{ .took = .{ .mouse = .{
+                    .btn = @intCast(@min(btn, 255)),
+                    .x = @intCast(@min(x, 999)),
+                    .y = @intCast(@min(y, 999)),
+                    .down = c == 'M',
+                } } };
+            }
+            return .{ .took = .ignore };
+        }
+        return .none;
+    }
+    // Ran off the end mid-fragment. Hold it when it already reads as a CSI
+    // parameter list, or when the loop armed us; a bare unarmed digit run is
+    // somebody typing, and holding it would strand the keystrokes.
+    return if (lt or sep or orphan_armed) .partial else .none;
+}
+
 fn leadingInt(s: []const u8) u32 {
     var n: u32 = 0;
     for (s) |c| {
@@ -356,206 +562,4 @@ fn leadingInt(s: []const u8) u32 {
         n = n * 10 + (c - '0');
     }
     return n;
-}
-
-test "next: letters, enter, ctrl-c, arrows, kitty ctrl-p" {
-    var i: usize = 0;
-    try std.testing.expectEqual(Key{ .char = 'a' }, next("a", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.enter, next("\r", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key{ .ctrl = 'c' }, next("\x03", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.up, next("\x1b[A", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.shift_tab, next("\x1b[Z", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key{ .ctrl = 'p' }, next("\x1b[112;5u", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key{ .char = '/' }, next("/", &i).?);
-    i = 0;
-    const click = next("\x1b[<0;12;8M", &i).?;
-    try std.testing.expect(click == .mouse);
-    try std.testing.expectEqual(@as(u8, 0), click.mouse.btn);
-    try std.testing.expectEqual(@as(u16, 12), click.mouse.x);
-    try std.testing.expectEqual(@as(u16, 8), click.mouse.y);
-    try std.testing.expect(click.mouse.down);
-    i = 0;
-    try std.testing.expectEqual(Key.paste_start, next("\x1b[200~", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.paste_end, next("\x1b[201~", &i).?);
-    i = 0;
-    try std.testing.expect(next("\x1b[20", &i) == null);
-    try std.testing.expectEqual(@as(usize, 0), i);
-    i = 0;
-    try std.testing.expectEqual(Key{ .char = 0xc3 }, next("\xc3\xa9", &i).?);
-    try std.testing.expectEqual(Key{ .char = 0xa9 }, next("\xc3\xa9", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.delete_to_start, next("\x1b[127;9u", &i).?);
-    held = 0;
-    i = 0;
-    try std.testing.expectEqual(Key.delete_word, next("\x1b\x7f", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.prev_turn, next("\x1b[1;2D", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.next_turn, next("\x1b[1;2C", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.word_left, next("\x1b[1;3D", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.home, next("\x1b[1;9D", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.shift_enter, next("\x1b[13;2u", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.shift_enter, next("\x1b\r", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.delete_to_start, next("\x1b[27;9;127~", &i).?);
-    i = 0;
-    held = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b[57444;1:1u", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.delete_to_start, next("\x7f", &i).?);
-    held = 0;
-}
-
-test "lone trailing ESC stays pending, not an instant Escape" {
-    var i: usize = 0;
-    try std.testing.expect(next("\x1b", &i) == null);
-    try std.testing.expectEqual(@as(usize, 0), i);
-}
-
-test "ESC ESC delivers an Escape and leaves the second pending" {
-    var i: usize = 0;
-    try std.testing.expectEqual(Key.escape, next("\x1b\x1b", &i).?);
-    try std.testing.expectEqual(@as(usize, 1), i);
-    try std.testing.expect(next("\x1b\x1b", &i) == null);
-    try std.testing.expectEqual(@as(usize, 1), i);
-}
-
-test "kitty release events never fire keys" {
-    var i: usize = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b[1;1:3A", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b[3;1:3~", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b[5;1:3~", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b[97;1:3u", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.up, next("\x1b[1;1:2A", &i).?); // repeat acts
-}
-
-test "right-side modifiers follow the real kitty table, never Escape" {
-    held = 0;
-    var i: usize = 0;
-    // Right-Shift (57447) and Right-Ctrl (57448) must not latch held bits.
-    try std.testing.expectEqual(Key.ignore, next("\x1b[57447;1:1u", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b[57448;1:1u", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.backspace, next("\x7f", &i).?);
-    // Right-Alt (57449) latches alt; its release clears it.
-    i = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b[57449;1:1u", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.delete_word, next("\x7f", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b[57449;1:3u", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.backspace, next("\x7f", &i).?);
-    held = 0;
-}
-
-test "unknown keys and replies are inert, never Escape" {
-    var i: usize = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b[57376u", &i).?); // F13
-    i = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b[17~", &i).?); // F6
-    i = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b[2~", &i).?); // Insert
-    i = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b[?1;2c", &i).?); // DA reply
-}
-
-test "kitty functional arrows and keypad map; a stale super latch resyncs" {
-    held = 8; // pretend we missed the Super release
-    var i: usize = 0;
-    try std.testing.expectEqual(Key.up, next("\x1b[57352u", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key{ .char = 'a' }, next("\x1b[97;1u", &i).?);
-    try std.testing.expectEqual(@as(u32, 0), held);
-    i = 0;
-    try std.testing.expectEqual(Key.backspace, next("\x7f", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.enter, next("\x1b[57414u", &i).?); // KP_ENTER
-    held = 0;
-}
-
-test "SS3 application keys and unbound alt-chords" {
-    var i: usize = 0;
-    try std.testing.expectEqual(Key.up, next("\x1bOA", &i).?);
-    i = 0;
-    try std.testing.expectEqual(Key.f1, next("\x1bOP", &i).?);
-    i = 0;
-    // Split SS3 stays pending.
-    try std.testing.expect(next("\x1bO", &i) == null);
-    try std.testing.expectEqual(@as(usize, 0), i);
-    i = 0;
-    // Unbound Alt+p swallows both bytes — no phantom Escape, no stray 'p'.
-    try std.testing.expectEqual(Key.ignore, next("\x1bp", &i).?);
-    try std.testing.expectEqual(@as(usize, 2), i);
-    try std.testing.expect(next("\x1bp", &i) == null);
-}
-
-test "X10 mouse fallback consumes its payload instead of typing it" {
-    var i: usize = 0;
-    const ev = next("\x1b[M\x20\x2c\x28", &i).?;
-    try std.testing.expect(ev == .mouse);
-    try std.testing.expectEqual(@as(u8, 0), ev.mouse.btn);
-    try std.testing.expectEqual(@as(u16, 12), ev.mouse.x);
-    try std.testing.expectEqual(@as(u16, 8), ev.mouse.y);
-    try std.testing.expect(ev.mouse.down);
-    try std.testing.expectEqual(@as(usize, 6), i);
-    i = 0;
-    // Split short — wait for the rest.
-    try std.testing.expect(next("\x1b[M\x20", &i) == null);
-    try std.testing.expectEqual(@as(usize, 0), i);
-}
-
-test "non-ASCII CSI-u codepoints type text instead of Escape" {
-    var i: usize = 0;
-    try std.testing.expectEqual(Key{ .codepoint = 0xe9 }, next("\x1b[233;1u", &i).?);
-    held = 0;
-}
-
-test "OSC and APC replies on stdin are consumed, never typed" {
-    var i: usize = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b]11;rgb:14/14/14\x07", &i).?);
-    try std.testing.expectEqual(@as(usize, 18), i);
-    i = 0;
-    try std.testing.expectEqual(Key.ignore, next("\x1b_Gi=1;OK\x1b\\", &i).?);
-    try std.testing.expectEqual(@as(usize, 11), i);
-    i = 0;
-    // Unterminated reply stays pending until the rest arrives.
-    try std.testing.expect(next("\x1b]11;rgb:14", &i) == null);
-    try std.testing.expectEqual(@as(usize, 0), i);
-}
-
-test "typed text behind an Alt+] chord recovers instead of wedging (#516)" {
-    // CR proves it is not a reply: the introducer is swallowed as a chord
-    // and the sentence reparses as ordinary keys, Enter included.
-    var i: usize = 0;
-    const bytes = "\x1b]fix it\r";
-    try std.testing.expectEqual(Key.ignore, next(bytes, &i).?);
-    try std.testing.expectEqual(Key{ .char = 'f' }, next(bytes, &i).?);
-    var last: Key = .ignore;
-    while (next(bytes, &i)) |k| last = k;
-    try std.testing.expectEqual(Key.enter, last);
-    // Longer than any real reply — recover even without CR/LF.
-    var big: [140]u8 = undefined;
-    big[0] = 0x1b;
-    big[1] = 'P';
-    @memset(big[2..], 'a');
-    i = 0;
-    try std.testing.expectEqual(Key.ignore, next(&big, &i).?);
-    try std.testing.expectEqual(Key{ .char = 'a' }, next(&big, &i).?);
 }

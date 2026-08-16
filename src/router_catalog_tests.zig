@@ -13,6 +13,7 @@ const rc = @import("router_catalog.zig");
 const parseModels = rc.parseModels;
 const modelsUrl = rc.modelsUrl;
 const dynamic = rc.dynamic;
+const alwaysLive = rc.alwaysLive;
 const catalogHeaders = rc.catalogHeaders;
 const cacheDocument = rc.cacheDocument;
 const pageUrl = rc.pageUrl;
@@ -114,8 +115,8 @@ test "Anthropic catalog is live and authenticates like Messages" {
     try std.testing.expectEqualStrings("https://api.anthropic.com/v1/models?limit=1000", modelsUrl(spec));
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
-    var buf: [3]std.http.Header = undefined;
-    const headers = catalogHeaders(state.allocator(), spec, "sk-test", &buf) orelse
+    var buf: [4]std.http.Header = undefined;
+    const headers = catalogHeaders(state.allocator(), spec, "sk-test", .none, &buf) orelse
         return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(usize, 3), headers.len);
     try std.testing.expectEqualStrings("x-api-key", headers[1].name);
@@ -123,7 +124,7 @@ test "Anthropic catalog is live and authenticates like Messages" {
     try std.testing.expectEqualStrings("anthropic-version", headers[2].name);
     // Bearer routers are unchanged by the x-api-key branch.
     const router = provider.specFor("codegraff") orelse return error.TestUnexpectedResult;
-    const bearer = catalogHeaders(state.allocator(), router, "key", &buf) orelse
+    const bearer = catalogHeaders(state.allocator(), router, "key", .none, &buf) orelse
         return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(usize, 2), bearer.len);
     try std.testing.expectEqualStrings("Authorization", bearer[1].name);
@@ -133,16 +134,29 @@ test "xAI catalog is live (grok-build parity: fetch /v1/models, never a baked-on
     const spec = provider.specFor("xai") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(provider.ProviderSpec.CatalogKind.openai, spec.catalog);
     try std.testing.expect(dynamic(spec));
+    try std.testing.expect(alwaysLive(spec));
     try std.testing.expectEqualStrings("https://api.x.ai/v1/models", modelsUrl(spec));
-    // Catalog GET auth mirrors chat auth: plain bearer, like every OpenAI router.
+    // API-key catalog GET: plain bearer. OAuth login: + X-XAI-Token-Auth.
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
-    var buf: [3]std.http.Header = undefined;
-    const headers = catalogHeaders(state.allocator(), spec, "xai-test", &buf) orelse
+    var buf: [4]std.http.Header = undefined;
+    const headers = catalogHeaders(state.allocator(), spec, "xai-test", .environment, &buf) orelse
         return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(usize, 2), headers.len);
     try std.testing.expectEqualStrings("Authorization", headers[1].name);
     try std.testing.expectEqualStrings("Bearer xai-test", headers[1].value);
+    const login_headers = catalogHeaders(state.allocator(), spec, "oauth-tok", .login, &buf) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 3), login_headers.len);
+    try std.testing.expectEqualStrings("X-XAI-Token-Auth", login_headers[2].name);
+    try std.testing.expectEqualStrings("xai-grok-cli", login_headers[2].value);
+}
+
+test "alwaysLive is xAI-only so other OpenAI routers keep the disk TTL" {
+    try std.testing.expect(alwaysLive(provider.specFor("xai").?));
+    try std.testing.expect(!alwaysLive(provider.specFor("codegraff").?));
+    try std.testing.expect(!alwaysLive(provider.specFor("anthropic").?));
+    try std.testing.expect(!alwaysLive(provider.specFor("fireworks").?));
 }
 
 test "xAI /v1/models rows inherit baked context windows" {
@@ -261,6 +275,13 @@ test "router discovery replaces only its provider slice" {
     try std.testing.expect(pricing.providerModelInTable("codex", "gpt-5.6-sol"));
 }
 
+test "startup catalog loads fan out concurrently with Kimi" {
+    const src = @embedFile("router_catalog.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(fetchSpecTask") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(kimiFetchTask") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "fn spawnKimi") != null);
+}
+
 // ── provider.zig routing tests parked here under its 600-line ceiling ──────
 
 test "providerFor (#377): family-prefixed spelling routes to the direct provider, not the gateway" {
@@ -285,15 +306,21 @@ test "providerFor (#377): family-prefixed spelling routes to the direct provider
     try std.testing.expectEqualStrings("codegraff", (try no_kimi.providerFor("kimi-k3")).id);
 }
 
-test "GRAFF_XAI_WIRE=responses moves xAI onto the Responses wire (#502)" {
+test "xAI defaults to the Responses wire; GRAFF_XAI_WIRE=chat opts out (#502)" {
     const Keys = provider.Keys;
     const Provider = provider.Provider;
     const all = Keys{ .values = @splat("k") };
+    const saved = provider.g_xai_responses;
+    defer provider.g_xai_responses = saved;
+    // The compiled-in default IS the responses wire — a regression here means
+    // grok silently loses server compaction, WS turns, and structured outputs.
+    try std.testing.expect(provider.g_xai_responses);
+    // GRAFF_XAI_WIRE=chat (any non-"responses" value) restores chat completions.
+    provider.g_xai_responses = false;
     const chat = try all.providerById("xai", "grok-4.3");
     try std.testing.expectEqual(Provider.Kind.openai, chat.kind);
     try std.testing.expect(chat.serverCompactUrl() == null); // chat wire: no blob replay path
     provider.g_xai_responses = true;
-    defer provider.g_xai_responses = false;
     const resp = try all.providerById("xai", "grok-4.3");
     try std.testing.expectEqual(Provider.Kind.responses, resp.kind);
     try std.testing.expectEqualStrings(provider.xai_responses_url, resp.url);
@@ -305,7 +332,9 @@ test "GRAFF_XAI_WIRE=responses moves xAI onto the Responses wire (#502)" {
     // codex keeps in-stream compaction — never the explicit endpoint.
     const codex = try all.providerById("codex", "gpt-5.6-sol");
     try std.testing.expect(codex.serverCompactUrl() == null);
-    // every other provider is untouched by the knob.
+    // every other provider is untouched by the knob: openai keeps its native
+    // Responses wire (default since v0.0.250) and its own endpoint.
     const oai = try all.providerById("openai", "gpt-5.6");
-    try std.testing.expectEqual(Provider.Kind.openai, oai.kind);
+    try std.testing.expectEqual(Provider.Kind.responses, oai.kind);
+    try std.testing.expect(std.mem.indexOf(u8, oai.url, "api.openai.com") != null);
 }

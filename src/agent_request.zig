@@ -82,6 +82,12 @@ fn resetRequestScratch(scratch: *std.heap.ArenaAllocator) void {
     }
 }
 
+/// Detached recaps are cosmetic: keep recovered transport details in the trace,
+/// but do not surface them as raw worker chatter in the normal REPL.
+fn showRecoveredTransportRetry(kind: run_budget_mod.CallKind) bool {
+    return kind != .recap;
+}
+
 /// #390 — appended once, on the run's final admitted model call, right where
 /// the tools disappear, so the model knows WHY and lands instead of retrying.
 pub const landing_note =
@@ -94,6 +100,12 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // Startup paints the prompt while CA loading continues. The root turn and
     // title task rendezvous here, then issue their requests concurrently.
     http.waitForClientReady(self.io);
+    if (self.registry) |reg| {
+        if (@import("mcp_boot.zig").joinPending(reg)) {
+            self.invalidateRootTools();
+            try self.ensureRootTools(self.provider.kind);
+        }
+    }
     var budget_permit: ?run_budget_mod.Permit = null;
     if (self.run_budget) |budget| {
         const kind: run_budget_mod.CallKind = if (self.compaction_request) .compaction else self.call_kind;
@@ -329,7 +341,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             // just-closed keep-alive almost always re-fail
                             // (#86). 250ms·2ⁿ, capped at 4s over 6 tries; Esc cancels.
                             const delay_ms = RetryPlan.delayMs(throttled, attempt);
-                            try self.say("[network error: {t} — retrying in {d}ms ({d}/{d})]\n", .{ err, delay_ms, attempt + 1, max_attempts });
+                            if (showRecoveredTransportRetry(self.call_kind))
+                                try self.say("[network error: {t} — retrying in {d}ms ({d}/{d})]\n", .{ err, delay_ms, attempt + 1, max_attempts });
                             // Same trace breadcrumb the 429/5xx branch leaves: a
                             // transport-flake retry is otherwise invisible in the
                             // session trace, hiding how flaky a provider really is.
@@ -425,6 +438,10 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         self.closeCodexWs();
                         continue :rebuild;
                     }
+                    // Codex Responses reports capacity failures through this
+                    // response.failed arm too. Keep it on the same bounded
+                    // overload retry path as SSE and JSON error envelopes.
+                    if (try retryTransientServerError(self, "", failure.code, msg, &server_retries)) continue :rebuild;
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("codex api error: {s}", .{msg});
                     return error.ApiError;
@@ -520,6 +537,12 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
         return root;
     }
+}
+
+test "recovered recap transport retries stay out of normal REPL output" {
+    try std.testing.expect(!showRecoveredTransportRetry(.recap));
+    try std.testing.expect(showRecoveredTransportRetry(.root));
+    try std.testing.expect(showRecoveredTransportRetry(.child));
 }
 
 test "request scratch retains normal capacity but releases an oversized spike" {

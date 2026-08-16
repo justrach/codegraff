@@ -54,6 +54,7 @@ pub fn emit(w: ?*Io.Writer, ev: EngineEvent) void {
             style.dim,                                   style.reset, style.accent, t.path, style.reset, t.branch,
             if (t.autocommit) autocommit_suffix else "",
         }),
+        .shared_worktree_owner => |owner| sharedWorktreeOwner(w, owner),
         .saved_model_unavailable => |m| savedModelUnavailable(w, m),
         .mcp_consent_prompt => |p| line(
             w,
@@ -90,6 +91,20 @@ fn toneColor(tone: engine_events.Notice.Tone) []const u8 {
         .warn => style.yellow,
         .alert => style.red,
     };
+}
+
+fn sharedWorktreeOwner(w: ?*Io.Writer, owner: engine_events.SharedWorktreeOwner) void {
+    const out = w orelse return;
+    const session_id = if (owner.session_id.len > 0) owner.session_id else "unknown session";
+    out.print("{s}╭─{s} {s}{s}◆ Shared worktree{s}\n", .{ style.dim, style.reset, style.accent, style.bold, style.reset }) catch return;
+    out.print("{s}│{s} {s}Active session{s}  {s}{s}{s} · pid {d} · active {d}m\n", .{
+        style.dim, style.reset, style.dim, style.reset, style.accent, session_id, style.reset, owner.pid, owner.active_minutes,
+    }) catch return;
+    if (owner.goal.len > 0) out.print("{s}│{s} {s}Goal{s}            {s}\n", .{ style.dim, style.reset, style.dim, style.reset, owner.goal }) catch return;
+    out.print("{s}╰─{s} Edits share this checkout. Coordinate, or restart with {s}graff -w{s} to isolate.\n", .{
+        style.dim, style.reset, style.bold, style.reset,
+    }) catch return;
+    out.flush() catch {};
 }
 
 /// The startup twin of providerFallback. The reset lands AFTER the newline
@@ -161,6 +176,18 @@ test "slice 2: the startup lines render exactly as the inline prints did" {
     try std.testing.expectEqualStrings(
         "worktree: .graff/worktrees/w (branch worktree-w) — edits isolated from the main checkout\n",
         renderTest(&aw, .{ .worktree_entered = .{ .path = ".graff/worktrees/w", .branch = "worktree-w", .autocommit = false } }),
+    );
+    try std.testing.expectEqualStrings(
+        "╭─ ◆ Shared worktree\n" ++
+            "│ Active session  session-42 · pid 4242 · active 5m\n" ++
+            "│ Goal            polish startup output\n" ++
+            "╰─ Edits share this checkout. Coordinate, or restart with graff -w to isolate.\n",
+        renderTest(&aw, .{ .shared_worktree_owner = .{
+            .session_id = "session-42",
+            .pid = 4242,
+            .active_minutes = 5,
+            .goal = "polish startup output",
+        } }),
     );
     try std.testing.expectEqualStrings(
         "note: saved model 'k2' is unavailable — selected sonnet via anthropic for this session; saved preference kept\n",
@@ -243,6 +270,7 @@ test "slice 2: a frontendless lifecycle draws nothing" {
     emit(null, .{ .session_banner = .{ .cwd = "/repo", .trace_path = "t" } });
     emit(null, .{ .session_notice = .{ .text = "x", .tone = .dim } });
     emit(null, .{ .worktree_entered = .{ .path = "p", .branch = "b", .autocommit = true } });
+    emit(null, .{ .shared_worktree_owner = .{ .session_id = "s", .pid = 1, .active_minutes = 0, .goal = "" } });
     emit(null, .{ .saved_model_unavailable = .{ .saved = "a", .model = "b", .provider = "c", .blocked = true } });
     emit(null, .{ .mcp_consent_prompt = .{ .count = 1 } });
     emit(null, .{ .session_saved = .{ .name = "s", .ext = ".session.json" } });

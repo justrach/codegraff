@@ -8,6 +8,7 @@ const app = @import("app.zig");
 const chrome = @import("chrome.zig");
 const engine = @import("engine.zig");
 const scrollback = @import("scrollback.zig");
+const theme_mod = @import("theme.zig");
 const welcome = @import("welcome.zig");
 const Model = app.Model;
 
@@ -26,7 +27,10 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
         try chrome.overlay(self, a, width)
     else
         "";
-    const mid = if (self.overlay != .none and self.overlay != .image)
+    // The image overlay is a card ABOVE the composer, so `mid` stays the
+    // transcript; every other overlay replaces it with its own body.
+    const overlay_body = self.overlay != .none and self.overlay != .image;
+    const mid = if (overlay_body)
         try chrome.overlay(self, a, width)
     else if (self.screen == .welcome and self.userTurnCount() == 0)
         try welcome.render(self, a, width)
@@ -47,7 +51,10 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
 
     const bottom_lines = countLines(bottom.items);
     const top_lines = countLines(top);
-    const card_lines = countLines(image_card);
+    // countLines counts a trailing '\n' as an extra line but the append below
+    // adds no newline of its own — the off-by-one shifted the whole frame up
+    // one row and broke composer clicks (prompt_origin pointed past the box).
+    const card_lines = if (image_card.len == 0) 0 else countLines(image_card) - @intFromBool(image_card[image_card.len - 1] == '\n');
     self.preview_rows = card_lines;
     self.mid_origin = top_lines;
     self.prompt_origin = if (height > bottom_lines) height - bottom_lines else 0;
@@ -64,6 +71,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     if (top.len > 0 and top[top.len - 1] != '\n') try out.append('\n');
 
     const n = mid_lines.items.len;
+    self.sticky_rows = 0;
     if (n <= view_h) {
         self.scroll = 0;
         self.mid_skip = 0;
@@ -79,7 +87,35 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
         if (self.scroll > max_scroll) self.scroll = max_scroll;
         const start = max_scroll - self.scroll;
         self.mid_skip = start;
-        for (mid_lines.items[start .. start + view_h]) |ln| {
+        // grok sticky header (minimal single slot): once the last user prompt
+        // scrolls past the viewport top, its first line stays pinned as row 0
+        // with a blank separator row under it. The two chrome rows OCCLUDE the
+        // two top content lines instead of shifting them, so the row↔line map
+        // for everything below is unchanged and the bottom line stays put.
+        var chrome_rows: usize = 0;
+        // Only the transcript gets a pinned prompt. On an overlay screen `mid`
+        // is the overlay's own body, and a long one (/help, /models) scrolls
+        // too — ungated, this pinned a user prompt over its first two rows.
+        if (!overlay_body and view_h >= 5) {
+            if (scrollback.stickyUserAbove(self, start, width)) |utext| {
+                const th = self.theme();
+                var head = std.array_list.Managed(u8).init(a);
+                try head.appendSlice(th.accent);
+                try head.appendSlice("\u{276F} ");
+                try head.appendSlice(th.text);
+                var one = utext;
+                if (std.mem.indexOfScalar(u8, utext, '\n')) |nl| one = utext[0..nl];
+                try head.appendSlice(one);
+                const cols = if (width > 2) width - 2 else 1;
+                try out.appendSlice(theme_mod.takeCols(head.items, cols));
+                try out.appendSlice(theme_mod.reset);
+                try out.append('\n');
+                try out.append('\n');
+                chrome_rows = 2;
+                self.sticky_rows = 2;
+            }
+        }
+        for (mid_lines.items[start + chrome_rows .. start + view_h]) |ln| {
             try out.appendSlice(ln);
             try out.append('\n');
         }
@@ -227,4 +263,60 @@ test "debug overlay keeps the observability HUD and adds layout" {
     try std.testing.expect(std.mem.indexOf(u8, text, "mid-origin") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "images") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "pending") != null);
+}
+
+test "the sticky header never pins a prompt over an overlay" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.push(.user, "SECRETPROMPT about widgets");
+    var i: usize = 0;
+    while (i < 40) : (i += 1) try m.push(.assistant, "filler assistant prose to make the transcript long");
+    // It engages on the transcript...
+    const transcript = try render(&m, std.testing.allocator, 80, 24, 0);
+    std.testing.allocator.free(transcript);
+    try std.testing.expectEqual(@as(usize, 2), m.sticky_rows);
+    // ...and stands down once `mid` is an overlay body long enough to scroll:
+    // ungated, the pin ate the overlay's own first two rows.
+    m.openOverlay(.help);
+    const overlay_frame = try render(&m, std.testing.allocator, 80, 24, 0);
+    defer std.testing.allocator.free(overlay_frame);
+    try std.testing.expectEqual(@as(usize, 0), m.sticky_rows);
+    try std.testing.expect(std.mem.indexOf(u8, overlay_frame, "SECRETPROMPT") == null);
+    // The image overlay is a card, not a body: the transcript keeps its pin.
+    m.closeOverlay();
+    m.preview_path = "/tmp/shot.png";
+    m.preview_n = 1;
+    m.openOverlay(.image);
+    const card_frame = try render(&m, std.testing.allocator, 80, 24, 0);
+    defer std.testing.allocator.free(card_frame);
+    try std.testing.expectEqual(@as(usize, 2), m.sticky_rows);
+}
+
+test "sticky header pins the last scrolled-past user prompt with a blank separator" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.push(.user, "how do I frobnicate the widget?");
+    var i: usize = 0;
+    while (i < 40) : (i += 1) try m.push(.assistant, "a long explanation line that fills the scrollback with content");
+    // follow-mode bottom: prompt is far above, so it pins.
+    const frame = try render(&m, std.testing.allocator, 80, 24, 0);
+    defer std.testing.allocator.free(frame);
+    var it = std.mem.splitScalar(u8, frame, '\n');
+    var row: usize = 0;
+    var pin_row: ?usize = null;
+    while (it.next()) |ln| : (row += 1) {
+        if (std.mem.indexOf(u8, ln, "\u{276F} ") != null and std.mem.indexOf(u8, ln, "frobnicate") != null) {
+            pin_row = row;
+            break;
+        }
+    }
+    try std.testing.expect(pin_row != null);
+    // scrolled fully back to the top, the prompt is inline: no pin.
+    m.follow = false;
+    m.scroll = 100000;
+    const top_frame = try render(&m, std.testing.allocator, 80, 24, 0);
+    defer std.testing.allocator.free(top_frame);
+    try std.testing.expect(std.mem.indexOf(u8, top_frame, "\u{276F} ") == null);
 }

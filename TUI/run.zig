@@ -13,6 +13,7 @@ const restore_mod = @import("restore.zig");
 const theme_mod = @import("theme.zig");
 const turn = @import("turn.zig");
 const tty = @import("tty.zig");
+const traj = @import("traj.zig");
 const Model = app.Model;
 
 // 1000/1003/1006: click + hover + wheel as buttons 64/65 (not arrows).
@@ -73,7 +74,9 @@ pub fn run(
     var stdout = Io.File.stdout().writer(io, &out_buf);
     const w = &stdout.interface;
     w.writeAll(enable_seq) catch {};
+    w.writeAll("\x1b]11;?\x07") catch {}; // background query -> auto light/dark (key.zig bg_report)
     w.flush() catch {};
+    traj.open(io);
     defer {
         w.writeAll(restore_mod.seq) catch {};
         w.flush() catch {};
@@ -87,6 +90,8 @@ pub fn run(
     var saw_gfx: bool = false;
     var prev: []u8 = &.{};
     var prev_rows: usize = 0;
+    var prev_cols: usize = 0;
+    var prev_theme = m.theme_id;
     defer if (prev.len != 0) gpa.free(prev);
     while (m.running and !m.quit_requested) {
         m.now_ms = @intCast(@divTrunc(@max(@as(i128, 0), Io.Timestamp.now(io, .real).nanoseconds), 1_000_000));
@@ -103,14 +108,28 @@ pub fn run(
         const hash = std.hash.Wyhash.hash(0, frame);
         if (hash != last_hash) {
             const has_gfx = std.mem.indexOf(u8, frame, "\x1b_G") != null;
-            const full = prev.len == 0 or rows != prev_rows or saw_gfx or has_gfx;
+            // The theme bg is painted per ROW, not baked into the frame, and
+            // blank rows are byte-identical across themes/widths — the diff
+            // path skips them, stranding old-bg rows after /theme or the
+            // startup OSC-11 polarity flip, and stale columns after a
+            // width-only resize. Both must force a full paint.
+            const full = prev.len == 0 or rows != prev_rows or cols != prev_cols or m.theme_id != prev_theme or saw_gfx or has_gfx;
             // Kitty images sit above the cell grid and survive \x1b[K / dirty
             // paints — delete before every redraw that might have shown one.
+            // ?2026 synchronized output: the terminal buffers everything
+            // between begin/end and swaps atomically, so a diff paint can
+            // never show a half-updated frame (grok-build does the same).
+            // Terminals without it ignore the pair — strictly no worse.
+            w.writeAll("\x1b[?2026h") catch {};
             if (saw_gfx or has_gfx) w.writeAll("\x1b_Ga=d,d=A,q=2\x1b\\") catch {};
             paint(w, frame, rows, cols, if (full) &.{} else prev, m.theme().bg) catch {};
+            w.writeAll("\x1b[?2026l") catch {};
+            w.flush() catch {};
             if (prev.len != 0) gpa.free(prev);
             prev = gpa.dupe(u8, frame) catch &.{};
             prev_rows = rows;
+            prev_cols = cols;
+            prev_theme = m.theme_id;
             last_hash = hash;
             saw_gfx = has_gfx;
         }
@@ -129,6 +148,10 @@ pub fn run(
                         esc_stall = 0;
                     },
                     .drop => {
+                        // A sequence the terminal never finished, waited out.
+                        // Its tail may still arrive alone on a later read —
+                        // tell key.zig to expect orphan debris there.
+                        key_mod.orphan_armed = true;
                         pending_len = 0;
                         esc_stall = 0;
                     },
@@ -145,6 +168,7 @@ pub fn run(
             pending_len = 0;
         }
         const got = tty.readStdin(inbuf[pending_len..]);
+        if (got > 0) traj.note(io, m.now_ms, inbuf[pending_len .. pending_len + got]);
         if (got == 0) {
             // poll says readable but read gives nothing: hangup or transient
             // error. Three in a row means the TTY is gone.
@@ -177,6 +201,11 @@ pub fn run(
             pending_len = rest;
         } else pending_len = 0;
     }
+    if (prev.len != 0) {
+        const vis = @import("dump.zig").visible(gpa, prev) catch prev;
+        defer if (vis.ptr != prev.ptr) gpa.free(vis);
+        traj.snap(io, m.now_ms, vis);
+    }
 }
 
 /// What to do with input bytes stuck mid-sequence after quiet polls (~25ms
@@ -202,6 +231,7 @@ fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
     }
     raw.* = tty.enterRaw() orelse raw.*;
     w.writeAll(enable_seq) catch {};
+    w.writeAll("\x1b]11;?\x07") catch {}; // background query -> auto light/dark (key.zig bg_report)
     w.flush() catch {};
     _ = io;
 }
@@ -240,7 +270,14 @@ fn paint(w: *Io.Writer, frame: []const u8, rows: usize, cols: usize, prev: []con
         try w.writeAll(bg);
         const ln = nthLine(frame, row);
         try w.writeAll(ln);
-        try fillRow(w, ln, cols);
+        const vis = theme_mod.visibleLen(ln);
+        if (vis < cols) {
+            try fillRow(w, ln, cols);
+        } else {
+            // Row is exactly full: the cursor is ON the last column and EL
+            // erases it inclusive — that ate the composer's right border.
+            continue;
+        }
         try w.writeAll(bg);
         try w.writeAll("\x1b[K");
     }
@@ -267,18 +304,24 @@ fn rowChanged(prev: []const u8, frame: []const u8, row: usize) bool {
     return !std.mem.eql(u8, nthLine(prev, row), nthLine(frame, row));
 }
 
-test "run loop enables click tracking and bracketed paste" {
+test "run loop enables click+hover tracking and bracketed paste" {
     const src = @embedFile("run.zig");
     const mouse_on = [_]u8{ '?', '1', '0', '0', '0', 'h' };
     const sgr_on = [_]u8{ '?', '1', '0', '0', '6', 'h' };
     const paste_on = [_]u8{ '?', '2', '0', '0', '4', 'h' };
+    // 1003 (motion) is back ON for image-chip hover previews. The v0.0.255
+    // leak (raw SGR typed into the thinking line) stays pinned by key.zig's
+    // flood/orphan tests; the restore seq must pop it so the shell never
+    // inherits motion tracking.
     const hover_on = [_]u8{ '?', '1', '0', '0', '3', 'h' };
+    const hover_off = [_]u8{ '?', '1', '0', '0', '3', 'l' };
     const kitty_on = [_]u8{ '>', '1', '1', 'u' };
     const wrap_off = [_]u8{ '?', '7', 'l' };
     try std.testing.expect(std.mem.indexOf(u8, src, &mouse_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &sgr_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &paste_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &hover_on) != null);
+    try std.testing.expect(std.mem.indexOf(u8, restore_mod.seq, &hover_off) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &[_]u8{ '?', '1', '0', '0', '7', 'h' }) == null);
     try std.testing.expect(std.mem.indexOf(u8, src, &kitty_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &wrap_off) != null);
@@ -296,7 +339,44 @@ test "a truncated CSI never becomes Escape or typed debris; a lone ESC still doe
     try std.testing.expectEqual(StallVerdict.wait, stallVerdict("\x1b[5744", 19));
     // ...and silently drop once it is clearly lost, so it is never typed.
     try std.testing.expectEqual(StallVerdict.drop, stallVerdict("\x1b[<65;2;3", 20));
+    // Half-arrived shapes from 1003 hover tracking — never the Escape key.
+    try std.testing.expectEqual(StallVerdict.drop, stallVerdict("\x1b[", 20));
+    try std.testing.expectEqual(StallVerdict.drop, stallVerdict("\x1bO", 20));
+    try std.testing.expectEqual(StallVerdict.drop, stallVerdict("39;7", 20));
     try std.testing.expectEqual(StallVerdict.wait, stallVerdict("", 5));
+}
+
+fn paintToBuf(a: std.mem.Allocator, frame: []const u8, rows: usize, cols: usize, prev: []const u8) ![]u8 {
+    var aw = Io.Writer.Allocating.init(a);
+    errdefer aw.deinit();
+    try paint(&aw.writer, frame, rows, cols, prev, "\x1b[48;2;20;20;20m");
+    return aw.toOwnedSlice();
+}
+
+test "paint keeps a full row's last glyph but still erases every shorter row" {
+    const a = std.testing.allocator;
+    // Row 0 is exactly 10 columns: ESC[K sits ON the last cell and would eat
+    // the composer's right border, so a full row gets neither pad nor erase.
+    // Row 1 is short and must get both.
+    const out = try paintToBuf(a, "╭────────╮\nshort", 2, 10, "XXXXXXXXXX\nold row!!");
+    defer a.free(out);
+    const border = std.mem.indexOf(u8, out, "╭────────╮").?;
+    const short = std.mem.indexOf(u8, out, "short").?;
+    const erase = std.mem.indexOfPos(u8, out, border, "\x1b[K");
+    try std.testing.expect(erase != null and erase.? > short);
+    try std.testing.expect(std.mem.indexOfPos(u8, out, short, "     ") != null);
+}
+
+test "paint erases a row whose glyphs are ambiguous width" {
+    const a = std.testing.allocator;
+    // "  ✓ bash finished ok" draws 20 cells. When visibleLen claimed 21 it
+    // measured full at cols=21, so paint skipped the pad AND the erase and the
+    // 21st cell kept the previous frame. Both must still happen.
+    const frame = "  \u{2713} bash finished ok";
+    try std.testing.expectEqual(@as(usize, 20), theme_mod.visibleLen(frame));
+    const out = try paintToBuf(a, frame, 1, 21, "RESIDUE RESIDUE RESIDU");
+    defer a.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[K") != null);
 }
 
 test "rowChanged only flags the line that actually moved" {

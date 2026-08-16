@@ -208,3 +208,74 @@ fn expectDecision(body: []const u8, status: u16, want: std.meta.Tag(Decision)) !
     const got = decideDiscover(arena_state.allocator(), status, body);
     try std.testing.expectEqual(want, std.meta.activeTag(got));
 }
+
+test "Auto: server/discover listing 2026-07-28 is modern_list" {
+    try expectDecision(
+        \\{"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2026-07-28","2025-11-25"]}}
+    , 200, .modern_list);
+}
+
+test "Auto: discover without 2026-07-28 falls back (no_modern_version)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const got = decideDiscover(arena_state.allocator(), 200,
+        \\{"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2025-11-25"]}}
+    );
+    try std.testing.expectEqual(Decision{ .legacy_handshake = .no_modern_version }, got);
+}
+
+test "Auto: METHOD_NOT_FOUND (-32601) falls back like rust-sdk Auto" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const got = decideDiscover(arena_state.allocator(), 200,
+        \\{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}
+    );
+    try std.testing.expectEqual(Decision{ .legacy_handshake = .rejected }, got);
+}
+
+test "Auto: initialize-first rejection falls back" {
+    try expectDecision(
+        \\{"jsonrpc":"2.0","error":{"code":-32000,"message":"Bad Request: Server not initialized"},"id":null}
+    , 200, .legacy_handshake);
+}
+
+test "Auto: -32020 is a modern reject, never a legacy fallback" {
+    try expectDecision(
+        \\{"jsonrpc":"2.0","id":1,"error":{"code":-32020,"message":"header mismatch"}}
+    , 400, .reject_modern);
+}
+
+test "Auto: -32022 listing only 2025-11-25 is a legacy handshake" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const got = decideDiscover(arena_state.allocator(), 400,
+        \\{"jsonrpc":"2.0","id":1,"error":{"code":-32022,"data":{"supported":["2025-11-25"]}}}
+    );
+    try std.testing.expectEqual(Decision{ .legacy_handshake = .no_modern_version }, got);
+}
+
+test "Auto: -32022 that also lists 2026-07-28 retries once" {
+    try expectDecision(
+        \\{"jsonrpc":"2.0","id":1,"error":{"code":-32022,"data":{"supported":["2026-07-28"]}}}
+    , 400, .retry);
+}
+
+test "Auto: cached legacy era is a first-class Decision path" {
+    try std.testing.expectEqual(mcp_rpc.LegacyReason.cached_legacy, .cached_legacy);
+}
+
+test "Auto: known modern era lists without server/discover" {
+    const src = @embedFile("mcp_lifecycle.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "if (known_era == .modern)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "tools/list") != null);
+}
+
+test "Auto: first-launch overlaps initialize with the modern probes" {
+    const src = @embedFile("mcp_lifecycle.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(initTask") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "dropHttpSession") != null);
+}
+
+test {
+    _ = @import("mcp_cache.zig");
+}

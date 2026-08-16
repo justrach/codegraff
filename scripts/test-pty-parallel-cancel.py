@@ -143,6 +143,7 @@ def main() -> None:
                 # of ending at the prompt with nothing to go on. No marks at
                 # all means the quit keystroke itself never landed.
                 "GRAFF_SHUTDOWN_DEBUG": "1",
+                "GRAFF_REPL_DEBUG": "1",  # this test asserts the debug-only parallel tool lifecycle rows
             }
             with PtySession(GRAFF, ["--model", "lmstudio", "--no-telemetry"], cwd=tmp, env=env, timeout=20) as session:
                 session.wait_for_literal("] ›")

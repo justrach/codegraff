@@ -1,7 +1,9 @@
 import type {
   ConversationSessionSummary,
   ConversationViewSnapshot,
+  FollowupRequest,
   SessionMessage,
+  SessionRecapStatus,
 } from "@/services/desktop/types/contracts";
 
 export type AgentOverviewStatus =
@@ -21,6 +23,8 @@ export interface AgentOverviewItem {
   label: string;
   detail: string;
   status: AgentOverviewStatus;
+  /** Set on orchestrators waiting on a human; the control pane answers it inline. */
+  followup: FollowupRequest | null;
   isCurrentConversation: boolean;
   sequence: number;
 }
@@ -88,6 +92,19 @@ function titleForConversation(
   return summaries[key]?.title ?? latestUserPrompt(view.messages) ?? "Untitled task";
 }
 
+function recapStatusToOverview(
+  status: SessionRecapStatus,
+): AgentOverviewStatus {
+  switch (status) {
+    case "needs_input":
+      return "needs-input";
+    case "failed":
+      return "failed";
+    default:
+      return "completed";
+  }
+}
+
 function buildOrchestrator(
   key: string,
   view: ConversationViewSnapshot,
@@ -96,14 +113,19 @@ function buildOrchestrator(
 ): AgentOverviewItem {
   const activeAgent = latestRequestAgent(view);
   const lastMessage = view.messages.at(-1);
+  const recap = view.recap ?? null;
   let status: AgentOverviewStatus = "idle";
 
+  // Live signals win over the recap: it describes the last SETTLED turn
+  // (#419), so a running request or a pending followup is always fresher.
   if (view.followup != null) {
     status = "needs-input";
   } else if (view.activeRequestIds.length > 0) {
     status = "running";
   } else if (lastMessage?.kind === "error") {
     status = "failed";
+  } else if (recap != null) {
+    status = recapStatusToOverview(recap.status);
   }
 
   return {
@@ -114,8 +136,13 @@ function buildOrchestrator(
     workspacePath: view.workspacePath,
     kind: "orchestrator",
     label: activeAgent ?? "Main agent",
-    detail: view.goal ?? latestUserPrompt(view.messages) ?? "Ready for direction",
+    detail:
+      recap?.text ??
+      view.goal ??
+      latestUserPrompt(view.messages) ??
+      "Ready for direction",
     status,
+    followup: view.followup ?? null,
     isCurrentConversation,
     sequence: view.messages.length,
   };
@@ -150,6 +177,7 @@ function buildSubagents(
         end?.summary ??
         (status === "running" ? "Working in the background" : "Task finished"),
       status,
+      followup: null,
       isCurrentConversation,
       sequence: index,
     });
@@ -195,8 +223,14 @@ export function buildAgentOverview({
     );
 
   const activeIds = new Set(active.map((item) => item.id));
+  // Recent activity: finished subagents, plus settled orchestrators whose
+  // recap (#419) gave them a real outcome — an "idle" one has nothing to say.
   const recent = items
-    .filter((item) => !activeIds.has(item.id) && item.kind === "subagent")
+    .filter(
+      (item) =>
+        !activeIds.has(item.id) &&
+        (item.kind === "subagent" || item.status !== "idle"),
+    )
     .sort((left, right) => right.sequence - left.sequence)
     .slice(0, 6);
 
@@ -208,4 +242,23 @@ export function buildAgentOverview({
     ).length,
     needsInput: active.filter((item) => item.status === "needs-input").length,
   };
+}
+
+/**
+ * One spoken-style summary of the overview, used as the control-pane trigger's
+ * aria-label/title so the button announces the same thing the pane shows.
+ */
+export function formatAgentActivityLabel(
+  overview: Pick<AgentOverviewSnapshot, "totalActive" | "needsInput">,
+): string {
+  if (overview.totalActive === 0) {
+    return "Agent control — no active agents";
+  }
+
+  const activePart = `${overview.totalActive} active`;
+  if (overview.needsInput === 0) {
+    return `Agent control — ${activePart}`;
+  }
+
+  return `Agent control — ${activePart}, ${overview.needsInput} need${overview.needsInput === 1 ? "s" : ""} input`;
 }

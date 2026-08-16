@@ -20,8 +20,11 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     try s.objectField("instructions");
     try s.write(try schemaAwarePrompt(self));
     if (is_codex or http_headers.wantsGrokConvId(self.provider.id)) {
-        // Codex: session UUID partition. xAI: official prompt_cache_key,
-        // same sticky id as the `x-grok-conv-id` header.
+        // Pin our full resends to a per-session cache partition, the way
+        // openai/codex does (it defaults this to the same session UUID it
+        // puts in the `session_id` header). xAI documents prompt_cache_key +
+        // the x-grok-conv-id header for the same purpose
+        // (advanced-api-usage/prompt-caching) — same sticky id as the header.
         var ckbuf: [96]u8 = undefined;
         try s.objectField("prompt_cache_key");
         try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
@@ -62,7 +65,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     // Ultra preset → wire value `max`. #379: compaction summaries run at low
     // effort — a high-effort reasoner can complete with only reasoning items
     // and zero output text, i.e. an empty summary.
-    try s.write(if (self.compaction_request) "low" else if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
+    try s.write(if (self.compaction_request or self.server_compaction_request) "low" else if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
     try s.endObject();
     try s.objectField("include");
     try s.beginArray();
@@ -161,7 +164,7 @@ test "xai Responses body is bearer-clean: no codex-isms, xAI-legal fields only (
     try std.testing.expect(std.mem.indexOf(u8, body, "\"instructions\":\"system\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"store\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning\":{\"effort\":\"medium\"}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"prompt_cache_key\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"prompt_cache_key\":\"") != null); // xAI caches on it (+ x-grok-conv-id header)
     try std.testing.expect(std.mem.indexOf(u8, body, "service_tier") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "context_management") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "previous_response_id") == null);

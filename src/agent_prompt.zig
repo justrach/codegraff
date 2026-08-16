@@ -44,9 +44,9 @@ fn status(self: *Agent) engine_events.PromptStatus {
         } else null,
         .cache_read = self.last_cache_read,
         .cost = cost(self),
-        // The Fast badge is a `responses`-shaped concept; on any other wire
-        // format the flag exists but means nothing, so no badge is offered.
-        .fast = self.fast and self.provider.kind == .responses,
+        // Fast priority is exclusive to the ChatGPT/Codex route; the official
+        // OpenAI Platform Responses provider does not inherit that contract.
+        .fast = self.fast and std.mem.eql(u8, self.provider.id, "codex"),
         .fallback = self.fallback_active,
         .plan = main_mod.plan_mode,
         .strict = self.strict,
