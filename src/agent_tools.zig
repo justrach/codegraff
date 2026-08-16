@@ -59,17 +59,12 @@ const readline = @import("readline.zig"); // ask_user answers get the same full 
 const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
 
 // #440: the ONE size contract for a tool result — preview + durable handle +
-// byte count + shape hint, applied here at tool time. It replaced this file's
-// old persistToolResult/toolPreviewText pair (a 2000-char head and a bare
-// path), and it clamps itself under the send-time per-output cap so the two are
-// ordered by construction rather than stacked.
+// byte count + shape hint, applied at tool time, clamped under the send-time cap.
 const tool_handle = @import("tool_handle.zig");
 
 // escWatchTask/drainStdin/rawNonblockStdin live in agent_interrupt.zig;
-// Agent.esc_watch_done is a struct-level pub var that STAYS declared inside the
-// Agent struct in main.zig (never alias a var — see esc_cancel/
-// Agent.esc_watch_done in agent_interrupt.zig's own header comment). All reached
-// through the Agent struct's namespace.
+// esc_cancel/esc_watch_done STAY declared on the Agent struct (never alias
+// a var — see agent_interrupt.zig's own header). Reached via Agent's namespace.
 const escWatchTask = Agent.escWatchTask;
 const drainStdin = Agent.drainStdin;
 const rawNonblockStdin = Agent.rawNonblockStdin;
@@ -181,14 +176,16 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             .run_id = if (self.tracer) |tr| tr.identity.run_id else "untraced",
         };
         for (ext_idx.items, outputs) |i, output| {
-            // A result over the threshold never enters the conversation whole:
-            // the complete bytes go to a durable handle and the model gets a
-            // bounded preview, that path, the byte count, and a shape hint.
+            // Over the threshold, the bytes go to a durable handle; the model
+            // gets a bounded preview + path + byte count + shape hint.
             const handled = try tool_handle.forResult(self.gpa, self.arena, handle_target, output.text, handle_threshold);
             // Surface spill round-trips in normal mode; debug already draws the badged ✓ line.
             if (output.text.len > handle_threshold)
                 tool_render.handleSpillLine(self, output.text.len, handled.path != null);
-            results[i] = .{ .text = handled.text, .is_error = output.is_error, .cancelled = output.cancelled, .ms = output.ms };
+            // #541: the handle-protocol lesson rides this agent's FIRST handle
+            // instead of standing in every request's system prompt.
+            const text = try tool_handle.withFirstNote(self.arena, handled, &self.handle_note_shown);
+            results[i] = .{ .text = text, .is_error = output.is_error, .cancelled = output.cancelled, .ms = output.ms };
             if (self.eval_cmd != null and toolInvalidatesEval(calls[i])) {
                 self.eval_verified = false;
                 self.eval_repair_pending = false;

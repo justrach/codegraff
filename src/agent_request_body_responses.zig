@@ -19,16 +19,13 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     const is_codex = std.mem.eql(u8, self.provider.id, "codex");
     try s.objectField("instructions");
     try s.write(try schemaAwarePrompt(self));
-    if (is_codex or http_headers.wantsGrokConvId(self.provider.id)) {
-        // Pin our full resends to a per-session cache partition, the way
-        // openai/codex does (it defaults this to the same session UUID it
-        // puts in the `session_id` header). xAI documents prompt_cache_key +
-        // the x-grok-conv-id header for the same purpose
-        // (advanced-api-usage/prompt-caching) — same sticky id as the header.
-        var ckbuf: [96]u8 = undefined;
-        try s.objectField("prompt_cache_key");
-        try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
-    }
+    // Sticky cache partition from the first request. Codex and OpenAI
+    // document prompt_cache_key; xAI uses the same id as x-grok-conv-id.
+    // Root = session id, child = suffix, so interleaved agents do not evict
+    // each other. Effort is NOT flipped per turn — that would miss the prefix.
+    var ckbuf: [96]u8 = undefined;
+    try s.objectField("prompt_cache_key");
+    try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
     // Held-socket delta: previous_response_id + only the new items. xAI's
     // published WS contract supports this with store:false via the in-memory
     // connection cache; a not-found / 25-min close / drop re-anchors.

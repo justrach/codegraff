@@ -48,22 +48,6 @@ pub const local_tools_note =
     \\this exception to an inferred path or to a subagent.
 ;
 
-/// Gate: `caps.local_tools`. #440's handle contract. Gated on the same
-/// capability as the tools that produce a handle AND the ones that can open
-/// one: with read_file/bash/codedb removed, a path is not something this
-/// session can act on, so the paragraph would be pure cost.
-pub const tool_handle_note =
-    \\
-    \\
-    \\A tool result past the size threshold comes back as a handle: a bounded
-    \\preview plus the path of a file holding the COMPLETE result (byte count
-    \\and a one-line shape hint included). Treat that path as the result —
-    \\slice what you need with read_file's start_line/end_line, a grep-style
-    \\bash command, or codedb, as many times as the task needs. Never re-run
-    \\the tool for more output and never pull the whole file back into the
-    \\conversation; the handle stays readable for the rest of the session.
-;
-
 /// Gate: `caps.subagents` — the `subagent`/`workflow` tools as the catalog
 /// actually reports them, not as this file assumes them.
 pub const orchestration_note =

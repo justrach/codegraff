@@ -1,13 +1,9 @@
-//! Per-turn effort routing (k3 benchmark, 2026-08): a lookup/Q&A-shaped
-//! SUBAGENT turn runs at low effort when that child inherited the stock
-//! `.medium` default (no effort pin). Root never routes: `reasoning_effort`
-//! / `reasoning.effort` sits in the cached prefix, and flipping it mid-
-//! conversation misses the prompt cache and breaks the WS chain fingerprint
-//! (codex_chain.propsFp). Children already have their own conv id.
-//!
-//! Edit-shaped prompts keep the default: low effort there INFLATES tool-
-//! call count (permgate went 11→16 calls and +85% wall). An explicit
-//! /effort or a worker `effort:` pin always wins.
+//! Lookup-shape detector. Used to decide a prompt is Q&A vs mutation.
+//! The harness does NOT auto-flip `reasoning_effort` — that field is part
+//! of the cached prefix on Codex, OpenAI, xAI, DeepSeek, and the codegraff
+//! gateway. Changing it mid-conversation misses the cache and drops the
+//! WS chain (codex_chain.propsFp). An explicit /effort or a worker
+//! `effort:` pin is the only way effort moves.
 
 const std = @import("std");
 
@@ -48,10 +44,10 @@ pub fn routesToLowEffort(prompt: []const u8) bool {
     return false;
 }
 
-/// Root stays sticky for cache. Only an unpinned child (default medium) may
-/// drop a lookup-shaped task to low.
-pub fn shouldRouteLookupLow(is_sub: bool, default_medium: bool, prompt: []const u8) bool {
-    return is_sub and default_medium and routesToLowEffort(prompt);
+/// Never auto-route. Kept so a caller cannot quietly reintroduce a prefix
+/// flip: the gate is closed for root and children alike.
+pub fn shouldRouteLookupLow(_: bool, _: bool, _: []const u8) bool {
+    return false;
 }
 
 test "lookup prompts route low, mutation prompts and bare commands do not" {
@@ -65,8 +61,6 @@ test "lookup prompts route low, mutation prompts and bare commands do not" {
     try std.testing.expect(!routesToLowEffort("hi"));
     try std.testing.expect(routesToLowEffort("Explain how the permission gate works here?"));
     const q = "Explain how the permission gate works here?";
-    try std.testing.expect(!shouldRouteLookupLow(false, true, q)); // root: keep the cached prefix
-    try std.testing.expect(shouldRouteLookupLow(true, true, q)); // unpinned child
-    try std.testing.expect(!shouldRouteLookupLow(true, false, q)); // explicit effort pin
-    try std.testing.expect(!shouldRouteLookupLow(true, true, "fix the failing test"));
+    try std.testing.expect(!shouldRouteLookupLow(false, true, q));
+    try std.testing.expect(!shouldRouteLookupLow(true, true, q));
 }

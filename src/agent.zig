@@ -22,7 +22,6 @@ const trace = @import("trace.zig");
 const tools_mod = @import("tools.zig");
 const vision = @import("vision.zig");
 const prompts = @import("prompts.zig");
-const effort_route = @import("effort_route.zig");
 const tool_render = @import("agent_tool_render.zig");
 const schema = @import("schema.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: --no-local-tools picks the gated subagent catalogs
@@ -30,8 +29,7 @@ const models_cache = @import("models_cache.zig");
 const keys_cli = @import("keys_cli.zig");
 const run_budget_mod = @import("run_budget.zig");
 
-// prompt_ui (agent_prompt.zig) owns the width-budgeted status line (#209,
-// 600-line goal); prompt() is member-aliased back onto Agent below.
+// agent_prompt.zig owns the width-budgeted status line (#209); aliased below.
 const prompt_ui = @import("agent_prompt.zig");
 const agent_tests = @import("agent_tests.zig");
 const goal_state = @import("goal_state.zig");
@@ -123,6 +121,7 @@ pub const Agent = struct {
     agent_cwd: ?[]const u8 = null, // subagent-only (#276 P0-1): absolute path of this agent's isolated git worktree, threaded through ToolCtx per tool call instead of a process-wide chdir — parallel siblings each keep their own
     tools_used: trace.ToolSink = .{}, // external tool calls this agent made (per turn for the root)
     tool_calls_this_turn: u64 = 0,
+    handle_note_shown: bool = false, // #541: the handle-protocol lesson rides this agent's FIRST handle, once
     seen_tool_keys: std.ArrayList([]const u8) = .empty, // root-only per-turn dedupe keys
     md_buf: std.ArrayList(u8) = .empty, // current incomplete streamed line (markdown rendering)
     md_fence: bool = false, // inside a ``` code fence while streaming
@@ -319,23 +318,6 @@ pub const Agent = struct {
         self.codex_ws_opened_ms = 0;
     }
 
-    /// The text of the newest user message, "" when there is none or it is
-    /// not a plain string (attachments/tool replies don't route).
-    fn lastUserText(self: *const Agent) []const u8 {
-        var i = self.messages.items.len;
-        while (i > 0) {
-            i -= 1;
-            const m = self.messages.items[i];
-            if (m != .object) continue;
-            const role = m.object.get("role") orelse continue;
-            if (role == .string and std.mem.eql(u8, role.string, "user")) {
-                const content = m.object.get("content") orelse return "";
-                return if (content == .string) content.string else "";
-            }
-        }
-        return "";
-    }
-
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
         // Defensive for restored/embedded agents whose provider was assigned
         // directly instead of going through providers.applyProvider.
@@ -343,15 +325,6 @@ pub const Agent = struct {
         // No per-turn teardown: the socket and the chain span user turns, guarded by codex_chain.usable instead.
         self.completed = null;
         if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) esc_cancel.store(false, .release);
-        // Effort routing: lookup-shaped SUBAGENT turns only. Flipping the
-        // root's reasoning_effort mid-conversation misses the prompt cache
-        // and drops the WS chain. Children have their own conv id.
-        const saved_reasoning = self.reasoning;
-        if (effort_route.shouldRouteLookupLow(self.sub, self.reasoning == .medium, self.lastUserText())) {
-            self.reasoning = .low;
-            tool_render.routedEffortLine(self);
-        }
-        defer self.reasoning = saved_reasoning;
         while (true) {
             // Esc during a tool join (set by escWatchTask) lands here: the
             // root consumes the flag and aborts before the next request;
@@ -592,6 +565,7 @@ pub const Agent = struct {
 
 test {
     _ = @import("agent_prompt.zig");
+    _ = @import("effort_route.zig");
     try agent_tests.lazyRootTools(Agent);
 }
 

@@ -167,12 +167,17 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 }
                 try s.endObject();
             }
-            // Kimi pins each request for prompt-cache affinity; graff sends the durable per-PROJECT key (http_headers.projectCacheKey).
-            if (is_kimi) {
-                var ckbuf: [96]u8 = undefined;
-                try s.objectField("prompt_cache_key");
-                try s.write(http_headers.projectCacheKey(self.io, self.label, self, &ckbuf));
-            }
+            // Sticky cache partition from the first request. Kimi keys by
+            // project (cwd) so a new session still hits the warm prefix;
+            // everyone else on this wire uses the per-conversation id
+            // (OpenAI / codegraff / deepseek / xAI-chat). Children suffix
+            // so they do not evict the root.
+            var ckbuf: [96]u8 = undefined;
+            try s.objectField("prompt_cache_key");
+            try s.write(if (is_kimi)
+                http_headers.projectCacheKey(self.io, self.label, self, &ckbuf)
+            else
+                http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
             // Reasoning-effort hint for OpenAI-compatible providers that
             // honor it (codegraff gateway, deepseek). Mirrors the
             // Responses `reasoning.effort` set in the branch below.
@@ -533,4 +538,50 @@ test "kimi k2.6 opts into thinking.keep so replayed reasoning is used, not just 
     const anthropic = try agent.buildBody(null, false, true, true);
     defer std.testing.allocator.free(anthropic);
     try std.testing.expect(std.mem.indexOf(u8, anthropic, keep) != null);
+}
+
+test "openai-wire bodies send a sticky prompt_cache_key; children isolate" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var messages = std.json.Array.init(arena);
+    try messages.append(try testUserMessage(arena, "hello"));
+
+    var root: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "codegraff", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-pro", .context = 1_000_000 },
+        .messages = messages,
+        .sub = false,
+        .label = "main",
+        .out = null,
+        .sys_normal = "system",
+    };
+    const rb = try root.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(rb);
+    const needle = "\"prompt_cache_key\":\"";
+    const rs = std.mem.indexOf(u8, rb, needle) orelse return error.MissingPromptCacheKey;
+    const re = std.mem.indexOfScalarPos(u8, rb, rs + needle.len, '"') orelse return error.MissingPromptCacheKey;
+    const root_key = rb[rs + needle.len .. re];
+    try std.testing.expectEqualStrings(http_headers.sessionId(root.io), root_key);
+
+    var child = root;
+    child.sub = true;
+    child.label = "sub";
+    child.provider.id = "deepseek";
+    child.provider.model = "deepseek-v4-flash";
+    const cb = try child.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(cb);
+    const cs = std.mem.indexOf(u8, cb, needle) orelse return error.MissingPromptCacheKey;
+    const ce = std.mem.indexOfScalarPos(u8, cb, cs + needle.len, '"') orelse return error.MissingPromptCacheKey;
+    const child_key = cb[cs + needle.len .. ce];
+    try std.testing.expect(!std.mem.eql(u8, root_key, child_key));
+
+    var oai = root;
+    oai.provider = .{ .id = "openai", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 1_050_000 };
+    const ob = try oai.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(ob);
+    try std.testing.expect(std.mem.indexOf(u8, ob, needle) != null);
 }

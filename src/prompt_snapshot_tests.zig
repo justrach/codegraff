@@ -49,14 +49,6 @@ const golden_full_prompt =
     \\status first, preserve existing changes, and explain that those edits are
     \\not covered by /rewind. Do not claim a relaunch is required. Never extend
     \\this exception to an inferred path or to a subagent.
-    \\
-    \\A tool result past the size threshold comes back as a handle: a bounded
-    \\preview plus the path of a file holding the COMPLETE result (byte count
-    \\and a one-line shape hint included). Treat that path as the result —
-    \\slice what you need with read_file's start_line/end_line, a grep-style
-    \\bash command, or codedb, as many times as the task needs. Never re-run
-    \\the tool for more output and never pull the whole file back into the
-    \\conversation; the handle stays readable for the rest of the session.
     \\For independent,
     \\self-contained chunks of work — exploring several directories, running
     \\unrelated checks, summarizing multiple files — fan out: call the
