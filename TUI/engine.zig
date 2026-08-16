@@ -8,8 +8,17 @@ const events_mod = @import("events.zig");
 pub const Event = events_mod.Event;
 pub const EventQueue = events_mod.Queue;
 pub const ToolEvent = events_mod.Tool;
+pub const Status = events_mod.Status;
+pub const Cost = events_mod.Cost;
 
 pub const Effort = enum { low, medium, high, xhigh, max, ultra };
+
+/// The session's permission policy. This is ENGINE state, not a badge: the
+/// turn backend maps it onto the harness's plan gate and approval policy
+/// (repl_glue.replTurnCb). Before #551 round 2 the TUI kept its own copy and
+/// the engine was never told, so a footer reading "Plan" sat over a turn that
+/// was writing files.
+pub const Mode = enum { normal, plan, always_approve };
 
 pub const Turn = struct {
     role: Role,
@@ -22,6 +31,10 @@ pub const Params = struct {
     fast: bool = false,
     thinking: bool = false,
     ultracode: bool = false,
+    /// Permission policy for this turn (Shift+Tab, Ctrl+O, /plan).
+    mode: Mode = .normal,
+    /// /strict — selects the strict system prompt on the turn's agent.
+    strict: bool = false,
     goal: []const u8 = "",
 };
 
@@ -56,9 +69,11 @@ pub const ModelFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, na
 pub const CancelFn = *const fn (turn_ctx: ?*anyopaque) void;
 /// Fill dest with a staged image path (return >0) or an error line (return <0).
 pub const PasteFn = *const fn (turn_ctx: ?*anyopaque, dest: []u8) isize;
-/// Run a user-typed `!` shell line in the session cwd; return combined
-/// output (caller frees) or null when the spawn itself failed.
-pub const BashFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, cmd: []const u8) ?[]const u8;
+/// Run a user-typed `!` shell line; return combined output (caller frees), the
+/// gate's refusal, or null when the harness could not produce either. `params`
+/// carries the session's policy because `!` goes through the same gate the
+/// model's bash tool does — a `!` under /plan must be refused (#551).
+pub const BashFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, cmd: []const u8, params: Params) ?[]const u8;
 /// Newline-joined repo-relative paths for @-search (caller frees), or null.
 pub const FilesFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator) ?[]const u8;
 /// Copy text to the system clipboard; true on success.
@@ -70,6 +85,13 @@ pub const CompactOut = struct {
     turns: []Turn = &.{},
 };
 pub const CompactFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, history: []const Turn, out: *CompactOut) bool;
+
+/// The frontend just discarded part of its transcript. The engine owns the
+/// conversation the model actually sees (#551), so it has to be told: without
+/// this, /new left the whole old session in the request body and /rewind left
+/// a prompt the user had taken back.
+pub const HistoryOp = enum { reset, rewind };
+pub const HistoryFn = *const fn (turn_ctx: ?*anyopaque, op: HistoryOp) void;
 
 pub const Job = struct {
     thread: std.Thread = undefined,
@@ -105,6 +127,8 @@ pub const BgOp = struct {
     turns: []Turn = &.{},
     /// bash input — gpa-owned command line.
     cmd: []const u8 = "",
+    /// The session policy this op runs under, same as a turn's (#551).
+    params: Params = .{},
     /// compact output — gpa-owned.
     compact: CompactOut = .{},
     ok: bool = false,
@@ -118,7 +142,7 @@ pub fn bgRun(op: *BgOp) void {
             op.ok = f(g_turn_ctx, op.gpa, op.turns, &op.compact);
         },
         .bash => if (g_bash_fn) |f| {
-            op.text = f(g_turn_ctx, op.gpa, op.cmd);
+            op.text = f(g_turn_ctx, op.gpa, op.cmd, op.params);
         },
         .files => if (g_files_fn) |f| {
             op.text = f(g_turn_ctx, op.gpa);
@@ -140,6 +164,13 @@ pub var g_bash_fn: ?BashFn = null;
 pub var g_files_fn: ?FilesFn = null;
 pub var g_copy_fn: ?CopyFn = null;
 pub var g_compact_fn: ?CompactFn = null;
+pub var g_history_fn: ?HistoryFn = null;
+
+/// Tell the engine the transcript was cut. Silent when nothing is wired
+/// (offline TUI, unit tests).
+pub fn historyChanged(op: HistoryOp) void {
+    if (g_history_fn) |f| f(g_turn_ctx, op);
+}
 pub var g_model_name: []const u8 = "";
 pub var g_models: []const u8 = "";
 pub var g_cwd: []const u8 = ".";

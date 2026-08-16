@@ -51,9 +51,8 @@ fn isCtrl(k: Key, c: u8) bool {
 
 fn ctrlN(self: *Model) void {
     if (self.new_arm_until_ms != 0 and self.now_ms <= self.new_arm_until_ms) {
-        self.clearHistory();
         self.new_arm_until_ms = 0;
-        self.setToast("new session");
+        self.setToast(if (self.newSession()) "new session" else "an engine call is still running — press Esc first");
         return;
     }
     self.new_arm_until_ms = self.now_ms + 1000;

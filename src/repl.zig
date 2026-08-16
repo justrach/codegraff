@@ -30,8 +30,10 @@ const model_turn = @import("repl_model_turn.zig");
 const model_commands = @import("repl_model_commands.zig");
 const model_render = @import("repl_model_render.zig");
 const repl_run = @import("repl_run.zig");
+const repl_types = @import("repl_types.zig");
 
 test {
+    _ = repl_types;
     _ = parser_mod;
     _ = util;
     _ = repl_markdown;
@@ -54,46 +56,14 @@ test {
 // keeps repl.zig decoupled from the harness's Agent/Provider (no circular import).
 // ---------------------------------------------------------------------------
 
-pub const Effort = enum { low, medium, high, xhigh, max, ultra };
-
-pub const Turn = struct {
-    role: Role,
-    text: []const u8,
-    pub const Role = enum { user, assistant };
-};
-
-pub const Params = struct {
-    effort: Effort = .medium,
-    fast: bool = false,
-    thinking: bool = false,
-    ultracode: bool = false,
-    goal: []const u8 = "", // "" = none
-};
-
-pub const StreamBuf = struct {
-    // Single-writer (worker thread) / single-reader (render loop), lock-free: a
-    // fixed pre-allocated buffer (no realloc → stable pointer) + an atomic
-    // length. The worker appends bytes then release-stores the new length; the
-    // reader acquire-loads it and reads the committed prefix. Overflow drops
-    // extra bytes — only the live preview is affected (the final reply uses
-    // runTurn's return value).
-    buf: []u8 = &.{},
-    len: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    pub fn appendBytes(self: *StreamBuf, bytes: []const u8) void {
-        const cur = self.len.load(.monotonic);
-        if (cur >= self.buf.len) return;
-        const n = @min(bytes.len, self.buf.len - cur);
-        @memcpy(self.buf[cur .. cur + n], bytes[0..n]);
-        self.len.store(cur + n, .release);
-    }
-    pub fn snapshot(self: *StreamBuf, gpa: std.mem.Allocator) ?[]u8 {
-        const n = self.len.load(.acquire);
-        if (n == 0) return null;
-        return gpa.dupe(u8, self.buf[0..n]) catch null;
-    }
-};
-
-pub const TurnFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, history: []const Turn, params: Params, stream: *StreamBuf) ?[]const u8;
+// The vocabulary itself lives in repl_types.zig (move+alias, 600-line cap);
+// #551 grew Params a `mode`/`strict` so a frontend's policy reaches the engine.
+pub const Effort = repl_types.Effort;
+pub const Turn = repl_types.Turn;
+pub const Mode = repl_types.Mode;
+pub const Params = repl_types.Params;
+pub const StreamBuf = repl_types.StreamBuf;
+pub const TurnFn = repl_types.TurnFn;
 
 pub var g_turn_fn: ?TurnFn = null;
 pub var g_turn_ctx: ?*anyopaque = null;

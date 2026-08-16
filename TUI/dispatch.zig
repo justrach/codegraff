@@ -7,6 +7,7 @@ const app = @import("app.zig");
 const bgop = @import("bgop.zig");
 const catalog = @import("catalog.zig");
 const engine = @import("engine.zig");
+const meters = @import("meters.zig");
 const theme_mod = @import("theme.zig");
 const turn = @import("turn.zig");
 const Model = app.Model;
@@ -35,7 +36,6 @@ pub fn applyLine(self: *Model, raw: []const u8) Effect {
     if (payload.ptr != line.ptr) self.alloc.free(payload);
     if (self.chat) {
         self.turns += 1;
-        self.chars_in += line.len;
         turn.startJob(self);
         return .stay;
     }
@@ -75,7 +75,7 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.quit_requested = true;
         return .quit;
     } else if (std.mem.eql(u8, canon, "/new")) {
-        self.clearHistory();
+        _ = self.newSession(); // the `destroys` guard above already refused a live call
         self.push(.system, "started a new conversation") catch {};
         self.screen = .welcome;
     } else if (std.mem.eql(u8, canon, "/home")) {
@@ -155,7 +155,7 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.session_name = if (arg.len > 0) (self.alloc.dupe(u8, arg) catch null) else null;
         self.pushFmt(.system, "session: {s}", .{self.session_name orelse "untitled"}) catch {};
     } else if (std.mem.eql(u8, canon, "/session-info")) {
-        self.pushFmt(.system, "{s} · {s} · {d} turn(s) · ~{d} in / ~{d} out · {s}", .{ self.modeLabel(), engine.g_model_name, self.turns, self.chars_in, self.chars_out, engine.g_cwd }) catch {};
+        meters.sessionInfo(self);
     } else if (std.mem.eql(u8, canon, "/debug")) {
         self.openOverlay(.debug);
     } else if (std.mem.eql(u8, canon, "/usage")) {
@@ -167,7 +167,7 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
             self.push(.system, "usage unavailable (no session sink)") catch {};
         }
     } else if (std.mem.eql(u8, canon, "/context")) {
-        self.pushFmt(.system, "context: {d} chars sent, {d} received this session", .{ self.chars_in, self.chars_out }) catch {};
+        meters.contextInfo(self);
     } else if (std.mem.eql(u8, canon, "/history")) {
         recallPrev(self);
     } else if (std.mem.eql(u8, canon, "/image")) {
@@ -253,6 +253,12 @@ fn copyLastReply(self: *Model) void {
 }
 
 pub fn rewind(self: *Model) void {
+    // Same reason newSession refuses: the rewind reaches the engine's history,
+    // and the rewind overlay's Enter does not go through runCommand's guard.
+    if (self.pending != null or self.bg != null) {
+        self.push(.system, busy_note) catch {};
+        return;
+    }
     var i = self.history.items.len;
     while (i > 0) : (i -= 1) {
         if (self.history.items[i - 1].kind == .user) break;
@@ -264,6 +270,10 @@ pub fn rewind(self: *Model) void {
     var j = self.history.items.len;
     while (j > i - 1) : (j -= 1) self.freeEntry(self.history.items[j - 1]);
     self.history.shrinkRetainingCapacity(i - 1);
+    // The engine holds the conversation, so taking the turn back has to reach
+    // it too — otherwise the next request still carries the prompt the user
+    // just withdrew (#551).
+    engine.historyChanged(.rewind);
     self.push(.system, "rewound the last turn") catch {};
 }
 
@@ -371,8 +381,6 @@ test "/usage is not a char-count view" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
-    m.chars_in = 99;
-    m.chars_out = 88;
     _ = applyLine(&m, "/usage");
     const text = m.history.items[m.history.items.len - 1].text;
     try std.testing.expect(std.mem.indexOf(u8, text, "chars sent") == null);
@@ -443,7 +451,6 @@ test "/usage with a session HUD is the cost line, not chars" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
-    m.chars_in = 99;
     _ = applyLine(&m, "/cost");
     const text = m.history.items[m.history.items.len - 1].text;
     try std.testing.expect(std.mem.indexOf(u8, text, "api call(s)") != null);

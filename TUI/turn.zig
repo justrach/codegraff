@@ -8,6 +8,21 @@ const engine = @import("engine.zig");
 const Model = app.Model;
 const Effect = app.Effect;
 
+/// What the session is currently asking the engine to do. Shared by a model
+/// turn and by `!cmd` (bgop), because both run under the SAME policy — a /plan
+/// that only reached one of them is the #551 bug in miniature.
+pub fn paramsOf(self: *const Model) engine.Params {
+    return .{
+        .effort = self.effort,
+        .fast = self.fast,
+        .thinking = self.thinking_show,
+        .ultracode = self.ultracode or self.effort == .ultra,
+        .mode = self.mode,
+        .strict = self.strict,
+        .goal = self.goal orelse "",
+    };
+}
+
 pub fn startJob(self: *Model) void {
     var turns = std.array_list.Managed(engine.Turn).init(self.alloc);
     for (self.history.items) |e| {
@@ -33,13 +48,10 @@ pub fn startJob(self: *Model) void {
     job.* = .{
         .gpa = self.alloc,
         .history = turns.toOwnedSlice() catch &.{},
-        .params = .{
-            .effort = self.effort,
-            .fast = self.fast,
-            .thinking = self.thinking_show,
-            .ultracode = self.ultracode or self.effort == .ultra,
-            .goal = self.goal orelse "",
-        },
+        // Policy travels WITH the turn (#551): the engine applies the plan gate
+        // and the strict prompt from these, so the footer and the run can no
+        // longer disagree.
+        .params = paramsOf(self),
         .stream = .{ .buf = self.alloc.alloc(u8, 256 * 1024) catch &.{} },
     };
     // The queue must own its copies before the turn thread can push: the
@@ -66,7 +78,6 @@ pub fn finishJob(self: *Model) void {
     drainEvents(self);
     _ = removePendingRows(self);
     if (job.result) |r| {
-        self.chars_out += r.len;
         self.push(.assistant, r) catch {};
         self.alloc.free(r);
     } else if (self.cancel_requested) {
@@ -208,6 +219,8 @@ fn applyEvent(self: *Model, ev: engine.Event) void {
         // A mid-turn failover changes what the status bar must say. The event's
         // copy dies with this drain, so the Model takes ownership of the name
         // the global points at.
+        // The engine's meters, measured against the request it actually sent.
+        .status => |st| self.setStatus(st),
         .model_changed => |s| if (self.alloc.dupe(u8, s)) |owned| {
             if (self.model_override) |old| self.alloc.free(old);
             self.model_override = owned;

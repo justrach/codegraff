@@ -58,7 +58,15 @@ pub fn promptBox(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
         try out.append('\n');
     }
     const model = if (engine.g_model_name.len > 0) engine.g_model_name else "offline";
-    const label = try std.fmt.allocPrint(a, " {s} ({s}) · {s} ", .{ model, @tagName(self.effort), self.modeSlug() });
+    // The context share comes from the engine's meter and appears only once a
+    // turn has reported usage — a "0%" before the first response would be the
+    // char-counter's old habit of showing a number it had not measured (#551).
+    var pct_buf: [16]u8 = undefined;
+    const pct: []const u8 = if (self.contextPercent()) |p|
+        (std.fmt.bufPrint(&pct_buf, " · {d}%", .{p}) catch "")
+    else
+        "";
+    const label = try std.fmt.allocPrint(a, " {s} ({s}) · {s}{s} ", .{ model, @tagName(self.effort), self.modeSlug(), pct });
     try out.appendSlice(try footer(a, border, th.muted, label, inner));
     return out.items;
 }

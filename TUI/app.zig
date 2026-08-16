@@ -10,7 +10,10 @@ const theme_mod = @import("theme.zig");
 pub const Screen = enum { welcome, agent };
 pub const Focus = enum { prompt, scrollback };
 pub const Overlay = enum { none, palette, help, theme, model, effort, settings, rewind, slash, debug, image, file, jump };
-pub const AgentMode = enum { normal, plan, always_approve };
+/// One vocabulary with the engine (#551): the Model does not keep a private
+/// copy of the permission policy, it holds the engine's own enum and hands it
+/// straight to the turn backend.
+pub const AgentMode = engine.Mode;
 pub const EscArm = enum { none, clear, rewind };
 pub const EntryKind = enum { user, assistant, tool, system, err, pending };
 
@@ -92,8 +95,10 @@ pub const Model = struct {
     scroll: usize = 0,
     selected: usize = 0,
     turns: usize = 0,
-    chars_in: usize = 0,
-    chars_out: usize = 0,
+    /// The engine's last reported meters (#551). Null until a turn has run —
+    /// there is nothing honest to say about a context nobody has measured.
+    /// Its strings are owned here; setStatus and deinit are the only writers.
+    status: ?engine.Status = null,
     last_term_width: usize = 80,
     last_term_height: usize = 24,
     /// Screen row (0-based) where scrollback/welcome starts — for mouse hits.
@@ -161,6 +166,7 @@ pub const Model = struct {
         self.images.deinit();
         if (self.goal) |g| self.alloc.free(g);
         if (self.session_name) |s| self.alloc.free(s);
+        self.dropStatus();
         if (self.model_override) |m| {
             // The global points into this buffer; drop it before the free so a
             // late reader cannot follow a dangling slice.
@@ -254,11 +260,59 @@ pub const Model = struct {
         for (self.history.items) |e| self.freeEntry(e);
         self.history.clearRetainingCapacity();
         self.turns = 0;
-        self.chars_in = 0;
-        self.chars_out = 0;
+        // The meters describe a conversation that no longer exists. Compaction
+        // replays through here too and re-reports its own on the next turn.
+        self.dropStatus();
         self.selected = 0;
         self.scroll = 0;
         self.screen = .welcome;
+    }
+
+    /// Adopt the engine's meters. The event's copy dies with the drain that
+    /// delivered it, so the two strings are re-owned here.
+    pub fn setStatus(self: *Model, st: engine.Status) void {
+        const model = self.alloc.dupe(u8, st.model) catch return;
+        const provider = self.alloc.dupe(u8, st.provider_id) catch {
+            self.alloc.free(model);
+            return;
+        };
+        self.dropStatus();
+        var owned = st;
+        owned.model = model;
+        owned.provider_id = provider;
+        self.status = owned;
+    }
+
+    pub fn dropStatus(self: *Model) void {
+        const st = self.status orelse return;
+        self.alloc.free(st.model);
+        self.alloc.free(st.provider_id);
+        self.status = null;
+    }
+
+    /// Percent of the model's context window in use, or null while nothing has
+    /// been measured — a "0%" drawn before the first response is a lie.
+    pub fn contextPercent(self: *const Model) ?u64 {
+        const st = self.status orelse return null;
+        if (!st.has_context) return null;
+        return st.percent();
+    }
+
+    /// /new, /clear, Ctrl+N twice: start over. Distinct from clearHistory,
+    /// which the compaction replay also uses — that one REPLACES the visible
+    /// transcript for a conversation the engine has just rewritten and must
+    /// keep, while this one throws the conversation away too (#551).
+    ///
+    /// Returns false while an engine call is in flight, and does nothing: the
+    /// reset frees the arena that call is allocating its history from, so
+    /// "clear the screen" would be a use-after-free on the turn thread. /new
+    /// already refused mid-turn (#521); Ctrl+N did not, and only became
+    /// dangerous once the reset reached past the transcript.
+    pub fn newSession(self: *Model) bool {
+        if (self.pending != null or self.bg != null) return false;
+        self.clearHistory();
+        engine.historyChanged(.reset);
+        return true;
     }
 
     pub fn userTurnCount(self: *const Model) usize {

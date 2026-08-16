@@ -23,7 +23,9 @@ const Op = engine.BgOp;
 pub fn start(self: *Model, kind: Op.Kind, turns: []engine.Turn, cmd: []const u8, label: []const u8) bool {
     if (self.bg != null or self.pending != null) return false;
     const op = self.alloc.create(Op) catch return false;
-    op.* = .{ .kind = kind, .gpa = self.alloc, .turns = turns, .cmd = cmd };
+    // The op carries the same policy a turn does: `!cmd` goes through the
+    // engine's gate now, and /plan has to reach it (#551).
+    op.* = .{ .kind = kind, .gpa = self.alloc, .turns = turns, .cmd = cmd, .params = turn.paramsOf(self) };
     if (label.len > 0) self.push(.pending, label) catch {};
     self.bg = op;
     if (std.Thread.spawn(.{}, engine.bgRun, .{op})) |th| {
@@ -156,7 +158,7 @@ fn drain(m: *Model) !void {
 
 test "a bash op runs off the render thread and its output lands in the scrollback (#533)" {
     engine.g_bash_fn = struct {
-        fn f(_: ?*anyopaque, gpa: std.mem.Allocator, cmd: []const u8) ?[]const u8 {
+        fn f(_: ?*anyopaque, gpa: std.mem.Allocator, cmd: []const u8, _: engine.Params) ?[]const u8 {
             return std.fmt.allocPrint(gpa, "ran: {s}", .{cmd}) catch null;
         }
     }.f;
@@ -207,7 +209,7 @@ test "a second op is refused while one is in flight, and Esc cancels the live on
         var go: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
         var entered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
         var saw_cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
-        fn bash(_: ?*anyopaque, gpa: std.mem.Allocator, _: []const u8) ?[]const u8 {
+        fn bash(_: ?*anyopaque, gpa: std.mem.Allocator, _: []const u8, _: engine.Params) ?[]const u8 {
             entered.store(true, .release);
             while (!go.load(.acquire)) std.Thread.yield() catch {};
             return gpa.dupe(u8, "done") catch null;

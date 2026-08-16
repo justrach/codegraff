@@ -177,10 +177,29 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
         .session_saved,
         .run_finished,
         => {},
-        // The pre-turn status line. The TUI draws its own chrome from its own
-        // Model, so adopting this needs the context/cost meters to move into
-        // that Model first — a later slice of #551, not a silent drop here.
-        .prompt_ready => {},
+        // The engine's own meters. The TUI kept character counters and called
+        // them a context meter; these are the real numbers, and they are the
+        // only ones that know about compaction, cached tokens and cost.
+        .prompt_ready => |st| b.queue.push(.{ .status = .{
+            .model = st.model,
+            .provider_id = st.provider_id,
+            .has_context = st.context != null,
+            .tokens = if (st.context) |meter| meter.tokens else 0,
+            .window = if (st.context) |meter| meter.window else 0,
+            .compact_at = if (st.context) |meter| meter.compact_at else 0,
+            .cache_read = st.cache_read,
+            .cost = switch (st.cost) {
+                .hidden => .hidden,
+                .subscription => .subscription,
+                .unpriced => .unpriced,
+                .usd => |v| .{ .usd = v },
+            },
+            .fast = st.fast,
+            .fallback = st.fallback,
+            .plan = st.plan,
+            .strict = st.strict,
+            .ultracode = st.ultracode,
+        } }),
     }
 }
 
@@ -264,6 +283,62 @@ test "a refusal and a failover reach the frontend instead of being dropped" {
     try std.testing.expectEqualStrings("tool-call budget spent", evs[0].tool_rejected.detail);
     try std.testing.expectEqualStrings("loaded 2 saved approval(s)", evs[1].notice);
     try std.testing.expectEqualStrings("sonnet", evs[2].model_changed);
+}
+
+test "the engine's meters reach the frontend instead of being dropped (#551)" {
+    var qbuf: tui.EventQueue = .{};
+    qbuf.attach(std.testing.allocator);
+    defer qbuf.deinit();
+    var sbuf: [8]u8 = undefined;
+    var stream: repl.StreamBuf = .{ .buf = &sbuf };
+    var bridge: Bridge = .{ .queue = &qbuf, .stream = &stream };
+    forBridge(&bridge).emit(undefined, .{ .prompt_ready = .{
+        .model = "gpt-5.6",
+        .provider_id = "codex",
+        .cwd = "~/src/graff",
+        .privacy_label = "Privacy:Aggregate",
+        .privacy = .aggregate,
+        .effort = .high,
+        .context = .{ .tokens = 12_345, .window = 200_000, .compact_at = 160_000 },
+        .cache_read = 2048,
+        .cost = .subscription,
+        .plan = true,
+    } });
+    const evs = qbuf.drain();
+    defer qbuf.free(evs);
+    try std.testing.expectEqual(@as(usize, 1), evs.len);
+    const st = evs[0].status;
+    try std.testing.expectEqualStrings("gpt-5.6", st.model);
+    try std.testing.expectEqualStrings("codex", st.provider_id);
+    try std.testing.expect(st.has_context);
+    try std.testing.expectEqual(@as(u64, 12_345), st.tokens);
+    try std.testing.expectEqual(@as(u64, 160_000), st.compact_at);
+    try std.testing.expectEqual(@as(u64, 2048), st.cache_read);
+    try std.testing.expectEqual(@as(u64, 6), st.percent());
+    try std.testing.expect(st.cost == .subscription);
+    try std.testing.expect(st.plan);
+}
+
+test "a status with no usage yet says so rather than reporting a zero context" {
+    var qbuf: tui.EventQueue = .{};
+    qbuf.attach(std.testing.allocator);
+    defer qbuf.deinit();
+    var sbuf: [8]u8 = undefined;
+    var stream: repl.StreamBuf = .{ .buf = &sbuf };
+    var bridge: Bridge = .{ .queue = &qbuf, .stream = &stream };
+    forBridge(&bridge).emit(undefined, .{ .prompt_ready = .{
+        .model = "local",
+        .provider_id = "lmstudio",
+        .cwd = ".",
+        .privacy_label = "",
+        .privacy = .local,
+        .cost = .unpriced,
+    } });
+    const evs = qbuf.drain();
+    defer qbuf.free(evs);
+    try std.testing.expect(!evs[0].status.has_context);
+    try std.testing.expectEqual(@as(u64, 0), evs[0].status.percent());
+    try std.testing.expect(evs[0].status.cost == .unpriced);
 }
 
 test "a capped preview never ends mid-character" {
