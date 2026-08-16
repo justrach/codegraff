@@ -71,6 +71,47 @@ pub const Job = struct {
     stream: StreamBuf,
 };
 
+/// A background engine op: `/compact`, `!cmd`, or the @-file list. Same
+/// thread + done-flag contract as Job, so the render+input loop keeps painting
+/// and Esc keeps reaching keys.handle while the engine works (#533). Every
+/// field the worker writes is read only after `done`.
+pub const BgOp = struct {
+    pub const Kind = enum { compact, bash, files };
+
+    kind: Kind,
+    gpa: std.mem.Allocator,
+    thread: std.Thread = undefined,
+    threaded: bool = true,
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Esc/Ctrl+C asked the engine to stop; the callbacks observe it through
+    /// the same cancel signal a turn uses.
+    cancelled: bool = false,
+    /// compact input — gpa-owned turns.
+    turns: []Turn = &.{},
+    /// bash input — gpa-owned command line.
+    cmd: []const u8 = "",
+    /// compact output — gpa-owned.
+    compact: CompactOut = .{},
+    ok: bool = false,
+    /// bash / files output — gpa-owned.
+    text: ?[]const u8 = null,
+};
+
+pub fn bgRun(op: *BgOp) void {
+    switch (op.kind) {
+        .compact => if (g_compact_fn) |f| {
+            op.ok = f(g_turn_ctx, op.gpa, op.turns, &op.compact);
+        },
+        .bash => if (g_bash_fn) |f| {
+            op.text = f(g_turn_ctx, op.gpa, op.cmd);
+        },
+        .files => if (g_files_fn) |f| {
+            op.text = f(g_turn_ctx, op.gpa);
+        },
+    }
+    op.done.store(true, .release);
+}
+
 pub const HudKind = enum { debug, usage };
 pub const HudFn = *const fn (kind: HudKind, buf: []u8) usize;
 

@@ -111,7 +111,7 @@ pub fn statusBar(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
     if (self.now_ms < self.toast_until_ms and self.toast.len > 0) {
         return theme_mod.paint(a, th.accent, self.toast);
     }
-    if (self.pending != null) {
+    if (self.pending != null or self.bg != null) {
         const raw = try std.fmt.allocPrint(a, "{s} Enter:queue  ·  Shift+Tab:mode  ·  Esc:cancel  ·  {s}[stop]{s}", .{
             th.muted, th.error_fg, theme_mod.reset,
         });

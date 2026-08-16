@@ -32,6 +32,9 @@ pub const Model = struct {
     steer_queue: std.array_list.Managed([]const u8),
     images: std.array_list.Managed([]const u8),
     pending: ?*engine.Job = null,
+    /// A background engine op (/compact, !cmd, @-file list) — same thread +
+    /// done-flag contract as `pending`, so neither can freeze the loop (#533).
+    bg: ?*engine.BgOp = null,
 
     screen: Screen = .welcome,
     focus: Focus = .prompt,
@@ -114,6 +117,9 @@ pub const Model = struct {
         // running at this point is abandoned, leak and all.
         if (self.pending) |job| {
             if (!job.threaded or job.done.load(.acquire)) self.destroyJob(job) else self.pending = null;
+        }
+        if (self.bg) |op| {
+            if (!op.threaded or op.done.load(.acquire)) @import("bgop.zig").reap(self) else self.bg = null;
         }
         for (self.history.items) |e| self.alloc.free(e.text);
         self.history.deinit();

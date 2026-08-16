@@ -273,6 +273,13 @@ fn esc(self: *Model) Effect {
         self.input.setValue("") catch {};
         return .stay;
     }
+    if (self.bg != null) {
+        // A background engine op (/compact, !cmd) is exactly as interruptible
+        // as a turn now that it no longer blocks this thread (#533).
+        @import("bgop.zig").cancel(self);
+        self.setToast("cancelled");
+        return .stay;
+    }
     if (self.pending != null) {
         turn.cancelTurn(self);
         self.setToast("cancelled");
@@ -304,6 +311,13 @@ fn esc(self: *Model) Effect {
 }
 
 fn ctrlC(self: *Model) Effect {
+    if (self.bg) |op| {
+        if (!op.cancelled) {
+            @import("bgop.zig").cancel(self);
+            self.setToast("cancelled — Ctrl+C again to quit");
+            return .stay;
+        }
+    }
     if (self.pending != null and !self.cancel_requested) {
         turn.cancelTurn(self);
         self.setToast("cancelled — Ctrl+C again to quit");

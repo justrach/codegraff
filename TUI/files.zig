@@ -38,7 +38,12 @@ pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
     try out.appendSlice(try theme_mod.paint(a, th.muted, try std.fmt.allocPrint(a, "{d}/{d}", .{ n, total })));
     try out.appendSlice("\n\n");
     if (n == 0) {
-        const hint = if (list.len == 0) "no file list (offline?) — Esc" else "no matches — type to filter, Esc";
+        const hint = if (@import("bgop.zig").loadingFiles(self))
+            "loading files…"
+        else if (list.len == 0)
+            "no file list (offline?) — Esc"
+        else
+            "no matches — type to filter, Esc";
         try out.appendSlice(try theme_mod.paint(a, th.muted, hint));
         try out.append('\n');
         return out.items;

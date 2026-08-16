@@ -46,6 +46,7 @@ test {
     _ = @import("nav.zig");
     _ = @import("image.zig");
     _ = @import("turn.zig");
+    _ = @import("bgop.zig");
     _ = @import("welcome.zig");
     _ = @import("scrollback.zig");
     _ = @import("chrome.zig");

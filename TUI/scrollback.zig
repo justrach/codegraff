@@ -238,7 +238,9 @@ fn row(self: *const Model, a: std.mem.Allocator, idx: usize, e: app.Entry, width
         .err => th.error_fg,
     };
     const raw = if (e.kind == .pending)
-        thinkingLabel(now_ms)
+        // A background engine op (/compact, !cmd) names itself; a model turn
+        // pushes an empty row and gets the generic label.
+        (if (e.text.len > 0) e.text else thinkingLabel(now_ms))
     else if (e.kind == .tool)
         try toolTitle(a, e.text)
     else if (e.folded)

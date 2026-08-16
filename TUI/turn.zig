@@ -175,7 +175,7 @@ pub fn harvestLiveTools(self: *Model) void {
 /// Remove every .pending row wherever it sits. Steering pushes "↳ queued"
 /// rows after the pending entry, so "pending is last" is not an invariant —
 /// assuming it stranded a permanent thinking row in the transcript (#520).
-fn removePendingRows(self: *Model) bool {
+pub fn removePendingRows(self: *Model) bool {
     var had = false;
     var i: usize = self.history.items.len;
     while (i > 0) {
