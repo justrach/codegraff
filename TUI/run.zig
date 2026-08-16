@@ -80,8 +80,14 @@ pub fn run(
     w.writeAll(enable_seq) catch {};
     w.writeAll("\x1b]11;?\x07") catch {}; // background query -> auto light/dark (key.zig bg_report)
     w.flush() catch {};
+    // Nothing may write to the real terminal around the frame painter: park
+    // fd 2 on .graff/tui-stderr.log so std.debug.print from any thread (a
+    // subagent's status card, a worker line) cannot scroll the alt screen and
+    // bleed stale rows through the diff paint. Every exit path unparks it.
+    restore_mod.muteStderr();
     traj.open(io);
     defer {
+        restore_mod.unmuteStderr();
         w.writeAll(restore_mod.seq) catch {};
         w.flush() catch {};
     }
@@ -342,6 +348,7 @@ fn closePaste(m: *Model) void {
 }
 
 fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
+    restore_mod.unmuteStderr(); // the shell we hand over to owns the real terminal
     w.writeAll(restore_mod.seq) catch {};
     w.flush() catch {};
     tty.restore(raw.*);
@@ -352,6 +359,7 @@ fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
     w.writeAll(enable_seq) catch {};
     w.writeAll("\x1b]11;?\x07") catch {}; // background query -> auto light/dark (key.zig bg_report)
     w.flush() catch {};
+    restore_mod.muteStderr(); // fullscreen again: stderr goes back to the log
     _ = io;
 }
 
@@ -379,6 +387,10 @@ fn paint(w: *Io.Writer, frame: []const u8, rows: usize, cols: usize, prev: []con
             if (row + 1 < rows) try w.writeAll("\r\n");
             row += 1;
         }
+        // Erase below the last painted row too: if anything ever scrolled the
+        // alt screen (a resize race, a foreign write before stderr was
+        // parked), no stale row survives a full repaint.
+        try w.writeAll("\x1b[J");
         try w.flush();
         return;
     }
