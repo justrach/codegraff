@@ -241,7 +241,7 @@ test "projectCacheKey is a durable per-project v5 UUID, stable across calls" {
 
 test "x-grok-conv-id with no explicit conv still uses the project root id" {
     const io = std.testing.io;
-    const xai: Provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "grok-4.6", .context = 256_000 };
+    const xai: Provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "grok-4.6", .context = 500_000 };
     var buf: [12]std.http.Header = undefined;
     const headers = providerHeadersWithConv(io, xai, "Bearer k", &buf, null);
     try std.testing.expectEqualStrings(projectRootId(io), headerValue(headers, "x-grok-conv-id") orelse return error.MissingGrokConvId);
@@ -276,7 +276,7 @@ test "xAI Chat Completions headers carry a stable per-conversation x-grok-conv-i
     const child_id = promptCacheKey(io, "sub", child_agent, &child_buf);
     try std.testing.expect(!std.mem.eql(u8, root_id, child_id));
 
-    const xai: Provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "grok-4.6", .context = 256_000 };
+    const xai: Provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "grok-4.6", .context = 500_000 };
     var buf: [12]std.http.Header = undefined;
     const first = providerHeadersWithConv(io, xai, "Bearer k", &buf, root_id);
     try std.testing.expectEqualStrings(root_id, headerValue(first, "x-grok-conv-id") orelse return error.MissingGrokConvId);

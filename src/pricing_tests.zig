@@ -49,3 +49,51 @@ test "resolveModelName (#377): family-prefixed spelling resolves to the provider
     try std.testing.expect(!pricing.familyAliasEquals("kimi", "k3", "kimi-k30"));
     try std.testing.expect(!pricing.familyAliasEquals("codex", "k3", "kimi-k3"));
 }
+
+test "usdFor: per-million math and negative clamping" {
+    const p = pricing.priceFor("gpt-5.5").?; // $5 in / $30 out / $0.5 cache per 1M
+    try std.testing.expectApproxEqAbs(@as(f64, 5.0), pricing.usdFor(p, 1_000_000, 0, 0), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), pricing.usdFor(p, 0, 1_000_000, 0), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), pricing.usdFor(p, 0, 0, 100_000), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), pricing.usdFor(p, -42, -1, 0), 1e-9); // clamped
+}
+
+test "grok-4.6 window is 500k and compact-at is 80%" {
+    const window = pricing.contextFor("xai", "grok-4.6");
+    try std.testing.expectEqual(@as(u64, 500_000), window);
+    try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("xai", "grok-4.3")); // other xAI rows unchanged
+    try std.testing.expectEqual(@as(u64, pricing.default_context), pricing.contextFor("nope", "unknown-xyz"));
+    const p = provider_mod.Provider{
+        .id = "xai",
+        .kind = .responses,
+        .auth = .bearer,
+        .url = "",
+        .api_key = "k",
+        .model = "grok-4.6",
+        .context = window,
+    };
+    try std.testing.expectEqual(@as(u64, 400_000), p.compactAt()); // 80% of 500k
+}
+
+test "grok-4.6 prices: low band under 200k, high band for the whole request at ≥200k" {
+    const p = pricing.priceFor("grok-4.6") orelse return error.MissingGrok46Price;
+    try std.testing.expectEqual(@as(u64, 200_000), p.high_at);
+    // 10k uncached + 2k cached + 500 out @ $2 / $0.50 / $6
+    try std.testing.expectApproxEqAbs(@as(f64, 0.024), pricing.usdFor(p, 10_000, 2_000, 500), 1e-12);
+    // 199_999 stays on the low band
+    try std.testing.expectApproxEqAbs(@as(f64, 0.399998), pricing.usdFor(p, 199_999, 0, 0), 1e-12);
+    // 200k uncached + 1k out uses $4 / $12 for every token
+    try std.testing.expectApproxEqAbs(@as(f64, 0.812), pricing.usdFor(p, 200_000, 0, 1_000), 1e-12);
+    // 190k uncached + 20k cached = 210k prompt → high band on all tokens @ $4 / $1 (cached) / $12 out unused here
+    try std.testing.expectApproxEqAbs(@as(f64, 0.78), pricing.usdFor(p, 190_000, 20_000, 0), 1e-12);
+    // grok-4.3 stays flat even above 200k
+    const old = pricing.priceFor("grok-4.3").?;
+    try std.testing.expectEqual(@as(u64, 0), old.high_at);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.25), pricing.usdFor(old, 200_000, 0, 0), 1e-12);
+}
+
+test "xAI default model is grok-4.6 and is catalogued" {
+    const spec = provider_mod.specFor("xai") orelse return error.MissingXaiSpec;
+    try std.testing.expectEqualStrings("grok-4.6", spec.default_model);
+    try std.testing.expect(pricing.providerModelInTable("xai", "grok-4.6"));
+}

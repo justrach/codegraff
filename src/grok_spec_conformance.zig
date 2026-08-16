@@ -23,7 +23,7 @@ fn xaiAgent(arena: std.mem.Allocator, label: []const u8, kind: @import("provider
         .arena = arena,
         .io = std.testing.io,
         .client = undefined,
-        .provider = .{ .id = "xai", .kind = kind, .auth = .bearer, .url = "https://api.x.ai/v1/responses", .api_key = "k", .model = "grok-4.6", .context = 256_000 },
+        .provider = .{ .id = "xai", .kind = kind, .auth = .bearer, .url = "https://api.x.ai/v1/responses", .api_key = "k", .model = "grok-4.6", .context = 500_000 },
         .messages = messages,
         .sub = !std.mem.eql(u8, label, "main"),
         .label = label,
@@ -54,7 +54,7 @@ test "grok spec: Chat Completions x-grok-conv-id is stable for root and isolated
     const child_id = http_headers.promptCacheKey(io, "sub", @ptrCast(&child_slot), &cbuf);
     try std.testing.expect(!std.mem.eql(u8, root_id, child_id));
 
-    const xai: @import("provider.zig").Provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "grok-4.6", .context = 256_000 };
+    const xai: @import("provider.zig").Provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "grok-4.6", .context = 500_000 };
     var h1: [12]std.http.Header = undefined;
     var h2: [12]std.http.Header = undefined;
     var h3: [12]std.http.Header = undefined;

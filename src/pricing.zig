@@ -13,7 +13,7 @@ const util = @import("util.zig");
 /// (codex, claude) bill via subscription, not per token — recordCost treats
 /// them as $0 ("sub") regardless of this table. Models absent here have no
 /// known price and contribute 0 to the running cost (shown as ~).
-pub const ModelPrice = struct { name: []const u8, in: f64, out: f64, cache: f64 };
+pub const ModelPrice = struct { name: []const u8, in: f64, out: f64, cache: f64, high_at: u64 = 0, high_in: f64 = 0, high_out: f64 = 0, high_cache: f64 = 0 };
 pub const price_table = [_]ModelPrice{
     .{ .name = "deepseek-v4-pro", .in = 1.1, .out = 2.2, .cache = 0.11 },
     .{ .name = "deepseek-v4-flash", .in = 0.14, .out = 0.28, .cache = 0.028 },
@@ -43,6 +43,7 @@ pub const price_table = [_]ModelPrice{
     .{ .name = "kimi-k2.6", .in = 0.95, .out = 4, .cache = 0.1 },
     .{ .name = "kimi-k2-thinking", .in = 0.6, .out = 2.5, .cache = 0.06 },
     .{ .name = "kimi-k2.5", .in = 0.6, .out = 3, .cache = 0.06 },
+    .{ .name = "grok-4.6", .in = 2, .out = 6, .cache = 0.5, .high_at = 200_000, .high_in = 4, .high_out = 12, .high_cache = 1 },
     .{ .name = "grok-4.3", .in = 1.25, .out = 2.5, .cache = 0.3 },
     .{ .name = "grok-build", .in = 1, .out = 2, .cache = 0.1 },
     .{ .name = "glm-5.2", .in = 1, .out = 3.2, .cache = 0.1 },
@@ -70,11 +71,16 @@ pub fn priceFor(model: []const u8) ?ModelPrice {
 pub const Billing = enum { sub, priced, unpriced };
 
 /// USD for one request at price `p` (negative token counts clamp to 0).
+/// When `high_at` is set and prompt tokens (uncached+cached) meet it, the
+/// whole request uses the high band — grok-4.6's published ≥200k rates.
 pub fn usdFor(p: ModelPrice, uncached_in: i64, cache_in: i64, out: i64) f64 {
-    const fi: f64 = @floatFromInt(@max(uncached_in, 0));
-    const fc: f64 = @floatFromInt(@max(cache_in, 0));
+    const ui = @max(uncached_in, 0);
+    const ci = @max(cache_in, 0);
+    const high = p.high_at > 0 and @as(u64, @intCast(ui)) +| @as(u64, @intCast(ci)) >= p.high_at;
+    const fi: f64 = @floatFromInt(ui);
+    const fc: f64 = @floatFromInt(ci);
     const fo: f64 = @floatFromInt(@max(out, 0));
-    return (fi * p.in + fc * p.cache + fo * p.out) / 1_000_000.0;
+    return (fi * (if (high) p.high_in else p.in) + fc * (if (high) p.high_cache else p.cache) + fo * (if (high) p.high_out else p.out)) / 1_000_000.0;
 }
 
 /// Session-wide usage/cost tally. Every API response lands here — the root
@@ -275,6 +281,7 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
     .{ .provider = "kimi", .name = "kimi-for-coding-highspeed", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
     .{ .provider = "moonshot", .name = "kimi-latest", .context = 131_072 },
+    .{ .provider = "xai", .name = "grok-4.6", .context = 500_000, .supports_reasoning = true },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
     .{ .provider = "zai", .name = "glm-5.2", .context = 204_800 },
@@ -588,13 +595,4 @@ test "refresh overlay augments price/context lookups (codex cap still applies)" 
 // Seat classification moved to billing.zig with #471 — it needs the provider
 // spec and the credential source, not the price sheet. Its tests live there.
 
-test "usdFor: per-million math and negative clamping" {
-    const p = priceFor("gpt-5.5").?; // $5 in / $30 out / $0.5 cache per 1M
-    try std.testing.expectApproxEqAbs(@as(f64, 5.0), usdFor(p, 1_000_000, 0, 0), 1e-9);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.5), usdFor(p, 0, 1_000_000, 0), 1e-9);
-    try std.testing.expectApproxEqAbs(@as(f64, 3.0), usdFor(p, 0, 0, 100_000), 1e-9);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.0), usdFor(p, -42, -1, 0), 1e-9); // clamped
-}
-
-// CostTally/modelInTable/priceFor/resolveModelName tests live in
-// pricing_tests.zig (this file sits against the 600-line cap).
+// usdFor + grok-4.6 window/band tests live in pricing_tests.zig (600-line cap).

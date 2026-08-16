@@ -445,7 +445,7 @@ pub fn xaiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !voi
             const refresh = strFieldObj(resp, "refresh_token") orelse "";
             const expires_in: i64 = if (resp.get("expires_in")) |ei| (if (ei == .integer) ei.integer else 3600) else 3600;
             try writeXaiAuth(io, arena, home, a.string, refresh, @divTrunc(unixMs(io), 1000) + expires_in);
-            try out.print("✓ logged into Grok (xAI) — wrote {s}. /model xai grok-4.3\n", .{xaiAuthPath(arena, home)});
+            try out.print("✓ logged into Grok (xAI) — wrote {s}. /model xai grok-4.6\n", .{xaiAuthPath(arena, home)});
             try out.writeAll("  note: xAI gates its OpenAI-compatible API per account — if a Grok turn 403s, your account isn't allowlisted for api.x.ai yet.\n");
             try out.flush();
             return;
