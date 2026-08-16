@@ -1,0 +1,678 @@
+{
+  "kernel": "prompt_cache",
+  "version": 1,
+  "cases": [
+    {
+      "id": "openai.main.shared_cwd.g0.root",
+      "cell": {
+        "wire": "openai",
+        "label": "main",
+        "isolation": "shared_cwd",
+        "grok": false,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.main.shared_cwd.g0.sub",
+      "cell": {
+        "wire": "openai",
+        "label": "main",
+        "isolation": "shared_cwd",
+        "grok": false,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.main.shared_cwd.g1.root",
+      "cell": {
+        "wire": "openai",
+        "label": "main",
+        "isolation": "shared_cwd",
+        "grok": true,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.main.shared_cwd.g1.sub",
+      "cell": {
+        "wire": "openai",
+        "label": "main",
+        "isolation": "shared_cwd",
+        "grok": true,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.main.worktree.g0.root",
+      "cell": {
+        "wire": "openai",
+        "label": "main",
+        "isolation": "worktree",
+        "grok": false,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.main.worktree.g0.sub",
+      "cell": {
+        "wire": "openai",
+        "label": "main",
+        "isolation": "worktree",
+        "grok": false,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.main.worktree.g1.root",
+      "cell": {
+        "wire": "openai",
+        "label": "main",
+        "isolation": "worktree",
+        "grok": true,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.main.worktree.g1.sub",
+      "cell": {
+        "wire": "openai",
+        "label": "main",
+        "isolation": "worktree",
+        "grok": true,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.other.shared_cwd.g0.root",
+      "cell": {
+        "wire": "openai",
+        "label": "other",
+        "isolation": "shared_cwd",
+        "grok": false,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.other.shared_cwd.g0.sub",
+      "cell": {
+        "wire": "openai",
+        "label": "other",
+        "isolation": "shared_cwd",
+        "grok": false,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.other.shared_cwd.g1.root",
+      "cell": {
+        "wire": "openai",
+        "label": "other",
+        "isolation": "shared_cwd",
+        "grok": true,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.other.shared_cwd.g1.sub",
+      "cell": {
+        "wire": "openai",
+        "label": "other",
+        "isolation": "shared_cwd",
+        "grok": true,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.other.worktree.g0.root",
+      "cell": {
+        "wire": "openai",
+        "label": "other",
+        "isolation": "worktree",
+        "grok": false,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.other.worktree.g0.sub",
+      "cell": {
+        "wire": "openai",
+        "label": "other",
+        "isolation": "worktree",
+        "grok": false,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.other.worktree.g1.root",
+      "cell": {
+        "wire": "openai",
+        "label": "other",
+        "isolation": "worktree",
+        "grok": true,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "openai.other.worktree.g1.sub",
+      "cell": {
+        "wire": "openai",
+        "label": "other",
+        "isolation": "worktree",
+        "grok": true,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.main.shared_cwd.g0.root",
+      "cell": {
+        "wire": "responses",
+        "label": "main",
+        "isolation": "shared_cwd",
+        "grok": false,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.main.shared_cwd.g0.sub",
+      "cell": {
+        "wire": "responses",
+        "label": "main",
+        "isolation": "shared_cwd",
+        "grok": false,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.main.shared_cwd.g1.root",
+      "cell": {
+        "wire": "responses",
+        "label": "main",
+        "isolation": "shared_cwd",
+        "grok": true,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.main.shared_cwd.g1.sub",
+      "cell": {
+        "wire": "responses",
+        "label": "main",
+        "isolation": "shared_cwd",
+        "grok": true,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.main.worktree.g0.root",
+      "cell": {
+        "wire": "responses",
+        "label": "main",
+        "isolation": "worktree",
+        "grok": false,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.main.worktree.g0.sub",
+      "cell": {
+        "wire": "responses",
+        "label": "main",
+        "isolation": "worktree",
+        "grok": false,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.main.worktree.g1.root",
+      "cell": {
+        "wire": "responses",
+        "label": "main",
+        "isolation": "worktree",
+        "grok": true,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.main.worktree.g1.sub",
+      "cell": {
+        "wire": "responses",
+        "label": "main",
+        "isolation": "worktree",
+        "grok": true,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "root",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.other.shared_cwd.g0.root",
+      "cell": {
+        "wire": "responses",
+        "label": "other",
+        "isolation": "shared_cwd",
+        "grok": false,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.other.shared_cwd.g0.sub",
+      "cell": {
+        "wire": "responses",
+        "label": "other",
+        "isolation": "shared_cwd",
+        "grok": false,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.other.shared_cwd.g1.root",
+      "cell": {
+        "wire": "responses",
+        "label": "other",
+        "isolation": "shared_cwd",
+        "grok": true,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.other.shared_cwd.g1.sub",
+      "cell": {
+        "wire": "responses",
+        "label": "other",
+        "isolation": "shared_cwd",
+        "grok": true,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.other.worktree.g0.root",
+      "cell": {
+        "wire": "responses",
+        "label": "other",
+        "isolation": "worktree",
+        "grok": false,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.other.worktree.g0.sub",
+      "cell": {
+        "wire": "responses",
+        "label": "other",
+        "isolation": "worktree",
+        "grok": false,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.other.worktree.g1.root",
+      "cell": {
+        "wire": "responses",
+        "label": "other",
+        "isolation": "worktree",
+        "grok": true,
+        "seat": "root"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "responses.other.worktree.g1.sub",
+      "cell": {
+        "wire": "responses",
+        "label": "other",
+        "isolation": "worktree",
+        "grok": true,
+        "seat": "sub"
+      },
+      "emit_key": true,
+      "partition": "child",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.main.shared_cwd.g0.root",
+      "cell": {
+        "wire": "anthropic",
+        "label": "main",
+        "isolation": "shared_cwd",
+        "grok": false,
+        "seat": "root"
+      },
+      "emit_key": false,
+      "partition": "root",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.main.shared_cwd.g0.sub",
+      "cell": {
+        "wire": "anthropic",
+        "label": "main",
+        "isolation": "shared_cwd",
+        "grok": false,
+        "seat": "sub"
+      },
+      "emit_key": false,
+      "partition": "root",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.main.shared_cwd.g1.root",
+      "cell": {
+        "wire": "anthropic",
+        "label": "main",
+        "isolation": "shared_cwd",
+        "grok": true,
+        "seat": "root"
+      },
+      "emit_key": false,
+      "partition": "root",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.main.shared_cwd.g1.sub",
+      "cell": {
+        "wire": "anthropic",
+        "label": "main",
+        "isolation": "shared_cwd",
+        "grok": true,
+        "seat": "sub"
+      },
+      "emit_key": false,
+      "partition": "root",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.main.worktree.g0.root",
+      "cell": {
+        "wire": "anthropic",
+        "label": "main",
+        "isolation": "worktree",
+        "grok": false,
+        "seat": "root"
+      },
+      "emit_key": false,
+      "partition": "root",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.main.worktree.g0.sub",
+      "cell": {
+        "wire": "anthropic",
+        "label": "main",
+        "isolation": "worktree",
+        "grok": false,
+        "seat": "sub"
+      },
+      "emit_key": false,
+      "partition": "root",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.main.worktree.g1.root",
+      "cell": {
+        "wire": "anthropic",
+        "label": "main",
+        "isolation": "worktree",
+        "grok": true,
+        "seat": "root"
+      },
+      "emit_key": false,
+      "partition": "root",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.main.worktree.g1.sub",
+      "cell": {
+        "wire": "anthropic",
+        "label": "main",
+        "isolation": "worktree",
+        "grok": true,
+        "seat": "sub"
+      },
+      "emit_key": false,
+      "partition": "root",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.other.shared_cwd.g0.root",
+      "cell": {
+        "wire": "anthropic",
+        "label": "other",
+        "isolation": "shared_cwd",
+        "grok": false,
+        "seat": "root"
+      },
+      "emit_key": false,
+      "partition": "child",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.other.shared_cwd.g0.sub",
+      "cell": {
+        "wire": "anthropic",
+        "label": "other",
+        "isolation": "shared_cwd",
+        "grok": false,
+        "seat": "sub"
+      },
+      "emit_key": false,
+      "partition": "child",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.other.shared_cwd.g1.root",
+      "cell": {
+        "wire": "anthropic",
+        "label": "other",
+        "isolation": "shared_cwd",
+        "grok": true,
+        "seat": "root"
+      },
+      "emit_key": false,
+      "partition": "child",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.other.shared_cwd.g1.sub",
+      "cell": {
+        "wire": "anthropic",
+        "label": "other",
+        "isolation": "shared_cwd",
+        "grok": true,
+        "seat": "sub"
+      },
+      "emit_key": false,
+      "partition": "child",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.other.worktree.g0.root",
+      "cell": {
+        "wire": "anthropic",
+        "label": "other",
+        "isolation": "worktree",
+        "grok": false,
+        "seat": "root"
+      },
+      "emit_key": false,
+      "partition": "child",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.other.worktree.g0.sub",
+      "cell": {
+        "wire": "anthropic",
+        "label": "other",
+        "isolation": "worktree",
+        "grok": false,
+        "seat": "sub"
+      },
+      "emit_key": false,
+      "partition": "child",
+      "spawn_ok": false,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.other.worktree.g1.root",
+      "cell": {
+        "wire": "anthropic",
+        "label": "other",
+        "isolation": "worktree",
+        "grok": true,
+        "seat": "root"
+      },
+      "emit_key": false,
+      "partition": "child",
+      "spawn_ok": true,
+      "header_agrees": true
+    },
+    {
+      "id": "anthropic.other.worktree.g1.sub",
+      "cell": {
+        "wire": "anthropic",
+        "label": "other",
+        "isolation": "worktree",
+        "grok": true,
+        "seat": "sub"
+      },
+      "emit_key": false,
+      "partition": "child",
+      "spawn_ok": false,
+      "header_agrees": true
+    }
+  ]
+}

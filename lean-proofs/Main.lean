@@ -6,6 +6,7 @@ import Graff.PathConfine
 import Graff.Shape
 import Graff.Score
 import Graff.BashPolicy
+import Graff.PromptCache
 
 open Graff
 
@@ -22,4 +23,5 @@ def main : IO Unit := do
   IO.println s!"shape        {Shape.shapeCells}  R0={Shape.r0Cells}  R3={Shape.r3Cells}"
   IO.println s!"score        {Score.scoreCells}  filed={Score.filedCells}  titles={Score.titleCells}  classes={Score.classCells}"
   IO.println s!"bash         {BashPolicy.bashCells}  allowed={BashPolicy.allowedCells}  external={BashPolicy.externalCells}"
-  IO.println s!"cells_total  {ToolCatalog.catalogCells + Transport.transportCells + Provider.providerRows + GoalLoop.goalCells + PathConfine.leaseCells + Shape.shapeCells + Score.scoreCells + BashPolicy.bashCells}"
+  IO.println s!"prompt_cache {PromptCache.cacheCells}  spawn_ok={PromptCache.spawnOkCells}  key={PromptCache.keyCells}"
+  IO.println s!"cells_total  {ToolCatalog.catalogCells + Transport.transportCells + Provider.providerRows + GoalLoop.goalCells + PathConfine.leaseCells + Shape.shapeCells + Score.scoreCells + BashPolicy.bashCells + PromptCache.cacheCells}"

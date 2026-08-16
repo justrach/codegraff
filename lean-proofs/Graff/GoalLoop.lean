@@ -7,6 +7,12 @@
   The checklist is collapsed to what the gate actually reads: none / open /
   all-completed. Empty is none, never done.
 
+  Process kernel, not a Turing machine (finite `Event` / `step`, no tape).
+  The 360-cell cube is the snapshot of that machine: refuse arms, a second
+  attempt accepts, standing has no retire edge, and `checklistFinished` is
+  unreachable without `write allCompleted`. GoalLoop is the worked example;
+  cube kernels stay cubes.
+
   Executable port: spec/ref/goal_loop.py.
 -/
 
@@ -36,7 +42,7 @@ structure State where
   checklist : Checklist := .none
   dirty     : Bool := false
   armed     : Bool := false
-deriving Repr, BEq
+deriving Repr, BEq, DecidableEq
 
 def goalActive (s : State) : Bool :=
   if s.seat ≠ .root then false
@@ -118,6 +124,145 @@ theorem armed_accepts (s : State) (h₁ : goalActive s = true) (h₂ : s.armed =
   unfold completionGate
   simp [h₁, h₂]
 
+/-! The machine. Snapshot predicates above; these are the edges. -/
+
+/-- Discrete harness actions. Seat is configuration, not an event.
+    Empty `todo_write` is `write .none` and is a no-op. World-done is not here. -/
+inductive Event where
+  | setGoal (standing : Bool)
+  | pause
+  | resume
+  | clear
+  | write (c : Checklist)
+  | attempt
+deriving DecidableEq, Repr, BEq
+
+/-- Live work being replaced. Complete/none adopt the current checklist. -/
+def liveGoal : Goal → Bool
+  | .active | .paused | .blocked => true
+  | .none | .complete => false
+
+def setActive (s : State) (standing : Bool) (reset : Bool) : State :=
+  if reset then
+    { seat := s.seat, goal := Goal.active, standing := standing, checklist := Checklist.none, dirty := false, armed := false }
+  else
+    { s with goal := Goal.active, standing := standing, armed := false }
+
+def step (s : State) (e : Event) : State :=
+  match e with
+  | Event.setGoal standing => setActive s standing (liveGoal s.goal)
+  | Event.pause => if decide (s.goal = Goal.active) then { s with goal := Goal.paused } else s
+  | Event.resume => if decide (s.goal = Goal.paused) then { s with goal := Goal.active } else s
+  | Event.clear => { seat := s.seat, goal := Goal.none, standing := false, checklist := Checklist.none, dirty := false, armed := false }
+  | Event.write c => if decide (c = Checklist.none) then s else { s with checklist := c, dirty := true, armed := false }
+  | Event.attempt =>
+      match completionGate s with
+      | Verdict.refuseOpen => { s with armed := true }
+      | Verdict.refuseNoPlan => { s with armed := true }
+      | Verdict.accept =>
+          if retiresOnAccept s then { s with armed := false, goal := Goal.complete } else { s with armed := false }
+
+def run (s : State) : List Event → State
+  | []      => s
+  | e :: es => run (step s e) es
+
+def writesDone : Event → Bool
+  | Event.write .allCompleted => true
+  | _                         => false
+
+def noDoneWrite : List Event → Bool
+  | []      => true
+  | e :: es => !writesDone e && noDoneWrite es
+
+/-! Missing-edge / path facts. Same propositions as the snapshot theorems. -/
+
+theorem write_none_id (s : State) : step s (.write .none) = s := by
+  simp [step]
+
+theorem write_open_never_finished (s : State) :
+    checklistFinished (step s (.write .open)) = false := by
+  simp [step, checklistFinished, allDone]
+
+theorem standing_attempt_preserves_goal (s : State) (h : s.standing = true) :
+    (step s .attempt).goal = s.goal := by
+  simp [step]
+  cases completionGate s <;> simp [standing_does_not_retire s h]
+
+theorem sub_attempt_preserves_goal (s : State) (h : s.seat = .sub) :
+    (step s .attempt).goal = s.goal := by
+  have hg : completionGate s = .accept := sub_never_refuses s h
+  have hr : retiresOnAccept s = false := by simp [retiresOnAccept, goalActive, h]
+  simp [step, hg, hr]
+
+theorem review_attempt_preserves_goal (s : State) (h : s.seat = .review) :
+    (step s .attempt).goal = s.goal := by
+  have hg : completionGate s = .accept := review_never_refuses s h
+  have hr : retiresOnAccept s = false := by simp [retiresOnAccept, goalActive, h]
+  simp [step, hg, hr]
+
+theorem paused_attempt_preserves_goal (s : State) (h : s.goal = .paused) :
+    (step s .attempt).goal = s.goal := by
+  have hg : completionGate s = .accept := paused_never_refuses s h
+  have hr : retiresOnAccept s = false := by simp [retiresOnAccept, goalActive, h]
+  simp [step, hg, hr]
+
+theorem refuse_arms (s : State)
+    (h : completionGate s = .refuseOpen ∨ completionGate s = .refuseNoPlan) :
+    (step s .attempt).armed = true ∧ (step s .attempt).goal = s.goal := by
+  cases h with
+  | inl h => simp [step, h]
+  | inr h => simp [step, h]
+
+theorem attempt_keeps_list (s : State) :
+    (step s .attempt).checklist = s.checklist ∧
+      (step s .attempt).dirty = s.dirty := by
+  simp [step]
+  cases completionGate s <;> simp
+  split <;> simp
+
+theorem setGoal_preserves_unfinished (s : State) (standing : Bool)
+    (h0 : checklistFinished s = false) :
+    checklistFinished (step s (.setGoal standing)) = false := by
+  simp [step, setActive]
+  cases liveGoal s.goal
+  · simpa [checklistFinished] using h0
+  · simp [checklistFinished, allDone]
+
+theorem unfinished_step (s : State) (e : Event)
+    (h0 : checklistFinished s = false) (hw : writesDone e = false) :
+    checklistFinished (step s e) = false := by
+  cases e with
+  | setGoal b => exact setGoal_preserves_unfinished s b h0
+  | pause =>
+      simp [step]
+      split <;> simpa [checklistFinished] using h0
+  | resume =>
+      simp [step]
+      split <;> simpa [checklistFinished] using h0
+  | clear => simp [step, checklistFinished, allDone]
+  | write c =>
+      match c with
+      | .none => simpa [write_none_id] using h0
+      | .open => simp [step, checklistFinished, allDone]
+      | .allCompleted => simp [writesDone] at hw
+  | attempt =>
+      have k := attempt_keeps_list s
+      simp [checklistFinished] at h0 ⊢
+      rw [k.1, k.2]; exact h0
+
+theorem no_done_write_never_finished (s : State) (es : List Event)
+    (h0 : checklistFinished s = false) (hw : noDoneWrite es = true) :
+    checklistFinished (run s es) = false := by
+  induction es generalizing s with
+  | nil => simpa [run] using h0
+  | cons e rest ih =>
+      simp only [run]
+      cases hwe : writesDone e
+      · have hr : noDoneWrite rest = true := by
+          simp [noDoneWrite, hwe] at hw; exact hw
+        exact ih (step s e) (unfinished_step s e h0 hwe) hr
+      · simp [noDoneWrite, hwe] at hw
+
 /-! Concrete cells the harness also checks. -/
 
 example : completionGate {} = .accept := by native_decide
@@ -132,6 +277,16 @@ example : checklistFinished { checklist := .allCompleted, dirty := false } = fal
 example : checklistFinished { checklist := .allCompleted, dirty := true } = true := by native_decide
 example : retiresOnAccept { goal := .active } = true := by native_decide
 example : retiresOnAccept { goal := .active, standing := true } = false := by native_decide
+
+/-! Traces of `step`. Double-check = refuse then accept; standing has no retire. -/
+
+example : (run {} [.setGoal false, .attempt]).armed = true := by native_decide
+example : (run {} [.setGoal false, .attempt]).goal = .active := by native_decide
+example : (run {} [.setGoal false, .attempt, .attempt]).goal = .complete := by native_decide
+example : (run {} [.setGoal true, .attempt, .attempt]).goal = .active := by native_decide
+example : (run {} [.setGoal false, .write .allCompleted, .attempt]).goal = .complete := by native_decide
+example : (run {} [.setGoal true, .write .allCompleted, .attempt]).goal = .active := by native_decide
+example : checklistFinished (run {} [.setGoal false, .write .open, .attempt]) = false := by native_decide
 
 /-! Tiny list model for `allDone` / replace, so empty ≠ done is not just an enum. -/
 
