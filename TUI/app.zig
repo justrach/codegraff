@@ -302,9 +302,17 @@ pub const Model = struct {
     /// which the compaction replay also uses — that one REPLACES the visible
     /// transcript for a conversation the engine has just rewritten and must
     /// keep, while this one throws the conversation away too (#551).
-    pub fn newSession(self: *Model) void {
+    ///
+    /// Returns false while an engine call is in flight, and does nothing: the
+    /// reset frees the arena that call is allocating its history from, so
+    /// "clear the screen" would be a use-after-free on the turn thread. /new
+    /// already refused mid-turn (#521); Ctrl+N did not, and only became
+    /// dangerous once the reset reached past the transcript.
+    pub fn newSession(self: *Model) bool {
+        if (self.pending != null or self.bg != null) return false;
         self.clearHistory();
         engine.historyChanged(.reset);
+        return true;
     }
 
     pub fn userTurnCount(self: *const Model) usize {

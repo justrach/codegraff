@@ -75,7 +75,7 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.quit_requested = true;
         return .quit;
     } else if (std.mem.eql(u8, canon, "/new")) {
-        self.newSession();
+        _ = self.newSession(); // the `destroys` guard above already refused a live call
         self.push(.system, "started a new conversation") catch {};
         self.screen = .welcome;
     } else if (std.mem.eql(u8, canon, "/home")) {
@@ -253,6 +253,12 @@ fn copyLastReply(self: *Model) void {
 }
 
 pub fn rewind(self: *Model) void {
+    // Same reason newSession refuses: the rewind reaches the engine's history,
+    // and the rewind overlay's Enter does not go through runCommand's guard.
+    if (self.pending != null or self.bg != null) {
+        self.push(.system, busy_note) catch {};
+        return;
+    }
     var i = self.history.items.len;
     while (i > 0) : (i -= 1) {
         if (self.history.items[i - 1].kind == .user) break;

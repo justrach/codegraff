@@ -138,6 +138,48 @@ test "cutting the transcript reaches the engine's conversation (#551)" {
     try std.testing.expectEqual(before, Seen.ops.items.len);
 }
 
+test "a live engine call blocks every path that would free its history (#551)" {
+    // The reset/rewind seam frees the arena the running turn allocates its
+    // history from, so "just clear the screen" would be a use-after-free on
+    // the turn thread. Ctrl+N never went through runCommand's #521 guard.
+    const Seen = struct {
+        var n: usize = 0;
+        fn f(_: ?*anyopaque, _: engine.HistoryOp) void {
+            n += 1;
+        }
+    };
+    Seen.n = 0;
+    engine.g_history_fn = Seen.f;
+    defer engine.g_history_fn = null;
+
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.push(.user, "alpha");
+    const job = try std.testing.allocator.create(engine.Job);
+    job.* = .{
+        .threaded = false,
+        .gpa = std.testing.allocator,
+        .history = try std.testing.allocator.alloc(engine.Turn, 0),
+        .params = .{},
+        .stream = .{},
+    };
+    m.pending = job;
+
+    try std.testing.expect(!m.newSession());
+    dispatch.rewind(&m);
+    try std.testing.expectEqual(@as(usize, 0), Seen.n);
+    try std.testing.expectEqualStrings("alpha", m.history.items[0].text);
+
+    m.pending = null;
+    std.testing.allocator.free(job.history);
+    std.testing.allocator.destroy(job);
+
+    // With the engine idle both reach it again.
+    try std.testing.expect(m.newSession());
+    try std.testing.expectEqual(@as(usize, 1), Seen.n);
+}
+
 test "/compact never crops locally; engine stub rewrites history" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
