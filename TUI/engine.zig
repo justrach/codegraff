@@ -67,9 +67,11 @@ pub const ModelFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, na
 pub const CancelFn = *const fn (turn_ctx: ?*anyopaque) void;
 /// Fill dest with a staged image path (return >0) or an error line (return <0).
 pub const PasteFn = *const fn (turn_ctx: ?*anyopaque, dest: []u8) isize;
-/// Run a user-typed `!` shell line in the session cwd; return combined
-/// output (caller frees) or null when the spawn itself failed.
-pub const BashFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, cmd: []const u8) ?[]const u8;
+/// Run a user-typed `!` shell line; return combined output (caller frees), the
+/// gate's refusal, or null when the harness could not produce either. `params`
+/// carries the session's policy because `!` goes through the same gate the
+/// model's bash tool does — a `!` under /plan must be refused (#551).
+pub const BashFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, cmd: []const u8, params: Params) ?[]const u8;
 /// Newline-joined repo-relative paths for @-search (caller frees), or null.
 pub const FilesFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator) ?[]const u8;
 /// Copy text to the system clipboard; true on success.
@@ -123,6 +125,8 @@ pub const BgOp = struct {
     turns: []Turn = &.{},
     /// bash input — gpa-owned command line.
     cmd: []const u8 = "",
+    /// The session policy this op runs under, same as a turn's (#551).
+    params: Params = .{},
     /// compact output — gpa-owned.
     compact: CompactOut = .{},
     ok: bool = false,
@@ -136,7 +140,7 @@ pub fn bgRun(op: *BgOp) void {
             op.ok = f(g_turn_ctx, op.gpa, op.turns, &op.compact);
         },
         .bash => if (g_bash_fn) |f| {
-            op.text = f(g_turn_ctx, op.gpa, op.cmd);
+            op.text = f(g_turn_ctx, op.gpa, op.cmd, op.params);
         },
         .files => if (g_files_fn) |f| {
             op.text = f(g_turn_ctx, op.gpa);

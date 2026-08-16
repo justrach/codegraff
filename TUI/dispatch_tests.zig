@@ -23,7 +23,7 @@ fn settle(m: *Model) !void {
 
 test "! runs through the bash callback in the background and lands in the scrollback (#533)" {
     engine.g_bash_fn = struct {
-        fn f(_: ?*anyopaque, gpa: std.mem.Allocator, cmd: []const u8) ?[]const u8 {
+        fn f(_: ?*anyopaque, gpa: std.mem.Allocator, cmd: []const u8, _: engine.Params) ?[]const u8 {
             return std.fmt.allocPrint(gpa, "ran: {s}", .{cmd}) catch null;
         }
     }.f;

@@ -12,6 +12,7 @@ const pricing = @import("pricing.zig");
 const providers = @import("providers.zig");
 const process_runner = @import("process_runner.zig");
 const repl = @import("repl.zig");
+const repl_bash = @import("repl_bash.zig");
 const repl_glue = @import("repl_glue.zig");
 const tui = @import("tui");
 const engine_sink = @import("engine_sink.zig");
@@ -276,39 +277,23 @@ fn pasteErr(dest: []u8, msg: []const u8) isize {
     return -@as(isize, @intCast(n));
 }
 
-/// `!cmd` bash mode: run in the session cwd, cap output, 20s deadline.
-fn bashCb(ctx: ?*anyopaque, gpa: Allocator, cmd: []const u8) ?[]const u8 {
-    const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
-    const argv: []const []const u8 = if (builtin.os.tag == .windows)
-        &.{ "cmd.exe", "/C", cmd }
-    else
-        &.{ "/bin/sh", "-c", cmd };
-    const run_res = process_runner.runCapped(gpa, c.io, argv, 64 * 1024, 16 * 1024, 20_000) catch return null;
-    defer gpa.free(run_res.stdout);
-    defer gpa.free(run_res.stderr);
-    var out = std.array_list.Managed(u8).init(gpa);
-    defer out.deinit();
-    const so = std.mem.trimEnd(u8, run_res.stdout, "\r\n");
-    const se = std.mem.trimEnd(u8, run_res.stderr, "\r\n");
-    out.appendSlice(so) catch {};
-    if (se.len > 0) {
-        if (out.items.len > 0) out.append('\n') catch {};
-        out.appendSlice(se) catch {};
-    }
-    if (run_res.timed_out) {
-        if (out.items.len > 0) out.append('\n') catch {};
-        out.appendSlice("(timed out after 20s)") catch {};
-    } else if (!process_runner.ranOk(run_res)) {
-        if (out.items.len > 0) out.append('\n') catch {};
-        var nb: [32]u8 = undefined;
-        const note = switch (run_res.term) {
-            .exited => |code| std.fmt.bufPrint(&nb, "(exit {d})", .{code}) catch "(exit ?)",
-            else => "(terminated)",
-        };
-        out.appendSlice(note) catch {};
-    }
-    if (out.items.len == 0) out.appendSlice("(no output)") catch {};
-    return out.toOwnedSlice() catch null;
+/// `!cmd` bash mode — the engine's bash tool, gate and all (repl_bash.zig).
+/// It used to call process_runner directly, which is how `/plan` + `!rm -rf`
+/// ran the rm and how the model never learned what the user had run (#551).
+fn bashCb(ctx: ?*anyopaque, gpa: Allocator, cmd: []const u8, params: tui.Params) ?[]const u8 {
+    return repl_bash.replBashCb(ctx, gpa, cmd, .{
+        .effort = @enumFromInt(@intFromEnum(params.effort)),
+        .fast = params.fast,
+        .thinking = params.thinking,
+        .ultracode = params.ultracode,
+        .mode = switch (params.mode) {
+            .normal => .normal,
+            .plan => .plan,
+            .always_approve => .always_approve,
+        },
+        .strict = params.strict,
+        .goal = params.goal,
+    });
 }
 
 /// @-mention source: tracked+untracked files (gitignore honored), find fallback.
@@ -360,6 +345,7 @@ fn hudCb(kind: tui.HudKind, buf: []u8) usize {
 test {
     _ = tui;
     _ = tui_sink;
+    _ = repl_bash;
 }
 
 test "hudCb usage/debug use the cost-tally renderer, not chars" {

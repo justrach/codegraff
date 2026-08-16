@@ -203,7 +203,10 @@ fn earlyEnd(gpa: Allocator, agent: *Agent, why: []const u8) ?[]const u8 {
 
 const testing = std.testing;
 
-fn testCtx(client: *std.http.Client) ReplCtx {
+/// A session context with no provider behind it — enough for anything that
+/// exercises gates, prompts or history rather than a model call. Shared with
+/// repl_bash.zig's tests, which drive the same turnAgent.
+pub fn testCtx(client: *std.http.Client) ReplCtx {
     return .{
         .io = testing.io,
         .client = client,
