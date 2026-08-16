@@ -110,6 +110,22 @@ fn isInputFinal(c: u8) bool {
     };
 }
 
+/// Finals that count only while `armed`. Cursor/mode replies (`[2A`, `[H`,
+/// `[?1003l`) reach the sweeper whenever the carry window expired before the
+/// tail landed, and typing `2A` into the composer is exactly the debris this
+/// file exists to eat. Unarmed they stay ordinary text — `2A`, `3H` and `1F`
+/// are all things people write, and the suite pins them.
+fn isArmedFinal(c: u8) bool {
+    return switch (c) {
+        'A'...'D', 'F', 'H', 'Z', 'h', 'l' => true,
+        else => false,
+    };
+}
+
+fn isFinal(c: u8, armed_now: bool) bool {
+    return c == 'M' or c == 'm' or c == 'u' or c == '~' or (armed_now and isArmedFinal(c));
+}
+
 pub const Orphan = union(enum) {
     /// Not debris — hand the bytes to the normal parser (typed text).
     none,
@@ -127,10 +143,25 @@ pub const Orphan = union(enum) {
 /// 0x40..0x7e range ate `0x1f` (final `x`), `[12]` (final `]`) and `1e5`
 /// (final `e`). A run with neither `<` nor a separator (`3u`) is debris only
 /// while `armed` says the loop really did drop a truncated sequence.
+///
+/// `armed` also widens the shape, because it means the loop REALLY lost a head
+/// and the carry window expired before the tail landed: an orphaned `[`
+/// introducer counts, so do cursor/mode finals (`2A`, `[H`, `[200~`), and a
+/// bare `~` whose parameters went with the head. Unarmed none of that moves —
+/// every one of those strings is something a human types.
 pub fn take(bytes: []const u8, i: *usize) Orphan {
     const start = i.*;
     if (start >= bytes.len) return .none;
     var j = start;
+    // The head that was dropped was a bare `\x1b`, so its `[` now leads the
+    // read (`[A`, `[200~PASTED`). Only ever debris while armed: unarmed, `[12]`
+    // is somebody typing.
+    var lost_csi = false;
+    if (armed and bytes[j] == '[') {
+        lost_csi = true;
+        j += 1;
+        if (j >= bytes.len) return .partial;
+    }
     const lt = bytes[j] == '<';
     if (lt) j += 1;
     var sep = false;
@@ -143,8 +174,18 @@ pub fn take(bytes: []const u8, i: *usize) Orphan {
         headless = true;
         j += 1;
     }
-    if (j >= bytes.len) return if (headless) .partial else .none;
-    if (bytes[j] < '0' or bytes[j] > '9') return .none;
+    if (j >= bytes.len) return if (headless or lost_csi) .partial else .none;
+    if (bytes[j] < '0' or bytes[j] > '9') {
+        // No parameters left at all: they went with the head. `[A` (we saw the
+        // orphaned `[`) and a lone `~` are debris while armed. A bare letter
+        // with no `[` in front of it is NOT — that is the user typing, and
+        // eating it would swallow the `h` of `hello`.
+        if (armed and ((lost_csi and isFinal(bytes[j], true)) or bytes[j] == '~')) {
+            i.* = j + 1;
+            return .{ .took = .ignore };
+        }
+        return .none;
+    }
     var k = j;
     while (k < bytes.len) : (k += 1) {
         const c = bytes[k];
@@ -153,7 +194,7 @@ pub fn take(bytes: []const u8, i: *usize) Orphan {
             sep = true;
             continue;
         }
-        if (c == 'M' or c == 'm' or c == 'u' or c == '~') {
+        if (isFinal(c, armed)) {
             if (!lt and !sep and !armed) return .none;
             i.* = k + 1;
             // A fragment that opened on a separator lost its leading fields:
@@ -179,7 +220,7 @@ pub fn take(bytes: []const u8, i: *usize) Orphan {
     // Ran off the end mid-fragment. Hold it when it already reads as a CSI
     // parameter list, or when the loop armed us; a bare unarmed digit run is
     // somebody typing, and holding it would strand the keystrokes.
-    return if (lt or sep or armed) .partial else .none;
+    return if (lt or sep or armed or lost_csi) .partial else .none;
 }
 
 test "a join only happens when the tail really completes the head" {

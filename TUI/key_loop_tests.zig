@@ -67,6 +67,20 @@ const Loop = struct {
             self.paste_ends += 1;
         }
     }
+
+    /// run.zig's carry window elapsing (`stall.carryExpired`): the head is
+    /// spent before the read, so it can no longer glue itself onto anything.
+    fn expireCarry(_: *Loop) void {
+        key.stashOrphanHead("");
+    }
+
+    /// run.zig's arm window elapsing (`stall.armExpired`): the loop disarms the
+    /// sweeper before parsing, because a claim that a head was "just" dropped
+    /// goes stale. Strictly the longer of the two windows.
+    fn expireArm(self: *Loop) void {
+        self.expireCarry();
+        key.armOrphan(false);
+    }
 };
 
 test "SGR motion flood chopped at every byte offset never types a character" {
@@ -291,4 +305,91 @@ test "a real multi-read paste is untouched by any of the recovery paths" {
     try std.testing.expectEqual(@as(usize, 1), loop.paste_ends);
     try std.testing.expectEqual(@as(usize, 0), loop.mice);
     try std.testing.expect(!key.inPaste());
+}
+
+test "a stale debris arm never eats the token the user types later" {
+    // The arm had no clock at all, so it stayed live until something happened
+    // to consume it: `3u apples` reached the composer as ` apples` twelve
+    // seconds after the head was dropped, from a keyboard (Alt+[ on a
+    // meta-sending terminal is enough to lose a head).
+    var loop = Loop.init(std.testing.allocator);
+    defer loop.deinit();
+    try loop.read("\x1b[<35;80");
+    loop.stallDrop();
+    loop.expireArm(); // ~1s later: the claim is stale
+    try loop.read("3u apples");
+    try std.testing.expectEqualStrings("3u apples", loop.typed.items);
+    try std.testing.expectEqual(@as(usize, 0), loop.mice);
+    try std.testing.expectEqual(@as(usize, 0), loop.pending);
+
+    // Human-speed typing lost even more, through the `.partial` hold: `2m
+    // later` arrived as `m later` with the `2m` swallowed as a mouse report.
+    var slow = Loop.init(std.testing.allocator);
+    defer slow.deinit();
+    try slow.read("\x1b[<35;80");
+    slow.stallDrop();
+    slow.expireArm();
+    for ("2m later") |c| try slow.read(&[_]u8{c});
+    try std.testing.expectEqualStrings("2m later", slow.typed.items);
+    try std.testing.expectEqual(@as(usize, 0), slow.mice);
+    try std.testing.expectEqual(@as(usize, 0), slow.pending);
+}
+
+test "late debris tails are eaten while armed and typed when they are not" {
+    // The head is dropped, the 400ms carry window expires, and the tail lands
+    // late: `take` rejected every final outside `M/m/u/~`, so `2A`, `~`, `[A`
+    // and a split paste START marker all typed themselves into the composer.
+    const tails = [_][]const u8{ "2A", "~", "[A", "[3~", "1;2D", "[H", "[Z", "2F" };
+    for (tails) |tail| {
+        var loop = Loop.init(std.testing.allocator);
+        defer loop.deinit();
+        key.armOrphan(true);
+        defer key.armOrphan(false);
+        try loop.read(tail);
+        try std.testing.expectEqualStrings("", loop.typed.items);
+        try std.testing.expectEqual(@as(usize, 0), loop.pending);
+    }
+
+    // A paste START marker split off its ESC: the marker goes, the body is
+    // still text, and the arm is spent on that one fragment.
+    var split = Loop.init(std.testing.allocator);
+    defer split.deinit();
+    key.armOrphan(true);
+    try split.read("[200~PASTED");
+    try std.testing.expectEqualStrings("PASTED", split.typed.items);
+    key.armOrphan(false);
+
+    // Unarmed, every one of those is somebody typing and must arrive intact —
+    // this is the half the widened final set must not regress.
+    for (tails) |tail| {
+        var typed = Loop.init(std.testing.allocator);
+        defer typed.deinit();
+        try typed.read(tail);
+        try std.testing.expectEqualStrings(tail, typed.typed.items);
+        try std.testing.expectEqual(@as(usize, 0), typed.mice);
+    }
+    // ...including the shapes the widening comes closest to: a bare `[` really
+    // is the start of typed text when no head was lost.
+    var text = Loop.init(std.testing.allocator);
+    defer text.deinit();
+    try text.read("[12] and 3H at 2:30");
+    try std.testing.expectEqualStrings("[12] and 3H at 2:30", text.typed.items);
+}
+
+test "an armed sweeper still never swallows a word the user typed" {
+    // The widened final set includes `h` and `l` (CSI mode replies), which are
+    // also the first letters of ordinary words. They may only ever count
+    // BEHIND an orphaned `[` or a parameter run, never bare.
+    const words = [_][]const u8{ "hello world", "list the files", "done", "Fix it", "Zoom" };
+    for (words) |w| {
+        var loop = Loop.init(std.testing.allocator);
+        defer loop.deinit();
+        try loop.read("\x1b[<35;80");
+        loop.stallDrop();
+        loop.expireCarry(); // the head is spent; the ARM is what is on trial
+        try loop.read(w);
+        try std.testing.expectEqualStrings(w, loop.typed.items);
+        try std.testing.expectEqual(@as(usize, 0), loop.pending);
+    }
+    key.armOrphan(false);
 }
