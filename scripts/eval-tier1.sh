@@ -249,6 +249,13 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-painter.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+    # The viewport must not jump when the terminal changes width: drives
+    # TIOCSWINSZ across five widths mid-scroll and reads the screen back. With
+    # the logical scroll anchor removed the marker leaves the screen on the
+    # FIRST width change, so this is a real gate, not a smoke test.
+    if python3 scripts/test-tui-resize-anchor.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
   fi
 fi
 
