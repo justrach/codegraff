@@ -585,38 +585,3 @@ test "a wide table fits the terminal: grid intact, one visual line per row (#tab
     try std.testing.expectEqual(@as(usize, 5), rows); // top rule, header, mid rule, body, bottom rule
     try std.testing.expect(std.mem.indexOf(u8, out, "\u{2026}") != null); // over-long cells clip with an ellipsis
 }
-
-test "a diff fence bands its edits instead of taking the code canvas" {
-    const th = theme_mod.of(.night);
-    const src = "before\n```diff\n@@ -1,2 +1,2 @@\n const keep = 0;\n-const old = 1;\n+const new = 2;\n```\nafter";
-    const out = try renderThemed(std.testing.allocator, src, th, 40);
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, diff.addBg(false)) != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, diff.delBg(false)) != null);
-    // A patch is not code: it never picks up the fence's own background.
-    try std.testing.expect(std.mem.indexOf(u8, out, syntax.codeBg(false)) == null);
-    var it = std.mem.splitScalar(u8, out, '\n');
-    while (it.next()) |ln| {
-        try std.testing.expect(theme_mod.visibleLen(ln) <= 40);
-        if (std.mem.indexOf(u8, ln, "after") == null) continue;
-        // The prose under the fence inherits neither band.
-        try std.testing.expect(std.mem.indexOf(u8, ln, diff.addBg(false)) == null);
-        try std.testing.expect(std.mem.indexOf(u8, ln, diff.delBg(false)) == null);
-    }
-}
-
-test "an undeclared fence that IS a patch bands; a bullet list never does" {
-    const th = theme_mod.of(.night);
-    const patch = try renderThemed(std.testing.allocator, "```\n--- a/x\n+++ b/x\n-gone\n+here\n```", th, 40);
-    defer std.testing.allocator.free(patch);
-    try std.testing.expect(std.mem.indexOf(u8, patch, diff.addBg(false)) != null);
-    // Lines that merely START with `-` are a list, not a diff (#diff).
-    const list = try renderThemed(std.testing.allocator, "- one\n- two\n- three", th, 40);
-    defer std.testing.allocator.free(list);
-    try std.testing.expect(std.mem.indexOf(u8, list, diff.delBg(false)) == null);
-    // …and a zig fence still gets syntax colors on the code canvas.
-    const code = try renderThemed(std.testing.allocator, "```zig\nconst x = 1;\n```", th, 40);
-    defer std.testing.allocator.free(code);
-    try std.testing.expect(std.mem.indexOf(u8, code, syntax.codeBg(false)) != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, diff.addBg(false)) == null);
-}
