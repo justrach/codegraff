@@ -38,6 +38,7 @@
 //!   U+2298 ⊘  N  denied tool
 //!   U+2717 ✗  N  failed tool
 //!   U+21B3 ↳  N  queued/nested row
+//!   U+275A ❚  N  scrollbar thumb                one column everywhere
 //!   U+25CF ●  A  assistant / error mark        static, box-class
 //!   U+25C6 ◆  A  tool mark                     static, box-class
 //!   U+00B7 ·  A  system mark, meter separator  static, box-class
@@ -71,6 +72,7 @@ pub const registry = [_]Glyph{
     .{ .cp = 0x2298, .cols = 1, .class = .narrow, .role = "denied tool" },
     .{ .cp = 0x2717, .cols = 1, .class = .narrow, .role = "failed tool" },
     .{ .cp = 0x21B3, .cols = 1, .class = .narrow, .role = "queued / nested row" },
+    .{ .cp = 0x275A, .cols = 1, .class = .narrow, .role = "scrollbar thumb" },
     .{ .cp = 0x25CF, .cols = 1, .class = .ambiguous, .role = "assistant / error mark" },
     .{ .cp = 0x25C6, .cols = 1, .class = .ambiguous, .role = "tool mark" },
     .{ .cp = 0x00B7, .cols = 1, .class = .ambiguous, .role = "system mark / meter separator" },
@@ -112,6 +114,11 @@ pub const system = "\u{00B7}";
 pub const denied = "\u{2298}";
 pub const failed = "\u{2717}";
 pub const cursor = "\u{258B}";
+/// The transcript scrollbar's thumb (scrollbar.zig). Narrow-class on purpose:
+/// it is painted ON the last column, so a glyph a terminal draws two cells wide
+/// would push itself off the row. The Block Elements (▐, █) read better and are
+/// EAW-Ambiguous, which is exactly the trade this registry exists to refuse.
+pub const scroll_thumb = "\u{275A}";
 
 fn lookup(cp: u21) ?Glyph {
     for (registry) |g| {

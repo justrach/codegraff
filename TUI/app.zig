@@ -59,6 +59,9 @@ pub const Band = struct {
     len: usize = 0,
     /// Index, in the composed mid-lines, of the line on `top`.
     off: usize = 0,
+    /// Visual lines the band is a window ONTO — the whole wrapped transcript,
+    /// not the screenful of it. The scrollbar's proportions come from here.
+    total: usize = 0,
 };
 
 pub const ESC_MS: u64 = 800;
@@ -129,6 +132,15 @@ pub const Model = struct {
     band: Band = .{},
     paint_hint: ?@import("scrollpaint.zig").Hint = null,
     now_ms: u64 = 0,
+    /// When the viewport last MOVED. The scrollbar fades out of a tail-parked
+    /// viewport this many milliseconds later (scrollbar.zig); zero means the
+    /// session has never scrolled, so no gutter has ever been earned.
+    scroll_seen_ms: u64 = 0,
+    /// A one-shot byte string the run loop owes the TERMINAL, not the screen:
+    /// the OSC 52 clipboard write a copy just produced. Deliberately not part
+    /// of the frame — a frame is re-painted (the self-heal rewrites it every
+    /// few seconds), and a clipboard write must happen exactly once.
+    osc_pending: []const u8 = "",
     hist_idx: ?usize = null,
     /// Newline-joined paths for the @-file picker, loaded once per session.
     files_cache: ?[]const u8 = null,
@@ -202,6 +214,7 @@ pub const Model = struct {
         if (self.overlay_filter.len > 0) self.alloc.free(self.overlay_filter);
         if (self.files_cache) |f| self.alloc.free(f);
         if (self.sel_text.len > 0) self.alloc.free(self.sel_text);
+        if (self.osc_pending.len > 0) self.alloc.free(self.osc_pending);
         self.input.deinit();
     }
 

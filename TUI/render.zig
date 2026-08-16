@@ -10,6 +10,7 @@ const chrome = @import("chrome.zig");
 const engine = @import("engine.zig");
 const glyphs = @import("glyphs.zig");
 const layout_cache = @import("layout_cache.zig");
+const scrollbar = @import("scrollbar.zig");
 const scrollback = @import("scrollback.zig");
 const scrollpaint = @import("scrollpaint.zig");
 const selection = @import("selection.zig");
@@ -181,6 +182,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
             .top = self.mid_origin + chrome_rows,
             .len = view_h - chrome_rows,
             .off = start + chrome_rows,
+            .total = n,
         };
     }
     if (image_card.len > 0) {
@@ -192,7 +194,11 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     // Selection is a post-pass over the finished frame: the row builders stay
     // unaware of it, and the band lands on screen rows exactly as the mouse
     // reported them (#529).
-    return gpa.dupe(u8, try selection.paint(self, a, out.items, width));
+    const banded = try selection.paint(self, a, out.items, width);
+    // The scroll gutter goes LAST, after the capture: the thumb is chrome the
+    // selection must never copy, and it hides for the duration of a drag
+    // anyway (scrollbar.zig owns both halves of that rule).
+    return gpa.dupe(u8, try scrollbar.paint(self, a, banded, width));
 }
 
 /// `count` mid rows starting at `from`, taken from the layout cache when the

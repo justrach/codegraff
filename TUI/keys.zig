@@ -169,6 +169,11 @@ fn pageSize(self: *const Model) u32 {
 }
 
 pub fn scrollBy(self: *Model, delta: i32) void {
+    // Every door into the viewport comes through here — wheel, arrows, page
+    // keys — so this is the one place the scrollbar's fade clock has to be
+    // wound (scrollbar.zig). A tail-parked viewport shows the gutter for a
+    // moment after the last movement and then lets it go.
+    self.scroll_seen_ms = @max(self.now_ms, 1);
     if (delta > 0) {
         self.scroll +|= @as(usize, @intCast(delta));
         self.follow = false;
