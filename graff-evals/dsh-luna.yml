@@ -1,0 +1,14 @@
+# graff-evals overlay: retarget dsh's default agent model at OpenAI gpt-5.6-luna.
+# Applied via `dsh --profile headless --patch <this file>` so harness-vs-harness
+# runs compare the same model. dsh has no --model flag; this layer is the knob.
+- id: agent-default-model
+  config:
+    provider: openai
+    model: gpt-5.6-luna
+# The route itself: a pi-ai catalog route, so endpoint/protocol/models come
+# from the installed pi-ai catalog; only the credential reference is ours.
+- id: llm-pi-ai
+  config:
+    providers:
+      openai:
+        apiKeyEnv: OPENAI_API_KEY

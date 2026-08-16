@@ -80,6 +80,29 @@ def parse_answer_and_usage(harness, stdout, stderr):
                 usage = {"calls": ev.get("num_turns"), "in": u.get("input_tokens"),
                          "cached": u.get("cache_read_input_tokens"),
                          "out": u.get("output_tokens"), "api_ms": ev.get("duration_api_ms")}
+    if harness["answer"] == "pi-json":
+        answer, calls, tin, tread, twrite, tout, cost = "", 0, 0, 0, 0, 0, 0.0
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            msg = ev.get("message", {})
+            if ev.get("type") == "message_end" and msg.get("role") == "assistant":
+                u = msg.get("usage", {})
+                calls += 1
+                tin += u.get("input", 0)
+                tread += u.get("cacheRead", 0)
+                twrite += u.get("cacheWrite", 0)
+                tout += u.get("output", 0)
+                cost += u.get("cost", {}).get("total", 0.0)
+                answer = "".join(c.get("text", "") for c in msg.get("content", [])
+                                 if c.get("type") == "text") or answer
+        usage = {"calls": calls, "in": tin + tread + twrite, "cached": tread,
+                 "out": tout, "cost_usd": round(cost, 6)}
     if harness.get("usage") == "graff-stderr":
         m = GRAFF_USAGE_RE.search(stderr)
         if m:
@@ -98,7 +121,8 @@ def one_run(hname, harness, task, model, rep, live=False):
     stdout_parts, stderr_parts = [], []
     try:
         p = subprocess.Popen(cmd, cwd=sandbox, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, text=True)
+                             stderr=subprocess.PIPE, text=True,
+                             env=dict(os.environ, **harness.get("env", {})))
         import selectors
         sel = selectors.DefaultSelector()
         sel.register(p.stdout, selectors.EVENT_READ, "out")
