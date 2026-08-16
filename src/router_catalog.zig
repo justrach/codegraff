@@ -478,6 +478,37 @@ pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const 
     }
 }
 
+/// An explicit /models listing is the freshness moment: hit every keyed
+/// dynamic provider live, concurrently (startup's own fan-out), bypassing
+/// BOTH the once-per-process attempt latch and the 6h TTL — the pair that
+/// made /models show a boot-time snapshot until restart. The disk cache
+/// remains the offline fallback, and each live list is re-cached for the
+/// next boot. Returns how many providers were pinged.
+pub fn refreshForListing(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys) usize {
+    var futures: [provider.provider_specs.len + 1]?Io.Future(FetchOutcome) = @splat(null);
+    var pinged: usize = 0;
+    for (provider.provider_specs, 0..) |spec, index| {
+        if (!dynamic(spec)) continue;
+        const key = keys.get(spec.id) orelse continue;
+        if (key.len == 0) continue;
+        attempted[index] = true;
+        futures[index] = spawnFetch(io, gpa, home, spec, key, keys.source(spec.id));
+        pinged += 1;
+    }
+    if (provider.additional_router) |spec| {
+        if (keys.get(spec.id)) |key| if (key.len != 0) {
+            additional_attempted = true;
+            futures[provider.provider_specs.len] = spawnFetch(io, gpa, home, spec, key, keys.source(spec.id));
+            pinged += 1;
+        };
+    }
+    for (&futures) |*maybe| {
+        const outcome = if (maybe.*) |*fut| fut.await(io) else continue;
+        finishFetch(io, arena, home, outcome);
+    }
+    return pinged;
+}
+
 pub fn ensureForQuery(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, query: []const u8) void {
     for (provider.provider_specs, 0..) |spec, index| {
         if (!dynamic(spec) or !catalog_selection.queryMayUse(spec.id, query)) continue;

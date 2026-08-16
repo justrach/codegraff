@@ -327,6 +327,15 @@ pub fn ensureModelQueryCatalogs(root: *Agent, keys: Keys, query: []const u8) voi
     router_catalog.ensureForQuery(root.io, root.gpa, root.arena, root.home, keys, query);
 }
 
+/// The /models listing's live refresh: the explicit ping is the freshness
+/// moment, so the router-catalog providers (codegraff/anthropic/fireworks/
+/// workspace router) are re-fetched NOW — concurrently, cache as offline
+/// fallback — instead of showing the boot-time snapshot until restart.
+/// Codex and Kimi keep their bespoke caches; /models prints their sources.
+pub fn refreshModelListing(root: *Agent, keys: Keys) usize {
+    return router_catalog.refreshForListing(root.io, root.gpa, root.arena, root.home, keys);
+}
+
 /// Structured set_model has separate provider/model fields. An explicit
 /// provider fully determines routing; a model-only request remains fuzzy.
 pub fn controlRequestMayUseCodex(provider_query: []const u8, model_query: []const u8, legacy_name: []const u8) bool {

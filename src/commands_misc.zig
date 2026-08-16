@@ -368,6 +368,11 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/models")) {
         root.ensureStoredKeys(keys);
         providers.ensureModelQueryCatalogs(root, keys.*, "");
+        // The explicit listing is the freshness moment: live-refresh the
+        // router-catalog providers, bypassing the per-process latch and 6h
+        // TTL that made /models show a boot-time snapshot until restart.
+        const pinged = providers.refreshModelListing(root, keys.*);
+        if (pinged > 0) try out.print("{s}(pinged {d} provider catalog(s) live){s}\n", .{ style.dim, pinged, style.reset });
         try out.writeAll("model                      ctx      compact@   provider    key  vision\n");
         for (pricing.models()) |m| {
             const has_key = keys.get(m.provider) != null;
