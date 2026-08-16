@@ -123,6 +123,10 @@ pub const Model = struct {
     preview_rows: usize = 0,
     /// Drag-selection band over the composed frame (#529) — presentation only.
     sel: @import("selection.zig").Sel = .{},
+    /// Wrapped-line layout of the transcript, keyed by width/theme/fold/entry
+    /// identity (layout_cache.zig). Presentation state: a pure memo of what the
+    /// row builders would produce, so scrolling is a slice and not a re-layout.
+    layout: @import("layout_cache.zig").Cache = .{},
     /// Text the band currently covers, captured by the same pass that paints
     /// it, so what the clipboard gets is exactly what the user saw highlighted.
     sel_text: []const u8 = "",
@@ -156,6 +160,7 @@ pub const Model = struct {
         if (self.bg) |op| {
             if (!op.threaded or op.done.load(.acquire)) @import("bgop.zig").reap(self) else self.bg = null;
         }
+        self.layout.deinit(self.alloc);
         for (self.history.items) |e| self.freeEntry(e);
         self.history.deinit();
         for (self.prompt_hist.items) |s| self.alloc.free(s);
@@ -257,6 +262,9 @@ pub const Model = struct {
     }
 
     pub fn clearHistory(self: *Model) void {
+        // Before the entries go: the layout holds wrapped bytes for them and a
+        // back-pointer into their text.
+        self.layout.invalidate(self.alloc);
         for (self.history.items) |e| self.freeEntry(e);
         self.history.clearRetainingCapacity();
         self.turns = 0;
