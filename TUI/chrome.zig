@@ -167,16 +167,11 @@ pub fn slashMenu(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
     var i: usize = first;
     while (i < first + show) : (i += 1) {
         const it = catalog.items[idx[i]];
-<<<<<<< HEAD
-        const mark: []const u8 = if (i == sel) "› " else "  ";
+        const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(i != sel));
         // One menu entry is one ROW: a click maps a screen row straight back to
         // an item, so a long description is CUT, never wrapped — wrapping
         // would slide every entry below it off its own row.
         const line = theme_mod.takeCols(try std.fmt.allocPrint(a, "{s}{s}  {s}", .{ mark, it.name, it.desc }), width);
-=======
-        const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(i != sel));
-        const line = try std.fmt.allocPrint(a, "{s}{s}  {s}", .{ mark, it.name, it.desc });
->>>>>>> fix/tui-chrome-width
         try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
         try out.append('\n');
     }
@@ -199,14 +194,9 @@ fn listOverlay(self: *const Model, a: std.mem.Allocator, width: usize) ![]const 
     var i: usize = 0;
     while (i < show) : (i += 1) {
         const it = catalog.items[idx[i]];
-<<<<<<< HEAD
-        const mark: []const u8 = if (i == sel) "› " else "  ";
+        const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(i != sel));
         // Same rule as the inline menu: one entry, one row, cut to fit.
         const line = theme_mod.takeCols(try std.fmt.allocPrint(a, "{s}{s}  {s}", .{ mark, it.name, it.desc }), width);
-=======
-        const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(i != sel));
-        const line = try std.fmt.allocPrint(a, "{s}{s}  {s}", .{ mark, it.name, it.desc });
->>>>>>> fix/tui-chrome-width
         try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
         try out.append('\n');
     }

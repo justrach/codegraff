@@ -277,6 +277,14 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-scroll-paint.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+    # Trackpad momentum must be COALESCED and BUDGETED, not queued. Drives 500
+    # SGR wheel reports twice — all at once, then spread over ~1s the way
+    # momentum really arrives — and reads the loop's own paint counters back.
+    # With the frame budget removed the paced storm paints 503 times instead of
+    # ~105, so this is a real gate, not a smoke test.
+    if python3 scripts/test-tui-event-pacing.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
   fi
 fi
 
