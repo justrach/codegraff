@@ -86,9 +86,53 @@ fn installStopHandlers() void {
     for (stop_signals) |sig| std.posix.sigaction(sig, &sa, null);
 }
 
-/// Async-signal-safe: one raw write + tcsetattr, nothing else.
+/// While the fullscreen TUI owns the screen, NOTHING may write to the real
+/// terminal around the frame painter — but std.debug.print (subagent status
+/// cards, worker lines, debug notices, any pool thread) goes straight to fd 2
+/// and scrolls the alt screen out from under the diff painter: stale rows
+/// "bleed through". So the TUI parks fd 2 on .graff/tui-stderr.log for its
+/// whole lifetime and every exit path — quit, crash, suspend — puts it back
+/// so panic traces and shell prompts land on the real terminal again.
+/// (Child processes spawned BEFORE the mute keep their inherited fd 2; MCP
+/// servers boot pre-TUI and are the remaining, far rarer leak.)
+var real_stderr: std.posix.fd_t = -1;
+
+pub fn muteStderr() void {
+    if (builtin.os.tag == .windows or builtin.is_test) return;
+    if (real_stderr != -1) return;
+    _ = std.posix.system.mkdir(".graff", 0o755);
+    const log = std.posix.openat(
+        std.posix.AT.FDCWD,
+        ".graff/tui-stderr.log",
+        .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true },
+        0o644,
+    ) catch return;
+    const saved_fd = std.posix.system.dup(std.posix.STDERR_FILENO);
+    if (saved_fd < 0) {
+        _ = std.posix.system.close(log);
+        return;
+    }
+    real_stderr = saved_fd;
+    if (std.posix.system.dup2(log, std.posix.STDERR_FILENO) < 0) {
+        _ = std.posix.system.close(real_stderr);
+        real_stderr = -1;
+    }
+    _ = std.posix.system.close(log);
+}
+
+/// Async-signal-safe (dup2/close only), so the crash and stop paths may call it.
+pub fn unmuteStderr() void {
+    if (builtin.os.tag == .windows) return;
+    if (real_stderr == -1) return;
+    _ = std.posix.system.dup2(real_stderr, std.posix.STDERR_FILENO);
+    _ = std.posix.system.close(real_stderr);
+    real_stderr = -1;
+}
+
+/// Async-signal-safe: raw write + tcsetattr + the stderr un-park, nothing else.
 pub fn emergency() void {
     if (builtin.os.tag == .windows) return;
+    unmuteStderr(); // diagnostics after this point must reach the real terminal
     if (!armed.swap(false, .acq_rel)) return;
     _ = std.posix.system.write(std.posix.STDOUT_FILENO, seq.ptr, seq.len);
     std.posix.tcsetattr(std.posix.STDIN_FILENO, .NOW, saved) catch {};
@@ -155,6 +199,7 @@ fn onStop(sig: std.posix.SIG) callconv(.c) void {
     if (!was_fullscreen) return;
     if (tty.enterRaw()) |_| {}
     if (enable.len > 0) _ = std.posix.system.write(std.posix.STDOUT_FILENO, enable.ptr, enable.len);
+    muteStderr(); // fullscreen again: stderr back to the log (open/dup2 are async-signal-safe)
     armed.store(true, .release);
     resumed.store(true, .release);
 }
@@ -194,6 +239,30 @@ test "crash signals are hooked, and they hand the signal back, not to SIG_DFL (#
     // Ctrl+Z / `kill -TSTP` must never stop us on a raw alt screen (#549).
     try std.testing.expectEqual(@as(usize, 1), stop_signals.len);
     try std.testing.expectEqual(std.posix.SIG.TSTP, stop_signals[0]);
+}
+
+test "stderr is parked for the TUI's whole lifetime and unparked on every exit path" {
+    const run_src = @embedFile("run.zig");
+    // Parked right after the fullscreen enable, before the first frame...
+    const enable_at = std.mem.indexOf(u8, run_src, "w.writeAll(enable_seq) catch {};").?;
+    const mute_at = std.mem.indexOfPos(u8, run_src, enable_at, "restore_mod.muteStderr();").?;
+    // ...and unparked in the run loop's exit defer, before the restore bytes.
+    const defer_unmute = std.mem.indexOfPos(u8, run_src, mute_at, "restore_mod.unmuteStderr();").?;
+    const defer_restore = std.mem.indexOfPos(u8, run_src, defer_unmute, "w.writeAll(restore_mod.seq) catch {};").?;
+    try std.testing.expect(defer_unmute < defer_restore);
+    // The shell hand-over (Ctrl+Z park) unparks before stopping and re-parks after.
+    const park_at = std.mem.indexOf(u8, run_src, "fn parkToShell").?;
+    try std.testing.expect(std.mem.indexOfPos(u8, run_src, park_at, "unmuteStderr()") != null);
+    try std.testing.expect(std.mem.indexOfPos(u8, run_src, park_at, "muteStderr()") != null);
+    // Crash/stop paths: emergency() unparks FIRST, so panic traces reach the
+    // real terminal; the SIGCONT re-entry re-parks.
+    const self_src = @embedFile("restore.zig");
+    const emergency_at = std.mem.indexOf(u8, self_src, "pub fn emergency() void {").?;
+    const unmute_in_emergency = std.mem.indexOfPos(u8, self_src, emergency_at, "unmuteStderr();").?;
+    const write_in_emergency = std.mem.indexOfPos(u8, self_src, emergency_at, "std.posix.system.write").?;
+    try std.testing.expect(unmute_in_emergency < write_in_emergency);
+    const cont_at = std.mem.indexOf(u8, self_src, "genuinely continued here").?;
+    try std.testing.expect(std.mem.indexOfPos(u8, self_src, cont_at, "muteStderr();") != null);
 }
 
 test "resumed latch fires exactly once per continue" {
