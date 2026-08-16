@@ -58,6 +58,13 @@ pub const ReplCtx = struct {
     /// built from the transcript it passes in, which is what `graff repl`'s
     /// scripted path still does.
     convo: ?*repl_convo.Conversation = null,
+    /// The context meter, carried between turns (#551). A chat frontend builds
+    /// a fresh Agent per turn, so leaving these on it reset the meter every
+    /// turn — and with them the pre-send compaction gate, which reads exactly
+    /// these numbers to decide when the window is nearly full.
+    last_context_tokens: u64 = 0,
+    context_local_tokens: u64 = 0,
+    last_cache_read: u64 = 0,
 };
 
 /// The engine-owned conversation, in repl_convo.zig (move+alias, #123).

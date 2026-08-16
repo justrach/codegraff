@@ -35,6 +35,45 @@ pub const Tool = struct {
     denied: bool = false,
 };
 
+/// What the cost meter can say. Three of the four are STATES, not numbers, so
+/// a pre-formatted string would have had to invent figures for them.
+pub const Cost = union(enum) {
+    /// --no-cost: the segment does not exist.
+    hidden,
+    /// Flat-rate provider: spend is not per-turn.
+    subscription,
+    /// No price-table row for this model.
+    unpriced,
+    usd: f64,
+};
+
+/// The engine's view of the session after a turn (engine_events.PromptStatus).
+/// The TUI used to answer /context and /session-info from characters it had
+/// counted itself, which measured the transcript rather than the request and
+/// went further wrong every time the engine compacted or a tool result landed.
+pub const Status = struct {
+    model: []const u8,
+    provider_id: []const u8 = "",
+    /// Context figures are meaningful only once a response has reported usage.
+    has_context: bool = false,
+    tokens: u64 = 0,
+    window: u64 = 0,
+    compact_at: u64 = 0,
+    cache_read: u64 = 0,
+    cost: Cost = .hidden,
+    fast: bool = false,
+    fallback: bool = false,
+    plan: bool = false,
+    strict: bool = false,
+    ultracode: bool = false,
+
+    /// Percent of the window in use, 0 when nothing has been measured.
+    pub fn percent(self: Status) u64 {
+        if (!self.has_context or self.window == 0) return 0;
+        return @min((self.tokens *| 100) / self.window, 100);
+    }
+};
+
 pub const Event = union(enum) {
     /// A tool call cleared the gates and is running (ToolInvocation).
     tool_started: Tool,
@@ -47,6 +86,10 @@ pub const Event = union(enum) {
     notice: []const u8,
     /// The active provider failed over mid-turn (provider_fallback).
     model_changed: []const u8,
+    /// The engine's own context/cost meters (prompt_ready). The TUI renders
+    /// /context, /session-info and the footer from THIS, instead of counting
+    /// characters and calling the result a context meter.
+    status: Status,
 };
 
 /// Lock-guarded SPSC-shaped hand-off: the turn thread (and the parallel tool
@@ -141,7 +184,18 @@ fn dupeEvent(gpa: std.mem.Allocator, ev: Event) ?Event {
         .tool_rejected => |t| .{ .tool_rejected = dupeTool(gpa, t) orelse return null },
         .notice => |s| .{ .notice = gpa.dupe(u8, s) catch return null },
         .model_changed => |s| .{ .model_changed = gpa.dupe(u8, s) catch return null },
+        .status => |st| .{ .status = dupeStatus(gpa, st) orelse return null },
     };
+}
+
+fn dupeStatus(gpa: std.mem.Allocator, st: Status) ?Status {
+    var out = st;
+    out.model = gpa.dupe(u8, st.model) catch return null;
+    out.provider_id = gpa.dupe(u8, st.provider_id) catch {
+        gpa.free(out.model);
+        return null;
+    };
+    return out;
 }
 
 fn freeEvent(gpa: std.mem.Allocator, ev: Event) void {
@@ -151,6 +205,10 @@ fn freeEvent(gpa: std.mem.Allocator, ev: Event) void {
             gpa.free(t.detail);
         },
         .notice, .model_changed => |s| gpa.free(s),
+        .status => |st| {
+            gpa.free(st.model);
+            gpa.free(st.provider_id);
+        },
     }
 }
 

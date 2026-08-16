@@ -78,7 +78,6 @@ pub fn finishJob(self: *Model) void {
     drainEvents(self);
     _ = removePendingRows(self);
     if (job.result) |r| {
-        self.chars_out += r.len;
         self.push(.assistant, r) catch {};
         self.alloc.free(r);
     } else if (self.cancel_requested) {
@@ -220,6 +219,8 @@ fn applyEvent(self: *Model, ev: engine.Event) void {
         // A mid-turn failover changes what the status bar must say. The event's
         // copy dies with this drain, so the Model takes ownership of the name
         // the global points at.
+        // The engine's meters, measured against the request it actually sent.
+        .status => |st| self.setStatus(st),
         .model_changed => |s| if (self.alloc.dupe(u8, s)) |owned| {
             if (self.model_override) |old| self.alloc.free(old);
             self.model_override = owned;

@@ -20,6 +20,7 @@ pub const StreamBuf = engine.StreamBuf;
 pub const Event = engine.Event;
 pub const EventQueue = engine.EventQueue;
 pub const ToolEvent = engine.ToolEvent;
+pub const Status = engine.Status;
 pub const TurnFn = engine.TurnFn;
 pub const ModelFn = engine.ModelFn;
 pub const CancelFn = engine.CancelFn;
@@ -45,6 +46,7 @@ test {
     _ = catalog;
     _ = app;
     _ = @import("dispatch.zig");
+    _ = @import("meters.zig");
     _ = @import("key.zig");
     _ = @import("key_orphan.zig");
     _ = @import("key_tests.zig");

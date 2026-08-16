@@ -102,6 +102,10 @@ pub fn turnAgent(
         .ultracode_mode = params.ultracode,
         .show_thinking = params.thinking,
         .strict = Policy.from(params).strict,
+        // Session meters, not per-turn ones: see ReplCtx.
+        .last_context_tokens = c.last_context_tokens,
+        .context_local_tokens = c.context_local_tokens,
+        .last_cache_read = c.last_cache_read,
     };
     try prompts.setSystemPrompts(&agent, sys, arena);
     return agent;
@@ -170,7 +174,15 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
         c.provider = agent.provider;
         c.fallback_active = agent.fallback_active;
         c.fallback_blocked = agent.fallback_blocked;
+        c.last_context_tokens = agent.last_context_tokens;
+        c.context_local_tokens = agent.context_local_tokens;
+        c.last_cache_read = agent.last_cache_read;
         returnHistory(c, &agent);
+        // The engine's own status line, as a typed event (#551): the frontend
+        // renders /context, /session-info and its footer from THIS rather than
+        // from characters it counted. Emitted on every exit path, including the
+        // early ends, because a stalled turn still moved the meters.
+        agent.prompt() catch {};
     }
     const final = providers.runTurnWithFallback(&agent, &c.keys, arena, &sink.writer) catch |err| switch (err) {
         // A mid-stream stall (#134): the repl turn IS live (stream_quiet=false),
