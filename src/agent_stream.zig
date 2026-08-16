@@ -23,8 +23,8 @@ const reasoningDelta = @import("title.zig").reasoningDelta;
 const stream_tests = @import("agent_stream_tests.zig");
 
 const http = @import("http.zig");
+const http_headers = @import("http_headers.zig");
 const providerUserAgent = http.providerUserAgent;
-const providerHeaders = http.providerHeaders;
 const capture5xxBodyStream = http.capture5xxBodyStream;
 const WatchdogFired = http.WatchdogFired;
 const sendHeadTask = http.sendHeadTask;
@@ -74,7 +74,9 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     };
     defer if (bearer.len > 0) gpa.free(bearer);
     var headers_buf: [12]std.http.Header = undefined;
-    const extra = providerHeaders(self.io, provider, bearer, &headers_buf);
+    var conv_buf: [96]u8 = undefined;
+    const conv = http_headers.promptCacheKey(self.io, self.label, self, &conv_buf);
+    const extra = http_headers.providerHeadersWithConv(self.io, provider, bearer, &headers_buf, conv);
 
     self.md_buf.clearRetainingCapacity(); // fresh markdown state per stream
     self.arg_live = .{}; // fresh tool-argument extractor per stream

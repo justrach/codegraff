@@ -27,6 +27,8 @@ pub fn waitForClientReady(io: Io) void {
 
 pub const providerUserAgent = headers.userAgent;
 pub const providerHeaders = headers.providerHeaders;
+/// Test/call-site seam: the !live request path's POST, with an explicit conv id.
+pub const postWithConv = post;
 
 /// Copy up to root.g_5xx_body_buf.len bytes of an error response body into the
 /// global buffer so request()'s retry message can surface the gateway's
@@ -120,7 +122,7 @@ test "retryAfterMs: seconds, ms preferred, cap, HTTP-date/none -> 0 (#retry-afte
 /// subagents (#177). Mirrors postStream's errdefer poison (agent_stream.zig).
 /// The client and its connection pool stay shared across pool threads —
 /// client.request is what fetch wraps and is equally thread-safe.
-fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []const u8) ![]u8 {
+fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []const u8, conv_id: ?[]const u8) ![]u8 {
     var aw: Io.Writer.Allocating = .init(gpa);
     errdefer aw.deinit();
 
@@ -131,7 +133,7 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
     defer if (bearer.len > 0) gpa.free(bearer);
 
     var headers_buf: [12]std.http.Header = undefined;
-    const extra = providerHeaders(client.io, provider, bearer, &headers_buf);
+    const extra = headers.providerHeadersWithConv(client.io, provider, bearer, &headers_buf, conv_id);
 
     var req = try client.request(.POST, try std.Uri.parse(provider.url), .{
         .redirect_behavior = .unhandled,
@@ -334,8 +336,8 @@ pub fn headStallTask(io: Io, poll_stdin: bool) WatchdogFired {
 }
 
 /// Select-arm wrapper for `post` (pins the member type to anyerror![]u8).
-fn postTask(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []const u8) anyerror![]u8 {
-    return post(gpa, client, provider, body);
+fn postTask(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []const u8, conv_id: ?[]const u8) anyerror![]u8 {
+    return post(gpa, client, provider, body, conv_id);
 }
 
 /// Cancel the remaining select arms, freeing a late-arriving response body
@@ -355,11 +357,11 @@ fn drainPostSelect(gpa: Allocator, sel: anytype) void {
 /// Esc surfaces as error.Interrupted (no retry); the deadline as
 /// error.HungRequest, which request()'s retry loop treats as a transport
 /// flake. Falls back to a bare post when no spare concurrency exists.
-pub fn postWatched(gpa: Allocator, io: Io, client: *std.http.Client, provider: Provider, body: []const u8) ![]u8 {
+pub fn postWatched(gpa: Allocator, io: Io, client: *std.http.Client, provider: Provider, body: []const u8, conv_id: ?[]const u8) ![]u8 {
     const Done = union(enum) { posted: anyerror![]u8, watchdog: WatchdogFired };
     var done_buf: [2]Done = undefined;
     var sel: Io.Select(Done) = .init(io, &done_buf);
-    sel.concurrent(.posted, postTask, .{ gpa, client, provider, body }) catch
+    sel.concurrent(.posted, postTask, .{ gpa, client, provider, body, conv_id }) catch
         return error.HungRequest; // #56 Fix-B: pool exhausted — don't fall back to a bare blocking post() that can hang a subagent turn with no Esc path; return retryable so request() retries + backs off
     sel.concurrent(.watchdog, postWatchdog, .{io}) catch {
         const r = sel.await() catch |e| { // posted is the only arm
@@ -461,7 +463,7 @@ test "post (#177): a send-failed connection is not re-pooled — the next reques
     // poisoned the connection, and the real assertion is that the NEXT request
     // recovers (below). Only an unexpected success needs the throwaway dial, to
     // release the server's still-pending second accept() so await can't hang.
-    if (post(gpa, &client, provider, big)) |resp| {
+    if (post(gpa, &client, provider, big, null)) |resp| {
         gpa.free(resp);
         if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
         return error.TestExpectedError;
@@ -470,7 +472,7 @@ test "post (#177): a send-failed connection is not re-pooled — the next reques
     // The regression: without the poison this pulls dead conn 1 back out of
     // the pool (no fresh dial) and fails with WriteFailed instead of
     // reaching conn 2's 200.
-    const second = post(gpa, &client, provider, "{}");
+    const second = post(gpa, &client, provider, "{}", null);
     if (second) |resp| {
         defer gpa.free(resp);
         try std.testing.expectEqualStrings("ok", resp);
@@ -572,7 +574,7 @@ test "post (#177 5xx path): an oversized 5xx surfaces as ServerError and the ses
     // The 5xx surfaces as error.ServerError and poisons conn 1. Guard the
     // assertion the same way as the send-failed test: on any other outcome,
     // release the server's still-pending second accept() before failing.
-    if (post(gpa, &client, provider, "{}")) |resp| {
+    if (post(gpa, &client, provider, "{}", null)) |resp| {
         gpa.free(resp);
         if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
         return error.TestExpectedError; // a 500 must surface as ServerError
@@ -584,7 +586,7 @@ test "post (#177 5xx path): an oversized 5xx surfaces as ServerError and the ses
     // Recovery: the next request reaches conn 2's 200. (Unlike the send-failed
     // case above, std does not re-pool a partially-read connection on its own,
     // so this asserts end-to-end recovery, not that the 5xx poison is required.)
-    const second = post(gpa, &client, provider, "{}");
+    const second = post(gpa, &client, provider, "{}", null);
     if (second) |resp| {
         defer gpa.free(resp);
         try std.testing.expectEqualStrings("ok", resp);

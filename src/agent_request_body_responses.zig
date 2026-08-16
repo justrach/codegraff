@@ -19,19 +19,16 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     const is_codex = std.mem.eql(u8, self.provider.id, "codex");
     try s.objectField("instructions");
     try s.write(try schemaAwarePrompt(self));
-    if (is_codex) {
-        // Pin our full resends to a per-session cache partition, the way
-        // openai/codex does (it defaults this to the same session UUID it
-        // puts in the `session_id` header). xAI documents automatic prompt
-        // caching and no such field, so it stays codex-only.
+    if (is_codex or http_headers.wantsGrokConvId(self.provider.id)) {
+        // Codex: session UUID partition. xAI: official prompt_cache_key,
+        // same sticky id as the `x-grok-conv-id` header.
         var ckbuf: [96]u8 = undefined;
         try s.objectField("prompt_cache_key");
         try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
     }
-    // Codex WS delta: once a response.id is held on a live WS session, send
-    // previous_response_id + only the items the server does not yet hold.
-    // codex_chain gates this to codex — xAI's WS stalls silently on a
-    // store:false chained turn (probed 2026-08-15). ONE gate for both fields.
+    // Held-socket delta: previous_response_id + only the new items. xAI's
+    // published WS contract supports this with store:false via the in-memory
+    // connection cache; a not-found / 25-min close / drop re-anchors.
     const chain = codex_chain.chainUsable(self);
     if (chain) {
         try s.objectField("previous_response_id");
@@ -164,7 +161,7 @@ test "xai Responses body is bearer-clean: no codex-isms, xAI-legal fields only (
     try std.testing.expect(std.mem.indexOf(u8, body, "\"instructions\":\"system\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"store\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning\":{\"effort\":\"medium\"}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "prompt_cache_key") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"prompt_cache_key\":\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "service_tier") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "context_management") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "previous_response_id") == null);

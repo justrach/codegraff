@@ -17,6 +17,7 @@ const normalizeResponsesHistory = messages_mod.normalizeResponsesHistory;
 const normalizeOpenAIHistory = messages_mod.normalizeOpenAIHistory;
 
 const http = @import("http.zig");
+const http_headers = @import("http_headers.zig");
 const postWatched = http.postWatched;
 const RetryPlan = http.RetryPlan;
 
@@ -62,6 +63,7 @@ pub const parseResponses = responses.parseResponses;
 pub const errorMessage = responses.errorMessage;
 
 pub const buildBody = @import("agent_request_body.zig").buildBody;
+const codex_chain = @import("codex_chain.zig");
 
 const req_stats = @import("req_stats.zig"); // GRAFF_REQ_STATS anatomy (session_settings arms req_stats.g_armed)
 
@@ -203,10 +205,12 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         const resp_body = blk: {
             var attempt: usize = 0;
             while (true) : (attempt += 1) {
+                var conv_buf: [96]u8 = undefined;
+                const conv = http_headers.promptCacheKey(self.io, self.label, self, &conv_buf);
                 const attempt_body = if (live)
                     self.postLive(body)
                 else
-                    postWatched(self.gpa, self.io, self.client, self.provider, body);
+                    postWatched(self.gpa, self.io, self.client, self.provider, body, conv);
                 if (attempt_body) |ok| break :blk ok else |err| {
                     if (self.streamed_text) if (self.out) |w| {
                         w.writeAll("\n") catch {};
@@ -389,9 +393,9 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     // input. Gated on codex_prev_id != null (a delta was
                     // actually sent); it's null after the retry, so this can't
                     // loop for this request.
-                    if (self.codex_prev_id != null and std.mem.indexOf(u8, msg, "previous_response_id") != null) {
+                    if (self.codex_prev_id != null and codex_chain.shouldDropChain(msg, failure.code)) {
                         self.closeCodexWs();
-                        if (self.tracer) |tr| tr.note("ws", "server rejected previous_response_id — re-anchoring with full input");
+                        if (self.tracer) |tr| tr.note("ws", "server dropped previous_response_id — re-anchoring with full input");
                         continue :rebuild;
                     }
                     // #174: a context-window rejection means the true input

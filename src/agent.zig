@@ -92,6 +92,7 @@ pub const Agent = struct {
     codex_chain_rewrites: u32 = 0, // history_rewrites when the chain was anchored; a later compaction/trim invalidates it
     codex_props_fp: u64 = 0, // request properties the server anchored on (model/effort/fast/tools/instructions)
     codex_ws_used_ms: i64 = 0, // .awake-clock ms of the WS's last successful use; gates the idle preemptive re-anchor (#codex-ws)
+    codex_ws_opened_ms: i64 = 0, // first connect time; xAI/codex WS hard-cap is 25 minutes
     sub: bool,
     /// This agent is served NO tools at all — the `tools` field is omitted
     /// from the request rather than sent empty, which every provider accepts.
@@ -314,6 +315,7 @@ pub const Agent = struct {
             self.codex_prev_id = null;
         }
         self.codex_sent_upto = 0;
+        self.codex_ws_opened_ms = 0;
     }
 
     pub fn runTurn(self: *Agent) anyerror![]const u8 {

@@ -258,7 +258,9 @@ pub fn explicitCompact(self: *Agent) bool {
     var cp = self.provider;
     cp.url = compact_url;
     if (!main_mod.json_mode) self.say("[compacting server-side: {d} item(s)…]\n", .{self.messages.items.len}) catch {};
-    const resp = http.postWatched(self.gpa, self.io, self.client, cp, body) catch |err| {
+    var conv_buf: [96]u8 = undefined;
+    const conv = @import("http_headers.zig").promptCacheKey(self.io, self.label, self, &conv_buf);
+    const resp = http.postWatched(self.gpa, self.io, self.client, cp, body, conv) catch |err| {
         if (self.tracer) |tr| tr.note("compact", @errorName(err));
         return false;
     };

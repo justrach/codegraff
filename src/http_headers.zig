@@ -107,7 +107,19 @@ pub fn userAgent(provider: Provider) std.http.Client.Request.Headers.Value {
     return .default;
 }
 
+/// xAI Chat Completions + Responses: the official cache-routing header.
+/// `promptCacheKey` is the same sticky id used as Responses `prompt_cache_key`.
+pub fn wantsGrokConvId(provider_id: []const u8) bool {
+    return std.mem.eql(u8, provider_id, "xai");
+}
+
 pub fn providerHeaders(io: Io, provider: Provider, bearer: []const u8, buf: *[12]std.http.Header) []const std.http.Header {
+    return providerHeadersWithConv(io, provider, bearer, buf, null);
+}
+
+/// Same as `providerHeaders`, with an explicit conversation id for xAI.
+/// Null falls back to the process session id (one-off posts: title, compact).
+pub fn providerHeadersWithConv(io: Io, provider: Provider, bearer: []const u8, buf: *[12]std.http.Header, conv_id: ?[]const u8) []const std.http.Header {
     var count: usize = 0;
     switch (provider.auth) {
         .x_api_key => {
@@ -138,6 +150,10 @@ pub fn providerHeaders(io: Io, provider: Provider, bearer: []const u8, buf: *[12
         buf[count] = .{ .name = "originator", .value = "codex_cli_rs" };
         count += 1;
         buf[count] = .{ .name = "session_id", .value = sessionId(io) };
+        count += 1;
+    }
+    if (wantsGrokConvId(provider.id)) {
+        buf[count] = .{ .name = "x-grok-conv-id", .value = conv_id orelse sessionId(io) };
         count += 1;
     }
     return buf[0..count];
@@ -195,4 +211,42 @@ test "adoptSessionId validates length and never overwrites a minted id" {
     adoptSessionId("too-short");
     adoptSessionId("00000000-0000-4000-8000-000000000000");
     try std.testing.expectEqualStrings(before, sessionId(io));
+}
+
+fn headerValue(headers: []const std.http.Header, name: []const u8) ?[]const u8 {
+    for (headers) |h| if (std.mem.eql(u8, h.name, name)) return h.value;
+    return null;
+}
+
+test "xAI Chat Completions headers carry a stable per-conversation x-grok-conv-id" {
+    const io = std.testing.io;
+    var root_ptr: usize = 1;
+    var child_ptr: usize = 2;
+    const root_agent: *const anyopaque = @ptrCast(&root_ptr);
+    const child_agent: *const anyopaque = @ptrCast(&child_ptr);
+    var root_buf: [96]u8 = undefined;
+    var child_buf: [96]u8 = undefined;
+    const root_id = promptCacheKey(io, "main", root_agent, &root_buf);
+    const again_buf = promptCacheKey(io, "main", root_agent, root_buf[0..]);
+    _ = again_buf;
+    var root_buf2: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(root_id, promptCacheKey(io, "main", root_agent, &root_buf2));
+    const child_id = promptCacheKey(io, "sub", child_agent, &child_buf);
+    try std.testing.expect(!std.mem.eql(u8, root_id, child_id));
+
+    const xai: Provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "grok-4.6", .context = 256_000 };
+    var buf: [12]std.http.Header = undefined;
+    const first = providerHeadersWithConv(io, xai, "Bearer k", &buf, root_id);
+    try std.testing.expectEqualStrings(root_id, headerValue(first, "x-grok-conv-id") orelse return error.MissingGrokConvId);
+    var buf2: [12]std.http.Header = undefined;
+    const second = providerHeadersWithConv(io, xai, "Bearer k", &buf2, root_id);
+    try std.testing.expectEqualStrings(root_id, headerValue(second, "x-grok-conv-id").?);
+    var buf3: [12]std.http.Header = undefined;
+    const child_headers = providerHeadersWithConv(io, xai, "Bearer k", &buf3, child_id);
+    try std.testing.expectEqualStrings(child_id, headerValue(child_headers, "x-grok-conv-id").?);
+
+    const anth: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude", .context = 200_000 };
+    var abuf: [12]std.http.Header = undefined;
+    const ah = providerHeadersWithConv(io, anth, "", &abuf, root_id);
+    try std.testing.expect(headerValue(ah, "x-grok-conv-id") == null);
 }

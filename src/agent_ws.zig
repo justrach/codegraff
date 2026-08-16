@@ -75,6 +75,13 @@ pub fn codexWsIdleExpired(now_ms: i64, used_ms: i64) bool {
     return now_ms - used_ms > codex_ws_idle_ms;
 }
 
+/// Official Responses WS hard cap: one connection stays open ≤ 25 minutes.
+pub const ws_lifetime_ms: i64 = 25 * std.time.ms_per_min;
+
+pub fn wsLifetimeExpired(now_ms: i64, opened_ms: i64) bool {
+    return opened_ms != 0 and now_ms - opened_ms >= ws_lifetime_ms;
+}
+
 /// The .awake monotonic clock in ms — same time source as request()'s
 /// latency measurement, so codex_ws_used_ms compares consistently.
 fn nowAwakeMs(io: Io) i64 {
@@ -364,19 +371,24 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     defer gpa.free(frame);
 
     const bearer = try std.fmt.allocPrint(arena, "Bearer {s}", .{provider.api_key});
-    // The SAME per-process session id the HTTP path sends, not a fresh one per
-    // connect: this is what the backend partitions its prompt cache on, so a
-    // new id per socket handed every re-anchor a cold partition.
-    // The ChatGPT identity tail is codex-only — xAI's WS authenticates with the bearer alone (#502).
-    const all_headers = [_]ws.Header{
-        .{ .name = "Authorization", .value = bearer },
-        .{ .name = "session_id", .value = http_headers.sessionId(self.io) },
-        .{ .name = "chatgpt-account-id", .value = provider.account },
-        .{ .name = "OpenAI-Beta", .value = "responses_websockets=2026-02-06" },
-        .{ .name = "originator", .value = "codex_cli_rs" },
-        .{ .name = "User-Agent", .value = "codex_cli_rs/0.1 (graff)" },
-    };
-    const headers: []const ws.Header = if (std.mem.eql(u8, provider.id, "codex")) &all_headers else all_headers[0..2];
+    var conv_buf: [96]u8 = undefined;
+    const conv = http_headers.promptCacheKey(self.io, self.label, self, &conv_buf);
+    var hdrs: [7]ws.Header = undefined;
+    var hn: usize = 1;
+    hdrs[0] = .{ .name = "Authorization", .value = bearer };
+    if (std.mem.eql(u8, provider.id, "codex")) {
+        hdrs[1] = .{ .name = "session_id", .value = http_headers.sessionId(self.io) };
+        hdrs[2] = .{ .name = "chatgpt-account-id", .value = provider.account };
+        hdrs[3] = .{ .name = "OpenAI-Beta", .value = "responses_websockets=2026-02-06" };
+        hdrs[4] = .{ .name = "originator", .value = "codex_cli_rs" };
+        hdrs[5] = .{ .name = "User-Agent", .value = "codex_cli_rs/0.1 (graff)" };
+        hn = 6;
+    } else if (http_headers.wantsGrokConvId(provider.id)) {
+        hdrs[1] = .{ .name = "session_id", .value = http_headers.sessionId(self.io) };
+        hdrs[2] = .{ .name = "x-grok-conv-id", .value = conv };
+        hn = 3;
+    }
+    const headers: []const ws.Header = hdrs[0..hn];
     const url = try wssUrl(arena, provider.url);
 
     // Esc watching (root TTY), same gate as postStream.
@@ -394,20 +406,10 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     defer sink.emit(self.io, .stream_finished);
 
     if (self.tracer) |tr| tr.note("ws", "connecting");
-    // (#codex-ws) Preemptive idle re-anchor: don't reuse a WS the server has
-    // likely already killed (it closes idle sockets well before our reuse in a
-    // real trace) — that costs a failed round trip before the reactive
-    // CodexWsReanchor path kicks in. Close it up front instead. Subtlety: the
-    // body was already built while codex_ws was non-null, so a DELTA body
-    // (previous_response_id + partial input) is useless on a fresh connection —
-    // return error.CodexWsReanchor so request()'s rebuild: loop rebuilds full
-    // input. A non-delta body is self-contained: just fall through and dial.
-    //
-    // This CLOCK is the only pre-send gate there is — see the liveness note
-    // above for why a real is_closed() equivalent is not available here, and
-    // which deadlines cover the socket it cannot judge.
+    // Idle or 25-minute cap: a delta body is useless on a fresh socket.
     if (self.codex_ws) |held| {
-        if (codexWsIdleExpired(nowAwakeMs(self.io), self.codex_ws_used_ms)) {
+        const now = nowAwakeMs(self.io);
+        if (codexWsIdleExpired(now, self.codex_ws_used_ms) or wsLifetimeExpired(now, self.codex_ws_opened_ms)) {
             // The premise of this branch is that the server has likely already
             // killed this socket, so it is SUSPECT: it must not spend a blocking
             // courtesy close frame on it (ws.WsClient.deinit).
@@ -444,7 +446,8 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
             });
             return e;
         };
-        self.codex_ws_used_ms = nowAwakeMs(self.io); // fresh socket = fresh idle window (#codex-ws)
+        self.codex_ws_opened_ms = nowAwakeMs(self.io);
+        self.codex_ws_used_ms = self.codex_ws_opened_ms;
         if (self.tracer) |tr| tr.note("ws", "connected");
     } else if (self.tracer) |tr| tr.note("ws", "reuse (delta)");
     const client = self.codex_ws.?;
