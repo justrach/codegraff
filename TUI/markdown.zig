@@ -275,6 +275,9 @@ pub fn renderUser(a: std.mem.Allocator, src: []const u8, accent: []const u8, tex
     return out.toOwnedSlice();
 }
 
+/// `code`, **bold** and bare URLs, painted in place. Public for table.zig,
+/// which renders a cell the same way prose is rendered rather than measuring
+/// markers by hand — see the note at the head of that file.
 pub fn inlineSpans(out: *std.array_list.Managed(u8), line: []const u8, accent: []const u8, text: []const u8) !void {
     var i: usize = 0;
     while (i < line.len) {

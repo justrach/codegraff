@@ -27,6 +27,7 @@ const std = @import("std");
 const Io = std.Io;
 
 const paint = @import("paint.zig");
+const theme_mod = @import("theme.zig");
 
 /// What render.zig believes the last two frames did to the scrollable band.
 /// `delta` counts CONTENT lines: positive means the viewport moved further
@@ -37,6 +38,16 @@ pub const Hint = struct {
     top: usize,
     len: usize,
     delta: isize,
+    /// Both frames carry the scroll gutter (scrollbar.zig), so every band row
+    /// on both is shaped `content ++ reset ++ style ++ cell`. The content half
+    /// slides with the scroll; the gutter cell does NOT, because its position
+    /// comes from the scroll offset rather than from the lines under it. So
+    /// the verification compares content halves and the paint patches the one
+    /// cell per row, on the two or three rows the thumb actually moved across.
+    /// False means ordinary whole-row comparison — including the frame the
+    /// gutter appears on and the frame it leaves, where the shapes differ and
+    /// the caller correctly falls back to a full diff.
+    gutter: bool = false,
 };
 
 /// Terminals taller than this fall back to the diff path rather than grow the
@@ -83,6 +94,22 @@ fn viable(rows: usize, h: Hint) bool {
     return @abs(h.delta) < h.len;
 }
 
+/// A gutter row splits at its LAST reset: everything before is the content the
+/// scroll carries, everything from it (`reset ++ style ++ cell`) is the one
+/// column that does not. scrollbar.zig appends that suffix after every band
+/// row, so the last reset is always the split — and the suffix is
+/// self-contained, which is what lets the patch below write it straight onto
+/// the last cell.
+fn content(row: []const u8) []const u8 {
+    const at = std.mem.lastIndexOf(u8, row, theme_mod.reset) orelse return row;
+    return row[0..at];
+}
+
+fn cell(row: []const u8) []const u8 {
+    const at = std.mem.lastIndexOf(u8, row, theme_mod.reset) orelse return "";
+    return row[at..];
+}
+
 /// Decide, writing nothing. Returns the exposed-row plan when a hardware
 /// scroll is provably equivalent to repainting the band, and null otherwise —
 /// a null here is never a correctness risk, only a missed optimisation.
@@ -95,7 +122,11 @@ fn plan(rows: usize, h: Hint, cur: *const Lines, old: *const Lines) ?Plan {
     while (j < kept) : (j += 1) {
         const dst = if (up) j else j + mag;
         const src = if (up) j + mag else j;
-        if (!std.mem.eql(u8, cur.at(h.top + dst), old.at(h.top + src))) return null;
+        const want = cur.at(h.top + dst);
+        const have = old.at(h.top + src);
+        if (h.gutter) {
+            if (!std.mem.eql(u8, content(want), content(have))) return null;
+        } else if (!std.mem.eql(u8, want, have)) return null;
     }
     return .{
         .first_exposed = h.top + (if (up) kept else 0),
@@ -140,6 +171,25 @@ pub fn tryPaint(
         const r = p.first_exposed + e;
         try w.print("\x1b[{d};1H", .{r + 1});
         try paint.paintRow(w, cur.at(r), cols, bg);
+    }
+    // The gutter rode the scroll along with the content, but its position
+    // comes from the scroll OFFSET, so on the rows the thumb moved across the
+    // terminal is now showing the wrong cell. Patch that one column, and only
+    // where it actually differs — a notch moves the thumb by about a row, so
+    // this is two cells, not a band. (Exposed rows were just written whole.)
+    if (h.gutter) {
+        const kept = h.len - p.count;
+        var j: usize = 0;
+        while (j < kept) : (j += 1) {
+            const dst = if (p.up) j else j + p.count;
+            const src = if (p.up) j + p.count else j;
+            const want = cell(cur.at(h.top + dst));
+            if (std.mem.eql(u8, want, cell(old.at(h.top + src)))) continue;
+            try w.print("\x1b[{d};{d}H", .{ h.top + dst + 1, cols });
+            try w.writeAll(paint.row_prologue);
+            try w.writeAll(bg);
+            try w.writeAll(want);
+        }
     }
     // The band moved; nothing else did. Chrome that changed for its own
     // reasons — the sticky header now pinning a different prompt, a scroll
@@ -308,6 +358,85 @@ test "a selection band dropped by the same wheel notch blocks the scroll" {
     // Over the CLEAN screen the scroll is fine; over the banded one it is not.
     try std.testing.expect((try emit(ar, after, 24, 80, clean_prev, h)) != null);
     try std.testing.expect((try emit(ar, after, 24, 80, banded.items, h)) == null);
+}
+
+/// The same frame with every band row in the gutter shape scrollbar.zig gives
+/// it: content, then `reset ++ style ++ cell`, with the thumb on `thumb_len`
+/// rows starting `thumb_top` into the band.
+fn withGutter(a: std.mem.Allocator, frame: []const u8, band_top: usize, band_len: usize, thumb_top: usize, thumb_len: usize, cols: usize) ![]const u8 {
+    var out = std.array_list.Managed(u8).init(a);
+    var r: usize = 0;
+    var it = std.mem.splitScalar(u8, frame, '\n');
+    while (it.next()) |ln| : (r += 1) {
+        if (r > 0) try out.append('\n');
+        if (r < band_top or r >= band_top + band_len) {
+            try out.appendSlice(ln);
+            continue;
+        }
+        const body = theme_mod.takeCols(ln, cols - 1);
+        try out.appendSlice(body);
+        var pad = cols - 1 - theme_mod.visibleLen(body);
+        while (pad > 0) : (pad -= 1) try out.append(' ');
+        try out.appendSlice(theme_mod.reset);
+        try out.appendSlice("\x1b[38;2;90;90;90m");
+        const on = r >= band_top + thumb_top and r < band_top + thumb_top + thumb_len;
+        try out.appendSlice(if (on) "\u{275A}" else " ");
+    }
+    return out.items;
+}
+
+test "the scroll gutter rides the fast path and is patched a cell at a time" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const ar = arena.allocator();
+    const rows: usize = 24;
+    const cols: usize = 80;
+    const top: usize = 3;
+    const len: usize = 18;
+    // A notch: the content slid one line AND the thumb moved one row down.
+    const before = try withGutter(ar, try frameAt(ar, 100, rows, top, len, "same"), top, len, 4, 6, cols);
+    const after = try withGutter(ar, try frameAt(ar, 101, rows, top, len, "same"), top, len, 5, 6, cols);
+    const h: Hint = .{ .top = top, .len = len, .delta = 1, .gutter = true };
+    // Without the gutter flag the frames look like a band that changed for its
+    // own reasons, and the fast path is refused — that is the regression this
+    // pins, and it is why the flag exists.
+    try std.testing.expect((try emit(ar, after, rows, cols, before, .{ .top = top, .len = len, .delta = 1 })) == null);
+    const out = (try emit(ar, after, rows, cols, before, h)).?;
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\x1b[1S"));
+    // A handful of cells, not a band. The thumb is a RANGE, and the content
+    // slid up by one while the thumb moved down by one, so it is displaced by
+    // two rows relative to what the terminal just carried: the two rows at
+    // each end. Each is addressed at the LAST column, never at column 1.
+    try std.testing.expectEqual(@as(usize, 4), std.mem.count(u8, out, ";80H"));
+    // One whole row: the one the scroll exposed at the bottom of the band.
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, ";1H"));
+    // Cheap: a gutter notch must stay in the same class as a plain one.
+    var aw = Io.Writer.Allocating.init(ar);
+    try paint.paint(&aw.writer, after, rows, cols, before, test_bg, true, null);
+    try std.testing.expect(out.len * 4 < aw.written().len);
+}
+
+test "a gutter frame whose content did NOT slide is still refused" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const ar = arena.allocator();
+    const top: usize = 3;
+    const len: usize = 18;
+    const before = try withGutter(ar, try frameAt(ar, 100, 24, top, len, "same"), top, len, 4, 6, 80);
+    // Same offset the hint claims, but a row inside the band changed: the
+    // content comparison has to catch it even though the gutter halves agree.
+    const raw = try frameAt(ar, 101, 24, top, len, "same");
+    var folded = std.array_list.Managed(u8).init(ar);
+    var it = std.mem.splitScalar(u8, raw, '\n');
+    var r: usize = 0;
+    while (it.next()) |ln| : (r += 1) {
+        if (r > 0) try folded.append('\n');
+        try folded.appendSlice(if (r == 9) "the tool run just expanded" else ln);
+    }
+    const after = try withGutter(ar, folded.items, top, len, 5, 6, 80);
+    try std.testing.expect((try emit(ar, after, 24, 80, before, .{ .top = top, .len = len, .delta = 1, .gutter = true })) == null);
 }
 
 /// A terminal that also knows DECSTBM / SU / SD — the two sequences the diff

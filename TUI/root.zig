@@ -69,10 +69,14 @@ test {
     _ = @import("theme_tint.zig");
     _ = @import("hover.zig");
     _ = @import("hover_tests.zig");
+    _ = @import("osc52.zig");
+    _ = @import("scrollbar.zig");
+    _ = @import("scrollbar_tests.zig");
     _ = @import("chrome.zig");
     _ = @import("models.zig");
     _ = @import("markdown.zig");
     _ = @import("markdown_stream_tests.zig");
+    _ = @import("table.zig");
     _ = @import("syntax.zig");
     _ = @import("diff.zig");
     _ = @import("dump.zig");

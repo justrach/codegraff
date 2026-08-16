@@ -89,14 +89,14 @@ pub fn run(
     w.writeAll(enable_seq) catch {};
     w.writeAll("\x1b]11;?\x07") catch {}; // background query -> auto light/dark (key.zig bg_report)
     w.flush() catch {};
+    // Registered BEFORE the restore below, so LIFO puts the line on the normal
+    // screen after the alt screen is gone. No-op unless GRAFF_TUI_PAINT_STATS.
+    defer pacing.report(w);
     // Nothing may write to the real terminal around the frame painter: park
     // fd 2 on .graff/tui-stderr.log so std.debug.print from any thread (a
     // subagent's status card, a worker line) cannot scroll the alt screen and
     // bleed stale rows through the diff paint. Every exit path unparks it.
     restore_mod.muteStderr();
-    // Registered BEFORE the restore below, so LIFO puts the line on the normal
-    // screen after the alt screen is gone. No-op unless GRAFF_TUI_PAINT_STATS.
-    defer pacing.report(w);
     traj.open(io);
     defer {
         restore_mod.unmuteStderr();
@@ -169,6 +169,18 @@ pub fn run(
                 const rows = @max(tty.rows(), @as(usize, 12));
                 const frame = render_mod.render(&m, gpa, cols, rows, m.now_ms) catch break :frame_blk;
                 defer gpa.free(frame);
+                // A copy landed inside that render (selection.zig commits the
+                // clipboard from the pass that captured it). OSC 52 asks the
+                // TERMINAL for its clipboard, which is the only one an SSH user
+                // can paste from — and it goes out HERE, outside the frame,
+                // because the frame gets repainted and a clipboard write must
+                // happen exactly once.
+                const osc = @import("selection.zig").takeOsc52(&m);
+                if (osc.len > 0) {
+                    w.writeAll(osc) catch {};
+                    w.flush() catch {};
+                    m.alloc.free(osc); // minted by the model's own allocator
+                }
                 const hash = std.hash.Wyhash.hash(0, frame);
                 // The diff painter trusts `prev` to be what is on screen. Two
                 // things can make that a lie without changing a single byte of

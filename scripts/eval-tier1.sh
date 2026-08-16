@@ -316,6 +316,16 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-hover.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+    # The scroll gutter has to land on a CELL and then leave no trace, and the
+    # OSC 52 copy has to leave the process — neither is visible to a unit test.
+    # Reads the thumb off the last column of the virtual screen, compares that
+    # column against a forced full repaint once it fades, and matches the
+    # base64 on the wire against the rows the drag covered. Each of the three
+    # is a verified gate: removing the fade rule, the fade EXPIRY, or the tty
+    # write each fails a different check.
+    if python3 scripts/test-tui-scrollbar-osc52.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
   fi
 fi
 
