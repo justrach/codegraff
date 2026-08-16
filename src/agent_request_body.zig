@@ -181,13 +181,18 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 try s.write(if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
             }
             // --output-schema: structured outputs (xAI docs' response_format).
-            // A provider that rejected json_schema (#543, deepseek) runs in
-            // json_object mode instead — the schema rides the prompt then.
+            // A provider that rejected json_schema (#543, deepseek) degrades
+            // dsh-style: the tools-off formatting turn carries the schema as a
+            // forced structured_output tool (validation + repair loop); a turn
+            // with real tools falls back to json_object + schema-in-prompt.
             if (self.output_schema) |schema_json| {
-                if (self.sox_json_object)
-                    try @import("agent_request_body_responses.zig").writeJsonObjectFormat(&s)
+                const sox = @import("agent_request_body_responses.zig");
+                if (!self.sox_json_object)
+                    try sox.writeResponseFormat(&s, schema_json)
+                else if (tools != null)
+                    try sox.writeJsonObjectFormat(&s)
                 else
-                    try @import("agent_request_body_responses.zig").writeResponseFormat(&s, schema_json);
+                    try sox.writeStructuredOutputTool(&s, schema_json);
             }
         },
         // The Responses-wire body (codex / xAI #502) lives in its own module

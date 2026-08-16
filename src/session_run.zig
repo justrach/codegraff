@@ -175,7 +175,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
             root.text_only = false;
             root.output_schema = null;
         }
-        try root.messages.append(try messages_mod.textMessage(arena, "user", "Return ONLY the final answer as a single JSON object matching the enforced output schema. No prose."));
+        try root.messages.append(try messages_mod.textMessage(arena, "user", "Return ONLY the final answer matching the enforced output schema: call the structured_output tool if it is offered, otherwise reply with a single JSON object. No prose."));
         if (telemetry.g_telem) |t| t.countTurn();
         final_text = providers.runTurnWithFallback(root, keys, arena, null) catch blk: {
             // Best-effort: schema-shaping must never lose a finished answer.

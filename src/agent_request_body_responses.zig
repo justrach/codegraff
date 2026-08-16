@@ -88,11 +88,13 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
 pub fn schemaAwarePrompt(self: *Agent) ![]const u8 {
     const base = self.systemPrompt();
     if (self.output_schema == null) return base;
-    // #543 degrade: this provider cannot enforce json_schema server-side
-    // (json_object mode only), so the schema itself must reach the model.
+    // #543 degrade: this provider cannot enforce json_schema server-side,
+    // so the schema itself must reach the model — satisfied through the
+    // structured_output tool when offered (the tools-off formatting turn),
+    // else as the entire final message (agentic turns, json_object mode).
     if (self.sox_json_object) return std.mem.concat(self.scratchAlloc(), u8, &.{
         base,
-        "\n\nA JSON output schema is enforced on your final message. Use tools first to gather every fact you need; only the final message must match the schema — never guess values. This provider cannot enforce the schema server-side, so the final message must be a single JSON object that satisfies exactly this schema: ",
+        "\n\nA JSON output schema is enforced on your final answer. Use tools first to gather every fact you need — never guess values. This provider cannot enforce the schema server-side, so satisfy it yourself: call the structured_output tool when it is offered, otherwise reply with a single JSON object, matching exactly this schema: ",
         self.output_schema.?,
     });
     return std.mem.concat(self.scratchAlloc(), u8, &.{
@@ -128,6 +130,56 @@ pub fn writeJsonObjectFormat(s: *std.json.Stringify) !void {
     try s.objectField("type");
     try s.write("json_object");
     try s.endObject();
+}
+
+/// #543 tool mode (dsh's structured_output pattern): on the tools-off
+/// formatting turn the schema IS a tool — function calling replaces
+/// response_format entirely, and argument validation (handleStructuredOutput)
+/// gives a repair loop json_object mode never had. No forced tool_choice:
+/// deepseek's thinking mode rejects it ("Thinking mode does not support this
+/// tool_choice" — the same conflict the anthropic branch notes for Kimi), and
+/// dsh's own MUST-call instruction carries the demand instead.
+pub fn writeStructuredOutputTool(s: *std.json.Stringify, schema_json: []const u8) !void {
+    try s.objectField("tools");
+    try s.beginArray();
+    try s.beginObject();
+    try s.objectField("type");
+    try s.write("function");
+    try s.objectField("function");
+    try s.beginObject();
+    try s.objectField("name");
+    try s.write("structured_output");
+    try s.objectField("description");
+    try s.write("Report your final answer. Call this exactly once, when your answer is complete; the arguments must match this tool's parameter schema exactly.");
+    try s.objectField("parameters");
+    try s.print("{s}", .{schema_json});
+    try s.endObject();
+    try s.endObject();
+    try s.endArray();
+}
+
+/// #543 tool-mode capture: the forced structured_output call IS the final
+/// answer. Arguments are checked against the schema's top-level `required`
+/// list; a violation returns a tool ERROR so the model corrects itself in
+/// the ordinary loop (dsh's validate-and-repair). Valid arguments land via
+/// self.completed — the same end-of-turn channel attempt_completion uses.
+pub fn handleStructuredOutput(self: *Agent, input: Value) @import("tools.zig").ExecResult {
+    if (input != .object) return .{ .text = "structured_output arguments must be a single JSON object matching the tool's parameter schema", .is_error = true };
+    if (self.output_schema) |schema_json| {
+        if (std.json.parseFromSliceLeaky(Value, self.scratchAlloc(), schema_json, .{})) |schema_v| {
+            if (schema_v == .object) if (schema_v.object.get("required")) |req| if (req == .array) {
+                for (req.array.items) |k| if (k == .string and input.object.get(k.string) == null) {
+                    const text = std.fmt.allocPrint(self.arena, "arguments do not match the schema: missing required key \"{s}\" — call structured_output again with every required key present", .{k.string}) catch "arguments do not match the schema: a required key is missing";
+                    return .{ .text = text, .is_error = true };
+                };
+            };
+        } else |_| {}
+    }
+    var aw: std.Io.Writer.Allocating = .init(self.arena);
+    var st: std.json.Stringify = .{ .writer = &aw.writer };
+    st.write(input) catch return .{ .text = "structured_output arguments could not be serialized", .is_error = true };
+    self.completed = aw.toOwnedSlice() catch return .{ .text = "structured_output arguments could not be serialized", .is_error = true };
+    return .{ .text = "structured output recorded", .is_error = false };
 }
 
 /// Structured outputs on the chat-completions wire: response_format
@@ -169,6 +221,25 @@ fn testAgentFor(arena: std.mem.Allocator, id: []const u8, kind: @import("provide
     };
 }
 
+test "openai/codex Responses send prompt_cache_key and leave cache mode to the API" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var oai = try testAgentFor(a, "openai", .responses, "gpt-5.6");
+    const ob = try oai.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(ob);
+    try std.testing.expect(std.mem.indexOf(u8, ob, "\"prompt_cache_key\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ob, "prompt_cache_breakpoint") == null);
+    try std.testing.expect(std.mem.indexOf(u8, ob, "prompt_cache_options") == null);
+
+    var codex = try testAgentFor(a, "codex", .responses, "gpt-5.6-sol");
+    const cb = try codex.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(cb);
+    try std.testing.expect(std.mem.indexOf(u8, cb, "\"prompt_cache_key\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cb, "prompt_cache_breakpoint") == null);
+    try std.testing.expect(std.mem.indexOf(u8, cb, "prompt_cache_options") == null);
+}
+
 test "xai Responses body is bearer-clean: no codex-isms, xAI-legal fields only (#502)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -181,6 +252,7 @@ test "xai Responses body is bearer-clean: no codex-isms, xAI-legal fields only (
     try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning\":{\"effort\":\"medium\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"prompt_cache_key\":\"") != null); // xAI caches on it (+ x-grok-conv-id header)
     try std.testing.expect(std.mem.indexOf(u8, body, "service_tier") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "prompt_cache_breakpoint") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "context_management") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "previous_response_id") == null);
 }
@@ -209,21 +281,60 @@ test "--output-schema rides text.format on Responses and response_format on chat
     try std.testing.expect(std.mem.indexOf(u8, plain_body, "response_format") == null);
 }
 
-test "#543: json_schema rejection degrades to json_object with the schema moved into the prompt" {
+test "#543: json_schema rejection degrades dsh-style — forced structured_output tool on the formatting turn, json_object with tools" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const schema = "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},\"required\":[\"answer\"],\"additionalProperties\":false}";
     var agent = try testAgentFor(arena_state.allocator(), "deepseek", .openai, "deepseek-v4-flash");
     agent.output_schema = schema;
     agent.sox_json_object = true; // learned via the request() quirk ladder on deepseek's rejection
+
+    // Tools-off formatting turn: the schema IS a tool, forced — no response_format at all.
     const body = try agent.buildBody(null, false, true, true);
     defer std.testing.allocator.free(body);
-    // The wire carries plain JSON mode, never the rejected json_schema shape...
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"response_format\":{\"type\":\"json_object\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"structured_output\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"parameters\":{\"type\":\"object\",\"properties\":{\"answer\"") != null);
+    // NO forced tool_choice: deepseek thinking mode rejects it; the instruction demands the call.
+    try std.testing.expect(std.mem.indexOf(u8, body, "tool_choice") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "response_format") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "json_schema") == null);
-    // ...so the schema itself must reach the model through the system prompt.
+    // The prompt suffix still teaches the contract and carries the schema.
     try std.testing.expect(std.mem.indexOf(u8, body, "cannot enforce the schema server-side") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\\\"additionalProperties\\\":false") != null);
-    // json_object mode requires the word JSON in the prompt (deepseek docs) — the suffix carries it.
-    try std.testing.expect(std.mem.indexOf(u8, body, "JSON output schema") != null);
+
+    // A turn with real tools cannot merge the synthetic one — json_object mode instead.
+    const tools = "[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":\"\",\"parameters\":{\"type\":\"object\"}}}]";
+    const body2 = try agent.buildBody(tools, false, true, true);
+    defer std.testing.allocator.free(body2);
+    try std.testing.expect(std.mem.indexOf(u8, body2, "\"response_format\":{\"type\":\"json_object\"}") != null);
+    // The prompt suffix may NAME the tool; the synthetic DEFINITION must not appear.
+    try std.testing.expect(std.mem.indexOf(u8, body2, "\"name\":\"structured_output\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body2, "json_schema") == null);
+}
+
+test "#543: handleStructuredOutput validates required keys, repairs via tool error, lands via completed" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = try testAgentFor(a, "deepseek", .openai, "deepseek-v4-flash");
+    agent.output_schema = "{\"type\":\"object\",\"properties\":{\"n\":{\"type\":\"integer\"},\"name\":{\"type\":\"string\"}},\"required\":[\"n\",\"name\"]}";
+
+    // Non-object arguments are a schema violation, not a capture.
+    const bad_shape = handleStructuredOutput(&agent, .{ .string = "42" });
+    try std.testing.expect(bad_shape.is_error);
+    try std.testing.expect(agent.completed == null);
+
+    // A missing required key names itself so the model can repair and retry.
+    const missing = handleStructuredOutput(&agent, try std.json.parseFromSliceLeaky(Value, a, "{\"n\":4}", .{}));
+    try std.testing.expect(missing.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, missing.text, "missing required key \"name\"") != null);
+    try std.testing.expect(agent.completed == null);
+
+    // Valid arguments become the final answer, verbatim JSON, via completed.
+    const ok = handleStructuredOutput(&agent, try std.json.parseFromSliceLeaky(Value, a, "{\"n\":4,\"name\":\"SKU-B\"}", .{}));
+    try std.testing.expect(!ok.is_error);
+    try std.testing.expectEqualStrings("structured output recorded", ok.text);
+    const final = agent.completed.?;
+    try std.testing.expect(std.mem.indexOf(u8, final, "\"n\":4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, final, "\"name\":\"SKU-B\"") != null);
 }

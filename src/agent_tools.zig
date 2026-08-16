@@ -104,7 +104,9 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             continue;
         }
         try self.sayToolUse(call);
-        if (isMetaName(call.name)) {
+        if (self.output_schema != null and std.mem.eql(u8, call.name, "structured_output")) {
+            results[i] = @import("agent_request_body_responses.zig").handleStructuredOutput(self, call.input); // #543 tool-mode capture
+        } else if (isMetaName(call.name)) {
             results[i] = try self.handleMeta(call);
         } else if (try self.gateTool(call)) |denied| {
             results[i] = denied;
