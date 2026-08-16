@@ -9,6 +9,7 @@ const app = @import("app.zig");
 const chrome = @import("chrome.zig");
 const engine = @import("engine.zig");
 const glyphs = @import("glyphs.zig");
+const hover = @import("hover.zig");
 const scrollback = @import("scrollback.zig");
 const layout_cache = @import("layout_cache.zig");
 const scrollpaint = @import("scrollpaint.zig");
@@ -189,10 +190,13 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     }
     try out.appendSlice(bottom_block);
     self.paint_hint = scrollHint(self, prev_band);
-    // Selection is a post-pass over the finished frame: the row builders stay
-    // unaware of it, and the band lands on screen rows exactly as the mouse
-    // reported them (#529).
-    return gpa.dupe(u8, try selection.paint(self, a, out.items, width));
+    // Hover and selection are both post-passes over the finished frame: the row
+    // builders stay unaware of either, and both land on screen rows exactly as
+    // the mouse reported them (#529). Hover runs FIRST so a drag band painted
+    // over the same row wins — a selection CLAIMS a region, a hover tint only
+    // announces one.
+    const hovered = try hover.paint(self, a, out.items, width);
+    return gpa.dupe(u8, try selection.paint(self, a, hovered, width));
 }
 
 /// `count` mid rows starting at `from`, taken from the layout cache when the

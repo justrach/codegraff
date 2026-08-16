@@ -155,7 +155,8 @@ pub fn run(
         // queue empty behind it. Quiet, the frame is composed on the spot, so a
         // single flick pays nothing. A skipped tick falls straight through to
         // the drain below, so the frame that does land shows the LATEST scroll
-        // position — the intermediate ones are never painted at all.
+        // position — the intermediate ones are never painted at all. A hover
+        // sweep is the same shape as a momentum flick and rides the same lane.
         const more_pending = tty.poll(0);
         const painted = pacing.shouldPaint(m.now_ms, last_frame_ms, last_input_ms, more_pending);
         if (!painted) {

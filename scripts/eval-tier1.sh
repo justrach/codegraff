@@ -307,6 +307,15 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-stream-markdown.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+    # A clickable row has to LOOK clickable. Runs a real tool loop against the
+    # codex mock, then reads CELLS off a virtual screen: the hovered summary
+    # takes the theme's hover background and its ◆ becomes ›, its neighbour is
+    # untouched, leaving restores it, a single click still expands, and a
+    # double click is one net toggle. With the post-pass refused the probe
+    # fails on the tint (verified), so this is a gate on both halves.
+    if python3 scripts/test-tui-hover.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
   fi
 fi
 

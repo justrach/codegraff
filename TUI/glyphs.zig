@@ -116,6 +116,10 @@ pub fn frame(anim: []const []const u8, i: usize) []const u8 {
 // ── static ──────────────────────────────────────────────────────────────────
 
 pub const caret = "\u{203A}"; // composer prompt
+/// Swapped in for `tool` on a COLLAPSED row under the pointer (hover.zig).
+/// Same codepoint as `caret` on purpose — one chevron means "this opens" —
+/// but named for its own role so the two call sites cannot drift.
+pub const expand = "\u{203A}";
 pub const prompt_mark = "\u{276F}"; // sticky header
 pub const assistant = "\u{25CF}";
 pub const tool = "\u{25C6}";

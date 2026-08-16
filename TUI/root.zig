@@ -66,6 +66,9 @@ test {
     _ = @import("layout_cache.zig");
     _ = @import("selection.zig");
     _ = @import("selection_tests.zig");
+    _ = @import("theme_tint.zig");
+    _ = @import("hover.zig");
+    _ = @import("hover_tests.zig");
     _ = @import("chrome.zig");
     _ = @import("models.zig");
     _ = @import("markdown.zig");

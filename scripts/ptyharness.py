@@ -537,7 +537,15 @@ class PtyHarness:
         child_env = os.environ.copy()
         child_env.setdefault("TERM", term)
         if env:
-            child_env.update(env)
+            # A None value UNSETS. A probe that needs a clean slate (no
+            # inherited GRAFF_*/CODEX_* from the developer's shell) cannot get
+            # there by setting the variable to "" — an empty string is a value,
+            # and graff reads several of them as one.
+            for k, v in env.items():
+                if v is None:
+                    child_env.pop(k, None)
+                else:
+                    child_env[k] = v
         cwd = os.path.abspath(cwd or os.getcwd())
         child_env["PWD"] = cwd
 
