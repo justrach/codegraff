@@ -86,6 +86,58 @@ test "/new /compact /rewind are blocked while a job is pending (#521)" {
     try std.testing.expectEqualStrings("hi", m.history.items[0].text);
 }
 
+test "cutting the transcript reaches the engine's conversation (#551)" {
+    // The model's history lives in the engine now, so a TUI-local truncation
+    // that never told it left the discarded turns in the next request body.
+    const Seen = struct {
+        var ops: std.ArrayList(engine.HistoryOp) = .empty;
+        fn f(_: ?*anyopaque, op: engine.HistoryOp) void {
+            ops.append(std.testing.allocator, op) catch {};
+        }
+    };
+    Seen.ops = .empty;
+    defer Seen.ops.deinit(std.testing.allocator);
+    engine.g_history_fn = Seen.f;
+    defer engine.g_history_fn = null;
+
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.push(.user, "alpha");
+    try m.push(.assistant, "beta");
+
+    _ = dispatch.applyLine(&m, "/rewind");
+    try std.testing.expectEqual(@as(usize, 1), Seen.ops.items.len);
+    try std.testing.expectEqual(engine.HistoryOp.rewind, Seen.ops.items[0]);
+
+    _ = dispatch.applyLine(&m, "/new");
+    try std.testing.expectEqual(@as(usize, 2), Seen.ops.items.len);
+    try std.testing.expectEqual(engine.HistoryOp.reset, Seen.ops.items[1]);
+
+    // /clear is the same command under another name, and Ctrl+N (twice) is the
+    // same session reset from the keyboard.
+    _ = dispatch.applyLine(&m, "/clear");
+    try std.testing.expectEqual(engine.HistoryOp.reset, Seen.ops.items[Seen.ops.items.len - 1]);
+    const before = Seen.ops.items.len;
+
+    // Compaction must NOT come through here: it REWROTE the conversation, and
+    // resetting on the replay would throw away the summary it just produced.
+    engine.g_compact_fn = struct {
+        fn f(_: ?*anyopaque, gpa: std.mem.Allocator, _: []const engine.Turn, out: *engine.CompactOut) bool {
+            out.note = gpa.dupe(u8, "history compacted") catch "";
+            const turns = gpa.alloc(engine.Turn, 1) catch return false;
+            turns[0] = .{ .role = .user, .text = gpa.dupe(u8, "Context: earlier work") catch "" };
+            out.turns = turns;
+            return true;
+        }
+    }.f;
+    defer engine.g_compact_fn = null;
+    try m.push(.user, "gamma");
+    _ = dispatch.applyLine(&m, "/compact");
+    try settle(&m);
+    try std.testing.expectEqual(before, Seen.ops.items.len);
+}
+
 test "/compact never crops locally; engine stub rewrites history" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);

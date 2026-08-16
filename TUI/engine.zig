@@ -82,6 +82,13 @@ pub const CompactOut = struct {
 };
 pub const CompactFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, history: []const Turn, out: *CompactOut) bool;
 
+/// The frontend just discarded part of its transcript. The engine owns the
+/// conversation the model actually sees (#551), so it has to be told: without
+/// this, /new left the whole old session in the request body and /rewind left
+/// a prompt the user had taken back.
+pub const HistoryOp = enum { reset, rewind };
+pub const HistoryFn = *const fn (turn_ctx: ?*anyopaque, op: HistoryOp) void;
+
 pub const Job = struct {
     thread: std.Thread = undefined,
     threaded: bool = true,
@@ -151,6 +158,13 @@ pub var g_bash_fn: ?BashFn = null;
 pub var g_files_fn: ?FilesFn = null;
 pub var g_copy_fn: ?CopyFn = null;
 pub var g_compact_fn: ?CompactFn = null;
+pub var g_history_fn: ?HistoryFn = null;
+
+/// Tell the engine the transcript was cut. Silent when nothing is wired
+/// (offline TUI, unit tests).
+pub fn historyChanged(op: HistoryOp) void {
+    if (g_history_fn) |f| f(g_turn_ctx, op);
+}
 pub var g_model_name: []const u8 = "";
 pub var g_models: []const u8 = "";
 pub var g_cwd: []const u8 = ".";

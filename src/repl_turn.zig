@@ -107,6 +107,36 @@ pub fn turnAgent(
     return agent;
 }
 
+/// Give the turn's agent the session's history. With a conversation the agent
+/// BORROWS it — only the new prompt is folded in, so the request's prefix is
+/// byte-identical to last turn's (prompt caching) and the model still sees the
+/// tool calls it made earlier. Without one, the frontend's transcript is
+/// materialized into the throwaway arena, which is all `graff repl` needs.
+fn borrowHistory(c: *ReplCtx, agent: *Agent, history: []const repl.Turn, arena: Allocator, scratch: *std.heap.ArenaAllocator) !void {
+    const cv = c.convo orelse {
+        for (history) |t| {
+            const role = switch (t.role) {
+                .user => "user",
+                .assistant => "assistant",
+            };
+            try agent.messages.append(try textMessage(arena, role, t.text));
+        }
+        return;
+    };
+    try cv.adopt(history);
+    agent.messages = cv.list().*;
+    // Transient parse garbage goes here instead of the session arena (#124).
+    agent.scratch_arena = scratch;
+}
+
+/// Hand the conversation back. runTurn appended this turn's assistant message
+/// and every tool_use/tool_result pair to the borrowed list, and a managed
+/// ArrayList is a VALUE — not copying it back would drop the whole turn.
+fn returnHistory(c: *ReplCtx, agent: *Agent) void {
+    const cv = c.convo orelse return;
+    cv.list().* = agent.messages;
+}
+
 /// repl.TurnFn — run a full ROOT agent turn (tools + MCP) for the chat
 /// frontends, so the model can read files, run bash, search the codebase, etc.
 /// Output streams into a thread-safe sink the frontend polls to render live;
@@ -114,9 +144,15 @@ pub fn turnAgent(
 /// text (raw markdown, owned by gpa) or null.
 pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Turn, params: repl.Params, stream: *repl.StreamBuf) ?[]const u8 {
     const c: *ReplCtx = @ptrCast(@alignCast(ctx_ptr orelse return null));
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
+    // Per-turn scratch. When the session owns a conversation this is the
+    // agent's `scratch_arena` (reset per request, #124) and the conversation's
+    // arena is the agent's `arena`, so provider responses — the tool_use and
+    // tool_result blocks — are written where they OUTLIVE the turn. Without a
+    // conversation it is both, which is the old throwaway behavior.
+    var scratch_state = std.heap.ArenaAllocator.init(gpa);
+    defer scratch_state.deinit();
+    const scratch = scratch_state.allocator();
+    const arena = if (c.convo) |cv| cv.alloc() else scratch;
     var sink: repl_glue.ReplStreamSink = undefined;
     sink.init(stream); // agent output streams into the repl's live pane (thread-safe)
     const policy = Policy.from(params);
@@ -129,17 +165,12 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
     var approvals: Approvals = .{ .yolo = policy.yolo };
     var agent = turnAgent(c, gpa, arena, params, &sink.writer, &approvals) catch return null;
     defer agent.tools_used.deinit(gpa);
-    for (history) |t| {
-        const role = switch (t.role) {
-            .user => "user",
-            .assistant => "assistant",
-        };
-        agent.messages.append(textMessage(arena, role, t.text) catch return null) catch return null;
-    }
+    borrowHistory(c, &agent, history, arena, &scratch_state) catch return null;
     defer {
         c.provider = agent.provider;
         c.fallback_active = agent.fallback_active;
         c.fallback_blocked = agent.fallback_blocked;
+        returnHistory(c, &agent);
     }
     const final = providers.runTurnWithFallback(&agent, &c.keys, arena, &sink.writer) catch |err| switch (err) {
         // A mid-stream stall (#134): the repl turn IS live (stream_quiet=false),
@@ -250,6 +281,127 @@ test "plan mode on a chat turn actually denies a write_file (#551)" {
         defer agent.tools_used.deinit(testing.allocator);
         try testing.expect((try agent.gateTool(call)) == null);
     }
+}
+
+/// Stand in for the provider round trip: write into the borrowed history
+/// exactly the shape agent_steps writes for an anthropic tool turn — an
+/// assistant message carrying a tool_use block, then the user message carrying
+/// its tool_result. This is the content the TUI's flattened `.user`/`.assistant`
+/// rows can never carry back, which is the whole point of the conversation.
+fn fakeToolTurn(agent: *Agent, id: []const u8, cmd: []const u8, result: []const u8) !void {
+    const a = agent.arena;
+    var use: std.json.ObjectMap = .empty;
+    try use.put(a, "type", .{ .string = "tool_use" });
+    try use.put(a, "id", .{ .string = id });
+    try use.put(a, "name", .{ .string = "bash" });
+    var input: std.json.ObjectMap = .empty;
+    try input.put(a, "command", .{ .string = cmd });
+    try use.put(a, "input", .{ .object = input });
+    var content = std.json.Array.init(a);
+    try content.append(.{ .object = use });
+    var assistant: std.json.ObjectMap = .empty;
+    try assistant.put(a, "role", .{ .string = "assistant" });
+    try assistant.put(a, "content", .{ .array = content });
+    try agent.messages.append(.{ .object = assistant });
+
+    var results = std.json.Array.init(a);
+    try results.append(try @import("messages.zig").toolResultMessage(a, .anthropic, id, result, false));
+    var wrapper: std.json.ObjectMap = .empty;
+    try wrapper.put(a, "role", .{ .string = "user" });
+    try wrapper.put(a, "content", .{ .array = results });
+    try agent.messages.append(.{ .object = wrapper });
+}
+
+test "turn 2 carries turn 1's tool_use and tool_result; /clear drops both (#551)" {
+    const gpa = testing.allocator;
+    var client: std.http.Client = undefined;
+    var c = testCtx(&client);
+    var convo = @import("repl_convo.zig").Conversation.init(gpa);
+    defer convo.deinit();
+    c.convo = &convo;
+    var discard_buf: [64]u8 = undefined;
+    var discarding: Io.Writer.Discarding = .init(&discard_buf);
+    var approvals: Approvals = .{ .yolo = true };
+    const tools = "[{\"name\":\"bash\",\"description\":\"\",\"input_schema\":{\"type\":\"object\"}}]";
+
+    // ── turn 1: the user asks, the engine runs a tool ──────────────────────
+    {
+        var scratch = std.heap.ArenaAllocator.init(gpa);
+        defer scratch.deinit();
+        var agent = try turnAgent(&c, gpa, convo.alloc(), .{}, &discarding.writer, &approvals);
+        defer agent.tools_used.deinit(gpa);
+        try borrowHistory(&c, &agent, &.{.{ .role = .user, .text = "count the files" }}, convo.alloc(), &scratch);
+        try fakeToolTurn(&agent, "call-1", "ls | wc -l", "42");
+        try agent.messages.append(try textMessage(agent.arena, "assistant", "there are 42"));
+        returnHistory(&c, &agent);
+    }
+
+    // ── turn 2: the request must still contain turn 1's tool exchange ──────
+    {
+        var scratch = std.heap.ArenaAllocator.init(gpa);
+        defer scratch.deinit();
+        var agent = try turnAgent(&c, gpa, convo.alloc(), .{}, &discarding.writer, &approvals);
+        defer agent.tools_used.deinit(gpa);
+        try borrowHistory(&c, &agent, &.{
+            .{ .role = .user, .text = "count the files" },
+            .{ .role = .assistant, .text = "there are 42" },
+            .{ .role = .user, .text = "and how many are zig?" },
+        }, convo.alloc(), &scratch);
+        const body = try agent.buildBody(tools, false, true, true);
+        defer gpa.free(body);
+        try testing.expect(std.mem.indexOf(u8, body, "tool_use") != null);
+        try testing.expect(std.mem.indexOf(u8, body, "call-1") != null);
+        try testing.expect(std.mem.indexOf(u8, body, "tool_result") != null);
+        try testing.expect(std.mem.indexOf(u8, body, "ls | wc -l") != null);
+        try testing.expect(std.mem.indexOf(u8, body, "and how many are zig?") != null);
+        // The first prompt appears ONCE — adopt() folds in only the new tail,
+        // it does not re-materialize the transcript on top of itself.
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, body, "count the files"));
+        returnHistory(&c, &agent);
+    }
+
+    // ── /clear: the next turn carries neither ─────────────────────────────
+    convo.reset();
+    {
+        var scratch = std.heap.ArenaAllocator.init(gpa);
+        defer scratch.deinit();
+        var agent = try turnAgent(&c, gpa, convo.alloc(), .{}, &discarding.writer, &approvals);
+        defer agent.tools_used.deinit(gpa);
+        try borrowHistory(&c, &agent, &.{.{ .role = .user, .text = "fresh start" }}, convo.alloc(), &scratch);
+        const body = try agent.buildBody(tools, false, true, true);
+        defer gpa.free(body);
+        try testing.expect(std.mem.indexOf(u8, body, "tool_use") == null);
+        try testing.expect(std.mem.indexOf(u8, body, "call-1") == null);
+        try testing.expect(std.mem.indexOf(u8, body, "tool_result") == null);
+        try testing.expect(std.mem.indexOf(u8, body, "count the files") == null);
+        try testing.expect(std.mem.indexOf(u8, body, "fresh start") != null);
+        returnHistory(&c, &agent);
+    }
+}
+
+test "without a conversation every turn is still built from the transcript" {
+    // `graff repl`'s scripted path has no session memory and must keep working
+    // exactly as it did — this is the branch the TUI no longer takes.
+    const gpa = testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var scratch = std.heap.ArenaAllocator.init(gpa);
+    defer scratch.deinit();
+    var client: std.http.Client = undefined;
+    var c = testCtx(&client);
+    var discard_buf: [64]u8 = undefined;
+    var discarding: Io.Writer.Discarding = .init(&discard_buf);
+    var approvals: Approvals = .{ .yolo = true };
+    var agent = try turnAgent(&c, gpa, arena, .{}, &discarding.writer, &approvals);
+    defer agent.tools_used.deinit(gpa);
+    try borrowHistory(&c, &agent, &.{
+        .{ .role = .user, .text = "one" },
+        .{ .role = .assistant, .text = "two" },
+    }, arena, &scratch);
+    try testing.expectEqual(@as(usize, 2), agent.messages.items.len);
+    try testing.expect(agent.scratch_arena == null);
+    returnHistory(&c, &agent); // a no-op without a conversation
 }
 
 test "/strict selects the strict system prompt on the turn's agent (#551)" {

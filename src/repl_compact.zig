@@ -27,13 +27,17 @@ pub fn replCompactCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl
         out.note = gpa.dupe(u8, "compaction needs a live session") catch "";
         return false;
     }));
-    if (history.len == 0) {
+    // With a session conversation the engine's own history is what gets
+    // compacted — `history` is only the frontend's projection of it, and
+    // summarizing that would throw away the tool blocks compaction exists to
+    // fold up (#551).
+    if (history.len == 0 and (c.convo == null or c.convo.?.len() == 0)) {
         out.note = gpa.dupe(u8, "nothing to compact") catch "";
         return false;
     }
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
+    var scratch_state = std.heap.ArenaAllocator.init(gpa);
+    defer scratch_state.deinit();
+    const arena = if (c.convo) |cv| cv.alloc() else scratch_state.allocator();
     var discard_buf: [256]u8 = undefined;
     var discarding: Io.Writer.Discarding = .init(&discard_buf);
     var approvals: Approvals = .{ .yolo = true };
@@ -65,7 +69,10 @@ pub fn replCompactCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl
         return false;
     };
     defer agent.tools_used.deinit(gpa);
-    for (history) |t| {
+    if (c.convo) |cv| {
+        agent.scratch_arena = &scratch_state;
+        agent.messages = cv.list().*;
+    } else for (history) |t| {
         const role = switch (t.role) {
             .user => "user",
             .assistant => "assistant",
@@ -78,6 +85,11 @@ pub fn replCompactCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl
             return false;
         };
     }
+    // Whatever compact() did to the borrowed list — rewrite, or nothing at all
+    // on a failure that leaves history untouched — is the session's state now.
+    defer if (c.convo) |cv| {
+        cv.list().* = agent.messages;
+    };
     const n = agent.compact() catch |err| {
         out.note = (switch (err) {
             error.EmptySummary => gpa.dupe(u8, "compaction failed: empty summary, history unchanged"),

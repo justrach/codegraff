@@ -75,7 +75,7 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.quit_requested = true;
         return .quit;
     } else if (std.mem.eql(u8, canon, "/new")) {
-        self.clearHistory();
+        self.newSession();
         self.push(.system, "started a new conversation") catch {};
         self.screen = .welcome;
     } else if (std.mem.eql(u8, canon, "/home")) {
@@ -264,6 +264,10 @@ pub fn rewind(self: *Model) void {
     var j = self.history.items.len;
     while (j > i - 1) : (j -= 1) self.freeEntry(self.history.items[j - 1]);
     self.history.shrinkRetainingCapacity(i - 1);
+    // The engine holds the conversation, so taking the turn back has to reach
+    // it too — otherwise the next request still carries the prompt the user
+    // just withdrew (#551).
+    engine.historyChanged(.rewind);
     self.push(.system, "rewound the last turn") catch {};
 }
 

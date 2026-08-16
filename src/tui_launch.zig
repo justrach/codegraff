@@ -86,6 +86,13 @@ pub fn run(
         .tools_openai = root.tools_openai,
         .tools_responses = root.tools_responses,
     };
+    // #551: the session's conversation belongs to the engine and outlives every
+    // turn, so tool_use/tool_result blocks accumulate the way mainloop's root
+    // messages do instead of being rebuilt from rendered rows each turn. It is
+    // created here, on the frame that owns the whole TUI session.
+    var convo = repl_glue.Conversation.init(gpa);
+    defer convo.deinit();
+    repl_ctx.convo = &convo;
     var models_buf = std.array_list.Managed(u8).init(arena);
     for (pricing.models()) |mi| {
         if (mi.name.len == 0) continue;
@@ -110,7 +117,21 @@ pub fn run(
         .files_fn = filesCb,
         .copy_fn = copyCb,
         .compact_fn = compactCb,
+        .history_fn = historyCb,
     });
+}
+
+/// The transcript was cut, so cut the conversation the same way: /new starts
+/// over, /rewind takes back the last prompt and everything the engine did for
+/// it. Compaction does NOT come through here — it rewrites the conversation
+/// rather than discarding it.
+fn historyCb(ctx: ?*anyopaque, op: tui.HistoryOp) void {
+    const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return));
+    const convo = c.convo orelse return;
+    switch (op) {
+        .reset => convo.reset(),
+        .rewind => convo.rewind(),
+    }
 }
 
 /// Overlay the TUI preview buffer as a repl.StreamBuf so replTurnCb's

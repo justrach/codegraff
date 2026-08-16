@@ -264,6 +264,15 @@ pub const Model = struct {
         self.screen = .welcome;
     }
 
+    /// /new, /clear, Ctrl+N twice: start over. Distinct from clearHistory,
+    /// which the compaction replay also uses — that one REPLACES the visible
+    /// transcript for a conversation the engine has just rewritten and must
+    /// keep, while this one throws the conversation away too (#551).
+    pub fn newSession(self: *Model) void {
+        self.clearHistory();
+        engine.historyChanged(.reset);
+    }
+
     pub fn userTurnCount(self: *const Model) usize {
         var n: usize = 0;
         for (self.history.items) |e| {

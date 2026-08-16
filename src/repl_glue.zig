@@ -53,7 +53,20 @@ pub const ReplCtx = struct {
     tools_anthropic: []const u8,
     tools_openai: []const u8,
     tools_responses: []const u8,
+    /// The session's conversation, when the frontend wants the engine to own
+    /// it (#551). Null = the caller has no session memory and each turn is
+    /// built from the transcript it passes in, which is what `graff repl`'s
+    /// scripted path still does.
+    convo: ?*repl_convo.Conversation = null,
 };
+
+/// The engine-owned conversation, in repl_convo.zig (move+alias, #123).
+pub const Conversation = repl_convo.Conversation;
+const repl_convo = @import("repl_convo.zig");
+
+test {
+    _ = repl_convo;
+}
 
 /// The live-pane writer, in repl_stream_sink.zig (move+alias, #123).
 pub const ReplStreamSink = @import("repl_stream_sink.zig").ReplStreamSink;
