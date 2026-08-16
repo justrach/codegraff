@@ -4,6 +4,7 @@
 const std = @import("std");
 
 const app = @import("app.zig");
+const diff_mod = @import("diff.zig");
 const glyphs = @import("glyphs.zig");
 const theme_mod = @import("theme.zig");
 const Model = app.Model;
@@ -371,6 +372,8 @@ fn toolCard(a: std.mem.Allocator, th: theme_mod.Theme, call: app.Entry, outcome:
     const preview = toolPreview(outcome);
     const head = try std.fmt.allocPrint(a, "{s}{s}{s}{s}{s} {s}", .{ sel, if (selected) th.accent else th.muted, glyphs.tool, theme_mod.reset, th.text, title });
     if (preview == null) return theme_mod.wrapToWidth(a, head, width);
+    // A patch-shaped result is banded, not quoted: diff.zig owns its wrap.
+    if (diff_mod.looksLikeUnified(preview.?)) return std.fmt.allocPrint(a, "{s}\n{s}", .{ try theme_mod.wrapToWidth(a, head, width), try diff_mod.renderThemed(a, preview.?, th, width) });
     const body = try std.fmt.allocPrint(a, "{s}{s}│  {s}{s}", .{ sel, th.muted, preview.?, theme_mod.reset });
     const joined = try std.fmt.allocPrint(a, "{s}\n{s}", .{ try theme_mod.wrapToWidth(a, head, width), try theme_mod.wrapToWidth(a, body, width) });
     return joined;
