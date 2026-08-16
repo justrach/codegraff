@@ -11,6 +11,13 @@ pub const ToolEvent = events_mod.Tool;
 
 pub const Effort = enum { low, medium, high, xhigh, max, ultra };
 
+/// The session's permission policy. This is ENGINE state, not a badge: the
+/// turn backend maps it onto the harness's plan gate and approval policy
+/// (repl_glue.replTurnCb). Before #551 round 2 the TUI kept its own copy and
+/// the engine was never told, so a footer reading "Plan" sat over a turn that
+/// was writing files.
+pub const Mode = enum { normal, plan, always_approve };
+
 pub const Turn = struct {
     role: Role,
     text: []const u8,
@@ -22,6 +29,10 @@ pub const Params = struct {
     fast: bool = false,
     thinking: bool = false,
     ultracode: bool = false,
+    /// Permission policy for this turn (Shift+Tab, Ctrl+O, /plan).
+    mode: Mode = .normal,
+    /// /strict — selects the strict system prompt on the turn's agent.
+    strict: bool = false,
     goal: []const u8 = "",
 };
 

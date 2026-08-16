@@ -38,6 +38,11 @@ pub fn startJob(self: *Model) void {
             .fast = self.fast,
             .thinking = self.thinking_show,
             .ultracode = self.ultracode or self.effort == .ultra,
+            // Policy travels WITH the turn (#551): the engine applies the plan
+            // gate and the strict prompt from these, so the footer and the run
+            // can no longer disagree.
+            .mode = self.mode,
+            .strict = self.strict,
             .goal = self.goal orelse "",
         },
         .stream = .{ .buf = self.alloc.alloc(u8, 256 * 1024) catch &.{} },

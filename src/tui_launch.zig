@@ -172,6 +172,15 @@ fn turnCb(
         .fast = params.fast,
         .thinking = params.thinking,
         .ultracode = params.ultracode,
+        // #551: the footer's mode IS the turn's policy now. The two enums are
+        // mapped explicitly so a new mode on either side is a compile error
+        // rather than a badge that quietly means nothing.
+        .mode = switch (params.mode) {
+            .normal => .normal,
+            .plan => .plan,
+            .always_approve => .always_approve,
+        },
+        .strict = params.strict,
         .goal = params.goal,
     }, liveStream(stream));
     if (result != null) {

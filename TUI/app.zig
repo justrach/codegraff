@@ -10,7 +10,10 @@ const theme_mod = @import("theme.zig");
 pub const Screen = enum { welcome, agent };
 pub const Focus = enum { prompt, scrollback };
 pub const Overlay = enum { none, palette, help, theme, model, effort, settings, rewind, slash, debug, image, file, jump };
-pub const AgentMode = enum { normal, plan, always_approve };
+/// One vocabulary with the engine (#551): the Model does not keep a private
+/// copy of the permission policy, it holds the engine's own enum and hands it
+/// straight to the turn backend.
+pub const AgentMode = engine.Mode;
 pub const EscArm = enum { none, clear, rewind };
 pub const EntryKind = enum { user, assistant, tool, system, err, pending };
 
