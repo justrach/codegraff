@@ -144,6 +144,10 @@ pub const Model = struct {
     preview_rows: usize = 0,
     /// Drag-selection band over the composed frame (#529) — presentation only.
     sel: @import("selection.zig").Sel = .{},
+    /// Row under the pointer and the double-click window (hover.zig). Screen
+    /// state: which row is hovered is never an engine fact, and the affordance
+    /// it paints is derived from the typed entries the Model already holds.
+    hover: @import("hover.zig").State = .{},
     /// Wrapped-line layout of the transcript, keyed by width/theme/fold/entry
     /// identity (layout_cache.zig). Presentation state: a pure memo of what the
     /// row builders would produce, so scrolling is a slice and not a re-layout.

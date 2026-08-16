@@ -95,6 +95,10 @@ fn extend(self: *Model, ev: key_mod.Mouse) void {
     self.sel.h_row = p.row;
     self.sel.h_col = p.col;
     self.sel.active = true;
+    // This gesture MOVED, so it is a drag and not a click — it can never be
+    // half of a double click either. hover.zig is told rather than left to
+    // re-derive the same distinction from the same reports.
+    @import("hover.zig").dragged(self);
 }
 
 /// Mouse-up arms the copy. The band itself KEEPS painting: the user sees
