@@ -18,7 +18,7 @@ KITTY_POP_RE = re.compile(r"\x1b\[<[0-9;]*u")
 # The Zig conformance test parses the live constants and diffs them against
 # the fixture copy of these, so drift in either direction trips.
 GRAFF_ENABLE = "\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?7l\x1b[>11u\x1b[>4;2m"
-GRAFF_RESTORE = "\x1b[?2026l\x1b[>4;0m\x1b[<u\x1b[?7h\x1b[?1006l\x1b[?1003l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l"
+GRAFF_RESTORE = "\x1b[?2026l\x1b[r\x1b[>4;0m\x1b[<u\x1b[?7h\x1b[?1006l\x1b[?1003l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l"
 
 
 def parse_ops(stream: str) -> list[tuple[str, int]]:

@@ -256,6 +256,13 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-resize-anchor.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+    # A wheel notch must be a scroll region + SU, not a screen rewrite — and a
+    # storm of them must still leave the screen equal to a forced full repaint.
+    # With the hint refused the probe fails on the FIRST notch (verified), so
+    # this is a gate on both halves, not a smoke test.
+    if python3 scripts/test-tui-scroll-paint.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
   fi
 fi
 
