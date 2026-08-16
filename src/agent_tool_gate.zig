@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const main_mod = @import("main.zig");
+const json_inbox = @import("json_inbox.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 const tools_mod = @import("tools.zig");
@@ -17,6 +18,7 @@ const companionReadOnly = skills.companionReadOnly;
 const fleet = @import("fleet.zig");
 const telemetry = @import("telemetry.zig");
 const learning_privacy = @import("learning_privacy.zig");
+const presence = @import("presence.zig");
 
 const TemplateCandidates = struct {
     items: [16][]const u8 = undefined,
@@ -91,7 +93,7 @@ fn gatePrivateTemplateSharing(self: *Agent, call: ToolCall) !?ExecResult {
     try w.writeAll("  Sends: exact reusable system/persona text. Excludes: task prompt, bindings, code, paths, reports, and tool results.\n");
     try w.writeAll("  [y] share exact template version(s) this session · [l] run locally · [n] cancel child › ");
     try w.flush();
-    const raw: []const u8 = (try in.takeDelimiter('\n')) orelse "";
+    const raw: []const u8 = (try json_inbox.reply(self.arena, in)) orelse "";
     const answer = std.mem.trim(u8, raw, " \t\r");
     if (answer.len > 0 and (answer[0] == 'y' or answer[0] == 'Y')) {
         for (candidates.items[0..candidates.len]) |prompt| {
@@ -167,6 +169,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         if (std.mem.eql(u8, call.name, "learn_candidate") or
             std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or
             std.mem.eql(u8, call.name, "imagegen") or // #352: writes a file and spawns a workspace-write child
+            std.mem.eql(u8, call.name, "peer_message") or // #469: appends to a peer's inbox — a side effect
             (mcp.Registry.isMcp(call.name) and !companionReadOnly(call.name, call.input))) return .{
             .text = try self.arena.dupe(u8, "plan mode is on — read-only. Fold this change into the plan you present; the user applies it after approving (/plan toggles the mode off)."),
             .is_error = true,
@@ -185,7 +188,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
                 if (self.in) |in| if (self.out) |w| {
                     try w.print("  ⚠ plan mode — read outside the project: {s}\n  [a]llow read-only access to these paths this session · [n]o › ", .{cmd});
                     try w.flush();
-                    const raw: []const u8 = (try in.takeDelimiter('\n')) orelse "";
+                    const raw: []const u8 = (try json_inbox.reply(self.arena, in)) orelse "";
                     const answer = std.mem.trim(u8, raw, " \t\r");
                     if (answer.len > 0 and (answer[0] == 'a' or answer[0] == 'A' or answer[0] == 'y' or answer[0] == 'Y')) {
                         try approvals.approvePlanRead(self.io, self.gpa, cmd);
@@ -212,6 +215,16 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         const cmd_val = args.get("command") orelse return null;
         if (cmd_val != .string) return null;
         const cmd = std.mem.trim(u8, cmd_val.string, " \t");
+        // #469: one deliberate checkpoint per live co-owner before this session
+        // touches the shared index/tree — fires under --yolo too, where no
+        // approvals prompt would ever surface the collision. The model sees
+        // the peer's identity + goal and re-issues the command to proceed.
+        if (presence.isSharedTreeGit(cmd) or presence.isSharedTreeShell(cmd)) {
+            if (presence.gateCheck(self.io, self.arena)) |checkpoint| return .{
+                .text = checkpoint,
+                .is_error = true,
+            };
+        }
         const destructive_git = Approvals.isDestructiveGit(cmd);
         const gate_ok = !destructive_git or Approvals.destructiveGitAllowed(approvals.yolo, self.sub);
         if (gate_ok and approvals.allowed(self.io, cmd)) return null;
@@ -221,6 +234,12 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         else
             std.fmt.bufPrint(&line_buf, "run: {s}", .{cmd}) catch cmd;
     } else if (std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file")) {
+        // #469: the same once-per-peer checkpoint guards the files themselves —
+        // the incident's other vector was editing a file a live peer had open.
+        if (presence.gateCheck(self.io, self.arena)) |checkpoint| return .{
+            .text = checkpoint,
+            .is_error = true,
+        };
         if (approvals.allowedExact(self.io, call.name)) return null;
         key = call.name;
         const path = if (call.input == .object)
@@ -247,7 +266,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
                     "  [y] run + send once · [n] cancel › ",
             );
             try w.flush();
-            const raw: []const u8 = (try in.takeDelimiter('\n')) orelse "";
+            const raw: []const u8 = (try json_inbox.reply(self.arena, in)) orelse "";
             const answer = std.mem.trim(u8, raw, " \t\r");
             if (answer.len > 0 and (answer[0] == 'y' or answer[0] == 'Y')) {
                 learning_privacy.authorizeAggregateOnce(self.io);
@@ -285,7 +304,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
     };
     try w.print("  ⚠ {s}\n  [y]es once · [a]lways allow \"{s}\" (saved to {s}) · [n]o › ", .{ prompt_line, key, Approvals.settings_path });
     try w.flush();
-    const raw: []const u8 = (try in.takeDelimiter('\n')) orelse "";
+    const raw: []const u8 = (try json_inbox.reply(self.arena, in)) orelse "";
     const answer = std.mem.trim(u8, raw, " \t\r");
     if (answer.len > 0) switch (answer[0]) {
         'y', 'Y' => return null,
@@ -300,7 +319,10 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         else => {},
     };
     return .{
-        .text = try self.arena.dupe(u8, "user declined this tool call — try another approach or ask them how to proceed"),
+        // Narrow the recovery space on purpose: a declined call invites the
+        // model to invent a different detour every run (measured as turn-count
+        // variance on identical tasks, #476). Point at the deterministic exits.
+        .text = try self.arena.dupe(u8, "user declined this tool call — do not retry it or a reworded equivalent; the answer will not change. Continue with what is already approved, delegate the declined work to a subagent, or report the blocker plainly."),
         .is_error = true,
     };
 }

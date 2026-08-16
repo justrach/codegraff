@@ -1,0 +1,1831 @@
+{
+  "kernel": "tool_catalog",
+  "version": 1,
+  "universe": {
+    "base": [
+      "bash",
+      "bash_output",
+      "bash_kill",
+      "read_file",
+      "edit_file",
+      "write_file",
+      "webfetch",
+      "skill",
+      "codedb"
+    ],
+    "meta": [
+      "todo_write",
+      "todo_read",
+      "eval",
+      "note_constraint",
+      "ask_user",
+      "attempt_completion",
+      "load_tool_schemas",
+      "clock_sleep"
+    ],
+    "root_extras": [
+      "subagent",
+      "workflow",
+      "agent_output",
+      "learn_candidate",
+      "peer_message"
+    ],
+    "optional": [
+      "imagegen"
+    ],
+    "local": [
+      "bash",
+      "bash_output",
+      "bash_kill",
+      "read_file",
+      "edit_file",
+      "write_file",
+      "codedb",
+      "imagegen"
+    ],
+    "lean": [
+      "bash",
+      "read_file",
+      "edit_file",
+      "write_file",
+      "codedb",
+      "subagent",
+      "attempt_completion",
+      "load_tool_schemas"
+    ]
+  },
+  "cases": [
+    {
+      "id": "root.nl0.lean0.img0.clk0.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "peer_message"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "sub.nl0.lean0.img0.clk0.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "root.nl0.lean0.img0.clk0.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "learn_candidate",
+        "peer_message"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "sub.nl0.lean0.img0.clk0.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "root.nl0.lean0.img0.clk1.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "clock_sleep",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "peer_message"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "sub.nl0.lean0.img0.clk1.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "root.nl0.lean0.img0.clk1.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "clock_sleep",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "learn_candidate",
+        "peer_message"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "sub.nl0.lean0.img0.clk1.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "root.nl0.lean0.img1.clk0.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "peer_message",
+        "imagegen"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "sub.nl0.lean0.img1.clk0.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "imagegen"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "root.nl0.lean0.img1.clk0.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "learn_candidate",
+        "peer_message",
+        "imagegen"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "sub.nl0.lean0.img1.clk0.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "imagegen"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "root.nl0.lean0.img1.clk1.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "clock_sleep",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "peer_message",
+        "imagegen"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "sub.nl0.lean0.img1.clk1.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "imagegen"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "root.nl0.lean0.img1.clk1.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "clock_sleep",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "learn_candidate",
+        "peer_message",
+        "imagegen"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "sub.nl0.lean0.img1.clk1.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "imagegen"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "root.nl0.lean1.img0.clk0.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "codedb",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "sub.nl0.lean1.img0.clk0.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "root.nl0.lean1.img0.clk0.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "codedb",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "sub.nl0.lean1.img0.clk0.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "root.nl0.lean1.img0.clk1.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "codedb",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "sub.nl0.lean1.img0.clk1.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "root.nl0.lean1.img0.clk1.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "codedb",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "sub.nl0.lean1.img0.clk1.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb"
+      ],
+      "blocked": [
+        "imagegen"
+      ]
+    },
+    {
+      "id": "root.nl0.lean1.img1.clk0.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "codedb",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "sub.nl0.lean1.img1.clk0.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "imagegen"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "root.nl0.lean1.img1.clk0.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "codedb",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "sub.nl0.lean1.img1.clk0.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "imagegen"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "root.nl0.lean1.img1.clk1.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "codedb",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "sub.nl0.lean1.img1.clk1.lrn0",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "imagegen"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "root.nl0.lean1.img1.clk1.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "bash",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "codedb",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "sub.nl0.lean1.img1.clk1.lrn1",
+      "flags": {
+        "no_local": false,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "bash",
+        "bash_output",
+        "bash_kill",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "webfetch",
+        "skill",
+        "codedb",
+        "imagegen"
+      ],
+      "blocked": []
+    },
+    {
+      "id": "root.nl1.lean0.img0.clk0.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "webfetch",
+        "skill",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "peer_message"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean0.img0.clk0.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean0.img0.clk0.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "webfetch",
+        "skill",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "learn_candidate",
+        "peer_message"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean0.img0.clk0.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean0.img0.clk1.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "webfetch",
+        "skill",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "clock_sleep",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "peer_message"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean0.img0.clk1.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean0.img0.clk1.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "webfetch",
+        "skill",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "clock_sleep",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "learn_candidate",
+        "peer_message"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean0.img0.clk1.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean0.img1.clk0.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "webfetch",
+        "skill",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "peer_message"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean0.img1.clk0.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean0.img1.clk0.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "webfetch",
+        "skill",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "learn_candidate",
+        "peer_message"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean0.img1.clk0.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean0.img1.clk1.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "webfetch",
+        "skill",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "clock_sleep",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "peer_message"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean0.img1.clk1.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean0.img1.clk1.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "webfetch",
+        "skill",
+        "todo_write",
+        "todo_read",
+        "eval",
+        "note_constraint",
+        "ask_user",
+        "attempt_completion",
+        "load_tool_schemas",
+        "clock_sleep",
+        "subagent",
+        "workflow",
+        "agent_output",
+        "learn_candidate",
+        "peer_message"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean0.img1.clk1.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": false,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean1.img0.clk0.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean1.img0.clk0.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean1.img0.clk0.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean1.img0.clk0.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean1.img0.clk1.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean1.img0.clk1.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean1.img0.clk1.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean1.img0.clk1.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": false,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean1.img1.clk0.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean1.img1.clk0.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean1.img1.clk0.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean1.img1.clk0.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": false,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean1.img1.clk1.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "root"
+      },
+      "advertised": [
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean1.img1.clk1.lrn0",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": false,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "root.nl1.lean1.img1.clk1.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "root"
+      },
+      "advertised": [
+        "attempt_completion",
+        "load_tool_schemas",
+        "subagent"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    },
+    {
+      "id": "sub.nl1.lean1.img1.clk1.lrn1",
+      "flags": {
+        "no_local": true,
+        "lean": true,
+        "imagegen": true,
+        "clock_sleep": true,
+        "learn_loaded": true,
+        "seat": "sub"
+      },
+      "advertised": [
+        "webfetch",
+        "skill"
+      ],
+      "blocked": [
+        "bash",
+        "bash_kill",
+        "bash_output",
+        "codedb",
+        "edit_file",
+        "imagegen",
+        "read_file",
+        "write_file"
+      ]
+    }
+  ]
+}

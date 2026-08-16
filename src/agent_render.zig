@@ -432,8 +432,8 @@ pub fn flushStreamTail(self: *Agent) void {
 
 /// Render one markdown line to ANSI (portable SGR only — bold/color, no
 /// italic, so iTerm/Ghostty/Terminal/Windows-Terminal all agree): code
-/// fences + fenced bodies dimmed, ATX headers bold-coral, `-`/`*`/`+`
-/// bullets → coral •, and inline `**bold**` / `` `code` `` spans.
+/// fences + fenced bodies dimmed, ATX headers bold-emerald, `-`/`*`/`+`
+/// bullets → emerald •, and inline `**bold**` / `` `code` `` spans.
 pub fn renderMdLine(self: *Agent, w: *Io.Writer, line: []const u8) void {
     var lead: usize = 0;
     while (lead < line.len and line[lead] == ' ') lead += 1;

@@ -8,6 +8,7 @@ const Agent = @import("agent.zig").Agent;
 const context_tokens = @import("context_tokens.zig");
 const messages_mod = @import("messages.zig");
 const pricing = @import("pricing.zig");
+const billing = @import("billing.zig");
 const g_cost = &pricing.g_cost;
 
 test "recordUsage (#202): floors the meter from the local estimate when usage is absent" {
@@ -183,11 +184,12 @@ pub fn usageInt(obj: std.json.ObjectMap, name: []const u8) i64 {
 }
 
 /// Record one request's usage into the session-wide tally (g_cost):
-/// token counts always; USD only for API-key providers with a
-/// price_table row. Subscription providers (codex, claude) bill flat
-/// and tally as sub_calls; unpriced models as unpriced_calls.
+/// token counts always; USD only for metered seats with a price_table row.
+/// #471: the seat is classified from the provider AND how its credential was
+/// obtained — a flat-rate login (codex/kimi/xai) tallies as sub_calls and adds
+/// $0, while an env key on that same provider is metered like any other.
 pub fn recordCost(self: *Agent, uncached_in: i64, cache_in: i64, out: i64) void {
-    g_cost.add(self.io, self.provider.id, self.provider.model, uncached_in, cache_in, out);
+    g_cost.add(self.io, billing.forProvider(self.provider), self.provider.model, uncached_in, cache_in, out);
 }
 
 /// #174: ~4-bytes/token estimate of the FULL history serialized as Responses

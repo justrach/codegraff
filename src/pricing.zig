@@ -13,7 +13,7 @@ const util = @import("util.zig");
 /// (codex, claude) bill via subscription, not per token — recordCost treats
 /// them as $0 ("sub") regardless of this table. Models absent here have no
 /// known price and contribute 0 to the running cost (shown as ~).
-pub const ModelPrice = struct { name: []const u8, in: f64, out: f64, cache: f64 };
+pub const ModelPrice = struct { name: []const u8, in: f64, out: f64, cache: f64, high_at: u64 = 0, high_in: f64 = 0, high_out: f64 = 0, high_cache: f64 = 0 };
 pub const price_table = [_]ModelPrice{
     .{ .name = "deepseek-v4-pro", .in = 1.1, .out = 2.2, .cache = 0.11 },
     .{ .name = "deepseek-v4-flash", .in = 0.14, .out = 0.28, .cache = 0.028 },
@@ -27,8 +27,11 @@ pub const price_table = [_]ModelPrice{
     .{ .name = "gpt-5.3-codex", .in = 1.75, .out = 14, .cache = 0.175 },
     .{ .name = "gpt-5.2", .in = 1.75, .out = 14, .cache = 0.175 },
     .{ .name = "gpt-5-codex", .in = 1.25, .out = 10, .cache = 0.125 },
-    .{ .name = "claude-opus-4-8", .in = 15, .out = 75, .cache = 1.5 },
-    .{ .name = "claude-opus-4.8", .in = 15, .out = 75, .cache = 1.5 },
+    .{ .name = "claude-fable-5", .in = 10, .out = 50, .cache = 1 }, // pricier than opus-5; unpriced it read as a cheap rung
+    .{ .name = "claude-opus-5", .in = 5, .out = 25, .cache = 0.5 },
+    .{ .name = "claude-sonnet-5", .in = 2, .out = 10, .cache = 0.2 }, // introductory, $3/$15 from 2026-09-01
+    .{ .name = "claude-opus-4-8", .in = 5, .out = 25, .cache = 0.5 },
+    .{ .name = "claude-opus-4.8", .in = 5, .out = 25, .cache = 0.5 },
     .{ .name = "claude-sonnet-4-6", .in = 3, .out = 15, .cache = 0.3 },
     .{ .name = "claude-sonnet-4.6", .in = 3, .out = 15, .cache = 0.3 },
     .{ .name = "claude-haiku-4-5", .in = 1, .out = 5, .cache = 0.1 },
@@ -40,6 +43,7 @@ pub const price_table = [_]ModelPrice{
     .{ .name = "kimi-k2.6", .in = 0.95, .out = 4, .cache = 0.1 },
     .{ .name = "kimi-k2-thinking", .in = 0.6, .out = 2.5, .cache = 0.06 },
     .{ .name = "kimi-k2.5", .in = 0.6, .out = 3, .cache = 0.06 },
+    .{ .name = "grok-4.6", .in = 2, .out = 6, .cache = 0.5, .high_at = 200_000, .high_in = 4, .high_out = 12, .high_cache = 1 },
     .{ .name = "grok-4.3", .in = 1.25, .out = 2.5, .cache = 0.3 },
     .{ .name = "grok-build", .in = 1, .out = 2, .cache = 0.1 },
     .{ .name = "glm-5.2", .in = 1, .out = 3.2, .cache = 0.1 },
@@ -60,21 +64,23 @@ pub fn priceFor(model: []const u8) ?ModelPrice {
     return null;
 }
 
-/// Billing class of one API call: the codex subscription login bills
-/// flat-rate, price_table rows bill per token, anything else is unpriced.
+/// Billing class of one API call: a flat-rate subscription login bills nothing
+/// per token, price_table rows bill per token, anything else is unpriced.
+/// Classifying a SEAT is billing.zig's job — it needs the provider spec and the
+/// credential source, neither of which belongs in a price sheet.
 pub const Billing = enum { sub, priced, unpriced };
 
-pub fn billingFor(provider_id: []const u8, model: []const u8) Billing {
-    if (std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "kimi")) return .sub;
-    return if (priceFor(model) != null) .priced else .unpriced;
-}
-
 /// USD for one request at price `p` (negative token counts clamp to 0).
+/// When `high_at` is set and prompt tokens (uncached+cached) meet it, the
+/// whole request uses the high band — grok-4.6's published ≥200k rates.
 pub fn usdFor(p: ModelPrice, uncached_in: i64, cache_in: i64, out: i64) f64 {
-    const fi: f64 = @floatFromInt(@max(uncached_in, 0));
-    const fc: f64 = @floatFromInt(@max(cache_in, 0));
+    const ui = @max(uncached_in, 0);
+    const ci = @max(cache_in, 0);
+    const high = p.high_at > 0 and @as(u64, @intCast(ui)) +| @as(u64, @intCast(ci)) >= p.high_at;
+    const fi: f64 = @floatFromInt(ui);
+    const fc: f64 = @floatFromInt(ci);
     const fo: f64 = @floatFromInt(@max(out, 0));
-    return (fi * p.in + fc * p.cache + fo * p.out) / 1_000_000.0;
+    return (fi * (if (high) p.high_in else p.in) + fc * (if (high) p.high_cache else p.cache) + fo * (if (high) p.high_out else p.out)) / 1_000_000.0;
 }
 
 /// Session-wide usage/cost tally. Every API response lands here — the root
@@ -93,17 +99,23 @@ pub const CostTally = struct {
     sub_calls: u64 = 0, // subscription-billed (flat-rate; contribute $0)
     unpriced_calls: u64 = 0, // no price_table row
 
-    pub fn add(self: *CostTally, io: Io, provider_id: []const u8, model: []const u8, uncached_in: i64, cache_in: i64, out: i64) void {
+    /// `billing` is the caller's already-classified seat (billing.forSeat): a
+    /// flat-rate login and a metered env key on the SAME provider+model are
+    /// different classes, so the tally cannot derive it itself (#471).
+    pub fn add(self: *CostTally, io: Io, billing: Billing, model: []const u8, uncached_in: i64, cache_in: i64, out: i64) void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         self.api_calls +|= 1;
         self.in_tokens +|= @intCast(@max(uncached_in, 0));
         self.cache_tokens +|= @intCast(@max(cache_in, 0));
         self.out_tokens +|= @intCast(@max(out, 0));
-        switch (billingFor(provider_id, model)) {
+        switch (billing) {
             .sub => self.sub_calls +|= 1,
             .unpriced => self.unpriced_calls +|= 1,
-            .priced => self.usd += usdFor(priceFor(model).?, uncached_in, cache_in, out),
+            // No `.?`: the class comes from the caller; a dropped row falls back.
+            .priced => {
+                if (priceFor(model)) |p| self.usd += usdFor(p, uncached_in, cache_in, out) else self.unpriced_calls +|= 1;
+            },
         }
     }
 
@@ -176,6 +188,13 @@ pub const model_table = [_]ModelInfo{
     // LM Studio serves whatever model is loaded; "lmstudio" is a routing alias —
     // swap for your loaded model id if LM Studio requires an exact match (GET :1234/v1/models).
     .{ .provider = "lmstudio", .name = "lmstudio", .context = 200_000 },
+    // Anthropic: no-key/offline FALLBACK ONLY. With a key, router_catalog
+    // fetches /v1/models and replaces this slice 1:1 with the live list
+    // (windows from max_input_tokens) — do not grow or "fix" these rows to
+    // track releases; they exist so boot, --schema, and routing work before
+    // the first authenticated fetch.
+    .{ .provider = "anthropic", .name = "claude-opus-5", .context = 1_000_000 },
+    .{ .provider = "anthropic", .name = "claude-sonnet-5", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-fable-5", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-8", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-7", .context = 1_000_000 },
@@ -235,11 +254,19 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "fireworks", .name = "accounts/fireworks/models/minimax-m3", .context = 512_000 },
     .{ .provider = "fireworks", .name = "accounts/fireworks/models/qwen3p7-plus", .context = 262_144 },
     .{ .provider = "fireworks", .name = "accounts/fireworks/models/gpt-oss-120b", .context = 131_072 },
+    // PR #395 providers (groq/mistral/kilo): context rows so boot and routing
+    // work before any live /models fetch. gpt-oss-120b matches the fireworks
+    // row for the same weights; kilo-auto routes dynamically, so its row
+    // carries the conservative small-model window.
+    .{ .provider = "groq", .name = "openai/gpt-oss-120b", .context = 131_072 },
+    .{ .provider = "mistral", .name = "mistral-medium-latest", .context = 131_072 },
+    .{ .provider = "kilo", .name = "kilo-auto/small", .context = 131_072 },
     // codegraff gateway (its claude aliases use dots, so they don't collide
     // with the anthropic rows above)
     .{ .provider = "codegraff", .name = "claude-opus-4.8", .context = 1_000_000 },
     .{ .provider = "codegraff", .name = "claude-sonnet-4.6", .context = 1_000_000 },
     .{ .provider = "codegraff", .name = "deepseek-v4-pro", .context = 1_000_000 },
+    .{ .provider = "codegraff", .name = "deepseek-v4-flash", .context = 1_000_000 },
     .{ .provider = "codegraff", .name = "minimax-m3", .context = 1_000_000 },
     .{ .provider = "codegraff", .name = "gpt-5.5", .context = 400_000 },
     .{ .provider = "codegraff", .name = "kimi-k2.6", .context = 262_144 },
@@ -250,10 +277,11 @@ pub const model_table = [_]ModelInfo{
     // Kimi Code offline fallback. Authenticated startup replaces this slice
     // from /coding/v1/models; K3 is the current explicit generation while the
     // two compatibility aliases keep their smaller advertised window.
-    .{ .provider = "kimi", .name = "k3", .context = 1_048_576, .protocol = .kimi, .supports_reasoning = true, .support_efforts = &.{"max"}, .default_effort = "max" },
+    .{ .provider = "kimi", .name = "k3", .context = 1_048_576, .protocol = .kimi, .supports_reasoning = true, .support_efforts = &.{ "low", "high", "max" }, .default_effort = "high" },
     .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
     .{ .provider = "kimi", .name = "kimi-for-coding-highspeed", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
     .{ .provider = "moonshot", .name = "kimi-latest", .context = 131_072 },
+    .{ .provider = "xai", .name = "grok-4.6", .context = 500_000, .supports_reasoning = true },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
     .{ .provider = "zai", .name = "glm-5.2", .context = 204_800 },
@@ -306,14 +334,6 @@ pub fn kimiThinkingEffort(model: []const u8, requested: []const u8) ?[]const u8 
         for (info.support_efforts) |effort| if (std.mem.eql(u8, effort, fallback)) return effort;
     }
     return info.support_efforts[info.support_efforts.len / 2];
-}
-
-/// Kimi k2.6 defaults `thinking.keep` to null: the server bills the reasoning
-/// we replay each turn and then ignores it (#323). k2.7-code always preserves
-/// and k3 rejects the parameter; the live catalog says nothing about keep, so
-/// this is a seeded id check (a point release is spelled `k2.6` or `k2p6`).
-pub fn kimiKeepsReasoning(model: []const u8) bool {
-    return kimiSupportsThinking(model) and (std.mem.indexOf(u8, model, "k2.6") != null or std.mem.indexOf(u8, model, "k2p6") != null);
 }
 
 fn pureKimiGeneration(name: []const u8) ?u32 {
@@ -572,21 +592,7 @@ test "refresh overlay augments price/context lookups (codex cap still applies)" 
     try std.testing.expectEqual(codex_context_window, contextFor("codex", "future-model-x"));
 }
 
-test "billingFor: subscription, priced, unpriced classification" {
-    try std.testing.expectEqual(Billing.sub, billingFor("codex", "gpt-5.5")); // priced model, but flat-rate login
-    try std.testing.expectEqual(Billing.sub, billingFor("kimi", "k3"));
-    try std.testing.expectEqual(Billing.priced, billingFor("openai", "gpt-5.5"));
-    try std.testing.expectEqual(Billing.priced, billingFor("anthropic", "claude-sonnet-4-6"));
-    try std.testing.expectEqual(Billing.unpriced, billingFor("openai", "mystery-model"));
-}
+// Seat classification moved to billing.zig with #471 — it needs the provider
+// spec and the credential source, not the price sheet. Its tests live there.
 
-test "usdFor: per-million math and negative clamping" {
-    const p = priceFor("gpt-5.5").?; // $5 in / $30 out / $0.5 cache per 1M
-    try std.testing.expectApproxEqAbs(@as(f64, 5.0), usdFor(p, 1_000_000, 0, 0), 1e-9);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.5), usdFor(p, 0, 1_000_000, 0), 1e-9);
-    try std.testing.expectApproxEqAbs(@as(f64, 3.0), usdFor(p, 0, 0, 100_000), 1e-9);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.0), usdFor(p, -42, -1, 0), 1e-9); // clamped
-}
-
-// CostTally/modelInTable/priceFor/resolveModelName tests live in
-// pricing_tests.zig (this file sits against the 600-line cap).
+// usdFor + grok-4.6 window/band tests live in pricing_tests.zig (600-line cap).

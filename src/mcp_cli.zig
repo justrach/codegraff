@@ -145,6 +145,7 @@ fn mcpCliUsage(w: *Io.Writer) !void {
     try w.writeAll(
         \\usage:
         \\  graff mcp                      list servers in .mcp.json + ~/.codegraff/mcp.json
+        \\  graff mcp import               copy Claude/Cursor MCP + skills into graff folders
         \\  graff mcp add <name> --url <https://...> [--header KEY=VALUE ...]
         \\  graff mcp login <name>        OAuth login for a remote server
         \\  graff mcp add <name> [--env KEY=VALUE ...] -- <command> [args...]
@@ -166,6 +167,14 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, en
     var out = Io.File.stdout().writer(io, &obuf);
     // Reads (list/login) see project + global; writes stay project-local.
     const global_path = mcp_config.globalPath(arena, home, environ_map);
+
+    if (args.len > 0 and (std.mem.eql(u8, args[0], "import") or std.mem.eql(u8, args[0], "import-claude") or std.mem.eql(u8, args[0], "adopt"))) {
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const n = Io.Dir.cwd().realPath(io, &cwd_buf) catch 0;
+        const cwd = if (n > 0) cwd_buf[0..n] else ".";
+        try @import("adopt.zig").command(io, arena, home, cwd, &out.interface);
+        return;
+    }
 
     if (args.len == 0 or std.mem.eql(u8, args[0], "list")) {
         const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path);

@@ -25,6 +25,12 @@ export type SessionTodoStatus = "pending" | "in_progress" | "completed" | "cance
 
 export type SessionTodo = { id: string, content: string, status: SessionTodoStatus, };
 
+export type SessionRecapStatus = "needs_input" | "completed" | "failed";
+
+export type SessionRecapSource = "heuristic" | "model";
+
+export type SessionRecap = { text: string, status: SessionRecapStatus, source: SessionRecapSource, };
+
 export type ConversationSessionSummary = { conversationId: string, title: string, updatedAt: string | null, isDraft: boolean, isRunning: boolean, hasPendingFollowup: boolean, };
 
 export type ChatBinding = { workspacePath: string, conversationId: string, };
@@ -34,7 +40,12 @@ export type ConversationViewSnapshot = { workspacePath: string, conversationId: 
  * Steering objective for this chat, set via `/goal`. Surfaced in the UI as
  * the goal chip above the composer. Omitted from the payload when unset.
  */
-goal?: string, followup: FollowupRequest | null, };
+goal?: string,
+/**
+ * Latest harness `session_recap` for this chat (#419). Omitted until the
+ * first turn completes.
+ */
+recap?: SessionRecap, followup: FollowupRequest | null, };
 
 export type WorkspaceKind = "project" | "managed_chat";
 

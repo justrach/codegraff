@@ -39,12 +39,14 @@ const Agent = agent_mod.Agent;
 
 const engine_events = @import("engine_events.zig");
 const EngineEvent = engine_events.EngineEvent;
+const obs = @import("obs.zig");
 const protocol_seq = @import("protocol_seq.zig");
 const render = @import("agent_stream_render.zig");
 const tool_render = @import("agent_tool_render.zig"); // slice 1c: the tool cluster's terminal half
 const session_render = @import("session_render.zig"); // slice 2: the lifecycle cluster's terminal half
 const prompt_render = @import("agent_prompt_render.zig"); // batch 3: the status line's terminal half
 const tick_gate = @import("tick_gate.zig"); // #tui-tick: child ticks wait for a foreground line boundary
+const repl = @import("repl.zig");
 
 /// An event plus its position, as delivered to a sink.
 pub const Stamped = struct {
@@ -74,6 +76,7 @@ pub const EngineSink = struct {
     /// construction — an agent with no writer gets a non-durable vtable — so
     /// emitters need no `out == null` guard of their own.
     pub fn emit(self: EngineSink, io: Io, ev: EngineEvent) void {
+        obs.note(ev);
         const reserve = self.vt.durable and engine_events.durable(ev);
         if (reserve and main_mod.json_mode) {
             // Reserving outside the lock could put a smaller seq on the wire
@@ -142,6 +145,39 @@ pub fn enableColor() void {
     session_render.enableColor();
 }
 
+/// Set by a fullscreen frontend (TUI/) so TuiSink never draws on stdout —
+/// that would fight the alt-screen. Text goes to `a.out` (the pane buffer).
+///
+/// This only ever gated hostedEmit, which renders the tool cluster back into
+/// "⚙ /✓ " TEXT for a frontend to parse out again and silently drops every
+/// other event. It survives as the fallback for a hosted agent that has NO
+/// sink of its own — a subagent, a one-shot — while a frontend that installs
+/// one (see `bindTurnSink`) never goes through it (#551).
+pub var hosted_frontend: bool = false;
+
+/// The sink a frontend wants the next Agent built on THIS thread to use.
+///
+/// The turn constructors (repl_glue.replTurnCb) are shared by every frontend
+/// and know nothing about any of them, so the frontend leaves its sink here
+/// before handing the turn over and takes it back after. Thread-local because
+/// one turn thread runs one turn: a background subagent pool thread building
+/// its own Agent finds nothing here and keeps the process-mode default, which
+/// is exactly right — a child's output is not the frontend's transcript.
+threadlocal var g_turn_sink: ?EngineSink = null;
+
+pub fn bindTurnSink(s: EngineSink) void {
+    g_turn_sink = s;
+}
+
+pub fn unbindTurnSink() void {
+    g_turn_sink = null;
+}
+
+/// The bound sink, or null when no frontend claimed this turn.
+pub fn turnSink() ?EngineSink {
+    return g_turn_sink;
+}
+
 const tui_vtable: VTable = .{ .emit = tuiEmit, .durable = false };
 const json_vtable: VTable = .{ .emit = jsonEmit, .durable = true };
 /// Same writer, nothing to write to: see jsonSink.
@@ -162,6 +198,7 @@ fn lifecycleEmit(ctx: *anyopaque, ev: Stamped) void {
 /// branch is the old inline agent_stream.zig code path, gate for gate.
 fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
     const a: *Agent = @ptrCast(@alignCast(ctx));
+    if (hosted_frontend) return hostedEmit(a, ev.event);
     switch (ev.event) {
         .stream_begin => render.spinnerStart(a),
         // Reasoning streams into the live dimmed "Thinking" block when
@@ -236,11 +273,11 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         // the one file down here that still reaches the palette; the moments
         // the terminal never drew (the dispatch/close brackets, refusals) are
         // silent rather than absent from the vocabulary.
-        .tool_call_announced => |t| tool_render.toolUseLine(a, t),
-        .tool_result => |r| tool_render.toolResultLine(a, r),
+        .tool_call_announced => |t| if (repl.g_debug) tool_render.toolUseLine(a, t) else tool_render.toolCompactUse(a, t.name),
+        .tool_result => |r| if (repl.g_debug) tool_render.toolResultLine(a, r) else tool_render.toolCompactResult(a, r),
         .tool_call_started, .tool_call_finished, .tool_rejected => {},
-        .parallel_batch_started => |b| tool_render.parallelBatchStarted(a, b.count),
-        .parallel_batch_finished => |b| tool_render.parallelBatchFinished(a, b),
+        .parallel_batch_started => |b| if (repl.g_debug) tool_render.parallelBatchStarted(a, b.count),
+        .parallel_batch_finished => |b| if (repl.g_debug) tool_render.parallelBatchFinished(a, b),
         .completion_deferred => tool_render.completionDeferred(a),
         .goal_completed => tool_render.goalCompleted(a),
         .completion_text, .todo_list_updated => |t| tool_render.toolTextLine(a, t.text),
@@ -251,6 +288,7 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         .session_notice,
         .session_banner,
         .worktree_entered,
+        .shared_worktree_owner,
         .saved_model_unavailable,
         .mcp_consent_prompt,
         .provider_fallback,
@@ -268,6 +306,44 @@ fn notice(a: *Agent, text: []const u8) void {
     const w = a.out orelse return;
     w.writeAll(text) catch return;
     w.flush() catch {};
+}
+
+/// The fallback for a HOSTED agent with no sink of its own — a subagent, a
+/// one-shot under a fullscreen frontend. It renders the tool cluster back into
+/// "⚙ /✓ " text and drops everything else, which is why a real frontend must
+/// install a sink instead of reading these bytes back (#551). Nothing new goes
+/// in here: a new event gets a surface on a real sink, not a glyph line.
+fn hostedEmit(a: *Agent, ev: EngineEvent) void {
+    const w = a.out orelse return;
+    switch (ev) {
+        .text_delta, .tool_arg_delta => |d| {
+            w.writeAll(d.text) catch {};
+            w.flush() catch {};
+        },
+        .completion_text, .todo_list_updated => |t| {
+            w.writeAll(t.text) catch {};
+            w.writeAll("\n") catch {};
+            w.flush() catch {};
+        },
+        .tool_call_announced => |t| {
+            const arg = compactArg(t.input);
+            if (arg.len > 0)
+                w.print("⚙ {s} {s}\n", .{ shortTool(t.name), arg }) catch {}
+            else
+                w.print("⚙ {s}\n", .{shortTool(t.name)}) catch {};
+            w.flush() catch {};
+        },
+        .tool_result => |r| {
+            const mark: []const u8 = if (r.is_error) "✗" else "✓";
+            const preview = firstLineCap(r.text, 80);
+            if (preview.len > 0)
+                w.print("{s} {s} | {s}\n", .{ mark, shortTool(r.name), preview }) catch {}
+            else
+                w.print("{s} {s}\n", .{ mark, shortTool(r.name) }) catch {};
+            w.flush() catch {};
+        },
+        else => {},
+    }
 }
 
 /// The existing --json wire. Only the durable events have a shape; giving a
@@ -325,6 +401,35 @@ fn jsonLine(w: *Io.Writer, cursor: engine_events.Cursor, payload: anytype) void 
     protocol_seq.writeEventStamped(w, cursor.sequence, payload) catch return;
     w.writeByte('\n') catch return;
     w.flush() catch return;
+}
+
+pub fn shortTool(name: []const u8) []const u8 {
+    if (std.mem.eql(u8, name, "read_file")) return "read";
+    if (std.mem.eql(u8, name, "write_file")) return "write";
+    return name;
+}
+
+/// The one argument worth showing beside a tool name — the path it touches,
+/// the command it runs, the query it asks. Shared with the TUI's typed sink
+/// (tui_sink.zig) so both frontends pick the same field.
+pub fn compactArg(input: std.json.Value) []const u8 {
+    const obj = switch (input) {
+        .object => |o| o,
+        else => return "",
+    };
+    const keys = [_][]const u8{ "path", "target_file", "file", "filename", "command", "cmd", "query", "q", "pattern", "url", "symbol" };
+    for (keys) |k| {
+        const v = obj.get(k) orelse continue;
+        if (v == .string and v.string.len > 0) return v.string;
+    }
+    return "";
+}
+
+pub fn firstLineCap(text: []const u8, cap: usize) []const u8 {
+    var s = std.mem.trim(u8, text, " \t\r\n");
+    if (std.mem.indexOfScalar(u8, s, '\n')) |i| s = std.mem.trim(u8, s[0..i], " \t\r");
+    if (s.len > cap) return s[0..cap];
+    return s;
 }
 
 test {

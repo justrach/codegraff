@@ -28,6 +28,7 @@ const approvals_mod = @import("approvals.zig");
 const confinedPath = approvals_mod.confinedPath;
 const noSymlinkEscape = approvals_mod.noSymlinkEscape;
 const runCapped = @import("jobs.zig").runCapped;
+const codedbpro_report = @import("codedbpro_report.zig"); // persistent-daemon splice fast path
 
 /// Whole-file read ceiling for the splice source (unchanged from exec.zig).
 const edit_read_cap: usize = 1024 * 1024;
@@ -237,6 +238,18 @@ pub fn applyEdit(ctx: ToolCtx, path: []const u8, resolved: []const u8, old: []co
 
         if (ctx.snapshots) |snaps| if (!ctx.from_sub) snaps.record(path, .{ .content = data }); // pre-edit content for /rewind
 
+        // Fastest splice first: the persistent codedb-pro daemon skips
+        // zigpatch's ~2.4ms fork/exec floor (~0.3ms over the pipe, measured).
+        // The /rewind snapshot above already ran and verifyOnDisk still backs
+        // the result — only the byte-splice is delegated. null falls through
+        // to the zigpatch spawn, then the native write.
+        if (codedbpro_report.spliceViaDaemon(gpa, ctx, resolved, path, old, new, count, data.len)) |msg| {
+            preserveMode(io, resolved, prev_stat); // daemon renames a fresh inode into place, same as zigpatch
+            const verdict = verifyOnDisk(gpa, io, resolved, data, replaced, old, new, true);
+            if (verdict != .ok) return .{ .text = try verdictText(gpa, path, verdict, "codedb-pro"), .is_error = true };
+            return .{ .text = msg };
+        }
+
         // Premium splice: when the zigrep suite is installed, zigpatch does the
         // write — an atomic tmp+rename byte-level --all splice (our count
         // checks above already enforce the uniqueness semantics). Any failure,
@@ -413,7 +426,7 @@ test "verdictText names the file, refuses the success wording, and demands a re-
 
 /// Minimal ToolCtx for the file-tool tests: no client, no registry, no
 /// approvals — applyEdit touches none of them.
-fn testCtx(client: *std.http.Client) ToolCtx {
+pub fn testCtx(client: *std.http.Client) ToolCtx {
     return .{
         .gpa = std.testing.allocator,
         .io = std.testing.io,

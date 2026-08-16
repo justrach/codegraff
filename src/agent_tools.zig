@@ -11,6 +11,7 @@ const Io = std.Io;
 const Value = std.json.Value;
 
 const main_mod = @import("main.zig");
+const json_inbox = @import("json_inbox.zig");
 const review = @import("review.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
@@ -27,7 +28,7 @@ const parseAnswerRequest = tools_mod.parseAnswerRequest;
 // which belongs to the input-inversion issue (#430), not to this one.
 const engine_events = @import("engine_events.zig");
 const engine_sink = @import("engine_sink.zig");
-
+const tool_render = @import("agent_tool_render.zig");
 const terminal = @import("term.zig");
 const tty = terminal.tty;
 
@@ -35,7 +36,9 @@ const schema = @import("schema.zig");
 const isMetaName = schema.isMetaName;
 const eval_control = @import("agent_eval_control.zig");
 const goal_state = @import("goal_state.zig");
+const task_outcome = @import("task_outcome.zig");
 const goal_todo = @import("goal_todo.zig"); // todo_write's replace path + the omitted-completed preserve rule
+const peer_channel = @import("peer_channel.zig"); // #469: peer_message's handler
 pub const toolInvalidatesEval = eval_control.toolInvalidatesEval;
 pub const gateTool = @import("agent_tool_gate.zig").gateTool;
 pub const firstWord = @import("agent_tool_gate.zig").firstWord;
@@ -50,21 +53,18 @@ const execTool = exec.execTool;
 const brief_diversity = @import("brief_diversity.zig"); // #382: N sibling spawns in one batch are a fleet
 const playbook_glue = @import("playbook_glue.zig"); // #381: the note_constraint meta arm
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: the load_tool_schemas meta arm
+const native_fold = @import("native_fold.zig"); // folded native power tools: load_tool_schemas's native half
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
+const readline = @import("readline.zig"); // ask_user answers get the same full editor as the main prompt
 const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
 
 // #440: the ONE size contract for a tool result — preview + durable handle +
-// byte count + shape hint, applied here at tool time. It replaced this file's
-// old persistToolResult/toolPreviewText pair (a 2000-char head and a bare
-// path), and it clamps itself under the send-time per-output cap so the two are
-// ordered by construction rather than stacked.
+// byte count + shape hint, applied at tool time, clamped under the send-time cap.
 const tool_handle = @import("tool_handle.zig");
 
 // escWatchTask/drainStdin/rawNonblockStdin live in agent_interrupt.zig;
-// Agent.esc_watch_done is a struct-level pub var that STAYS declared inside the
-// Agent struct in main.zig (never alias a var — see esc_cancel/
-// Agent.esc_watch_done in agent_interrupt.zig's own header comment). All reached
-// through the Agent struct's namespace.
+// esc_cancel/esc_watch_done STAY declared on the Agent struct (never alias
+// a var — see agent_interrupt.zig's own header). Reached via Agent's namespace.
 const escWatchTask = Agent.escWatchTask;
 const drainStdin = Agent.drainStdin;
 const rawNonblockStdin = Agent.rawNonblockStdin;
@@ -104,7 +104,9 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             continue;
         }
         try self.sayToolUse(call);
-        if (isMetaName(call.name)) {
+        if (self.output_schema != null and std.mem.eql(u8, call.name, "structured_output")) {
+            results[i] = @import("agent_request_body_responses.zig").handleStructuredOutput(self, call.input); // #543 tool-mode capture
+        } else if (isMetaName(call.name)) {
             results[i] = try self.handleMeta(call);
         } else if (try self.gateTool(call)) |denied| {
             results[i] = denied;
@@ -176,11 +178,16 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             .run_id = if (self.tracer) |tr| tr.identity.run_id else "untraced",
         };
         for (ext_idx.items, outputs) |i, output| {
-            // A result over the threshold never enters the conversation whole:
-            // the complete bytes go to a durable handle and the model gets a
-            // bounded preview, that path, the byte count, and a shape hint.
+            // Over the threshold, the bytes go to a durable handle; the model
+            // gets a bounded preview + path + byte count + shape hint.
             const handled = try tool_handle.forResult(self.gpa, self.arena, handle_target, output.text, handle_threshold);
-            results[i] = .{ .text = handled.text, .is_error = output.is_error, .cancelled = output.cancelled, .ms = output.ms };
+            // Surface spill round-trips in normal mode; debug already draws the badged ✓ line.
+            if (output.text.len > handle_threshold)
+                tool_render.handleSpillLine(self, output.text.len, handled.path != null);
+            // #541: the handle-protocol lesson rides this agent's FIRST handle
+            // instead of standing in every request's system prompt.
+            const text = try tool_handle.withFirstNote(self.arena, handled, &self.handle_note_shown);
+            results[i] = .{ .text = text, .is_error = output.is_error, .cancelled = output.cancelled, .ms = output.ms };
             if (self.eval_cmd != null and toolInvalidatesEval(calls[i])) {
                 self.eval_verified = false;
                 self.eval_repair_pending = false;
@@ -291,6 +298,11 @@ fn clockSleepInterruptedText(arena: std.mem.Allocator, elapsed_ms: i64) ![]const
 
 /// Handle a meta tool inline on the agent's own thread.
 pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
+    // Folded natives, meta path: inline dispatch never reaches exec.zig's
+    // guard chain, so auto-load lives here too — same rule as gateExec.
+    if (!self.sub) native_fold.markIfFolded(call.name);
+    // #469: sideways coordination between co-resident root sessions.
+    if (std.mem.eql(u8, call.name, peer_channel.tool_name)) return peer_channel.handleMessage(self, call);
     if (std.mem.eql(u8, call.name, "attempt_completion")) {
         if (!self.review_mode and self.eval_cmd != null and (!self.eval_verified or self.eval_repair_pending)) {
             const message = if (self.eval_repair_pending)
@@ -307,6 +319,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         }
         const result = if (tools_mod.json_args.object(call.input)) |o| (tools_mod.json_args.str(o, "result") orelse "") else "";
         self.completed = try self.arena.dupe(u8, result);
+        if (!self.sub) task_outcome.noteGoalCompleted(self);
         // .complete retires the epoch (goal_state.currentEpoch) and the checklist parks - readable, no longer current, never deleted (#318).
         // A --goal standing objective is exempt: the completion is recorded above, the steering stays, and only /goal clear|pause|<new> retires it.
         if (goal_state.retireOnCompletion(self, util.unixMs(self.io))) {
@@ -351,15 +364,13 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         return .{ .text = try clockSleepSuccessText(self.arena, parsed.ms, parsed.clamped), .is_error = false };
     }
     if (std.mem.eql(u8, call.name, "note_constraint")) return playbook_glue.noteConstraint(self, call.input); // #381: append-only, and it re-composes the root's own prompt
-    if (std.mem.eql(u8, call.name, mcp_schema_gate.tool_name)) return mcp_schema_gate.handleLoad(self, call.input); // #416: inline, so the loaded-schema set has exactly one writer
+    if (std.mem.eql(u8, call.name, mcp_schema_gate.tool_name)) return (native_fold.handleLoadNative(self, call.input) catch null) orelse mcp_schema_gate.handleLoad(self, call.input); // #416: inline, one writer — folded natives answered first
     if (std.mem.eql(u8, call.name, "ask_user")) return self.askUser(call);
     // todo_read
     return .{ .text = self.renderTodos(goal_state.currentEpoch(self.goal)), .is_error = false };
 }
 
-/// The "user message as a tool" half of the loop: the agent calls
-/// ask_user, we block for a typed reply, and hand it back as the tool
-/// result. Only the root agent has stdin; subagents must self-decide.
+/// Block the root agent for an ask_user reply; subagents have no stdin.
 pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
     const in = self.in orelse return .{
         .text = "no human is attached — make a reasonable assumption and continue",
@@ -374,7 +385,7 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
             break :blk id;
         };
         try self.emitAskUser(call_id, question, call.input);
-        const raw = (try in.takeDelimiter('\n')) orelse return .{
+        const raw = (try json_inbox.reply(self.arena, in)) orelse return .{
             .text = "user ended input without answering",
             .is_error = true,
         };
@@ -394,10 +405,16 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
     if (tools_mod.json_args.object(call.input)) |o| if (tools_mod.json_args.arrayOf(o, "options")) |opts| {
         for (opts, 1..) |opt, n| try w.print("   {d}) {s}\n", .{ n, tools_mod.json_args.text(opt) orelse "(non-text option)" });
     };
-    try w.writeAll("   your answer › ");
-    try w.flush();
-
-    const raw = (try in.takeDelimiter('\n')) orelse return .{
+    // Route the reply through the same full-line editor as the main prompt:
+    // cursor editing, bracketed paste, the `@` file picker, and Ctrl-V
+    // clipboard images. A bare takeDelimiter here stripped all of that from
+    // ask_user. Answers get a scratch history so they never pollute the main
+    // prompt's up-arrow recall.
+    var answer_history: std.ArrayList([]const u8) = .empty;
+    defer answer_history.deinit(self.arena);
+    var answer_buf: std.ArrayList(u8) = .empty;
+    defer answer_buf.deinit(self.arena);
+    const raw = (try readline.readLine(self, in, w, self.arena, &answer_history, &answer_buf, "   your answer › ")) orelse return .{
         .text = "user ended input without answering",
         .is_error = true,
     };
@@ -504,6 +521,8 @@ test "clockSleepSuccessText/clockSleepInterruptedText: exact result strings (#22
 }
 
 test "handleMeta clock_sleep: ms=0 completes for real end-to-end, bad ms rejects without touching Io" {
+    // clock_sleep is a folded native: handleMeta refuses it until loaded. Mark it loaded rather than toggling fold.enabled: `enabled` is shared mutable state the parallel test runner races on (native_fold.zig's own tests flip it), while g_loaded is append-only and safe (the refusal is covered in native_fold.zig).
+    @import("native_fold.zig").markLoaded("clock_sleep");
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();

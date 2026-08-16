@@ -22,17 +22,18 @@ const trace = @import("trace.zig");
 const tools_mod = @import("tools.zig");
 const vision = @import("vision.zig");
 const prompts = @import("prompts.zig");
+const tool_render = @import("agent_tool_render.zig");
 const schema = @import("schema.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: --no-local-tools picks the gated subagent catalogs
 const models_cache = @import("models_cache.zig");
 const keys_cli = @import("keys_cli.zig");
 const run_budget_mod = @import("run_budget.zig");
 
-// prompt_ui (agent_prompt.zig) owns the width-budgeted status line (#209,
-// 600-line goal); prompt() is member-aliased back onto Agent below.
+// agent_prompt.zig owns the width-budgeted status line (#209); aliased below.
 const prompt_ui = @import("agent_prompt.zig");
 const agent_tests = @import("agent_tests.zig");
 const goal_state = @import("goal_state.zig");
+const peer_channel = @import("peer_channel.zig"); // #469: turn-boundary peer message delivery
 
 pub const TodoItem = struct {
     content: []const u8,
@@ -56,6 +57,11 @@ pub const Goal = struct {
     standing: bool = false, // seeded by --goal: steering policy for the WHOLE session that the model can never retire; only the user can, with /goal clear|pause|<new> (#318)
     created_ms: i64 = 0,
     updated_ms: i64 = 0,
+    // Effort snapshots for task-outcome telemetry (task_outcome.zig): session
+    // counters at goal-set time, diffed at completion/abandon.
+    turns_at_set: u64 = 0,
+    calls_at_set: u64 = 0,
+    compacts_at_set: u64 = 0,
 };
 /// One agent: a message history plus the POST/tool-dispatch loop. The root
 /// agent prints to stdout; subagents (sub = true) run on pool threads and
@@ -86,6 +92,7 @@ pub const Agent = struct {
     codex_chain_rewrites: u32 = 0, // history_rewrites when the chain was anchored; a later compaction/trim invalidates it
     codex_props_fp: u64 = 0, // request properties the server anchored on (model/effort/fast/tools/instructions)
     codex_ws_used_ms: i64 = 0, // .awake-clock ms of the WS's last successful use; gates the idle preemptive re-anchor (#codex-ws)
+    codex_ws_opened_ms: i64 = 0, // first connect time; xAI/codex WS hard-cap is 25 minutes
     sub: bool,
     /// This agent is served NO tools at all — the `tools` field is omitted
     /// from the request rather than sent empty, which every provider accepts.
@@ -114,6 +121,7 @@ pub const Agent = struct {
     agent_cwd: ?[]const u8 = null, // subagent-only (#276 P0-1): absolute path of this agent's isolated git worktree, threaded through ToolCtx per tool call instead of a process-wide chdir — parallel siblings each keep their own
     tools_used: trace.ToolSink = .{}, // external tool calls this agent made (per turn for the root)
     tool_calls_this_turn: u64 = 0,
+    handle_note_shown: bool = false, // #541: the handle-protocol lesson rides this agent's FIRST handle, once
     seen_tool_keys: std.ArrayList([]const u8) = .empty, // root-only per-turn dedupe keys
     md_buf: std.ArrayList(u8) = .empty, // current incomplete streamed line (markdown rendering)
     md_fence: bool = false, // inside a ``` code fence while streaming
@@ -131,7 +139,7 @@ pub const Agent = struct {
     model_catalog: ?models_cache.LazyCodexCatalog = null, // demand-loaded dynamic Codex rows (root only)
     stored_keys_loaded: bool = true, // false after an explicit-provider launch; model surfaces fill the remaining Keychain slots
     keep_context: bool = true, // carry the conversation across wire-format model switches (/keepcontext)
-    reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — codex, deepseek, codegraff (/effort, /reasoning)
+    reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — xai, codex, deepseek, codegraff (/effort, /reasoning)
     fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
     fallback_allow: []const []const u8 = &.{}, // explicit cross-provider allowlist from .harness/settings.json
     fallback_active: bool = false, // current provider/model is a temporary fallback, not the saved preference
@@ -140,6 +148,7 @@ pub const Agent = struct {
     review_mode: bool = false,
     show_thinking: bool = true, // stream the model's reasoning live in the TUI (/thinking); off = spinner only
     ai_title: bool = true, // AI-generate the tab/session title from the first prompt (/title)
+    ai_recap: bool = true, // AI one-line status recap at turn end (settings: session_recap)
     goal: ?Goal = null, // structured objective + status lifecycle (/goal, #223)
     goal_note_fp: u64 = 0, // last-injected standing-goal note fingerprint (goal_state.steeringGate, #318)
     goal_note_age: u32 = 0, // turns since that note was last injected (refresh interval)
@@ -183,6 +192,7 @@ pub const Agent = struct {
     partial_text: std.ArrayList(u8) = .empty,
     stream_quiet: bool = false, // suppress live streaming (one-shot and internal requests)
     compaction_request: bool = false, // the current model call is the synthetic compaction-summary request
+    server_compaction_request: bool = false, // force one explicit Codex in-stream compaction pass
     responses_output_limit: ?u32 = null, // auxiliary override (title=64); compaction always uses 4096
     last_request_context_overflow: bool = false, // explicit provider rejection, not an inferred meter threshold
     last_request_write_failed: bool = false, // transport gave up specifically with WriteFailed this request
@@ -200,11 +210,15 @@ pub const Agent = struct {
     thinking_text: std.ArrayList(u8) = .empty, // buffered reasoning, so a fold can unfold (#92)
     ai_title_done: bool = false, // the one-time AI tab-title call has run this session
     title_generation: u64 = 0, // invalidates detached results across /clear, /new, and manual /rename
+    session_recap: ?@import("recap.zig").Recap = null, // last turn-end recap (#419): the session_recap wire event, and /status's recap line
+    recap_generation: u64 = 0, // bumped at every turn start: supersedes detached recap jobs still in flight (#419)
     arg_live: ArgLive = .{}, // live attempt_completion/ask_user argument text
     streamed_args: ArgTool = .none, // which meta tool's prose streamed live this request
     streamed_args_len: usize = 0, // raw bytes emitted for it (gates re-print suppression)
     cap_new: bool = false, // provider rejected max_tokens → use max_completion_tokens
+    sox_json_object: bool = false, // #543: provider rejected response_format json_schema → json_object + schema-in-prompt
     effort_rejected: bool = false, // model rejected reasoning_effort → drop it (e.g. gpt-5.5 on chat/completions wants /v1/responses)
+    output_schema: ?[]const u8 = null, // --output-schema: JSON schema the final answer must satisfy (response_format / text.format, #502)
     next_ask_id: u64 = 1,
     tui_header_shown: bool = false,
 
@@ -228,9 +242,9 @@ pub const Agent = struct {
     }
 
     /// Whether the active provider honors a reasoning-effort hint: the
-    /// Responses API (codex) via reasoning.effort, and the OpenAI-compatible
-    /// providers we know normalize a top-level reasoning_effort — the
-    /// codegraff gateway and deepseek. Everything else ignores it.
+    /// Responses API (codex, native xAI) via reasoning.effort, and the
+    /// OpenAI-compatible providers that normalize reasoning_effort — native
+    /// xAI chat, the codegraff gateway, and deepseek. Everything else ignores it.
     pub fn effortApplies(self: *const Agent) bool {
         return schema.providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
     }
@@ -289,8 +303,6 @@ pub const Agent = struct {
         self.stored_keys_loaded = true;
     }
 
-    /// Run until the model stops (or, in strict mode, calls
-    /// attempt_completion). Returns the final assistant text (arena-owned).
     /// Close the held codex Responses WS session and reset the delta state, so the
     /// next request re-anchors with full input. The chain now spans user turns
     /// (codex_chain.zig guards it), so this is for errors, idle and compaction.
@@ -304,6 +316,7 @@ pub const Agent = struct {
             self.codex_prev_id = null;
         }
         self.codex_sent_upto = 0;
+        self.codex_ws_opened_ms = 0;
     }
 
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
@@ -312,7 +325,7 @@ pub const Agent = struct {
         try self.ensureRootTools(self.provider.kind);
         // No per-turn teardown: the socket and the chain span user turns, guarded by codex_chain.usable instead.
         self.completed = null;
-        if (!self.sub) esc_cancel.store(false, .release); // fresh turn, no stale cancel
+        if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) esc_cancel.store(false, .release);
         while (true) {
             // Esc during a tool join (set by escWatchTask) lands here: the
             // root consumes the flag and aborts before the next request;
@@ -321,6 +334,12 @@ pub const Agent = struct {
                 if (!self.sub) esc_cancel.store(false, .release);
                 return error.Interrupted;
             }
+            // #469: co-resident sessions' queued channel messages land at EVERY
+            // step boundary, so a working session picks a peer's note up
+            // mid-task (between tool batches) and can act on it in the same
+            // turn — durable in history, visible as an event. Offset-based:
+            // an empty channel costs one small stat per step.
+            peer_channel.deliverInbound(self);
             // #193: pre-send overflow gate. A single turn's tool-output burst can
             // push the input past the model's wall before the between-turns 80%
             // meter (last_context_tokens, server-reported) catches up. Estimate the
@@ -344,7 +363,7 @@ pub const Agent = struct {
                 // threshold, a transient/empty summary must not immediately drop
                 // real history. Destructive recovery is reserved for >=95%.
                 const recovery_meter = self.effectiveContextTokens();
-                self.compactOrRecover(self.provider.nearContextLimit(recovery_meter));
+                self.autocompact(recovery_meter);
                 self.closeCodexWs();
             }
             const root = try self.request(if (self.text_only) null else self.toolsJson());
@@ -418,6 +437,9 @@ pub const Agent = struct {
     pub const emergencyCutIndex = @import("agent_compact.zig").emergencyCutIndex;
     pub const emergencyTrim = @import("agent_compact.zig").emergencyTrim;
     pub const compactOrRecover = @import("agent_compact.zig").compactOrRecover;
+    pub const manualCompact = @import("agent_server_compact.zig").manualCompact;
+    pub const autocompact = @import("agent_server_compact.zig").autocompact;
+    pub const autocompactResumed = @import("agent_server_compact.zig").autocompactResumed;
     pub const capOversizedToolOutputs = @import("agent_compact.zig").capOversizedToolOutputs;
 
     // The live streaming path (thinking spinner, live "Thinking" reasoning
@@ -458,7 +480,15 @@ pub const Agent = struct {
     /// turn iterations, and the root consumes at its next loop head as
     /// error.Interrupted.
     pub var esc_cancel: std.atomic.Value(bool) = .init(false);
+    var root_turn_prepared: std.atomic.Value(bool) = .init(false);
     pub var esc_watch_done: std.atomic.Value(bool) = .init(true);
+
+    /// Clear stale cancellation before the root becomes externally cancellable;
+    /// runTurn consumes the marker without erasing a cancellation arriving later.
+    pub fn prepareRootTurn() void {
+        esc_cancel.store(false, .release);
+        root_turn_prepared.store(true, .release);
+    }
 
     // Esc-cancel handling (the stdin scanner + steering-buffer capture +
     // interruptible sleep) lives in agent_interrupt.zig (#123, 600-line
@@ -536,6 +566,7 @@ pub const Agent = struct {
 
 test {
     _ = @import("agent_prompt.zig");
+    _ = @import("effort_route.zig");
     try agent_tests.lazyRootTools(Agent);
 }
 

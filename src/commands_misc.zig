@@ -9,6 +9,8 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
+const tool_balance = @import("tool_balance.zig"); // /tools: session tool-class tally
+const codedbpro_report = @import("codedbpro_report.zig"); // /tools: licensed-gate fallback state
 const provider_mod = @import("provider.zig");
 const agent_mod = @import("agent.zig");
 const util = @import("util.zig");
@@ -36,6 +38,7 @@ const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: which listed MC
 const subagent = @import("subagent.zig"); // #276 P0-3: g_agent_jobs, for /jobs
 
 const pricing = @import("pricing.zig");
+const obs = @import("obs.zig");
 const default_context = pricing.default_context;
 const g_cost = &pricing.g_cost;
 const models_cache = @import("models_cache.zig");
@@ -43,6 +46,8 @@ const kimi_catalog = @import("kimi_catalog.zig");
 const providers = @import("providers.zig");
 const command_catalog = @import("command_catalog.zig");
 const side_question = @import("side_question.zig"); // #415 /btw
+const peer_channel = @import("peer_channel.zig"); // #469 /tell + the /sessions "live now" section
+const route_set = @import("route_set.zig"); // /routes: user-defined priced model lanes
 const serde = @import("serde.zig");
 
 const mcp_cli = @import("mcp_cli.zig");
@@ -151,6 +156,7 @@ fn ownedSessionName(arena: Allocator, arg: []const u8, fallback: []const u8) All
 /// `line` doesn't match any command in this file — the caller falls through
 /// to handleRest() for the unknown-command/help terminal stage.
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
+    if (try @import("adopt.zig").trySlash(root.io, arena, root.home, line, out)) return true;
     if (try commands_privacy.tryHandle(root, line, out)) return true;
     if (try playbook_glue.command(root, arena, line, out)) return true; // #381 /never | /constraint
     if (try side_question.command(root, arena, line, out)) return true; // #415 /btw
@@ -222,7 +228,12 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (std.mem.eql(u8, line, "/cost")) {
+    if (std.mem.eql(u8, line, "/debug")) {
+        try obs.renderHud(out);
+        try out.flush();
+        return true;
+    }
+    if (std.mem.eql(u8, line, "/cost") or std.mem.eql(u8, line, "/usage")) {
         const c = g_cost.snap(root.io);
         if (c.api_calls == 0) {
             try out.writeAll("no API calls yet this session\n");
@@ -241,9 +252,20 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
+    if (std.mem.eql(u8, line, "/tools")) {
+        var snap = tool_balance.snapshot();
+        const text = try tool_balance.render(arena, &snap, main_mod.g_codedbpro_licensed, codedbpro_report.fallbackOpen());
+        try out.writeAll(text);
+        try out.flush();
+        return true;
+    }
     if (std.mem.startsWith(u8, line, "/mcp")) {
         const arg = std.mem.trim(u8, line["/mcp".len..], " \t");
         const reg = root.registry.?; // always present now
+        if (@import("mcp_boot.zig").joinPending(reg)) {
+            root.invalidateRootTools();
+            try root.ensureRootTools(root.provider.kind);
+        }
         if (std.mem.startsWith(u8, arg, "add")) {
             // /mcp add <name> <command> [args...] or <name> --url <URL>
             var it = std.mem.tokenizeAny(u8, arg["add".len..], " \t");
@@ -346,6 +368,11 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/models")) {
         root.ensureStoredKeys(keys);
         providers.ensureModelQueryCatalogs(root, keys.*, "");
+        // The explicit listing is the freshness moment: live-refresh the
+        // router-catalog providers, bypassing the per-process latch and 6h
+        // TTL that made /models show a boot-time snapshot until restart.
+        const pinged = providers.refreshModelListing(root, keys.*);
+        if (pinged > 0) try out.print("{s}(pinged {d} provider catalog(s) live){s}\n", .{ style.dim, pinged, style.reset });
         try out.writeAll("model                      ctx      compact@   provider    key  vision\n");
         for (pricing.models()) |m| {
             const has_key = keys.get(m.provider) != null;
@@ -529,6 +556,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
+    if (std.mem.startsWith(u8, line, "/tell") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.tellCommand(root, arena, line, out); // #469
+    if (std.mem.startsWith(u8, line, "/peek") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.peekCommand(root, arena, line, out); // #469
+    if (std.mem.startsWith(u8, line, "/routes") and (line.len == 7 or line[7] == ' ' or line[7] == '\t')) return route_set.command(root, keys, arena, line, out); // user-defined priced lanes
     if (std.mem.eql(u8, line, "/sessions")) {
         var entries = listSavedSessions(root, arena);
         defer entries.deinit(arena);
@@ -542,6 +572,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             }
         }
         if (entries.items.len == 0) try out.writeAll("(no saved sessions in cwd)\n");
+        try peer_channel.writeLiveSection(root, arena, out); // #469: co-resident live sessions, with goals
         try out.flush();
         return true;
     }
@@ -558,19 +589,6 @@ pub fn handleRest(line: []const u8, out: *Io.Writer) !void {
         try out.flush();
         return;
     }
-    try out.writeAll("commands (bare / opens the filterable menu):\n");
-    for (command_catalog.commands) |command| {
-        const usage = if (command.usage.len > 0) command.usage else command.name;
-        try out.print("  {s:<32} {s}\n", .{ usage, command.desc });
-    }
-    try out.writeAll(
-        \\  exit | /exit | /quit             quit (also ctrl-d or ctrl-c on an empty line)
-        \\
-        \\esc during a response interrupts the turn; streamed output remains in history.
-        \\"always allow" answers persist to .harness/settings.json in the cwd.
-        \\launch flags: --model <name> · --yolo · -p "prompt" · --json · --help · --version
-        \\subcommands: graff login [codex] · graff key set <provider> <key> · graff --schema
-        \\
-    );
+    try @import("help.zig").render(out);
     try out.flush();
 }

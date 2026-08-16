@@ -185,13 +185,17 @@ test "#380 fast fail: no vision-capable model anywhere refuses the spawn, action
     // Saying "none is reachable" there would be a lie, so it is a distinct
     // message that names the model and how to authorize it.
     withKeys(&keys, &.{"anthropic"});
-    const cheap: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude-haiku-4-5", .context = 200_000 };
-    try std.testing.expectEqualStrings("", va.blockedByCost(cheap)); // haiku IS the cheap vision rung — affordable, so not this case
+    // #471 moved anthropic's cheap rung from haiku-4-5 to sonnet-5, so the
+    // vision seat is sonnet-5 ($2/$10) rather than haiku ($1/$5): still 2.5x
+    // under opus, and now a genuinely cheaper SEAT than the frontier instead
+    // of an equally-priced older opus.
+    const cheap: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude-sonnet-5", .context = 200_000 };
+    try std.testing.expectEqualStrings("", va.blockedByCost(cheap)); // sonnet-5 IS the cheap vision rung — affordable, so not this case
     const priced_out: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "deepseek-v4-flash", .context = 200_000 };
-    try std.testing.expectEqualStrings("claude-haiku-4-5", va.blockedByCost(priced_out));
-    const cost_msg = try va.blockMessage(std.testing.allocator, .{ .path = "a.png", .blocked = true, .pricier = "claude-haiku-4-5" });
+    try std.testing.expectEqualStrings("claude-sonnet-5", va.blockedByCost(priced_out));
+    const cost_msg = try va.blockMessage(std.testing.allocator, .{ .path = "a.png", .blocked = true, .pricier = "claude-sonnet-5" });
     defer std.testing.allocator.free(cost_msg);
-    try std.testing.expect(std.mem.indexOf(u8, cost_msg, "model:\"claude-haiku-4-5\"") != null); // how to authorize it
+    try std.testing.expect(std.mem.indexOf(u8, cost_msg, "model:\"claude-sonnet-5\"") != null); // how to authorize it
     try std.testing.expect(std.mem.indexOf(u8, cost_msg, "escalate") != null); // and why it was not taken
     try std.testing.expect(!std.mem.eql(u8, cost_msg, msg));
 }
@@ -200,7 +204,7 @@ test "#380 candidate search: sub-first, then provider-local under the cost ceili
     // Ladder rungs bottom-up, so a re-route descends price rather than seizing
     // the frontier model.
     try std.testing.expectEqualStrings("gpt-5.6-luna", va.visionModelFor("codex").?);
-    try std.testing.expectEqualStrings("claude-haiku-4-5", va.visionModelFor("anthropic").?);
+    try std.testing.expectEqualStrings("claude-sonnet-5", va.visionModelFor("anthropic").?);
     try std.testing.expect(va.visionModelFor("deepseek") == null); // no vision model at any rung
 
     const saved = bench.g_keys;
@@ -219,12 +223,12 @@ test "#380 candidate search: sub-first, then provider-local under the cost ceili
     try std.testing.expectEqualStrings("gpt-5.6-luna", seat.model);
 
     // An anthropic base with no sub logged in resolves provider-locally, and
-    // only because haiku is CHEAPER than the opus it replaces.
+    // only because sonnet-5 is CHEAPER than the opus it replaces.
     withKeys(&keys, &.{"anthropic"});
-    const opus_root: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude-opus-4-8", .context = 200_000 };
+    const opus_root: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude-opus-5", .context = 1_000_000 };
     const local = va.visionSeat(opus_root).?;
     try std.testing.expectEqualStrings("anthropic", local.id);
-    try std.testing.expectEqualStrings("claude-haiku-4-5", local.model);
+    try std.testing.expectEqualStrings("claude-sonnet-5", local.model);
 }
 
 test "#380 honesty flag: each disclaimer spelling is caught, ordinary reports are not" {
@@ -375,4 +379,45 @@ test "#380 does not disturb #292: the pin chain's own outcomes still arrive" {
     // An off-vocabulary tier is still reported as a typo, not swallowed.
     const typo = va.forSpawn(codex(), obj(a, "{\"tier\":\"cheap\"}"), false, .{}, "read a.png");
     try std.testing.expectEqual(pin_mod.Outcome.unknown_tier, typo.pin.outcome);
+}
+
+test "#471 the #291 ladder descent is not a human pin, so a tier ask still reaches a plan" {
+    // The bug this guards, found by running the harness for real rather than
+    // by unit test: resolveSubagentProvider returns a NON-null worker provider
+    // for the automatic #291 ladder descent, so `session_pinned` was true in
+    // every ordinary session on a provider that has a ladder. forSpawn read
+    // that as "the human chose these workers" and skipped sub-first routing
+    // entirely — a logged-in flat-rate plan sat idle while a metered rung did
+    // the work. Every prior test passed sub_ok straight into subagent_pin and
+    // so never exercised this computation at all.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const saved_keys = bench.g_keys;
+    const saved_ladder = selection.g_default_from_ladder;
+    defer {
+        bench.g_keys = saved_keys;
+        selection.g_default_from_ladder = saved_ladder;
+    }
+    var keys: provider_mod.Keys = undefined;
+    withKeys(&keys, &.{"codex"});
+
+    // A DeepSeek session's tier:"small" stays on flash — luna is a drop.
+    selection.g_default_from_ladder = true;
+    const auto = va.forSpawn(deepseek(), obj(a, "{\"tier\":\"small\"}"), true, .{}, "extract the imports");
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, auto.pin.outcome);
+    try std.testing.expectEqualStrings("deepseek", auto.pin.provider.?.id);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", auto.pin.provider.?.model);
+
+    // A real --subagent-model session is still untouchable: the user picked
+    // the workers, and no auto-route may override that.
+    selection.g_default_from_ladder = false;
+    const pinned = va.forSpawn(deepseek(), obj(a, "{\"tier\":\"small\"}"), true, .{}, "extract the imports");
+    try std.testing.expect(pinned.pin.outcome != .sub_routed);
+
+    // Unpinned still stays on DeepSeek flash, not luna.
+    selection.g_default_from_ladder = false;
+    const free = va.forSpawn(deepseek(), obj(a, "{\"tier\":\"small\"}"), false, .{}, "extract the imports");
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, free.pin.outcome);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", free.pin.provider.?.model);
 }

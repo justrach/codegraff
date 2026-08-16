@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 
 import { NewChatTrigger } from "../components/NewChatTrigger";
-import { AgentOverviewPanel } from "../components/agent-overview/AgentOverviewPanel";
+import { AgentControlPane } from "../components/agent-control/AgentControlPane";
 import { GeneralSettingsPane } from "../components/general-settings/GeneralSettingsPane";
 import { McpSettingsPane } from "../components/mcp-settings/McpSettingsPane";
 import { ProvidersSettingsPane } from "../components/providers-settings/ProvidersSettingsPane";
@@ -285,6 +285,11 @@ function AppShell() {
             isDarkTheme={isDarkTheme}
             onToggleTheme={toggleTheme}
           />
+          <AgentControlPane
+            onNavigateToConversation={() => {
+              setIsSettingsViewOpen(false);
+            }}
+          />
           <AppSidebarControl
             isFullscreen={isFullscreen}
             isSidebarVisible={isDesktopSidebarVisible}
@@ -374,11 +379,8 @@ function AppShell() {
                     <SidebarVisibilityContext.Provider
                       value={isDesktopSidebarVisible}
                     >
-                      <div className="flex h-full min-w-0 flex-1 overflow-hidden">
-                        <div className="min-w-0 flex-1">
-                          <WorkspaceBoard />
-                        </div>
-                        <AgentOverviewPanel />
+                      <div className="h-full min-w-0 flex-1 overflow-hidden">
+                        <WorkspaceBoard />
                       </div>
                     </SidebarVisibilityContext.Provider>
                   </SettingsNavigationProvider>

@@ -50,10 +50,12 @@ const harness_version = root.harness_version;
 const telemetry_net = @import("telemetry_net.zig");
 pub const validatedAuthKey = telemetry_net.validatedAuthKey;
 const otlpLogsUrl = telemetry_net.otlpLogsUrl;
+const obs = @import("obs.zig");
 
 test {
     _ = telemetry_net;
     _ = @import("telemetry_tests.zig");
+    _ = obs;
 }
 
 pub const Telemetry = struct {
@@ -133,10 +135,17 @@ pub const Telemetry = struct {
     }
 
     pub fn countTurn(self: *Telemetry) void {
+        obs.turn(.completed);
         if (!self.on()) return;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         self.turns += 1;
+    }
+
+    /// Line-session / oneshot / ACP: length only, then the turn counter.
+    pub fn beginTurn(self: *Telemetry, prompt_len: u32, model: []const u8) void {
+        obs.prompt(prompt_len, model);
+        countTurn(self);
     }
 
     pub fn ultracode(self: *Telemetry) void {
@@ -154,8 +163,9 @@ pub const Telemetry = struct {
     /// log record. Only the fixed call-site category leaves the process: raw
     /// provider/tool error text can echo prompts, paths, source, or secrets.
     pub fn errorEvent(self: *Telemetry, kind: []const u8, detail: []const u8) void {
-        if (!self.on()) return;
         _ = detail;
+        obs.fail(kind);
+        if (!self.on()) return;
         {
             self.mutex.lockUncancelable(self.io);
             defer self.mutex.unlock(self.io);
@@ -522,6 +532,14 @@ pub const Telemetry = struct {
             } else {
                 if (e.kind.len > 0) try attr(&s, "kind", .{ .str = e.kind });
                 if (e.detail.len > 0) try attr(&s, "detail", .{ .str = e.detail });
+                if (std.mem.eql(u8, e.body, "task")) {
+                    // task_outcome.zig goal events: effort rides as numeric
+                    // attrs; the worker stores the attrs JSON verbatim.
+                    try attr(&s, "turns", .{ .int = e.tasks });
+                    try attr(&s, "calls", .{ .int = e.phases });
+                    try attr(&s, "compactions", .{ .int = e.failed });
+                    try attr(&s, "duration_ms", .{ .int = e.ms });
+                }
                 if (std.mem.eql(u8, e.body, "workflow")) {
                     try attr(&s, "phases", .{ .int = e.phases });
                     try attr(&s, "tasks", .{ .int = e.tasks });
@@ -533,6 +551,7 @@ pub const Telemetry = struct {
             try s.endObject();
         }
         // Session summary: the "general usage stats" record (final flush only).
+        try obs.writeOtlp(&s, self.start_unix_ms);
         if (include_summary) {
             const models_joined = std.mem.join(self.gpa, ",", self.models.items) catch "";
             defer if (models_joined.len > 0) self.gpa.free(models_joined);

@@ -70,20 +70,27 @@ test "jsonBytes tracks the real serialized size closely enough to budget with" {
     try testing.expect(estimate <= actual + actual / 10);
 }
 
-test "a small server stays eager, an expensive one is deferred (#416 default)" {
+test "every server defers by default; the budget knob restores size-based eagerness (#476)" {
     withDefaults();
     defer withDefaults();
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
+    // Universal deferral: even a tiny server ships placeholders by default.
     const small = try fixture(arena, "small", 2, 40);
-    try testing.expect(gate.serverCost(small, "small") <= gate.default_budget);
+    try testing.expect(gate.serverCost(small, "small") > gate.default_budget);
+    for (small) |t| try testing.expect(gate.isDeferred(small, t));
+    try testing.expect(gate.anyDeferred(small));
+
+    // The old size-based policy stays reachable via GRAFF_MCP_SCHEMA_BUDGET.
+    gate.g_policy.budget = 4096;
+    try testing.expect(gate.serverCost(small, "small") <= gate.g_policy.budget);
     for (small) |t| try testing.expect(!gate.isDeferred(small, t));
     try testing.expect(!gate.anyDeferred(small));
 
     const fat = try fixture(arena, "fat", 8, 2000);
-    try testing.expect(gate.serverCost(fat, "fat") > gate.default_budget);
+    try testing.expect(gate.serverCost(fat, "fat") > gate.g_policy.budget);
     for (fat) |t| try testing.expect(gate.isDeferred(fat, t));
     try testing.expect(gate.anyDeferred(fat));
 }
@@ -184,14 +191,8 @@ test "load_tool_schemas returns the full schemas and enables the tools" {
     const arena = arena_state.allocator();
     const fat = try fixture(arena, "fat", 4, 2000);
 
-    // Before: every tool blocked, with an actionable refusal.
+    // Before: every tool blocked (the refusal itself is gone — auto-load).
     try testing.expect(gate.blocked(fat, "mcp__fat__t0"));
-    const refusal = try gate.refusalText(testing.allocator, "mcp__fat__t0");
-    defer testing.allocator.free(refusal);
-    try testing.expect(std.mem.indexOf(u8, refusal, gate.tool_name) != null);
-    try testing.expect(std.mem.indexOf(u8, refusal, "mcp__fat__t0") != null);
-    try testing.expect(std.mem.indexOf(u8, refusal, "does not change approvals") != null);
-    try testing.expect(std.mem.indexOf(u8, refusal, "unknown") == null); // never a bare unknown-tool
 
     const req = try std.json.parseFromSliceLeaky(Value, arena, "{\"tools\":[\"mcp__fat__t0\"]}", .{ .allocate = .alloc_always });
     const r = try gate.loadInto(arena, fat, req);
@@ -252,6 +253,59 @@ test "one tool named twice in a call is emitted once, not duplicated" {
     try testing.expectEqual(@as(usize, 2), gate.rendersForTest());
 }
 
+test "query mode: keywords load the matching deferred tools, a miss lists what exists" {
+    withDefaults();
+    defer withDefaults();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const fat = try fixture(arena, "fat", 3, 2000);
+
+    const hit = try std.json.parseFromSliceLeaky(Value, arena, "{\"query\":\"first line\"}", .{ .allocate = .alloc_always });
+    const loaded = try gate.loadInto(arena, fat, hit);
+    try testing.expect(!loaded.is_error);
+    try testing.expect(loaded.loaded > 0);
+    for (fat) |t| try testing.expect(!gate.isDeferred(fat, t)); // all matched + enabled
+    try testing.expect(std.mem.indexOf(u8, loaded.text, "input_schema") != null); // full schemas ride the result
+
+    gate.reset();
+    const miss = try std.json.parseFromSliceLeaky(Value, arena, "{\"query\":\"zzqqx\"}", .{ .allocate = .alloc_always });
+    const none = try gate.loadInto(arena, fat, miss);
+    try testing.expect(none.is_error);
+    try testing.expect(std.mem.startsWith(u8, none.text, "no deferred tool matched query 'zzqqx'."));
+    try testing.expect(std.mem.indexOf(u8, none.text, "mcp__fat__t0") != null); // the listing follows
+}
+
+test "stable catalog: a load only appends tail bytes, and the tool stays visible (#476)" {
+    withDefaults();
+    defer withDefaults();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const fat = try fixture(arena, "fat", 3, 2000);
+    const meta_spec = [_]@import("schema.zig").ToolSpec{.{ .name = gate.tool_name, .desc = gate.tool_desc, .schema = gate.tool_schema }};
+    const schema_mod = @import("schema.zig");
+
+    gate.g_stable_catalog = true;
+    defer gate.g_stable_catalog = false;
+    const before = try schema_mod.renderRootTools(arena, .anthropic, &meta_spec, fat);
+    const req = try std.json.parseFromSliceLeaky(Value, arena, "{\"tools\":[\"mcp__fat__t0\"]}", .{ .allocate = .alloc_always });
+    const loaded = try gate.loadInto(arena, fat, req);
+    try testing.expect(!loaded.is_error);
+    try testing.expectEqual(@as(usize, 1), loaded.loaded);
+    const after = try schema_mod.renderRootTools(arena, .anthropic, &meta_spec, fat);
+    // Adoption stays (the v1 full-skip experiment failed on this): the loaded
+    // tool IS in the catalog…
+    try testing.expect(std.mem.indexOf(u8, after, "mcp__fat__t0") != null);
+    // …but only as tail bytes: everything up to the closing bracket is the
+    // pre-load catalog verbatim, so the provider's prefix cache survives.
+    try testing.expect(std.mem.startsWith(u8, after, before[0 .. before.len - 1]));
+
+    gate.g_stable_catalog = false;
+    const normal = try schema_mod.renderRootTools(arena, .anthropic, &meta_spec, fat);
+    try testing.expect(std.mem.indexOf(u8, normal, "mcp__fat__t0") != null); // default: loaded tools rejoin in place
+}
+
 test "an unknown name errors and lists what is actually deferred; no args just lists" {
     withDefaults();
     defer withDefaults();
@@ -276,6 +330,8 @@ test "an unknown name errors and lists what is actually deferred; no args just l
     try testing.expect(std.mem.indexOf(u8, list.text, "second line nobody needs up front") == null);
 
     // Nothing deferred at all: say so rather than printing an empty list.
+    // (Reachable via the budget knob now that every server defers by default.)
+    gate.g_policy.budget = 4096;
     const small = try fixture(arena, "small", 1, 4);
     const quiet = try gate.loadInto(arena, small, none);
     try testing.expect(!quiet.is_error);
@@ -289,6 +345,7 @@ test "an eager tool is never blocked, and the load tool is advertised only when 
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const small = try fixture(arena, "small", 2, 40);
+    gate.g_policy.budget = 4096; // make "small" eager explicitly — the default defers everything (#476)
     try testing.expect(!gate.blocked(small, "mcp__small__t0"));
     try testing.expect(!gate.hiddenSpec("bash", small)); // only the load tool is ever hidden
     try testing.expect(gate.hiddenSpec(gate.tool_name, small)); // nothing deferred -> not advertised

@@ -10,7 +10,10 @@ from pty_harness import PtySession, terminal_text
 
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
-CORAL = b"\x1b[38;2;196;81;61m"
+# The effort/ultracode badges and the picker selection moved from coral to the
+# emerald accent when the palette aligned to the site (coral is reserved for
+# errors) — ansi.zig style.accent / pickers.zig.
+ACCENT = b"\x1b[38;2;5;150;105m"
 RESET = b"\x1b[0m"
 
 
@@ -60,7 +63,7 @@ def main() -> None:
                 "/effort xhigh",
                 "reasoning effort: Extra high",
                 f"[{base} · {privacy} · cwd {tmp}",
-                CORAL + b"Extra high" + RESET,
+                ACCENT + b"Extra high" + RESET,
             )
             command(
                 "/model definitely-not-a-model",
@@ -103,7 +106,7 @@ def main() -> None:
                 "/ultracode on",
                 "ultracode mode: on",
                 f"[{base} · Plan · Strict · Ultracode · {privacy} · cwd {tmp}",
-                CORAL + b"Ultracode" + RESET,
+                ACCENT + b"Ultracode" + RESET,
             )
             command(
                 "/yolo",
@@ -151,7 +154,7 @@ def main() -> None:
             paint = bytes(session.raw[cursor:]).rsplit(b"\x1b[2J\x1b[H", 1)[-1]
             if paint.count(b"\n") != 11:
                 raise AssertionError("model picker exceeded its 12-row terminal budget")
-            if CORAL + b"\xe2\x80\xba deepseek-v4-pro" not in paint:
+            if ACCENT + b"\xe2\x80\xba deepseek-v4-pro" not in paint:
                 raise AssertionError("model picker did not initially select the active model")
             session.send_key("ctrl-c")
             session.wait_for_literal("] ›", start=cursor)
@@ -162,7 +165,7 @@ def main() -> None:
             session.wait_for_literal("Ultra", start=cursor)
             session.pump_for(0.1)
             paint = bytes(session.raw[cursor:]).rsplit(b"\x1b[2J\x1b[H", 1)[-1]
-            if CORAL + b"\xe2\x80\xba Extra high" not in paint:
+            if ACCENT + b"\xe2\x80\xba Extra high" not in paint:
                 raise AssertionError("reasoning picker did not initially select the current level")
             session.send_key("ctrl-c")
             session.wait_for_literal("] ›", start=cursor)

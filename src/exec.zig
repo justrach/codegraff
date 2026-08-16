@@ -15,6 +15,9 @@ const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
 const util = @import("util.zig");
+const codedbpro_report = @import("codedbpro_report.zig"); // licensed-companion failure → redacted issue filer
+const codedbpro_paths = @import("codedbpro_paths.zig"); // session-cwd paths for the resident companion daemon
+const tool_balance = @import("tool_balance.zig"); // session-wide tool-class tally (/tools)
 const ToolCall = tools.ToolCall;
 
 const tools = @import("tools.zig");
@@ -63,12 +66,16 @@ const read_file = @import("read_file.zig");
 // #337: edit_file's verified write path, plus the file-tool helpers that moved
 // out with it (this file is at the 600-line ceiling).
 const edit_verify = @import("edit_verify.zig");
+const edit_batch = @import("edit_batch.zig"); // batched edit_file spans (#476)
 const fsErrorText = edit_verify.fsErrorText;
 const preserveMode = edit_verify.preserveMode;
 const hooks = @import("hooks.zig");
 const telemetry = @import("telemetry.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-local-tools gate
+const native_fold = @import("native_fold.zig"); // folded native power tools: layer-2 refusal until load_tool_schemas unfolds
+const vision = @import("vision.zig"); // read_file stages images like MCP image results (#249)
+const input_util = @import("input_util.zig");
 const imagegen = @import("imagegen.zig"); // #352: the codex-gated image tool (advertising lives in schema.zig/tool_gates.zig)
 
 /// Wall-clock ceiling for one *subagent* bash command. Subagents run on pool
@@ -115,12 +122,45 @@ fn learningArgv(argv: *[10][]const u8, exe_path: []const u8, contribute: bool) u
 
 /// Runs on a pool thread; never throws — failures become is_error results.
 /// Every execution is timed (out.ms) and traced.
+/// read_file on an image: stage the pixels on the registry's pending-image
+/// slot — the same place MCP image results land (#249) — so the per-turn
+/// handoff attaches them to the agent's next turn. Null means "fall back to
+/// the generic binary-file error" (no registry, unreadable, over the ceiling).
+fn stageReadFileImage(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: []const u8, size: u64) !?ToolOutput {
+    const reg = ctx.registry orelse return null;
+    if (size == 0 or size > 5 * 1024 * 1024) return null; // vision ceiling, same as stageImagePath
+    const media_type = vision.imageMediaType(path);
+    if (!vision.visionCapable(ctx.provider)) return .{
+        .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — the active model does not accept images, so it was not attached]", .{ media_type, size }),
+    };
+    const data = Io.Dir.cwd().readFileAlloc(io, resolved, gpa, .limited(5 * 1024 * 1024)) catch return null;
+    defer gpa.free(data);
+    const enc = std.base64.standard.Encoder;
+    const b64 = try gpa.alloc(u8, enc.calcSize(data.len));
+    defer gpa.free(b64);
+    _ = enc.encode(b64, data);
+    reg.mutex.lockUncancelable(reg.io);
+    defer reg.mutex.unlock(reg.io);
+    if (reg.pending_image != null) return .{
+        .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — not attached: another image is already queued for the next turn]", .{ media_type, size }),
+    };
+    const arena = reg.arena();
+    reg.pending_image = .{
+        .media_type = try arena.dupe(u8, media_type),
+        .b64 = try arena.dupe(u8, b64),
+        .label = try arena.dupe(u8, path),
+    };
+    return .{
+        .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — attached to your next turn]", .{ media_type, size }),
+    };
+}
+
 pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     const t0: Io.Timestamp = .now(ctx.io, .awake);
     // #255: reserved before any gate/dispatch runs so tool_started/
     // tool_finished bracket the whole call, including a gate denial below.
     const call_id: u64 = if (ctx.tracer) |tr| tr.toolStarted(call.name, call.input) else 0;
-    if (noLocalToolsGate(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call)) |blocked| {
+    if (noLocalToolsGate(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call) orelse codedbpro_report.licensedGate(ctx, call) orelse native_fold.gateExec(ctx.gpa, call.name, ctx.from_sub)) |blocked| {
         var out = blocked;
         out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
         if (ctx.tracer) |tr| {
@@ -145,6 +185,15 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
         tr.toolFinished(call.name, call_id, out.ms, out.is_error, out.text.len);
     }
     if (ctx.tools_used) |ts| ts.add(ctx.io, ctx.gpa, call.name, out.is_error);
+    // Session-wide class tally (/tools) — and when suite usage NEWLY skews,
+    // the nudge rides this tool result so the model hears it, not just the
+    // user's /tools view. Edge-triggered: a few per session at most. The
+    // superseded out.text is deliberately NOT freed (it can be a static
+    // empty slice; freeing it would corrupt) — a rare small abandonment.
+    if (tool_balance.record(ctx.gpa, call, out.is_error)) |nudge| {
+        defer ctx.gpa.free(nudge);
+        out.text = std.fmt.allocPrint(ctx.gpa, "{s}\n\n[{s}]", .{ out.text, nudge }) catch out.text;
+    }
     runPostToolHooks(ctx, call, out);
     return out;
 }
@@ -187,14 +236,21 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             .text = try gpa.dupe(u8, "MCP not available in this context"),
             .is_error = true,
         };
-        // #416 layer 2. Deliberately HERE, inside execToolInner: this runs
-        // downstream of agent_tool_gate.gateTool, so the consent prompt is
-        // still reached in exactly the cases (and the order) it was before —
-        // deferral can only subtract a call consent already allowed, never
-        // add one, and never short-circuits an approval check.
-        if (mcp_schema_gate.blocked(reg.tools, call.name))
-            return .{ .text = try mcp_schema_gate.refusalText(gpa, call.name), .is_error = true };
-        const r = try reg.call(gpa, call.name, call.input);
+        // #416 layer 2, auto-load era: a confident call to a deferred tool
+        // loads its schema inline and runs — the refusal round trip is gone
+        // (same user direction as the native fold). Still downstream of
+        // agent_tool_gate.gateTool: consent is already settled.
+        mcp_schema_gate.autoLoad(gpa, reg.tools, call.name);
+        var prepared = codedbpro_paths.prepareInput(gpa, io, ctx.agent_cwd, call.name, call.input) catch |err| {
+            codedbpro_report.onFailure(ctx, call.name, @errorName(err));
+            return failure(gpa, err);
+        };
+        defer prepared.deinit(gpa);
+        const r = reg.call(gpa, call.name, prepared.value) catch |err| {
+            codedbpro_report.onFailure(ctx, call.name, @errorName(err));
+            return failure(gpa, err);
+        };
+        if (r.is_error) codedbpro_report.onFailure(ctx, call.name, r.text);
         return .{ .text = r.text, .is_error = r.is_error };
     }
 
@@ -345,7 +401,12 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
         const start_line = intField(input, "start_line");
         const end_line = intField(input, "end_line");
+        const contains = strField(input, "contains");
         const want_compact = tools.json_args.flag(input, "compact");
+        if (contains) |needle| {
+            if (needle.len == 0) return .{ .text = try gpa.dupe(u8, "read_file: contains must not be empty"), .is_error = true };
+            if (start_line != null or end_line != null or want_compact) return .{ .text = try gpa.dupe(u8, "read_file: contains cannot be combined with start_line, end_line, or compact"), .is_error = true };
+        }
         // #66: opt-in compact view routes to `codedb read <path> [-L a-b] --compact`
         // when codedb is present and this file is indexed. Lossy (strips comments/
         // blanks, shows line numbers) so it is NEVER the default and is labeled
@@ -365,7 +426,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         // absolute path.
         const resolved: []const u8 = if (ctx.agent_cwd) |base| try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, path }) else path;
         defer if (ctx.agent_cwd != null) gpa.free(resolved);
-        const outcome = read_file.read(io, gpa, .cwd(), resolved, start_line, end_line) catch |err| {
+        const outcome = read_file.read(io, gpa, .cwd(), resolved, start_line, end_line, contains) catch |err| {
             if (fsErrorText(gpa, .read, path, err)) |t| return .{ .text = t, .is_error = true };
             return err;
         };
@@ -375,9 +436,18 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
                 defer gpa.free(value.head);
                 break :blk .{ .text = try std.fmt.allocPrint(gpa, "{s}\n\n[read_file preview: {d}-byte file exceeds the {d} KiB whole-file limit; use start_line/end_line for byte-exact windows]", .{ util.utf8Prefix(value.head, value.head.len), value.total_bytes, read_file.max_bytes / 1024 }) };
             },
-            .binary => |size| .{
-                .text = try std.fmt.allocPrint(gpa, "{s} is a binary file ({d} bytes) — read_file only handles text. Use bash instead (e.g. `file`, `strings`, `pdftotext`, `sips`, `unzip -l`).", .{ path, size }),
-                .is_error = true,
+            .binary => |size| blk: {
+                // An image is only "binary" to a text-only model: stage the
+                // pixels exactly like an MCP image result (#249) so read_file
+                // on a PNG/JPG/GIF/WebP attaches it to the next turn instead
+                // of erroring out. Non-images keep the classic guidance.
+                if (input_util.isImagePath(path)) {
+                    if (try stageReadFileImage(gpa, io, ctx, resolved, path, size)) |out| break :blk out;
+                }
+                break :blk .{
+                    .text = try std.fmt.allocPrint(gpa, "{s} is a binary file ({d} bytes) — read_file only handles text. Use bash instead (e.g. `file`, `strings`, `pdftotext`, `sips`, `unzip -l`).", .{ path, size }),
+                    .is_error = true,
+                };
             },
             .range_too_large => .{
                 .text = try std.fmt.allocPrint(gpa, "read_file: requested range from {s} exceeds {d} KiB — request a narrower start_line/end_line window", .{ path, read_file.max_bytes / 1024 }),
@@ -386,6 +456,9 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             .start_past_end => .{
                 .text = try std.fmt.allocPrint(gpa, "start_line {?d} is past the end of {s}", .{ start_line, path }),
                 .is_error = true,
+            },
+            .no_match => .{
+                .text = try std.fmt.allocPrint(gpa, "No lines in {s} contain the exact literal {s}.", .{ path, contains orelse "" }),
             },
         };
     }
@@ -436,7 +509,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     // #337: the read/splice/write/VERIFY path lives in edit_verify.zig, where
     // the post-edit check sits ON the success path — a write that did not land
     // can no longer be reported as `replaced N occurrence(s)`.
-    if (std.mem.eql(u8, call.name, "edit_file")) return edit_verify.execEdit(ctx, input);
+    if (std.mem.eql(u8, call.name, "edit_file")) return if (input == .object and input.object.get("edits") != null) edit_batch.execBatch(ctx, input) else edit_verify.execEdit(ctx, input);
     if (std.mem.eql(u8, call.name, "write_file")) {
         const path = strField(input, "path") orelse return missingArg(gpa, "path");
         const content = strField(input, "content") orelse return missingArg(gpa, "content");
@@ -518,4 +591,9 @@ test "internal learning respects the parent privacy ceiling" {
     try std.testing.expectEqualSlices([]const u8, &.{ "graff", "--learning-privacy", "local", "learn", "run" }, argv[0..len]);
     len = learningArgv(&argv, "graff", true);
     try std.testing.expectEqualSlices([]const u8, &.{ "graff", "--learning-privacy", "aggregate", "learn", "run", "--submit" }, argv[0..len]);
+}
+
+test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, so the compiled-in references live here (the reach check diffs the test binary, not which file holds the line)
+    _ = @import("codedbpro_report.zig");
+    _ = @import("tool_balance.zig");
 }

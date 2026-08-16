@@ -187,13 +187,17 @@ test "defaultLadderModel: descends one rung per provider, bottom rung inherits" 
     try std.testing.expect(defaultLadderModel(mk("codex", "gpt-5.6-luna")) == null);
     // openai: same shape, sibling names
     try std.testing.expectEqualStrings("gpt-5.6-terra", defaultLadderModel(mk("openai", "gpt-5.6")).?);
-    // anthropic: opus -> sonnet -> haiku -> (bottom)
-    try std.testing.expectEqualStrings("claude-sonnet-4-6", defaultLadderModel(mk("anthropic", "claude-opus-4-8")).?);
-    try std.testing.expectEqualStrings("claude-haiku-4-5", defaultLadderModel(mk("anthropic", "claude-sonnet-4-6")).?);
-    try std.testing.expect(defaultLadderModel(mk("anthropic", "claude-haiku-4-5")) == null);
-    // deepseek: pro steps to its only cheaper rung (flash); flash has nowhere lower
+    // anthropic: opus-5 -> sonnet-5 -> (bottom). #471 dropped the opus-4-8 and
+    // sonnet-4-6 rungs: every opus generation bills the same $5/$25 per MTok,
+    // so descending within the family is not a cheaper seat at all.
+    try std.testing.expectEqualStrings("claude-sonnet-5", defaultLadderModel(mk("anthropic", "claude-opus-5")).?);
+    try std.testing.expect(defaultLadderModel(mk("anthropic", "claude-sonnet-5")) == null);
+    try std.testing.expect(defaultLadderModel(mk("anthropic", "claude-opus-4-8")) == null);
+    // deepseek / codegraff: pro (the session default) descends to flash;
+    // a flash root is already the cheap seat and inherits.
     try std.testing.expectEqualStrings("deepseek-v4-flash", defaultLadderModel(mk("deepseek", "deepseek-v4-pro")).?);
     try std.testing.expect(defaultLadderModel(mk("deepseek", "deepseek-v4-flash")) == null);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", defaultLadderModel(mk("codegraff", "deepseek-v4-pro")).?);
     // unlisted provider -> no ladder at all
     try std.testing.expect(defaultLadderModel(mk("xai", "grok-4.3")) == null);
     // a real, catalogued model that just isn't a rung on its own provider's
@@ -212,10 +216,10 @@ test "default ladder: resolves the mid sibling when no flags are given" {
     try std.testing.expectEqualStrings("codex", worker.id); // provider-local, unpinned
     try std.testing.expectEqualStrings("gpt-5.6-terra", worker.model);
 
-    const anthropic_root = try keys.providerById("anthropic", "claude-opus-4-8");
+    const anthropic_root = try keys.providerById("anthropic", "claude-opus-5");
     const anthropic_worker = resolveSubagentProvider(keys, anthropic_root, null, null, false, false).?;
     try std.testing.expectEqualStrings("anthropic", anthropic_worker.id);
-    try std.testing.expectEqualStrings("claude-sonnet-4-6", anthropic_worker.model);
+    try std.testing.expectEqualStrings("claude-sonnet-5", anthropic_worker.model);
 }
 
 test "default ladder: bottom-rung and off-ladder roots inherit (resolve to null)" {
@@ -282,14 +286,8 @@ test "ladder rungs vs providerClass: documented, intentional disagreement (#291)
     try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("gpt-5.6-sol"));
     try std.testing.expectEqualStrings("mid", @import("scoring.zig").providerClass("gpt-5.6-terra")); // ladder rung: mid
     try std.testing.expectEqualStrings("small", @import("scoring.zig").providerClass("gpt-5.6-luna")); // ladder rung: small
-    // The one remaining disagreement, still reported rather than papered
-    // over: the ladder treats deepseek-v4-flash as deepseek's only cheaper
-    // rung (mid), while providerClass's "flash" needle states its absolute
-    // capability (small). Relative-vs-absolute semantics, not a bug — the
-    // needle table's other callers (DGM fitness scoring/fleet niche gating)
-    // want the absolute answer.
     try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("deepseek-v4-pro"));
-    try std.testing.expectEqualStrings("small", @import("scoring.zig").providerClass("deepseek-v4-flash")); // ladder rung: mid
+    try std.testing.expectEqualStrings("small", @import("scoring.zig").providerClass("deepseek-v4-flash")); // ladder rung: small
     // Claude agrees end-to-end (opus/sonnet/haiku are tier-distinct needles
     // in providerClass, matching the ladder one-for-one).
     try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("claude-opus-4-8"));

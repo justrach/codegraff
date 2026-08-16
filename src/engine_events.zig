@@ -129,6 +129,16 @@ pub const SessionBanner = struct { cwd: []const u8, trace_path: []const u8 };
 /// will checkpoint each turn onto that branch (main.g_worktree_autocommit).
 pub const WorktreeEntry = struct { path: []const u8, branch: []const u8, autocommit: bool };
 
+/// A live Graff session already owns the checkout this session entered. Kept
+/// structured so a frontend can foreground the owner and isolation action
+/// instead of printing the collision warning as an undifferentiated string.
+pub const SharedWorktreeOwner = struct {
+    session_id: []const u8,
+    pid: i32,
+    active_minutes: i64,
+    goal: []const u8,
+};
+
 /// Startup could not honor the saved model preference and picked another.
 /// `blocked` means the substitute is cross-provider and not on the fallback
 /// allow-list, so it stays a one-session choice until the user widens it.
@@ -323,6 +333,8 @@ pub const EngineEvent = union(enum) {
     session_banner: SessionBanner,
     /// `-w/--worktree` entered its scratch checkout.
     worktree_entered: WorktreeEntry,
+    /// Another live session owns the checkout used by this session.
+    shared_worktree_owner: SharedWorktreeOwner,
     /// The saved model preference could not be honored this session. The
     /// startup twin of provider_fallback, and deliberately not a Notice: a
     /// frontend that wants to offer "use it anyway" needs the fields.
@@ -489,10 +501,11 @@ test "slice 1c: the tool-cluster notices are presentation pulses" {
 }
 
 test "slice 2: the lifecycle cluster is pulses, except the failover the wire carries" {
-    const pulses: [8]EngineEvent = .{
+    const pulses: [9]EngineEvent = .{
         .{ .session_notice = .{ .text = "loaded 2 saved approval(s)", .tone = .dim } },
         .{ .session_banner = .{ .cwd = "/repo", .trace_path = ".graff/traces/a.jsonl" } },
         .{ .worktree_entered = .{ .path = ".graff/worktrees/w", .branch = "worktree-w", .autocommit = true } },
+        .{ .shared_worktree_owner = .{ .session_id = "session-1", .pid = 42, .active_minutes = 5, .goal = "ship safely" } },
         .{ .saved_model_unavailable = .{ .saved = "old", .model = "new", .provider = "codex", .blocked = false } },
         .{ .mcp_consent_prompt = .{ .count = 3 } },
         .{ .session_saved = .{ .name = "session-1", .ext = ".session.json" } },

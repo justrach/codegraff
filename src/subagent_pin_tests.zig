@@ -171,30 +171,32 @@ test "graceful fallback: every unhonorable pin keeps the session default, never 
     // A provider with no ladder at all: a tier pin is a no-op, not a crash.
     const xai: Provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "grok-4.3", .context = 256_000 };
     try std.testing.expectEqual(pin_mod.Outcome.no_ladder, pin_mod.forSpawn(xai, obj(a, "{\"tier\":\"small\"}"), true).outcome);
-    // A ladder without that rung (deepseek has no `small`) — never rounds to
+    // A ladder without that rung (deepseek has no mid) — never rounds to
     // the nearest rung.
-    const deepseek: Provider = .{ .id = "deepseek", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-pro", .context = 128_000 };
-    try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(deepseek, obj(a, "{\"tier\":\"small\"}"), true).outcome);
-    try std.testing.expectEqualStrings("deepseek-v4-flash", pin_mod.forSpawn(deepseek, obj(a, "{\"tier\":\"mid\"}"), true).provider.?.model);
+    const deepseek: Provider = .{ .id = "deepseek", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-flash", .context = 128_000 };
+    try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(deepseek, obj(a, "{\"tier\":\"mid\"}"), true).outcome);
+    const opus: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude-opus-5", .context = 1_000_000 };
+    try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(opus, obj(a, "{\"tier\":\"mid\"}"), true).outcome);
+    try std.testing.expectEqualStrings("claude-sonnet-5", pin_mod.forSpawn(opus, obj(a, "{\"tier\":\"small\"}"), true).provider.?.model);
 }
 
 test "cost ceiling: a tier rung may descend price but never raise it" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    // deepseek's compiled ladder: frontier deepseek-v4-pro ($0.435/0.87),
-    // mid deepseek-v4-flash ($0.14/0.28). Descending is fine…
-    const pro: Provider = .{ .id = "deepseek", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-pro", .context = 128_000 };
-    try std.testing.expectEqualStrings("deepseek-v4-flash", pin_mod.forSpawn(pro, obj(a, "{\"tier\":\"mid\"}"), true).provider.?.model);
-    // …but a flash root asking for the frontier rung would RAISE cost —
+    // anthropic's compiled ladder: frontier claude-opus-5 ($5/25), small
+    // claude-sonnet-5 ($2/10). Descending is fine…
+    const opus: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude-opus-5", .context = 1_000_000 };
+    try std.testing.expectEqualStrings("claude-sonnet-5", pin_mod.forSpawn(opus, obj(a, "{\"tier\":\"small\"}"), true).provider.?.model);
+    // …but a sonnet-5 root asking for the frontier rung would RAISE cost —
     // blocked with a reason, spawn keeps the session default. Naming the
     // model explicitly still escalates: that is the visible, consented path.
-    const flash: Provider = .{ .id = "deepseek", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-flash", .context = 128_000 };
-    const blocked = pin_mod.forSpawn(flash, obj(a, "{\"tier\":\"frontier\"}"), true);
+    const sonnet: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude-sonnet-5", .context = 1_000_000 };
+    const blocked = pin_mod.forSpawn(sonnet, obj(a, "{\"tier\":\"frontier\"}"), true);
     try std.testing.expectEqual(pin_mod.Outcome.rung_pricier, blocked.outcome);
     try std.testing.expect(blocked.provider == null);
     try std.testing.expect(blocked.outcome.describe().len > 0);
-    try std.testing.expectEqualStrings("deepseek-v4-pro", pin_mod.forSpawn(flash, obj(a, "{\"model\":\"deepseek-v4-pro\"}"), true).provider.?.model);
+    try std.testing.expectEqualStrings("claude-opus-5", pin_mod.forSpawn(sonnet, obj(a, "{\"model\":\"claude-opus-5\"}"), true).provider.?.model);
     // The affordability rule itself: unpriced base has no ceiling; a priced
     // base blocks an unpriced rung (it cannot prove it is not an escalation).
     try std.testing.expect(pin_mod.rungAffordable("model-with-no-price-anywhere", "deepseek-v4-pro"));
@@ -213,34 +215,185 @@ test "sub-first routing: a logged-in flat-rate sub outranks metered for explicit
         if (std.mem.eql(u8, spec.id, "codex")) keys.values[i] = "tok";
     }
     bench.g_keys = &keys;
-    // A deepseek session asking tier:"small": the codex sub is logged in and
-    // luna is the better pick — of course it goes to luna, on the sub.
+    // A DeepSeek session asking tier:"small" stays on DeepSeek flash even
+    // when Codex is logged in — luna is the worse seat, not a free upgrade.
     const dsv: Provider = .{ .id = "deepseek", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-pro", .context = 128_000 };
     const routed = pin_mod.forSpawn(dsv, obj(a, "{\"tier\":\"small\"}"), true);
-    try std.testing.expectEqual(pin_mod.Outcome.sub_routed, routed.outcome);
-    try std.testing.expectEqualStrings("codex", routed.provider.?.id);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", routed.provider.?.model);
-    try std.testing.expect(routed.outcome.describe().len > 0);
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, routed.outcome);
+    try std.testing.expectEqualStrings("deepseek", routed.provider.?.id);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", routed.provider.?.model);
     // An explicit --subagent-provider (sub_ok=false) is a human choice no
-    // auto-route may override: back to the provider-local path (deepseek has
-    // no small rung → no_rung, session default kept).
-    try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(dsv, obj(a, "{\"tier\":\"small\"}"), false).outcome);
-    // Explicit model pins stay provider-local — naming a model is a statement
-    // about THIS provider, never a silent hop.
-    try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), true).outcome);
-    // No login (g_keys null) → no candidates → the metered ceiling rules.
+    // auto-route may override: the provider-local flash rung still applies.
+    const local = pin_mod.forSpawn(dsv, obj(a, "{\"tier\":\"small\"}"), false);
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, local.outcome);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", local.provider.?.model);
+    // Exact model pins: provider-local first, but a name the child's provider
+    // does not serve falls through to a logged-in sub that serves it exactly
+    // — the same standing consent as the tier path, rescuing a pin that used
+    // to silently no-op.
+    const mrouted = pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.model_sub_routed, mrouted.outcome);
+    try std.testing.expectEqualStrings("codex", mrouted.provider.?.id);
+    try std.testing.expectEqualStrings("gpt-5.6-luna", mrouted.provider.?.model);
+    try std.testing.expect(mrouted.outcome.describe().len > 0);
+    // …under the identical gates: an explicit --subagent-provider
+    // (sub_ok=false) forbids the hop…
+    try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), false).outcome);
+    // …and the match is strictly exact/alias — a substring must NOT cross a
+    // provider boundary to find a model the pin did not name.
+    try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"luna\"}"), true).outcome);
+    // No login (g_keys null) → no subscription hop; DeepSeek still has a
+    // local flash rung. An exact luna pin with no login stays unknown.
     bench.g_keys = null;
-    try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(dsv, obj(a, "{\"tier\":\"small\"}"), true).outcome);
+    const nologin = pin_mod.forSpawn(dsv, obj(a, "{\"tier\":\"small\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, nologin.outcome);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", nologin.provider.?.model);
+    try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(dsv, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), true).outcome);
+
+    // Same family through a codegraff login: stay on gateway flash, not luna.
+    bench.g_keys = &keys;
+    const cg: Provider = .{ .id = "codegraff", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-pro", .context = 1_000_000 };
+    const cg_small = pin_mod.forSpawn(cg, obj(a, "{\"tier\":\"small\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, cg_small.outcome);
+    try std.testing.expectEqualStrings("codegraff", cg_small.provider.?.id);
+    try std.testing.expectEqualStrings("deepseek-v4-flash", cg_small.provider.?.model);
 }
 
-test "a pin never crosses a provider boundary" {
+test "exact pin: the child's own provider wins over a logged-in sub serving the same name" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const bench = @import("bench_priors.zig");
+    const saved = bench.g_keys;
+    defer bench.g_keys = saved;
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    for (provider_mod.provider_specs, 0..) |spec, i| {
+        if (std.mem.eql(u8, spec.id, "codex")) keys.values[i] = "tok";
+    }
+    bench.g_keys = &keys;
+    // openai's own catalog serves gpt-5.6-luna — the pin resolves locally
+    // (.pinned), never hopping to the codex sub that serves the same name:
+    // a locally-served pin crosses no boundary and moves no billing.
+    const oai: Provider = .{ .id = "openai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 1_050_000 };
+    const got = pin_mod.forSpawn(oai, obj(a, "{\"model\":\"gpt-5.6-luna\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, got.outcome);
+    try std.testing.expectEqualStrings("openai", got.provider.?.id);
+    try std.testing.expectEqualStrings("gpt-5.6-luna", got.provider.?.model);
+}
+
+test "two logins split the tiers: k3 is mid, luna is the mechanical rung (#471)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const bench = @import("bench_priors.zig");
+    const saved = bench.g_keys;
+    defer bench.g_keys = saved;
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    for (provider_mod.provider_specs, 0..) |spec, i| {
+        if (std.mem.eql(u8, spec.id, "kimi") or std.mem.eql(u8, spec.id, "codex")) keys.values[i] = "tok";
+    }
+    bench.g_keys = &keys;
+
+    // Both plans logged in, metered anthropic root. The three tiers land on
+    // three different paid-for seats, and none of them costs a cent extra:
+    //   frontier -> codex sol   (73 beats k3's 68 on the bench sheet)
+    //   mid      -> kimi k3     (codex has no mid rung; terra is dominated)
+    //   small    -> codex luna  (kimi declares no small rung, so k3's higher
+    //                            score cannot swallow the mechanical tier —
+    //                            code search and greps stay on the cheap seat)
+    const claude: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude-opus-5", .context = 1_000_000 };
+    const want = [_]struct { tier: []const u8, pid: []const u8, model: []const u8 }{
+        .{ .tier = "frontier", .pid = "codex", .model = "gpt-5.6-sol" },
+        .{ .tier = "mid", .pid = "kimi", .model = "k3" },
+        .{ .tier = "small", .pid = "codex", .model = "gpt-5.6-luna" },
+    };
+    for (want) |w| {
+        const body = std.fmt.allocPrint(a, "{{\"tier\":\"{s}\"}}", .{w.tier}) catch unreachable;
+        const routed = pin_mod.forSpawn(claude, obj(a, body), true);
+        try std.testing.expectEqual(pin_mod.Outcome.sub_routed, routed.outcome);
+        try std.testing.expectEqualStrings(w.pid, routed.provider.?.id);
+        try std.testing.expectEqualStrings(w.model, routed.provider.?.model);
+    }
+
+    // The regression this guards: kimi used to have no ladder row at all, so
+    // sub-first routing skipped it and tier:"mid" fell through to a METERED
+    // anthropic rung — paying for work a logged-in plan already covers.
+    // The candidate list is derived from the specs' sub_login declaration.
+    var saw_kimi = false;
+    for (pin_mod.subscription_providers) |sid| {
+        try std.testing.expect(!std.mem.eql(u8, sid, "zai"));
+        try std.testing.expect(!std.mem.eql(u8, sid, "codegraff"));
+        if (std.mem.eql(u8, sid, "kimi")) saw_kimi = true;
+    }
+    try std.testing.expect(saw_kimi);
+}
+
+test "a kimi root borrows codex's cheap rung: small -> luna when it is logged in (#471)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const bench = @import("bench_priors.zig");
+    const sl = bench.g_ladders;
+    const sk = bench.g_keys;
+    defer {
+        bench.g_ladders = sl;
+        bench.g_keys = sk;
+    }
+    // A REAL session's ladders, not the compiled fallbacks: the shipped bench
+    // sheet dominates codex's terra out of existence, so codex has no mid rung
+    // and kimi's k3 is the only mid seat either plan offers.
+    bench.g_ladders = bench.derive(a, &bench.builtin_entries);
+
+    const kimi_root: Provider = .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "k3", .context = 1_048_576 };
+    var both: provider_mod.Keys = .{ .values = @splat(null) };
+    for (provider_mod.provider_specs, 0..) |spec, i| {
+        if (std.mem.eql(u8, spec.id, "kimi") or std.mem.eql(u8, spec.id, "codex")) both.values[i] = "tok";
+    }
+    bench.g_keys = &both;
+
+    // The point of sub-first routing seen from the other side: sitting ON the
+    // kimi plan, mechanical work still goes to codex's luna, because kimi's
+    // plan has no cheap rung and the codex login is already paid for. Neither
+    // hop costs a cent, so crossing is free — and the login IS the consent.
+    const small = pin_mod.forSpawn(kimi_root, obj(a, "{\"tier\":\"small\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.sub_routed, small.outcome);
+    try std.testing.expectEqualStrings("codex", small.provider.?.id);
+    try std.testing.expectEqualStrings("gpt-5.6-luna", small.provider.?.model);
+
+    // Escalating works the same way: sol outscores k3 on the bench sheet.
+    const top = pin_mod.forSpawn(kimi_root, obj(a, "{\"tier\":\"frontier\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.sub_routed, top.outcome);
+    try std.testing.expectEqualStrings("gpt-5.6-sol", top.provider.?.model);
+
+    // …and asking for mid while already seated on the mid model is a no-op,
+    // not a pointless re-seat: k3 IS kimi's mid rung.
+    try std.testing.expectEqual(pin_mod.Outcome.same, pin_mod.forSpawn(kimi_root, obj(a, "{\"tier\":\"mid\"}"), true).outcome);
+
+    // Kimi alone: nothing to borrow, so the cheap tier has no rung and the
+    // spawn keeps the session default rather than silently escalating to k3.
+    var solo: provider_mod.Keys = .{ .values = @splat(null) };
+    for (provider_mod.provider_specs, 0..) |spec, i| {
+        if (std.mem.eql(u8, spec.id, "kimi")) solo.values[i] = "tok";
+    }
+    bench.g_keys = &solo;
+    try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(kimi_root, obj(a, "{\"tier\":\"small\"}"), true).outcome);
+    try std.testing.expectEqual(pin_mod.Outcome.same, pin_mod.forSpawn(kimi_root, obj(a, "{\"tier\":\"frontier\"}"), true).outcome);
+}
+
+test "without a login, a pin never crosses a provider boundary" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
-    // Whatever the base provider is, the answer is that same provider — the
-    // cross-provider decision stays with --subagent-provider and its consent
-    // flag, which resolved `base` before a pin was ever consulted.
+    // Self-sufficient about login state: sub-first/model sub routing only
+    // ever crosses to a LOGGED-IN flat-rate sub, so with g_keys null every
+    // pin answer stays on the base provider. The metered cross-provider
+    // decision stays with --subagent-provider and its consent flag, which
+    // resolved `base` before a pin was ever consulted.
+    const bench = @import("bench_priors.zig");
+    const saved = bench.g_keys;
+    defer bench.g_keys = saved;
+    bench.g_keys = null;
     const bases = [_]Provider{
         codexBase(),
         .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude-opus-4-8", .context = 200_000 },

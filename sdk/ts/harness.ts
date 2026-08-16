@@ -2,17 +2,18 @@
 
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import type { Readable, Writable } from "node:stream";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import type { Readable, Writable } from "node:stream";
 
-export const HARNESS_VERSION = "0.10";
+export const HARNESS_VERSION = "0.12";
 
-export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "accounts/fireworks/models/deepseek-v4-flash" | "accounts/fireworks/models/deepseek-v4-pro" | "accounts/fireworks/models/glm-5p2" | "accounts/fireworks/models/gpt-oss-120b" | "accounts/fireworks/models/kimi-k2p6" | "accounts/fireworks/models/kimi-k2p7-code" | "accounts/fireworks/models/minimax-m3" | "accounts/fireworks/models/qwen3p7-plus" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "fugu" | "fugu-ultra" | "fugu-ultra-20260615" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5.2" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.3-codex-spark" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "grok-4.3" | "grok-build" | "k3" | "kimi-for-coding" | "kimi-for-coding-highspeed" | "kimi-k2.6" | "kimi-latest" | "lmstudio" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3" | "mlx-community/Qwen3.6-27B-OptiQ-4bit" | (string & {});
-export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "skill" | "codedb" | "todo_write" | "todo_read" | "eval" | "note_constraint" | "ask_user" | "attempt_completion" | "load_tool_schemas" | "clock_sleep" | "subagent" | "workflow" | "agent_output" | "learn_candidate" | "imagegen";
-export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kimi" | "moonshot" | "xai" | "zai" | "fugu" | "fireworks" | "mlx" | "lmstudio" | "codex";
+export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "accounts/fireworks/models/deepseek-v4-flash" | "accounts/fireworks/models/deepseek-v4-pro" | "accounts/fireworks/models/glm-5p2" | "accounts/fireworks/models/gpt-oss-120b" | "accounts/fireworks/models/kimi-k2p6" | "accounts/fireworks/models/kimi-k2p7-code" | "accounts/fireworks/models/minimax-m3" | "accounts/fireworks/models/qwen3p7-plus" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-opus-5" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "claude-sonnet-5" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "fugu" | "fugu-ultra" | "fugu-ultra-20260615" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5.2" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.3-codex-spark" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "grok-4.3" | "grok-4.6" | "grok-build" | "k3" | "kilo-auto/small" | "kimi-for-coding" | "kimi-for-coding-highspeed" | "kimi-k2.6" | "kimi-latest" | "lmstudio" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3" | "mistral-medium-latest" | "mlx-community/Qwen3.6-27B-OptiQ-4bit" | "openai/gpt-oss-120b" | (string & {});
+export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "skill" | "codedb" | "todo_write" | "todo_read" | "eval" | "note_constraint" | "ask_user" | "attempt_completion" | "load_tool_schemas" | "clock_sleep" | "subagent" | "workflow" | "agent_output" | "learn_candidate" | "peer_message" | "imagegen";
+export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kilo" | "groq" | "mistral" | "kimi" | "moonshot" | "xai" | "zai" | "fugu" | "fireworks" | "mlx" | "lmstudio" | "codex";
 
 /** Events streamed by `harness --json` (one JSON object per stdout line), each
  *  discriminated by `type` — the analogue of codegraff's AgentEvent stream.
@@ -37,8 +38,12 @@ export type Event =
   | { seq: number; type: "tool_call_finished"; name: string; is_error: boolean; ms: number }
   | { seq: number; type: "agent_usage"; id: string; ok: boolean; duration_ms: number; tool_calls: number; context_tokens: number; cache_read_tokens: number }
   | { seq: number; type: "finalizing" }
-  | { seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }
+  | { seq: number; type: "session_recap"; text: string; status: "needs_input" | "completed" | "failed"; source: "heuristic" | "model" }
+  | { seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; input_tokens: number; uncached_input_tokens: number; cache_read_tokens: number; output_tokens: number; api_calls: number; subscription_calls: number; unpriced_calls: number; complete?: boolean; metadata_complete?: boolean }
   | { seq: number; type: "system_prompt"; ok: boolean; append: boolean; chars: number }
+  | { seq: number; type: "model"; ok: boolean; provider: string; model: string; context: number; note: string }
+  | { seq: number; type: "compact"; ok: boolean; chars: number }
+  | { seq: number; type: "effort"; ok: boolean; level: string; applies: boolean }
   | { seq: number; type: "score"; ok: boolean; prompt_sha: string }
   | { seq: number; type: "error"; message: string };
 
@@ -52,8 +57,8 @@ export function promptFingerprint(text: string): string {
 // ── Options ──────────────────────────────────────────────────────────────
 
 export interface HarnessOptions {
-  /** Path to the CLI binary (default: "graff" on PATH, falling back to its
-   *  old name "harness"). */
+  /** Path to the CLI binary. Defaults to the matching optional
+   *  `@codegraff/graff-*` package, then `graff` on PATH. */
   binary?: string;
   /** Working directory for the agent. Defaults to the parent process cwd. */
   cwd?: string;
@@ -81,12 +86,43 @@ export interface ChatOptions {
   prompt: string;
   /** Run this turn in isolated, read-only review mode. */
   review?: boolean;
+  /** Abort the turn mid-flight: on abort the SDK writes {"type":"cancel"}
+   *  out-of-band (the REPL's Esc path); the stream still runs to the
+   *  cancelled turn's terminal event — an `error` event ("turn cancelled"). */
+  signal?: AbortSignal;
 }
 
 export interface AnswerOptions {
   text?: string;
   cancelled?: boolean;
   callId?: string;
+}
+
+/** Reasoning effort levels accepted by setEffort (protocol set_effort). */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
+/** Structured result of one turn: the final assistant text plus the usage
+ *  the harness reported on the terminal `turn` event. */
+export interface AskResult {
+  /** Final assistant text. */
+  text: string;
+  /** Server-reported context size at turn end. */
+  contextTokens: number;
+  /** Turn cost in USD. */
+  costUsd: number;
+  inputTokens: number;
+  uncachedInputTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  /** Provider API calls made this turn. */
+  apiCalls: number;
+  /** Calls served under a subscription (unmetered) login. */
+  subscriptionCalls: number;
+  /** Calls with no pricing data. */
+  unpricedCalls: number;
+  /** False when the turn finished incomplete (interrupted/stalled). */
+  complete?: boolean;
+  metadataComplete?: boolean;
 }
 
 export interface RunAgentOptions extends HarnessOptions {
@@ -123,13 +159,53 @@ function sdkInstallId(): string {
   return id;
 }
 
-/** The CLI is `graff` (renamed from `harness`); prefer it when on PATH,
- *  fall back to the old name so pre-rename installs keep working. */
-function defaultBinary(): string {
-  for (const dir of (process.env.PATH ?? "").split(":")) {
-    if (dir && existsSync(join(dir, "graff"))) return "graff";
+const PLATFORM_PACKAGES: Readonly<Record<string, string>> = {
+  "darwin-arm64": "@codegraff/graff-darwin-arm64",
+  "darwin-x64": "@codegraff/graff-darwin-x64",
+  "linux-arm64": "@codegraff/graff-linux-arm64",
+  "linux-x64": "@codegraff/graff-linux-x64",
+  "win32-arm64": "@codegraff/graff-win32-arm64",
+  "win32-x64": "@codegraff/graff-win32-x64",
+};
+
+/** Resolve the binary bundled by npm. `createRequire` anchors lookup beside
+ *  this installed SDK, so hoisted and nested optional dependencies both work. */
+function packagedBinary(): { path?: string; packageName?: string } {
+  const packageName = PLATFORM_PACKAGES[`${process.platform}-${process.arch}`];
+  if (!packageName) return {};
+  const require = createRequire(import.meta.url);
+  let manifest: string;
+  try { manifest = require.resolve(`${packageName}/package.json`); } catch {
+    return { packageName };
   }
-  return "harness";
+  let protocol: unknown;
+  try { protocol = JSON.parse(readFileSync(manifest, "utf8")).graffProtocol; } catch {}
+  if (protocol !== HARNESS_VERSION) {
+    throw new Error(`${packageName} uses graff protocol ${String(protocol ?? "unknown")}, but @codegraff/sdk requires ${HARNESS_VERSION}. Reinstall @codegraff/sdk without disabling optional dependencies.`);
+  }
+  const binary = process.platform === "win32" ? "graff.exe" : "graff";
+  const path = join(dirname(manifest), "bin", binary);
+  return existsSync(path) ? { path, packageName } : { packageName };
+}
+
+/** Prefer the version-pinned npm binary, then a caller-supplied PATH. Return
+ *  an absolute path so probing and spawning cannot disagree. */
+function defaultBinary(env: NodeJS.ProcessEnv): string {
+  const packaged = packagedBinary();
+  if (packaged.path) return packaged.path;
+  const binary = process.platform === "win32" ? "graff.exe" : "graff";
+  for (const dir of (env.PATH ?? env.Path ?? env.path ?? "").split(delimiter)) {
+    if (!dir) continue;
+    const path = join(dir, binary);
+    try {
+      accessSync(path, process.platform === "win32" ? constants.F_OK : constants.X_OK);
+      return path;
+    } catch {}
+  }
+  const install = packaged.packageName
+    ? `Reinstall @codegraff/sdk so npm can install ${packaged.packageName}, or install graff on PATH.`
+    : "Install graff on PATH or pass Harness.init({ binary: ... }).";
+  throw new Error(`No graff binary is available for ${process.platform}-${process.arch}. ${install}`);
 }
 
 const TELEMETRY_DEFAULT = "https://harness-telemetry.rachpradhan.workers.dev";
@@ -232,11 +308,16 @@ export class Harness {
   private proc: ChildProcessByStdio<Writable, Readable, null>;
   private queue: ((e: Event | null) => void)[] = [];
   private buffer: Event[] = [];
+  /** Tail of the operation chain (see acquireOp). Always resolves. */
+  private opTail: Promise<void> = Promise.resolve();
+  private closed = false;
+  private closePromise?: Promise<void>;
 
   constructor(opts: HarnessOptions = {}) {
-    this.proc = spawn(opts.binary ?? defaultBinary(), spawnArgs(opts), {
+    const env = sdkEnv(opts.env);
+    this.proc = spawn(opts.binary ?? defaultBinary(env), spawnArgs(opts), {
       cwd: opts.cwd,
-      env: sdkEnv(opts.env),
+      env,
       stdio: ["pipe", "pipe", "inherit"],
     });
     const rl = createInterface({ input: this.proc.stdout });
@@ -255,6 +336,9 @@ export class Harness {
       for (const w of this.queue) w(null);
       this.queue = [];
     });
+    // cancel()/answer() are lock-free, so their writes can race process
+    // death: swallow stdin stream errors instead of crashing the host.
+    this.proc.stdin.on("error", () => {});
   }
 
   /** Start a long-lived agent (codegraff parity for `Graff.init`). */
@@ -265,38 +349,106 @@ export class Harness {
     return new Promise((resolve) => this.queue.push(resolve));
   }
 
-  /** Run one turn; async-iterate events up to and including `turn`/`error`. */
+  /** Operation chain: turns (chat) and acked controls (setSystemPrompt,
+   *  setModel, setEffort, compact, score) run one at a time, so a control
+   *  can never steal a chat's terminal event off the shared event queue.
+   *  The tail always RESOLVES — an operation's error goes only to its own
+   *  caller and can never poison the queue behind it. answer() and cancel()
+   *  bypass the chain on purpose: the harness reads both out-of-band. */
+  private acquireOp(): Promise<() => void> {
+    if (this.closed) return Promise.reject(new Error("harness is closed"));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const acquired = this.opTail.then(() => release);
+    this.opTail = this.opTail.then(() => gate);
+    return acquired;
+  }
+
+  /** Run `op` holding the operation lock (see acquireOp). */
+  private async runOp<T>(op: () => Promise<T>): Promise<T> {
+    const release = await this.acquireOp();
+    try {
+      return await op();
+    } finally {
+      release();
+    }
+  }
+
+  /** Run one turn; async-iterate events up to and including `turn`/`error`.
+   *  Holds the operation lock until the terminal event, so a control issued
+   *  mid-turn (setSystemPrompt, setModel, …) queues BEHIND the turn instead
+   *  of stealing its events off the shared queue. Pass `signal` to cancel
+   *  the turn (see ChatOptions.signal / cancel()). */
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {
     const prompt = typeof input === "string" ? input : input.prompt;
     const type = typeof input === "string" || !input.review ? "user" : "review";
-    this.proc.stdin.write(JSON.stringify({ type, text: prompt }) + "\n");
-    while (true) {
-      const ev = await this.next();
-      if (ev === null) {
-        // Process closed without a terminal event: died mid-turn. Reported
-        // to telemetry and thrown instead of silently ending the stream.
-        reportError("died", `harness exited mid-turn (code=${this.proc.exitCode})`);
-        throw new Error(`harness exited mid-turn (code=${this.proc.exitCode})`);
+    const signal = typeof input === "string" ? undefined : input.signal;
+    // Already aborted: send nothing — a cancel written before the turn's
+    // first line would be cleared again when the turn starts.
+    signal?.throwIfAborted();
+    const release = await this.acquireOp();
+    let aborted = false;
+    const onAbort = () => { if (aborted) return; aborted = true; this.cancel(); };
+    try {
+      this.proc.stdin.write(JSON.stringify({ type, text: prompt }) + "\n");
+      if (signal) {
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort(); // aborted between the entry check and here
       }
-      yield ev;
-      if (ev.type === "turn" || ev.type === "error") return;
+      while (true) {
+        const ev = await this.next();
+        if (ev === null) {
+          // Process closed without a terminal event: died mid-turn. Reported
+          // to telemetry and thrown instead of silently ending the stream.
+          reportError("died", `harness exited mid-turn (code=${this.proc.exitCode})`);
+          throw new Error(`harness exited mid-turn (code=${this.proc.exitCode})`);
+        }
+        yield ev;
+        if (ev.type === "turn" || ev.type === "error") return;
+      }
+    } finally {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      release();
     }
+  }
+
+  /** Run a turn and return its final text plus the usage the harness
+   *  reported on the terminal `turn` event (tokens, cost, call breakdown).
+   *  Rejects on an `error` event — including a cancelled turn. */
+  async askResult(input: string | ChatOptions): Promise<AskResult> {
+    let result: AskResult | null = null;
+    for await (const ev of this.chat(input)) {
+      if (ev.type === "turn") {
+        result = {
+          text: ev.text,
+          contextTokens: ev.context_tokens,
+          costUsd: ev.cost_usd,
+          inputTokens: ev.input_tokens,
+          uncachedInputTokens: ev.uncached_input_tokens,
+          cacheReadTokens: ev.cache_read_tokens,
+          outputTokens: ev.output_tokens,
+          apiCalls: ev.api_calls,
+          subscriptionCalls: ev.subscription_calls,
+          unpricedCalls: ev.unpriced_calls,
+          complete: ev.complete,
+          metadataComplete: ev.metadata_complete,
+        };
+      }
+      if (ev.type === "error") throw new Error(ev.message);
+    }
+    if (!result) throw new Error("turn ended without a terminal event");
+    return result;
   }
 
   /** Run a turn and return just the final assistant text. */
   async ask(input: string | ChatOptions): Promise<string> {
-    let final = "";
-    for await (const ev of this.chat(input)) {
-      if (ev.type === "turn") final = ev.text;
-      if (ev.type === "error") throw new Error(ev.message);
-    }
-    return final;
+    return (await this.askResult(input)).text;
   }
 
   /** Run one isolated, read-only review turn and return its final report. */
   review(input: string | ChatOptions): Promise<string> {
-    const prompt = typeof input === "string" ? input : input.prompt;
-    return this.ask({ prompt, review: true });
+    const options = typeof input === "string" ? { prompt: input } : input;
+    return this.ask({ ...options, review: true });
   }
 
   /** Answer an in-flight ask_user event. Call this while consuming chat()
@@ -318,20 +470,77 @@ export class Harness {
    *  `appendSystemPrompt` options; mutate only at task boundaries, never
    *  back-and-forth inside a loop. */
   async setSystemPrompt(text: string, append = false): Promise<void> {
-    this.proc.stdin.write(JSON.stringify({ type: "set_system_prompt", text, append }) + "\n");
-    // Edge-version durability: a newer harness may emit event types this
-    // client predates — skip them while waiting for the ack (the chat loop
-    // already tolerates unknowns the same way) instead of throwing.
-    while (true) {
-      const ev = await this.next();
-      if (ev === null) { reportError("died", "harness closed before acking set_system_prompt"); throw new Error("harness closed"); }
-      if (ev.type === "error") throw new Error(ev.message);
-      if (ev.type === "system_prompt") return;
-    }
+    return this.runOp(async () => {
+      this.proc.stdin.write(JSON.stringify({ type: "set_system_prompt", text, append }) + "\n");
+      // Edge-version durability: a newer harness may emit event types this
+      // client predates — skip them while waiting for the ack (the chat loop
+      // already tolerates unknowns the same way) instead of throwing.
+      while (true) {
+        const ev = await this.next();
+        if (ev === null) { reportError("died", "harness closed before acking set_system_prompt"); throw new Error("harness closed"); }
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "system_prompt") return;
+      }
+    });
   }
 
   /** Tack extra instructions onto the current system prompt. */
   appendSystemPrompt(text: string): Promise<void> { return this.setSystemPrompt(text, true); }
+
+  /** Cancel the in-flight turn — the SDK analogue of the REPL's Esc. Writes
+   *  {"type":"cancel"} straight to stdin, which the harness inbox reads
+   *  OUT-OF-BAND (ahead of any queued request), so this deliberately does
+   *  NOT join the operation queue: a cancel queued behind the turn it means
+   *  to stop would fire too late. Lock-free like answer(). The active
+   *  chat() stream still runs to the cancelled turn's terminal event. */
+  cancel(): void {
+    this.proc.stdin.write(JSON.stringify({ type: "cancel" }) + "\n");
+  }
+
+  /** Switch provider/model mid-session — the provider-qualified form of the
+   *  protocol's set_model control. Call between turns; resolves on the
+   *  `model` ack, rejects on the harness's `error` event (unknown model,
+   *  missing key/login, …). Serialized with chat() and the other controls. */
+  setModel(provider: ProviderId | string, model: ModelName | string): Promise<void> {
+    return this.runOp(async () => {
+      this.proc.stdin.write(JSON.stringify({ type: "set_model", provider, model }) + "\n");
+      while (true) {
+        const ev = await this.next();
+        if (ev === null) { reportError("died", "harness closed before acking set_model"); throw new Error("harness closed"); }
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "model") return;
+      }
+    });
+  }
+
+  /** Set the reasoning effort for later turns (protocol set_effort).
+   *  Resolves on the `effort` ack; serialized like the other controls. */
+  setEffort(level: EffortLevel): Promise<void> {
+    return this.runOp(async () => {
+      this.proc.stdin.write(JSON.stringify({ type: "set_effort", level }) + "\n");
+      while (true) {
+        const ev = await this.next();
+        if (ev === null) { reportError("died", "harness closed before acking set_effort"); throw new Error("harness closed"); }
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "effort") return;
+      }
+    });
+  }
+
+  /** Compact the conversation history now (protocol compact). Resolves on
+   *  the `compact` ack; rejects when compaction fails — the harness leaves
+   *  history unchanged in that case. Serialized like the other controls. */
+  compact(): Promise<void> {
+    return this.runOp(async () => {
+      this.proc.stdin.write(JSON.stringify({ type: "compact" }) + "\n");
+      while (true) {
+        const ev = await this.next();
+        if (ev === null) { reportError("died", "harness closed before acking compact"); throw new Error("harness closed"); }
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "compact") return;
+      }
+    });
+  }
 
   /** Record an evaluation score for an agent/prompt variant in the
    *  aggregate `.graff/trajectories` archive — the DGM evaluation
@@ -356,15 +565,17 @@ export class Harness {
       : /^[0-9a-f]{16}$/.test(parent) ? parent : promptFingerprint(parent);
     // The SDK emitter strips prompt_text until it has an interactive review UI.
     if (niche && !/^[0-9a-f]{16}$/.test(promptOrSha)) fleetSignal("propose", { niche, prompt_sha: sha, parent_sha: parent_sha ?? "", prompt_text: promptOrSha });
-    this.proc.stdin.write(JSON.stringify({ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale }) + "\n");
-    // Same edge-version tolerance as setSystemPrompt: skip unknown events
-    // while waiting for the ack.
-    while (true) {
-      const ev = await this.next();
-      if (ev === null) { reportError("died", "harness closed before acking score"); throw new Error("harness closed"); }
-      if (ev.type === "error") throw new Error(ev.message);
-      if (ev.type === "score") { fleetSignal("submit", { prompt_sha: sha, parent_sha: parent_sha ?? "", niche: niche ?? "" }); return; }
-    }
+    return this.runOp(async () => {
+      this.proc.stdin.write(JSON.stringify({ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale }) + "\n");
+      // Same edge-version tolerance as setSystemPrompt: skip unknown events
+      // while waiting for the ack.
+      while (true) {
+        const ev = await this.next();
+        if (ev === null) { reportError("died", "harness closed before acking score"); throw new Error("harness closed"); }
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "score") { fleetSignal("submit", { prompt_sha: sha, parent_sha: parent_sha ?? "", niche: niche ?? "" }); return; }
+      }
+    });
   }
 
   /** Pull the fleet's live champion personas (GET /v1/elites). Local mode
@@ -393,15 +604,27 @@ export class Harness {
   /** The harness schema version this client was generated from. */
   version(): string { return HARNESS_VERSION; }
 
-  /** Close stdin and give the harness a moment to exit cleanly — it flushes
-   *  telemetry and trajectory records on the way out; killing immediately
-   *  would race (and lose) that flush. */
-  close(): void {
+  /** Cancel active work, close stdin, and await the child's clean exit so its
+   *  telemetry and trajectory flushes are durable. Idempotent; force-kills
+   *  only after the graceful deadline. */
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    this.cancel();
+    this.closed = true;
     this.proc.stdin.end();
-    const t = setTimeout(() => this.proc.kill(), 15000);
-    t.unref?.();
-    this.proc.on("close", () => clearTimeout(t));
+    this.closePromise = new Promise((resolve) => {
+      if (this.proc.exitCode !== null) return resolve();
+      const timer = setTimeout(() => this.proc.kill(), 15000);
+      timer.unref?.();
+      const finish = () => { clearTimeout(timer); resolve(); };
+      this.proc.once("close", finish);
+      this.proc.once("error", finish);
+    });
+    return this.closePromise;
   }
+
+  /** Alias for close(). */
+  dispose(): Promise<void> { return this.close(); }
 }
 
 // ── HarnessSession (parallel to codegraff's `GraffSession`) ────────────────
@@ -413,10 +636,16 @@ export class HarnessSession {
   /** Send a user turn; async-iterate its events. */
   send(input: string | ChatOptions): AsyncGenerator<Event> { return this.agent.chat(input); }
   ask(input: string | ChatOptions): Promise<string> { return this.agent.ask(input); }
+  askResult(input: string | ChatOptions): Promise<AskResult> { return this.agent.askResult(input); }
   review(input: string | ChatOptions): Promise<string> { return this.agent.review(input); }
   answer(input: string | AnswerOptions): void { return this.agent.answer(input); }
+  cancel(): void { this.agent.cancel(); }
   setSystemPrompt(text: string, append = false): Promise<void> { return this.agent.setSystemPrompt(text, append); }
-  close(): void { this.agent.close(); }
+  setModel(provider: ProviderId | string, model: ModelName | string): Promise<void> { return this.agent.setModel(provider, model); }
+  setEffort(level: EffortLevel): Promise<void> { return this.agent.setEffort(level); }
+  compact(): Promise<void> { return this.agent.compact(); }
+  close(): Promise<void> { return this.agent.close(); }
+  dispose(): Promise<void> { return this.agent.dispose(); }
 }
 
 // ── Top-level one-shot (parallel to codegraff's `runAgent`) ────────────────
@@ -427,9 +656,9 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<Event> {
   try {
     yield* h.chat({ prompt: opts.prompt });
   } finally {
-    h.close();
+    await h.close();
   }
 }
 
-export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "glm-4.5", "glm-4.7", "glm-5", "glm-5.2", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.3", "grok-build", "k3", "kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3", "mlx-community/Qwen3.6-27B-OptiQ-4bit"];
-export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "skill", "codedb", "todo_write", "todo_read", "eval", "note_constraint", "ask_user", "attempt_completion", "load_tool_schemas", "clock_sleep", "subagent", "workflow", "agent_output", "learn_candidate", "imagegen"];
+export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-opus-5", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "claude-sonnet-5", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "glm-4.5", "glm-4.7", "glm-5", "glm-5.2", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.3", "grok-4.6", "grok-build", "k3", "kilo-auto/small", "kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3", "mistral-medium-latest", "mlx-community/Qwen3.6-27B-OptiQ-4bit", "openai/gpt-oss-120b"];
+export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "skill", "codedb", "todo_write", "todo_read", "eval", "note_constraint", "ask_user", "attempt_completion", "load_tool_schemas", "clock_sleep", "subagent", "workflow", "agent_output", "learn_candidate", "peer_message", "imagegen"];

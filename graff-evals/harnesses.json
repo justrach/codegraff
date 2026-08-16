@@ -1,0 +1,73 @@
+{
+  "graff": {
+    "cmd": ["graff", "-p", "{prompt}", "--model", "{model}", "--yolo"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": ["output-schema"],
+    "schema_args": ["--output-schema", "{schema}"],
+    "env": {"GRAFF_POST_DEADLINE_SECS": "90"},
+    "default_model": "grok-4.6"
+  },
+  "graff-full": {
+    "cmd": ["graff", "-p", "{prompt}", "--model", "{model}", "--yolo", "--no-lean"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": ["output-schema"],
+    "schema_args": ["--output-schema", "{schema}"],
+    "default_model": "grok-4.6"
+  },
+  "graff-dev": {
+    "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": ["output-schema"],
+    "schema_args": ["--output-schema", "{schema}"],
+    "default_model": "grok-4.6"
+  },
+  "grok": {
+    "cmd": ["grok", "-p", "{prompt}", "-m", "{model}", "--always-approve", "--output-format", "streaming-messages-json"],
+    "answer": "grok-stream",
+    "usage": "grok-stream",
+    "capabilities": [],
+    "default_model": "grok-4.6"
+  },
+  "claude": {
+    "cmd": ["claude", "-p", "{prompt}", "--model", "{model}", "--dangerously-skip-permissions"],
+    "answer": "stdout",
+    "usage": null,
+    "capabilities": [],
+    "default_model": "claude-sonnet-5"
+  },
+  "dsh": {
+    "cmd": ["dsh", "--profile", "headless", "--patch", "{repo}/graff-evals/dsh-luna.yml", "{prompt}"],
+    "answer": "stdout",
+    "usage": null,
+    "capabilities": [],
+    "env": {"DSH_PERMISSION_MODE": "danger-full-access"},
+    "default_model": "gpt-5.6-luna",
+    "note": "no --model flag; the model is pinned by the dsh-luna.yml patch layer"
+  },
+  "pi": {
+    "cmd": ["pi", "-p", "--mode", "json", "--provider", "openai", "--model", "{model}", "--no-session", "{prompt}"],
+    "answer": "pi-json",
+    "usage": "pi-json",
+    "capabilities": [],
+    "default_model": "gpt-5.6-luna"
+  },
+  "dsh-deepseek": {
+    "cmd": ["dsh", "--profile", "headless", "{prompt}"],
+    "answer": "stdout",
+    "usage": null,
+    "capabilities": [],
+    "env": {"DSH_PERMISSION_MODE": "danger-full-access"},
+    "default_model": "deepseek-v4-flash",
+    "note": "dsh's native default route (deepseek-official/deepseek-v4-flash); no patch layer"
+  },
+  "pi-deepseek": {
+    "cmd": ["pi", "-p", "--mode", "json", "--provider", "deepseek", "--model", "{model}", "--no-session", "{prompt}"],
+    "answer": "pi-json",
+    "usage": "pi-json",
+    "capabilities": [],
+    "default_model": "deepseek-v4-flash"
+  }
+}

@@ -33,8 +33,45 @@ pub fn propsFor(self: *const Agent) u64 {
     return propsFp(self.provider.model, @tagName(self.reasoning), self.fast, self.toolsJson(), self.systemPrompt());
 }
 
+/// GRAFF_CODEX_FULL_RESEND=1 (armed by session_settings.applyEnvKnobs):
+/// never chain — every turn sends the full input, opencode's only shape
+/// (they carry no previous_response_id at all). Experiment flag for the
+/// cache-hit work: chained turns read back ~0 cached tokens, so the delta
+/// optimization trades cheap cache reads for full-price re-uploads.
+pub var g_force_full_resend = false;
+
+/// GRAFF_XAI_WS_CHAIN=1 (session_settings.applyEnvKnobs): experiment — xAI
+/// documents on-socket chaining with store:false via a per-connection cache,
+/// and a live probe chained successfully, but a second probe reproduced the
+/// original silent multi-minute stall (both 2026-08-15). Off until the
+/// service is consistent; the errorFrameAction/reanchor ladder contains the
+/// blast radius when it is on.
+pub var g_xai_ws_chain = false;
+
 /// May this request chain onto the held response instead of re-anchoring?
+/// Brands whose Responses WS holds prior state in-memory and accept
+/// `previous_response_id` + delta input (including store:false / ZDR).
+pub fn chainBrandOk(provider_id: []const u8) bool {
+    return std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "xai");
+}
+
+/// A failed turn must drop the chain: not-found (ZDR / store:false evict),
+/// the 25-minute connection cap, or a generic previous_response_id reject.
+pub fn shouldDropChain(message: []const u8, code: ?[]const u8) bool {
+    if (code) |c| {
+        if (std.mem.indexOf(u8, c, "previous_response_not_found") != null) return true;
+        if (std.mem.indexOf(u8, c, "websocket_connection_limit_reached") != null) return true;
+    }
+    if (std.mem.indexOf(u8, message, "previous_response_not_found") != null) return true;
+    if (std.mem.indexOf(u8, message, "websocket connection limit") != null) return true;
+    if (std.mem.indexOf(u8, message, "previous_response_id") != null) return true;
+    return false;
+}
+
 pub fn chainUsable(self: *const Agent) bool {
+    if (g_force_full_resend) return false;
+    const xai_chain = g_xai_ws_chain and std.mem.eql(u8, self.provider.id, "xai");
+    if (!std.mem.eql(u8, self.provider.id, "codex") and !xai_chain) return false;
     return usable(
         self.codex_ws != null,
         self.codex_prev_id != null,
@@ -131,4 +168,18 @@ test "usable: chains only on a clean extension of what the server holds" {
 
     // /model or /effort changed between turns.
     try std.testing.expect(!usable(true, true, 4, 6, 0, 0, 8, 7));
+}
+
+test "chainBrandOk: xAI and codex chain; anthropic does not" {
+    try std.testing.expect(chainBrandOk("codex"));
+    try std.testing.expect(chainBrandOk("xai"));
+    try std.testing.expect(!chainBrandOk("anthropic"));
+    try std.testing.expect(!chainBrandOk("kimi"));
+}
+
+test "shouldDropChain: not-found and 25-minute cap evict the in-memory id" {
+    try std.testing.expect(shouldDropChain("Previous response with id 'resp_abc' not found.", "previous_response_not_found"));
+    try std.testing.expect(shouldDropChain("Responses websocket connection limit reached (25 minutes).", "websocket_connection_limit_reached"));
+    try std.testing.expect(shouldDropChain("unsupported previous_response_id", null));
+    try std.testing.expect(!shouldDropChain("rate limited", "rate_limit_exceeded"));
 }

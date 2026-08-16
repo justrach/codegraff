@@ -207,8 +207,8 @@ pub fn cleanTitle(raw: []const u8) ?[]const u8 {
 test "titleFromPrompt and folderBasename format TUI headers" {
     try std.testing.expectEqualStrings("Chat", titleFromPrompt(" \n\t "));
     try std.testing.expectEqualStrings("Refactor the auth middleware", titleFromPrompt("  Refactor the auth middleware\nwith tests"));
-    try std.testing.expectEqualStrings("codegraff", folderBasename("/Users/rach/src/codegraff"));
-    try std.testing.expectEqualStrings("codegraff", folderBasename("/Users/rach/src/codegraff/"));
+    try std.testing.expectEqualStrings("codegraff", folderBasename("/Users/example/src/codegraff"));
+    try std.testing.expectEqualStrings("codegraff", folderBasename("/Users/example/src/codegraff/"));
 }
 
 test "reasoningDelta extracts thinking/reasoning per provider wire format (#75)" {

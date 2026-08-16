@@ -1,15 +1,12 @@
 //! The `graff repl` (chat-mode) bridge — run a full root-agent turn (tools +
 //! MCP) per repl.TurnFn call, plus the model-switch/cancel adapters — and the
 //! goal/eval steering-note assembly shared by both the REPL and interactive
-//! loops. Also the Codex-style steering queue drain (popSteer/
-//! resetSteerPartial/steerEcho) and the /effort /fast /ultracode persistence
-//! (save/loadThinkingSettings). Split out of main.zig (600-line goal, #123).
+//! loops. Also the steering queue drain and /effort /fast /ultracode
+//! persistence (save/loadThinkingSettings). Split out of main.zig (#123).
 //!
 //! The mutable steer/thinking globals (g_steer_buf, g_steer_queue,
-//! g_steer_echoed, g_steer_visible, g_out) stay declared in main.zig — shared
-//! live with agent_interrupt.zig/agent_stream.zig via the same `main_mod.g_x`
-//! pattern those files already use, so every access here goes through
-//! `main_mod.g_x`, never a local alias (would freeze its value at import time).
+//! g_steer_echoed, g_steer_visible, g_out) stay declared in main.zig and are
+//! reached via `main_mod.g_x`, never a local alias (would freeze its value).
 //!
 //! parseEvalScore/steerEcho/saveThinkingSettings stay pub — subagent.zig,
 //! agent_compact.zig, agent_interrupt.zig, commands_model.zig back-import them.
@@ -31,14 +28,10 @@ const mcp = @import("mcp.zig");
 const repl = @import("repl.zig");
 const approvals_mod = @import("approvals.zig");
 const Approvals = approvals_mod.Approvals;
-const messages_mod = @import("messages.zig");
-const textMessage = messages_mod.textMessage;
 const pricing = @import("pricing.zig");
-const providers = @import("providers.zig");
 const trace = @import("trace.zig");
 const serde = @import("serde.zig");
 const fallback_config = @import("fallback_config.zig");
-const prompts = @import("prompts.zig");
 
 pub const ReplCtx = struct {
     io: Io,
@@ -56,40 +49,30 @@ pub const ReplCtx = struct {
     tools_anthropic: []const u8,
     tools_openai: []const u8,
     tools_responses: []const u8,
+    /// The session's conversation, when the frontend wants the engine to own
+    /// it (#551). Null = the caller has no session memory and each turn is
+    /// built from the transcript it passes in, which is what `graff repl`'s
+    /// scripted path still does.
+    convo: ?*repl_convo.Conversation = null,
+    /// The context meter, carried between turns (#551). A chat frontend builds
+    /// a fresh Agent per turn, so leaving these on it reset the meter every
+    /// turn — and with them the pre-send compaction gate, which reads exactly
+    /// these numbers to decide when the window is nearly full.
+    last_context_tokens: u64 = 0,
+    context_local_tokens: u64 = 0,
+    last_cache_read: u64 = 0,
 };
 
-/// A thread-safe sink the worker writes the agent's output to and the repl's
-/// render loop polls — this is what makes `graff repl` stream live. Custom
-/// Io.Writer whose drain appends (under the StreamBuf mutex) to the repl buffer.
-pub const ReplStreamSink = struct {
-    target: *repl.StreamBuf,
-    buf: [4096]u8 = undefined,
-    writer: Io.Writer = undefined,
+/// The engine-owned conversation, in repl_convo.zig (move+alias, #123).
+pub const Conversation = repl_convo.Conversation;
+const repl_convo = @import("repl_convo.zig");
 
-    const vtable: Io.Writer.VTable = .{ .drain = drain };
+test {
+    _ = repl_convo;
+}
 
-    pub fn init(self: *ReplStreamSink, target: *repl.StreamBuf) void {
-        self.target = target;
-        self.writer = .{ .vtable = &vtable, .buffer = &self.buf, .end = 0 };
-    }
-
-    fn drain(w: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
-        const self: *ReplStreamSink = @alignCast(@fieldParentPtr("writer", w));
-        self.target.appendBytes(w.buffer[0..w.end]);
-        w.end = 0;
-        const slices = data[0 .. data.len - 1];
-        const pattern = data[data.len - 1];
-        var written: usize = 0;
-        for (slices) |b| {
-            self.target.appendBytes(b);
-            written += b.len;
-        }
-        var i: usize = 0;
-        while (i < splat) : (i += 1) self.target.appendBytes(pattern);
-        written += pattern.len * splat;
-        return written;
-    }
-};
+/// The live-pane writer, in repl_stream_sink.zig (move+alias, #123).
+pub const ReplStreamSink = @import("repl_stream_sink.zig").ReplStreamSink;
 
 /// The standing-goal steering note for a turn when /goal is set. The checklist
 /// itself is deliberately NOT embedded (#318): the model sees it in todo_write
@@ -307,103 +290,15 @@ test "a zero-tool turn stops as idle, not accepted; a refused completion keeps t
     try std.testing.expect(std.meta.activeTag(continuationDecision(.active, false, turnStopped(0, true), 5)) == .continue_turn);
 }
 
-/// repl.TurnFn — run a full ROOT agent turn (tools + MCP) for `graff repl`, so
-/// the model can read files, run bash, search the codebase, etc. — not a bare
-/// completion. Auto-approves tools (yolo: the chat repl has no permission UI),
-/// in=null (never blocks on a prompt). Output streams into a thread-safe sink
-/// the repl polls to render live; the clean final text is runTurn's return
-/// value. Returns the final assistant text (raw markdown, owned by gpa) or null.
-pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Turn, params: repl.Params, stream: *repl.StreamBuf) ?[]const u8 {
-    const c: *ReplCtx = @ptrCast(@alignCast(ctx_ptr orelse return null));
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var sink: ReplStreamSink = undefined;
-    sink.init(stream); // agent output streams into the repl's live pane (thread-safe)
-    var approvals: Approvals = .{ .yolo = true };
-    const sys = if (params.goal.len > 0)
-        (std.fmt.allocPrint(arena, "{s}\n\n# Standing goal (from the user)\n{s}\n\nTrack this as a todo_write checklist and work through it across turns - mark each item in_progress when you start and completed when done. Keep the list current; don't repeat finished items.", .{ c.sys_normal, params.goal }) catch c.sys_normal)
-    else
-        c.sys_normal;
-    var agent: Agent = .{
-        .gpa = gpa,
-        .arena = arena,
-        .io = c.io,
-        .client = c.client,
-        .provider = c.provider,
-        .messages = std.json.Array.init(arena),
-        .sub = false, // root: enables the full tool set + agentic loop
-        .label = "repl",
-        .out = &sink.writer,
-        .in = null, // never prompt for tool approval / ask_user
-        .stream_quiet = false, // stream tokens live into the repl pane
-        .registry = c.registry,
-        .tracer = c.tracer,
-        .run_budget = c.run_budget,
-        .approvals = &approvals,
-        .tools_anthropic = c.tools_anthropic,
-        .tools_openai = c.tools_openai,
-        .tools_responses = c.tools_responses,
-        .reasoning = switch (params.effort) {
-            .low => .low,
-            .medium => .medium,
-            .high => .high,
-            .xhigh => .xhigh,
-            .max => .max,
-            .ultra => .ultra,
-        },
-        .fast = params.fast,
-        .fallback_allow = c.fallback_allow,
-        .fallback_active = c.fallback_active,
-        .fallback_blocked = c.fallback_blocked,
-        .ultracode_mode = params.ultracode,
-        .show_thinking = params.thinking,
-    };
-    // #326: the funnel — also recomputes sys_ultra/sys_ultra_strict from
-    // `sys`, so ultracode/effort-ultra here carries the REAL composed base.
-    prompts.setSystemPrompts(&agent, sys, arena) catch return null;
-    defer agent.tools_used.deinit(gpa);
-    for (history) |t| {
-        const role = switch (t.role) {
-            .user => "user",
-            .assistant => "assistant",
-        };
-        agent.messages.append(textMessage(arena, role, t.text) catch return null) catch return null;
-    }
-    defer {
-        c.provider = agent.provider;
-        c.fallback_active = agent.fallback_active;
-        c.fallback_blocked = agent.fallback_blocked;
-    }
-    const final = providers.runTurnWithFallback(&agent, &c.keys, arena, &sink.writer) catch |err| switch (err) {
-        // A mid-stream stall (#134): the repl turn IS live (stream_quiet=false),
-        // so postStream can return error.StreamStalled. Don't collapse it to
-        // null — the pane renders that as "model call failed — check /model and
-        // your API key", mislabeling a harness stall as an auth/config problem.
-        // Keep the streamed partial + an honest marker, mirroring mainloop.
-        error.StreamStalled => {
-            const partial = std.mem.trim(u8, agent.partial_text.items, " \t\r\n");
-            return if (partial.len > 0)
-                std.fmt.allocPrint(gpa, "{s}\n\n[response ended early: stream stalled]", .{partial}) catch null
-            else
-                gpa.dupe(u8, "[response ended early: stream stalled]") catch null;
-        },
-        error.StreamDropped => {
-            // A mid-stream provider drop (#133), same handling as a stall: keep
-            // the streamed partial + an honest marker, never a null that the
-            // pane would render as "model call failed".
-            const partial = std.mem.trim(u8, agent.partial_text.items, " \t\r\n");
-            return if (partial.len > 0)
-                std.fmt.allocPrint(gpa, "{s}\n\n[response ended early: connection dropped]", .{partial}) catch null
-            else
-                gpa.dupe(u8, "[response ended early: connection dropped]") catch null;
-        },
-        error.FallbackConsentRequired => return gpa.dupe(u8, "Saved model unavailable. Allow this provider with /fallback in the standard REPL, or choose another model.") catch null,
-        else => return null,
-    };
-    const trimmed = std.mem.trim(u8, final, " \t\r\n");
-    if (trimmed.len == 0) return null;
-    return gpa.dupe(u8, trimmed) catch null;
+/// repl.TurnFn — one full ROOT agent turn. The body lives in repl_turn.zig
+/// (move+alias, 600-line cap); `repl_glue.replTurnCb` still resolves, and
+/// repl_turn.Policy is where a turn's mode/strict becomes engine behavior.
+pub const replTurnCb = @import("repl_turn.zig").replTurnCb;
+
+test {
+    // An alias does not pull a sibling's tests in — name it so the policy
+    // regressions in repl_turn.zig are actually compiled and run.
+    _ = @import("repl_turn.zig");
 }
 
 /// repl.ModelFn adapter — switch the active model by name. Resolve its provider
@@ -569,6 +464,9 @@ pub fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
     if (v.object.get("ai_title")) |tv| if (tv == .bool) {
         root.ai_title = tv.bool;
     };
+    if (v.object.get("session_recap")) |rv| {
+        if (rv == .bool) root.ai_recap = rv.bool;
+    }
 }
 
 /// REPL slash commands share the leading `/` with absolute POSIX paths. Only

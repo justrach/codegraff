@@ -22,6 +22,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const util = @import("util.zig");
+const class_needles = @import("shape_needles.zig");
 
 /// Canonical phase/stage labels an ultracode workflow names its slots with.
 ///
@@ -337,11 +338,11 @@ pub fn classOf(raw: []const u8) TaskClass {
     // "ties broken by ascending order", and the bare word classified the eval
     // study's wordfreq FEATURE task as a bugfix — a mis-celled observation,
     // which is exactly what this function's doc comment forbids.
-    if (anyOfCI(raw, &.{ "fix ", "bug", "is broken", "are broken", "broken test", "broken build", "failing", "fails", "regression", "crash", "repair", "make the tests pass", "doesn't work", "does not work" })) return .bugfix;
-    if (anyOfCI(raw, &.{ "refactor", "rename", "extract ", "restructure", "deduplicate", "dedupe", "move the", "port the", "migrate" })) return .refactor;
-    if (anyOfCI(raw, &.{ "review", "audit", "critique", "find bugs", "security review", "code smell" })) return .review;
-    if (anyOfCI(raw, &.{ "how does", "how do ", "why does", "explain", "investigate", "research", "summarize", "summarise", "summary", "understand", "what is the", "which ", "map the", "trace how", "answering", "these questions", "four questions", "cite the" })) return .research;
-    if (anyOfCI(raw, &.{ "add ", "implement", "build ", "create ", "write ", "support for", "new feature", "feature" })) return .feature;
+    if (anyOfCI(raw, &class_needles.bugfix)) return .bugfix;
+    if (anyOfCI(raw, &class_needles.refactor)) return .refactor;
+    if (anyOfCI(raw, &class_needles.review)) return .review;
+    if (anyOfCI(raw, &class_needles.research)) return .research;
+    if (anyOfCI(raw, &class_needles.feature)) return .feature;
     return .other;
 }
 
@@ -350,7 +351,7 @@ pub fn classOf(raw: []const u8) TaskClass {
 /// is the most expensive thing this harness can do, so it takes an explicit
 /// word, never an inference from a long prompt.
 pub fn isAuditClass(raw: []const u8) bool {
-    return anyOfCI(raw, &.{ "thorough", "exhaustive", "comprehensive", "audit", "every file", "all files", "across the codebase", "across the repo", "systematically", "full sweep", "end-to-end review" });
+    return anyOfCI(raw, &class_needles.audit);
 }
 
 /// The user's raw ask for THIS turn, captured where the harness already reads

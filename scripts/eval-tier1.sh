@@ -16,7 +16,16 @@ set -uo pipefail
 repo_root=$(git -C "$(dirname "${BASH_SOURCE[0]}")/.." rev-parse --show-toplevel)
 cd "$repo_root"
 
-CHECKS=(fmt lines reach build tests invariants sdk)
+# git exports GIT_DIR (and friends) to hooks. Anything this script spawns —
+# the test suite's git-fixture tests, graff itself in the sdk check — inherits
+# them, and a child's `git init`/`git commit` in its OWN tmpdir then operates
+# on THIS repo instead: `git init` re-marks the checkout bare (core.bare=true)
+# and `git commit` lands a stray "fixture" commit on the current branch, with
+# the tmpdir as the work tree. Scrub the hook environment so child git
+# processes discover their repo from their cwd like they expect.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
+
+CHECKS=(fmt lines spec reach build tests tui tuiguard invariants sdk)
 
 usage() {
   cat <<'EOF'
@@ -25,9 +34,12 @@ usage: scripts/eval-tier1.sh [--only <check>] [--list]
 checks, in order:
   fmt         zig fmt --check src build.zig
   lines       scripts/check-zig-lines.sh (600-line ceiling, AGENTS.md)
+  spec        spec/conformance.py (kernel properties + fixture staleness)
   reach       every file that declares tests is reachable from the test root
   build       zig build
   tests       zig build test, and the suite count never shrinks
+  tui         zig build tui-test (the TUI suite was ungated until the 2026-08 bug wave)
+  tuiguard    scripts/tui-pty-guard.py — real-binary pty lifecycle invariants
   invariants  the named goal/loop/todo tests actually ran, not just compiled
   sdk         the committed SDKs match `graff --schema`
 EOF
@@ -91,6 +103,19 @@ if wanted lines; then
   if bash scripts/check-zig-lines.sh; then :; else
     printf '    fix: split the file above into focused sibling modules.\n'
     record_fail lines
+  fi
+fi
+
+# --- spec --------------------------------------------------------------
+if wanted spec; then
+  announce spec "spec/conformance.py — kernel properties + fixture staleness"
+  # The Zig leg of the corpus already gates via `tests` (the conformance tests
+  # embed the fixtures); this closes the triangle's other side pre-push: the
+  # executable model's properties, and that the committed fixtures match it.
+  if python3 spec/conformance.py; then :; else
+    printf '    a kernel drifted: ratchet the model (lean-proofs/ + spec/ref/) or the impl,\n'
+    printf '    then regenerate fixtures: python3 spec/conformance.py --export\n'
+    record_fail spec
   fi
 fi
 
@@ -172,6 +197,50 @@ if wanted tests; then
           *) record_fail tests ;;
         esac
       fi
+    fi
+  fi
+fi
+
+# --- tui ---------------------------------------------------------------
+if wanted tui; then
+  if ((!build_ok)); then
+    skip_dependent tui
+  else
+    announce tui "zig build tui-test — the TUI parser/render suite"
+    out=$(zig build tui-test --summary all 2>&1)
+    if (($? != 0)); then
+      printf '%s\n' "$out" | tail -8
+      record_fail tui
+    else
+      printf '%s\n' "$out" | sed -n 's/.*Build Summary: .*; \([0-9/]* tests passed.*\)/  \1/p' | tail -1
+    fi
+  fi
+fi
+
+# --- tuiguard ----------------------------------------------------------
+if wanted tuiguard; then
+  if ((!build_ok)); then
+    skip_dependent tuiguard
+  else
+    announce tuiguard "tui-pty-guard.py — mode-balance / hostile-input / kill-restore on the real binary"
+    # grok-build's discipline as a gate: every latched DEC mode is reset on
+    # every exit path, the historical crasher corpus cannot kill a session,
+    # and SIGTERM never strands a raw terminal. Skips itself without a pty.
+    if python3 scripts/tui-pty-guard.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # #529: the drag gesture the mouse-tracking modes above swallow. Paints an
+    # inverse band and lands on the real clipboard (restored afterwards);
+    # skips itself off macOS, where there is no pbcopy/pbpaste.
+    if python3 scripts/test-tui-selection.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # #551: the TUI renders tool activity from the engine's TYPED events. Drives
+    # a real tool loop against the codex mock (no network, no model) and reads
+    # the screen back: one folded summary, a field-backed card under it, and an
+    # answer line that starts with "✓ " staying an answer.
+    if python3 scripts/test-tui-typed-events.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
     fi
   fi
 fi

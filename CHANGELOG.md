@@ -10,6 +10,331 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.263 (2026-08-17)
+
+- grok-4.6 is the xAI default: 500k context, compact at 400k, published
+  dual-band prices (`$2/$0.50/$6` under 200k prompt tokens, `$4/$1/$12`
+  at or above). SuperGrok login stays $0; metered `XAI_API_KEY` uses the
+  bands. grok-4.3 is unchanged.
+- `/effort low|medium|high|xhigh` now applies on native Grok. The default
+  Responses wire already sent `reasoning.effort`; the UI no longer claims
+  the model ignores it, and `GRAFF_XAI_WIRE=chat` sends `reasoning_effort`.
+  `grok-build` via the Codegraff gateway still rejects the hint.
+- Prompt-cache affinity is durable per project: a new session in the same
+  cwd reuses `prompt_cache_key` / `x-grok-conv-id` instead of minting a
+  process-local id.
+- TUI: crash/suspend/panic restore the terminal; SIGTSTP no longer livelocks
+  a background op; in-app drag selection copies on release; quit cancels and
+  settles the live turn before leaving fullscreen.
+- The TUI is a real client of the REPL engine now. Tool rows come from the
+  engine's typed events instead of re-parsing rendered text (no more phantom
+  tool rows when an answer starts with a status glyph), `/thinking` actually
+  streams reasoning, and denied tools, notices, and provider failovers show
+  up in the transcript.
+- `/plan` and `/strict` are enforced, not footer labels: plan mode denies
+  writes and `!` commands through the engine's own gate, and `!cmd` runs
+  under the same approvals, hooks, and accounting as the model's bash tool,
+  with its output entering the conversation.
+- The session conversation lives in the engine across turns, so a follow-up
+  request carries the previous turn's tool calls and results, and provider
+  prompt caching works again. `/context` and `/session-info` report the
+  engine's token meters instead of local character counts.
+- Input hardening: a split or unterminated bracketed paste recovers (bounded
+  holds everywhere, a resting mouse can't stall it), lost escape-sequence
+  debris no longer types itself or eats the next word, the kitty numeric
+  keypad works, and Ctrl+D quits from an empty composer.
+- `/models` pings every keyed provider catalog live on each listing, so new
+  gateway rollouts appear without a restart.
+- Structured outputs reach Anthropic (schema as a tool) and survive DeepSeek's
+  json_schema reject by degrading to a `structured_output` tool.
+- Conformance corpus grew to ten Lean kernels (3,642 cells). TUI pty
+  lifecycle guards joined tier-1, and the README documents the full
+  54-command catalog.
+
+## v0.0.262 (2026-08-15)
+
+- A formal conformance corpus now guards the harness's decision procedures:
+  six Lean kernels (tool catalog, transport, provider table, goal loop,
+  path confinement, routing shapes) prove the invariants, an executable
+  reference model exports every reachable cell (1,770 of them), and
+  `zig build test` diffs the live implementation against the export —
+  a wrong flag combination fails with the exact counterexample cell.
+  `scripts/eval-spec.sh` runs the whole triangle offline; `lake` is
+  optional and never on the test path.
+- TUI `/compact` now runs the engine's real compaction (same summarizer as
+  the REPL) instead of silently cropping to the last few rows; the model's
+  context and the transcript finally agree about what survived.
+- Thinking no longer pulses the transcript: the flickering live bar is gone
+  from every collapsed "Called N tools" row; liveness is the pending row's
+  steady bar and animated dots.
+- Split escape sequences get a second hardening pass: the input loop now
+  waits ~500ms for a truncated sequence's tail (slow ssh/tmux links
+  complete instead of losing input), and only then drops it — still arming
+  the orphan-debris sweeper. An unterminated OSC/DCS introducer (Alt+] in
+  meta-sends-ESC terminals) recovers the text typed behind it instead of
+  wedging the keyboard until it is destroyed (#516), and a buffer-filling
+  wedge can no longer masquerade as a TTY hangup that exits the TUI
+  mid-session (#517).
+- Mid-turn safety: /new, /compact and /rewind are refused while a turn is
+  running instead of wiping history under the live job (#521); the
+  slash-menu selection clamps to the filtered list and scrolls with the
+  highlight, so Enter always fires the row you see (#522); steering can no
+  longer strand a permanent "thinking" row (#520).
+- Raw mode clears IEXTEN and IXON: Ctrl+V pastes as advertised and Ctrl+S
+  cannot freeze the whole TUI (#523).
+
+## v0.0.261 (2026-08-15)
+
+- The TUI looks and behaves like grok-build where it counts: syntax-highlighted
+  code fences (grok-night/grok-day token colors on a full-width band, hidden
+  markers), a sticky header pinning the prompt you scrolled past, automatic
+  light/dark from the terminal's reported background, and flicker-free
+  synchronized painting.
+- Two dozen rendering and input bugs found by a three-pass audit and a live
+  visual-capture pipeline, headlined by: a half-arrived mouse-hover report
+  could fire a phantom Escape that silently cancelled the running turn and
+  then type its debris (`39;7;32M…`) into the composer; the orphan-sequence
+  sweeper ate pasted text like `0x1f` and `1e5`; the first `**bold**` made the
+  rest of the message bold; emoji and CJK widths bent every box border;
+  `/theme` left most rows in the old background; `/jump` hid the very turn it
+  jumped to; clicking blank space toggled the last tool run.
+- Grok requests carry `x-grok-conv-id` and `prompt_cache_key` on every wire so
+  xAI's automatic prompt caching actually hits; WebSocket sessions retire
+  before the server's 25-minute cap and classify its error frames instead of
+  burning the stall budget. `GRAFF_XAI_WS_CHAIN=1` opts into on-socket
+  delta chaining (experimental).
+
+## v0.0.260 (2026-08-15)
+
+- Fixed the composer silently wiping mid-typing: switching apps with Cmd+Tab
+  latched a phantom Super modifier (the release went to the other app), so
+  the next Backspace acted as Cmd+Backspace and deleted to the start of the
+  line. A plain keypress now clears stale modifier latches.
+
+## v0.0.259 (2026-08-15)
+
+- Grok now defaults to xAI's Responses wire: WebSocket turns (with the SSE
+  fallback ladder), lossless first-party server compaction, and structured
+  outputs work out of the box on a SuperGrok subscription. Set
+  `GRAFF_XAI_WIRE=chat` to return to chat completions.
+- Fixed duplicate MCP tool definitions when a deferred server start raced the
+  eager codedb-pro companion; strict Responses endpoints rejected every turn
+  over the duplicate.
+
+## v0.0.258 (2026-08-15)
+
+- Full Grok support on a SuperGrok subscription (#502): opt into xAI's
+  Responses wire with `GRAFF_XAI_WIRE=responses` for first-party server-side
+  compaction (encrypted blob; measured −80% follow-up input tokens on a 9.3k
+  conversation, with the client summary kept as automatic fallback), WebSocket
+  turns over the held socket, and `--output-schema '<json>'`/`@file`
+  structured outputs on both wires. grok-4.6's stray `<|eos|>` after
+  strict-schema JSON is stripped, and structured output runs two-phase — an
+  unconstrained agentic run, then one tools-off formatting turn — so a strict
+  grammar can no longer talk the model out of using its tools.
+- graff-evals: an in-repo, RL-style eval environment — 12 deterministic
+  agentic tasks (debugging, shell, git, refactor, long-context recall,
+  structured output …) with sandboxed checks; `run.py --harness graff,grok`
+  prints a side-by-side pass/wall/latency/token table.
+- Kitty keyboard overhaul: the real kitty modifier table (Right-Alt/Right-Cmd
+  no longer type Escape), key-release events never double-fire, a stale
+  alt/super latch resyncs, and terminal state (kitty pop, alt-screen, mouse)
+  is restored even on SIGTERM/SIGHUP. Shift+number punctuation and mouse
+  hover for image chips both keep working.
+- REPL parity commands from the grok-build gap review: `!` shell prefix, `@`
+  file mentions, `/jump`, `/copy`, `/btw`, `/vim-mode`.
+- Fewer discovery rounds when a prompt names its target file/symbol (#489).
+
+## v0.0.257 (2026-08-15)
+
+- Composer box corners line up with the sides, wrap at word boundaries, and
+  the hint row is clipped so it no longer ends on a stray "E".
+
+## v0.0.256 (2026-08-15)
+
+- Leftover Kitty keyboard CSI (`3u7444;9u`) is ignored instead of typed or
+  turned into Escape/Ctrl+C (which cancelled the turn).
+- Shift+number keys type the punctuation they should (`Shift+9` is `(`,
+  `Shift+0` is `)`), including via Kitty CSI-u and modifyOtherKeys.
+- Interrupting a turn collapses Thinking immediately (Grok ❙ + static
+  "Thinking"; no leftover spinner next to ■ interrupted).
+- The pager appends raw stdin hex to `.graff/tui-traj.jsonl` and the last
+  visible frame on exit so the next leak can be replayed.
+
+## v0.0.255 (2026-08-14)
+
+- The fullscreen pager no longer prints raw SGR mouse reports
+  (`39;33;23M`) into the thinking line. Hover-motion tracking is off;
+  split/orphan mouse sequences are consumed instead of typed.
+
+## v0.0.254 (2026-08-14)
+
+- `graff tui` (and TTY `graff repl`) is a Grok-style fullscreen pager: wrapped
+  composer with Ctrl+Z undo, folded multi-tool cards that click open, image
+  chips, a searchable effort picker, markdown tables, and a headless Term
+  driver for tests. Bare `graff` stays the line REPL.
+- `/import-claude` copies Claude/Cursor MCP servers, skills, and hooks into
+  `~/.codegraff` and the current repo; first start adopts automatically, the
+  command remains for a later rescan.
+- Hosted TUI tool rows carry the path or a one-line preview so live `⚙`/`✓`
+  lines stay inspectable without dumping raw JSON.
+- macOS CLI and desktop assets are Developer ID signed and Apple notarized
+  (`notary-local`); the `.dmg` and updater tarball ship beside the CLI
+  tarballs.
+
+## v0.0.253 (2026-08-14)
+
+- Explicit `/compact` uses OpenAI's standalone Responses compact endpoint for
+  direct API-key sessions and supported in-stream compaction for Codex, with
+  transactional history replacement and local fallback; non-OpenAI providers
+  remain local-only.
+- Measured interactive yolo startup falls from 5.85s to 2.76s—53% less waiting,
+  or about 2.1x faster—through Kimi prompt-cache affinity, low-effort lookup
+  routing, concurrent live-catalog fetches, and concurrent/deferred MCP startup,
+  while preserving deterministic catalog and tool ordering.
+- `@codegraff/sdk` ships its platform harness binary and production embedding
+  APIs for persistent turns, live events, controls, cancellation, and process
+  ownership, backed by packed-install and JSON integration coverage.
+- The normal REPL keeps recovered recap retries and verbose tool/startup details
+  out of the way; `/debug` provides a content-free HUD, `/usage` reports spend,
+  `read_file contains=` handles exact-key lookups in one bounded read, and
+  shared-worktree owners render as a structured callout.
+- The desktop app replaces the persistent agent overview column with compact
+  agent control and adopts the Codegraff emblem across web, desktop, Android,
+  and iOS assets.
+- Run-budget landing, Codex overload retry, xAI OAuth parity, and benchmark
+  fixture validation harden autonomous and release workflows.
+
+## v0.0.252 (2026-08-13)
+
+- Grok models are discovered live: xAI joins the generic `/v1/models`
+  catalog and always fetches `api.x.ai` (disk cache is offline fallback
+  only), so new Grok rollouts become routable without a release. SuperGrok
+  login tokens send `X-XAI-Token-Auth` on chat and catalog requests, matching
+  grok-build.
+- The #469 peer-message spacing bracket is pinned by a unit test on the
+  emitted event sequence, plus a CI-wired PTY smoke test for device-room
+  delivery.
+- release.yml uploads assets onto an existing release instead of failing
+  into an untagged draft (the v0.0.251 updater-404 race).
+
+## v0.0.251 (2026-08-13)
+
+- Peer messages get breathing room in the REPL: the `#469 channel` block used
+  to render mid-stream with no spacing, clumped against the text above and
+  below; it is now bracketed by a blank line on either side. Render-only —
+  history bytes and the GUI are unchanged.
+
+## v0.0.250 (2026-08-12)
+
+- First-party OpenAI server compaction now installs the complete canonical
+  `/responses/compact` output transactionally on both the Codex subscription
+  and official Platform Responses routes. Missing, invalid, or empty output
+  leaves history intact and falls back to readable local compaction; other
+  providers remain local-only.
+- The official `openai` provider uses the Responses API with ordinary bearer
+  authentication, without inheriting ChatGPT backend headers, WebSocket
+  chaining, or Codex-only priority behavior.
+- REPL tool activity is visible again as stable terse start/result rows with
+  human-readable command, path, URL, or description previews instead of raw
+  JSON or cursor-rewriting output.
+- Controlled replay evidence covers 21/21 perfect continuations across the
+  first-party OpenAI host/auth paths, including long paired tool histories.
+
+## v0.0.249 (2026-08-12)
+
+- Folded native tools become callable immediately after their schemas load
+  (#492). The active catalog is rebuilt from the loaded schemas instead of
+  continuing to advertise tools that can never enter dispatch.
+- Turn events expose cumulative input, output, cache-read, and cache-write
+  token usage, with the TypeScript SDKs regenerated from the same schema
+  source (#491).
+- codedb-pro tool paths resolve from the active session worktree rather than
+  the daemon's startup directory, preventing false missing-path reports when
+  Graff changes projects.
+- Piped sessions end an unanswered `ask_user` cleanly at EOF instead of
+  spinning or hanging (#478).
+- The default prompt carries a capped skills catalog, and the release suite
+  now exercises concurrent interactive WebSocket tool loops across multiple
+  sessions (#480).
+
+## v0.0.245 (2026-08-09)
+
+- Licensed codedb-pro is now the default toolset, not an ornament. The license
+  probe at startup pins the server's schemas eager (no per-session
+  `load_tool_schemas` toll that steered models back to the built-ins), the
+  system note makes `mcp__codedbpro__read`/`faster_search`/`batch` the stated
+  defaults for reads and searches, and the built-ins they replace are actually
+  *refused* while the licensed server is healthy: `read_file`, `codedb`, and
+  bash lines leading with `grep`/`rg`/`find` get a refusal naming the
+  replacement (shell searches point at `zigrep` directly; it always skips
+  vendor dirs, so the refusal says when `rg -uu` is the right call instead).
+  Plan mode is exempt (it denies MCP calls outright), and any codedb-pro
+  failure opens the fallback for the rest of the session — being in charge
+  must never leave the model with no working way to read.
+- codedb-pro failures file their own bug reports: the first failure per
+  signature (cap 3/session, root-only) spawns a background subagent that
+  dedupes against open issues and files on justrach/codegraff under the
+  `codedb-pro` label. The harness redacts before anything reaches a model or
+  the issue body — absolute/home paths, credential-looking tokens, URL query
+  strings — keeping only the tool name and the error essence. Unattended
+  sessions (or unapproved `gh`) draft to `.graff/issue-drafts/` instead of
+  publishing without consent.
+- Edits go through the persistent daemon instead of spawning zigpatch per
+  edit: `edit_file` keeps the /rewind snapshot and the on-disk verification,
+  but the byte-splice rides the always-on MCP connection (measured 0.34ms vs
+  2.37ms per edit on small files — fork/exec was ~85% of the cost). A
+  measured size gate (4 MiB, matching the daemon's cache ceiling) sends big
+  files to the spawn path. Pairs with zigrepper 0.2.21, where the same edits
+  got 2.9x faster still (cache-backed snapshots, light edit loads).
+- `/tools` shows the session's tool balance: codedb-pro read/search/batch vs
+  zigrep vs native fallbacks, gate refusals, and errors. When suite usage
+  skews (8+ calls, one class ≥80%), the nudge rides the tool result so the
+  model hears it — once per dominant class, not on repeat.
+
+## v0.0.244 (2026-08-08)
+
+- Co-resident sessions see and coordinate with each other (#469): a per-user
+  registry at `~/.graff/live` names any live session already in your worktree,
+  probed for liveness on read via `proc_identity`, so crashed sessions reap
+  themselves — no heartbeats, no daemon. The first index- or tree-mutating git
+  command, file write, or shell move against a peer's tree pauses once for a
+  deliberate re-issue, under `--yolo` too, where no approval prompt exists. The
+  motivating failure: two `--yolo` roots in one worktree picked up the same task
+  and one git-staged the other's files mid-write, because neither could see the
+  other. Sessions can also talk — the `peer_message` tool, `/tell`, and `/peek`
+  over a shared per-worktree room plus a device-wide one.
+- Session recaps ride the event stream (#419): a settled turn carries a
+  Completed or Needs-input status and a one-line recap, so a GUI overview can
+  say what each agent did without re-reading the transcript.
+- Subscriptions are billed and routed as subscriptions (#471). A flat-rate
+  login and a metered API key on the same provider are different *seats*, and
+  nothing in the routing stack knew that: billing was a hardcoded provider-id
+  list, the third of four such lists in the tree, and they disagreed. xAI has
+  had a real device-code login since `graff login xai`, so a paid SuperGrok
+  session was billed at grok list price and excluded from subscription routing
+  entirely. Now the plan **outranks** the key on the same provider instead of
+  losing to it by arriving second, contributes $0 to `/cost`, and the displaced
+  key is parked — taking over, announced, only when the plan hits a quota cap.
+- Worker tiers land on seats you already pay for (#471): an explicit `tier` ask
+  crosses to a logged-in plan (`mid` → k3, `small` → gpt-5.6-luna) rather than
+  a metered rung. The #291 ladder descent had been blocking this by looking
+  like a manual pin, which made subscription routing dead in most sessions —
+  found by running the harness for real, not by the unit suite.
+- A tier rung must be a genuinely cheaper SEAT (#471): the bench sheet ranks by
+  $/task, which folds the seat's rate together with how many tokens a model
+  burns, so an equally-priced older model read as the cheap rung. Every opus
+  generation bills $5/$25, so descending opus-5 → opus-4-8 saved nothing at
+  all. Anthropic now descends opus-5 → sonnet-5, deepseek-v4-flash replaces pro
+  outright, and a mid rung that cost *more* than its own frontier is gone.
+- `graff route` with no model lists every provider you can reach, what it
+  bills, and the tiers it offers — including a plan whose displaced key is
+  parked behind it. Detection stats the credential file only: listing providers
+  never refreshes a token or spends anything.
+- Anthropic serves its live model list, like the OpenAI routers: new Claude
+  releases arrive without a rebuild, with the baked rows kept as the
+  no-key/offline fallback.
+
 ## v0.0.242 (2026-08-06)
 
 - MCP tool schemas load on demand (#416): a server's tools are advertised by

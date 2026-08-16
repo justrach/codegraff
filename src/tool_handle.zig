@@ -41,12 +41,17 @@ pub const handles_dir = ".graff/tool-results";
 /// by this same number, so one result costs at most one threshold of context
 /// whatever its size.
 ///
-/// 4 KiB is ~1k tokens: a real screenful of head — enough to see a stack trace,
-/// a file header, or the first rows of a table and decide what to ask for —
-/// while still a constant, bounded price. The caps it replaces were not
-/// constant: 128 KiB of bash stdout, 64 KiB of codedb output, and up to 136 KiB
-/// of a single result at send time.
-pub const default_threshold_bytes: usize = 4096;
+/// 16 KiB is ~4k tokens — still a constant, bounded price, but big enough that
+/// a typical search result or file read comes back INLINE. That matters more
+/// than the context it spends: every handle forces the model into a follow-up
+/// read, and a round-trip costs ~5-8s of model latency while the tokens cost
+/// cache-read prices on big-window models. Measured on K3 (1M window, 2026-08
+/// graff×kimi-cli benchmark): raising 4 KiB → 32 KiB cut runEval/providers
+/// wall time ~16% by removing 2-3 handle-chase round-trips per task; 16 KiB
+/// keeps half that win while staying safe on 32k-class windows. The caps this
+/// contract replaced were not constant: 128 KiB of bash stdout, 64 KiB of
+/// codedb output, and up to 136 KiB of a single result at send time.
+pub const default_threshold_bytes: usize = 16384;
 pub var threshold_bytes: usize = default_threshold_bytes;
 
 /// Ceiling on what one process may leave in `handles_dir`. Every handle is a
@@ -137,6 +142,23 @@ pub fn forResult(gpa: Allocator, arena: Allocator, target: Target, text: []const
         .path = path,
         .bytes = text.len,
     };
+}
+
+/// #541: the once-per-agent protocol lesson. The marker on every handle
+/// already teaches slicing; these are the two clauses that used to ride the
+/// STANDING prompt (~225 tokens on every call of every session, mostly
+/// buying nothing). agent_tools appends this to the FIRST handle an agent
+/// produces — the #445 pattern: guidance delivered when it earns its tokens.
+pub const first_note = " [handle protocol, applies to every such handle: never pull a whole handle file back into the conversation — slice ranges — and the file stays readable for the rest of the session.]";
+
+/// The #541 append, pure so the once-per-agent contract is testable without
+/// an Io or a live Agent: `shown` is the agent's own flag, flipped exactly
+/// when a real handle (not a pass-through, not a budget truncation) first
+/// carries the note.
+pub fn withFirstNote(arena: Allocator, r: Result, shown: *bool) ![]const u8 {
+    if (r.path == null or shown.*) return r.text;
+    shown.* = true;
+    return std.fmt.allocPrint(arena, "{s}{s}", .{ r.text, first_note });
 }
 
 fn markerText(arena: Allocator, path: ?[]const u8, total: usize, threshold: usize, shape: []const u8) ![]const u8 {
@@ -429,6 +451,30 @@ test "#440: shape hints are measured, not guessed — JSON keys, array items, li
     try std.testing.expect(std.mem.indexOf(u8, hint, "k0, k1") != null);
     try std.testing.expect(std.mem.indexOf(u8, hint, "(+8 more)") != null);
     try std.testing.expect(std.mem.indexOf(u8, hint, "k12") == null);
+}
+
+test "#541: the protocol lesson rides the FIRST handle only — never a pass-through, never twice" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var shown = false;
+
+    // A pass-through (below threshold, no handle) neither carries the note
+    // nor consumes the session's one showing.
+    const small: Result = .{ .text = "plain result", .path = null, .bytes = 12 };
+    try std.testing.expectEqualStrings("plain result", try withFirstNote(a, small, &shown));
+    try std.testing.expect(!shown);
+
+    // The first real handle gets marker + lesson, and flips the flag.
+    const handle: Result = .{ .text = "preview\n\n[tool result handle: ...]", .path = "/tmp/h-0.txt", .bytes = 40_000 };
+    const first = try withFirstNote(a, handle, &shown);
+    try std.testing.expect(std.mem.startsWith(u8, first, handle.text));
+    try std.testing.expect(std.mem.indexOf(u8, first, "handle protocol") != null);
+    try std.testing.expect(shown);
+
+    // The second handle is marker-only: the lesson never repeats.
+    const second = try withFirstNote(a, handle, &shown);
+    try std.testing.expectEqualStrings(handle.text, second);
 }
 
 test "#440: the run byte budget bounds the handle dir, and over it the result is truncated honestly" {

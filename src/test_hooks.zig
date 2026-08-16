@@ -41,6 +41,10 @@ const subagent_selection = @import("subagent_selection.zig");
 // #292 per-persona / per-spawn model pins: the module is reached in
 // production (subagent.zig), but its split-out test files are not.
 const subagent_pin_tests = @import("subagent_pin_tests.zig");
+// Folded native tools (#416's two-phase pattern for the harness's own power
+// tools): reached in production via schema.zig/exec.zig/agent_tools.zig.
+const native_fold = @import("native_fold.zig");
+const edit_batch = @import("edit_batch.zig");
 // Moved off subagent.zig, which is at the 600-line cap.
 const subagent_tests = @import("subagent_tests.zig");
 // Bench score/cost priors → derived tier ladders (.harness/bench.json).
@@ -53,6 +57,7 @@ const route_trace = @import("route_trace.zig");
 // #376 phase-uniform learned routing + the rung-stratified fitness fold.
 const route_phase = @import("route_phase.zig");
 const route_check = @import("route_check.zig");
+const route_report = @import("route_report.zig"); // #471 credential/tier listing
 // #380 vision-aware spawn routing + the report-time capability-honesty flag.
 const vision_ask = @import("vision_ask.zig");
 const vision_ask_tests = @import("vision_ask_tests.zig");
@@ -69,6 +74,8 @@ const scoring_slot_test = @import("scoring_slot_test.zig");
 
 // #273: session.zig's own tests, moved off it for the same reason.
 const session_tests = @import("session_tests.zig");
+// /help's sectioned render + the catalog-coverage guard.
+const help = @import("help.zig");
 
 // #441: and session_transcript.zig's, moved off it for the same reason again.
 // The module itself is reached from session.queueSave, but this FILE is not, so
@@ -120,6 +127,7 @@ const compact_note_glue = @import("compact_note_glue.zig");
 // decls, but the hook makes the coverage explicit rather than contingent on
 // that staying true.
 const mcp_config = @import("mcp_config.zig");
+const effort_route = @import("effort_route.zig");
 
 // #416: two-phase MCP tool exposure. schema.zig/exec.zig reach the gate, but
 // its tests live in a sibling file that nothing in production imports.
@@ -200,6 +208,8 @@ test {
     _ = router_config;
     _ = subagent_selection;
     _ = subagent_pin_tests;
+    _ = native_fold;
+    _ = edit_batch;
     _ = subagent_tests;
     _ = bench_priors;
     _ = bench_priors_tests;
@@ -208,6 +218,7 @@ test {
     _ = route_trace;
     _ = route_phase;
     _ = route_check;
+    _ = route_report;
     _ = vision_ask;
     _ = vision_ask_tests;
     _ = pricing_tests;
@@ -216,6 +227,7 @@ test {
     _ = serve_create;
     _ = scoring_slot_test;
     _ = session_tests;
+    _ = help;
     _ = session_transcript_tests;
     _ = session_settings_tests;
     _ = commands_session_test;
@@ -253,4 +265,5 @@ test {
     _ = agent_compact_summary_test;
     _ = side_question_tests;
     _ = json_controls;
+    _ = effort_route;
 }

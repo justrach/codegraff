@@ -122,3 +122,39 @@ pub const TokenSignal = struct {
         return d == .string and d.string.len != 0;
     }
 };
+
+/// xAI WS error frames ({"type":"error"}) are terminal for the turn but not in
+/// isStreamEnd's completed/failed set, so without classification they burn the
+/// whole stall budget on a doomed socket.
+pub const ErrorFrameAction = enum { none, retire, chain_lost };
+
+pub fn errorFrameAction(frame: []const u8) ErrorFrameAction {
+    if (std.mem.indexOf(u8, frame, "\"type\":\"error\"") == null) return .none;
+    // The server sends this right before closing a 25-minute-old socket.
+    if (std.mem.indexOf(u8, frame, "websocket_connection_limit_reached") != null) return .retire;
+    // Our chain anchor is gone (evicted / never cached under store:false).
+    if (std.mem.indexOf(u8, frame, "previous_response_not_found") != null) return .chain_lost;
+    return .none;
+}
+
+/// The deadline for writing a frame of `frame_len` bytes.
+///
+/// NOT a flat head-sized budget: the frame most likely to sit under this guard
+/// is the LARGEST one, because every recovery re-anchors with the full
+/// conversation (closeCodexWs nulls codex_prev_id). A flat 30s over a ~1MB
+/// re-anchor on a slow uplink is a false positive costing a transport failure,
+/// and two of those latch SSE for the session. Policy: the head budget plus one
+/// second per 64KB (a ~512 kbit/s floor, far below any link that can carry a
+/// codex session), clamped to the read budget so the send guard can never
+/// outlast the watchdog covering the reply.
+pub fn sendDeadlineMs(frame_len: usize, head_ms: u64, stream_ms: u64) u64 {
+    const grow: u64 = @as(u64, @intCast(frame_len / (64 * 1024))) *| 1000;
+    return @min(head_ms +| grow, @max(head_ms, stream_ms));
+}
+
+test "errorFrameAction classifies the two xAI ws error codes, ignores prose" {
+    try std.testing.expectEqual(ErrorFrameAction.retire, errorFrameAction("{\"type\":\"error\",\"error\":{\"code\":\"websocket_connection_limit_reached\"}}"));
+    try std.testing.expectEqual(ErrorFrameAction.chain_lost, errorFrameAction("{\"type\":\"error\",\"error\":{\"code\":\"previous_response_not_found\"}}"));
+    try std.testing.expectEqual(ErrorFrameAction.none, errorFrameAction("{\"type\":\"response.output_text.delta\",\"delta\":\"websocket_connection_limit_reached\"}"));
+    try std.testing.expectEqual(ErrorFrameAction.none, errorFrameAction("{\"type\":\"error\",\"error\":{\"code\":\"other\"}}"));
+}

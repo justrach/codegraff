@@ -67,7 +67,7 @@ export function ConversationPanelHeader({
     <>
       <header
         className={cn(
-          "flex h-9.5 items-center gap-3 border-b border-border pr-11 select-none",
+          "flex h-9.5 items-center gap-3 border-b border-border pr-19 select-none",
           reserveTitlebarInset ? "pl-34" : "pl-3",
         )}
       >

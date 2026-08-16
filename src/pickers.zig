@@ -169,6 +169,37 @@ fn writeCell(out: *Io.Writer, text: []const u8, width: usize) void {
     out.writeAll("…") catch return;
 }
 
+/// Byte index where the last `columns` visible columns begin — the
+/// forward-scan mirror of prefixBytes, so the slice keeps whole codepoints.
+fn tailBytes(text: []const u8, columns: usize) usize {
+    const total = visibleLen(text);
+    if (total <= columns) return 0;
+    var seen: usize = 0;
+    var i: usize = 0;
+    const skip = total - columns;
+    while (i < text.len and seen < skip) : (seen += 1) {
+        i += std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
+    }
+    return i;
+}
+
+/// writeCell for identifiers whose distinguishing part is the TAIL — model
+/// ids like `accounts/fireworks/models/deepseek-v4-pro`, which right-
+/// truncation renders identical (`accounts/fireworks/models…`) for every
+/// model a provider serves. Over-long text keeps its last width-1 columns
+/// behind the ellipsis: `…s/deepseek-v4-pro`.
+fn writeCellTail(out: *Io.Writer, text: []const u8, width: usize) void {
+    if (width == 0) return;
+    if (visibleLen(text) <= width) {
+        writeCell(out, text, width);
+        return;
+    }
+    if (width > 1) {
+        out.writeAll("…") catch return;
+        out.writeAll(text[tailBytes(text, width - 1)..]) catch return;
+    } else out.writeAll("…") catch return;
+}
+
 fn writeClipped(out: *Io.Writer, text: []const u8, width: usize) void {
     if (visibleLen(text) <= width) {
         out.writeAll(text) catch {};
@@ -252,7 +283,7 @@ pub fn modelPicker(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer)
             const context = pricing.contextFor(m.provider, m.name);
             if (row == sel) out.writeAll(style.accent) catch {};
             out.print("{s} ", .{if (row == sel) "›" else if (cur) "▌" else " "}) catch {};
-            writeCell(out, m.name, layout.name_width);
+            writeCellTail(out, m.name, layout.name_width); // path-like ids (fireworks) differ only at the tail
             out.writeByte(' ') catch {};
             writeCell(out, m.provider, layout.provider_width);
             if (layout.show_context) {
@@ -464,6 +495,21 @@ test "fuzzyScore ranks basename prefix above substring above subsequence" {
     // no match at all → null; empty needle → 0
     try std.testing.expect(fuzzyScore("abc", "xyz") == null);
     try std.testing.expectEqual(@as(?i32, 0), fuzzyScore("abc", ""));
+}
+
+test "writeCellTail keeps the distinguishing tail of path-like model ids" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var aw: std.Io.Writer.Allocating = .init(arena);
+    writeCellTail(&aw.writer, "accounts/fireworks/models/deepseek-v4-pro", 18);
+    try std.testing.expectEqualStrings("…s/deepseek-v4-pro", aw.writer.buffered()); // not accounts/fireworks/models…
+    var aw2: std.Io.Writer.Allocating = .init(arena);
+    writeCellTail(&aw2.writer, "deepseek-v4-pro", 18);
+    try std.testing.expectEqualStrings("deepseek-v4-pro   ", aw2.writer.buffered()); // fits: padded like writeCell
+    var aw3: std.Io.Writer.Allocating = .init(arena);
+    writeCellTail(&aw3.writer, "claude-opus-4.8", 4);
+    try std.testing.expectEqualStrings("…4.8", aw3.writer.buffered());
 }
 
 test "picker layouts honor terminal row and column budgets" {

@@ -1,0 +1,952 @@
+{
+  "kernel": "path_confine",
+  "version": 1,
+  "paths": [
+    {
+      "path": "",
+      "confined": false
+    },
+    {
+      "path": "src/main.zig",
+      "confined": true
+    },
+    {
+      "path": "a/b/c",
+      "confined": true
+    },
+    {
+      "path": "/etc/passwd",
+      "confined": false
+    },
+    {
+      "path": "../outside",
+      "confined": false
+    },
+    {
+      "path": "a/../../b",
+      "confined": false
+    },
+    {
+      "path": "a/./b",
+      "confined": true
+    },
+    {
+      "path": ".",
+      "confined": true
+    },
+    {
+      "path": "foo/..",
+      "confined": false
+    },
+    {
+      "path": "..",
+      "confined": false
+    },
+    {
+      "path": "..hidden",
+      "confined": true
+    },
+    {
+      "path": ".graff/settings.json",
+      "confined": true
+    },
+    {
+      "path": "a//b",
+      "confined": true
+    },
+    {
+      "path": "//etc/passwd",
+      "confined": false
+    },
+    {
+      "path": "foo\\..\\bar",
+      "confined": false
+    },
+    {
+      "path": "foo/bar/baz",
+      "confined": true
+    }
+  ],
+  "leases": [
+    {
+      "id": "both_empty.z0.gone.me0",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": false,
+        "probe": "gone",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z0.gone.me1",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": false,
+        "probe": "gone",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z0.match.me0",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": false,
+        "probe": "match",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z0.match.me1",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": false,
+        "probe": "match",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z0.mismatch.me0",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": false,
+        "probe": "mismatch",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z0.mismatch.me1",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": false,
+        "probe": "mismatch",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z0.unknown.me0",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": false,
+        "probe": "unknown",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z0.unknown.me1",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": false,
+        "probe": "unknown",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z1.gone.me0",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": true,
+        "probe": "gone",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z1.gone.me1",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": true,
+        "probe": "gone",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z1.match.me0",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": true,
+        "probe": "match",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z1.match.me1",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": true,
+        "probe": "match",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z1.mismatch.me0",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": true,
+        "probe": "mismatch",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z1.mismatch.me1",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": true,
+        "probe": "mismatch",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z1.unknown.me0",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": true,
+        "probe": "unknown",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "both_empty.z1.unknown.me1",
+      "lease": {
+        "identities": "both_empty",
+        "start_zero": true,
+        "probe": "unknown",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z0.gone.me0",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": false,
+        "probe": "gone",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z0.gone.me1",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": false,
+        "probe": "gone",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z0.match.me0",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": false,
+        "probe": "match",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z0.match.me1",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": false,
+        "probe": "match",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z0.mismatch.me0",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": false,
+        "probe": "mismatch",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z0.mismatch.me1",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": false,
+        "probe": "mismatch",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z0.unknown.me0",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": false,
+        "probe": "unknown",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z0.unknown.me1",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": false,
+        "probe": "unknown",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z1.gone.me0",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": true,
+        "probe": "gone",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z1.gone.me1",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": true,
+        "probe": "gone",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z1.match.me0",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": true,
+        "probe": "match",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z1.match.me1",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": true,
+        "probe": "match",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z1.mismatch.me0",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": true,
+        "probe": "mismatch",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z1.mismatch.me1",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": true,
+        "probe": "mismatch",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z1.unknown.me0",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": true,
+        "probe": "unknown",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "rec_empty.z1.unknown.me1",
+      "lease": {
+        "identities": "rec_empty",
+        "start_zero": true,
+        "probe": "unknown",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z0.gone.me0",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": false,
+        "probe": "gone",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z0.gone.me1",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": false,
+        "probe": "gone",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z0.match.me0",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": false,
+        "probe": "match",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z0.match.me1",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": false,
+        "probe": "match",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z0.mismatch.me0",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": false,
+        "probe": "mismatch",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z0.mismatch.me1",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": false,
+        "probe": "mismatch",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z0.unknown.me0",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": false,
+        "probe": "unknown",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z0.unknown.me1",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": false,
+        "probe": "unknown",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z1.gone.me0",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": true,
+        "probe": "gone",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z1.gone.me1",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": true,
+        "probe": "gone",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z1.match.me0",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": true,
+        "probe": "match",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z1.match.me1",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": true,
+        "probe": "match",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z1.mismatch.me0",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": true,
+        "probe": "mismatch",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z1.mismatch.me1",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": true,
+        "probe": "mismatch",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z1.unknown.me0",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": true,
+        "probe": "unknown",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "mine_empty.z1.unknown.me1",
+      "lease": {
+        "identities": "mine_empty",
+        "start_zero": true,
+        "probe": "unknown",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "same.z0.gone.me0",
+      "lease": {
+        "identities": "same",
+        "start_zero": false,
+        "probe": "gone",
+        "pid_self": false
+      },
+      "verdict": "stale_dead",
+      "warns": false
+    },
+    {
+      "id": "same.z0.gone.me1",
+      "lease": {
+        "identities": "same",
+        "start_zero": false,
+        "probe": "gone",
+        "pid_self": true
+      },
+      "verdict": "stale_dead",
+      "warns": false
+    },
+    {
+      "id": "same.z0.match.me0",
+      "lease": {
+        "identities": "same",
+        "start_zero": false,
+        "probe": "match",
+        "pid_self": false
+      },
+      "verdict": "live_foreign",
+      "warns": true
+    },
+    {
+      "id": "same.z0.match.me1",
+      "lease": {
+        "identities": "same",
+        "start_zero": false,
+        "probe": "match",
+        "pid_self": true
+      },
+      "verdict": "self",
+      "warns": false
+    },
+    {
+      "id": "same.z0.mismatch.me0",
+      "lease": {
+        "identities": "same",
+        "start_zero": false,
+        "probe": "mismatch",
+        "pid_self": false
+      },
+      "verdict": "stale_dead",
+      "warns": false
+    },
+    {
+      "id": "same.z0.mismatch.me1",
+      "lease": {
+        "identities": "same",
+        "start_zero": false,
+        "probe": "mismatch",
+        "pid_self": true
+      },
+      "verdict": "stale_dead",
+      "warns": false
+    },
+    {
+      "id": "same.z0.unknown.me0",
+      "lease": {
+        "identities": "same",
+        "start_zero": false,
+        "probe": "unknown",
+        "pid_self": false
+      },
+      "verdict": "live_unverified",
+      "warns": true
+    },
+    {
+      "id": "same.z0.unknown.me1",
+      "lease": {
+        "identities": "same",
+        "start_zero": false,
+        "probe": "unknown",
+        "pid_self": true
+      },
+      "verdict": "self",
+      "warns": false
+    },
+    {
+      "id": "same.z1.gone.me0",
+      "lease": {
+        "identities": "same",
+        "start_zero": true,
+        "probe": "gone",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "same.z1.gone.me1",
+      "lease": {
+        "identities": "same",
+        "start_zero": true,
+        "probe": "gone",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "same.z1.match.me0",
+      "lease": {
+        "identities": "same",
+        "start_zero": true,
+        "probe": "match",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "same.z1.match.me1",
+      "lease": {
+        "identities": "same",
+        "start_zero": true,
+        "probe": "match",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "same.z1.mismatch.me0",
+      "lease": {
+        "identities": "same",
+        "start_zero": true,
+        "probe": "mismatch",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "same.z1.mismatch.me1",
+      "lease": {
+        "identities": "same",
+        "start_zero": true,
+        "probe": "mismatch",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "same.z1.unknown.me0",
+      "lease": {
+        "identities": "same",
+        "start_zero": true,
+        "probe": "unknown",
+        "pid_self": false
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "same.z1.unknown.me1",
+      "lease": {
+        "identities": "same",
+        "start_zero": true,
+        "probe": "unknown",
+        "pid_self": true
+      },
+      "verdict": "stale_unverifiable",
+      "warns": false
+    },
+    {
+      "id": "differ.z0.gone.me0",
+      "lease": {
+        "identities": "differ",
+        "start_zero": false,
+        "probe": "gone",
+        "pid_self": false
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z0.gone.me1",
+      "lease": {
+        "identities": "differ",
+        "start_zero": false,
+        "probe": "gone",
+        "pid_self": true
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z0.match.me0",
+      "lease": {
+        "identities": "differ",
+        "start_zero": false,
+        "probe": "match",
+        "pid_self": false
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z0.match.me1",
+      "lease": {
+        "identities": "differ",
+        "start_zero": false,
+        "probe": "match",
+        "pid_self": true
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z0.mismatch.me0",
+      "lease": {
+        "identities": "differ",
+        "start_zero": false,
+        "probe": "mismatch",
+        "pid_self": false
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z0.mismatch.me1",
+      "lease": {
+        "identities": "differ",
+        "start_zero": false,
+        "probe": "mismatch",
+        "pid_self": true
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z0.unknown.me0",
+      "lease": {
+        "identities": "differ",
+        "start_zero": false,
+        "probe": "unknown",
+        "pid_self": false
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z0.unknown.me1",
+      "lease": {
+        "identities": "differ",
+        "start_zero": false,
+        "probe": "unknown",
+        "pid_self": true
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z1.gone.me0",
+      "lease": {
+        "identities": "differ",
+        "start_zero": true,
+        "probe": "gone",
+        "pid_self": false
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z1.gone.me1",
+      "lease": {
+        "identities": "differ",
+        "start_zero": true,
+        "probe": "gone",
+        "pid_self": true
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z1.match.me0",
+      "lease": {
+        "identities": "differ",
+        "start_zero": true,
+        "probe": "match",
+        "pid_self": false
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z1.match.me1",
+      "lease": {
+        "identities": "differ",
+        "start_zero": true,
+        "probe": "match",
+        "pid_self": true
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z1.mismatch.me0",
+      "lease": {
+        "identities": "differ",
+        "start_zero": true,
+        "probe": "mismatch",
+        "pid_self": false
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z1.mismatch.me1",
+      "lease": {
+        "identities": "differ",
+        "start_zero": true,
+        "probe": "mismatch",
+        "pid_self": true
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z1.unknown.me0",
+      "lease": {
+        "identities": "differ",
+        "start_zero": true,
+        "probe": "unknown",
+        "pid_self": false
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    },
+    {
+      "id": "differ.z1.unknown.me1",
+      "lease": {
+        "identities": "differ",
+        "start_zero": true,
+        "probe": "unknown",
+        "pid_self": true
+      },
+      "verdict": "other_worktree",
+      "warns": false
+    }
+  ]
+}

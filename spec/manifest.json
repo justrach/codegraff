@@ -1,0 +1,92 @@
+{
+  "schema": "codegraff.spec.manifest.v1",
+  "comment": [
+    "Inventory of the conformance corpus. cells_floor is a ratchet like",
+    "tier1 test_count_baseline: a kernel may grow, it may not shrink. A drop",
+    "means a flag or vendor fell out of the export. triangle = lean + ref +",
+    "fixture + zig all present. Growing right = more complete triangles on",
+    "decision procedures, not more Lean files."
+  ],
+  "kernels": [
+    {
+      "id": "tool_catalog",
+      "lean": "lean-proofs/Graff/ToolCatalog.lean",
+      "ref": "spec/ref/tool_catalog.py",
+      "fixture": "spec/kernels/tool_catalog.json",
+      "zig": "src/spec_catalog_conformance.zig",
+      "impl": "src/schema.zig:effectiveRootSpecs",
+      "cells_floor": 64,
+      "cells_key": "cases"
+    },
+    {
+      "id": "transport",
+      "lean": "lean-proofs/Graff/Transport.lean",
+      "ref": "spec/ref/transport.py",
+      "fixture": "spec/kernels/transport.json",
+      "zig": "src/spec_transport_conformance.zig",
+      "impl": "src/transport_gate.zig:eligible",
+      "cells_floor": 96,
+      "cells_key": "cases"
+    },
+    {
+      "id": "provider",
+      "lean": "lean-proofs/Graff/Provider.lean",
+      "ref": "spec/ref/provider.py",
+      "fixture": "spec/kernels/providers.json",
+      "zig": "src/spec_provider_conformance.zig",
+      "impl": "src/provider.zig:provider_specs",
+      "cells_floor": 18,
+      "cells_key": "rows"
+    },
+    {
+      "id": "goal_loop",
+      "lean": "lean-proofs/Graff/GoalLoop.lean",
+      "ref": "spec/ref/goal_loop.py",
+      "fixture": "spec/kernels/goal_loop.json",
+      "zig": "src/spec_goal_loop_conformance.zig",
+      "impl": "src/goal_state.zig:completionGate",
+      "cells_floor": 360,
+      "cells_key": "cases"
+    },
+    {
+      "id": "path_confine",
+      "lean": "lean-proofs/Graff/PathConfine.lean",
+      "ref": "spec/ref/path_confine.py",
+      "fixture": "spec/kernels/path_confine.json",
+      "zig": "src/spec_path_confine_conformance.zig",
+      "impl": "src/harness_policy.zig:confinedPath+src/worktree_lease.zig:ownerVerdict",
+      "cells_floor": 96,
+      "cells_key": ["paths", "leases"]
+    },
+    {
+      "id": "shape",
+      "lean": "lean-proofs/Graff/Shape.lean",
+      "ref": "spec/ref/shape.py",
+      "fixture": "spec/kernels/shape.json",
+      "zig": "src/spec_shape_conformance.zig",
+      "impl": "src/escalation.zig:ladderRung+src/shapes.zig:classOf",
+      "cells_floor": 1728,
+      "cells_key": "cases"
+    },
+    {
+      "id": "score",
+      "lean": "lean-proofs/Graff/Score.lean",
+      "ref": "spec/ref/score.py",
+      "fixture": "spec/kernels/score.json",
+      "zig": "src/spec_score_conformance.zig",
+      "impl": "src/pipeline_score.zig:stageScore+src/route_policy.zig:roleOf+src/scoring.zig:normalizeOutboundScore+providerClass",
+      "cells_floor": 1210,
+      "cells_key": "cases"
+    },
+    {
+      "id": "bash_policy",
+      "lean": "lean-proofs/Graff/BashPolicy.lean",
+      "ref": "spec/ref/bash_policy.py",
+      "fixture": "spec/kernels/bash_policy.json",
+      "zig": "src/spec_bash_policy_conformance.zig",
+      "impl": "src/harness_policy.zig:isSimple+escapesCwd+readOnlyAllowed",
+      "cells_floor": 32,
+      "cells_key": "cases"
+    }
+  ]
+}

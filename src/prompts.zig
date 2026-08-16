@@ -45,7 +45,7 @@ const session_index = @import("session_index.zig"); // #410: where the durable t
 pub const parallel_tools_note = text.parallel_tools_note;
 
 /// The capability a segment needs. `.always` is what survives every gate.
-pub const Gate = enum { always, local_tools, subagents, todos, constraints };
+pub const Gate = enum { always, local_tools, subagents, todos, constraints, git_repo };
 
 /// `name` exists for the snapshot tests: it lets an assertion say WHICH
 /// segment a gate dropped instead of only how many bytes went missing.
@@ -57,12 +57,12 @@ pub const Segment = struct { name: []const u8, text: []const u8, gate: Gate };
 pub const segments = [_]Segment{
     .{ .name = "intro", .text = text.intro_note, .gate = .always },
     .{ .name = "local_tools", .text = text.local_tools_note, .gate = .local_tools },
-    .{ .name = "tool_handle", .text = text.tool_handle_note, .gate = .local_tools }, // #440
     .{ .name = "orchestration", .text = text.orchestration_note, .gate = .subagents },
     .{ .name = "todo", .text = text.todo_note, .gate = .todos },
     .{ .name = "trace", .text = text.trace_note, .gate = .local_tools },
     .{ .name = "harness_issue", .text = text.harness_issue_note, .gate = .local_tools },
-    .{ .name = "git", .text = text.git_note, .gate = .always },
+    .{ .name = "git_authoring", .text = text.git_authoring_note, .gate = .git_repo },
+    .{ .name = "git_safety", .text = text.git_safety_note, .gate = .always },
     .{ .name = "work", .text = text.work_note, .gate = .always },
     .{ .name = "headsup", .text = text.headsup_note, .gate = .always },
     .{ .name = "todo_progress", .text = text.todo_progress_note, .gate = .todos },
@@ -80,6 +80,18 @@ pub const main_system_prompt = blk: {
     break :blk out;
 };
 
+/// One-shot (-p) sessions have no user to approve tool calls. The gate's REAL
+/// map (agent_tool_gate.zig): at the ROOT, bash/edit_file/write_file and
+/// unapproved MCP are auto-denied; SUBAGENTS skip the approval gate entirely
+/// (only destructive git and learn_candidate are blocked for them). Without
+/// this note the model learns the map by trial: measured benchmark flips
+/// between "subagent detour, task done" and "root edit denied, task
+/// abandoned" on identical input — plus a retry tax of failed calls first.
+/// Telling it UP FRONT makes the delegation deterministic. Appended by
+/// startup.buildSystemPrompt only when the session is unattended AND not
+/// --yolo (yolo pre-approves everything, so the note would be a lie there).
+pub const unattended_note = "\n\nThis session is non-interactive: there is no user to approve tool calls, so YOUR approval-gated tools — bash, edit_file, write_file, unapproved MCP calls — are AUTO-DENIED at the root. Never retry a denial; it will not change. Subagents are NOT approval-gated: delegate implementation and command execution to a subagent (it can edit files and run tests itself), then report its result plainly. The user can also re-run with --yolo, or pre-approve tools in .harness/settings.json, to let the root act directly.";
+
 /// #421: what this session can actually do, exactly as the tool catalog
 /// reports it. Defaults are "everything", so a caller that only cares about
 /// one gate names one field.
@@ -92,6 +104,10 @@ pub const Caps = struct {
     todos: bool = true,
     /// `note_constraint`.
     constraints: bool = true,
+    /// The cwd is inside a git repository, so commit/PR authoring guidance
+    /// has something to act on. Session state like the others: settled once
+    /// at startup (probeGitRepo), before buildSystemPrompt composes.
+    git_repo: bool = true,
 
     pub fn has(self: Caps, gate: Gate) bool {
         return switch (gate) {
@@ -100,12 +116,13 @@ pub const Caps = struct {
             .subagents => self.subagents,
             .todos => self.todos,
             .constraints => self.constraints,
+            .git_repo => self.git_repo,
         };
     }
 
     /// Nothing gated: composeBase may hand back the comptime constant.
     pub fn full(self: Caps) bool {
-        return self.local_tools and self.subagents and self.todos and self.constraints;
+        return self.local_tools and self.subagents and self.todos and self.constraints and self.git_repo;
     }
 };
 
@@ -119,12 +136,34 @@ pub fn toolAdvertised(name: []const u8) bool {
 /// The live gates. Every flag and env knob feeding them is settled before
 /// startup.buildSystemPrompt runs (args.parse, then setupSkillsAndTheme).
 pub fn detectCaps() Caps {
+    // The lean halves agree: a tool the catalog filtered out (no_local_tools)
+    // is also not a capability the prompt may instruct about.
     return .{
         .local_tools = toolAdvertised("read_file") and toolAdvertised("bash"),
         .subagents = toolAdvertised("subagent"),
-        .todos = toolAdvertised("todo_write"),
-        .constraints = toolAdvertised("note_constraint"),
+        .todos = toolAdvertised("todo_write") and !no_local_tools.lean,
+        .constraints = toolAdvertised("note_constraint") and !no_local_tools.lean,
+        .git_repo = g_git_repo,
     };
+}
+
+/// Whether the cwd sits inside a git repository — the `git_repo` gate's
+/// backing state. Defaults TRUE so an embedder (or a test) that never probes
+/// keeps the full prompt; startup.buildSystemPrompt is the one prober.
+pub var g_git_repo: bool = true;
+
+/// Walk up from the cwd looking for `.git` — access(), not a dir stat,
+/// because a worktree checkout keeps `.git` as a FILE. Bounded: 32 levels
+/// covers any real checkout, and the filesystem root just fails access.
+pub fn probeGitRepo(io: Io) void {
+    var buf: [128]u8 = undefined;
+    var prefix: usize = 0;
+    g_git_repo = while (prefix + 4 <= buf.len) {
+        @memcpy(buf[prefix..][0..4], ".git");
+        if (Io.Dir.cwd().access(io, buf[0 .. prefix + 4], .{})) |_| break true else |_| {}
+        @memcpy(buf[prefix..][0..3], "../");
+        prefix += 3;
+    } else false;
 }
 
 /// The segment list in `main_system_prompt` order, minus every segment whose

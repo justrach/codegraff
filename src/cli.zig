@@ -21,6 +21,89 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.263
+    \\  • grok-4.6 is the xAI default: 500k window, published dual-band prices
+    \\  • /effort low|medium|high|xhigh on native Grok (gateway grok-build still ignores it)
+    \\  • Per-project prompt cache key survives a new session in the same cwd
+    \\  • TUI: crash/suspend restore, in-app drag selection, SIGTSTP/quit livelock gone
+    \\
+    \\0.0.262
+    \\  • Formal conformance corpus (Lean kernels + executable reference)
+    \\  • TUI /compact runs the real engine compaction; mid-turn /new|/compact|/rewind refused
+    \\
+    \\0.0.261
+    \\  • Grok-style TUI: syntax-highlighted fences, sticky prompt header, auto light/dark, flicker-free paints
+    \\  • ~24 rendering/input fixes: phantom-Escape turn cancels, debris typed into the composer, bold bleed, emoji-bent borders, /theme half-repaints
+    \\  • xAI KV-cache affinity headers + WebSocket 25-min limit handling
+    \\
+    \\0.0.260
+    \\  • Fixed the composer wiping itself mid-typing after a Cmd+Tab (stale Super latch made Backspace act as Cmd+Backspace)
+    \\
+    \\0.0.259
+    \\  • Grok defaults to xAI's Responses wire: WebSocket turns, lossless server-side compaction, structured outputs — no env needed (GRAFF_XAI_WIRE=chat opts out)
+    \\  • Fixed duplicate MCP tool definitions that made strict Responses endpoints reject every turn
+    \\
+    \\0.0.258
+    \\  • Full Grok on a SuperGrok sub: GRAFF_XAI_WIRE=responses gets server-side compaction (lossless blob), WebSocket turns, and --output-schema structured outputs
+    \\  • /compact on the xAI wire uses the first-party endpoint; strict schemas run two-phase so they never suppress tool use
+    \\  • Kitty keyboard overhaul: right-side modifiers fixed, no release double-fires, terminal state restored even on SIGTERM
+    \\  • graff-evals: in-repo eval suite (12 tasks) with side-by-side harness comparison
+    \\
+    \\0.0.257
+    \\  • Composer box aligns and wraps on words, not mid-letter
+    \\
+    \\0.0.256
+    \\  • TUI swallows leftover Kitty CSI-u, types Shift+9 as (, logs stdin to .graff/tui-traj.jsonl
+    \\
+    \\0.0.255
+    \\  • TUI no longer dumps mouse CSI (39;33;23M) into the thinking line
+    \\
+    \\0.0.254
+    \\  • graff tui is a Grok-style fullscreen pager (composer wrap, tool fold, effort picker, markdown tables); bare graff stays the line REPL
+    \\  • /import-claude copies Claude/Cursor MCP servers and skills into ~/.codegraff on first start or on demand
+    \\
+    \\0.0.253
+    \\  • /compact uses first-party OpenAI compaction for direct API-key and Codex sessions, with transactional local fallback
+    \\  • Kimi cache affinity plus concurrent catalogs and MCP startup remove avoidable serial latency
+    \\  • @codegraff/sdk ships its platform binary and production Harness/Remote controls for npm embedding
+    \\  • The REPL gains quiet normal output, /debug and read_file contains=; desktop agents move into focused control with new branding
+    \\
+    \\0.0.252
+    \\  • Grok models come from a live api.x.ai /v1/models fetch every load — new rollouts no longer wait for a release
+    \\  • SuperGrok OAuth tokens send X-XAI-Token-Auth like grok-build, so login sessions can actually call the API
+    \\
+    \\0.0.250
+    \\  • First-party OpenAI compaction preserves the complete canonical compact output on both Codex subscription and official Platform Responses routes
+    \\  • Invalid remote compaction falls back locally without mutating history; non-OpenAI providers remain local-only
+    \\  • REPL tool calls use stable terse start/result rows with readable previews instead of raw JSON
+    \\
+    \\0.0.249
+    \\  • Folded native tools become callable as soon as their schemas load; the active catalog now rebuilds instead of advertising unreachable tools
+    \\  • Turn events and generated TypeScript SDKs expose cumulative input, output, cache-read, and cache-write token usage
+    \\  • codedb-pro paths resolve from the active session worktree, and piped ask_user sessions end cleanly at EOF
+    \\  • The default prompt carries a capped skills catalog, with concurrent interactive WebSocket tool loops covered by the release suite
+    \\
+    \\0.0.247
+    \\  • Interactive startup is quiet by default; `GRAFF_REPL_DEBUG=1` restores launch and runtime diagnostics, and `/debug` still toggles them live
+    \\  • Shared-worktree ownership is a structured callout with the active session, goal, and `graff -w` isolation action
+    \\  • Immediate multiline pastes into `ask_user` preserve every line instead of submitting only the first
+    \\
+    \\0.0.244
+    \\  • Co-resident graff sessions now see each other: a startup warning names any live session already in your worktree, and the first git mutation, file write, or shell move against a peer's tree pauses once for a deliberate re-issue — two agents can no longer silently tear one tree
+    \\  • Sessions can message each other: the peer_message tool and /tell post to a shared channel every co-resident session hears (address one by name, "all" reaches every session on the device), delivered mid-task at step boundaries with the sender's current goal attached
+    \\  • The model is told up front who else is live and what they're working on, so it coordinates — or picks disjoint work — before any collision
+    \\  • /peek <session> shows what a live co-resident session is doing right now — its last prompt, last action, last tool
+    \\  • Session recaps ride the event stream: settled turns carry a Completed or Needs-input status with a one-line recap for the GUI agent overview
+    \\  • Subscriptions are billed and routed as subscriptions: a flat-rate login (Codex, Kimi, SuperGrok) now outranks an API key on the same provider instead of losing to it, costs $0 in /cost, and the key it displaced is parked and takes over — announced — only if the plan runs out of quota
+    \\  • Worker tiers land on seats you already pay for: an explicit tier ask crosses to a logged-in plan (mid → k3, small → gpt-5.6-luna) rather than a metered rung — except a DeepSeek session (direct or via codegraff), which stays on flash instead of dropping to luna
+    \\  • A tier rung must now be a genuinely cheaper SEAT, so anthropic descends opus-5 → sonnet-5 instead of to an equally-priced older opus, and deepseek-v4-flash replaces pro outright
+    \\  • `graff route` with no model lists every provider you can reach, what it bills, and the tiers it offers
+    \\  • Anthropic serves its live model list, so new Claude releases arrive without a rebuild
+    \\
+    \\0.0.243
+    \\  • The terminal palette now matches codegraff.com: the identity accent is the site's emerald (#059669) — spinner, prompt, headings, tool-call lines, and attached-file chips — so a routine ⚙ bash line no longer reads as error red
+    \\  • The ensō spinner actually turns now: six brush poses stepping at 100ms instead of four doubled poses every 320ms — the ~3fps stutter is gone
+    \\
     \\0.0.242
     \\  • MCP tool schemas load on demand: a 13-tool server's catalog drops 64.8%, about 1,700 input tokens off every request; small servers stay eager and unchanged
     \\  • A big tool result returns a handle — preview, path, byte count, shape — instead of its contents, so it never occupies context turn after turn
@@ -109,6 +192,8 @@ pub const usage_text =
     \\  -w, --worktree <name>           isolate this session in a git worktree (.graff/worktrees/<name>) so parallel agents don't collide on files
     \\  --no-autocommit                 with -w, don't auto-commit each turn (default on; land work with `graff worktree merge`)
     \\  --yolo           skip all permission prompts for the session
+    \\  --lean           slim tool surface (8 core tools) + MCP deferred behind load_tool_schemas — the DEFAULT for -p one-shots (GRAFF_LEAN=1)
+    \\  --no-lean        opt a one-shot out of the implied --lean: full tool surface + eager MCP, the pre-default -p behavior
     \\  --no-local-tools embedder mode: hard-disable the built-in bash/bash_output/bash_kill/read_file/edit_file/write_file/codedb tools for the whole process (subagents included), so graff can run outside the sandbox and get its coding tools from an MCP server instead; webfetch, orchestration and MCP tools still work (GRAFF_NO_LOCAL_TOOLS=1)
     \\  -p, --print      one-shot print mode (answer on stdout, progress on stderr)
     \\  --timing         show per-tool wall-clock on result lines
@@ -129,7 +214,8 @@ pub const usage_text =
     \\native vision block on vision models; other files paste as their path),
     \\esc interrupts a streaming response, "always allow" persists to
     \\.harness/settings.json.
-    \\telemetry: anonymous OTLP usage stats are sent only when
+    \\telemetry: /debug is a local content-free HUD (session/turn/tool
+    \\decisions). Anonymous OTLP usage stats leave the process only when
     \\OTEL_EXPORTER_OTLP_ENDPOINT (or GRAFF_OTEL_ENDPOINT) is set; opt out
     \\with --no-telemetry or GRAFF_NO_TELEMETRY=1. GRAFF_TELEMETRY_KEY sends
     \\an optional x-harness-key token to the configured collector.

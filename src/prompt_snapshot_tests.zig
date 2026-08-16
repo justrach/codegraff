@@ -37,7 +37,9 @@ const golden_full_prompt =
     \\say so and finish the task with what is here.
     \\read_file before editing; prefer
     \\edit_file for changes to existing files and write_file only for new
-    \\files or full rewrites. To navigate code — finding symbols, callers,
+    \\files or full rewrites. For a read-only exact-key lookup in one known file,
+    \\call read_file once with contains set to the exact key and answer from its
+    \\output; do not request the whole file first. To navigate code — finding symbols,
     \\definitions, or where logic lives — prefer the codedb tool (it's indexed
     \\and structural) over bash grep/find/ls. Before an exact edit, read one current uncompressed target span, apply the smallest edit that preserves terminal-newline state, do not verify after success, and reread/retry only on stale source, ambiguity, or failure. Some bash commands need user approval — if one
     \\is declined, try another approach or ask. Native file tools deliberately
@@ -47,16 +49,6 @@ const golden_full_prompt =
     \\status first, preserve existing changes, and explain that those edits are
     \\not covered by /rewind. Do not claim a relaunch is required. Never extend
     \\this exception to an inferred path or to a subagent.
-    \\
-    \\A tool result past the size threshold does not come back in full. What you
-    \\get is a handle: a bounded preview, the path of a file holding the COMPLETE
-    \\result, its byte count, and a one-line shape hint (the line count, or the
-    \\top-level keys of a JSON payload). Treat that path as the result — slice
-    \\what you need out of it with read_file's start_line/end_line, a grep-style
-    \\bash command, or codedb, and do that as many times as the task needs. Never
-    \\re-run the tool just to see more of its output, and never pull the whole
-    \\file back into the conversation; the handle stays readable for the rest of
-    \\the session, so the bytes are not lost by being left on disk.
     \\For independent,
     \\self-contained chunks of work — exploring several directories, running
     \\unrelated checks, summarizing multiple files — fan out: call the
@@ -67,14 +59,11 @@ const golden_full_prompt =
     \\Use todo_write to
     \\track multi-step work. Work directly for small sequential steps.
     \\
-    \\The harness writes this run's JSONL event trace beneath
-    \\.graff/traces in the working directory (`/trace` shows its exact path):
-    \\one object per line with
-    \\"ev" of "api" (model round trips: ms latency, request/response bytes,
-    \\context_tokens) or "tool" (tool executions: name, ms, result bytes,
-    \\errors), and "t" = ms since session start. When asked to debug, profile,
-    \\or explain the harness's own behavior — including your own — use `/trace`
-    \\to locate that run's file, then read and analyze it.
+    \\The harness writes this run's JSONL event trace beneath .graff/traces
+    \\(`/trace` shows its exact path): one object per line, "ev" of "api" (ms
+    \\latency, request/response bytes, context_tokens) or "tool" (name, ms,
+    \\result bytes, errors), "t" = ms since session start. When asked to debug,
+    \\profile, or explain the harness's own behavior, `/trace` and analyze it.
     \\
     \\If you hit a bug or limitation in the harness itself (this graff/codegraff
     \\agent — its tools, prompts, streaming, sessions, or behavior — as opposed
@@ -89,21 +78,16 @@ const golden_full_prompt =
     \\of the commit message, after a blank line:
     \\Co-Authored-By: Codegraff <blackfloofie@codegraff.com>
     \\
-    \\A pull request description you author must explain WHY the change was made,
-    \\not only what it does — a reviewer cannot reconstruct the reasoning from the
-    \\diff. Cover both halves:
-    \\## What changed
-    \\- concise summary of the implementation
-    \\## Why
-    \\- Problem/failure mode: the concrete bug, gap, or symptom that motivated it
-    \\- Reason for this approach: why this design over the obvious one
-    \\- Constraints or trade-offs: what the fix had to work around, and its costs
-    \\- Rejected alternatives (when relevant): what you considered and ruled out
-    \\Scale the rationale to the change: a subtle or non-obvious change earns the
-    \\full Why section, while a trivial one (typo, version bump, mechanical rename)
-    \\needs a single sentence — never pad a small change with boilerplate headings.
-    \\Apply the same what+why reasoning to the commit message body when the commit
-    \\is the only artifact the reviewer will see.
+    \\A pull request description you author must explain WHY, not only what —
+    \\a reviewer cannot reconstruct the reasoning from the diff. Under
+    \\## What changed / ## Why, cover: Problem/failure mode;
+    \\Reason for this approach; Constraints or trade-offs;
+    \\Rejected alternatives when relevant.
+    \\Scale the rationale to the change: a subtle change earns the full
+    \\sections, a trivial one (typo, version bump) a single sentence —
+    \\never pad a small change with boilerplate headings. Apply the same
+    \\what+why reasoning to the commit message body when the commit is the
+    \\only artifact the reviewer will see.
     \\
     \\Never run git commands that discard work — `reset --hard`, `clean -f`,
     \\`checkout --`/`restore`, force-push, or `branch -D` — unless the user
@@ -111,15 +95,22 @@ const golden_full_prompt =
     \\auto-checkpoints are the user's safety net; do not blow them away.
     \\
     \\Assume the user wants the work done, not described. Keep going until the
-    \\task is genuinely handled: the change applied, verified with the project's
-    \\own build, test, or lint commands rather than declared done from the diff,
-    \\and the failure you were chasing gone. Never stop at a plan, a half-applied
-    \\edit, or an untested guess, and never leave the last step for the user. If
-    \\a real ambiguity blocks you, ask; otherwise decide and go.
-    \\Run the target project through its OWN environment — its package manager,
-    \\task runner, test command, container or virtualenv — rather than a
-    \\substitute you assembled; a failure there is the relevant result, and a
-    \\green run somewhere else is not evidence.
+    \\task is genuinely handled: the change applied, verified with the
+    \\project's own build, test, or lint commands in its OWN environment —
+    \\a green run anywhere else is not evidence — and the failure you were
+    \\chasing gone. Never stop at a plan, a half-applied edit, or an untested
+    \\guess, and never leave the last step for the user. If a real ambiguity
+    \\blocks you, ask; otherwise decide and go. When a task names files or
+    \\failing tests, use the named target directly instead of probing unrelated
+    \\indexes first; that dice roll makes every run of the same task different.
+    \\Match the verification to the
+    \\ask: make the requested thing work and prove it — do not add unrequested
+    \\tests, coverage, or review passes; thoroughness past the ask is turns,
+    \\tokens, and diff noise the user did not order. And never repeat a tool
+    \\call with identical parameters once you have a usable result — the answer
+    \\will not change; reread only on stale source, ambiguity, or failure.
+    \\When a Project layout segment is present, it is the tree — read the
+    \\files you need straight from it instead of ls/find exploration turns.
     \\
     \\Before a large chunk of work, give a one- or two-sentence heads-up on what
     \\you are about to do; on long tasks, drop a brief note as each phase lands.
@@ -133,11 +124,10 @@ const golden_full_prompt =
     \\The moment the user rejects, forbids, or vetoes something ("no dots", "not vanilla JS", "stop adding scroll hints"), call note_constraint with one short imperative line recording it, then carry on — recorded constraints are injected into every later subagent, workflow and pipeline brief and survive compaction, so a rejection you leave unrecorded is one your fresh workers will repeat.
     \\
     \\Write the final message as an update to a teammate who has not seen your
-    \\screen. Cite evidence as `path:line` instead of pasting file bodies — never
-    \\dump large file contents into an answer — and backtick-wrap commands, paths,
-    \\and identifiers. Scale it to the change: a typo fix is one sentence, a
-    \\feature is a short structured summary. Close with the next steps that
-    \\genuinely exist — tests to run, follow-ups you left — and nothing more.
+    \\screen. Cite evidence as `path:line` — never dump large file contents into
+    \\an answer — and backtick-wrap commands, paths, and identifiers. Scale it
+    \\to the change: a typo fix is one sentence, a feature a short structured
+    \\summary. Close with the next steps that genuinely exist, and nothing more.
     \\Be direct and concise.
     \\
     \\Parallelize tool calls whenever possible: when several reads or checks are
@@ -155,7 +145,8 @@ const matrix = [_]struct { name: []const u8, caps: prompts.Caps }{
     .{ .name = "no-subagents", .caps = .{ .subagents = false } },
     .{ .name = "no-todos", .caps = .{ .todos = false } },
     .{ .name = "no-constraints", .caps = .{ .constraints = false } },
-    .{ .name = "floor", .caps = .{ .local_tools = false, .subagents = false, .todos = false, .constraints = false } },
+    .{ .name = "no-git-repo (scratch cwd)", .caps = .{ .git_repo = false } },
+    .{ .name = "floor", .caps = .{ .local_tools = false, .subagents = false, .todos = false, .constraints = false, .git_repo = false } },
 };
 
 test "#421 golden: the full-capability root prompt is exactly this, byte for byte" {
@@ -227,16 +218,20 @@ test "#421: a gated-off capability's tool names disappear from the prompt entire
     const no_constraints = try prompts.composeSegments(a, .{ .constraints = false });
     try std.testing.expect(std.mem.indexOf(u8, no_constraints, "note_constraint") == null);
 
+    // Outside a git repo, the AUTHORING guidance goes — commit identity and
+    // PR discipline have nothing to act on — while the safety rail stays.
+    const no_git = try prompts.composeSegments(a, .{ .git_repo = false });
+    for ([_][]const u8{ "## What changed", "Co-Authored-By: Codegraff", "GIT_AUTHOR_" }) |dead|
+        try std.testing.expect(std.mem.indexOf(u8, no_git, dead) == null);
+
     // What survives EVERY gate: identity, the two prompt-doctrine lines, the
-    // git/PR discipline, the do-not-discard-work rail, and the closing style.
+    // do-not-discard-work rail, and the closing style.
     for (matrix) |row| {
         const out = try prompts.composeSegments(a, row.caps);
         for ([_][]const u8{
             "You are a coding agent",
             "never invent", // #421 doctrine 1: no wrapper APIs, no assumed capabilities
             "its OWN environment", // #421 doctrine 2: verify where the project lives
-            "## What changed",
-            "Co-Authored-By: Codegraff",
             "Never run git commands that discard work",
             "Parallelize tool calls",
             "Be direct and concise",
@@ -551,4 +546,45 @@ test "#391/#445: the prompt funnel never arms the note store in a test build" {
     // Production arms here. A test build must not, or the funnel stops being
     // the pure string function the rest of this suite depends on.
     try std.testing.expect(!prompts.compactNotesArmed());
+}
+
+test "lean drops the todo/constraint capabilities from the prompt, never the local tools" {
+    const saved = no_local_tools.lean;
+    defer no_local_tools.lean = saved;
+    no_local_tools.lean = false;
+    const full = prompts.detectCaps();
+    try std.testing.expect(full.todos and full.constraints and full.local_tools);
+    no_local_tools.lean = true;
+    const lean = prompts.detectCaps();
+    try std.testing.expect(!lean.todos and !lean.constraints);
+    try std.testing.expect(lean.local_tools and lean.subagents); // the lean seven keep both
+    // …and the composition carries it: the dropped segments' bytes are gone.
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+    const lean_prompt = try prompts.composeBase(a, lean);
+    try std.testing.expect(lean_prompt.len < prompts.main_system_prompt.len);
+}
+
+test "unattended one-shots are told the REAL approval map up front; attended sessions hear nothing" {
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+    const startup = @import("startup.zig");
+    const saved_img = imagegen.available;
+    defer imagegen.available = saved_img;
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const Io = std.Io;
+    var aw: Io.Writer.Allocating = .init(a);
+    const attended = try startup.buildSystemPrompt(std.testing.io, a, &aw.writer, null, null, true, false, &.{}, false, null, env);
+    try std.testing.expect(std.mem.indexOf(u8, attended, "AUTO-DENIED") == null);
+    var aw2: Io.Writer.Allocating = .init(a);
+    const unattended = try startup.buildSystemPrompt(std.testing.io, a, &aw2.writer, null, null, true, true, &.{}, false, null, env);
+    try std.testing.expect(std.mem.indexOf(u8, unattended, "AUTO-DENIED") != null);
+    // The map the denial text alone could not teach: the root is gated,
+    // subagents are the ungated path, and --yolo/settings are the user's.
+    try std.testing.expect(std.mem.indexOf(u8, unattended, "Subagents are NOT approval-gated") != null);
+    try std.testing.expect(std.mem.indexOf(u8, unattended, "--yolo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, unattended, ".harness/settings.json") != null);
 }

@@ -24,11 +24,12 @@
 //!    consent prompt is reached in exactly the cases it was reached before, in
 //!    the same order, and deferral can only ever subtract a call that consent
 //!    already allowed — never add one it did not.
-//!  - **Small servers behave exactly as they do today.** The default is
-//!    size-based: a server whose tools cost at most `default_budget` bytes of
-//!    description + schema stays EAGER, because the load round trip re-emits
-//!    those same bytes and would be a wash. Only servers above the threshold
-//!    are deferred, plus whatever the user pins either way.
+//!  - **Deferral is universal.** Every server's tools ship as placeholders
+//!    until `load_tool_schemas` unfolds them — the measured interactive
+//!    anatomy (#476) is that most sessions never call most servers, so eager
+//!    bytes are re-sent cost with no payoff, and discovery has proven
+//!    reliable. `GRAFF_MCP_SCHEMA_BUDGET` restores the old size-based
+//!    threshold; `GRAFF_MCP_EAGER` pins specific servers either way.
 //!
 //! Session state (which schemas have been loaded) is a lock-free append-only
 //! list: the only writer is the orchestrator thread — `load_tool_schemas` is a
@@ -48,12 +49,15 @@ const util = @import("util.zig");
 const ExecResult = tools_mod.ExecResult;
 
 /// Per-server budget, in bytes of description + serialized schema, under which
-/// a server is served eagerly. 4 KiB is roughly 1,000 tokens: below that the
-/// `load_tool_schemas` round trip (a tool call plus a result that re-emits the
-/// very schemas it saved) costs about what deferral saves, so the indirection
-/// only pays above it. It also means every small server keeps working byte for
-/// byte as it did before #416.
-pub const default_budget: usize = 4096;
+/// a server is served eagerly. Zero by default: EVERY server defers. The old
+/// 4 KiB threshold assumed the load round trip was a wash below ~1,000 tokens,
+/// but that only holds for sessions that call the tool — the measured
+/// interactive anatomy (#476) is that most sessions never touch most servers,
+/// so eager bytes are pure re-sent cost and discovery via load_tool_schemas
+/// has proven reliable (the codedbpro pin removal shipped with zero discovery
+/// turns). GRAFF_MCP_SCHEMA_BUDGET restores a size threshold;
+/// GRAFF_MCP_EAGER pins specific servers.
+pub const default_budget: usize = 0;
 
 /// How much of an MCP tool's description survives into the deferred listing.
 /// Enough for a model to tell tools apart and decide what to load; a real MCP
@@ -79,9 +83,9 @@ pub const env_eager = "GRAFF_MCP_EAGER"; // comma-separated server names; "*" pi
 /// entry and no import cycle. The description is spliced into a raw JSON
 /// string, so it must stay free of characters needing JSON escapes.
 pub const tool_name = "load_tool_schemas";
-pub const tool_desc = "Load the full JSON input schemas for MCP tools and enable them for the rest of this session. MCP servers with large schemas are registered up front by name and a one-line description only, so that thousands of tokens of JSON Schema stay out of every request. A tool whose schema has not been loaded CANNOT be called: calling it returns an error telling you to load it first. Pass tools with exact qualified names (mcp__server__tool), or pass server to load every deferred tool on one server. Call it with no arguments to list what is currently deferred. Loading is permanent for this session and free to repeat, because the schemas are cached.";
+pub const tool_desc = "Load the full JSON input schemas for deferred tools and enable them for the rest of this session. Deferred tools — MCP and folded native — ship without their schemas so those bytes stay out of every request; what is deferred right now is listed at the end of this description. A tool whose schema has not been loaded CANNOT be called: load it first. Pass tools with exact names (mcp__server__tool for MCP, a bare name like workflow for native), server to load one whole MCP server, or query with keywords to search deferred tools; no arguments lists everything deferred. Loading is permanent for this session and free to repeat.";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"tools": {"type": "array", "items": {"type": "string"}, "description": "Exact qualified MCP tool names to load, e.g. mcp__deepwiki__ask_question"}, "server": {"type": "string", "description": "Load every deferred tool on this MCP server instead of naming them one by one"}}}
+    \\{"type": "object", "properties": {"tools": {"type": "array", "items": {"type": "string"}, "description": "Exact qualified MCP tool names to load, e.g. mcp__deepwiki__ask_question"}, "server": {"type": "string", "description": "Load every deferred tool on this MCP server instead of naming them one by one"}, "query": {"type": "string", "description": "Search deferred tools by keyword (matches name and description, loads the top 8 matches) — use when you know what you need but not the exact tool name"}}}
 ;
 
 /// How this session decides eager vs deferred. Set once by `configure`.
@@ -95,6 +99,23 @@ pub const Policy = struct {
 
 pub var g_policy: Policy = .{};
 
+/// GRAFF_STABLE_CATALOG=1 experiment (#476): a loaded tool's schema rides the
+/// load_tool_schemas RESULT in the conversation, so the catalog does not need
+/// to re-render it — skipping policy-deferred tools even after load keeps the
+/// request prefix byte-identical all session, which is what provider prefix
+/// caching charges against. Every load otherwise busts the cache (measured:
+/// 0% cache on the calls right after each load).
+pub var g_stable_catalog = false;
+
+/// Deferred by POLICY, ignoring load state — the stable-catalog render rule
+/// and (in stable mode) the listing, which must not change as tools load.
+pub fn policyDeferred(all: []const mcp.Tool, tool: mcp.Tool) bool {
+    if (!g_policy.enabled) return false;
+    const server = serverOf(tool.qualified_name);
+    if (pinnedEager(server)) return false;
+    return serverCost(all, server) > g_policy.budget;
+}
+
 // --- session state: which schemas have been loaded -------------------------
 
 const Node = struct {
@@ -103,6 +124,9 @@ const Node = struct {
     /// so a repeated load is a pointer copy rather than a re-serialization.
     /// This is the per-session schema cache the issue asks for.
     rendered: []const u8,
+    /// Load order (0 = never loaded): the stable-catalog tail appends in this
+    /// order so a new load changes only the catalog's tail bytes (#476).
+    seq: usize,
     next: ?*Node,
 };
 
@@ -141,9 +165,23 @@ fn publish(arena: Allocator, name: []const u8, rendered: []const u8) !*Node {
     const node = try arena.create(Node);
     // The name is COPIED, not aliased: `tool.qualified_name` belongs to the
     // registry's arena, and this list has to outlive any registry rebuild.
-    node.* = .{ .name = try arena.dupe(u8, name), .rendered = rendered, .next = g_head.load(.acquire) };
+    node.* = .{ .name = try arena.dupe(u8, name), .rendered = rendered, .seq = nextSeq(), .next = g_head.load(.acquire) };
     g_head.store(node, .release);
     return node;
+}
+
+var g_seq: usize = 0;
+fn nextSeq() usize {
+    g_seq += 1;
+    return g_seq;
+}
+
+/// A loaded tool's position in load order; null when not loaded. schema.zig's
+/// stable-catalog tail sorts by this so loads are append-only.
+pub fn loadSeq(qualified: []const u8) ?usize {
+    var cur = g_head.load(.acquire);
+    while (cur) |n| : (cur = n.next) if (std.mem.eql(u8, n.name, qualified)) return n.seq;
+    return null;
 }
 
 // --- policy ----------------------------------------------------------------
@@ -176,6 +214,30 @@ pub fn configure(arena: Allocator, merged: mcp_config.Merged, environ_map: anyty
     }
     policy.eager = eager.items;
     g_policy = policy;
+}
+
+/// Startup-only promotion after configure(): a post-connect capability probe
+/// (the codedb-pro license check) lands AFTER the registry starts, so it
+/// appends here rather than arriving through env/config. Single-threaded
+/// startup contract — call it from main() before the first catalog render,
+/// never at request time (pool threads read g_policy concurrently).
+pub fn pinEagerRuntime(arena: Allocator, server: []const u8) void {
+    if (pinnedEager(server)) return;
+    var list: std.ArrayList([]const u8) = .empty;
+    list.appendSlice(arena, g_policy.eager) catch return;
+    list.append(arena, arena.dupe(u8, server) catch return) catch return;
+    g_policy.eager = list.items;
+}
+
+/// --lean: fold EVERY MCP server behind load_tool_schemas rather than skip
+/// MCP entirely — capability survives (a load call away), prefix cost drops
+/// to names + shortened descriptions. Clears eager pins too: a licensed
+/// companion's runtime pin is worth its bytes in an interactive session, not
+/// in a one-shot counting every token. GRAFF_MCP_SCHEMA_BUDGET=0 is the same
+/// policy reached by env; this is the flag's path to it.
+pub fn deferAllRuntime() void {
+    g_policy.budget = 0;
+    g_policy.eager = &.{};
 }
 
 /// The server half of `mcp__<server>__<tool>`; "" for a name that is not one.
@@ -242,6 +304,20 @@ pub fn shortDesc(desc: []const u8) []const u8 {
 
 // --- layer 2: refuse a call whose schema was never loaded -------------------
 
+/// exec.zig's MCP dispatch calls this where it used to refuse: a confident
+/// call to a deferred tool renders + publishes its schema and proceeds (user
+/// direction — same rule as the native fold's markIfFolded). The catalog's
+/// zero-stub listing is unchanged; the call itself was already provider-legal.
+pub fn autoLoad(arena: Allocator, all: []const mcp.Tool, qualified: []const u8) void {
+    if (!blocked(all, qualified)) return;
+    for (all) |t| {
+        if (std.mem.eql(u8, t.qualified_name, qualified)) {
+            _ = enable(arena, t) catch {};
+            return;
+        }
+    }
+}
+
 /// Whether calling `qualified` right now must be refused. False for an eager
 /// tool, for one already loaded, and for a name the registry does not know
 /// (mcp.Registry.call owns that error, unchanged).
@@ -251,19 +327,6 @@ pub fn blocked(all: []const mcp.Tool, qualified: []const u8) bool {
         return isDeferred(all, t);
     }
     return false;
-}
-
-/// The refusal a blocked call gets: never a bare "unknown tool", always the
-/// exact next action.
-pub fn refusalText(gpa: Allocator, qualified: []const u8) ![]u8 {
-    return std.fmt.allocPrint(
-        gpa,
-        "{s} is registered but its schema is not loaded, so it cannot be called yet. " ++
-            "Call {s} with {{\"tools\": [\"{s}\"]}} first — that returns the full input schema and enables the tool " ++
-            "for the rest of this session — then call {s} again with arguments matching that schema. " ++
-            "This is a context-cost deferral only; it does not change approvals or trust.",
-        .{ qualified, tool_name, qualified, qualified },
-    );
 }
 
 // --- the load tool ---------------------------------------------------------
@@ -319,6 +382,16 @@ pub fn loadInto(arena: Allocator, all: []const mcp.Tool, input: Value) !Loaded {
             if (found) |i| try wanted.append(arena, i) else try missing.append(arena, item.string);
         }
     };
+    // codex tool_search pattern: keyword discovery when the exact name is not
+    // known — top matches join `wanted` and load exactly like named tools.
+    if (tools_mod.strField(input, "query")) |q| {
+        const matched = try matchQuery(arena, all, q);
+        if (matched.len == 0) {
+            const rest = try listing(arena, all, &.{});
+            return .{ .text = try std.fmt.allocPrint(arena, "no deferred tool matched query '{s}'. {s}", .{ q, rest }), .is_error = true };
+        }
+        for (matched) |i| try wanted.append(arena, i);
+    }
 
     if (missing.items.len > 0) return .{ .text = try listing(arena, all, missing.items), .is_error = true };
     if (wanted.items.len == 0) return .{ .text = try listing(arena, all, &.{}), .is_error = false };
@@ -343,6 +416,123 @@ pub fn loadInto(arena: Allocator, all: []const mcp.Tool, input: Value) !Loaded {
     );
     try head.writer.writeAll(aw.writer.buffered());
     return .{ .text = head.writer.buffered(), .loaded = fresh };
+}
+
+/// The short tool name within its server: mcp__codedbpro__read -> read.
+fn shortName(qualified: []const u8) []const u8 {
+    if (!std.mem.startsWith(u8, qualified, "mcp__")) return qualified;
+    const rest = qualified[5..];
+    const sep = std.mem.indexOf(u8, rest, "__") orelse return qualified;
+    return rest[sep + 2 ..];
+}
+
+/// Case-insensitive substring search (std.ascii has no indexOfIgnoreCase in
+/// this toolchain): windowed eqlIgnoreCase, fine at description sizes.
+pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1)
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+    return false;
+}
+
+/// Keyword search over deferred tools (the load tool's `query` arm): score
+/// each deferred tool by how many query tokens appear, case-insensitively, in
+/// its qualified name or description; return the top 8, best first. A token
+/// that matches nothing simply does not score — there is no fuzzier fallback,
+/// because the no-match path returns the full deferred listing anyway.
+fn matchQuery(arena: Allocator, all: []const mcp.Tool, query: []const u8) ![]usize {
+    const top_k = 8;
+    var best: [top_k]struct { score: usize, idx: usize } = undefined;
+    var n_best: usize = 0;
+    for (all, 0..) |t, i| {
+        if (!isDeferred(all, t)) continue;
+        var score: usize = 0;
+        var tok = std.mem.tokenizeAny(u8, query, " \t,;:/_-");
+        while (tok.next()) |w| {
+            if (w.len < 2) continue;
+            if (containsIgnoreCase(t.qualified_name, w) or containsIgnoreCase(t.description, w)) score += 1;
+        }
+        if (score == 0) continue;
+        if (n_best < top_k) {
+            best[n_best] = .{ .score = score, .idx = i };
+            n_best += 1;
+        } else {
+            // Replace the weakest entry when this one beats it.
+            var weakest: usize = 0;
+            for (best[0..n_best], 0..) |b, k| if (b.score < best[weakest].score) {
+                weakest = k;
+            };
+            if (score <= best[weakest].score) continue;
+            best[weakest] = .{ .score = score, .idx = i };
+        }
+    }
+    const out = try arena.alloc(usize, n_best);
+    // Selection-sort descending so the strongest match loads first.
+    for (out, 0..) |*slot, k| {
+        var top: usize = 0;
+        for (best[0..n_best], 0..) |b, j| if (b.score > best[top].score) {
+            top = j;
+        };
+        slot.* = best[top].idx;
+        best[top].score = 0;
+        _ = k;
+    }
+    return out;
+}
+
+/// The load tool's live catalog description: the static base plus, while
+/// anything is deferred, a compact source listing (server: short tool names).
+/// Deferred tools ship NO per-tool catalog entries of their own — this
+/// listing is how the model learns what exists (codex's tool_search source
+/// listing), and `query` covers discovery beyond it (#476).
+pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
+    // Folded NATIVES ride this listing too (#476, the schema.zig zero-stub
+    // rule): their names live here, once, instead of a static enumeration
+    // every session re-pays after the tools load. Same stable-catalog rule
+    // as the MCP half — stable mode lists by policy, never by load state.
+    const native_fold = @import("native_fold.zig");
+    var natives: std.ArrayList([]const u8) = .empty;
+    if (native_fold.anyFolded()) {
+        for (native_fold.folded) |name| {
+            if (!g_stable_catalog and native_fold.isLoaded(name)) continue;
+            try natives.append(arena, name);
+        }
+    }
+    if (!anyDeferred(all) and natives.items.len == 0) return tool_desc;
+    // Stable-catalog mode lists by POLICY, not load state: a listing that
+    // shrinks as tools load would change the prefix this mode exists to fix.
+    const deferredRule: *const fn ([]const mcp.Tool, mcp.Tool) bool = if (g_stable_catalog) &policyDeferred else &isDeferred;
+    var servers: std.ArrayList([]const u8) = .empty;
+    for (all) |t| {
+        if (!deferredRule(all, t)) continue;
+        const sv = serverOf(t.qualified_name);
+        const seen = for (servers.items) |s| {
+            if (std.mem.eql(u8, s, sv)) break true;
+        } else false;
+        if (!seen) try servers.append(arena, sv);
+    }
+    var aw: Io.Writer.Allocating = .init(arena);
+    try aw.writer.writeAll(tool_desc);
+    if (natives.items.len > 0) {
+        try aw.writer.writeAll(" Folded native:");
+        for (natives.items, 0..) |name, i| try aw.writer.print("{s}{s}", .{ if (i == 0) " " else ", ", name });
+        try aw.writer.writeAll(";");
+    }
+    if (servers.items.len > 0) try aw.writer.writeAll(" Deferred now:");
+    for (servers.items) |sv| {
+        try aw.writer.print(" {s} (", .{sv});
+        var first = true;
+        for (all) |t| {
+            if (!deferredRule(all, t)) continue;
+            if (!std.mem.eql(u8, serverOf(t.qualified_name), sv)) continue;
+            if (!first) try aw.writer.writeAll(", ");
+            try aw.writer.writeAll(shortName(t.qualified_name));
+            first = false;
+        }
+        try aw.writer.writeAll(");");
+    }
+    return aw.writer.buffered();
 }
 
 /// What is deferred right now, names + short descriptions. Doubles as the
@@ -385,42 +575,9 @@ pub fn handleLoad(agent: anytype, input: Value) ExecResult {
 
 // --- size accounting -------------------------------------------------------
 
-const max_depth = 32;
-
-/// Serialized byte count of a JSON value, near enough for a budget decision
-/// (escapes and float formatting are approximated). Depth-capped: the value
-/// comes from an MCP server, so it is untrusted input.
-pub fn jsonBytes(v: Value, depth: u8) usize {
-    if (depth >= max_depth) return 0;
-    return switch (v) {
-        .null => 4,
-        .bool => |b| if (b) @as(usize, 4) else 5,
-        .integer => |i| blk: {
-            var buf: [24]u8 = undefined;
-            const printed = std.fmt.bufPrint(&buf, "{d}", .{i}) catch break :blk 1;
-            break :blk printed.len;
-        },
-        .float => 8,
-        .number_string => |s| s.len,
-        .string => |s| s.len + 2,
-        .array => |a| blk: {
-            var n: usize = 2;
-            for (a.items, 0..) |item, i| n += jsonBytes(item, depth + 1) + @intFromBool(i > 0);
-            break :blk n;
-        },
-        .object => |o| blk: {
-            var n: usize = 2;
-            var it = o.iterator();
-            var first = true;
-            while (it.next()) |e| {
-                n += e.key_ptr.len + 3 + jsonBytes(e.value_ptr.*, depth + 1);
-                if (!first) n += 1;
-                first = false;
-            }
-            break :blk n;
-        },
-    };
-}
+/// Body in util.zig (600-line cap); re-exported so serverCost and the tests
+/// keep naming this module.
+pub const jsonBytes = util.jsonBytes;
 // Tests live in mcp_schema_gate_tests.zig (both files answer to the 600-line
 // ceiling); the catalog-level half is in tool_schema_tests.zig, next to
 // renderRootTools.

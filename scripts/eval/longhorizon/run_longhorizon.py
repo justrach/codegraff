@@ -17,7 +17,7 @@ FIX = ROOT / "fixture"
 RUNS = ROOT / "runs"
 MEMO = pathlib.Path(os.environ.get("LH_MEMO_BIN", ""))  # optional comparison arm; not vendored
 
-GRAFF = os.environ.get("GRAFF_BIN", "/Users/blackfloofie/codegraff/zig-out/bin/graff")
+GRAFF = os.environ.get("GRAFF_BIN", str(ROOT.parents[2] / "zig-out" / "bin" / "graff"))
 MODEL = os.environ.get("GRAFF_EVAL_MODEL", "gpt-5.6-sol")
 STEPS = int(os.environ.get("LH_STEPS", "12"))
 FILLER = int(os.environ.get("LH_FILLER", "26"))     # lines/step, under the 4096B handle threshold

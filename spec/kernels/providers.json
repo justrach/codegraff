@@ -1,0 +1,168 @@
+{
+  "kernel": "provider",
+  "version": 1,
+  "rows": [
+    {
+      "id": "anthropic",
+      "kind": "anthropic",
+      "auth": "x_api_key",
+      "login": "api_key",
+      "catalog": "anthropic",
+      "sub_login": false,
+      "takes_effort": false
+    },
+    {
+      "id": "codegraff",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "codegraff_device",
+      "catalog": "openai",
+      "sub_login": false,
+      "takes_effort": true
+    },
+    {
+      "id": "deepseek",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "baked",
+      "sub_login": false,
+      "takes_effort": true
+    },
+    {
+      "id": "openai",
+      "kind": "responses",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "baked",
+      "sub_login": false,
+      "takes_effort": false
+    },
+    {
+      "id": "minimax",
+      "kind": "anthropic",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "baked",
+      "sub_login": false,
+      "takes_effort": false
+    },
+    {
+      "id": "xiaomi",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "baked",
+      "sub_login": false,
+      "takes_effort": false
+    },
+    {
+      "id": "kilo",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "baked",
+      "sub_login": false,
+      "takes_effort": false
+    },
+    {
+      "id": "groq",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "baked",
+      "sub_login": false,
+      "takes_effort": false
+    },
+    {
+      "id": "mistral",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "baked",
+      "sub_login": false,
+      "takes_effort": false
+    },
+    {
+      "id": "kimi",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "kimi_device",
+      "catalog": "kimi",
+      "sub_login": true,
+      "takes_effort": false
+    },
+    {
+      "id": "moonshot",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "baked",
+      "sub_login": false,
+      "takes_effort": false
+    },
+    {
+      "id": "xai",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "xai_device",
+      "catalog": "openai",
+      "sub_login": true,
+      "takes_effort": false
+    },
+    {
+      "id": "zai",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "baked",
+      "sub_login": false,
+      "takes_effort": false
+    },
+    {
+      "id": "fugu",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "baked",
+      "sub_login": false,
+      "takes_effort": false
+    },
+    {
+      "id": "fireworks",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "openai",
+      "sub_login": false,
+      "takes_effort": false
+    },
+    {
+      "id": "mlx",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "baked",
+      "sub_login": false,
+      "takes_effort": false
+    },
+    {
+      "id": "lmstudio",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "baked",
+      "sub_login": false,
+      "takes_effort": false
+    },
+    {
+      "id": "codex",
+      "kind": "responses",
+      "auth": "bearer",
+      "login": "codex_device",
+      "catalog": "codex",
+      "sub_login": true,
+      "takes_effort": false
+    }
+  ]
+}

@@ -17,10 +17,15 @@ const args = @import("args.zig");
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const http = @import("http.zig");
+const http_stall = @import("http_stall.zig");
 const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig"); // codex_ws_idle_ms override (#codex-ws)
+const agent_request = @import("agent_request.zig"); // GRAFF_REQ_STATS → g_req_stats (token-diet measurement)
+const native_fold = @import("native_fold.zig"); // GRAFF_NO_NATIVE_FOLD → enabled
+const mcp_schema_gate = @import("mcp_schema_gate.zig"); // GRAFF_STABLE_CATALOG → g_stable_catalog
 const no_local_tools = @import("no_local_tools.zig"); // #330: GRAFF_NO_LOCAL_TOOLS
 const tool_handle = @import("tool_handle.zig"); // #440: GRAFF_TOOL_HANDLE_BYTES
+const server_compact = @import("agent_server_compact.zig"); // GRAFF_SERVER_COMPACT + #compact-ab assignment
 const provider_mod = @import("provider.zig");
 const skills = @import("skills.zig");
 const anim = @import("anim.zig");
@@ -67,7 +72,27 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // unparseable or 0. A stall is never a user interrupt regardless of the value.
     if (environ_map.get("GRAFF_STREAM_STALL_SECS")) |v| {
         if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
-            if (secs > 0) http.stream_stall_ms = @min(secs, 86_400) * 1000; // clamp: <=1 day, no u64 overflow
+            if (secs > 0) {
+                http.stream_stall_ms = @min(secs, 86_400) * 1000; // clamp: <=1 day, no u64 overflow
+                http_stall.head_ceiling_ms = http.stream_stall_ms; // an explicit budget wins both regimes
+            }
+        } else |_| {}
+    }
+    // The pre-first-token ceiling alone (http_stall.head_ceiling_ms): for a
+    // provider that buffers a long reasoning phase in total silence BEFORE
+    // the first token. Seconds; ignored if unparseable or 0.
+    if (environ_map.get("GRAFF_STREAM_HEAD_STALL_SECS")) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
+            if (secs > 0) http_stall.head_ceiling_ms = @min(secs, 86_400) * 1000;
+        } else |_| {}
+    }
+    // #544: the non-streaming request deadline (default 5 min). One-shots and
+    // subagents run non-streamed, so this is their only hang detector; a
+    // harness with a tighter per-task budget lowers it so a wedged request
+    // retries inside that budget. Seconds; ignored if unparseable or 0.
+    if (environ_map.get("GRAFF_POST_DEADLINE_SECS")) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
+            if (secs > 0) http.post_deadline_ms = @min(secs, 86_400) * 1000;
         } else |_| {}
     }
     // #codex-ws: GRAFF_CODEX_WS=off|0|false|no (case-insensitive, the
@@ -87,6 +112,22 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         main_mod.g_clock_sleep = main_mod.g_clock_sleep or std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
     }
     if (environ_map.get("GRAFF_NO_LOCAL_TOOLS")) |v| no_local_tools.enabled = no_local_tools.enabled or no_local_tools.envEnables(v);
+    // GRAFF_LEAN: presence-based, exactly matching session_start.leanSkipsMcp
+    // (the MCP half of the same switch) — a "0" still means lean, by design.
+    if (environ_map.get("GRAFF_LEAN") != null) no_local_tools.lean = true;
+    // GRAFF_REQ_STATS: presence-based request-anatomy print (req_stats).
+    @import("req_stats.zig").g_armed = environ_map.get("GRAFF_REQ_STATS") != null;
+    // GRAFF_CODEX_FULL_RESEND: presence-based — never chain previous_response_id
+    // (codex_chain); the opencode-shape experiment for cache-hit measurement.
+    if (environ_map.get("GRAFF_CODEX_FULL_RESEND") != null) @import("codex_chain.zig").g_force_full_resend = true;
+    // GRAFF_NO_NATIVE_FOLD: presence-based — restore full power-tool schemas
+    // in every request (the pre-fold interactive surface).
+    if (environ_map.get("GRAFF_NO_NATIVE_FOLD") != null) native_fold.enabled = false;
+    // GRAFF_STABLE_CATALOG: presence-based experiment (#476) — policy-deferred
+    // tools stay out of the catalog even after load_tool_schemas enables them,
+    // keeping the request prefix byte-identical all session for the provider's
+    // prefix cache. The loaded schema rides the load result in-conversation.
+    if (environ_map.get("GRAFF_STABLE_CATALOG") != null) mcp_schema_gate.g_stable_catalog = true;
     // (#codex-ws) GRAFF_CODEX_WS_IDLE_SECS raises/lowers the held-WS idle limit
     // (default 4 min — the backend killed ours within 8.5 min idle; opencode
     // pools at 5). Mirrors GRAFF_STREAM_STALL_SECS above: seconds, ignored if
@@ -114,7 +155,25 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
             if (pct > 0) provider_mod.g_compact_pct_override = @min(pct, 100);
         } else |_| {}
     }
+    // GRAFF_SERVER_COMPACT=0/false/off: force the client arm; =1/true/on:
+    // force the server arm. Unset → #compact-ab assignment decides.
+    if (environ_map.get("GRAFF_SERVER_COMPACT")) |v| {
+        const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off");
+        server_compact.g_server_compact_override = !off;
+    }
+    // #502: xAI defaults to the Responses wire (api.x.ai/v1/responses) —
+    // first-party server compaction + WS turns. GRAFF_XAI_WIRE=chat (anything
+    // but "responses") moves it back to chat completions; unset keeps the default.
+    if (environ_map.get("GRAFF_XAI_WIRE")) |v| {
+        provider_mod.g_xai_responses = std.ascii.eqlIgnoreCase(std.mem.trim(u8, v, " \t"), "responses");
+    }
+    if (environ_map.get("GRAFF_XAI_URL")) |v| {
+        if (v.len > 0) provider_mod.g_xai_url_override = v;
+    }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
+    // #502 follow-up: opt-in xAI on-socket chaining (see codex_chain.g_xai_ws_chain).
+    if (environ_map.get("GRAFF_XAI_WS_CHAIN")) |v|
+        @import("codex_chain.zig").g_xai_ws_chain = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "true");
     // GRAFF_WS_FORCE_FAIL_ONCE proves a clean retry; the counted sibling proves
     // that two consecutive failures latch the SSE fallback. Test seams only.
     if (environ_map.get("GRAFF_WS_FORCE_FAIL_ONCE")) |v| {
@@ -127,6 +186,9 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
 
 pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool, cwd_display: []const u8) !ThemeSetup {
     try applyEnvKnobs(arena, environ_map);
+    // #compact-ab: bucket this install into a compaction arm once per process.
+    // After applyEnvKnobs so GRAFF_SERVER_COMPACT wins and skips assignment.
+    server_compact.assignArm(io, arena, @import("keys_cli.zig").homeEnv(environ_map) orelse "");
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
     anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme

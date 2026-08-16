@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -147,13 +148,21 @@ def run(graff: Path) -> None:
             requests = mock.recorded_requests()
             if len(requests) != 2:
                 raise AssertionError(f"expected a two-request tool loop: {requests!r}")
-            advertised = {
-                tool.get("name")
-                for tool in requests[0].body.get("tools", [])
-                if isinstance(tool, dict)
-                and isinstance(tool.get("name"), str)
-                and tool["name"].startswith("mcp__smolify__")
-            }
+            # Deferred-catalog era: smolify tools no longer occupy the wire
+            # tools array (zero-stub deferral, a14bdf2) — the public-only
+            # advertisement boundary now lives in load_tool_schemas's
+            # description, which lists exactly the deferred tool names.
+            lts_desc = next(
+                (
+                    tool.get("description", "")
+                    for tool in requests[0].body.get("tools", [])
+                    if isinstance(tool, dict) and tool.get("name") == "load_tool_schemas"
+                ),
+                "",
+            )
+            advertised = set()
+            for group in re.findall(r"smolify \(([^)]*)\)", lts_desc):
+                advertised.update(f"mcp__smolify__{name.strip()}" for name in group.split(","))
             if advertised != SAFE_TOOLS:
                 raise AssertionError(f"unsafe or missing default Smolify tools: {advertised!r}")
             second_input = requests[1].body.get("input", [])

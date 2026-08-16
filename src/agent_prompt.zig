@@ -33,7 +33,7 @@ fn status(self: *Agent) engine_events.PromptStatus {
         .cwd = main_mod.g_cwd_display,
         .privacy_label = learning_privacy.current().badge(),
         .privacy = privacyTier(learning_privacy.current()),
-        .effort = if (self.effortApplies()) effortTier(self.reasoning) else null,
+        .effort = effectiveEffort(self),
         // The meter appears only once a response has reported usage, but the
         // count it shows is the EFFECTIVE one (local estimates carry it
         // between turns) — two different questions, as it has always been.
@@ -44,9 +44,9 @@ fn status(self: *Agent) engine_events.PromptStatus {
         } else null,
         .cache_read = self.last_cache_read,
         .cost = cost(self),
-        // The Fast badge is a `responses`-shaped concept; on any other wire
-        // format the flag exists but means nothing, so no badge is offered.
-        .fast = self.fast and self.provider.kind == .responses,
+        // Fast priority is exclusive to the ChatGPT/Codex route; the official
+        // OpenAI Platform Responses provider does not inherit that contract.
+        .fast = self.fast and std.mem.eql(u8, self.provider.id, "codex"),
         .fallback = self.fallback_active,
         .plan = main_mod.plan_mode,
         .strict = self.strict,
@@ -77,6 +77,22 @@ fn effortTier(effort: main_mod.ReasoningEffort) engine_events.ReasoningEffort {
     };
 }
 
+/// The badge names the effort that will actually go on the wire. Kimi
+/// normalizes the session knob against the catalog's allow-list (k3 allows
+/// low/high/max with default max, so a Medium session sends "max"); showing
+/// the raw knob would badge "Medium" over a request that runs at "max".
+fn effectiveEffort(self: *Agent) ?engine_events.ReasoningEffort {
+    if (std.mem.eql(u8, self.provider.id, "kimi")) {
+        const wire = pricing.kimiThinkingEffort(self.provider.model, @tagName(self.reasoning)) orelse
+            return null;
+        inline for (std.meta.tags(main_mod.ReasoningEffort)) |tag| {
+            if (std.mem.eql(u8, @tagName(tag), wire)) return effortTier(tag);
+        }
+        return null;
+    }
+    return if (self.effortApplies()) effortTier(self.reasoning) else null;
+}
+
 fn privacyTier(mode: learning_privacy.Mode) engine_events.PrivacyTier {
     return switch (mode) {
         .local => .local,
@@ -105,4 +121,32 @@ test "the vocabulary's tiers stay in step with the engine's own enums" {
     inline for (std.meta.tags(learning_privacy.Mode)) |m| {
         try std.testing.expectEqualStrings(@tagName(m), @tagName(privacyTier(m)));
     }
+}
+
+test "kimi effort badge names the normalized wire effort, not the raw knob" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const messages = std.json.Array.init(arena);
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "k3", .context = 1_048_576 },
+        .messages = messages,
+        .sub = false,
+        .label = "",
+        .out = null,
+        .sys_normal = "",
+    };
+    // k3 allows low/high/max with default high: a Medium session runs at the
+    // catalog default, while an allowed effort passes through untouched.
+    agent.reasoning = .medium;
+    try std.testing.expectEqual(engine_events.ReasoningEffort.high, effectiveEffort(&agent).?);
+    agent.reasoning = .max;
+    try std.testing.expectEqual(engine_events.ReasoningEffort.max, effectiveEffort(&agent).?);
+    // No catalog row, no wire effort, no badge.
+    agent.provider.model = "unknown-xyz";
+    try std.testing.expectEqual(@as(?engine_events.ReasoningEffort, null), effectiveEffort(&agent));
 }

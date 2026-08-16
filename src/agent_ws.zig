@@ -26,6 +26,7 @@ const Agent = agent_mod.Agent;
 
 const ws = @import("ws.zig");
 const http_headers = @import("http_headers.zig");
+const transport_gate = @import("transport_gate.zig");
 
 // #422 slice 1b: this file draws nothing. Wait/cut moments are typed events
 // through the sink; the spinner and the ⚠ notices are TuiSink's rendering.
@@ -46,33 +47,39 @@ const watchdogError = http.watchdogError;
 const signal = @import("agent_ws_signal.zig");
 pub const frameHasOutputText = signal.frameHasOutputText;
 pub const TokenSignal = signal.TokenSignal;
-
 const isStreamEnd = @import("agent_stream.zig").isStreamEnd;
-
 const escPressed = Agent.escPressed;
 const rawNonblockStdin = Agent.rawNonblockStdin;
 const drainSteerStdin = Agent.drainSteerStdin;
 
-/// Codex ws applies to root Responses turns when enabled and not already fallen
-/// back this session. Subagents/quiet turns keep the non-streaming SSE path.
+/// WS: root Responses turns when enabled and not fallen back this session
+/// (codex + xai only — Platform OpenAI has no WS endpoint).
 pub fn wsEligible(self: *Agent) bool {
-    return main_mod.g_codex_ws and !self.ws_off and !self.sub and
-        self.provider.kind == .responses and self.out != null and !self.stream_quiet;
+    // Provider id is a production filter on top of the spec'd kind/flag
+    // algebra: only codex and xai actually serve a WS endpoint.
+    const has_ws = std.mem.eql(u8, self.provider.id, "codex") or std.mem.eql(u8, self.provider.id, "xai");
+    return has_ws and transport_gate.eligible(.{ .kind = self.provider.kind, .is_sub = self.sub, .codex_ws = main_mod.g_codex_ws, .ws_off = self.ws_off, .has_out = self.out != null, .quiet = self.stream_quiet });
 }
 
-/// (#codex-ws) Client-side idle limit on the held codex WS, opencode's
-/// OpenAIWebSocketPool design: never reuse a socket the server may already
-/// have killed. A real trace showed the backend closing ours somewhere
-/// within 8.5 min idle (user parked on an ask_user prompt) — 4 min stays
-/// comfortably under (opencode uses 5). Overridable via
-/// GRAFF_CODEX_WS_IDLE_SECS (parsed in session_run.zig beside the other
-/// codex transport knobs).
+/// (#codex-ws) Idle limit on the held WS (never reuse a socket the server
+/// may have killed; 4 min stays under the observed ~8.5-min server close).
+/// GRAFF_CODEX_WS_IDLE_SECS overrides (session_run.zig).
 pub var codex_ws_idle_ms: i64 = 4 * std.time.ms_per_min;
 
 /// (#codex-ws) The idle-reanchor decision, pure so the regression test can
 /// exercise it without a socket: has the held WS sat unused past the limit?
 pub fn codexWsIdleExpired(now_ms: i64, used_ms: i64) bool {
     return now_ms - used_ms > codex_ws_idle_ms;
+}
+
+/// Official Responses WS hard cap: one connection stays open ≤ 25 minutes.
+pub const ws_lifetime_ms: i64 = 25 * std.time.ms_per_min;
+/// Retire a minute early so a turn never STARTS on a socket the server is
+/// about to kill mid-response (per-agent clock: codex_ws_opened_ms).
+pub const ws_retire_ms: i64 = ws_lifetime_ms - std.time.ms_per_min;
+
+pub fn wsLifetimeExpired(now_ms: i64, opened_ms: i64) bool {
+    return opened_ms != 0 and now_ms - opened_ms >= ws_retire_ms;
 }
 
 /// The .awake monotonic clock in ms — same time source as request()'s
@@ -128,12 +135,10 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
         // the same refusal. Latch now (openai/codex: FallbackToHttp).
         const declined = e == error.UpgradeRequired;
         const fallback = declined or wsShouldFallback(self.ws_transport_failures);
-        // (#codex-ws) A delta body carries previous_response_id + only the new
-        // messages, anchored to the WS session that just died — the codex HTTP
-        // endpoint rejects previous_response_id outright ("Unsupported
-        // parameter"), and even if it didn't, the referenced response died with
-        // the socket. Never replay it over SSE. closeCodexWs's errdefer inside
-        // postResponsesWs already reset codex_ws/codex_prev_id/codex_sent_upto by
+        // (#codex-ws) A delta body is anchored to the WS session that just
+        // died (HTTP rejects previous_response_id; the response died with the
+        // socket) — never replay it over SSE. closeCodexWs's errdefer already
+        // reset codex_ws/codex_prev_id/codex_sent_upto by
         // the time we get here; call it again defensively (idempotent) so a
         // rebuilt body definitely carries full input with no prior-id, and ask
         // request() to rebuild + retry (a fresh WS re-anchors with full history)
@@ -166,7 +171,7 @@ fn emitAbort(self: *Agent, reason: engine_events.StreamAbort, turn_ending: bool)
     engine_sink.forAgent(self).emit(self.io, .{ .transport_aborted = cut });
 }
 
-fn wssUrl(arena: std.mem.Allocator, https_url: []const u8) ![]u8 {
+pub fn wssUrl(arena: std.mem.Allocator, https_url: []const u8) ![]u8 {
     if (std.mem.startsWith(u8, https_url, "https://"))
         return std.fmt.allocPrint(arena, "wss://{s}", .{https_url["https://".len..]});
     if (std.mem.startsWith(u8, https_url, "http://"))
@@ -186,20 +191,9 @@ fn wsConnectTask(gpa: std.mem.Allocator, io: Io, url: []const u8, headers: []con
     return ws.WsClient.connect(gpa, io, url, false, headers);
 }
 
-/// The deadline for writing a frame of `frame_len` bytes.
-///
-/// NOT a flat head-sized budget: the frame most likely to sit under this guard
-/// is the LARGEST one, because every recovery re-anchors with the full
-/// conversation (closeCodexWs nulls codex_prev_id). A flat 30s over a ~1MB
-/// re-anchor on a slow uplink is a false positive costing a transport failure,
-/// and two of those latch SSE for the session. Policy: the head budget plus one
-/// second per 64KB (a ~512 kbit/s floor, far below any link that can carry a
-/// codex session), clamped to the read budget so the send guard can never
-/// outlast the watchdog covering the reply.
-pub fn sendDeadlineMs(frame_len: usize, head_ms: u64, stream_ms: u64) u64 {
-    const grow: u64 = @as(u64, @intCast(frame_len / (64 * 1024))) *| 1000;
-    return @min(head_ms +| grow, @max(head_ms, stream_ms));
-}
+// The frame-write deadline policy lives in agent_ws_signal.zig (600-line
+// cap); aliased back so call sites and tests keep naming agent_ws.
+pub const sendDeadlineMs = signal.sendDeadlineMs;
 
 /// Bound the outbound half of a ws turn. `sendText` is a blocking socket write
 /// with no deadline: if the peer stops draining, it parks in the syscall until
@@ -359,23 +353,31 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     const arena = self.arena;
     const provider = self.provider;
 
-    // Wrap graff's Responses body ({"model":…}) with the ws envelope.
     const frame = try std.fmt.allocPrint(gpa, "{{\"type\":\"response.create\",{s}", .{body[1..]});
     defer gpa.free(frame);
 
     const bearer = try std.fmt.allocPrint(arena, "Bearer {s}", .{provider.api_key});
-    // The SAME per-process session id the HTTP path sends, not a fresh one per
-    // connect: this is what the backend partitions its prompt cache on, so a
-    // new id per socket handed every re-anchor a cold partition.
-    const sid = http_headers.sessionId(self.io);
-    const headers = [_]ws.Header{
-        .{ .name = "Authorization", .value = bearer },
-        .{ .name = "chatgpt-account-id", .value = provider.account },
-        .{ .name = "OpenAI-Beta", .value = "responses_websockets=2026-02-06" },
-        .{ .name = "originator", .value = "codex_cli_rs" },
-        .{ .name = "session_id", .value = sid },
-        .{ .name = "User-Agent", .value = "codex_cli_rs/0.1 (graff)" },
-    };
+    // ChatGPT tail is codex-only (#502); xAI takes x-grok-conv-id instead —
+    // the project cache id (root/sub isolated), same sticky value as the
+    // Responses body's prompt_cache_key, not the per-process session id.
+    var conv_buf: [96]u8 = undefined;
+    const conv = http_headers.promptCacheKey(self.io, self.label, self, &conv_buf);
+    var hdrs: [7]ws.Header = undefined;
+    var hn: usize = 1;
+    hdrs[0] = .{ .name = "Authorization", .value = bearer };
+    if (std.mem.eql(u8, provider.id, "codex")) {
+        hdrs[1] = .{ .name = "session_id", .value = http_headers.sessionId(self.io) };
+        hdrs[2] = .{ .name = "chatgpt-account-id", .value = provider.account };
+        hdrs[3] = .{ .name = "OpenAI-Beta", .value = "responses_websockets=2026-02-06" };
+        hdrs[4] = .{ .name = "originator", .value = "codex_cli_rs" };
+        hdrs[5] = .{ .name = "User-Agent", .value = "codex_cli_rs/0.1 (graff)" };
+        hn = 6;
+    } else if (http_headers.wantsGrokConvId(provider.id)) {
+        hdrs[1] = .{ .name = "session_id", .value = http_headers.sessionId(self.io) };
+        hdrs[2] = .{ .name = "x-grok-conv-id", .value = conv };
+        hn = 3;
+    }
+    const headers: []const ws.Header = hdrs[0..hn];
     const url = try wssUrl(arena, provider.url);
 
     // Esc watching (root TTY), same gate as postStream.
@@ -393,20 +395,15 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     defer sink.emit(self.io, .stream_finished);
 
     if (self.tracer) |tr| tr.note("ws", "connecting");
-    // (#codex-ws) Preemptive idle re-anchor: don't reuse a WS the server has
-    // likely already killed (it closes idle sockets well before our reuse in a
-    // real trace) — that costs a failed round trip before the reactive
-    // CodexWsReanchor path kicks in. Close it up front instead. Subtlety: the
-    // body was already built while codex_ws was non-null, so a DELTA body
-    // (previous_response_id + partial input) is useless on a fresh connection —
-    // return error.CodexWsReanchor so request()'s rebuild: loop rebuilds full
-    // input. A non-delta body is self-contained: just fall through and dial.
-    //
-    // This CLOCK is the only pre-send gate there is — see the liveness note
-    // above for why a real is_closed() equivalent is not available here, and
-    // which deadlines cover the socket it cannot judge.
+    // (#codex-ws) Preemptive re-anchor: don't reuse a WS the server likely
+    // already killed (idle) or is about to (the 25-min cap) — that costs a
+    // failed round trip before the reactive path. A DELTA body is useless on
+    // a fresh connection, so return CodexWsReanchor for request()'s rebuild;
+    // a full body falls through and dials. This clock is the only pre-send
+    // gate (no is_closed() equivalent; the deadlines cover the rest).
     if (self.codex_ws) |held| {
-        if (codexWsIdleExpired(nowAwakeMs(self.io), self.codex_ws_used_ms)) {
+        const now = nowAwakeMs(self.io);
+        if (codexWsIdleExpired(now, self.codex_ws_used_ms) or wsLifetimeExpired(now, self.codex_ws_opened_ms)) {
             // The premise of this branch is that the server has likely already
             // killed this socket, so it is SUSPECT: it must not spend a blocking
             // courtesy close frame on it (ws.WsClient.deinit).
@@ -429,7 +426,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     // socket held since the last request has proved nothing since.
     const reused = self.codex_ws != null;
     if (self.codex_ws == null) {
-        self.codex_ws = connectWatched(gpa, self.io, url, &headers, orig_tio != null) catch |e| {
+        self.codex_ws = connectWatched(gpa, self.io, url, headers, orig_tio != null) catch |e| {
             // HungRequest, matching connectWatched's deadline error — NOT
             // StreamStalled, which the guard stopped returning when it moved to
             // the SSE guard's transport-flake semantics. An arm naming the wrong
@@ -443,7 +440,8 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
             });
             return e;
         };
-        self.codex_ws_used_ms = nowAwakeMs(self.io); // fresh socket = fresh idle window (#codex-ws)
+        self.codex_ws_opened_ms = nowAwakeMs(self.io); // 25-min server cap starts now
+        self.codex_ws_used_ms = self.codex_ws_opened_ms; // fresh socket = fresh idle window (#codex-ws)
         if (self.tracer) |tr| tr.note("ws", "connected");
     } else if (self.tracer) |tr| tr.note("ws", "reuse (delta)");
     const client = self.codex_ws.?;
@@ -581,6 +579,15 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         try full.writer.writeAll(fbuf.items);
         try full.writer.writeByte('\n');
         const line = try std.fmt.allocPrint(arena, "data: {s}", .{fbuf.items});
+        // xAI error frames are terminal but not in isStreamEnd's set. Both
+        // arms route through postLive's close + redial (resets chain state).
+        switch (signal.errorFrameAction(fbuf.items)) {
+            .none => {},
+            .retire, .chain_lost => |act| {
+                if (self.tracer) |tr| tr.note("ws", if (act == .retire) "server connection limit — retiring socket" else "chain anchor gone — re-anchoring full");
+                return error.ConnectionResetByPeer;
+            },
+        }
         if (isStreamEnd(arena, self.provider.kind, line)) {
             if (self.tracer) |tr| tr.note("ws", "completed");
             break :stream;
@@ -589,11 +596,4 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     }
     self.codex_ws_used_ms = nowAwakeMs(self.io); // completed turn — restart the idle window (#codex-ws)
     return full.toOwnedSlice();
-}
-
-test "wssUrl: https->wss, http->ws" {
-    var a = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer a.deinit();
-    try std.testing.expectEqualStrings("wss://chatgpt.com/backend-api/codex/responses", try wssUrl(a.allocator(), "https://chatgpt.com/backend-api/codex/responses"));
-    try std.testing.expectEqualStrings("ws://localhost:1234/x", try wssUrl(a.allocator(), "http://localhost:1234/x"));
 }

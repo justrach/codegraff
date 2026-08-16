@@ -33,12 +33,16 @@
 //! overrides a persona that says `model: gpt-5.6-sol` — otherwise a per-spawn
 //! override could not lower a persona's pin, which is its whole point.
 //!
-//! PROVIDER LOCALITY. A pin resolves only against the catalog rows of the
+//! PROVIDER LOCALITY. A pin resolves FIRST against the catalog rows of the
 //! provider the child was ALREADY going to use (root, or --subagent-provider
-//! once --allow-cross-provider-subagents consented). So a pin can never move
-//! prompts, code, or billing to a second provider: that decision stays with
-//! the startup flag and its consent gate, exactly as #292 requires, and
-//! Provider.withModel makes it structurally impossible here.
+//! once --allow-cross-provider-subagents consented), and a locally-served
+//! name always wins: no boundary crossed, no billing moved. The one
+//! exception is FLAT-RATE SUBSCRIPTION ROUTING — a logged-in device-login
+//! sub is marginal-cost-zero and the login itself is the user's standing
+//! consent for that vendor, so an explicit tier ask (subscriptionRung) or an
+//! exact model name the child's provider does not serve (subscriptionModel)
+//! may be seated on the sub. Metered cross-provider routing still keeps the
+//! startup flag and its consent gate, exactly as #292 requires.
 //!
 //! GRACEFUL FALLBACK. Every failure to honour a pin resolves to a null
 //! provider, which the spawn path reads as "keep the session default".
@@ -60,6 +64,7 @@ const std = @import("std");
 const provider_mod = @import("provider.zig");
 const Provider = provider_mod.Provider;
 const pricing = @import("pricing.zig");
+const billing = @import("billing.zig"); // #471: seat billing class (flat-rate login vs metered key)
 const bench_priors = @import("bench_priors.zig");
 const fleet = @import("fleet.zig");
 const selection = @import("subagent_selection.zig");
@@ -111,6 +116,7 @@ pub const Outcome = enum {
     no_rung, // the ladder has no model at that rung
     rung_pricier, // the rung would cost more than the child's current model
     sub_routed, // the rung went to a logged-in flat-rate subscription instead
+    model_sub_routed, // an exact pin the child's provider does not serve went to a logged-in sub that does
 
     pub fn describe(self: Outcome) []const u8 {
         return switch (self) {
@@ -123,6 +129,7 @@ pub const Outcome = enum {
             .no_rung => "tier pin ignored: this provider's ladder has no model at that rung — kept the session default",
             .rung_pricier => "tier pin ignored: that rung is pricier than this agent's model — cost never escalates implicitly; pin the model by name to escalate",
             .sub_routed => "tier routed to a logged-in flat-rate subscription — marginal cost zero outranks metered spend; the login is the user's standing consent for that vendor",
+            .model_sub_routed => "model pin routed to a logged-in flat-rate subscription that serves it — the child's provider does not; the login is the user's standing consent for that vendor",
         };
     }
 };
@@ -243,14 +250,14 @@ pub fn resolveIn(base: Provider, pin: Pin, cell: Cell) Resolved {
         // opus-class) an automatic rung must not spend more than the model
         // the user chose. Escalation stays possible, but only by naming the
         // model in the call — visible, never implicit.
-        if (!rungAffordable(base.model, resolved)) return .{ .outcome = .rung_pricier };
+        if (!rungAffordableOn(base, resolved)) return .{ .outcome = .rung_pricier };
         // #372: the learned layer sits HERE, below every explicit pin. It is
         // handed the CATALOG-resolved ladder answer and may return a measured
         // improvement on it; a swap that somehow fails the same cost ceiling
         // is dropped rather than failing the spawn, so the worst case is
         // today's ladder answer.
         if (route_policy.learnedRung(base.id, cell, resolved)) |learned| {
-            if (rungAffordable(base.model, learned)) return finish(base, learned, .learned_policy);
+            if (rungAffordableOn(base, learned)) return finish(base, learned, .learned_policy);
         }
         return finish(base, resolved, .ladder);
     }
@@ -258,22 +265,46 @@ pub fn resolveIn(base: Provider, pin: Pin, cell: Cell) Resolved {
     return .{};
 }
 
-/// Flat-rate, device-login subscription providers, in fallback preference
-/// order (bench scores rank them when several are logged in). codegraff's
-/// license is deliberately absent: it fronts the metered multi-vendor
-/// gateway this policy protects the user's wallet FROM. `pub` since #380:
+/// Flat-rate, device-login subscription providers. Derived from the specs'
+/// `sub_login` declaration rather than listed here, because #471 found this
+/// was the FOURTH hardcoded "which providers are subscriptions" list in the
+/// tree and they disagreed: xAI has had a real device-code login since
+/// oauth.zig's xaiLogin, and its absence from this array is what kept a paid
+/// SuperGrok seat out of sub-first routing entirely. codegraff's license
+/// stays out for the same reason as before — `sub_login = false`, because it
+/// fronts the metered multi-vendor gateway this policy protects the wallet
+/// FROM. Order follows provider_specs; bench scores rank the candidates that
+/// are actually logged in, so it only breaks exact ties. `pub` since #380:
 /// vision_ask.visionSeat searches the same candidates under the same rule.
-pub const subscription_providers = [_][]const u8{ "codex", "kimi" };
+pub const subscription_providers = blk: {
+    var ids: [provider_mod.provider_specs.len][]const u8 = undefined;
+    var n: usize = 0;
+    for (provider_mod.provider_specs) |spec| {
+        if (!spec.sub_login) continue;
+        ids[n] = spec.id;
+        n += 1;
+    }
+    const frozen = ids[0..n].*;
+    break :blk frozen;
+};
+
+/// Direct DeepSeek, or the same family through the codegraff gateway.
+/// Both DeepSeek seats outclass gpt-5.6-luna; hopping a DeepSeek session
+/// onto Codex's small rung is a capability drop, not a free upgrade.
+fn deepseekFamily(p: Provider) bool {
+    return std.mem.eql(u8, p.id, "deepseek") or std.mem.startsWith(u8, p.model, "deepseek");
+}
 
 /// SUB-FIRST TIER ROUTING (explicit `tier` asks only — the silent no-tier
 /// default still inherits the user's chosen family): a logged-in flat-rate
-/// subscription is marginal-cost-zero, so its rung outranks ANY metered
-/// model — a deepseek session's tier:"small" goes to luna on the codex sub,
-/// not to a metered gateway row — and the login itself is the user's
-/// standing consent for that vendor. Metered cross-provider routing keeps
-/// the explicit --subagent-provider + --allow-cross-provider-subagents bar.
+/// subscription is marginal-cost-zero, so its rung outranks a metered
+/// model — except a DeepSeek session (direct or via codegraff), which
+/// already sits on seats better than luna and must not be dumped there.
+/// The login is still standing consent for an *exact* model pin. Metered
+/// cross-provider routing keeps the explicit --subagent-provider bar.
 /// When several subs serve the rung, the bench sheet's score picks.
 fn subscriptionRung(tier: Tier, base: Provider) ?Resolved {
+    if (deepseekFamily(base)) return null;
     const keys = bench_priors.g_keys orelse return null;
     var best: ?Resolved = null;
     var best_score: f64 = -1;
@@ -293,10 +324,55 @@ fn subscriptionRung(tier: Tier, base: Provider) ?Resolved {
     return best;
 }
 
+/// EXACT-name sub routing, the model axis's counterpart to subscriptionRung:
+/// when a pin names a model the child's own provider does not serve, a
+/// logged-in flat-rate subscription that DOES serve that exact name (or one
+/// of its aliases) honors it — the same standing-consent rule as the tier
+/// path, and metered cross-provider keeps its explicit bar. The match is
+/// strictly exact/alias, never modelForProvider's substring fallback: a
+/// fuzzy hit crossing a provider boundary could seat a model the pin did not
+/// name, which is worse than the silent no-op this rescues. Bench scores
+/// break the rare tie of two subs serving one name. `src` rides through so
+/// the trace still says explicit-pin/persona, not ladder — no rung was
+/// consulted.
+fn subscriptionModel(query: []const u8, base: Provider, src: Source) ?Resolved {
+    const keys = bench_priors.g_keys orelse return null;
+    var best: ?Resolved = null;
+    var best_score: f64 = -1;
+    for (subscription_providers) |sid| {
+        if (std.mem.eql(u8, sid, base.id)) continue; // the base's own catalog already answered provider-locally
+        for (pricing.models()) |model| {
+            if (!std.mem.eql(u8, model.provider, sid)) continue;
+            if (!std.mem.eql(u8, model.name, query) and !pricing.modelAliasEquals(model.name, query)) continue;
+            const prov = keys.providerById(sid, model.name) catch continue; // not logged in → not a candidate
+            const s = bench_priors.scoreFor(sid, model.name) orelse 0;
+            if (best == null or s > best_score) {
+                best = .{ .provider = prov, .outcome = .model_sub_routed, .source = src };
+                best_score = s;
+            }
+        }
+    }
+    return best;
+}
+
 /// Summed in+out $/1M. An unpriced BASE has no ceiling to enforce (whole
 /// subscription families like codex carry no per-token price — blocking
 /// there would kill every intra-family rung); a priced base with an unpriced
 /// rung cannot prove the rung is not an escalation, so it blocks.
+///
+/// #471: a flat-rate BASE seat has no ceiling either, and unlike the unpriced
+/// case that is not an accident of the sheet. The ceiling exists to stop an
+/// automatic rung from spending more than the model the user chose; on a
+/// subscription every rung spends the same nothing, so enforcing models.dev
+/// list prices there would gate a seat by money nobody is paying. Note the
+/// base's own price row can appear at any time — `price_overlay` is rebuilt
+/// from a remote sheet on every `graff models refresh` and matches on bare
+/// model name — so this cannot rely on `priceFor` returning null.
+pub fn rungAffordableOn(base: Provider, rung_model: []const u8) bool {
+    if (billing.freeAtTheMargin(base)) return true;
+    return rungAffordable(base.model, rung_model);
+}
+
 pub fn rungAffordable(base_model: []const u8, rung_model: []const u8) bool {
     const bp = pricing.priceFor(base_model) orelse return true;
     const rp = pricing.priceFor(rung_model) orelse return false;
@@ -315,6 +391,13 @@ fn finish(base: Provider, name: ?[]const u8, source: Source) Resolved {
 /// with --subagent-provider, an explicit human choice no auto-route may
 /// override), else resolve the model axis provider-locally against `base`;
 /// the effort axis rides through verbatim (it needs no catalog).
+///
+/// Exact model pins are provider-local FIRST: the child's own provider
+/// serving the name crosses no boundary and moves no billing, so it always
+/// wins. Only when local resolution comes back unknown_model — the pin would
+/// otherwise silently no-op — does subscriptionModel try a logged-in
+/// flat-rate sub that serves the exact name, under the same login-is-consent
+/// rule as the tier path.
 pub fn forSpawn(base: Provider, obj: std.json.ObjectMap, sub_ok: bool) Resolved {
     return forSpawnIn(base, obj, sub_ok, .{});
 }
@@ -324,8 +407,17 @@ pub fn forSpawn(base: Provider, obj: std.json.ObjectMap, sub_ok: bool) Resolved 
 pub fn forSpawnIn(base: Provider, obj: std.json.ObjectMap, sub_ok: bool, cell: Cell) Resolved {
     const pin = requested(obj);
     if (pin.isNone()) return .{};
+    const pin_src: Source = if (pin.from_persona) .persona else .explicit_pin;
     var out: Resolved = blk: {
-        if (sub_ok and pin.model == null) if (pin.tier) |t| if (subscriptionRung(t, base)) |r| break :blk r;
+        if (sub_ok) {
+            if (pin.model) |q| {
+                const local = resolveIn(base, pin, cell);
+                if (local.outcome != .unknown_model) break :blk local;
+                if (subscriptionModel(q, base, pin_src)) |r| break :blk r;
+                break :blk local; // keep the reported unknown_model + its reason
+            }
+            if (pin.tier) |t| if (subscriptionRung(t, base)) |r| break :blk r;
+        }
         break :blk resolveIn(base, pin, cell);
     };
     if (pin.effort) |e| {

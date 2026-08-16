@@ -43,6 +43,9 @@ struct ConversationState {
     /// (harness semantics). Surfaced to the GUI's task-progress dock.
     todos: Vec<SessionTodoDto>,
     goal: Option<String>,
+    /// Latest harness `session_recap` (#419) — the agent overview's one-liner.
+    /// Session-local: not persisted; a restored chat earns a fresh one.
+    recap: Option<SessionRecapDto>,
     /// Persistent ultracode (multi-agent workflow) mode, scoped to this chat.
     ultracode_enabled: bool,
     updated_at: i64,
@@ -526,6 +529,7 @@ impl RuntimeManager {
                     ultracode_enabled: false,
                     todos: Vec::new(),
                     goal: None,
+                    recap: None,
                     updated_at: now_millis(),
                 });
             conversation.plan_mode = plan_mode;
@@ -987,6 +991,18 @@ impl RuntimeManager {
                     .await;
                     self.emit().await?;
                 }
+                Some("session_recap") => {
+                    // #419: the harness's turn-end recap (heuristic first, a
+                    // cheap-model one possibly later) — session metadata, not
+                    // a chat message. Emitted before `turn`, so it lands here.
+                    if let Some(recap) = parse_session_recap(&event) {
+                        self.mutate_conversation(conversation_id, move |conversation| {
+                            conversation.recap = Some(recap);
+                        })
+                        .await;
+                        self.emit().await?;
+                    }
+                }
                 Some("turn") => break,
                 Some("error") => {
                     let raw_message = event
@@ -1079,6 +1095,16 @@ impl RuntimeManager {
                 continue;
             };
             match event.get("type").and_then(serde_json::Value::as_str) {
+                // #419: a between-turns model recap can surface while we wait
+                // for a control ack — keep it, and keep waiting for the ack.
+                Some("session_recap") => {
+                    if let Some(recap) = parse_session_recap(&event) {
+                        self.mutate_conversation(conversation_id, move |conversation| {
+                            conversation.recap = Some(recap);
+                        })
+                        .await;
+                    }
+                }
                 Some("model" | "compact" | "mode" | "agent" | "effort" | "fast" | "ultracode") => {
                     break event;
                 }
@@ -1789,6 +1815,7 @@ impl RuntimeManager {
                 ultracode_enabled: false,
                 todos: Vec::new(),
                 goal: None,
+                recap: None,
                 updated_at: now_millis(),
             },
         );
@@ -2499,6 +2526,7 @@ fn load_persisted_conversations() -> HashMap<String, ConversationState> {
                     ultracode_enabled: conversation.ultracode_enabled,
                     todos: Vec::new(),
                     goal: conversation.goal,
+                    recap: None,
                     updated_at: conversation.updated_at,
                 },
             )
@@ -2587,6 +2615,29 @@ fn first_workspace_conversation_id(state: &RuntimeState, workspace_path: &str) -
         .map(|conversation| conversation.conversation_id.clone())
 }
 
+/// Parse a `session_recap` wire event (#419). Unknown/missing status or
+/// source degrade to completed/heuristic; an empty text is not a recap.
+fn parse_session_recap(event: &serde_json::Value) -> Option<SessionRecapDto> {
+    let text = event.get("text")?.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let status = match event.get("status").and_then(serde_json::Value::as_str) {
+        Some("needs_input") => SessionRecapStatusDto::NeedsInput,
+        Some("failed") => SessionRecapStatusDto::Failed,
+        _ => SessionRecapStatusDto::Completed,
+    };
+    let source = match event.get("source").and_then(serde_json::Value::as_str) {
+        Some("model") => SessionRecapSourceDto::Model,
+        _ => SessionRecapSourceDto::Heuristic,
+    };
+    Some(SessionRecapDto {
+        text: text.to_string(),
+        status,
+        source,
+    })
+}
+
 fn conversation_view(
     conversation: &ConversationState,
     followup: Option<FollowupRequestDto>,
@@ -2599,6 +2650,7 @@ fn conversation_view(
         request_agent_ids: conversation.request_agent_ids.clone(),
         todos: conversation.todos.clone(),
         goal: conversation.goal.clone(),
+        recap: conversation.recap.clone(),
         followup,
     }
 }
@@ -4276,6 +4328,7 @@ mod tests {
                 ultracode_enabled: false,
                 todos: Vec::new(),
                 goal: None,
+                recap: None,
                 updated_at: 10,
             },
         );
@@ -4683,6 +4736,7 @@ mod tests {
                 ultracode_enabled: false,
                 todos: Vec::new(),
                 goal: None,
+                recap: None,
                 updated_at: 10,
             },
         );
@@ -4701,6 +4755,7 @@ mod tests {
                 ultracode_enabled: false,
                 todos: Vec::new(),
                 goal: None,
+                recap: None,
                 updated_at: 20,
             },
         );

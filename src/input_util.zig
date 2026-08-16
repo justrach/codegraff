@@ -140,7 +140,7 @@ test "type-ahead NUL is the line discipline's Ctrl-D, everything else is itself"
     try std.testing.expectEqual(@as(u8, 0x1b), typeAheadByte(0x1b));
 }
 
-/// Sumi-rust → Codegraff coral → warm-gold stops for the ultracode ember wave.
+/// Sumi-rust → vermilion → warm-gold stops for the ultracode ember wave.
 const ultracode_rgb = [_]struct { r: u8, g: u8, b: u8 }{
     .{ .r = 168, .g = 99, .b = 67 },
     .{ .r = 179, .g = 92, .b = 73 },
@@ -304,7 +304,7 @@ pub fn cleanDroppedPath(gpa: Allocator, home: []const u8, pasted: []const u8) ?[
 // Redraw the whole input below a fixed prompt prefix, wrapping it
 // across rows. Spans listed in `marks` (paths from the @ picker or a
 // file drop, plus "[Image]") render as an accent chip (reverse video +
-// Codegraff coral) so they keep reading as attached files, not typed words; a
+// Codegraff emerald) so they keep reading as attached files, not typed words; a
 // chip crossing a row break keeps its colour. `st` carries the row
 // count + cursor row of the previous draw so this one can clear it
 // with relative moves only — no DECSC anchor for a scroll to strand.
@@ -367,7 +367,7 @@ pub fn redraw(o: *Io.Writer, items: []const u8, c: usize, marks: []const []const
                     o.writeAll("\x1b[0m") catch {};
                     shine_active = false;
                 }
-                o.writeAll(if (main_mod.use_color) "\x1b[7;38;2;196;81;61m" else "\x1b[7m") catch {};
+                o.writeAll(if (main_mod.use_color) "\x1b[7;38;2;5;150;105m" else "\x1b[7m") catch {};
                 mark_end = i + best;
                 mark_open = true;
             }
