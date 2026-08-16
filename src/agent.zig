@@ -216,6 +216,7 @@ pub const Agent = struct {
     streamed_args: ArgTool = .none, // which meta tool's prose streamed live this request
     streamed_args_len: usize = 0, // raw bytes emitted for it (gates re-print suppression)
     cap_new: bool = false, // provider rejected max_tokens → use max_completion_tokens
+    sox_json_object: bool = false, // #543: provider rejected response_format json_schema → json_object + schema-in-prompt
     effort_rejected: bool = false, // model rejected reasoning_effort → drop it (e.g. gpt-5.5 on chat/completions wants /v1/responses)
     output_schema: ?[]const u8 = null, // --output-schema: JSON schema the final answer must satisfy (response_format / text.format, #502)
     next_ask_id: u64 = 1,

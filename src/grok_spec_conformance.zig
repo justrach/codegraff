@@ -49,6 +49,8 @@ test "grok spec: Chat Completions x-grok-conv-id is stable for root and isolated
     const root_id = http_headers.promptCacheKey(io, "main", @ptrCast(&root_slot), &rbuf);
     var rbuf2: [96]u8 = undefined;
     try std.testing.expectEqualStrings(root_id, http_headers.promptCacheKey(io, "main", @ptrCast(&root_slot), &rbuf2));
+    try std.testing.expectEqualStrings(root_id, http_headers.projectRootId(io));
+    try std.testing.expect(!std.mem.eql(u8, root_id, http_headers.sessionId(io)));
     const child_id = http_headers.promptCacheKey(io, "sub", @ptrCast(&child_slot), &cbuf);
     try std.testing.expect(!std.mem.eql(u8, root_id, child_id));
 

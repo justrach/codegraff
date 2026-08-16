@@ -358,8 +358,8 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
 
     const bearer = try std.fmt.allocPrint(arena, "Bearer {s}", .{provider.api_key});
     // ChatGPT tail is codex-only (#502); xAI takes x-grok-conv-id instead —
-    // the PER-CONVERSATION cache id (root/sub isolated), same sticky value as
-    // the Responses body's prompt_cache_key, not the bare process session id.
+    // the project cache id (root/sub isolated), same sticky value as the
+    // Responses body's prompt_cache_key, not the per-process session id.
     var conv_buf: [96]u8 = undefined;
     const conv = http_headers.promptCacheKey(self.io, self.label, self, &conv_buf);
     var hdrs: [7]ws.Header = undefined;

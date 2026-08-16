@@ -37,6 +37,7 @@ const knobs = [_]Knob{
     .{ .name = "GRAFF_FORCE_DROP_ALWAYS", .value = "1" },
     .{ .name = "GRAFF_STREAM_STALL_SECS", .value = "7" },
     .{ .name = "GRAFF_STREAM_HEAD_STALL_SECS", .value = "9" },
+    .{ .name = "GRAFF_POST_DEADLINE_SECS", .value = "90" },
     .{ .name = "GRAFF_CODEX_WS", .value = "off" },
     .{ .name = "GRAFF_CLOCK_SLEEP", .value = "1" },
     .{ .name = "GRAFF_NO_LOCAL_TOOLS", .value = "1" },
@@ -79,6 +80,7 @@ const Saved = struct {
     codex_ws: bool,
     clock_sleep: bool,
     stream_stall_ms: u64,
+    post_deadline_ms: u64,
     codex_ws_idle_ms: i64,
     context_override: ?u64,
     compact_pct_override: ?u8,
@@ -98,6 +100,7 @@ const Saved = struct {
             .codex_ws = main_mod.g_codex_ws,
             .clock_sleep = main_mod.g_clock_sleep,
             .stream_stall_ms = http.stream_stall_ms,
+            .post_deadline_ms = http.post_deadline_ms,
             .codex_ws_idle_ms = agent_ws.codex_ws_idle_ms,
             .context_override = provider_mod.g_context_override,
             .compact_pct_override = provider_mod.g_compact_pct_override,
@@ -118,6 +121,7 @@ const Saved = struct {
         main_mod.g_codex_ws = s.codex_ws;
         main_mod.g_clock_sleep = s.clock_sleep;
         http.stream_stall_ms = s.stream_stall_ms;
+        http.post_deadline_ms = s.post_deadline_ms;
         agent_ws.codex_ws_idle_ms = s.codex_ws_idle_ms;
         provider_mod.g_context_override = s.context_override;
         provider_mod.g_compact_pct_override = s.compact_pct_override;
@@ -176,6 +180,7 @@ test "applyEnvKnobs actually applies the values it reads" {
     try std.testing.expect(no_local_tools.enabled);
     try std.testing.expect(ws.g_debug);
     try std.testing.expectEqual(@as(u64, 7_000), http.stream_stall_ms); // seconds → ms
+    try std.testing.expectEqual(@as(u64, 90_000), http.post_deadline_ms); // #544: seconds → ms
     try std.testing.expectEqual(@as(i64, 11_000), agent_ws.codex_ws_idle_ms);
     try std.testing.expectEqual(@as(?u64, 123_456), provider_mod.g_context_override);
     try std.testing.expectEqual(@as(?u8, 55), provider_mod.g_compact_pct_override);

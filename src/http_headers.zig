@@ -12,13 +12,10 @@ var session_id_len: usize = 0;
 /// with, and the critical section is a single one-time 36-byte format.
 var session_id_lock: std.atomic.Value(bool) = .init(false);
 
-/// A UUIDv4 minted once per process, matching what openai/codex generates per
-/// session. It rides two places: the `session_id` header and `prompt_cache_key`
-/// on the Responses body, which is what the backend partitions its prompt cache
-/// on. This was a single hardcoded constant shared by every graff user on every
-/// machine, which is the worst case for that partition: one key carrying all
-/// traffic overflows and DEGRADES hit rate, so the full histories we resend
-/// each turn had no affinity to land on.
+/// A UUIDv4 minted once per process. Codex still sends this as the `session_id`
+/// header (ChatGPT backend identity). Prompt-cache affinity is `projectRootId`,
+/// not this value — a per-process random key made every new session's first
+/// call a cold partition.
 pub fn sessionId(io: Io) []const u8 {
     while (session_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
     defer session_id_lock.store(false, .release);
@@ -42,55 +39,76 @@ pub fn sessionId(io: Io) []const u8 {
     return session_id_buf[0..session_id_len];
 }
 
-/// The cache-affinity partition for one agent. opencode keys per session for
-/// the same reason: every agent in the process used to share the session id,
-/// so interleaved root/sub requests — different prefixes under one key —
-/// evicted each other (root cache_read measured ~35% in benchmarks). Root
-/// ("main") keeps the bare session id; every other agent gets a unique suffix.
+/// Prompt-cache affinity for one agent. xAI routes `x-grok-conv-id` (Chat
+/// Completions) and `prompt_cache_key` (Responses) to the same server — that
+/// is how a prefix written earlier can still hit. Root is the durable
+/// per-project id; children get a suffix so interleaved root/sub prefixes
+/// do not evict each other.
 pub fn promptCacheKey(io: Io, label: []const u8, agent: *const anyopaque, buf: []u8) []const u8 {
-    const base = sessionId(io);
-    if (std.mem.eql(u8, label, "main")) return base;
+    return projectCacheKey(io, label, agent, buf);
+}
+
+var project_id_buf: [36]u8 = undefined;
+var project_id_len: usize = 0;
+var project_id_lock: std.atomic.Value(bool) = .init(false);
+
+/// Durable per-project id (cwd-derived UUIDv5, no state to persist). A new
+/// session in the same repo reuses the bucket the last session wrote, so
+/// turn 1 can hit the warm system+tools prefix if the provider still has
+/// it. Different models do not share a cache (the server keys by model);
+/// they each get this same routing id so *their* later sessions can find
+/// *their* prefix. Same-project conversation tails may evict each other;
+/// the expensive prefix still hits.
+pub fn projectRootId(io: Io) []const u8 {
+    while (project_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
+    defer project_id_lock.store(false, .release);
+    if (project_id_len == 0) {
+        var raw: [16]u8 = undefined;
+        {
+            var cwd_buf: [4096]u8 = undefined;
+            const n = Io.Dir.cwd().realPathFile(io, ".", &cwd_buf) catch blk: {
+                @memcpy(cwd_buf[0..1], ".");
+                break :blk 1;
+            };
+            const cwd = cwd_buf[0..n];
+            var digest: [32]u8 = undefined;
+            var h = std.crypto.hash.sha2.Sha256.init(.{});
+            h.update("graff-kimi-project-cache-v1");
+            h.update(cwd);
+            h.final(&digest);
+            @memcpy(&raw, digest[0..16]);
+            raw[6] = (raw[6] & 0x0f) | 0x50; // version 5: name-derived
+            raw[8] = (raw[8] & 0x3f) | 0x80; // variant 1
+        }
+        const hex = std.fmt.bytesToHex(raw, .lower);
+        @memcpy(project_id_buf[0..8], hex[0..8]);
+        project_id_buf[8] = '-';
+        @memcpy(project_id_buf[9..13], hex[8..12]);
+        project_id_buf[13] = '-';
+        @memcpy(project_id_buf[14..18], hex[12..16]);
+        project_id_buf[18] = '-';
+        @memcpy(project_id_buf[19..23], hex[16..20]);
+        project_id_buf[23] = '-';
+        @memcpy(project_id_buf[24..36], hex[20..32]);
+        project_id_len = 36;
+    }
+    return project_id_buf[0..project_id_len];
+}
+
+pub fn projectCacheKey(io: Io, label: []const u8, agent: *const anyopaque, buf: []u8) []const u8 {
+    const base = projectRootId(io);
+    if (std.mem.eql(u8, label, "main")) {
+        if (buf.len >= base.len) {
+            @memcpy(buf[0..base.len], base);
+            return buf[0..base.len];
+        }
+        return base;
+    }
     return std.fmt.bufPrint(buf, "{s}-{x}", .{ base, @intFromPtr(agent) }) catch base;
 }
 
-/// Kimi-only: a DURABLE per-project cache partition, derived from the cwd
-/// (UUIDv5-style, no state to persist). The kimi backend keys its prompt
-/// cache on prompt_cache_key, and a per-process random key made every new
-/// session's first call a cold partition — measured cache_read=0 on every
-/// first call in the k3 benchmark, where kimi-cli's fresh sessions hit ~19k.
-/// A per-project key lets the first call of a new session land on the warm
-/// shared system-prompt prefix (~2-4s). Same-project sessions share the
-/// partition: conversation tails evict each other, the expensive prefix still
-/// hits. Subagents keep a per-agent suffix (the eviction reasoning above).
-pub fn projectCacheKey(io: Io, label: []const u8, agent: *const anyopaque, buf: []u8) []const u8 {
-    var raw: [16]u8 = undefined;
-    {
-        var cwd_buf: [4096]u8 = undefined;
-        const n = Io.Dir.cwd().realPathFile(io, ".", &cwd_buf) catch blk: {
-            @memcpy(cwd_buf[0..1], ".");
-            break :blk 1;
-        };
-        const cwd = cwd_buf[0..n];
-        var digest: [32]u8 = undefined;
-        var h = std.crypto.hash.sha2.Sha256.init(.{});
-        h.update("graff-kimi-project-cache-v1");
-        h.update(cwd);
-        h.final(&digest);
-        @memcpy(&raw, digest[0..16]);
-        raw[6] = (raw[6] & 0x0f) | 0x50; // version 5: name-derived
-        raw[8] = (raw[8] & 0x3f) | 0x80; // variant 1
-    }
-    const hex = std.fmt.bytesToHex(raw, .lower);
-    const base = std.fmt.bufPrint(buf, "{s}-{s}-{s}-{s}-{s}", .{ hex[0..8], hex[8..12], hex[12..16], hex[16..20], hex[20..32] }) catch unreachable;
-    if (std.mem.eql(u8, label, "main")) return base;
-    const suffix = std.fmt.bufPrint(buf[base.len..], "-{x}", .{@intFromPtr(agent)}) catch return base;
-    return buf[0 .. base.len + suffix.len];
-}
-
-/// /resume adopts the persisted key so k3/codex prompt-cache affinity survives
-/// the process boundary — both upstreams key the cache on the durable
-/// conversation id (kimi-code's sessionContext.sessionId; codex's ModelClient
-/// default), not a per-process UUID. No-op once this process has minted its own.
+/// /resume adopts the persisted Codex `session_id`. Prompt-cache routing
+/// uses `projectRootId` and does not need this. No-op once minted.
 pub fn adoptSessionId(id: []const u8) void {
     if (id.len != 36) return;
     while (session_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
@@ -107,8 +125,8 @@ pub fn userAgent(provider: Provider) std.http.Client.Request.Headers.Value {
     return .default;
 }
 
-/// xAI Chat Completions + Responses: the official cache-routing header.
-/// `promptCacheKey` is the same sticky id used as Responses `prompt_cache_key`.
+/// xAI Chat Completions: `x-grok-conv-id` (Responses: `prompt_cache_key`).
+/// Same value on both — xAI routes that id to one server so the prefix hits.
 pub fn wantsGrokConvId(provider_id: []const u8) bool {
     return std.mem.eql(u8, provider_id, "xai");
 }
@@ -157,7 +175,7 @@ pub fn providerHeadersWithConv(io: Io, provider: Provider, bearer: []const u8, b
         count += 1;
     }
     if (wantsGrokConvId(provider.id)) {
-        buf[count] = .{ .name = "x-grok-conv-id", .value = conv_id orelse sessionId(io) };
+        buf[count] = .{ .name = "x-grok-conv-id", .value = conv_id orelse projectRootId(io) };
         count += 1;
     }
     return buf[0..count];
@@ -167,8 +185,7 @@ test "session_id is a stable per-process UUIDv4, not a shared constant" {
     const io = std.testing.io;
     const a = sessionId(io);
     try std.testing.expectEqual(@as(usize, 36), a.len);
-    // The value the backend partitions its prompt cache on used to be this
-    // constant, identical for every session and every graff user.
+    // Codex session_id must not collapse to the old shared constant.
     try std.testing.expect(!std.mem.eql(u8, a, "00000000-0000-0000-0000-000000000001"));
     for ([_]usize{ 8, 13, 18, 23 }) |i| try std.testing.expectEqual(@as(u8, '-'), a[i]);
     try std.testing.expectEqual(@as(u8, '4'), a[14]); // version nibble
@@ -177,8 +194,6 @@ test "session_id is a stable per-process UUIDv4, not a shared constant" {
         if (i == 8 or i == 13 or i == 18 or i == 23) continue;
         try std.testing.expect((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f'));
     }
-    // Stable within the process: the header and prompt_cache_key must agree,
-    // and the key must not move turn to turn or it partitions nothing.
     try std.testing.expectEqualStrings(a, sessionId(io));
 
     var buf: [12]std.http.Header = undefined;
@@ -213,10 +228,23 @@ test "projectCacheKey is a durable per-project v5 UUID, stable across calls" {
     var buf2: [96]u8 = undefined;
     const b = projectCacheKey(std.testing.io, "main", agent, &buf2);
     try std.testing.expectEqualStrings(a, b); // durable: no per-process randomness
+    try std.testing.expectEqualStrings(a, projectRootId(std.testing.io));
+    // Prompt-cache routing is this project id, not the per-process session UUID.
+    try std.testing.expect(!std.mem.eql(u8, a, sessionId(std.testing.io)));
+    var pbuf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(a, promptCacheKey(std.testing.io, "main", agent, &pbuf));
     // Subagents get a per-agent suffix off the same partition (eviction rule).
     var buf3: [96]u8 = undefined;
     const sub = projectCacheKey(std.testing.io, "sub", agent, &buf3);
     try std.testing.expect(std.mem.startsWith(u8, sub, a));
+}
+
+test "x-grok-conv-id with no explicit conv still uses the project root id" {
+    const io = std.testing.io;
+    const xai: Provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "grok-4.6", .context = 256_000 };
+    var buf: [12]std.http.Header = undefined;
+    const headers = providerHeadersWithConv(io, xai, "Bearer k", &buf, null);
+    try std.testing.expectEqualStrings(projectRootId(io), headerValue(headers, "x-grok-conv-id") orelse return error.MissingGrokConvId);
 }
 
 test "adoptSessionId validates length and never overwrites a minted id" {

@@ -86,6 +86,15 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
             if (secs > 0) http_stall.head_ceiling_ms = @min(secs, 86_400) * 1000;
         } else |_| {}
     }
+    // #544: the non-streaming request deadline (default 5 min). One-shots and
+    // subagents run non-streamed, so this is their only hang detector; a
+    // harness with a tighter per-task budget lowers it so a wedged request
+    // retries inside that budget. Seconds; ignored if unparseable or 0.
+    if (environ_map.get("GRAFF_POST_DEADLINE_SECS")) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
+            if (secs > 0) http.post_deadline_ms = @min(secs, 86_400) * 1000;
+        } else |_| {}
+    }
     // #codex-ws: GRAFF_CODEX_WS=off|0|false|no (case-insensitive, the
     // GRAFF_FLEET predicate) forces the SSE transport for codex;
     // GRAFF_WS_DEBUG=1 dumps the ws handshake + frames to stderr. This is the

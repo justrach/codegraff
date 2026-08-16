@@ -507,6 +507,14 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 self.cap_new = true; // provider wants the post-deprecation name
                 continue;
             }
+            // #543: a provider without json_schema structured outputs (deepseek:
+            // "This response_format type is unavailable now") must not lose the
+            // --output-schema contract — retry in json_object mode with the
+            // schema moved into the prompt, on the same ladder as cap_new.
+            if (self.output_schema != null and !self.sox_json_object and std.mem.indexOf(u8, msg, "response_format") != null) {
+                self.sox_json_object = true;
+                continue;
+            }
             if (!self.effort_rejected and mentionsReasoningEffort(msg)) {
                 self.effort_rejected = true; // model rejects the effort hint here; drop + retry
                 continue;

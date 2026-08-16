@@ -484,9 +484,8 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     root.todos.clearRetainingCapacity(); // never inherit another conversation's checklist (#318)
     if (obj.get("todos")) |tv| try appendTodosFromValue(arena, &root.todos, tv);
     root.todos_dirty = false; // restored todos are persisted state, never this-process completion evidence (#318)
-    // The completion double-check is per-PROCESS state and leaked across /resume
-    // (#318): an arm left by a refusal in the previous session short-circuited the
-    // first attempt_completion of the resumed one, closing its goal unchecked.
+    // The completion double-check is per-PROCESS state (#318): a leftover arm
+    // short-circuited the resumed session's first attempt_completion.
     root.completion_gate_armed = false;
     root.completion_refused = false;
     // #318: retire a restored-active goal whose checklist is already finished.
@@ -499,7 +498,8 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     root.session_title = title;
     // Rebase the saved server-only delta onto today's prompt/tool-schema input.
     restoreContextMeter(root, saved_context_tokens, saved_local_tokens);
-    root.cap_new = false; // per-provider; relearn on rejection
+    root.cap_new = false; // per-provider (like sox/effort below); relearn on rejection
+    root.sox_json_object = false; // #543
     root.effort_rejected = false;
     root.ws_off = false; // transport failures belong to the prior live session
     root.ws_transport_failures = 0;

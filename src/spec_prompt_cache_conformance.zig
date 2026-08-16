@@ -93,6 +93,12 @@ test "prompt cache: every baked provider pins a key or Anthropic prefix" {
                 return error.ChildNotIsolated;
             }
             if (k1.len == 0) return error.EmptyCacheKey;
+            var pkbuf: [96]u8 = undefined;
+            const want = http_headers.promptCacheKey(root.io, root.label, &root, &pkbuf);
+            if (!std.mem.eql(u8, k1, want)) {
+                std.debug.print("\n{s}: cache key is not the project id\n", .{spec.id});
+                return error.CacheKeyNotProject;
+            }
         } else {
             if (cacheKeyIn(first) != null) {
                 std.debug.print("\n{s}: unexpected prompt_cache_key on Anthropic wire\n", .{spec.id});
@@ -134,7 +140,9 @@ test "prompt cache: xAI Responses header and body agree; OpenAI Responses has a 
     var ca = try agentFor(a, cd, "main", .responses);
     const cb = try ca.buildBody(null, false, true, true);
     defer std.testing.allocator.free(cb);
-    try std.testing.expectEqualStrings(http_headers.sessionId(ca.io), cacheKeyIn(cb) orelse return error.MissingPromptCacheKey);
+    var ckbuf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(http_headers.promptCacheKey(ca.io, ca.label, &ca, &ckbuf), cacheKeyIn(cb) orelse return error.MissingPromptCacheKey);
+    try std.testing.expect(!std.mem.eql(u8, http_headers.sessionId(ca.io), cacheKeyIn(cb).?));
 }
 
 test "prompt cache: effort is never auto-flipped (prefix stays)" {

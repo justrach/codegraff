@@ -19,10 +19,11 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     const is_codex = std.mem.eql(u8, self.provider.id, "codex");
     try s.objectField("instructions");
     try s.write(try schemaAwarePrompt(self));
-    // Sticky cache partition from the first request. Codex and OpenAI
-    // document prompt_cache_key; xAI uses the same id as x-grok-conv-id.
-    // Root = session id, child = suffix, so interleaved agents do not evict
-    // each other. Effort is NOT flipped per turn — that would miss the prefix.
+    // Sticky cache partition from the first request. Codex/OpenAI document
+    // prompt_cache_key; xAI uses the same id as x-grok-conv-id (routes the
+    // request to the server that already has the prefix). Root = project
+    // id, child = suffix. Effort is NOT flipped per turn — that would miss
+    // the prefix.
     var ckbuf: [96]u8 = undefined;
     try s.objectField("prompt_cache_key");
     try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
@@ -87,6 +88,13 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
 pub fn schemaAwarePrompt(self: *Agent) ![]const u8 {
     const base = self.systemPrompt();
     if (self.output_schema == null) return base;
+    // #543 degrade: this provider cannot enforce json_schema server-side
+    // (json_object mode only), so the schema itself must reach the model.
+    if (self.sox_json_object) return std.mem.concat(self.scratchAlloc(), u8, &.{
+        base,
+        "\n\nA JSON output schema is enforced on your final message. Use tools first to gather every fact you need; only the final message must match the schema — never guess values. This provider cannot enforce the schema server-side, so the final message must be a single JSON object that satisfies exactly this schema: ",
+        self.output_schema.?,
+    });
     return std.mem.concat(self.scratchAlloc(), u8, &.{
         base,
         "\n\nA JSON output schema is enforced on your final message. Use tools first to gather every fact you need; only the final message must match the schema — never guess values.",
@@ -109,6 +117,16 @@ pub fn writeTextFormat(s: *std.json.Stringify, schema_json: []const u8) !void {
     try s.objectField("schema");
     try s.print("{s}", .{schema_json});
     try s.endObject();
+    try s.endObject();
+}
+
+/// #543 fallback for providers without json_schema support (deepseek): plain
+/// JSON mode — the schema constraint moves into the prompt (schemaAwarePrompt).
+pub fn writeJsonObjectFormat(s: *std.json.Stringify) !void {
+    try s.objectField("response_format");
+    try s.beginObject();
+    try s.objectField("type");
+    try s.write("json_object");
     try s.endObject();
 }
 
@@ -189,4 +207,23 @@ test "--output-schema rides text.format on Responses and response_format on chat
     const plain_body = try plain.buildBody(null, false, true, true);
     defer std.testing.allocator.free(plain_body);
     try std.testing.expect(std.mem.indexOf(u8, plain_body, "response_format") == null);
+}
+
+test "#543: json_schema rejection degrades to json_object with the schema moved into the prompt" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const schema = "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},\"required\":[\"answer\"],\"additionalProperties\":false}";
+    var agent = try testAgentFor(arena_state.allocator(), "deepseek", .openai, "deepseek-v4-flash");
+    agent.output_schema = schema;
+    agent.sox_json_object = true; // learned via the request() quirk ladder on deepseek's rejection
+    const body = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(body);
+    // The wire carries plain JSON mode, never the rejected json_schema shape...
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"response_format\":{\"type\":\"json_object\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "json_schema") == null);
+    // ...so the schema itself must reach the model through the system prompt.
+    try std.testing.expect(std.mem.indexOf(u8, body, "cannot enforce the schema server-side") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\\\"additionalProperties\\\":false") != null);
+    // json_object mode requires the word JSON in the prompt (deepseek docs) — the suffix carries it.
+    try std.testing.expect(std.mem.indexOf(u8, body, "JSON output schema") != null);
 }

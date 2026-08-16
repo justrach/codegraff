@@ -167,17 +167,12 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 }
                 try s.endObject();
             }
-            // Sticky cache partition from the first request. Kimi keys by
-            // project (cwd) so a new session still hits the warm prefix;
-            // everyone else on this wire uses the per-conversation id
-            // (OpenAI / codegraff / deepseek / xAI-chat). Children suffix
-            // so they do not evict the root.
+            // Sticky cache partition from the first request. Durable per
+            // project so a new session still hits the warm system+tools
+            // prefix; children suffix so they do not evict the root.
             var ckbuf: [96]u8 = undefined;
             try s.objectField("prompt_cache_key");
-            try s.write(if (is_kimi)
-                http_headers.projectCacheKey(self.io, self.label, self, &ckbuf)
-            else
-                http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
+            try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
             // Reasoning-effort hint for OpenAI-compatible providers that
             // honor it (codegraff gateway, deepseek). Mirrors the
             // Responses `reasoning.effort` set in the branch below.
@@ -186,8 +181,14 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 try s.write(if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
             }
             // --output-schema: structured outputs (xAI docs' response_format).
-            if (self.output_schema) |schema_json|
-                try @import("agent_request_body_responses.zig").writeResponseFormat(&s, schema_json);
+            // A provider that rejected json_schema (#543, deepseek) runs in
+            // json_object mode instead — the schema rides the prompt then.
+            if (self.output_schema) |schema_json| {
+                if (self.sox_json_object)
+                    try @import("agent_request_body_responses.zig").writeJsonObjectFormat(&s)
+                else
+                    try @import("agent_request_body_responses.zig").writeResponseFormat(&s, schema_json);
+            }
         },
         // The Responses-wire body (codex / xAI #502) lives in its own module
         // under the 600-line ceiling; structured-output writers ride along.
@@ -454,9 +455,10 @@ test "retained reasoning: codex full resend keeps encrypted reasoning items and 
     try std.testing.expect(std.mem.indexOf(u8, body, "previous_response_id") == null);
 
     // Because store:false makes every turn a full resend, the backend needs a
-    // cache partition to land it in. openai/codex sends prompt_cache_key on
-    // this exact path, defaulting it to the per-session UUID.
-    const key = try std.fmt.allocPrint(arena, "\"prompt_cache_key\":\"{s}\"", .{http_headers.sessionId(agent.io)});
+    // cache partition to land it in. openai/codex send prompt_cache_key on
+    // this exact path, keyed by the durable project id.
+    var ckbuf: [96]u8 = undefined;
+    const key = try std.fmt.allocPrint(arena, "\"prompt_cache_key\":\"{s}\"", .{http_headers.promptCacheKey(agent.io, agent.label, &agent, &ckbuf)});
     try std.testing.expect(std.mem.indexOf(u8, body, key) != null);
 }
 
@@ -565,7 +567,9 @@ test "openai-wire bodies send a sticky prompt_cache_key; children isolate" {
     const rs = std.mem.indexOf(u8, rb, needle) orelse return error.MissingPromptCacheKey;
     const re = std.mem.indexOfScalarPos(u8, rb, rs + needle.len, '"') orelse return error.MissingPromptCacheKey;
     const root_key = rb[rs + needle.len .. re];
-    try std.testing.expectEqualStrings(http_headers.sessionId(root.io), root_key);
+    var rkbuf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(http_headers.promptCacheKey(root.io, root.label, &root, &rkbuf), root_key);
+    try std.testing.expect(!std.mem.eql(u8, root_key, http_headers.sessionId(root.io)));
 
     var child = root;
     child.sub = true;

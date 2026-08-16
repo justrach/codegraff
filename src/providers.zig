@@ -112,6 +112,7 @@ fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: bool
     // meter instead of replacing it with the structurally-low local estimate.
     if (!same_selection) {
         root.cap_new = false; // per-provider token-cap quirk; relearn on rejection
+        root.sox_json_object = false; // #543: json_schema support is per-provider; relearn
         root.effort_rejected = false; // new model may accept reasoning_effort; relearn
         root.ws_off = false; // a previous Codex WS fallback must not leak across switches
         root.ws_transport_failures = 0;
@@ -501,6 +502,7 @@ test "applyProviderInner preserves the server meter on an exact model re-selecti
     root.context_local_tokens = root.fullRequestEstimateTokens();
     root.last_cache_read = 12_345;
     root.cap_new = true;
+    root.sox_json_object = true;
     root.effort_rejected = true;
     root.ws_off = true;
     root.ws_transport_failures = 2;
@@ -511,6 +513,7 @@ test "applyProviderInner preserves the server meter on an exact model re-selecti
     try std.testing.expectEqual(@as(u64, 220_000), root.last_context_tokens);
     try std.testing.expectEqual(@as(u64, 12_345), root.last_cache_read);
     try std.testing.expect(root.cap_new);
+    try std.testing.expect(root.sox_json_object);
     try std.testing.expect(root.effort_rejected);
     try std.testing.expect(root.ws_off);
 
@@ -521,6 +524,7 @@ test "applyProviderInner preserves the server meter on an exact model re-selecti
     try std.testing.expectEqual(root.last_context_tokens, root.context_local_tokens);
     try std.testing.expectEqual(@as(u64, 0), root.last_cache_read);
     try std.testing.expect(!root.cap_new);
+    try std.testing.expect(!root.sox_json_object); // #543: relearned per provider
     try std.testing.expect(!root.effort_rejected);
     try std.testing.expect(!root.ws_off);
     try std.testing.expectEqual(@as(u8, 0), root.ws_transport_failures);
