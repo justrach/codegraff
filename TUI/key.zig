@@ -12,6 +12,19 @@ pub var held: u32 = 0;
 /// stay out of it or a chunk that happens to start `39;7;32M` gets eaten.
 var in_paste: bool = false;
 
+pub fn inPaste() bool {
+    return in_paste;
+}
+
+/// Close a bracketed paste the terminal never closed for us. The read loop
+/// calls this when it gives up on a `CSI 201~` that split across reads and
+/// never arrived — without it the latch is permanent and every Enter, Escape
+/// and slash command becomes literal text for the rest of the session
+/// (#532/#536/#548).
+pub fn endPaste() void {
+    in_paste = false;
+}
+
 /// Arm/disarm the orphan-debris sweeper. The read loop arms it when it throws
 /// away a partial escape sequence that never finished, because the NEXT read
 /// can then legitimately open with that sequence's orphaned tail.

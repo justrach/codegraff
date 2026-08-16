@@ -16,6 +16,7 @@ const Loop = struct {
     pending: usize = 0,
     typed: std.array_list.Managed(u8),
     mice: usize = 0,
+    paste_ends: usize = 0,
     bg_reports: usize = 0,
 
     fn init(a: std.mem.Allocator) Loop {
@@ -35,6 +36,7 @@ const Loop = struct {
             .codepoint => try self.typed.append('?'),
             .mouse => self.mice += 1,
             .escape => try self.typed.append('E'), // a phantom Escape cancels the turn
+            .paste_end => self.paste_ends += 1,
             .bg_report => self.bg_reports += 1,
             else => {},
         };
@@ -54,12 +56,16 @@ const Loop = struct {
         try self.typed.append('E');
     }
 
-    /// run.zig's `.drop` verdict: carry the head so a late tail can rejoin
-    /// it, and arm the sweeper for the tails that arrive headless.
+    /// run.zig's `.drop` verdict: carry the head, arm the sweeper, and close
+    /// out a paste that can no longer be closed by its own marker.
     fn stallDrop(self: *Loop) void {
         key.stashOrphanHead(self.inbuf[0..self.pending]);
         self.pending = 0;
         key.armOrphan(true);
+        if (key.inPaste()) {
+            key.endPaste();
+            self.paste_ends += 1;
+        }
     }
 };
 
@@ -240,4 +246,49 @@ test "a headless debris tail that opens on a separator is eaten, not typed (#546
     defer typed.deinit();
     try typed.read(";24M");
     try std.testing.expectEqualStrings(";24M", typed.typed.items);
+}
+
+test "a paste whose end marker is lost still closes (#532/#536/#548)" {
+    var loop = Loop.init(std.testing.allocator);
+    defer loop.deinit();
+    try loop.read("\x1b[200~");
+    try loop.read("hello");
+    try loop.read("\x1b[201");
+    try std.testing.expect(key.inPaste());
+    loop.stallDrop(); // ~2s of silence: give up on the marker
+    try std.testing.expect(!key.inPaste());
+    try std.testing.expectEqual(@as(usize, 1), loop.paste_ends);
+    // The late `~` rejoins its head, so it is never typed either.
+    try loop.read("~");
+    try std.testing.expectEqualStrings("hello", loop.typed.items);
+    // And the debris guard is live again, because the paste really did close.
+    try loop.read("\x1b[<39;7;32M");
+    try std.testing.expectEqualStrings("hello", loop.typed.items);
+    try std.testing.expectEqual(@as(usize, 1), loop.mice);
+}
+
+test "an unterminated paste releases on the idle timeout (#548)" {
+    var loop = Loop.init(std.testing.allocator);
+    defer loop.deinit();
+    try loop.read("\x1b[200~body");
+    try std.testing.expect(key.inPaste());
+    key.endPaste(); // run.zig's paste_idle_ms sweep
+    try std.testing.expect(!key.inPaste());
+    // Back to a normal composer: debris is eaten again instead of typed.
+    try loop.read("\x1b[<39;7;32M");
+    try std.testing.expectEqualStrings("body", loop.typed.items);
+    try std.testing.expectEqual(@as(usize, 1), loop.mice);
+}
+
+test "a real multi-read paste is untouched by any of the recovery paths" {
+    var loop = Loop.init(std.testing.allocator);
+    defer loop.deinit();
+    try loop.read("\x1b[200~");
+    try loop.read("39;7;32M and 0x1f ");
+    try loop.read("second chunk ;24M");
+    try loop.read("\x1b[201~");
+    try std.testing.expectEqualStrings("39;7;32M and 0x1f second chunk ;24M", loop.typed.items);
+    try std.testing.expectEqual(@as(usize, 1), loop.paste_ends);
+    try std.testing.expectEqual(@as(usize, 0), loop.mice);
+    try std.testing.expect(!key.inPaste());
 }

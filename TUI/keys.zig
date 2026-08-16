@@ -40,6 +40,7 @@ pub fn handle(self: *Model, k: Key) Effect {
     }
     if (k == .paste_end) {
         self.pasting = false;
+        key_mod.endPaste(); // the two latches must never drift apart
         const v = std.mem.trim(u8, self.input.getValue(), " \t\r\n");
         if (@import("image.zig").attachDropped(self, v)) {
             self.input.setValue("") catch {};
@@ -51,6 +52,15 @@ pub fn handle(self: *Model, k: Key) Effect {
             .enter => self.input.handle(.{ .char = '\n' }),
             .char => |c| self.input.handle(.{ .char = c }),
             .codepoint => self.input.handle(k),
+            // In-band escape hatch. A paste whose `CSI 201~` never arrived
+            // latches this branch forever, and it swallows Enter, Tab, the
+            // slash menu and every overlay — indistinguishable from a hung
+            // TUI. Escape breaks the latch instead of vanishing (#536/#548).
+            .escape => {
+                self.pasting = false;
+                key_mod.endPaste();
+                self.setToast("paste ended");
+            },
             else => {},
         }
         return .stay;
