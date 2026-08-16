@@ -38,7 +38,20 @@ import time
 # relative path resolved there is a silent boot failure, not a graff finding.
 BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "zig-out/bin/graff")
 BOOT_WAIT = 3.0
+BOOT_MAX = 15.0  # under load (tier-1 right after a test compile) 3s is not enough
 QUIT_WAIT = 4.0
+
+
+def boot(fd):
+    """Drain until the alt-screen enter proves the TUI is up (readiness, not a
+    fixed sleep — a loaded machine boots slower than any constant we pick)."""
+    out = b""
+    end = time.time() + BOOT_MAX
+    while time.time() < end:
+        out += drain(fd, 0.3)
+        if b"\x1b[?1049h" in out:
+            return out + drain(fd, 1.0)  # let the first full paint land
+    return out
 
 
 def spawn(cwd, env_extra):
@@ -123,7 +136,7 @@ def quit_seq(fd):
 def check_a():
     ws, env = fresh_ws()
     pid, fd = spawn(ws, env)
-    out = drain(fd, BOOT_WAIT)
+    out = boot(fd)
     quit_seq(fd)
     out += drain(fd, QUIT_WAIT)
     status = reap(pid)
@@ -151,7 +164,7 @@ HOSTILE = [
 def check_b():
     ws, env = fresh_ws()
     pid, fd = spawn(ws, env)
-    drain(fd, BOOT_WAIT)
+    boot(fd)
     out = b""
     for payload in HOSTILE:
         os.write(fd, payload)
@@ -188,7 +201,7 @@ def check_b():
 def check_c():
     ws, env = fresh_ws()
     pid, fd = spawn(ws, env)
-    out = drain(fd, BOOT_WAIT)
+    out = boot(fd)
     os.kill(pid, signal.SIGTERM)
     out += drain(fd, 3.0)
     status = reap(pid)
