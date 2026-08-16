@@ -65,6 +65,7 @@ test {
     _ = @import("models.zig");
     _ = @import("markdown.zig");
     _ = @import("syntax.zig");
+    _ = @import("diff.zig");
     _ = @import("dump.zig");
     _ = @import("effort.zig");
     _ = @import("sim.zig");
