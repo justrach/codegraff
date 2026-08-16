@@ -39,7 +39,8 @@ checks, in order:
   build       zig build
   tests       zig build test, and the suite count never shrinks
   tui         zig build tui-test (the TUI suite was ungated until the 2026-08 bug wave)
-  tuiguard    scripts/tui-pty-guard.py — real-binary pty lifecycle invariants
+  tuiguard    real-binary pty probes: lifecycle invariants (tui-pty-guard.py)
+              and virtual-screen checks (test-tui-screenstate.py)
   invariants  the named goal/loop/todo tests actually ran, not just compiled
   sdk         the committed SDKs match `graff --schema`
 EOF
@@ -247,6 +248,33 @@ if wanted tuiguard; then
     # differently from us, then reads the SCREEN back and compares it cell for
     # cell against a forced full repaint of the same frame.
     if python3 scripts/test-tui-painter.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # The viewport must not jump when the terminal changes width: drives
+    # TIOCSWINSZ across five widths mid-scroll and reads the screen back. With
+    # the logical scroll anchor removed the marker leaves the screen on the
+    # FIRST width change, so this is a real gate, not a smoke test.
+    if python3 scripts/test-tui-resize-anchor.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # grok-build's one-column rule for ANIMATED chrome: watches the live blink
+    # on a background op's pending row and fails if the label beside it moves a
+    # column, or if a frame is not East-Asian-Narrow. TUI/glyphs.zig holds the
+    # same law for the frame sets; this is the pixels.
+    if python3 scripts/test-tui-chrome-width.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # Streaming markdown: the answer arrives as 1-3 codepoint deltas whose
+    # boundaries land mid-escape, mid-fence and mid-marker. Both the live tail
+    # and the settled row must be free of the model's own CR/SGR bytes.
+    if python3 scripts/test-tui-stream-markdown.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # Same invariants, read off a VIRTUAL SCREEN instead of raw bytes
+    # (scripts/ptyharness.py): the VT interpreter's own selftest, the ported
+    # mode-balance check, and out-of-band screen corruption fed straight to the
+    # tty. The self-heal assertion is expected-fail until fix/tui-painter lands.
+    if python3 scripts/test-tui-screenstate.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
   fi

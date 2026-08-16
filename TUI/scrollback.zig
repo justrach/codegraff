@@ -4,6 +4,8 @@
 const std = @import("std");
 
 const app = @import("app.zig");
+const diff_mod = @import("diff.zig");
+const glyphs = @import("glyphs.zig");
 const theme_mod = @import("theme.zig");
 const Model = app.Model;
 
@@ -218,20 +220,20 @@ fn summary(self: *const Model, a: std.mem.Allocator, start: usize, end: usize, s
         if (rowIsMcp(e)) mcp_n += 1;
         if (isSearch(classifyOn(e))) searches += 1 else calls += 1;
     }
-    const sel: []const u8 = if (selected) "› " else "  ";
+    const sel = glyphs.frame(&glyphs.row_mark, @intFromBool(!selected));
     // No live bar here: liveness belongs to the pending row alone. A bar on
     // every summary made the whole transcript pulse and shift while thinking.
     var out = std.array_list.Managed(u8).init(a);
     if (calls > 0) {
         const label = if (mcp_n == calls + searches)
-            try std.fmt.allocPrint(a, "{s}◆ Called {d} MCP tool{s}", .{ sel, calls, if (calls == 1) "" else "s" })
+            try std.fmt.allocPrint(a, "{s}{s} Called {d} MCP tool{s}", .{ sel, glyphs.tool, calls, if (calls == 1) "" else "s" })
         else
-            try std.fmt.allocPrint(a, "{s}◆ Called {d} tool{s}", .{ sel, calls, if (calls == 1) "" else "s" });
+            try std.fmt.allocPrint(a, "{s}{s} Called {d} tool{s}", .{ sel, glyphs.tool, calls, if (calls == 1) "" else "s" });
         try out.appendSlice(try theme_mod.paint(a, if (selected) th.accent else th.muted, label));
     }
     if (searches > 0) {
         if (out.items.len > 0) try out.append('\n');
-        const label = try std.fmt.allocPrint(a, "{s}◆ Searched {d} MCP tool{s}", .{ sel, searches, if (searches == 1) "" else "s" });
+        const label = try std.fmt.allocPrint(a, "{s}{s} Searched {d} MCP tool{s}", .{ sel, glyphs.tool, searches, if (searches == 1) "" else "s" });
         try out.appendSlice(try theme_mod.paint(a, if (selected) th.accent else th.muted, label));
     }
     return out.items;
@@ -241,10 +243,10 @@ fn row(self: *const Model, a: std.mem.Allocator, idx: usize, e: app.Entry, width
     const th = self.theme();
     const mark: []const u8 = switch (e.kind) {
         .user => "",
-        .assistant => "●",
-        .tool => "◆",
-        .system => "·",
-        .err => "●",
+        .assistant => glyphs.assistant,
+        .tool => glyphs.tool,
+        .system => glyphs.system,
+        .err => glyphs.assistant,
         .pending => thinkingGlyph(now_ms),
     };
     const color: []const u8 = switch (e.kind) {
@@ -268,7 +270,7 @@ fn row(self: *const Model, a: std.mem.Allocator, idx: usize, e: app.Entry, width
         .user => try @import("markdown.zig").renderUser(a, raw, th.accent, th.text),
         else => raw,
     };
-    const sel: []const u8 = if (selected) "› " else "  ";
+    const sel = glyphs.frame(&glyphs.row_mark, @intFromBool(!selected));
     if (e.kind == .user) {
         const line = try std.fmt.allocPrint(a, "{s}{s}#{d}{s}  {s}", .{ sel, th.muted, userNo(self, idx), theme_mod.reset, body });
         return theme_mod.wrapToWidth(a, line, width);
@@ -332,7 +334,7 @@ fn displayName(name: []const u8) []const u8 {
 fn toolTitle(a: std.mem.Allocator, named: app.Entry, status: app.Entry) ![]const u8 {
     const t = named.tool orelse return named.text;
     const mark: []const u8 = if (status.tool) |s|
-        (if (s.denied) "⊘ " else if (s.is_error) "✗ " else "")
+        (if (s.denied) glyphs.denied ++ " " else if (s.is_error) glyphs.failed ++ " " else "")
     else
         "";
     const name = displayName(t.name);
@@ -365,11 +367,13 @@ fn toolVisual(
 }
 
 fn toolCard(a: std.mem.Allocator, th: theme_mod.Theme, call: app.Entry, outcome: app.Entry, selected: bool, width: usize) ![]const u8 {
-    const sel: []const u8 = if (selected) "› " else "  ";
+    const sel = glyphs.frame(&glyphs.row_mark, @intFromBool(!selected));
     const title = try toolTitle(a, call, outcome);
     const preview = toolPreview(outcome);
-    const head = try std.fmt.allocPrint(a, "{s}{s}◆{s}{s} {s}", .{ sel, if (selected) th.accent else th.muted, theme_mod.reset, th.text, title });
+    const head = try std.fmt.allocPrint(a, "{s}{s}{s}{s}{s} {s}", .{ sel, if (selected) th.accent else th.muted, glyphs.tool, theme_mod.reset, th.text, title });
     if (preview == null) return theme_mod.wrapToWidth(a, head, width);
+    // A patch-shaped result is banded, not quoted: diff.zig owns its wrap.
+    if (diff_mod.looksLikeUnified(preview.?)) return std.fmt.allocPrint(a, "{s}\n{s}", .{ try theme_mod.wrapToWidth(a, head, width), try diff_mod.renderThemed(a, preview.?, th, width) });
     const body = try std.fmt.allocPrint(a, "{s}{s}│  {s}{s}", .{ sel, th.muted, preview.?, theme_mod.reset });
     const joined = try std.fmt.allocPrint(a, "{s}\n{s}", .{ try theme_mod.wrapToWidth(a, head, width), try theme_mod.wrapToWidth(a, body, width) });
     return joined;
@@ -380,13 +384,15 @@ fn thinkingGlyph(now_ms: u64) []const u8 {
     // run.zig's hash-diff suppress every paint for a background op's whole
     // duration — 8s of literally zero terminal output read as a freeze. One
     // changing glyph on one line keeps the paints flowing while historical
-    // rows stay byte-identical (the earlier full-transcript pulse bug).
-    return if ((now_ms / 500) % 2 == 0) "❙" else "❘";
+    // rows stay byte-identical (the earlier full-transcript pulse bug). The
+    // frames come from the registry, which pins each to ONE column so the
+    // label beside them never steps sideways as they tick (glyphs.zig).
+    return glyphs.frame(&glyphs.thinking, now_ms / 500);
 }
 
 fn thinkingLabel(now_ms: u64) []const u8 {
     _ = now_ms;
-    // Grok: static "Thinking" — motion is only the ❙ flicker.
+    // Grok: static "Thinking" — motion is only the one-column blink.
     return "Thinking";
 }
 
@@ -395,18 +401,11 @@ fn firstLine(s: []const u8) []const u8 {
     return s;
 }
 
+/// The live tail is raw model bytes: escapes, C0 controls (a CR would rewind
+/// the row) and the half glyph a delta boundary left behind all have to go
+/// before it reaches a frame. Same filter the finished message gets.
 fn strip(a: std.mem.Allocator, s: []const u8) []const u8 {
-    var out = std.array_list.Managed(u8).init(a);
-    var i: usize = 0;
-    while (i < s.len) {
-        if (s[i] == 0x1b) {
-            i = theme_mod.skipEsc(s, i);
-            continue;
-        }
-        out.append(s[i]) catch {};
-        i += 1;
-    }
-    return out.items;
+    return @import("markdown.zig").sanitize(a, s) catch s;
 }
 
 fn tail(a: std.mem.Allocator, s: []const u8, width: usize, max_lines: usize) ![]const u8 {
@@ -430,10 +429,10 @@ test "firstLine stops at newline" {
     try std.testing.expectEqualStrings("ab", firstLine("ab\ncd"));
 }
 
-test "thinking animation is Grok ❙ flicker plus static Thinking" {
+test "thinking animation is a one-column blink plus a static Thinking" {
     try std.testing.expectEqualStrings("Thinking", thinkingLabel(0));
     try std.testing.expectEqualStrings(thinkingLabel(0), thinkingLabel(320));
-    try std.testing.expectEqualStrings("❙", thinkingGlyph(0));
+    try std.testing.expectEqualStrings(glyphs.thinking[0], thinkingGlyph(0));
     // The glyph must actually FLICKER across a half-period, and be stable
     // within one — a fully static pending row suppressed every paint for a
     // background op's whole duration (verified live: 8s of zero output).
@@ -470,7 +469,7 @@ test "a live turn never pulses or shifts historical rows" {
     while (it.next()) |ln| {
         if (std.mem.indexOf(u8, ln, "Called") != null) {
             saw_summary = true;
-            try std.testing.expect(std.mem.indexOf(u8, ln, "❙") == null);
+            try std.testing.expect(std.mem.indexOf(u8, ln, glyphs.thinking[0]) == null);
         }
     }
     try std.testing.expect(saw_summary);

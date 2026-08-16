@@ -4,9 +4,11 @@
 
 const std = @import("std");
 
+const anchor = @import("anchor.zig");
 const app = @import("app.zig");
 const chrome = @import("chrome.zig");
 const engine = @import("engine.zig");
+const glyphs = @import("glyphs.zig");
 const scrollback = @import("scrollback.zig");
 const selection = @import("selection.zig");
 const theme_mod = @import("theme.zig");
@@ -14,6 +16,17 @@ const welcome = @import("welcome.zig");
 const Model = app.Model;
 
 pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize, now_ms: u64) ![]const u8 {
+    // A horizontal resize rewraps everything under the viewport, so the row
+    // count in `scroll` stops meaning what it meant. Take a LOGICAL anchor off
+    // the frame we last painted — read at the OLD width, before it is
+    // overwritten — and restore the viewport onto it below. Only the
+    // transcript is anchored this way: an overlay body scrolls too, but its
+    // rows are not history entries.
+    const rewrap: ?anchor.Anchor = if (width != self.last_term_width and
+        (self.overlay == .none or self.overlay == .image))
+        anchor.capture(self, self.last_term_width)
+    else
+        null;
     self.last_term_width = width;
     self.last_term_height = height;
     self.now_ms = now_ms;
@@ -105,6 +118,10 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     } else {
         const max_scroll = n - view_h;
         if (self.follow) self.scroll = 0;
+        // Put the anchored logical line back on the top row. Saturating: when
+        // the rewrap pushed it past the last possible top line the viewport
+        // parks at the bottom, which still shows it.
+        if (rewrap) |anc| self.scroll = max_scroll -| anchor.rowAt(self, anc, width);
         if (self.scroll > max_scroll) self.scroll = max_scroll;
         const start = max_scroll - self.scroll;
         self.mid_skip = start;
@@ -122,7 +139,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
                 const th = self.theme();
                 var head = std.array_list.Managed(u8).init(a);
                 try head.appendSlice(th.accent);
-                try head.appendSlice("\u{276F} ");
+                try head.appendSlice(glyphs.prompt_mark ++ " ");
                 try head.appendSlice(th.text);
                 var one = utext;
                 if (std.mem.indexOfScalar(u8, utext, '\n')) |nl| one = utext[0..nl];

@@ -1,6 +1,7 @@
 //! Composer buffer. Soft-wrap lives in chrome; undo is Ctrl/Cmd+Z.
 
 const std = @import("std");
+const glyphs = @import("glyphs.zig");
 const Key = @import("key.zig").Key;
 
 const Snap = struct { text: []u8, cursor: usize };
@@ -132,11 +133,11 @@ pub const Input = struct {
         var out = std.array_list.Managed(u8).init(a);
         if (self.buf.items.len == 0) {
             try out.appendSlice(self.placeholder);
-            try out.appendSlice("▋");
+            try out.appendSlice(glyphs.cursor);
             return out.items;
         }
         try out.appendSlice(self.buf.items[0..self.cursor]);
-        try out.appendSlice("▋");
+        try out.appendSlice(glyphs.cursor);
         try out.appendSlice(self.buf.items[self.cursor..]);
         return out.items;
     }
