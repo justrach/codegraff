@@ -14,10 +14,31 @@ pub const AgentMode = enum { normal, plan, always_approve };
 pub const EscArm = enum { none, clear, rewind };
 pub const EntryKind = enum { user, assistant, tool, system, err, pending };
 
+/// A tool row's payload, straight off the engine's ToolInvocation /
+/// ToolOutcome / ToolRejection (#551). Rendering reads these FIELDS; nothing
+/// re-derives them by splitting a rendered line on a glyph or on " | ".
+pub const ToolInfo = struct {
+    /// The engine's tool name, verbatim. Classification (mcp / search) tests
+    /// this, never the whole row.
+    name: []const u8,
+    /// Argument preview on a call, result preview on an outcome.
+    detail: []const u8 = "",
+    /// false = the call was announced, true = it returned (or was refused).
+    done: bool = false,
+    is_error: bool = false,
+    /// Refused by the harness before it ran.
+    denied: bool = false,
+};
+
 pub const Entry = struct {
     kind: EntryKind,
     text: []const u8,
     folded: bool = false,
+    /// Non-null on every `.tool` row a live turn produces. Null on a legacy
+    /// `.tool` row restored from a session written before the typed contract —
+    /// those still render from `text` alone (see scrollback.zig), which is the
+    /// whole reason this is optional rather than required.
+    tool: ?ToolInfo = null,
 };
 
 pub const Effect = enum { stay, quit, background };
@@ -64,6 +85,10 @@ pub const Model = struct {
 
     goal: ?[]const u8 = null,
     session_name: ?[]const u8 = null,
+    /// Owns the string `engine.g_model_name` points at after a mid-turn
+    /// provider failover (#551): the event that carried it is freed as soon as
+    /// the drain that delivered it returns.
+    model_override: ?[]const u8 = null,
     scroll: usize = 0,
     selected: usize = 0,
     turns: usize = 0,
@@ -126,7 +151,7 @@ pub const Model = struct {
         if (self.bg) |op| {
             if (!op.threaded or op.done.load(.acquire)) @import("bgop.zig").reap(self) else self.bg = null;
         }
-        for (self.history.items) |e| self.alloc.free(e.text);
+        for (self.history.items) |e| self.freeEntry(e);
         self.history.deinit();
         for (self.prompt_hist.items) |s| self.alloc.free(s);
         self.prompt_hist.deinit();
@@ -136,6 +161,12 @@ pub const Model = struct {
         self.images.deinit();
         if (self.goal) |g| self.alloc.free(g);
         if (self.session_name) |s| self.alloc.free(s);
+        if (self.model_override) |m| {
+            // The global points into this buffer; drop it before the free so a
+            // late reader cannot follow a dangling slice.
+            if (engine.g_model_name.ptr == m.ptr) engine.g_model_name = "";
+            self.alloc.free(m);
+        }
         if (self.overlay_filter.len > 0) self.alloc.free(self.overlay_filter);
         if (self.files_cache) |f| self.alloc.free(f);
         if (self.sel_text.len > 0) self.alloc.free(self.sel_text);
@@ -148,6 +179,7 @@ pub const Model = struct {
         for (job.history) |t| self.alloc.free(t.text);
         self.alloc.free(job.history);
         if (job.stream.buf.len > 0) self.alloc.free(job.stream.buf);
+        job.events.deinit();
         self.alloc.destroy(job);
         self.pending = null;
     }
@@ -167,6 +199,44 @@ pub const Model = struct {
         }
     }
 
+    /// Append a FIELD-BACKED tool row (#551). `name`/`detail` come from the
+    /// engine's typed event and are copied here; `text` is kept only as the
+    /// plain fallback the non-rendering readers use (sticky header, selection
+    /// copy, session persistence), never as the thing rendering parses.
+    pub fn pushTool(self: *Model, info: ToolInfo) !void {
+        const name = try self.alloc.dupe(u8, info.name);
+        errdefer self.alloc.free(name);
+        const detail = try sanitized(self.alloc, info.detail);
+        errdefer self.alloc.free(detail);
+        const text = if (detail.len > 0)
+            try std.fmt.allocPrint(self.alloc, "{s}  {s}", .{ name, detail })
+        else
+            try self.alloc.dupe(u8, name);
+        errdefer self.alloc.free(text);
+        try self.history.append(.{
+            .kind = .tool,
+            .text = text,
+            .folded = true,
+            .tool = .{
+                .name = name,
+                .detail = detail,
+                .done = info.done,
+                .is_error = info.is_error,
+                .denied = info.denied,
+            },
+        });
+    }
+
+    /// Release everything an entry owns. Tool rows own two extra strings, so
+    /// freeing `text` alone leaks them.
+    pub fn freeEntry(self: *Model, e: Entry) void {
+        self.alloc.free(e.text);
+        if (e.tool) |t| {
+            self.alloc.free(t.name);
+            self.alloc.free(t.detail);
+        }
+    }
+
     pub fn pushFmt(self: *Model, kind: EntryKind, comptime fmt: []const u8, args: anytype) !void {
         const raw = try std.fmt.allocPrint(self.alloc, fmt, args);
         defer self.alloc.free(raw);
@@ -181,7 +251,7 @@ pub const Model = struct {
     }
 
     pub fn clearHistory(self: *Model) void {
-        for (self.history.items) |e| self.alloc.free(e.text);
+        for (self.history.items) |e| self.freeEntry(e);
         self.history.clearRetainingCapacity();
         self.turns = 0;
         self.chars_in = 0;

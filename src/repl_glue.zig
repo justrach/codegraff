@@ -308,6 +308,11 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
         .tracer = c.tracer,
         .run_budget = c.run_budget,
         .approvals = &approvals,
+        // #551: a frontend that wants the engine's TYPED events installs its
+        // sink for this thread's turn (engine_sink.bindTurnSink). Null for
+        // `graff repl` and every headless caller, which keeps the process-mode
+        // default. Never re-parse rendered output to learn what the engine did.
+        .sink = @import("engine_sink.zig").turnSink(),
         .tools_anthropic = c.tools_anthropic,
         .tools_openai = c.tools_openai,
         .tools_responses = c.tools_responses,

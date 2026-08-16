@@ -361,8 +361,8 @@ test "click on a folded tool row still expands it, and paints no band" {
     m.setup(std.testing.allocator);
     defer m.deinit();
     try m.push(.user, "hi");
-    try m.push(.tool, "⚙ bash");
-    try m.push(.tool, "✓ bash");
+    try m.pushTool(.{ .name = "bash" });
+    try m.pushTool(.{ .name = "bash", .detail = "ok", .done = true });
     m.last_term_height = 24;
     m.last_term_width = 80;
     m.mid_origin = 1;
@@ -381,8 +381,8 @@ test "click on blank padding selects and toggles nothing (#519)" {
     m.setup(std.testing.allocator);
     defer m.deinit();
     try m.push(.user, "hi");
-    try m.push(.tool, "⚙ bash");
-    try m.push(.tool, "✓ bash");
+    try m.pushTool(.{ .name = "bash" });
+    try m.pushTool(.{ .name = "bash", .detail = "ok", .done = true });
     m.last_term_height = 24;
     m.last_term_width = 80;
     m.mid_origin = 0;
@@ -399,8 +399,8 @@ test "a drag that starts on a tool group leaves the group as it was" {
     m.setup(std.testing.allocator);
     defer m.deinit();
     try m.push(.user, "hi");
-    try m.push(.tool, "⚙ bash");
-    try m.push(.tool, "✓ bash");
+    try m.pushTool(.{ .name = "bash" });
+    try m.pushTool(.{ .name = "bash", .detail = "ok", .done = true });
     m.last_term_height = 24;
     m.last_term_width = 80;
     m.mid_origin = 1;

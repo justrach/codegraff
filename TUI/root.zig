@@ -17,6 +17,9 @@ pub const HudKind = engine.HudKind;
 pub const Turn = engine.Turn;
 pub const Params = engine.Params;
 pub const StreamBuf = engine.StreamBuf;
+pub const Event = engine.Event;
+pub const EventQueue = engine.EventQueue;
+pub const ToolEvent = engine.ToolEvent;
 pub const TurnFn = engine.TurnFn;
 pub const ModelFn = engine.ModelFn;
 pub const CancelFn = engine.CancelFn;
@@ -35,6 +38,7 @@ pub const sim = @import("sim.zig");
 
 test {
     _ = engine;
+    _ = @import("events.zig");
     _ = theme;
     _ = catalog;
     _ = app;

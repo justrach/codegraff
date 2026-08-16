@@ -42,6 +42,9 @@ pub fn startJob(self: *Model) void {
         },
         .stream = .{ .buf = self.alloc.alloc(u8, 256 * 1024) catch &.{} },
     };
+    // The queue must own its copies before the turn thread can push: the
+    // engine's payloads live in a per-turn arena that dies with the turn.
+    job.events.attach(self.alloc);
     self.push(.pending, "") catch {};
     self.pending = job;
     if (std.Thread.spawn(.{}, engine.jobRun, .{job})) |th| {
@@ -57,13 +60,11 @@ pub fn finishJob(self: *Model) void {
     if (!job.done.load(.acquire)) return;
     if (job.threaded) job.thread.join();
 
+    // Whatever the engine emitted after the last frame — the tail of the tool
+    // run, a closing notice — before the answer row goes in, so the transcript
+    // keeps its order.
+    drainEvents(self);
     _ = removePendingRows(self);
-    // The live stream carries ⚙/✓/✗ lines; the result is only the final
-    // answer. Keep the tool rows so they don't vanish with the pending entry.
-    if (job.stream.snapshot(self.alloc)) |live| {
-        defer self.alloc.free(live);
-        persistToolLines(self, live);
-    }
     if (job.result) |r| {
         self.chars_out += r.len;
         self.push(.assistant, r) catch {};
@@ -76,6 +77,7 @@ pub fn finishJob(self: *Model) void {
     for (job.history) |t| self.alloc.free(t.text);
     self.alloc.free(job.history);
     if (job.stream.buf.len > 0) self.alloc.free(job.stream.buf);
+    job.events.deinit();
     self.alloc.destroy(job);
     self.pending = null;
     self.cancel_requested = false;
@@ -140,7 +142,7 @@ pub fn cancelTurn(self: *Model) void {
 fn collapseThinking(self: *Model) void {
     const n = self.history.items.len;
     if (n == 0 or self.history.items[n - 1].kind != .pending) return;
-    self.alloc.free(self.history.items[n - 1].text);
+    self.freeEntry(self.history.items[n - 1]);
     const text = self.alloc.dupe(u8, "■ interrupted") catch {
         self.history.shrinkRetainingCapacity(n - 1);
         return;
@@ -148,28 +150,71 @@ fn collapseThinking(self: *Model) void {
     self.history.items[n - 1] = .{ .kind = .system, .text = text, .folded = false };
 }
 
+/// Did this turn already say it was interrupted? Scans back to the prompt
+/// rather than looking only at the last row: a cancel collapses the pending
+/// row immediately, and events that were already in flight land AFTER it, so
+/// "is it the last row" would have written a second notice (#551).
 fn hasInterrupted(self: *const Model) bool {
-    if (self.history.items.len == 0) return false;
-    return std.mem.eql(u8, self.history.items[self.history.items.len - 1].text, "■ interrupted");
+    var i = self.history.items.len;
+    while (i > 0) {
+        i -= 1;
+        const e = self.history.items[i];
+        if (e.kind == .user) return false;
+        if (std.mem.eql(u8, e.text, "■ interrupted")) return true;
+    }
+    return false;
 }
 
-pub fn isToolLine(line: []const u8) bool {
-    return std.mem.startsWith(u8, line, "⚙ ") or
-        std.mem.startsWith(u8, line, "✓ ") or
-        std.mem.startsWith(u8, line, "✗ ") or
-        std.mem.startsWith(u8, line, "⊘ ");
-}
-
-/// Pull new ⚙/✓/✗ lines out of the live stream so they become clickable
-/// folded history *during* the turn, not only after finishJob.
-pub fn harvestLiveTools(self: *Model) void {
-    if (self.cancel_requested) return;
+/// Apply everything the engine has emitted for the live turn. Called from the
+/// render loop's poll point every frame, so tool rows, notices and failovers
+/// appear *during* the turn and not only at finishJob.
+///
+/// This replaced the old harvestLiveTools, which reconstructed tool activity by
+/// matching "⚙ /✓ /✗ /⊘ " prefixes in the sink's rendered bytes — an assistant
+/// answer whose line began "✓ " became a phantom tool row, and every re-scan
+/// re-counted the rows it had already made (#551).
+pub fn drainEvents(self: *Model) void {
     const job = self.pending orelse return;
-    const live = job.stream.snapshot(self.alloc) orelse return;
-    defer self.alloc.free(live);
+    const evs = job.events.drain();
+    defer job.events.free(evs);
+    if (evs.len == 0) return;
+    // Events land BEFORE the live "Thinking" row, which is a presentation
+    // artifact rather than transcript content.
     const had_pending = removePendingRows(self);
-    persistToolLines(self, live);
+    for (evs) |ev| applyEvent(self, ev);
     if (had_pending) self.push(.pending, "") catch {};
+}
+
+fn applyEvent(self: *Model, ev: engine.Event) void {
+    switch (ev) {
+        .tool_started => |t| self.pushTool(.{ .name = t.name, .detail = t.detail }) catch {},
+        .tool_finished => |t| self.pushTool(.{
+            .name = t.name,
+            .detail = t.detail,
+            .done = true,
+            .is_error = t.is_error,
+        }) catch {},
+        // A refusal is a finished tool row in the error state: the TUI has a
+        // surface for that today, and dropping it (as the old sink did) left
+        // the user watching a call that simply never came back.
+        .tool_rejected => |t| self.pushTool(.{
+            .name = t.name,
+            .detail = t.detail,
+            .done = true,
+            .is_error = true,
+            .denied = true,
+        }) catch {},
+        .notice => |s| self.push(.system, s) catch {},
+        // A mid-turn failover changes what the status bar must say. The event's
+        // copy dies with this drain, so the Model takes ownership of the name
+        // the global points at.
+        .model_changed => |s| if (self.alloc.dupe(u8, s)) |owned| {
+            if (self.model_override) |old| self.alloc.free(old);
+            self.model_override = owned;
+            engine.g_model_name = owned;
+            self.pushFmt(.system, "model → {s}", .{owned}) catch {};
+        } else |_| {},
+    }
 }
 
 /// Remove every .pending row wherever it sits. Steering pushes "↳ queued"
@@ -181,34 +226,12 @@ pub fn removePendingRows(self: *Model) bool {
     while (i > 0) {
         i -= 1;
         if (self.history.items[i].kind == .pending) {
-            self.alloc.free(self.history.items[i].text);
+            self.freeEntry(self.history.items[i]);
             _ = self.history.orderedRemove(i);
             had = true;
         }
     }
     return had;
-}
-
-fn persistToolLines(self: *Model, stream: []const u8) void {
-    var have: usize = 0;
-    var hi = self.history.items.len;
-    while (hi > 0) {
-        hi -= 1;
-        if (self.history.items[hi].kind == .user) break;
-        if (self.history.items[hi].kind == .tool) have += 1;
-    }
-    var seen: usize = 0;
-    var it = std.mem.splitScalar(u8, stream, '\n');
-    while (it.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or !isToolLine(line)) continue;
-        if (seen < have) {
-            seen += 1;
-            continue;
-        }
-        self.push(.tool, line) catch {};
-        seen += 1;
-    }
 }
 
 test "startJob without a turn_fn finishes as a failed call" {
@@ -225,11 +248,13 @@ test "startJob without a turn_fn finishes as a failed call" {
     try std.testing.expect(m.history.items[m.history.items.len - 1].kind == .err);
 }
 
-test "finishJob keeps tool lines from the live stream" {
+test "finishJob turns queued events into field-backed tool rows" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
-    const live = "hello\n⚙ bash\n✓ bash\nmore text";
+    // Prose and structure arrive on SEPARATE channels now: the answer text
+    // that happens to contain a "✓ " line is only ever an answer.
+    const live = "hello\n✓ all good\nmore text";
     const buf = try std.testing.allocator.dupe(u8, live);
     const job = try std.testing.allocator.create(engine.Job);
     job.* = .{
@@ -241,6 +266,9 @@ test "finishJob keeps tool lines from the live stream" {
         .result = try std.testing.allocator.dupe(u8, "all done"),
     };
     job.stream.len.store(live.len, .release);
+    job.events.attach(std.testing.allocator);
+    job.events.push(.{ .tool_started = .{ .name = "bash", .detail = "ls -la" } });
+    job.events.push(.{ .tool_finished = .{ .name = "bash", .detail = "4 files" } });
     job.done.store(true, .release);
     try m.push(.pending, "");
     m.pending = job;
@@ -248,20 +276,104 @@ test "finishJob keeps tool lines from the live stream" {
     try std.testing.expect(m.pending == null);
     try std.testing.expectEqual(@as(usize, 3), m.history.items.len);
     try std.testing.expectEqual(app.EntryKind.tool, m.history.items[0].kind);
-    try std.testing.expectEqualStrings("⚙ bash", m.history.items[0].text);
-    try std.testing.expectEqual(app.EntryKind.tool, m.history.items[1].kind);
-    try std.testing.expectEqualStrings("✓ bash", m.history.items[1].text);
+    // The row carries FIELDS, not a rendered line to be taken apart again.
+    const call = m.history.items[0].tool orelse return error.NotFieldBacked;
+    try std.testing.expectEqualStrings("bash", call.name);
+    try std.testing.expectEqualStrings("ls -la", call.detail);
+    try std.testing.expect(!call.done);
+    const outcome = m.history.items[1].tool orelse return error.NotFieldBacked;
+    try std.testing.expectEqualStrings("4 files", outcome.detail);
+    try std.testing.expect(outcome.done);
+    try std.testing.expect(!outcome.is_error);
     try std.testing.expectEqual(app.EntryKind.assistant, m.history.items[2].kind);
     try std.testing.expectEqualStrings("all done", m.history.items[2].text);
 }
 
-test "hosted tool line is visible on the live tail before finishJob" {
+test "a streamed line starting with a status glyph never becomes a tool row (#551)" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    // Exactly the shape that produced phantom rows: the model's own answer,
+    // formatted as a checklist, streaming through the live buffer.
+    const live = "✓ tests pass\n✗ lint fails\n⚙ retrying\n";
+    const buf = try std.testing.allocator.dupe(u8, live);
+    const job = try std.testing.allocator.create(engine.Job);
+    job.* = .{
+        .gpa = std.testing.allocator,
+        .history = &.{},
+        .params = .{},
+        .stream = .{ .buf = buf },
+        .threaded = false,
+        .result = try std.testing.allocator.dupe(u8, "✓ tests pass\n✗ lint fails\n⚙ retrying"),
+    };
+    job.stream.len.store(live.len, .release);
+    job.events.attach(std.testing.allocator);
+    job.done.store(true, .release);
+    try m.push(.pending, "");
+    m.pending = job;
+    finishJob(&m);
+    var tools: usize = 0;
+    for (m.history.items) |e| {
+        if (e.kind == .tool) tools += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), tools);
+    try std.testing.expectEqual(app.EntryKind.assistant, m.history.items[m.history.items.len - 1].kind);
+    // And the answer is stored ONCE — the old harvest left a copy behind as
+    // tool rows and then pushed the same text again as the answer.
+    var copies: usize = 0;
+    for (m.history.items) |e| {
+        if (std.mem.indexOf(u8, e.text, "tests pass") != null) copies += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), copies);
+}
+
+test "a refusal and a failover reach the transcript instead of vanishing" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    const job = try std.testing.allocator.create(engine.Job);
+    job.* = .{
+        .gpa = std.testing.allocator,
+        .history = &.{},
+        .params = .{},
+        .stream = .{},
+        .threaded = false,
+        .result = try std.testing.allocator.dupe(u8, "ok"),
+    };
+    job.events.attach(std.testing.allocator);
+    job.events.push(.{ .tool_rejected = .{
+        .name = "write_file",
+        .detail = "plan mode forbids writes",
+        .is_error = true,
+        .denied = true,
+    } });
+    job.events.push(.{ .notice = "loaded 2 saved approval(s)" });
+    job.events.push(.{ .model_changed = "sonnet" });
+    job.done.store(true, .release);
+    try m.push(.pending, "");
+    m.pending = job;
+    finishJob(&m);
+    const refused = m.history.items[0].tool orelse return error.NotFieldBacked;
+    try std.testing.expect(refused.denied);
+    try std.testing.expect(refused.is_error);
+    try std.testing.expect(refused.done);
+    try std.testing.expectEqual(app.EntryKind.system, m.history.items[1].kind);
+    try std.testing.expectEqualStrings("loaded 2 saved approval(s)", m.history.items[1].text);
+    // The failover updates what the status bar reads, not just the transcript.
+    try std.testing.expectEqualStrings("sonnet", engine.g_model_name);
+    try std.testing.expect(std.mem.indexOf(u8, m.history.items[2].text, "sonnet") != null);
+}
+
+test "a live tool row is visible mid-turn, straight off the event queue" {
     const scrollback = @import("scrollback.zig");
     const Hold = struct {
         var started: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
         var release: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
-        fn f(_: ?*anyopaque, gpa: std.mem.Allocator, _: []const engine.Turn, _: engine.Params, stream: *engine.StreamBuf) ?[]const u8 {
-            stream.appendBytes("⚙ bash\n");
+        fn f(_: ?*anyopaque, gpa: std.mem.Allocator, _: []const engine.Turn, _: engine.Params, stream: *engine.StreamBuf, events: *engine.EventQueue) ?[]const u8 {
+            // The turn thread pushes structure and streams prose, exactly as
+            // the real sink does.
+            events.push(.{ .tool_started = .{ .name = "bash", .detail = "ls" } });
+            stream.appendBytes("working…\n");
             started.store(true, .release);
             while (!release.load(.acquire)) std.Thread.yield() catch {};
             return gpa.dupe(u8, "all done") catch null;
@@ -289,10 +401,12 @@ test "hosted tool line is visible on the live tail before finishJob" {
     try std.testing.expect(!job.done.load(.acquire));
     const snap = job.stream.snapshot(std.testing.allocator) orelse return error.LiveTailEmpty;
     defer std.testing.allocator.free(snap);
-    try std.testing.expect(std.mem.indexOf(u8, snap, "⚙ bash") != null);
+    // Prose only in the live buffer — the tool row is on the other channel.
+    try std.testing.expect(std.mem.indexOf(u8, snap, "working") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snap, "bash") == null);
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    harvestLiveTools(&m);
+    drainEvents(&m);
     const harvested = try scrollback.render(&m, arena_state.allocator(), 80, 0);
     try std.testing.expect(std.mem.indexOf(u8, harvested, "Called") != null);
 
@@ -347,6 +461,10 @@ test "cancelTurn collapses thinking immediately" {
     try std.testing.expect(m.history.items.len == 1);
     try std.testing.expect(m.history.items[0].kind == .system);
     try std.testing.expectEqualStrings("■ interrupted", m.history.items[0].text);
+    // Events already in flight when the cancel landed still arrive, and they
+    // land after the notice — which must not make finishJob write a second one.
+    job.events.attach(std.testing.allocator);
+    job.events.push(.{ .tool_finished = .{ .name = "bash", .detail = "cancelled", .is_error = true } });
     job.done.store(true, .release);
     finishJob(&m);
     try std.testing.expect(m.pending == null);
@@ -389,7 +507,7 @@ test "Model.deinit never joins a running turn thread (#534)" {
     const Hold = struct {
         var release: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
         var started: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
-        fn f(_: ?*anyopaque, gpa: std.mem.Allocator, _: []const engine.Turn, _: engine.Params, _: *engine.StreamBuf) ?[]const u8 {
+        fn f(_: ?*anyopaque, gpa: std.mem.Allocator, _: []const engine.Turn, _: engine.Params, _: *engine.StreamBuf, _: *engine.EventQueue) ?[]const u8 {
             started.store(true, .release);
             while (!release.load(.acquire)) std.Thread.yield() catch {};
             return gpa.dupe(u8, "late") catch null;

@@ -174,12 +174,28 @@ fn lineCount(s: []const u8) usize {
     return std.mem.count(u8, s, "\n") + 1;
 }
 
-fn isSearch(text: []const u8) bool {
-    return containsIgnoreCase(text, "search") or containsIgnoreCase(text, "grep") or containsIgnoreCase(text, "find");
+/// Is this a search-shaped tool? Answered from the tool NAME (#551). It used
+/// to be answered from the whole rendered line, so `bash` running a command
+/// that merely mentioned "find" counted as a search.
+fn isSearch(name: []const u8) bool {
+    return containsIgnoreCase(name, "search") or containsIgnoreCase(name, "grep") or containsIgnoreCase(name, "find");
 }
 
-fn isMcp(text: []const u8) bool {
-    return std.mem.indexOf(u8, text, "mcp__") != null or containsIgnoreCase(text, "mcp");
+fn isMcp(name: []const u8) bool {
+    return std.mem.startsWith(u8, name, "mcp__");
+}
+
+/// What a row's classification reads. A field-backed row answers with the
+/// engine's tool name; a legacy row restored from an old session has only its
+/// rendered text, and keeps the looser substring behavior it was written with.
+fn classifyOn(e: app.Entry) []const u8 {
+    if (e.tool) |t| return t.name;
+    return e.text;
+}
+
+fn rowIsMcp(e: app.Entry) bool {
+    if (e.tool) |t| return isMcp(t.name);
+    return std.mem.indexOf(u8, e.text, "mcp__") != null or containsIgnoreCase(e.text, "mcp");
 }
 
 fn containsIgnoreCase(hay: []const u8, needle: []const u8) bool {
@@ -198,9 +214,9 @@ fn summary(self: *const Model, a: std.mem.Allocator, start: usize, end: usize, s
     var mcp_n: usize = 0;
     var i = start;
     while (i < end) : (i += 1) {
-        const t = self.history.items[i].text;
-        if (isMcp(t)) mcp_n += 1;
-        if (isSearch(t)) searches += 1 else calls += 1;
+        const e = self.history.items[i];
+        if (rowIsMcp(e)) mcp_n += 1;
+        if (isSearch(classifyOn(e))) searches += 1 else calls += 1;
     }
     const sel: []const u8 = if (selected) "› " else "  ";
     // No live bar here: liveness belongs to the pending row alone. A bar on
@@ -242,7 +258,7 @@ fn row(self: *const Model, a: std.mem.Allocator, idx: usize, e: app.Entry, width
         // pushes an empty row and gets the generic label.
         (if (e.text.len > 0) e.text else thinkingLabel(now_ms))
     else if (e.kind == .tool)
-        try toolTitle(a, e.text)
+        try toolTitle(a, e, e)
     else if (e.folded)
         firstLine(e.text)
     else
@@ -275,57 +291,62 @@ fn userNo(self: *const Model, idx: usize) u32 {
     return if (n == 0) 1 else n;
 }
 
-fn prettyTool(text: []const u8) []const u8 {
-    var s = std.mem.trim(u8, text, " \t");
-    const prefixes = [_][]const u8{ "⚙ ", "✓ ", "✗ ", "⊘ " };
-    for (prefixes) |p| {
-        if (std.mem.startsWith(u8, s, p)) s = s[p.len..];
-    }
-    if (std.mem.startsWith(u8, s, "mcp__")) {
-        if (std.mem.lastIndexOf(u8, s, "__")) |u| {
-            if (u + 2 < s.len) return s[u + 2 ..];
-        }
-    }
-    return s;
+/// A tool row's start/done phase, straight off its typed payload. A legacy row
+/// (tool == null) is neither: it has no phase to read, so it renders alone.
+fn isStartTool(e: app.Entry) bool {
+    const t = e.tool orelse return false;
+    return !t.done;
 }
 
-fn isStartTool(text: []const u8) bool {
-    return std.mem.startsWith(u8, std.mem.trim(u8, text, " \t"), "⚙ ");
-}
-
-fn isDoneTool(text: []const u8) bool {
-    const s = std.mem.trim(u8, text, " \t");
-    return std.mem.startsWith(u8, s, "✓ ") or std.mem.startsWith(u8, s, "✗ ") or std.mem.startsWith(u8, s, "⊘ ");
+fn isDoneTool(e: app.Entry) bool {
+    const t = e.tool orelse return false;
+    return t.done;
 }
 
 fn nextTool(self: *const Model, t: usize, end: usize) usize {
-    if (t + 1 < end and isStartTool(self.history.items[t].text) and isDoneTool(self.history.items[t + 1].text))
+    if (t + 1 < end and isStartTool(self.history.items[t]) and isDoneTool(self.history.items[t + 1]))
         return t + 2;
     return t + 1;
 }
 
-fn shortToolName(name: []const u8) []const u8 {
+/// The display form of a tool NAME: the harness's internal names shortened,
+/// and an MCP tool shown by its leaf. Operates on the name alone — the old
+/// prettyTool did this by stripping a status glyph off a rendered line first.
+fn displayName(name: []const u8) []const u8 {
     if (std.mem.eql(u8, name, "read_file")) return "read";
     if (std.mem.eql(u8, name, "write_file")) return "write";
+    if (std.mem.startsWith(u8, name, "mcp__")) {
+        if (std.mem.lastIndexOf(u8, name, "__")) |u| {
+            if (u + 2 < name.len) return name[u + 2 ..];
+        }
+    }
     return name;
 }
 
-fn toolTitle(a: std.mem.Allocator, text: []const u8) ![]const u8 {
-    const pretty = prettyTool(text);
-    const cut = std.mem.indexOf(u8, pretty, " | ") orelse pretty.len;
-    const head = pretty[0..cut];
-    const sp = std.mem.indexOfScalar(u8, head, ' ') orelse return shortToolName(head);
-    const name = shortToolName(head[0..sp]);
-    const rest = std.mem.trim(u8, head[sp + 1 ..], " \t");
-    if (rest.len == 0) return name;
-    return std.fmt.allocPrint(a, "{s}  {s}", .{ name, rest });
+/// The head of a tool row: `[status mark] name  [argument preview]`, composed
+/// from FIELDS. On a paired card the name and its arguments come from the call
+/// (`named`) while the status mark comes from the outcome (`status`); on a lone
+/// row both are the same entry. A legacy row has only its stored line and is
+/// shown verbatim rather than taken apart — the old code split that line on
+/// " | ", which silently truncated any command containing one.
+fn toolTitle(a: std.mem.Allocator, named: app.Entry, status: app.Entry) ![]const u8 {
+    const t = named.tool orelse return named.text;
+    const mark: []const u8 = if (status.tool) |s|
+        (if (s.denied) "⊘ " else if (s.is_error) "✗ " else "")
+    else
+        "";
+    const name = displayName(t.name);
+    // A finished row's detail is its RESULT preview and belongs in the body.
+    const args = if (t.done) "" else t.detail;
+    if (args.len == 0) return if (mark.len == 0) name else std.fmt.allocPrint(a, "{s}{s}", .{ mark, name });
+    return std.fmt.allocPrint(a, "{s}{s}  {s}", .{ mark, name, args });
 }
 
-fn toolPreview(text: []const u8) ?[]const u8 {
-    const pretty = prettyTool(text);
-    const at = std.mem.indexOf(u8, pretty, " | ") orelse return null;
-    const body = std.mem.trim(u8, pretty[at + 3 ..], " \t");
-    return if (body.len == 0) null else body;
+/// The one-line body under a tool card: the outcome's result preview.
+fn toolPreview(e: app.Entry) ?[]const u8 {
+    const t = e.tool orelse return null;
+    if (!t.done or t.detail.len == 0) return null;
+    return t.detail;
 }
 
 fn toolVisual(
@@ -338,15 +359,15 @@ fn toolVisual(
     selected: bool,
 ) ![]const u8 {
     const e = self.history.items[t];
-    const paired = t + 1 < end and isStartTool(e.text) and isDoneTool(self.history.items[t + 1].text);
+    const paired = t + 1 < end and isStartTool(e) and isDoneTool(self.history.items[t + 1]);
     if (!paired) return row(self, a, t, e, width, now_ms, selected);
-    return toolCard(a, self.theme(), e.text, self.history.items[t + 1].text, selected, width);
+    return toolCard(a, self.theme(), e, self.history.items[t + 1], selected, width);
 }
 
-fn toolCard(a: std.mem.Allocator, th: theme_mod.Theme, start_text: []const u8, done_text: []const u8, selected: bool, width: usize) ![]const u8 {
+fn toolCard(a: std.mem.Allocator, th: theme_mod.Theme, call: app.Entry, outcome: app.Entry, selected: bool, width: usize) ![]const u8 {
     const sel: []const u8 = if (selected) "› " else "  ";
-    const title = try toolTitle(a, start_text);
-    const preview = toolPreview(done_text);
+    const title = try toolTitle(a, call, outcome);
+    const preview = toolPreview(outcome);
     const head = try std.fmt.allocPrint(a, "{s}{s}◆{s}{s} {s}", .{ sel, if (selected) th.accent else th.muted, theme_mod.reset, th.text, title });
     if (preview == null) return theme_mod.wrapToWidth(a, head, width);
     const body = try std.fmt.allocPrint(a, "{s}{s}│  {s}{s}", .{ sel, th.muted, preview.?, theme_mod.reset });
@@ -391,11 +412,11 @@ fn strip(a: std.mem.Allocator, s: []const u8) []const u8 {
 fn tail(a: std.mem.Allocator, s: []const u8, width: usize, max_lines: usize) ![]const u8 {
     var lines = std.array_list.Managed([]const u8).init(a);
     var it = std.mem.splitScalar(u8, s, '\n');
-    while (it.next()) |ln| {
-        const t = std.mem.trim(u8, ln, " \t\r");
-        if (@import("turn.zig").isToolLine(t)) continue;
-        try lines.append(ln);
-    }
+    // No tool-line filter any more: the live buffer carries PROSE only —
+    // answer text and (with /thinking on) reasoning. Tool activity reaches the
+    // transcript as typed events, so nothing here has to guess which lines the
+    // sink drew (#551).
+    while (it.next()) |ln| try lines.append(ln);
     const start = if (lines.items.len > max_lines) lines.items.len - max_lines else 0;
     var out = std.array_list.Managed(u8).init(a);
     for (lines.items[start..], 0..) |ln, n| {
@@ -426,8 +447,8 @@ test "a live turn never pulses or shifts historical rows" {
     m.setup(std.testing.allocator);
     defer m.deinit();
     try m.push(.user, "hi");
-    try m.push(.tool, "⚙ bash");
-    try m.push(.tool, "✓ bash");
+    try m.pushTool(.{ .name = "bash" });
+    try m.pushTool(.{ .name = "bash", .detail = "ok", .done = true });
     try m.push(.assistant, "done");
     try m.push(.pending, "");
     var sbuf: [16]u8 = undefined;
@@ -472,10 +493,17 @@ test "a live turn never pulses or shifts historical rows" {
     try std.testing.expectEqual(@as(usize, 1), changed);
 }
 
-test "prettyTool strips mcp prefix" {
-    try std.testing.expectEqualStrings("memo", prettyTool("✓ mcp__codedbpro__memo"));
-    try std.testing.expectEqualStrings("faster_search", prettyTool("⚙ mcp__codedbpro__faster_search"));
-    try std.testing.expectEqualStrings("bash", prettyTool("⚙ bash"));
+test "displayName shortens an mcp tool to its leaf, reading the NAME" {
+    // The old prettyTool took a rendered LINE and stripped a status glyph off
+    // it first; this takes the engine's tool name, which is all it ever needed.
+    try std.testing.expectEqualStrings("memo", displayName("mcp__codedbpro__memo"));
+    try std.testing.expectEqualStrings("faster_search", displayName("mcp__codedbpro__faster_search"));
+    try std.testing.expectEqualStrings("bash", displayName("bash"));
+    try std.testing.expectEqualStrings("read", displayName("read_file"));
+}
+
+test {
+    _ = @import("scrollback_tests.zig");
 }
 
 test "collapsed tool run is one Called summary" {
@@ -483,8 +511,8 @@ test "collapsed tool run is one Called summary" {
     m.setup(std.testing.allocator);
     defer m.deinit();
     try m.push(.user, "hi");
-    try m.push(.tool, "⚙ bash");
-    try m.push(.tool, "✓ bash");
+    try m.pushTool(.{ .name = "bash" });
+    try m.pushTool(.{ .name = "bash", .detail = "ok", .done = true });
     try m.push(.assistant, "done");
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -517,8 +545,8 @@ test "Called summary visual row maps back to the tool group" {
     m.setup(std.testing.allocator);
     defer m.deinit();
     try m.push(.user, "hi");
-    try m.push(.tool, "⚙ bash");
-    try m.push(.tool, "✓ bash");
+    try m.pushTool(.{ .name = "bash" });
+    try m.pushTool(.{ .name = "bash", .detail = "ok", .done = true });
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const text = try render(&m, arena.allocator(), 80, 0);
@@ -539,8 +567,8 @@ test "collapsed search run is one Searched summary" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
-    try m.push(.tool, "⚙ grep needle");
-    try m.push(.tool, "✓ grep needle");
+    try m.pushTool(.{ .name = "grep", .detail = "needle" });
+    try m.pushTool(.{ .name = "grep", .detail = "3 hits", .done = true });
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const text = try render(&m, arena.allocator(), 80, 0);
@@ -555,8 +583,8 @@ test "expanded read card shows the path and preview" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
-    try m.push(.tool, "⚙ read src/foo.zig");
-    try m.push(.tool, "✓ read | const std = @import(\"std\");");
+    try m.pushTool(.{ .name = "read_file", .detail = "src/foo.zig" });
+    try m.pushTool(.{ .name = "read_file", .detail = "const std = @import(\"std\");", .done = true });
     m.toggleToolGroup(0);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

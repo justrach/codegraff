@@ -17,7 +17,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     self.last_term_width = width;
     self.last_term_height = height;
     self.now_ms = now_ms;
-    @import("turn.zig").harvestLiveTools(self);
+    @import("turn.zig").drainEvents(self);
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -172,8 +172,8 @@ test "click on a painted Called row expands the tools" {
     m.setup(std.testing.allocator);
     defer m.deinit();
     try m.push(.assistant, "Hey. I am in /Users/blackfloofie/codegraff on wip/shared-checkout-2026-08-14 and holding a long worktree path so this wraps");
-    try m.push(.tool, "⚙ bash");
-    try m.push(.tool, "✓ bash");
+    try m.pushTool(.{ .name = "bash" });
+    try m.pushTool(.{ .name = "bash", .detail = "ok", .done = true });
     const frame = try render(&m, std.testing.allocator, 80, 24, 0);
     defer std.testing.allocator.free(frame);
     var row: usize = 0;
@@ -212,8 +212,8 @@ test "visible dump of a fixture frame shows chips, Called, composer, no CSI" {
     m.setup(std.testing.allocator);
     defer m.deinit();
     try m.push(.user, "@[/tmp/shot.png] look");
-    try m.push(.tool, "⚙ bash");
-    try m.push(.tool, "✓ bash");
+    try m.pushTool(.{ .name = "bash" });
+    try m.pushTool(.{ .name = "bash", .detail = "ok", .done = true });
     const frame = try render(&m, std.testing.allocator, 80, 24, 0);
     defer std.testing.allocator.free(frame);
     const dump_mod = @import("dump.zig");
@@ -257,7 +257,7 @@ test "debug overlay keeps the observability HUD and adds layout" {
     m.setup(std.testing.allocator);
     defer m.deinit();
     try m.push(.user, "@[/tmp/shot.png] look");
-    try m.push(.tool, "⚙ bash");
+    try m.pushTool(.{ .name = "bash" });
     const frame = try render(&m, std.testing.allocator, 80, 24, 0);
     defer std.testing.allocator.free(frame);
     m.openOverlay(.debug);

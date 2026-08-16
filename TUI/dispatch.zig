@@ -262,7 +262,7 @@ pub fn rewind(self: *Model) void {
         return;
     }
     var j = self.history.items.len;
-    while (j > i - 1) : (j -= 1) self.alloc.free(self.history.items[j - 1].text);
+    while (j > i - 1) : (j -= 1) self.freeEntry(self.history.items[j - 1]);
     self.history.shrinkRetainingCapacity(i - 1);
     self.push(.system, "rewound the last turn") catch {};
 }
