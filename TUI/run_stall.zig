@@ -25,6 +25,9 @@ const esc_grace_idle: u8 = 2;
 const esc_grace_live: u8 = 8;
 /// A paste marker is worth ~2s before we conclude it is never coming.
 const paste_marker_stalls: u8 = 80;
+/// ...but a LONE ESC inside that window gets ~300ms, not the full 2s: see
+/// `stallVerdict`.
+const esc_grace_paste: u8 = 12;
 /// Input silence that ends a bracketed paste nothing else can close.
 pub const paste_idle_ms: u64 = 2000;
 /// How long a given-up head stays eligible to rejoin its tail. A sequence cut
@@ -48,10 +51,19 @@ const arm_window_ms: u64 = 1000;
 /// only silently drop once it is clearly never coming.
 pub fn stallVerdict(pending: []const u8, stalls: u8, ctx: StallCtx) StallVerdict {
     if (pending.len == 0) return .wait;
+    const lone_esc = pending.len == 1 and pending[0] == 0x1b;
     if (ctx.in_paste and isPasteMarkerPrefix(pending)) {
+        // ESC is a proper prefix of `CSI 201~`, so the marker budget also
+        // swallowed the ONE in-band way out of a wedged paste for ~2s on every
+        // terminal that does not send kitty CSI-u (where Escape arrives as
+        // `CSI 27 u` and never looked like a marker). A lone ESC that has sat
+        // there through several quiet polls without growing a body is the user
+        // reaching for that hatch, not a terminator in flight; an ESC with
+        // bytes behind it still gets the full marker wait.
+        if (lone_esc and stalls >= esc_grace_paste) return .escape_key;
         return if (stalls >= paste_marker_stalls) .drop else .wait;
     }
-    if (pending.len == 1 and pending[0] == 0x1b) {
+    if (lone_esc) {
         const grace = if (ctx.turn_live) esc_grace_live else esc_grace_idle;
         return if (stalls >= grace) .escape_key else .wait;
     }
@@ -146,7 +158,7 @@ test "the debris arm expires too, so it can never eat a later keystroke" {
 
 test "a paste marker is never abandoned on the #94 timescale (#532)" {
     // Both give-up routes strand `in_paste` forever, so every prefix of either
-    // marker gets ~2s — including the lone ESC, which must NOT become Escape.
+    // marker gets ~2s — including a lone ESC on the #94 timescale.
     const p: StallCtx = .{ .in_paste = true };
     try std.testing.expectEqual(StallVerdict.wait, stallVerdict("\x1b", 2, p));
     try std.testing.expectEqual(StallVerdict.wait, stallVerdict("\x1b[201", 20, p));
@@ -173,4 +185,18 @@ test "a resting mouse is not paste activity (#548 starvation)" {
     try std.testing.expect(!onlyMouseReports("\x1b[<35;80;24")); // split: not complete
     try std.testing.expect(!onlyMouseReports("\x1b[201~"));
     try std.testing.expect(!onlyMouseReports("\x1b[A"));
+}
+
+test "a lone ESC inside a latched paste is the escape hatch, not a 2s wait" {
+    // On a non-kitty terminal Escape IS `\x1b`, which is a prefix of the
+    // terminator — so the hatch out of a wedged paste was dead for ~2s.
+    const p: StallCtx = .{ .in_paste = true };
+    try std.testing.expectEqual(StallVerdict.wait, stallVerdict("\x1b", 11, p));
+    try std.testing.expectEqual(StallVerdict.escape_key, stallVerdict("\x1b", 12, p));
+    try std.testing.expectEqual(StallVerdict.escape_key, stallVerdict("\x1b", 79, p));
+    // An ESC with a body behind it is still a terminator in flight: full wait.
+    try std.testing.expectEqual(StallVerdict.wait, stallVerdict("\x1b[", 12, p));
+    try std.testing.expectEqual(StallVerdict.wait, stallVerdict("\x1b[201", 79, p));
+    // Outside a paste nothing moved: #94's 2-stall Escape still fires.
+    try std.testing.expectEqual(StallVerdict.escape_key, stallVerdict("\x1b", 2, .{}));
 }
