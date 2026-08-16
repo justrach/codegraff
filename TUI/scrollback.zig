@@ -1,4 +1,5 @@
-//! Conversation scrollback. ANSI only.
+//! Conversation scrollback. ANSI only. render() is the uncached full layout
+//! that layout_cache.zig memoizes per block and that its tests hold it to.
 //! Consecutive tool rows collapse into a Grok-style summary until expanded.
 
 const std = @import("std");
@@ -41,7 +42,7 @@ pub fn render(self: *const Model, a: std.mem.Allocator, width: usize, now_ms: u6
         if (!first) try out.append('\n');
         first = false;
         const selected = self.focus == .scrollback and i == self.selected;
-        try out.appendSlice(try row(self, a, i, e, width, now_ms, selected));
+        try out.appendSlice(try row(self, a, userNo(self, i), e, width, now_ms, selected));
         i += 1;
     }
     if (self.pending) |job| {
@@ -88,7 +89,7 @@ pub fn indexAtVisual(self: *const Model, visual_row: usize, width: usize) ?usize
             i = run.end;
             continue;
         }
-        const s = row(self, a, i, self.history.items[i], width, self.now_ms, false) catch "";
+        const s = row(self, a, userNo(self, i), self.history.items[i], width, self.now_ms, false) catch "";
         const lines = lineCount(s);
         if (visual_row >= v and visual_row < v + lines) return i;
         v += lines;
@@ -131,7 +132,7 @@ pub fn visualOfIndex(self: *const Model, idx: usize, width: usize) ?usize {
             continue;
         }
         if (i == idx) return v;
-        v += lineCount(row(self, a, i, self.history.items[i], width, self.now_ms, false) catch "");
+        v += lineCount(row(self, a, userNo(self, i), self.history.items[i], width, self.now_ms, false) catch "");
         i += 1;
     }
     return null;
@@ -165,13 +166,13 @@ pub fn stickyUserAbove(self: *const Model, top_line: usize, width: usize) ?[]con
             continue;
         }
         if (e.kind == .user and v < top_line) best = e.text;
-        v += lineCount(row(self, a, i, e, width, self.now_ms, false) catch "");
+        v += lineCount(row(self, a, userNo(self, i), e, width, self.now_ms, false) catch "");
         i += 1;
     }
     return best;
 }
 
-fn lineCount(s: []const u8) usize {
+pub fn lineCount(s: []const u8) usize {
     if (s.len == 0) return 1;
     return std.mem.count(u8, s, "\n") + 1;
 }
@@ -209,7 +210,7 @@ fn containsIgnoreCase(hay: []const u8, needle: []const u8) bool {
     return false;
 }
 
-fn summary(self: *const Model, a: std.mem.Allocator, start: usize, end: usize, selected: bool) ![]const u8 {
+pub fn summary(self: *const Model, a: std.mem.Allocator, start: usize, end: usize, selected: bool) ![]const u8 {
     const th = self.theme();
     var searches: usize = 0;
     var calls: usize = 0;
@@ -239,7 +240,7 @@ fn summary(self: *const Model, a: std.mem.Allocator, start: usize, end: usize, s
     return out.items;
 }
 
-fn row(self: *const Model, a: std.mem.Allocator, idx: usize, e: app.Entry, width: usize, now_ms: u64, selected: bool) ![]const u8 {
+pub fn row(self: *const Model, a: std.mem.Allocator, user_no: u32, e: app.Entry, width: usize, now_ms: u64, selected: bool) ![]const u8 {
     const th = self.theme();
     const mark: []const u8 = switch (e.kind) {
         .user => "",
@@ -272,7 +273,7 @@ fn row(self: *const Model, a: std.mem.Allocator, idx: usize, e: app.Entry, width
     };
     const sel = glyphs.frame(&glyphs.row_mark, @intFromBool(!selected));
     if (e.kind == .user) {
-        const line = try std.fmt.allocPrint(a, "{s}{s}#{d}{s}  {s}", .{ sel, th.muted, userNo(self, idx), theme_mod.reset, body });
+        const line = try std.fmt.allocPrint(a, "{s}{s}#{d}{s}  {s}", .{ sel, th.muted, user_no, theme_mod.reset, body });
         return theme_mod.wrapToWidth(a, line, width);
     }
     if (e.kind == .pending) {
@@ -305,7 +306,7 @@ fn isDoneTool(e: app.Entry) bool {
     return t.done;
 }
 
-fn nextTool(self: *const Model, t: usize, end: usize) usize {
+pub fn nextTool(self: *const Model, t: usize, end: usize) usize {
     if (t + 1 < end and isStartTool(self.history.items[t]) and isDoneTool(self.history.items[t + 1]))
         return t + 2;
     return t + 1;
@@ -351,7 +352,7 @@ fn toolPreview(e: app.Entry) ?[]const u8 {
     return t.detail;
 }
 
-fn toolVisual(
+pub fn toolVisual(
     self: *const Model,
     a: std.mem.Allocator,
     t: usize,
@@ -362,7 +363,7 @@ fn toolVisual(
 ) ![]const u8 {
     const e = self.history.items[t];
     const paired = t + 1 < end and isStartTool(e) and isDoneTool(self.history.items[t + 1]);
-    if (!paired) return row(self, a, t, e, width, now_ms, selected);
+    if (!paired) return row(self, a, 0, e, width, now_ms, selected); // a tool row is never numbered
     return toolCard(a, self.theme(), e, self.history.items[t + 1], selected, width);
 }
 
@@ -401,7 +402,7 @@ fn firstLine(s: []const u8) []const u8 {
     return s;
 }
 
-fn strip(a: std.mem.Allocator, s: []const u8) []const u8 {
+pub fn strip(a: std.mem.Allocator, s: []const u8) []const u8 {
     var out = std.array_list.Managed(u8).init(a);
     var i: usize = 0;
     while (i < s.len) {
@@ -415,7 +416,7 @@ fn strip(a: std.mem.Allocator, s: []const u8) []const u8 {
     return out.items;
 }
 
-fn tail(a: std.mem.Allocator, s: []const u8, width: usize, max_lines: usize) ![]const u8 {
+pub fn tail(a: std.mem.Allocator, s: []const u8, width: usize, max_lines: usize) ![]const u8 {
     var lines = std.array_list.Managed([]const u8).init(a);
     var it = std.mem.splitScalar(u8, s, '\n');
     // No tool-line filter any more: the live buffer carries PROSE only —

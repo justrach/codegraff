@@ -242,12 +242,18 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-typed-events.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
-<<<<<<< HEAD
     # The frame painter may never show anything but the current frame. Storms
     # the window size, fills the screen with glyphs terminals measure
     # differently from us, then reads the SCREEN back and compares it cell for
     # cell against a forced full repaint of the same frame.
     if python3 scripts/test-tui-painter.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # Scrolling is a viewport SLICE of one cached layout, not a re-layout
+    # (TUI/layout_cache.zig). Reads the screen back on every scroll step and
+    # after every width change: the markers on screen must be a contiguous
+    # ascending run, which a stale block or a mis-offset slice cannot fake.
+    if python3 scripts/test-tui-layout-cache.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
     # The viewport must not jump when the terminal changes width: drives
