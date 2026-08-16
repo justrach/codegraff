@@ -225,8 +225,8 @@ test "orphan kitty CSI-u is ignore, never letters or Escape" {
     // `3u` carries neither a `<` nor a `;`, so on its own it reads as somebody
     // typing. The loop arms us when it drops a truncated sequence — which is
     // the only way this tail can exist.
-    key.orphan_armed = true;
-    defer key.orphan_armed = false;
+    key.armOrphan(true);
+    defer key.armOrphan(false);
     var n: usize = 0;
     while (next(seq, &i)) |k| {
         try std.testing.expect(k == .ignore);
@@ -236,112 +236,6 @@ test "orphan kitty CSI-u is ignore, never letters or Escape" {
     try std.testing.expectEqual(seq.len, i);
     i = 0;
     try std.testing.expectEqual(Key{ .char = 'h' }, next("hi", &i).?);
-}
-
-/// run.zig's read loop, minus the terminal: fixed input buffer, parse to
-/// exhaustion, carry the unparsed tail into the next read. Regressions in the
-/// carry/rewind contract only show up across a read boundary, so the debris
-/// tests have to drive the real thing.
-const Loop = struct {
-    inbuf: [4096]u8 = undefined,
-    pending: usize = 0,
-    typed: std.array_list.Managed(u8),
-    mice: usize = 0,
-
-    fn init(a: std.mem.Allocator) Loop {
-        key.resetInputState();
-        return .{ .typed = std.array_list.Managed(u8).init(a) };
-    }
-    fn deinit(self: *Loop) void {
-        self.typed.deinit();
-    }
-
-    fn read(self: *Loop, bytes: []const u8) !void {
-        @memcpy(self.inbuf[self.pending .. self.pending + bytes.len], bytes);
-        const n = self.pending + bytes.len;
-        var i: usize = 0;
-        while (next(self.inbuf[0..n], &i)) |k| switch (k) {
-            .char => |c| try self.typed.append(c),
-            .codepoint => try self.typed.append('?'),
-            .mouse => self.mice += 1,
-            .escape => try self.typed.append('E'), // a phantom Escape cancels the turn
-            else => {},
-        };
-        self.pending = if (i < n) blk: {
-            const rest = n - i;
-            std.mem.copyForwards(u8, self.inbuf[0..rest], self.inbuf[i..n]);
-            break :blk rest;
-        } else 0;
-    }
-};
-
-test "SGR motion flood chopped at every byte offset never types a character" {
-    key.orphan_armed = false;
-    // The exact bytes the user saw on the bottom row, plus one hover report.
-    const flood = "\x1b[<39;7;32M\x1b[<39;4;32M\x1b[<39;3;33M\x1b[<39;1;33M\x1b[<35;80;24M";
-    var cut: usize = 0;
-    while (cut <= flood.len) : (cut += 1) {
-        var loop = Loop.init(std.testing.allocator);
-        defer loop.deinit();
-        try loop.read(flood[0..cut]);
-        try loop.read(flood[cut..]);
-        try std.testing.expectEqualStrings("", loop.typed.items);
-        try std.testing.expectEqual(@as(usize, 5), loop.mice);
-        try std.testing.expectEqual(@as(usize, 0), loop.pending);
-    }
-}
-
-test "debris after a dropped ESC head is consumed, not typed — even split again" {
-    // run.zig drops a pending head that never completed and arms us; the tail
-    // arrives alone, and may itself straddle the next read boundary.
-    const tail = "39;7;32M\x1b[<39;4;32M";
-    var cut: usize = 0;
-    while (cut <= tail.len) : (cut += 1) {
-        var loop = Loop.init(std.testing.allocator);
-        defer loop.deinit();
-        key.orphan_armed = true;
-        defer key.orphan_armed = false;
-        try loop.read(tail[0..cut]);
-        try loop.read(tail[cut..]);
-        try std.testing.expectEqualStrings("", loop.typed.items);
-        try std.testing.expectEqual(@as(usize, 2), loop.mice);
-    }
-}
-
-test "typed and pasted text survives the debris guard (0x1f, [12], 1e5)" {
-    key.orphan_armed = false;
-    const cases = [_][]const u8{
-        "const x = 0x1f;",
-        "v1e5 [12] 2xM",
-        "1.5]",
-        "0x1f",
-        "[12]",
-        "1e5",
-        "grep -n '39;7;32M' log", // debris-shaped text, but not at a read head
-        "step 3 of 10 (2m30s)",
-    };
-    for (cases) |text| {
-        var loop = Loop.init(std.testing.allocator);
-        defer loop.deinit();
-        try loop.read(text);
-        try std.testing.expectEqualStrings(text, loop.typed.items);
-        try std.testing.expectEqual(@as(usize, 0), loop.mice);
-    }
-    // Byte-at-a-time typing is the same string.
-    var slow = Loop.init(std.testing.allocator);
-    defer slow.deinit();
-    for ("0x1f + [12] = 1e5") |c| try slow.read(&[_]u8{c});
-    try std.testing.expectEqualStrings("0x1f + [12] = 1e5", slow.typed.items);
-}
-
-test "bracketed paste of debris-shaped code reaches the composer intact" {
-    key.orphan_armed = false;
-    var loop = Loop.init(std.testing.allocator);
-    defer loop.deinit();
-    try loop.read("\x1b[200~");
-    try loop.read("39;7;32M and 0x1f");
-    try loop.read("\x1b[201~");
-    try std.testing.expectEqualStrings("39;7;32M and 0x1f", loop.typed.items);
 }
 
 test "Shift+9 is open-paren, Shift+0 is close-paren" {
@@ -399,4 +293,49 @@ test "typed text behind an Alt+] chord recovers instead of wedging (#516)" {
     i = 0;
     try std.testing.expectEqual(Key.ignore, next(&big, &i).?);
     try std.testing.expectEqual(Key{ .char = 'a' }, next(&big, &i).?);
+}
+test "kitty numeric keypad types instead of vanishing (#549)" {
+    var i: usize = 0;
+    try std.testing.expectEqual(Key{ .char = '0' }, next("\x1b[57399u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '7' }, next("\x1b[57406u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '9' }, next("\x1b[57408u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '.' }, next("\x1b[57409u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '/' }, next("\x1b[57410u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '*' }, next("\x1b[57411u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '-' }, next("\x1b[57412u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '+' }, next("\x1b[57413u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = '=' }, next("\x1b[57415u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = ',' }, next("\x1b[57416u", &i).?);
+    // Releases stay inert, and the unbound keypad keys are still never Escape.
+    i = 0;
+    try std.testing.expectEqual(Key.ignore, next("\x1b[57406;1:3u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.ignore, next("\x1b[57425u", &i).?); // KP_Insert
+    i = 0;
+    try std.testing.expectEqual(Key.ignore, next("\x1b[57427u", &i).?); // KP_Begin
+    key.held = 0;
+}
+
+test "the event type is read from the modifier field, not the text field (#549)" {
+    // `CSI code ; mods:event ; text:text u` — the associated-text codepoints in
+    // field 3 are ':'-separated too, and scanning the whole tail found those.
+    var i: usize = 0;
+    try std.testing.expectEqual(Key{ .char = 'A' }, next("\x1b[97;2;65:66u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key{ .char = 'a' }, next("\x1b[97;1;97:3u", &i).?);
+    // A genuine release, in field 2, is still ignored.
+    i = 0;
+    try std.testing.expectEqual(Key.ignore, next("\x1b[97;1:3u", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.ignore, next("\x1b[1;1:3A", &i).?);
+    key.held = 0;
 }

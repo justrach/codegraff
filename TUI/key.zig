@@ -1,35 +1,56 @@
 //! Keyboard tokens. Understands classic CSI, SS3, and kitty CSI-u (Ghostty).
 
 const std = @import("std");
+const orphan = @import("key_orphan.zig");
 
 /// Super/alt currently held, from kitty modifier-key events (Ghostty Cmd+Delete
 /// often arrives as a bare DEL after Super-down).
 pub var held: u32 = 0;
-
-/// Armed by the read loop when it throws away a partial escape sequence that
-/// never finished (run.zig's stall path) — the NEXT read can then legitimately
-/// open with that sequence's orphaned tail. Cleared by the first token that is
-/// not orphan debris.
-pub var orphan_armed: bool = false;
-
-/// End offset of the last orphan fragment consumed from the buffer currently
-/// being parsed, so back-to-back debris keeps being eaten while a digit run
-/// that follows real input never is. `maxInt` = no run in progress.
-var orphan_end: usize = std.math.maxInt(usize);
 
 /// Inside `CSI 200~ … CSI 201~`. Every byte between them is literal text by
 /// definition, and a long paste spans several reads — so the debris guard must
 /// stay out of it or a chunk that happens to start `39;7;32M` gets eaten.
 var in_paste: bool = false;
 
+pub fn inPaste() bool {
+    return in_paste;
+}
+
+/// Close a bracketed paste the terminal never closed for us. The read loop
+/// calls this when it gives up on a `CSI 201~` that split across reads and
+/// never arrived — without it the latch is permanent and every Enter, Escape
+/// and slash command becomes literal text for the rest of the session
+/// (#532/#536/#548).
+pub fn endPaste() void {
+    in_paste = false;
+}
+
+/// Arm/disarm the orphan-debris sweeper. The read loop arms it when it throws
+/// away a partial escape sequence that never finished, because the NEXT read
+/// can then legitimately open with that sequence's orphaned tail.
+pub fn armOrphan(on: bool) void {
+    orphan.armed = on;
+}
+
+/// Keep the truncated escape head the read loop just abandoned, so the next
+/// read can rejoin it (see key_orphan.zig).
+pub fn stashOrphanHead(bytes: []const u8) void {
+    orphan.stashHead(bytes);
+}
+
+/// Prepend a stashed head to a freshly read buffer when it completes it.
+/// Every read must call this — the head is one-shot and expires here.
+pub fn joinOrphanHead(buf: []u8, n: usize) usize {
+    return orphan.joinHead(buf, n);
+}
+
 /// Drop every latched parser bit. The globals live for one input loop, so a
 /// fresh session (or a headless sim.Term) must not inherit a held modifier, an
 /// unclosed bracketed paste, or an arm from whatever ran before it.
 pub fn resetInputState() void {
     held = 0;
-    orphan_armed = false;
-    orphan_end = std.math.maxInt(usize);
     in_paste = false;
+    orphan.reset();
 }
 
 pub const Key = union(enum) {
@@ -84,24 +105,28 @@ pub fn next(bytes: []const u8, i: *usize) ?Key {
     // pending head, or the tty input queue overflowed while a slow frame
     // painted). A digit run anywhere else is typed or pasted TEXT — swallowing
     // it ate `0x1f`, `[12]`, `1e5` and every version string.
-    if (!in_paste and (i.* == 0 or i.* == orphan_end)) {
-        switch (takeOrphanCsi(bytes, i)) {
+    if (!in_paste and (i.* == 0 or i.* == orphan.end)) {
+        switch (orphan.take(bytes, i)) {
             .took => |k| {
-                orphan_end = i.*;
+                orphan.end = i.*;
+                // The arm covers exactly ONE lost head. Leaving it latched let
+                // the sweeper keep eating whatever the user typed next — `3u
+                // apples` reached the composer as ` apples`, and a lone `3`
+                // was held pending until the stall path dropped it (#531).
+                orphan.armed = false;
                 return k;
             },
             // Debris cut short at the read boundary: hold the bytes so the loop
             // carries them into the next read instead of typing the digits. The
-            // held bytes ARE the carry-over, so the arm has done its job.
-            .partial => {
-                orphan_armed = false;
-                return null;
-            },
+            // arm must SURVIVE that carry — the rejoined fragment is the same
+            // one lost head, and disarming here made `3` + `u` read as typed
+            // text and type itself (#546).
+            .partial => return null,
             .none => {},
         }
     }
-    orphan_end = std.math.maxInt(usize);
-    orphan_armed = false;
+    orphan.end = std.math.maxInt(usize);
+    orphan.armed = false;
     const b = bytes[i.*];
     i.* += 1;
     if (b == 0x1b) return escapeSeq(bytes, i);
@@ -349,11 +374,17 @@ fn csiMods(params: []const u8) u32 {
 }
 
 /// kitty event-type sub-param (field 2 after ':'): 1 press, 2 repeat, 3 release.
+///
+/// It lives in the MODIFIER field and nowhere else. Scanning the whole tail for
+/// the first ':' read field 3 instead — the associated-text codepoints, which
+/// are ':'-separated too — so `CSI 97;2;65:66u` reported event 66, and a text
+/// field ending `:3` silently swallowed a real keypress as a release (#549).
 fn eventOf(params: []const u8) u32 {
     const s = std.mem.indexOfScalar(u8, params, ';') orelse return 1;
-    const rest = params[s + 1 ..];
-    const c = std.mem.indexOfScalar(u8, rest, ':') orelse return 1;
-    return leadingInt(rest[c + 1 ..]);
+    var field = params[s + 1 ..];
+    if (std.mem.indexOfScalar(u8, field, ';')) |e| field = field[0..e];
+    const c = std.mem.indexOfScalar(u8, field, ':') orelse return 1;
+    return leadingInt(field[c + 1 ..]);
 }
 
 /// CSI unicode ; mods u  — kitty/ghostty. mods bit 2 = ctrl, 1 = shift.
@@ -412,7 +443,20 @@ fn functional(code: u32, mods: u32, ev: u32) Key {
         57355, 57422 => .page_down,
         57356, 57423 => .home,
         57357, 57424 => .end,
-        // Locks, PrintScreen, remaining keypad, media, F13+: inert.
+        // Numeric keypad. With `>11u` on, kitty reports these INSTEAD of the
+        // plain ASCII byte, so leaving them unmapped dropped every keypad
+        // digit and operator on the floor (#549).
+        57399...57408 => .{ .char = '0' + @as(u8, @intCast(code - 57399)) },
+        57409 => .{ .char = '.' },
+        57410 => .{ .char = '/' },
+        57411 => .{ .char = '*' },
+        57412 => .{ .char = '-' },
+        57413 => .{ .char = '+' },
+        57415 => .{ .char = '=' },
+        57416 => .{ .char = ',' },
+        // KP_Insert (57425) and KP_Begin (57427) have no binding here and stay
+        // inert exactly like CSI 2~ — never a phantom Escape. Locks,
+        // PrintScreen, media and F13+ likewise.
         else => .ignore,
     };
 }
@@ -496,69 +540,11 @@ fn sgrMouse(params: []const u8, down: bool) Key {
     } };
 }
 
-const Orphan = union(enum) {
-    /// Not debris — hand the bytes to the normal parser (typed text).
-    none,
-    /// Debris shape, cut short by the read boundary: hold, do not type it.
-    partial,
-    took: Key,
-};
-
-/// CSI debris after a lost ESC (`7444;9u`, `39;33;23M`, `<35;80;24M`). Never a
-/// letter and never Escape/Ctrl-C — those cancel or kill the turn.
-///
-/// Strictly shaped, because this runs against text a human may have typed: an
-/// optional `<`, then digits with `;`/`:` separators, then a MOUSE or CSI-u
-/// final (`M`/`m`/`u`/`~`). Any other terminator is text — accepting the whole
-/// 0x40..0x7e range ate `0x1f` (final `x`), `[12]` (final `]`) and `1e5`
-/// (final `e`). A run with neither `<` nor a separator (`3u`) is debris only
-/// while `orphan_armed` says the loop really did drop a truncated sequence.
-fn takeOrphanCsi(bytes: []const u8, i: *usize) Orphan {
-    const start = i.*;
-    if (start >= bytes.len) return .none;
-    var j = start;
-    const lt = bytes[j] == '<';
-    if (lt) j += 1;
-    if (j >= bytes.len or bytes[j] < '0' or bytes[j] > '9') return .none;
-    var sep = false;
-    var k = j;
-    while (k < bytes.len) : (k += 1) {
-        const c = bytes[k];
-        if (c >= '0' and c <= '9') continue;
-        if (c == ';' or c == ':') {
-            sep = true;
-            continue;
-        }
-        if (c == 'M' or c == 'm' or c == 'u' or c == '~') {
-            if (!lt and !sep and !orphan_armed) return .none;
-            i.* = k + 1;
-            if (c == 'M' or c == 'm') {
-                const body = bytes[j..k];
-                var it = std.mem.splitScalar(u8, body, ';');
-                const btn = leadingInt(it.next() orelse "0");
-                const x = leadingInt(it.next() orelse "1");
-                const y = leadingInt(it.next() orelse "1");
-                return .{ .took = .{ .mouse = .{
-                    .btn = @intCast(@min(btn, 255)),
-                    .x = @intCast(@min(x, 999)),
-                    .y = @intCast(@min(y, 999)),
-                    .down = c == 'M',
-                } } };
-            }
-            return .{ .took = .ignore };
-        }
-        return .none;
-    }
-    // Ran off the end mid-fragment. Hold it when it already reads as a CSI
-    // parameter list, or when the loop armed us; a bare unarmed digit run is
-    // somebody typing, and holding it would strand the keystrokes.
-    return if (lt or sep or orphan_armed) .partial else .none;
-}
-
-fn leadingInt(s: []const u8) u32 {
+pub fn leadingInt(s: []const u8) u32 {
     // Saturating (#545): params come raw off stdin, and a 10+-digit run —
     // hostile or corrupt input, never a real key — overflowed u32 and aborted
     // the whole TUI. maxInt decodes as .ignore / clamped coords everywhere.
+    // pub: key_orphan.zig (the extracted debris sweeper) parses with it too.
     var n: u32 = 0;
     for (s) |c| {
         if (c < '0' or c > '9') break;

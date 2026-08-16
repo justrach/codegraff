@@ -64,7 +64,7 @@ pub const Term = struct {
         const room = self.inbuf.len - self.pending;
         const take = @min(bytes.len, room);
         @memcpy(self.inbuf[self.pending .. self.pending + take], bytes[0..take]);
-        const n = self.pending + take;
+        const n = key_mod.joinOrphanHead(&self.inbuf, self.pending + take);
         var i: usize = 0;
         var last: Effect = .stay;
         while (key_mod.next(self.inbuf[0..n], &i)) |k| {
@@ -80,12 +80,19 @@ pub const Term = struct {
         return last;
     }
 
-    /// The live loop gives up on a pending sequence that never finished and
-    /// tells key.zig to expect its orphaned tail (run.zig's stall path).
+    /// The live loop gives up on a pending sequence that never finished: it
+    /// carries the head for one more read, arms the debris sweeper, and — if
+    /// the casualty was a bracketed-paste marker — synthesizes the paste_end
+    /// the terminal never sent (run.zig's stall path).
     pub fn stallDropPending(self: *Term) void {
         if (self.pending == 0) return;
+        key_mod.stashOrphanHead(self.inbuf[0..self.pending]);
         self.pending = 0;
-        key_mod.orphan_armed = true;
+        key_mod.armOrphan(true);
+        if (key_mod.inPaste()) {
+            key_mod.endPaste();
+            _ = keys.handle(&self.model, .paste_end);
+        }
     }
 
     pub fn press(self: *Term, k: Key) Effect {
@@ -254,8 +261,8 @@ test "hoverText on an image chip opens the preview" {
 
 test "a 1003 hover flood during a live turn never types itself into the frame" {
     const engine = @import("engine.zig");
-    key_mod.orphan_armed = false;
-    defer key_mod.orphan_armed = false;
+    key_mod.armOrphan(false);
+    defer key_mod.armOrphan(false);
     var term: Term = undefined;
     term.init(std.testing.allocator, 80, 24);
     defer term.deinit();
@@ -305,4 +312,38 @@ test "annotated dump prefixes 1-based rows" {
     defer std.testing.allocator.free(ann);
     try std.testing.expect(std.mem.indexOf(u8, ann, "  1|") != null);
     try std.testing.expect(std.mem.indexOf(u8, ann, "abc") != null);
+}
+
+test "a paste that never terminates does not wedge the composer (#536/#548)" {
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    // The terminator is lost in flight: `pasting` latches and swallows Enter,
+    // Tab, the slash menu and every overlay — the 'TUI froze' report.
+    _ = term.feed("\x1b[200~/help");
+    try std.testing.expect(term.model.pasting);
+    _ = term.press(.enter);
+    try std.testing.expect(term.model.pasting);
+    // Escape is the in-band hatch: it breaks the latch instead of vanishing.
+    _ = term.press(.escape);
+    try std.testing.expect(!term.model.pasting);
+    try std.testing.expect(!key_mod.inPaste());
+    // ...and the composer works again: Tab moves focus, Escape reaches esc().
+    _ = term.press(.tab);
+    try std.testing.expectEqual(app.Focus.scrollback, term.model.focus);
+}
+
+test "giving up on a split paste terminator closes the paste, tail and all (#532)" {
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    _ = term.feed("\x1b[200~hello");
+    _ = term.feed("\x1b[201");
+    try std.testing.expect(key_mod.inPaste());
+    term.stallDropPending(); // the loop waited the marker out
+    try std.testing.expect(!key_mod.inPaste());
+    try std.testing.expect(!term.model.pasting);
+    // The late `~` rejoins its carried head instead of typing itself.
+    _ = term.feed("~");
+    try std.testing.expectEqualStrings("hello", term.model.input.getValue());
 }
