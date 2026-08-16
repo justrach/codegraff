@@ -26,9 +26,10 @@ COST_SYNTHESIZE = 2
 COST_IMPLEMENT = 6
 COST_DEFAULT = 3
 MIN_LANDING_RESERVE = 6
+COST_NARRATION = 1  # #390: one call reserved to narrate the run's outcome
 
 # dry / split (spendable 9: adhoc fits, design does not) / wet
-BUDGETS: tuple[tuple[int, int], ...] = ((0, 100), (29, 100), (1_000_000, 1_000_000))
+BUDGETS: tuple[tuple[int, int], ...] = ((0, 100), (30, 100), (1_000_000, 1_000_000))
 CUBE = 1728  # 6 shapes × 2⁵ bools × 3 prior-counts × 3 budgets
 
 
@@ -51,10 +52,14 @@ def landing_reserve(cap: int) -> int:
     return max(MIN_LANDING_RESERVE, cap // 5)
 
 
+def total_reserve(cap: int) -> int:
+    return landing_reserve(cap) + COST_NARRATION
+
+
 def fleet_fits(shape: Shape, remaining: int, cap: int) -> bool:
     if cap == 0:
         return True
-    return remaining - landing_reserve(cap) >= fleet_floor(shape)
+    return remaining - total_reserve(cap) >= fleet_floor(shape)
 
 
 def load_needles(path: Path = NEEDLES_ZIG) -> dict[str, list[str]]:
@@ -202,10 +207,10 @@ def payload() -> dict:
             }
         )
     split_adhoc = Observables(
-        shape="adhoc", files_lt3=False, widest_ge2=True, remaining=29, cap=100
+        shape="adhoc", files_lt3=False, widest_ge2=True, remaining=30, cap=100
     )
     split_design = Observables(
-        shape="design", files_lt3=False, widest_ge2=True, remaining=29, cap=100
+        shape="design", files_lt3=False, widest_ge2=True, remaining=30, cap=100
     )
     return {
         "kernel": "shape",
@@ -216,7 +221,7 @@ def payload() -> dict:
         "needles": {k: needles[k] for k in NEEDLE_KEYS},
         "class_cases": class_cases(needles),
         "split": {
-            "remaining": 29,
+            "remaining": 30,
             "cap": 100,
             "adhoc_ladder": ladder_rung(split_adhoc),
             "design_ladder": ladder_rung(split_design),
@@ -252,10 +257,10 @@ def check_properties() -> int:
             raise ValueError(f"explicit-lifts-below-R2: {hon}")
     if n != CUBE:
         raise ValueError(f"shape-cube: n={n} want={CUBE}")
-    if not fleet_fits("adhoc", 29, 100) or fleet_fits("design", 29, 100):
-        raise ValueError("split-budget: remaining=29 cap=100 must admit adhoc and refuse design")
-    split_a = Observables(shape="adhoc", files_lt3=False, widest_ge2=True, remaining=29, cap=100)
-    split_d = Observables(shape="design", files_lt3=False, widest_ge2=True, remaining=29, cap=100)
+    if not fleet_fits("adhoc", 30, 100) or fleet_fits("design", 30, 100):
+        raise ValueError("split-budget: remaining=30 cap=100 must admit adhoc and refuse design")
+    split_a = Observables(shape="adhoc", files_lt3=False, widest_ge2=True, remaining=30, cap=100)
+    split_d = Observables(shape="design", files_lt3=False, widest_ge2=True, remaining=30, cap=100)
     if ladder_rung(split_a) != "R2" or ladder_rung(split_d) != "R0":
         raise ValueError(
             f"split-ladder: adhoc={ladder_rung(split_a)} design={ladder_rung(split_d)}"

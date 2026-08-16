@@ -94,16 +94,23 @@ def fleetFloor : Shape → Nat
 def landingReserve (cap : Nat) : Nat :=
   Nat.max minLandingReserve (cap / 5)
 
+/-- #390: one call is held back to narrate the run's outcome, so the ladder
+    budgets against landing work AND narration (`Ledger.reserve`). -/
+def costNarration : Nat := 1
+
+def totalReserve (cap : Nat) : Nat :=
+  landingReserve cap + costNarration
+
 /-- `Ledger.fits`. cap = 0 is unlimited. Nat subtraction saturates. -/
 def fleetFits (shape : Shape) (remaining cap : Nat) : Bool :=
   if cap = 0 then true
-  else decide (remaining - landingReserve cap ≥ fleetFloor shape)
+  else decide (remaining - totalReserve cap ≥ fleetFloor shape)
 
 theorem adhoc_floor_lt_design : fleetFloor .adhoc < fleetFloor .design := by native_decide
 
-/-- remaining=29, cap=100 → spendable 9: adhoc (9) fits, design (18) does not. -/
-theorem split_admits_adhoc : fleetFits .adhoc 29 100 = true := by native_decide
-theorem split_refuses_design : fleetFits .design 29 100 = false := by native_decide
+/-- remaining=30, cap=100 → spendable 9: adhoc (9) fits, design (18) does not. -/
+theorem split_admits_adhoc : fleetFits .adhoc 30 100 = true := by native_decide
+theorem split_refuses_design : fleetFits .design 30 100 = false := by native_decide
 
 theorem unlimited_fits (s : Shape) : fleetFits s 0 0 = true := by
   cases s <;> native_decide
@@ -190,7 +197,7 @@ theorem small_no_signal_is_R0 (o : Observables)
 
 /-- dry / split (adhoc fits, design does not) / wet. -/
 def budgetCells : List (Nat × Nat) :=
-  [(0, 100), (29, 100), (1000000, 1000000)]
+  [(0, 100), (30, 100), (1000000, 1000000)]
 
 def allObservables : List Observables :=
   Id.run do
@@ -230,10 +237,10 @@ example : ladderRung { shape := .research, audit := true, remaining := 1000000, 
 example : ladderRung { filesLt3 := false, widestGe2 := true, remaining := 1000000, cap := 1000000 } = .R2 := by native_decide
 example : ladderRung {
     shape := .adhoc, filesLt3 := false, widestGe2 := true,
-    remaining := 29, cap := 100 } = .R2 := by native_decide
+    remaining := 30, cap := 100 } = .R2 := by native_decide
 example : ladderRung {
     shape := .design, filesLt3 := false, widestGe2 := true,
-    remaining := 29, cap := 100 } = .R0 := by native_decide
+    remaining := 30, cap := 100 } = .R0 := by native_decide
 example : ladderRung {
     filesLt3 := true, priorFailure := true, priorCount := 1,
     hasVerifier := true, audit := false } = .R0d := by native_decide

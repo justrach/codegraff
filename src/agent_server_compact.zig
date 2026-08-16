@@ -221,7 +221,9 @@ fn compactStandalone(self: *Agent) !usize {
     defer self.gpa.free(body);
     var compact_provider = self.provider;
     compact_provider.url = try compactEndpoint(self.arena, self.provider.url);
-    const response_body = try http.postWatched(self.gpa, self.io, self.client, compact_provider, body);
+    var conv_buf: [96]u8 = undefined;
+    const conv = @import("http_headers.zig").promptCacheKey(self.io, self.label, self, &conv_buf);
+    const response_body = try http.postWatched(self.gpa, self.io, self.client, compact_provider, body, conv);
     defer self.gpa.free(response_body);
     const response = std.json.parseFromSliceLeaky(std.json.Value, self.arena, response_body, .{ .allocate = .alloc_always }) catch {
         if (self.tracer) |tr| tr.note("server_compact_error", response_body[0..@min(response_body.len, 400)]);

@@ -303,8 +303,6 @@ pub const Agent = struct {
         self.stored_keys_loaded = true;
     }
 
-    /// Run until the model stops (or, in strict mode, calls
-    /// attempt_completion). Returns the final assistant text (arena-owned).
     /// Close the held codex Responses WS session and reset the delta state, so the
     /// next request re-anchors with full input. The chain now spans user turns
     /// (codex_chain.zig guards it), so this is for errors, idle and compaction.

@@ -10,7 +10,7 @@ Closed catalog: review / research / design / migration / feature / adhoc.
 Unknown names are adhoc, never a guess.
 
 Affordability is the live ledger: `fits(remaining, fleetFloor(shape))`.
-cap 0 is unlimited. The cube includes a split budget (remaining=29, cap=100)
+cap 0 is unlimited. The cube includes a split budget (remaining=30, cap=100)
 that admits adhoc and refuses design.
 
 `ladderRung` precedence:

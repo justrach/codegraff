@@ -191,20 +191,9 @@ fn wsConnectTask(gpa: std.mem.Allocator, io: Io, url: []const u8, headers: []con
     return ws.WsClient.connect(gpa, io, url, false, headers);
 }
 
-/// The deadline for writing a frame of `frame_len` bytes.
-///
-/// NOT a flat head-sized budget: the frame most likely to sit under this guard
-/// is the LARGEST one, because every recovery re-anchors with the full
-/// conversation (closeCodexWs nulls codex_prev_id). A flat 30s over a ~1MB
-/// re-anchor on a slow uplink is a false positive costing a transport failure,
-/// and two of those latch SSE for the session. Policy: the head budget plus one
-/// second per 64KB (a ~512 kbit/s floor, far below any link that can carry a
-/// codex session), clamped to the read budget so the send guard can never
-/// outlast the watchdog covering the reply.
-pub fn sendDeadlineMs(frame_len: usize, head_ms: u64, stream_ms: u64) u64 {
-    const grow: u64 = @as(u64, @intCast(frame_len / (64 * 1024))) *| 1000;
-    return @min(head_ms +| grow, @max(head_ms, stream_ms));
-}
+// The frame-write deadline policy lives in agent_ws_signal.zig (600-line
+// cap); aliased back so call sites and tests keep naming agent_ws.
+pub const sendDeadlineMs = signal.sendDeadlineMs;
 
 /// Bound the outbound half of a ws turn. `sendText` is a blocking socket write
 /// with no deadline: if the peer stops draining, it parks in the syscall until
