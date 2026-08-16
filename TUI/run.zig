@@ -5,6 +5,7 @@ const builtin = @import("builtin");
 const Io = std.Io;
 
 const app = @import("app.zig");
+const bgop = @import("bgop.zig");
 const engine = @import("engine.zig");
 const key_mod = @import("key.zig");
 const keys = @import("keys.zig");
@@ -66,7 +67,7 @@ pub fn run(
     if (opts.yolo) m.mode = .always_approve;
 
     var raw = tty.enterRaw() orelse return error.NotATty;
-    restore_mod.arm(raw);
+    restore_mod.arm(raw, enable_seq);
     defer restore_mod.disarm();
     defer tty.restore(raw);
 
@@ -96,13 +97,24 @@ pub fn run(
     var prev_theme = m.theme_id;
     defer if (prev.len != 0) gpa.free(prev);
     while (m.running and !m.quit_requested) {
-        m.now_ms = @intCast(@divTrunc(@max(@as(i128, 0), Io.Timestamp.now(io, .real).nanoseconds), 1_000_000));
+        m.now_ms = nowMs(io);
+        if (restore_mod.takeResumed()) {
+            // SIGTSTP took the terminal back to the shell and SIGCONT handed
+            // it over again: the alt screen is blank, so the diff baseline
+            // would leave the frame half-drawn. Force a full repaint.
+            last_hash = 0;
+            if (prev.len != 0) gpa.free(prev);
+            prev = &.{};
+        }
         if (m.pending) |job| {
             if (job.done.load(.acquire)) {
                 turn.finishJob(&m);
                 if (turn.drainSteer(&m) == .quit) break;
             }
         }
+        // Background engine ops (/compact, !cmd, @-file list) land here too —
+        // the same poll that keeps a turn from freezing the loop (#533).
+        bgop.finish(&m);
         const cols = @max(tty.cols(), @as(usize, 40));
         const rows = @max(tty.rows(), @as(usize, 12));
         const frame = render_mod.render(&m, gpa, cols, rows, m.now_ms) catch "tui: render error";
@@ -138,7 +150,7 @@ pub fn run(
 
         // Short wait while an unfinished escape sequence is pending: if
         // nothing follows, the lone ESC was a real Escape keypress (#94).
-        const wait: i32 = if (pending_len > 0) 25 else if (m.pending != null) 50 else 200;
+        const wait: i32 = if (pending_len > 0) 25 else if (m.pending != null or m.bg != null) 50 else 200;
         if (!tty.poll(wait)) {
             if (key_mod.inPaste() and m.now_ms -| last_input_ms >= paste_idle_ms) {
                 // A `CSI 200~` whose `CSI 201~` never arrives latches the
@@ -232,6 +244,51 @@ pub fn run(
             pending_len = rest;
         } else pending_len = 0;
     }
+    // Quitting with a turn still live: cancel FIRST — Ctrl+Q (nav.zig) and the
+    // palette's /quit never did — then wait for the thread here, with the alt
+    // screen still up and a frame explaining the wait, instead of joining from
+    // Model.deinit after the terminal has already been handed back (#534).
+    if (m.pending != null or m.bg != null) {
+        turn.cancelTurn(&m);
+        bgop.cancel(&m);
+        m.push(.system, "■ stopping…") catch {};
+        const cols = @max(tty.cols(), @as(usize, 40));
+        const rows = @max(tty.rows(), @as(usize, 12));
+        if (render_mod.render(&m, gpa, cols, rows, m.now_ms)) |frame| {
+            defer gpa.free(frame);
+            paint(w, frame, rows, cols, &.{}, m.theme().bg) catch {};
+            w.flush() catch {};
+        } else |_| {}
+        const start = m.now_ms;
+        var forced = false;
+        while (!forced and (turn.quitStep(&m, m.now_ms -| start) == .wait or
+            bgop.quitStep(&m, m.now_ms -| start) == .wait))
+        {
+            if (tty.poll(50)) {
+                const got = tty.readStdin(&inbuf);
+                // A second Ctrl+C / Esc during the wait means "go now".
+                for (inbuf[0..got]) |b| {
+                    if (b == 0x03 or b == 0x1b) forced = true;
+                }
+            }
+            m.now_ms = nowMs(io);
+        }
+        const elapsed = if (forced) turn.quit_drain_ms else m.now_ms -| start;
+        const stuck = turn.quitStep(&m, elapsed) == .abandon or bgop.quitStep(&m, elapsed) == .abandon;
+        if (!stuck) {
+            turn.finishJob(&m);
+            bgop.finish(&m);
+        } else {
+            turn.abandonJob(&m);
+            bgop.abandon(&m);
+            // The threads are still writing into the job and the op, so the
+            // process must not outlive the restore: put the terminal back with
+            // the same bytes the defers would have written, then leave.
+            w.flush() catch {};
+            restore_mod.emergency();
+            std.process.exit(0);
+        }
+    }
     if (prev.len != 0) {
         const vis = @import("dump.zig").visible(gpa, prev) catch prev;
         defer if (vis.ptr != prev.ptr) gpa.free(vis);
@@ -245,6 +302,10 @@ pub fn run(
 /// delivering Escape cancelled live turns and typing the late tail sprayed
 /// "2;39M"-style debris into the transcript — wait for the tail instead, and
 /// only silently drop once it is clearly never coming.
+fn nowMs(io: Io) u64 {
+    return @intCast(@divTrunc(@max(@as(i128, 0), Io.Timestamp.now(io, .real).nanoseconds), 1_000_000));
+}
+
 pub const StallVerdict = enum { wait, escape_key, drop };
 
 pub const StallCtx = struct {

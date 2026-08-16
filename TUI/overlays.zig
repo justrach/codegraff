@@ -42,10 +42,12 @@ pub fn key(self: *Model, k: Key) Effect {
     return .stay;
 }
 
-/// Load the session file list once, then open the @-picker.
+/// Open the @-picker immediately and load the session file list in the
+/// background. Loading it inline blocked the render+input thread for up to the
+/// runCapped 10s cap on the first @ of a session (#533).
 pub fn openFiles(self: *Model) void {
-    if (self.files_cache == null) {
-        if (engine.g_files_fn) |f| self.files_cache = f(engine.g_turn_ctx, self.alloc);
+    if (self.files_cache == null and engine.g_files_fn != null) {
+        _ = @import("bgop.zig").start(self, .files, &.{}, "", "");
     }
     self.openOverlay(.file);
 }

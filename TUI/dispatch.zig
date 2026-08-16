@@ -4,6 +4,7 @@
 const std = @import("std");
 
 const app = @import("app.zig");
+const bgop = @import("bgop.zig");
 const catalog = @import("catalog.zig");
 const engine = @import("engine.zig");
 const theme_mod = @import("theme.zig");
@@ -11,12 +12,22 @@ const turn = @import("turn.zig");
 const Model = app.Model;
 const Effect = app.Effect;
 
+/// Shown whenever an engine call is already in flight — /compact, `!cmd` and
+/// a model turn all use the one engine, so they queue behind each other.
+pub const busy_note = "an engine call is still running — press Esc to cancel it";
+
 pub fn applyLine(self: *Model, raw: []const u8) Effect {
     const line = std.mem.trim(u8, raw, " \t\r\n");
     if (line.len == 0 and self.images.items.len == 0) return .stay;
     if (line.len > 0) rememberPrompt(self, line);
     if (line.len > 0 and line[0] == '/') return runCommand(self, line);
     if (line.len > 1 and line[0] == '!') return bang(self, std.mem.trim(u8, line[1..], " \t"));
+    if (self.bg != null) {
+        // /compact rewrites the history the next turn would send — never race
+        // a turn against it.
+        self.push(.system, busy_note) catch {};
+        return .stay;
+    }
     const prefix = self.takeImagesPrefix(self.alloc);
     const payload = if (prefix.len == 0) line else (std.fmt.allocPrint(self.alloc, "{s}{s}", .{ prefix, line }) catch line);
     if (prefix.len > 0) self.alloc.free(prefix);
@@ -52,6 +63,11 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
     const destroys = std.mem.eql(u8, canon, "/new") or std.mem.eql(u8, canon, "/compact") or std.mem.eql(u8, canon, "/rewind");
     if (self.pending != null and destroys) {
         self.push(.system, "a turn is still running — press Esc to cancel it first") catch {};
+        return .stay;
+    }
+    // Same for a background engine op: /compact is itself one of them.
+    if (self.bg != null and destroys) {
+        self.push(.system, busy_note) catch {};
         return .stay;
     }
 
@@ -190,8 +206,10 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
     return if (self.quit_requested) .quit else .stay;
 }
 
-/// `!cmd` — run a shell line locally (grok-style bash mode). Output stays
-/// out of the model history: EntryKind.system never reaches startJob.
+/// `!cmd` — run a shell line locally (grok-style bash mode) on a background
+/// thread, so a slow command no longer freezes the frame for its whole 20s
+/// cap (#533). Output stays out of the model history: EntryKind.system never
+/// reaches startJob.
 fn bang(self: *Model, cmd: []const u8) Effect {
     if (cmd.len == 0) return .stay;
     self.pushFmt(.system, "$ {s}", .{cmd}) catch {};
@@ -199,17 +217,16 @@ fn bang(self: *Model, cmd: []const u8) Effect {
         self.push(.err, "! needs a live session (offline)") catch {};
         return .stay;
     }
-    if (engine.g_bash_fn.?(engine.g_turn_ctx, self.alloc, cmd)) |out| {
-        defer self.alloc.free(out);
-        self.push(.system, lastLines(out, 40)) catch {};
-    } else {
-        self.push(.err, "command failed to start") catch {};
+    const owned = self.alloc.dupe(u8, cmd) catch return .stay;
+    if (!bgop.start(self, .bash, &.{}, owned, "running")) {
+        self.alloc.free(owned);
+        self.push(.system, busy_note) catch {};
     }
     return .stay;
 }
 
 /// Tail of `s` capped to `max` lines, for `!` output in the scrollback.
-fn lastLines(s: []const u8, max: usize) []const u8 {
+pub fn lastLines(s: []const u8, max: usize) []const u8 {
     var count: usize = 0;
     var i = s.len;
     while (i > 0) {
@@ -250,16 +267,15 @@ pub fn rewind(self: *Model) void {
     self.push(.system, "rewound the last turn") catch {};
 }
 
+/// `/compact` — hand the history to the engine on a background thread. Running
+/// it inline froze the render+input loop for the whole summarization round
+/// trip, with no paint, no key handling and no way to cancel (#533).
 pub fn compact(self: *Model) void {
-    const f = engine.g_compact_fn orelse {
+    if (engine.g_compact_fn == null) {
         self.push(.system, "compaction needs a live session") catch {};
         return;
-    };
-    var turns = std.array_list.Managed(engine.Turn).init(self.alloc);
-    defer {
-        for (turns.items) |t| self.alloc.free(t.text);
-        turns.deinit();
     }
+    var turns = std.array_list.Managed(engine.Turn).init(self.alloc);
     for (self.history.items) |e| {
         const role: ?engine.Turn.Role = switch (e.kind) {
             .user => .user,
@@ -271,24 +287,11 @@ pub fn compact(self: *Model) void {
             turns.append(.{ .role = r, .text = t }) catch self.alloc.free(t);
         }
     }
-    var out: engine.CompactOut = .{};
-    const ok = f(engine.g_turn_ctx, self.alloc, turns.items, &out);
-    defer {
-        if (out.note.len > 0) self.alloc.free(out.note);
-        for (out.turns) |t| self.alloc.free(t.text);
-        if (out.turns.len > 0) self.alloc.free(out.turns);
-    }
-    if (!ok) {
-        self.push(.system, if (out.note.len > 0) out.note else "compaction failed, history unchanged") catch {};
-        return;
-    }
-    self.clearHistory();
-    if (out.note.len > 0) self.push(.system, out.note) catch {};
-    for (out.turns) |t| {
-        self.push(switch (t.role) {
-            .user => .user,
-            .assistant => .assistant,
-        }, t.text) catch {};
+    const owned: []engine.Turn = turns.toOwnedSlice() catch &.{};
+    if (!bgop.start(self, .compact, owned, "", "compacting")) {
+        for (owned) |t| self.alloc.free(t.text);
+        if (owned.len > 0) self.alloc.free(owned);
+        self.push(.system, busy_note) catch {};
     }
 }
 
@@ -526,23 +529,6 @@ test "/effort with no arg opens the effort menu" {
     try std.testing.expectEqual(@as(usize, @intFromEnum(engine.Effort.high)), m.overlay_sel);
     try std.testing.expectEqual(app.Effect.stay, applyLine(&m, "/effort low"));
     try std.testing.expectEqual(engine.Effort.low, m.effort);
-}
-
-test "! runs through the bash callback and lands in the scrollback" {
-    engine.g_bash_fn = struct {
-        fn f(_: ?*anyopaque, gpa: std.mem.Allocator, cmd: []const u8) ?[]const u8 {
-            return std.fmt.allocPrint(gpa, "ran: {s}", .{cmd}) catch null;
-        }
-    }.f;
-    defer engine.g_bash_fn = null;
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    _ = applyLine(&m, "!git status");
-    try std.testing.expectEqual(@as(usize, 2), m.history.items.len);
-    try std.testing.expectEqualStrings("$ git status", m.history.items[0].text);
-    try std.testing.expectEqualStrings("ran: git status", m.history.items[1].text);
-    try std.testing.expectEqual(app.EntryKind.system, m.history.items[1].kind);
 }
 
 test "/vim-mode toggles and /jump without turns explains" {

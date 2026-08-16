@@ -1,8 +1,8 @@
 //! simple-harness — a minimal, dependency-free agentic loop supporting
-//! Anthropic and OpenAI-compatible providers, built-in/meta/MCP tools,
-//! parallel agents, strict tool-call mode, client-side compaction, and
-//! run-exclusive JSONL tracing under `.graff/traces`.
+//! Anthropic and OpenAI-compatible providers, built-in/meta/MCP tools, parallel
+//! agents, strict tool-call mode, compaction, and JSONL traces in `.graff/traces`.
 const std = @import("std");
+pub const panic = @import("tui").restore.Panic; // leave the alt screen BEFORE std prints a panic, or the restore sequence erases the trace (#535)
 const Io = std.Io;
 const http_warm = @import("http_warm.zig");
 pub const prewarmCaBundle = http_warm.prewarmCaBundle;
