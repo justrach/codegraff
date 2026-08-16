@@ -8,6 +8,7 @@ const anchor = @import("anchor.zig");
 const app = @import("app.zig");
 const chrome = @import("chrome.zig");
 const engine = @import("engine.zig");
+const glyphs = @import("glyphs.zig");
 const layout_cache = @import("layout_cache.zig");
 const scrollback = @import("scrollback.zig");
 const scrollpaint = @import("scrollpaint.zig");
@@ -153,7 +154,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
                 const th = self.theme();
                 var head = std.array_list.Managed(u8).init(a);
                 try head.appendSlice(th.accent);
-                try head.appendSlice("\u{276F} ");
+                try head.appendSlice(glyphs.prompt_mark ++ " ");
                 try head.appendSlice(th.text);
                 var one = utext;
                 if (std.mem.indexOfScalar(u8, utext, '\n')) |nl| one = utext[0..nl];

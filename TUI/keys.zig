@@ -223,6 +223,15 @@ pub fn wheelScroll(self: *Model, notches: i32) Effect {
     // The band is anchored to screen rows, so scrolling it would slide it onto
     // other content — drop it and scroll.
     selection.clear(self);
+    // An open picker or the completion menu owns the wheel: one notch is one
+    // ITEM there, never a scroll of the transcript underneath. A coalesced run
+    // moves the selection once per notch, so momentum still travels a list.
+    const up = notches > 0;
+    var steps: u32 = @intCast(@abs(notches));
+    if (@import("overlays.zig").wheel(self, up)) {
+        while (steps > 1) : (steps -= 1) _ = @import("overlays.zig").wheel(self, up);
+        return .stay;
+    }
     scrollBy(self, notches *| @import("pacing.zig").lines_per_notch);
     return .stay;
 }

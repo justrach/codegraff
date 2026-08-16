@@ -243,7 +243,6 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-typed-events.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
-<<<<<<< HEAD
     # Same invariants, read off a VIRTUAL SCREEN instead of raw bytes
     # (scripts/ptyharness.py): the VT interpreter's own selftest, the ported
     # mode-balance check, and out-of-band screen corruption fed straight to the
@@ -251,8 +250,6 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-screenstate.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
-=======
->>>>>>> perf/tui-event-pacing
     # The frame painter may never show anything but the current frame. Storms
     # the window size, fills the screen with glyphs terminals measure
     # differently from us, then reads the SCREEN back and compares it cell for
@@ -260,7 +257,6 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-painter.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
-<<<<<<< HEAD
     # Scrolling is a viewport SLICE of one cached layout, not a re-layout
     # (TUI/layout_cache.zig). Reads the screen back on every scroll step and
     # after every width change: the markers on screen must be a contiguous
@@ -268,8 +264,6 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-layout-cache.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
-=======
->>>>>>> perf/tui-event-pacing
     # The viewport must not jump when the terminal changes width: drives
     # TIOCSWINSZ across five widths mid-scroll and reads the screen back. With
     # the logical scroll anchor removed the marker leaves the screen on the
@@ -290,6 +284,13 @@ if wanted tuiguard; then
     # With the frame budget removed the paced storm paints 503 times instead of
     # ~105, so this is a real gate, not a smoke test.
     if python3 scripts/test-tui-event-pacing.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
+    # grok-build's one-column rule for ANIMATED chrome: watches the live blink
+    # on a background op's pending row and fails if the label beside it moves a
+    # column, or if a frame is not East-Asian-Narrow. TUI/glyphs.zig holds the
+    # same law for the frame sets; this is the pixels.
+    if python3 scripts/test-tui-chrome-width.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
   fi

@@ -92,8 +92,14 @@ pub fn run(
     // Registered BEFORE the restore below, so LIFO puts the line on the normal
     // screen after the alt screen is gone. No-op unless GRAFF_TUI_PAINT_STATS.
     defer pacing.report(w);
+    // Nothing may write to the real terminal around the frame painter: park
+    // fd 2 on .graff/tui-stderr.log so std.debug.print from any thread (a
+    // subagent's status card, a worker line) cannot scroll the alt screen and
+    // bleed stale rows through the diff paint. Every exit path unparks it.
+    restore_mod.muteStderr();
     traj.open(io);
     defer {
+        restore_mod.unmuteStderr();
         w.writeAll(restore_mod.seq) catch {};
         w.flush() catch {};
     }
@@ -460,6 +466,7 @@ fn closePaste(m: *Model) void {
 }
 
 fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
+    restore_mod.unmuteStderr(); // the shell we hand over to owns the real terminal
     w.writeAll(restore_mod.seq) catch {};
     w.flush() catch {};
     tty.restore(raw.*);
@@ -470,6 +477,7 @@ fn parkToShell(io: Io, w: *Io.Writer, raw: *tty.RawState) void {
     w.writeAll(enable_seq) catch {};
     w.writeAll("\x1b]11;?\x07") catch {}; // background query -> auto light/dark (key.zig bg_report)
     w.flush() catch {};
+    restore_mod.muteStderr(); // fullscreen again: stderr goes back to the log
     _ = io;
 }
 
