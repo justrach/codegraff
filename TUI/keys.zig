@@ -6,6 +6,7 @@ const app = @import("app.zig");
 const catalog = @import("catalog.zig");
 const dispatch = @import("dispatch.zig");
 const scrollback = @import("scrollback.zig");
+const selection = @import("selection.zig");
 const engine = @import("engine.zig");
 const key_mod = @import("key.zig");
 const theme_mod = @import("theme.zig");
@@ -16,6 +17,9 @@ const Effect = app.Effect;
 
 pub fn handle(self: *Model, k: Key) Effect {
     if (k == .ignore) return .stay;
+    // Anything that is not part of the drag gesture drops the selection band
+    // (#529). The OSC-11 polarity reply is the terminal talking, not the user.
+    if (k != .mouse and k != .bg_report) selection.clear(self);
     if (@import("nav.zig").handle(self, k)) |e| return e;
     // Job-control wins overlays so Ctrl+C always does something.
     if (isCtrl(k, 'c')) return ctrlC(self);
@@ -212,14 +216,16 @@ fn scrollbackKey(self: *Model, k: Key) Effect {
 }
 
 fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
-    if (ev.btn == 64) {
-        scrollBy(self, 3);
+    if (ev.btn == 64 or ev.btn == 65) {
+        // The band is anchored to screen rows, so scrolling it would slide it
+        // onto other content — drop it and scroll.
+        selection.clear(self);
+        scrollBy(self, if (ev.btn == 64) 3 else -3);
         return .stay;
     }
-    if (ev.btn == 65) {
-        scrollBy(self, -3);
-        return .stay;
-    }
+    // A drag or its release belongs to the selection; a press only ANCHORS one
+    // and falls through, so a plain click keeps its meaning (#529).
+    if (selection.mouse(self, ev)) return .stay;
     if (@import("image.zig").mouse(self, ev)) return .stay;
     if (!ev.down or ev.btn != 0) return .stay;
     if (self.overlay != .none) {
@@ -241,7 +247,12 @@ fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
     // toggle anything (#519).
     const i = scrollback.indexAtVisual(self, vis, self.last_term_width) orelse return .stay;
     self.selected = i;
-    if (self.history.items[i].kind == .tool) self.toggleToolGroup(i);
+    if (self.history.items[i].kind == .tool) {
+        self.toggleToolGroup(i);
+        // Remembered so the fold can be put back if this press turns out to be
+        // the start of a drag — selecting text must not restructure the view.
+        self.sel.undo_idx = i;
+    }
     return .stay;
 }
 
@@ -491,23 +502,9 @@ test "Cmd+Delete and Ctrl+U kill the draft, not the viewport" {
     try std.testing.expect(m.follow);
 }
 
-test "click on blank padding selects and toggles nothing (#519)" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    try m.push(.user, "hi");
-    try m.push(.tool, "⚙ bash");
-    try m.push(.tool, "✓ bash");
-    m.last_term_height = 24;
-    m.last_term_width = 80;
-    m.mid_origin = 0;
-    m.mid_skip = 0;
-    m.prompt_origin = 20;
-    try std.testing.expect(m.history.items[1].folded);
-    _ = handle(&m, .{ .mouse = .{ .btn = 0, .x = 2, .y = 15, .down = true } });
-    try std.testing.expect(m.history.items[1].folded);
-    try std.testing.expectEqual(app.Focus.scrollback, m.focus);
-}
+// The click-behaviour tests live beside the drag tests in selection.zig: a
+// click and a drag are two readings of the same press, and they only stay
+// separable if they are pinned together.
 
 test "slash selection clamps to the filtered list and stays visible (#522)" {
     var m: Model = undefined;
@@ -524,22 +521,6 @@ test "slash selection clamps to the filtered list and stays visible (#522)" {
     defer arena.deinit();
     const menu = try @import("chrome.zig").slashMenu(&m, arena.allocator(), 80);
     try std.testing.expect(std.mem.indexOf(u8, menu, "› ") != null);
-}
-
-test "click on a folded tool row expands it" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    try m.push(.user, "hi");
-    try m.push(.tool, "⚙ bash");
-    try m.push(.tool, "✓ bash");
-    m.last_term_height = 24;
-    m.last_term_width = 80;
-    m.mid_origin = 1;
-    m.mid_skip = 0;
-    try std.testing.expect(m.history.items[1].folded);
-    _ = handle(&m, .{ .mouse = .{ .btn = 0, .x = 4, .y = 3, .down = true } });
-    try std.testing.expect(!m.history.items[1].folded);
 }
 
 test "empty Up scrolls transcript and keeps prompt focus" {

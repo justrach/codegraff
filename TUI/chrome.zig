@@ -249,7 +249,8 @@ fn helpOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
         \\  Ctrl+J / K     scroll one line
         \\  Ctrl+N N       new session
         \\  Ctrl+Q         quit
-        \\  Shift+drag     copy (native selection)
+        \\  drag           select transcript · copy on release
+        \\  Shift+drag     the terminal's own selection (any region)
         \\  Ctrl+Z          undo composer
         \\  Cmd+Delete     kill to start of line
         \\  Option+Delete  kill previous word

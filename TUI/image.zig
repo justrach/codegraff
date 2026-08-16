@@ -302,23 +302,7 @@ fn openPath(path: []const u8) void {
 }
 
 fn copyPath(path: []const u8) void {
-    if (path.len == 0) return;
-    const io = ioHandle();
-    var child = std.process.spawn(io, .{
-        .argv = &.{"pbcopy"},
-        .stdin = .pipe,
-        .stdout = .ignore,
-        .stderr = .ignore,
-    }) catch return;
-    if (child.stdin) |*s| {
-        var wbuf: [4096]u8 = undefined;
-        var w = s.writerStreaming(io, &wbuf);
-        w.interface.writeAll(path) catch {};
-        w.interface.flush() catch {};
-        s.close(io);
-        child.stdin = null;
-    }
-    _ = child.wait(io) catch {};
+    _ = @import("selection.zig").copyText(path);
 }
 
 pub fn attachDropped(self: *Model, raw: []const u8) bool {
