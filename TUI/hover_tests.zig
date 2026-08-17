@@ -323,6 +323,21 @@ test "a group that folds under the pointer starts announcing that it opens" {
     try testing.expect(std.mem.indexOf(u8, shut, glyphs.expand) != null);
 }
 
+test "a hover row the frame no longer reaches clears instead of staying armed" {
+    var m: Model = undefined;
+    try folded(&m);
+    defer m.deinit();
+    // Composer is a real target at prompt_origin. Park there, then hand paint
+    // a frame too short to contain that row — the tint has nowhere to go.
+    m.hover.row = 20;
+    m.hover.hit = .{ .target = .composer };
+    const frame = "a\nb\nc";
+    const out = try hover.paint(&m, testing.allocator, frame, 80);
+    try testing.expectEqualStrings(frame, out);
+    try testing.expectEqual(@as(?usize, null), m.hover.row);
+    try testing.expectEqual(hover.Target.none, m.hover.hit.target);
+}
+
 test "hover clears when the pointer is over an overlay, which has no row targets" {
     var m: Model = undefined;
     try folded(&m);

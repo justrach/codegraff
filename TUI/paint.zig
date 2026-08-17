@@ -98,9 +98,10 @@ pub fn paintRow(w: *Io.Writer, ln: []const u8, cols: usize, bg: []const u8) !voi
     try w.writeAll(bg);
     // Measure and write the same cells: a smuggled CR/BEL/BS is not a column
     // and must not reach the terminal (CR rewinds the row, BEL rings, BS
-    // walks the cursor back). Tab stays — it is legal prose. ESC stays —
-    // that is SGR. The frame builders already strip this; this is the last
-    // door so a leak cannot desync the row↔line map.
+    // walks the cursor back). Tab expands to the next stop of 8 — counting
+    // it as one cell left pad() short and the rest of the previous frame on
+    // the row. ESC stays — that is SGR. The frame builders already strip
+    // this; this is the last door so a leak cannot desync the row↔line map.
     const vis = cellLen(ln);
     if (vis < cols) {
         try writeCells(w, ln);
@@ -128,10 +129,17 @@ fn pad(w: *Io.Writer, cells: usize) !void {
     while (n > 0) : (n -= 1) try w.writeByte(' ');
 }
 
-/// C0/DEL that must never be a cell. Tab is kept (legal prose); ESC is kept
-/// (SGR) and handled by the callers before they reach this.
+/// C0/DEL that must never be a cell. Tab is expanded to spaces (stop 8) by
+/// the callers, never written raw and never dropped as zero-width. ESC is
+/// kept (SGR) and handled before they reach this.
 fn isRowControl(b: u8) bool {
     return (b < 0x20 and b != '\t') or b == 0x7f;
+}
+
+/// Columns a tab occupies at `col`, matching common emulators (stops of 8).
+/// A tab on a stop advances to the next one, never zero.
+fn tabPad(col: usize) usize {
+    return 8 - (col % 8);
 }
 
 fn cellLen(ln: []const u8) usize {
@@ -140,6 +148,11 @@ fn cellLen(ln: []const u8) usize {
     while (i < ln.len) {
         if (ln[i] == 0x1b) {
             i = theme_mod.skipEsc(ln, i);
+            continue;
+        }
+        if (ln[i] == '\t') {
+            n += tabPad(n);
+            i += 1;
             continue;
         }
         if (isRowControl(ln[i])) {
@@ -161,6 +174,13 @@ fn takeCells(ln: []const u8, max: usize) []const u8 {
             i = theme_mod.skipEsc(ln, i);
             continue;
         }
+        if (ln[i] == '\t') {
+            const w = tabPad(n);
+            if (n + w > max) break;
+            i += 1;
+            n += w;
+            continue;
+        }
         if (isRowControl(ln[i])) {
             i += 1;
             continue;
@@ -175,11 +195,19 @@ fn takeCells(ln: []const u8, max: usize) []const u8 {
 
 fn writeCells(w: *Io.Writer, ln: []const u8) !void {
     var i: usize = 0;
+    var col: usize = 0;
     while (i < ln.len) {
         if (ln[i] == 0x1b) {
             const e = theme_mod.skipEsc(ln, i);
             try w.writeAll(ln[i..e]);
             i = e;
+            continue;
+        }
+        if (ln[i] == '\t') {
+            const n = tabPad(col);
+            try pad(w, n);
+            col += n;
+            i += 1;
             continue;
         }
         if (isRowControl(ln[i])) {
@@ -188,8 +216,9 @@ fn writeCells(w: *Io.Writer, ln: []const u8) !void {
         }
         const start = i;
         i += 1;
-        while (i < ln.len and ln[i] != 0x1b and !isRowControl(ln[i])) : (i += 1) {}
+        while (i < ln.len and ln[i] != 0x1b and ln[i] != '\t' and !isRowControl(ln[i])) : (i += 1) {}
         try w.writeAll(ln[start..i]);
+        col += theme_mod.visibleLen(ln[start..i]);
     }
 }
 

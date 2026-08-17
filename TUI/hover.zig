@@ -227,6 +227,7 @@ pub fn paint(m: *Model, a: std.mem.Allocator, frame: []const u8, width: usize) !
     m.hover.hit = now; // the group may have folded or opened under the pointer
     const bg = tint.hoverBg(m.theme_id);
     var out = std.array_list.Managed(u8).init(a);
+    errdefer out.deinit();
     var r: usize = 0;
     var it = std.mem.splitScalar(u8, frame, '\n');
     var found = false;
@@ -241,7 +242,12 @@ pub fn paint(m: *Model, a: std.mem.Allocator, frame: []const u8, width: usize) !
         try out.appendSlice(ln);
     }
     // The pointer is parked on a row the frame no longer reaches (the transcript
-    // shrank under it). Nothing to tint, and the stale row must not paint.
-    if (!found) return frame;
+    // shrank under it). Nothing to tint, and the stale row must not paint —
+    // clear so the next frame does not keep announcing a click that cannot land.
+    if (!found) {
+        out.deinit();
+        clear(m);
+        return frame;
+    }
     return out.items;
 }
