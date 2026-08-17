@@ -105,9 +105,11 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         if (arg.len == 0) {
             self.openOverlay(.model);
         } else if (engine.g_model_fn) |f| {
-            if (f(engine.g_turn_ctx, self.alloc, arg)) |nm| {
-                engine.g_model_name = nm;
-                self.pushFmt(.system, "switched to {s}", .{nm}) catch {};
+            // A hand-typed name names no provider, so the engine routes it —
+            // the picker is the surface that knows which seat was meant.
+            if (f(engine.g_turn_ctx, self.alloc, "", arg)) |got| {
+                self.adoptModel(got);
+                self.pushFmt(.system, "switched to {s} · {s}", .{ got.model, got.provider }) catch {};
             } else self.pushFmt(.err, "couldn't switch to '{s}'", .{arg}) catch {};
         } else self.push(.system, "model switching isn't available (offline)") catch {};
     } else if (std.mem.eql(u8, canon, "/effort")) {
@@ -177,7 +179,7 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
     } else if (std.mem.eql(u8, canon, "/paste")) {
         pasteClipboard(self);
     } else if (std.mem.eql(u8, canon, "/doctor")) {
-        self.pushFmt(.system, "ok · model={s} · cwd={s} · theme={s} · vim={s}", .{ engine.g_model_name, engine.g_cwd, @tagName(self.theme_id), onOff(self.vim_mode) }) catch {};
+        self.pushFmt(.system, "ok · model={s} via {s} · cwd={s} · theme={s} · vim={s}", .{ engine.g_model_name, engine.g_model_provider, engine.g_cwd, @tagName(self.theme_id), onOff(self.vim_mode) }) catch {};
     } else if (std.mem.eql(u8, canon, "/import-claude")) {
         self.push(.system, "adopting Claude/Cursor MCP writes ~/.codegraff — run `graff mcp import` from this repo") catch {};
     } else if (std.mem.eql(u8, canon, "/jump")) {

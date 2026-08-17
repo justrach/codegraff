@@ -326,6 +326,14 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-scrollbar-osc52.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+    # #560: the picker has to say WHO serves each model. Reads the open overlay
+    # off the virtual screen and checks that every row carries a provider and a
+    # cost badge, that gpt-5.5 draws one distinguishable row per provider with
+    # the right badge on each (codex plan / openai api / codegraff credits),
+    # and that typing a provider name filters to that provider's seats.
+    if python3 scripts/test-tui-model-picker.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
   fi
 fi
 

@@ -30,23 +30,9 @@ pub const enable_seq = "\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1003h\x1
 /// is unchanged, so the repaint is the same bytes into a synchronized swap.
 pub const heal_interval_ms: u64 = 3000;
 
-pub const RunOpts = struct {
-    turn_ctx: ?*anyopaque = null,
-    turn_fn: ?engine.TurnFn = null,
-    model_fn: ?engine.ModelFn = null,
-    cancel_fn: ?engine.CancelFn = null,
-    model_name: []const u8 = "",
-    models: []const u8 = "",
-    cwd: []const u8 = ".",
-    yolo: bool = false,
-    hud_fn: ?engine.HudFn = null,
-    paste_fn: ?engine.PasteFn = null,
-    bash_fn: ?engine.BashFn = null,
-    files_fn: ?engine.FilesFn = null,
-    copy_fn: ?engine.CopyFn = null,
-    compact_fn: ?engine.CompactFn = null,
-    history_fn: ?engine.HistoryFn = null,
-};
+/// Every seam the frontend is handed, declared with the engine that owns
+/// them (engine.RunOpts). Re-exported here because `run` is its only caller.
+pub const RunOpts = engine.RunOpts;
 
 pub fn run(
     gpa: std.mem.Allocator,
@@ -70,7 +56,8 @@ pub fn run(
     engine.g_compact_fn = opts.compact_fn;
     engine.g_history_fn = opts.history_fn;
     engine.g_model_name = opts.model_name;
-    engine.g_models = opts.models;
+    engine.g_model_provider = opts.model_provider;
+    engine.g_model_entries = opts.model_entries;
     engine.g_cwd = opts.cwd;
 
     var m: Model = undefined;

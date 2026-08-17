@@ -352,12 +352,17 @@ test "status paints coral [stop] while a turn is pending" {
     try std.testing.expect(std.mem.indexOf(u8, text, "Esc:cancel") != null);
 }
 
-test "model overlay lists engine.g_models" {
-    engine.g_models = "grok-4, gpt-5.5";
+test "model overlay lists engine.g_model_entries with their providers" {
+    engine.g_model_entries = &.{
+        .{ .name = "grok-4", .provider = "xai", .has_key = true, .cost = .plan },
+        .{ .name = "gpt-5.5", .provider = "openai", .has_key = true, .cost = .api },
+    };
     engine.g_model_name = "grok-4";
+    engine.g_model_provider = "xai";
     defer {
-        engine.g_models = "";
+        engine.g_model_entries = &.{};
         engine.g_model_name = "";
+        engine.g_model_provider = "";
     }
     var m: Model = undefined;
     m.setup(std.testing.allocator);
@@ -369,6 +374,9 @@ test "model overlay lists engine.g_models" {
     try std.testing.expect(std.mem.indexOf(u8, text, "grok-4") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "gpt-5.5") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "Model ›") != null);
+    // The blind spot this fixes: the provider was nowhere on the surface.
+    try std.testing.expect(std.mem.indexOf(u8, text, "xai · plan") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "openai · api") != null);
 }
 
 test "debug overlay is not the offline fallback when a hud is wired" {
@@ -393,8 +401,6 @@ test "debug overlay is not the offline fallback when a hud is wired" {
     try std.testing.expect(std.mem.indexOf(u8, text, "overlay       debug") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "prompt-origin") != null);
 }
-
-pub const splitModels = @import("models.zig").splitModels;
 
 fn settingsOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
     const th = self.theme();

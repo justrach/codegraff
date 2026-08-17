@@ -21,8 +21,8 @@ pub const Item = struct {
 
 /// The canonical command list, in menu / help display order.
 pub const commands = [_]Item{
-    .{ .name = "/model", .usage = "/model <name>", .desc = "switch model/provider, fuzzy match (e.g. \"sonnet\", \"opus\")" },
-    .{ .name = "/models", .usage = "/models [health]", .desc = "list known models, context windows, compaction points; health shows live state" },
+    .{ .name = "/model", .usage = "/model [<provider>] <name>", .desc = "switch model/provider, fuzzy match (e.g. \"sonnet\", \"opus\"); name a provider to pin the seat" },
+    .{ .name = "/models", .usage = "/models [health]", .desc = "list known models: context window, compaction point, provider and what that seat costs (plan/credits/api/local); health shows live state" },
     .{ .name = "/clear", .desc = "wipe the conversation and start fresh" },
     .{ .name = "/new", .desc = "start a fresh autosaved session" },
     .{ .name = "/rename", .usage = "/rename <title>", .desc = "set the current session title" },
