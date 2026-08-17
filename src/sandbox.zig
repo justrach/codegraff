@@ -170,7 +170,7 @@ pub const manifest_name = "manifest.json";
 pub const payload_name = "payload.bin";
 
 /// True when `s` can only ever name something INSIDE the session subtree.
-/// Session names come from /save and from AI titles, snapshot ids from
+/// Session names come from /save and from generated titles, snapshot ids from
 /// `newId`, and neither may become a write outside `.graff/sessions`.
 pub fn safeName(s: []const u8) bool {
     return tool_spill.safeName(s);
