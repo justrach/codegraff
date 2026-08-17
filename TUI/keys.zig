@@ -4,6 +4,7 @@ const std = @import("std");
 
 const app = @import("app.zig");
 const catalog = @import("catalog.zig");
+const click = @import("click.zig");
 const dispatch = @import("dispatch.zig");
 const hover = @import("hover.zig");
 const layout_cache = @import("layout_cache.zig");
@@ -20,7 +21,12 @@ pub fn handle(self: *Model, k: Key) Effect {
     if (k == .ignore) return .stay;
     // Anything that is not part of the drag gesture drops the selection band
     // (#529). The OSC-11 polarity reply is the terminal talking, not the user.
-    if (k != .mouse and k != .bg_report) selection.clear(self);
+    if (k != .mouse and k != .bg_report) {
+        selection.clear(self);
+        // A key can only arrive with the button up: a gutter drag whose
+        // release went missing must not keep the pointer captured (click.zig).
+        self.click.gutter = false;
+    }
     if (@import("nav.zig").handle(self, k)) |e| return e;
     // Job-control wins overlays so Ctrl+C always does something.
     if (isCtrl(k, 'c')) return ctrlC(self);
@@ -261,11 +267,18 @@ fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
     // Pure motion under ?1003h: track the row so the frame can announce that it
     // is clickable. Never consumed — the image-chip preview reads it too.
     _ = hover.mouse(self, ev);
+    // The scroll gutter owns its column BEFORE the selection can anchor there:
+    // a press on the thumb is a scrollbar gesture and never a drag-copy.
+    if (click.gutterGesture(self, ev)) return .stay;
     // A drag or its release belongs to the selection; a press only ANCHORS one
     // and falls through, so a plain click keeps its meaning (#529).
     if (selection.mouse(self, ev)) return .stay;
     if (@import("image.zig").mouse(self, ev)) return .stay;
     if (!ev.down or ev.btn != 0) return .stay;
+    // An open list answers the press on its own row (click.zig). It declines
+    // everything else, including the backdrop around a panel and every overlay
+    // that has no rows to pick — those keep the dismissal below.
+    if (click.press(self, ev)) |e| return e;
     if (self.overlay != .none) {
         self.closeOverlay();
         return .stay;

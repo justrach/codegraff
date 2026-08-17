@@ -9,7 +9,9 @@ const theme_mod = @import("theme.zig");
 const Model = app.Model;
 
 pub const max_files = 512;
-const visible_rows = 10;
+/// Rows the picker draws at once - the click map (overlays.rowSpan) reads this
+/// same window instead of keeping a second copy of it.
+pub const visible_rows = 10;
 
 /// Newline-joined `list` filtered by substring-or-subsequence `query`.
 pub fn filterList(list: []const u8, query: []const u8, out: [][]const u8) usize {
@@ -38,7 +40,7 @@ pub fn head(self: *const Model, a: std.mem.Allocator) !panel.Head {
     };
 }
 
-pub const hint = "type to search · ↑↓ move · Enter insert · Esc";
+pub const hint = "type to search · ↑↓ move · click or Enter inserts · Esc";
 
 /// The ROWS only — the frame carries the rest.
 pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {

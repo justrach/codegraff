@@ -136,6 +136,14 @@ pub const Model = struct {
     prompt_origin: usize = 20,
     /// How many mid-lines were clipped above the viewport.
     mid_skip: usize = 0,
+    /// Composed mid-lines this frame: the transcript's wrapped total, or an
+    /// overlay body's own line count. A press past it landed on the BACKDROP
+    /// under a short panel and dismisses it, rather than on the panel itself.
+    mid_total: usize = 0,
+    /// Rows of the slash completion menu on screen, at the top of the bottom
+    /// block. A press there picks a command instead of merely focusing the
+    /// composer (click.zig); zero whenever the menu is closed.
+    slash_rows: usize = 0,
     /// The scrollable band of the frame just composed, and the painter hint
     /// derived from how it moved since the frame before it. Presentation state
     /// for the diff painter's scroll fast path: render.zig is the only writer,
@@ -176,6 +184,9 @@ pub const Model = struct {
     /// state: which row is hovered is never an engine fact, and the affordance
     /// it paints is derived from the typed entries the Model already holds.
     hover: @import("hover.zig").State = .{},
+    /// Single-click gesture state (click.zig) - whether the scroll gutter
+    /// currently owns the pointer. Presentation only, like `sel` and `hover`.
+    click: @import("click.zig").State = .{},
     /// Wrapped-line layout of the transcript, keyed by width/theme/fold/entry
     /// identity (layout_cache.zig). Presentation state: a pure memo of what the
     /// row builders would produce, so scrolling is a slice and not a re-layout.

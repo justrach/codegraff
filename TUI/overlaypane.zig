@@ -40,14 +40,14 @@ fn spec(self: *const Model, a: std.mem.Allocator) !panel.Spec {
             break :blk .{
                 .title = "Commands",
                 .note = try tally(a, catalog.filter(self.input.getValue(), &idx), catalog.items.len),
-                .footer = "↑↓ move · Enter run · Esc",
+                .footer = "↑↓ move · click or Enter runs · Esc",
                 .body = try listBody(self, a),
             };
         },
         // No tally: a list that cannot be filtered has nothing to count down.
         .theme => .{
             .title = "Theme",
-            .footer = "↑↓ move · Enter apply · Esc",
+            .footer = "↑↓ move · click or Enter applies · Esc",
             .body = try themeBody(self, a),
         },
         .help => .{
@@ -84,13 +84,13 @@ fn spec(self: *const Model, a: std.mem.Allocator) !panel.Spec {
         },
         .settings => .{
             .title = "Settings",
-            .footer = "↑↓ move · Enter change · Esc",
+            .footer = "↑↓ move · click or Enter changes · Esc",
             .body = try settingsBody(self, a),
         },
         .jump => .{
             .title = "Jump to turn",
             .note = if (self.userTurnCount() == 0) "" else try std.fmt.allocPrint(a, "{d} turns", .{self.userTurnCount()}),
-            .footer = "↑↓ move · Enter jump · Esc",
+            .footer = "↑↓ move · click or Enter jumps · Esc",
             .body = try jumpBody(self, a),
         },
         else => .{ .body = "" },

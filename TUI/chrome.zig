@@ -198,19 +198,56 @@ fn hintLine(self: *const Model, a: std.mem.Allocator, width: usize, segs: []cons
     return theme_mod.paint(a, th.muted, out.items);
 }
 
-pub fn slashMenu(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
+/// The completion menu's geometry, published so the renderer below and the
+/// click map (click.zig) share ONE set of numbers instead of each deriving
+/// its own. `line0` and `lines` describe the COMPOSED block, frame included:
+/// the menu is a panel now, so its first row is a border and an item no
+/// longer sits at the block's top line.
+pub const SlashGeom = struct {
+    /// First item shown - the window follows the highlight.
+    first: usize,
+    /// Item rows drawn.
+    show: usize,
+    /// Items in the filtered catalogue.
+    n: usize,
+    /// Block line the first item row sits on: 1 inside a frame, else 0.
+    line0: usize,
+    /// Lines the whole block composes to, edges and window row included.
+    lines: usize,
+};
+
+pub fn slashWindow(self: *const Model) ?SlashGeom {
     const v = self.input.getValue();
-    if (self.focus != .prompt or v.len == 0 or v[0] != '/') return "";
+    if (self.focus != .prompt or v.len == 0 or v[0] != '/') return null;
     var idx: [catalog.items.len]usize = undefined;
     const n = catalog.filter(v, &idx);
-    if (n == 0) return "";
+    if (n == 0) return null;
+    const show = @min(n, @as(usize, 8));
+    const sel = @min(self.slash_sel, n - 1);
+    // A panel too narrow to frame is returned as bare rows (panel.min_width),
+    // and then the first item IS the first line.
+    const framed = self.last_term_width >= panel.min_width;
+    const edges: usize = if (framed) 2 else 0;
+    return .{
+        .first = if (sel >= show) sel + 1 - show else 0,
+        .show = show,
+        .n = n,
+        .line0 = if (framed) 1 else 0,
+        .lines = show + @intFromBool(n > show) + edges,
+    };
+}
+
+pub fn slashMenu(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
+    const w = slashWindow(self) orelse return "";
+    var idx: [catalog.items.len]usize = undefined;
+    const n = catalog.filter(self.input.getValue(), &idx);
     const th = self.theme();
     var out = std.array_list.Managed(u8).init(a);
     // Clamped selection + a window that follows it, so the highlighted row is
     // always visible and always the row Enter fires (#522).
-    const show = @min(n, @as(usize, 8));
+    const show = w.show;
     const sel = @min(self.slash_sel, n - 1);
-    const first = if (sel >= show) sel + 1 - show else 0;
+    const first = w.first;
     var i: usize = first;
     while (i < first + show) : (i += 1) {
         const it = catalog.items[idx[i]];

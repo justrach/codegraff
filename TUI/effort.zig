@@ -48,7 +48,7 @@ pub fn head(self: *const Model, a: std.mem.Allocator) !panel.Head {
     };
 }
 
-pub const hint = "type to filter · ↑↓ move · Enter pick · Esc";
+pub const hint = "type to filter · ↑↓ move · click or Enter picks · Esc";
 
 /// The ROWS only — the frame carries the rest.
 pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
