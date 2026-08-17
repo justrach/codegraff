@@ -264,7 +264,17 @@ test "type /help then enter opens the help overlay" {
     try std.testing.expectEqual(app.Overlay.help, term.model.overlay);
     const vis = try term.screen();
     defer std.testing.allocator.free(vis);
-    try std.testing.expect(std.mem.indexOf(u8, vis, "/quit") != null);
+    // A sheet opens at its FIRST row — it used to open at its last, so the
+    // only part of /help you ever saw was the tail of the command list.
+    try std.testing.expect(std.mem.indexOf(u8, vis, "Shortcuts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "Tab            prompt / scrollback") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "/quit") == null);
+    // ...and paging it reaches the rest.
+    var i: usize = 0;
+    while (i < 4) : (i += 1) _ = term.feed("\x1b[6~");
+    const paged = try term.screen();
+    defer std.testing.allocator.free(paged);
+    try std.testing.expect(std.mem.indexOf(u8, paged, "/quit") != null);
 }
 
 test "hoverText on an image chip opens the preview" {

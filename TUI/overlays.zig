@@ -8,10 +8,38 @@ const catalog = @import("catalog.zig");
 const dispatch = @import("dispatch.zig");
 const engine = @import("engine.zig");
 const files_mod = @import("files.zig");
+const panel = @import("panel.zig");
 const theme_mod = @import("theme.zig");
 const Key = @import("key.zig").Key;
 const Model = app.Model;
 const Effect = app.Effect;
+
+/// Overlays whose body is a SHEET rather than a list: there is no highlight to
+/// move, so the arrows and the page keys scroll the body instead. keys.zig
+/// routes every key here before it reaches its own page handling, so without
+/// this a /help taller than the terminal had no way at all to show its second
+/// half — the arrows only walked an `overlay_sel` nothing rendered.
+fn scrolls(o: app.Overlay) bool {
+    return o == .help or o == .debug;
+}
+
+fn page(self: *const Model) usize {
+    const h = self.last_term_height;
+    return @max(if (h > 8) h - 6 else 3, 3);
+}
+
+/// One step of the sheet, clamped to its end by the frame composer (render.zig
+/// knows the row count; this does not).
+fn scrollSheet(self: *Model, k: Key) bool {
+    switch (k) {
+        .up => self.overlay_scroll -|= 3,
+        .down => self.overlay_scroll += 3,
+        .page_up => self.overlay_scroll -|= page(self),
+        .page_down => self.overlay_scroll += page(self),
+        else => return false,
+    }
+    return true;
+}
 
 pub fn key(self: *Model, k: Key) Effect {
     if (@import("image.zig").key(self, k)) return .stay;
@@ -19,6 +47,7 @@ pub fn key(self: *Model, k: Key) Effect {
         self.closeOverlay();
         return .stay;
     }
+    if (scrolls(self.overlay) and scrollSheet(self, k)) return .stay;
     if (k == .up) {
         self.overlay_sel -|= 1;
         return .stay;
@@ -52,7 +81,10 @@ pub fn wheel(self: *Model, up: bool) bool {
     // The image card is a preview above the composer, not a list; it keeps its
     // own key handling and the transcript keeps the wheel.
     if (self.overlay != .none and self.overlay != .image) {
-        if (up) self.overlay_sel -|= 1 else self.overlay_sel += 1;
+        // A sheet scrolls; only a LIST has a highlight for a notch to move.
+        if (scrolls(self.overlay)) {
+            if (up) self.overlay_scroll -|= 1 else self.overlay_scroll += 1;
+        } else if (up) self.overlay_sel -|= 1 else self.overlay_sel += 1;
         return true;
     }
     const v = self.input.getValue();
@@ -69,6 +101,98 @@ pub fn wheel(self: *Model, up: bool) bool {
     return true;
 }
 
+// ------------------------------------------------------------- row geometry
+
+/// Where an open list overlay's ROWS sit inside its own composed body, in body
+/// lines. render.zig lays that body out exactly like the transcript - screen
+/// row `mid_origin + k` shows body line `mid_skip + k` - so this plus those two
+/// numbers is the whole row map a click needs.
+///
+/// Every overlay is a PANEL now (panel.zig): its name and its tally ride in the
+/// top edge and its keys in the bottom one, so the body a list composes is its
+/// rows and nothing else, and the frame contributes exactly one line above them.
+/// That is why `line0` is the same for all of them - the per-overlay header
+/// shapes this used to track no longer exist. The panel also CLIPS every row to
+/// its inner width instead of wrapping, which is what keeps one item on one
+/// line and lets this map be arithmetic rather than a second pass over bytes.
+pub const Span = struct {
+    /// Body line of the first row drawn.
+    line0: usize,
+    /// Item index that row shows - a windowed list starts partway down.
+    first: usize,
+    /// Rows drawn.
+    rows: usize,
+    /// Items in the FILTERED list, which is what `overlay_sel` indexes.
+    total: usize,
+};
+
+/// The panel's top edge, and the only reason `line0` is not zero.
+const frame_rows: usize = 1;
+
+pub fn rowSpan(self: *const Model) ?Span {
+    const models = @import("models.zig");
+    const effort_mod = @import("effort.zig");
+    // Too narrow to frame is too narrow to CLIP: panel.zig hands the body back
+    // untouched, the rows wrap, and one item stops being one line. Nothing is
+    // clickable at that width rather than the wrong thing being.
+    if (self.last_term_width < panel.min_width) return null;
+    switch (self.overlay) {
+        .palette => {
+            var idx: [catalog.items.len]usize = undefined;
+            const n = catalog.filter(self.input.getValue(), &idx);
+            const show = @min(n, @as(usize, 12));
+            if (show == 0) return null;
+            return .{ .line0 = frame_rows, .first = 0, .rows = show, .total = show };
+        },
+        .theme => return .{ .line0 = frame_rows, .first = 0, .rows = theme_mod.all.len, .total = theme_mod.all.len },
+        .settings => return .{ .line0 = frame_rows, .first = 0, .rows = 4, .total = 4 },
+        .jump => {
+            const total = self.userTurnCount();
+            if (total == 0) return null;
+            return .{ .line0 = frame_rows, .first = 0, .rows = total, .total = total };
+        },
+        .effort => {
+            var buf: [effort_mod.all.len]engine.Effort = undefined;
+            const n = effort_mod.filter(self.overlay_filter, &buf);
+            if (n == 0) return null;
+            return .{ .line0 = frame_rows, .first = 0, .rows = n, .total = n };
+        },
+        .model => {
+            var rows: [models.max_models]engine.ModelEntry = undefined;
+            const n = models.filterModels(engine.g_model_entries, self.overlay_filter, &rows);
+            if (n == 0) return null;
+            return windowed(frame_rows, n, self.overlay_sel % n, models.visible_rows);
+        },
+        .file => {
+            var names: [files_mod.max_files][]const u8 = undefined;
+            const n = files_mod.filterList(self.files_cache orelse "", self.overlay_filter, &names);
+            if (n == 0) return null;
+            return windowed(frame_rows, n, self.overlay_sel % n, files_mod.visible_rows);
+        },
+        else => return null,
+    }
+}
+
+/// The scrolling window the searchable pickers draw: `vis` rows that follow the
+/// highlight, so it is always on screen and always the row Enter fires.
+fn windowed(line0: usize, n: usize, sel: usize, vis_max: usize) Span {
+    const vis = @min(vis_max, n);
+    const off = if (sel >= vis) sel - vis + 1 else 0;
+    return .{ .line0 = line0, .first = off, .rows = @min(vis, n - off), .total = n };
+}
+
+/// A click landed on item `item`. The first click on a row moves the highlight
+/// there; a click on the row that already carries it CONFIRMS, exactly as
+/// Enter does. Those two halves are also what make a double click a confirm,
+/// without a second copy of hover.zig's double-click window.
+pub fn clickRow(self: *Model, item: usize) Effect {
+    const span = rowSpan(self) orelse return .stay;
+    if (item >= span.total) return .stay;
+    if (self.overlay_sel % span.total == item) return activate(self);
+    self.overlay_sel = item;
+    return .stay;
+}
+
 /// Open the @-picker immediately and load the session file list in the
 /// background. Loading it inline blocked the render+input thread for up to the
 /// runCapped 10s cap on the first @ of a session (#533).
@@ -79,7 +203,7 @@ pub fn openFiles(self: *Model) void {
     self.openOverlay(.file);
 }
 
-fn activate(self: *Model) Effect {
+pub fn activate(self: *Model) Effect {
     switch (self.overlay) {
         .palette => {
             var idx: [catalog.items.len]usize = undefined;
@@ -102,20 +226,25 @@ fn activate(self: *Model) Effect {
         },
         .model => {
             const models = @import("models.zig");
-            var names: [models.max_models][]const u8 = undefined;
-            const n = models.filterModels(engine.g_models, self.overlay_filter, &names);
+            var rows: [models.max_models]engine.ModelEntry = undefined;
+            const n = models.filterModels(engine.g_model_entries, self.overlay_filter, &rows);
             const sel = if (n == 0) 0 else self.overlay_sel % n;
             self.closeOverlay();
             if (n == 0) return .stay;
-            const pick = names[sel];
+            // THE row the user chose, provider and all. Handing the engine the
+            // name alone let it re-route by first-name-match, so picking the
+            // openai row for a model codex also serves landed on codex.
+            const pick = rows[sel];
             if (engine.g_model_fn) |f| {
-                if (f(engine.g_turn_ctx, self.alloc, pick)) |nm| {
-                    engine.g_model_name = nm;
-                    self.setToast(nm);
+                if (f(engine.g_turn_ctx, self.alloc, pick.provider, pick.name)) |got| {
+                    self.adoptModel(got);
+                    self.setToast(got.model);
+                    self.pushFmt(.system, "model → {s} · {s}", .{ got.model, got.provider }) catch {};
                 } else self.setToast("couldn't switch");
             } else {
-                engine.g_model_name = pick;
-                self.setToast(pick);
+                engine.g_model_name = pick.name;
+                engine.g_model_provider = pick.provider;
+                self.setToast(pick.name);
             }
         },
         .effort => {

@@ -219,3 +219,27 @@ test "end to end: a wrapped diff keeps its band and bleeds onto nothing (#diff)"
     try std.testing.expect(del_rows > 1); // the deletion really did fold
     try std.testing.expectEqual(del_rows - 1, folds); // every fold is marked
 }
+
+test "a long system row breaks on a space, never through a token" {
+    // The /usage line at 60 columns: hard wrapping cut "$0.0000" in half, so
+    // the transcript showed "$0.0" with "000" on the row below it.
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.push(.system, "3 api call(s) · 300 in (0 cached) + 30 out tokens · $0.0000 · 3 subscription call(s), flat-rate");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_]usize{ 40, 52, 60, 72 }) |w| {
+        const rows = try scrollback.render(&m, arena.allocator(), w, 0);
+        var it = std.mem.splitScalar(u8, rows, '\n');
+        var n: usize = 0;
+        while (it.next()) |ln| : (n += 1) {
+            try std.testing.expect(theme_mod.visibleLen(ln) <= w);
+            // No row may END in the middle of the amount, and none may open
+            // with the tail of one.
+            try std.testing.expect(!std.mem.endsWith(u8, std.mem.trimEnd(u8, ln, " "), "$0.0"));
+        }
+        try std.testing.expect(std.mem.indexOf(u8, rows, "$0.0000") != null);
+        try std.testing.expect(n > 1); // it really did wrap
+    }
+}

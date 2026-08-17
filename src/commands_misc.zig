@@ -37,6 +37,12 @@ const jobs = @import("jobs.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: which listed MCP tools are still schema-deferred
 const subagent = @import("subagent.zig"); // #276 P0-3: g_agent_jobs, for /jobs
 
+const billing = @import("billing.zig");
+const models_table = @import("models_table.zig");
+
+test { // main.zig is the test root, so this reference is what runs its tests
+    _ = models_table;
+}
 const pricing = @import("pricing.zig");
 const obs = @import("obs.zig");
 const default_context = pricing.default_context;
@@ -374,21 +380,19 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         // TTL that made /models show a boot-time snapshot until restart.
         const pinged = providers.refreshModelListing(root, keys.*);
         if (pinged > 0) try out.print("{s}(pinged {d} provider catalog(s) live){s}\n", .{ style.dim, pinged, style.reset });
-        try out.writeAll("model                      ctx      compact@   provider    key  vision\n");
-        for (pricing.models()) |m| {
-            const has_key = keys.get(m.provider) != null;
-            const current = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id);
-            const context = pricing.contextFor(m.provider, m.name);
-            try out.print("{s:<26} {d:>5}k   {d:>5}k    {s:<11} {s}    {s}{s}\n", .{
-                m.name,
-                context / 1000,
-                context / 10 * 8 / 1000,
-                m.provider,
-                if (has_key) "✓" else "—",
-                if (visionModel(m.name)) "✓" else "—",
-                if (current) "  ← current" else "",
-            });
-        }
+        // `cost` answers what a model name cannot: the same model through codex
+        // (plan), codegraff (credits) and openai (api) is three different
+        // bills. Same wording as the TUI picker; the surfaces must agree.
+        try out.writeAll(models_table.header);
+        for (pricing.models()) |m| try models_table.writeRow(out, .{
+            .name = m.name,
+            .context = pricing.contextFor(m.provider, m.name),
+            .provider = m.provider,
+            .cost = billing.costFor(m.provider, keys.source(m.provider)).badge(),
+            .has_key = keys.get(m.provider) != null,
+            .vision = visionModel(m.name),
+            .current = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id),
+        });
         try out.print("(codex catalog: {s})\n", .{models_cache.codex_catalog_source});
         try out.print("(kimi catalog: {s})\n", .{kimi_catalog.catalog_source});
         if (pricing_db.source.len != 0) try out.print("(price db: {s})\n", .{pricing_db.source});

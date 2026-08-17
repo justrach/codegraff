@@ -84,12 +84,18 @@ test "Shift+Tab cycles Normal Plan Always-approve" {
     try std.testing.expectEqual(app.AgentMode.normal, m.mode);
 }
 
+const two_models = [_]engine.ModelEntry{
+    .{ .name = "grok-4", .provider = "xai", .has_key = true, .cost = .plan },
+    .{ .name = "gpt-5.5", .provider = "openai", .has_key = true, .cost = .api },
+};
+
 test "model overlay Enter picks the selected name" {
-    engine.g_models = "grok-4, gpt-5.5";
+    engine.g_model_entries = &two_models;
     engine.g_model_name = "grok-4";
     defer {
-        engine.g_models = "";
+        engine.g_model_entries = &.{};
         engine.g_model_name = "";
+        engine.g_model_provider = "";
         engine.g_model_fn = null;
     }
     var m: Model = undefined;
@@ -100,14 +106,20 @@ test "model overlay Enter picks the selected name" {
     _ = handle(&m, .enter);
     try std.testing.expectEqual(app.Overlay.none, m.overlay);
     try std.testing.expectEqualStrings("gpt-5.5", engine.g_model_name);
+    try std.testing.expectEqualStrings("openai", engine.g_model_provider);
 }
 
 test "model overlay type-to-search picks the filtered name" {
-    engine.g_models = "grok-4, gpt-5.5, deepseek-v4-pro";
+    engine.g_model_entries = &.{
+        .{ .name = "grok-4", .provider = "xai", .has_key = true },
+        .{ .name = "gpt-5.5", .provider = "openai", .has_key = true },
+        .{ .name = "deepseek-v4-pro", .provider = "codegraff", .has_key = true, .cost = .credits },
+    };
     engine.g_model_name = "grok-4";
     defer {
-        engine.g_models = "";
+        engine.g_model_entries = &.{};
         engine.g_model_name = "";
+        engine.g_model_provider = "";
         engine.g_model_fn = null;
     }
     var m: Model = undefined;
@@ -121,6 +133,79 @@ test "model overlay type-to-search picks the filtered name" {
     _ = handle(&m, .enter);
     try std.testing.expectEqual(app.Overlay.none, m.overlay);
     try std.testing.expectEqualStrings("deepseek-v4-pro", engine.g_model_name);
+    try std.testing.expectEqualStrings("codegraff", engine.g_model_provider);
+}
+
+/// Records what the engine was ASKED to switch to. The bug this pins: the
+/// picker handed over a name and the engine re-resolved the provider itself.
+var asked_provider: []const u8 = "";
+var asked_name: []const u8 = "";
+
+fn recordSwitch(_: ?*anyopaque, gpa: std.mem.Allocator, provider: []const u8, name: []const u8) ?engine.Picked {
+    asked_provider = provider;
+    asked_name = name;
+    return .{ .model = gpa.dupe(u8, name) catch return null, .provider = provider };
+}
+
+test "picking the SECOND of two same-named rows switches to that row's provider" {
+    // codex serves gpt-5.6 on a ChatGPT plan and openai serves it on a metered
+    // key. Both rows read "gpt-5.6"; picking the openai one used to send the
+    // bare name and land wherever the router preferred — usually codex.
+    engine.g_model_entries = &.{
+        .{ .name = "gpt-5.6", .provider = "codex", .has_key = true, .cost = .plan },
+        .{ .name = "gpt-5.6", .provider = "openai", .has_key = true, .cost = .api },
+    };
+    engine.g_model_fn = recordSwitch;
+    asked_provider = "";
+    asked_name = "";
+    defer {
+        engine.g_model_entries = &.{};
+        engine.g_model_name = "";
+        engine.g_model_provider = "";
+        engine.g_model_fn = null;
+    }
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    m.openOverlay(.model);
+    m.overlay_sel = 1;
+    _ = handle(&m, .enter);
+    try std.testing.expectEqualStrings("openai", asked_provider);
+    try std.testing.expectEqualStrings("gpt-5.6", asked_name);
+    try std.testing.expectEqualStrings("openai", engine.g_model_provider);
+    try std.testing.expectEqualStrings("gpt-5.6", engine.g_model_name);
+
+    // ...and the first row still reaches codex, so this is a routed pick and
+    // not a constant.
+    m.openOverlay(.model);
+    m.overlay_sel = 0;
+    _ = handle(&m, .enter);
+    try std.testing.expectEqualStrings("codex", asked_provider);
+    try std.testing.expectEqualStrings("codex", engine.g_model_provider);
+}
+
+test "a provider-filtered pick keeps the provider of the row it matched" {
+    engine.g_model_entries = &.{
+        .{ .name = "gpt-5.6", .provider = "codex", .has_key = true, .cost = .plan },
+        .{ .name = "gpt-5.6", .provider = "openai", .has_key = true, .cost = .api },
+        .{ .name = "k3", .provider = "kimi", .has_key = true, .cost = .plan },
+    };
+    engine.g_model_fn = recordSwitch;
+    asked_provider = "";
+    defer {
+        engine.g_model_entries = &.{};
+        engine.g_model_name = "";
+        engine.g_model_provider = "";
+        engine.g_model_fn = null;
+    }
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    m.openOverlay(.model);
+    for ("openai") |c| _ = handle(&m, .{ .char = c });
+    _ = handle(&m, .enter);
+    try std.testing.expectEqualStrings("openai", asked_provider);
+    try std.testing.expectEqualStrings("gpt-5.6", asked_name);
 }
 
 test "PgUp leaves follow; PgDn returns to the live tail" {

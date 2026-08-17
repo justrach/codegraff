@@ -67,8 +67,9 @@ pub const ReplCtx = struct {
 pub const Conversation = repl_convo.Conversation;
 const repl_convo = @import("repl_convo.zig");
 
-test {
+test { // or their tests silently never run (unit_tests' root is main.zig)
     _ = repl_convo;
+    _ = @import("repl_model_pick_test.zig");
 }
 
 /// The live-pane writer, in repl_stream_sink.zig (move+alias, #123).
@@ -306,14 +307,54 @@ test {
 /// explicit choice for the next launch. Automatic turn fallback updates only
 /// `c.provider`, never this preference file.
 pub fn replModelCb(ctx_ptr: ?*anyopaque, gpa: Allocator, name: []const u8) ?[]const u8 {
+    const picked = replModelPick(ctx_ptr, gpa, "", name) orelse return null;
+    return picked.model;
+}
+
+/// What a model switch settled on. The provider id travels back because the
+/// caller may have asked for a model TWO providers serve, and which one it
+/// landed on is the difference between spending a plan and spending a key.
+pub const Picked = struct { model: []const u8, provider: []const u8 };
+
+/// The catalog's own copy of this seat's model name. Borrowing it rather than
+/// duplicating keeps the switched Provider pointing at storage that outlives
+/// the caller's buffer, which is what the name-routed path has always done.
+fn catalogName(provider_id: []const u8, name: []const u8) ?[]const u8 {
+    for (pricing.models()) |m|
+        if (std.mem.eql(u8, m.provider, provider_id) and std.mem.eql(u8, m.name, name)) return m.name;
+    return null;
+}
+
+/// Switch to `name` on a NAMED provider. An empty `provider_id` means the
+/// caller does not know one (a hand-typed `/model <name>`) and the router
+/// picks, which is the old behaviour. When it IS known — the catalog row the
+/// user clicked — that seat is honoured or the switch fails; silently
+/// rerouting to whichever provider the router prefers is the bug this closes,
+/// because choosing between two seats for one model name is the picker's whole
+/// job.
+pub fn replModelPick(ctx_ptr: ?*anyopaque, gpa: Allocator, provider_id: []const u8, name: []const u8) ?Picked {
     const c: *ReplCtx = @ptrCast(@alignCast(ctx_ptr orelse return null));
-    const resolved = pricing.resolveModelName(c.keys, name) orelse return null;
-    c.provider = c.keys.providerFor(gpa.dupe(u8, resolved) catch return null) catch return null;
+    if (provider_id.len > 0 and provider_mod.specFor(provider_id) != null) {
+        // Off-catalog names (a live LM Studio id) have no table slice to
+        // borrow, so those — and only those — are copied.
+        const owned = catalogName(provider_id, name) == null;
+        const model = if (owned) (gpa.dupe(u8, name) catch return null) else catalogName(provider_id, name).?;
+        c.provider = c.keys.providerById(provider_id, model) catch {
+            if (owned) gpa.free(model);
+            return null;
+        };
+    } else {
+        // `resolveModelName` answers with the catalog's own slice, never with
+        // a piece of the query, so there is nothing to copy here either.
+        const resolved = pricing.resolveModelName(c.keys, name) orelse return null;
+        c.provider = c.keys.providerFor(resolved) catch return null;
+    }
     c.fallback_active = false;
     c.fallback_blocked = false;
     serde.saveModel(c.io, c.home, c.provider.id, c.provider.model);
-    return gpa.dupe(u8, c.provider.model) catch null;
+    return .{ .model = gpa.dupe(u8, c.provider.model) catch return null, .provider = c.provider.id };
 }
+
 /// repl.CancelFn adapter — force-interrupt the running repl turn. Sets the
 /// Agent-wide esc_cancel flag the streaming loops + watchdog poll, so the
 /// in-flight runTurn unwinds (error.Interrupted) and the repl drains its steer

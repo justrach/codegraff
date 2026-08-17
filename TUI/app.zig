@@ -116,6 +116,12 @@ pub const Model = struct {
     /// the drain that delivered it returns.
     model_override: ?[]const u8 = null,
     scroll: usize = 0,
+    /// An overlay body is a DOCUMENT, not a transcript: it opens at its FIRST
+    /// row and scrolls downward, where the transcript is pinned to its tail.
+    /// Kept apart from `scroll` on purpose — sharing the field meant paging
+    /// /help left the transcript underneath parked mid-history the moment the
+    /// overlay closed. Presentation state, reset whenever an overlay opens.
+    overlay_scroll: usize = 0,
     selected: usize = 0,
     turns: usize = 0,
     /// The engine's last reported meters (#551). Null until a turn has run —
@@ -130,6 +136,14 @@ pub const Model = struct {
     prompt_origin: usize = 20,
     /// How many mid-lines were clipped above the viewport.
     mid_skip: usize = 0,
+    /// Composed mid-lines this frame: the transcript's wrapped total, or an
+    /// overlay body's own line count. A press past it landed on the BACKDROP
+    /// under a short panel and dismisses it, rather than on the panel itself.
+    mid_total: usize = 0,
+    /// Rows of the slash completion menu on screen, at the top of the bottom
+    /// block. A press there picks a command instead of merely focusing the
+    /// composer (click.zig); zero whenever the menu is closed.
+    slash_rows: usize = 0,
     /// The scrollable band of the frame just composed, and the painter hint
     /// derived from how it moved since the frame before it. Presentation state
     /// for the diff painter's scroll fast path: render.zig is the only writer,
@@ -170,6 +184,9 @@ pub const Model = struct {
     /// state: which row is hovered is never an engine fact, and the affordance
     /// it paints is derived from the typed entries the Model already holds.
     hover: @import("hover.zig").State = .{},
+    /// Single-click gesture state (click.zig) - whether the scroll gutter
+    /// currently owns the pointer. Presentation only, like `sel` and `hover`.
+    click: @import("click.zig").State = .{},
     /// Wrapped-line layout of the transcript, keyed by width/theme/fold/entry
     /// identity (layout_cache.zig). Presentation state: a pure memo of what the
     /// row builders would produce, so scrolling is a slice and not a re-layout.
@@ -305,6 +322,18 @@ pub const Model = struct {
         try self.history.append(.{ .kind = kind, .text = text });
     }
 
+    /// Take ownership of what the engine says a model switch landed on. The
+    /// name is allocated by the callback out of THIS Model's allocator and the
+    /// globals point into it, so the Model holds exactly one such buffer and
+    /// deinit already knows how to drop it. The provider id is a static spec
+    /// literal and is not owned.
+    pub fn adoptModel(self: *Model, picked: engine.Picked) void {
+        if (self.model_override) |old| self.alloc.free(old);
+        self.model_override = picked.model;
+        engine.g_model_name = picked.model;
+        engine.g_model_provider = picked.provider;
+    }
+
     pub fn setToast(self: *Model, text: []const u8) void {
         self.toast = text;
         self.toast_until_ms = self.now_ms + 1500;
@@ -427,6 +456,7 @@ pub const Model = struct {
     pub fn closeOverlay(self: *Model) void {
         self.overlay = .none;
         self.overlay_sel = 0;
+        self.overlay_scroll = 0;
         self.preview_path = "";
         self.preview_n = 0;
         self.preview_pin = false;
@@ -439,6 +469,7 @@ pub const Model = struct {
     pub fn openOverlay(self: *Model, which: Overlay) void {
         self.overlay = which;
         self.overlay_sel = 0;
+        self.overlay_scroll = 0;
         if (self.overlay_filter.len > 0) {
             self.alloc.free(self.overlay_filter);
             self.overlay_filter = "";

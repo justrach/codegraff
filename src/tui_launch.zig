@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const args = @import("args.zig");
 const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
+const billing = @import("billing.zig");
 const pricing = @import("pricing.zig");
 const providers = @import("providers.zig");
 const process_runner = @import("process_runner.zig");
@@ -94,12 +95,7 @@ pub fn run(
     var convo = repl_glue.Conversation.init(gpa);
     defer convo.deinit();
     repl_ctx.convo = &convo;
-    var models_buf = std.array_list.Managed(u8).init(arena);
-    for (pricing.models()) |mi| {
-        if (mi.name.len == 0) continue;
-        if (models_buf.items.len != 0) models_buf.appendSlice(", ") catch {};
-        models_buf.appendSlice(mi.name) catch {};
-    }
+    const entries = modelEntries(arena, keys.*);
     engine_sink.hosted_frontend = true;
     defer engine_sink.hosted_frontend = false;
     obs.ensureSession();
@@ -109,7 +105,8 @@ pub fn run(
         .model_fn = modelCb,
         .cancel_fn = cancelCb,
         .model_name = root.provider.model,
-        .models = models_buf.items,
+        .model_provider = root.provider.id,
+        .model_entries = entries,
         .cwd = cwd,
         .yolo = yolo,
         .hud_fn = hudCb,
@@ -211,10 +208,39 @@ fn turnCb(
     return result;
 }
 
-fn modelCb(ctx: ?*anyopaque, gpa: Allocator, name: []const u8) ?[]const u8 {
-    const nm = repl_glue.replModelCb(ctx, gpa, name);
-    if (nm) |n| obs.modelSwitch(n);
-    return nm;
+/// The catalog the picker draws, with the provider column the TUI used to be
+/// blind to. Rows for providers with no credential are KEPT — the catalog is
+/// the map of what exists — and marked so the picker can dim them.
+///
+/// The cost class is classified HERE, on the src side, because it is a fact
+/// about credentials (src/billing.zig owns the rule); the TUI is handed the
+/// answer. The two enums are mapped by hand so a new class on either side is a
+/// compile error rather than a badge that quietly means nothing.
+pub fn modelEntries(arena: Allocator, keys: provider_mod.Keys) []const tui.ModelEntry {
+    var out = std.array_list.Managed(tui.ModelEntry).init(arena);
+    for (pricing.models()) |mi| {
+        if (mi.name.len == 0) continue;
+        out.append(.{
+            .name = mi.name,
+            .provider = mi.provider,
+            .has_key = keys.get(mi.provider) != null,
+            .cost = switch (billing.costFor(mi.provider, keys.source(mi.provider))) {
+                .plan => .plan,
+                .credits => .credits,
+                .api => .api,
+                .local => .local,
+            },
+        }) catch break;
+    }
+    return out.items;
+}
+
+/// A picker row names its provider; a typed `/model <name>` does not and is
+/// routed by name, exactly as before.
+fn modelCb(ctx: ?*anyopaque, gpa: Allocator, provider: []const u8, name: []const u8) ?tui.Picked {
+    const picked = repl_glue.replModelPick(ctx, gpa, provider, name) orelse return null;
+    obs.modelSwitch(picked.model);
+    return .{ .model = picked.model, .provider = picked.provider };
 }
 
 fn compactCb(ctx: ?*anyopaque, gpa: Allocator, history: []const tui.Turn, out: *tui.CompactOut) bool {
@@ -415,4 +441,58 @@ test "liveStream publishes len as appendBytes arrive" {
     try std.testing.expectEqualStrings("⚙ bash\n", snap);
     rstream.appendBytes("✓ bash\n");
     try std.testing.expect(std.mem.endsWith(u8, tstream.buf[0..tstream.len.load(.acquire)], "✓ bash\n"));
+}
+
+test "modelEntries carries the provider column the picker was blind to" {
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    _ = keys.set("codex", "tok", .login);
+    _ = keys.set("openai", "sk-test", .environment);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const entries = modelEntries(arena_state.allocator(), keys);
+    try std.testing.expect(entries.len > 0);
+    try std.testing.expectEqual(pricing.models().len, entries.len);
+
+    var codex: ?tui.ModelEntry = null;
+    var openai: ?tui.ModelEntry = null;
+    var unkeyed: ?tui.ModelEntry = null;
+    for (entries) |e| {
+        try std.testing.expect(e.provider.len > 0);
+        if (codex == null and std.mem.eql(u8, e.provider, "codex")) codex = e;
+        if (openai == null and std.mem.eql(u8, e.provider, "openai")) openai = e;
+        if (unkeyed == null and std.mem.eql(u8, e.provider, "anthropic")) unkeyed = e;
+    }
+    // The three classes from the report: a plan seat, a metered seat, and a
+    // seat with no credential that stays on the list so the user can see it.
+    try std.testing.expectEqual(tui.CostClass.plan, codex.?.cost);
+    try std.testing.expect(codex.?.has_key);
+    try std.testing.expectEqual(tui.CostClass.api, openai.?.cost);
+    try std.testing.expect(openai.?.has_key);
+    try std.testing.expectEqual(tui.CostClass.api, unkeyed.?.cost);
+    try std.testing.expect(!unkeyed.?.has_key);
+}
+
+test "the same model under two providers is two distinguishable entries" {
+    // gpt-5.5 is served by codex, openai and codegraff. Before this the picker
+    // had three rows reading "gpt-5.5" and no way to tell them apart.
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    _ = keys.set("codex", "tok", .login);
+    _ = keys.set("codegraff", "cg", .login);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var seen: usize = 0;
+    var costs: [8]tui.CostClass = undefined;
+    for (modelEntries(arena_state.allocator(), keys)) |e| {
+        if (!std.mem.eql(u8, e.name, "gpt-5.5")) continue;
+        if (seen < costs.len) costs[seen] = e.cost;
+        seen += 1;
+    }
+    try std.testing.expect(seen >= 2);
+    var has_plan = false;
+    var has_credits = false;
+    for (costs[0..@min(seen, costs.len)]) |c| {
+        if (c == .plan) has_plan = true;
+        if (c == .credits) has_credits = true;
+    }
+    try std.testing.expect(has_plan and has_credits);
 }

@@ -3,6 +3,7 @@
 const std = @import("std");
 const app = @import("app.zig");
 const engine = @import("engine.zig");
+const panel = @import("panel.zig");
 const theme_mod = @import("theme.zig");
 const Model = app.Model;
 
@@ -38,18 +39,25 @@ pub fn pick(self: *const Model) ?engine.Effort {
     return buf[self.overlay_sel % n];
 }
 
+/// The panel's top-edge slots (overlaypane.zig places them).
+pub fn head(self: *const Model, a: std.mem.Allocator) !panel.Head {
+    var names: [all.len]engine.Effort = undefined;
+    return .{
+        .title = try std.fmt.allocPrint(a, "Effort › {s}\u{258B}", .{self.overlay_filter}),
+        .note = try std.fmt.allocPrint(a, "{d}/{d}", .{ filter(self.overlay_filter, &names), all.len }),
+    };
+}
+
+pub const hint = "type to filter · ↑↓ move · click or Enter picks · Esc";
+
+/// The ROWS only — the frame carries the rest.
 pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
     const th = self.theme();
     var names: [all.len]engine.Effort = undefined;
     const n = filter(self.overlay_filter, &names);
     var out = std.array_list.Managed(u8).init(a);
-    const q = self.overlay_filter;
-    try out.appendSlice(try theme_mod.paint(a, th.accent, try std.fmt.allocPrint(a, "Effort › {s}▋", .{q})));
-    try out.append('\n');
-    try out.appendSlice(try theme_mod.paint(a, th.muted, try std.fmt.allocPrint(a, "{d}/{d}", .{ n, all.len })));
-    try out.appendSlice("\n\n");
     if (n == 0) {
-        try out.appendSlice(try theme_mod.paint(a, th.muted, "no matches — Esc to close\n"));
+        try out.appendSlice(try theme_mod.paint(a, th.muted, "  no matches\n"));
         return out.items;
     }
     const sel = self.overlay_sel % n;
@@ -60,9 +68,6 @@ pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
         try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
         try out.append('\n');
     }
-    try out.append('\n');
-    try out.appendSlice(try theme_mod.paint(a, th.muted, "type to filter · ↑↓ move · Enter pick · Esc"));
-    try out.append('\n');
     return out.items;
 }
 
@@ -83,7 +88,7 @@ test "effort overlay lists levels and marks current" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const text = try render(&m, arena.allocator());
-    try std.testing.expect(std.mem.indexOf(u8, text, "Effort ›") != null);
+    try std.testing.expect(std.mem.indexOf(u8, (try head(&m, arena.allocator())).title, "Effort ›") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "low") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "high") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "(current)") != null);

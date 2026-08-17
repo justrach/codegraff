@@ -195,6 +195,25 @@ def check_osc52(h):
     return None
 
 
+def check_heal_does_not_recopy(h):
+    """The self-heal repaint must not put the clipboard write back on the wire.
+
+    The heartbeat rewrites every row of the frame it already believes is up
+    (run.zig, heal_interval_ms = 3s). A clipboard write is NOT part of that
+    frame - it is written out of band, once, on the release - and a heal that
+    re-emitted it would hand the terminal a second copy of a selection the
+    user made once, on a timer, forever. Idle across two heartbeats and read
+    the wire.
+    """
+    after_copy = len(h.raw)
+    h.pump(7.0)  # >= two heal intervals
+    tail = bytes(h.raw[after_copy:])
+    again = OSC52.findall(tail)
+    if again:
+        return f"the self-heal re-emitted {len(again)} OSC 52 sequence(s) while idle"
+    return None
+
+
 def run(PtyHarness):
     ws, env = fresh_ws()
     h = PtyHarness([BIN, "tui", "--yolo"], cols=COLS, rows=ROWS, cwd=ws, env=env)
@@ -221,6 +240,10 @@ def run(PtyHarness):
         if err:
             return err
         print("    osc52: the wire carried the exact base64 of the dragged rows")
+        err = check_heal_does_not_recopy(h)
+        if err:
+            return err
+        print("    heal: two heartbeats passed and the clipboard stayed quiet")
         return None
     finally:
         h.close()

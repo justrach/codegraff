@@ -247,11 +247,14 @@ pub fn row(self: *const Model, a: std.mem.Allocator, user_no: u32, e: app.Entry,
     }
     if (e.kind == .pending) {
         const line = try std.fmt.allocPrint(a, "{s}{s}{s}{s}{s} {s}{s}", .{ sel, th.accent, thinkingGlyph(now_ms), theme_mod.reset, th.muted, body, theme_mod.reset });
-        return theme_mod.wrapToWidth(a, line, width);
+        return theme_mod.wrapPreferWords(a, line, width);
     }
     const body_fg = if (e.kind == .err) th.error_fg else th.text;
     const line = try std.fmt.allocPrint(a, "{s}{s}{s}{s}{s} {s}{s}", .{ sel, color, mark, theme_mod.reset, body_fg, body, theme_mod.reset });
-    return theme_mod.wrapToWidth(a, line, width);
+    // Break on a SPACE where there is one: a system row is prose nothing
+    // pre-wrapped, and at 60 columns the usage line split "$0.0000" into
+    // "$0.0" and "000" — a different number on each row.
+    return theme_mod.wrapPreferWords(a, line, width);
 }
 
 fn userNo(self: *const Model, idx: usize) u32 {
