@@ -8,7 +8,9 @@ const theme_mod = @import("theme.zig");
 const Model = app.Model;
 
 pub const max_files = 512;
-const visible_rows = 10;
+/// Rows the picker draws at once — the click map reads this same window
+/// (overlays.rowSpan) instead of keeping a second copy of it.
+pub const visible_rows = 10;
 
 /// Newline-joined `list` filtered by substring-or-subsequence `query`.
 pub fn filterList(list: []const u8, query: []const u8, out: [][]const u8) usize {
@@ -25,14 +27,15 @@ pub fn filterList(list: []const u8, query: []const u8, out: [][]const u8) usize 
     return n;
 }
 
-pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
+pub fn render(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
+    const w = @import("chrome.zig").rowCols(width);
     const th = self.theme();
     var names: [max_files][]const u8 = undefined;
     const list = self.files_cache orelse "";
     const total = filterList(list, "", &names);
     const n = filterList(list, self.overlay_filter, &names);
     var out = std.array_list.Managed(u8).init(a);
-    const title = try std.fmt.allocPrint(a, "File › {s}▋", .{self.overlay_filter});
+    const title = theme_mod.takeCols(try std.fmt.allocPrint(a, "File › {s}▋", .{self.overlay_filter}), w);
     try out.appendSlice(try theme_mod.paint(a, th.accent, title));
     try out.append('\n');
     try out.appendSlice(try theme_mod.paint(a, th.muted, try std.fmt.allocPrint(a, "{d}/{d}", .{ n, total })));
@@ -44,7 +47,7 @@ pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
             "no file list (offline?) — Esc"
         else
             "no matches — type to filter, Esc";
-        try out.appendSlice(try theme_mod.paint(a, th.muted, hint));
+        try out.appendSlice(try theme_mod.paint(a, th.muted, theme_mod.takeCols(hint, w)));
         try out.append('\n');
         return out.items;
     }
@@ -54,12 +57,12 @@ pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
     var i = off;
     while (i < n and i < off + vis) : (i += 1) {
         const mark: []const u8 = if (i == sel) "› " else "  ";
-        const line = try std.fmt.allocPrint(a, "{s}{s}", .{ mark, names[i] });
+        const line = theme_mod.takeCols(try std.fmt.allocPrint(a, "{s}{s}", .{ mark, names[i] }), w);
         try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
         try out.append('\n');
     }
     try out.append('\n');
-    try out.appendSlice(try theme_mod.paint(a, th.muted, "type to search · ↑↓ · Enter insert · Esc"));
+    try out.appendSlice(try theme_mod.paint(a, th.muted, theme_mod.takeCols("type to search · ↑↓ · click or Enter inserts · Esc", w)));
     try out.append('\n');
     return out.items;
 }
@@ -81,7 +84,7 @@ test "render shows the filtered file rows" {
     m.openOverlay(.file);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const text = try render(&m, arena.allocator());
+    const text = try render(&m, arena.allocator(), 80);
     try std.testing.expect(std.mem.indexOf(u8, text, "src/a.zig") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "docs/b.md") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "File ›") != null);

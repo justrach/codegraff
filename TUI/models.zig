@@ -8,7 +8,9 @@ const theme_mod = @import("theme.zig");
 const Model = app.Model;
 
 pub const max_models = 256;
-const visible_rows = 14;
+/// Rows the picker draws at once. Public so the click map (overlays.rowSpan)
+/// reads the same window the renderer draws rather than a second copy of it.
+pub const visible_rows = 14;
 
 /// Case-insensitive substring, else fzf-style subsequence ("gpt56" → gpt-5.6).
 pub fn modelMatch(name: []const u8, query: []const u8) bool {
@@ -51,7 +53,8 @@ pub fn splitModels(list: []const u8, out: [][]const u8) usize {
     return filterModels(list, "", out);
 }
 
-pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
+pub fn render(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
+    const w = @import("chrome.zig").rowCols(width);
     const th = self.theme();
     var names: [max_models][]const u8 = undefined;
     const total = splitModels(engine.g_models, &names);
@@ -59,14 +62,15 @@ pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
     var out = std.array_list.Managed(u8).init(a);
 
     const q = self.overlay_filter;
-    const title = try std.fmt.allocPrint(a, "Model › {s}▋", .{q});
+    const title = theme_mod.takeCols(try std.fmt.allocPrint(a, "Model › {s}▋", .{q}), w);
     try out.appendSlice(try theme_mod.paint(a, th.accent, title));
     try out.append('\n');
     try out.appendSlice(try theme_mod.paint(a, th.muted, try std.fmt.allocPrint(a, "{d}/{d}", .{ n, total })));
     try out.appendSlice("\n\n");
 
     if (n == 0) {
-        try out.appendSlice(try theme_mod.paint(a, th.muted, "no matches — type to filter, Esc to close\n"));
+        try out.appendSlice(try theme_mod.paint(a, th.muted, theme_mod.takeCols("no matches — type to filter, Esc to close", w)));
+        try out.append('\n');
         return out.items;
     }
 
@@ -78,12 +82,12 @@ pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
         const mark: []const u8 = if (i == sel) "› " else "  ";
         const cur: []const u8 = if (std.mem.eql(u8, names[i], engine.g_model_name)) "  (current)" else "";
         const shown = tailId(names[i]);
-        const line = try std.fmt.allocPrint(a, "{s}{s}{s}", .{ mark, shown, cur });
+        const line = theme_mod.takeCols(try std.fmt.allocPrint(a, "{s}{s}{s}", .{ mark, shown, cur }), w);
         try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
         try out.append('\n');
     }
     try out.append('\n');
-    try out.appendSlice(try theme_mod.paint(a, th.muted, "type to search · ↑↓ move · Enter pick · Esc"));
+    try out.appendSlice(try theme_mod.paint(a, th.muted, theme_mod.takeCols("type to search · ↑↓ move · click or Enter picks · Esc", w)));
     try out.append('\n');
     return out.items;
 }
@@ -126,7 +130,7 @@ test "model overlay typed query is a filtered list, not the dump" {
     for ("deepseek") |c| m.typeOverlayFilter(c);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const text = try render(&m, arena.allocator());
+    const text = try render(&m, arena.allocator(), 80);
     try std.testing.expect(std.mem.indexOf(u8, text, "deepseek-v4-pro") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "gpt-5.5") == null);
     try std.testing.expect(std.mem.indexOf(u8, text, "1/3") != null);

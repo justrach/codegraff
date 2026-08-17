@@ -69,6 +69,8 @@ test {
     _ = @import("theme_tint.zig");
     _ = @import("hover.zig");
     _ = @import("hover_tests.zig");
+    _ = @import("click.zig");
+    _ = @import("click_tests.zig");
     _ = @import("osc52.zig");
     _ = @import("scrollbar.zig");
     _ = @import("scrollbar_tests.zig");

@@ -69,6 +69,89 @@ pub fn wheel(self: *Model, up: bool) bool {
     return true;
 }
 
+// ------------------------------------------------------------- row geometry
+
+/// Where an open list overlay's ROWS sit inside its own composed body, in body
+/// lines. render.zig lays that body out exactly like the transcript - screen
+/// row `mid_origin + k` shows body line `mid_skip + k` - so this plus those two
+/// numbers is the whole row map a click needs.
+///
+/// The header shapes are the renderers' own: a bare title (palette, theme), a
+/// title and a blank (settings, jump), or a title, a count and a blank (the
+/// searchable model / effort / file pickers). Each list row is CUT to the
+/// screen width by its renderer, never wrapped, so one item is always one line
+/// and this map can be arithmetic rather than a second pass over the bytes.
+pub const Span = struct {
+    /// Body line of the first row drawn.
+    line0: usize,
+    /// Item index that row shows - a windowed list starts partway down.
+    first: usize,
+    /// Rows drawn.
+    rows: usize,
+    /// Items in the FILTERED list, which is what `overlay_sel` indexes.
+    total: usize,
+};
+
+pub fn rowSpan(self: *const Model) ?Span {
+    const models = @import("models.zig");
+    const effort_mod = @import("effort.zig");
+    switch (self.overlay) {
+        .palette => {
+            var idx: [catalog.items.len]usize = undefined;
+            const n = catalog.filter(self.input.getValue(), &idx);
+            const show = @min(n, @as(usize, 12));
+            if (show == 0) return null;
+            return .{ .line0 = 1, .first = 0, .rows = show, .total = show };
+        },
+        .theme => return .{ .line0 = 1, .first = 0, .rows = theme_mod.all.len, .total = theme_mod.all.len },
+        .settings => return .{ .line0 = 2, .first = 0, .rows = 4, .total = 4 },
+        .jump => {
+            const total = self.userTurnCount();
+            if (total == 0) return null;
+            return .{ .line0 = 2, .first = 0, .rows = total, .total = total };
+        },
+        .effort => {
+            var buf: [effort_mod.all.len]engine.Effort = undefined;
+            const n = effort_mod.filter(self.overlay_filter, &buf);
+            if (n == 0) return null;
+            return .{ .line0 = 3, .first = 0, .rows = n, .total = n };
+        },
+        .model => {
+            var names: [models.max_models][]const u8 = undefined;
+            const n = models.filterModels(engine.g_models, self.overlay_filter, &names);
+            if (n == 0) return null;
+            return windowed(3, n, self.overlay_sel % n, models.visible_rows);
+        },
+        .file => {
+            var names: [files_mod.max_files][]const u8 = undefined;
+            const n = files_mod.filterList(self.files_cache orelse "", self.overlay_filter, &names);
+            if (n == 0) return null;
+            return windowed(3, n, self.overlay_sel % n, files_mod.visible_rows);
+        },
+        else => return null,
+    }
+}
+
+/// The scrolling window the searchable pickers draw: `vis` rows that follow the
+/// highlight, so it is always on screen and always the row Enter fires.
+fn windowed(line0: usize, n: usize, sel: usize, vis_max: usize) Span {
+    const vis = @min(vis_max, n);
+    const off = if (sel >= vis) sel - vis + 1 else 0;
+    return .{ .line0 = line0, .first = off, .rows = @min(vis, n - off), .total = n };
+}
+
+/// A click landed on item `item`. The first click on a row moves the highlight
+/// there; a click on the row that already carries it CONFIRMS, exactly as
+/// Enter does. Those two halves are also what make a double click a confirm,
+/// without a second copy of hover.zig's double-click window.
+pub fn clickRow(self: *Model, item: usize) Effect {
+    const span = rowSpan(self) orelse return .stay;
+    if (item >= span.total) return .stay;
+    if (self.overlay_sel % span.total == item) return activate(self);
+    self.overlay_sel = item;
+    return .stay;
+}
+
 /// Open the @-picker immediately and load the session file list in the
 /// background. Loading it inline blocked the render+input thread for up to the
 /// runCapped 10s cap on the first @ of a session (#533).
@@ -79,7 +162,7 @@ pub fn openFiles(self: *Model) void {
     self.openOverlay(.file);
 }
 
-fn activate(self: *Model) Effect {
+pub fn activate(self: *Model) Effect {
     switch (self.overlay) {
         .palette => {
             var idx: [catalog.items.len]usize = undefined;

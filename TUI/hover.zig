@@ -63,11 +63,15 @@ pub const Target = enum {
     sticky,
     /// The composer. A press focuses it.
     composer,
+    /// A row of an open list overlay. A press moves the highlight there, and a
+    /// press on the row that already has it confirms (click.zig).
+    row,
 };
 
 pub const Hit = struct {
     target: Target = .none,
-    /// History index the row maps to. Set for `.tool` only.
+    /// What the row maps to: a history index for `.tool`, the list item for
+    /// `.row`. Null for every target that names no element.
     idx: ?usize = null,
     /// The group is folded, so its mark should announce that it opens.
     collapsed: bool = false,
@@ -92,9 +96,14 @@ pub const State = struct {
 /// What screen row `y` (0-based) is, this frame. The row→entry map is the
 /// layout cache's, which is the same one keys.mouseKey clicks through.
 pub fn hitTest(m: *Model, y: usize) Hit {
-    // An overlay owns the whole screen and any press merely closes it; there is
-    // no per-row target to announce, so nothing is highlighted while one is up.
-    if (m.overlay != .none) return .{};
+    // An overlay owns the whole screen. Its LIST rows are clickable now, so
+    // they announce themselves through the same one hit test; its title,
+    // footer and backdrop are not, and stay quiet.
+    if (m.overlay != .none) {
+        if (m.overlay == .image or y >= m.prompt_origin) return .{};
+        const item = @import("click.zig").overlayRowAt(m, y) orelse return .{};
+        return .{ .target = .row, .idx = item };
+    }
     if (y >= m.prompt_origin) return .{ .target = .composer };
     if (y < m.mid_origin) return .{};
     // Sticky chrome OCCLUDES the top content rows: the blank separator row

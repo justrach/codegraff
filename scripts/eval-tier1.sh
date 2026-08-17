@@ -316,6 +316,18 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-hover.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+    # A single click has to DO something. Drives real SGR press/release bytes
+    # through the same virtual screen: a motionless click paints no selection
+    # band and copies nothing (while the same press WITH motion does), a press
+    # on the scroll gutter seeks and a held one drags the viewport without ever
+    # anchoring a band, an overlay row selects and then confirms, the backdrop
+    # dismisses, and the highlighted completion row runs. Each of the five is a
+    # verified gate: disabling the gutter, the drag branch, the overlay press,
+    # the slash press, or making a press anchor a band each fails a different
+    # check.
+    if python3 scripts/test-tui-click.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
     # The scroll gutter has to land on a CELL and then leave no trace, and the
     # OSC 52 copy has to leave the process — neither is visible to a unit test.
     # Reads the thumb off the last column of the virtual screen, compares that

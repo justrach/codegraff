@@ -102,6 +102,14 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     const room = if (height > top_lines + card_lines + 1) height - top_lines - card_lines - 1 else 1;
     const bottom_block = lastLines(bottom.items, room);
     const bottom_lines = countLines(bottom_block);
+    // The completion menu rides at the TOP of the bottom block, and a short
+    // terminal trims that block from the top — so what survives is what a
+    // click can land on (click.zig). Counted here, where both the untrimmed
+    // and the trimmed shapes are in hand.
+    self.slash_rows = if (slash.len == 0)
+        0
+    else
+        (countLines(slash) - @intFromBool(slash[slash.len - 1] == '\n')) -| (countLines(bottom.items) - bottom_lines);
     self.preview_rows = card_lines;
     self.mid_origin = top_lines;
     self.prompt_origin = if (height > bottom_lines) height - bottom_lines else 0;
@@ -120,6 +128,9 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     if (top.len > 0 and top[top.len - 1] != '\n') try out.append('\n');
 
     const n = if (cache) |c| c.total else mid_lines.items.len;
+    // Mid lines this frame, transcript or overlay body alike. A press below
+    // the last of them is on the backdrop, not on the panel (click.zig).
+    self.mid_total = n;
     self.sticky_rows = 0;
     if (n <= view_h) {
         self.scroll = 0;

@@ -133,39 +133,58 @@ pub fn statusBar(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
     return theme_mod.paint(a, th.muted, theme_mod.takeCols(" Enter:send  ·  Shift+Enter:newline  ·  Shift+Tab:mode", if (width == 0) 80 else width));
 }
 
+/// A list row is CUT to the screen, never wrapped: render.zig wraps an
+/// overlay body to the width, and a row that wrapped would push every row
+/// under it off its own line — which is exactly the map a click rides on
+/// (overlays.rowSpan). Zero means "no width yet", which only happens in a
+/// unit test composing a body on its own.
+pub fn rowCols(width: usize) usize {
+    return if (width == 0) 80 else width;
+}
+
 pub fn overlay(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
     return switch (self.overlay) {
         .none => "",
         .palette => try listOverlay(self, a, width),
-        .theme => try themeOverlay(self, a),
+        .theme => try themeOverlay(self, a, width),
         .help => try helpOverlay(self, a),
         .rewind => try std.fmt.allocPrint(a, "{s}{s}Rewind last turn?{s}\n{s}Enter rewind  ·  Esc cancel{s}\n", .{ theme_mod.bold, self.theme().accent, theme_mod.reset, self.theme().muted, theme_mod.reset }),
         .debug => try debugOverlay(self, a),
-        .model => try @import("models.zig").render(self, a),
-        .effort => try @import("effort.zig").render(self, a),
-        .settings => try settingsOverlay(self, a),
+        .model => try @import("models.zig").render(self, a, width),
+        .effort => try @import("effort.zig").render(self, a, width),
+        .settings => try settingsOverlay(self, a, width),
         .image => try @import("image.zig").render(self, a, width),
-        .file => try @import("files.zig").render(self, a),
-        .jump => try jumpOverlay(self, a),
+        .file => try @import("files.zig").render(self, a, width),
+        .jump => try jumpOverlay(self, a, width),
         .slash => "",
     };
 }
 
-pub fn slashMenu(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
+/// The completion menu's window over the filtered command list: the rows it
+/// draws and the item the first of them shows. Clamped selection + a window
+/// that follows it, so the highlighted row is always visible and always the
+/// row Enter fires (#522) — and so a click can map a screen row straight back
+/// to a command (click.zig) instead of re-deriving the same three numbers.
+pub fn slashWindow(self: *const Model) ?struct { first: usize, show: usize, n: usize } {
     const v = self.input.getValue();
-    if (self.focus != .prompt or v.len == 0 or v[0] != '/') return "";
+    if (self.focus != .prompt or v.len == 0 or v[0] != '/') return null;
     var idx: [catalog.items.len]usize = undefined;
     const n = catalog.filter(v, &idx);
-    if (n == 0) return "";
-    const th = self.theme();
-    var out = std.array_list.Managed(u8).init(a);
-    // Clamped selection + a window that follows it, so the highlighted row is
-    // always visible and always the row Enter fires (#522).
+    if (n == 0) return null;
     const show = @min(n, @as(usize, 8));
     const sel = @min(self.slash_sel, n - 1);
-    const first = if (sel >= show) sel + 1 - show else 0;
-    var i: usize = first;
-    while (i < first + show) : (i += 1) {
+    return .{ .first = if (sel >= show) sel + 1 - show else 0, .show = show, .n = n };
+}
+
+pub fn slashMenu(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
+    const w = slashWindow(self) orelse return "";
+    var idx: [catalog.items.len]usize = undefined;
+    _ = catalog.filter(self.input.getValue(), &idx);
+    const th = self.theme();
+    var out = std.array_list.Managed(u8).init(a);
+    const sel = @min(self.slash_sel, w.n - 1);
+    var i: usize = w.first;
+    while (i < w.first + w.show) : (i += 1) {
         const it = catalog.items[idx[i]];
         const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(i != sel));
         // One menu entry is one ROW: a click maps a screen row straight back to
@@ -203,7 +222,7 @@ fn listOverlay(self: *const Model, a: std.mem.Allocator, width: usize) ![]const 
     return out.items;
 }
 
-fn themeOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
+fn themeOverlay(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
     const th = self.theme();
     var out = std.array_list.Managed(u8).init(a);
     try out.appendSlice(try theme_mod.paint(a, th.accent, "Theme"));
@@ -212,14 +231,14 @@ fn themeOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
     for (theme_mod.all, 0..) |id, i| {
         const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(i != sel));
         const cur: []const u8 = if (id == self.theme_id) "  (current)" else "";
-        const line = try std.fmt.allocPrint(a, "{s}{s}{s}", .{ mark, id.label(), cur });
+        const line = theme_mod.takeCols(try std.fmt.allocPrint(a, "{s}{s}{s}", .{ mark, id.label(), cur }), rowCols(width));
         try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
         try out.append('\n');
     }
     return out.items;
 }
 
-fn jumpOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
+fn jumpOverlay(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
     const th = self.theme();
     var out = std.array_list.Managed(u8).init(a);
     try out.appendSlice(try theme_mod.paint(a, th.accent, "Jump to turn"));
@@ -236,13 +255,13 @@ fn jumpOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
         const nl = std.mem.indexOfScalar(u8, e.text, '\n') orelse e.text.len;
         const clip = e.text[0..@min(nl, 60)];
         const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(no != sel));
-        const line = try std.fmt.allocPrint(a, "{s}#{d}  {s}", .{ mark, no + 1, clip });
+        const line = theme_mod.takeCols(try std.fmt.allocPrint(a, "{s}#{d}  {s}", .{ mark, no + 1, clip }), rowCols(width));
         try out.appendSlice(if (no == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
         try out.append('\n');
         no += 1;
     }
     try out.append('\n');
-    try out.appendSlice(try theme_mod.paint(a, th.muted, "↑↓ move · Enter jump · Esc"));
+    try out.appendSlice(try theme_mod.paint(a, th.muted, theme_mod.takeCols("↑↓ move · click or Enter jumps · Esc", rowCols(width))));
     try out.append('\n');
     return out.items;
 }
@@ -396,7 +415,7 @@ test "debug overlay is not the offline fallback when a hud is wired" {
 
 pub const splitModels = @import("models.zig").splitModels;
 
-fn settingsOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
+fn settingsOverlay(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
     const th = self.theme();
     var out = std.array_list.Managed(u8).init(a);
     try out.appendSlice(try theme_mod.paint(a, th.accent, "Settings"));
@@ -410,12 +429,12 @@ fn settingsOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
     const sel = self.overlay_sel % rows.len;
     for (rows, 0..) |r, i| {
         const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(i != sel));
-        const line = try std.fmt.allocPrint(a, "{s}{s:<10}  {s}", .{ mark, r[0], r[1] });
+        const line = theme_mod.takeCols(try std.fmt.allocPrint(a, "{s}{s:<10}  {s}", .{ mark, r[0], r[1] }), rowCols(width));
         try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
         try out.append('\n');
     }
     try out.append('\n');
-    try out.appendSlice(try theme_mod.paint(a, th.muted, "Enter change · type /model to search · Esc"));
+    try out.appendSlice(try theme_mod.paint(a, th.muted, theme_mod.takeCols("click or Enter changes · Esc", rowCols(width))));
     try out.append('\n');
     return out.items;
 }
