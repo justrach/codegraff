@@ -183,6 +183,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("TUI/root.zig"),
             .target = target,
             .optimize = optimize,
+            // The dump/bench helpers read GRAFF_TUI_DUMP / GRAFF_TUI_BENCH
+            // through std.c.getenv. Without libc those tests do not compile
+            // on Linux, so the painter battery never ran here.
+            .link_libc = true,
         }),
         // Same -Dtest-filter as `zig build test`: the layout benchmark needs to
         // be runnable on its own, ReleaseFast, without the rest of the suite.

@@ -582,4 +582,8 @@ test "the loop self-heals: a resize EVENT and a periodic sweep force a repaint" 
     // the set of rows a heal exists to rewrite. Same for `full`, which folds in
     // kitty graphics (pixels do not move when cells scroll), resize and theme.
     try std.testing.expect(std.mem.indexOf(u8, src, "if (full or heal) null else m.paint_hint") != null);
+    // Theme bg is painted per row, not baked into the frame. Blank rows are
+    // byte-identical across themes, so a diff paint would strand the old
+    // canvas — /theme and the startup OSC-11 flip both force a full paint.
+    try std.testing.expect(std.mem.indexOf(u8, src, "m.theme_id != prev_theme") != null);
 }
