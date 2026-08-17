@@ -10,6 +10,35 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.265 (2026-08-17)
+
+- The TUI is clickable everywhere it looks clickable: a click on any picker
+  row (models, files, themes, settings, effort, jump, the slash menu) moves
+  the highlight and a click on the highlighted row confirms it, exactly like
+  Enter. Clicking the backdrop around a panel dismisses it. The scroll thumb
+  is live: click the gutter to seek, hold and drag to scroll. A motionless
+  click never starts a copy, and a drag never toggles a fold.
+- Overlays draw as proper panels: a framed, docked pane with the title in
+  the frame, so pickers read as surfaces instead of floating text.
+- `/models` finally says who serves each model. Every picker row and the
+  REPL table show the provider plus a cost badge (plan, credits, api,
+  local), search matches provider names, and picking one of two same-named
+  models switches to that row's provider, not the first name match. Codex
+  on your ChatGPT plan and the same model on a metered OpenAI key are now
+  visibly different things.
+- Prices and context windows refresh from the community LiteLLM price
+  database (cached a day in `~/.codegraff/prices.json`, `GRAFF_PRICES_PATH`
+  overrides). The baked table remains the offline floor, canonical vendor
+  rows outrank reseller copies, and codex context caps are untouched.
+- New sandbox seam: `/snapshot attach` puts a Docker container under the
+  session, `/snapshot` captures its filesystem, `/rewind <id>` restores it,
+  and `/snapshot list` shows what you have. The tarball streams disk to
+  disk without entering memory, and the conversation log is never rewound
+  with the sandbox. `/rewind <number>` still rewinds the conversation.
+- Test substrate: three new live probes (clicks, model picker, overlay
+  panels) join the tier 1 gate; the suites grew to 1400 unit and 415 TUI
+  tests.
+
 ## v0.0.264 (2026-08-17)
 
 - The frame painter now guarantees screen == frame: rows that measure full
