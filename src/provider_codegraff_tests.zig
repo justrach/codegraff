@@ -1,5 +1,7 @@
 const std = @import("std");
 const provider = @import("provider.zig");
+const Agent = @import("agent.zig").Agent;
+const http_headers = @import("http_headers.zig");
 
 fn build(model: []const u8) provider.Provider {
     const keys: provider.Keys = .{ .values = @splat(null) };
@@ -40,4 +42,45 @@ test "Codegraff model switches rebuild both wire and endpoint" {
     const back_to_chat = responses.withModel("claude-opus-4.8");
     try std.testing.expectEqual(provider.Provider.Kind.openai, back_to_chat.kind);
     try std.testing.expectEqualStrings("https://gateway.codegraff.com/v1/chat/completions", back_to_chat.url);
+}
+
+test "Codegraff Responses aliases pin a sticky prompt_cache_key" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var messages = std.json.Array.init(arena);
+    try messages.append(.{ .object = blk: {
+        var obj: std.json.ObjectMap = .empty;
+        try obj.put(arena, "role", .{ .string = "user" });
+        try obj.put(arena, "content", .{ .string = "hello" });
+        break :blk obj;
+    } });
+
+    for ([_][]const u8{ "gpt-5.6", "grok-4.6" }) |model| {
+        var root: Agent = .{
+            .gpa = std.testing.allocator,
+            .arena = arena,
+            .io = std.testing.io,
+            .client = undefined,
+            .provider = build(model),
+            .messages = messages,
+            .sub = false,
+            .label = "main",
+            .out = null,
+            .sys_normal = "system",
+        };
+        const first = try root.buildBody(null, false, true, true);
+        defer std.testing.allocator.free(first);
+        const second = try root.buildBody(null, false, true, true);
+        defer std.testing.allocator.free(second);
+        const needle = "\"prompt_cache_key\":\"";
+        const s1 = std.mem.indexOf(u8, first, needle) orelse return error.MissingPromptCacheKey;
+        const e1 = std.mem.indexOfScalarPos(u8, first, s1 + needle.len, '"') orelse return error.MissingPromptCacheKey;
+        const k1 = first[s1 + needle.len .. e1];
+        const s2 = std.mem.indexOf(u8, second, needle) orelse return error.MissingPromptCacheKey;
+        const e2 = std.mem.indexOfScalarPos(u8, second, s2 + needle.len, '"') orelse return error.MissingPromptCacheKey;
+        try std.testing.expectEqualStrings(k1, second[s2 + needle.len .. e2]);
+        var buf: [96]u8 = undefined;
+        try std.testing.expectEqualStrings(http_headers.promptCacheKey(root.io, root.label, &root, &buf), k1);
+    }
 }
