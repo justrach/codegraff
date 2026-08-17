@@ -121,6 +121,56 @@ def close_picker(h):
     h.pump(0.6)
 
 
+def sgr(btn, col, row, press=True):
+    return f"\x1b[<{btn};{col};{row}{'M' if press else 'm'}".encode()
+
+
+def click(h, col, row, settle=0.5):
+    """A CLICK: press and release on one cell, with nothing in between."""
+    h.inject_keys(sgr(0, col, row))
+    h.pump(0.12)
+    h.inject_keys(sgr(0, col, row, press=False))
+    h.pump(settle)
+
+
+def row_index_of(h, want_name, want_provider):
+    """0-based screen row of the picker row for one exact seat."""
+    for i, ln in enumerate(h.screen_lines()):
+        s = unwall(ln).rstrip()
+        if not (s.startswith("  ") or s.startswith("\u203a ") or s.startswith(" \u203a ")):
+            continue
+        if " \u00b7 " not in s:
+            continue
+        name, provider, _ = seat(s)
+        if name == want_name and provider == want_provider:
+            return i
+    return None
+
+
+def highlighted_provider(h, name):
+    """Which provider's row for `name` currently carries the \u203a highlight."""
+    for ln in h.screen_lines():
+        s = unwall(ln).rstrip()
+        if not s.startswith("\u203a ") or " \u00b7 " not in s:
+            continue
+        got_name, provider, _ = seat(s.split("  (current)")[0])
+        if got_name == name:
+            return provider
+    return None
+
+
+def current_provider_of(h, name):
+    """Which provider's row wears `(current)`, for the seats named `name`."""
+    for ln in h.screen_lines():
+        s = unwall(ln).rstrip()
+        if "(current)" not in s or " \u00b7 " not in s:
+            continue
+        got_name, provider, _ = seat(s.split("  (current)")[0])
+        if got_name == name:
+            return provider
+    return None
+
+
 def seat(row):
     """(name, provider, badge) off a rendered picker row."""
     head, _, tail = row.partition(" \u00b7 ")
@@ -183,6 +233,48 @@ def check(h):
     close_picker(h)
     if "Model \u203a" in h.screen_contents():
         return "Esc did not close the picker"
+
+    # (6) THE end-to-end claim, and the one place the two lanes meet: CLICK a
+    # same-named seat on a DIFFERENT provider and prove the switch actually
+    # landed on the provider that was clicked. `(current)` is decided by name
+    # AND provider, so which row wears it is the observable answer - and by
+    # name alone all three gpt-5.5 rows would have claimed it.
+    shared = open_picker(h, b"gpt-5.5")
+    seats = [seat(r) for r in shared if seat(r)[0] == "gpt-5.5"]
+    was = current_provider_of(h, "gpt-5.5")
+    # Deliberately NOT the row that already carries the highlight: on that one a
+    # single click confirms (the picker's one rule), and this check is about a
+    # click that has to MOVE the highlight before it can confirm.
+    lit = highlighted_provider(h, "gpt-5.5")
+    target = next((p for _, p, _ in seats if p != lit and p != was), None)
+    if target is None:
+        return f"no unlit gpt-5.5 provider to switch to (lit={lit}, current={was}, seen={seats})"
+    row = row_index_of(h, "gpt-5.5", target)
+    if row is None:
+        return f"the {target} row for gpt-5.5 is not on screen\n{h.screen_contents()}"
+    # Select, then confirm - the picker's one rule for a click.
+    click(h, 4, row + 1)
+    if "Model \u203a" not in h.screen_contents():
+        return "the first click closed the picker instead of selecting the row"
+    if highlighted_provider(h, "gpt-5.5") != target:
+        return (
+            f"the first click did not move the highlight onto {target!r} "
+            f"(it is on {highlighted_provider(h, 'gpt-5.5')!r})\n{h.screen_contents()}"
+        )
+    click(h, 4, row + 1, settle=1.0)
+    if "Model \u203a" in h.screen_contents():
+        return "the second click on the highlighted row did not confirm it"
+
+    reopened = open_picker(h, b"gpt-5.5")
+    now = current_provider_of(h, "gpt-5.5")
+    if now != target:
+        return (
+            f"picked gpt-5.5 on {target!r} but the current seat is {now!r} "
+            f"(was {was!r})\n{chr(10).join(reopened)}"
+        )
+    if sum("(current)" in r for r in reopened) != 1:
+        return f"more than one gpt-5.5 row claims to be current\n{chr(10).join(reopened)}"
+    close_picker(h)
     return None
 
 
