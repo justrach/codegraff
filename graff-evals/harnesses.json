@@ -69,5 +69,13 @@
     "usage": "pi-json",
     "capabilities": [],
     "default_model": "deepseek-v4-flash"
+  },
+  "pi-codegraff": {
+    "cmd": ["pi", "-p", "--mode", "json", "--provider", "codegraff", "--model", "{model}", "--no-session", "{prompt}"],
+    "answer": "pi-json",
+    "usage": "pi-json",
+    "capabilities": [],
+    "default_model": "gemini-3.7-flash",
+    "note": "uses ~/.pi/agent/models.json provider codegraff → gateway.codegraff.com; Gemini tool loops need the codegraff-gemini-echo extension"
   }
 }

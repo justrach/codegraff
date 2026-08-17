@@ -168,8 +168,12 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
             else => |e| std.process.fatal("turn failed: {t}", .{e}),
         }
     };
+    const had_schema = pending_schema != null;
     if (pending_schema) |schema_json| {
         root.output_schema = schema_json;
+        // Gemini (via the gateway) accepts json_schema then ignores it, so the
+        // #543 sox path never learns. Force schema-in-prompt + structured_output.
+        if (std.mem.startsWith(u8, root.provider.model, "gemini")) root.sox_json_object = true;
         root.text_only = true;
         defer {
             root.text_only = false;
@@ -183,7 +187,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
             break :blk final_text;
         };
     }
-    try out.print("{s}\n", .{final_text});
+    try out.print("{s}\n", .{if (had_schema) unwrapFencedJson(final_text) else final_text});
     try out.flush();
     // Usage summary → stderr, so stdout stays exactly the answer.
     pricing.printUsageFooter(io);
@@ -515,4 +519,21 @@ pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ
         },
         .skipped => {},
     }
+}
+
+/// `--output-schema` checks `json.load` the printed answer. Models that ignore
+/// json_schema often wrap the object in a markdown fence; strip that only.
+fn unwrapFencedJson(text: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    if (!std.mem.startsWith(u8, trimmed, "```")) return trimmed;
+    var rest = trimmed[3..];
+    if (std.mem.startsWith(u8, rest, "json")) rest = rest[4..];
+    rest = std.mem.trimStart(u8, rest, " \t\r\n");
+    if (std.mem.lastIndexOf(u8, rest, "```")) |end| return std.mem.trim(u8, rest[0..end], " \t\r\n");
+    return rest;
+}
+
+test "unwrapFencedJson strips a markdown fence and leaves bare JSON alone" {
+    try std.testing.expectEqualStrings("{\"a\":1}", unwrapFencedJson("```json\n{\"a\":1}\n```\n"));
+    try std.testing.expectEqualStrings("{\"a\":1}", unwrapFencedJson("{\"a\":1}"));
 }
