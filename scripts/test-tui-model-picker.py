@@ -74,11 +74,26 @@ def workspace(tmp):
 BADGES = ("plan", "credits", "api", "local")
 
 
+def unwall(line):
+    """A panel body row with its side walls taken off.
+
+    The picker is framed now (panel.zig), so every catalog row arrives as
+    `\u2502  name  provider \u00b7 badge \u2502` and the walls have to come off before the
+    row can be read as a seat.
+    """
+    s = line.strip()
+    if s.startswith("\u2502"):
+        s = s[1:]
+    if s.endswith("\u2502"):
+        s = s[:-1]
+    return s
+
+
 def picker_rows(h):
     """Screen lines that are catalog rows: `name provider \u00b7 badge [marker]`."""
     out = []
     for ln in h.screen_lines():
-        s = ln.rstrip()
+        s = unwall(ln).rstrip()
         if not (s.startswith("  ") or s.startswith("\u203a ") or s.startswith(" \u203a ")):
             continue
         head, sep, tail = s.partition(" \u00b7 ")

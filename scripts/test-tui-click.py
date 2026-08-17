@@ -216,19 +216,45 @@ def check_gutter_drag(h, first, last):
     return None
 
 
+def unwall(line):
+    """A panel body row with its side walls taken off."""
+    s = line.strip()
+    if s.startswith("\u2502"):
+        s = s[1:]
+    if s.endswith("\u2502"):
+        s = s[:-1]
+    return s
+
+
 def panel_rows(h, title):
-    """(row, text) of every marked row of the open panel under `title`."""
+    """(row, text) of every body row of the open panel named `title`.
+
+    The name lives in the panel's TOP EDGE (`\u256d\u2500 Theme \u2500\u2500\u256e`), not in a body
+    row of its own, so the header is found on the border and the rows are the
+    walled lines under it, up to the closing edge.
+    """
     lines = h.screen_lines()
-    head = next((i for i, ln in enumerate(lines) if ln.strip().startswith(title)), None)
+    head = next(
+        (i for i, ln in enumerate(lines) if ln.lstrip().startswith("\u256d") and title in ln),
+        None,
+    )
     if head is None:
         return None
     out = []
-    for i in range(head + 1, min(head + 12, ROWS)):
-        text = lines[i].strip()
+    for i in range(head + 1, ROWS):
+        raw = lines[i].strip()
+        if raw.startswith("\u2570"):  # the closing edge ends the panel
+            break
+        if not raw.startswith("\u2502"):
+            break
+        text = unwall(lines[i]).strip()
         if not text:
             continue
-        if text.startswith("›"):
+        if text.startswith("\u203a"):
             text = text[1:].strip()
+        # The "\u2026 N below" window marker is chrome, not a pickable row.
+        if text.startswith("\u2026"):
+            continue
         out.append((i, text.split("  (current)")[0].strip()))
     return out
 
@@ -252,16 +278,20 @@ def check_list_rows(h):
         return "the second click on the highlighted row did not confirm it"
     if label not in h.screen_contents():
         return f"confirming did not report the picked row {label!r}"
-    # ...and the backdrop below the panel dismisses it, like Esc.
+    # ...and the backdrop dismisses it, like Esc. The panel DOCKS to the
+    # composer, so the empty band is ABOVE it, not below.
     h.inject_keys(b"/theme\r")
     h.pump(1.0)
     rows = panel_rows(h, "Theme")
     if not rows:
         return "the theme panel did not reopen"
-    below = rows[-1][0] + 3
-    click(h, 4, below + 1, settle=0.8)
+    top = rows[0][0] - 1  # the panel's top edge
+    above = top - 2
+    if above < 1:
+        return f"no backdrop above the panel to click (top edge at {top})"
+    click(h, 4, above + 1, settle=0.8)
     if panel_rows(h, "Theme") is not None:
-        return "a click on the backdrop below the panel left it open"
+        return "a click on the backdrop above the panel left it open"
     return None
 
 
