@@ -32,6 +32,7 @@ const provider_mod = @import("provider.zig");
 const keys_cli = @import("keys_cli.zig");
 const oauth = @import("oauth.zig");
 const models_cache = @import("models_cache.zig");
+const pricing_db = @import("pricing_db.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
 const router_config = @import("router_config.zig");
 const router_catalog = @import("router_catalog.zig");
@@ -199,6 +200,10 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // agents (the pre-compaction note, title, reflect) resolve the ONE file
     // the login flow writes instead of "/.kimi/...".
     oauth.initHome(keys_cli.homeEnv(init.environ_map) orelse "");
+    // #557: same pin for GRAFF_PRICES_PATH, before `graff models` is dispatched
+    // below — the hydration points (router_catalog, models_cache) all sit well
+    // under the last call that still holds the environment.
+    pricing_db.initOverride(init.environ_map.get("GRAFF_PRICES_PATH"));
 
     // `harness key set <provider> <key>` / `harness key list`: safe key store
     // (macOS Keychain, else a 0600 file). Exits after.

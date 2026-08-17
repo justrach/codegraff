@@ -41,6 +41,7 @@ const pricing = @import("pricing.zig");
 const obs = @import("obs.zig");
 const default_context = pricing.default_context;
 const g_cost = &pricing.g_cost;
+const pricing_db = @import("pricing_db.zig"); // #557: price-DB age for the /models footer
 const models_cache = @import("models_cache.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
 const providers = @import("providers.zig");
@@ -390,6 +391,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         }
         try out.print("(codex catalog: {s})\n", .{models_cache.codex_catalog_source});
         try out.print("(kimi catalog: {s})\n", .{kimi_catalog.catalog_source});
+        if (pricing_db.source.len != 0) try out.print("(price db: {s})\n", .{pricing_db.source});
         try out.print("(unknown models: {d}k ctx; claude* → anthropic, else → codegraff)\n", .{default_context / 1000});
         // Live LM Studio models: query the local server so loaded models show up
         // in /models without hand-typing their ids. Best-effort and silent if the

@@ -23,6 +23,7 @@ const catalog_selection = @import("catalog_selection.zig");
 const credential_store = @import("credential_store.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
 const pricing = @import("pricing.zig");
+const pricing_db = @import("pricing_db.zig"); // #557: LiteLLM price/context overlay, hydrated on the same beats as these catalogs
 const provider = @import("provider.zig");
 const serde = @import("serde.zig");
 const util = @import("util.zig");
@@ -485,6 +486,7 @@ pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const 
 /// remains the offline fallback, and each live list is re-cached for the
 /// next boot. Returns how many providers were pinged.
 pub fn refreshForListing(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys) usize {
+    pricing_db.ensure(io, gpa, arena, home, true); // the same freshness moment covers the price sheet, network and all
     var futures: [provider.provider_specs.len + 1]?Io.Future(FetchOutcome) = @splat(null);
     var pinged: usize = 0;
     for (provider.provider_specs, 0..) |spec, index| {
@@ -510,6 +512,9 @@ pub fn refreshForListing(io: Io, gpa: Allocator, arena: Allocator, home: []const
 }
 
 pub fn ensureForQuery(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, query: []const u8) void {
+    // Cache/override only: this runs at boot too, and no model surface is worth
+    // a 2 MB GET on the hot path. refreshForListing is the online arm.
+    pricing_db.ensure(io, gpa, arena, home, false);
     for (provider.provider_specs, 0..) |spec, index| {
         if (!dynamic(spec) or !catalog_selection.queryMayUse(spec.id, query)) continue;
         ensureAt(io, gpa, arena, home, keys, index);

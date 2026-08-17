@@ -12,6 +12,7 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const pricing = @import("pricing.zig");
+const pricing_db = @import("pricing_db.zig"); // #557: the LiteLLM price sheet refreshes on the same beat as models.dev
 const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;
 const provider = @import("provider.zig"); // g_codex_url_override: keep /models discovery on the same origin as the overridden responses endpoint
@@ -514,6 +515,8 @@ pub fn refresh(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, out: 
     try out.print("✓ refreshed {d} models from models.dev → {s}\n", .{ metas.items.len, path });
     reportNew(doc.object, out);
     loadOverlay(io, arena, home); // apply to this process too
+    pricing_db.ensure(io, gpa, arena, home, true); // strictly after loadOverlay: it appends, models.dev assigns
+    if (pricing_db.source.len != 0) try out.print("✓ price database: {s}\n", .{pricing_db.source});
     try out.flush();
 }
 
@@ -560,6 +563,7 @@ pub fn command(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, sub_a
         return;
     }
     loadOverlay(io, arena, home); // reflect a prior refresh in the listing
+    pricing_db.ensure(io, gpa, arena, home, false); // cached price sheet only; `refresh` is the online arm
     try list(out);
 }
 
