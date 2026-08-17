@@ -281,12 +281,17 @@ test "help overlay names the advertised pager commands" {
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, text, "Shortcuts"));
 }
 
-test "model overlay lists engine.g_models" {
-    engine.g_models = "grok-4, gpt-5.5";
+test "model overlay lists the catalog with its provider column" {
+    engine.g_model_entries = &.{
+        .{ .name = "grok-4", .provider = "xai", .has_key = true, .cost = .plan },
+        .{ .name = "gpt-5.5", .provider = "openai", .has_key = true, .cost = .api },
+    };
     engine.g_model_name = "grok-4";
+    engine.g_model_provider = "xai";
     defer {
-        engine.g_models = "";
+        engine.g_model_entries = &.{};
         engine.g_model_name = "";
+        engine.g_model_provider = "";
     }
     var m: Model = undefined;
     m.setup(testing.allocator);
@@ -298,6 +303,9 @@ test "model overlay lists engine.g_models" {
     try testing.expect(std.mem.indexOf(u8, text, "grok-4") != null);
     try testing.expect(std.mem.indexOf(u8, text, "gpt-5.5") != null);
     try testing.expect(std.mem.indexOf(u8, text, "Model ›") != null);
+    // The provider rides on the row, inside the frame.
+    try testing.expect(std.mem.indexOf(u8, text, "xai · plan") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "openai · api") != null);
 }
 
 test "debug overlay is not the offline fallback when a hud is wired" {
@@ -329,8 +337,11 @@ test "every overlay is a bordered panel with its name in the frame" {
     // floating on the pager with no edge anywhere, and each surface spelled its
     // own title row. One panel builder means one look, and the check is that
     // NONE of them opts out.
-    engine.g_models = "grok-4, gpt-5.5";
-    defer engine.g_models = "";
+    engine.g_model_entries = &.{
+        .{ .name = "grok-4", .provider = "xai", .has_key = true, .cost = .plan },
+        .{ .name = "gpt-5.5", .provider = "openai", .has_key = true, .cost = .api },
+    };
+    defer engine.g_model_entries = &.{};
     const cases = [_]struct { o: app.Overlay, name: []const u8 }{
         .{ .o = .palette, .name = "Commands" },
         .{ .o = .theme, .name = "Theme" },
@@ -382,13 +393,17 @@ test "a windowed list says how much of itself is off-screen" {
     // that the other 61 existed.
     var arena0 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena0.deinit();
-    var buf = std.array_list.Managed(u8).init(arena0.allocator());
+    var buf = std.array_list.Managed(engine.ModelEntry).init(arena0.allocator());
     for (0..75) |i| {
-        if (i > 0) try buf.appendSlice(", ");
-        try buf.appendSlice(try std.fmt.allocPrint(arena0.allocator(), "model-{d}", .{i}));
+        try buf.append(.{
+            .name = try std.fmt.allocPrint(arena0.allocator(), "model-{d}", .{i}),
+            .provider = "openai",
+            .has_key = true,
+            .cost = .api,
+        });
     }
-    engine.g_models = buf.items;
-    defer engine.g_models = "";
+    engine.g_model_entries = buf.items;
+    defer engine.g_model_entries = &.{};
     var m: Model = undefined;
     m.setup(testing.allocator);
     defer m.deinit();

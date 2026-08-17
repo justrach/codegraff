@@ -46,6 +46,57 @@ pub fn subscriptionLogin(provider_id: []const u8) bool {
     return false;
 }
 
+/// A seat served from THIS MACHINE — a local OpenAI-compatible server (LM
+/// Studio :1234, mlx-lm :8080). The rule mirrors `keys_cli.isLocalUrl`, which
+/// this module deliberately does not import: keys_cli is the interactive key
+/// CLI and billing is a leaf.
+fn localSeat(provider_id: []const u8) bool {
+    const spec = provider_mod.specFor(provider_id) orelse return false;
+    return std.mem.indexOf(u8, spec.url, "127.0.0.1") != null or
+        std.mem.indexOf(u8, spec.url, "localhost") != null;
+}
+
+/// What a turn on this seat COSTS THE USER, in the terms they think in.
+/// `Billing` answers "does /cost add a number", which is the accountant's
+/// question; this answers "am I about to spend my plan, my gateway balance, or
+/// my metered key", which is the one a model picker has to answer BEFORE the
+/// turn. The same `gpt-5.6` reached through codex, codegraff and openai is
+/// three different bills and used to render as three identical rows.
+pub const CostClass = enum {
+    /// Flat-rate subscription login: ChatGPT plan, SuperGrok, Kimi.
+    plan,
+    /// The codegraff gateway, drawn against a credit balance.
+    credits,
+    /// A metered vendor key — the meter runs per token.
+    api,
+    /// A server on this machine. No bill exists.
+    local,
+
+    pub fn badge(self: CostClass) []const u8 {
+        return switch (self) {
+            .plan => "plan",
+            .credits => "credits",
+            .api => "api",
+            .local => "local",
+        };
+    }
+};
+
+/// Classify a seat. Where a credential exists it decides — the same discipline
+/// `forSeat` uses, because it is the LOGIN that is flat-rate and not the
+/// vendor. A seat with no credential yet falls back to the provider table and
+/// there advertises what signing in would buy, which is the only useful thing
+/// to say on a row the user cannot pick yet.
+pub fn costFor(provider_id: []const u8, source: CredentialSource) CostClass {
+    if (localSeat(provider_id)) return .local;
+    if (std.mem.eql(u8, provider_id, "codegraff")) return .credits;
+    if (!subscriptionLogin(provider_id)) return .api;
+    return switch (source) {
+        .login, .none => .plan,
+        .environment, .stored, .session => .api,
+    };
+}
+
 /// The billing class of one API call on this seat.
 pub fn forSeat(provider_id: []const u8, model: []const u8, source: CredentialSource) Billing {
     if (source == .login and subscriptionLogin(provider_id)) return .sub;
@@ -117,4 +168,60 @@ test "freeAtTheMargin follows the credential, not the vendor" {
     try std.testing.expect(freeAtTheMargin(seat("xai", "grok-4.3", .login)));
     try std.testing.expect(!freeAtTheMargin(seat("xai", "grok-4.3", .environment)));
     try std.testing.expect(!freeAtTheMargin(seat("anthropic", "claude-opus-4-8", .environment)));
+}
+
+test "costFor: the picker's badge follows the credential, then the provider" {
+    // The user's complaint, encoded: codex is a ChatGPT plan, the codegraff
+    // gateway spends credits, and a raw OpenAI key runs a meter — three
+    // different bills that used to render as the same bare model name.
+    try std.testing.expectEqual(CostClass.plan, costFor("codex", .login));
+    try std.testing.expectEqual(CostClass.credits, costFor("codegraff", .login));
+    try std.testing.expectEqual(CostClass.credits, costFor("codegraff", .environment));
+    try std.testing.expectEqual(CostClass.api, costFor("openai", .environment));
+    try std.testing.expectEqual(CostClass.api, costFor("anthropic", .stored));
+
+    // Same provider, two credentials, two answers — `graff login xai` buys a
+    // plan, XAI_API_KEY buys metered api.x.ai.
+    try std.testing.expectEqual(CostClass.plan, costFor("xai", .login));
+    try std.testing.expectEqual(CostClass.api, costFor("xai", .environment));
+    try std.testing.expectEqual(CostClass.plan, costFor("kimi", .login));
+    try std.testing.expectEqual(CostClass.api, costFor("kimi", .stored));
+
+    // localhost is nobody's bill.
+    try std.testing.expectEqual(CostClass.local, costFor("lmstudio", .environment));
+    try std.testing.expectEqual(CostClass.local, costFor("mlx", .none));
+
+    // No credential: the row still says what signing in would buy.
+    try std.testing.expectEqual(CostClass.plan, costFor("codex", .none));
+    try std.testing.expectEqual(CostClass.api, costFor("openai", .none));
+
+    // An id nothing knows is metered, the same safe direction `forSeat` takes.
+    try std.testing.expectEqual(CostClass.api, costFor("no-such-provider", .login));
+}
+
+test "costFor agrees with forSeat wherever both have an opinion" {
+    // Two classifiers over one fact is how #471 happened. They answer
+    // different questions, but a plan seat must never be a metered badge.
+    for (provider_mod.provider_specs) |spec| {
+        for ([_]CredentialSource{ .none, .environment, .login, .stored, .session }) |src| {
+            const class = costFor(spec.id, src);
+            const sub = forSeat(spec.id, "definitely-not-in-the-price-sheet", src) == .sub;
+            if (sub) try std.testing.expectEqual(CostClass.plan, class);
+            if (class == .plan) try std.testing.expect(sub or src == .none);
+        }
+    }
+}
+
+test "every CostClass badge is short, distinct and non-empty" {
+    // The badge is a table column in two surfaces; an empty or oversized one
+    // silently breaks alignment rather than failing anywhere.
+    var seen: [4][]const u8 = undefined;
+    var n: usize = 0;
+    for ([_]CostClass{ .plan, .credits, .api, .local }) |c| {
+        const b = c.badge();
+        try std.testing.expect(b.len > 0 and b.len <= 7);
+        for (seen[0..n]) |prev| try std.testing.expect(!std.mem.eql(u8, prev, b));
+        seen[n] = b;
+        n += 1;
+    }
 }

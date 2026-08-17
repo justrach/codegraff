@@ -85,7 +85,46 @@ pub const StreamBuf = struct {
 /// as an event. The TUI used to recover the second kind by parsing the first,
 /// which is the defect this seam removes.
 pub const TurnFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, history: []const Turn, params: Params, stream: *StreamBuf, events: *events_mod.Queue) ?[]const u8;
-pub const ModelFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, name: []const u8) ?[]const u8;
+/// How a seat is PAID FOR. The TUI never derives this — src/billing.zig owns
+/// the rule and the engine hands the answer over with the catalog, the same
+/// way it hands over the model names themselves.
+pub const CostClass = enum {
+    plan,
+    credits,
+    api,
+    local,
+
+    pub fn badge(self: CostClass) []const u8 {
+        return switch (self) {
+            .plan => "plan",
+            .credits => "credits",
+            .api => "api",
+            .local => "local",
+        };
+    }
+};
+
+/// One row of the model catalog. A bare name was ambiguous: the same model
+/// served by codex (a ChatGPT plan), codegraff (gateway credits) and openai (a
+/// metered key) drew three identical rows, and picking one resolved the
+/// provider by first-name-match rather than by the row the user chose.
+pub const ModelEntry = struct {
+    name: []const u8,
+    provider: []const u8 = "",
+    /// False when this provider has no credential in this session. The row
+    /// stays — knowing the seat EXISTS is the point — but it is dimmed.
+    has_key: bool = false,
+    cost: CostClass = .api,
+};
+
+/// What a switch actually landed on. The provider travels back with the model
+/// so the current-row marker can tell two same-named seats apart.
+pub const Picked = struct { model: []const u8, provider: []const u8 = "" };
+
+/// Switch to `name` ON `provider`. An empty `provider` means "the caller does
+/// not know one" (a hand-typed `/model <name>`) and asks the engine to route
+/// by name, which is what the picker used to be stuck doing for every pick.
+pub const ModelFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, provider: []const u8, name: []const u8) ?Picked;
 pub const CancelFn = *const fn (turn_ctx: ?*anyopaque) void;
 /// Fill dest with a staged image path (return >0) or an error line (return <0).
 pub const PasteFn = *const fn (turn_ctx: ?*anyopaque, dest: []u8) isize;
@@ -174,6 +213,29 @@ pub fn bgRun(op: *BgOp) void {
 pub const HudKind = enum { debug, usage };
 pub const HudFn = *const fn (kind: HudKind, buf: []u8) usize;
 
+/// Everything the host frontend hands the loop at startup: the callbacks that
+/// reach the real agent and the facts the chrome renders from. Lives with the
+/// seam it describes; `run.zig` re-exports it as `run.RunOpts`.
+pub const RunOpts = struct {
+    turn_ctx: ?*anyopaque = null,
+    turn_fn: ?TurnFn = null,
+    model_fn: ?ModelFn = null,
+    cancel_fn: ?CancelFn = null,
+    model_name: []const u8 = "",
+    model_provider: []const u8 = "",
+    /// The model catalog with its provider column (see ModelEntry).
+    model_entries: []const ModelEntry = &.{},
+    cwd: []const u8 = ".",
+    yolo: bool = false,
+    hud_fn: ?HudFn = null,
+    paste_fn: ?PasteFn = null,
+    bash_fn: ?BashFn = null,
+    files_fn: ?FilesFn = null,
+    copy_fn: ?CopyFn = null,
+    compact_fn: ?CompactFn = null,
+    history_fn: ?HistoryFn = null,
+};
+
 pub var g_turn_fn: ?TurnFn = null;
 pub var g_turn_ctx: ?*anyopaque = null;
 pub var g_model_fn: ?ModelFn = null;
@@ -192,7 +254,11 @@ pub fn historyChanged(op: HistoryOp) void {
     if (g_history_fn) |f| f(g_turn_ctx, op);
 }
 pub var g_model_name: []const u8 = "";
-pub var g_models: []const u8 = "";
+/// Provider id serving `g_model_name`. Empty offline.
+pub var g_model_provider: []const u8 = "";
+/// The model catalog, provider column and all. Single source of truth for
+/// every model surface in the TUI — there is no flat name-only string left.
+pub var g_model_entries: []const ModelEntry = &.{};
 pub var g_cwd: []const u8 = ".";
 
 pub fn jobRun(job: *Job) void {

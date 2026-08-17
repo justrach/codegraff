@@ -133,20 +133,25 @@ fn activate(self: *Model) Effect {
         },
         .model => {
             const models = @import("models.zig");
-            var names: [models.max_models][]const u8 = undefined;
-            const n = models.filterModels(engine.g_models, self.overlay_filter, &names);
+            var rows: [models.max_models]engine.ModelEntry = undefined;
+            const n = models.filterModels(engine.g_model_entries, self.overlay_filter, &rows);
             const sel = if (n == 0) 0 else self.overlay_sel % n;
             self.closeOverlay();
             if (n == 0) return .stay;
-            const pick = names[sel];
+            // THE row the user chose, provider and all. Handing the engine the
+            // name alone let it re-route by first-name-match, so picking the
+            // openai row for a model codex also serves landed on codex.
+            const pick = rows[sel];
             if (engine.g_model_fn) |f| {
-                if (f(engine.g_turn_ctx, self.alloc, pick)) |nm| {
-                    engine.g_model_name = nm;
-                    self.setToast(nm);
+                if (f(engine.g_turn_ctx, self.alloc, pick.provider, pick.name)) |got| {
+                    self.adoptModel(got);
+                    self.setToast(got.model);
+                    self.pushFmt(.system, "model → {s} · {s}", .{ got.model, got.provider }) catch {};
                 } else self.setToast("couldn't switch");
             } else {
-                engine.g_model_name = pick;
-                self.setToast(pick);
+                engine.g_model_name = pick.name;
+                engine.g_model_provider = pick.provider;
+                self.setToast(pick.name);
             }
         },
         .effort => {

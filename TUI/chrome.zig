@@ -270,12 +270,38 @@ test "status paints coral [stop] while a turn is pending" {
     try std.testing.expect(std.mem.indexOf(u8, text, "Esc:cancel") != null);
 }
 
-pub const splitModels = @import("models.zig").splitModels;
-
 /// The overlay bodies live in overlaypane.zig — they are the panel's business,
 /// not the composer's, and keeping both here put this file over its ceiling.
 /// Re-exported so the frame composer still has one door to the chrome.
 pub const overlay = @import("overlaypane.zig").overlay;
+
+test "model overlay lists engine.g_model_entries with their providers" {
+    engine.g_model_entries = &.{
+        .{ .name = "grok-4", .provider = "xai", .has_key = true, .cost = .plan },
+        .{ .name = "gpt-5.5", .provider = "openai", .has_key = true, .cost = .api },
+    };
+    engine.g_model_name = "grok-4";
+    engine.g_model_provider = "xai";
+    defer {
+        engine.g_model_entries = &.{};
+        engine.g_model_name = "";
+        engine.g_model_provider = "";
+    }
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    m.openOverlay(.model);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const text = try overlay(&m, arena.allocator(), 80);
+    try std.testing.expect(std.mem.indexOf(u8, text, "grok-4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "gpt-5.5") != null);
+    // The name and the tally ride in the panel's TOP EDGE now, not in a body row.
+    try std.testing.expect(std.mem.indexOf(u8, text, "Model \u{203A}") != null);
+    // The blind spot this fixes: the provider was nowhere on the surface.
+    try std.testing.expect(std.mem.indexOf(u8, text, "xai \u{B7} plan") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "openai \u{B7} api") != null);
+}
 
 test "the composer footer holds its columns as the context meter ticks" {
     // The footer label is CENTRED, so a share that widened from 9% to 10%

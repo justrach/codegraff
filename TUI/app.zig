@@ -311,6 +311,18 @@ pub const Model = struct {
         try self.history.append(.{ .kind = kind, .text = text });
     }
 
+    /// Take ownership of what the engine says a model switch landed on. The
+    /// name is allocated by the callback out of THIS Model's allocator and the
+    /// globals point into it, so the Model holds exactly one such buffer and
+    /// deinit already knows how to drop it. The provider id is a static spec
+    /// literal and is not owned.
+    pub fn adoptModel(self: *Model, picked: engine.Picked) void {
+        if (self.model_override) |old| self.alloc.free(old);
+        self.model_override = picked.model;
+        engine.g_model_name = picked.model;
+        engine.g_model_provider = picked.provider;
+    }
+
     pub fn setToast(self: *Model, text: []const u8) void {
         self.toast = text;
         self.toast_until_ms = self.now_ms + 1500;
