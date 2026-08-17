@@ -1,6 +1,7 @@
 //! Session/environment slash commands, split out of main.zig's handleCommand
 //! (600-line goal, issue #123): /clear /new /rename /goal /loop /bash /agents
-//! /animation /theme /hooks /skills /trajectory /plan.
+//! /animation /theme /hooks /skills /trajectory /plan, plus #554's /snapshot
+//! and the snapshot half of /rewind (dispatched to commands_sandbox.zig).
 
 const std = @import("std");
 const Io = std.Io;
@@ -30,6 +31,7 @@ const style = &ansi.style;
 
 const exec = @import("exec.zig");
 const execTool = exec.execTool;
+const commands_sandbox = @import("commands_sandbox.zig"); // #554 /snapshot + /rewind <id>
 
 const fleet = @import("fleet.zig");
 const promoteAgents = fleet.promoteAgents;
@@ -81,6 +83,9 @@ pub fn resetConversationSteering(root: *Agent) void {
 /// (handleCommand in main.zig) then tries the next peer module.
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     _ = keys; // unused in this file's command set; kept for a uniform tryHandle signature
+    // #554: claims /snapshot, and /rewind ONLY when its argument is a snapshot
+    // id — a numeric /rewind falls through to the conversation rewind below.
+    if (try commands_sandbox.tryHandle(root, arena, line, out)) return true;
     if (std.mem.eql(u8, line, "/clear")) {
         root.messages = std.json.Array.init(arena);
         root.last_context_tokens = 0;
