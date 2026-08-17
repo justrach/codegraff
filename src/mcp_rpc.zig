@@ -110,10 +110,7 @@ fn stdioRequestBounded(server: *Server, a: Allocator, io: Io, params: []const u8
     server.next_id += 1;
     {
         const stdio = &server.transport.stdio;
-        const w = &stdio.stdin_writer.interface;
-        try w.writeAll(try mcp_protocol.buildRequest(a, id, method, params, false));
-        try w.writeByte('\n');
-        try w.flush();
+        try mcp_stdio.writeRequest(&stdio.stdin_writer.interface, try mcp_protocol.buildRequest(a, id, method, params, false));
     }
     var done_buf: [2]StdioProbeDone = undefined;
     var select: Io.Select(StdioProbeDone) = .init(io, &done_buf);
@@ -183,14 +180,11 @@ pub fn request(server: *Server, response_alloc: Allocator, params: []const u8, m
 
     switch (server.transport) {
         .stdio => |*stdio| {
-            const w = &stdio.stdin_writer.interface;
-            try w.writeAll(body);
-            try w.writeByte('\n');
-            try w.flush();
+            try mcp_stdio.writeRequest(&stdio.stdin_writer.interface, body);
 
             const r = &stdio.stdout_reader.interface;
             while (true) {
-                const line = (try r.takeDelimiter('\n')) orelse return error.McpClosed;
+                const line = try mcp_stdio.takeLine(r);
                 if (mcp_http.matchingResponse(response_alloc, line, id)) |parsed| return parsed;
             }
         },
@@ -321,7 +315,7 @@ fn stdioProbeReadTask(server: *Server, response_alloc: Allocator, id: i64) anyer
     const stdio = &server.transport.stdio;
     const r = &stdio.stdout_reader.interface;
     while (true) {
-        const line = (try r.takeDelimiter('\n')) orelse return error.McpClosed;
+        const line = try mcp_stdio.takeLine(r);
         if (mcp_http.matchingResponse(response_alloc, line, id)) |parsed| return parsed;
     }
 }
@@ -567,7 +561,7 @@ test "connectStdio (#275): a silent stdio server times out instead of hanging st
 
 test "a late reply for a stale id cannot be mistaken for the id actually awaited" {
     // The exact loop body `request`'s stdio branch and `stdioProbeReadTask`
-    // both use: takeDelimiter, then filter by id via
+    // both use: mcp_stdio.takeLine, then filter by id via
     // mcp_http.matchingResponse, skipping any line whose id doesn't match.
     // Proves that if a `server/discover` probe times out but its reply
     // arrives later, it cannot be mistaken for the `initialize` response
@@ -583,7 +577,10 @@ test "a late reply for a stale id cannot be mistaken for the id actually awaited
     );
     var found: ?Value = null;
     while (true) {
-        const line = (try reader.takeDelimiter('\n')) orelse break;
+        const line = mcp_stdio.takeLine(&reader) catch |err| switch (err) {
+            error.McpClosed => break,
+            else => return err,
+        };
         if (mcp_http.matchingResponse(a, line, 2)) |parsed| {
             found = parsed;
             break;

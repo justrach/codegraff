@@ -1,8 +1,34 @@
-//! MCP stdio child-process shutdown.
+//! MCP stdio child-process shutdown and newline-delimited request/response.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
+
+/// One newline-delimited JSON-RPC line. A payload that fills graff's 1 MiB
+/// stdio reader used to surface as the opaque `WriteFailed` that auto-filed
+/// #527/#528/#552; map the cap to a diagnosable error instead.
+pub fn takeLine(r: *Io.Reader) ![]u8 {
+    const line = r.takeDelimiter('\n') catch |err| switch (err) {
+        error.StreamTooLong => return error.McpResponseTooLarge,
+        else => return err,
+    };
+    return line orelse error.McpClosed;
+}
+
+/// Write one newline-delimited request. A dead child (binary replaced
+/// mid-session) used to fail the write as `WriteFailed`.
+pub fn writeRequest(w: *Io.Writer, body: []const u8) !void {
+    w.writeAll(body) catch |err| return mapClosed(err);
+    w.writeByte('\n') catch |err| return mapClosed(err);
+    w.flush() catch |err| return mapClosed(err);
+}
+
+fn mapClosed(err: anyerror) anyerror {
+    return switch (err) {
+        error.WriteFailed => error.McpClosed,
+        else => err,
+    };
+}
 
 const shutdown_grace = std.Io.Duration.fromMilliseconds(100);
 
@@ -53,4 +79,10 @@ pub fn stopChild(io: Io, child: *std.process.Child) void {
             _ = child.wait(io) catch child.kill(io);
         },
     }
+}
+
+test "takeLine: one JSON-RPC line" {
+    var reader: Io.Reader = .fixed("{\"ok\":true}\nnext\n");
+    const line = try takeLine(&reader);
+    try std.testing.expectEqualStrings("{\"ok\":true}", line);
 }

@@ -36,9 +36,19 @@ pub fn callerError(text: []const u8) bool {
         "path not found",
         "no content provided",
         "missing content",
+        "missing 'hash'",
         "is a directory",
         "permission denied",
         "path too long",
+        // Transport / client-cap names from `reg.call catch |err| @errorName(err)`.
+        // Dead daemon (binary replaced mid-session) or a line past graff's
+        // 1 MiB stdio reader — not a CodeDB Pro tool bug (#527, #528, #552).
+        "WriteFailed",
+        "StreamTooLong",
+        "McpClosed",
+        "McpResponseTooLarge",
+        "McpHandshakeTimeout",
+        "BrokenPipe",
     }) |needle| {
         if (std.mem.indexOf(u8, text, needle) != null) return true;
     }
@@ -97,6 +107,9 @@ test "prepareInput resolves CodeDB Pro paths against the agent cwd" {
 test "caller errors are not filed as CodeDB Pro defects" {
     try std.testing.expect(callerError("{\"ok\":false,\"error\":\"path not found\"}"));
     try std.testing.expect(callerError("{\"ok\":false,\"error\":\"no content provided\"}"));
-    try std.testing.expect(!callerError("StreamTooLong"));
+    try std.testing.expect(callerError("{\"ok\":false,\"error\":\"memo get: missing 'hash'\"}"));
+    try std.testing.expect(callerError("WriteFailed"));
+    try std.testing.expect(callerError("McpResponseTooLarge"));
+    try std.testing.expect(callerError("McpClosed"));
     try std.testing.expect(!callerError("lint: failed to spawn eslint"));
 }
