@@ -178,7 +178,7 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             // Reasoning-effort hint for OpenAI-compatible providers that
             // honor it (codegraff gateway, deepseek). Mirrors the
             // Responses `reasoning.effort` set in the branch below.
-            if (!is_kimi and self.effortApplies() and !self.effort_rejected) {
+            if (!is_kimi and self.sendReasoningEffort()) {
                 try s.objectField("reasoning_effort");
                 try s.write(if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
             }

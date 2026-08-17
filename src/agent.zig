@@ -249,6 +249,16 @@ pub const Agent = struct {
         return schema.providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
     }
 
+    /// Whether this turn should put reasoning_effort on the wire. Gemini 3.x
+    /// maps that field to thinking_level; the default medium makes every
+    /// turn think for seconds (2× wall vs Pi, which omits it). /effort still
+    /// applies — we only skip the unset default.
+    pub fn sendReasoningEffort(self: *const Agent) bool {
+        if (!self.effortApplies() or self.effort_rejected) return false;
+        if (std.mem.startsWith(u8, self.provider.model, "gemini") and self.reasoning == .medium) return false;
+        return true;
+    }
+
     /// #330/#352: a child's catalog is a comptime constant, so both gates just
     /// pick the pre-built twin rather than rebuilding one per subagent —
     /// schema.subToolsJson owns that choice. Root catalogs are filtered where

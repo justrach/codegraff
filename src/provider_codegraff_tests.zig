@@ -84,3 +84,47 @@ test "Codegraff Responses aliases pin a sticky prompt_cache_key" {
         try std.testing.expectEqualStrings(http_headers.promptCacheKey(root.io, root.label, &root, &buf), k1);
     }
 }
+
+test "Codegraff Gemini omits default reasoning_effort; /effort high still sends" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var messages = std.json.Array.init(arena);
+    try messages.append(.{ .object = blk: {
+        var obj: std.json.ObjectMap = .empty;
+        try obj.put(arena, "role", .{ .string = "user" });
+        try obj.put(arena, "content", .{ .string = "hello" });
+        break :blk obj;
+    } });
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = build("gemini-3.7-flash"),
+        .messages = messages,
+        .sub = false,
+        .label = "main",
+        .out = null,
+        .sys_normal = "system",
+    };
+    try std.testing.expect(agent.effortApplies());
+    try std.testing.expect(!agent.sendReasoningEffort());
+    const omitted = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(omitted);
+    try std.testing.expect(std.mem.indexOf(u8, omitted, "reasoning_effort") == null);
+
+    agent.reasoning = .high;
+    try std.testing.expect(agent.sendReasoningEffort());
+    const high = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(high);
+    try std.testing.expect(std.mem.indexOf(u8, high, "\"reasoning_effort\":\"high\"") != null);
+
+    var deepseek: Agent = agent;
+    deepseek.provider = build("deepseek-v4-pro");
+    deepseek.reasoning = .medium;
+    try std.testing.expect(deepseek.sendReasoningEffort());
+    const ds = try deepseek.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(ds);
+    try std.testing.expect(std.mem.indexOf(u8, ds, "\"reasoning_effort\":\"medium\"") != null);
+}
