@@ -13,12 +13,40 @@ const Key = @import("key.zig").Key;
 const Model = app.Model;
 const Effect = app.Effect;
 
+/// Overlays whose body is a SHEET rather than a list: there is no highlight to
+/// move, so the arrows and the page keys scroll the body instead. keys.zig
+/// routes every key here before it reaches its own page handling, so without
+/// this a /help taller than the terminal had no way at all to show its second
+/// half — the arrows only walked an `overlay_sel` nothing rendered.
+fn scrolls(o: app.Overlay) bool {
+    return o == .help or o == .debug;
+}
+
+fn page(self: *const Model) usize {
+    const h = self.last_term_height;
+    return @max(if (h > 8) h - 6 else 3, 3);
+}
+
+/// One step of the sheet, clamped to its end by the frame composer (render.zig
+/// knows the row count; this does not).
+fn scrollSheet(self: *Model, k: Key) bool {
+    switch (k) {
+        .up => self.overlay_scroll -|= 3,
+        .down => self.overlay_scroll += 3,
+        .page_up => self.overlay_scroll -|= page(self),
+        .page_down => self.overlay_scroll += page(self),
+        else => return false,
+    }
+    return true;
+}
+
 pub fn key(self: *Model, k: Key) Effect {
     if (@import("image.zig").key(self, k)) return .stay;
     if (k == .escape) {
         self.closeOverlay();
         return .stay;
     }
+    if (scrolls(self.overlay) and scrollSheet(self, k)) return .stay;
     if (k == .up) {
         self.overlay_sel -|= 1;
         return .stay;
@@ -52,7 +80,10 @@ pub fn wheel(self: *Model, up: bool) bool {
     // The image card is a preview above the composer, not a list; it keeps its
     // own key handling and the transcript keeps the wheel.
     if (self.overlay != .none and self.overlay != .image) {
-        if (up) self.overlay_sel -|= 1 else self.overlay_sel += 1;
+        // A sheet scrolls; only a LIST has a highlight for a notch to move.
+        if (scrolls(self.overlay)) {
+            if (up) self.overlay_scroll -|= 1 else self.overlay_scroll += 1;
+        } else if (up) self.overlay_sel -|= 1 else self.overlay_sel += 1;
         return true;
     }
     const v = self.input.getValue();

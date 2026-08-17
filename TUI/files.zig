@@ -4,6 +4,7 @@ const std = @import("std");
 
 const app = @import("app.zig");
 const models = @import("models.zig");
+const panel = @import("panel.zig");
 const theme_mod = @import("theme.zig");
 const Model = app.Model;
 
@@ -25,26 +26,35 @@ pub fn filterList(list: []const u8, query: []const u8, out: [][]const u8) usize 
     return n;
 }
 
-pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
-    const th = self.theme();
+/// The panel's top-edge slots (overlaypane.zig places them).
+pub fn head(self: *const Model, a: std.mem.Allocator) !panel.Head {
     var names: [max_files][]const u8 = undefined;
     const list = self.files_cache orelse "";
     const total = filterList(list, "", &names);
     const n = filterList(list, self.overlay_filter, &names);
+    return .{
+        .title = try std.fmt.allocPrint(a, "File › {s}\u{258B}", .{self.overlay_filter}),
+        .note = try std.fmt.allocPrint(a, "{d}/{d}", .{ n, total }),
+    };
+}
+
+pub const hint = "type to search · ↑↓ move · Enter insert · Esc";
+
+/// The ROWS only — the frame carries the rest.
+pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
+    const th = self.theme();
+    var names: [max_files][]const u8 = undefined;
+    const list = self.files_cache orelse "";
+    const n = filterList(list, self.overlay_filter, &names);
     var out = std.array_list.Managed(u8).init(a);
-    const title = try std.fmt.allocPrint(a, "File › {s}▋", .{self.overlay_filter});
-    try out.appendSlice(try theme_mod.paint(a, th.accent, title));
-    try out.append('\n');
-    try out.appendSlice(try theme_mod.paint(a, th.muted, try std.fmt.allocPrint(a, "{d}/{d}", .{ n, total })));
-    try out.appendSlice("\n\n");
     if (n == 0) {
-        const hint = if (@import("bgop.zig").loadingFiles(self))
-            "loading files…"
+        const why = if (@import("bgop.zig").loadingFiles(self))
+            "  loading files…"
         else if (list.len == 0)
-            "no file list (offline?) — Esc"
+            "  no file list (offline?)"
         else
-            "no matches — type to filter, Esc";
-        try out.appendSlice(try theme_mod.paint(a, th.muted, hint));
+            "  no matches — type to filter";
+        try out.appendSlice(try theme_mod.paint(a, th.muted, why));
         try out.append('\n');
         return out.items;
     }
@@ -58,9 +68,7 @@ pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
         try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
         try out.append('\n');
     }
-    try out.append('\n');
-    try out.appendSlice(try theme_mod.paint(a, th.muted, "type to search · ↑↓ · Enter insert · Esc"));
-    try out.append('\n');
+    if (n > vis) try out.appendSlice(try panel.windowRow(a, th, off, vis, n));
     return out.items;
 }
 
@@ -84,6 +92,7 @@ test "render shows the filtered file rows" {
     const text = try render(&m, arena.allocator());
     try std.testing.expect(std.mem.indexOf(u8, text, "src/a.zig") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "docs/b.md") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "File ›") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "2/2") != null);
+    const hd = try head(&m, arena.allocator());
+    try std.testing.expect(std.mem.indexOf(u8, hd.title, "File ›") != null);
+    try std.testing.expectEqualStrings("2/2", hd.note);
 }

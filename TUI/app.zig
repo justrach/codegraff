@@ -116,6 +116,12 @@ pub const Model = struct {
     /// the drain that delivered it returns.
     model_override: ?[]const u8 = null,
     scroll: usize = 0,
+    /// An overlay body is a DOCUMENT, not a transcript: it opens at its FIRST
+    /// row and scrolls downward, where the transcript is pinned to its tail.
+    /// Kept apart from `scroll` on purpose — sharing the field meant paging
+    /// /help left the transcript underneath parked mid-history the moment the
+    /// overlay closed. Presentation state, reset whenever an overlay opens.
+    overlay_scroll: usize = 0,
     selected: usize = 0,
     turns: usize = 0,
     /// The engine's last reported meters (#551). Null until a turn has run —
@@ -427,6 +433,7 @@ pub const Model = struct {
     pub fn closeOverlay(self: *Model) void {
         self.overlay = .none;
         self.overlay_sel = 0;
+        self.overlay_scroll = 0;
         self.preview_path = "";
         self.preview_n = 0;
         self.preview_pin = false;
@@ -439,6 +446,7 @@ pub const Model = struct {
     pub fn openOverlay(self: *Model, which: Overlay) void {
         self.overlay = which;
         self.overlay_sel = 0;
+        self.overlay_scroll = 0;
         if (self.overlay_filter.len > 0) {
             self.alloc.free(self.overlay_filter);
             self.overlay_filter = "";

@@ -73,6 +73,8 @@ test {
     _ = @import("scrollbar.zig");
     _ = @import("scrollbar_tests.zig");
     _ = @import("chrome.zig");
+    _ = @import("panel.zig");
+    _ = @import("overlaypane.zig");
     _ = @import("models.zig");
     _ = @import("markdown.zig");
     _ = @import("markdown_stream_tests.zig");

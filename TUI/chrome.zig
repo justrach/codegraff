@@ -6,6 +6,7 @@ const app = @import("app.zig");
 const catalog = @import("catalog.zig");
 const engine = @import("engine.zig");
 const glyphs = @import("glyphs.zig");
+const panel = @import("panel.zig");
 const theme_mod = @import("theme.zig");
 const Model = app.Model;
 
@@ -30,10 +31,11 @@ pub fn promptBox(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
     const focused = self.focus == .prompt and self.overlay == .none;
     const border = if (focused) th.focus else th.border;
     var out = std.array_list.Managed(u8).init(a);
-    if (self.input.getValue().len == 0 and self.images.items.len == 0 and engine.g_paste_fn != null) {
-        try out.appendSlice(try theme_mod.paint(a, th.muted, " Image in clipboard · ctrl+v to paste"));
-        try out.append('\n');
-    }
+    // No standing row above the composer. The one that used to sit here read
+    // "Image in clipboard · ctrl+v to paste" whenever a paste hook was wired at
+    // all — which is always — so it announced an image nobody had copied, on
+    // every idle frame, at the cost of a row. The affordance belongs with the
+    // other keys, in the footer hint (statusBar).
     try out.appendSlice(border);
     try out.appendSlice("╭");
     var n: usize = 0;
@@ -122,33 +124,78 @@ fn footer(a: std.mem.Allocator, border: []const u8, muted: []const u8, label: []
 pub fn statusBar(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
     const th = self.theme();
     if (self.now_ms < self.toast_until_ms and self.toast.len > 0) {
-        return theme_mod.paint(a, th.accent, self.toast);
+        return theme_mod.paint(a, th.accent, theme_mod.takeCols(try std.fmt.allocPrint(a, " {s}", .{self.toast}), fitWidth(width)));
     }
     if (self.pending != null or self.bg != null) {
-        const raw = try std.fmt.allocPrint(a, "{s} Enter:queue  ·  Shift+Tab:mode  ·  Esc:cancel  ·  {s}[stop]{s}", .{
-            th.muted, th.error_fg, theme_mod.reset,
+        return hintLine(self, a, width, &.{
+            .{ .text = "Enter:queue" },
+            .{ .text = "Shift+Tab:mode" },
+            .{ .text = "Esc:cancel" },
+            .{ .text = "[stop]", .sgr = th.error_fg, .pin = true },
         });
-        return theme_mod.takeCols(raw, if (width == 0) 80 else width);
     }
-    return theme_mod.paint(a, th.muted, theme_mod.takeCols(" Enter:send  ·  Shift+Enter:newline  ·  Shift+Tab:mode", if (width == 0) 80 else width));
+    return hintLine(self, a, width, &.{
+        .{ .text = "Enter:send" },
+        .{ .text = "Shift+Enter:newline" },
+        .{ .text = "Shift+Tab:mode" },
+        .{ .text = "Ctrl+V:image", .want = engine.g_paste_fn != null },
+        .{ .text = "Ctrl+X:help" },
+    });
 }
 
-pub fn overlay(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
-    return switch (self.overlay) {
-        .none => "",
-        .palette => try listOverlay(self, a, width),
-        .theme => try themeOverlay(self, a),
-        .help => try helpOverlay(self, a),
-        .rewind => try std.fmt.allocPrint(a, "{s}{s}Rewind last turn?{s}\n{s}Enter rewind  ·  Esc cancel{s}\n", .{ theme_mod.bold, self.theme().accent, theme_mod.reset, self.theme().muted, theme_mod.reset }),
-        .debug => try debugOverlay(self, a),
-        .model => try @import("models.zig").render(self, a),
-        .effort => try @import("effort.zig").render(self, a),
-        .settings => try settingsOverlay(self, a),
-        .image => try @import("image.zig").render(self, a, width),
-        .file => try @import("files.zig").render(self, a),
-        .jump => try jumpOverlay(self, a),
-        .slash => "",
-    };
+fn fitWidth(width: usize) usize {
+    return if (width == 0) 80 else width;
+}
+
+const Hint = struct {
+    text: []const u8,
+    /// Defaults to the muted token at paint time — a hint is never the accent.
+    sgr: []const u8 = "",
+    /// Reserved before anything else is measured, and painted last: the stop
+    /// control is the one segment a narrow terminal may not drop.
+    pin: bool = false,
+    /// False leaves the segment out entirely (an affordance that is not wired).
+    want: bool = true,
+};
+
+const hint_sep = "  ·  ";
+
+/// The footer hint, assembled from the segments that FIT.
+///
+/// grok-build's footer is one line that never wraps and never runs off the
+/// edge. graff's was a fixed string handed to takeCols, so an 44-column
+/// terminal read "Enter:send  ·  Shift+Enter:newl" — a key name cut in half.
+/// Segments are whole or absent, dropped from the right, and a pinned one keeps
+/// its room reserved before the walk begins.
+fn hintLine(self: *const Model, a: std.mem.Allocator, width: usize, segs: []const Hint) ![]const u8 {
+    const th = self.theme();
+    const room = fitWidth(width);
+    var reserved: usize = 0;
+    for (segs) |s| {
+        if (s.pin and s.want) reserved += theme_mod.visibleLen(s.text) + theme_mod.visibleLen(hint_sep);
+    }
+    var out = std.array_list.Managed(u8).init(a);
+    try out.append(' ');
+    var used: usize = 1;
+    var any = false;
+    for (segs) |s| {
+        if (s.pin or !s.want) continue;
+        const cost = theme_mod.visibleLen(s.text) + (if (any) theme_mod.visibleLen(hint_sep) else 0);
+        if (used + cost + reserved > room) break;
+        if (any) try out.appendSlice(hint_sep);
+        try out.appendSlice(try theme_mod.paint(a, if (s.sgr.len > 0) s.sgr else th.muted, s.text));
+        used += cost;
+        any = true;
+    }
+    for (segs) |s| {
+        if (!s.pin or !s.want) continue;
+        if (any) try out.appendSlice(hint_sep);
+        try out.appendSlice(try theme_mod.paint(a, if (s.sgr.len > 0) s.sgr else th.muted, s.text));
+        any = true;
+    }
+    // The separators are painted outside any span, so the row would otherwise
+    // wear whatever pen the previous paint left on it.
+    return theme_mod.paint(a, th.muted, out.items);
 }
 
 pub fn slashMenu(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
@@ -175,146 +222,17 @@ pub fn slashMenu(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
         try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
         try out.append('\n');
     }
-    return out.items;
-}
-
-fn listOverlay(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
-    const th = self.theme();
-    var idx: [catalog.items.len]usize = undefined;
-    const n = catalog.filter(self.input.getValue(), &idx);
-    var out = std.array_list.Managed(u8).init(a);
-    try out.appendSlice(try theme_mod.paint(a, th.accent, "Commands"));
-    try out.append('\n');
-    const show = @min(n, @as(usize, 12));
-    if (show == 0) {
-        try out.appendSlice(try theme_mod.paint(a, th.muted, "no matches\n"));
-        return out.items;
-    }
-    const sel = self.overlay_sel % show;
-    var i: usize = 0;
-    while (i < show) : (i += 1) {
-        const it = catalog.items[idx[i]];
-        const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(i != sel));
-        // Same rule as the inline menu: one entry, one row, cut to fit.
-        const line = theme_mod.takeCols(try std.fmt.allocPrint(a, "{s}{s}  {s}", .{ mark, it.name, it.desc }), width);
-        try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
-        try out.append('\n');
-    }
-    return out.items;
-}
-
-fn themeOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
-    const th = self.theme();
-    var out = std.array_list.Managed(u8).init(a);
-    try out.appendSlice(try theme_mod.paint(a, th.accent, "Theme"));
-    try out.append('\n');
-    const sel = self.overlay_sel % theme_mod.all.len;
-    for (theme_mod.all, 0..) |id, i| {
-        const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(i != sel));
-        const cur: []const u8 = if (id == self.theme_id) "  (current)" else "";
-        const line = try std.fmt.allocPrint(a, "{s}{s}{s}", .{ mark, id.label(), cur });
-        try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
-        try out.append('\n');
-    }
-    return out.items;
-}
-
-fn jumpOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
-    const th = self.theme();
-    var out = std.array_list.Managed(u8).init(a);
-    try out.appendSlice(try theme_mod.paint(a, th.accent, "Jump to turn"));
-    try out.appendSlice("\n\n");
-    const total = self.userTurnCount();
-    if (total == 0) {
-        try out.appendSlice(try theme_mod.paint(a, th.muted, "no turns yet\n"));
-        return out.items;
-    }
-    const sel = self.overlay_sel % total;
-    var no: usize = 0;
-    for (self.history.items) |e| {
-        if (e.kind != .user) continue;
-        const nl = std.mem.indexOfScalar(u8, e.text, '\n') orelse e.text.len;
-        const clip = e.text[0..@min(nl, 60)];
-        const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(no != sel));
-        const line = try std.fmt.allocPrint(a, "{s}#{d}  {s}", .{ mark, no + 1, clip });
-        try out.appendSlice(if (no == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
-        try out.append('\n');
-        no += 1;
-    }
-    try out.append('\n');
-    try out.appendSlice(try theme_mod.paint(a, th.muted, "↑↓ move · Enter jump · Esc"));
-    try out.append('\n');
-    return out.items;
-}
-
-fn helpOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
-    return theme_mod.paint(a, self.theme().text,
-        \\Shortcuts
-        \\
-        \\  Tab            prompt / scrollback
-        \\  Enter          send
-        \\  Esc            cancel · 2× clear · 2× rewind
-        \\  Ctrl+C         cancel, then quit
-        \\  Ctrl+X / F1    this overlay
-        \\  Ctrl+P         command palette
-        \\  Shift+Tab      Normal → Plan → Always-approve
-        \\  click / ← →    collapse / expand tools
-        \\  hover [Image]  preview  ·  y copy  ·  Enter open
-        \\  Shift+← →      prev / next user turn
-        \\  Ctrl+J / K     scroll one line
-        \\  Ctrl+N N       new session
-        \\  Ctrl+Q         quit
-        \\  drag           select transcript · copy on release
-        \\  Shift+drag     the terminal's own selection (any region)
-        \\  Ctrl+Z          undo composer
-        \\  Cmd+Delete     kill to start of line
-        \\  Option+Delete  kill previous word
-        \\  wheel          scroll transcript
-        \\  PgUp / PgDn    page transcript
-        \\  cmd+v          paste text
-        \\  Ctrl+V         attach clipboard image
-        \\  Ctrl+R         prompt history
-        \\  /              slash menu
-        \\  @              fuzzy file mention
-        \\  !cmd           run a shell command
-        \\
-        \\Commands
-        \\  /quit /exit /q    leave the pager
-        \\  /help             this overlay
-        \\  /new /clear       fresh session
-        \\  /home             welcome screen
-        \\  /model            switch model (type to search)
-        \\  /effort           reasoning depth (type to filter)
-        \\  /settings         model · effort · mode · theme
-        \\  /usage /cost      live token/cost line
-        \\  /debug            observability HUD
-        \\  /plan             toggle plan mode
-        \\  /always-approve   skip permission prompts
-        \\  /import-claude    copy Claude and Cursor MCP + skills
-        \\  /jump             jump to a previous turn
-        \\  /copy             copy the last reply
-        \\  /btw              queue an aside mid-turn
-        \\  /vim-mode         vim keys in the scrollback
-    );
-}
-
-test "help overlay names the advertised pager commands" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    m.openOverlay(.help);
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const text = try overlay(&m, arena.allocator(), 80);
-    for ([_][]const u8{
-        "/quit",     "/help", "/new", "/home", "/model", "/settings", "/usage", "/debug", "/plan", "/always-approve",
-        "Shift+Tab", "PgUp",  "PgDn",
-        "←",
-        "→",
-        "Tab",       "Enter", "Esc",
-    }) |name| {
-        try std.testing.expect(std.mem.indexOf(u8, text, name) != null);
-    }
+    if (n > show) try out.appendSlice(try panel.windowRow(a, th, first, show, n));
+    // The same box the palette wears (overlaypane.zig). The completion menu and
+    // Ctrl+P show the SAME catalogue; before this one was a framed panel and
+    // the other bare text hanging over the transcript, which read as two
+    // unrelated features rather than one list reached two ways.
+    return panel.wrap(a, th, width, .{
+        .title = "Commands",
+        .note = try std.fmt.allocPrint(a, "{d}/{d}", .{ n, catalog.items.len }),
+        .footer = "↑↓ move · Enter run · Esc",
+        .body = out.items,
+    });
 }
 
 test "composer footer shows the live agent mode" {
@@ -352,84 +270,12 @@ test "status paints coral [stop] while a turn is pending" {
     try std.testing.expect(std.mem.indexOf(u8, text, "Esc:cancel") != null);
 }
 
-test "model overlay lists engine.g_models" {
-    engine.g_models = "grok-4, gpt-5.5";
-    engine.g_model_name = "grok-4";
-    defer {
-        engine.g_models = "";
-        engine.g_model_name = "";
-    }
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    m.openOverlay(.model);
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const text = try overlay(&m, arena.allocator(), 80);
-    try std.testing.expect(std.mem.indexOf(u8, text, "grok-4") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "gpt-5.5") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "Model ›") != null);
-}
-
-test "debug overlay is not the offline fallback when a hud is wired" {
-    engine.g_hud_fn = struct {
-        fn f(kind: engine.HudKind, buf: []u8) usize {
-            _ = kind;
-            const s = "observability  graff.schema v1\n  usage      1 api call(s)";
-            const n = @min(s.len, buf.len);
-            @memcpy(buf[0..n], s[0..n]);
-            return n;
-        }
-    }.f;
-    defer engine.g_hud_fn = null;
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    m.openOverlay(.debug);
-    const text = try overlay(&m, std.testing.allocator, 80);
-    defer std.testing.allocator.free(text);
-    try std.testing.expect(std.mem.indexOf(u8, text, "offline") == null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "usage") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "overlay       debug") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "prompt-origin") != null);
-}
-
 pub const splitModels = @import("models.zig").splitModels;
 
-fn settingsOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
-    const th = self.theme();
-    var out = std.array_list.Managed(u8).init(a);
-    try out.appendSlice(try theme_mod.paint(a, th.accent, "Settings"));
-    try out.appendSlice("\n\n");
-    const rows = [_][2][]const u8{
-        .{ "Model", if (engine.g_model_name.len > 0) engine.g_model_name else "—" },
-        .{ "Effort", @tagName(self.effort) },
-        .{ "Mode", self.modeLabel() },
-        .{ "Theme", self.theme_id.label() },
-    };
-    const sel = self.overlay_sel % rows.len;
-    for (rows, 0..) |r, i| {
-        const mark = glyphs.frame(&glyphs.row_mark, @intFromBool(i != sel));
-        const line = try std.fmt.allocPrint(a, "{s}{s:<10}  {s}", .{ mark, r[0], r[1] });
-        try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
-        try out.append('\n');
-    }
-    try out.append('\n');
-    try out.appendSlice(try theme_mod.paint(a, th.muted, "Enter change · type /model to search · Esc"));
-    try out.append('\n');
-    return out.items;
-}
-
-fn debugOverlay(self: *const Model, a: std.mem.Allocator) ![]const u8 {
-    const th = self.theme();
-    var buf: [2048]u8 = undefined;
-    const body: []const u8 = if (engine.g_hud_fn) |f| buf[0..f(.debug, &buf)] else "observability  (offline — no session sink)\n";
-    var lbuf: [256]u8 = undefined;
-    const lay = @import("dump.zig").layoutBuf(&lbuf, self);
-    return std.fmt.allocPrint(a, "{s}{s}Observability{s}\n{s}{s}{s}\n{s}Esc close{s}\n", .{
-        theme_mod.bold, th.text, theme_mod.reset, th.text, body, lay, th.muted, theme_mod.reset,
-    });
-}
+/// The overlay bodies live in overlaypane.zig — they are the panel's business,
+/// not the composer's, and keeping both here put this file over its ceiling.
+/// Re-exported so the frame composer still has one door to the chrome.
+pub const overlay = @import("overlaypane.zig").overlay;
 
 test "the composer footer holds its columns as the context meter ticks" {
     // The footer label is CENTRED, so a share that widened from 9% to 10%

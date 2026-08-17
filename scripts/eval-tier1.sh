@@ -326,6 +326,15 @@ if wanted tuiguard; then
     if python3 scripts/test-tui-scrollbar-osc52.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
+    # Every overlay is a bordered panel with its name in the top rule, docked to
+    # the composer, opened at its FIRST row; and the composer no longer claims a
+    # clipboard image on every idle frame. Border cells and the gap between the
+    # panel and the input box are geometry a unit test cannot see. Each of the
+    # four checks is verified: unframing the panel, undocking it, opening a
+    # sheet at its tail, or restoring the clipboard row each fails its own.
+    if python3 scripts/test-tui-overlay-panels.py zig-out/bin/graff; then :; else
+      record_fail tuiguard
+    fi
   fi
 fi
 

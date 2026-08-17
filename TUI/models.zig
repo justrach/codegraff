@@ -4,6 +4,7 @@ const std = @import("std");
 
 const app = @import("app.zig");
 const engine = @import("engine.zig");
+const panel = @import("panel.zig");
 const theme_mod = @import("theme.zig");
 const Model = app.Model;
 
@@ -51,22 +52,30 @@ pub fn splitModels(list: []const u8, out: [][]const u8) usize {
     return filterModels(list, "", out);
 }
 
-pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
-    const th = self.theme();
+/// What the panel's top edge says: the live filter, and how much of the
+/// catalogue survives it. The picker owns these strings; the frame only places
+/// them (overlaypane.zig).
+pub fn head(self: *const Model, a: std.mem.Allocator) !panel.Head {
     var names: [max_models][]const u8 = undefined;
     const total = splitModels(engine.g_models, &names);
     const n = filterModels(engine.g_models, self.overlay_filter, &names);
+    return .{
+        .title = try std.fmt.allocPrint(a, "Model › {s}\u{258B}", .{self.overlay_filter}),
+        .note = try std.fmt.allocPrint(a, "{d}/{d}", .{ n, total }),
+    };
+}
+
+pub const hint = "type to search · ↑↓ move · Enter pick · Esc";
+
+/// The ROWS only. Title, tally and keys ride in the panel's edges.
+pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
+    const th = self.theme();
+    var names: [max_models][]const u8 = undefined;
+    const n = filterModels(engine.g_models, self.overlay_filter, &names);
     var out = std.array_list.Managed(u8).init(a);
 
-    const q = self.overlay_filter;
-    const title = try std.fmt.allocPrint(a, "Model › {s}▋", .{q});
-    try out.appendSlice(try theme_mod.paint(a, th.accent, title));
-    try out.append('\n');
-    try out.appendSlice(try theme_mod.paint(a, th.muted, try std.fmt.allocPrint(a, "{d}/{d}", .{ n, total })));
-    try out.appendSlice("\n\n");
-
     if (n == 0) {
-        try out.appendSlice(try theme_mod.paint(a, th.muted, "no matches — type to filter, Esc to close\n"));
+        try out.appendSlice(try theme_mod.paint(a, th.muted, "  no matches — type to filter\n"));
         return out.items;
     }
 
@@ -82,9 +91,7 @@ pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
         try out.appendSlice(if (i == sel) try theme_mod.paint(a, th.accent, line) else try theme_mod.paint(a, th.muted, line));
         try out.append('\n');
     }
-    try out.append('\n');
-    try out.appendSlice(try theme_mod.paint(a, th.muted, "type to search · ↑↓ move · Enter pick · Esc"));
-    try out.append('\n');
+    if (n > vis) try out.appendSlice(try panel.windowRow(a, th, off, vis, n));
     return out.items;
 }
 
@@ -129,6 +136,7 @@ test "model overlay typed query is a filtered list, not the dump" {
     const text = try render(&m, arena.allocator());
     try std.testing.expect(std.mem.indexOf(u8, text, "deepseek-v4-pro") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "gpt-5.5") == null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "1/3") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "Model › deepseek") != null);
+    const hd = try head(&m, arena.allocator());
+    try std.testing.expectEqualStrings("1/3", hd.note);
+    try std.testing.expect(std.mem.indexOf(u8, hd.title, "Model › deepseek") != null);
 }

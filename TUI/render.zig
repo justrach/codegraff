@@ -124,23 +124,43 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     if (n <= view_h) {
         self.scroll = 0;
         self.mid_skip = 0;
+        // An overlay panel DOCKS to the composer, the way the slash menu does
+        // and grok-build's minimal pickers do: the list rises out of the box
+        // you are typing in. Top-anchored it floated at the ceiling with a
+        // field of blank rows between the thing being chosen and the caret
+        // choosing it. The transcript keeps its own habit, top-down.
+        const above: usize = if (overlay_body) view_h - n else 0;
+        var lead = above;
+        while (lead > 0) : (lead -= 1) try out.append('\n');
         for (try midSlice(a, cache, mid_lines.items, 0, n)) |ln| {
             try out.appendSlice(ln);
             try out.append('\n');
         }
-        var pad: usize = view_h - n;
+        var pad: usize = view_h - n - above;
         while (pad > 0) : (pad -= 1) try out.append('\n');
+        self.mid_origin += above;
     } else {
         const max_scroll = n - view_h;
-        if (self.follow) self.scroll = 0;
-        // Put the anchored logical line back on the top row. Saturating: when
-        // the rewrap pushed it past the last possible top line the viewport
-        // parks at the bottom, which still shows it.
-        if (rewrap) |anc| {
-            if (cache) |c| self.scroll = max_scroll -| anchor.rowAt(self, c, anc);
+        // An overlay body reads TOP-DOWN. The transcript is pinned to its tail
+        // because the newest line is the one you want; a shortcut sheet is a
+        // document, and opening one at its last row showed the tail of /help
+        // and nothing else. Its own cursor, so closing the overlay leaves the
+        // transcript's viewport where it was.
+        var start: usize = undefined;
+        if (overlay_body) {
+            if (self.overlay_scroll > max_scroll) self.overlay_scroll = max_scroll;
+            start = self.overlay_scroll;
+        } else {
+            if (self.follow) self.scroll = 0;
+            // Put the anchored logical line back on the top row. Saturating:
+            // when the rewrap pushed it past the last possible top line the
+            // viewport parks at the bottom, which still shows it.
+            if (rewrap) |anc| {
+                if (cache) |c| self.scroll = max_scroll -| anchor.rowAt(self, c, anc);
+            }
+            if (self.scroll > max_scroll) self.scroll = max_scroll;
+            start = max_scroll - self.scroll;
         }
-        if (self.scroll > max_scroll) self.scroll = max_scroll;
-        const start = max_scroll - self.scroll;
         self.mid_skip = start;
         // grok sticky header (minimal single slot): once the last user prompt
         // scrolls past the viewport top, its first line stays pinned as row 0
@@ -419,8 +439,11 @@ test "visible dump of a fixture frame shows chips, the fold header, composer, no
     try std.testing.expect(std.mem.indexOf(u8, lay, "images") != null);
 
     m.openOverlay(.debug);
-    const dbg = try chrome.overlay(&m, std.testing.allocator, 80);
-    defer std.testing.allocator.free(dbg);
+    // The overlay body is built from many small pieces now that it is framed
+    // (panel.zig), so it wants the arena every other chrome builder gets.
+    var oarena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer oarena.deinit();
+    const dbg = try chrome.overlay(&m, oarena.allocator(), 80);
     const lay_dbg = try dump_mod.layout(std.testing.allocator, &m);
     defer std.testing.allocator.free(lay_dbg);
     try std.testing.expect(std.mem.indexOf(u8, lay_dbg, "overlay       debug") != null);
@@ -448,8 +471,9 @@ test "debug overlay keeps the observability HUD and adds layout" {
     const frame = try render(&m, std.testing.allocator, 80, 24, 0);
     defer std.testing.allocator.free(frame);
     m.openOverlay(.debug);
-    const text = try chrome.overlay(&m, std.testing.allocator, 80);
-    defer std.testing.allocator.free(text);
+    var oarena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer oarena.deinit();
+    const text = try chrome.overlay(&m, oarena.allocator(), 80);
     try std.testing.expect(std.mem.indexOf(u8, text, "Observability") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "offline") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "overlay       debug") != null);
