@@ -194,6 +194,15 @@ const proc_identity = @import("proc_identity.zig");
 // (agent_context.zig, subagent.zig) sit at the 600-line cap.
 const usage_attribution_tests = @import("usage_attribution_tests.zig");
 
+// #554: the sandbox seam, its Docker backend, the /snapshot + /rewind <id>
+// commands, and the fake-docker orchestration suite. Production reaches
+// commands_sandbox.zig from commands_misc.tryHandle and the rest only through
+// calls, so without these hooks the whole subsystem's tests compile to nothing.
+const sandbox = @import("sandbox.zig");
+const sandbox_docker = @import("sandbox_docker.zig");
+const commands_sandbox = @import("commands_sandbox.zig");
+const sandbox_tests = @import("sandbox_tests.zig");
+
 test {
     _ = learn_holdout;
     _ = learn_receipt;
@@ -266,4 +275,8 @@ test {
     _ = side_question_tests;
     _ = json_controls;
     _ = effort_route;
+    _ = sandbox;
+    _ = sandbox_docker;
+    _ = commands_sandbox;
+    _ = sandbox_tests;
 }
