@@ -238,9 +238,9 @@ pub const Provider = struct {
         const is_xai_responses = std.mem.eql(u8, spec.id, "xai") and g_xai_responses;
         return .{
             .id = spec.id,
-            .kind = if (is_kimi_anthropic) .anthropic else if (is_xai_responses) .responses else spec.kind,
+            .kind = if (is_kimi_anthropic) .anthropic else if (is_xai_responses or @import("provider_codegraff.zig").usesResponses(spec.id, model)) .responses else spec.kind,
             .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
-            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (std.mem.eql(u8, spec.id, "xai")) (g_xai_url_override orelse if (is_xai_responses) xai_responses_url else spec.url) else spec.url,
+            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (std.mem.eql(u8, spec.id, "xai")) (g_xai_url_override orelse if (is_xai_responses) xai_responses_url else spec.url) else if (@import("provider_codegraff.zig").usesResponses(spec.id, model)) @import("provider_codegraff.zig").responses_url else spec.url,
             .api_key = base.api_key,
             .model = model,
             .context = contextWindowFor(spec.id, model),
@@ -334,9 +334,9 @@ pub const Keys = struct {
         const is_xai_responses = std.mem.eql(u8, spec.id, "xai") and g_xai_responses;
         return .{
             .id = spec.id,
-            .kind = if (is_kimi_anthropic) .anthropic else if (is_xai_responses) .responses else spec.kind,
+            .kind = if (is_kimi_anthropic) .anthropic else if (is_xai_responses or @import("provider_codegraff.zig").usesResponses(spec.id, model)) .responses else spec.kind,
             .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
-            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (std.mem.eql(u8, spec.id, "xai")) (g_xai_url_override orelse if (is_xai_responses) xai_responses_url else spec.url) else spec.url,
+            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (std.mem.eql(u8, spec.id, "xai")) (g_xai_url_override orelse if (is_xai_responses) xai_responses_url else spec.url) else if (@import("provider_codegraff.zig").usesResponses(spec.id, model)) @import("provider_codegraff.zig").responses_url else spec.url,
             .api_key = key,
             .model = model,
             .context = contextWindowFor(spec.id, model),

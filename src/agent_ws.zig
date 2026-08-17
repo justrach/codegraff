@@ -53,11 +53,11 @@ const rawNonblockStdin = Agent.rawNonblockStdin;
 const drainSteerStdin = Agent.drainSteerStdin;
 
 /// WS: root Responses turns when enabled and not fallen back this session
-/// (codex + xai only — Platform OpenAI has no WS endpoint).
+/// (codex + xai + Codegraff gateway; Platform OpenAI has no WS endpoint).
 pub fn wsEligible(self: *Agent) bool {
     // Provider id is a production filter on top of the spec'd kind/flag
-    // algebra: only codex and xai actually serve a WS endpoint.
-    const has_ws = std.mem.eql(u8, self.provider.id, "codex") or std.mem.eql(u8, self.provider.id, "xai");
+    // algebra: only these providers actually serve a WS endpoint.
+    const has_ws = std.mem.eql(u8, self.provider.id, "codex") or std.mem.eql(u8, self.provider.id, "xai") or std.mem.eql(u8, self.provider.id, "codegraff");
     return has_ws and transport_gate.eligible(.{ .kind = self.provider.kind, .is_sub = self.sub, .codex_ws = main_mod.g_codex_ws, .ws_off = self.ws_off, .has_out = self.out != null, .quiet = self.stream_quiet });
 }
 

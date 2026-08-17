@@ -197,7 +197,7 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                     try sox.writeStructuredOutputTool(&s, schema_json);
             }
         },
-        // The Responses-wire body (codex / xAI #502) lives in its own module
+        // The Responses-wire body (codex / xAI / native Codegraff) lives in its own module
         // under the 600-line ceiling; structured-output writers ride along.
         .responses => try @import("agent_request_body_responses.zig").write(self, &s, tools, force_tool),
     }

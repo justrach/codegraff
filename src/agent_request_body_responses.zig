@@ -1,4 +1,4 @@
-//! The Responses-wire request body (codex / xAI #502), split from
+//! The Responses-wire request body (codex / xAI / native Codegraff), split from
 //! agent_request_body.zig under the 600-line ceiling, plus the structured-
 //! output writers (text.format here, response_format for the chat wire).
 
@@ -12,7 +12,7 @@ const codex_chain = @import("codex_chain.zig");
 const server_compact = @import("agent_server_compact.zig");
 
 pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_tool: bool) !void {
-    // Responses API (codex / ChatGPT backend, and xAI behind GRAFF_XAI_WIRE).
+    // Responses API (codex / ChatGPT, xAI, and native Codegraff aliases).
     // system prompt → instructions; history items are valid input items;
     // stream is required (we buffer + parse the SSE); reasoning items return
     // encrypted and are passed back per turn.

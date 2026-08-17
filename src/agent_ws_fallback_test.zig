@@ -198,9 +198,9 @@ test "#427: a non-426 handshake failure keeps the ladder's free retry, then latc
 }
 
 // #502 regression: the codex-only gate (correct for Platform OpenAI, which has
-// no WS server to probe) must not swallow xAI — both serve a real WS endpoint,
-// and the v0.0.25x release line's gate silently killed xAI WS turns once.
-test "wsEligible: codex and xai qualify; Platform OpenAI and chat wires never do" {
+// no WS server to probe) must not swallow xAI or Codegraff Responses — all three
+// serve a real WS endpoint, while the gateway's chat-routed models still do not.
+test "wsEligible: native Responses providers qualify; Platform OpenAI and chat wires never do" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
 
@@ -219,6 +219,12 @@ test "wsEligible: codex and xai qualify; Platform OpenAI and chat wires never do
 
     agent.provider.id = "xai";
     try std.testing.expect(agent_ws.wsEligible(&agent)); // #502: xai rides WS
+
+    agent.provider.id = "codegraff";
+    try std.testing.expect(agent_ws.wsEligible(&agent)); // native gateway Responses ride WS
+    agent.provider.kind = .openai;
+    try std.testing.expect(!agent_ws.wsEligible(&agent)); // translated gateway chat never does
+    agent.provider.kind = .responses;
 
     agent.provider.id = "openai";
     try std.testing.expect(!agent_ws.wsEligible(&agent)); // Platform: no WS server

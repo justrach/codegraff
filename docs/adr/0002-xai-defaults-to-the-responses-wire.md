@@ -30,8 +30,9 @@ back onto chat completions.
 - Lossless compaction by default; the intent-aware client summary remains
   the fallback when the endpoint refuses or fails, and the chat wire keeps
   it as primary.
-- WS eligibility stays an explicit provider list (codex, xai) — Platform
-  OpenAI is Responses-kind but has no WS server and must never probe one.
+- WS eligibility stays an explicit provider list (codex, xai, and Codegraff
+  when its selected alias is Responses-kind) — Platform OpenAI has no WS
+  server and must never probe one.
 - Chaining via previous_response_id stays codex-only: xAI's store:false +
   previous_response_id stalls server-side (probed live), so xai rides
   full-resend over the held socket.
