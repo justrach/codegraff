@@ -229,7 +229,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "plugins")) {
         const home = keys_cli.homeEnv(init.environ_map) orelse "";
         plugins.applyEnv(init.environ_map);
-        try plugins.command(io, arena, home);
+        try plugins.command(io, arena, home, flags.positionals.items[1..]);
         return true;
     }
 

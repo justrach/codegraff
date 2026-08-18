@@ -12,6 +12,7 @@ const std = @import("std");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
+const layout = @import("plugin_layout.zig");
 
 const plugin_cap = 32;
 const walk_depth: u8 = 4;
@@ -27,6 +28,7 @@ pub const Plugin = struct {
     skills: bool = false,
     agents: bool = false,
     mcp: bool = false,
+    commands: bool = false,
 };
 
 fn off() bool {
@@ -69,7 +71,9 @@ fn isPlugin(io: Io, path: []const u8) bool {
         existsJoin(io, path, ".mcp.json") or
         existsJoin(io, path, "mcp.json") or
         existsJoin(io, path, "skills") or
-        existsJoin(io, path, "agents");
+        existsJoin(io, path, "agents") or
+        existsJoin(io, path, "commands") or
+        existsJoin(io, path, "SKILL.md");
 }
 
 fn hasMcp(io: Io, path: []const u8) bool {
@@ -92,16 +96,16 @@ fn walk(io: Io, arena: Allocator, list: *std.ArrayList(Plugin), path: []const u8
     var dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
     if (isPlugin(io, path)) {
-        const skills_p = join(arena, path, "skills");
-        const agents_p = join(arena, path, "agents");
+        const lay = layout.inspect(io, arena, path);
         list.append(arena, .{
             .name = pluginName(io, arena, path),
             .path = path,
             .origin = origin,
             .personal = personal,
-            .skills = exists(io, skills_p),
-            .agents = exists(io, agents_p),
-            .mcp = hasMcp(io, path),
+            .skills = lay.skill_dirs.len > 0 or lay.root_skill != null,
+            .agents = lay.agent_dirs.len > 0,
+            .mcp = lay.has_mcp or hasMcp(io, path),
+            .commands = lay.has_commands,
         }) catch {};
         return; // do not treat a plugin's skills/ as a nested plugin
     }
@@ -164,9 +168,17 @@ pub fn discover(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Dir) []
 pub fn skillDirs(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Dir, personal: bool) []const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     for (discover(io, arena, home, project)) |p| {
-        if (p.personal != personal or !p.skills) continue;
-        const d = join(arena, p.path, "skills");
-        if (d.len > 0) out.append(arena, d) catch {};
+        if (p.personal != personal) continue;
+        for (layout.inspect(io, arena, p.path).skill_dirs) |d| out.append(arena, d) catch {};
+    }
+    return out.items;
+}
+
+pub fn rootSkills(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Dir, personal: bool) []const layout.RootSkill {
+    var out: std.ArrayList(layout.RootSkill) = .empty;
+    for (discover(io, arena, home, project)) |p| {
+        if (p.personal != personal) continue;
+        if (layout.inspect(io, arena, p.path).root_skill) |rs| out.append(arena, rs) catch {};
     }
     return out.items;
 }
@@ -174,9 +186,8 @@ pub fn skillDirs(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Dir, p
 pub fn agentDirs(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Dir, personal: bool) []const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     for (discover(io, arena, home, project)) |p| {
-        if (p.personal != personal or !p.agents) continue;
-        const d = join(arena, p.path, "agents");
-        if (d.len > 0) out.append(arena, d) catch {};
+        if (p.personal != personal) continue;
+        for (layout.inspect(io, arena, p.path).agent_dirs) |d| out.append(arena, d) catch {};
     }
     return out.items;
 }
@@ -227,15 +238,11 @@ fn takeRel(io: Io, arena: Allocator, dir: Io.Dir, servers: *std.json.ObjectMap, 
 /// Later-wins stays with those files: this only inserts missing names.
 pub fn mergeMcp(io: Io, arena: Allocator, home: []const u8, dir: Io.Dir, servers: *std.json.ObjectMap, found: *bool) void {
     if (off()) return;
-    const plugs = discover(io, arena, if (home.len > 0) home else null, dir);
-    for (plugs) |p| {
-        takeAbs(io, arena, servers, found, join(arena, p.path, ".mcp.json"), null);
-        takeAbs(io, arena, servers, found, join(arena, p.path, "mcp.json"), null);
-    }
-
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const n = dir.realPath(io, &buf) catch 0;
     const cwd = if (n > 0) buf[0..n] else null;
+    const plugs = discover(io, arena, if (home.len > 0) home else null, dir);
+    for (plugs) |p| layout.mergeMcp(io, arena, p.path, cwd orelse "", servers, found);
     if (home.len > 0) {
         takeAbs(io, arena, servers, found, join(arena, home, ".claude.json"), cwd);
         takeAbs(io, arena, servers, found, join(arena, home, ".claude/settings.json"), null);
@@ -261,30 +268,55 @@ pub fn slashCommand(io: Io, arena: Allocator, home: []const u8, line: []const u8
         try out.flush();
         return true;
     }
+    const rest = std.mem.trim(u8, line["/plugins".len..], " \t");
     const list = discover(io, arena, if (home.len > 0) home else null, Io.Dir.cwd());
-    if (list.len == 0) {
-        try out.writeAll("no plugins discovered. graff reads Cursor/Claude/Grok/Codex plugin trees in place (skills/, agents/, mcp.json). nothing to copy; GRAFF_NO_PLUGINS=1 disables.\n");
+    if (std.mem.startsWith(u8, rest, "load ")) {
+        const want = std.mem.trim(u8, rest["load ".len..], " \t");
+        for (list) |p| {
+            if (!std.ascii.eqlIgnoreCase(p.name, want)) continue;
+            const lay = layout.inspect(io, arena, p.path);
+            try out.print("{s}  [{s}/{s}]  {s}\n", .{ p.name, p.origin, if (p.personal) "user" else "project", p.path });
+            if (lay.has_commands) try out.writeAll("  commands/*.md load as skills (Claude default)\n");
+            if (lay.root_skill) |rs| try out.print("  root skill: {s}\n", .{rs.name});
+            if (p.skills) try out.writeAll("  skills: on-demand via the skill tool / /skills\n");
+            if (p.agents) try out.writeAll("  agents: in the fleet\n");
+            if (p.mcp) try out.writeAll("  mcp: in the merge (needs /mcp trust or --yolo)\n");
+            try out.writeAll("hooks are not run.\n");
+            try out.flush();
+            return true;
+        }
+        try out.print("no plugin named '{s}'. /plugins lists what graff is reading.\n", .{want});
         try out.flush();
         return true;
     }
-    try out.print("{d} plugin(s) (in-place, not copied):\n", .{list.len});
+    if (list.len == 0) {
+        try out.writeAll("no plugins discovered. graff reads Claude/Cursor/Grok/Codex trees in place (skills/, commands/, agents/, mcp.json, root SKILL.md). nothing to copy; GRAFF_NO_PLUGINS=1 disables.\n");
+        try out.flush();
+        return true;
+    }
+    try out.print("{d} plugin(s) (in-place, Claude layout, not copied):\n", .{list.len});
     for (list) |p| {
         try out.print("  {s}  [{s}/{s}]", .{ p.name, p.origin, if (p.personal) "user" else "project" });
         if (p.skills) try out.writeAll(" skills");
+        if (p.commands) try out.writeAll(" commands");
         if (p.agents) try out.writeAll(" agents");
         if (p.mcp) try out.writeAll(" mcp");
         try out.print("  {s}\n", .{p.path});
     }
-    try out.writeAll("skills load on demand (skill tool / /skills). MCP still needs /mcp trust or --yolo.\n");
+    try out.writeAll("skills and commands/*.md load on demand (skill tool / /skills). /plugins load <name> shows one. MCP still needs /mcp trust or --yolo.\n");
     try out.flush();
     return true;
 }
 
 /// `graff plugins` — same listing as `/plugins`, without starting a session.
-pub fn command(io: Io, arena: Allocator, home: []const u8) !void {
+pub fn command(io: Io, arena: Allocator, home: []const u8, args: []const []const u8) !void {
     var obuf: [4096]u8 = undefined;
     var out = Io.File.stdout().writer(io, &obuf);
-    _ = try slashCommand(io, arena, home, "/plugins", &out.interface);
+    const line = if (args.len >= 2 and std.mem.eql(u8, args[0], "load"))
+        std.fmt.allocPrint(arena, "/plugins load {s}", .{args[1]}) catch "/plugins"
+    else
+        "/plugins";
+    _ = try slashCommand(io, arena, home, line, &out.interface);
 }
 
 const testing = std.testing;
@@ -293,6 +325,30 @@ fn tmpBase(io: Io, tmp: *testing.TmpDir, arena: Allocator) ![]const u8 {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const n = try tmp.dir.realPath(io, &buf);
     return arena.dupe(u8, buf[0..n]);
+}
+
+test "discover: Claude commands/ alone is a plugin and a skill dir" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = testing.io;
+    const base = try tmpBase(io, &tmp, arena);
+    const home = join(arena, base, "home");
+    const plug = join(arena, home, ".claude/plugins/greet");
+    try Io.Dir.cwd().createDirPath(io, join(arena, plug, ".claude-plugin"));
+    try Io.Dir.cwd().createDirPath(io, join(arena, plug, "commands"));
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, plug, ".claude-plugin/plugin.json"), .data = "{\"name\":\"greet\"}" });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, plug, "commands/hello.md"), .data = "---\nname: hello\ndescription: d\n---\nHi.\n" });
+
+    const list = discover(io, arena, home, tmp.dir);
+    try testing.expectEqual(@as(usize, 1), list.len);
+    try testing.expect(list[0].commands);
+    try testing.expect(list[0].skills);
+    const dirs = skillDirs(io, arena, home, tmp.dir, true);
+    try testing.expectEqual(@as(usize, 1), dirs.len);
+    try testing.expect(std.mem.endsWith(u8, dirs[0], "commands"));
 }
 
 test "discover: a Claude plugin.json tree is a plugin; marketplaces are not" {

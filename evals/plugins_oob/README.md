@@ -20,8 +20,10 @@ What it guards:
 
 - Plugin MCP names appear on `graff mcp list`.
 - A graff global wins a shared name (plugin command must not leak).
+- Claude inline `mcpServers` land, and `${CLAUDE_PLUGIN_ROOT}` expands.
 - `GRAFF_NO_PLUGINS=1` hides plugin and foreign-harness names only.
 - `graff plugins` prints the manifest name, not the Cursor cache hash.
+- Claude `commands/` is listed; `graff plugins load eval-claude` names it.
 - The same opt-out prints `GRAFF_NO_PLUGINS` on `graff plugins`.
 
 MCP fixtures use `command: /bin/false` so a mistaken connect cannot hang on

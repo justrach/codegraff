@@ -579,8 +579,11 @@ one in `.harness/skills/<name>/SKILL.md` (or `~/.harness/skills/` for every
 project), give it `name` and `description` frontmatter, and write the
 instructions in the body. Skills already written for Claude Code, Cursor,
 Grok, or Codex work as they are: `.claude/skills/`, `~/.cursor/skills-cursor/`,
-`~/.grok/skills/`, plugin `skills/` trees, and `~/.agents/skills/` are read
-in place (not copied). `/plugins` and `graff plugins` list the plugin trees.
+`~/.grok/skills/`, plugin `skills/` and Claude `commands/*.md` trees, and
+`~/.agents/skills/` are read in place (not copied). A Claude plugin works the
+same way it does in Claude Code: `commands/`, a root `SKILL.md`, inline
+`mcpServers`, and `${CLAUDE_PLUGIN_ROOT}` are honored. `/plugins` and
+`graff plugins` list the trees; `/plugins load <name>` shows one.
 `GRAFF_NO_PLUGINS=1` skips them.
 
 Only the name and description enter the system prompt, so a large skill library
@@ -599,8 +602,9 @@ Graff speaks both MCP transports directly: local stdio servers and remote
 Streamable HTTP servers. Servers already configured for Claude, Cursor, or
 Grok are read in place (plugin `mcp.json` / `.mcp.json`, `~/.claude.json`,
 `~/.cursor/mcp.json`, `.cursor/mcp.json`) and fill names graff does not
-already define; they still need `/mcp trust` or `--yolo`. `/plugins` and
-`graff plugins` show which plugin trees contributed. Smolify (`https://app.smol.ly/mcp`) is available as a
+already define; they still need `/mcp trust` or `--yolo`. Plugin manifests
+may also declare `mcpServers` inline or as a path (Claude's shape).
+`/plugins` and `graff plugins` show which plugin trees contributed. Smolify (`https://app.smol.ly/mcp`) is available as a
 core documentation service; it needs no Node bridge or project configuration.
 Its public-read schemas are bundled locally, so startup makes no Smolify
 request. The anonymous transport initializes only after an approved tool call,

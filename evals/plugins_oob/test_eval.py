@@ -41,9 +41,10 @@ class PluginOobTests(unittest.TestCase):
 
     def test_assertions_reject_the_wrong_listing(self) -> None:
         good = (
-            "5 MCP server(s):\n"
+            "6 MCP server(s):\n"
             "  eval-gmail: /bin/false\n"
             "  eval-claude: /bin/false\n"
+            "  eval-inline: /home/demo/missing-bin\n"
             "  from-cursor: /bin/false\n"
             "  from-graff: /bin/true  (global)\n"
             "  shared: /bin/true graff-wins  (global)\n"
@@ -60,9 +61,9 @@ class PluginOobTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             assert_mcp_opt_out(good)
         plugins = (
-            "2 plugin(s) (in-place, not copied):\n"
+            "2 plugin(s) (in-place, Claude layout, not copied):\n"
             f"  eval-gmail  [cursor/user] skills mcp  /home/{CURSOR_HASH}\n"
-            "  eval-claude  [claude/user] mcp  /home/demo\n"
+            "  eval-claude  [claude/user] skills commands mcp  /home/demo\n"
         )
         assert_plugins_named(plugins)
         with self.assertRaises(SystemExit):

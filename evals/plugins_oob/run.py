@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parents[1]
 CURSOR_HASH = "2a8044425c7bddf429c3bdedf3ab61e791d34d65"
 
-PLUGIN_ONLY = ("eval-gmail", "eval-claude", "from-cursor")
+PLUGIN_ONLY = ("eval-gmail", "eval-claude", "eval-inline", "from-cursor")
 GRAFF_ONLY = ("from-graff",)
 SHARED = "shared"
 
@@ -50,11 +50,25 @@ def seed_home(home: Path) -> None:
 
     claude = home / ".claude/plugins/demo"
     (claude / ".claude-plugin").mkdir(parents=True)
+    (claude / "commands").mkdir(parents=True)
     (claude / ".claude-plugin/plugin.json").write_text(
-        '{"name":"eval-claude"}\n', encoding="utf-8"
+        json.dumps(
+            {
+                "name": "eval-claude",
+                "mcpServers": {
+                    "eval-inline": {"command": "${CLAUDE_PLUGIN_ROOT}/missing-bin"}
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
     )
     (claude / ".mcp.json").write_text(
         json.dumps({"mcpServers": {"eval-claude": {"command": "/bin/false"}}}) + "\n",
+        encoding="utf-8",
+    )
+    (claude / "commands/hello.md").write_text(
+        "---\nname: hello\ndescription: Claude command playbook\n---\n\nHi.\n",
         encoding="utf-8",
     )
 
@@ -127,6 +141,10 @@ def assert_mcp_merged(text: str) -> None:
         raise SystemExit(f"plugin command leaked onto shared:\n{text}")
     if "graff-wins" not in text:
         raise SystemExit(f"graff global lost the shared name:\n{text}")
+    if "${CLAUDE_PLUGIN_ROOT}" in text:
+        raise SystemExit(f"CLAUDE_PLUGIN_ROOT was not expanded:\n{text}")
+    if "missing-bin" not in text:
+        raise SystemExit(f"inline Claude mcpServers did not land:\n{text}")
 
 
 def assert_mcp_opt_out(text: str) -> None:
@@ -149,6 +167,8 @@ def assert_plugins_named(text: str) -> None:
         raise SystemExit(f"graff plugins missed the Claude plugin:\n{text}")
     if "[cursor/user]" not in text or "[claude/user]" not in text:
         raise SystemExit(f"origin tags missing:\n{text}")
+    if "commands" not in text:
+        raise SystemExit(f"Claude commands/ was not listed:\n{text}")
 
 
 def self_test(graff: str) -> None:
@@ -172,6 +192,15 @@ def self_test(graff: str) -> None:
 
         listed = expect_ok(run_graff(graff, ["plugins"], home, cwd), "graff plugins")
         assert_plugins_named(listed)
+
+        loaded = expect_ok(
+            run_graff(graff, ["plugins", "load", "eval-claude"], home, cwd),
+            "graff plugins load eval-claude",
+        )
+        if "commands/*.md" not in loaded:
+            raise SystemExit(f"plugins load missed Claude commands:\n{loaded}")
+        if "eval-claude" not in loaded:
+            raise SystemExit(f"plugins load missed the plugin name:\n{loaded}")
 
         disabled = expect_ok(
             run_graff(graff, ["plugins"], home, cwd, {"GRAFF_NO_PLUGINS": "1"}),

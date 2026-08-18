@@ -23,11 +23,16 @@ config.
   `.grok-plugin/plugin.json`, `plugin.json`, `.mcp.json`, `mcp.json`,
   `skills/`, or `agents/`. The listing name comes from the manifest when
   present (Cursor cache folders are content hashes). Skip `marketplaces/`.
-  Cap 32.
+  Cap 32. A directory is also a plugin if it has Claude's `commands/` or a
+  root `SKILL.md`.
 - Skills from those trees (and `~/.agents/skills`, `~/.grok/skills`,
   `~/.codex/skills`, `~/.cursor/skills-cursor`, `~/.cursor/skills`) join the
-  existing on-demand `skill` catalog. Bodies still load only when the model
-  calls `skill`. Project `.harness/skills` still wins.
+  existing on-demand `skill` catalog. Claude `commands/*.md` and a plugin-root
+  `SKILL.md` (when there is no `skills/` tree) load the same way. Manifest
+  `skills` / `commands` / `agents` paths and inline or path-valued
+  `mcpServers` are honored; `${CLAUDE_PLUGIN_ROOT}` and
+  `${CLAUDE_PROJECT_DIR}` expand in MCP strings. Bodies still load only when
+  the model calls `skill`. Project `.harness/skills` still wins.
 - Plugin `agents/` join the fleet after personal `~/.harness/agents` and
   before project `.harness/agents`.
 - Plugin `.mcp.json` / `mcp.json` plus Claude/Cursor/Grok MCP files
@@ -35,7 +40,8 @@ config.
   **missing** server names only. graff's `~/.codegraff/mcp.json` and
   `.mcp.json` still win. Consent is unchanged (`/mcp trust` / `--yolo`).
 - `GRAFF_NO_PLUGINS=1` disables the scan. `/plugins` and `graff plugins`
-  list origin. Do not vendor grok-build. Do not auto-run plugin hooks.
+  list origin; `/plugins load <name>` shows one tree. Do not vendor
+  grok-build. Do not auto-run plugin hooks. Do not add plugin `bin/` to PATH.
 
 ## Consequences
 
