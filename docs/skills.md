@@ -19,8 +19,8 @@ Two kinds of thing are called "skills" in graff, and `/skills` lists both:
 | bundled in the binary | every install |
 | `~/.claude/skills/` | you, every project (compatibility) |
 | `~/.harness/skills/` | you, every project |
-| `~/.grok/skills/`, `~/.codex/skills/`, `~/.agents/skills/` | you, every project (other harnesses, in place) |
-| `~/.claude/plugins/*/skills/` (and Grok/Codex/graff plugin trees) | you, every project (ADR 0007) |
+| `~/.grok/skills/`, `~/.codex/skills/`, `~/.agents/skills/`, `~/.cursor/skills-cursor/` | you, every project (other harnesses, in place) |
+| `~/.cursor/plugins/*/skills/` and `~/.claude/plugins/*/skills/` (and Grok/Codex/graff plugin trees) | you, every project (ADR 0007) |
 | `.claude/skills/` | this project (compatibility) |
 | `.grok/skills/`, `.codex/skills/` | this project |
 | `.claude/plugins/*/skills/` (and project plugin trees) | this project |

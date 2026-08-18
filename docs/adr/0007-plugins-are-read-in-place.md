@@ -15,21 +15,25 @@ config.
 
 ## Decision
 
-- Discover plugin roots in place: `~/.claude/plugins/`, `~/.grok/plugins/`,
-  `~/.codex/plugins/`, `~/.codegraff/plugins/`, and the project
-  `.claude/.grok/.codex/.harness/plugins/` trees (including Claude's
-  `plugins/cache/…` layout). A directory is a plugin if it has
-  `.claude-plugin/plugin.json`, `.grok-plugin/plugin.json`, `plugin.json`,
-  `.mcp.json`, `skills/`, or `agents/`. Skip `marketplaces/`. Cap 32.
+- Discover plugin roots in place: `~/.cursor/plugins/`, `~/.claude/plugins/`,
+  `~/.grok/plugins/`, `~/.codex/plugins/`, `~/.codegraff/plugins/`, and the
+  project `.cursor/.claude/.grok/.codex/.harness/plugins/` trees (including
+  Cursor/Claude `plugins/cache/…`). A directory is a plugin if it has
+  `.cursor-plugin/plugin.json`, `.claude-plugin/plugin.json`,
+  `.grok-plugin/plugin.json`, `plugin.json`, `.mcp.json`, `mcp.json`,
+  `skills/`, or `agents/`. The listing name comes from the manifest when
+  present (Cursor cache folders are content hashes). Skip `marketplaces/`.
+  Cap 32.
 - Skills from those trees (and `~/.agents/skills`, `~/.grok/skills`,
-  `~/.codex/skills`) join the existing on-demand `skill` catalog. Bodies still
-  load only when the model calls `skill`. Project `.harness/skills` still wins.
+  `~/.codex/skills`, `~/.cursor/skills-cursor`, `~/.cursor/skills`) join the
+  existing on-demand `skill` catalog. Bodies still load only when the model
+  calls `skill`. Project `.harness/skills` still wins.
 - Plugin `agents/` join the fleet after personal `~/.harness/agents` and
   before project `.harness/agents`.
-- Plugin `.mcp.json` plus Claude/Cursor/Grok MCP files (`~/.claude.json`,
-  `~/.cursor/mcp.json`, `.cursor/mcp.json`, …) fill **missing** server names
-  only. graff's `~/.codegraff/mcp.json` and `.mcp.json` still win. Consent is
-  unchanged (`/mcp trust` / `--yolo`).
+- Plugin `.mcp.json` / `mcp.json` plus Claude/Cursor/Grok MCP files
+  (`~/.claude.json`, `~/.cursor/mcp.json`, `.cursor/mcp.json`, …) fill
+  **missing** server names only. graff's `~/.codegraff/mcp.json` and
+  `.mcp.json` still win. Consent is unchanged (`/mcp trust` / `--yolo`).
 - `GRAFF_NO_PLUGINS=1` disables the scan. `/plugins` lists origin. Do not
   vendor grok-build. Do not auto-run plugin hooks.
 

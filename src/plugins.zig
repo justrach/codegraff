@@ -62,12 +62,29 @@ fn existsJoin(io: Io, a: []const u8, b: []const u8) bool {
 }
 
 fn isPlugin(io: Io, path: []const u8) bool {
-    return existsJoin(io, path, ".claude-plugin/plugin.json") or
+    return existsJoin(io, path, ".cursor-plugin/plugin.json") or
+        existsJoin(io, path, ".claude-plugin/plugin.json") or
         existsJoin(io, path, ".grok-plugin/plugin.json") or
         existsJoin(io, path, "plugin.json") or
         existsJoin(io, path, ".mcp.json") or
+        existsJoin(io, path, "mcp.json") or
         existsJoin(io, path, "skills") or
         existsJoin(io, path, "agents");
+}
+
+fn hasMcp(io: Io, path: []const u8) bool {
+    return existsJoin(io, path, ".mcp.json") or existsJoin(io, path, "mcp.json");
+}
+
+/// Manifest `name` when present — Cursor cache folders are content hashes.
+fn pluginName(io: Io, arena: Allocator, path: []const u8) []const u8 {
+    const files = [_][]const u8{ ".cursor-plugin/plugin.json", ".claude-plugin/plugin.json", ".grok-plugin/plugin.json", "plugin.json" };
+    for (files) |rel| {
+        const text = Io.Dir.cwd().readFileAlloc(io, join(arena, path, rel), arena, .limited(64 * 1024)) catch continue;
+        const v = std.json.parseFromSliceLeaky(Value, arena, text, .{ .allocate = .alloc_always }) catch continue;
+        if (v == .object) if (v.object.get("name")) |n| if (n == .string and n.string.len > 0) return n.string;
+    }
+    return arena.dupe(u8, std.fs.path.basename(path)) catch std.fs.path.basename(path);
 }
 
 fn walk(io: Io, arena: Allocator, list: *std.ArrayList(Plugin), path: []const u8, origin: []const u8, personal: bool, depth: u8, visits: *usize) void {
@@ -77,15 +94,14 @@ fn walk(io: Io, arena: Allocator, list: *std.ArrayList(Plugin), path: []const u8
     if (isPlugin(io, path)) {
         const skills_p = join(arena, path, "skills");
         const agents_p = join(arena, path, "agents");
-        const mcp_p = join(arena, path, ".mcp.json");
         list.append(arena, .{
-            .name = arena.dupe(u8, std.fs.path.basename(path)) catch return,
+            .name = pluginName(io, arena, path),
             .path = path,
             .origin = origin,
             .personal = personal,
             .skills = exists(io, skills_p),
             .agents = exists(io, agents_p),
-            .mcp = exists(io, mcp_p),
+            .mcp = hasMcp(io, path),
         }) catch {};
         return; // do not treat a plugin's skills/ as a nested plugin
     }
@@ -105,6 +121,7 @@ fn walk(io: Io, arena: Allocator, list: *std.ArrayList(Plugin), path: []const u8
 const Spec = struct { rel: []const u8, origin: []const u8 };
 
 const user_roots = [_]Spec{
+    .{ .rel = ".cursor/plugins", .origin = "cursor" },
     .{ .rel = ".claude/plugins", .origin = "claude" },
     .{ .rel = ".grok/plugins", .origin = "grok" },
     .{ .rel = ".codex/plugins", .origin = "codex" },
@@ -113,13 +130,14 @@ const user_roots = [_]Spec{
 };
 
 const project_roots = [_]Spec{
+    .{ .rel = ".cursor/plugins", .origin = "cursor" },
     .{ .rel = ".claude/plugins", .origin = "claude" },
     .{ .rel = ".grok/plugins", .origin = "grok" },
     .{ .rel = ".codex/plugins", .origin = "codex" },
     .{ .rel = ".harness/plugins", .origin = "harness" },
 };
 
-/// Every plugin tree under the usual Claude/Grok/Codex/graff folders.
+/// Every plugin tree under the usual Cursor/Claude/Grok/Codex/graff folders.
 /// `project` is the workspace root (cwd in production, a tmp dir in tests).
 pub fn discover(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Dir) []const Plugin {
     if (off()) return &.{};
@@ -210,7 +228,10 @@ fn takeRel(io: Io, arena: Allocator, dir: Io.Dir, servers: *std.json.ObjectMap, 
 pub fn mergeMcp(io: Io, arena: Allocator, home: []const u8, dir: Io.Dir, servers: *std.json.ObjectMap, found: *bool) void {
     if (off()) return;
     const plugs = discover(io, arena, if (home.len > 0) home else null, dir);
-    for (plugs) |p| takeAbs(io, arena, servers, found, join(arena, p.path, ".mcp.json"), null);
+    for (plugs) |p| {
+        takeAbs(io, arena, servers, found, join(arena, p.path, ".mcp.json"), null);
+        takeAbs(io, arena, servers, found, join(arena, p.path, "mcp.json"), null);
+    }
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const n = dir.realPath(io, &buf) catch 0;
@@ -236,13 +257,13 @@ pub fn mergeMcp(io: Io, arena: Allocator, home: []const u8, dir: Io.Dir, servers
 pub fn slashCommand(io: Io, arena: Allocator, home: []const u8, line: []const u8, out: *Io.Writer) !bool {
     if (!(std.mem.eql(u8, line, "/plugins") or std.mem.startsWith(u8, line, "/plugins "))) return false;
     if (off()) {
-        try out.writeAll("plugins disabled (GRAFF_NO_PLUGINS). unset it and restart to scan Claude/Grok/Codex trees.\n");
+        try out.writeAll("plugins disabled (GRAFF_NO_PLUGINS). unset it and restart to scan Cursor/Claude/Grok/Codex trees.\n");
         try out.flush();
         return true;
     }
     const list = discover(io, arena, if (home.len > 0) home else null, Io.Dir.cwd());
     if (list.len == 0) {
-        try out.writeAll("no plugins discovered. graff reads Claude/Grok/Codex plugin trees in place (skills/, agents/, .mcp.json). nothing to copy; GRAFF_NO_PLUGINS=1 disables.\n");
+        try out.writeAll("no plugins discovered. graff reads Cursor/Claude/Grok/Codex plugin trees in place (skills/, agents/, mcp.json). nothing to copy; GRAFF_NO_PLUGINS=1 disables.\n");
         try out.flush();
         return true;
     }
@@ -312,7 +333,7 @@ test "discover: walks Claude plugins/cache two levels down" {
 
     const list = discover(io, arena, home, tmp.dir);
     try testing.expectEqual(@as(usize, 1), list.len);
-    try testing.expectEqualStrings("1.0.0", list[0].name);
+    try testing.expectEqualStrings("pack", list[0].name);
     try testing.expect(list[0].agents);
     const agents = agentDirs(io, arena, home, tmp.dir, true);
     try testing.expectEqual(@as(usize, 1), agents.len);
@@ -379,4 +400,39 @@ test "slashCommand: /plugins lists origin and refuses unrelated lines" {
     try testing.expect(!(try slashCommand(testing.io, arena_state.allocator(), "", "/skills", &aw.writer)));
     try testing.expect(try slashCommand(testing.io, arena_state.allocator(), "", "/plugins", &aw.writer));
     try testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "plugin") != null);
+}
+
+test "discover: Cursor cache uses .cursor-plugin + mcp.json; name from manifest" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = testing.io;
+    const base = try tmpBase(io, &tmp, arena);
+    const home = join(arena, base, "home");
+    const hash = "2a8044425c7bddf429c3bdedf3ab61e791d34d65";
+    const plug = join(arena, home, join(arena, ".cursor/plugins/cache/cursor-public/45893410", hash));
+    try Io.Dir.cwd().createDirPath(io, join(arena, plug, ".cursor-plugin"));
+    try Io.Dir.cwd().writeFile(io, .{
+        .sub_path = join(arena, plug, ".cursor-plugin/plugin.json"),
+        .data = "{\"name\":\"gmail\",\"mcpServers\":\"./mcp.json\"}",
+    });
+    try Io.Dir.cwd().writeFile(io, .{
+        .sub_path = join(arena, plug, "mcp.json"),
+        .data = "{\"mcpServers\":{\"gmail\":{\"url\":\"https://gmailmcp.googleapis.com/mcp/v1\"}}}",
+    });
+
+    const list = discover(io, arena, home, tmp.dir);
+    try testing.expectEqual(@as(usize, 1), list.len);
+    try testing.expectEqualStrings("gmail", list[0].name);
+    try testing.expectEqualStrings("cursor", list[0].origin);
+    try testing.expect(list[0].mcp);
+    try testing.expect(!list[0].skills);
+
+    var servers: std.json.ObjectMap = .empty;
+    var found = false;
+    mergeMcp(io, arena, home, tmp.dir, &servers, &found);
+    try testing.expect(found);
+    try testing.expectEqualStrings("https://gmailmcp.googleapis.com/mcp/v1", servers.get("gmail").?.object.get("url").?.string);
 }

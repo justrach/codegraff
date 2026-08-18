@@ -66,7 +66,7 @@ const desc_cap = 160; // per-skill description budget in the system prompt — t
 /// a schema.ToolSpec) so schema.zig's catalog needs one entry and no import
 /// cycle. The description must stay free of characters needing JSON escapes.
 pub const tool_name = "skill";
-pub const tool_desc = "Load a skill: the full instructions for one kind of task, kept out of your context until you need them. The system prompt lists only skill names and descriptions, so call this to read the body BEFORE doing work a skill covers, then follow it. Omit name to list every available skill. Skills come from .harness/skills/, ~/.harness/skills/, .claude/skills/, Claude/Grok/Codex plugin trees, plus bundled skill-creator, mcp-config, jspace, and workspace.";
+pub const tool_desc = "Load a skill: the full instructions for one kind of task, kept out of your context until you need them. The system prompt lists only skill names and descriptions, so call this to read the body BEFORE doing work a skill covers, then follow it. Omit name to list every available skill. Skills come from .harness/skills/, ~/.harness/skills/, .claude/skills/, Cursor/Claude/Grok/Codex plugin trees, plus bundled skill-creator, mcp-config, jspace, and workspace.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"name": {"type": "string", "description": "Skill name to load; omit to list every available skill"}}}
 ;
@@ -162,7 +162,7 @@ fn scan(io: Io, arena: Allocator, home: ?[]const u8) []const Skill {
 fn collect(io: Io, arena: Allocator, home: ?[]const u8) std.ArrayList(Skill) {
     var list: std.ArrayList(Skill) = .empty;
     list.appendSlice(arena, &builtins) catch {};
-    if (home) |h| for ([_][]const u8{ compat_dir, ".codegraff/skills", project_dir, ".grok/skills", ".codex/skills", ".agents/skills" }) |dir| {
+    if (home) |h| for ([_][]const u8{ compat_dir, ".codegraff/skills", project_dir, ".grok/skills", ".codex/skills", ".agents/skills", ".cursor/skills-cursor", ".cursor/skills" }) |dir| {
         const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ h, dir }) catch continue;
         loadDir(io, arena, &list, path, .personal);
     };
@@ -170,6 +170,7 @@ fn collect(io: Io, arena: Allocator, home: ?[]const u8) std.ArrayList(Skill) {
     loadDir(io, arena, &list, compat_dir, .project);
     loadDir(io, arena, &list, ".grok/skills", .project);
     loadDir(io, arena, &list, ".codex/skills", .project);
+    loadDir(io, arena, &list, ".cursor/skills", .project);
     for (plugins.skillDirs(io, arena, home, Io.Dir.cwd(), false)) |d| loadDir(io, arena, &list, d, .plugin);
     loadDir(io, arena, &list, project_dir, .project);
     return list;
