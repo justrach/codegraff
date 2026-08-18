@@ -14,6 +14,7 @@ record only when you need the evidence or the edge cases.
 | [0001](0001-structured-outputs-are-a-formatting-step.md) | Structured output is a final formatting step. Never constrain the agentic phase with a schema grammar, and do not use `--output-schema` unless a program consumes the result. |
 | [0002](0002-xai-defaults-to-the-responses-wire.md) | xAI runs on the Responses wire by default (WS turns, lossless server compaction). `GRAFF_XAI_WIRE=chat` opts out; WS stays an explicit provider list. |
 | [0003](0003-codegraff-wire-follows-model-capability.md) | Codegraff uses Responses + WS for GPT-5.6 and grok-4.6 aliases; Claude, Gemini, and other aliases stay on Chat Completions. |
+| [0004](0004-peer-speech-is-a-working-set.md) | Peer speech is a working set in history, not a second copy of the room; compact drops spent injects and never treats them as the human. |
 
 ## When to write one
 

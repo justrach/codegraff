@@ -25,6 +25,7 @@ const presence = @import("presence.zig");
 const presence_chan = @import("presence_chan.zig");
 const worktree_lease = @import("worktree_lease.zig");
 const repl = @import("repl.zig");
+const peer_context = @import("peer_context.zig");
 
 const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
@@ -34,7 +35,7 @@ const Owner = worktree_lease.Owner;
 pub const tool_name = "peer_message";
 pub const tool_desc = "Post a message to the shared graff channel: live graff sessions hear it at their next step boundary, stamped with your session name and current goal. Use it to coordinate the way you would steer a subagent, but sideways: announce what you are restructuring, ask the others to hold off a directory, or split the work. Hearing is folder-scoped: bare posts go to this folder's room and every session in it hears them; `session` names one intended recipient (name substring, possibly in another folder) — a cross-folder post is delivered to the addressed session only, never broadcast. Device-wide broadcast is the user's /tell all, not this tool. Delivery is queued and one-way — the tool result only confirms the post, never a reply.";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"session": {"type": "string", "description": "peer session name substring (omit for this folder's room), \"all\" for every live session on this device, or a session name in another folder"}, "text": {"type": "string", "description": "one or two sentences of coordination intent"}}, "required": ["text"]}
+    \\{"type": "object", "properties": {"session": {"type": "string", "description": "peer session name substring (omit for this folder's room). A name in another folder is a DM via the device room, delivered to that session only. Not \"all\" — device-wide broadcast is the user's /tell all"}, "text": {"type": "string", "description": "one or two sentences of coordination intent"}}, "required": ["text"]}
 ;
 
 /// Resolve the one peer a message is for. `want` is a session-name substring
@@ -141,15 +142,16 @@ fn peerNoteIfChanged(root: *Agent) ?[]const u8 {
     if (peers.len == 0 and g_peer_fp == 0) return null;
     var buf: std.ArrayList(u8) = .empty;
     if (peers.len == 0) {
-        buf.appendSlice(root.arena, "[#469 presence] the other live graff sessions are gone — the shared tree is yours alone now.") catch return null;
+        buf.appendSlice(root.arena, "[presence] the other live graff sessions are gone — the shared tree is yours alone now.") catch return null;
     } else {
         const mine = presence.ownIdentity();
-        buf.appendSlice(root.arena, std.fmt.allocPrint(root.arena, "[#469 presence] {d} other live graff session(s):", .{peers.len}) catch return null) catch return null;
+        buf.appendSlice(root.arena, std.fmt.allocPrint(root.arena, "[presence] {d} other live graff session(s):", .{peers.len}) catch return null) catch return null;
         for (peers) |p| {
             const where: []const u8 = if (std.mem.eql(u8, p.identity, mine)) "this folder" else p.identity;
-            buf.appendSlice(root.arena, std.fmt.allocPrint(root.arena, " {s} (goal: {s}, {s});", .{ p.session_id, if (p.goal.len > 0) p.goal else "?", where }) catch break) catch break;
+            const goal = peer_context.clip(if (p.goal.len > 0) p.goal else "?", 40);
+            buf.appendSlice(root.arena, std.fmt.allocPrint(root.arena, " {s} ({s}, {s});", .{ p.session_id, goal, where }) catch break) catch break;
         }
-        buf.appendSlice(root.arena, " Coordinate with the peer_message tool before restructuring shared files — bare posts stay in this folder, \"all\" or a name in another folder reaches every session on this device.") catch {};
+        buf.appendSlice(root.arena, " Coordinate with peer_message before touching shared files — bare post = this folder's room; name a session to address them.") catch {};
     }
     const text = buf.items;
     const fp = std.hash.Wyhash.hash(0, text);
@@ -234,7 +236,7 @@ pub fn deliverInbound(root: *Agent) void {
         if (repl.g_debug) markers.append(root.arena, n) catch {};
     }
     if (omitted > 0) {
-        const marker = std.fmt.allocPrint(root.arena, "[#469 channel: {d} older message(s) predating this session omitted]", .{omitted}) catch "";
+        const marker = std.fmt.allocPrint(root.arena, "[peer channel: {d} older message(s) predating this session omitted]", .{omitted}) catch "";
         if (marker.len > 0) {
             buf.appendSlice(root.arena, marker) catch {};
             buf.append(root.arena, '\n') catch {};
@@ -242,7 +244,7 @@ pub fn deliverInbound(root: *Agent) void {
         }
     }
     if (skipped > 0) {
-        const marker = std.fmt.allocPrint(root.arena, "[#469 device room: {d} message(s) not addressed to this session skipped — folder-scoped hearing]", .{skipped}) catch "";
+        const marker = std.fmt.allocPrint(root.arena, "[peer channel: {d} message(s) not addressed to this session skipped — folder-scoped hearing]", .{skipped}) catch "";
         if (marker.len > 0) {
             buf.appendSlice(root.arena, marker) catch {};
             buf.append(root.arena, '\n') catch {};
@@ -250,23 +252,34 @@ pub fn deliverInbound(root: *Agent) void {
         }
     }
     var lines: std.ArrayList([]const u8) = .empty;
+    const hist = peer_context.historyWindow(is_backlog_drain, local_msgs.len + device_msgs.len);
+    if (hist.hidden > 0) {
+        const marker = std.fmt.allocPrint(root.arena, "[peer channel: {d} backlog message(s) omitted from context — keeping last {d}]", .{ hist.hidden, peer_context.history_tail_max }) catch "";
+        if (marker.len > 0) {
+            buf.appendSlice(root.arena, marker) catch {};
+            buf.append(root.arena, '\n') catch {};
+        }
+    }
+    var line_i: usize = 0;
     for ([2][]const presence.Message{ local_msgs, device_msgs }, [2][]const u8{ "", " · device" }) |msgs, scope| {
         for (msgs) |m| {
-            const goal = if (m.from_goal.len > 0) std.fmt.allocPrint(root.arena, " (goal: {s})", .{m.from_goal}) catch "" else "";
+            const goal = if (m.from_goal.len > 0) std.fmt.allocPrint(root.arena, " (goal: {s})", .{peer_context.clip(m.from_goal, 40)}) catch "" else "";
             // Addressing is rendered, not enforced: everyone hears the line,
             // and the marker says who it was meant for.
             const to = if (m.to.len == 0) "" else if (std.mem.indexOf(u8, m.to, own) != null or std.mem.indexOf(u8, own, m.to) != null) " → you" else std.fmt.allocPrint(root.arena, " → {s}", .{m.to}) catch "";
-            const line = std.fmt.allocPrint(root.arena, "[peer message from {s}{s}{s}{s} — #469 channel]: {s}", .{ m.from_session, goal, to, scope, m.text }) catch continue;
-            buf.appendSlice(root.arena, line) catch {};
-            buf.append(root.arena, '\n') catch {};
+            const line = std.fmt.allocPrint(root.arena, "[peer message from {s}{s}{s}{s}]: {s}", .{ m.from_session, goal, to, scope, peer_context.clip(m.text, peer_context.line_clip) }) catch continue;
+            if (line_i >= hist.start) {
+                buf.appendSlice(root.arena, line) catch {};
+                buf.append(root.arena, '\n') catch {};
+            }
             lines.append(root.arena, line) catch {};
+            line_i += 1;
         }
     }
-    // History gets every line (the model coordinates from it); the REPL prints
-    // only the tail of a first-drain backlog so a resume is not a wall of
-    // text. Live incremental drains render every line — those are new.
+    // History gets the working-set tail (ADR 0004); the REPL prints only the
+    // last backlog_repl_show of a first-drain so a resume is not a wall.
     if (window.hidden > 0) {
-        const marker = std.fmt.allocPrint(root.arena, "[#469 channel: {d} backlog message(s) delivered to context — showing last {d}]", .{ window.hidden, backlog_repl_show }) catch "";
+        const marker = std.fmt.allocPrint(root.arena, "[peer channel: {d} backlog message(s) delivered to context — showing last {d}]", .{ window.hidden, backlog_repl_show }) catch "";
         if (marker.len > 0 and repl.g_debug) markers.append(root.arena, marker) catch {};
     }
     renderPeerBlock(sink, root.io, any_visible, markers.items, lines.items[window.start..]);
@@ -274,7 +287,7 @@ pub fn deliverInbound(root: *Agent) void {
     buf.appendSlice(root.arena, "(reply with the peer_message tool — queued, one-way; everyone here hears it)") catch {};
     var obj: std.json.ObjectMap = .empty;
     obj.put(root.arena, "role", .{ .string = "user" }) catch return;
-    obj.put(root.arena, "content", .{ .string = buf.items }) catch return;
+    obj.put(root.arena, "content", .{ .string = peer_context.capInject(buf.items) }) catch return;
     root.messages.append(.{ .object = obj }) catch {};
 }
 
@@ -390,14 +403,17 @@ pub fn summarizeTranscript(arena: Allocator, text: []const u8) PeekSummary {
 fn firstText(obj: std.json.ObjectMap) ?[]const u8 {
     const content = obj.get("content") orelse return null;
     switch (content) {
-        .string => |s| return if (s.len > 0 and !std.mem.startsWith(u8, s, "[peer message")) s else null,
+        .string => |s| return if (s.len > 0 and !peer_context.isPeerInjectContent(s)) s else null,
         .array => |arr| {
             for (arr.items) |blk| {
                 if (blk != .object) continue;
                 const t = blk.object.get("type") orelse continue;
                 if (t == .string and std.mem.eql(u8, t.string, "text")) {
                     if (blk.object.get("text")) |v| {
-                        if (v == .string and v.string.len > 0) return v.string;
+                        if (v == .string and v.string.len > 0) {
+                            if (peer_context.isPeerInjectContent(v.string)) continue;
+                            return v.string;
+                        }
                     }
                 }
             }
@@ -407,14 +423,6 @@ fn firstText(obj: std.json.ObjectMap) ?[]const u8 {
     }
 }
 
-fn clip(text: []const u8, max: usize) []const u8 {
-    const t = std.mem.trim(u8, text, " \t\r\n");
-    return if (t.len <= max) t else t[0..max];
-}
-
-/// The transcript path for a peer: shared worktree means shared .graff;
-/// cross-folder peers are reached through their recorded identity (a git dir
-/// whose parent is the tree root, or the cwd realpath outside git).
 fn transcriptPath(arena: Allocator, peer: Owner) []const u8 {
     const mine = presence.ownIdentity();
     const base = if (std.mem.eql(u8, peer.identity, mine))
@@ -465,8 +473,8 @@ pub fn peekCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Wr
     const sum = summarizeTranscript(arena, window);
     const goal = if (peer.goal.len > 0) peer.goal else "?";
     try out.print("⚡ {s} · pid {d} · goal: {s}\n", .{ peer.session_id, peer.pid, goal });
-    if (sum.last_prompt.len > 0) try out.print("  last prompt: {s}\n", .{clip(sum.last_prompt, 120)});
-    if (sum.last_said.len > 0) try out.print("  last said: {s}\n", .{clip(sum.last_said, 120)});
+    if (sum.last_prompt.len > 0) try out.print("  last prompt: {s}\n", .{peer_context.clip(sum.last_prompt, 120)});
+    if (sum.last_said.len > 0) try out.print("  last said: {s}\n", .{peer_context.clip(sum.last_said, 120)});
     if (sum.last_tool.len > 0) try out.print("  last tool: {s}", .{sum.last_tool});
     if (sum.messages > 0)
         try out.print("{s}{d} transcript messages\n", .{ if (sum.last_tool.len > 0) " · " else "  ", sum.messages })
@@ -516,7 +524,7 @@ test "summarizeTranscript: last prompt, last words, last tool, from complete lin
     ++ "\n" ++
         \\{"role":"assistant","content":[{"type":"text","text":"switched the query to display_name"}]}
     ++ "\n" ++
-        \\{"role":"user","content":"[peer message from s-2 — #469 channel]: hold off"}
+        \\{"role":"user","content":"[peer message from s-2]: hold off"}
     ++ "\n" ++ "{\"role\":\"user\",\"content\":\"a torn last line";
     const sum = summarizeTranscript(arena, text);
     try std.testing.expectEqualStrings("refactor the digest job", sum.last_prompt); // peer-channel quotes are not the peer's doings
@@ -570,11 +578,11 @@ test "renderPeerBlock: blank notices bracket the block; silence when nothing is 
     defer rec.deinit(std.testing.allocator);
     const vt: engine_sink.VTable = .{ .emit = recordNoticeText, .durable = false };
     const sink: engine_sink.EngineSink = .{ .ctx = &rec, .vt = &vt };
-    const markers = [_][]const u8{"[#469 presence] 1 other live session"};
-    const lines = [_][]const u8{ "[peer message from a — #469 channel]: one", "[peer message from b — #469 channel]: two" };
+    const markers = [_][]const u8{"[presence] 1 other live session"};
+    const lines = [_][]const u8{ "[peer message from a]: one", "[peer message from b]: two" };
     renderPeerBlock(sink, undefined, true, &markers, &lines);
     try std.testing.expectEqualDeep(&[_][]const u8{
-        "", "[#469 presence] 1 other live session", lines[0], lines[1], "",
+        "", "[presence] 1 other live session", lines[0], lines[1], "",
     }, rec.items);
     // A history-only drain paints nothing — no stray blank pair.
     rec.clearRetainingCapacity();

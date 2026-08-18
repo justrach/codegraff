@@ -337,7 +337,7 @@ pub fn gateCheck(io: Io, arena: Allocator) ?[]const u8 {
         g_acked_len += 1;
     }
     const warning = worktree_lease.duplicateOwnerWarning(arena, peer, unixMs(io) - peer.last_seen_ms);
-    return std.fmt.allocPrint(arena, "{s}shared-tree checkpoint (#469): the action was NOT performed. Re-issue the identical call to proceed — this fires once per live peer, across git mutations, file writes, and shell moves alike — coordinate first via the peer_message tool (session \"{s}\"), or keep your edits disjoint from theirs.", .{ warning, peer.session_id }) catch warning;
+    return std.fmt.allocPrint(arena, "{s}shared-tree checkpoint: the action was NOT performed. Re-issue the identical call to proceed — this fires once per live peer, across git mutations, file writes, and shell moves alike — coordinate first via the peer_message tool (session \"{s}\"), or keep your edits disjoint from theirs.", .{ warning, peer.session_id }) catch warning;
 }
 
 // The channel's wire format (Message, chanName, postMessage, readNewMessages)

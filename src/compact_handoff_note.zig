@@ -48,6 +48,7 @@ const Agent = agent_mod.Agent;
 const compact_instruction = @import("prompts.zig").compact_instruction;
 const session_transcript = @import("session_transcript.zig");
 const tool_spill = @import("tool_spill.zig");
+const peer_context = @import("peer_context.zig");
 
 /// Most modified paths named before the list is elided. A compaction runs at
 /// the point context is scarce, so this block has to stay a note rather than
@@ -66,7 +67,9 @@ const persists_note =
     \\the command lines that worked, identifiers. Spend the words instead on what
     \\disk cannot give back - the decisions and why they were made, what was tried
     \\and failed, the constraints the user set, and the exact state of the
-    \\unfinished work.
+    \\unfinished work. Peer-channel notes are a working set, not the conversation:
+    \\do not transcribe [peer message] or [presence] lines; the harness drops them
+    \\and restates who is still live after this summary (the room log stays on disk).
 ;
 
 /// The user message compact() sends to ask for the handoff summary: the
@@ -101,6 +104,7 @@ pub fn durableState(arena: Allocator, root: *Agent, discarded: []const Value) !?
     if (try fileLine(arena, root)) |line| try lines.append(arena, line);
     if (try handleLine(arena, discarded)) |line| try lines.append(arena, line);
     if (try transcriptLine(arena, root)) |line| try lines.append(arena, line);
+    if (try peer_context.durableRosterLine(arena, root.io)) |line| try lines.append(arena, line);
     if (lines.items.len == 0) return null;
     return try std.fmt.allocPrint(arena,
         \\[durable state, re-derived by the harness at this compaction rather than
@@ -230,6 +234,8 @@ test "the summary request says what persists and asks for names, not contents (#
     try testing.expect(std.mem.startsWith(u8, req, compact_instruction));
     try testing.expect(std.mem.indexOf(u8, req, "Record NAMES, not contents") != null);
     try testing.expect(std.mem.indexOf(u8, req, "restated to you in full") != null);
+    try testing.expect(std.mem.indexOf(u8, req, "Peer-channel notes are a working set") != null);
+    try testing.expect(std.mem.indexOf(u8, req, "do not transcribe [peer message]") != null);
     // The ground truth itself belongs on the FAR side of the summary, where the
     // model cannot summarize it away. It must not be in the request.
     try testing.expect(std.mem.indexOf(u8, req, "durable state, re-derived") == null);
