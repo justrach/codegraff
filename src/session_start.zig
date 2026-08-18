@@ -41,6 +41,7 @@ const skills = @import("skills.zig");
 const mcp = @import("mcp.zig");
 const mcp_cli = @import("mcp_cli.zig");
 const mcp_config = @import("mcp_config.zig");
+const plugin_scan = @import("plugin_scan.zig");
 const adopt = @import("adopt.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: the eager-vs-deferred policy for MCP tool schemas
 const jobs = @import("jobs.zig");
@@ -402,6 +403,13 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     // so an unguarded line here would corrupt the head of every --json run.
     const quiet = json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") == null;
     const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path, home);
+    // Interactive only: json/one-shot stdout cannot carry chatter. A slow
+    // Cursor/Claude tree used to look like a hung boot; this line is the clock.
+    if (!json_mode and flags.oneshot_prompt == null) {
+        const st = plugin_scan.last;
+        if (st.n > 0 or st.ms > 20)
+            sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "plugins: {s}", .{plugin_scan.format(arena)})));
+    }
     // #416: resolve eager-vs-deferred BEFORE anything connects, so the first
     // catalog render already knows which servers pay their schemas up front.
     mcp_schema_gate.configure(arena, merged, environ_map);

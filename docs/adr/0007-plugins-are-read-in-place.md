@@ -50,5 +50,7 @@ config.
 - Discover classifies with one readdir per visited directory (not a stat per
   marker) and stores skill/agent dirs on the plugin so later merges do not
   inspect again. A named `skill` load hits the session catalog; a miss or a
-  list still rescans.
+  list still rescans. Production caches the first walk (MCP + fleet + skills
+  share it); tests do not. `/plugins` and the interactive boot line print
+  wall time so a slow home directory is visible.
 - Revisit if a user needs to disable one plugin without `GRAFF_NO_PLUGINS`.

@@ -46,6 +46,7 @@ pub var disabled: bool = false;
 
 pub fn applyEnv(environ_map: anytype) void {
     disabled = environ_map.get("GRAFF_NO_PLUGINS") != null;
+    @import("plugin_scan.zig").invalidate();
 }
 
 fn join(arena: Allocator, a: []const u8, b: []const u8) []const u8 {
@@ -133,9 +134,21 @@ const project_roots = [_]Spec{
     .{ .rel = ".harness/plugins", .origin = "harness" },
 };
 
+/// Dirs walked on the last `discoverFresh` (not a cache hit). `plugin_scan`
+/// copies this into the timed receipt.
+pub var last_visits: usize = 0;
+
+const scan = @import("plugin_scan.zig");
+
 /// Every plugin tree under the usual Cursor/Claude/Grok/Codex/graff folders.
 /// `project` is the workspace root (cwd in production, a tmp dir in tests).
+/// Production reuses the first walk; tests always scan live.
 pub fn discover(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Dir) []const Plugin {
+    return scan.discover(io, arena, home, project);
+}
+
+pub fn discoverFresh(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Dir) []const Plugin {
+    last_visits = 0;
     if (off()) return &.{};
     var list: std.ArrayList(Plugin) = .empty;
     var visits: usize = 0;
@@ -154,6 +167,7 @@ pub fn discover(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Dir) []
             }
         }
     }
+    last_visits = visits;
     return list.items;
 }
 
@@ -272,7 +286,7 @@ pub fn slashCommand(io: Io, arena: Allocator, home: []const u8, line: []const u8
             if (p.skills) try out.writeAll("  skills: on-demand via the skill tool / /skills\n");
             if (p.agents) try out.writeAll("  agents: in the fleet\n");
             if (p.mcp) try out.writeAll("  mcp: in the merge (needs /mcp trust or --yolo)\n");
-            try out.writeAll("hooks are not run.\n");
+            try out.print("hooks are not run. {s}\n", .{scan.format(arena)});
             try out.flush();
             return true;
         }
@@ -281,11 +295,11 @@ pub fn slashCommand(io: Io, arena: Allocator, home: []const u8, line: []const u8
         return true;
     }
     if (list.len == 0) {
-        try out.writeAll("no plugins discovered. graff reads Claude/Cursor/Grok/Codex trees in place (skills/, commands/, agents/, mcp.json, root SKILL.md). nothing to copy; GRAFF_NO_PLUGINS=1 disables.\n");
+        try out.print("no plugins discovered ({d}ms, {d} dirs). graff reads Claude/Cursor/Grok/Codex trees in place (skills/, commands/, agents/, mcp.json, root SKILL.md). nothing to copy; GRAFF_NO_PLUGINS=1 disables.\n", .{ scan.last.ms, scan.last.visits });
         try out.flush();
         return true;
     }
-    try out.print("{d} plugin(s) (in-place, Claude layout, not copied):\n", .{list.len});
+    try out.print("{s} (in-place, Claude layout, not copied):\n", .{scan.format(arena)});
     for (list) |p| {
         try out.print("  {s}  [{s}/{s}]", .{ p.name, p.origin, if (p.personal) "user" else "project" });
         if (p.skills) try out.writeAll(" skills");
@@ -457,6 +471,7 @@ test "slashCommand: /plugins lists origin and refuses unrelated lines" {
     try testing.expect(!(try slashCommand(testing.io, arena_state.allocator(), "", "/skills", &aw.writer)));
     try testing.expect(try slashCommand(testing.io, arena_state.allocator(), "", "/plugins", &aw.writer));
     try testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "plugin") != null);
+    try testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "ms") != null);
 }
 
 test "applyEnv: GRAFF_NO_PLUGINS disables discover and /plugins" {
