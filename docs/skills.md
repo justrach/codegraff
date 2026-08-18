@@ -20,7 +20,7 @@ Two kinds of thing are called "skills" in graff, and `/skills` lists both:
 | `~/.claude/skills/` | you, every project (compatibility) |
 | `~/.harness/skills/` | you, every project |
 | `~/.grok/skills/`, `~/.codex/skills/`, `~/.agents/skills/`, `~/.cursor/skills-cursor/` | you, every project (other harnesses, in place) |
-| `~/.cursor/plugins/*/skills/` and `~/.claude/plugins/*/skills/` (and Grok/Codex/graff plugin trees, plus Claude `commands/*.md` and a plugin-root `SKILL.md`) | you, every project (ADR 0007) |
+| `~/.cursor/plugins/*/skills/` and `~/.claude/plugins/*/skills/` (and Grok/Codex/graff plugin trees, plus Claude `commands/*.md`, a plugin-root `SKILL.md`, and cache installs named in `installed_plugins.json`) | you, every project (ADR 0007) |
 | `.claude/skills/` | this project (compatibility) |
 | `.grok/skills/`, `.codex/skills/` | this project |
 | `.claude/plugins/*/skills/` (and project plugin trees) | this project |

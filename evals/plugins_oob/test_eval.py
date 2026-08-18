@@ -37,6 +37,7 @@ class PluginOobTests(unittest.TestCase):
                 (home / ".cursor/plugins/cache/cursor-public/evalfix" / CURSOR_HASH / ".cursor-plugin/plugin.json").is_file()
             )
             self.assertIn("eval-gmail", (home / ".cursor/plugins/cache/cursor-public/evalfix" / CURSOR_HASH / ".cursor-plugin/plugin.json").read_text())
+            self.assertIn("installPath", (home / ".cursor/plugins/installed_plugins.json").read_text())
             self.assertIn("graff-wins", (home / ".codegraff/mcp.json").read_text())
 
     def test_assertions_reject_the_wrong_listing(self) -> None:

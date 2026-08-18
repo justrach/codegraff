@@ -47,6 +47,11 @@ def seed_home(home: Path) -> None:
         "---\nname: plugin-secret\ndescription: fixture playbook\n---\n\nbody\n",
         encoding="utf-8",
     )
+    (home / ".cursor/plugins").mkdir(parents=True, exist_ok=True)
+    (home / ".cursor/plugins/installed_plugins.json").write_text(
+        json.dumps({"plugins": {"eval-gmail@cursor-public": [{"installPath": str(plug)}]}}) + "\n",
+        encoding="utf-8",
+    )
 
     claude = home / ".claude/plugins/demo"
     (claude / ".claude-plugin").mkdir(parents=True)

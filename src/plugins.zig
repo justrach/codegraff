@@ -1,9 +1,8 @@
 //! In-place plugins and foreign-harness MCP (ADR 0007).
 //!
-//! Grok-build's trick is that it never copies Claude/Codex/Cursor trees into
-//! its own folders: it reads `skills/`, `agents/`, and `.mcp.json` where the
-//! other harness already installed them. graff's first-run `adopt` copies once
-//! and then ignores anything added later. This module is the live scan.
+//! Grok-build never walks `plugins/cache/` (OpenCode never does either — it
+//! globs `.claude/skills/**/SKILL.md` and `.opencode/`). Cache installs come
+//! from `installed_plugins.json` `installPath`. This module is the live scan.
 //!
 //! Skills stay on-demand (`skill` tool / `/skills`), including Claude
 //! `commands/*.md` and a plugin-root `SKILL.md`. MCP still needs `/mcp
@@ -16,7 +15,9 @@ const Allocator = std.mem.Allocator;
 const layout = @import("plugin_layout.zig");
 
 const plugin_cap = 32;
-const walk_depth: u8 = 4;
+/// Immediate children plus one more for Cursor `local/<name>/`. Never
+/// `cache/` — that tree is hashed and is what made a scan take a second.
+const walk_depth: u8 = 2;
 const visit_cap = 256;
 const file_cap: std.Io.Limit = .limited(1 << 20);
 const reserved = "smolify";
@@ -55,6 +56,7 @@ fn join(arena: Allocator, a: []const u8, b: []const u8) []const u8 {
 
 fn skipped(name: []const u8) bool {
     return std.mem.eql(u8, name, "marketplaces") or
+        std.mem.eql(u8, name, "cache") or
         std.mem.eql(u8, name, ".git") or
         std.mem.eql(u8, name, "node_modules");
 }
@@ -91,20 +93,7 @@ fn walk(io: Io, arena: Allocator, list: *std.ArrayList(Plugin), path: []const u8
         children.append(arena, child) catch {};
     }
     if (plugin_here) {
-        const lay = layout.inspect(io, arena, path);
-        list.append(arena, .{
-            .name = if (lay.name.len > 0) lay.name else std.fs.path.basename(path),
-            .path = path,
-            .origin = origin,
-            .personal = personal,
-            .skills = lay.skill_dirs.len > 0 or lay.root_skill != null,
-            .agents = lay.agent_dirs.len > 0,
-            .mcp = lay.has_mcp,
-            .commands = lay.has_commands,
-            .skill_dirs = lay.skill_dirs,
-            .agent_dirs = lay.agent_dirs,
-            .root_skill = lay.root_skill,
-        }) catch {};
+        adopt(io, arena, list, path, origin, personal, "");
         return; // do not treat a plugin's skills/ as a nested plugin
     }
     if (depth == 0) return;
@@ -112,6 +101,34 @@ fn walk(io: Io, arena: Allocator, list: *std.ArrayList(Plugin), path: []const u8
     for (children.items) |child| {
         walk(io, arena, list, child, origin, personal, depth - 1, visits);
         if (list.items.len >= plugin_cap) return;
+    }
+}
+
+fn adopt(io: Io, arena: Allocator, list: *std.ArrayList(Plugin), path: []const u8, origin: []const u8, personal: bool, json_name: []const u8) void {
+    if (list.items.len >= plugin_cap) return;
+    for (list.items) |p| if (std.mem.eql(u8, p.path, path)) return;
+    const lay = layout.inspect(io, arena, path);
+    if (lay.skill_dirs.len == 0 and lay.agent_dirs.len == 0 and !lay.has_mcp and !lay.has_commands and lay.root_skill == null)
+        return;
+    const name = if (json_name.len > 0) json_name else if (lay.name.len > 0) lay.name else std.fs.path.basename(path);
+    list.append(arena, .{
+        .name = name,
+        .path = path,
+        .origin = origin,
+        .personal = personal,
+        .skills = lay.skill_dirs.len > 0 or lay.root_skill != null,
+        .agents = lay.agent_dirs.len > 0,
+        .mcp = lay.has_mcp,
+        .commands = lay.has_commands,
+        .skill_dirs = lay.skill_dirs,
+        .agent_dirs = lay.agent_dirs,
+        .root_skill = lay.root_skill,
+    }) catch {};
+}
+
+fn takeInstalled(io: Io, arena: Allocator, list: *std.ArrayList(Plugin), json_path: []const u8, origin: []const u8, personal: bool, cwd: []const u8) void {
+    for (@import("plugin_index.zig").load(io, arena, json_path, cwd)) |e| {
+        adopt(io, arena, list, e.path, origin, personal, e.name);
     }
 }
 
@@ -152,20 +169,22 @@ pub fn discoverFresh(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Di
     if (off()) return &.{};
     var list: std.ArrayList(Plugin) = .empty;
     var visits: usize = 0;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = project.realPath(io, &buf) catch 0;
+    const cwd = if (n > 0) arena.dupe(u8, buf[0..n]) catch "" else "";
     if (home) |h| if (h.len > 0) {
         for (user_roots) |spec| {
             walk(io, arena, &list, join(arena, h, spec.rel), spec.origin, true, walk_depth, &visits);
         }
+        takeInstalled(io, arena, &list, join(arena, h, ".claude/plugins/installed_plugins.json"), "claude", true, cwd);
+        takeInstalled(io, arena, &list, join(arena, h, ".cursor/plugins/installed_plugins.json"), "cursor", true, cwd);
     };
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const n = project.realPath(io, &buf) catch 0;
-    if (n > 0) {
-        const root = arena.dupe(u8, buf[0..n]) catch "";
-        if (root.len > 0) {
-            for (project_roots) |spec| {
-                walk(io, arena, &list, join(arena, root, spec.rel), spec.origin, false, walk_depth, &visits);
-            }
+    if (cwd.len > 0) {
+        for (project_roots) |spec| {
+            walk(io, arena, &list, join(arena, cwd, spec.rel), spec.origin, false, walk_depth, &visits);
         }
+        takeInstalled(io, arena, &list, join(arena, cwd, ".claude/plugins/installed_plugins.json"), "claude", false, cwd);
+        takeInstalled(io, arena, &list, join(arena, cwd, ".cursor/plugins/installed_plugins.json"), "cursor", false, cwd);
     }
     last_visits = visits;
     return list.items;
@@ -388,7 +407,7 @@ test "discover: a Claude plugin.json tree is a plugin; marketplaces are not" {
     try testing.expect(std.mem.endsWith(u8, dirs[0], "demo/skills"));
 }
 
-test "discover: walks Claude plugins/cache two levels down" {
+test "discover: installed_plugins.json names a cache installPath; cache/ is not walked" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
@@ -401,7 +420,10 @@ test "discover: walks Claude plugins/cache two levels down" {
     try Io.Dir.cwd().createDirPath(io, join(arena, nested, "agents"));
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, nested, "plugin.json"), .data = "{\"name\":\"pack\"}" });
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, nested, "agents/reviewer.md"), .data = "---\nname: pack-reviewer\n---\nbe careful\n" });
+    try testing.expectEqual(@as(usize, 0), discover(io, arena, home, tmp.dir).len);
 
+    const json = try std.fmt.allocPrint(arena, "{{\"plugins\":{{\"pack@official\":[{{\"installPath\":\"{s}\"}}]}}}}", .{nested});
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, home, ".claude/plugins/installed_plugins.json"), .data = json });
     const list = discover(io, arena, home, tmp.dir);
     try testing.expectEqual(@as(usize, 1), list.len);
     try testing.expectEqualStrings("pack", list[0].name);
@@ -525,6 +547,8 @@ test "discover: Cursor cache uses .cursor-plugin + mcp.json; name from manifest"
         .sub_path = join(arena, plug, "mcp.json"),
         .data = "{\"mcpServers\":{\"gmail\":{\"url\":\"https://gmailmcp.googleapis.com/mcp/v1\"}}}",
     });
+    const idx = try std.fmt.allocPrint(arena, "{{\"plugins\":{{\"gmail@cursor-public\":[{{\"installPath\":\"{s}\"}}]}}}}", .{plug});
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, home, ".cursor/plugins/installed_plugins.json"), .data = idx });
 
     const list = discover(io, arena, home, tmp.dir);
     try testing.expectEqual(@as(usize, 1), list.len);

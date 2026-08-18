@@ -130,6 +130,7 @@ const workspace_switch = @import("workspace_switch.zig"); // ADR 0006 mid-sessio
 const plugins = @import("plugins.zig"); // ADR 0007 in-place plugin / foreign MCP discovery
 const plugin_layout = @import("plugin_layout.zig"); // Claude commands/ + inline MCP + ${CLAUDE_PLUGIN_ROOT}
 const plugin_scan = @import("plugin_scan.zig"); // timed discover + production cache
+const plugin_index = @import("plugin_index.zig"); // Claude/Cursor installed_plugins.json
 
 // #345: the global-vs-project MCP config merge. mcp.zig does reference its
 // decls, but the hook makes the coverage explicit rather than contingent on
@@ -265,6 +266,7 @@ test {
     _ = plugins;
     _ = plugin_layout;
     _ = plugin_scan;
+    _ = plugin_index;
     _ = shutdown_trace;
     _ = credential_store;
     _ = engine_events;

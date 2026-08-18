@@ -17,14 +17,16 @@ config.
 
 - Discover plugin roots in place: `~/.cursor/plugins/`, `~/.claude/plugins/`,
   `~/.grok/plugins/`, `~/.codex/plugins/`, `~/.codegraff/plugins/`, and the
-  project `.cursor/.claude/.grok/.codex/.harness/plugins/` trees (including
-  Cursor/Claude `plugins/cache/…`). A directory is a plugin if it has
-  `.cursor-plugin/plugin.json`, `.claude-plugin/plugin.json`,
-  `.grok-plugin/plugin.json`, `plugin.json`, `.mcp.json`, `mcp.json`,
-  `skills/`, or `agents/`. The listing name comes from the manifest when
-  present (Cursor cache folders are content hashes). Skip `marketplaces/`.
-  Cap 32. A directory is also a plugin if it has Claude's `commands/` or a
-  root `SKILL.md`.
+  project `.cursor/.claude/.grok/.codex/.harness/plugins/` trees. Parent dirs
+  are listed two levels deep so Cursor `local/<name>/` is visible (OpenCode
+  globs named skill trees; grok-build lists immediate children). `cache/` and
+  `marketplaces/` are not walked. Cache installs come from Claude/Cursor
+  `installed_plugins.json` `installPath` entries, the same index grok-build
+  reads. A directory is a plugin if it has `.cursor-plugin/plugin.json`,
+  `.claude-plugin/plugin.json`, `.grok-plugin/plugin.json`, `plugin.json`,
+  `.mcp.json`, `mcp.json`, `skills/`, `agents/`, Claude's `commands/`, or a
+  root `SKILL.md`. The listing name comes from the registry key or the
+  manifest (Cursor cache folders are content hashes). Cap 32.
 - Skills from those trees (and `~/.agents/skills`, `~/.grok/skills`,
   `~/.codex/skills`, `~/.cursor/skills-cursor`, `~/.cursor/skills`) join the
   existing on-demand `skill` catalog. Claude `commands/*.md` and a plugin-root
@@ -52,5 +54,7 @@ config.
   inspect again. A named `skill` load hits the session catalog; a miss or a
   list still rescans. Production caches the first walk (MCP + fleet + skills
   share it); tests do not. `/plugins` and the interactive boot line print
-  wall time so a slow home directory is visible.
+  wall time so a slow home directory is visible. A plugin that lives only
+  under `cache/` and is missing from `installed_plugins.json` is invisible
+  until the other harness records it — same as grok-build.
 - Revisit if a user needs to disable one plugin without `GRAFF_NO_PLUGINS`.
