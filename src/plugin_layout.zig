@@ -30,6 +30,7 @@ pub const RootSkill = struct {
 };
 
 pub const Layout = struct {
+    name: []const u8 = "",
     skill_dirs: []const []const u8 = &.{},
     agent_dirs: []const []const u8 = &.{},
     root_skill: ?RootSkill = null,
@@ -43,12 +44,6 @@ fn exists(io: Io, path: []const u8) bool {
 
 fn join(arena: Allocator, a: []const u8, b: []const u8) []const u8 {
     return std.fmt.allocPrint(arena, "{s}/{s}", .{ a, b }) catch "";
-}
-
-fn existsJoin(io: Io, a: []const u8, b: []const u8) bool {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const p = std.fmt.bufPrint(&buf, "{s}/{s}", .{ a, b }) catch return false;
-    return exists(io, p);
 }
 
 /// Refuse `..` so a manifest cannot walk out of the plugin tree.
@@ -163,29 +158,68 @@ fn ingestMcpField(io: Io, arena: Allocator, servers: *std.json.ObjectMap, found:
     }
 }
 
-/// Claude defaults plus any extra dirs the manifest names.
+fn readOneManifest(io: Io, arena: Allocator, plugin_path: []const u8, rel: []const u8) ?Value {
+    const text = Io.Dir.cwd().readFileAlloc(io, join(arena, plugin_path, rel), arena, .limited(64 * 1024)) catch return null;
+    const v = std.json.parseFromSliceLeaky(Value, arena, text, .{ .allocate = .alloc_always }) catch return null;
+    return if (v == .object) v else null;
+}
+
+/// Claude defaults plus any extra dirs the manifest names. One readdir of the
+/// plugin root, then at most one manifest file — not a stat per marker.
 pub fn inspect(io: Io, arena: Allocator, plugin_path: []const u8) Layout {
     var skills: std.ArrayList([]const u8) = .empty;
     var agents: std.ArrayList([]const u8) = .empty;
-    appendDir(arena, &skills, io, join(arena, plugin_path, "skills"));
-    const commands = join(arena, plugin_path, "commands");
-    const has_commands = exists(io, commands);
-    if (has_commands) appendDir(arena, &skills, io, commands);
-    appendDir(arena, &agents, io, join(arena, plugin_path, "agents"));
+    var has_commands = false;
+    var has_mcp = false;
+    var saw_root_skill = false;
+    var saw_claude = false;
+    var saw_cursor = false;
+    var saw_grok = false;
+    var saw_plugin_json = false;
+    var dir = Io.Dir.cwd().openDir(io, plugin_path, .{ .iterate = true }) catch return .{
+        .name = std.fs.path.basename(plugin_path),
+    };
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (std.mem.eql(u8, entry.name, "skills")) {
+            skills.append(arena, join(arena, plugin_path, "skills")) catch {};
+        } else if (std.mem.eql(u8, entry.name, "commands")) {
+            has_commands = true;
+            skills.append(arena, join(arena, plugin_path, "commands")) catch {};
+        } else if (std.mem.eql(u8, entry.name, "agents")) {
+            agents.append(arena, join(arena, plugin_path, "agents")) catch {};
+        } else if (std.mem.eql(u8, entry.name, "SKILL.md")) {
+            saw_root_skill = true;
+        } else if (std.mem.eql(u8, entry.name, "mcp.json") or std.mem.eql(u8, entry.name, ".mcp.json")) {
+            has_mcp = true;
+        } else if (std.mem.eql(u8, entry.name, ".claude-plugin")) {
+            saw_claude = true;
+        } else if (std.mem.eql(u8, entry.name, ".cursor-plugin")) {
+            saw_cursor = true;
+        } else if (std.mem.eql(u8, entry.name, ".grok-plugin")) {
+            saw_grok = true;
+        } else if (std.mem.eql(u8, entry.name, "plugin.json")) {
+            saw_plugin_json = true;
+        }
+    }
 
-    const manifest = readManifest(io, arena, plugin_path);
+    const manifest_rel: ?[]const u8 = if (saw_claude) ".claude-plugin/plugin.json" else if (saw_cursor) ".cursor-plugin/plugin.json" else if (saw_grok) ".grok-plugin/plugin.json" else if (saw_plugin_json) "plugin.json" else null;
+    const manifest = if (manifest_rel) |rel| readOneManifest(io, arena, plugin_path, rel) else null;
     if (manifest) |v| {
         collectPaths(arena, &skills, io, plugin_path, v.object.get("skills"));
         collectPaths(arena, &skills, io, plugin_path, v.object.get("commands"));
         collectPaths(arena, &agents, io, plugin_path, v.object.get("agents"));
+        if (v.object.get("mcpServers") != null) has_mcp = true;
     }
 
+    const name = if (manifest) |v| blk: {
+        if (v.object.get("name")) |n| if (n == .string and n.string.len > 0) break :blk n.string;
+        break :blk std.fs.path.basename(plugin_path);
+    } else std.fs.path.basename(plugin_path);
+
     var root_skill: ?RootSkill = null;
-    if (skills.items.len == 0 and existsJoin(io, plugin_path, "SKILL.md")) {
-        const name = if (manifest) |v| blk: {
-            if (v.object.get("name")) |n| if (n == .string and n.string.len > 0) break :blk n.string;
-            break :blk std.fs.path.basename(plugin_path);
-        } else std.fs.path.basename(plugin_path);
+    if (skills.items.len == 0 and saw_root_skill) {
         root_skill = .{
             .path = join(arena, plugin_path, "SKILL.md"),
             .name = name,
@@ -193,10 +227,8 @@ pub fn inspect(io: Io, arena: Allocator, plugin_path: []const u8) Layout {
         };
     }
 
-    const has_mcp = existsJoin(io, plugin_path, ".mcp.json") or existsJoin(io, plugin_path, "mcp.json") or
-        (if (manifest) |v| v.object.get("mcpServers") != null else false);
-
     return .{
+        .name = name,
         .skill_dirs = skills.items,
         .agent_dirs = agents.items,
         .root_skill = root_skill,
@@ -238,6 +270,7 @@ test "inspect: commands/ and root SKILL.md follow Claude defaults" {
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, plug, "commands/hello.md"), .data = "---\nname: hello\ndescription: say hi\n---\nHi.\n" });
 
     const lay = inspect(io, arena, plug);
+    try testing.expectEqualStrings("greet", lay.name);
     try testing.expect(lay.has_commands);
     try testing.expectEqual(@as(usize, 1), lay.skill_dirs.len);
     try testing.expect(std.mem.endsWith(u8, lay.skill_dirs[0], "commands"));
@@ -248,6 +281,7 @@ test "inspect: commands/ and root SKILL.md follow Claude defaults" {
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, lone, ".claude-plugin/plugin.json"), .data = "{\"name\":\"solo\"}" });
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, lone, "SKILL.md"), .data = "---\nname: solo\ndescription: one playbook\n---\nDo the thing.\n" });
     const lone_lay = inspect(io, arena, lone);
+    try testing.expectEqualStrings("solo", lone_lay.name);
     try testing.expect(lone_lay.root_skill != null);
     try testing.expectEqualStrings("solo", lone_lay.root_skill.?.name);
     try testing.expectEqual(@as(usize, 0), lone_lay.skill_dirs.len);

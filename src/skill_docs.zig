@@ -158,7 +158,8 @@ fn scan(io: Io, arena: Allocator, home: ?[]const u8) []const Skill {
 
 /// bundled < personal dirs < user plugins < .claude/.grok/.codex/skills <
 /// project plugins < .harness/skills. Each later tier shadows the previous by
-/// name. Plugin trees are read in place (ADR 0007), not copied.
+/// name. Plugin trees are read in place (ADR 0007), not copied. One `discover`
+/// fills both plugin tiers so startup does not walk Cursor/Claude trees four times.
 fn collect(io: Io, arena: Allocator, home: ?[]const u8) std.ArrayList(Skill) {
     var list: std.ArrayList(Skill) = .empty;
     list.appendSlice(arena, &builtins) catch {};
@@ -166,14 +167,21 @@ fn collect(io: Io, arena: Allocator, home: ?[]const u8) std.ArrayList(Skill) {
         const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ h, dir }) catch continue;
         loadDir(io, arena, &list, path, .personal);
     };
-    for (plugins.skillDirs(io, arena, home, Io.Dir.cwd(), true)) |d| loadDir(io, arena, &list, d, .plugin);
-    for (plugins.rootSkills(io, arena, home, Io.Dir.cwd(), true)) |rs| mergeFile(io, arena, &list, rs.dir, rs.path, rs.name, .plugin);
+    const plugs = plugins.discover(io, arena, home, Io.Dir.cwd());
+    for (plugs) |p| {
+        if (!p.personal) continue;
+        for (p.skill_dirs) |d| loadDir(io, arena, &list, d, .plugin);
+        if (p.root_skill) |rs| mergeFile(io, arena, &list, rs.dir, rs.path, rs.name, .plugin);
+    }
     loadDir(io, arena, &list, compat_dir, .project);
     loadDir(io, arena, &list, ".grok/skills", .project);
     loadDir(io, arena, &list, ".codex/skills", .project);
     loadDir(io, arena, &list, ".cursor/skills", .project);
-    for (plugins.skillDirs(io, arena, home, Io.Dir.cwd(), false)) |d| loadDir(io, arena, &list, d, .plugin);
-    for (plugins.rootSkills(io, arena, home, Io.Dir.cwd(), false)) |rs| mergeFile(io, arena, &list, rs.dir, rs.path, rs.name, .plugin);
+    for (plugs) |p| {
+        if (p.personal) continue;
+        for (p.skill_dirs) |d| loadDir(io, arena, &list, d, .plugin);
+        if (p.root_skill) |rs| mergeFile(io, arena, &list, rs.dir, rs.path, rs.name, .plugin);
+    }
     loadDir(io, arena, &list, project_dir, .project);
     return list;
 }
@@ -266,14 +274,20 @@ pub fn promptCatalog(arena: Allocator, list: []const Skill) []const u8 {
     return aw.writer.buffered();
 }
 
-/// The `skill` tool. Rescans the skill directories every call, so a skill
-/// written earlier in this same session loads without a restart. An unknown
-/// name comes back as an error listing what does exist.
+/// The `skill` tool. A named load already in the session catalog (`g_skills`)
+/// returns that body without walking plugin trees again. A miss, or an empty
+/// name (list), rescans so a SKILL.md written this session still loads.
+/// An unknown name comes back as an error listing what does exist.
 pub fn execSkill(gpa: Allocator, io: Io, input: Value) !ToolOutput {
+    const requested = std.mem.trim(u8, tools.strField(input, "name") orelse "", " \t\r\n");
+    if (requested.len > 0) {
+        for (g_skills) |sk| {
+            if (std.ascii.eqlIgnoreCase(sk.name, requested)) return .{ .text = try render(gpa, sk) };
+        }
+    }
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const list = scan(io, arena_state.allocator(), g_home);
-    const requested = std.mem.trim(u8, tools.strField(input, "name") orelse "", " \t\r\n");
     if (requested.len == 0) return .{ .text = try listing(gpa, list, null) };
     for (list) |sk| {
         if (std.ascii.eqlIgnoreCase(sk.name, requested)) return .{ .text = try render(gpa, sk) };
@@ -460,4 +474,25 @@ test "listing: an unknown name is an error result that names what exists" {
     const empty = try listing(gpa, &.{}, null);
     defer gpa.free(empty);
     try std.testing.expect(std.mem.indexOf(u8, empty, ".harness/skills/<name>/SKILL.md") != null);
+}
+
+test "execSkill: a named load hits the session catalog without a rescan" {
+    const prev = g_skills;
+    defer g_skills = prev;
+    const one = [_]Skill{.{
+        .name = "memhit",
+        .desc = "d",
+        .body = "hello-from-mem",
+        .source = .plugin,
+    }};
+    g_skills = &one;
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var obj: std.json.ObjectMap = .empty;
+    try obj.put(arena_state.allocator(), "name", .{ .string = "memhit" });
+    const out = try execSkill(std.testing.allocator, std.testing.io, .{ .object = obj });
+    defer std.testing.allocator.free(out.text);
+    try std.testing.expect(!out.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "hello-from-mem") != null);
 }

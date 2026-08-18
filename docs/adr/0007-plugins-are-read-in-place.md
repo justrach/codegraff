@@ -47,4 +47,8 @@ config.
 
 - A plugin installed after first-run adopt is visible next session.
 - Project plugin MCP is not more trusted than project `.mcp.json`; it is less.
+- Discover classifies with one readdir per visited directory (not a stat per
+  marker) and stores skill/agent dirs on the plugin so later merges do not
+  inspect again. A named `skill` load hits the session catalog; a miss or a
+  list still rescans.
 - Revisit if a user needs to disable one plugin without `GRAFF_NO_PLUGINS`.

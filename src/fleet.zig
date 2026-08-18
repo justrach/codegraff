@@ -128,12 +128,12 @@ pub fn loadAgentTypes(io: Io, arena: Allocator, home: ?[]const u8) []const Agent
     }
     const plugs = plugins.discover(io, arena, home, Io.Dir.cwd());
     for (plugs) |p| {
-        if (!p.personal or !p.agents) continue;
-        loadAgentDir(io, arena, &list, std.fmt.allocPrint(arena, "{s}/agents", .{p.path}) catch continue);
+        if (!p.personal) continue;
+        for (p.agent_dirs) |d| loadAgentDir(io, arena, &list, d);
     }
     for (plugs) |p| {
-        if (p.personal or !p.agents) continue;
-        loadAgentDir(io, arena, &list, std.fmt.allocPrint(arena, "{s}/agents", .{p.path}) catch continue);
+        if (p.personal) continue;
+        for (p.agent_dirs) |d| loadAgentDir(io, arena, &list, d);
     }
     loadAgentDir(io, arena, &list, agents_dir);
     // A verified learning ref is the highest-precedence project policy. The
