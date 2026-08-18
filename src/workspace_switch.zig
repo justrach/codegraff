@@ -104,19 +104,31 @@ fn samePath(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, left, right);
 }
 
-fn matches(entry: Entry, want: []const u8) bool {
-    if (samePath(entry.path, want)) return true;
-    if (std.mem.eql(u8, basename(entry.path), want)) return true;
-    if (std.mem.eql(u8, entry.branch, want)) return true;
-    return std.mem.indexOf(u8, entry.path, want) != null or std.mem.indexOf(u8, entry.branch, want) != null;
+const Rank = enum(u8) { substring = 1, exact_branch, exact_base, exact_path };
+
+fn matchRank(entry: Entry, want: []const u8) ?Rank {
+    if (samePath(entry.path, want)) return .exact_path;
+    if (std.mem.eql(u8, basename(entry.path), want)) return .exact_base;
+    if (std.mem.eql(u8, entry.branch, want)) return .exact_branch;
+    if (std.mem.indexOf(u8, entry.path, want) != null or std.mem.indexOf(u8, entry.branch, want) != null)
+        return .substring;
+    return null;
 }
 
 pub fn resolve(arena: Allocator, entries: []const Entry, want: []const u8, current: []const u8) Resolve {
     const needle = std.mem.trim(u8, want, " \t");
     if (needle.len == 0 or entries.len == 0) return .none;
+    var best: ?Rank = null;
     var hits: std.ArrayList(Entry) = .empty;
     for (entries) |e| {
-        if (matches(e, needle)) hits.append(arena, e) catch {};
+        const rank = matchRank(e, needle) orelse continue;
+        if (best == null or @intFromEnum(rank) > @intFromEnum(best.?)) {
+            best = rank;
+            hits.clearRetainingCapacity();
+            hits.append(arena, e) catch {};
+        } else if (rank == best.?) {
+            hits.append(arena, e) catch {};
+        }
     }
     if (hits.items.len == 0) return .none;
     if (hits.items.len == 1) {
@@ -311,7 +323,11 @@ test "resolve: unique fragment, basename, branch, already, none, ambiguous" {
     }
     try std.testing.expect(resolve(a, rows, "no-such-tree", here) == .none);
     switch (resolve(a, rows, "codegraff", here)) {
-        .ambiguous => |hits| try std.testing.expect(hits.len >= 2),
+        .already => |e| try std.testing.expectEqualStrings(here, e.path),
+        else => return error.TestUnexpectedResult,
+    }
+    switch (resolve(a, rows, "worktrees", here)) {
+        .ambiguous => |hits| try std.testing.expectEqual(@as(usize, 2), hits.len),
         else => return error.TestUnexpectedResult,
     }
 }
@@ -324,7 +340,7 @@ test "formatList: stars the current tree and stays pull (no dump of bodies)" {
     const text = formatList(a, rows, rows[1].path);
     try std.testing.expect(std.mem.indexOf(u8, text, "* /Users/rach/codegraff/.claude/worktrees/cursor-peer-pull-554f") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "action=use") != null);
-    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, formatList(a, &.{}, ""), '*'));
+    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, formatList(a, &.{}, ""), "*"));
 }
 
 test "run: subagent is refused; bad action and empty use name the fix" {
