@@ -146,10 +146,10 @@ pub fn buildSystemPrompt(
         try out.print("imagegen: Codex skill found — tool enabled ({s}), playbook at {s}\n", .{ imagegen.engineSummary(), imagegen.skill_dir });
         try out.flush();
     }
-    // Markdown skills (skill_docs.zig): names + trigger descriptions only. The
-    // bodies stay on disk until the model calls the `skill` tool, so a large
-    // installed skill set costs a line each rather than its full text. Loaded
-    // here rather than in session_run so every prompt rebuild rescans the tiers.
+    // Markdown skills (skill_docs.zig): names + trigger descriptions only.
+    // Pinned once into the system-prompt prefix so later turns hit the
+    // prompt cache (Codex: old prompt is an exact prefix of the new one).
+    // The `skill` tool rescans without rewriting this prefix.
     skill_docs.g_skills = skill_docs.load(io, arena, fleet.g_home);
     const skill_catalog = skill_docs.promptCatalog(arena, skill_docs.g_skills);
     if (skill_catalog.len > 0) {

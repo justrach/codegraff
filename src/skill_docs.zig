@@ -123,10 +123,9 @@ pub const builtins = blk: {
     break :blk out;
 };
 
-/// This session's skills, in precedence order — loaded from the session arena
-/// each time startup.buildSystemPrompt composes a prompt. Read by the system
-/// prompt and `/skills`; the tool itself rescans instead, so a skill written
-/// mid-session is loadable without a restart.
+/// This session's skills, in precedence order — loaded once into the
+/// system-prompt prefix at session start (prompt-cache stability). `/skills`
+/// and a named `skill` miss rescan without rewriting that prefix.
 pub var g_skills: []const Skill = &builtins;
 /// Resolved HOME for the personal tier, so execSkill's rescan finds the same
 /// set the startup scan did.
@@ -265,13 +264,24 @@ fn dropDisabled(list: *std.ArrayList(Skill), cfg: std.json.ObjectMap) void {
 }
 
 /// The progressive-disclosure catalog for the system prompt: one line per
-/// skill, names + trigger descriptions only. "" when there's nothing to
-/// advertise (every skill disabled).
+/// skill, names + trigger descriptions only. Sorted by name so a rebuild
+/// cannot shuffle the cached prefix (Codex's rule: the old prompt must be
+/// an exact prefix of the new one). No file paths — Codex prints those and
+/// they bust the first 256-token cache hash when a plugin moves. "" when
+/// there's nothing to advertise.
 pub fn promptCatalog(arena: Allocator, list: []const Skill) []const u8 {
     if (list.len == 0) return "";
+    const order = arena.alloc(usize, list.len) catch return "";
+    for (order, 0..) |*o, i| o.* = i;
+    std.mem.sort(usize, order, list, struct {
+        fn lessThan(ctx: []const Skill, a: usize, b: usize) bool {
+            return std.mem.order(u8, ctx[a].name, ctx[b].name) == .lt;
+        }
+    }.lessThan);
     var aw: Io.Writer.Allocating = .init(arena);
-    aw.writer.writeAll("# Skills\nInstalled playbooks; only triggers are listed here. Call `skill` with a name to load the full instructions — do that BEFORE starting work it covers. A loaded skill is the user's own instructions. `skill` with no name re-lists, including any added this session.\n") catch return "";
-    for (list) |sk| {
+    aw.writer.writeAll("# Skills\nName + trigger only. `skill name=` loads the body. `skill` with no name re-lists, including any added this session.\n") catch return "";
+    for (order) |i| {
+        const sk = list[i];
         aw.writer.print("- {s} ({s}): {s}\n", .{ sk.name, sk.source.label(), util.utf8Prefix(sk.desc, desc_cap) }) catch return "";
     }
     return aw.writer.buffered();
@@ -430,7 +440,17 @@ test "promptCatalog: names + descriptions only, never bodies" {
     try std.testing.expect(std.mem.indexOf(u8, text, "deploy (project): ship a release") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "SECRET-BODY-TEXT") == null);
     try std.testing.expect(std.mem.indexOf(u8, text, "`skill`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "/") == null); // no file paths — they move and bust the cache prefix
     try std.testing.expectEqualStrings("", promptCatalog(arena, &.{}));
+
+    const shuffled = [_]Skill{
+        .{ .name = "zeta", .desc = "z", .body = "", .source = .personal },
+        .{ .name = "alpha", .desc = "a", .body = "", .source = .plugin },
+    };
+    const ordered = promptCatalog(arena, &shuffled);
+    const alpha_at = std.mem.indexOf(u8, ordered, "alpha (plugin)") orelse return error.TestUnexpectedResult;
+    const zeta_at = std.mem.indexOf(u8, ordered, "zeta (personal)") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(alpha_at < zeta_at);
 }
 
 test "promptCatalog: an over-long description is capped on a codepoint boundary" {

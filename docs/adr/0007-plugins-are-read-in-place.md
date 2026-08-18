@@ -22,7 +22,11 @@ config.
   globs named skill trees; grok-build lists immediate children). `cache/` and
   `marketplaces/` are not walked. Cache installs come from Claude/Cursor
   `installed_plugins.json` `installPath` entries, the same index grok-build
-  reads. A directory is a plugin if it has `.cursor-plugin/plugin.json`,
+  reads. Codex installs live under `~/.codex/plugins/cache/` via its store,
+  not a walk; we take `.codex/plugins/installed_plugins.json` when present
+  and recognize `.codex-plugin/plugin.json` first (Codex's manifest order).
+  A directory is a plugin if it has `.codex-plugin/plugin.json`,
+  `.cursor-plugin/plugin.json`,
   `.claude-plugin/plugin.json`, `.grok-plugin/plugin.json`, `plugin.json`,
   `.mcp.json`, `mcp.json`, `skills/`, `agents/`, Claude's `commands/`, or a
   root `SKILL.md`. The listing name comes from the registry key or the
@@ -52,9 +56,12 @@ config.
 - Discover classifies with one readdir per visited directory (not a stat per
   marker) and stores skill/agent dirs on the plugin so later merges do not
   inspect again. MCP merge only opens plugin trees that already have MCP.
-  The skill catalog reads an 8 KB frontmatter prefix (name + description);
-  bodies stay on disk until `skill name=`. A named load hits the session
-  catalog and then reads that one file; a miss or a list still rescans.
+  The skill catalog reads an 8 KB frontmatter prefix (name + description),
+  sorts by name, and omits file paths so the system-prompt prefix is
+  byte-stable for prompt cache (Codex's rule: the old prompt is an exact
+  prefix of the new one). Bodies stay on disk until `skill name=`. A named
+  load hits the session catalog and then reads that one file; a miss or a
+  list still rescans without rewriting the prefix.
   Production caches the first walk (MCP + fleet + skills share it); tests
   do not. `/plugins` and the interactive boot line print wall time so a
   slow home directory is visible. A plugin that lives only under `cache/`

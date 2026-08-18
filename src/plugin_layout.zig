@@ -16,7 +16,9 @@ const Allocator = std.mem.Allocator;
 const file_cap: std.Io.Limit = .limited(1 << 20);
 const reserved = "smolify";
 
+/// Codex's order: `.codex-plugin` first, then Claude, then Cursor.
 const manifest_files = [_][]const u8{
+    ".codex-plugin/plugin.json",
     ".claude-plugin/plugin.json",
     ".cursor-plugin/plugin.json",
     ".grok-plugin/plugin.json",
@@ -172,6 +174,7 @@ pub fn inspect(io: Io, arena: Allocator, plugin_path: []const u8) Layout {
     var has_commands = false;
     var has_mcp = false;
     var saw_root_skill = false;
+    var saw_codex = false;
     var saw_claude = false;
     var saw_cursor = false;
     var saw_grok = false;
@@ -193,6 +196,8 @@ pub fn inspect(io: Io, arena: Allocator, plugin_path: []const u8) Layout {
             saw_root_skill = true;
         } else if (std.mem.eql(u8, entry.name, "mcp.json") or std.mem.eql(u8, entry.name, ".mcp.json")) {
             has_mcp = true;
+        } else if (std.mem.eql(u8, entry.name, ".codex-plugin")) {
+            saw_codex = true;
         } else if (std.mem.eql(u8, entry.name, ".claude-plugin")) {
             saw_claude = true;
         } else if (std.mem.eql(u8, entry.name, ".cursor-plugin")) {
@@ -204,7 +209,7 @@ pub fn inspect(io: Io, arena: Allocator, plugin_path: []const u8) Layout {
         }
     }
 
-    const manifest_rel: ?[]const u8 = if (saw_claude) ".claude-plugin/plugin.json" else if (saw_cursor) ".cursor-plugin/plugin.json" else if (saw_grok) ".grok-plugin/plugin.json" else if (saw_plugin_json) "plugin.json" else null;
+    const manifest_rel: ?[]const u8 = if (saw_codex) ".codex-plugin/plugin.json" else if (saw_claude) ".claude-plugin/plugin.json" else if (saw_cursor) ".cursor-plugin/plugin.json" else if (saw_grok) ".grok-plugin/plugin.json" else if (saw_plugin_json) "plugin.json" else null;
     const manifest = if (manifest_rel) |rel| readOneManifest(io, arena, plugin_path, rel) else null;
     if (manifest) |v| {
         collectPaths(arena, &skills, io, plugin_path, v.object.get("skills"));
@@ -285,6 +290,14 @@ test "inspect: commands/ and root SKILL.md follow Claude defaults" {
     try testing.expect(lone_lay.root_skill != null);
     try testing.expectEqualStrings("solo", lone_lay.root_skill.?.name);
     try testing.expectEqual(@as(usize, 0), lone_lay.skill_dirs.len);
+
+    const cx = join(arena, base, "host");
+    try Io.Dir.cwd().createDirPath(io, join(arena, cx, ".codex-plugin"));
+    try Io.Dir.cwd().createDirPath(io, join(arena, cx, "skills"));
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, cx, ".codex-plugin/plugin.json"), .data = "{\"name\":\"host\"}" });
+    const cx_lay = inspect(io, arena, cx);
+    try testing.expectEqualStrings("host", cx_lay.name);
+    try testing.expectEqual(@as(usize, 1), cx_lay.skill_dirs.len);
 }
 
 test "mergeMcp: inline servers expand CLAUDE_PLUGIN_ROOT; extra file paths work" {

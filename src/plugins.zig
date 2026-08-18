@@ -64,7 +64,8 @@ fn skipped(name: []const u8) bool {
 /// True when this directory entry is enough to treat the parent as a plugin,
 /// so the walk does not `stat` ten marker paths per visited folder.
 fn pluginMarker(name: []const u8) bool {
-    return std.mem.eql(u8, name, ".cursor-plugin") or
+    return std.mem.eql(u8, name, ".codex-plugin") or
+        std.mem.eql(u8, name, ".cursor-plugin") or
         std.mem.eql(u8, name, ".claude-plugin") or
         std.mem.eql(u8, name, ".grok-plugin") or
         std.mem.eql(u8, name, "plugin.json") or
@@ -178,6 +179,7 @@ pub fn discoverFresh(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Di
         }
         takeInstalled(io, arena, &list, join(arena, h, ".claude/plugins/installed_plugins.json"), "claude", true, cwd);
         takeInstalled(io, arena, &list, join(arena, h, ".cursor/plugins/installed_plugins.json"), "cursor", true, cwd);
+        takeInstalled(io, arena, &list, join(arena, h, ".codex/plugins/installed_plugins.json"), "codex", true, cwd);
     };
     if (cwd.len > 0) {
         for (project_roots) |spec| {
@@ -185,6 +187,7 @@ pub fn discoverFresh(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Di
         }
         takeInstalled(io, arena, &list, join(arena, cwd, ".claude/plugins/installed_plugins.json"), "claude", false, cwd);
         takeInstalled(io, arena, &list, join(arena, cwd, ".cursor/plugins/installed_plugins.json"), "cursor", false, cwd);
+        takeInstalled(io, arena, &list, join(arena, cwd, ".codex/plugins/installed_plugins.json"), "codex", false, cwd);
     }
     last_visits = visits;
     return list.items;
