@@ -168,3 +168,18 @@ mount the generator/grader outside it. The local runner relies on harness path
 confinement and is designed for evaluation convenience, not hostile-code
 isolation. Pin the generator and grader commit/hash in every trajectory so an
 optimizer cannot silently change its own reward function.
+
+## Related evals (harness surfaces, not coding kernels)
+
+`ledger-batch-v1` does not cover plugin discovery, skill disclosure, or
+worktree switch. Those are cheap, offline, and live next to this family:
+
+| Surface | How |
+|---|---|
+| In-place plugins + MCP merge | `python3 evals/plugins_oob/run.py --self-test` |
+| Plugin skill on-demand / opt-out | `python3 scripts/eval-tier2.py --only plugin-skill-on-demand` |
+| Mid-session worktree switch | `python3 scripts/eval-tier2.py --only workspace-list-use` |
+
+A second generator family should still be a distinct systems behavior
+(scheduler, migrations, protocol adapter) — not a larger ledger, and not a
+re-test of the inspect path above.

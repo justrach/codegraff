@@ -158,6 +158,7 @@ pub const usage_text =
     \\  graff mcp add <name> --url <url>  add a Streamable HTTP MCP server
     \\  graff mcp login <name>            OAuth login for a remote MCP server
     \\  graff mcp                         list configured MCP servers
+    \\  graff plugins                     list Cursor/Claude/Grok/Codex plugin trees (in place)
     \\  graff learn [help]                local mutate/evaluate/promote/rollback engine
     \\  graff worktree list              list the per-tab worktrees created by -w
     \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up

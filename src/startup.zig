@@ -46,6 +46,7 @@ const learn_bootstrap = @import("learn_bootstrap.zig");
 const learn_auto = @import("learn_auto.zig");
 const imagegen = @import("imagegen.zig"); // #352: codex-skill detection + the personal-tier skill mirror
 
+const plugins = @import("plugins.zig");
 const startup_keys = @import("startup_keys.zig");
 pub const ResolvedKeys = startup_keys.ResolvedKeys;
 pub const storedKeyMayAffectSelection = startup_keys.storedKeyMayAffectSelection;
@@ -218,7 +219,17 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // override); add still writes workspace-only. OAuth login validates HOME itself.
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "mcp")) {
         const home = keys_cli.homeEnv(init.environ_map) orelse "";
+        // CLI never reaches session_settings.applyEnvKnobs; honor the same
+        // GRAFF_NO_PLUGINS gate the REPL / --json session uses.
+        plugins.applyEnv(init.environ_map);
         try mcp_cli.mcpCommand(io, gpa, arena, home, init.environ_map, flags.positionals.items[1..]);
+        return true;
+    }
+
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "plugins")) {
+        const home = keys_cli.homeEnv(init.environ_map) orelse "";
+        plugins.applyEnv(init.environ_map);
+        try plugins.command(io, arena, home);
         return true;
     }
 

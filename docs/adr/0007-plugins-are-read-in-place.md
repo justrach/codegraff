@@ -34,8 +34,8 @@ config.
   (`~/.claude.json`, `~/.cursor/mcp.json`, `.cursor/mcp.json`, …) fill
   **missing** server names only. graff's `~/.codegraff/mcp.json` and
   `.mcp.json` still win. Consent is unchanged (`/mcp trust` / `--yolo`).
-- `GRAFF_NO_PLUGINS=1` disables the scan. `/plugins` lists origin. Do not
-  vendor grok-build. Do not auto-run plugin hooks.
+- `GRAFF_NO_PLUGINS=1` disables the scan. `/plugins` and `graff plugins`
+  list origin. Do not vendor grok-build. Do not auto-run plugin hooks.
 
 ## Consequences
 

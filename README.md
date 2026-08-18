@@ -399,6 +399,7 @@ usage:
   graff key list                   show which providers have keys
   graff mcp add <name> -- <cmd>     add an MCP server to .mcp.json
   graff mcp                         list configured MCP servers
+  graff plugins                     list Cursor/Claude/Grok/Codex plugin trees (in place)
   graff learn <command>             local prompt-policy learning and rollback
   graff --schema                   print the machine-readable interface (SDK codegen)
 
@@ -579,8 +580,8 @@ project), give it `name` and `description` frontmatter, and write the
 instructions in the body. Skills already written for Claude Code, Cursor,
 Grok, or Codex work as they are: `.claude/skills/`, `~/.cursor/skills-cursor/`,
 `~/.grok/skills/`, plugin `skills/` trees, and `~/.agents/skills/` are read
-in place (not copied). `/plugins` lists the plugin trees. `GRAFF_NO_PLUGINS=1`
-skips them.
+in place (not copied). `/plugins` and `graff plugins` list the plugin trees.
+`GRAFF_NO_PLUGINS=1` skips them.
 
 Only the name and description enter the system prompt, so a large skill library
 costs one line each. The model calls the `skill` tool to pull a body in when it
@@ -598,8 +599,8 @@ Graff speaks both MCP transports directly: local stdio servers and remote
 Streamable HTTP servers. Servers already configured for Claude, Cursor, or
 Grok are read in place (plugin `mcp.json` / `.mcp.json`, `~/.claude.json`,
 `~/.cursor/mcp.json`, `.cursor/mcp.json`) and fill names graff does not
-already define; they still need `/mcp trust` or `--yolo`. `/plugins` shows
-which plugin trees contributed. Smolify (`https://app.smol.ly/mcp`) is available as a
+already define; they still need `/mcp trust` or `--yolo`. `/plugins` and
+`graff plugins` show which plugin trees contributed. Smolify (`https://app.smol.ly/mcp`) is available as a
 core documentation service; it needs no Node bridge or project configuration.
 Its public-read schemas are bundled locally, so startup makes no Smolify
 request. The anonymous transport initializes only after an approved tool call,

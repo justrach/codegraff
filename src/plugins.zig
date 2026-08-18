@@ -280,6 +280,13 @@ pub fn slashCommand(io: Io, arena: Allocator, home: []const u8, line: []const u8
     return true;
 }
 
+/// `graff plugins` — same listing as `/plugins`, without starting a session.
+pub fn command(io: Io, arena: Allocator, home: []const u8) !void {
+    var obuf: [4096]u8 = undefined;
+    var out = Io.File.stdout().writer(io, &obuf);
+    _ = try slashCommand(io, arena, home, "/plugins", &out.interface);
+}
+
 const testing = std.testing;
 
 fn tmpBase(io: Io, tmp: *testing.TmpDir, arena: Allocator) ![]const u8 {
@@ -400,6 +407,37 @@ test "slashCommand: /plugins lists origin and refuses unrelated lines" {
     try testing.expect(!(try slashCommand(testing.io, arena_state.allocator(), "", "/skills", &aw.writer)));
     try testing.expect(try slashCommand(testing.io, arena_state.allocator(), "", "/plugins", &aw.writer));
     try testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "plugin") != null);
+}
+
+test "applyEnv: GRAFF_NO_PLUGINS disables discover and /plugins" {
+    const saved = disabled;
+    defer disabled = saved;
+    disabled = false;
+    const Env = struct {
+        pub fn get(_: @This(), key: []const u8) ?[]const u8 {
+            return if (std.mem.eql(u8, key, "GRAFF_NO_PLUGINS")) "1" else null;
+        }
+    };
+    applyEnv(Env{});
+    try testing.expect(disabled);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = testing.io;
+    const base = try tmpBase(io, &tmp, arena);
+    const home = join(arena, base, "home");
+    const plug = join(arena, home, ".claude/plugins/hidden");
+    try Io.Dir.cwd().createDirPath(io, join(arena, plug, ".claude-plugin"));
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, plug, ".claude-plugin/plugin.json"), .data = "{\"name\":\"hidden\"}" });
+    try testing.expectEqual(@as(usize, 0), discover(io, arena, home, tmp.dir).len);
+
+    var aw: Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    try testing.expect(try slashCommand(io, arena, home, "/plugins", &aw.writer));
+    try testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "GRAFF_NO_PLUGINS") != null);
 }
 
 test "discover: Cursor cache uses .cursor-plugin + mcp.json; name from manifest" {
