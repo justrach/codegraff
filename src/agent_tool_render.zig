@@ -70,6 +70,9 @@ fn toolDetail(t: ToolInvocation) []const u8 {
             if (act.len > 0 and !std.mem.eql(u8, act, "send")) break :blk "action";
         }
         break :blk "text";
+    } else if (std.mem.eql(u8, t.name, "workspace")) blk: {
+        if (stringField(t.input, "path")) |p| if (p.len > 0) break :blk "path";
+        break :blk "action";
     } else return "";
     const detail = stringField(t.input, field) orelse return "";
     const end = std.mem.indexOfScalar(u8, detail, '\n') orelse detail.len;

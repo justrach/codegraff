@@ -58,6 +58,7 @@ ROOT_EXTRAS = (
     "agent_output",
     "learn_candidate",
     "peer_message",
+    "workspace",
 )
 ROOT_UNIVERSE = BASE_TOOLS + META_TOOLS + ROOT_EXTRAS
 

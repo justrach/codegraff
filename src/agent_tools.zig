@@ -38,7 +38,8 @@ const eval_control = @import("agent_eval_control.zig");
 const goal_state = @import("goal_state.zig");
 const task_outcome = @import("task_outcome.zig");
 const goal_todo = @import("goal_todo.zig"); // todo_write's replace path + the omitted-completed preserve rule
-const peer_channel = @import("peer_channel.zig"); // #469: peer_message's handler
+const peer_channel = @import("peer_channel.zig");
+const workspace_switch = @import("workspace_switch.zig");
 pub const toolInvalidatesEval = eval_control.toolInvalidatesEval;
 pub const gateTool = @import("agent_tool_gate.zig").gateTool;
 pub const firstWord = @import("agent_tool_gate.zig").firstWord;
@@ -303,6 +304,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     if (!self.sub) native_fold.markIfFolded(call.name);
     // #469: sideways coordination between co-resident root sessions.
     if (std.mem.eql(u8, call.name, peer_channel.tool_name)) return peer_channel.handleMessage(self, call);
+    if (std.mem.eql(u8, call.name, workspace_switch.tool_name)) return workspace_switch.handle(self, call);
     if (std.mem.eql(u8, call.name, "attempt_completion")) {
         if (!self.review_mode and self.eval_cmd != null and (!self.eval_verified or self.eval_repair_pending)) {
             const message = if (self.eval_repair_pending)

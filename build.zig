@@ -130,6 +130,7 @@ pub fn build(b: *std.Build) void {
         .{ .import = "skill_doc_creator", .path = "assets/skills/skill-creator.md" },
         .{ .import = "skill_doc_mcp_config", .path = "assets/skills/mcp-config.md" },
         .{ .import = "skill_doc_jspace", .path = "assets/skills/jspace.md" },
+        .{ .import = "skill_doc_workspace", .path = "assets/skills/workspace.md" },
     }) |asset| {
         exe.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
         unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });

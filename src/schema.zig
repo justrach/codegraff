@@ -14,7 +14,8 @@ const mcp = @import("mcp.zig");
 const pricing = @import("pricing.zig");
 const learn_store = @import("learn_store.zig");
 const skill_docs = @import("skill_docs.zig"); // SKILL.md playbooks: the `skill` tool's name/desc/schema live there
-const peer_channel = @import("peer_channel.zig"); // #469: the peer_message tool's name/desc/schema live there
+const peer_channel = @import("peer_channel.zig");
+const workspace_switch = @import("workspace_switch.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-local-tools gate (layer 1 lives here, layer 2 in exec.zig)
 const tool_gates = @import("tool_gates.zig"); // #352: the additive twin — optional tools that only exist when startup found their backing capability
 const imagegen = @import("imagegen.zig"); // #352: name/desc/schema as plain strings, like skill_docs, so this catalog needs one entry and no import cycle
@@ -200,12 +201,9 @@ const learn_candidate_spec = ToolSpec{
     ,
 };
 
-pub const root_specs = base_specs ++ meta_specs ++ [_]ToolSpec{ subagent_spec, workflow_spec, agent_output_spec, learn_candidate_spec, peer_spec };
 const peer_spec = ToolSpec{ .name = peer_channel.tool_name, .desc = peer_channel.tool_desc, .schema = peer_channel.tool_schema };
-
-// The common catalog (clock_sleep off) is static too. Previously every root
-// startup allocated and filled a filtered ToolSpec array before rendering even
-// one provider catalog.
+const workspace_spec = ToolSpec{ .name = workspace_switch.tool_name, .desc = workspace_switch.tool_desc, .schema = workspace_switch.tool_schema };
+pub const root_specs = base_specs ++ meta_specs ++ [_]ToolSpec{ subagent_spec, workflow_spec, agent_output_spec, learn_candidate_spec, peer_spec, workspace_spec };
 /// The root catalog minus the named optional entries, built once at compile
 /// time. The length check is the guard: each name must match EXACTLY one
 /// spec, so a rename or a duplicated entry is a compile error rather than a
@@ -226,7 +224,7 @@ const root_specs_without_clock = rootSpecsWithout(&.{"clock_sleep"});
 const root_specs_without_learning = rootSpecsWithout(&.{"learn_candidate"});
 const root_specs_without_optional = rootSpecsWithout(&.{ "clock_sleep", "learn_candidate" });
 
-pub const meta_names = [_][]const u8{ "todo_write", "todo_read", "ask_user", "eval", "attempt_completion", "clock_sleep", "note_constraint", mcp_schema_gate.tool_name, peer_channel.tool_name };
+pub const meta_names = [_][]const u8{ "todo_write", "todo_read", "ask_user", "eval", "attempt_completion", "clock_sleep", "note_constraint", mcp_schema_gate.tool_name, peer_channel.tool_name, workspace_switch.tool_name };
 
 pub fn isMetaName(name: []const u8) bool {
     for (meta_names) |m| if (std.mem.eql(u8, name, m)) return true;

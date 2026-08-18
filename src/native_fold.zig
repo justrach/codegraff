@@ -50,6 +50,7 @@ pub const folded = [_][]const u8{
     "todo_write",
     "todo_read",
     "peer_message",
+    "workspace",
     "note_constraint",
     "agent_output",
     "skill",

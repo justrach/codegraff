@@ -1,23 +1,8 @@
-//! Cross-session presence registry (#469): the disk + lifecycle half that
-//! worktree_lease.zig's pure #320 logic never got wired to. Every root session
-//! writes a small owner record (pid + start identity + worktree identity +
-//! current goal) into the per-user registry at birth and removes it at exit.
-//! Liveness is PROBED via proc_identity (#413), never trusted from the file,
-//! so a crashed session's record reaps itself on the next read — no heartbeat
-//! thread, no reaper daemon.
-//!
-//! Adherence is structural, not prompt-level:
-//!   - announce/retire/goal updates are wired into session_run + goal_flow, so
-//!     a session cannot forget to register;
-//!   - agent_tool_gate refuses the FIRST index/worktree-mutating git command
-//!     issued while a live foreign session co-owns this worktree — under
-//!     --yolo too, where no approvals prompt exists — until the command is
-//!     re-issued. That re-issue is the deliberate acknowledgment the #469
-//!     incident (two --yolo sessions, one staging renames under the other)
-//!     never had a chance to make.
-//!
-//! No locking, no arbitration (#469 v1 non-goals): the registry carries
-//! presence + intent; humans and agents still serialize the work.
+//! Cross-session presence registry (#469): disk + lifecycle for worktree_lease.
+//! Each root session writes pid + start-id + worktree identity + goal into
+//! ~/.graff/live; liveness is probed via proc_identity, never the file.
+//! announce/retire/goal are wired into session_run + goal_flow. The first
+//! shared-tree mutation against a live peer checkpoints once. No locking.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -273,13 +258,29 @@ pub fn announce(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, sess
     return duplicate;
 }
 
-/// Remove our record. Best-effort: a crashed session leaves it behind and the
-/// next listPeers probes it dead and reaps it — retire is hygiene, not
-/// correctness.
-/// Free the gpa-owned globals. finalizeSession calls this at exit: a Debug
-/// build's SafeAllocator reports any gpa allocation still held at process end
-/// as a leak (and exits non-zero), and these five strings are otherwise
-/// exactly that. After deinit the module is inert.
+pub fn rebind(io: Io, gpa: Allocator, arena: Allocator) void {
+    if (builtin.is_test or g_own_name == null) return;
+    const identity = worktree_lease.currentIdentity(gpa, io, arena);
+    if (identity.id.len == 0 or std.mem.eql(u8, identity.id, g_identity)) return;
+    if (g_identity.len > 0) gpa.free(g_identity);
+    g_identity = gpa.dupe(u8, identity.id) catch return;
+    if (g_chan) |c| gpa.free(c);
+    var chan_buf: [chan_name_max]u8 = undefined;
+    g_chan = gpa.dupe(u8, chanName(&chan_buf, g_identity)) catch null;
+    g_inbox_off = 0;
+    if (g_dir) |dir_path| if (g_chan) |chan| {
+        var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch {
+            writeOwn(io, arena);
+            return;
+        };
+        defer dir.close(io);
+        if (dir.readFileAlloc(io, chan, arena, .limited(16 * 1024 * 1024)) catch null) |text|
+            g_inbox_off = @intCast(text.len);
+    };
+    writeOwn(io, arena);
+}
+
+/// retire is hygiene; deinit frees gpa-owned globals for the exit leak check.
 pub fn deinit(gpa: Allocator) void {
     if (g_dir) |p| gpa.free(p);
     if (g_identity.len > 0) gpa.free(g_identity);

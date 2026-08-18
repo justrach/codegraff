@@ -435,6 +435,7 @@ pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer
     // skips this and gets reaped by the next reader's liveness probe instead.
     presence.retire(io);
     presence.deinit(gpa); // its gpa-owned globals must not reach the exit-time leak check
+    @import("workspace_switch.zig").deinitDisplay(gpa);
     if (!json_mode and root.messages.items.len > 0) {
         const sink = engine_sink.writerSink(out);
         if (session.saveSession(root, arena, root.session_name)) |_| {

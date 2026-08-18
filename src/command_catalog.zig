@@ -64,6 +64,7 @@ pub const commands = [_]Item{
     .{ .name = "/save", .usage = "/save [name]", .desc = "write the conversation to <name>.session.json (default: current)" },
     .{ .name = "/resume", .usage = "/resume [name]", .desc = "restore a saved conversation (no arg → interactive picker)" },
     .{ .name = "/sessions", .desc = "list saved sessions in the cwd" },
+    .{ .name = "/workspace", .usage = "/workspace [list|use <name>]", .desc = "list git worktrees or switch this session into one (file tools follow)" },
     .{ .name = "/todo", .desc = "show the current task list" },
     .{ .name = "/jobs", .desc = "list background jobs" },
     .{ .name = "/cost", .desc = "session token usage and cost" },
