@@ -101,6 +101,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.todos.clearRetainingCapacity();
         const had_goal = root.goal != null;
         resetConversationSteering(root);
+        prompts.pinStandingGoal(root, arena);
         prompts.resetSessionCompacted(root, arena); // #445: the save below empties the file the #410 line names
         saveSession(root, arena, root.session_name) catch {};
         setTerminalTitle(out, "Chat", main_mod.g_cwd_display);
@@ -117,6 +118,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.compact_transport_failures = 0;
         root.todos.clearRetainingCapacity();
         resetConversationSteering(root);
+        prompts.pinStandingGoal(root, arena);
         root.session_title = null;
         root.ai_title_done = false; // let the new session earn its own AI title
         root.title_generation +%= 1;
@@ -168,6 +170,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             root.goal = null; // the checklist PARKS with the goal (#318): items keep their epoch and stay in the session, they just stop being current
             goal_state.resetCompletionGate(root);
             root.goal_note_fp = 0;
+            prompts.pinStandingGoal(root, arena);
             if (root.tracer) |t| t.note("goal", "cleared");
             saveSession(root, arena, root.session_name) catch {};
             if (open > 0) {
@@ -178,6 +181,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             if (root.goal) |*g| {
                 g.status = .paused;
                 g.updated_ms = unixMs(root.io);
+                prompts.pinStandingGoal(root, arena);
                 saveSession(root, arena, root.session_name) catch {};
                 try out.print("Goal paused: {s} - turns no longer get goal steering. /goal resume to continue.\n", .{g.objective});
             } else try out.writeAll("No active goal to pause. Set one with /goal <objective>.\n");
@@ -186,6 +190,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 g.status = .active;
                 g.updated_ms = unixMs(root.io);
                 root.goal_note_fp = 0; // re-state the note on the next turn, not a stale-suppressed repeat
+                prompts.pinStandingGoal(root, arena);
                 saveSession(root, arena, root.session_name) catch {};
                 try out.print("\xf0\x9f\x8e\xaf Goal resumed: {s} - steering every turn again.\n", .{g.objective});
             } else try out.writeAll("No goal to resume. Set one with /goal <objective>.\n");
@@ -194,6 +199,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             // adopt-or-supersede, gate + fingerprint resets) is
             // goal_flow.applyGoalSet; this handler only reports it.
             const res = goal_flow.applyGoalSet(root, try arena.dupe(u8, text), unixMs(root.io));
+            prompts.pinStandingGoal(root, arena);
             if (res.superseded) |old| {
                 // Replacement is a supersession boundary (#318): the old
                 // checklist parks (retained, no longer current) and a one-shot

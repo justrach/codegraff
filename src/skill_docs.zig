@@ -9,9 +9,9 @@
 //! like fleet.zig's agent personas — bundled < personal < project — and
 //! disclosure is progressive: only the descriptions ride in the system prompt
 //! (promptCatalog), while bodies stay on disk until the `skill` tool loads one
-//! (execSkill). Two skills are embedded in the binary so a fresh install
-//! already knows how to write more (skill-creator) and how to change MCP
-//! config (mcp-config).
+//! (execSkill). Three skills are embedded in the binary so a fresh install
+//! already knows how to write more (skill-creator), how to change MCP
+//! config (mcp-config), and how to run a long-horizon working set (jspace).
 
 const std = @import("std");
 const Io = std.Io;
@@ -63,7 +63,7 @@ const desc_cap = 160; // per-skill description budget in the system prompt — t
 /// a schema.ToolSpec) so schema.zig's catalog needs one entry and no import
 /// cycle. The description must stay free of characters needing JSON escapes.
 pub const tool_name = "skill";
-pub const tool_desc = "Load a skill: the full instructions for one kind of task, kept out of your context until you need them. The system prompt lists only skill names and descriptions, so call this to read the body BEFORE doing work a skill covers, then follow it. Omit name to list every available skill. Skills come from .harness/skills/ (this project), ~/.harness/skills/ (yours), .claude/skills/, plus two bundled ones: skill-creator (write and install a new skill) and mcp-config (inspect or change this workspace's MCP servers).";
+pub const tool_desc = "Load a skill: the full instructions for one kind of task, kept out of your context until you need them. The system prompt lists only skill names and descriptions, so call this to read the body BEFORE doing work a skill covers, then follow it. Omit name to list every available skill. Skills come from .harness/skills/ (this project), ~/.harness/skills/ (yours), .claude/skills/, plus bundled skill-creator, mcp-config, and jspace.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"name": {"type": "string", "description": "Skill name to load; omit to list every available skill"}}}
 ;
@@ -98,6 +98,7 @@ const Embedded = struct { fallback: []const u8, bytes: []const u8 };
 const embedded = [_]Embedded{
     .{ .fallback = "skill-creator", .bytes = @embedFile("skill_doc_creator") },
     .{ .fallback = "mcp-config", .bytes = @embedFile("skill_doc_mcp_config") },
+    .{ .fallback = "jspace", .bytes = @embedFile("skill_doc_jspace") },
 };
 
 /// Skills compiled into the binary: every install has these, no files needed.
@@ -324,9 +325,10 @@ test "parseDoc: no frontmatter keeps the filename and the whole file as body" {
 }
 
 test "bundled skills: both parse at comptime with a trigger description" {
-    try std.testing.expectEqual(@as(usize, 2), builtins.len);
+    try std.testing.expectEqual(@as(usize, 3), builtins.len);
     try std.testing.expectEqualStrings("skill-creator", builtins[0].name);
     try std.testing.expectEqualStrings("mcp-config", builtins[1].name);
+    try std.testing.expectEqualStrings("jspace", builtins[2].name);
     for (builtins) |sk| {
         try std.testing.expect(sk.desc.len > 40); // a trigger, not a topic word
         try std.testing.expect(sk.body.len > 500);
@@ -338,12 +340,14 @@ test "bundled skills: both parse at comptime with a trigger description" {
     try std.testing.expect(std.mem.indexOf(u8, builtins[0].body, project_dir) != null);
     try std.testing.expect(std.mem.indexOf(u8, builtins[1].body, ".mcp.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, builtins[1].body, "/mcp trust") != null);
+    try std.testing.expect(std.mem.indexOf(u8, builtins[2].body, "action=inbox") != null);
 }
 
 test "tool_desc stays JSON-escape-free (it is spliced into a raw schema string)" {
     for (tool_desc) |c| try std.testing.expect(c != '"' and c != '\\' and c >= 0x20);
     try std.testing.expect(std.mem.indexOf(u8, tool_desc, "skill-creator") != null);
     try std.testing.expect(std.mem.indexOf(u8, tool_desc, "mcp-config") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tool_desc, "jspace") != null);
 }
 
 test "insert: a later tier shadows the same name, others append" {

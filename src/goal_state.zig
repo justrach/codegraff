@@ -187,8 +187,10 @@ pub fn resetCompletionGate(root: *Agent) void {
 }
 
 /// Re-state an unchanged active note after this many suppressed turns, in case
-/// the last statement aged out of the model's effective attention.
+/// LoopListGate: re-paste an unchanged /loop checklist after this many quiet turns.
 pub const refresh_turns: u32 = 8;
+/// Standing-goal essay. 0 = never; the objective lives in the prefix (ADR 0005).
+pub const essay_refresh_turns: u32 = 0;
 
 pub const SteeringGate = struct { inject: bool, fp: u64, age: u32 };
 
@@ -198,7 +200,8 @@ pub const SteeringGate = struct { inject: bool, fp: u64, age: u32 };
 pub fn steeringGate(note: []const u8, last_fp: u64, age: u32, refresh_every: u32) SteeringGate {
     if (note.len == 0) return .{ .inject = false, .fp = 0, .age = 0 };
     const fp = std.hash.Wyhash.hash(0, note);
-    if (fp != last_fp or age + 1 >= refresh_every) return .{ .inject = true, .fp = fp, .age = 0 };
+    if (fp != last_fp) return .{ .inject = true, .fp = fp, .age = 0 };
+    if (refresh_every > 0 and age + 1 >= refresh_every) return .{ .inject = true, .fp = fp, .age = 0 };
     return .{ .inject = false, .fp = fp, .age = age + 1 };
 }
 
@@ -209,7 +212,7 @@ pub fn applyGoalSteering(arena: Allocator, root: *Agent, base: []const u8) ![]co
     if (root.review_mode) return base;
     var msg = base;
     const note = try repl_glue.goalSteeringNote(arena, root.goal);
-    const gate = steeringGate(note, root.goal_note_fp, root.goal_note_age, refresh_turns);
+    const gate = steeringGate(note, root.goal_note_fp, root.goal_note_age, essay_refresh_turns);
     root.goal_note_fp = gate.fp;
     root.goal_note_age = gate.age;
     if (gate.inject) msg = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, note });
@@ -519,7 +522,10 @@ test "steeringGate: inject on change, suppress repeats, refresh after the interv
     // Changed note (new objective/epoch): inject again.
     const g3 = steeringGate("[standing goal: y]", g2.fp, g2.age, 8);
     try std.testing.expect(g3.inject);
-    // Refresh interval lapse re-states an unchanged note.
+    // refresh_every 0 never time-refreshes (ADR 0005: prefix holds the objective).
+    const held = steeringGate("[standing goal: y]", g3.fp, 99, 0);
+    try std.testing.expect(!held.inject and held.age == 100);
+    // A non-zero interval still re-states when it lapses.
     const g4 = steeringGate("[standing goal: y]", g3.fp, 7, 8);
     try std.testing.expect(g4.inject and g4.age == 0);
 }
