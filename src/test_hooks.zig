@@ -127,6 +127,7 @@ const peer_context_compact_test = @import("peer_context_compact_test.zig");
 const peer_inbox = @import("peer_inbox.zig"); // Claude-style list/inbox pull
 const peer_target = @import("peer_target.zig"); // exact DM / goal targeting
 const workspace_switch = @import("workspace_switch.zig"); // ADR 0006 mid-session worktree switch
+const plugins = @import("plugins.zig"); // ADR 0007 in-place plugin / foreign MCP discovery
 
 // #345: the global-vs-project MCP config merge. mcp.zig does reference its
 // decls, but the hook makes the coverage explicit rather than contingent on
@@ -259,6 +260,7 @@ test {
     _ = peer_inbox;
     _ = peer_target;
     _ = workspace_switch;
+    _ = plugins;
     _ = shutdown_trace;
     _ = credential_store;
     _ = engine_events;

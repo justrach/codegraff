@@ -6,8 +6,8 @@
 //! when they're on PATH). This module is the document-shaped kind, same layout
 //! Claude Code uses: `<dir>/<name>/SKILL.md` (or `<dir>/<name>.md`) with
 //! `name:`/`description:` frontmatter and a markdown body. Discovery is tiered
-//! like fleet.zig's agent personas — bundled < personal < project — and
-//! disclosure is progressive: only the descriptions ride in the system prompt
+//! like fleet.zig's agent personas — bundled < personal < plugins < project —
+//! and disclosure is progressive: only the descriptions ride in the system prompt
 //! (promptCatalog), while bodies stay on disk until the `skill` tool loads one
 //! (execSkill). Bundled skills teach writing more (skill-creator), MCP
 //! config (mcp-config), long-horizon control (jspace), and mid-session
@@ -23,17 +23,20 @@ const tools = @import("tools.zig");
 const ToolOutput = tools.ToolOutput;
 // Only the settings-file location, never the approval session (#422 ratchet).
 const policy = @import("harness_policy.zig");
+const plugins = @import("plugins.zig");
 
 pub const Source = enum {
     builtin,
     personal,
     project,
+    plugin,
 
     pub fn label(self: Source) []const u8 {
         return switch (self) {
             .builtin => "bundled",
             .personal => "personal",
             .project => "project",
+            .plugin => "plugin",
         };
     }
 };
@@ -63,7 +66,7 @@ const desc_cap = 160; // per-skill description budget in the system prompt — t
 /// a schema.ToolSpec) so schema.zig's catalog needs one entry and no import
 /// cycle. The description must stay free of characters needing JSON escapes.
 pub const tool_name = "skill";
-pub const tool_desc = "Load a skill: the full instructions for one kind of task, kept out of your context until you need them. The system prompt lists only skill names and descriptions, so call this to read the body BEFORE doing work a skill covers, then follow it. Omit name to list every available skill. Skills come from .harness/skills/ (this project), ~/.harness/skills/ (yours), .claude/skills/, plus bundled skill-creator, mcp-config, jspace, and workspace.";
+pub const tool_desc = "Load a skill: the full instructions for one kind of task, kept out of your context until you need them. The system prompt lists only skill names and descriptions, so call this to read the body BEFORE doing work a skill covers, then follow it. Omit name to list every available skill. Skills come from .harness/skills/, ~/.harness/skills/, .claude/skills/, Claude/Grok/Codex plugin trees, plus bundled skill-creator, mcp-config, jspace, and workspace.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"name": {"type": "string", "description": "Skill name to load; omit to list every available skill"}}}
 ;
@@ -153,17 +156,21 @@ fn scan(io: Io, arena: Allocator, home: ?[]const u8) []const Skill {
     return list.items;
 }
 
-/// bundled < ~/.claude/skills < ~/.harness/skills < .claude/skills <
-/// .harness/skills. Each tier shadows the previous by name, so a project skill
-/// wins over a personal one and both win over a bundled one.
+/// bundled < personal dirs < user plugins < .claude/.grok/.codex/skills <
+/// project plugins < .harness/skills. Each later tier shadows the previous by
+/// name. Plugin trees are read in place (ADR 0007), not copied.
 fn collect(io: Io, arena: Allocator, home: ?[]const u8) std.ArrayList(Skill) {
     var list: std.ArrayList(Skill) = .empty;
     list.appendSlice(arena, &builtins) catch {};
-    if (home) |h| for ([_][]const u8{ compat_dir, ".codegraff/skills", project_dir }) |dir| {
+    if (home) |h| for ([_][]const u8{ compat_dir, ".codegraff/skills", project_dir, ".grok/skills", ".codex/skills", ".agents/skills" }) |dir| {
         const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ h, dir }) catch continue;
         loadDir(io, arena, &list, path, .personal);
     };
+    for (plugins.skillDirs(io, arena, home, Io.Dir.cwd(), true)) |d| loadDir(io, arena, &list, d, .plugin);
     loadDir(io, arena, &list, compat_dir, .project);
+    loadDir(io, arena, &list, ".grok/skills", .project);
+    loadDir(io, arena, &list, ".codex/skills", .project);
+    for (plugins.skillDirs(io, arena, home, Io.Dir.cwd(), false)) |d| loadDir(io, arena, &list, d, .plugin);
     loadDir(io, arena, &list, project_dir, .project);
     return list;
 }

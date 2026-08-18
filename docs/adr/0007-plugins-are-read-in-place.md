@@ -1,0 +1,40 @@
+# 0007. Plugins and foreign MCP are read in place
+
+Status: accepted 2026-08-18
+
+## Context
+
+Grok-build feels like it "just works" with Claude/Codex/Cursor because it
+**reads their trees where they already live**. graff's first-run `adopt` copies
+MCP and skills into `~/.codegraff/` once, then ignores anything installed
+after that marker. A skill cannot see a plugin that was never copied. MCP
+added to `~/.claude.json` after the first `graff` session never connected.
+
+Copying also duplicates secrets and drifts from the other harness's live
+config.
+
+## Decision
+
+- Discover plugin roots in place: `~/.claude/plugins/`, `~/.grok/plugins/`,
+  `~/.codex/plugins/`, `~/.codegraff/plugins/`, and the project
+  `.claude/.grok/.codex/.harness/plugins/` trees (including Claude's
+  `plugins/cache/…` layout). A directory is a plugin if it has
+  `.claude-plugin/plugin.json`, `.grok-plugin/plugin.json`, `plugin.json`,
+  `.mcp.json`, `skills/`, or `agents/`. Skip `marketplaces/`. Cap 32.
+- Skills from those trees (and `~/.agents/skills`, `~/.grok/skills`,
+  `~/.codex/skills`) join the existing on-demand `skill` catalog. Bodies still
+  load only when the model calls `skill`. Project `.harness/skills` still wins.
+- Plugin `agents/` join the fleet after personal `~/.harness/agents` and
+  before project `.harness/agents`.
+- Plugin `.mcp.json` plus Claude/Cursor/Grok MCP files (`~/.claude.json`,
+  `~/.cursor/mcp.json`, `.cursor/mcp.json`, …) fill **missing** server names
+  only. graff's `~/.codegraff/mcp.json` and `.mcp.json` still win. Consent is
+  unchanged (`/mcp trust` / `--yolo`).
+- `GRAFF_NO_PLUGINS=1` disables the scan. `/plugins` lists origin. Do not
+  vendor grok-build. Do not auto-run plugin hooks.
+
+## Consequences
+
+- A plugin installed after first-run adopt is visible next session.
+- Project plugin MCP is not more trusted than project `.mcp.json`; it is less.
+- Revisit if a user needs to disable one plugin without `GRAFF_NO_PLUGINS`.

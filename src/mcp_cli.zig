@@ -177,7 +177,7 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, en
     }
 
     if (args.len == 0 or std.mem.eql(u8, args[0], "list")) {
-        const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path);
+        const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path, home);
         try mcp_config.reportInvalid(merged, &out.interface, mcp_config_path, global_path, "", "");
         if (merged.servers.count() == 0) {
             try out.interface.writeAll("no MCP servers configured. Add one with `graff mcp add <name> -- <command> [args...]`,\nor list servers for every project in ~/" ++ mcp_config.global_rel_path ++ ".\n");
@@ -224,7 +224,7 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, en
         else url: {
             // Global servers are loginable too — the merged set is the same one
             // the session connects from.
-            const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path);
+            const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path, home);
             // Say which file is broken before claiming the server is missing:
             // "not configured" for a server that IS configured, in a file that
             // does not parse, sends the user looking in the wrong place.

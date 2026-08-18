@@ -7,6 +7,8 @@
 //! schema and is merged with the project file at every read site, with PROJECT
 //! ENTRIES WINNING on a name conflict: a repository's own config must never be
 //! silently shadowed by whatever the user happens to have set up globally.
+//! Names neither file defines are filled from in-place plugin trees and other
+//! harness configs (ADR 0007) — still below this merge, still consent-gated.
 //!
 //! The file lives under `~/.codegraff/`, this repo's home-scoped convention
 //! (see models_cache.zig and router_catalog.zig), rather than inventing a new
@@ -22,6 +24,7 @@ const std = @import("std");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
+const plugins = @import("plugins.zig");
 
 /// Home-relative location of the user-level config.
 pub const global_rel_path = ".codegraff/mcp.json";
@@ -36,7 +39,7 @@ pub const unsupported_rel_path = ".mcpconfig.json";
 
 /// The merged `mcpServers` set plus the provenance callers need to describe it.
 pub const Merged = struct {
-    /// Every server graff should consider: global first, then project on top.
+    /// Every server graff should consider: plugins/foreign, then global, then project.
     servers: std.json.ObjectMap = .empty,
     /// The workspace half on its own, so `graff mcp list` can tag an entry the
     /// project does not define as `(global)`.
@@ -102,7 +105,7 @@ fn readServers(io: Io, arena: Allocator, dir: Io.Dir, path: []const u8, found: *
 /// handle it is opened through. Never fails: a missing or malformed file simply
 /// contributes nothing. Values stay arena-allocated, like the rest of the MCP
 /// config handling.
-pub fn load(io: Io, arena: Allocator, dir: Io.Dir, project_path: []const u8, global_path: ?[]const u8) Merged {
+pub fn load(io: Io, arena: Allocator, dir: Io.Dir, project_path: []const u8, global_path: ?[]const u8, home: []const u8) Merged {
     var merged: Merged = .{};
     const global = if (global_path) |p|
         readServers(io, arena, dir, p, &merged.found, &merged.invalid_global)
@@ -116,6 +119,9 @@ pub fn load(io: Io, arena: Allocator, dir: Io.Dir, project_path: []const u8, glo
     while (global_it.next()) |entry| merged.servers.put(arena, entry.key_ptr.*, entry.value_ptr.*) catch return merged;
     var project_it = merged.project.iterator();
     while (project_it.next()) |entry| merged.servers.put(arena, entry.key_ptr.*, entry.value_ptr.*) catch return merged;
+    // Plugin / Claude / Cursor / Grok configs fill names still missing. They
+    // never beat a graff file. `home` empty keeps tests off the real $HOME.
+    plugins.mergeMcp(io, arena, home, dir, &merged.servers, &merged.found);
     return merged;
 }
 
@@ -157,7 +163,7 @@ const TestEnv = struct {
 /// Both halves are read through the tmp dir handle, so no test touches `$HOME`
 /// or the real workspace.
 fn loadTmp(arena: Allocator, dir: Io.Dir) Merged {
-    return load(testing.io, arena, dir, ".mcp.json", "global.json");
+    return load(testing.io, arena, dir, ".mcp.json", "global.json", "");
 }
 
 test "global MCP path prefers the env override and otherwise lives under ~/.codegraff" {

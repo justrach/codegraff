@@ -18,6 +18,7 @@ const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const http = @import("http.zig");
 const http_stall = @import("http_stall.zig");
+const plugins = @import("plugins.zig");
 const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig"); // codex_ws_idle_ms override (#codex-ws)
 const agent_request = @import("agent_request.zig"); // GRAFF_REQ_STATS → g_req_stats (token-diet measurement)
@@ -62,6 +63,7 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // user-installed companion at the same trust level as the skills
     // auto-detection above it, NOT arbitrary workspace config.
     main_mod.g_path_env = try arena.dupe(u8, environ_map.get("PATH") orelse "");
+    plugins.applyEnv(environ_map);
     main_mod.g_codedb_guard = environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     main_mod.g_force_stall_once = environ_map.get("GRAFF_FORCE_STALL_ONCE") != null; // #134 test seam
     main_mod.g_force_drop_once = environ_map.get("GRAFF_FORCE_DROP_ONCE") != null; // #132/#133 test seam

@@ -401,7 +401,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     // can carry chatter. With a global config `mcp_count > 0` in every project,
     // so an unguarded line here would corrupt the head of every --json run.
     const quiet = json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") == null;
-    const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path);
+    const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path, home);
     // #416: resolve eager-vs-deferred BEFORE anything connects, so the first
     // catalog render already knows which servers pay their schemas up front.
     mcp_schema_gate.configure(arena, merged, environ_map);

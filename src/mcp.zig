@@ -218,7 +218,7 @@ pub const Registry = struct {
     /// (no tool calls in flight).
     pub fn trustWorkspace(reg: *Registry, config_path: []const u8) !usize {
         const a = reg.arena();
-        const merged = mcp_config.load(reg.io, a, Io.Dir.cwd(), config_path, reg.global_config_path);
+        const merged = mcp_config.load(reg.io, a, Io.Dir.cwd(), config_path, reg.global_config_path, reg.home);
 
         var servers: std.ArrayList(*Server) = .empty;
         try servers.appendSlice(a, reg.servers);
@@ -253,7 +253,7 @@ pub const Registry = struct {
     /// best-effort (any read/parse failure contributes nothing).
     pub fn pendingWorkspace(reg: *Registry, config_path: []const u8) usize {
         const a = reg.arena();
-        const merged = mcp_config.load(reg.io, a, Io.Dir.cwd(), config_path, reg.global_config_path);
+        const merged = mcp_config.load(reg.io, a, Io.Dir.cwd(), config_path, reg.global_config_path, reg.home);
         var n: usize = 0;
         var it = merged.servers.iterator();
         while (it.next()) |entry| {

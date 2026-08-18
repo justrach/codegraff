@@ -51,6 +51,7 @@ pub const commands = [_]Item{
     .{ .name = "/trajectory", .desc = "show this session's agent tree — turns + spawned subagents" },
     .{ .name = "/agents", .desc = "list agent types — builtin personas + .harness/agents/*.md" },
     .{ .name = "/skills", .usage = "/skills [add|remove <name>]", .desc = "list SKILL.md playbooks + companion tools; add/remove enables or disables one" },
+    .{ .name = "/plugins", .desc = "list Claude/Grok/Codex plugin trees graff is reading in place" },
     .{ .name = "/hooks", .desc = "list lifecycle hooks and the built-in codedb guard" },
     .{ .name = "/doctor", .desc = "read-only health check: goal/todo invariants, and why steering will or will not be appended" },
     .{ .name = "/btw", .usage = "/btw <question>", .desc = "ask one side question about this conversation — no tools, billed, never added to the session" },

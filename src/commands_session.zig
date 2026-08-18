@@ -33,6 +33,7 @@ const exec = @import("exec.zig");
 const execTool = exec.execTool;
 const commands_sandbox = @import("commands_sandbox.zig"); // #554 /snapshot + /rewind <id>
 const workspace_switch = @import("workspace_switch.zig");
+const plugins = @import("plugins.zig");
 
 const fleet = @import("fleet.zig");
 const promoteAgents = fleet.promoteAgents;
@@ -88,6 +89,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     // id — a numeric /rewind falls through to the conversation rewind below.
     if (try commands_sandbox.tryHandle(root, arena, line, out)) return true;
     if (try workspace_switch.slashCommand(root, arena, line, out)) return true;
+    if (try plugins.slashCommand(root.io, arena, root.home, line, out)) return true;
     if (std.mem.eql(u8, line, "/clear")) {
         root.messages = std.json.Array.init(arena);
         root.last_context_tokens = 0;

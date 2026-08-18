@@ -118,7 +118,11 @@ curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/instal
 ```
 
 From a checkout, just run `./install.sh`. The binary lands in `~/bin` by default
-(override with `HARNESS_DIR`):
+(override with `HARNESS_DIR`). The installer appends that directory to your
+`~/.zshrc` (and `~/.bashrc` / fish config when those are your shell or already
+exist), so a new terminal finds `graff` — the usual "it installed but
+`graff: command not found`" miss. Skip with `HARNESS_NO_PATH=1`. Open a new tab
+or `source ~/.zshrc` once after install:
 
 | tool      | purpose |
 | --------- | ------- |
@@ -509,6 +513,7 @@ gateway rollouts appear without a restart.
 /agents                   list agent types: builtin personas + .harness/agents/*.md
 /skills [add|remove <name>]
                           list SKILL.md playbooks + companion tools; add/remove enables or disables one
+/plugins                  list Claude/Grok/Codex plugin trees graff is reading in place
 /hooks                    list lifecycle hooks and the built-in codedb guard
 /doctor                   read-only health check: goal/todo invariants, and why steering will or will not be appended
 /btw <question>           ask one side question about this conversation: no tools, billed, never added to the session
@@ -571,8 +576,10 @@ accepted findings.
 A skill is a markdown playbook graff loads only when a task calls for it. Drop
 one in `.harness/skills/<name>/SKILL.md` (or `~/.harness/skills/` for every
 project), give it `name` and `description` frontmatter, and write the
-instructions in the body. Skills already written for Claude Code work as they
-are: `.claude/skills/` is read too.
+instructions in the body. Skills already written for Claude Code, Grok, or
+Codex work as they are: `.claude/skills/`, `~/.grok/skills/`, plugin
+`skills/` trees, and `~/.agents/skills/` are read in place (not copied).
+`/plugins` lists the plugin trees. `GRAFF_NO_PLUGINS=1` skips them.
 
 Only the name and description enter the system prompt, so a large skill library
 costs one line each. The model calls the `skill` tool to pull a body in when it
@@ -587,7 +594,11 @@ and `/skills add <name>` brings it back. See
 ### MCP servers
 
 Graff speaks both MCP transports directly: local stdio servers and remote
-Streamable HTTP servers. Smolify (`https://app.smol.ly/mcp`) is available as a
+Streamable HTTP servers. Servers already configured for Claude, Cursor, or
+Grok are read in place (plugin `.mcp.json`, `~/.claude.json`,
+`~/.cursor/mcp.json`, `.cursor/mcp.json`) and fill names graff does not
+already define; they still need `/mcp trust` or `--yolo`. `/plugins` shows
+which plugin trees contributed. Smolify (`https://app.smol.ly/mcp`) is available as a
 core documentation service; it needs no Node bridge or project configuration.
 Its public-read schemas are bundled locally, so startup makes no Smolify
 request. The anonymous transport initializes only after an approved tool call,
@@ -1241,8 +1252,9 @@ rules in `AGENTS.md` and the harness picks them up like any real coding agent.
 `install.sh` compiles `graff` (ReleaseFast) and installs it to `~/bin` (override
 with `HARNESS_DIR=`); it builds the current checkout, or clones the repo if run
 standalone. It detects the platform (Windows → WSL hint), checks for the pinned
-Zig 0.17 development build,
-and ends with a PATH check. Alternatively, run in place:
+Zig 0.17 development build, and appends the install dir to `~/.zshrc` /
+`~/.bashrc` so `graff` is on PATH in the next terminal (`HARNESS_NO_PATH=1`
+skips). Alternatively, run in place:
 
 ```sh
 zig build run            # or: ./zig-out/bin/graff
