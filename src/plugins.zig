@@ -80,6 +80,7 @@ fn walk(io: Io, arena: Allocator, list: *std.ArrayList(Plugin), path: []const u8
     if (list.items.len >= plugin_cap or visits.* >= visit_cap) return;
     var dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
+    visits.* += 1;
     var children: std.ArrayList([]const u8) = .empty;
     var plugin_here = false;
     var it = dir.iterate();
@@ -97,7 +98,6 @@ fn walk(io: Io, arena: Allocator, list: *std.ArrayList(Plugin), path: []const u8
         return; // do not treat a plugin's skills/ as a nested plugin
     }
     if (depth == 0) return;
-    visits.* += 1;
     for (children.items) |child| {
         walk(io, arena, list, child, origin, personal, depth - 1, visits);
         if (list.items.len >= plugin_cap) return;
@@ -267,7 +267,9 @@ pub fn mergeMcp(io: Io, arena: Allocator, home: []const u8, dir: Io.Dir, servers
     const n = dir.realPath(io, &buf) catch 0;
     const cwd = if (n > 0) buf[0..n] else null;
     const plugs = discover(io, arena, if (home.len > 0) home else null, dir);
-    for (plugs) |p| layout.mergeMcp(io, arena, p.path, cwd orelse "", servers, found);
+    for (plugs) |p| {
+        if (p.mcp) layout.mergeMcp(io, arena, p.path, cwd orelse "", servers, found);
+    }
     if (home.len > 0) {
         takeAbs(io, arena, servers, found, join(arena, home, ".claude.json"), cwd);
         takeAbs(io, arena, servers, found, join(arena, home, ".claude/settings.json"), null);

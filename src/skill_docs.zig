@@ -58,7 +58,8 @@ pub const project_dir = ".harness/skills";
 /// Read as-is so skills already written for Claude Code work here untouched.
 pub const compat_dir = ".claude/skills";
 
-const file_cap = 256 * 1024; // largest SKILL.md we'll read
+const file_cap = 256 * 1024; // largest SKILL.md we'll read on a named load
+const head_cap = 8 * 1024; // catalog read: frontmatter + proof of a body
 const body_cap = 32 * 1024; // largest body handed to the model in one load
 const desc_cap = 160; // per-skill description budget in the system prompt — the trigger, not the summary; the body is one `skill` call away
 
@@ -212,7 +213,9 @@ fn loadDir(io: Io, arena: Allocator, list: *std.ArrayList(Skill), dir_path: []co
 }
 
 fn mergeFile(io: Io, arena: Allocator, list: *std.ArrayList(Skill), dir_path: []const u8, path: []const u8, raw_name: []const u8, source: Source) void {
-    const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(file_cap)) catch return;
+    // Prefix only: name + description for the prompt. The body stays on disk
+    // until `skill name=` / render, same as ADR 0007 and OpenCode's catalog.
+    const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(head_cap)) catch return;
     // raw_name points into the directory iterator's buffer, which the next
     // entry overwrites — the parsed skill has to own it.
     const fallback = arena.dupe(u8, raw_name) catch return;
@@ -221,7 +224,7 @@ fn mergeFile(io: Io, arena: Allocator, list: *std.ArrayList(Skill), dir_path: []
     insert(arena, list, .{
         .name = p.name,
         .desc = p.desc,
-        .body = p.body,
+        .body = "",
         .dir = dir_path,
         .path = path,
         .source = source,
@@ -282,7 +285,7 @@ pub fn execSkill(gpa: Allocator, io: Io, input: Value) !ToolOutput {
     const requested = std.mem.trim(u8, tools.strField(input, "name") orelse "", " \t\r\n");
     if (requested.len > 0) {
         for (g_skills) |sk| {
-            if (std.ascii.eqlIgnoreCase(sk.name, requested)) return .{ .text = try render(gpa, sk) };
+            if (std.ascii.eqlIgnoreCase(sk.name, requested)) return .{ .text = try render(gpa, io, sk) };
         }
     }
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -290,17 +293,24 @@ pub fn execSkill(gpa: Allocator, io: Io, input: Value) !ToolOutput {
     const list = scan(io, arena_state.allocator(), g_home);
     if (requested.len == 0) return .{ .text = try listing(gpa, list, null) };
     for (list) |sk| {
-        if (std.ascii.eqlIgnoreCase(sk.name, requested)) return .{ .text = try render(gpa, sk) };
+        if (std.ascii.eqlIgnoreCase(sk.name, requested)) return .{ .text = try render(gpa, io, sk) };
     }
     return .{ .text = try listing(gpa, list, requested), .is_error = true };
 }
 
-fn render(gpa: Allocator, sk: Skill) ![]u8 {
+fn render(gpa: Allocator, io: Io, sk: Skill) ![]u8 {
+    var body = sk.body;
+    var hold = std.heap.ArenaAllocator.init(gpa);
+    defer hold.deinit();
+    if (body.len == 0 and sk.path.len > 0) {
+        const data = Io.Dir.cwd().readFileAlloc(io, sk.path, hold.allocator(), .limited(file_cap)) catch "";
+        if (data.len > 0) body = parseDoc(sk.name, data).body;
+    }
     var aw: Io.Writer.Allocating = .init(gpa);
     errdefer aw.deinit();
     try aw.writer.print("# skill: {s} ({s})\n\n", .{ sk.name, sk.source.label() });
-    try aw.writer.writeAll(util.utf8Prefix(sk.body, body_cap));
-    if (sk.body.len > body_cap)
+    try aw.writer.writeAll(util.utf8Prefix(body, body_cap));
+    if (body.len > body_cap)
         try aw.writer.print("\n\n[body truncated at {d} KB — read the rest from {s}]", .{ body_cap / 1024, sk.path });
     if (sk.dir.len > 0)
         try aw.writer.print("\n\n[this skill lives in {s}/ — read anything it references from there with read_file]", .{sk.dir});
@@ -449,7 +459,7 @@ test "promptCatalog: an over-long description is capped on a codepoint boundary"
 
 test "render: bundled load has no file pointer; long bodies say where the rest is" {
     const gpa = std.testing.allocator;
-    const bundled = try render(gpa, builtins[1]);
+    const bundled = try render(gpa, std.testing.io, builtins[1]);
     defer gpa.free(bundled);
     try std.testing.expect(std.mem.startsWith(u8, bundled, "# skill: mcp-config (bundled)"));
     try std.testing.expect(std.mem.indexOf(u8, bundled, ".mcp.json") != null);
@@ -458,7 +468,7 @@ test "render: bundled load has no file pointer; long bodies say where the rest i
     const big = try gpa.alloc(u8, body_cap + 100);
     defer gpa.free(big);
     @memset(big, 'x');
-    const long = try render(gpa, .{ .name = "big", .desc = "", .body = big, .dir = ".harness/skills/big", .path = ".harness/skills/big/SKILL.md", .source = .project });
+    const long = try render(gpa, std.testing.io, .{ .name = "big", .desc = "", .body = big, .dir = ".harness/skills/big", .path = ".harness/skills/big/SKILL.md", .source = .project });
     defer gpa.free(long);
     try std.testing.expect(std.mem.indexOf(u8, long, "body truncated at 32 KB") != null);
     try std.testing.expect(std.mem.indexOf(u8, long, ".harness/skills/big/SKILL.md") != null);
@@ -495,4 +505,46 @@ test "execSkill: a named load hits the session catalog without a rescan" {
     defer std.testing.allocator.free(out.text);
     try std.testing.expect(!out.is_error);
     try std.testing.expect(std.mem.indexOf(u8, out.text, "hello-from-mem") != null);
+}
+
+test "load: catalog keeps name and desc; named skill reads the body from disk" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &buf);
+    const home = std.fmt.allocPrint(arena, "{s}/home", .{buf[0..n]}) catch return error.OutOfMemory;
+    const dir = std.fmt.allocPrint(arena, "{s}/.harness/skills/secret", .{home}) catch return error.OutOfMemory;
+    try Io.Dir.cwd().createDirPath(io, dir);
+    try Io.Dir.cwd().writeFile(io, .{
+        .sub_path = std.fmt.allocPrint(arena, "{s}/SKILL.md", .{dir}) catch return error.OutOfMemory,
+        .data = "---\nname: secret\ndescription: handshake playbook\n---\n\nCATALOG_MUST_NOT_KEEP_THIS_BODY\n",
+    });
+
+    const prev_home = g_home;
+    const prev_skills = g_skills;
+    defer {
+        g_home = prev_home;
+        g_skills = prev_skills;
+    }
+    const list = load(io, arena, home);
+    var found: ?Skill = null;
+    for (list) |sk| {
+        if (std.mem.eql(u8, sk.name, "secret")) found = sk;
+    }
+    try std.testing.expect(found != null);
+    try std.testing.expectEqualStrings("handshake playbook", found.?.desc);
+    try std.testing.expectEqualStrings("", found.?.body);
+    try std.testing.expect(std.mem.indexOf(u8, found.?.path, "SKILL.md") != null);
+
+    g_skills = list;
+    var obj: std.json.ObjectMap = .empty;
+    try obj.put(arena, "name", .{ .string = "secret" });
+    const out = try execSkill(std.testing.allocator, io, .{ .object = obj });
+    defer std.testing.allocator.free(out.text);
+    try std.testing.expect(!out.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "CATALOG_MUST_NOT_KEEP_THIS_BODY") != null);
 }

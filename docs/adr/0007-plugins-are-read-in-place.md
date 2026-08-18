@@ -51,10 +51,13 @@ config.
 - Project plugin MCP is not more trusted than project `.mcp.json`; it is less.
 - Discover classifies with one readdir per visited directory (not a stat per
   marker) and stores skill/agent dirs on the plugin so later merges do not
-  inspect again. A named `skill` load hits the session catalog; a miss or a
-  list still rescans. Production caches the first walk (MCP + fleet + skills
-  share it); tests do not. `/plugins` and the interactive boot line print
-  wall time so a slow home directory is visible. A plugin that lives only
-  under `cache/` and is missing from `installed_plugins.json` is invisible
-  until the other harness records it — same as grok-build.
+  inspect again. MCP merge only opens plugin trees that already have MCP.
+  The skill catalog reads an 8 KB frontmatter prefix (name + description);
+  bodies stay on disk until `skill name=`. A named load hits the session
+  catalog and then reads that one file; a miss or a list still rescans.
+  Production caches the first walk (MCP + fleet + skills share it); tests
+  do not. `/plugins` and the interactive boot line print wall time so a
+  slow home directory is visible. A plugin that lives only under `cache/`
+  and is missing from `installed_plugins.json` is invisible until the other
+  harness records it — same as grok-build.
 - Revisit if a user needs to disable one plugin without `GRAFF_NO_PLUGINS`.
