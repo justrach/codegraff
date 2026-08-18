@@ -124,6 +124,7 @@ const compact_note = @import("compact_note.zig");
 const compact_note_glue = @import("compact_note_glue.zig");
 const peer_context = @import("peer_context.zig"); // ADR 0004 / #563 slice F
 const peer_context_compact_test = @import("peer_context_compact_test.zig");
+const peer_target = @import("peer_target.zig"); // exact DM / goal targeting
 
 // #345: the global-vs-project MCP config merge. mcp.zig does reference its
 // decls, but the hook makes the coverage explicit rather than contingent on
@@ -253,6 +254,7 @@ test {
     _ = compact_note_glue;
     _ = peer_context;
     _ = peer_context_compact_test;
+    _ = peer_target;
     _ = shutdown_trace;
     _ = credential_store;
     _ = engine_events;
