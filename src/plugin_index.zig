@@ -15,6 +15,19 @@ pub const Entry = struct {
     path: []const u8,
 };
 
+/// JSON string literal, including quotes. Tests must use this when a native
+/// path goes into JSON — Windows `\` is an escape and silently empties parse.
+pub fn quote(arena: Allocator, s: []const u8) []const u8 {
+    var aw: Io.Writer.Allocating = .init(arena);
+    aw.writer.writeByte('"') catch return "\"\"";
+    for (s) |c| {
+        if (c == '\\' or c == '"') aw.writer.writeByte('\\') catch return "\"\"";
+        aw.writer.writeByte(c) catch return "\"\"";
+    }
+    aw.writer.writeByte('"') catch return "\"\"";
+    return aw.writer.buffered();
+}
+
 fn strField(obj: std.json.ObjectMap, key: []const u8) []const u8 {
     const v = obj.get(key) orelse return "";
     return if (v == .string) v.string else "";
@@ -96,8 +109,8 @@ test "load: names and installPath; project scope is cwd-gated" {
     try Io.Dir.cwd().writeFile(io, .{
         .sub_path = json_path,
         .data = try std.fmt.allocPrint(arena,
-            \\{{"plugins":{{"gmail@cursor":[{{"installPath":"{s}"}}],"pack@official":[{{"installPath":"{s}","scope":"project","projectPath":"{s}"}}]}}}}
-        , .{ user_plug, proj_plug, project }),
+            \\{{"plugins":{{"gmail@cursor":[{{"installPath":{s}}}],"pack@official":[{{"installPath":{s},"scope":"project","projectPath":{s}}}]}}}}
+        , .{ quote(arena, user_plug), quote(arena, proj_plug), quote(arena, project) }),
     });
 
     const user_only = load(io, arena, json_path, "/elsewhere");

@@ -1,12 +1,8 @@
 //! In-place plugins and foreign-harness MCP (ADR 0007).
 //!
-//! Grok-build never walks `plugins/cache/` (OpenCode never does either — it
-//! globs `.claude/skills/**/SKILL.md` and `.opencode/`). Cache installs come
-//! from `installed_plugins.json` `installPath`. This module is the live scan.
-//!
-//! Skills stay on-demand (`skill` tool / `/skills`), including Claude
-//! `commands/*.md` and a plugin-root `SKILL.md`. MCP still needs `/mcp
-//! trust` or `--yolo`. Plugin hooks are not run. GRAFF_NO_PLUGINS=1 disables.
+//! Never walk `plugins/cache/`. Claude/Cursor cache comes from
+//! `installed_plugins.json`; Codex from `config.toml` → PluginStore.
+//! Skills stay on-demand. MCP needs `/mcp trust` or `--yolo`.
 
 const std = @import("std");
 const Io = std.Io;
@@ -15,8 +11,7 @@ const Allocator = std.mem.Allocator;
 const layout = @import("plugin_layout.zig");
 
 const plugin_cap = 32;
-/// Immediate children plus one more for Cursor `local/<name>/`. Never
-/// `cache/` — that tree is hashed and is what made a scan take a second.
+/// Depth 2 for Cursor `local/<name>/`. Never `cache/` (hashed, slow).
 const walk_depth: u8 = 2;
 const visit_cap = 256;
 const file_cap: std.Io.Limit = .limited(1 << 20);
@@ -133,6 +128,12 @@ fn takeInstalled(io: Io, arena: Allocator, list: *std.ArrayList(Plugin), json_pa
     }
 }
 
+fn takeCodex(io: Io, arena: Allocator, list: *std.ArrayList(Plugin), home: []const u8, personal: bool) void {
+    for (@import("plugin_codex.zig").load(io, arena, home)) |e| {
+        adopt(io, arena, list, e.path, "codex", personal, e.name);
+    }
+}
+
 const Spec = struct { rel: []const u8, origin: []const u8 };
 
 const user_roots = [_]Spec{
@@ -179,7 +180,7 @@ pub fn discoverFresh(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Di
         }
         takeInstalled(io, arena, &list, join(arena, h, ".claude/plugins/installed_plugins.json"), "claude", true, cwd);
         takeInstalled(io, arena, &list, join(arena, h, ".cursor/plugins/installed_plugins.json"), "cursor", true, cwd);
-        takeInstalled(io, arena, &list, join(arena, h, ".codex/plugins/installed_plugins.json"), "codex", true, cwd);
+        takeCodex(io, arena, &list, join(arena, h, ".codex"), true);
     };
     if (cwd.len > 0) {
         for (project_roots) |spec| {
@@ -187,7 +188,7 @@ pub fn discoverFresh(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Di
         }
         takeInstalled(io, arena, &list, join(arena, cwd, ".claude/plugins/installed_plugins.json"), "claude", false, cwd);
         takeInstalled(io, arena, &list, join(arena, cwd, ".cursor/plugins/installed_plugins.json"), "cursor", false, cwd);
-        takeInstalled(io, arena, &list, join(arena, cwd, ".codex/plugins/installed_plugins.json"), "codex", false, cwd);
+        takeCodex(io, arena, &list, join(arena, cwd, ".codex"), false);
     }
     last_visits = visits;
     return list.items;
@@ -221,7 +222,7 @@ pub fn agentDirs(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Dir, p
 }
 
 fn pathEq(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, std.mem.trimEnd(u8, a, "/"), std.mem.trimEnd(u8, b, "/"));
+    return std.mem.eql(u8, std.mem.trimEnd(u8, a, "/\\"), std.mem.trimEnd(u8, b, "/\\"));
 }
 
 fn putServers(arena: Allocator, servers: *std.json.ObjectMap, found: *bool, v: ?Value) void {
@@ -427,7 +428,7 @@ test "discover: installed_plugins.json names a cache installPath; cache/ is not 
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, nested, "agents/reviewer.md"), .data = "---\nname: pack-reviewer\n---\nbe careful\n" });
     try testing.expectEqual(@as(usize, 0), discover(io, arena, home, tmp.dir).len);
 
-    const json = try std.fmt.allocPrint(arena, "{{\"plugins\":{{\"pack@official\":[{{\"installPath\":\"{s}\"}}]}}}}", .{nested});
+    const json = try std.fmt.allocPrint(arena, "{{\"plugins\":{{\"pack@official\":[{{\"installPath\":{s}}}]}}}}", .{@import("plugin_index.zig").quote(arena, nested)});
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, home, ".claude/plugins/installed_plugins.json"), .data = json });
     const list = discover(io, arena, home, tmp.dir);
     try testing.expectEqual(@as(usize, 1), list.len);
@@ -476,9 +477,9 @@ test "mergeMcp: ~/.claude.json project-scoped servers match this cwd" {
     const base = try tmpBase(io, &tmp, arena);
     const home = join(arena, base, "home");
     try Io.Dir.cwd().createDirPath(io, home);
-    const head = "{\"mcpServers\":{\"root\":{\"command\":\"r\"}},\"projects\":{\"";
-    const tail = "\":{\"mcpServers\":{\"here\":{\"command\":\"h\"}}},\"/other\":{\"mcpServers\":{\"nope\":{\"command\":\"x\"}}}}}";
-    const payload = try std.fmt.allocPrint(arena, "{s}{s}{s}", .{ head, base, tail });
+    const head = "{\"mcpServers\":{\"root\":{\"command\":\"r\"}},\"projects\":{";
+    const tail = ":{\"mcpServers\":{\"here\":{\"command\":\"h\"}}},\"/other\":{\"mcpServers\":{\"nope\":{\"command\":\"x\"}}}}}";
+    const payload = try std.fmt.allocPrint(arena, "{s}{s}{s}", .{ head, @import("plugin_index.zig").quote(arena, base), tail });
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, home, ".claude.json"), .data = payload });
 
     var servers: std.json.ObjectMap = .empty;
@@ -552,7 +553,7 @@ test "discover: Cursor cache uses .cursor-plugin + mcp.json; name from manifest"
         .sub_path = join(arena, plug, "mcp.json"),
         .data = "{\"mcpServers\":{\"gmail\":{\"url\":\"https://gmailmcp.googleapis.com/mcp/v1\"}}}",
     });
-    const idx = try std.fmt.allocPrint(arena, "{{\"plugins\":{{\"gmail@cursor-public\":[{{\"installPath\":\"{s}\"}}]}}}}", .{plug});
+    const idx = try std.fmt.allocPrint(arena, "{{\"plugins\":{{\"gmail@cursor-public\":[{{\"installPath\":{s}}}]}}}}", .{@import("plugin_index.zig").quote(arena, plug)});
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, home, ".cursor/plugins/installed_plugins.json"), .data = idx });
 
     const list = discover(io, arena, home, tmp.dir);

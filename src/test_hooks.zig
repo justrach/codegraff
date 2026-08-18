@@ -131,6 +131,7 @@ const plugins = @import("plugins.zig"); // ADR 0007 in-place plugin / foreign MC
 const plugin_layout = @import("plugin_layout.zig"); // Claude commands/ + inline MCP + ${CLAUDE_PLUGIN_ROOT}
 const plugin_scan = @import("plugin_scan.zig"); // timed discover + production cache
 const plugin_index = @import("plugin_index.zig"); // Claude/Cursor installed_plugins.json
+const plugin_codex = @import("plugin_codex.zig"); // Codex config.toml → PluginStore
 
 // #345: the global-vs-project MCP config merge. mcp.zig does reference its
 // decls, but the hook makes the coverage explicit rather than contingent on

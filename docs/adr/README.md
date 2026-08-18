@@ -17,7 +17,7 @@ record only when you need the evidence or the edge cases.
 | [0004](0004-peer-speech-is-a-working-set.md) | Peer speech is pull: a one-line `[peer]` wake in history, bodies in the inbox ring; compact drops spent injects and never treats them as the human. |
 | [0005](0005-standing-goal-lives-in-the-prefix.md) | Standing goal is one prefix line; the user-message essay injects on change only, never every N turns. |
 | [0006](0006-workspace-switch-is-a-tool.md) | Mid-session worktree switch is a real `workspace` tool; a skill cannot move file-tool cwd. |
-| [0007](0007-plugins-are-read-in-place.md) | Cursor/Claude/Grok/Codex plugins and MCP are read in place (cache via installed_plugins.json, never walked); skills stay on-demand; MCP stays consent-gated. |
+| [0007](0007-plugins-are-read-in-place.md) | Cursor/Claude/Grok/Codex plugins and MCP are read in place (Claude/Cursor cache via installed_plugins.json, Codex via config.toml PluginStore, never walked); skills stay on-demand; MCP stays consent-gated. |
 | [0008](0008-synthetic-evals-use-external-verifiers.md) | Synthetic coding evals promote only external-verifier passes; model judges may tiebreak correctness, never decide it. |
 
 ## When to write one

@@ -441,6 +441,7 @@ test "promptCatalog: names + descriptions only, never bodies" {
     try std.testing.expect(std.mem.indexOf(u8, text, "SECRET-BODY-TEXT") == null);
     try std.testing.expect(std.mem.indexOf(u8, text, "`skill`") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "/") == null); // no file paths — they move and bust the cache prefix
+    try std.testing.expect(std.mem.indexOf(u8, text, "file:") == null); // Codex prints these; we do not
     try std.testing.expectEqualStrings("", promptCatalog(arena, &.{}));
 
     const shuffled = [_]Skill{

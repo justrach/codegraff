@@ -22,9 +22,11 @@ config.
   globs named skill trees; grok-build lists immediate children). `cache/` and
   `marketplaces/` are not walked. Cache installs come from Claude/Cursor
   `installed_plugins.json` `installPath` entries, the same index grok-build
-  reads. Codex installs live under `~/.codex/plugins/cache/` via its store,
-  not a walk; we take `.codex/plugins/installed_plugins.json` when present
-  and recognize `.codex-plugin/plugin.json` first (Codex's manifest order).
+  reads. Codex does not write that file: enabled ids in `~/.codex/config.toml`
+  (`[plugins."name@marketplace"]`) resolve to
+  `plugins/cache/<marketplace>/<name>/<version>` (prefer `local`, else the
+  last sorted version). We still recognize `.codex-plugin/plugin.json` first
+  (Codex's manifest order) and do not list the cache tree.
   A directory is a plugin if it has `.codex-plugin/plugin.json`,
   `.cursor-plugin/plugin.json`,
   `.claude-plugin/plugin.json`, `.grok-plugin/plugin.json`, `plugin.json`,
@@ -64,7 +66,7 @@ config.
   list still rescans without rewriting the prefix.
   Production caches the first walk (MCP + fleet + skills share it); tests
   do not. `/plugins` and the interactive boot line print wall time so a
-  slow home directory is visible. A plugin that lives only under `cache/`
-  and is missing from `installed_plugins.json` is invisible until the other
-  harness records it — same as grok-build.
+  slow home directory is visible.   A plugin that lives only under `cache/`
+  and is missing from `installed_plugins.json` (Claude/Cursor) or
+  `config.toml` (Codex) is invisible until the other harness records it.
 - Revisit if a user needs to disable one plugin without `GRAFF_NO_PLUGINS`.
