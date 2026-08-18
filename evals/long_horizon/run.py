@@ -230,6 +230,50 @@ def self_test(seed: int) -> None:
     print(f"self-test ok: baseline rejected, reference accepted, tampering rejected (seed {seed})")
 
 
+def showcase(seed: int) -> None:
+    """Print one generated task and its externally verified reward path."""
+    with tempfile.TemporaryDirectory(prefix="graff-long-horizon-showcase-") as raw:
+        workspace = Path(raw)
+        materialize(workspace, seed)
+        seed_data = json.loads((workspace / ".eval-seed.json").read_text(encoding="utf-8"))
+        paths = sorted(
+            str(path.relative_to(workspace))
+            for path in workspace.rglob("*")
+            if path.is_file()
+        )
+        baseline = grade(workspace, seed)
+
+        print(f"{ENVIRONMENT_ID} / seed {seed}")
+        balances = ", ".join(
+            f"{account}={balance}"
+            for account, balance in seed_data["balances"].items()
+        )
+        print(f"Fixture accounts: {balances}")
+        print("\nGenerated repository:")
+        for relative in paths:
+            print(f"  {relative}")
+        print("\nAgent task (TASK.md):")
+        for line in (workspace / "TASK.md").read_text(encoding="utf-8").splitlines():
+            print(f"  {line}")
+        print(
+            f"\nUnfinished baseline: {baseline['passed']}/{baseline['total']} checks, "
+            f"score={baseline['score']:.3f} (expected failure)"
+        )
+
+        apply_reference(workspace)
+        solved = grade(workspace, seed)
+        if not solved["deterministic_pass"]:
+            raise SystemExit("showcase failed: bundled reference solution did not pass")
+        print("\nExternal verifier after the bundled reference patch:")
+        for result in solved["checks"]:
+            print(f"  [PASS] {result['name']}")
+        print(
+            f"Reference solution: {solved['passed']}/{solved['total']} checks; "
+            "deterministic reward floor=0.900"
+        )
+        print("Model quality may add at most 0.050, only after this complete pass.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--harness", default="graff-dev")
@@ -239,10 +283,15 @@ def main() -> None:
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--judge-command", help="external JSON-in/JSON-out maintainability judge")
     parser.add_argument("--keep", action="store_true")
-    parser.add_argument("--self-test", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--self-test", action="store_true")
+    mode.add_argument("--showcase", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         self_test(args.seed)
+        return
+    if args.showcase:
+        showcase(args.seed)
         return
 
     RESULTS.mkdir(parents=True, exist_ok=True)

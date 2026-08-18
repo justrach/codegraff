@@ -12,6 +12,34 @@ requires coordinated edits, projected-state reasoning, rollback semantics,
 compatibility, tests, and verification. New environments should test a distinct
 systems behavior rather than merely making this fixture larger.
 
+## Inspect one eval in 60 seconds
+
+The showcase path makes the environment concrete without calling a provider or
+leaving a workspace behind. It prints the seeded repository, the exact task an
+agent receives, the unfinished baseline score, and every verifier row after the
+bundled reference patch:
+
+```sh
+python3 evals/long_horizon/run.py --showcase --seed 469
+```
+
+The condensed scorecard is:
+
+```text
+ledger-batch-v1 / seed 469
+Fixture accounts: cedar=105, ember=220, fjord=120, grove=210
+Generated repository: 14 files across ledgercore/ and tests/
+Agent task: implement atomic idempotent batch transfers across the model,
+            service, repository state, and stable JSON API
+Unfinished baseline: 2/10 checks, score=0.160 (expected failure)
+Reference solution: 10/10 checks; deterministic reward floor=0.900
+Model quality may add at most 0.050, only after this complete pass.
+```
+
+The full output includes the generated `TASK.md` and names all ten external
+checks, so a reviewer can see both what the agent must coordinate and what
+actually determines reward.
+
 ## Run
 
 ```sh

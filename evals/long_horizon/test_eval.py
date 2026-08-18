@@ -1,11 +1,13 @@
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 from environment import materialize
 from grader import grade
 from reference import apply_reference
-from run import final_reward
+from run import final_reward, showcase
 
 
 class EnvironmentTests(unittest.TestCase):
@@ -36,6 +38,17 @@ class EnvironmentTests(unittest.TestCase):
         pass_reward, _ = final_reward(passing, 1, 1, 0.0)
         self.assertLessEqual(fail_reward, 0.8)
         self.assertGreaterEqual(pass_reward, 0.9)
+
+    def test_showcase_exposes_task_and_external_scorecard(self):
+        output = StringIO()
+        with redirect_stdout(output):
+            showcase(469)
+        rendered = output.getvalue()
+        self.assertIn("ledger-batch-v1 / seed 469", rendered)
+        self.assertIn("Agent task (TASK.md):", rendered)
+        self.assertIn("Unfinished baseline:", rendered)
+        self.assertIn("[PASS] atomic-failures", rendered)
+        self.assertIn("deterministic reward floor=0.900", rendered)
 
 
 if __name__ == "__main__":
