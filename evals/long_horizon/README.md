@@ -40,6 +40,43 @@ The full output includes the generated `TASK.md` and names all ten external
 checks, so a reviewer can see both what the agent must coordinate and what
 actually determines reward.
 
+## What may explain the initial branch A/B
+
+We also ran the same `gpt-5.6-luna` coding suite through peer/goal revision
+`d93214e` and the `release/v0.0.265` Graff binary. The task score did **not** improve: both
+versions solved every case. The branch instead reached the same answers with
+less work (new versus release):
+
+| Sample | Correctness | Wall time | Model calls | Input tokens | Output tokens |
+|---|---:|---:|---:|---:|---:|
+| Full suite, 12 tasks | 12/12 vs 12/12 | 146.01s vs 175.25s (-16.7%) | 37 vs 47 (-21.3%) | 172,919 vs 224,383 (-22.9%) | 3,284 vs 4,589 (-28.4%) |
+| Five-task subset, three samples each | 15/15 vs 15/15 | 140.38s vs 190.58s (-26.3%) | 37 vs 50 (-26.0%) | 165,556 vs 233,237 (-29.0%) | 2,350 vs 4,342 (-45.9%) |
+
+The strongest code-level explanation is conditional: ADR 0004 removed pushed
+peer rosters and message bodies from model history. The release could put about
+4,000 tokens of stale co-resident chatter into a one-shot's first request and
+sometimes induced the model to answer that chatter. The branch parks bodies in
+an inbox and injects at most a one-line wake. That mechanism predicts the
+observed pattern—identical final answers, but fewer round trips and fewer input
+and output tokens—**if another Graff session was visible during the run**.
+The old harness often spent an extra call even on `exact-reply`; the branch
+finished it in one.
+
+This is a plausible mechanism, not a causal result. The result records do not
+preserve the request bodies or live-peer roster, so they cannot prove that the
+old arm paid the peer-context cost. Provider load, cache warmth, and rollout
+nondeterminism remain confounders. The standing-goal change in ADR 0005 cannot
+explain these short one-shots because the harness did not pass `--goal`, and the
+runs were too short to compact. We also did not tune the system-prompt essays.
+
+The single long-horizon seed is likewise a smoke test, not evidence of a score
+increase. Under the corrected semantic grader both solutions pass 10/10. The
+branch used 15 rather than 16 calls and 141,848 rather than 156,310 input tokens,
+but it was slower (121.6s versus 111.0s) and emitted more output (5,185 versus
+4,671 tokens). Establishing causality needs explicit binary provenance, held-out
+seeds, interleaved run order, and multiple repetitions; five seeds with three
+repetitions per binary is the minimum useful next comparison.
+
 ## Run
 
 ```sh
