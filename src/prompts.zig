@@ -471,8 +471,9 @@ pub const compact_instruction =
     \\work. Be thorough but compact. Reply with only the summary.
 ;
 
-test { // #421/#410: the capability matrix + the full-capability golden. An unreferenced module's tests never run.
+test { // #421/#410: prompt snapshots and goal-prefix behavior must stay reachable.
     _ = @import("prompt_snapshot_tests.zig");
+    _ = @import("prompt_goal_tests.zig");
 }
 
 // The harness has always run a returned tool batch concurrently, for subagents
