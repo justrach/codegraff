@@ -65,10 +65,12 @@ fn toolDetail(t: ToolInvocation) []const u8 {
         "description"
     else if (std.mem.eql(u8, t.name, "imagegen"))
         "prompt"
-    else if (std.mem.eql(u8, t.name, "peer_message"))
-        "text"
-    else
-        return "";
+    else if (std.mem.eql(u8, t.name, "peer_message")) blk: {
+        if (stringField(t.input, "action")) |act| {
+            if (act.len > 0 and !std.mem.eql(u8, act, "send")) break :blk "action";
+        }
+        break :blk "text";
+    } else return "";
     const detail = stringField(t.input, field) orelse return "";
     const end = std.mem.indexOfScalar(u8, detail, '\n') orelse detail.len;
     return std.mem.trim(u8, detail[0..end], " \t\r");

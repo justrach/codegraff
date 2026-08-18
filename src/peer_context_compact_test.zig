@@ -11,6 +11,7 @@ test "cleanUserTurn: a peer inject is not a human user turn" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
+    try std.testing.expect(!compact.cleanUserTurn(try textMessage(a, "user", "[peer] 1 unread from a — peer_message action=inbox")));
     try std.testing.expect(!compact.cleanUserTurn(try textMessage(a, "user", "[peer message from a]: hold gui/src")));
     try std.testing.expect(!compact.cleanUserTurn(try textMessage(a, "user", "[presence] 1 other live graff session(s)")));
     try std.testing.expect(!compact.cleanUserTurn(try textMessage(a, "user", "[#469 presence] leftover from a resumed transcript")));

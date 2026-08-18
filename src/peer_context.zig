@@ -1,12 +1,13 @@
 //! Peer speech in the model's history is a working set, not the conversation
-//! (ADR 0004 / #563 slice F).
+//! (ADR 0004 / #563).
 //!
-//! The JSONL room in presence_chan.zig is the log. deliverInbound copies a
-//! short tail into a user-role note so the model can coordinate *this step*.
-//! Those notes are perishable: they are not a human turn, they must not fence
-//! compaction or emergency trim, and compact drops every spent one (a later
-//! turn already followed it) while keeping a trailing unreplied inject so a
-//! compact between drain and reply cannot swallow inbound.
+//! The JSONL room in presence_chan.zig is the log. deliverInbound parks
+//! bodies in peer_inbox.zig and injects a one-line `[peer]` wake so the
+//! model knows to `action=inbox`. Those wakes are perishable: they are not
+//! a human turn, they must not fence compaction or emergency trim, and
+//! compact drops every spent one (a later turn already followed it) while
+//! keeping a trailing unreplied inject so a compact between drain and
+//! reply cannot swallow the wake.
 //!
 //! Detection is prefix-based because that is how the inject is serialized
 //! today. Slice C can replace the fake user role; until then every compact
@@ -24,9 +25,9 @@ const presence = @import("presence.zig");
 /// keeps the rest; the REPL show-count (2) is a display cap, not this.
 pub const history_tail_max: usize = 3;
 
-/// Hard ceiling on one deliverInbound blob, so a long roster plus a few
-/// clipped lines cannot become another uncapped tool output.
-pub const inject_byte_cap: usize = 800;
+/// Hard ceiling on one deliverInbound wake. The bodies live in the inbox
+/// ring; this is only the one-liner that says they are waiting.
+pub const inject_byte_cap: usize = 240;
 
 /// Per-line clip inside that blob. The tool already asks for one or two
 /// sentences; the receiver enforces it.
@@ -34,6 +35,7 @@ pub const line_clip: usize = 200;
 
 pub fn isPeerInjectContent(s: []const u8) bool {
     const t = std.mem.trimStart(u8, s, " \t\r\n");
+    if (std.mem.startsWith(u8, t, "[peer]")) return true;
     if (std.mem.startsWith(u8, t, "[peer message")) return true;
     if (std.mem.startsWith(u8, t, "[presence]")) return true;
     if (std.mem.startsWith(u8, t, "[#469 presence]")) return true;
@@ -101,24 +103,13 @@ pub fn appendWorkingSet(dest: *std.json.Array, kept: []const Value, original: []
     }
 }
 
-/// One durable-state line naming who is live *now*. Speech stays in the
-/// JSONL room; quoting it here would just survive compact as another leak.
+/// One durable-state line: a count, not the roster. `action=list` is the
+/// pull; quoting names and goals here would just survive compact as another
+/// leak.
 pub fn durableRosterLine(arena: Allocator, io: Io) !?[]const u8 {
     const peers = presence.liveAllPeers(io, arena);
     if (peers.len == 0) return null;
-    var buf: std.ArrayList(u8) = .empty;
-    try buf.appendSlice(arena, "- live co-resident sessions (working set; speech is in the worktree channel, not this summary): ");
-    for (peers, 0..) |p, i| {
-        if (i > 0) try buf.appendSlice(arena, "; ");
-        const goal = if (p.goal.len > 0) clip(p.goal, 40) else "?";
-        const piece = try std.fmt.allocPrint(arena, "{s} ({s})", .{ p.session_id, goal });
-        try buf.appendSlice(arena, piece);
-        if (buf.items.len > 240) {
-            try buf.appendSlice(arena, "; …");
-            break;
-        }
-    }
-    return buf.items;
+    return try std.fmt.allocPrint(arena, "- {d} live co-resident session(s); peer_message action=list to see who (speech is pull, not this summary)", .{peers.len});
 }
 
 const testing = std.testing;
@@ -134,6 +125,7 @@ fn asstText(arena: Allocator, s: []const u8) !Value {
 }
 
 test "isPeerInjectContent: live prefixes and the #469-era strings in old transcripts" {
+    try testing.expect(isPeerInjectContent("[peer] 1 unread from s-2 — peer_message action=inbox"));
     try testing.expect(isPeerInjectContent("[peer message from s-2]: hold off"));
     try testing.expect(isPeerInjectContent("  [presence] 1 other live graff session(s)"));
     try testing.expect(isPeerInjectContent("[#469 presence] 1 other live graff session(s)"));

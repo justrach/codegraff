@@ -2,7 +2,7 @@
 //!
 //! The JSONL rooms stay append-only logs (ADR 0004). Delivery is the
 //! working set: a bare worktree post is still a room, but a named target is
-//! a DM — only that session injects it. `session` on peer_message resolves
+//! a DM — only that session parks it. `session` on peer_message resolves
 //! by exact id, pid, unique name fragment, or unique **goal** fragment so a
 //! model can ping "the one doing the digest job" without guessing names.
 //!
