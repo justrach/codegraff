@@ -68,7 +68,7 @@ const persists_note =
     \\disk cannot give back - the decisions and why they were made, what was tried
     \\and failed, the constraints the user set, and the exact state of the
     \\unfinished work. Peer-channel notes are a working set, not the conversation:
-    \\do not transcribe [peer] wakes or [peer message] or [presence] lines; the
+    \\do not transcribe [peer message] or [presence] lines or [peer] wakes; the
     \\harness drops them. Who is live and what they said are pull: peer_message
     \\action=list / action=inbox (the room log stays on disk).
 ;

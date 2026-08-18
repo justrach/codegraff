@@ -80,15 +80,15 @@ pub fn parkHeard(local: []const Message, device: []const Message) usize {
     return n;
 }
 
-fn itemAt(i: usize) Parked {
-    return g_items[(g_head + i) % inbox_cap];
+fn itemAt(i: usize) *const Parked {
+    return &g_items[(g_head + i) % inbox_cap];
 }
 
-fn fromSlice(p: Parked) []const u8 {
+fn fromSlice(p: *const Parked) []const u8 {
     return p.from[0..p.from_len];
 }
 
-fn textSlice(p: Parked) []const u8 {
+fn textSlice(p: *const Parked) []const u8 {
     return p.text[0..p.text_len];
 }
 
@@ -151,28 +151,28 @@ fn peer(id: []const u8, pid: i32, goal: []const u8, identity: []const u8) Owner 
     return .{ .session_id = id, .pid = pid, .goal = goal, .identity = identity };
 }
 
-test "parkHeard then takeAll formats bodies and clears the ring" {
+test "inbox ring: park, one-line wake, overflow drops oldest, takeAll clears" {
+    // One test owns the process-local ring so parallel suite threads cannot
+    // interleave park/take on the same slots (ADR 0004 mailbox is per-process).
     resetForTest();
     defer resetForTest();
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
+
     const n = parkHeard(&.{msg("session-aaa", "hold gui/src", "")}, &.{msg("session-bbb", "your turn", "session-me")});
     try testing.expectEqual(@as(usize, 2), n);
     try testing.expectEqual(@as(usize, 2), unread());
+    const wake = formatWake(a);
+    try testing.expect(std.mem.startsWith(u8, wake, "[peer] 2 unread from session-aaa + 1 more"));
+    try testing.expect(std.mem.indexOf(u8, wake, "action=inbox") != null);
+    try testing.expect(std.mem.indexOfScalar(u8, wake, '\n') == null);
     const body = takeAll(a);
     try testing.expect(std.mem.indexOf(u8, body, "[peer message from session-aaa]: hold gui/src") != null);
     try testing.expect(std.mem.indexOf(u8, body, "[peer message from session-bbb · device DM]: your turn") != null);
     try testing.expectEqual(@as(usize, 0), unread());
     try testing.expectEqualStrings("inbox empty", takeAll(a));
-}
 
-test "parkHeard: the ring drops the oldest when it overflows inbox_cap" {
-    resetForTest();
-    defer resetForTest();
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
     var i: usize = 0;
     while (i < inbox_cap + 2) : (i += 1) {
         const from = try std.fmt.allocPrint(a, "s-{d}", .{i});
@@ -180,26 +180,10 @@ test "parkHeard: the ring drops the oldest when it overflows inbox_cap" {
         _ = parkHeard(&.{msg(from, text, "")}, &.{});
     }
     try testing.expectEqual(inbox_cap, unread());
-    const body = takeAll(a);
-    try testing.expect(std.mem.indexOf(u8, body, "line 0") == null);
-    try testing.expect(std.mem.indexOf(u8, body, "line 1") == null);
-    try testing.expect(std.mem.indexOf(u8, body, try std.fmt.allocPrint(a, "line {d}", .{inbox_cap + 1})) != null);
-}
-
-test "formatWake names the first sender and stays one line" {
-    resetForTest();
-    defer resetForTest();
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    _ = parkHeard(&.{msg("session-aaa", "hold", "")}, &.{});
-    const one = formatWake(a);
-    try testing.expect(std.mem.startsWith(u8, one, "[peer] 1 unread from session-aaa"));
-    try testing.expect(std.mem.indexOf(u8, one, "action=inbox") != null);
-    try testing.expect(std.mem.indexOfScalar(u8, one, '\n') == null);
-    _ = parkHeard(&.{msg("session-bbb", "go", "")}, &.{});
-    const two = formatWake(a);
-    try testing.expect(std.mem.startsWith(u8, two, "[peer] 2 unread from session-aaa + 1 more"));
+    const overflow = takeAll(a);
+    try testing.expect(std.mem.indexOf(u8, overflow, "line 0") == null);
+    try testing.expect(std.mem.indexOf(u8, overflow, "line 1") == null);
+    try testing.expect(std.mem.indexOf(u8, overflow, try std.fmt.allocPrint(a, "line {d}", .{inbox_cap + 1})) != null);
 }
 
 test "formatList: one short line per peer; empty is honest" {
