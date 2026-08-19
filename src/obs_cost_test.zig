@@ -15,6 +15,7 @@ fn resetCost(io: Io) void {
     c.usd = 0;
     c.in_tokens = 0;
     c.cache_tokens = 0;
+    c.cache_write_tokens = 0;
     c.out_tokens = 0;
     c.api_calls = 0;
     c.sub_calls = 0;
@@ -39,7 +40,7 @@ test "usage/debug match the cost-tally renderer and add turn/decision extras" {
     defer obs.reset();
     obs.attach(io);
 
-    pricing.g_cost.add(io, .priced, "gpt-5.5", 1000, 200, 50);
+    pricing.g_cost.add(io, .priced, "gpt-5.5", 1000, 200, 0, 50);
     obs.turn(.completed);
     obs.note(.{ .tool_rejected = .{
         .name = "mcp__github__create_issue",
@@ -74,8 +75,8 @@ test "usage/debug match the cost-tally renderer and add turn/decision extras" {
     try std.testing.expect(!contains(debug, "create_issue"));
     try std.testing.expect(contains(debug, "mcp_tool"));
 
-    pricing.g_cost.add(io, .sub, "gpt-5.5", 10, 0, 10);
-    pricing.g_cost.add(io, .unpriced, "no-such-model", 10, 0, 10);
+    pricing.g_cost.add(io, .sub, "gpt-5.5", 10, 0, 0, 10);
+    pricing.g_cost.add(io, .unpriced, "no-such-model", 10, 0, 0, 10);
     var cost2_buf: [384]u8 = undefined;
     const cost2 = renderCost(io, &cost2_buf);
     try std.testing.expect(contains(cost2, "subscription"));
@@ -120,7 +121,7 @@ test "live emit path fills HUD and OTLP like a real turn" {
     const sink = engine_sink.writerSink(null);
     sink.emit(io, .{ .session_banner = .{ .cwd = "/Users/secret/repo", .trace_path = "/tmp/trace.jsonl" } });
     obs.prompt(11, "gpt-5.5");
-    pricing.g_cost.add(io, .priced, "gpt-5.5", 1000, 200, 50);
+    pricing.g_cost.add(io, .priced, "gpt-5.5", 1000, 200, 0, 50);
     sink.emit(io, .{ .tool_call_started = .{ .name = "bash", .input = .null } });
     sink.emit(io, .{ .tool_call_finished = .{ .name = "bash", .text = "cat /etc/passwd", .is_error = false, .ms = 12 } });
     obs.turn(.completed);

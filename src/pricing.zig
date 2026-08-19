@@ -70,17 +70,10 @@ pub fn priceFor(model: []const u8) ?ModelPrice {
 /// credential source, neither of which belongs in a price sheet.
 pub const Billing = enum { sub, priced, unpriced };
 
-/// USD for one request at price `p` (negative token counts clamp to 0).
-/// When `high_at` is set and prompt tokens (uncached+cached) meet it, the
-/// whole request uses the high band — grok-4.6's published ≥200k rates.
+pub const usdForUsage = @import("pricing_cache.zig").usdForUsage;
+
 pub fn usdFor(p: ModelPrice, uncached_in: i64, cache_in: i64, out: i64) f64 {
-    const ui = @max(uncached_in, 0);
-    const ci = @max(cache_in, 0);
-    const high = p.high_at > 0 and @as(u64, @intCast(ui)) +| @as(u64, @intCast(ci)) >= p.high_at;
-    const fi: f64 = @floatFromInt(ui);
-    const fc: f64 = @floatFromInt(ci);
-    const fo: f64 = @floatFromInt(@max(out, 0));
-    return (fi * (if (high) p.high_in else p.in) + fc * (if (high) p.high_cache else p.cache) + fo * (if (high) p.high_out else p.out)) / 1_000_000.0;
+    return usdForUsage(p, "", uncached_in, cache_in, 0, out);
 }
 
 /// Session-wide usage/cost tally. Every API response lands here — the root
@@ -92,8 +85,9 @@ pub fn usdFor(p: ModelPrice, uncached_in: i64, cache_in: i64, out: i64) f64 {
 pub const CostTally = struct {
     mutex: Io.Mutex = .init,
     usd: f64 = 0,
-    in_tokens: u64 = 0, // uncached input
+    in_tokens: u64 = 0, // ordinary + cache-write input
     cache_tokens: u64 = 0, // cache-read input
+    cache_write_tokens: u64 = 0,
     out_tokens: u64 = 0,
     api_calls: u64 = 0,
     sub_calls: u64 = 0, // subscription-billed (flat-rate; contribute $0)
@@ -102,19 +96,20 @@ pub const CostTally = struct {
     /// `billing` is the caller's already-classified seat (billing.forSeat): a
     /// flat-rate login and a metered env key on the SAME provider+model are
     /// different classes, so the tally cannot derive it itself (#471).
-    pub fn add(self: *CostTally, io: Io, billing: Billing, model: []const u8, uncached_in: i64, cache_in: i64, out: i64) void {
+    pub fn add(self: *CostTally, io: Io, billing: Billing, model: []const u8, ordinary_in: i64, cache_in: i64, cache_write_in: i64, out: i64) void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         self.api_calls +|= 1;
-        self.in_tokens +|= @intCast(@max(uncached_in, 0));
+        self.in_tokens +|= @intCast(@max(ordinary_in, 0) +| @max(cache_write_in, 0));
         self.cache_tokens +|= @intCast(@max(cache_in, 0));
+        self.cache_write_tokens +|= @intCast(@max(cache_write_in, 0));
         self.out_tokens +|= @intCast(@max(out, 0));
         switch (billing) {
             .sub => self.sub_calls +|= 1,
             .unpriced => self.unpriced_calls +|= 1,
             // No `.?`: the class comes from the caller; a dropped row falls back.
             .priced => {
-                if (priceFor(model)) |p| self.usd += usdFor(p, uncached_in, cache_in, out) else self.unpriced_calls +|= 1;
+                if (priceFor(model)) |p| self.usd += usdForUsage(p, model, ordinary_in, cache_in, cache_write_in, out) else self.unpriced_calls +|= 1;
             },
         }
     }
@@ -130,8 +125,8 @@ pub const CostTally = struct {
 
     /// One-line summary shared by /cost and the one-shot stderr report.
     pub fn render(c: CostTally, w: *Io.Writer) !void {
-        try w.print("{d} api call(s) · {d} in ({d} cached) + {d} out tokens · ${d:.4}", .{
-            c.api_calls, c.in_tokens +| c.cache_tokens, c.cache_tokens, c.out_tokens, c.usd,
+        try w.print("{d} api call(s) · {d} in ({d} cached, {d} cache writes) + {d} out tokens · ${d:.4}", .{
+            c.api_calls, c.in_tokens +| c.cache_tokens, c.cache_tokens, c.cache_write_tokens, c.out_tokens, c.usd,
         });
         if (c.sub_calls > 0) try w.print(" · {d} subscription call(s), flat-rate (not in $)", .{c.sub_calls});
         if (c.unpriced_calls > 0) try w.print(" · {d} call(s) on unpriced models", .{c.unpriced_calls});

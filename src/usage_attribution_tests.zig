@@ -159,15 +159,16 @@ test "#418: parent context is identical with and without an attributed child; on
     // The BILL: the run-wide tally moved by EXACTLY the children's usage.
     const cost_after = pricing.g_cost.snap(io);
     try std.testing.expectEqual(cost_before.api_calls + fleet_size, cost_after.api_calls);
-    // recordUsage folds anthropic cache WRITES into uncached input; cache
-    // READS bill on their own line.
+    // Cache writes remain part of total non-read input, while their dedicated
+    // counter and 1.25× price stay visible; cache reads bill on their own line.
     const billed_in: u64 = @intCast(child_sample.input + child_sample.cache_write);
     const billed_cache: u64 = @intCast(child_sample.cache_read);
     const billed_out: u64 = @intCast(child_sample.output);
     try std.testing.expectEqual(cost_before.in_tokens + fleet_size * billed_in, cost_after.in_tokens);
     try std.testing.expectEqual(cost_before.cache_tokens + fleet_size * billed_cache, cost_after.cache_tokens);
+    try std.testing.expectEqual(cost_before.cache_write_tokens + fleet_size * @as(u64, @intCast(child_sample.cache_write)), cost_after.cache_write_tokens);
     try std.testing.expectEqual(cost_before.out_tokens + fleet_size * billed_out, cost_after.out_tokens);
-    const per_child = pricing.usdFor(pricing.priceFor(child_model).?, child_sample.input + child_sample.cache_write, child_sample.cache_read, child_sample.output);
+    const per_child = pricing.usdForUsage(pricing.priceFor(child_model).?, child_model, child_sample.input, child_sample.cache_read, child_sample.cache_write, child_sample.output);
     try std.testing.expect(per_child > 0); // the assertion below is only worth anything if the model is priced
     try std.testing.expectApproxEqAbs(cost_before.usd + @as(f64, @floatFromInt(fleet_size)) * per_child, cost_after.usd, 1e-9);
 }

@@ -131,9 +131,9 @@ pub fn recordUsage(self: *Agent, root: std.json.ObjectMap, req_body_len: usize) 
                 floorContextTokens(self, fallback);
             self.last_usage_includes_output = total > 0 and if (u.get("output_tokens")) |v| v == .integer and v.integer >= 0 else false;
             const cache = usageInt(u, "cache_read_input_tokens");
+            const cache_write = usageInt(u, "cache_creation_input_tokens");
             if (cache > 0) self.last_cache_read = @intCast(cache);
-            // cache writes bill ~like input; fold them into uncached input.
-            self.recordCost(usageInt(u, "input_tokens") +| usageInt(u, "cache_creation_input_tokens"), cache, usageInt(u, "output_tokens"));
+            self.recordCost(usageInt(u, "input_tokens"), cache, cache_write, usageInt(u, "output_tokens"));
         },
         .openai => {
             const total = usageInt(u, "total_tokens");
@@ -148,11 +148,13 @@ pub fn recordUsage(self: *Agent, root: std.json.ObjectMap, req_body_len: usize) 
             // deepseek reports prompt_cache_hit_tokens; the OpenAI shape
             // nests cached_tokens under prompt_tokens_details.
             var cache = usageInt(u, "prompt_cache_hit_tokens");
-            if (cache == 0) if (u.get("prompt_tokens_details")) |d| if (d == .object) {
-                cache = usageInt(d.object, "cached_tokens");
+            var cache_write: i64 = 0;
+            if (u.get("prompt_tokens_details")) |d| if (d == .object) {
+                if (cache == 0) cache = usageInt(d.object, "cached_tokens");
+                cache_write = usageInt(d.object, "cache_write_tokens");
             };
             if (cache > 0) self.last_cache_read = @intCast(cache);
-            self.recordCost(@max(usageInt(u, "prompt_tokens") - cache, 0), cache, usageInt(u, "completion_tokens"));
+            self.recordCost(@max(usageInt(u, "prompt_tokens") - cache - cache_write, 0), cache, cache_write, usageInt(u, "completion_tokens"));
         },
         // codex uses recordUsageResponses on its own path.
         .responses => {},
@@ -188,8 +190,8 @@ pub fn usageInt(obj: std.json.ObjectMap, name: []const u8) i64 {
 /// #471: the seat is classified from the provider AND how its credential was
 /// obtained — a flat-rate login (codex/kimi/xai) tallies as sub_calls and adds
 /// $0, while an env key on that same provider is metered like any other.
-pub fn recordCost(self: *Agent, uncached_in: i64, cache_in: i64, out: i64) void {
-    g_cost.add(self.io, billing.forProvider(self.provider), self.provider.model, uncached_in, cache_in, out);
+pub fn recordCost(self: *Agent, ordinary_in: i64, cache_in: i64, cache_write_in: i64, out: i64) void {
+    g_cost.add(self.io, billing.forProvider(self.provider), self.provider.model, ordinary_in, cache_in, cache_write_in, out);
 }
 
 /// #174: ~4-bytes/token estimate of the FULL history serialized as Responses
@@ -477,11 +479,13 @@ pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap, req_body
     // backend rejects the resend for exceeding the window, and auto-compaction
     // (gated on this meter) never rescues it.
     var cached: i64 = 0;
+    var cache_write: i64 = 0;
     if (u.get("input_tokens_details")) |d| if (d == .object) {
         cached = usageInt(d.object, "cached_tokens");
+        cache_write = usageInt(d.object, "cache_write_tokens");
         if (cached > 0) self.last_cache_read = @intCast(cached);
     };
-    self.recordCost(@max(in_tokens - cached, 0), cached, out_tokens);
+    self.recordCost(@max(in_tokens - cached - cache_write, 0), cached, cache_write, out_tokens);
 }
 
 test "recordUsageResponses: usage fallbacks never lower an authoritative meter" {

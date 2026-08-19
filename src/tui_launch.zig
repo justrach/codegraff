@@ -381,6 +381,7 @@ test "hudCb usage/debug use the cost-tally renderer, not chars" {
     c.usd = 0;
     c.in_tokens = 0;
     c.cache_tokens = 0;
+    c.cache_write_tokens = 0;
     c.out_tokens = 0;
     c.api_calls = 0;
     c.sub_calls = 0;
@@ -400,7 +401,7 @@ test "hudCb usage/debug use the cost-tally renderer, not chars" {
     obs.reset();
     defer obs.reset();
     obs.attach(io);
-    pricing.g_cost.add(io, .priced, "gpt-5.5", 1000, 200, 50);
+    pricing.g_cost.add(io, .priced, "gpt-5.5", 1000, 200, 0, 50);
     obs.turn(.completed);
 
     var cost_buf: [256]u8 = undefined;

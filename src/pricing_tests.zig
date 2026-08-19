@@ -8,13 +8,15 @@ test "CostTally token and call counters saturate" {
     var tally: pricing.CostTally = .{
         .in_tokens = std.math.maxInt(u64) - 1,
         .cache_tokens = std.math.maxInt(u64),
+        .cache_write_tokens = std.math.maxInt(u64),
         .out_tokens = std.math.maxInt(u64) - 2,
         .api_calls = std.math.maxInt(u64),
         .sub_calls = std.math.maxInt(u64),
     };
-    tally.add(std.testing.io, .sub, "gpt-5.5", 10, 10, 10);
+    tally.add(std.testing.io, .sub, "gpt-5.5", 10, 10, 10, 10);
     try std.testing.expectEqual(std.math.maxInt(u64), tally.in_tokens);
     try std.testing.expectEqual(std.math.maxInt(u64), tally.cache_tokens);
+    try std.testing.expectEqual(std.math.maxInt(u64), tally.cache_write_tokens);
     try std.testing.expectEqual(std.math.maxInt(u64), tally.out_tokens);
     try std.testing.expectEqual(std.math.maxInt(u64), tally.api_calls);
     try std.testing.expectEqual(std.math.maxInt(u64), tally.sub_calls);
@@ -50,12 +52,14 @@ test "resolveModelName (#377): family-prefixed spelling resolves to the provider
     try std.testing.expect(!pricing.familyAliasEquals("codex", "k3", "kimi-k3"));
 }
 
-test "usdFor: per-million math and negative clamping" {
+test "usdFor: per-million math, cache writes, and negative clamping" {
     const p = pricing.priceFor("gpt-5.5").?; // $5 in / $30 out / $0.5 cache per 1M
     try std.testing.expectApproxEqAbs(@as(f64, 5.0), pricing.usdFor(p, 1_000_000, 0, 0), 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 0.5), pricing.usdFor(p, 0, 1_000_000, 0), 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 3.0), pricing.usdFor(p, 0, 0, 100_000), 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 0.0), pricing.usdFor(p, -42, -1, 0), 1e-9); // clamped
+    const p56 = pricing.priceFor("gpt-5.6").?;
+    try std.testing.expectApproxEqAbs(@as(f64, 6.25), pricing.usdForUsage(p56, "gpt-5.6", 0, 0, 1_000_000, 0), 1e-9);
 }
 
 test "grok-4.6 window is 500k and compact-at is 80%" {
