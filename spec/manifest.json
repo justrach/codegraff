@@ -100,6 +100,16 @@
       "impl": "src/http_headers.zig:promptCacheKey+src/subagent_spawn.zig:allowed",
       "cells_floor": 48,
       "cells_key": "cases"
+    },
+    {
+      "id": "terminal_modes",
+      "lean": "lean-proofs/Graff/TerminalModes.lean",
+      "ref": "spec/ref/terminal_modes.py",
+      "fixture": "spec/kernels/terminal_modes.json",
+      "zig": "TUI/spec_terminal_modes_conformance.zig",
+      "impl": "TUI/run.zig:enable_seq+TUI/restore.zig:seq",
+      "cells_floor": 14,
+      "cells_key": "cells"
     }
   ]
 }

@@ -7,6 +7,7 @@ one model gates the fixtures AND the live binary.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 DEFAULT_ON = (7, 25)
 
@@ -37,19 +38,31 @@ def parse_ops(stream: str) -> list[tuple[str, int]]:
     return ops
 
 
-def fold(ops: list[tuple[str, int]]) -> tuple[dict[int, bool], int]:
-    final: dict[int, bool] = {}
-    depth = 0
-    for kind, n in ops:
-        if kind == "set":
-            final[n] = True
-        elif kind == "reset":
-            final[n] = False
-        elif kind == "push":
-            depth += 1
-        else:
-            depth = max(depth - 1, 0)  # grok-build's floor
-    return final, depth
+# Machine state: last-op-wins mode map + kitty depth (floored at 0).
+State = tuple[dict[int, bool], int]
+KERNEL_MD = Path(__file__).resolve().parents[1] / "kernels" / "terminal_modes.md"
+
+
+def step(s: State, op: tuple[str, int]) -> State:
+    final, depth = s
+    kind, n = op
+    out = dict(final)
+    if kind == "set":
+        out[n] = True
+    elif kind == "reset":
+        out[n] = False
+    elif kind == "push":
+        return out, depth + 1
+    else:
+        return out, max(depth - 1, 0)
+    return out, depth
+
+
+def fold(ops: list[tuple[str, int]]) -> State:
+    s: State = ({}, 0)
+    for op in ops:
+        s = step(s, op)
+    return s
 
 
 def deviations(final: dict[int, bool]) -> list[int]:
@@ -105,6 +118,7 @@ def check_properties() -> int:
     last_mode = list(MODE_RE.finditer(GRAFF_RESTORE))[-1]
     if last_mode.group(1) != "1049" or last_mode.group(2) != "l":
         raise ValueError("graff restore does not end with the alt-screen leave")
+    check_diagram()
     return n
 
 
@@ -126,3 +140,108 @@ def payload() -> dict:
         "graff_restore": GRAFF_RESTORE,
         "cells": rows,
     }
+
+
+def project(s: State) -> str:
+    final, depth = s
+    alt = bool(final.get(1049))
+    if depth == 0 and not deviations(final):
+        return "Idle"
+    if alt and depth >= 1:
+        return "Active"
+    if alt:
+        return "Alt"
+    if depth > 0:
+        return "Kitty"
+    return "Deviant"
+
+
+def event_label(op: tuple[str, int]) -> str:
+    kind, n = op
+    if kind in ("push", "pop"):
+        return kind
+    return f"{kind} {n}"
+
+
+def walk_ops(start: State, ops: list[tuple[str, int]]) -> list[tuple[State, tuple[str, int], State]]:
+    s = start
+    out: list[tuple[State, tuple[str, int], State]] = []
+    for op in ops:
+        t = step(s, op)
+        if t != s:
+            out.append((s, op, t))
+        s = t
+    return out
+
+
+def diagram_edges() -> list[tuple[str, str, str]]:
+    found: set[tuple[str, str, str]] = set()
+    extra: list[tuple[str, int]] = [
+        ("pop", 0),
+        ("push", 0),
+        ("pop", 0),
+        ("set", 1049),
+        ("reset", 1049),
+        ("set", 2004),
+        ("reset", 2004),
+    ]
+    streams = [parse_ops(GRAFF_ENABLE + GRAFF_RESTORE), extra]
+    for ops in streams:
+        for s, op, t in walk_ops(({}, 0), ops):
+            a, b = project(s), project(t)
+            if a == b:
+                continue
+            found.add((a, event_label(op), b))
+    return sorted(found)
+
+
+def mermaid() -> str:
+    lines = ["stateDiagram-v2", "  [*] --> Idle"]
+    for a, lab, b in diagram_edges():
+        lines.append(f"  {a} --> {b}: {lab}")
+    return "\n".join(lines) + "\n"
+
+
+def kernel_md() -> str:
+    body = mermaid().rstrip()
+    return (
+        "# Kernel: terminal modes\n"
+        "\n"
+        "Source of truth: `lean-proofs/Graff/TerminalModes.lean`.\n"
+        "\n"
+        "Process kernel, not a Turing machine: `Op` / `step` is the mode map\n"
+        "plus kitty depth. The 14 named sequences are the snapshot. Enable then\n"
+        "restore returns to Idle; restore leaves the alt-screen last; pop floors\n"
+        "at zero. TUI layout, glyphs, and the font stay never.\n"
+        "\n"
+        "The diagram is the projection of the live Python `step`. Emit it with\n"
+        "`python3 spec/conformance.py --diagram terminal_modes`.\n"
+        "\n"
+        "```mermaid\n"
+        f"{body}\n"
+        "```\n"
+    )
+
+
+def write_kernel_md(path: Path = KERNEL_MD) -> Path:
+    path.write_text(kernel_md())
+    return path
+
+
+def check_diagram() -> None:
+    s: State = ({}, 0)
+    for op in parse_ops(GRAFF_ENABLE + GRAFF_RESTORE):
+        s = step(s, op)
+    if project(s) != "Idle":
+        raise ValueError("diagram: enable+restore did not return to Idle")
+    if step(({}, 0), ("pop", 0))[1] != 0:
+        raise ValueError("diagram: pop from Idle left depth != 0")
+    text = mermaid()
+    if "Idle --> Alt: set 1049" not in text:
+        raise ValueError("diagram: mermaid missing Idle set-1049→Alt")
+    if "Alt --> Idle: reset 1049" not in text:
+        raise ValueError("diagram: mermaid missing Alt reset-1049→Idle")
+    if "Alt --> Active: push" not in text:
+        raise ValueError("diagram: mermaid missing Alt push→Active")
+    if "Idle --> Active: pop" in text:
+        raise ValueError("diagram: mermaid has Idle pop→Active")

@@ -35,16 +35,22 @@ from ref.tool_catalog import (
     subsequence,
 )
 from ref.transport import all_turns, eligible, idle_expired, pipe
+from ref.transport import check_diagram as transport_check_diagram
+from ref.transport import kernel_md as transport_kernel_md
+from ref.transport import write_kernel_md as write_transport_md
 from ref.provider import SPECS as PROVIDER_SPECS
 from ref.provider import ws_capable
 from ref.path_confine import (
     PATHS,
     all_leases,
+    check_diagram as path_check_diagram,
     confined,
     destructive_git_allowed,
     file_tool_ok,
+    kernel_md as path_kernel_md,
     owner_verdict,
     warns,
+    write_kernel_md as write_path_md,
 )
 from ref.goal_loop import check_properties as goal_check_properties
 from ref.goal_loop import payload as goal_payload
@@ -54,14 +60,16 @@ from ref.prompt_cache import write_kernel_md as write_cache_md
 from ref.prompt_cache import kernel_md as cache_kernel_md
 from ref.shape import check_properties as shape_check_properties
 from ref.shape import payload as shape_model_payload
-from ref.score import check_properties as score_check_properties
-from ref.score import payload as score_model_payload
+from ref.score import check_properties as score_check_properties, payload as score_model_payload
+from ref.score import kernel_md as score_kernel_md, write_kernel_md as write_score_md
 from ref.bash_policy import check_properties as bash_check_properties
 from ref.bash_policy import payload as bash_model_payload
 from ref.structured_output import check_properties as sox_check_properties
 from ref.structured_output import payload as sox_model_payload
 from ref.terminal_modes import check_properties as term_check_properties
 from ref.terminal_modes import payload as term_model_payload
+from ref.terminal_modes import write_kernel_md as write_term_md
+from ref.terminal_modes import kernel_md as term_kernel_md
 
 ROOT = Path(__file__).resolve().parent
 KERNELS = ROOT / "kernels"
@@ -202,6 +210,10 @@ def check_transport() -> int:
         raise Counterexample("idle-eq-keeps", None, "equal to the limit must keep the socket")
     if not idle_expired(101, 0, 100):
         raise Counterexample("idle-past-expires", None, "strictly past the limit must expire")
+    try:
+        transport_check_diagram()
+    except ValueError as e:
+        raise Counterexample("transport-diagram", None, str(e)) from e
     return n
 
 
@@ -364,6 +376,10 @@ def check_path_confine() -> int:
             raise Counterexample("lease-self", l, v)
         if v == "live_foreign" and not warns(v):
             raise Counterexample("lease-warns", l, v)
+    try:
+        path_check_diagram()
+    except ValueError as e:
+        raise Counterexample("path-diagram", None, str(e)) from e
     return n
 
 
@@ -403,15 +419,19 @@ def export() -> list[Path]:
     return [
         _write(FIXTURE, cases_payload()),
         _write(TRANSPORT_FIXTURE, transport_payload()),
+        write_transport_md(KERNELS / "transport.md"),
         _write(PROVIDER_FIXTURE, provider_payload()),
         _write(GOAL_FIXTURE, goal_payload()),
         write_kernel_md(KERNELS / "goal_loop.md"),
         _write(PATH_FIXTURE, path_payload()),
+        write_path_md(KERNELS / "path_confine.md"),
         _write(SHAPE_FIXTURE, shape_payload()),
         _write(SCORE_FIXTURE, score_payload()),
+        write_score_md(KERNELS / "score.md"),
         _write(BASH_FIXTURE, bash_payload()),
         _write(SOX_FIXTURE, sox_model_payload()),
         _write(TERM_FIXTURE, term_model_payload()),
+        write_term_md(KERNELS / "terminal_modes.md"),
         _write(CACHE_FIXTURE, cache_payload()),
         write_cache_md(KERNELS / "prompt_cache.md"),
     ]
@@ -437,12 +457,17 @@ def check_fixtures() -> None:
     _same(TERM_FIXTURE, term_model_payload(), "terminal_modes")
     _same(CACHE_FIXTURE, cache_payload(), "prompt_cache")
     from ref.goal_loop import kernel_md
-    md = KERNELS / "goal_loop.md"
-    if not md.is_file() or md.read_text() != kernel_md():
-        raise Counterexample("fixtures-stale", None, "goal_loop.md does not match live step; run --export")
-    cmd = KERNELS / "prompt_cache.md"
-    if not cmd.is_file() or cmd.read_text() != cache_kernel_md():
-        raise Counterexample("fixtures-stale", None, "prompt_cache.md does not match live step; run --export")
+    for name, body in (
+        ("goal_loop.md", kernel_md),
+        ("prompt_cache.md", cache_kernel_md),
+        ("terminal_modes.md", term_kernel_md),
+        ("path_confine.md", path_kernel_md),
+        ("transport.md", transport_kernel_md),
+        ("score.md", score_kernel_md),
+    ):
+        md = KERNELS / name
+        if not md.is_file() or md.read_text() != body():
+            raise Counterexample("fixtures-stale", None, f"{name} does not match live step; run --export")
 
 
 def break_model(kind: str) -> None:
@@ -515,7 +540,14 @@ def main() -> int:
         return 0 if inv["ok"] else 1
 
     if args.diagram:
-        mods = {"goal_loop": "ref.goal_loop", "prompt_cache": "ref.prompt_cache"}
+        mods = {
+            "goal_loop": "ref.goal_loop",
+            "prompt_cache": "ref.prompt_cache",
+            "terminal_modes": "ref.terminal_modes",
+            "path_confine": "ref.path_confine",
+            "transport": "ref.transport",
+            "score": "ref.score",
+        }
         path = mods.get(args.diagram)
         if path is None:
             print(f"no machine projection for {args.diagram}", file=sys.stderr)

@@ -13,6 +13,11 @@
   seq) as op lists: their composition is balanced, and restore leaves the
   alt-screen last.
 
+  Process kernel, not a Turing machine: `Op` is the event, `step` is the
+  transition (mode map + kitty depth). The 14 named sequences are the
+  snapshot. Enable then restore returns to defaults; restore leaves the
+  alt-screen last; kitty pop floors at zero.
+
   Executable port: spec/ref/terminal_modes.py (also the semantics behind
   scripts/tui-pty-guard.py). Impl anchor: TUI/spec_terminal_modes_conformance.zig
   parses the real constants and diffs them against the fixture.
@@ -23,6 +28,9 @@ namespace Graff.TerminalModes
 inductive Op
   | set (n : Nat) | reset (n : Nat) | push | pop
 deriving DecidableEq, Repr
+
+/-- Events are the DEC/kitty ops. -/
+abbrev Event := Op
 
 def defaultOn : List Nat := [7, 25]
 
@@ -90,5 +98,11 @@ theorem restore_idempotent :
     restoreOps and graff's committed sequence agree on the outcome. -/
 theorem generated_restore_balances :
     balanced (graffEnable ++ restoreOps graffEnable) = true := by decide
+
+/-- Pop on an untouched terminal stays at depth 0 (Nat floors). -/
+theorem pop_from_zero : (step ([], 0) .pop).2 = 0 := by decide
+
+/-- Enable alone is not balanced — restore is what returns to defaults. -/
+theorem enable_unbalanced : balanced graffEnable = false := by decide
 
 end Graff.TerminalModes

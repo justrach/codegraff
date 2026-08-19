@@ -1,9 +1,16 @@
 /-
   Transport kernel.
 
+  Process kernel, not a Turing machine: finite `Event` / `step`, no tape.
   Vendors are not axes. The program switches on `Kind` (3 wire formats)
   and a handful of turn flags. WebSocket is legal on exactly one shape:
   a live root Responses turn that has not fallen back and is not quiet.
+
+  The 96-cell cube is the snapshot. `Event` / `step` is the machine:
+  a sub never takes WS; joining a non-responses turn does not grant it.
+  PromptCache isolates the child's cache key; this kernel is the pipe
+  that child is forbidden from opening. Fleet topology is not a Shape
+  cell — Shape stays a cube of one observation.
 
   Matches `transport_gate.eligible` / `agent_ws.wsEligible`.
   Executable port: spec/ref/transport.py.
@@ -115,5 +122,74 @@ example : eligible { kind := .responses, wsOff := true } = false := by native_de
 example : eligible { kind := .anthropic, codexWs := true, hasOut := true } = false := by native_decide
 example : idleExpired 100 0 100 = false := by native_decide
 example : idleExpired 101 0 100 = true := by native_decide
+
+/-! The machine. Snapshot predicates above; these are the edges. -/
+
+inductive Event where
+  | setKind (k : Kind)
+  | markSub
+  | joinRoot
+  | setCodexWs (b : Bool)
+  | setWsOff (b : Bool)
+  | setHasOut (b : Bool)
+  | setQuiet (b : Bool)
+deriving DecidableEq, Repr, BEq
+
+def withKind (t : Turn) (k : Kind) : Turn :=
+  { kind := k, isSub := t.isSub, codexWs := t.codexWs, wsOff := t.wsOff, hasOut := t.hasOut, quiet := t.quiet }
+
+def withSub (t : Turn) (sub : Bool) : Turn :=
+  { kind := t.kind, isSub := sub, codexWs := t.codexWs, wsOff := t.wsOff, hasOut := t.hasOut, quiet := t.quiet }
+
+def withCodexWs (t : Turn) (b : Bool) : Turn :=
+  { kind := t.kind, isSub := t.isSub, codexWs := b, wsOff := t.wsOff, hasOut := t.hasOut, quiet := t.quiet }
+
+def withWsOff (t : Turn) (b : Bool) : Turn :=
+  { kind := t.kind, isSub := t.isSub, codexWs := t.codexWs, wsOff := b, hasOut := t.hasOut, quiet := t.quiet }
+
+def withHasOut (t : Turn) (b : Bool) : Turn :=
+  { kind := t.kind, isSub := t.isSub, codexWs := t.codexWs, wsOff := t.wsOff, hasOut := b, quiet := t.quiet }
+
+def withQuiet (t : Turn) (b : Bool) : Turn :=
+  { kind := t.kind, isSub := t.isSub, codexWs := t.codexWs, wsOff := t.wsOff, hasOut := t.hasOut, quiet := b }
+
+def step (t : Turn) (e : Event) : Turn :=
+  match e with
+  | Event.setKind k => withKind t k
+  | Event.markSub => withSub t true
+  | Event.joinRoot => withSub t false
+  | Event.setCodexWs b => withCodexWs t b
+  | Event.setWsOff b => withWsOff t b
+  | Event.setHasOut b => withHasOut t b
+  | Event.setQuiet b => withQuiet t b
+
+def run (t : Turn) : List Event → Turn
+  | []      => t
+  | e :: es => run (step t e) es
+
+theorem mark_sub_never_ws (t : Turn) :
+    eligible (step t Event.markSub) = false := by
+  cases t.kind <;> simp [step, withSub, eligible]
+
+theorem set_anthropic_never_ws (t : Turn) :
+    eligible (step t (Event.setKind Kind.anthropic)) = false := by
+  simp [step, withKind, eligible]
+
+theorem set_openai_never_ws (t : Turn) :
+    eligible (step t (Event.setKind Kind.openai)) = false := by
+  simp [step, withKind, eligible]
+
+theorem not_responses_never_ws (t : Turn) (h : t.kind ≠ Kind.responses) :
+    eligible t = false := by
+  unfold eligible
+  simp [h]
+
+theorem join_non_responses_never_ws (t : Turn) (h : t.kind ≠ Kind.responses) :
+    eligible (step t Event.joinRoot) = false :=
+  not_responses_never_ws (step t Event.joinRoot) (by simpa [step, withSub] using h)
+
+theorem quiet_step_never_ws (t : Turn) :
+    eligible (step t (Event.setQuiet true)) = false := by
+  cases t.kind <;> simp [step, withQuiet, eligible]
 
 end Graff.Transport

@@ -1,14 +1,17 @@
 """Executable port of lean-proofs/Graff/Score.lean.
 
+Process kernel, not a Turing machine: finite Event / step, no tape.
 A score is maintained (filed) iff fleet is on, roleOf(label, niche) is a
-canonical slot, and the stage carries a signal. HMAC is out of the model.
-stageScore is the same function; the Signal cube is just its five counts.
-providerClass needles are in; the price fallback is out (tier=unknown).
+canonical slot, and the stage carries a signal. The honest unit is the
+STAGE: attempt never files; capture (post-join) files at most once.
+HMAC is out. stageScore is the function; the Signal cube is its five counts.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from itertools import product
+from pathlib import Path
 from typing import Literal
 
 Slot = Literal[
@@ -50,6 +53,7 @@ SIGNAL_COUNTS: dict[Signal, tuple[int, int]] = {
     "someOk": (3, 2),
 }
 CUBE = 1210  # 2 × 11 × 11 × 5
+KERNEL_MD = Path(__file__).resolve().parents[1] / "kernels" / "score.md"
 FILED = 240  # 1 × 120 celled pairs × 2 live signals
 
 # normalizeOutboundScore samples: raw float → millipoints or None
@@ -216,6 +220,7 @@ def check_properties() -> int:
         raise ValueError("terra-beats-family")
     if class_of("deepseek-v4-flash") != "small":
         raise ValueError("deepseek-flash-small")
+    check_diagram()
     return n
 
 
@@ -255,3 +260,168 @@ def payload() -> dict:
         ],
         "filed": FILED,
     }
+
+
+@dataclass(frozen=True)
+class State:
+    fleet: bool = False
+    slot: Slot = "none"
+    attempted: int = 0
+    ok: int = 0
+    filed: bool = False
+
+
+Event = tuple  # ("fleetOn",) | ("fleetOff",) | ("setSlot", Slot) | ("attempt", bool) | ("capture",)
+
+EVENTS: tuple[Event, ...] = (
+    ("fleetOn",),
+    ("fleetOff",),
+    ("setSlot", "transform"),
+    ("setSlot", "none"),
+    ("attempt", True),
+    ("attempt", False),
+    ("capture",),
+)
+
+
+def files_now(s: State) -> bool:
+    return bool(s.fleet and s.slot != "none" and stage_score(s.attempted, s.ok) is not None)
+
+
+def step(s: State, e: Event) -> State:
+    k = e[0]
+    if k == "fleetOn":
+        return State(True, s.slot, s.attempted, s.ok, s.filed)
+    if k == "fleetOff":
+        return State(False, s.slot, s.attempted, s.ok, s.filed)
+    if k == "setSlot":
+        return State(s.fleet, e[1], s.attempted, s.ok, s.filed)
+    if k == "attempt":
+        return State(s.fleet, s.slot, s.attempted + 1, s.ok + (1 if e[1] else 0), s.filed)
+    if k == "capture":
+        return State(s.fleet, s.slot, s.attempted, s.ok, files_now(s))
+    raise ValueError(f"unknown event {e!r}")
+
+
+def run(s: State, es: list[Event]) -> State:
+    for e in es:
+        s = step(s, e)
+    return s
+
+
+def project(s: State) -> str:
+    if not s.fleet:
+        return "Off"
+    if s.filed:
+        return "Filed"
+    if s.slot == "none":
+        return "Uncelled"
+    if s.attempted == 0:
+        return "Armed"
+    if stage_score(s.attempted, s.ok) is not None:
+        return "Live"
+    return "Dry"
+
+
+def event_label(e: Event) -> str:
+    k = e[0]
+    if k == "setSlot":
+        return "setSlot" if e[1] != "none" else "setSlot none"
+    if k == "attempt":
+        return "attempt ok" if e[1] else "attempt fail"
+    return k
+
+
+def walk(start: State | None = None) -> list[tuple[State, Event, State]]:
+    src = start or State()
+    seen = {src}
+    q = [src]
+    out: list[tuple[State, Event, State]] = []
+    while q:
+        s = q.pop()
+        for e in EVENTS:
+            if e[0] == "attempt" and s.attempted >= 2:
+                continue
+            t = step(s, e)
+            if t == s:
+                continue
+            out.append((s, e, t))
+            if t not in seen:
+                seen.add(t)
+                q.append(t)
+    return out
+
+
+def diagram_edges() -> list[tuple[str, str, str]]:
+    found: set[tuple[str, str, str]] = set()
+    for s, e, t in walk():
+        a, b = project(s), project(t)
+        if a == b:
+            continue
+        found.add((a, event_label(e), b))
+    return sorted(found)
+
+
+def mermaid() -> str:
+    lines = ["stateDiagram-v2", "  [*] --> Off"]
+    for a, lab, b in diagram_edges():
+        lines.append(f"  {a} --> {b}: {lab}")
+    return "\n".join(lines) + "\n"
+
+
+def kernel_md() -> str:
+    body = mermaid().rstrip()
+    return (
+        "# Kernel: score maintenance\n"
+        "\n"
+        "Source of truth: `lean-proofs/Graff/Score.lean`.\n"
+        "\n"
+        "Process kernel, not a Turing machine: finite `Event` / `step`, no tape.\n"
+        "The honest unit is the STAGE, never the item. N children do not mint N\n"
+        "rows. `attempt` never files; `capture` (the post-join gate) files only\n"
+        "when fleet is on, the slot is canonical, and `stageScore` is some.\n"
+        "Unreached / all-fail / overflow stay silent — a 0 would poison the mean.\n"
+        "The 1210-cell cube (240 filed) is the snapshot. Shape stays the\n"
+        "observation ladder of one turn.\n"
+        "\n"
+        "The diagram is the projection of the live Python `step`. Emit it with\n"
+        "`python3 spec/conformance.py --diagram score`.\n"
+        "\n"
+        "```mermaid\n"
+        f"{body}\n"
+        "```\n"
+    )
+
+
+def write_kernel_md(path: Path = KERNEL_MD) -> Path:
+    path.write_text(kernel_md())
+    return path
+
+
+def check_diagram() -> None:
+    idle = State()
+    items = run(idle, [("fleetOn",), ("setSlot", "transform"), ("attempt", True), ("attempt", True)])
+    if items.filed or items.attempted != 2 or items.ok != 2:
+        raise ValueError("diagram: two items filed or lost the fold")
+    filed = step(items, ("capture",))
+    if not filed.filed:
+        raise ValueError("diagram: clean capture did not file")
+    if run(idle, [("fleetOn",), ("setSlot", "transform"), ("capture",)]).filed:
+        raise ValueError("diagram: unreached filed")
+    if run(idle, [("fleetOn",), ("setSlot", "transform"), ("attempt", False), ("capture",)]).filed:
+        raise ValueError("diagram: all-fail filed")
+    if run(idle, [("setSlot", "transform"), ("attempt", True), ("capture",)]).filed:
+        raise ValueError("diagram: fleet-off filed")
+    if run(idle, [("fleetOn",), ("attempt", True), ("capture",)]).filed:
+        raise ValueError("diagram: uncelled filed")
+    if step(items, ("attempt", True)).filed:
+        raise ValueError("diagram: attempt filed")
+    text = mermaid()
+    if "Live --> Filed: capture" not in text:
+        raise ValueError("diagram: mermaid missing Live capture→Filed")
+    if "Live --> Filed: attempt ok" in text:
+        raise ValueError("diagram: mermaid has attempt file edge")
+    if "Dry --> Filed: capture" in text:
+        raise ValueError("diagram: mermaid has all-fail file edge")
+    if "Armed --> Filed: capture" in text:
+        raise ValueError("diagram: mermaid has unreached file edge")

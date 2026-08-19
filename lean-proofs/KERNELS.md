@@ -11,10 +11,26 @@ are not Turing machines: no tape, no halt state, no computability encoding.
 The diagram is the transition function. The cube, if the kernel has one, is
 the snapshot of that function.
 
-`GoalLoop` and `PromptCache` are the process kernels. GoalLoop: standing
-has no retire edge; harness-done needs a done write. PromptCache: sub never
-spawns; spawn isolates the child key; join restores the root partition;
-isolation does not mint a key. Score, Shape, Provider, and ToolCatalog stay cubes.
+Process kernels: `GoalLoop` (standing has no retire edge; harness-done
+needs a done write), `PromptCache` (sub never spawns; join restores the
+root partition), `TerminalModes` (`Op`/`step` mode map + kitty depth;
+enable++restore returns to Idle; pop floors; alt-screen leave is last),
+`PathConfine` (component walk: Escaped and Absolute absorb), and
+`Transport` (a sub never takes WS; only one live root Responses cell
+does), and `Score` (`attempt` never files; `capture` after the join
+files one stage row). They are not Turing machines: no tape, no halt
+state.
+
+The shape of a subagent fleet is not a cube. `Shape` is the observation
+ladder of one turn and stays a cube. How many children spawn, which
+isolation they take, which paths they walk, and whether they get a
+WebSocket are events — PromptCache, PathConfine, and Transport force
+every child through a machine. Score is how that unbounded fleet is
+filed: N items fold into one stage row; a 0 does not poison the cell.
+
+Shape, Provider, and ToolCatalog stay cubes. Leftover this turn:
+BashPolicy (command cube: `isSimple` / `escapesCwd` / `readOnlyAllowed`).
+TUI layout/glyphs, prompts, and SSE stay never.
 
 
 ## Every harness part
@@ -27,13 +43,14 @@ not a skip: TUI, prompts, and SSE bytes stay out of Lean on purpose.
 | Kernel | Cells | What it is *not* |
 |---|---|---|
 | `ToolCatalog` | 64 flag cubes | MCP names, descriptions, JSON wrappers |
-| `Transport` | 96 turns; **1** WS cell | frames, TLS, idle-kill timing of the server |
+| `Transport` | 96 turns + `Event`/`step`; **1** WS cell | frames, TLS, idle-kill timing of the server |
 | `Provider` | 18 baked rows | live `/models` overlay, Kimi protocol flip |
 | `GoalLoop` | 360 gate cells + `Event`/`step` | model wording, whether the work is correct |
 | `PromptCache` | 48 cells + `Event`/`step` | provider cache HIT, uuid5 cwd bytes, vision pin |
-| `PathConfine` | 16 lexical paths + 80 lease cells | OS errno, Windows drives, live symlink walk |
+| `TerminalModes` | 14 named sequences + `Op`/`step` | TUI layout, glyphs, the emulator font |
+| `PathConfine` | 16 lexical paths + 80 lease cells + `Event`/`step` | OS errno, Windows drives, live symlink walk |
 | `Shape` | 1728 ladder cells | `admit`, learned override, ε-explore, `observe` |
-| `Score` | 1210 filing cells (240 filed); 11 titles; 16 class samples | HMAC, providerClass price fallback |
+| `Score` | 1210 filing cells (240 filed) + `Event`/`step`; 11 titles; 16 class samples | HMAC, providerClass price fallback |
 
 ### New (this loop)
 

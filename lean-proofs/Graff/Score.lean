@@ -1,12 +1,16 @@
 /-
   Score maintenance: when a fitness row is filed, and in which cell.
 
-  This kernel is the discrete gate in front of the archive, not HMAC and
-  not the file tokenizer. A score is *maintained* (filed, comparable) iff
-  the fleet is on, the stage/phase resolves to a canonical slot, and the
-  run carries a signal. Off-vocabulary titles stay uncelled — they still
-  run, they do not accrue. An all-fail or unreached stage files nothing
-  (a 0 would poison the cell mean).
+  Process kernel, not a Turing machine: finite `Event` / `step`, no tape.
+  The 1210-cell cube (240 filed) is the snapshot. The honest unit is the
+  STAGE, never the item: N children do not mint N rows. `attempt` never
+  files; `capture` (the post-join gate) files at most once, and only when
+  fleet is on, the slot is canonical, and `stageScore` is some. Unreached,
+  all-fail, and overflow stay silent — a 0 would poison the cell mean.
+
+  Fleet topology is not a Shape cell. PromptCache isolates the child key;
+  PathConfine walks the jail; Transport forbids WS; this kernel is how
+  that unbounded fleet is scored.
 
   `stageScore` is the same function the harness uses (millipoints). The
   Signal cube is just the five counts that function classifies. First-word
@@ -408,5 +412,68 @@ example : classOf .sonnet = Tier.mid := by native_decide
 example : classOf .minimax = Tier.frontier := by native_decide
 example : titleSlot .findBugs = Slot.find := by native_decide
 example : titleSlot .sweepPadded = Slot.sweep := by native_decide
+
+/-! The machine. Snapshot predicates above; these are the edges. -/
+
+structure State where
+  fleet     : Bool := false
+  slot      : Slot := Slot.none
+  attempted : Nat := 0
+  ok        : Nat := 0
+  filed     : Bool := false
+deriving Repr, BEq, DecidableEq
+
+inductive Event where
+  | fleetOn
+  | fleetOff
+  | setSlot (s : Slot)
+  | attempt (ok : Bool)
+  | capture
+deriving DecidableEq, Repr, BEq
+
+def filesNow (s : State) : Bool :=
+  s.fleet && decide (s.slot ≠ Slot.none) && (stageScore s.attempted s.ok).isSome
+
+def step (s : State) (e : Event) : State :=
+  match e with
+  | Event.fleetOn => { fleet := true, slot := s.slot, attempted := s.attempted, ok := s.ok, filed := s.filed }
+  | Event.fleetOff => { fleet := false, slot := s.slot, attempted := s.attempted, ok := s.ok, filed := s.filed }
+  | Event.setSlot sl => { fleet := s.fleet, slot := sl, attempted := s.attempted, ok := s.ok, filed := s.filed }
+  | Event.attempt good =>
+      { fleet := s.fleet, slot := s.slot, attempted := s.attempted + 1,
+        ok := if good then s.ok + 1 else s.ok, filed := s.filed }
+  | Event.capture =>
+      { fleet := s.fleet, slot := s.slot, attempted := s.attempted, ok := s.ok, filed := filesNow s }
+
+def run (s : State) : List Event → State
+  | []      => s
+  | e :: es => run (step s e) es
+
+theorem attempt_never_files (s : State) (good : Bool) :
+    (step s (Event.attempt good)).filed = s.filed := rfl
+
+theorem fleet_off_capture_silent (s : State) (h : s.fleet = false) :
+    (step s Event.capture).filed = false := by
+  simp [step, filesNow, h]
+
+theorem unreached_capture_silent (s : State) (h : s.attempted = 0) :
+    (step s Event.capture).filed = false := by
+  simp [step, filesNow, h, stageScore]
+
+theorem all_fail_capture_silent (s : State) (h : s.ok = 0) :
+    (step s Event.capture).filed = false := by
+  simp [step, filesNow, h, stageScore]
+
+theorem uncelled_capture_silent (s : State) (h : s.slot = Slot.none) :
+    (step s Event.capture).filed = false := by
+  simp [step, filesNow, h]
+
+theorem items_do_not_file :
+    (run {} [Event.fleetOn, Event.setSlot Slot.transform, Event.attempt true, Event.attempt true]).filed = false := by
+  native_decide
+
+theorem clean_capture_files :
+    (run {} [Event.fleetOn, Event.setSlot Slot.transform, Event.attempt true, Event.attempt true, Event.capture]).filed = true := by
+  native_decide
 
 end Graff.Score

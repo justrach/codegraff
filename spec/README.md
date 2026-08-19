@@ -42,13 +42,14 @@ properties are load-bearing, and a missed combination is a real bug.
 | Kernel | Status | Why |
 |---|---|---|
 | `tool_catalog` | live | 64 catalog cubes. `#330` / `#352` / `--lean`. |
-| `transport` | live | 96 turns, **1** WebSocket cell. `Kind × seat × flags`. |
+| `transport` | live | Process kernel. 96 turns, **1** WebSocket cell. Sub never WS. |
 | `provider` | live | 18 baked rows over 3 wire kinds. |
 | `goal_loop` | live | Process kernel (`Event`/`step`, not a TM). 360 snapshot cells. Standing does not retire. |
 | `prompt_cache` | live | Process kernel. 48 cells. Sub never spawns. Child key isolated. Join restores root. |
-| `path_confine` | live | Lexical cwd jail, symlink prefixes, 80 lease verdicts. |
+| `terminal_modes` | live | Process kernel. 14 sequences. Enable+restore returns to Idle. Pop floors. Alt last. |
+| `path_confine` | live | Process kernel. Component walk; Escaped/Absolute absorb. 80 leases. |
 | `shape` | live | 1728 cells. Hand ladder + explicit arm. Budget from remaining/cap/floor. |
-| `score` | live | 1210 filing cells, 240 filed. First-word titles, needle class, `[0,1]` scale. |
+| `score` | live | Process kernel. 1210 cells, 240 filed. Attempt never files; capture after join does. |
 | `bash_policy` | live | 32 command cells. Simple + in-cwd + seed. External is never auto-allowed. |
 | TUI, prompts, SSE bytes | never | Eval, don't prove. Every other harness part is listed in `lean-proofs/KERNELS.md`. |
 
@@ -59,16 +60,23 @@ python3 spec/conformance.py            # properties + fixture self-check
 python3 spec/conformance.py --export   # regenerate kernels/*.json and GoalLoop mermaid
 python3 spec/conformance.py --diagram goal_loop   # live Event/step projection
 python3 spec/conformance.py --diagram prompt_cache
+python3 spec/conformance.py --diagram terminal_modes
+python3 spec/conformance.py --diagram path_confine
+python3 spec/conformance.py --diagram transport
+python3 spec/conformance.py --diagram score
 python3 spec/conformance.py --break imagegen-always-on   # demo a counterexample
 python3 spec/conformance.py --lean     # lake build, if installed
 zig build test --summary none -Dtest-filter="spec/tool_catalog"
 ```
 
-Process kernels (`GoalLoop`, `PromptCache`) are finite `Event` / `step`
-diagrams, not Turing machines. Cube kernels (Score, Shape, Provider,
-ToolCatalog) stay cubes. `--diagram goal_loop` / `--diagram prompt_cache`
-print the live `step` projection; `--export` writes those fences into
-`kernels/*.md`.
+Process kernels (`GoalLoop`, `PromptCache`, `TerminalModes`, `PathConfine`,
+`Transport`, `Score`) are finite `Event` / `step` diagrams, not Turing
+machines. Cube kernels (Shape, Provider, ToolCatalog) stay cubes.
+BashPolicy stays a command cube this turn. The shape of a subagent fleet
+is not a Shape cell — PromptCache / PathConfine / Transport force every
+child through a machine; Score files that unbounded fleet as one stage
+row after the join. `--diagram` prints a live `step` projection;
+`--export` writes those fences into `kernels/*.md`.
 
 The Zig test is the impl half of the harness: it sets the same flags the
 spec enumerated, asks `effectiveRootSpecs` / `subToolsJson` for names, and

@@ -2,26 +2,39 @@
 
 Source of truth: `lean-proofs/Graff/Score.lean`.
 
-A fitness row is *maintained* (filed, comparable) iff:
+Process kernel, not a Turing machine: finite `Event` / `step`, no tape.
+The honest unit is the STAGE, never the item. N children do not mint N
+rows. `attempt` never files; `capture` (the post-join gate) files only
+when fleet is on, the slot is canonical, and `stageScore` is some.
+Unreached / all-fail / overflow stay silent — a 0 would poison the mean.
+The 1210-cell cube (240 filed) is the snapshot. Shape stays the
+observation ladder of one turn.
 
-1. the fleet is on
-2. `roleOf(label, niche)` is a canonical slot (label first, niche fallback)
-3. the stage carries a signal (`stageScore` is not null)
+The diagram is the projection of the live Python `step`. Emit it with
+`python3 spec/conformance.py --diagram score`.
 
-Unreached, all-fail, and `ok > attempted` file nothing — a 0 would poison
-the cell mean. Off-vocabulary titles still run; they do not accrue.
-`stageScore` is the function; the Signal cube is just the five counts it
-classifies. Filed rows of the 1210-cell cube stay at 240.
-
-Titles match on the **first word** only. A substring rule would make
-`review the findings` collide with `find`. A leading non-ASCII byte
-aborts the scan (otherwise a later English word would steal the cell).
-
-Outbound scores are the `[0,1]` contract: values in `[0,1]` pass, `(1,100]`
-are percentages, anything else is rejected.
-
-The MAP-Elites cell is niche + tier + slot. Changing any axis is a
-different cell (v2). Uncelled rows are not comparable. Tier comes from
-the `providerClass` needle table (specific markers before families).
-HMAC and the price fallback are out of this kernel — unmatched models
-stay `unknown` and are not a maintained cell here.
+```mermaid
+stateDiagram-v2
+  [*] --> Off
+  Armed --> Dry: attempt fail
+  Armed --> Live: attempt ok
+  Armed --> Off: fleetOff
+  Armed --> Uncelled: setSlot none
+  Dry --> Live: attempt ok
+  Dry --> Off: fleetOff
+  Dry --> Uncelled: setSlot none
+  Filed --> Uncelled: capture
+  Filed --> Off: fleetOff
+  Live --> Filed: capture
+  Live --> Off: fleetOff
+  Live --> Uncelled: setSlot none
+  Off --> Armed: fleetOn
+  Off --> Dry: fleetOn
+  Off --> Filed: fleetOn
+  Off --> Live: fleetOn
+  Off --> Uncelled: fleetOn
+  Uncelled --> Off: fleetOff
+  Uncelled --> Armed: setSlot
+  Uncelled --> Dry: setSlot
+  Uncelled --> Live: setSlot
+```
