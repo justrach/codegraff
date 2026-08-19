@@ -93,10 +93,11 @@ def main() -> None:
             harness_dir = os.path.join(tmp, ".harness")
             os.makedirs(harness_dir)
             with open(os.path.join(harness_dir, "settings.json"), "w", encoding="utf-8") as fh:
-                # ai_title off: the AI tab-titler fires one extra quiet turn on the
-                # first prompt (codex_ws_test.py's note) which would corrupt the
-                # request ordinals this whole test is scripted against.
-                json.dump({"ai_title": False, "skills": {"codedbpro": False}}, fh)
+                # Cosmetic title/recap calls shift the request ordinals this test
+                # scripts against, so disable both for this isolated PTY fixture.
+                json.dump(
+                    {"ai_title": False, "session_recap": False, "skills": {"codedbpro": False}}, fh
+                )
 
             env = {
                 "HOME": tmp,
