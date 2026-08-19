@@ -11,7 +11,7 @@ always in this order:
    two compile-time optional rows).
 2. **Add** every `#352` optional whose flag is on (`imagegen` today).
 3. **Subtract** `#330` `--no-local-tools` (host-touching built-ins).
-4. **Keep** `--lean` (eight one-shot tools). Description compaction does
+4. **Keep** `--lean` (nine one-shot tools). Description compaction does
    not change names.
 
 A subagent starts from `base_specs` only (no meta, no `subagent`), then
@@ -22,12 +22,12 @@ run the keep-list.
 
 | Set | Names |
 |---|---|
-| base | `bash` `bash_output` `bash_kill` `read_file` `edit_file` `write_file` `webfetch` `skill` `codedb` |
-| meta (root) | `todo_write` `todo_read` `eval` `note_constraint` `ask_user` `attempt_completion` `load_tool_schemas` `clock_sleep` |
+| base | `bash` `bash_output` `bash_kill` `read_file` `edit_file` `write_file` `webfetch` `skill` `codedb` `read_tool_result` |
+| meta (root) | `todo_write` `todo_read` `eval` `note_constraint` `ask_user` `attempt_completion` `load_tool_schemas` `mcp_search_tools` `mcp_select_tool` `clock_sleep` |
 | root extras | `subagent` `workflow` `agent_output` `learn_candidate` `peer_message` `workspace` |
 | optional | `imagegen` |
-| local (`#330`) | `bash` `bash_output` `bash_kill` `read_file` `edit_file` `write_file` `codedb` `imagegen` |
-| lean keep | `bash` `read_file` `edit_file` `write_file` `codedb` `subagent` `attempt_completion` `load_tool_schemas` |
+| local (`#330`) | `bash` `bash_output` `bash_kill` `read_file` `edit_file` `write_file` `codedb` `read_tool_result` `imagegen` |
+| lean keep | `bash` `read_file` `edit_file` `write_file` `codedb` `read_tool_result` `subagent` `attempt_completion` `load_tool_schemas` |
 
 `webfetch`, every meta tool except the lean keepers, and every `mcp__*`
 name are **not** local. MCP is outside this kernel.

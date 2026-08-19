@@ -1,9 +1,4 @@
-//! Tool-schema + provider-tool JSON emission: the built-in/meta ToolSpec
-//! catalog, the per-provider tool-array renderers (anthropic/openai/responses),
-//! and emitSchema (the --schema / `graff serve` /v1/schema document). Split out
-//! of main.zig (#123). Back-imports main for Provider (.Kind) and the
-//! provider catalog and the active model table. main
-//! re-exports emitSchema + schema_version so serve.zig stays untouched.
+//! Tool-schema + provider-tool JSON emission. Split out of main.zig (#123).
 
 const std = @import("std");
 const Io = std.Io;
@@ -19,8 +14,10 @@ const workspace_switch = @import("workspace_switch.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-local-tools gate (layer 1 lives here, layer 2 in exec.zig)
 const tool_gates = @import("tool_gates.zig"); // #352: the additive twin — optional tools that only exist when startup found their backing capability
 const imagegen = @import("imagegen.zig"); // #352: name/desc/schema as plain strings, like skill_docs, so this catalog needs one entry and no import cycle
-const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: which MCP tools are served schema-first vs description-only, and the `load_tool_schemas` strings
-const native_fold = @import("native_fold.zig"); // folded native power tools: same two-phase pattern for the harness's own catalog
+const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: load_tool_schemas strings
+const mcp_select = @import("mcp_select.zig"); // fx search-then-select
+const result_read = @import("result_read.zig"); // overflow handle pager
+const native_fold = @import("native_fold.zig"); // folded native power tools
 const render = @import("schema_render.zig"); // the comptime provider-tool renderers moved out when #352's optional-tool catalogs doubled the number held here (600-line ceiling)
 const anthropicToolsJson = render.anthropicToolsJson;
 const openaiToolsJson = render.openaiToolsJson;
@@ -112,6 +109,7 @@ const base_specs = [_]ToolSpec{
         \\{"type": "object", "properties": {"command": {"type": "string", "description": "codedb subcommand + args, e.g. \"search parseHeader\", \"symbol buildBody --body\", \"callers switchProvider\""}}, "required": ["command"]}
         ,
     },
+    .{ .name = result_read.tool_name, .desc = result_read.tool_desc, .schema = result_read.tool_schema },
 };
 
 // Meta tools act on the agent's own state, not the outside world; the
@@ -160,6 +158,8 @@ const meta_specs = [_]ToolSpec{
     // (and enables those tools) on demand. Meta because it mutates the root's
     // own tool catalog; renderRootTools drops it while nothing is deferred.
     .{ .name = mcp_schema_gate.tool_name, .desc = mcp_schema_gate.tool_desc, .schema = mcp_schema_gate.tool_schema },
+    .{ .name = mcp_select.search_name, .desc = mcp_select.search_desc, .schema = mcp_select.search_schema },
+    .{ .name = mcp_select.select_name, .desc = mcp_select.select_desc, .schema = mcp_select.select_schema },
     .{
         .name = "clock_sleep",
         .desc = "Pause the current turn for up to 12 hours of wall-clock time; interruptible by user input, and reported as a normal (non-error) result either way. For autonomous /loop runs that need to wait before re-checking something (e.g. a long external job). Root-only; off unless --clock-sleep/GRAFF_CLOCK_SLEEP=1 is set.",
@@ -224,7 +224,7 @@ const root_specs_without_clock = rootSpecsWithout(&.{"clock_sleep"});
 const root_specs_without_learning = rootSpecsWithout(&.{"learn_candidate"});
 const root_specs_without_optional = rootSpecsWithout(&.{ "clock_sleep", "learn_candidate" });
 
-pub const meta_names = [_][]const u8{ "todo_write", "todo_read", "ask_user", "eval", "attempt_completion", "clock_sleep", "note_constraint", mcp_schema_gate.tool_name, peer_channel.tool_name, workspace_switch.tool_name };
+pub const meta_names = [_][]const u8{ "todo_write", "todo_read", "ask_user", "eval", "attempt_completion", "clock_sleep", "note_constraint", mcp_schema_gate.tool_name, mcp_select.search_name, mcp_select.select_name, peer_channel.tool_name, workspace_switch.tool_name };
 
 pub fn isMetaName(name: []const u8) bool {
     for (meta_names) |m| if (std.mem.eql(u8, name, m)) return true;

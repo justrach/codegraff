@@ -366,7 +366,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         return .{ .text = try clockSleepSuccessText(self.arena, parsed.ms, parsed.clamped), .is_error = false };
     }
     if (std.mem.eql(u8, call.name, "note_constraint")) return playbook_glue.noteConstraint(self, call.input); // #381: append-only, and it re-composes the root's own prompt
-    if (std.mem.eql(u8, call.name, mcp_schema_gate.tool_name)) return (native_fold.handleLoadNative(self, call.input) catch null) orelse mcp_schema_gate.handleLoad(self, call.input); // #416: inline, one writer — folded natives answered first
+    if (std.mem.eql(u8, call.name, mcp_schema_gate.tool_name) or @import("mcp_select.zig").isName(call.name)) return (native_fold.handleLoadNative(self, call.input) catch null) orelse @import("mcp_select.zig").dispatch(self, call);
     if (std.mem.eql(u8, call.name, "ask_user")) return self.askUser(call);
     // todo_read
     return .{ .text = self.renderTodos(goal_state.currentEpoch(self.goal)), .is_error = false };

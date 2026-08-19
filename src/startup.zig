@@ -107,7 +107,8 @@ pub fn buildSystemPrompt(
         const body = Io.Dir.cwd().readFileAlloc(io, fname, arena, .limited(64 * 1024)) catch continue;
         const trimmed = std.mem.trim(u8, body, " \t\r\n");
         if (trimmed.len == 0) continue;
-        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n# Project instructions (from {s})\n{s}", .{ base_prompt, fname, trimmed });
+        const capped = @import("context_limits.zig").applyAlloc(arena, trimmed, @import("context_limits.zig").agents_md_bytes);
+        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n# Project instructions (from {s})\n{s}", .{ base_prompt, fname, capped });
         if (!quiet) {
             try out.print("loaded project instructions from {s} ({d} bytes)\n", .{ fname, trimmed.len });
             try out.flush();
