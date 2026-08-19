@@ -1,7 +1,4 @@
-//! Model/provider/thinking slash commands, split out of main.zig's
-//! handleCommand (600-line goal, issue #123): /model /compact /rewind /fast
-//! /thinking /title /ultracode /effort /keepcontext /fallback /key /login /image
-//! /paste /strict.
+//! Model/provider/thinking slash commands (600-line goal, #123).
 
 const std = @import("std");
 const Io = std.Io;
