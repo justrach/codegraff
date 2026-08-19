@@ -77,6 +77,17 @@ test "grok spec: Chat Completions x-grok-conv-id is stable for root and isolated
     try std.testing.expectEqualStrings(va, vb);
     try std.testing.expectEqualStrings(child_id, vc);
     try std.testing.expect(!std.mem.eql(u8, va, vc));
+    // grok-build: session-id stays the conversation; conv-id isolates a child.
+    const sa = blk: {
+        for (a) |h| if (std.mem.eql(u8, h.name, "x-grok-session-id")) break :blk h.value;
+        return error.MissingGrokSessionId;
+    };
+    const sc = blk: {
+        for (c) |h| if (std.mem.eql(u8, h.name, "x-grok-session-id")) break :blk h.value;
+        return error.MissingGrokSessionId;
+    };
+    try std.testing.expectEqualStrings(root_id, sa);
+    try std.testing.expectEqualStrings(root_id, sc);
 }
 
 // The !live request path: Agent.request → promptCacheKey → postWatched → post.

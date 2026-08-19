@@ -205,9 +205,9 @@ pub fn render(w: *Io.Writer) !void {
     if (g_xai and g_aff_len > 0) {
         try w.print("  xAI        {s}  (automatic prefix cache)\n", .{if (g_responses) "responses" else "chat"});
         try w.print("  affinity   {s}\n", .{g_aff[0..g_aff_len]});
-        try w.writeAll("             x-grok-conv-id + prompt_cache_key, same value\n");
+        try w.writeAll("             x-grok-conv-id + x-grok-session-id + prompt_cache_key\n");
     } else {
-        try w.writeAll("  xAI        x-grok-conv-id + prompt_cache_key (same project id, automatic)\n");
+        try w.writeAll("  xAI        x-grok-conv-id + x-grok-session-id + prompt_cache_key\n");
     }
     try w.writeAll(
         \\  remaining max

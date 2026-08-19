@@ -40,4 +40,6 @@ Live Grok 4.6 (Responses, SuperGrok OAuth, 2026-08-19): same-process
 append-only turn 2 cached 3,712 of turn 1's 3,721 input tokens. A new
 process in the same folder started cold at 128 — the official first-request
 write, not a routing miss. That is the xAI contract working: sticky
-`x-grok-conv-id` / `prompt_cache_key`, exact prefix, reasoning replay.
+`x-grok-conv-id` / `x-grok-session-id` / `prompt_cache_key`, exact prefix,
+reasoning replay. Session-id is grok-build's extra sticky header: always
+the project id, even when a child isolates `x-grok-conv-id`.
