@@ -353,6 +353,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             return true;
         };
         root.ultracode_mode = next;
+        @import("prompt_cache_hud.zig").noteBust(.mode);
         const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("ultracode mode: {s}{s}\n", .{ if (root.ultracode_mode) "on" else "off", if (saved) "" else " (not persisted)" });
         try out.flush();
@@ -587,6 +588,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/strict")) {
         root.strict = !root.strict;
+        @import("prompt_cache_hud.zig").noteBust(.mode);
         root.rebaseContextMeter();
         try out.print("strict mode {s} — {s}\n", .{
             if (root.strict) "ON" else "off",

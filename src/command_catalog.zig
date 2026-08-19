@@ -71,6 +71,7 @@ pub const commands = [_]Item{
     .{ .name = "/cost", .desc = "session token usage and cost" },
     .{ .name = "/usage", .desc = "alias for /cost" },
     .{ .name = "/debug", .desc = "live content-free observability HUD (turns, tokens, tools, last events)" },
+    .{ .name = "/cache", .desc = "prompt-cache posture: prefix hash, hit rate, last bust, remaining max levers" },
     .{ .name = "/tools", .desc = "session tool balance: codedb-pro vs zigrep vs native usage, gate refusals, skew" },
     .{ .name = "/animation", .desc = "pick the thinking animation; persists to settings" },
     .{ .name = "/theme", .usage = "/theme [name]", .desc = "pick a color theme; /theme off resets to your terminal default; persists" },

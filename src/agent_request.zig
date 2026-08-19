@@ -206,6 +206,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         self.streamed_args = .none;
         const body = try self.buildBody(tools, force, live, stream_usage);
         defer self.gpa.free(body);
+        if (!self.sub) @import("prompt_cache_hud.zig").noteRequest(self.io, self.systemPrompt(), tools orelse "");
         // GRAFF_REQ_STATS=1: per-call request anatomy + body dumps (req_stats.zig).
         req_stats.report(self.io, body, tools, self.sys_normal);
         const t0: Io.Timestamp = .now(self.io, .awake);

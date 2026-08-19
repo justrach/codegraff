@@ -17,6 +17,7 @@ pub const items = [_]Item{
     .{ .name = "/session-info", .desc = "Session details", .aliases = &.{ "/status", "/info" } },
     .{ .name = "/usage", .desc = "Token usage and cost", .aliases = &.{"/cost"} },
     .{ .name = "/debug", .desc = "Live observability HUD" },
+    .{ .name = "/cache", .desc = "Prompt-cache posture and remaining max levers" },
     .{ .name = "/rewind", .desc = "Undo the last turn", .aliases = &.{"/undo"} },
     .{ .name = "/quit", .desc = "Quit", .aliases = &.{ "/exit", "/q" } },
     .{ .name = "/rename", .desc = "Rename this session", .aliases = &.{"/title"} },
@@ -96,6 +97,7 @@ test "filter: slash prefix and alias" {
     try std.testing.expect(lookup("/undo") != null);
     try std.testing.expect(lookup("/yolo") != null);
     try std.testing.expect(lookup("/debug") != null);
+    try std.testing.expect(lookup("/cache") != null);
     try std.testing.expect(lookup("/cost") != null);
     try std.testing.expect(lookup("/not-a-cmd") == null);
 }

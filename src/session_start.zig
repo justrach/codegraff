@@ -345,6 +345,7 @@ pub fn initTelemetry(io: Io, gpa: Allocator, client: *std.http.Client, environ_m
             default_telemetry_endpoint;
     const telem_home = keys_cli.homeEnv(environ_map) orelse "";
     obs.reset();
+    @import("prompt_cache_hud.zig").reset();
     obs.attach(io);
     obs.export_endpoint = telem_endpoint;
     return .{

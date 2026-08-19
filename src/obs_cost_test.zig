@@ -66,6 +66,7 @@ test "usage/debug match the cost-tally renderer and add turn/decision extras" {
     try std.testing.expect(contains(usage, cost));
     try std.testing.expect(contains(debug, cost));
     try std.testing.expect(contains(debug, "turns"));
+    try std.testing.expect(contains(debug, "cache"));
     try std.testing.expect(contains(debug, "deny"));
     try std.testing.expect(contains(debug, "completed"));
     try std.testing.expect(!contains(usage, "chars sent"));

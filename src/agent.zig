@@ -292,6 +292,7 @@ pub const Agent = struct {
     /// active format is immediately rebuilt; inactive formats remain lazy.
     pub fn invalidateRootTools(self: *Agent) void {
         if (self.sub) return;
+        @import("prompt_cache_hud.zig").noteBust(.tools);
         self.tools_anthropic = "";
         self.tools_openai = "";
         self.tools_responses = "";

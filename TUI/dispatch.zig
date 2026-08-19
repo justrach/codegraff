@@ -158,7 +158,7 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.pushFmt(.system, "session: {s}", .{self.session_name orelse "untitled"}) catch {};
     } else if (std.mem.eql(u8, canon, "/session-info")) {
         meters.sessionInfo(self);
-    } else if (std.mem.eql(u8, canon, "/debug")) {
+    } else if (std.mem.eql(u8, canon, "/debug") or std.mem.eql(u8, canon, "/cache")) {
         self.openOverlay(.debug);
     } else if (std.mem.eql(u8, canon, "/usage")) {
         var buf: [512]u8 = undefined;
@@ -376,6 +376,14 @@ test "/debug opens the observability overlay" {
     m.setup(std.testing.allocator);
     defer m.deinit();
     _ = applyLine(&m, "/debug");
+    try std.testing.expectEqual(app.Overlay.debug, m.overlay);
+}
+
+test "/cache opens the same observability overlay" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    _ = applyLine(&m, "/cache");
     try std.testing.expectEqual(app.Overlay.debug, m.overlay);
 }
 
