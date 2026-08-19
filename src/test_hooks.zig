@@ -106,6 +106,11 @@ const commands_session_test = @import("commands_session_test.zig");
 const acp = @import("acp.zig");
 const acp_protocol = @import("acp_protocol.zig");
 const acp_usage = @import("acp_usage.zig");
+const acp_sink = @import("acp_sink.zig");
+const job_wake = @import("job_wake.zig");
+const monitor = @import("monitor.zig");
+const job_tests = @import("job_tests.zig");
+const exec_learn_test = @import("exec_learn_test.zig");
 
 // #382: moved off agent_tools.zig when the sibling-spawn diversity check
 // needed two lines there and the file was at exactly 600. The tests are
@@ -258,6 +263,11 @@ test {
     _ = acp;
     _ = acp_protocol;
     _ = acp_usage;
+    _ = acp_sink;
+    _ = job_wake;
+    _ = monitor;
+    _ = job_tests;
+    _ = exec_learn_test;
     _ = agent_eval_control_tests;
     _ = playbook_glue;
     _ = playbook_reflect;

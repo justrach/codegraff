@@ -6,6 +6,7 @@
       "bash",
       "bash_output",
       "bash_kill",
+      "monitor",
       "read_file",
       "edit_file",
       "write_file",
@@ -38,6 +39,7 @@
       "bash",
       "bash_output",
       "bash_kill",
+      "monitor",
       "read_file",
       "edit_file",
       "write_file",
@@ -70,6 +72,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -107,6 +110,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -132,6 +136,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -170,6 +175,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -195,6 +201,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -233,6 +240,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -258,6 +266,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -297,6 +306,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -322,6 +332,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -358,6 +369,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -382,6 +394,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -419,6 +432,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -443,6 +457,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -480,6 +495,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -504,6 +520,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -542,6 +559,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -590,6 +608,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -639,6 +658,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -688,6 +708,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -737,6 +758,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -784,6 +806,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -830,6 +853,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -876,6 +900,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -922,6 +947,7 @@
         "bash",
         "bash_output",
         "bash_kill",
+        "monitor",
         "read_file",
         "edit_file",
         "write_file",
@@ -965,6 +991,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -990,6 +1017,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1028,6 +1056,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1053,6 +1082,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1091,6 +1121,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1116,6 +1147,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1155,6 +1187,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1180,6 +1213,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1217,6 +1251,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1242,6 +1277,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1280,6 +1316,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1305,6 +1342,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1343,6 +1381,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1368,6 +1407,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1407,6 +1447,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1432,6 +1473,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1458,6 +1500,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1483,6 +1526,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1509,6 +1553,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1534,6 +1579,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1560,6 +1606,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1585,6 +1632,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1611,6 +1659,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1636,6 +1685,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1662,6 +1712,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1687,6 +1738,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1713,6 +1765,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1738,6 +1791,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1764,6 +1818,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1789,6 +1844,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1815,6 +1871,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]
@@ -1840,6 +1897,7 @@
         "codedb",
         "edit_file",
         "imagegen",
+        "monitor",
         "read_file",
         "write_file"
       ]

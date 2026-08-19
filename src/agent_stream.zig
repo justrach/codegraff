@@ -387,7 +387,7 @@ test "openaiComplete (#133): finish_reason marks completion, deltas do not" {
 /// typed events through the sink. Best-effort: parse failures are ignored
 /// (the buffered body is parsed afterwards).
 pub fn printDelta(self: *Agent, raw_line: []const u8) void {
-    if (self.out == null) return; // pool-thread subagents have no frontend writer: skip entirely (capture included), as ever
+    if (self.out == null and self.sink == null) return; // pool-thread subagents have no frontend: skip (ACP installs a sink with out=null)
     const payload = ssePayload(raw_line) orelse return;
     const parsed = std.json.parseFromSlice(Value, self.gpa, payload, .{}) catch return;
     defer parsed.deinit();

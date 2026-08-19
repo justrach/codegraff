@@ -32,6 +32,7 @@ const pricing = @import("pricing.zig");
 const trace = @import("trace.zig");
 const serde = @import("serde.zig");
 const fallback_config = @import("fallback_config.zig");
+const job_wake = @import("job_wake.zig");
 
 pub const ReplCtx = struct {
     io: Io,
@@ -400,12 +401,16 @@ test "steerFlushRedundant drops empty + consecutive-identical flushes (#129)" {
     try std.testing.expect(!steerFlushRedundant(&two, "a")); // matches head not tail -> queue
 }
 
-/// Pops the next queued steering prompt (FIFO), or null if none.
+/// Pops the next queued steering prompt (FIFO), or an idle job-wake note.
 pub fn popSteer() ?SteerEntry {
-    steerLock();
-    defer steerUnlock();
-    if (main_mod.g_steer_queue.items.len == 0) return null;
-    return main_mod.g_steer_queue.orderedRemove(0);
+    {
+        steerLock();
+        defer steerUnlock();
+        if (main_mod.g_steer_queue.items.len > 0)
+            return main_mod.g_steer_queue.orderedRemove(0);
+    }
+    if (job_wake.popWakeText()) |text| return .{ .text = text, .force = false };
+    return null;
 }
 
 /// Drops any half-typed steering line (no Enter yet) — called at the top

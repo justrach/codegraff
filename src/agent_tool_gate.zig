@@ -174,7 +174,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
             .text = try self.arena.dupe(u8, "plan mode is on — read-only. Fold this change into the plan you present; the user applies it after approving (/plan toggles the mode off)."),
             .is_error = true,
         };
-        if (std.mem.eql(u8, call.name, "bash")) {
+        if (std.mem.eql(u8, call.name, "bash") or std.mem.eql(u8, call.name, "monitor")) {
             // Model-supplied: a non-object here is UB in a ReleaseFast build,
             // and this gate is ROOT-only, so the subagent-path guards added in
             // v0.0.223 never covered it.

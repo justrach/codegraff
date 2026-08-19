@@ -107,7 +107,7 @@ test "isSshCommand: bare and pathed ssh, not scp or substrings" {
 /// blocked on EOF with no deadline at all.
 const codedb_deadline_ms: u64 = 60 * 1000;
 
-fn learningArgv(argv: *[10][]const u8, exe_path: []const u8, contribute: bool) usize {
+pub fn learningArgv(argv: *[10][]const u8, exe_path: []const u8, contribute: bool) usize {
     var argc: usize = 0;
     for ([_][]const u8{ exe_path, "--learning-privacy", if (contribute) "aggregate" else "local", "learn", "run" }) |arg| {
         argv[argc] = arg;
@@ -218,7 +218,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             .text = try gpa.dupe(u8, "plan mode is on — read-only; describe the change instead of making it"),
             .is_error = true,
         };
-        if (std.mem.eql(u8, call.name, "bash")) {
+        if (std.mem.eql(u8, call.name, "bash") or std.mem.eql(u8, call.name, "monitor")) {
             if (strField(call.input, "command")) |cmd| if (!Approvals.readOnlyAllowed(cmd)) {
                 // The root may have approved this external read-only path this
                 // session (#64); subagents (from_sub) never get the external hatch.
@@ -548,6 +548,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     // #352: codex-gated. execImagegen answers a call that was never advertised
     // (an unavailable session) with the same honest error it gives the model.
     if (std.mem.eql(u8, call.name, imagegen.tool_name)) return imagegen.execImagegen(ctx, input);
+    if (std.mem.eql(u8, call.name, "monitor")) return @import("monitor.zig").exec(ctx, input);
     if (std.mem.eql(u8, call.name, "subagent")) return execSubagent(ctx, input);
     if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
     if (std.mem.eql(u8, call.name, "agent_output")) {
@@ -585,15 +586,8 @@ fn codedbCompactRead(gpa: Allocator, io: Io, path: []const u8, start: ?i64, end:
     return ToolOutput{ .text = try std.fmt.allocPrint(gpa, "{s}\n[compact view — comments/blank lines stripped, line numbers shown; re-read WITHOUT compact before building an edit_file old_string]", .{run.stdout}) };
 }
 
-test "internal learning respects the parent privacy ceiling" {
-    var argv: [10][]const u8 = undefined;
-    var len = learningArgv(&argv, "graff", false);
-    try std.testing.expectEqualSlices([]const u8, &.{ "graff", "--learning-privacy", "local", "learn", "run" }, argv[0..len]);
-    len = learningArgv(&argv, "graff", true);
-    try std.testing.expectEqualSlices([]const u8, &.{ "graff", "--learning-privacy", "aggregate", "learn", "run", "--submit" }, argv[0..len]);
-}
-
 test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, so the compiled-in references live here (the reach check diffs the test binary, not which file holds the line)
     _ = @import("codedbpro_report.zig");
     _ = @import("tool_balance.zig");
+    _ = @import("exec_learn_test.zig");
 }

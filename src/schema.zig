@@ -19,6 +19,7 @@ const workspace_switch = @import("workspace_switch.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-local-tools gate (layer 1 lives here, layer 2 in exec.zig)
 const tool_gates = @import("tool_gates.zig"); // #352: the additive twin — optional tools that only exist when startup found their backing capability
 const imagegen = @import("imagegen.zig"); // #352: name/desc/schema as plain strings, like skill_docs, so this catalog needs one entry and no import cycle
+const monitor = @import("monitor.zig"); // ADR 0013: line-stream watch; strings live here so the catalog stays one entry
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: which MCP tools are served schema-first vs description-only, and the `load_tool_schemas` strings
 const native_fold = @import("native_fold.zig"); // folded native power tools: same two-phase pattern for the harness's own catalog
 const render = @import("schema_render.zig"); // the comptime provider-tool renderers moved out when #352's optional-tool catalogs doubled the number held here (600-line ceiling)
@@ -74,6 +75,7 @@ const base_specs = [_]ToolSpec{
         \\{"type": "object", "properties": {"id": {"type": "integer", "description": "Job id to terminate"}}, "required": ["id"]}
         ,
     },
+    .{ .name = monitor.tool_name, .desc = monitor.tool_desc, .schema = monitor.tool_schema },
     .{
         .name = "read_file",
         .desc = "Read a UTF-8 text file. Call this before editing any file. For a read-only exact-key lookup, pass contains to return only matching numbered lines instead of the whole file. Whole-file reads over 256 KiB return a short preview; pass start_line/end_line (1-based, inclusive) for a byte-exact window from any size file.",

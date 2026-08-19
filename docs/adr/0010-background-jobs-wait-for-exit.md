@@ -33,5 +33,6 @@ A 20-minute CI watch is one tool call, not ~40 model completions.
 A snapshot (`wait_ms` omitted/0) still returns immediately. A model
 that wanted "wake me every 30s of silence" can no longer do that
 through `wait_ms=30000`; that was the measured failure mode.
-Idle auto-wake (grok-build's `maybe_drain_notifications`) is a
-follow-up: the in-turn wait is the tax we measured.
+Idle auto-wake landed in ADR 0013 (`popSteer` / next `session/prompt`);
+it does not interrupt a blocked readline. The in-turn wait is the tax
+we measured.

@@ -22,7 +22,7 @@ structure Flags where
 deriving Repr, BEq
 
 def localTools : List String :=
-  ["bash", "bash_output", "bash_kill", "read_file", "edit_file",
+  ["bash", "bash_output", "bash_kill", "monitor", "read_file", "edit_file",
    "write_file", "codedb", "imagegen"]
 
 def leanTools : List String :=
@@ -33,7 +33,7 @@ def optionalTools : List String :=
   ["imagegen"]
 
 def baseTools : List String :=
-  ["bash", "bash_output", "bash_kill", "read_file", "edit_file",
+  ["bash", "bash_output", "bash_kill", "monitor", "read_file", "edit_file",
    "write_file", "webfetch", "skill", "codedb"]
 
 def metaTools : List String :=
@@ -125,6 +125,8 @@ theorem cube_unique :
 
 example : mem "webfetch" localTools = false := by native_decide
 example : mem "imagegen" localTools = true := by native_decide
+example : mem "monitor" localTools = true := by native_decide
+example : mem "monitor" leanTools = false := by native_decide
 example : mem "imagegen" leanTools = false := by native_decide
 example : mem "subagent" leanTools = true := by native_decide
 example : unique (baseTools ++ metaTools ++ rootExtras) = true := by native_decide

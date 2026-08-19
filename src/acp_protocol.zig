@@ -11,6 +11,7 @@ const Value = std.json.Value;
 
 const util = @import("util.zig");
 const usage = @import("acp_usage.zig");
+const acp_sink = @import("acp_sink.zig");
 
 pub const protocol_version: i64 = 1;
 pub const err_method_not_found: i32 = -32601;
@@ -229,7 +230,7 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: Request) !void
             return respond(w, req, .{ .stopReason = "max_turn_requests" });
         return respondError(w, req, err_internal, @errorName(err));
     };
-    try writeSessionUpdate(w, sid, outcome.text);
+    if (!acp_sink.didStream()) try writeSessionUpdate(w, sid, outcome.text);
     if (outcome.session) |sess| try writeUsageUpdate(w, sid, sess);
     if (outcome.usage) |u|
         return respond(w, req, .{ .stopReason = "end_turn", .usage = u });

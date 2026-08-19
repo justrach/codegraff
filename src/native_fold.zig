@@ -55,6 +55,7 @@ pub const folded = [_][]const u8{
     "agent_output",
     "skill",
     "webfetch",
+    "monitor",
 };
 
 /// A name test only, independent of whether the fold is on.

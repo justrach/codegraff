@@ -40,6 +40,7 @@ workspace tool (ADR 0006).
 ## Consequences
 
 Zed and other ACP hosts can show cache hits without speaking `--json`.
-Revisit mid-turn cancel, `tool_call` streaming, client fs/permission
-callbacks, or `session/load` when a host needs them — each is a notification
-shape on this adapter, not a new agent.
+`tool_call` / `tool_call_update` and streamed `agent_message_chunk` landed
+in ADR 0013. Revisit mid-turn cancel, client fs/permission callbacks, or
+`session/load` when a host needs them — each is a notification shape on
+this adapter, not a new agent.

@@ -111,7 +111,7 @@ pub fn familyOf(name: []const u8) Family {
     if (eqAny(leaf, &.{ "read_file", "read", "view", "cat", "open" })) return .read;
     if (eqAny(leaf, &.{ "write_file", "write", "create" })) return .write;
     if (eqAny(leaf, &.{ "edit_file", "edit", "patch", "replace", "apply_patch", "multiedit" })) return .edit;
-    if (eqAny(leaf, &.{ "bash", "shell", "exec", "run_command", "bash_output", "bash_kill" })) return .bash;
+    if (eqAny(leaf, &.{ "bash", "shell", "exec", "run_command", "bash_output", "bash_kill", "monitor" })) return .bash;
     // Before the generic search test below: `web_search` is a fetch, not a
     // codebase search, and it would otherwise be swallowed by "search".
     if (eqAny(leaf, &.{ "webfetch", "web_fetch", "web_search", "fetch", "browse" })) return .web;

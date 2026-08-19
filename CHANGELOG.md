@@ -15,7 +15,11 @@ current is part of cutting a release.
 - `graff acp` reports per-turn `PromptResponse.usage` (full prompt + cache
   reads/writes) and a `usage_update` with session context size and cumulative
   cost. `initialize` carries `agentInfo`. String protocol versions and
-  `session/cancel` as a request are accepted (ADR 0012).
+  `session/cancel` as a request are accepted (ADR 0012). During a turn it
+  streams `tool_call` / `tool_call_update` and `agent_message_chunk` (ADR 0013).
+- Background jobs that finish between turns wake the next REPL/`session/prompt`
+  with a harness note. New `monitor` tool watches a command as complete lines
+  without stealing `bash_output`'s unread cursor (ADR 0013).
 
 ## v0.0.267 (2026-08-19)
 

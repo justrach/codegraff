@@ -28,8 +28,8 @@ const Allocator = std.mem.Allocator;
 /// `GRAFF_NO_LOCAL_TOOLS=1` (session_run.zig). Never flipped mid-session.
 pub var enabled: bool = false;
 
-/// The built-in tools that reach this host: shell execution plus its two job
-/// controls, the three file tools, and codedb - which reads the host checkout
+/// The built-in tools that reach this host: shell execution plus its job
+/// controls (including `monitor`), the three file tools, and codedb - which reads the host checkout
 /// through its own index. `webfetch` is deliberately absent: it is plain host
 /// HTTP with no sandbox to escape. So are the orchestration/meta tools, and
 /// everything MCP-sourced (an `mcp__*` name never matches here).
@@ -37,6 +37,7 @@ pub const gated_tools = [_][]const u8{
     "bash",
     "bash_output",
     "bash_kill",
+    "monitor",
     "read_file",
     "edit_file",
     "write_file",
@@ -136,7 +137,7 @@ pub fn compactLeanSpecs(comptime Spec: type, arena: Allocator, specs: []const Sp
 
 /// Refusal text. Names the flag so the model stops retrying the same call, and
 /// points it at what does work in this deployment.
-pub const refusal_text = "--no-local-tools is set for this process: the built-in bash, bash_output, bash_kill, read_file, edit_file, write_file and codedb tools are hard-disabled and cannot be re-enabled by asking. Run commands and touch files through the sandbox tools the connected MCP server provides instead; webfetch still works.";
+pub const refusal_text = "--no-local-tools is set for this process: the built-in bash, bash_output, bash_kill, monitor, read_file, edit_file, write_file and codedb tools are hard-disabled and cannot be re-enabled by asking. Run commands and touch files through the sandbox tools the connected MCP server provides instead; webfetch still works.";
 
 /// `GRAFF_NO_LOCAL_TOOLS` - affirmative-only, like GRAFF_CLOCK_SLEEP, and OR'd
 /// onto the CLI flag by the caller so a stray value can never turn
@@ -182,7 +183,7 @@ test "#330: the gated set is exactly the host-touching built-ins; webfetch, meta
     defer enabled = saved;
 
     for (gated_tools) |tool| try std.testing.expect(isLocalTool(tool));
-    try std.testing.expectEqual(@as(usize, 8), gated_tools.len);
+    try std.testing.expectEqual(@as(usize, 9), gated_tools.len);
     try std.testing.expect(isLocalTool("imagegen")); // #352: optional, but still a local spawn+write
     for ([_][]const u8{ "webfetch", "skill", "subagent", "workflow", "todo_write", "eval", "mcp__sandbox__exec", "mcp__sandbox__bash" }) |tool|
         try std.testing.expect(!isLocalTool(tool));

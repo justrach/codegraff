@@ -23,6 +23,7 @@ record only when you need the evidence or the edge cases.
 | [0010](0010-background-jobs-wait-for-exit.md) | `bash_output`/`agent_output` `wait_ms>0` blocks until exit (10h cap); do not poll every 30s. |
 | [0011](0011-prompt-cache-max-is-visible.md) | Prompt-cache max is `/cache` posture, not a new default; `/btw` rides the parent prefix. |
 | [0012](0012-acp-is-an-adapter.md) | `graff acp` is a protocol adapter over the existing loop; PromptResponse.usage is the per-turn cache-aware tally. |
+| [0013](0013-acp-cards-idle-wake-monitor.md) | ACP streams tool cards and text deltas; idle jobs wake the next turn; `monitor` watches lines. |
 
 ## When to write one
 

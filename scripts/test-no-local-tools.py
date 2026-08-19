@@ -39,6 +39,7 @@ GATED_TOOLS = (
     "bash",
     "bash_output",
     "bash_kill",
+    "monitor",
     "read_file",
     "edit_file",
     "write_file",

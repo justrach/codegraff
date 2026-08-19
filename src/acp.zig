@@ -10,8 +10,8 @@
 //!   initialize     → protocolVersion + agentCapabilities + agentInfo.
 //!   session/new    → mints one session id. ONE live session per process.
 //!   session/prompt → flatten ContentBlocks, run ONE full root turn (same
-//!                    loop `-p` uses), emit `agent_message_chunk` + optional
-//!                    `usage_update`, then `{stopReason, usage?}`.
+//!                    loop `-p` uses), stream tool cards + text deltas, emit
+//!                    optional `usage_update`, then `{stopReason, usage?}`.
 //!   session/cancel → empty result if it was a request; no interrupt yet.
 //!   anything else  → -32601. Notifications (no `id`) are NEVER answered.
 //!
@@ -42,7 +42,8 @@
 //!     process holds one session, so there is nothing to disambiguate, and a
 //!     scripted client can prompt without first parsing session/new's reply.
 //!   * loadSession is advertised false; session/load is therefore -32601.
-//!   * One update per turn (the final text), not streaming chunks or tool_call.
+//!   * Mid-turn cancel still does not abort (the read loop is blocked inside
+//!     the turn). Tool cards and text deltas stream via the ACP sink.
 //!   * `session/new` `cwd` is accepted and ignored: process-wide chdir would
 //!     fight the workspace tool (ADR 0006).
 //!   * `session/cancel` does not abort an in-flight turn (the read loop is
@@ -63,6 +64,8 @@ const util = @import("util.zig");
 const pricing = @import("pricing.zig");
 const proto = @import("acp_protocol.zig");
 const acp_usage = @import("acp_usage.zig");
+const acp_sink = @import("acp_sink.zig");
+const job_wake = @import("job_wake.zig");
 
 pub const protocol_version = proto.protocol_version;
 pub const err_method_not_found = proto.err_method_not_found;
@@ -96,8 +99,11 @@ const LiveTurn = struct {
 
     fn run(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!acp_usage.TurnOutcome {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+        acp_sink.beginTurn();
+        const wake = job_wake.takeNote(arena);
+        const prompt = if (wake.len == 0) text else try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ wake, text });
         const before = pricing.g_cost.snap(self.root.io);
-        try self.root.messages.append(try messages_mod.textMessage(arena, "user", text));
+        try self.root.messages.append(try messages_mod.textMessage(arena, "user", prompt));
         if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(text.len, std.math.maxInt(u32))), self.root.provider.model);
         const final = try providers.runTurnWithFallback(self.root, self.keys, arena, null);
         const after = pricing.g_cost.snap(self.root.io);
@@ -134,8 +140,13 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     main_mod.unattended = true;
     root.in = null;
     root.out = null;
-    root.stream_quiet = true;
+    root.stream_quiet = false; // sink streams chunks; out stays null so TUI/--json do not write
     main_mod.g_out = null; // no guiEmit into the ACP stream
+    var sink_state = acp_sink.State.init(io, out, gpa);
+    defer sink_state.deinit();
+    acp_sink.attach(&sink_state);
+    defer acp_sink.detach();
+    root.sink = sink_state.sink();
     var live: LiveTurn = .{ .root = root, .keys = keys };
     var d: proto.Dispatch = .{ .turn = LiveTurn.run, .ctx = &live, .seed = @bitCast(util.unixMs(io)) };
     while (true) {
@@ -147,6 +158,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
             std.debug.print("acp: dispatch failed: {t}\n", .{err});
             break;
         };
+        sink_state.setSession(d.session_id);
         out.flush() catch break;
     }
     session.saveSession(root, arena, root.session_name) catch {};

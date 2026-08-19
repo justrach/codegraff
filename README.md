@@ -452,12 +452,14 @@ initialize → session/new → session/prompt*
 Each `session/prompt` runs one full root turn and returns `stopReason` plus
 `usage` (per-turn tokens; `inputTokens` is the full prompt, including cache
 reads). A `usage_update` notification carries session context size and
-cumulative cost. Tools run unattended, same as `-p`.
+cumulative cost. During the turn, `tool_call` / `tool_call_update` and
+streamed `agent_message_chunk` notifications follow engine events (ADR 0013).
+Tools run unattended, same as `-p`.
 
 v0 does not implement client filesystem callbacks, permission prompts,
-`session/load`, streaming `tool_call` updates, or mid-turn cancel (`session/cancel`
-is acknowledged; the in-flight turn still finishes). `session/new` `cwd` is
-ignored — use the `workspace` tool (ADR 0006) rather than a process-wide chdir.
+`session/load`, or mid-turn cancel (`session/cancel` is acknowledged; the
+in-flight turn still finishes). `session/new` `cwd` is ignored — use the
+`workspace` tool (ADR 0006) rather than a process-wide chdir.
 
 ---
 
@@ -810,7 +812,7 @@ graff --json --no-local-tools --model gpt-5.5
 GRAFF_NO_LOCAL_TOOLS=1 graff --json
 ```
 
-With the gate on, `bash`, `bash_output`, `bash_kill`, `read_file`, `edit_file`,
+With the gate on, `bash`, `bash_output`, `bash_kill`, `monitor`, `read_file`, `edit_file`,
 `write_file` and `codedb` are hard-disabled for the whole process. It is a gate
 in the binary, not a permission rule the model can talk its way past, and it
 works in two layers because either one alone would be a promise rather than a
