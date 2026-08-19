@@ -275,7 +275,7 @@ fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_o
     admitNext(gpa, ctx.io);
     return .{ .text = try std.fmt.allocPrint(
         gpa,
-        "[agent {d} started: {s}]\nIt runs in the background across turns. Poll status/result with agent_output (id {d}, optional wait_ms); once it completes, agent_output keeps returning the same result — nothing is consumed.",
+        "[agent {d} started: {s}]\nIt runs in the background across turns. Do not poll. agent_output(id {d}, wait_ms>0) blocks until it finishes; omit wait_ms for a snapshot. After completion, agent_output keeps returning the same result.",
         .{ job.id, job.label, job.id },
     ) };
 }
@@ -302,17 +302,17 @@ pub fn agentStatusText(gpa: Allocator, id: u32, done: bool, is_error: bool, usag
     );
 }
 
-/// Same wait cap as jobs.zig's bash_output (job_wait_cap_ms) — kept as its
-/// own constant rather than made pub there, since it's one shared value, not
-/// shared state.
-const agent_wait_cap_ms: u64 = 30_000;
+/// Same wait policy as bash_output (ADR 0010): 0 = snapshot, >0 waits for
+/// exit (legacy 1–30000 values promote to 10h). Inlined so this file stays
+/// at the line cap without importing job_wait.
+const agent_wait_cap_ms: u64 = 36_000_000;
 
 /// agent_output: fetch a background subagent's status/result. Non-
 /// destructive — a completed fetch always replays the full result (unlike
 /// bash_output's cursor, a subagent's report is one-shot, not a stream).
-/// wait_ms > 0 polls (capped at 30s, like bash_output) while still running.
+/// wait_ms > 0 blocks until the agent finishes (or Esc), not every 30s.
 pub fn agentOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
-    const deadline = @min(wait_ms, agent_wait_cap_ms);
+    const deadline: u64 = if (wait_ms == 0) 0 else if (wait_ms <= 30_000) agent_wait_cap_ms else @min(wait_ms, agent_wait_cap_ms);
     var waited: u64 = 0;
     while (true) {
         g_agent_jobs.mutex.lockUncancelable(io);

@@ -10,6 +10,14 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.267 (2026-08-19)
+
+- Background jobs wait like grok-build: `bash_output(wait_ms>0)` and
+  `agent_output(wait_ms>0)` block until exit (10h cap), not until the
+  next byte or 30s of silence. The old 1–30000 poll values are promoted
+  to that cap so a `gh run watch` loop is one tool call, not hundreds of
+  model hops (ADR 0010).
+
 ## v0.0.266 (2026-08-19)
 
 - Peer talk is pull, not a second copy of the room: `peer_message
