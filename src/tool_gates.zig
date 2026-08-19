@@ -105,6 +105,7 @@ test { // the served catalogs' wire-compatibility guard (an unreferenced module'
     _ = @import("grok_spec_conformance.zig");
     _ = @import("spec_prompt_cache_conformance.zig");
     _ = @import("spec_prompt_cache_kernel_conformance.zig");
+    _ = @import("spec_prompt_prefix_conformance.zig");
 }
 
 test "#352: an optional tool is advertised only while its flag is set; other names are unaffected" {

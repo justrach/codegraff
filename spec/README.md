@@ -46,6 +46,7 @@ properties are load-bearing, and a missed combination is a real bug.
 | `provider` | live | 18 baked rows over 3 wire kinds. |
 | `goal_loop` | live | Process kernel (`Event`/`step`, not a TM). 360 snapshot cells. Standing does not retire. |
 | `prompt_cache` | live | Process kernel. 48 cells. Sub never spawns. Child key isolated. Join restores root. |
+| `prompt_prefix` | live | Process kernel. 6 cells. Names-only catalog, pin once. Skill events do not rewrite the prefix. |
 | `terminal_modes` | live | Process kernel. 14 sequences. Enable+restore returns to Idle. Pop floors. Alt last. |
 | `path_confine` | live | Process kernel. Component walk; Escaped/Absolute absorb. 80 leases. |
 | `shape` | live | 1728 cells. Hand ladder + explicit arm. Budget from remaining/cap/floor. |
@@ -60,6 +61,7 @@ python3 spec/conformance.py            # properties + fixture self-check
 python3 spec/conformance.py --export   # regenerate kernels/*.json and GoalLoop mermaid
 python3 spec/conformance.py --diagram goal_loop   # live Event/step projection
 python3 spec/conformance.py --diagram prompt_cache
+python3 spec/conformance.py --diagram prompt_prefix
 python3 spec/conformance.py --diagram terminal_modes
 python3 spec/conformance.py --diagram path_confine
 python3 spec/conformance.py --diagram transport
@@ -69,9 +71,9 @@ python3 spec/conformance.py --lean     # lake build, if installed
 zig build test --summary none -Dtest-filter="spec/tool_catalog"
 ```
 
-Process kernels (`GoalLoop`, `PromptCache`, `TerminalModes`, `PathConfine`,
-`Transport`, `Score`) are finite `Event` / `step` diagrams, not Turing
-machines. Cube kernels (Shape, Provider, ToolCatalog) stay cubes.
+Process kernels (`GoalLoop`, `PromptCache`, `PromptPrefix`, `TerminalModes`,
+`PathConfine`, `Transport`, `Score`) are finite `Event` / `step` diagrams,
+not Turing machines. Cube kernels (Shape, Provider, ToolCatalog) stay cubes.
 BashPolicy stays a command cube this turn. The shape of a subagent fleet
 is not a Shape cell — PromptCache / PathConfine / Transport force every
 child through a machine; Score files that unbounded fleet as one stage

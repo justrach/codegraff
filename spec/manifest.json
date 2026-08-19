@@ -110,6 +110,16 @@
       "impl": "TUI/run.zig:enable_seq+TUI/restore.zig:seq",
       "cells_floor": 14,
       "cells_key": "cells"
+    },
+    {
+      "id": "prompt_prefix",
+      "lean": "lean-proofs/Graff/PromptPrefix.lean",
+      "ref": "spec/ref/prompt_prefix.py",
+      "fixture": "spec/kernels/prompt_prefix.json",
+      "zig": "src/spec_prompt_prefix_conformance.zig",
+      "impl": "src/skill_docs.zig:promptCatalog+execSkill",
+      "cells_floor": 6,
+      "cells_key": "cases"
     }
   ]
 }

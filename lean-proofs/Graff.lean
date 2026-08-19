@@ -9,3 +9,4 @@ import Graff.BashPolicy
 import Graff.StructuredOutput
 import Graff.TerminalModes
 import Graff.PromptCache
+import Graff.PromptPrefix

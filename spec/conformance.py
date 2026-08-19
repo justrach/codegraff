@@ -58,6 +58,8 @@ from ref.prompt_cache import check_properties as cache_check_properties
 from ref.prompt_cache import payload as cache_payload
 from ref.prompt_cache import write_kernel_md as write_cache_md
 from ref.prompt_cache import kernel_md as cache_kernel_md
+from ref.prompt_prefix import check_properties as prefix_check_properties, payload as prefix_payload
+from ref.prompt_prefix import write_kernel_md as write_prefix_md, kernel_md as prefix_kernel_md
 from ref.shape import check_properties as shape_check_properties
 from ref.shape import payload as shape_model_payload
 from ref.score import check_properties as score_check_properties, payload as score_model_payload
@@ -84,6 +86,7 @@ BASH_FIXTURE = KERNELS / "bash_policy.json"
 SOX_FIXTURE = KERNELS / "structured_output.json"
 TERM_FIXTURE = KERNELS / "terminal_modes.json"
 CACHE_FIXTURE = KERNELS / "prompt_cache.json"
+PREFIX_FIXTURE = KERNELS / "prompt_prefix.json"
 LEAN_DIR = ROOT.parent / "lean-proofs"
 
 
@@ -342,6 +345,10 @@ def check_prompt_cache() -> int:
     return _ref(cache_check_properties, "prompt_cache")
 
 
+def check_prompt_prefix() -> int:
+    return _ref(prefix_check_properties, "prompt_prefix")
+
+
 def check_path_confine() -> int:
     n = 0
     for p in PATHS:
@@ -434,6 +441,8 @@ def export() -> list[Path]:
         write_term_md(KERNELS / "terminal_modes.md"),
         _write(CACHE_FIXTURE, cache_payload()),
         write_cache_md(KERNELS / "prompt_cache.md"),
+        _write(PREFIX_FIXTURE, prefix_payload()),
+        write_prefix_md(KERNELS / "prompt_prefix.md"),
     ]
 
 
@@ -456,10 +465,12 @@ def check_fixtures() -> None:
     _same(SOX_FIXTURE, sox_model_payload(), "structured_output")
     _same(TERM_FIXTURE, term_model_payload(), "terminal_modes")
     _same(CACHE_FIXTURE, cache_payload(), "prompt_cache")
+    _same(PREFIX_FIXTURE, prefix_payload(), "prompt_prefix")
     from ref.goal_loop import kernel_md
     for name, body in (
         ("goal_loop.md", kernel_md),
         ("prompt_cache.md", cache_kernel_md),
+        ("prompt_prefix.md", prefix_kernel_md),
         ("terminal_modes.md", term_kernel_md),
         ("path_confine.md", path_kernel_md),
         ("transport.md", transport_kernel_md),
@@ -486,15 +497,13 @@ def try_lean() -> int:
         print("lean: lake not installed (optional; fixtures are the CI surface)")
         return 0
     print(f"lean: {lake} build (cwd={LEAN_DIR})")
-    r = subprocess.run([lake, "build"], cwd=LEAN_DIR)
-    if r.returncode != 0:
+    if subprocess.run([lake, "build"], cwd=LEAN_DIR).returncode != 0:
         raise Counterexample("lean-build", None, "lake build failed")
     return 0
 
 
 def shutil_which(name: str) -> str | None:
     from shutil import which
-
     return which(name)
 
 
@@ -503,18 +512,9 @@ def try_impl() -> int:
     if zig is None:
         print("impl: zig not on PATH; skip")
         return 0
-    repo = ROOT.parent
-    cmd = [
-        zig,
-        "build",
-        "test",
-        "--summary",
-        "none",
-        "-Dtest-filter=spec/",
-    ]
+    cmd = [zig, "build", "test", "--summary", "none", "-Dtest-filter=spec/"]
     print("impl:", " ".join(cmd))
-    r = subprocess.run(cmd, cwd=repo)
-    if r.returncode != 0:
+    if subprocess.run(cmd, cwd=ROOT.parent).returncode != 0:
         raise Counterexample("impl", None, "zig test spec/tool_catalog failed")
     return 0
 
@@ -543,6 +543,7 @@ def main() -> int:
         mods = {
             "goal_loop": "ref.goal_loop",
             "prompt_cache": "ref.prompt_cache",
+            "prompt_prefix": "ref.prompt_prefix",
             "terminal_modes": "ref.terminal_modes",
             "path_confine": "ref.path_confine",
             "transport": "ref.transport",
@@ -564,6 +565,7 @@ def main() -> int:
         n_pr = check_provider()
         n_gl = check_goal_loop()
         n_ck = check_prompt_cache()
+        n_px = check_prompt_prefix()
         n_pc = check_path_confine()
         n_sh = check_shape()
         n_sc = check_score()
@@ -573,12 +575,12 @@ def main() -> int:
         if args.export:
             paths = export()
             rel = ", ".join(p.relative_to(ROOT.parent).as_posix() for p in paths)
-            print(f"exported catalog={n_cat} transport={n_tr} provider={n_pr} goal={n_gl} cache={n_ck} path={n_pc} shape={n_sh} score={n_sc} bash={n_ba} sox={n_sx} term={n_tm} → {rel}")
+            print(f"exported catalog={n_cat} transport={n_tr} provider={n_pr} goal={n_gl} cache={n_ck} prefix={n_px} path={n_pc} shape={n_sh} score={n_sc} bash={n_ba} sox={n_sx} term={n_tm} → {rel}")
         else:
             check_fixtures()
             print(
                 f"ok  tool_catalog {n_cat}  transport {n_tr} (1 ws)  "
-                f"provider {n_pr}  goal_loop {n_gl}  prompt_cache {n_ck}  path_confine {n_pc}  "
+                f"provider {n_pr}  goal_loop {n_gl}  prompt_cache {n_ck}  prompt_prefix {n_px}  path_confine {n_pc}  "
                 f"shape {n_sh}  score {n_sc}  bash {n_ba}  "
                 f"structured_output {n_sx}  terminal_modes {n_tm}"
             )
