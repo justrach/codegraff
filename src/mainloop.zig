@@ -216,7 +216,7 @@ pub fn run(ctx: *Ctx) !void {
                 const id = if (parsed.object.get("id")) |v| (if (v == .string) v.string else "") else "";
                 if (id.len == 0) {
                     @import("prompt_cache_hud.zig").noteBust(.persona);
-                try prompts.setSystemPrompts(ctx.root, ctx.sys_normal, ctx.arena); // #326: reset to the startup base, all four variants
+                    try prompts.setSystemPrompts(ctx.root, ctx.sys_normal, ctx.arena); // #326: reset to the startup base, all four variants
                     ctx.root.rebaseContextMeter();
                     ctx.root.emit(.{ .type = "agent", .ok = true, .id = id, .chars = ctx.root.sys_normal.len });
                     continue;
