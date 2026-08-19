@@ -189,7 +189,7 @@ const Walk = struct {
         const job = m.pending orelse return;
         if (m.cancel_requested) return;
         const n = m.history.items.len;
-        if (job.stream.len.load(.acquire) > 0) self.place(n, n, true, true);
+        if (job.raw.len.load(.acquire) > 0 or job.stream.len.load(.acquire) > 0) self.place(n, n, true, true);
         if (m.steer_queue.items.len > 0) self.place(n, n + 1, true, true);
     }
 };
@@ -199,7 +199,8 @@ const Walk = struct {
 fn liveText(m: *Model, a: std.mem.Allocator, start: usize, end: usize, width: usize) ![]const u8 {
     if (end != start) return steerText(m, a);
     const job = m.pending orelse return "";
-    const live = job.stream.snapshot(a) orelse return "";
+    const src = if (job.raw.len.load(.acquire) > 0) &job.raw else &job.stream;
+    const live = src.snapshot(a) orelse return "";
     return theme_mod.paint(a, m.theme().muted, try scrollback.tail(a, scrollback.strip(a, live), width, 4));
 }
 

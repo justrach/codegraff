@@ -54,6 +54,7 @@ const noSymlinkEscape = approvals_mod.noSymlinkEscape;
 const jobs = @import("jobs.zig");
 const runCapped = jobs.runCapped;
 const runCappedWithOptions = jobs.runCappedWithOptions;
+const exec_bash_stream = @import("exec_bash_stream.zig");
 const toolRunOptions = jobs.toolRunOptions; // #266/#198: own the child's process group
 const spawnJob = jobs.spawnJob;
 const jobOutput = jobs.jobOutput;
@@ -316,7 +317,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
                     try std.fmt.allocPrint(gpa, "could not start background job ({t}) — run it in the foreground instead", .{err}),
                 .is_error = true,
             };
-            return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. Do not poll. bash_output(id {d}, wait_ms>0) blocks until it exits; omit wait_ms for a snapshot. bash_kill stops it.{s}", .{
+            return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. You are notified on exit — do not poll. bash_output(id {d}, wait_ms>0) blocks until it exits; omit wait_ms for a snapshot. bash_kill stops it.{s}", .{
                 job.id,
                 job.cmd,
                 job.id,
@@ -325,13 +326,10 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         }
         const sh = shellArgv(cmd);
         const deadline: u64 = if (ctx.from_sub) subagent_bash_deadline_ms else 0;
-        // #276 P0-1: a worktree-isolated agent's bash calls run pinned to its
-        // own worktree — via std.process.Child.Cwd, per spawn, never a
-        // process-wide chdir — so parallel siblings never share a cwd.
-        // #266/#198: toolRunOptions also gives the command its own process
-        // group, so an Esc cancel or the deadline kills what it spawned (ssh,
-        // xcodebuild) instead of leaving it running against a dead turn.
-        const run = try runCappedWithOptions(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, deadline, toolRunOptions(ctx.agent_cwd));
+        var opts = toolRunOptions(ctx.agent_cwd);
+        var live = exec_bash_stream.Ctx{ .io = io };
+        exec_bash_stream.attach(&opts, !ctx.from_sub, &live);
+        const run = try runCappedWithOptions(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, deadline, opts);
         defer gpa.free(run.stdout);
         defer gpa.free(run.stderr);
 
@@ -594,6 +592,7 @@ test "internal learning respects the parent privacy ceiling" {
 }
 
 test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, so the compiled-in references live here (the reach check diffs the test binary, not which file holds the line)
+    _ = exec_bash_stream;
     _ = @import("codedbpro_report.zig");
     _ = @import("tool_balance.zig");
 }

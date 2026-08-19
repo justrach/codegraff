@@ -49,7 +49,7 @@ pub const commands = [_]Item{
     .{ .name = "/trace", .desc = "toggle this run's JSONL event trace (and show its path)" },
     .{ .name = "/privacy", .usage = "/privacy [local|aggregate|templates|examples]", .desc = "control prompt-learning data egress for this session" },
     .{ .name = "/trajectory", .desc = "show this session's agent tree — turns + spawned subagents" },
-    .{ .name = "/agents", .desc = "list agent types — builtin personas + .harness/agents/*.md" },
+    .{ .name = "/agents", .desc = "list agent types — builtin personas + .harness/agents" },
     .{ .name = "/skills", .usage = "/skills [add|remove <name>]", .desc = "list SKILL.md playbooks + companion tools; add/remove enables or disables one" },
     .{ .name = "/plugins", .usage = "/plugins [list|load <name>]", .desc = "list Claude/Cursor/Grok/Codex plugin trees graff is reading in place; load names one" },
     .{ .name = "/hooks", .desc = "list lifecycle hooks and the built-in codedb guard" },

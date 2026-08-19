@@ -161,11 +161,20 @@ pub const Job = struct {
     history: []Turn,
     params: Params,
     stream: StreamBuf,
+    /// grok-build RawTerminal tail: live bash_output_chunk bytes, not prose.
+    raw: StreamBuf = .{},
     /// Typed engine events for this turn (#551). Attached to the model's
     /// allocator by startJob; a Job literal that leaves it unattached simply
     /// carries no events.
     events: events_mod.Queue = .{},
 };
+
+/// The live job's raw bash tail. tui_sink writes here from the tool pool.
+pub var g_raw: ?*StreamBuf = null;
+
+/// Idle auto-wake: a finished background job wants a turn (grok-build notify).
+pub const IdleWakeFn = *const fn (turn_ctx: ?*anyopaque, buf: []u8) ?[]const u8;
+pub var g_idle_wake_fn: ?IdleWakeFn = null;
 
 /// A background engine op: `/compact`, `!cmd`, or the @-file list. Same
 /// thread + done-flag contract as Job, so the render+input loop keeps painting
@@ -234,6 +243,7 @@ pub const RunOpts = struct {
     copy_fn: ?CopyFn = null,
     compact_fn: ?CompactFn = null,
     history_fn: ?HistoryFn = null,
+    idle_wake_fn: ?IdleWakeFn = null,
 };
 
 pub var g_turn_fn: ?TurnFn = null;

@@ -255,6 +255,14 @@ pub const EngineEvent = union(enum) {
     /// included) but does NOT end the reasoning presentation — argument
     /// prose can stream while the model is still mid-call.
     tool_arg_delta: Delta,
+    /// A chunk of a still-running tool's stdout/stderr (grok-build's
+    /// `bash_output_chunk`). Presentation pulse: the --json wire already
+    /// carries the assembled `tool_result`; live frames are progress, not
+    /// history. TUI: raw append into the live tail. REPL: raw write.
+    tool_output_delta: struct { name: []const u8, stderr: bool = false, text: []const u8 },
+    /// A background bash job finished (grok-build TaskCompleted). Pulse:
+    /// the model learns via the injected wake, not a durable wire id.
+    job_completed: struct { id: u32, exit_code: ?u8 = null, killed: bool = false },
     /// A live transport attempt was cut; the payload says how and whether
     /// the turn ends with it (slice 1b). Distinct from stream_aborted: no
     /// partial answer is in flight, so sinks notice without flushing.
@@ -450,8 +458,10 @@ test "slice 1b: tool-arg prose and transport aborts are presentation pulses" {
     // Neither ever appeared on the --json wire (argLiveDelta gates --json
     // off; the transport notices were TTY-only), so neither may reserve a
     // sequence id — promoting one is a schema_version event, not a default.
-    const pulses: [3]EngineEvent = .{
+    const pulses: [5]EngineEvent = .{
         .{ .tool_arg_delta = .{ .text = "prose" } },
+        .{ .tool_output_delta = .{ .name = "bash", .text = "ok" } },
+        .{ .job_completed = .{ .id = 1, .exit_code = 0 } },
         .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = true } },
         .{ .transport_aborted = .{ .reason = .dropped, .turn_ending = false } },
     };

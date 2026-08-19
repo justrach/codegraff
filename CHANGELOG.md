@@ -10,6 +10,20 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.268 (2026-08-20)
+
+- Custom subagent files can be Codex-shaped TOML: `name`, `description`,
+  `developer_instructions`, plus `model` / `model_reasoning_effort` /
+  `isolation` / `tier`. Loaded from `~/.codex/agents`, `~/.harness/agents`,
+  `.codex/agents`, and `.harness/agents` (a graff file of the same name
+  wins). Markdown frontmatter still works; `/agents promote` still writes
+  `.md`.
+- Foreground bash streams as `bash_output_chunk` frames (16 KiB) onto a
+  raw terminal buffer, not the prose stream. Background jobs inject a
+  grok-build-style completion wake at the next step and, in the TUI,
+  start a turn while idle. Do not poll.
+- Test ratchet: unit suite 1486.
+
 ## v0.0.267 (2026-08-19)
 
 - Background jobs wait like grok-build: `bash_output(wait_ms>0)` and

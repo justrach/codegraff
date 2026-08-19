@@ -34,6 +34,7 @@ const prompt_ui = @import("agent_prompt.zig");
 const agent_tests = @import("agent_tests.zig");
 const goal_state = @import("goal_state.zig");
 const peer_channel = @import("peer_channel.zig"); // #469: turn-boundary peer message delivery
+const job_notify = @import("job_notify.zig");
 
 pub const TodoItem = struct {
     content: []const u8,
@@ -351,6 +352,7 @@ pub const Agent = struct {
             // turn — durable in history, visible as an event. Offset-based:
             // an empty channel costs one small stat per step.
             peer_channel.deliverInbound(self);
+            job_notify.deliver(self);
             // #193: pre-send overflow gate. A single turn's tool-output burst can
             // push the input past the model's wall before the between-turns 80%
             // meter (last_context_tokens, server-reported) catches up. Estimate the

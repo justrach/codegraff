@@ -21,6 +21,10 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.268
+    \\  • Codex-shaped .harness/agents/*.toml (and ~/.codex/agents) pin model/effort
+    \\  • Live bash chunks + idle job notify + raw terminal (do not poll)
+    \\
     \\0.0.267
     \\  • bash_output/agent_output wait_ms>0 blocks until exit (10h), not a 30s poll
     \\

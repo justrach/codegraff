@@ -254,7 +254,9 @@ pub const Model = struct {
         if (job.result) |r| self.alloc.free(r);
         for (job.history) |t| self.alloc.free(t.text);
         self.alloc.free(job.history);
+        if (engine.g_raw == &job.raw) engine.g_raw = null;
         if (job.stream.buf.len > 0) self.alloc.free(job.stream.buf);
+        if (job.raw.buf.len > 0) self.alloc.free(job.raw.buf);
         job.events.deinit();
         self.alloc.destroy(job);
         self.pending = null;

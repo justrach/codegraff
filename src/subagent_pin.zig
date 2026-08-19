@@ -5,7 +5,7 @@
 //! tier ladder. That is still the default; this module adds the two finer
 //! grains the issue asks for, on top of it rather than beside it.
 //!
-//!   1. A persona in `.harness/agents/<name>.md` may pin itself in
+//!   1. A persona in `.harness/agents/<name>.md` or `.toml` may pin itself in
 //!      frontmatter — `model: gpt-5.6-terra` (exact) or `tier: mid` (a rung
 //!      of whatever ladder the current provider is on). Parsed in fleet.zig
 //!      into AgentType.model/.tier; resolved here.
