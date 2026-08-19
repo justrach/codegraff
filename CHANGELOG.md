@@ -10,6 +10,13 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## Unreleased
+
+- `graff acp` reports per-turn `PromptResponse.usage` (full prompt + cache
+  reads/writes) and a `usage_update` with session context size and cumulative
+  cost. `initialize` carries `agentInfo`. String protocol versions and
+  `session/cancel` as a request are accepted (ADR 0012).
+
 ## v0.0.267 (2026-08-19)
 
 - Background jobs wait like grok-build: `bash_output(wait_ms>0)` and

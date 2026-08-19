@@ -402,6 +402,7 @@ usage:
   graff plugins                     list Cursor/Claude/Grok/Codex plugin trees (in place)
   graff learn <command>             local prompt-policy learning and rollback
   graff --schema                   print the machine-readable interface (SDK codegen)
+  graff acp                        Agent Client Protocol agent on stdio (Zed and other ACP hosts)
 
 flags:
   --model <name>            start on this model (same fuzzy resolution as /model)
@@ -437,6 +438,26 @@ final answer on stdout (progress lines go to stderr), and exits non-zero on
 failure. There's no human to ask, so the permission gate denies anything not
 already allowed. Pre-approve commands in `.harness/settings.json` or pass
 `--yolo`.
+
+**ACP mode** (`graff acp`) speaks the [Agent Client Protocol](https://agentclientprotocol.com/)
+on stdio — JSON-RPC 2.0, one message per line. Zed and other ACP hosts launch
+it as the agent process. It is an adapter over the same engine as `-p` /
+`--json` (ADR 0012): one conversation per process, append-only history, so the
+prompt cache stays warm the way a REPL does.
+
+```
+initialize → session/new → session/prompt*
+```
+
+Each `session/prompt` runs one full root turn and returns `stopReason` plus
+`usage` (per-turn tokens; `inputTokens` is the full prompt, including cache
+reads). A `usage_update` notification carries session context size and
+cumulative cost. Tools run unattended, same as `-p`.
+
+v0 does not implement client filesystem callbacks, permission prompts,
+`session/load`, streaming `tool_call` updates, or mid-turn cancel (`session/cancel`
+is acknowledged; the in-flight turn still finishes). `session/new` `cwd` is
+ignored — use the `workspace` tool (ADR 0006) rather than a process-wide chdir.
 
 ---
 

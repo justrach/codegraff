@@ -104,6 +104,8 @@ const commands_session_test = @import("commands_session_test.zig");
 // #375: `graff acp` (Zed's Agent Client Protocol over stdio). args.zig calls
 // one predicate from it, which analyses the file but does not run its tests.
 const acp = @import("acp.zig");
+const acp_protocol = @import("acp_protocol.zig");
+const acp_usage = @import("acp_usage.zig");
 
 // #382: moved off agent_tools.zig when the sibling-spawn diversity check
 // needed two lines there and the file was at exactly 600. The tests are
@@ -254,6 +256,8 @@ test {
     _ = mcp_schema_gate;
     _ = mcp_schema_gate_tests;
     _ = acp;
+    _ = acp_protocol;
+    _ = acp_usage;
     _ = agent_eval_control_tests;
     _ = playbook_glue;
     _ = playbook_reflect;
