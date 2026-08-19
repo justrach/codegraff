@@ -14,7 +14,8 @@ the snapshot of that function.
 Process kernels: `GoalLoop` (standing has no retire edge; harness-done
 needs a done write), `PromptCache` (sub never spawns; join restores the
 root partition), `PromptPrefix` (names + triggers, pinned once; skill
-load/list/rescan do not rewrite the prefix), `TerminalModes` (`Op`/`step`
+load/list/rescan do not rewrite the prefix — showcase with
+`python3 spec/conformance.py --showcase`), `TerminalModes` (`Op`/`step`
 mode map + kitty depth; enable++restore returns to Idle; pop floors;
 alt-screen leave is last), `PathConfine` (component walk: Escaped and
 Absolute absorb), `Transport` (a sub never takes WS; only one live root

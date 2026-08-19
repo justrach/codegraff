@@ -144,8 +144,34 @@ def mermaid() -> str:
     return "\n".join(lines) + "\n"
 
 
+def cube_table() -> str:
+    marks = {"HIT": "**HIT**", "miss": "miss"}
+    rows = ["| catalog \\ pin | `once` | `every_rebuild` |", "|---|---|---|"]
+    for cat in CATALOGS:
+        cells = []
+        for pin in PINS:
+            hit = cacheable(Cell(cat, pin))
+            cells.append(marks["HIT"] if hit else marks["miss"])
+        rows.append(f"| `{cat}` | {cells[0]} | {cells[1]} |")
+    return "\n".join(rows)
+
+
+def max_walk_mermaid() -> str:
+    return (
+        "sequenceDiagram\n"
+        "  participant P as prefix\n"
+        "  P->>P: start names_only (HIT)\n"
+        "  P->>P: skill_load (id, HIT)\n"
+        "  P->>P: skill_list (id, HIT)\n"
+        "  P->>P: rescan (id, HIT)\n"
+        "  P->>P: turn (id, HIT)\n"
+        "  P->>P: rebuild with_paths (BUST)\n"
+    )
+
+
 def kernel_md() -> str:
     body = mermaid().rstrip()
+    walk = max_walk_mermaid().rstrip()
     return (
         "# Kernel: prompt prefix (cache HIT)\n"
         "\n"
@@ -159,7 +185,15 @@ def kernel_md() -> str:
         "prompt must be an exact prefix of the new one).\n"
         "\n"
         "Wording is out of Lean. The 6-cell cube is catalog kind × pin policy;\n"
-        "exactly one cell is cacheable (`names_only` × `once`).\n"
+        "exactly one cell is cacheable (`names_only` × `once`). That is the\n"
+        "measured path. Showcase it with\n"
+        "`python3 spec/conformance.py --showcase`.\n"
+        "\n"
+        f"{cube_table()}\n"
+        "\n"
+        "```mermaid\n"
+        f"{walk}\n"
+        "```\n"
         "\n"
         "```mermaid\n"
         f"{body}\n"
@@ -232,5 +266,15 @@ def check_properties() -> int:
         raise ValueError("trace: rebuild that changes catalog must bust")
     if not hit_ok(run(idle, [("start", "names_only"), ("rebuild_into_prefix", "names_only")])):
         raise ValueError("trace: same-catalog rebuild should stay")
+    if not hit_ok(run(idle, [
+        ("start", "names_only"),
+        ("skill_load",),
+        ("skill_list",),
+        ("rescan",),
+        ("turn",),
+    ])):
+        raise ValueError("trace: maximizing walk left the HIT cell")
+    from ref.prompt_showcase import check_maximizing
+    check_maximizing()
     check_diagram()
     return n

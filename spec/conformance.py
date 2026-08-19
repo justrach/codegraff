@@ -337,16 +337,9 @@ def _ref(fn, name: str) -> int:
         raise Counterexample(name, None, str(e)) from e
 
 
-def check_goal_loop() -> int:
-    return _ref(goal_check_properties, "goal_loop")
-
-
-def check_prompt_cache() -> int:
-    return _ref(cache_check_properties, "prompt_cache")
-
-
-def check_prompt_prefix() -> int:
-    return _ref(prefix_check_properties, "prompt_prefix")
+def check_goal_loop() -> int: return _ref(goal_check_properties, "goal_loop")
+def check_prompt_cache() -> int: return _ref(cache_check_properties, "prompt_cache")
+def check_prompt_prefix() -> int: return _ref(prefix_check_properties, "prompt_prefix")
 
 
 def check_path_confine() -> int:
@@ -525,6 +518,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--export", action="store_true", help="write spec/kernels/*.json")
     parser.add_argument("--diagram", metavar="KERNEL", help="print live Event/step projection")
+    parser.add_argument("--showcase", nargs="?", const="prompt", metavar="KERNEL", help="prompt-cache maximizing walk")
     parser.add_argument("--break", dest="mutate", metavar="KIND", help="mutate the model to demo a counterexample")
     parser.add_argument("--lean", action="store_true", help="lake build lean-proofs if lake is installed")
     parser.add_argument("--impl", action="store_true", help="run the Zig fixture tests")
@@ -539,15 +533,19 @@ def main() -> int:
         print(json.dumps(inv, indent=2) if args.json else render(inv))
         return 0 if inv["ok"] else 1
 
+    if args.showcase:
+        from ref.prompt_showcase import showcase
+        try:
+            sys.stdout.write(showcase(args.showcase))
+            return 0
+        except ValueError as e:
+            print(e, file=sys.stderr)
+            return 2
     if args.diagram:
         mods = {
-            "goal_loop": "ref.goal_loop",
-            "prompt_cache": "ref.prompt_cache",
-            "prompt_prefix": "ref.prompt_prefix",
-            "terminal_modes": "ref.terminal_modes",
-            "path_confine": "ref.path_confine",
-            "transport": "ref.transport",
-            "score": "ref.score",
+            "goal_loop": "ref.goal_loop", "prompt_cache": "ref.prompt_cache",
+            "prompt_prefix": "ref.prompt_prefix", "terminal_modes": "ref.terminal_modes",
+            "path_confine": "ref.path_confine", "transport": "ref.transport", "score": "ref.score",
         }
         path = mods.get(args.diagram)
         if path is None:

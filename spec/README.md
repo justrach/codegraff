@@ -62,6 +62,7 @@ python3 spec/conformance.py --export   # regenerate kernels/*.json and GoalLoop 
 python3 spec/conformance.py --diagram goal_loop   # live Event/step projection
 python3 spec/conformance.py --diagram prompt_cache
 python3 spec/conformance.py --diagram prompt_prefix
+python3 spec/conformance.py --showcase            # prefix cube + maximizing walk + key machine
 python3 spec/conformance.py --diagram terminal_modes
 python3 spec/conformance.py --diagram path_confine
 python3 spec/conformance.py --diagram transport
@@ -78,6 +79,7 @@ BashPolicy stays a command cube this turn. The shape of a subagent fleet
 is not a Shape cell — PromptCache / PathConfine / Transport force every
 child through a machine; Score files that unbounded fleet as one stage
 row after the join. `--diagram` prints a live `step` projection;
+`--showcase` prints the one HIT cell and the session walk that stays on it;
 `--export` writes those fences into `kernels/*.md`.
 
 The Zig test is the impl half of the harness: it sets the same flags the

@@ -78,3 +78,34 @@ test "spec/prompt_prefix: skill list/load do not rewrite the pinned g_skills pre
     try std.testing.expectEqualStrings("keep", skill_docs.g_skills[0].name);
     try std.testing.expectEqualStrings(before, skill_docs.promptCatalog(arena_state.allocator(), skill_docs.g_skills));
 }
+
+test "spec/prompt_prefix: maximizing walk stays on names_only × once" {
+    const prev = skill_docs.g_skills;
+    defer skill_docs.g_skills = prev;
+    const pinned = [_]skill_docs.Skill{
+        .{ .name = "keep", .desc = "stays", .body = "SECRET-BODY", .path = "/tmp/keep/SKILL.md", .source = .builtin },
+        .{ .name = "zeta", .desc = "later", .body = "MORE-SECRET", .path = "file:/tmp/zeta", .source = .plugin },
+    };
+    skill_docs.g_skills = &pinned;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const start = skill_docs.promptCatalog(arena, skill_docs.g_skills);
+    try std.testing.expect(std.mem.indexOf(u8, start, "SECRET-BODY") == null);
+    try std.testing.expect(std.mem.indexOf(u8, start, "MORE-SECRET") == null);
+    try std.testing.expect(std.mem.indexOf(u8, start, "file:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, start, "/") == null);
+
+    var obj: std.json.ObjectMap = .empty;
+    try obj.put(arena, "name", .{ .string = "keep" });
+    const loaded = try skill_docs.execSkill(std.testing.allocator, std.testing.io, .{ .object = obj });
+    defer std.testing.allocator.free(loaded.text);
+    const listed = try skill_docs.execSkill(std.testing.allocator, std.testing.io, .{ .object = .empty });
+    defer std.testing.allocator.free(listed.text);
+
+    const after = skill_docs.promptCatalog(arena, skill_docs.g_skills);
+    try std.testing.expectEqualStrings(start, after);
+    try std.testing.expectEqual(@as(usize, 2), skill_docs.g_skills.len);
+    try std.testing.expect(std.mem.indexOf(u8, after, "keep") != null);
+    try std.testing.expect(std.mem.indexOf(u8, after, "zeta") != null);
+}
