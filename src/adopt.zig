@@ -392,8 +392,8 @@ test "adopt writes missing Claude MCP into graff folders and skips existing name
     try Io.Dir.cwd().createDirPath(io, cwd);
     const payload = try std.fmt.allocPrint(
         arena,
-        "{{\"mcpServers\":{{\"codedb\":{{\"command\":\"/bin/codedb\",\"args\":[]}},\"smolify\":{{\"command\":\"x\"}},\"deepwiki\":{{\"url\":\"https://mcp.deepwiki.com/mcp\"}}}},\"projects\":{{\"{s}\":{{\"mcpServers\":{{\"relay\":{{\"command\":\"relay\",\"args\":[\"-s\"]}}}}}}}}}}",
-        .{cwd},
+        "{{\"mcpServers\":{{\"codedb\":{{\"command\":\"/bin/codedb\",\"args\":[]}},\"smolify\":{{\"command\":\"x\"}},\"deepwiki\":{{\"url\":\"https://mcp.deepwiki.com/mcp\"}}}},\"projects\":{{{s}:{{\"mcpServers\":{{\"relay\":{{\"command\":\"relay\",\"args\":[\"-s\"]}}}}}}}}}}",
+        .{@import("plugin_index.zig").quote(arena, cwd)},
     );
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/.claude.json", .{home}), .data = payload });
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/.claude/skills/demo/SKILL.md", .{home}), .data = "---\nname: demo\ndescription: d\n---\nbody\n" });
