@@ -148,20 +148,25 @@ def tool_names(request: RecordedRequest) -> list[str]:
 
 
 def catalog_names(request: RecordedRequest) -> list[str]:
-    """Wire tools plus the deferred catalog: zero-stub deferral (a14bdf2) and
-    the native fold moved names out of the wire tools array into
-    load_tool_schemas' description — 'server (a, b)' MCP groups and the static
-    folded-native prose ('native tools (workflow, ...)')."""
+    """Wire tools plus names carried in load_tool_schemas' deferred listing:
+    ``Folded native: workflow, ...;`` and ``server (tool, ...)`` MCP groups."""
     names = list(tool_names(request))
     tools = request.body.get("tools")
     if isinstance(tools, list):
         for tool in tools:
             if isinstance(tool, dict) and tool.get("name") == "load_tool_schemas":
-                for server, group in re.findall(r"([a-z0-9_]+) \(([^)]*)\)", tool.get("description", "")):
-                    for n in group.split(","):
-                        n = n.strip()
-                        if n and re.fullmatch(r"[a-z0-9_]+", n):  # prose parens carry spaces
-                            names.append(n if server == "tools" else f"mcp__{server}__{n}")
+                description = tool.get("description", "")
+                folded = re.search(r"Folded native:\s*([^;]+);", description)
+                if folded:
+                    for name in folded.group(1).split(","):
+                        name = name.strip()
+                        if re.fullmatch(r"[a-z0-9_]+", name):
+                            names.append(name)
+                for server, group in re.findall(r"([a-z0-9_]+) \(([^)]*)\)", description):
+                    for name in group.split(","):
+                        name = name.strip()
+                        if name and re.fullmatch(r"[a-z0-9_]+", name):  # prose parens carry spaces
+                            names.append(f"mcp__{server}__{name}")
     return names
 
 
