@@ -19,6 +19,7 @@ record only when you need the evidence or the edge cases.
 | [0006](0006-workspace-switch-is-a-tool.md) | Mid-session worktree switch is a real `workspace` tool; a skill cannot move file-tool cwd. |
 | [0007](0007-plugins-are-read-in-place.md) | Cursor/Claude/Grok/Codex plugins and MCP are read in place (Claude/Cursor cache via installed_plugins.json, Codex via config.toml PluginStore, never walked); skills stay on-demand; MCP stays consent-gated. |
 | [0008](0008-synthetic-evals-use-external-verifiers.md) | Synthetic coding evals promote only external-verifier passes; model judges may tiebreak correctness, never decide it. |
+| [0009](0009-gpt-5-6-explicit-prompt-cache-boundary.md) | GPT-5.6 OpenAI Platform marks the stable prefix explicitly; Codex and xAI stay on their supported keyed automatic-cache paths. |
 
 ## When to write one
 

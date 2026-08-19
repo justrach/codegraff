@@ -19,14 +19,28 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     const is_codex = std.mem.eql(u8, self.provider.id, "codex");
     try s.objectField("instructions");
     try s.write(try schemaAwarePrompt(self));
-    // Sticky cache partition from the first request. Codex/OpenAI document
-    // prompt_cache_key; xAI uses the same id as x-grok-conv-id (routes the
-    // request to the server that already has the prefix). Root = project
-    // id, child = suffix. Effort is NOT flipped per turn — that would miss
-    // the prefix.
+    // Sticky cache partition from the first request. xAI's key is a true
+    // per-conversation routing id. OpenAI/Codex instead share deterministic
+    // prefix lanes so repeated workflow roles can reuse the stable prompt.
     var ckbuf: [96]u8 = undefined;
     try s.objectField("prompt_cache_key");
-    try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
+    if (std.mem.eql(u8, self.provider.id, "xai"))
+        try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf))
+    else
+        try s.write(http_headers.promptPrefixCacheKey(self.io, self.label, &ckbuf));
+    const explicit_cache = supportsExplicitPromptCache(self);
+    if (explicit_cache) {
+        try s.objectField("prompt_cache_options");
+        try s.beginObject();
+        try s.objectField("mode");
+        // Root conversations grow append-only, so retain the useful implicit
+        // latest-message breakpoint. One-shot children cache only the shared
+        // system+tools prefix and avoid paying to write each unique task suffix.
+        try s.write(if (self.sub) "explicit" else "implicit");
+        try s.objectField("ttl");
+        try s.write("30m");
+        try s.endObject();
+    }
     // Held-socket delta: previous_response_id + only the new items. xAI's
     // published WS contract supports this with store:false via the in-memory
     // connection cache; a not-found / 25-min close / drop re-anchors.
@@ -36,13 +50,15 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
         try s.write(self.codex_prev_id.?);
     }
     try s.objectField("input");
-    if (chain) {
-        var delta = std.json.Array.init(self.arena);
-        for (self.messages.items[self.codex_sent_upto..]) |m| try delta.append(m);
-        try s.write(Value{ .array = delta });
-    } else {
-        try s.write(Value{ .array = self.messages });
-    }
+    try s.beginArray();
+    // Top-level `instructions` cannot carry a GPT-5.6 breakpoint. A stable,
+    // semantically neutral developer block after it marks the reusable boundary;
+    // tools are also part of the rendered prefix. Chained requests already hold
+    // this item server-side, so only a full anchor writes it.
+    if (!chain and explicit_cache) try writeCacheAnchor(s);
+    const from = if (chain) self.codex_sent_upto else 0;
+    for (self.messages.items[from..]) |m| try s.write(m);
+    try s.endArray();
     if (tools) |t| {
         try s.objectField("tools");
         try serde.writeOpenAITools(s, self.scratchAlloc(), t); // #261 follow-up
@@ -78,6 +94,33 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     // ("Unsupported parameter") on gpt-5.6-* — codex sets it only as a tool argument.
     try s.objectField("stream");
     try s.write(true);
+}
+
+fn supportsExplicitPromptCache(self: *const Agent) bool {
+    return std.mem.eql(u8, self.provider.id, "openai") and std.mem.startsWith(u8, self.provider.model, "gpt-5.6");
+}
+
+fn writeCacheAnchor(s: *std.json.Stringify) !void {
+    try s.beginObject();
+    try s.objectField("type");
+    try s.write("message");
+    try s.objectField("role");
+    try s.write("developer");
+    try s.objectField("content");
+    try s.beginArray();
+    try s.beginObject();
+    try s.objectField("type");
+    try s.write("input_text");
+    try s.objectField("text");
+    try s.write("The preceding instructions and available tools are the stable operating context for this session.");
+    try s.objectField("prompt_cache_breakpoint");
+    try s.beginObject();
+    try s.objectField("mode");
+    try s.write("explicit");
+    try s.endObject();
+    try s.endObject();
+    try s.endArray();
+    try s.endObject();
 }
 
 /// With --output-schema the strict grammar tempts the model to answer
@@ -243,7 +286,7 @@ fn testAgentFor(arena: std.mem.Allocator, id: []const u8, kind: @import("provide
     };
 }
 
-test "openai/codex Responses send prompt_cache_key and leave cache mode to the API" {
+test "GPT-5.6 Platform marks the stable prefix; Codex and older routes do not" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -251,15 +294,28 @@ test "openai/codex Responses send prompt_cache_key and leave cache mode to the A
     const ob = try oai.buildBody(null, false, true, true);
     defer std.testing.allocator.free(ob);
     try std.testing.expect(std.mem.indexOf(u8, ob, "\"prompt_cache_key\":\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ob, "prompt_cache_breakpoint") == null);
-    try std.testing.expect(std.mem.indexOf(u8, ob, "prompt_cache_options") == null);
+    try std.testing.expect(std.mem.indexOf(u8, ob, "\"prompt_cache_options\":{\"mode\":\"implicit\",\"ttl\":\"30m\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ob, "\"role\":\"developer\",\"content\":[{\"type\":\"input_text\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ob, "\"prompt_cache_breakpoint\":{\"mode\":\"explicit\"}") != null);
+
+    var worker = try testAgentFor(a, "openai", .responses, "gpt-5.6-luna");
+    worker.sub = true;
+    worker.label = "implement";
+    const wb = try worker.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(wb);
+    try std.testing.expect(std.mem.indexOf(u8, wb, "\"prompt_cache_options\":{\"mode\":\"explicit\",\"ttl\":\"30m\"}") != null);
 
     var codex = try testAgentFor(a, "codex", .responses, "gpt-5.6-sol");
     const cb = try codex.buildBody(null, false, true, true);
     defer std.testing.allocator.free(cb);
-    try std.testing.expect(std.mem.indexOf(u8, cb, "\"prompt_cache_key\":\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, cb, "prompt_cache_breakpoint") == null);
     try std.testing.expect(std.mem.indexOf(u8, cb, "prompt_cache_options") == null);
+    try std.testing.expect(std.mem.indexOf(u8, cb, "prompt_cache_breakpoint") == null);
+
+    var older = try testAgentFor(a, "openai", .responses, "gpt-5.5");
+    const old = try older.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(old);
+    try std.testing.expect(std.mem.indexOf(u8, old, "prompt_cache_breakpoint") == null);
+    try std.testing.expect(std.mem.indexOf(u8, old, "prompt_cache_options") == null);
 }
 
 test "xai Responses body is bearer-clean: no codex-isms, xAI-legal fields only (#502)" {
@@ -275,6 +331,7 @@ test "xai Responses body is bearer-clean: no codex-isms, xAI-legal fields only (
     try std.testing.expect(std.mem.indexOf(u8, body, "\"prompt_cache_key\":\"") != null); // xAI caches on it (+ x-grok-conv-id header)
     try std.testing.expect(std.mem.indexOf(u8, body, "service_tier") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "prompt_cache_breakpoint") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "prompt_cache_options") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "context_management") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "previous_response_id") == null);
 }

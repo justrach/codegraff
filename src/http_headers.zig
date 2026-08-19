@@ -39,13 +39,23 @@ pub fn sessionId(io: Io) []const u8 {
     return session_id_buf[0..session_id_len];
 }
 
-/// Prompt-cache affinity for one agent. xAI routes `x-grok-conv-id` (Chat
+/// Conversation affinity for one agent. xAI routes `x-grok-conv-id` (Chat
 /// Completions) and `prompt_cache_key` (Responses) to the same server — that
-/// is how a prefix written earlier can still hit. Root is the durable
-/// per-project id; children get a suffix so interleaved root/sub prefixes
-/// do not evict each other.
+/// is how an append-only conversation can keep finding its cached prefix.
+/// Root is the durable project id; each concurrent child gets its own suffix.
 pub fn promptCacheKey(io: Io, label: []const u8, agent: *const anyopaque, buf: []u8) []const u8 {
     return projectCacheKey(io, label, agent, buf);
+}
+
+/// OpenAI/Codex cache affinity for requests sharing a stable prompt prefix.
+/// Root keeps the durable project id. Children use four deterministic lanes:
+/// enough sharing for repeated workflow roles, without pushing one key past
+/// OpenAI's documented ~15 requests/minute cache-routing guidance during fanout.
+pub fn promptPrefixCacheKey(io: Io, label: []const u8, buf: []u8) []const u8 {
+    const base = projectRootId(io);
+    if (std.mem.eql(u8, label, "main")) return std.fmt.bufPrint(buf, "{s}", .{base}) catch base;
+    const lane = std.hash.Wyhash.hash(0, label) & 3;
+    return std.fmt.bufPrint(buf, "{s}-child-{d}", .{ base, lane }) catch base;
 }
 
 var project_id_buf: [36]u8 = undefined;
@@ -218,9 +228,11 @@ test "official OpenAI Responses uses Platform headers, not ChatGPT backend ident
     try std.testing.expectEqualStrings("Bearer k", headers[0].value);
 }
 
-test "projectCacheKey is a durable per-project v5 UUID, stable across calls" {
+test "project and prefix cache keys preserve conversation and sharing boundaries" {
     var fake: usize = 0;
+    var sibling_fake: usize = 1;
     const agent: *const anyopaque = @ptrCast(&fake);
+    const sibling: *const anyopaque = @ptrCast(&sibling_fake);
     var buf: [96]u8 = undefined;
     const a = projectCacheKey(std.testing.io, "main", agent, &buf);
     try std.testing.expectEqual(@as(usize, 36), a.len);
@@ -229,14 +241,24 @@ test "projectCacheKey is a durable per-project v5 UUID, stable across calls" {
     const b = projectCacheKey(std.testing.io, "main", agent, &buf2);
     try std.testing.expectEqualStrings(a, b); // durable: no per-process randomness
     try std.testing.expectEqualStrings(a, projectRootId(std.testing.io));
-    // Prompt-cache routing is this project id, not the per-process session UUID.
     try std.testing.expect(!std.mem.eql(u8, a, sessionId(std.testing.io)));
-    var pbuf: [96]u8 = undefined;
-    try std.testing.expectEqualStrings(a, promptCacheKey(std.testing.io, "main", agent, &pbuf));
-    // Subagents get a per-agent suffix off the same partition (eviction rule).
+
+    // xAI conversation affinity stays distinct for concurrent children.
     var buf3: [96]u8 = undefined;
+    var buf4: [96]u8 = undefined;
     const sub = projectCacheKey(std.testing.io, "sub", agent, &buf3);
-    try std.testing.expect(std.mem.startsWith(u8, sub, a));
+    const sibling_sub = projectCacheKey(std.testing.io, "sub", sibling, &buf4);
+    try std.testing.expect(!std.mem.eql(u8, sub, sibling_sub));
+
+    // OpenAI/Codex prefix affinity is stable for a workflow role, but spreads
+    // different roles over four lanes to stay below the per-key traffic guide.
+    var pbuf1: [96]u8 = undefined;
+    var pbuf2: [96]u8 = undefined;
+    const prefix1 = promptPrefixCacheKey(std.testing.io, "implement", &pbuf1);
+    const prefix2 = promptPrefixCacheKey(std.testing.io, "implement", &pbuf2);
+    try std.testing.expectEqualStrings(prefix1, prefix2);
+    try std.testing.expect(std.mem.startsWith(u8, prefix1, a));
+    try std.testing.expect(!std.mem.eql(u8, prefix1, a));
 }
 
 test "x-grok-conv-id with no explicit conv still uses the project root id" {
