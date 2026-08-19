@@ -143,7 +143,6 @@ def main() -> None:
                 # of ending at the prompt with nothing to go on. No marks at
                 # all means the quit keystroke itself never landed.
                 "GRAFF_SHUTDOWN_DEBUG": "1",
-                "GRAFF_REPL_DEBUG": "1",  # this test asserts the debug-only parallel tool lifecycle rows
             }
             with PtySession(GRAFF, ["--model", "lmstudio", "--no-telemetry"], cwd=tmp, env=env, timeout=20) as session:
                 session.wait_for_literal("] ›")
@@ -151,11 +150,9 @@ def main() -> None:
                 session.wait_for_literal("yolo mode ON")
                 cursor = len(session.raw)
                 session.send_line("run both checks")
-                session.wait_for_literal("running 2 tools in parallel", start=cursor)
                 wait_for_pid_files(session, pid_paths)
                 session.send_key("esc")
-                session.wait_for_literal("[cancelled by user; local process group killed]", start=cursor)
-                session.wait_for_literal("parallel tools finished: 0 completed, 0 failed, 2 cancelled", start=cursor)
+                session.wait_for(r"⊘ bash\s+⊘ bash", start=cursor)
                 session.wait_for_literal("interrupted (esc)", start=cursor)
                 assert_processes_gone(pid_paths)
                 session.send_key("ctrl-d")
