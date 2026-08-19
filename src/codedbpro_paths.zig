@@ -95,13 +95,15 @@ test "prepareInput resolves CodeDB Pro paths against the agent cwd" {
     const read_input = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"file\":\"src/main.zig\",\"mode\":\"full\"}", .{});
     var prepared_read = try prepareInput(std.testing.allocator, std.testing.io, "/tmp/graff-worktree", "mcp__codedbpro__read", read_input);
     defer prepared_read.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("/tmp/graff-worktree/src/main.zig", prepared_read.value.object.get("file").?.string);
+    const expected_read = if (@import("builtin").os.tag == .windows) "\\tmp\\graff-worktree\\src\\main.zig" else "/tmp/graff-worktree/src/main.zig";
+    try std.testing.expectEqualStrings(expected_read, prepared_read.value.object.get("file").?.string);
     try std.testing.expectEqualStrings("src/main.zig", read_input.object.get("file").?.string);
 
     const search_input = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"pattern\":\"needle\",\"path\":\"src\"}", .{});
     var prepared_search = try prepareInput(std.testing.allocator, std.testing.io, "/tmp/graff-worktree", "mcp__codedbpro__faster_search", search_input);
     defer prepared_search.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("/tmp/graff-worktree/src", prepared_search.value.object.get("path").?.string);
+    const expected_search = if (@import("builtin").os.tag == .windows) "\\tmp\\graff-worktree\\src" else "/tmp/graff-worktree/src";
+    try std.testing.expectEqualStrings(expected_search, prepared_search.value.object.get("path").?.string);
 }
 
 test "caller errors are not filed as CodeDB Pro defects" {

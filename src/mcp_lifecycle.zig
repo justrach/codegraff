@@ -1,11 +1,9 @@
 //! HTTP client lifecycle matching rust-sdk `ClientLifecycleMode::Auto`.
 //!
-//! Probe `server/discover` and `tools/list` in parallel (two HTTP clients so
-//! the shared `std.http.Client` is never raced). A modern `tools/list` result
-//! is enough — the 2026-07-28 spec lets any request be first. A modern
-//! `supportedVersions` list without a usable `tools/list` pays one follow-up
-//! list. Anything else falls back to the legacy initialize handshake, the
-//! same METHOD_NOT_FOUND path as `auto_startup_falls_back_after_discover_method_not_found`.
+//! Try modern `tools/list` first: the 2026-07-28 spec lets any request be first,
+//! so a modern server needs exactly one POST. A legacy-shaped rejection falls
+//! back to the byte-identical initialize handshake; modern protocol errors are
+//! surfaced rather than hidden behind fallback, matching rust-sdk Auto.
 
 const std = @import("std");
 const Io = std.Io;
@@ -21,7 +19,7 @@ const modern_protocol = mcp_protocol.modern_protocol;
 
 pub const Fallback = enum { rejected, no_modern_version };
 
-/// rust-sdk Auto: discover (and a parallel tools/list) then maybe initialize.
+/// Classify a failed modern request using rust-sdk Auto's fallback rules.
 pub const Decision = union(enum) {
     modern_list,
     legacy_handshake: Fallback,
@@ -103,18 +101,6 @@ fn markModern(server: *mcp_rpc.Server, session_alloc: Allocator) !void {
     server.initialized = true;
 }
 
-fn dropHttpSession(server: *mcp_rpc.Server) void {
-    const http = &server.transport.http;
-    if (http.session_id) |sid| {
-        http.client.allocator.free(sid);
-        http.session_id = null;
-    }
-}
-
-fn initTask(server: *mcp_rpc.Server, a: Allocator, session_alloc: Allocator) anyerror!void {
-    try mcp_rpc.initializeServer(server, a, session_alloc, null);
-}
-
 pub fn connectHttp(server: *mcp_rpc.Server, a: Allocator, session_alloc: Allocator, known_era: mcp_rpc.Era) !Value {
     if (known_era == .legacy) {
         server.probe_fallback = .cached_legacy;
@@ -132,74 +118,43 @@ fn connectHttpAttempt(server: *mcp_rpc.Server, a: Allocator, session_alloc: Allo
     const io = http.client.io;
     const gpa = http.client.allocator;
 
-    // Two probes may load the same OAuth file. Refresh once so neither races a mint.
     if (http.oauth_home) |home| {
         var oa = std.heap.ArenaAllocator.init(gpa);
         defer oa.deinit();
         _ = mcp_oauth.loadAccessToken(io, gpa, oa.allocator(), home, http.url);
     }
 
-    const id_discover = server.next_id;
-    server.next_id += 1;
     const id_list = server.next_id;
     server.next_id += 1;
-
-    // Overlap legacy initialize with the modern probes: a 2025-11-25 remote
-    // (DeepWiki, Mobbin) used to pay probe RTT + initialize + tools/list.
-    // rust-sdk Auto is sequential; we keep its fallback rules but start the
-    // handshake in the same window so a legacy peer is 2 RTT, not 3.
-    var fut_init = io.concurrent(initTask, .{ server, a, session_alloc }) catch
-        io.async(initTask, .{ server, a, session_alloc });
-    var fut_discover = io.concurrent(probeMethod, .{ io, gpa, http.url, http.headers, http.oauth_home, "server/discover", id_discover }) catch
-        io.async(probeMethod, .{ io, gpa, http.url, http.headers, http.oauth_home, "server/discover", id_discover });
-    var fut_list = io.concurrent(probeMethod, .{ io, gpa, http.url, http.headers, http.oauth_home, "tools/list", id_list }) catch
-        io.async(probeMethod, .{ io, gpa, http.url, http.headers, http.oauth_home, "tools/list", id_list });
-    const disc = fut_discover.await(io);
-    const list = fut_list.await(io);
-    const init_ok = if (fut_init.await(io)) |_| true else |_| false;
-    defer if (disc.reply.body) |b| gpa.free(b);
+    const list = probeMethod(io, gpa, http.url, http.headers, http.oauth_home, "tools/list", id_list);
     defer if (list.reply.body) |b| gpa.free(b);
 
-    // Spec: any modern request can be first. A real tools/list result is the
-    // catalog graff needs, so Auto costs one RTT on a 2026-07-28 server.
+    // Any modern request may be first. A real tools/list result is the catalog
+    // graff needs, so a 2026-07-28 server costs exactly one POST.
     if (listResult(a, list)) |parsed| {
         try markModern(server, session_alloc);
-        dropHttpSession(server);
         return parsed;
     }
 
-    if (init_ok) {
-        switch (decideDiscover(a, disc.reply.status, disc.reply.body orelse &.{})) {
-            .legacy_handshake => |why| {
-                server.probe_fallback = switch (why) {
-                    .rejected => .rejected,
-                    .no_modern_version => .no_modern_version,
-                };
-            },
-            else => {},
-        }
-        return mcp_rpc.request(server, a, "{}", "tools/list", null);
-    }
-
-    switch (decideDiscover(a, disc.reply.status, disc.reply.body orelse &.{})) {
-        .modern_list => {
+    return switch (decideDiscover(a, list.reply.status, list.reply.body orelse &.{})) {
+        .modern_list => blk: {
             try markModern(server, session_alloc);
-            return mcp_rpc.request(server, a, "{}", "tools/list", null);
+            break :blk mcp_rpc.request(server, a, "{}", "tools/list", null);
         },
-        .legacy_handshake => |why| {
+        .legacy_handshake => |why| blk: {
             server.probe_fallback = switch (why) {
                 .rejected => .rejected,
                 .no_modern_version => .no_modern_version,
             };
-            return mcp_rpc.connectLegacy(server, a, session_alloc, null);
+            break :blk mcp_rpc.connectLegacy(server, a, session_alloc, null);
         },
-        .retry => {
-            if (!retried) return connectHttpAttempt(server, a, session_alloc, true);
-            return error.McpIncompatibleProtocolVersion;
-        },
-        .reject_modern => return error.McpModernRequestRejected,
-        .incompatible => return error.McpIncompatibleProtocolVersion,
-    }
+        .retry => if (!retried)
+            connectHttpAttempt(server, a, session_alloc, true)
+        else
+            error.McpIncompatibleProtocolVersion,
+        .reject_modern => error.McpModernRequestRejected,
+        .incompatible => error.McpIncompatibleProtocolVersion,
+    };
 }
 
 fn expectDecision(body: []const u8, status: u16, want: std.meta.Tag(Decision)) !void {
@@ -270,10 +225,11 @@ test "Auto: known modern era lists without server/discover" {
     try std.testing.expect(std.mem.indexOf(u8, src, "tools/list") != null);
 }
 
-test "Auto: first-launch overlaps initialize with the modern probes" {
+test "Auto: first launch tries modern tools/list before legacy fallback" {
     const src = @embedFile("mcp_lifecycle.zig");
-    try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(initTask") != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "dropHttpSession") != null);
+    const list_pos = std.mem.indexOf(u8, src, "const list = probeMethod").?;
+    const fallback_pos = std.mem.indexOfPos(u8, src, list_pos, ".legacy_handshake => |why|").?;
+    try std.testing.expect(list_pos < fallback_pos);
 }
 
 test {
