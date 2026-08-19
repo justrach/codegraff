@@ -1,5 +1,6 @@
 //! #415 — `/btw`: a throwaway side question, answered from the LIVE
-//! conversation with tools disabled, rendered once, and then dropped.
+//! conversation, rendered once, and then dropped. Tools stay on the wire
+//! so the parent prompt-cache prefix hits; they are not executed.
 //!
 //! THE POINT. "what did that error actually mean?" is a question ABOUT the work
 //! in progress, not a step of it. Asking it the ordinary way costs the session
@@ -25,11 +26,12 @@
 //! agent's messages live in an arena the root holds no pointer to, and its
 //! `sub = true` makes `record` refuse it outright at the first line.
 //!
-//! NO TOOLS, GENUINELY. `Agent.request(null)` omits the `tools` field from the
-//! body entirely rather than sending an empty array, for all three wire
-//! formats — the same trick compaction and the title task use. `text_only` is
-//! set too, so the agent stays tool-less if it is ever driven through
-//! `runTurn` instead.
+//! PARENT PREFIX, grok-build side-call shape. The request keeps the root
+//! system prompt, the root tools JSON, and the root `prompt_cache_key` so
+//! the provider's prefix cache stays warm. The side-question note is a new
+//! user message (append-only), not a system rewrite. `text_only` stays set
+//! so `runTurn` cannot execute a tool if the model ignores the note; `ask`
+//! is still a single `request`, so a tool call is never run.
 //!
 //! IT IS STILL BILLED. The request goes through `Agent.request` like any
 //! other, so recordUsage/recordCost bank it in `pricing.g_cost` — the tally the
@@ -57,11 +59,11 @@ pub const output_limit: u32 = 1024;
 /// Shown when `/btw` arrives with nothing to ask. Says what the command is for,
 /// because an empty one is nearly always a half-typed line.
 pub const usage_hint = "/btw <question> — ask one side question about this conversation; " ++
-    "it runs with no tools and is never added to the session";
+    "it rides the parent cache prefix and is never added to the session";
 
-/// Appended to the ROOT's own system prompt for this one call. The model keeps
-/// its identity and its project context — the question is about the work in
-/// front of it — and is told the two things that are only true here.
+/// Appended as a USER message (not a system rewrite) so the cached prefix
+/// stays byte-identical. The model is told the two things that are only true
+/// here; tools stay on the wire for the prefix and must not be used.
 pub const side_note =
     \\[side question: the user has asked something ALONGSIDE the conversation
     \\above, not as the next step of it. Answer it from what is already in this
@@ -99,7 +101,8 @@ pub fn questionFromLine(line: []const u8) ?[]const u8 {
 /// allocate out of the session's.
 pub fn build(self: *Agent, arena: Allocator, question: []const u8) !Agent {
     var messages = try agent_compact.cloneJsonArray(arena, self.messages);
-    try messages.append(try textMessage(arena, "user", question));
+    const asked = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ side_note, question });
+    try messages.append(try textMessage(arena, "user", asked));
     return .{
         .gpa = self.gpa,
         .arena = arena,
@@ -108,8 +111,8 @@ pub fn build(self: *Agent, arena: Allocator, question: []const u8) !Agent {
         .provider = self.provider,
         .messages = messages,
         .sub = true, // never touches stdout, the root's state, or the transcript
-        .text_only = true, // and could not be handed tools even through runTurn
-        .label = "btw",
+        .text_only = true, // runTurn must not execute a tool if the model ignores the note
+        .label = "btw", // shares the root prompt_cache_key (http_headers.sharesParentCache)
         .out = null,
         .tracer = self.tracer,
         .run_budget = self.run_budget,
@@ -119,26 +122,38 @@ pub fn build(self: *Agent, arena: Allocator, question: []const u8) !Agent {
         .call_kind = .judge, // an auxiliary, bounded, non-recursive call
         .responses_output_limit = output_limit,
         .message_mutation_arena = arena,
-        .sys_override = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ self.systemPrompt(), side_note }),
+        .sys_override = self.systemPrompt(), // exact parent prefix; note is the user message
+        .tools_anthropic = self.tools_anthropic,
+        .tools_openai = self.tools_openai,
+        .tools_responses = self.tools_responses,
     };
 }
 
-/// One tool-less request over a clone of the live history. The answer is duped
-/// into `out_arena` (the caller's turn arena, not the session's) and everything
-/// else — the clone, the reply tree, the side agent — dies with the scratch
-/// arena before this returns. Null on any failure: a side question that could
-/// not be answered must still leave the conversation exactly as it found it.
-pub fn ask(self: *Agent, out_arena: Allocator, question: []const u8) ?[]const u8 {
+pub const Reply = struct {
+    text: []const u8,
+    cache_read: u64,
+};
+
+/// One request over a clone of the live history, parent tools on the wire.
+/// The answer is duped into `out_arena` (the caller's turn arena, not the
+/// session's) and everything else dies with the scratch arena. Null on any
+/// failure: a side question that could not be answered must still leave the
+/// conversation exactly as it found it.
+pub fn ask(self: *Agent, out_arena: Allocator, question: []const u8) ?Reply {
     var arena_state = std.heap.ArenaAllocator.init(self.gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var agent = build(self, arena, question) catch return null;
     defer agent.tools_used.deinit(self.gpa);
     defer agent.closeCodexWs(); // its own socket + response-id anchor, gpa-owned
-    const root = agent.request(null) catch return null;
+    const tools = self.toolsJson();
+    const root = agent.request(if (tools.len > 0) tools else null) catch return null;
     const text = std.mem.trim(u8, title.assistantText(self.provider.kind, root), " \t\r\n");
     if (text.len == 0) return null;
-    return out_arena.dupe(u8, text) catch null;
+    return .{
+        .text = out_arena.dupe(u8, text) catch return null,
+        .cache_read = agent.last_cache_read,
+    };
 }
 
 /// The `/btw` slash command. Returns false when `line` is not one, so it can sit
@@ -157,7 +172,9 @@ pub fn command(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer
         try out.flush();
         return true;
     };
-    try out.print("{s}\n{s}(side question — not added to this session){s}\n", .{ answer, style.dim, style.reset });
+    try out.print("{s}\n{s}(side question — not added · {d} cached){s}\n", .{
+        answer.text, style.dim, answer.cache_read, style.reset,
+    });
     try out.flush();
     return true;
 }

@@ -65,6 +65,7 @@ pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
         // retrying or apologising for a ledger that is already correct.
         .is_error = !std.mem.eql(u8, r.reason, "already recorded (same normalized text)"),
     };
+    @import("prompt_cache_hud.zig").noteBust(.playbook);
     refreshRoot(agent, agent.arena);
     agent.say("  {s}⛔ constraint recorded ({s}){s} {s}\n", .{ style.yellow, r.id, style.reset, text }) catch {};
     return .{ .text = std.fmt.allocPrint(agent.arena, "constraint recorded as {s}. It is now in {s} and rides every subagent, workflow and pipeline brief from here on, in this session and in later ones — you do not need to restate it.", .{ r.id, playbook.path }) catch "constraint recorded", .is_error = false };
@@ -102,6 +103,7 @@ pub fn command(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer
     if (std.mem.startsWith(u8, arg, "rm ") or std.mem.startsWith(u8, arg, "remove ")) {
         const id = std.mem.trim(u8, arg[if (arg[0] == 'r' and arg[1] == 'm') 3 else 7..], " \t");
         if (playbook.retire(root.io, arena, id)) {
+            @import("prompt_cache_hud.zig").noteBust(.playbook);
             refreshRoot(root, arena);
             try out.print("retired {s} — it no longer rides new briefs (the record stays in the log as a tombstone)\n", .{id});
         } else try out.print("no live playbook item with id '{s}' — /never lists them\n", .{id});
@@ -112,6 +114,7 @@ pub fn command(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer
     const provenance = std.fmt.bufPrint(&prov_buf, "user:{d}", .{@import("util.zig").unixMs(root.io)}) catch "user";
     const r = playbook.add(root.io, arena, arg, .user, provenance);
     if (r.ok) {
+        @import("prompt_cache_hud.zig").noteBust(.playbook);
         refreshRoot(root, arena);
         try out.print("{s}⛔ recorded {s}{s} — this now rides every brief, in this session and later ones\n", .{ style.yellow, r.id, style.reset });
     } else try out.print("not recorded: {s}\n", .{r.reason});

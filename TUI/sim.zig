@@ -277,6 +277,15 @@ test "type /help then enter opens the help overlay" {
     try std.testing.expect(std.mem.indexOf(u8, paged, "/quit") != null);
 }
 
+test "type /cache then enter opens the observability overlay" {
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    _ = term.typeText("/cache");
+    _ = term.enter();
+    try std.testing.expectEqual(app.Overlay.debug, term.model.overlay);
+}
+
 test "hoverText on an image chip opens the preview" {
     var term: Term = undefined;
     term.init(std.testing.allocator, 80, 24);

@@ -91,6 +91,7 @@ pub fn maybeWrite(self: *Agent) Decision {
     // be re-composed to reach the next request — the same refresh a mid-
     // session `/never` performs, and for the same reason.
     prompts.armCompactNotes(self.session_name);
+    @import("prompt_cache_hud.zig").noteBust(.compact);
     playbook_glue.refreshRoot(self, self.arena);
     if (!main_mod.json_mode) self.say("  📝 wrote a pre-compaction note to self ({d} chars)\n", .{reply.len}) catch {};
     if (self.tracer) |tr| tr.note("compact", "wrote a pre-compaction note to self (#391)");

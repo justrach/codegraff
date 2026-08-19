@@ -1,7 +1,4 @@
-//! Misc slash commands + the unknown-command/help fallback, split out of
-//! main.zig's handleCommand (600-line goal, issue #123): /todo /jobs /cost
-//! /mcp /models /yolo /trace /fleet /save /resume /sessions, plus the
-//! terminal handleRest() stage (unknown command → error, or /help dump).
+//! Misc slash commands + handleRest() fallback (600-line goal, #123).
 
 const std = @import("std");
 const Io = std.Io;
@@ -45,6 +42,7 @@ test { // main.zig is the test root, so this reference is what runs its tests
 }
 const pricing = @import("pricing.zig");
 const obs = @import("obs.zig");
+const cache_hud = @import("prompt_cache_hud.zig");
 const default_context = pricing.default_context;
 const g_cost = &pricing.g_cost;
 const pricing_db = @import("pricing_db.zig"); // #557: price-DB age for the /models footer
@@ -235,8 +233,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (std.mem.eql(u8, line, "/debug")) {
-        try obs.renderHud(out);
+    if (std.mem.eql(u8, line, "/debug") or std.mem.eql(u8, line, "/cache")) {
+        if (std.mem.eql(u8, line, "/debug")) try obs.renderHud(out) else try cache_hud.render(out);
         try out.flush();
         return true;
     }
@@ -306,6 +304,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             // Re-render the active catalog so the new tools reach the model;
             // inactive provider formats stay lazy until a later switch.
             root.invalidateRootTools();
+            @import("prompt_cache_hud.zig").noteBust(.mcp);
             try root.ensureRootTools(root.provider.kind);
             root.rebaseContextMeter();
             const persisted = if (is_remote)
