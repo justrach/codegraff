@@ -28,7 +28,13 @@ current is part of cutting a release.
   `[plugins."name@marketplace"]` → `plugins/cache/<mp>/<name>/<ver>`.
 - Prompt-cache max: the skill catalog is names + triggers only, sorted,
   pinned once at session start, no `file:` paths. Bodies load on
-  `skill name=`. Sticky `prompt_cache_key` is unchanged.
+  `skill name=`. GPT-5.6 OpenAI Platform marks the stable instructions/tool
+  prefix explicitly for 30-minute reuse; Codex and xAI remain on their
+  supported keyed automatic-cache paths (ADR 0009).
+- Cache creation tokens are tracked separately from reads and ordinary input,
+  including the documented 1.25× GPT-5.6 and Anthropic write price.
+- Path confinement, transport, score filing, and terminal mode lifecycles now
+  have executable state-machine references with matching Lean proofs.
 - `install.sh` appends `~/bin` to the login shell so `graff` is on PATH.
 - Synthetic long-horizon evals (`evals/long_horizon/`) grade with
   external deterministic checks (ADR 0008).
