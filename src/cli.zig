@@ -21,6 +21,9 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.267
+    \\  • bash_output/agent_output wait_ms>0 blocks until exit (10h), not a 30s poll
+    \\
     \\0.0.266
     \\  • In-place Cursor/Claude/Grok/Codex plugins (no cache walk; Codex via config.toml)
     \\  • Skill catalog is cache-stable: names + triggers, pinned once, no file: paths

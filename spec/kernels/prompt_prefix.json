@@ -1,0 +1,66 @@
+{
+  "kernel": "prompt_prefix",
+  "version": 1,
+  "cases": [
+    {
+      "id": "names_only.once",
+      "cell": {
+        "catalog": "names_only",
+        "pin": "once"
+      },
+      "prefix_ok": true,
+      "pin_ok": true,
+      "cacheable": true
+    },
+    {
+      "id": "names_only.every_rebuild",
+      "cell": {
+        "catalog": "names_only",
+        "pin": "every_rebuild"
+      },
+      "prefix_ok": true,
+      "pin_ok": false,
+      "cacheable": false
+    },
+    {
+      "id": "with_bodies.once",
+      "cell": {
+        "catalog": "with_bodies",
+        "pin": "once"
+      },
+      "prefix_ok": false,
+      "pin_ok": true,
+      "cacheable": false
+    },
+    {
+      "id": "with_bodies.every_rebuild",
+      "cell": {
+        "catalog": "with_bodies",
+        "pin": "every_rebuild"
+      },
+      "prefix_ok": false,
+      "pin_ok": false,
+      "cacheable": false
+    },
+    {
+      "id": "with_paths.once",
+      "cell": {
+        "catalog": "with_paths",
+        "pin": "once"
+      },
+      "prefix_ok": false,
+      "pin_ok": true,
+      "cacheable": false
+    },
+    {
+      "id": "with_paths.every_rebuild",
+      "cell": {
+        "catalog": "with_paths",
+        "pin": "every_rebuild"
+      },
+      "prefix_ok": false,
+      "pin_ok": false,
+      "cacheable": false
+    }
+  ]
+}

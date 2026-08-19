@@ -316,7 +316,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
                     try std.fmt.allocPrint(gpa, "could not start background job ({t}) — run it in the foreground instead", .{err}),
                 .is_error = true,
             };
-            return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. Poll new output with bash_output (id {d}, optional wait_ms), stop it with bash_kill.{s}", .{
+            return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. Do not poll. bash_output(id {d}, wait_ms>0) blocks until it exits; omit wait_ms for a snapshot. bash_kill stops it.{s}", .{
                 job.id,
                 job.cmd,
                 job.id,

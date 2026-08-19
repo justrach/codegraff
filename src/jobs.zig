@@ -256,7 +256,7 @@ const Job = struct {
 };
 
 const job_unread_cap = 256 * 1024;
-const job_wait_cap_ms: u64 = 30_000;
+const job_wait = @import("job_wait.zig");
 
 /// POSIX process groups; windows/wasi have none, so the group kills below and
 /// the job's own pgid are compiled out there (#198).
@@ -404,10 +404,10 @@ pub fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8) !*Job {
     return job;
 }
 
-/// bash_output: new output since the last read + status. With wait_ms > 0,
-/// polls until new output, exit, Esc, or the (capped) deadline.
+/// bash_output: unread output + status. wait_ms=0 is a snapshot. wait_ms>0
+/// blocks until the job exits (or Esc), not until the next byte (ADR 0010).
 pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
-    const deadline = @min(wait_ms, job_wait_cap_ms);
+    const deadline = job_wait.resolveDeadline(wait_ms);
     var waited: u64 = 0;
     while (true) {
         g_jobs.mutex.lockUncancelable(io);
@@ -416,7 +416,7 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             return .{ .text = try std.fmt.allocPrint(gpa, "no background job {d} — it may never have started; /jobs lists them", .{id}), .is_error = true };
         };
         const fresh = job.buf.items[job.cursor..];
-        if (fresh.len > 0 or job.done or waited >= deadline) {
+        if (job.done or waited >= deadline) {
             var aw: Io.Writer.Allocating = .init(gpa);
             errdefer aw.deinit();
             const w = &aw.writer;
@@ -511,6 +511,7 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
 test { // split-out modules: unreferenced, their tests silently never run
     _ = worktree_prune;
     _ = @import("worktree_lease.zig");
+    _ = job_wait;
 }
 
 test "foreground tool subprocesses own their process group (#266, #198)" {
@@ -524,6 +525,7 @@ test "foreground tool subprocesses own their process group (#266, #198)" {
 
 test "killing a background job takes its grandchildren with it (#198)" {
     if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    g_jobs = .{};
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
@@ -580,4 +582,19 @@ test "isolated capped runs clean descendants after timeout and normal exit" {
     io.sleep(.fromMilliseconds(1_000), .awake) catch {};
     try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "timeout-marker", .{}));
     try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "completed-marker", .{}));
+}
+
+test "bash_output wait_ms>0 waits for exit, not the next byte (ADR 0010)" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    g_jobs = .{};
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const id = (try spawnJob(gpa, io, "printf start; sleep 0.15; printf done; exit 7")).id;
+    defer jobsReap(gpa, io);
+    const snap = try jobOutput(gpa, io, id, 0);
+    defer gpa.free(snap.text);
+    const done = try jobOutput(gpa, io, id, 30_000);
+    defer gpa.free(done.text);
+    const text = if (std.mem.indexOf(u8, done.text, "exited with code 7") != null) done.text else snap.text;
+    try std.testing.expect(std.mem.indexOf(u8, text, "exited with code 7") != null);
 }

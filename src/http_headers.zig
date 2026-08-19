@@ -53,7 +53,7 @@ pub fn promptCacheKey(io: Io, label: []const u8, agent: *const anyopaque, buf: [
 /// OpenAI's documented ~15 requests/minute cache-routing guidance during fanout.
 pub fn promptPrefixCacheKey(io: Io, label: []const u8, buf: []u8) []const u8 {
     const base = projectRootId(io);
-    if (std.mem.eql(u8, label, "main")) return std.fmt.bufPrint(buf, "{s}", .{base}) catch base;
+    if (std.mem.eql(u8, label, "main") or sharesParentCache(label)) return std.fmt.bufPrint(buf, "{s}", .{base}) catch base;
     const lane = std.hash.Wyhash.hash(0, label) & 3;
     return std.fmt.bufPrint(buf, "{s}-child-{d}", .{ base, lane }) catch base;
 }
@@ -105,9 +105,16 @@ pub fn projectRootId(io: Io) []const u8 {
     return project_id_buf[0..project_id_len];
 }
 
+/// Side-calls that replay the parent history (`/btw`) share the root
+/// partition. Concurrent workers stay isolated. grok-build's recap does the
+/// same: same `prompt_cache_key` as the parent so the prefix stays warm.
+pub fn sharesParentCache(label: []const u8) bool {
+    return std.mem.eql(u8, label, "btw");
+}
+
 pub fn projectCacheKey(io: Io, label: []const u8, agent: *const anyopaque, buf: []u8) []const u8 {
     const base = projectRootId(io);
-    if (std.mem.eql(u8, label, "main")) {
+    if (std.mem.eql(u8, label, "main") or sharesParentCache(label)) {
         if (buf.len >= base.len) {
             @memcpy(buf[0..base.len], base);
             return buf[0..base.len];
@@ -146,7 +153,7 @@ pub fn providerHeaders(io: Io, provider: Provider, bearer: []const u8, buf: *[12
 }
 
 /// Same as `providerHeaders`, with an explicit conversation id for xAI.
-/// Null falls back to the process session id (one-off posts: title, compact).
+/// Null falls back to `projectRootId` (one-off posts: title, compact).
 pub fn providerHeadersWithConv(io: Io, provider: Provider, bearer: []const u8, buf: *[12]std.http.Header, conv_id: ?[]const u8) []const std.http.Header {
     var count: usize = 0;
     switch (provider.auth) {
@@ -185,7 +192,13 @@ pub fn providerHeadersWithConv(io: Io, provider: Provider, bearer: []const u8, b
         count += 1;
     }
     if (wantsGrokConvId(provider.id)) {
-        buf[count] = .{ .name = "x-grok-conv-id", .value = conv_id orelse projectRootId(io) };
+        const root_id = projectRootId(io);
+        buf[count] = .{ .name = "x-grok-conv-id", .value = conv_id orelse root_id };
+        count += 1;
+        // grok-build always sends session + conv. Session stays the durable
+        // project id so a child partition still routes onto the same server
+        // family; conv-id / prompt_cache_key isolate the prefix itself.
+        buf[count] = .{ .name = "x-grok-session-id", .value = root_id };
         count += 1;
     }
     return buf[0..count];
@@ -250,6 +263,9 @@ test "project and prefix cache keys preserve conversation and sharing boundaries
     const sibling_sub = projectCacheKey(std.testing.io, "sub", sibling, &buf4);
     try std.testing.expect(!std.mem.eql(u8, sub, sibling_sub));
 
+    var btw_buf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(a, projectCacheKey(std.testing.io, "btw", sibling, &btw_buf));
+
     // OpenAI/Codex prefix affinity is stable for a workflow role, but spreads
     // different roles over four lanes to stay below the per-key traffic guide.
     var pbuf1: [96]u8 = undefined;
@@ -267,6 +283,7 @@ test "x-grok-conv-id with no explicit conv still uses the project root id" {
     var buf: [12]std.http.Header = undefined;
     const headers = providerHeadersWithConv(io, xai, "Bearer k", &buf, null);
     try std.testing.expectEqualStrings(projectRootId(io), headerValue(headers, "x-grok-conv-id") orelse return error.MissingGrokConvId);
+    try std.testing.expectEqualStrings(projectRootId(io), headerValue(headers, "x-grok-session-id") orelse return error.MissingGrokSessionId);
 }
 
 test "adoptSessionId validates length and never overwrites a minted id" {
@@ -302,17 +319,21 @@ test "xAI Chat Completions headers carry a stable per-conversation x-grok-conv-i
     var buf: [12]std.http.Header = undefined;
     const first = providerHeadersWithConv(io, xai, "Bearer k", &buf, root_id);
     try std.testing.expectEqualStrings(root_id, headerValue(first, "x-grok-conv-id") orelse return error.MissingGrokConvId);
+    try std.testing.expectEqualStrings(root_id, headerValue(first, "x-grok-session-id") orelse return error.MissingGrokSessionId);
     var buf2: [12]std.http.Header = undefined;
     const second = providerHeadersWithConv(io, xai, "Bearer k", &buf2, root_id);
     try std.testing.expectEqualStrings(root_id, headerValue(second, "x-grok-conv-id").?);
+    try std.testing.expectEqualStrings(root_id, headerValue(second, "x-grok-session-id").?);
     var buf3: [12]std.http.Header = undefined;
     const child_headers = providerHeadersWithConv(io, xai, "Bearer k", &buf3, child_id);
     try std.testing.expectEqualStrings(child_id, headerValue(child_headers, "x-grok-conv-id").?);
+    try std.testing.expectEqualStrings(root_id, headerValue(child_headers, "x-grok-session-id").?);
 
     const anth: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude", .context = 200_000 };
     var abuf: [12]std.http.Header = undefined;
     const ah = providerHeadersWithConv(io, anth, "", &abuf, root_id);
     try std.testing.expect(headerValue(ah, "x-grok-conv-id") == null);
+    try std.testing.expect(headerValue(ah, "x-grok-session-id") == null);
 }
 
 test "xai login tokens send X-XAI-Token-Auth; API keys do not" {

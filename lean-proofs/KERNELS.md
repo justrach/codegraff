@@ -13,13 +13,17 @@ the snapshot of that function.
 
 Process kernels: `GoalLoop` (standing has no retire edge; harness-done
 needs a done write), `PromptCache` (sub never spawns; join restores the
-root partition), `TerminalModes` (`Op`/`step` mode map + kitty depth;
-enable++restore returns to Idle; pop floors; alt-screen leave is last),
-`PathConfine` (component walk: Escaped and Absolute absorb), and
-`Transport` (a sub never takes WS; only one live root Responses cell
-does), and `Score` (`attempt` never files; `capture` after the join
-files one stage row). They are not Turing machines: no tape, no halt
-state.
+root partition), `PromptPrefix` (names + triggers, pinned once; skill
+load/list/rescan do not rewrite the prefix), `PromptStable` (OpenGauss
+must-nots: skills/schemas in history, no clock/toolset-rewrite/memory
+reload in the prefix; compact re-pins — showcase with
+`python3 spec/conformance.py --showcase`), `TerminalModes` (`Op`/`step`
+mode map + kitty depth; enable++restore returns to Idle; pop floors;
+alt-screen leave is last), `PathConfine` (component walk: Escaped and
+Absolute absorb), `Transport` (a sub never takes WS; only one live root
+Responses cell does), and `Score` (`attempt` never files; `capture`
+after the join files one stage row). They are not Turing machines: no
+tape, no halt state.
 
 The shape of a subagent fleet is not a cube. `Shape` is the observation
 ladder of one turn and stays a cube. How many children spawn, which
@@ -47,6 +51,8 @@ not a skip: TUI, prompts, and SSE bytes stay out of Lean on purpose.
 | `Provider` | 18 baked rows | live `/models` overlay, Kimi protocol flip |
 | `GoalLoop` | 360 gate cells + `Event`/`step` | model wording, whether the work is correct |
 | `PromptCache` | 48 cells + `Event`/`step` | provider cache HIT, uuid5 cwd bytes, vision pin |
+| `PromptPrefix` | 6 cells + `Event`/`step` | catalog wording, provider HIT, compaction |
+| `PromptStable` | 20 cells + `Event`/`step` | Anthropic `cache_control` bytes, compact summary wording |
 | `TerminalModes` | 14 named sequences + `Op`/`step` | TUI layout, glyphs, the emulator font |
 | `PathConfine` | 16 lexical paths + 80 lease cells + `Event`/`step` | OS errno, Windows drives, live symlink walk |
 | `Shape` | 1728 ladder cells | `admit`, learned override, ε-explore, `observe` |
@@ -63,7 +69,7 @@ not a skip: TUI, prompts, and SSE bytes stay out of Lean on purpose.
 | Part | Why never |
 |---|---|
 | TUI (layout, colors, glyphs, hover) | the emulator owns the font and the cell grid |
-| Prompts / system text | wording is not a discrete decision |
+| Prompts / system text | wording is not a discrete decision (prefix *kind* is PromptPrefix) |
 | SSE / stream bytes | wire framing, not a predicate |
 | MCP protocol / tool descriptions | names and schemas, not a flag cube |
 | HMAC score signing | crypto, not a discrete gate |

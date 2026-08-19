@@ -9,7 +9,9 @@ not mint a key. Sub never spawns. Join restores the root partition.
 
 The diagram is the projection of the live Python `step` (same function
 `check_properties` walks). Emit it with
-`python3 spec/conformance.py --diagram prompt_cache`.
+`python3 spec/conformance.py --diagram prompt_cache`. The maximizing
+walk (sticky key + join restores) is
+`python3 spec/conformance.py --showcase prompt_cache`.
 
 ```mermaid
 stateDiagram-v2

@@ -1,5 +1,4 @@
-//! Root interactive/JSON event loop. `main` owns setup and storage; `Ctx` holds
-//! borrowed pointers valid until `run` returns for final session cleanup.
+//! Root interactive/JSON event loop. `main` owns setup; `Ctx` is borrowed until `run` returns.
 
 const std = @import("std");
 const Io = std.Io;
@@ -26,7 +25,7 @@ const goal_state = @import("goal_state.zig");
 const goal_flow = @import("goal_flow.zig");
 const goal_pacing = @import("goal_pacing.zig");
 const eval_memory = @import("eval_memory.zig");
-const json_controls = @import("json_controls.zig"); // #415: the --json controls that never become a turn
+const json_controls = @import("json_controls.zig");
 const json_inbox = @import("json_inbox.zig");
 const mainloop_score = @import("mainloop_score.zig");
 const mainloop_trace = @import("mainloop_trace.zig");
@@ -73,7 +72,6 @@ pub fn run(ctx: *Ctx) !void {
     // Trajectory spine: each turn's parent is the previous; a changed prompt fingerprint marks a set_system_prompt edge.
     var prev_turn_id: u64 = 0;
     var prev_prompt_fp: [16]u8 = scoring.promptFingerprint(ctx.root.systemPrompt());
-
     // Armed only after a clean /loop turn and consumed by the next read (#226).
     const loop_iter_cap: u32 = 25; // hard per-/loop iteration bound (never-completing-model guard)
     var loop_iters_left: u32 = 0; // continuation turns still authorized this /loop run
@@ -217,6 +215,7 @@ pub fn run(ctx: *Ctx) !void {
             if (std.mem.eql(u8, rtype, "set_agent")) {
                 const id = if (parsed.object.get("id")) |v| (if (v == .string) v.string else "") else "";
                 if (id.len == 0) {
+                    @import("prompt_cache_hud.zig").noteBust(.persona);
                     try prompts.setSystemPrompts(ctx.root, ctx.sys_normal, ctx.arena); // #326: reset to the startup base, all four variants
                     ctx.root.rebaseContextMeter();
                     ctx.root.emit(.{ .type = "agent", .ok = true, .id = id, .chars = ctx.root.sys_normal.len });
@@ -228,6 +227,7 @@ pub fn run(ctx: *Ctx) !void {
                     continue;
                 };
                 const persona_base = try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ ctx.sys_normal, prompt });
+                @import("prompt_cache_hud.zig").noteBust(.persona);
                 try prompts.setSystemPrompts(ctx.root, persona_base, ctx.arena); // #326: recomputes strict + ultra too
                 ctx.root.rebaseContextMeter();
                 ctx.root.emit(.{ .type = "agent", .ok = true, .id = id, .chars = ctx.root.sys_normal.len });
@@ -277,6 +277,7 @@ pub fn run(ctx: *Ctx) !void {
                     try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ ctx.root.sys_normal, text })
                 else
                     try ctx.arena.dupe(u8, text);
+                @import("prompt_cache_hud.zig").noteBust(.persona);
                 try prompts.setSystemPrompts(ctx.root, new_base, ctx.arena); // #326: recomputes strict + ultra too
                 ctx.root.rebaseContextMeter();
                 ctx.root.emit(.{ .type = "system_prompt", .ok = true, .append = append, .chars = ctx.root.sys_normal.len });
@@ -284,7 +285,7 @@ pub fn run(ctx: *Ctx) !void {
             }
             if (std.mem.eql(u8, rtype, "review")) review_prompt = text;
             // #415: a side question is ANSWERED here and never becomes a turn —
-            // no tools, billed, and nothing added to the session or its transcript.
+            // billed, parent-prefix cached, nothing added to the session.
             if (json_controls.sideQuestion(ctx.root, ctx.arena, rtype, text)) continue;
             json_controls.applyToolKnobs(parsed.object);
             break :blk text;

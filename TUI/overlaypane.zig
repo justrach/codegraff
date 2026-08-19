@@ -249,6 +249,7 @@ const help_body =
     \\  /settings         model · effort · mode · theme
     \\  /usage /cost      live token/cost line
     \\  /debug            observability HUD
+    \\  /cache            prompt-cache posture
     \\  /plan             toggle plan mode
     \\  /always-approve   skip permission prompts
     \\  /import-claude    copy Claude and Cursor MCP + skills
@@ -269,7 +270,7 @@ test "help overlay names the advertised pager commands" {
     defer arena.deinit();
     const text = try overlay(&m, arena.allocator(), 80);
     for ([_][]const u8{
-        "/quit",     "/help", "/new", "/home", "/model", "/settings", "/usage", "/debug", "/plan", "/always-approve",
+        "/quit",     "/help", "/new", "/home", "/model", "/settings", "/usage", "/debug", "/cache", "/plan", "/always-approve",
         "Shift+Tab", "PgUp",  "PgDn",
         "←",
         "→",

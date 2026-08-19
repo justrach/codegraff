@@ -192,6 +192,7 @@ pub fn usageInt(obj: std.json.ObjectMap, name: []const u8) i64 {
 /// $0, while an env key on that same provider is metered like any other.
 pub fn recordCost(self: *Agent, ordinary_in: i64, cache_in: i64, cache_write_in: i64, out: i64) void {
     g_cost.add(self.io, billing.forProvider(self.provider), self.provider.model, ordinary_in, cache_in, cache_write_in, out);
+    if (!self.sub) @import("prompt_cache_hud.zig").noteUsage(@intCast(@max(cache_in, 0)), @intCast(@max(cache_write_in, 0)));
 }
 
 /// #174: ~4-bytes/token estimate of the FULL history serialized as Responses

@@ -357,9 +357,9 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     defer gpa.free(frame);
 
     const bearer = try std.fmt.allocPrint(arena, "Bearer {s}", .{provider.api_key});
-    // ChatGPT tail is codex-only (#502); xAI takes x-grok-conv-id instead —
-    // the project cache id (root/sub isolated), same sticky value as the
-    // Responses body's prompt_cache_key, not the per-process session id.
+    // ChatGPT tail is codex-only (#502); xAI takes grok-build's affinity
+    // pair: x-grok-session-id (durable project) + x-grok-conv-id (root/sub
+    // partition, same value as the Responses body's prompt_cache_key).
     var conv_buf: [96]u8 = undefined;
     const conv = http_headers.promptCacheKey(self.io, self.label, self, &conv_buf);
     var hdrs: [7]ws.Header = undefined;
@@ -373,7 +373,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         hdrs[5] = .{ .name = "User-Agent", .value = "codex_cli_rs/0.1 (graff)" };
         hn = 6;
     } else if (http_headers.wantsGrokConvId(provider.id)) {
-        hdrs[1] = .{ .name = "session_id", .value = http_headers.sessionId(self.io) };
+        hdrs[1] = .{ .name = "x-grok-session-id", .value = http_headers.projectRootId(self.io) };
         hdrs[2] = .{ .name = "x-grok-conv-id", .value = conv };
         hn = 3;
     }

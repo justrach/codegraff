@@ -24,7 +24,7 @@ const side_question = @import("side_question.zig");
 pub fn sideQuestion(root: *Agent, arena: Allocator, rtype: []const u8, text: []const u8) bool {
     if (!std.mem.eql(u8, rtype, "btw")) return false;
     if (side_question.ask(root, arena, text)) |answer| {
-        root.emit(.{ .type = "btw", .ok = true, .text = answer, .persisted = false });
+        root.emit(.{ .type = "btw", .ok = true, .text = answer.text, .persisted = false, .cache_read_tokens = answer.cache_read });
     } else {
         root.emit(.{ .type = "error", .message = "side question failed; the conversation is unchanged" });
     }

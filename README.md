@@ -517,7 +517,7 @@ gateway rollouts appear without a restart.
 /plugins                  list Cursor/Claude/Grok/Codex plugin trees graff is reading in place
 /hooks                    list lifecycle hooks and the built-in codedb guard
 /doctor                   read-only health check: goal/todo invariants, and why steering will or will not be appended
-/btw <question>           ask one side question about this conversation: no tools, billed, never added to the session
+/btw <question>           ask one side question about this conversation: billed, never added, rides the parent cache prefix
 /compact                  compact history into a fresh context (OpenAI server-side when available)
 /rewind [n]               list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
 /image <path>             attach an image to your next message (vision models only)

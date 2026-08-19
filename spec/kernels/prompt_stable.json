@@ -1,0 +1,206 @@
+{
+  "kernel": "prompt_stable",
+  "version": 1,
+  "cases": [
+    {
+      "id": "turn.history",
+      "cell": {
+        "event": "turn",
+        "land": "history"
+      },
+      "land": "history",
+      "verdict": "keep",
+      "keep": true
+    },
+    {
+      "id": "turn.prefix",
+      "cell": {
+        "event": "turn",
+        "land": "prefix"
+      },
+      "land": "history",
+      "verdict": "keep",
+      "keep": false
+    },
+    {
+      "id": "skill_inject.history",
+      "cell": {
+        "event": "skill_inject",
+        "land": "history"
+      },
+      "land": "history",
+      "verdict": "keep",
+      "keep": true
+    },
+    {
+      "id": "skill_inject.prefix",
+      "cell": {
+        "event": "skill_inject",
+        "land": "prefix"
+      },
+      "land": "history",
+      "verdict": "keep",
+      "keep": false
+    },
+    {
+      "id": "schema_load.history",
+      "cell": {
+        "event": "schema_load",
+        "land": "history"
+      },
+      "land": "history",
+      "verdict": "keep",
+      "keep": true
+    },
+    {
+      "id": "schema_load.prefix",
+      "cell": {
+        "event": "schema_load",
+        "land": "prefix"
+      },
+      "land": "history",
+      "verdict": "keep",
+      "keep": false
+    },
+    {
+      "id": "toolset_append.history",
+      "cell": {
+        "event": "toolset_append",
+        "land": "history"
+      },
+      "land": "prefix",
+      "verdict": "keep",
+      "keep": false
+    },
+    {
+      "id": "toolset_append.prefix",
+      "cell": {
+        "event": "toolset_append",
+        "land": "prefix"
+      },
+      "land": "prefix",
+      "verdict": "keep",
+      "keep": true
+    },
+    {
+      "id": "toolset_rewrite.history",
+      "cell": {
+        "event": "toolset_rewrite",
+        "land": "history"
+      },
+      "land": "prefix",
+      "verdict": "illegal",
+      "keep": false
+    },
+    {
+      "id": "toolset_rewrite.prefix",
+      "cell": {
+        "event": "toolset_rewrite",
+        "land": "prefix"
+      },
+      "land": "prefix",
+      "verdict": "illegal",
+      "keep": false
+    },
+    {
+      "id": "clock_tick.history",
+      "cell": {
+        "event": "clock_tick",
+        "land": "history"
+      },
+      "land": "prefix",
+      "verdict": "illegal",
+      "keep": false
+    },
+    {
+      "id": "clock_tick.prefix",
+      "cell": {
+        "event": "clock_tick",
+        "land": "prefix"
+      },
+      "land": "prefix",
+      "verdict": "illegal",
+      "keep": false
+    },
+    {
+      "id": "memory_reload.history",
+      "cell": {
+        "event": "memory_reload",
+        "land": "history"
+      },
+      "land": "prefix",
+      "verdict": "illegal",
+      "keep": false
+    },
+    {
+      "id": "memory_reload.prefix",
+      "cell": {
+        "event": "memory_reload",
+        "land": "prefix"
+      },
+      "land": "prefix",
+      "verdict": "illegal",
+      "keep": false
+    },
+    {
+      "id": "set_system_prompt.history",
+      "cell": {
+        "event": "set_system_prompt",
+        "land": "history"
+      },
+      "land": "prefix",
+      "verdict": "bust",
+      "keep": false
+    },
+    {
+      "id": "set_system_prompt.prefix",
+      "cell": {
+        "event": "set_system_prompt",
+        "land": "prefix"
+      },
+      "land": "prefix",
+      "verdict": "bust",
+      "keep": false
+    },
+    {
+      "id": "standing_change.history",
+      "cell": {
+        "event": "standing_change",
+        "land": "history"
+      },
+      "land": "prefix",
+      "verdict": "bust",
+      "keep": false
+    },
+    {
+      "id": "standing_change.prefix",
+      "cell": {
+        "event": "standing_change",
+        "land": "prefix"
+      },
+      "land": "prefix",
+      "verdict": "bust",
+      "keep": false
+    },
+    {
+      "id": "compact.history",
+      "cell": {
+        "event": "compact",
+        "land": "history"
+      },
+      "land": "prefix",
+      "verdict": "keep",
+      "keep": false
+    },
+    {
+      "id": "compact.prefix",
+      "cell": {
+        "event": "compact",
+        "land": "prefix"
+      },
+      "land": "prefix",
+      "verdict": "keep",
+      "keep": true
+    }
+  ]
+}

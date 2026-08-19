@@ -333,6 +333,7 @@ pub fn renderHud(w: *Io.Writer) !void {
             try w.writeByte('\n');
         }
     }
+    try @import("prompt_cache_hud.zig").renderLine(w);
     try w.writeAll("  last events\n");
     var recs: [ring_cap]Record = undefined;
     const n = recent(&recs);
@@ -456,13 +457,14 @@ test "note: session and prompt never store paths or prompt text" {
     try std.testing.expectEqual(EventName.user_prompt, recs[1].name);
     try std.testing.expectEqualStrings("grok-4", recs[1].modelSlice());
     try std.testing.expectEqual(@as(u32, 7), recs[1].prompt_len);
-    var buf: [1024]u8 = undefined;
+    var buf: [2048]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
     try renderHud(&w);
     const text = w.buffered();
     try std.testing.expect(!contains(text, "/Users/secret"));
     try std.testing.expect(!contains(text, "traces/x"));
     try std.testing.expect(contains(text, "session_start"));
+    try std.testing.expect(contains(text, "cache"));
 }
 
 test "note: tool decision and result stay content-free" {
@@ -492,7 +494,7 @@ test "note: tool decision and result stay content-free" {
     try std.testing.expectEqual(@as(u64, 1), s.decisions_allow);
     try std.testing.expectEqual(@as(u64, 1), s.decisions_deny);
     try std.testing.expectEqual(@as(u64, 1), s.tool_calls);
-    var buf: [1024]u8 = undefined;
+    var buf: [2048]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
     try renderHud(&w);
     const text = w.buffered();

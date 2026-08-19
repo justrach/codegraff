@@ -340,6 +340,7 @@ pub fn pinStandingGoal(agent: *Agent, arena: Allocator) void {
         }
     }
     if (agent.sys_base.len == 0) return;
+    @import("prompt_cache_hud.zig").noteBust(.goal);
     setSystemPrompts(agent, agent.sys_base, arena) catch {};
 }
 
