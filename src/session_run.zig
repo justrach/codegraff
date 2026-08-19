@@ -316,6 +316,7 @@ pub fn buildRootAgent(
     if (flags.goal_flag) |g| { // --goal is STANDING (#318): every turn (incl. --json/-p/SDK), never model-retired
         root.goal_flag = try arena.dupe(u8, g); // kept: re-applied over every loadSession, incl. /resume
         root.goal = goal_flow.standingGoalFromFlag(root.goal_flag.?, null, root.todos.items, util.unixMs(io));
+        prompts.pinStandingGoal(&root, arena); // ADR 0005: prefix, not an 8-turn user-message refresh
     }
     // #469: register this root session so co-resident graffs see it (and it
     // them) BEFORE anyone touches the shared tree — a live co-owner is named
@@ -371,7 +372,10 @@ pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: *provider_mod.Keys, are
     if (flags.oneshot_prompt != null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) {
         session.loadSession(root, keys, arena, root.session_name) catch {};
         // loadSession overwrote root.goal; the flag wins, idempotently (#318).
-        if (root.goal_flag) |g| root.pending_goal_note = goal_flow.reapplyFlagGoal(arena, root, g, util.unixMs(root.io)) catch null;
+        if (root.goal_flag) |g| {
+            root.pending_goal_note = goal_flow.reapplyFlagGoal(arena, root, g, util.unixMs(root.io)) catch null;
+            prompts.pinStandingGoal(root, arena);
+        }
     }
 }
 
@@ -385,7 +389,10 @@ pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod
     if (!(flags.oneshot_prompt == null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag)) return;
     if (session.loadSession(root, keys, arena, root.session_name)) |_| {
         // --goal outranks the restored goal here too, idempotently (#318).
-        if (root.goal_flag) |g| root.pending_goal_note = goal_flow.reapplyFlagGoal(arena, root, g, util.unixMs(root.io)) catch null;
+        if (root.goal_flag) |g| {
+            root.pending_goal_note = goal_flow.reapplyFlagGoal(arena, root, g, util.unixMs(root.io)) catch null;
+            prompts.pinStandingGoal(root, arena);
+        }
         if (root.messages.items.len > 0) {
             if (!json_mode) {
                 // Prefer the saved AI summary; fall back to the first user
@@ -428,6 +435,7 @@ pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer
     // skips this and gets reaped by the next reader's liveness probe instead.
     presence.retire(io);
     presence.deinit(gpa); // its gpa-owned globals must not reach the exit-time leak check
+    @import("workspace_switch.zig").deinitDisplay(gpa);
     if (!json_mode and root.messages.items.len > 0) {
         const sink = engine_sink.writerSink(out);
         if (session.saveSession(root, arena, root.session_name)) |_| {

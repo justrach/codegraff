@@ -129,6 +129,8 @@ pub fn build(b: *std.Build) void {
     for ([_]struct { import: []const u8, path: []const u8 }{
         .{ .import = "skill_doc_creator", .path = "assets/skills/skill-creator.md" },
         .{ .import = "skill_doc_mcp_config", .path = "assets/skills/mcp-config.md" },
+        .{ .import = "skill_doc_jspace", .path = "assets/skills/jspace.md" },
+        .{ .import = "skill_doc_workspace", .path = "assets/skills/workspace.md" },
     }) |asset| {
         exe.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
         unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
@@ -183,6 +185,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("TUI/root.zig"),
             .target = target,
             .optimize = optimize,
+            // The dump/bench helpers read GRAFF_TUI_DUMP / GRAFF_TUI_BENCH
+            // through std.c.getenv. Without libc those tests do not compile
+            // on Linux, so the painter battery never ran here.
+            .link_libc = true,
         }),
         // Same -Dtest-filter as `zig build test`: the layout benchmark needs to
         // be runnable on its own, ReleaseFast, without the rest of the suite.

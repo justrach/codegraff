@@ -23,6 +23,7 @@ const no_local_tools = @import("no_local_tools.zig");
 const http = @import("http.zig");
 const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig");
+const plugins = @import("plugins.zig");
 
 const Knob = struct { name: []const u8, value: []const u8 };
 
@@ -48,6 +49,7 @@ const knobs = [_]Knob{
     .{ .name = "GRAFF_WS_DEBUG", .value = "1" },
     .{ .name = "GRAFF_WS_FORCE_FAIL_ONCE", .value = "1" },
     .{ .name = "GRAFF_WS_FORCE_FAIL_COUNT", .value = "3" },
+    .{ .name = "GRAFF_NO_PLUGINS", .value = "1" },
 };
 
 /// A stand-in for the process environment that records which names were asked
@@ -89,6 +91,7 @@ const Saved = struct {
     ws_debug: bool,
     ws_fail_once: bool,
     ws_fail_count: u8,
+    plugins_off: bool,
 
     fn capture() Saved {
         return .{
@@ -109,6 +112,7 @@ const Saved = struct {
             .ws_debug = ws.g_debug,
             .ws_fail_once = ws.g_force_connect_failure_once,
             .ws_fail_count = ws.g_force_connect_failure_count,
+            .plugins_off = plugins.disabled,
         };
     }
 
@@ -130,6 +134,7 @@ const Saved = struct {
         ws.g_debug = s.ws_debug;
         ws.g_force_connect_failure_once = s.ws_fail_once;
         ws.g_force_connect_failure_count = s.ws_fail_count;
+        plugins.disabled = s.plugins_off;
     }
 };
 
@@ -169,6 +174,7 @@ test "applyEnvKnobs actually applies the values it reads" {
     provider_mod.g_context_override = null;
     provider_mod.g_compact_pct_override = null;
     tool_handle.threshold_bytes = tool_handle.default_threshold_bytes;
+    plugins.disabled = false;
 
     var asked: [knobs.len]bool = @splat(false);
     try session_settings.applyEnvKnobs(arena_state.allocator(), RecordingEnv{ .asked = &asked });
@@ -187,4 +193,5 @@ test "applyEnvKnobs actually applies the values it reads" {
     try std.testing.expectEqual(@as(usize, 8192), tool_handle.threshold_bytes);
     try std.testing.expect(ws.g_force_connect_failure_once);
     try std.testing.expectEqual(@as(u8, 3), ws.g_force_connect_failure_count);
+    try std.testing.expect(plugins.disabled);
 }

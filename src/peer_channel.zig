@@ -1,17 +1,16 @@
 //! The #469 channel half: what co-resident root sessions SAY to each other,
 //! on top of what presence.zig knows (WHO is out there, liveness-probed).
 //!
-//! Four surfaces, one inbox primitive:
-//!   - peer_message: the model-facing tool, so a session can coordinate the
-//!     way a parent steers a subagent — "I'm restructuring gui/src, hold" —
-//!     except sideways, between roots. Queued, one-way, never synchronous.
+//! Claude-style pull (token-maxxing): history does not eat the room. Bodies
+//! park in peer_inbox.zig; the model reads them with `action=inbox` and
+//! discovers who is live with `action=list`. deliverInbound injects a
+//! one-line `[peer]` wake and still paints the full lines for the human.
+//!
+//! Surfaces:
+//!   - peer_message: send (default), list, inbox. Queued, one-way.
 //!   - /tell <session> <text>: the user's own line into a peer's inbox.
 //!   - /sessions: the saved-session list gains a "live now" section.
-//!   - deliverInbound: drains the channel at every step boundary of the turn
-//!     loop (agent.runTurn), so a peer's message lands mid-task — between tool
-//!     batches — as a first-class note, durable in history and visible to the
-//!     user as an event. True mid-request injection (interrupting a streamed
-//!     response) remains #430 territory; step boundaries are the safe seams.
+//!   - deliverInbound: drain + park at every root step boundary.
 
 const std = @import("std");
 
@@ -25,6 +24,9 @@ const presence = @import("presence.zig");
 const presence_chan = @import("presence_chan.zig");
 const worktree_lease = @import("worktree_lease.zig");
 const repl = @import("repl.zig");
+const peer_context = @import("peer_context.zig");
+const peer_inbox = @import("peer_inbox.zig");
+const peer_target = @import("peer_target.zig");
 
 const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
@@ -32,28 +34,10 @@ const ExecResult = tools_mod.ExecResult;
 const Owner = worktree_lease.Owner;
 
 pub const tool_name = "peer_message";
-pub const tool_desc = "Post a message to the shared graff channel: live graff sessions hear it at their next step boundary, stamped with your session name and current goal. Use it to coordinate the way you would steer a subagent, but sideways: announce what you are restructuring, ask the others to hold off a directory, or split the work. Hearing is folder-scoped: bare posts go to this folder's room and every session in it hears them; `session` names one intended recipient (name substring, possibly in another folder) — a cross-folder post is delivered to the addressed session only, never broadcast. Device-wide broadcast is the user's /tell all, not this tool. Delivery is queued and one-way — the tool result only confirms the post, never a reply.";
+pub const tool_desc = "Ping a co-resident session, list who is live, or read parked inbound. action=list | inbox | send (default). session is a DM (id/pid/name/goal); omit for this folder's room. Not \"all\".";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"session": {"type": "string", "description": "peer session name substring (omit for this folder's room), \"all\" for every live session on this device, or a session name in another folder"}, "text": {"type": "string", "description": "one or two sentences of coordination intent"}}, "required": ["text"]}
+    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["send", "list", "inbox"], "description": "send (default): ping a peer. list: who is live. inbox: read+clear parked inbound."}, "session": {"type": "string", "description": "who to ping: exact session name, pid, unique name fragment, or unique goal fragment (omit = this folder's room). Named targets are DMs. Not \"all\"."}, "text": {"type": "string", "description": "one or two sentences of coordination intent (required for send)"}}}
 ;
-
-/// Resolve the one peer a message is for. `want` is a session-name substring
-/// or a decimal pid; empty wants exactly one live peer.
-fn resolvePeer(peers: []const Owner, want: []const u8) union(enum) { one: Owner, none, ambiguous } {
-    if (want.len == 0) return if (peers.len == 1) .{ .one = peers[0] } else if (peers.len == 0) .none else .ambiguous;
-    var found: ?Owner = null;
-    var count: usize = 0;
-    for (peers) |p| {
-        const pid_match = std.fmt.parseInt(i32, want, 10) catch null;
-        const named = std.mem.indexOf(u8, p.session_id, want) != null;
-        if (named or (pid_match != null and pid_match.? == p.pid)) {
-            found = p;
-            count += 1;
-        }
-    }
-    if (count == 1) return .{ .one = found.? };
-    return if (count == 0) .none else .ambiguous;
-}
 
 /// Whether the named session sits in MY worktree (routes the post: worktree
 /// room when local, device room when not).
@@ -77,7 +61,19 @@ fn peerListText(arena: Allocator, peers: []const Owner) []const u8 {
 
 pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
     const obj = tools_mod.json_args.object(call.input) orelse return .{
-        .text = "peer_message needs an object input with a text field",
+        .text = "peer_message needs an object input",
+        .is_error = true,
+    };
+    const action = tools_mod.json_args.str(obj, "action") orelse "send";
+    if (std.mem.eql(u8, action, "list")) {
+        const everyone = presence.liveAllPeers(self.io, self.arena);
+        return .{ .text = peer_inbox.formatList(self.arena, everyone, presence.ownIdentity()), .is_error = false };
+    }
+    if (std.mem.eql(u8, action, "inbox")) {
+        return .{ .text = peer_inbox.takeAll(self.arena), .is_error = false };
+    }
+    if (!std.mem.eql(u8, action, "send")) return .{
+        .text = "peer_message action must be send, list, or inbox",
         .is_error = true,
     };
     const text = tools_mod.json_args.str(obj, "text") orelse "";
@@ -88,25 +84,20 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
         .text = "no live co-resident graff sessions in this worktree — the presence registry says you are alone here (a peer shows up via the startup warning when one starts)",
         .is_error = true,
     };
-    // Routing: bare posts stay in the worktree room; a named target in
-    // another folder rides the device room, delivered to the addressed
-    // session only. Model broadcasts are rejected: unaddressed "all" posts
-    // flooded every folder on the device with another room's coordination —
-    // device-wide broadcast is the user's channel (/tell all).
+    // Named `session` is a DM: only that peer hears it. Bare posts stay a
+    // room. Cross-folder names ride the device room. Model "all" is retired.
     if (std.mem.eql(u8, want, "all")) return .{
         .text = "\"all\" is retired for sessions — hearing is folder-scoped now. Post bare for this folder's room, or name one session (possibly in another folder) to reach it directly.",
         .is_error = true,
     };
-    // `session` is validated so a mistyped target errors usefully, but every
-    // peer hears the post either way — the channel is a room, not a DM.
-    const to: []const u8 = if (want.len == 0) "" else switch (resolvePeer(presence.liveAllPeers(self.io, self.arena), want)) {
+    const to: []const u8 = if (want.len == 0) "" else switch (peer_target.resolvePeer(presence.liveAllPeers(self.io, self.arena), want)) {
         .one => |p| p.session_id,
         .none => return .{
             .text = try std.fmt.allocPrint(self.arena, "no live peer matches \"{s}\" — live here: {s}", .{ want, peerListText(self.arena, local) }),
             .is_error = true,
         },
         .ambiguous => return .{
-            .text = try std.fmt.allocPrint(self.arena, "more than one live peer matches — name one with `session`: {s}", .{peerListText(self.arena, presence.liveAllPeers(self.io, self.arena))}),
+            .text = try std.fmt.allocPrint(self.arena, "more than one live peer matches — name one with `session` (id, pid, or a unique goal fragment): {s}", .{peerListText(self.arena, presence.liveAllPeers(self.io, self.arena))}),
             .is_error = true,
         },
     };
@@ -119,53 +110,22 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
         .text = "delivery failed — the presence registry is unavailable (this session may never have announced itself)",
         .is_error = true,
     };
-    const addressed = if (to.len > 0) try std.fmt.allocPrint(self.arena, " (for \"{s}\")", .{to}) else "";
-    const room: []const u8 = if (cross_folder) "device room, delivered to the addressed session only" else "worktree channel";
+    if (to.len == 0) return .{
+        .text = "posted to this folder's room — every live session here hears it at their next step boundary. Set session to DM one peer instead.",
+        .is_error = false,
+    };
+    const via: []const u8 = if (cross_folder) "device room" else "this folder";
     return .{
-        .text = try std.fmt.allocPrint(self.arena, "posted to the {s}{s} — live peer(s) hear it at their next step boundary. Delivery is one-way: any answer arrives the same way.", .{ room, addressed }),
+        .text = try std.fmt.allocPrint(self.arena, "DM to \"{s}\" via the {s} — only they hear it, at their next step boundary. Re-ping with session=\"{s}\".", .{ to, via, to }),
         .is_error = false,
     };
 }
 
-var g_peer_fp: u64 = 0; // fingerprint of the last-injected awareness note
-var g_peer_note_rewrites: u64 = 0; // history_rewrites when it was injected
-
-/// The proactive half of #469: the model can only auto-decide to coordinate
-/// with sessions it KNOWS about — this renders the live peer set (who, where,
-/// what goal) as a context note. Returned only when the set changed since the
-/// last injection, or a history rewrite may have compacted the note away, so
-/// a steady peer set costs zero tokens. Null while the device has no peers at
-/// all and none were ever announced — solo sessions never hear about this.
-fn peerNoteIfChanged(root: *Agent) ?[]const u8 {
-    const peers = presence.liveAllPeers(root.io, root.arena);
-    if (peers.len == 0 and g_peer_fp == 0) return null;
-    var buf: std.ArrayList(u8) = .empty;
-    if (peers.len == 0) {
-        buf.appendSlice(root.arena, "[#469 presence] the other live graff sessions are gone — the shared tree is yours alone now.") catch return null;
-    } else {
-        const mine = presence.ownIdentity();
-        buf.appendSlice(root.arena, std.fmt.allocPrint(root.arena, "[#469 presence] {d} other live graff session(s):", .{peers.len}) catch return null) catch return null;
-        for (peers) |p| {
-            const where: []const u8 = if (std.mem.eql(u8, p.identity, mine)) "this folder" else p.identity;
-            buf.appendSlice(root.arena, std.fmt.allocPrint(root.arena, " {s} (goal: {s}, {s});", .{ p.session_id, if (p.goal.len > 0) p.goal else "?", where }) catch break) catch break;
-        }
-        buf.appendSlice(root.arena, " Coordinate with the peer_message tool before restructuring shared files — bare posts stay in this folder, \"all\" or a name in another folder reaches every session on this device.") catch {};
-    }
-    const text = buf.items;
-    const fp = std.hash.Wyhash.hash(0, text);
-    if (fp == g_peer_fp and root.history_rewrites == g_peer_note_rewrites) return null;
-    g_peer_fp = fp;
-    g_peer_note_rewrites = root.history_rewrites;
-    return text;
-}
-
 /// The receiving half, called at every step boundary of a root agent's turn:
-/// queued peer messages plus the peer-awareness note become one durable
-/// user-role note in history plus user-visible events. Never fails a turn —
-/// delivery trouble is silence, not an error, because a peer must never break
-/// our session.
-/// The room tail a late joiner hears in full; anything older collapses into
-/// one "N omitted" marker instead of flooding the first history note.
+/// drain the rooms, park heard bodies, paint them for the human, and inject
+/// at most a one-line `[peer]` wake. Never fails a turn — delivery trouble
+/// is silence, not an error, because a peer must never break our session.
+/// The room tail a late joiner parks; anything older is seek-skipped.
 pub const backlog_tail_max = 10;
 var g_backlog_tail_cut = false;
 
@@ -181,19 +141,8 @@ fn displayWindow(is_backlog: bool, count: usize) DisplayWindow {
     return .{ .start = count - backlog_repl_show, .hidden = count - backlog_repl_show };
 }
 
-/// Device-room hearing is addressed-only: the line names this session and it
-/// arrives whoever posted it. Unaddressed lines cross folders only when the
-/// USER broadcast them (/tell all) — a /tell to one named graff is a DM, and
-/// a session's unaddressed device line is dropped.
-pub fn deviceHears(m: presence.Message, own: []const u8) bool {
-    if (m.to.len > 0 and own.len > 0 and
-        (std.mem.indexOf(u8, m.to, own) != null or std.mem.indexOf(u8, own, m.to) != null)) return true;
-    return m.from_user and m.to.len == 0;
-}
-
 pub fn deliverInbound(root: *Agent) void {
     if (root.sub) return;
-    const note = peerNoteIfChanged(root);
     var local_msgs = presence.drainChannel(root.io, root.arena);
     var device_msgs = presence.drainDevice(root.io, root.arena);
     // Only the process's FIRST drain carries the rooms' whole backlog; later
@@ -208,73 +157,55 @@ pub fn deliverInbound(root: *Agent) void {
         local_msgs = local_msgs[dl..];
         device_msgs = device_msgs[dd..];
     }
-    if (note == null and local_msgs.len == 0 and device_msgs.len == 0 and omitted == 0) return;
-    const sink = engine_sink.forAgent(root);
     const own = presence.ownSession();
-    // Device room is folder-scoped: hear what names this session or what the
-    // user posted; everything else collapses into one marker below.
-    var heard: std.ArrayList(presence.Message) = .empty;
+    // Named worktree posts are DMs; the JSONL still has the line.
+    var tree_heard: std.ArrayList(presence.Message) = .empty;
     var skipped: usize = 0;
+    for (local_msgs) |m| {
+        if (peer_target.treeHears(m, own)) tree_heard.append(root.arena, m) catch break else skipped += 1;
+    }
+    local_msgs = tree_heard.items;
+    var heard: std.ArrayList(presence.Message) = .empty;
     for (device_msgs) |m| {
-        if (deviceHears(m, own)) heard.append(root.arena, m) catch break else skipped += 1;
+        if (peer_target.deviceHears(m, own)) heard.append(root.arena, m) catch break else skipped += 1;
     }
     device_msgs = heard.items;
+    if (local_msgs.len == 0 and device_msgs.len == 0 and omitted == 0 and skipped == 0) return;
+    const sink = engine_sink.forAgent(root);
     // The visible block gets one blank line of air on either side: peer lines
     // land mid-stream at a step boundary and used to butt straight against
     // the assistant text above and whatever follows below — one clump.
     const window = displayWindow(is_backlog_drain, local_msgs.len + device_msgs.len);
     const any_visible = local_msgs.len + device_msgs.len > window.start or
-        (repl.g_debug and (note != null or omitted > 0 or skipped > 0 or window.hidden > 0));
-    var buf: std.ArrayList(u8) = .empty;
-    // Debug-only notices ride inside the block's bracket, in drain order.
+        (repl.g_debug and (omitted > 0 or skipped > 0 or window.hidden > 0));
     var markers: std.ArrayList([]const u8) = .empty;
-    if (note) |n| {
-        buf.appendSlice(root.arena, n) catch {};
-        buf.append(root.arena, '\n') catch {};
-        if (repl.g_debug) markers.append(root.arena, n) catch {};
+    if (omitted > 0 and repl.g_debug) {
+        const marker = std.fmt.allocPrint(root.arena, "[peer channel: {d} older message(s) predating this session omitted]", .{omitted}) catch "";
+        if (marker.len > 0) markers.append(root.arena, marker) catch {};
     }
-    if (omitted > 0) {
-        const marker = std.fmt.allocPrint(root.arena, "[#469 channel: {d} older message(s) predating this session omitted]", .{omitted}) catch "";
-        if (marker.len > 0) {
-            buf.appendSlice(root.arena, marker) catch {};
-            buf.append(root.arena, '\n') catch {};
-            if (repl.g_debug) markers.append(root.arena, marker) catch {};
-        }
+    if (skipped > 0 and repl.g_debug) {
+        const marker = std.fmt.allocPrint(root.arena, "[peer channel: {d} message(s) not addressed to this session skipped — folder-scoped hearing]", .{skipped}) catch "";
+        if (marker.len > 0) markers.append(root.arena, marker) catch {};
     }
-    if (skipped > 0) {
-        const marker = std.fmt.allocPrint(root.arena, "[#469 device room: {d} message(s) not addressed to this session skipped — folder-scoped hearing]", .{skipped}) catch "";
-        if (marker.len > 0) {
-            buf.appendSlice(root.arena, marker) catch {};
-            buf.append(root.arena, '\n') catch {};
-            if (repl.g_debug) markers.append(root.arena, marker) catch {};
-        }
+    if (window.hidden > 0 and repl.g_debug) {
+        const marker = std.fmt.allocPrint(root.arena, "[peer channel: {d} backlog message(s) showing last {d}]", .{ window.hidden, backlog_repl_show }) catch "";
+        if (marker.len > 0) markers.append(root.arena, marker) catch {};
     }
     var lines: std.ArrayList([]const u8) = .empty;
     for ([2][]const presence.Message{ local_msgs, device_msgs }, [2][]const u8{ "", " · device" }) |msgs, scope| {
         for (msgs) |m| {
-            const goal = if (m.from_goal.len > 0) std.fmt.allocPrint(root.arena, " (goal: {s})", .{m.from_goal}) catch "" else "";
-            // Addressing is rendered, not enforced: everyone hears the line,
-            // and the marker says who it was meant for.
-            const to = if (m.to.len == 0) "" else if (std.mem.indexOf(u8, m.to, own) != null or std.mem.indexOf(u8, own, m.to) != null) " → you" else std.fmt.allocPrint(root.arena, " → {s}", .{m.to}) catch "";
-            const line = std.fmt.allocPrint(root.arena, "[peer message from {s}{s}{s}{s} — #469 channel]: {s}", .{ m.from_session, goal, to, scope, m.text }) catch continue;
-            buf.appendSlice(root.arena, line) catch {};
-            buf.append(root.arena, '\n') catch {};
+            const goal = if (m.from_goal.len > 0) std.fmt.allocPrint(root.arena, " (goal: {s})", .{peer_context.clip(m.from_goal, 40)}) catch "" else "";
+            const to = if (m.to.len == 0) "" else if (peer_target.addressedTo(m.to, own)) " → you" else std.fmt.allocPrint(root.arena, " → {s}", .{m.to}) catch "";
+            const line = std.fmt.allocPrint(root.arena, "[peer message from {s}{s}{s}{s}]: {s}", .{ m.from_session, goal, to, scope, peer_context.clip(m.text, peer_context.line_clip) }) catch continue;
             lines.append(root.arena, line) catch {};
         }
     }
-    // History gets every line (the model coordinates from it); the REPL prints
-    // only the tail of a first-drain backlog so a resume is not a wall of
-    // text. Live incremental drains render every line — those are new.
-    if (window.hidden > 0) {
-        const marker = std.fmt.allocPrint(root.arena, "[#469 channel: {d} backlog message(s) delivered to context — showing last {d}]", .{ window.hidden, backlog_repl_show }) catch "";
-        if (marker.len > 0 and repl.g_debug) markers.append(root.arena, marker) catch {};
-    }
     renderPeerBlock(sink, root.io, any_visible, markers.items, lines.items[window.start..]);
-    if (buf.items.len == 0) return;
-    buf.appendSlice(root.arena, "(reply with the peer_message tool — queued, one-way; everyone here hears it)") catch {};
+    if (peer_inbox.parkHeard(local_msgs, device_msgs) == 0) return;
+    // History gets the wake only (ADR 0004). Bodies wait in the ring.
     var obj: std.json.ObjectMap = .empty;
     obj.put(root.arena, "role", .{ .string = "user" }) catch return;
-    obj.put(root.arena, "content", .{ .string = buf.items }) catch return;
+    obj.put(root.arena, "content", .{ .string = peer_context.capInject(peer_inbox.formatWake(root.arena)) }) catch return;
     root.messages.append(.{ .object = obj }) catch {};
 }
 
@@ -308,7 +239,7 @@ pub fn tellCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Wr
         return true;
     }
     const broadcast = std.mem.eql(u8, target, "all");
-    const to: []const u8 = if (broadcast) "" else switch (resolvePeer(everyone, target)) {
+    const to: []const u8 = if (broadcast) "" else switch (peer_target.resolvePeer(everyone, target)) {
         .one => |p| p.session_id,
         .none => {
             try out.print("no live peer matches \"{s}\"\n", .{target});
@@ -327,8 +258,8 @@ pub fn tellCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Wr
     else
         presence.postTo(root.io, arena, text, to);
     if (posted) {
-        const addressed = if (to.len > 0) try std.fmt.allocPrint(arena, " (for {s})", .{to}) else "";
-        const room: []const u8 = if (device_wide) "device-wide room" else "worktree channel";
+        const addressed = if (to.len > 0) try std.fmt.allocPrint(arena, " (DM to {s})", .{to}) else "";
+        const room: []const u8 = if (device_wide) "device-wide room" else if (to.len > 0) "this folder" else "worktree room";
         try out.print("⇢ posted to the {s}{s}\n", .{ room, addressed });
     } else try out.writeAll("delivery failed — presence registry unavailable\n");
     try out.flush();
@@ -390,14 +321,17 @@ pub fn summarizeTranscript(arena: Allocator, text: []const u8) PeekSummary {
 fn firstText(obj: std.json.ObjectMap) ?[]const u8 {
     const content = obj.get("content") orelse return null;
     switch (content) {
-        .string => |s| return if (s.len > 0 and !std.mem.startsWith(u8, s, "[peer message")) s else null,
+        .string => |s| return if (s.len > 0 and !peer_context.isPeerInjectContent(s)) s else null,
         .array => |arr| {
             for (arr.items) |blk| {
                 if (blk != .object) continue;
                 const t = blk.object.get("type") orelse continue;
                 if (t == .string and std.mem.eql(u8, t.string, "text")) {
                     if (blk.object.get("text")) |v| {
-                        if (v == .string and v.string.len > 0) return v.string;
+                        if (v == .string and v.string.len > 0) {
+                            if (peer_context.isPeerInjectContent(v.string)) continue;
+                            return v.string;
+                        }
                     }
                 }
             }
@@ -407,14 +341,6 @@ fn firstText(obj: std.json.ObjectMap) ?[]const u8 {
     }
 }
 
-fn clip(text: []const u8, max: usize) []const u8 {
-    const t = std.mem.trim(u8, text, " \t\r\n");
-    return if (t.len <= max) t else t[0..max];
-}
-
-/// The transcript path for a peer: shared worktree means shared .graff;
-/// cross-folder peers are reached through their recorded identity (a git dir
-/// whose parent is the tree root, or the cwd realpath outside git).
 fn transcriptPath(arena: Allocator, peer: Owner) []const u8 {
     const mine = presence.ownIdentity();
     const base = if (std.mem.eql(u8, peer.identity, mine))
@@ -437,7 +363,7 @@ pub fn peekCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Wr
         try out.flush();
         return true;
     }
-    const peer = switch (resolvePeer(everyone, target)) {
+    const peer = switch (peer_target.resolvePeer(everyone, target)) {
         .one => |p| p,
         .none => {
             try out.print("no live peer matches \"{s}\"\n", .{target});
@@ -465,8 +391,8 @@ pub fn peekCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Wr
     const sum = summarizeTranscript(arena, window);
     const goal = if (peer.goal.len > 0) peer.goal else "?";
     try out.print("⚡ {s} · pid {d} · goal: {s}\n", .{ peer.session_id, peer.pid, goal });
-    if (sum.last_prompt.len > 0) try out.print("  last prompt: {s}\n", .{clip(sum.last_prompt, 120)});
-    if (sum.last_said.len > 0) try out.print("  last said: {s}\n", .{clip(sum.last_said, 120)});
+    if (sum.last_prompt.len > 0) try out.print("  last prompt: {s}\n", .{peer_context.clip(sum.last_prompt, 120)});
+    if (sum.last_said.len > 0) try out.print("  last said: {s}\n", .{peer_context.clip(sum.last_said, 120)});
     if (sum.last_tool.len > 0) try out.print("  last tool: {s}", .{sum.last_tool});
     if (sum.messages > 0)
         try out.print("{s}{d} transcript messages\n", .{ if (sum.last_tool.len > 0) " · " else "  ", sum.messages })
@@ -516,29 +442,13 @@ test "summarizeTranscript: last prompt, last words, last tool, from complete lin
     ++ "\n" ++
         \\{"role":"assistant","content":[{"type":"text","text":"switched the query to display_name"}]}
     ++ "\n" ++
-        \\{"role":"user","content":"[peer message from s-2 — #469 channel]: hold off"}
+        \\{"role":"user","content":"[peer message from s-2]: hold off"}
     ++ "\n" ++ "{\"role\":\"user\",\"content\":\"a torn last line";
     const sum = summarizeTranscript(arena, text);
     try std.testing.expectEqualStrings("refactor the digest job", sum.last_prompt); // peer-channel quotes are not the peer's doings
     try std.testing.expectEqualStrings("switched the query to display_name", sum.last_said);
     try std.testing.expectEqualStrings("edit_file", sum.last_tool);
     try std.testing.expectEqual(5, sum.messages); // the torn tail is skipped
-}
-
-test "deviceHears: addressed lines and the user's /tell cross folders; broadcasts do not" {
-    const own = "session-111-us";
-    // A cross-folder post naming this session arrives (substring, either way).
-    try std.testing.expect(deviceHears(.{ .to = "session-111" }, own));
-    try std.testing.expect(deviceHears(.{ .to = own }, "session-111"));
-    // The user's /tell all crosses folders (unaddressed broadcast) — but a
-    // /tell naming one graff is a DM: only the target hears it.
-    try std.testing.expect(deviceHears(.{ .from_user = true }, own));
-    try std.testing.expect(!deviceHears(.{ .from_user = true, .to = "session-999-them" }, own));
-    try std.testing.expect(deviceHears(.{ .from_user = true, .to = "session-111" }, own));
-    // Another folder's addressed work and bare/broadcast lines stay out.
-    try std.testing.expect(!deviceHears(.{ .to = "session-999-them" }, own));
-    try std.testing.expect(!deviceHears(.{}, own));
-    try std.testing.expect(!deviceHears(.{ .to = "session-111" }, ""));
 }
 
 test "displayWindow: only a backlog drain is windowed, to its trailing lines" {
@@ -570,11 +480,11 @@ test "renderPeerBlock: blank notices bracket the block; silence when nothing is 
     defer rec.deinit(std.testing.allocator);
     const vt: engine_sink.VTable = .{ .emit = recordNoticeText, .durable = false };
     const sink: engine_sink.EngineSink = .{ .ctx = &rec, .vt = &vt };
-    const markers = [_][]const u8{"[#469 presence] 1 other live session"};
-    const lines = [_][]const u8{ "[peer message from a — #469 channel]: one", "[peer message from b — #469 channel]: two" };
+    const markers = [_][]const u8{"[presence] 1 other live session"};
+    const lines = [_][]const u8{ "[peer message from a]: one", "[peer message from b]: two" };
     renderPeerBlock(sink, undefined, true, &markers, &lines);
     try std.testing.expectEqualDeep(&[_][]const u8{
-        "", "[#469 presence] 1 other live session", lines[0], lines[1], "",
+        "", "[presence] 1 other live session", lines[0], lines[1], "",
     }, rec.items);
     // A history-only drain paints nothing — no stray blank pair.
     rec.clearRetainingCapacity();

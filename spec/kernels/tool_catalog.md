@@ -24,7 +24,7 @@ run the keep-list.
 |---|---|
 | base | `bash` `bash_output` `bash_kill` `read_file` `edit_file` `write_file` `webfetch` `skill` `codedb` |
 | meta (root) | `todo_write` `todo_read` `eval` `note_constraint` `ask_user` `attempt_completion` `load_tool_schemas` `clock_sleep` |
-| root extras | `subagent` `workflow` `agent_output` `learn_candidate` `peer_message` |
+| root extras | `subagent` `workflow` `agent_output` `learn_candidate` `peer_message` `workspace` |
 | optional | `imagegen` |
 | local (`#330`) | `bash` `bash_output` `bash_kill` `read_file` `edit_file` `write_file` `codedb` `imagegen` |
 | lean keep | `bash` `read_file` `edit_file` `write_file` `codedb` `subagent` `attempt_completion` `load_tool_schemas` |

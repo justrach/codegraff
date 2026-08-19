@@ -10,6 +10,31 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.266 (2026-08-19)
+
+- Peer talk is pull, not a second copy of the room: `peer_message
+  action=list` / `action=inbox` parks bodies in a ring and injects one
+  `[peer]` wake line. Named pings are DMs to the agent doing the work
+  (ADR 0004).
+- `--goal` / `/goal` is one `[standing goal: …]` prefix line. The long
+  coaching essay injects on first sight and on change only — not every
+  N turns (ADR 0005). Bundled `jspace` skill stays on-demand.
+- Mid-session worktree switch is a real `workspace` tool (`action=list` /
+  `action=use`). A skill cannot move file-tool cwd (ADR 0006).
+- Plugins and foreign MCP are read in place (ADR 0007): Cursor / Claude /
+  Grok / Codex trees, Claude `commands/*.md`, no copy into `~/.codegraff`.
+  `cache/` is never walked. Claude/Cursor cache comes from
+  `installed_plugins.json`; Codex from `~/.codex/config.toml`
+  `[plugins."name@marketplace"]` → `plugins/cache/<mp>/<name>/<ver>`.
+- Prompt-cache max: the skill catalog is names + triggers only, sorted,
+  pinned once at session start, no `file:` paths. Bodies load on
+  `skill name=`. Sticky `prompt_cache_key` is unchanged.
+- `install.sh` appends `~/bin` to the login shell so `graff` is on PATH.
+- Synthetic long-horizon evals (`evals/long_horizon/`) grade with
+  external deterministic checks (ADR 0008).
+- Test ratchet: unit suite 1443. `GRAFF_NO_PLUGINS=1` still hides
+  foreign trees.
+
 ## v0.0.265 (2026-08-17)
 
 - The TUI is clickable everywhere it looks clickable: a click on any picker

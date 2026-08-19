@@ -41,7 +41,8 @@ def metaTools : List String :=
    "attempt_completion", "load_tool_schemas", "clock_sleep"]
 
 def rootExtras : List String :=
-  ["subagent", "workflow", "agent_output", "learn_candidate", "peer_message"]
+  ["subagent", "workflow", "agent_output", "learn_candidate", "peer_message",
+   "workspace"]
 
 def filterKeep (keep : String → Bool) : List String → List String
   | []      => []

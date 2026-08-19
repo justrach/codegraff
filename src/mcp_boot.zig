@@ -88,7 +88,7 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
     errdefer reg.deinit();
     const a = reg.arena();
 
-    const merged = mcp_config.load(io, a, Io.Dir.cwd(), config_path, global_path);
+    const merged = mcp_config.load(io, a, Io.Dir.cwd(), config_path, global_path, home);
     if (!merged.found) {
         reg.arena_state.deinit(); // nothing was started; no transports to tear down
         return null;

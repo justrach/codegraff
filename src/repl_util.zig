@@ -18,8 +18,8 @@ pub const HELP_CHAT =
     \\  /goal <text>                     standing objective (tracked as a checklist)
     \\  /plan /strict /yolo /keepcontext /title   modes
     \\  /rename <name>  /animation enso|braille|dragon
-    \\  /bash /save /resume /sessions /trace /trajectory
-    \\  /agents /skills /hooks /mcp /loop /review /image /paste /key
+    \\  /bash /save /resume /sessions /workspace /trace /trajectory
+    \\  /agents /skills /plugins /hooks /mcp /loop /review /image /paste /key
     \\
     \\Type a message and press enter to send it to the model. Toggles accept
     \\[on|off] or flip when bare. Commands needing the agent loop explain so.

@@ -17,6 +17,7 @@ const goal_flow = @import("goal_flow.zig");
 // branch could see the other, so the break only appeared at integration.
 const prompts = @import("prompts.zig");
 const handoff_note = @import("compact_handoff_note.zig"); // #411: both halves of "what survives a compaction"
+const peer_context = @import("peer_context.zig"); // ADR 0004: peer injects are not a human turn
 const compact_note_glue = @import("compact_note_glue.zig"); // #391
 const server_compact = @import("agent_server_compact.zig"); // #compact-ab telemetry
 
@@ -140,10 +141,7 @@ pub fn compact(self: *Agent) anyerror!usize {
     // (WriteFailed) rather than returning a clean overflow, so compaction could
     // never run once near the cap. Old tool outputs are superseded by the summary
     // anyway; truncating them keeps the request sendable + all pairing intact.
-    // Build the summary request on a temporary deep copy of every JSON
-    // container. Pruning reasoning and truncating tool output must be
-    // transactional: if the summary call fails or returns empty, the live
-    // conversation remains byte-for-byte usable for the next attempt.
+    // Summary construction is transactional: a failed/empty reply restores the live conversation.
     var compact_arena_state = std.heap.ArenaAllocator.init(self.gpa);
     defer compact_arena_state.deinit();
     const compact_arena = compact_arena_state.allocator();
@@ -155,8 +153,10 @@ pub fn compact(self: *Agent) anyerror!usize {
     const recent_messages = live_messages.items[recent_start..];
     var summary_messages = std.json.Array.init(compact_arena);
     try summary_messages.ensureTotalCapacity(recent_start);
-    for (live_messages.items[0..recent_start]) |item|
+    for (live_messages.items[0..recent_start]) |item| {
+        if (peer_context.isPeerInject(item)) continue; // ADR 0004: do not ask the summarizer to hoard the room
         try summary_messages.append(try cloneJsonValue(compact_arena, item));
+    }
     self.messages = summary_messages;
     var installed_summary = false;
     defer if (!installed_summary) {
@@ -208,7 +208,7 @@ pub fn compact(self: *Agent) anyerror!usize {
     try fresh.append(try textMessage(self.arena, "user", try handoffMessage(self, summary, live_messages.items[0..recent_start])));
     // Preserve a valid recent suffix verbatim (up to ~8k estimated tokens),
     // including its user boundary and paired tool calls/results.
-    for (recent_messages) |message| try fresh.append(message);
+    try peer_context.appendWorkingSet(&fresh, recent_messages, live_messages.items);
     self.messages = fresh;
     self.compact_summary_failures = 0; // #379: a usable summary ends the streak
     self.last_context_tokens = 0;
@@ -335,7 +335,7 @@ pub fn cleanUserTurn(m: Value) bool {
     if (role != .string or !std.mem.eql(u8, role.string, "user")) return false;
     const content = m.object.get("content") orelse return true;
     switch (content) {
-        .string => return true, // a plain-text user turn
+        .string => |s| return !peer_context.isPeerInjectContent(s),
         .array => |arr| {
             // An anthropic user message that only carries tool_result blocks
             // is the response half of a tool call — it can't begin a
@@ -364,7 +364,7 @@ pub fn dropPriorTurnReasoning(self: *Agent) usize {
     for (self.messages.items, 0..) |m, i| {
         if (m != .object) continue;
         const role = m.object.get("role") orelse continue;
-        if (role == .string and std.mem.eql(u8, role.string, "user")) last_user = i;
+        if (role == .string and std.mem.eql(u8, role.string, "user") and !peer_context.isPeerInject(m)) last_user = i;
     }
     var w: usize = 0;
     for (self.messages.items, 0..) |m, i| {

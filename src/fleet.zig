@@ -22,6 +22,7 @@ const telemetry_mod = @import("telemetry.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const Telemetry = telemetry_mod.Telemetry;
 const http = @import("http.zig");
+const plugins = @import("plugins.zig");
 
 // ── Agent types (the MAP-Elites niches) ─────────────────────────────────────
 
@@ -124,6 +125,15 @@ pub fn loadAgentTypes(io: Io, arena: Allocator, home: ?[]const u8) []const Agent
     if (home) |h| {
         const personal = std.fmt.allocPrint(arena, "{s}/{s}", .{ h, agents_dir }) catch "";
         if (personal.len > 0) loadAgentDir(io, arena, &list, personal);
+    }
+    const plugs = plugins.discover(io, arena, home, Io.Dir.cwd());
+    for (plugs) |p| {
+        if (!p.personal) continue;
+        for (p.agent_dirs) |d| loadAgentDir(io, arena, &list, d);
+    }
+    for (plugs) |p| {
+        if (p.personal) continue;
+        for (p.agent_dirs) |d| loadAgentDir(io, arena, &list, d);
     }
     loadAgentDir(io, arena, &list, agents_dir);
     // A verified learning ref is the highest-precedence project policy. The

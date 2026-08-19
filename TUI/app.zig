@@ -525,9 +525,17 @@ pub const Model = struct {
 
 /// History entries render verbatim inside the alt screen — drop escape
 /// sequences and stray C0 controls a tool result (or the model) may carry.
+/// The fast path used to look only for ESC and CR, so a BEL/BS/NUL with
+/// neither leaked into the frame and the painter wrote it to the tty.
 fn sanitized(alloc: std.mem.Allocator, text: []const u8) ![]u8 {
-    if (std.mem.indexOfScalar(u8, text, 0x1b) == null and
-        std.mem.indexOfScalar(u8, text, '\r') == null) return alloc.dupe(u8, text);
+    var dirty = false;
+    for (text) |c| {
+        if (c == 0x1b or c == 0x7f or (c < 0x20 and c != '\n' and c != '\t')) {
+            dirty = true;
+            break;
+        }
+    }
+    if (!dirty) return alloc.dupe(u8, text);
     var out = std.array_list.Managed(u8).init(alloc);
     errdefer out.deinit();
     var i: usize = 0;
@@ -573,4 +581,7 @@ test "push strips raw ANSI, OSC, and CR from tool text" {
     defer m.deinit();
     try m.push(.tool, "⚙ bash | \x1b[31mred\x1b[0m\x1b]0;title\x07 done\r");
     try std.testing.expectEqualStrings("⚙ bash | red done", m.history.items[0].text);
+    // No ESC and no CR — the old fast path would have kept these.
+    try m.push(.assistant, "beep\x07back\x08null\x00done");
+    try std.testing.expectEqualStrings("beepbacknulldone", m.history.items[1].text);
 }

@@ -46,6 +46,7 @@ const learn_bootstrap = @import("learn_bootstrap.zig");
 const learn_auto = @import("learn_auto.zig");
 const imagegen = @import("imagegen.zig"); // #352: codex-skill detection + the personal-tier skill mirror
 
+const plugins = @import("plugins.zig");
 const startup_keys = @import("startup_keys.zig");
 pub const ResolvedKeys = startup_keys.ResolvedKeys;
 pub const storedKeyMayAffectSelection = startup_keys.storedKeyMayAffectSelection;
@@ -145,10 +146,10 @@ pub fn buildSystemPrompt(
         try out.print("imagegen: Codex skill found — tool enabled ({s}), playbook at {s}\n", .{ imagegen.engineSummary(), imagegen.skill_dir });
         try out.flush();
     }
-    // Markdown skills (skill_docs.zig): names + trigger descriptions only. The
-    // bodies stay on disk until the model calls the `skill` tool, so a large
-    // installed skill set costs a line each rather than its full text. Loaded
-    // here rather than in session_run so every prompt rebuild rescans the tiers.
+    // Markdown skills (skill_docs.zig): names + trigger descriptions only.
+    // Pinned once into the system-prompt prefix so later turns hit the
+    // prompt cache (Codex: old prompt is an exact prefix of the new one).
+    // The `skill` tool rescans without rewriting this prefix.
     skill_docs.g_skills = skill_docs.load(io, arena, fleet.g_home);
     const skill_catalog = skill_docs.promptCatalog(arena, skill_docs.g_skills);
     if (skill_catalog.len > 0) {
@@ -218,7 +219,17 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // override); add still writes workspace-only. OAuth login validates HOME itself.
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "mcp")) {
         const home = keys_cli.homeEnv(init.environ_map) orelse "";
+        // CLI never reaches session_settings.applyEnvKnobs; honor the same
+        // GRAFF_NO_PLUGINS gate the REPL / --json session uses.
+        plugins.applyEnv(init.environ_map);
         try mcp_cli.mcpCommand(io, gpa, arena, home, init.environ_map, flags.positionals.items[1..]);
+        return true;
+    }
+
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "plugins")) {
+        const home = keys_cli.homeEnv(init.environ_map) orelse "";
+        plugins.applyEnv(init.environ_map);
+        try plugins.command(io, arena, home, flags.positionals.items[1..]);
         return true;
     }
 

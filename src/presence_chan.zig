@@ -1,13 +1,14 @@
 //! The wire format half of the #469 channel: ONE append-only JSONL log per
-//! worktree, shared by every co-resident session — a room, not per-session
-//! inboxes, so a message addressed to one agent is still HEARD by the others.
-//! Named from a hash of the worktree identity so two checkouts never
-//! cross-hear. Appends use the read+write positional pattern from
-//! session_transcript (#462: write-only handles break appends on Windows).
-//! Delivery is queued — a sender never blocks on a receiver, and two busy
-//! sessions cannot deadlock (#417's rule). Every reader keeps its own byte
-//! offset and skips only its OWN messages; `to` is addressing metadata, not a
-//! delivery rule.
+//! worktree, shared by every co-resident session. Named from a hash of the
+//! worktree identity so two checkouts never cross-hear. Appends use the
+//! read+write positional pattern from session_transcript (#462: write-only
+//! handles break appends on Windows). Delivery is queued — a sender never
+//! blocks on a receiver (#417). Every reader keeps its own byte offset and
+//! skips only its OWN messages.
+//!
+//! `to` is a delivery rule for the working set (peer_target.zig): a bare
+//! worktree line is a room, a named `to` is a DM. The log still stores every
+//! line. The device room stays addressed-only (plus the user's /tell all).
 //!
 //! Everything here is parameterized and pure-ish (dir + name + allocator in,
 //! bytes out) so tests need no process registry; the wired layer that knows

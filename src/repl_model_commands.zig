@@ -115,8 +115,8 @@ pub fn runCommand(self: *Model, line: []const u8) void {
         self.push(.info, "`/loop` schedules repeated runs in the main session, not the chat repl") catch {};
     } else if (eqlAny(cmd, &.{ "/trace", "/trajectory" })) {
         self.push(.info, "trace/trajectory logging is a main-session feature") catch {};
-    } else if (eqlAny(cmd, &.{ "/save", "/resume", "/sessions" })) {
-        self.push(.info, "the chat repl is ephemeral — session save/resume/list lives in the main `graff` session") catch {};
+    } else if (eqlAny(cmd, &.{ "/save", "/resume", "/sessions", "/workspace", "/ws", "/plugins" })) {
+        self.push(.info, "the chat repl is ephemeral — session save/resume/list/workspace/plugins lives in the main `graff` session") catch {};
     } else if (std.mem.eql(u8, cmd, "/images")) {
         self.push(.info, "/images opens image URLs from tool output (e.g. a `gh issue view` result); the chat repl runs no tools — use the main `graff` session for it") catch {};
     } else if (eqlAny(cmd, &.{ "/image", "/paste" })) {

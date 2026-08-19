@@ -197,6 +197,7 @@ pub fn baseForSession(arena: Allocator) ![]const u8 {
 /// a persona swap cannot drop it. Empty for every non-root agent and every
 /// unit test — the same arming discipline playbook.g_root_inject uses.
 var g_transcript_note: []const u8 = "";
+var g_goal_line: []const u8 = ""; // ADR 0005: one prefix line; essay is change-only
 
 /// #445: has THIS process's root session compacted at least once? False at
 /// startup, set once by noteSessionCompacted, never lowered again. Public only
@@ -318,10 +319,28 @@ pub fn setSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !void
     // persona, so it re-composes here rather than being baked into a base a
     // later set_agent/set_system_prompt would replace (the #326 staleness class).
     const composed = if (g_transcript_note.len == 0) with_notes else try std.fmt.allocPrint(arena, "{s}{s}", .{ with_notes, g_transcript_note });
-    agent.sys_normal = composed;
-    agent.sys_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ composed, strict_note });
-    agent.sys_ultra = try std.fmt.allocPrint(arena, "{s}{s}", .{ composed, ultracode_system_note });
+    const with_goal = if (g_goal_line.len == 0) composed else try std.fmt.allocPrint(arena, "{s}{s}", .{ composed, g_goal_line });
+    agent.sys_normal = with_goal;
+    agent.sys_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ with_goal, strict_note });
+    agent.sys_ultra = try std.fmt.allocPrint(arena, "{s}{s}", .{ with_goal, ultracode_system_note });
     agent.sys_ultra_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ agent.sys_strict, ultracode_system_note });
+}
+
+/// Pin the live objective into the system-prompt prefix. Empty / paused /
+/// cleared goals disarm the line so a dead goal cannot keep paying tokens.
+/// Re-compose is free at startup (before the first request) and at compact
+/// (#445); a mid-session /goal change busts the prefix once, which is cheaper
+/// than restating the essay every eighth user turn.
+pub fn pinStandingGoal(agent: *Agent, arena: Allocator) void {
+    g_goal_line = "";
+    if (agent.goal) |g| {
+        if (g.status == .active and g.objective.len > 0) {
+            const obj = if (g.objective.len <= 120) g.objective else g.objective[0..120];
+            g_goal_line = std.fmt.allocPrint(arena, "\n\n[standing goal: {s}]\n", .{obj}) catch "";
+        }
+    }
+    if (agent.sys_base.len == 0) return;
+    setSystemPrompts(agent, agent.sys_base, arena) catch {};
 }
 
 /// The ROOT's entry to the same funnel, called once by session_run when the
@@ -452,8 +471,9 @@ pub const compact_instruction =
     \\work. Be thorough but compact. Reply with only the summary.
 ;
 
-test { // #421/#410: the capability matrix + the full-capability golden. An unreferenced module's tests never run.
+test { // #421/#410: prompt snapshots and goal-prefix behavior must stay reachable.
     _ = @import("prompt_snapshot_tests.zig");
+    _ = @import("prompt_goal_tests.zig");
 }
 
 // The harness has always run a returned tool batch concurrently, for subagents

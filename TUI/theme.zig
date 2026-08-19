@@ -179,7 +179,7 @@ pub fn charWidth(cp: u21) u2 {
 /// `✓\u{FE0F}` asks for emoji presentation and does take two cells, while a
 /// bare `✓` takes one. The selector itself stays zero-width, so the pair still
 /// measures two in total.
-fn cpAt(s: []const u8, i: usize) struct { w: u2, step: usize } {
+pub fn cpAt(s: []const u8, i: usize) struct { w: u2, step: usize } {
     const len = std.unicode.utf8ByteSequenceLength(s[i]) catch return .{ .w = 1, .step = 1 };
     const step = @min(@as(usize, len), s.len - i);
     const cp = std.unicode.utf8Decode(s[i .. i + step]) catch return .{ .w = 1, .step = step };

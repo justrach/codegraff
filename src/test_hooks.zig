@@ -122,6 +122,16 @@ const playbook_reflect = @import("playbook_reflect.zig");
 // the same way, so neither pulls its tests in without these.
 const compact_note = @import("compact_note.zig");
 const compact_note_glue = @import("compact_note_glue.zig");
+const peer_context = @import("peer_context.zig"); // ADR 0004 / #563 slice F
+const peer_context_compact_test = @import("peer_context_compact_test.zig");
+const peer_inbox = @import("peer_inbox.zig"); // Claude-style list/inbox pull
+const peer_target = @import("peer_target.zig"); // exact DM / goal targeting
+const workspace_switch = @import("workspace_switch.zig"); // ADR 0006 mid-session worktree switch
+const plugins = @import("plugins.zig"); // ADR 0007 in-place plugin / foreign MCP discovery
+const plugin_layout = @import("plugin_layout.zig"); // Claude commands/ + inline MCP + ${CLAUDE_PLUGIN_ROOT}
+const plugin_scan = @import("plugin_scan.zig"); // timed discover + production cache
+const plugin_index = @import("plugin_index.zig"); // Claude/Cursor installed_plugins.json
+const plugin_codex = @import("plugin_codex.zig"); // Codex config.toml → PluginStore
 
 // #345: the global-vs-project MCP config merge. mcp.zig does reference its
 // decls, but the hook makes the coverage explicit rather than contingent on
@@ -249,6 +259,15 @@ test {
     _ = playbook_reflect;
     _ = compact_note;
     _ = compact_note_glue;
+    _ = peer_context;
+    _ = peer_context_compact_test;
+    _ = peer_inbox;
+    _ = peer_target;
+    _ = workspace_switch;
+    _ = plugins;
+    _ = plugin_layout;
+    _ = plugin_scan;
+    _ = plugin_index;
     _ = shutdown_trace;
     _ = credential_store;
     _ = engine_events;

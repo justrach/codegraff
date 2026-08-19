@@ -21,6 +21,17 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.266
+    \\  • In-place Cursor/Claude/Grok/Codex plugins (no cache walk; Codex via config.toml)
+    \\  • Skill catalog is cache-stable: names + triggers, pinned once, no file: paths
+    \\  • Peer inbox is pull; standing goal is one prefix line; workspace tool switches trees
+    \\  • install.sh puts graff on PATH; long-horizon evals use external verifiers
+    \\
+    \\0.0.265
+    \\  • TUI clicks work everywhere they look clickable; overlays are framed panels
+    \\  • /models shows provider + cost badge; prices refresh from LiteLLM
+    \\  • /snapshot attach|list and /rewind for a Docker sandbox seam
+    \\
     \\0.0.263
     \\  • grok-4.6 is the xAI default: 500k window, published dual-band prices
     \\  • /effort low|medium|high|xhigh on native Grok (gateway grok-build still ignores it)
@@ -158,6 +169,7 @@ pub const usage_text =
     \\  graff mcp add <name> --url <url>  add a Streamable HTTP MCP server
     \\  graff mcp login <name>            OAuth login for a remote MCP server
     \\  graff mcp                         list configured MCP servers
+    \\  graff plugins [load <name>]       list Claude/Cursor/Grok/Codex plugin trees (in place)
     \\  graff learn [help]                local mutate/evaluate/promote/rollback engine
     \\  graff worktree list              list the per-tab worktrees created by -w
     \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up

@@ -28,7 +28,8 @@
       "workflow",
       "agent_output",
       "learn_candidate",
-      "peer_message"
+      "peer_message",
+      "workspace"
     ],
     "optional": [
       "imagegen"
@@ -85,7 +86,8 @@
         "subagent",
         "workflow",
         "agent_output",
-        "peer_message"
+        "peer_message",
+        "workspace"
       ],
       "blocked": [
         "imagegen"
@@ -147,7 +149,8 @@
         "workflow",
         "agent_output",
         "learn_candidate",
-        "peer_message"
+        "peer_message",
+        "workspace"
       ],
       "blocked": [
         "imagegen"
@@ -209,7 +212,8 @@
         "subagent",
         "workflow",
         "agent_output",
-        "peer_message"
+        "peer_message",
+        "workspace"
       ],
       "blocked": [
         "imagegen"
@@ -272,7 +276,8 @@
         "workflow",
         "agent_output",
         "learn_candidate",
-        "peer_message"
+        "peer_message",
+        "workspace"
       ],
       "blocked": [
         "imagegen"
@@ -334,6 +339,7 @@
         "workflow",
         "agent_output",
         "peer_message",
+        "workspace",
         "imagegen"
       ],
       "blocked": []
@@ -394,6 +400,7 @@
         "agent_output",
         "learn_candidate",
         "peer_message",
+        "workspace",
         "imagegen"
       ],
       "blocked": []
@@ -454,6 +461,7 @@
         "workflow",
         "agent_output",
         "peer_message",
+        "workspace",
         "imagegen"
       ],
       "blocked": []
@@ -515,6 +523,7 @@
         "agent_output",
         "learn_candidate",
         "peer_message",
+        "workspace",
         "imagegen"
       ],
       "blocked": []
@@ -946,7 +955,8 @@
         "subagent",
         "workflow",
         "agent_output",
-        "peer_message"
+        "peer_message",
+        "workspace"
       ],
       "blocked": [
         "bash",
@@ -1008,7 +1018,8 @@
         "workflow",
         "agent_output",
         "learn_candidate",
-        "peer_message"
+        "peer_message",
+        "workspace"
       ],
       "blocked": [
         "bash",
@@ -1070,7 +1081,8 @@
         "subagent",
         "workflow",
         "agent_output",
-        "peer_message"
+        "peer_message",
+        "workspace"
       ],
       "blocked": [
         "bash",
@@ -1133,7 +1145,8 @@
         "workflow",
         "agent_output",
         "learn_candidate",
-        "peer_message"
+        "peer_message",
+        "workspace"
       ],
       "blocked": [
         "bash",
@@ -1194,7 +1207,8 @@
         "subagent",
         "workflow",
         "agent_output",
-        "peer_message"
+        "peer_message",
+        "workspace"
       ],
       "blocked": [
         "bash",
@@ -1256,7 +1270,8 @@
         "workflow",
         "agent_output",
         "learn_candidate",
-        "peer_message"
+        "peer_message",
+        "workspace"
       ],
       "blocked": [
         "bash",
@@ -1318,7 +1333,8 @@
         "subagent",
         "workflow",
         "agent_output",
-        "peer_message"
+        "peer_message",
+        "workspace"
       ],
       "blocked": [
         "bash",
@@ -1381,7 +1397,8 @@
         "workflow",
         "agent_output",
         "learn_candidate",
-        "peer_message"
+        "peer_message",
+        "workspace"
       ],
       "blocked": [
         "bash",

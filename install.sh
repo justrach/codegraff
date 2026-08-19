@@ -11,7 +11,8 @@ set -euo pipefail
 # Env overrides: HARNESS_REPO (source repo), HARNESS_DIR (install dir),
 # HARNESS_BUILD=source (skip the release download and compile),
 # HARNESS_NO_GRAFF=1 (skip the codedb/zigrep companion suite),
-# HARNESS_NO_KURI=1 (skip kuri browser automation).
+# HARNESS_NO_KURI=1 (skip kuri browser automation),
+# HARNESS_NO_PATH=1 (do not append the install dir to ~/.zshrc / ~/.bashrc).
 
 REPO="${HARNESS_REPO:-https://github.com/justrach/codegraff}"
 INSTALL_DIR="${HARNESS_DIR:-$HOME/bin}"
@@ -255,15 +256,95 @@ main() {
     printf "  ${D}kuri skipped (HARNESS_NO_KURI) — /skills add kuri any time${N}\n"
   fi
 
-  case ":$PATH:" in
-    *":$INSTALL_DIR:"*) ;;
-    *)
-      printf "\n  ${Y}add to PATH:${N}\n"
-      printf "  ${C}export PATH=\"$INSTALL_DIR:\$PATH\"${N}  ${D}(add to ~/.zshrc or ~/.bashrc)${N}\n"
-      ;;
-  esac
+  ensure_path
 
   printf "\n  ${W}done!${N} run ${C}$BIN${N} to start, or ${C}$BIN --help${N}\n\n"
 }
+
+# Persist $INSTALL_DIR on PATH so the next terminal finds `graff`.
+# curl|sh often runs under bash while the login shell is zsh (macOS default),
+# which is why people saw "graff: command not found" after a successful
+# install — we only printed an export they never pasted. Write every rc that
+# exists, and create ~/.zshrc / ~/.bashrc when that is the login shell.
+# HARNESS_NO_PATH=1 skips. Idempotent via the marker comment.
+ensure_path() {
+  if [ -n "${HARNESS_NO_PATH:-}" ]; then
+    printf "  ${D}PATH skipped (HARNESS_NO_PATH)${N}\n"
+    return 0
+  fi
+  if [ -z "${HOME:-}" ]; then
+    printf "  ${Y}HOME unset — could not persist PATH${N}\n"
+    return 0
+  fi
+
+  local marker="# codegraff PATH (install.sh) — do not duplicate"
+  local export_line="export PATH=\"${INSTALL_DIR}:\$PATH\""
+  local fish_line="fish_add_path -m \"${INSTALL_DIR}\""
+  local wrote=0
+  local shell_name zshrc bashrc profile fishrc
+  shell_name="$(basename "${SHELL:-sh}")"
+  zshrc="${ZDOTDIR:-$HOME}/.zshrc"
+  bashrc="$HOME/.bashrc"
+  profile="$HOME/.profile"
+  fishrc="$HOME/.config/fish/config.fish"
+
+  append_rc() {
+    local file="$1"
+    local payload="$2"
+    mkdir -p "$(dirname "$file")" 2>/dev/null || return 0
+    if [ -f "$file" ] && grep -F "$marker" "$file" >/dev/null 2>&1; then
+      return 0
+    fi
+    if ! printf "\n%s\n%s\n" "$marker" "$payload" >> "$file" 2>/dev/null; then
+      return 0
+    fi
+    wrote=1
+    printf "  ${D}│${N} %-10s ${G}✓${N} (PATH → %s)\n" "PATH" "$file"
+  }
+
+  case "$shell_name" in
+    zsh)
+      touch "$zshrc" 2>/dev/null || true
+      append_rc "$zshrc" "$export_line"
+      ;;
+    bash)
+      touch "$bashrc" 2>/dev/null || true
+      append_rc "$bashrc" "$export_line"
+      ;;
+    fish)
+      mkdir -p "$(dirname "$fishrc")" 2>/dev/null || true
+      touch "$fishrc" 2>/dev/null || true
+      append_rc "$fishrc" "$fish_line"
+      ;;
+    *)
+      touch "$profile" 2>/dev/null || true
+      append_rc "$profile" "$export_line"
+      ;;
+  esac
+
+  if [ "$shell_name" != zsh ] && [ -f "$zshrc" ]; then
+    append_rc "$zshrc" "$export_line"
+  fi
+  if [ "$shell_name" != bash ] && [ -f "$bashrc" ]; then
+    append_rc "$bashrc" "$export_line"
+  fi
+
+  if [ "$wrote" = 1 ]; then
+    printf "\n  ${Y}open a new terminal${N} or ${C}source${N} the rc file above — otherwise ${C}$BIN${N} is not on PATH yet.\n"
+  else
+    case ":$PATH:" in
+      *":$INSTALL_DIR:"*) ;;
+      *)
+        printf "\n  ${Y}add to PATH:${N}\n"
+        printf "  ${C}export PATH=\"$INSTALL_DIR:\$PATH\"${N}  ${D}(add to ~/.zshrc or ~/.bashrc)${N}\n"
+        ;;
+    esac
+  fi
+}
+
+if [ "${1:-}" = "--path-only" ]; then
+  ensure_path
+  exit 0
+fi
 
 main
