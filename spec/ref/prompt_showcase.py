@@ -13,6 +13,13 @@ from ref.prompt_cache import run as cache_run
 from ref.prompt_cache import step as cache_step
 from ref.prompt_prefix import CATALOGS, PINS, Cell, State
 from ref.prompt_prefix import all_cells, cacheable, hit_ok, run, step
+from ref.prompt_stable import Cell as StableCell
+from ref.prompt_stable import EVENTS as STABLE_EVENTS
+from ref.prompt_stable import keep as stable_keep
+from ref.prompt_stable import land as stable_land
+from ref.prompt_stable import run as stable_run
+from ref.prompt_stable import hit_ok as stable_hit
+from ref.prompt_stable import State as StableState
 
 
 MAX_EVENTS: list[tuple] = (
@@ -101,6 +108,34 @@ def cache_lines() -> list[str]:
     ]
 
 
+def stable_lines() -> list[str]:
+    lines = ["PromptStable  20 cells  5 keep  (OpenGauss must-nots)", ""]
+    keeps = 0
+    for ev in STABLE_EVENTS:
+        k = stable_keep(StableCell(ev, stable_land(ev)))
+        if k:
+            keeps += 1
+        mark = "keep" if k else "bust"
+        lines.append(f"  {ev:<20} → {stable_land(ev):<8}  {mark}")
+    if keeps != 5:
+        raise ValueError(f"showcase: stable keep {keeps}, want 5")
+    s = stable_run(StableState(), [
+        ("start",),
+        ("ev", "turn"),
+        ("ev", "skill_inject"),
+        ("ev", "schema_load"),
+        ("ev", "toolset_append"),
+        ("ev", "compact"),
+    ])
+    if not stable_hit(s):
+        raise ValueError("showcase: stable maximizing walk left HIT")
+    lines.append("")
+    lines.append("  start + turn + skill + schema + append + compact  HIT")
+    lines.append("  clock_tick / toolset_rewrite / memory_reload       miss")
+    lines.append("  set_system_prompt / standing_change               miss (allowed bust)")
+    return lines
+
+
 def live_lines() -> list[str]:
     return [
         "live Zig  (the impl half)",
@@ -110,17 +145,20 @@ def live_lines() -> list[str]:
         "  /skills reload         updates the tool list; does not rebuild sys_normal",
         "  buildSystemPrompt      pins the catalog once at session start",
         "  promptCacheKey         sticky per project; child is a suffix",
+        "  essay_refresh_turns    0 — standing essay is change-only (ADR 0005)",
+        "  tools tail             append-only after the stable head (#476)",
     ]
 
 
 def verdict() -> str:
-    return "verdict: maximizing  (1/6 prefix cells, sticky key, join restores)"
+    return "verdict: maximizing  (1/6 prefix, 5/20 stable keep, sticky key, join restores)"
 
 
 def check_maximizing() -> None:
     cube_lines()
     walk_lines()
     cache_lines()
+    stable_lines()
 
 
 def showcase(which: str = "prompt") -> str:
@@ -128,12 +166,13 @@ def showcase(which: str = "prompt") -> str:
     blocks = {
         "prompt_prefix": [cube_lines(), walk_lines()],
         "prompt_cache": [cache_lines()],
-        "prompt": [cube_lines(), walk_lines(), cache_lines(), live_lines()],
+        "prompt_stable": [stable_lines()],
+        "prompt": [cube_lines(), walk_lines(), cache_lines(), stable_lines(), live_lines()],
     }
     picked = blocks.get(which)
     if picked is None:
         raise ValueError(
-            f"no showcase for {which!r} (try prompt, prompt_prefix, prompt_cache)"
+            f"no showcase for {which!r} (try prompt, prompt_prefix, prompt_cache, prompt_stable)"
         )
     lines = [
         "prompt-cache max",

@@ -340,6 +340,8 @@ def _ref(fn, name: str) -> int:
 def check_goal_loop() -> int: return _ref(goal_check_properties, "goal_loop")
 def check_prompt_cache() -> int: return _ref(cache_check_properties, "prompt_cache")
 def check_prompt_prefix() -> int: return _ref(prefix_check_properties, "prompt_prefix")
+def check_prompt_stable() -> int:
+    return _ref(__import__("ref.prompt_stable", fromlist=["check_properties"]).check_properties, "prompt_stable")
 
 
 def check_path_confine() -> int:
@@ -383,24 +385,15 @@ def check_path_confine() -> int:
     return n
 
 
-def check_shape() -> int:
-    return _ref(shape_check_properties, 'shape')
+def check_shape() -> int: return _ref(shape_check_properties, "shape")
 
 
-def check_score() -> int:
-    return _ref(score_check_properties, 'score')
+def check_score() -> int: return _ref(score_check_properties, "score")
+def check_bash() -> int: return _ref(bash_check_properties, "bash")
 
 
-def check_bash() -> int:
-    return _ref(bash_check_properties, 'bash')
-
-
-def check_sox() -> int:
-    return _ref(sox_check_properties, 'sox')
-
-
-def check_term() -> int:
-    return _ref(term_check_properties, 'term')
+def check_sox() -> int: return _ref(sox_check_properties, "sox")
+def check_term() -> int: return _ref(term_check_properties, "term")
 
 
 def prefixes_first(p: str) -> list[str]:
@@ -436,6 +429,8 @@ def export() -> list[Path]:
         write_cache_md(KERNELS / "prompt_cache.md"),
         _write(PREFIX_FIXTURE, prefix_payload()),
         write_prefix_md(KERNELS / "prompt_prefix.md"),
+        _write(KERNELS / "prompt_stable.json", __import__("ref.prompt_stable", fromlist=["payload"]).payload()),
+        __import__("ref.prompt_stable", fromlist=["write_kernel_md"]).write_kernel_md(KERNELS / "prompt_stable.md"),
     ]
 
 
@@ -459,11 +454,14 @@ def check_fixtures() -> None:
     _same(TERM_FIXTURE, term_model_payload(), "terminal_modes")
     _same(CACHE_FIXTURE, cache_payload(), "prompt_cache")
     _same(PREFIX_FIXTURE, prefix_payload(), "prompt_prefix")
+    from ref.prompt_stable import payload as stable_payload, kernel_md as stable_kernel_md
+    _same(KERNELS / "prompt_stable.json", stable_payload(), "prompt_stable")
     from ref.goal_loop import kernel_md
     for name, body in (
         ("goal_loop.md", kernel_md),
         ("prompt_cache.md", cache_kernel_md),
         ("prompt_prefix.md", prefix_kernel_md),
+        ("prompt_stable.md", stable_kernel_md),
         ("terminal_modes.md", term_kernel_md),
         ("path_confine.md", path_kernel_md),
         ("transport.md", transport_kernel_md),
@@ -544,7 +542,8 @@ def main() -> int:
     if args.diagram:
         mods = {
             "goal_loop": "ref.goal_loop", "prompt_cache": "ref.prompt_cache",
-            "prompt_prefix": "ref.prompt_prefix", "terminal_modes": "ref.terminal_modes",
+            "prompt_prefix": "ref.prompt_prefix", "prompt_stable": "ref.prompt_stable",
+            "terminal_modes": "ref.terminal_modes",
             "path_confine": "ref.path_confine", "transport": "ref.transport", "score": "ref.score",
         }
         path = mods.get(args.diagram)
@@ -564,6 +563,7 @@ def main() -> int:
         n_gl = check_goal_loop()
         n_ck = check_prompt_cache()
         n_px = check_prompt_prefix()
+        n_ps = check_prompt_stable()
         n_pc = check_path_confine()
         n_sh = check_shape()
         n_sc = check_score()
@@ -573,12 +573,12 @@ def main() -> int:
         if args.export:
             paths = export()
             rel = ", ".join(p.relative_to(ROOT.parent).as_posix() for p in paths)
-            print(f"exported catalog={n_cat} transport={n_tr} provider={n_pr} goal={n_gl} cache={n_ck} prefix={n_px} path={n_pc} shape={n_sh} score={n_sc} bash={n_ba} sox={n_sx} term={n_tm} → {rel}")
+            print(f"exported catalog={n_cat} transport={n_tr} provider={n_pr} goal={n_gl} cache={n_ck} prefix={n_px} stable={n_ps} path={n_pc} shape={n_sh} score={n_sc} bash={n_ba} sox={n_sx} term={n_tm} → {rel}")
         else:
             check_fixtures()
             print(
                 f"ok  tool_catalog {n_cat}  transport {n_tr} (1 ws)  "
-                f"provider {n_pr}  goal_loop {n_gl}  prompt_cache {n_ck}  prompt_prefix {n_px}  path_confine {n_pc}  "
+                f"provider {n_pr}  goal_loop {n_gl}  prompt_cache {n_ck}  prompt_prefix {n_px}  prompt_stable {n_ps}  path_confine {n_pc}  "
                 f"shape {n_sh}  score {n_sc}  bash {n_ba}  "
                 f"structured_output {n_sx}  terminal_modes {n_tm}"
             )

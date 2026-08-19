@@ -8,6 +8,7 @@ import Graff.Score
 import Graff.BashPolicy
 import Graff.PromptCache
 import Graff.PromptPrefix
+import Graff.PromptStable
 
 open Graff
 
@@ -26,4 +27,5 @@ def main : IO Unit := do
   IO.println s!"bash         {BashPolicy.bashCells}  allowed={BashPolicy.allowedCells}  external={BashPolicy.externalCells}"
   IO.println s!"prompt_cache {PromptCache.cacheCells}  spawn_ok={PromptCache.spawnOkCells}  key={PromptCache.keyCells}"
   IO.println s!"prompt_prefix {PromptPrefix.prefixCells}  hit={PromptPrefix.hitCells}"
-  IO.println s!"cells_total  {ToolCatalog.catalogCells + Transport.transportCells + Provider.providerRows + GoalLoop.goalCells + PathConfine.leaseCells + Shape.shapeCells + Score.scoreCells + BashPolicy.bashCells + PromptCache.cacheCells + PromptPrefix.prefixCells}"
+  IO.println s!"prompt_stable {PromptStable.stableCells}  keep={PromptStable.keepCells}"
+  IO.println s!"cells_total  {ToolCatalog.catalogCells + Transport.transportCells + Provider.providerRows + GoalLoop.goalCells + PathConfine.leaseCells + Shape.shapeCells + Score.scoreCells + BashPolicy.bashCells + PromptCache.cacheCells + PromptPrefix.prefixCells + PromptStable.stableCells}"

@@ -120,6 +120,16 @@
       "impl": "src/skill_docs.zig:promptCatalog+execSkill",
       "cells_floor": 6,
       "cells_key": "cases"
+    },
+    {
+      "id": "prompt_stable",
+      "lean": "lean-proofs/Graff/PromptStable.lean",
+      "ref": "spec/ref/prompt_stable.py",
+      "fixture": "spec/kernels/prompt_stable.json",
+      "zig": "src/spec_prompt_stable_conformance.zig",
+      "impl": "src/goal_state.zig:steeringGate+src/prompts.zig:pinStandingGoal+src/skill_docs.zig:execSkill",
+      "cells_floor": 20,
+      "cells_key": "cases"
     }
   ]
 }
