@@ -309,10 +309,7 @@ def run_scenario(
         "GRAFF_FLEET": "off",
         "GRAFF_NO_TELEMETRY": "1",
         "GRAFF_CODEX_URL": f"http://127.0.0.1:{port}/backend-api/codex/responses",
-        # The server-compaction A/B buckets on the install id, which is fresh
-        # per tmp HOME — the compaction legs below would be 50/50 flaky against
-        # a mock that speaks only the client-side flow. Pin the client arm.
-        "GRAFF_SERVER_COMPACT": "0",
+        "GRAFF_SERVER_COMPACT": "0",  # Pin client-compaction regression flows.
     }
     env.update(extra_env)
     # PtySession builds the child env from os.environ.copy(), so ambient
@@ -674,6 +671,7 @@ def run_midturn_compaction_scenario(
         "GRAFF_FLEET": "off",
         "GRAFF_NO_TELEMETRY": "1",
         "GRAFF_CODEX_URL": f"http://127.0.0.1:{port}/backend-api/codex/responses",
+        "GRAFF_SERVER_COMPACT": "0",
     }
     ambient = tuple(
         key
@@ -717,6 +715,7 @@ def run_transactional_compaction_scenario(
         "GRAFF_FLEET": "off",
         "GRAFF_NO_TELEMETRY": "1",
         "GRAFF_CODEX_URL": f"http://127.0.0.1:{port}/backend-api/codex/responses",
+        "GRAFF_SERVER_COMPACT": "0",
     }
     ambient = tuple(
         key
