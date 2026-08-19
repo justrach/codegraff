@@ -53,7 +53,7 @@ pub fn promptCacheKey(io: Io, label: []const u8, agent: *const anyopaque, buf: [
 /// OpenAI's documented ~15 requests/minute cache-routing guidance during fanout.
 pub fn promptPrefixCacheKey(io: Io, label: []const u8, buf: []u8) []const u8 {
     const base = projectRootId(io);
-    if (std.mem.eql(u8, label, "main")) return std.fmt.bufPrint(buf, "{s}", .{base}) catch base;
+    if (std.mem.eql(u8, label, "main") or sharesParentCache(label)) return std.fmt.bufPrint(buf, "{s}", .{base}) catch base;
     const lane = std.hash.Wyhash.hash(0, label) & 3;
     return std.fmt.bufPrint(buf, "{s}-child-{d}", .{ base, lane }) catch base;
 }
@@ -105,9 +105,16 @@ pub fn projectRootId(io: Io) []const u8 {
     return project_id_buf[0..project_id_len];
 }
 
+/// Side-calls that replay the parent history (`/btw`) share the root
+/// partition. Concurrent workers stay isolated. grok-build's recap does the
+/// same: same `prompt_cache_key` as the parent so the prefix stays warm.
+pub fn sharesParentCache(label: []const u8) bool {
+    return std.mem.eql(u8, label, "btw");
+}
+
 pub fn projectCacheKey(io: Io, label: []const u8, agent: *const anyopaque, buf: []u8) []const u8 {
     const base = projectRootId(io);
-    if (std.mem.eql(u8, label, "main")) {
+    if (std.mem.eql(u8, label, "main") or sharesParentCache(label)) {
         if (buf.len >= base.len) {
             @memcpy(buf[0..base.len], base);
             return buf[0..base.len];
@@ -255,6 +262,9 @@ test "project and prefix cache keys preserve conversation and sharing boundaries
     const sub = projectCacheKey(std.testing.io, "sub", agent, &buf3);
     const sibling_sub = projectCacheKey(std.testing.io, "sub", sibling, &buf4);
     try std.testing.expect(!std.mem.eql(u8, sub, sibling_sub));
+
+    var btw_buf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(a, projectCacheKey(std.testing.io, "btw", sibling, &btw_buf));
 
     // OpenAI/Codex prefix affinity is stable for a workflow role, but spreads
     // different roles over four lanes to stay below the per-key traffic guide.

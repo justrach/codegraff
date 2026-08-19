@@ -216,6 +216,7 @@ pub fn render(w: *Io.Writer) !void {
         \\    leave skill bodies      and file: paths out of the prefix (already the default)
         \\    append-only messages    official xAI prefix; edit/remove/reorder is a miss
         \\    replay reasoning        Chat reasoning_content · Responses encrypted_content
+        \\    /btw                    parent tools + system + cache key; note is the user message
         \\
     );
 }

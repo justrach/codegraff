@@ -285,7 +285,7 @@ pub fn run(ctx: *Ctx) !void {
             }
             if (std.mem.eql(u8, rtype, "review")) review_prompt = text;
             // #415: a side question is ANSWERED here and never becomes a turn —
-            // no tools, billed, and nothing added to the session or its transcript.
+            // billed, parent-prefix cached, nothing added to the session.
             if (json_controls.sideQuestion(ctx.root, ctx.arena, rtype, text)) continue;
             json_controls.applyToolKnobs(parsed.object);
             break :blk text;

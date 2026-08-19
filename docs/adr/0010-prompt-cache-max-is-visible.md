@@ -29,6 +29,9 @@ intentional. `/debug` counted tokens; it did not say why a miss happened.
 - Do not default `GRAFF_STABLE_CATALOG`. Do not move playbook / compact notes
   / standing goal off the prefix — those ride the system prompt on purpose
   (ADR 0005, #381, #391) and already share the compaction boundary.
+- `/btw` is a grok-build side-call: same system prompt, same tools JSON, same
+  `prompt_cache_key` as the parent. The side-question note is appended as a
+  user message. Tools are advertised for the prefix and not executed.
 
 ## Consequences
 
@@ -42,4 +45,6 @@ process in the same folder started cold at 128 — the official first-request
 write, not a routing miss. That is the xAI contract working: sticky
 `x-grok-conv-id` / `x-grok-session-id` / `prompt_cache_key`, exact prefix,
 reasoning replay. Session-id is grok-build's extra sticky header: always
-the project id, even when a child isolates `x-grok-conv-id`.
+the project id, even when a child isolates `x-grok-conv-id`. `/btw` shares
+that key and the parent tools/system so a side question can hit the warm
+prefix instead of evicting it.

@@ -76,40 +76,67 @@ fn serialize(arena: Allocator, msgs: std.json.Array) ![]const u8 {
     return aw.writer.buffered();
 }
 
-test "/btw (#415): the side request carries the live context and the question, with NO tools" {
+test "/btw (#415): the side request is the parent prefix plus an appended user note" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    // Every wire format, because "no tools" is written three times in buildBody
-    // and a fourth caller getting one of them wrong is exactly how a `/btw`
-    // would quietly grow the ability to edit files.
+    // Every wire format: the parent tools JSON must ride the body so the
+    // prefix matches, and the side note must be a user message, not a system
+    // rewrite. runTurn still cannot execute a tool (`text_only`).
     for ([_]Provider.Kind{ .anthropic, .openai, .responses }) |kind| {
         var r = try root(arena, kind);
         var agent = try side_question.build(&r, arena, question);
         defer agent.tools_used.deinit(std.testing.allocator);
-        const body = try agent.buildBody(null, false, false, false);
+        const tools = r.toolsJson();
+        const parent_body = try r.buildBody(tools, false, false, false);
+        defer std.testing.allocator.free(parent_body);
+        const body = try agent.buildBody(tools, false, false, false);
         defer std.testing.allocator.free(body);
 
-        // The answer is produced FROM the existing context: the conversation so
-        // far is in the request, with the question appended after it.
         try std.testing.expect(std.mem.indexOf(u8, body, "undefined symbol _graff_main") != null);
         const asked = std.mem.indexOf(u8, body, "what did that linker error") orelse
             return error.TestUnexpectedResult;
         try std.testing.expect(asked > std.mem.indexOf(u8, body, "undefined symbol _graff_main").?);
 
-        // No toolset, and not an empty one either — the key is absent.
-        try std.testing.expect(std.mem.indexOf(u8, body, "\"tools\"") == null);
-        try std.testing.expect(std.mem.indexOf(u8, body, "\"bash\"") == null);
-        try std.testing.expect(std.mem.indexOf(u8, body, "tool_choice") == null);
-        try std.testing.expect(agent.text_only); // and runTurn could not add any
+        try std.testing.expect(std.mem.indexOf(u8, body, "\"tools\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, body, "\"bash\"") != null);
+        try std.testing.expect(agent.text_only);
 
-        // The root's own prompt, plus the note that says why this turn is odd.
         try std.testing.expect(std.mem.indexOf(u8, body, "ROOT-BASE") != null);
         try std.testing.expect(std.mem.indexOf(u8, body, "You have NO tools on this turn") != null);
-        // It is a subagent for every root-only path, the transcript included.
         try std.testing.expect(agent.sub);
+        try std.testing.expectEqualStrings("btw", agent.label);
     }
+}
+
+test "/btw shares the parent prompt_cache_key and does not rewrite instructions" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var r = try root(arena, .responses);
+    r.provider.id = "xai";
+    r.provider.model = "grok-4.6";
+    r.label = "main";
+    var agent = try side_question.build(&r, arena, question);
+    defer agent.tools_used.deinit(std.testing.allocator);
+    const tools = r.toolsJson();
+    const parent_body = try r.buildBody(tools, false, false, false);
+    defer std.testing.allocator.free(parent_body);
+    const body = try agent.buildBody(tools, false, false, false);
+    defer std.testing.allocator.free(body);
+
+    const needle = "\"prompt_cache_key\":\"";
+    const p_start = std.mem.indexOf(u8, parent_body, needle) orelse return error.MissingParentKey;
+    const b_start = std.mem.indexOf(u8, body, needle) orelse return error.MissingSideKey;
+    const p_from = p_start + needle.len;
+    const b_from = b_start + needle.len;
+    const p_end = std.mem.indexOfScalarPos(u8, parent_body, p_from, '"') orelse return error.MissingParentKey;
+    const b_end = std.mem.indexOfScalarPos(u8, body, b_from, '"') orelse return error.MissingSideKey;
+    try std.testing.expectEqualStrings(parent_body[p_from..p_end], body[b_from..b_end]);
+    try std.testing.expect(std.mem.indexOf(u8, parent_body, "\"instructions\":\"ROOT-BASE\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"instructions\":\"ROOT-BASE\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, parent_body, "You have NO tools on this turn") == null);
 }
 
 test "/btw (#415): root.messages is byte-identical before and after, and the clone is deep" {

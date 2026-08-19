@@ -54,7 +54,7 @@ pub const commands = [_]Item{
     .{ .name = "/plugins", .usage = "/plugins [list|load <name>]", .desc = "list Claude/Cursor/Grok/Codex plugin trees graff is reading in place; load names one" },
     .{ .name = "/hooks", .desc = "list lifecycle hooks and the built-in codedb guard" },
     .{ .name = "/doctor", .desc = "read-only health check: goal/todo invariants, and why steering will or will not be appended" },
-    .{ .name = "/btw", .usage = "/btw <question>", .desc = "ask one side question about this conversation — no tools, billed, never added to the session" },
+    .{ .name = "/btw", .usage = "/btw <question>", .desc = "ask one side question about this conversation — billed, never added, rides the parent cache prefix" },
     .{ .name = "/compact", .desc = "compact history into a fresh context (OpenAI server-side when available)" },
     .{ .name = "/rewind", .usage = "/rewind [n|<snapshot>]", .desc = "list past prompts; /rewind <n> drops prompt n+after & reverts its file edits; /rewind <snapshot id> restores a sandbox filesystem instead, never the conversation" },
     .{ .name = "/snapshot", .usage = "/snapshot [attach [image]|detach|list]", .desc = "capture the attached sandbox's filesystem under .graff/sessions/<session>/snapshots; attach puts this session in a Docker sandbox, list shows what it has captured" },
