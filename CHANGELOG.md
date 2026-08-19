@@ -38,7 +38,7 @@ current is part of cutting a release.
 - `install.sh` appends `~/bin` to the login shell so `graff` is on PATH.
 - Synthetic long-horizon evals (`evals/long_horizon/`) grade with
   external deterministic checks (ADR 0008).
-- Test ratchet: unit suite 1443. `GRAFF_NO_PLUGINS=1` still hides
+- Test ratchet: unit suite 1444. `GRAFF_NO_PLUGINS=1` still hides
   foreign trees.
 
 ## v0.0.265 (2026-08-17)

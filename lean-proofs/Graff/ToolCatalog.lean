@@ -133,7 +133,7 @@ example : catalog {} =
     (baseTools ++
       ["todo_write", "todo_read", "eval", "note_constraint", "ask_user",
        "attempt_completion", "load_tool_schemas"] ++
-      ["subagent", "workflow", "agent_output", "peer_message"]) := by native_decide
+      ["subagent", "workflow", "agent_output", "peer_message", "workspace"]) := by native_decide
 
 example : catalog { imagegen := true } =
     catalog {} ++ ["imagegen"] := by native_decide
