@@ -42,6 +42,10 @@ var lock: std.atomic.Value(bool) = .init(false);
 var snap: Snap = .{};
 var pending: Bust = .none;
 var g_io: ?Io = null;
+var g_aff: [64]u8 = undefined;
+var g_aff_len: usize = 0;
+var g_xai: bool = false;
+var g_responses: bool = false;
 
 fn acquire() void {
     while (lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
@@ -56,6 +60,9 @@ pub fn reset() void {
     snap = .{};
     pending = .none;
     g_io = null;
+    g_aff_len = 0;
+    g_xai = false;
+    g_responses = false;
 }
 
 pub fn snapshot() Snap {
@@ -113,6 +120,18 @@ pub fn noteRequest(io: Io, system: []const u8, tools: []const u8) void {
     snap.tools_bytes = std.math.cast(u32, tools.len) orelse std.math.maxInt(u32);
     snap.same = !changed;
     snap.requests += 1;
+}
+
+/// Content-free xAI routing id (`x-grok-conv-id` / `prompt_cache_key`).
+/// Official docs: same value on Chat header and Responses body.
+pub fn noteAffinity(key: []const u8, xai: bool, responses: bool) void {
+    acquire();
+    defer release();
+    g_xai = xai;
+    g_responses = responses;
+    const n = @min(key.len, g_aff.len);
+    @memcpy(g_aff[0..n], key[0..n]);
+    g_aff_len = n;
 }
 
 pub fn bustLabel(b: Bust) []const u8 {
@@ -183,11 +202,20 @@ pub fn render(w: *Io.Writer) !void {
         try w.print("  busts      {d}  last: {s}\n", .{ s.busts, bustLabel(s.last_bust) });
     }
     try w.print("  catalog    {s}\n", .{if (mcp_schema_gate.g_stable_catalog) "stable (loads append tail only)" else "mutating (a load rewrites tools JSON)"});
+    if (g_xai and g_aff_len > 0) {
+        try w.print("  xAI        {s}  (automatic prefix cache)\n", .{if (g_responses) "responses" else "chat"});
+        try w.print("  affinity   {s}\n", .{g_aff[0..g_aff_len]});
+        try w.writeAll("             x-grok-conv-id + prompt_cache_key, same value\n");
+    } else {
+        try w.writeAll("  xAI        x-grok-conv-id + prompt_cache_key (same project id, automatic)\n");
+    }
     try w.writeAll(
         \\  remaining max
         \\    GRAFF_STABLE_CATALOG=1  opt-in: keep tools JSON byte-identical after load
         \\    /goal /never /strict    each prefix rewrite is one miss; compaction already pays one
         \\    leave skill bodies      and file: paths out of the prefix (already the default)
+        \\    append-only messages    official xAI prefix; edit/remove/reorder is a miss
+        \\    replay reasoning        Chat reasoning_content · Responses encrypted_content
         \\
     );
 }
@@ -272,9 +300,26 @@ test "render stays content-free and names remaining levers" {
     try std.testing.expect(contains(text, "prefix"));
     try std.testing.expect(contains(text, "GRAFF_STABLE_CATALOG"));
     try std.testing.expect(contains(text, "/goal"));
+    try std.testing.expect(contains(text, "x-grok-conv-id"));
+    try std.testing.expect(contains(text, "append-only"));
     try std.testing.expect(!contains(text, "SECRET-PROMPT"));
     try std.testing.expect(!contains(text, "/Users/me"));
     try std.testing.expect(!contains(text, "bash"));
+}
+
+test "render shows xAI affinity without prompt text" {
+    reset();
+    defer reset();
+    noteRequest(std.testing.io, "SECRET-PROMPT", "[]");
+    noteAffinity("b79ad29b-b3f9-463c-bca6-041d5058d366", true, true);
+    var buf: [2048]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try render(&w);
+    const text = w.buffered();
+    try std.testing.expect(contains(text, "responses"));
+    try std.testing.expect(contains(text, "b79ad29b-b3f9-463c-bca6-041d5058d366"));
+    try std.testing.expect(contains(text, "prompt_cache_key"));
+    try std.testing.expect(!contains(text, "SECRET-PROMPT"));
 }
 
 test "renderLine is one content-free row" {

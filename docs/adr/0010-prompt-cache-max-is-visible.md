@@ -19,8 +19,9 @@ intentional. `/debug` counted tokens; it did not say why a miss happened.
 ## Decision
 
 - `/cache` is the content-free cache HUD: prefix hash, last read/write,
-  session hit rate, catalog mode, last bust reason, and the remaining max
-  levers. No prompt text, paths, or tool bodies.
+  session hit rate, catalog mode, last bust reason, xAI affinity
+  (`x-grok-conv-id` + `prompt_cache_key`, same project id), and the
+  remaining max levers. No prompt text, paths, or tool bodies.
 - `/debug` gets one cache row from the same snapshot.
 - Named busts (`goal`, `playbook`, `compact`, `persona`, `tools`, `mcp`) are
   recorded at the mutation site and counted only when the next request's
@@ -34,3 +35,9 @@ intentional. `/debug` counted tokens; it did not say why a miss happened.
 A `/cache` after a miss names the lever. Revisit defaulting stable-catalog
 only if a new live measurement shows load-after-load cache-read returning
 from 0% without discovery or compaction regressions.
+
+Live Grok 4.6 (Responses, SuperGrok OAuth, 2026-08-19): same-process
+append-only turn 2 cached 3,712 of turn 1's 3,721 input tokens. A new
+process in the same folder started cold at 128 — the official first-request
+write, not a routing miss. That is the xAI contract working: sticky
+`x-grok-conv-id` / `prompt_cache_key`, exact prefix, reasoning replay.

@@ -255,3 +255,123 @@ test "grok spec: held xAI WS chains previous_response_id + delta; drop rebuilds 
     try std.testing.expect(std.mem.indexOf(u8, rebuilt, "\"first\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rebuilt, "third — not yet sent") != null);
 }
+
+// Official xAI prompt-caching contract
+// (docs.x.ai/developers/advanced-api-usage/prompt-caching):
+// Chat always sets x-grok-conv-id; Responses sets prompt_cache_key; same
+// routing id. Cache is an exact messages prefix — append only. Usage is
+// prompt_tokens_details.cached_tokens (Chat) /
+// input_tokens_details.cached_tokens (Responses). xAI must not receive
+// OpenAI prompt_cache_options / prompt_cache_breakpoint (ADR 0009).
+
+test "grok spec: official cache routing — Chat header and Responses body share one id" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var chat = try xaiAgent(a, "main", .openai);
+    var resp = try xaiAgent(a, "main", .responses);
+    var kbuf: [96]u8 = undefined;
+    const key = http_headers.promptCacheKey(io, "main", &resp, &kbuf);
+    try std.testing.expectEqualStrings(http_headers.projectRootId(io), key);
+
+    var hbuf: [12]std.http.Header = undefined;
+    const hdrs = http_headers.providerHeadersWithConv(io, chat.provider, "Bearer k", &hbuf, key);
+    const header = blk: {
+        for (hdrs) |h| if (std.mem.eql(u8, h.name, "x-grok-conv-id")) break :blk h.value;
+        return error.MissingGrokConvId;
+    };
+    try std.testing.expectEqualStrings(key, header);
+
+    const chat_body = try chat.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(chat_body);
+    const resp_body = try resp.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(resp_body);
+    try std.testing.expectEqualStrings(key, cacheKeyIn(resp_body) orelse return error.MissingPromptCacheKey);
+    try std.testing.expectEqualStrings(key, cacheKeyIn(chat_body) orelse return error.MissingPromptCacheKey);
+    try std.testing.expect(std.mem.indexOf(u8, resp_body, "prompt_cache_options") == null);
+    try std.testing.expect(std.mem.indexOf(u8, resp_body, "prompt_cache_breakpoint") == null);
+    try std.testing.expect(std.mem.indexOf(u8, chat_body, "prompt_cache_options") == null);
+}
+
+test "grok spec: official cache is an exact prefix — append keeps it, edit breaks it" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = try xaiAgent(a, "main", .responses);
+    const first = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(first);
+    try agent.messages.append(try textMessage(a, "assistant", "pong"));
+    try agent.messages.append(try textMessage(a, "user", "next"));
+    const appended = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(appended);
+    try std.testing.expect(std.mem.indexOf(u8, first, "hello") != null);
+    try std.testing.expect(std.mem.indexOf(u8, appended, "hello") != null);
+    try std.testing.expect(std.mem.indexOf(u8, appended, "next") != null);
+    try std.testing.expectEqualStrings(cacheKeyIn(first).?, cacheKeyIn(appended).?);
+
+    var edited = agent.messages.items[0].object;
+    try edited.put(a, "content", .{ .string = "HELLO-EDITED" });
+    agent.messages.items[0] = .{ .object = edited };
+    const miss = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(miss);
+    try std.testing.expect(std.mem.indexOf(u8, miss, "hello") == null);
+    try std.testing.expect(std.mem.indexOf(u8, miss, "HELLO-EDITED") != null);
+    try std.testing.expectEqualStrings(cacheKeyIn(first).?, cacheKeyIn(miss).?);
+}
+
+test "grok spec: Chat replays reasoning_content (official top cache-miss cause)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = try xaiAgent(a, "main", .openai);
+    var asst: std.json.ObjectMap = .empty;
+    try asst.put(a, "role", .{ .string = "assistant" });
+    try asst.put(a, "content", .{ .string = "pong" });
+    try asst.put(a, "reasoning_content", .{ .string = "think-then-pong" });
+    try agent.messages.append(.{ .object = asst });
+    try agent.messages.append(try textMessage(a, "user", "next"));
+    const body = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning_content\":\"think-then-pong\"") != null);
+}
+
+test "grok spec: official usage fields become last_cache_read" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = try xaiAgent(a, "main", .openai);
+    agent.last_cache_read = 0;
+    agent.last_context_tokens = 0;
+    agent.context_local_tokens = 0;
+    agent.codex_prev_id = null;
+    agent.strict = false;
+    agent.sys_strict = "";
+    agent.tools_openai = "";
+    agent.tools_responses = "";
+
+    var details: std.json.ObjectMap = .empty;
+    try details.put(a, "cached_tokens", .{ .integer = 98 });
+    var usage: std.json.ObjectMap = .empty;
+    try usage.put(a, "prompt_tokens", .{ .integer = 125 });
+    try usage.put(a, "completion_tokens", .{ .integer = 48 });
+    try usage.put(a, "prompt_tokens_details", .{ .object = details });
+    var response: std.json.ObjectMap = .empty;
+    try response.put(a, "usage", .{ .object = usage });
+    @import("agent_context.zig").recordUsage(&agent, response, 400);
+    try std.testing.expectEqual(@as(u64, 98), agent.last_cache_read);
+
+    agent.provider.kind = .responses;
+    agent.last_cache_read = 0;
+    var in_details: std.json.ObjectMap = .empty;
+    try in_details.put(a, "cached_tokens", .{ .integer = 50 });
+    var rusage: std.json.ObjectMap = .empty;
+    try rusage.put(a, "input_tokens", .{ .integer = 125 });
+    try rusage.put(a, "output_tokens", .{ .integer = 48 });
+    try rusage.put(a, "total_tokens", .{ .integer = 173 });
+    try rusage.put(a, "input_tokens_details", .{ .object = in_details });
+    var rresp: std.json.ObjectMap = .empty;
+    try rresp.put(a, "usage", .{ .object = rusage });
+    @import("agent_context.zig").recordUsageResponses(&agent, rresp, 400);
+    try std.testing.expectEqual(@as(u64, 50), agent.last_cache_read);
+}

@@ -206,7 +206,16 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         self.streamed_args = .none;
         const body = try self.buildBody(tools, force, live, stream_usage);
         defer self.gpa.free(body);
-        if (!self.sub) @import("prompt_cache_hud.zig").noteRequest(self.io, self.systemPrompt(), tools orelse "");
+        if (!self.sub) {
+            const hud = @import("prompt_cache_hud.zig");
+            hud.noteRequest(self.io, self.systemPrompt(), tools orelse "");
+            var aff_buf: [96]u8 = undefined;
+            hud.noteAffinity(
+                http_headers.promptCacheKey(self.io, self.label, self, &aff_buf),
+                std.mem.eql(u8, self.provider.id, "xai"),
+                self.provider.kind == .responses,
+            );
+        }
         // GRAFF_REQ_STATS=1: per-call request anatomy + body dumps (req_stats.zig).
         req_stats.report(self.io, body, tools, self.sys_normal);
         const t0: Io.Timestamp = .now(self.io, .awake);
