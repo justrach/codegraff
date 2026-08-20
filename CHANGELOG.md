@@ -22,6 +22,15 @@ current is part of cutting a release.
   raw terminal buffer, not the prose stream. Background jobs inject a
   grok-build-style completion wake at the next step and, in the TUI,
   start a turn while idle. Do not poll.
+- `ask_user` pasted images reach the next model request as real vision
+  blocks (a follow-up user message after the text tool result). Nine
+  `[Image]` placeholders with no pixels was #580. If nothing staged, the
+  tool result says so and names path / paste-text / next-prompt fallbacks.
+- Compaction and emergency trim stop before an unresolved current user
+  prompt and keep its image blocks verbatim (#581). A retry does not move
+  that cut. If the live prompt is the whole history, compact fails
+  explicitly instead of summarizing attachments to text. Traces emit
+  `compact_cut` with the boundary and preserved image count, not pixels.
 - Test ratchet: unit suite 1486.
 
 ## v0.0.267 (2026-08-19)
