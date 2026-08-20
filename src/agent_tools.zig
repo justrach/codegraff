@@ -11,16 +11,11 @@ const Io = std.Io;
 const Value = std.json.Value;
 
 const main_mod = @import("main.zig");
-const json_inbox = @import("json_inbox.zig");
 const review = @import("review.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
 const ExecResult = tools_mod.ExecResult;
-
-const AnswerRequest = tools_mod.AnswerRequest;
-const answerParseError = tools_mod.answerParseError;
-const parseAnswerRequest = tools_mod.parseAnswerRequest;
 
 // #422 slice 1c: every emission here leaves as a typed event; the terminal
 // palette lives in agent_tool_render.zig, behind the sink. `term.zig` stays
@@ -56,8 +51,6 @@ const playbook_glue = @import("playbook_glue.zig"); // #381: the note_constraint
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: the load_tool_schemas meta arm
 const native_fold = @import("native_fold.zig"); // folded native power tools: load_tool_schemas's native half
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
-const readline = @import("readline.zig"); // ask_user answers get the same full editor as the main prompt
-const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
 
 // #440: the ONE size contract for a tool result — preview + durable handle +
 // byte count + shape hint, applied at tool time, clamped under the send-time cap.
@@ -370,74 +363,6 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     if (std.mem.eql(u8, call.name, "ask_user")) return self.askUser(call);
     // todo_read
     return .{ .text = self.renderTodos(goal_state.currentEpoch(self.goal)), .is_error = false };
-}
-
-/// Block the root agent for an ask_user reply; subagents have no stdin.
-pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
-    const in = self.in orelse return .{
-        .text = "no human is attached — make a reasonable assumption and continue",
-        .is_error = true,
-    };
-    const w = self.out.?;
-    const question = if (tools_mod.json_args.object(call.input)) |o| (tools_mod.json_args.str(o, "question") orelse "(no question)") else "(no question)";
-    if (main_mod.json_mode) {
-        const call_id = if (call.id.len > 0) call.id else blk: {
-            const id = try std.fmt.allocPrint(self.arena, "ask_user-{d}", .{self.next_ask_id});
-            self.next_ask_id += 1;
-            break :blk id;
-        };
-        try self.emitAskUser(call_id, question, call.input);
-        const raw = (try json_inbox.reply(self.arena, in)) orelse return .{
-            .text = "user ended input without answering",
-            .is_error = true,
-        };
-        const parsed = std.json.parseFromSliceLeaky(Value, self.arena, std.mem.trim(u8, raw, " \t\r"), .{ .allocate = .alloc_always }) catch return .{
-            .text = "invalid answer JSON for ask_user",
-            .is_error = true,
-        };
-        const answer = parseAnswerRequest(parsed, call_id) catch |err| return .{
-            .text = answerParseError(err),
-            .is_error = true,
-        };
-        if (answer.cancelled) return .{ .text = "user cancelled the follow-up", .is_error = true };
-        return .{ .text = try self.arena.dupe(u8, answer.text), .is_error = false };
-    }
-    // Skip the re-print only when the question streamed live in full.
-    if (!self.argStreamedFully(call)) try w.print("\n❓ {s}\n", .{question});
-    if (tools_mod.json_args.object(call.input)) |o| if (tools_mod.json_args.arrayOf(o, "options")) |opts| {
-        for (opts, 1..) |opt, n| try w.print("   {d}) {s}\n", .{ n, tools_mod.json_args.text(opt) orelse "(non-text option)" });
-    };
-    // Route the reply through the same full-line editor as the main prompt:
-    // cursor editing, bracketed paste, the `@` file picker, and Ctrl-V
-    // clipboard images. A bare takeDelimiter here stripped all of that from
-    // ask_user. Answers get a scratch history so they never pollute the main
-    // prompt's up-arrow recall.
-    var answer_history: std.ArrayList([]const u8) = .empty;
-    defer answer_history.deinit(self.arena);
-    var answer_buf: std.ArrayList(u8) = .empty;
-    defer answer_buf.deinit(self.arena);
-    const raw = (try readline.readLine(self, in, w, self.arena, &answer_history, &answer_buf, "   your answer › ")) orelse return .{
-        .text = "user ended input without answering",
-        .is_error = true,
-    };
-    const answer = std.mem.trim(u8, raw, " \t\r");
-    return .{ .text = try self.arena.dupe(u8, answer), .is_error = false };
-}
-
-pub fn emitAskUser(self: *Agent, call_id: []const u8, question: []const u8, input: Value) !void {
-    const w = self.out orelse return;
-    // Same envelope as Agent.emit — hand-rolled only because `input` is a
-    // std.json.Value; #330's `seq` must ride this line too or a supervisor
-    // would see a hole exactly where it is asked to answer.
-    const ev = .{ .type = "ask_user", .call_id = call_id, .question = question, .input = input };
-    if (main_mod.json_mode) {
-        try protocol_seq.writeEvent(w, ev);
-    } else {
-        var s: std.json.Stringify = .{ .writer = w };
-        try s.write(ev);
-    }
-    try w.writeByte('\n');
-    try w.flush();
 }
 
 /// The call's announcement moment, as one pair of events: the bracket a

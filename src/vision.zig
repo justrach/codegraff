@@ -72,6 +72,12 @@ pub fn imageMediaType(path: []const u8) []const u8 {
 
 /// A user message carrying text + one image, in the provider's wire format.
 pub fn imageMessage(arena: Allocator, kind: Provider.Kind, text: []const u8, img: PendingImage) !Value {
+    return imageMessages(arena, kind, text, &.{img});
+}
+
+/// A user message carrying text + every staged image, in the provider's wire
+/// format. Used by the main prompt and by ask_user follow-ups (#580).
+pub fn imageMessages(arena: Allocator, kind: Provider.Kind, text: []const u8, imgs: []const PendingImage) !Value {
     var msg: std.json.ObjectMap = .empty;
     try msg.put(arena, "role", .{ .string = "user" });
     var content = std.json.Array.init(arena);
@@ -81,28 +87,30 @@ pub fn imageMessage(arena: Allocator, kind: Provider.Kind, text: []const u8, img
     try tb.put(arena, "text", .{ .string = try arena.dupe(u8, text) });
     try content.append(.{ .object = tb });
 
-    var ib: std.json.ObjectMap = .empty;
-    switch (kind) {
-        .anthropic => {
-            try ib.put(arena, "type", .{ .string = "image" });
-            var src: std.json.ObjectMap = .empty;
-            try src.put(arena, "type", .{ .string = "base64" });
-            try src.put(arena, "media_type", .{ .string = img.media_type });
-            try src.put(arena, "data", .{ .string = img.b64 });
-            try ib.put(arena, "source", .{ .object = src });
-        },
-        .openai => {
-            try ib.put(arena, "type", .{ .string = "image_url" });
-            var iu: std.json.ObjectMap = .empty;
-            try iu.put(arena, "url", .{ .string = try std.fmt.allocPrint(arena, "data:{s};base64,{s}", .{ img.media_type, img.b64 }) });
-            try ib.put(arena, "image_url", .{ .object = iu });
-        },
-        .responses => {
-            try ib.put(arena, "type", .{ .string = "input_image" });
-            try ib.put(arena, "image_url", .{ .string = try std.fmt.allocPrint(arena, "data:{s};base64,{s}", .{ img.media_type, img.b64 }) });
-        },
+    for (imgs) |img| {
+        var ib: std.json.ObjectMap = .empty;
+        switch (kind) {
+            .anthropic => {
+                try ib.put(arena, "type", .{ .string = "image" });
+                var src: std.json.ObjectMap = .empty;
+                try src.put(arena, "type", .{ .string = "base64" });
+                try src.put(arena, "media_type", .{ .string = img.media_type });
+                try src.put(arena, "data", .{ .string = img.b64 });
+                try ib.put(arena, "source", .{ .object = src });
+            },
+            .openai => {
+                try ib.put(arena, "type", .{ .string = "image_url" });
+                var iu: std.json.ObjectMap = .empty;
+                try iu.put(arena, "url", .{ .string = try std.fmt.allocPrint(arena, "data:{s};base64,{s}", .{ img.media_type, img.b64 }) });
+                try ib.put(arena, "image_url", .{ .object = iu });
+            },
+            .responses => {
+                try ib.put(arena, "type", .{ .string = "input_image" });
+                try ib.put(arena, "image_url", .{ .string = try std.fmt.allocPrint(arena, "data:{s};base64,{s}", .{ img.media_type, img.b64 }) });
+            },
+        }
+        try content.append(.{ .object = ib });
     }
-    try content.append(.{ .object = ib });
     try msg.put(arena, "content", .{ .array = content });
     return .{ .object = msg };
 }
@@ -157,7 +165,7 @@ pub fn stageImagePath(root: *Agent, path: []const u8) StageResult {
     // `fitToBudget` re-checks the magic bytes; without both, `sips -Z` would
     // keep the source encoding and we'd send JPEG bytes as `image/png`.
     const media = imageMediaType(fit.path);
-    root.pending_image = .{ .media_type = media, .b64 = b64, .label = arena.dupe(u8, path) catch path };
+    @import("vision_queue.zig").stage(root, .{ .media_type = media, .b64 = b64, .label = arena.dupe(u8, path) catch path });
     return .{ .ok = .{ .bytes = fit.bytes, .media_type = media } };
 }
 
@@ -218,14 +226,13 @@ pub fn tracePasteResult(root: *Agent, flavor: Flavor, r: StageResult) void {
 /// that holds both the registry and the provider.
 pub fn stageGuiImageAttachment(root: *Agent, msg: []const u8) void {
     if (root.registry) |reg| if (mcpImageHandoff(reg, visionCapable(root.provider), &root.pending_image)) return; // #249
-    if (root.pending_image != null) return;
     if (!visionCapable(root.provider)) return;
     var search: usize = 0;
     while (std.mem.indexOfPos(u8, msg, search, "@[")) |open| {
         const rest = msg[open + 2 ..];
         const close = std.mem.indexOfScalar(u8, rest, ']') orelse break;
         const path = rest[0..close];
-        if (isImagePath(path) and stageImagePath(root, path).isOk()) return;
+        if (isImagePath(path)) _ = stageImagePath(root, path);
         search = open + 2 + close + 1;
     }
 }

@@ -25,6 +25,7 @@ record only when you need the evidence or the edge cases.
 | [0012](0012-overflow-handles-named-limits-extra-roots.md) | Fat tool results become `tr_N` handles; named `--context-limit` caps prefix bytes; `--add-dir` extra roots are PathConfine allow-lists, not cwd/skill/session sources. |
 | [0013](0013-list-dir-lives-in-codedb.md) | Directory listing is `codedb list_dir` (in-process BFS, gitignore, 10k cap), not a new always-on catalog tool. |
 | [0014](0014-session-resume-carries-the-room-cursor.md) | `/resume` restores the peer-channel byte cursor and inbox; it does not replay the room into history. |
+| [0015](0015-ask-user-images-are-a-follow-up-user-message.md) | `ask_user` images ride a follow-up user message after the text tool result; Responses/OpenAI tool output stays text-only. |
 
 ## When to write one
 
