@@ -566,6 +566,7 @@ test "providerTakesEffort: native xAI grok takes effort; gateway grok does not" 
     try std.testing.expect(providerTakesEffort(.responses, "codex", "gpt-5.5"));
     try std.testing.expect(providerTakesEffort(.openai, "codegraff", "deepseek-v4-pro"));
     try std.testing.expect(providerTakesEffort(.openai, "deepseek", "deepseek-v4-pro"));
+    try std.testing.expect(providerTakesEffort(.openai, "zai", "glm-5.3"));
     try std.testing.expect(providerTakesEffort(.openai, "kimi", "k3"));
     try std.testing.expect(!providerTakesEffort(.openai, "openai", "gpt-5.5")); // direct openai chat
     try std.testing.expect(providerTakesEffort(.responses, "xai", "grok-4.6"));

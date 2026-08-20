@@ -12,6 +12,11 @@ current is part of cutting a release.
 
 ## v0.0.268 (2026-08-20)
 
+- Z.AI's existing seat now defaults to GLM-5.3 (1M context) with live
+  `/api/paas/v4/models`, `thinking.type=enabled`, and `/effort` remapped
+  onto `low`/`high`/`max` (graff `medium` → `high`). Pay-go stays on
+  `api.z.ai/api/paas/v4`; GLM Coding Plan keys use `ZAI_CODING=1` or
+  `GRAFF_ZAI_URL`. This is the GLM chat API, not image/video.
 - Cerebras Inference is a built-in OpenAI-chat provider (`CEREBRAS_API_KEY`,
   `graff key set cerebras …`, default `gpt-oss-120b`). Live `/v1/models`
   overlay; this is `api.cerebras.ai`, not the WSE CSL SDK.

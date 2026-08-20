@@ -62,6 +62,7 @@ const route_report = @import("route_report.zig"); // #471 credential/tier listin
 const vision_ask = @import("vision_ask.zig");
 const vision_ask_tests = @import("vision_ask_tests.zig");
 const pricing_tests = @import("pricing_tests.zig");
+const zai_wire = @import("zai_wire.zig"); // Z.AI GLM-5.3 thinking + effort remap
 const fitness_strata = @import("fitness_strata.zig");
 
 // `graff serve` resumability (#330): serve.zig imports these, but nothing in

@@ -104,7 +104,7 @@ pub const provider_specs = [_]ProviderSpec{
     // `graff login xai` is a real device-code OAuth flow (oauth.zig), so xAI's
     // login is a SuperGrok plan while XAI_API_KEY is metered api.x.ai access.
     .{ .id = "xai", .display_name = "xAI", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.6", .login = .xai_device, .sub_login = true, .catalog = .openai, .models_url = "https://api.x.ai/v1/models" },
-    .{ .id = "zai", .display_name = "Z.AI", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
+    .{ .id = "zai", .display_name = "Z.AI", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.3", .catalog = .openai, .models_url = "https://api.z.ai/api/paas/v4/models", .takes_effort = true },
     .{ .id = "fugu", .display_name = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
     // Fireworks serves its serverless catalog live (AIP gateway shape:
     // pageToken pagination, camelCase contextLength), so new model releases
@@ -147,12 +147,12 @@ pub fn specFor(id: []const u8) ?ProviderSpec {
 pub const kimi_native_url = "https://api.kimi.com/coding/v1/chat/completions";
 pub const kimi_anthropic_url = "https://api.kimi.com/coding/v1/messages?beta=true";
 
-/// Codex responses-endpoint override (GRAFF_CODEX_URL, parsed in main.zig at
-/// startup — localhost mocks / integration tests). Lives here because every
-/// provider (re)build path (startup, /model switches, session restore) goes
-/// through Keys.build; both the WS and SSE transports read provider.url.
+/// Endpoint overrides (GRAFF_CODEX_URL / GRAFF_XAI_URL / GRAFF_ZAI_URL). Parsed
+/// before Keys.build so startup, /model, and session restore share one URL.
 pub var g_codex_url_override: ?[]const u8 = null;
-pub var g_xai_url_override: ?[]const u8 = null; // GRAFF_XAI_URL (chat or Responses path)
+pub var g_xai_url_override: ?[]const u8 = null;
+pub var g_zai_url_override: ?[]const u8 = null;
+pub const zai_coding_url = "https://api.z.ai/api/coding/paas/v4/chat/completions";
 
 pub const Provider = struct {
     id: []const u8,
@@ -241,7 +241,7 @@ pub const Provider = struct {
             .id = spec.id,
             .kind = if (is_kimi_anthropic) .anthropic else if (is_xai_responses or @import("provider_codegraff.zig").usesResponses(spec.id, model)) .responses else spec.kind,
             .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
-            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (std.mem.eql(u8, spec.id, "xai")) (g_xai_url_override orelse if (is_xai_responses) xai_responses_url else spec.url) else if (@import("provider_codegraff.zig").usesResponses(spec.id, model)) @import("provider_codegraff.zig").responses_url else spec.url,
+            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (std.mem.eql(u8, spec.id, "xai")) (g_xai_url_override orelse if (is_xai_responses) xai_responses_url else spec.url) else if (std.mem.eql(u8, spec.id, "zai")) (g_zai_url_override orelse spec.url) else if (@import("provider_codegraff.zig").usesResponses(spec.id, model)) @import("provider_codegraff.zig").responses_url else spec.url,
             .api_key = base.api_key,
             .model = model,
             .context = contextWindowFor(spec.id, model),
@@ -337,7 +337,7 @@ pub const Keys = struct {
             .id = spec.id,
             .kind = if (is_kimi_anthropic) .anthropic else if (is_xai_responses or @import("provider_codegraff.zig").usesResponses(spec.id, model)) .responses else spec.kind,
             .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
-            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (std.mem.eql(u8, spec.id, "xai")) (g_xai_url_override orelse if (is_xai_responses) xai_responses_url else spec.url) else if (@import("provider_codegraff.zig").usesResponses(spec.id, model)) @import("provider_codegraff.zig").responses_url else spec.url,
+            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (std.mem.eql(u8, spec.id, "xai")) (g_xai_url_override orelse if (is_xai_responses) xai_responses_url else spec.url) else if (std.mem.eql(u8, spec.id, "zai")) (g_zai_url_override orelse spec.url) else if (@import("provider_codegraff.zig").usesResponses(spec.id, model)) @import("provider_codegraff.zig").responses_url else spec.url,
             .api_key = key,
             .model = model,
             .context = contextWindowFor(spec.id, model),

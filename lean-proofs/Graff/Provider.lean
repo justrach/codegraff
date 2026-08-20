@@ -57,7 +57,7 @@ def specs : List Row :=
   , { id := "kimi",       kind := .openai,    auth := .bearer,  login := .kimiDevice, catalog := .kimi, subLogin := true }
   , { id := "moonshot",   kind := .openai,    auth := .bearer }
   , { id := "xai",        kind := .openai,    auth := .bearer,  login := .xaiDevice, catalog := .openai, subLogin := true }
-  , { id := "zai",        kind := .openai,    auth := .bearer }
+  , { id := "zai",        kind := .openai,    auth := .bearer,  catalog := .openai, takesEffort := true }
   , { id := "fugu",       kind := .openai,    auth := .bearer }
   , { id := "fireworks",  kind := .openai,    auth := .bearer,  catalog := .openai }
   , { id := "mlx",        kind := .openai,    auth := .bearer }

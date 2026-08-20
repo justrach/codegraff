@@ -44,7 +44,7 @@ SPECS: list[dict] = [
     row("kimi", "openai", "bearer", login="kimi_device", catalog="kimi", sub_login=True),
     row("moonshot", "openai", "bearer"),
     row("xai", "openai", "bearer", login="xai_device", catalog="openai", sub_login=True),
-    row("zai", "openai", "bearer"),
+    row("zai", "openai", "bearer", catalog="openai", takes_effort=True),
     row("fugu", "openai", "bearer"),
     row("fireworks", "openai", "bearer", catalog="openai"),
     row("mlx", "openai", "bearer"),
