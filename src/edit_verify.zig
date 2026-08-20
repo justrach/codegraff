@@ -29,6 +29,7 @@ const confinedPath = approvals_mod.confinedPath;
 const noSymlinkEscape = approvals_mod.noSymlinkEscape;
 const runCapped = @import("jobs.zig").runCapped;
 const codedbpro_report = @import("codedbpro_report.zig"); // persistent-daemon splice fast path
+const edit_hint = @import("edit_hint.zig"); // nearest-match text on a miss (ADR 0014)
 
 /// Whole-file read ceiling for the splice source (unchanged from exec.zig).
 const edit_read_cap: usize = 1024 * 1024;
@@ -217,7 +218,7 @@ pub fn applyEdit(ctx: ToolCtx, path: []const u8, resolved: []const u8, old: []co
 
         const count = std.mem.count(u8, data, old);
         if (count == 0) return .{
-            .text = try std.fmt.allocPrint(gpa, "old_string not found in {s} — read_file it and match the existing text exactly", .{path}),
+            .text = try edit_hint.notFound(gpa, path, data, old),
             .is_error = true,
         };
         if (count > 1 and !all) return .{

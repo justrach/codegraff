@@ -246,9 +246,10 @@ test "grok search_replace: no match mentions read_file" {
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "test.txt", .data = "hello world\n" });
     const path = try relPath(a, tmp, "test.txt");
-    const out = runEdit(a, try span(a, path, "xyz", "abc", false));
+    const out = runEdit(a, try span(a, path, "hello xyz", "abc", false));
     try std.testing.expect(out.is_error);
     try std.testing.expect(std.mem.indexOf(u8, out.text, "read_file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "Nearest match: line 1: hello world") != null);
 }
 
 test "grok search_replace: CRLF single-line match preserves endings" {

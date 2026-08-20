@@ -366,6 +366,9 @@ pub fn outsideCwd(gpa: Allocator, path: []const u8) !ToolOutput {
 pub const bash_stdout_cap = 1024 * 1024;
 pub const bash_stderr_cap = 32 * 1024;
 pub const webfetch_cap = 256 * 1024;
+/// Fallback GET asks for markdown first (grok web_fetch). kuri-fetch already
+/// converts HTML; this is for the harness client when kuri is missing or blank.
+pub const webfetch_accept = "text/markdown, text/plain;q=0.9, text/html;q=0.8, */*;q=0.5";
 /// Capture ceiling for the `codedb read --compact` fallback (#66). This used to
 /// double as a context cap that truncated any codedb result past 64 KiB; #440
 /// removed that half — the handle preserves those bytes instead of discarding
@@ -393,11 +396,13 @@ pub fn rawFetch(gpa: Allocator, client: *std.http.Client, url: []const u8) ToolO
     var w: Io.Writer = .fixed(buf);
     var truncated = false;
     var status: ?std.http.Status = null;
+    const accept = [_]std.http.Header{.{ .name = "Accept", .value = webfetch_accept }};
     if (client.fetch(.{
         .location = .{ .url = url },
         .method = .GET,
         .response_writer = &w,
         .headers = .{ .user_agent = .{ .override = "simple-harness/" ++ harness_version } },
+        .extra_headers = &accept,
     })) |res| {
         status = res.status;
     } else |err| switch (err) {
@@ -448,6 +453,7 @@ test "blankText: webfetch empty-output heuristic" {
     try std.testing.expect(blankText("   \n\n\t\r\n  \n")); // SPA: pages of blank lines
     try std.testing.expect(blankText("ok\n")); // a couple of stray chars is still no content
     try std.testing.expect(!blankText("# Example Domain\n\nThis domain is for use..."));
+    try std.testing.expect(std.mem.startsWith(u8, webfetch_accept, "text/markdown"));
 }
 
 test "companionNativeFallback: every companion tool maps to a native equivalent" {

@@ -29,7 +29,8 @@ parity" and would split the model's write path.
   numbered `read_file` plus exact `edit_file` is the equivalent.
 
 The cases live in `src/edit_grok_contract.zig`, driven through `exec.execTool`
-so the catalog name is what is tested.
+so the catalog name is what is tested. A miss includes a nearest-match line
+when a token from `old_string` appears in the file (`src/edit_hint.zig`).
 
 ## Consequences
 
