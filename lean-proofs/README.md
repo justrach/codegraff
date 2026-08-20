@@ -28,6 +28,6 @@ executable model       exported cells
 
 See `KERNELS.md` for what is in, what is next, and what will never be a
 kernel. The rule: **factor axes, then drop illegal cells**. Eighteen
-providers are one table over three wire kinds, not eighteen programs.
+providers are one table over three wire kinds, not nineteen programs.
 WebSocket is a predicate on `Kind × seat × flags`, and almost every
 cell is *not* WebSocket.

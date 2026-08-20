@@ -58,10 +58,10 @@ pub const LazyCodexCatalog = struct {
 /// (models.dev keys resellers like requesty/openrouter/vercel alongside the
 /// canonical labs). Names not found here fall back to an any-provider scan.
 const canonical_providers = [_][]const u8{
-    "openai",    "anthropic", "deepseek", "xai",     "zai",
-    "z-ai",      "zhipuai",   "google",   "minimax", "moonshotai",
-    "moonshot",  "mistral",   "meta",     "xiaomi",  "fireworks-ai",
-    "fireworks", "alibaba",
+    "openai",       "anthropic", "deepseek", "xai",     "zai",
+    "z-ai",         "zhipuai",   "google",   "minimax", "moonshotai",
+    "moonshot",     "mistral",   "meta",     "xiaomi",  "cerebras",
+    "fireworks-ai", "fireworks", "alibaba",
 };
 
 /// One refreshed metadata row — the subset of a models.dev model we cache.

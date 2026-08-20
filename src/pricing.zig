@@ -254,6 +254,9 @@ pub const model_table = [_]ModelInfo{
     // row for the same weights; kilo-auto routes dynamically, so its row
     // carries the conservative small-model window.
     .{ .provider = "groq", .name = "openai/gpt-oss-120b", .context = 131_072 },
+    // Cerebras Inference (api.cerebras.ai OpenAI chat) — not the WSE CSL SDK.
+    .{ .provider = "cerebras", .name = "gpt-oss-120b", .context = 131_072 },
+    .{ .provider = "cerebras", .name = "gemma-4-31b", .context = 131_072 },
     .{ .provider = "mistral", .name = "mistral-medium-latest", .context = 131_072 },
     .{ .provider = "kilo", .name = "kilo-auto/small", .context = 131_072 },
     // codegraff gateway (its claude aliases use dots, so they don't collide
