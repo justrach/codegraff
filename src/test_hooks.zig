@@ -131,6 +131,8 @@ const result_read = @import("result_read.zig"); // overflow handle pager
 const handle_preview = @import("handle_preview.zig"); // notable lines on first spill
 const context_limits = @import("context_limits.zig"); // named prefix caps
 const workspace_roots = @import("workspace_roots.zig"); // --add-dir extra roots
+const list_dir = @import("list_dir.zig"); // codedb list_dir (BFS + gitignore)
+const gitignore = @import("gitignore.zig"); // ignore matcher for list_dir
 const mcp_select = @import("mcp_select.zig"); // search-then-select MCP
 const plugins = @import("plugins.zig"); // ADR 0007 in-place plugin / foreign MCP discovery
 const plugin_layout = @import("plugin_layout.zig"); // Claude commands/ + inline MCP + ${CLAUDE_PLUGIN_ROOT}
@@ -272,6 +274,8 @@ test {
     _ = result_read;
     _ = context_limits;
     _ = workspace_roots;
+    _ = list_dir;
+    _ = gitignore;
     _ = mcp_select;
     _ = plugins;
     _ = plugin_layout;
