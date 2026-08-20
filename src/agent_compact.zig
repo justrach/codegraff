@@ -5,7 +5,6 @@ const std = @import("std");
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const utf8Prefix = @import("util.zig").utf8Prefix;
-const context_tokens = @import("context_tokens.zig");
 
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
@@ -39,30 +38,16 @@ pub const appendEvalLog = agent_eval.appendEvalLog;
 pub const runJudge = agent_eval.runJudge;
 
 pub const recent_context_tokens: u64 = 8_000;
+const compact_cut = @import("compact_cut.zig");
+pub const recentContextStart = compact_cut.recentContextStart;
+pub const cleanUserTurn = compact_cut.cleanUserTurn;
+pub const turnOpeningUserIndex = compact_cut.turnOpeningUserIndex;
+pub const emergencyCutIndex = compact_cut.emergencyCutIndex;
 
 /// Head-cap for a child's pinned task prompt when restated in a handoff.
 /// ~2k tokens; head-capped because a workflow child's prompt carries the
 /// previous phase's results as a TAIL, so the head is the instruction.
 pub const task_pin_cap: usize = 8_000;
-
-/// Pick the earliest clean user-turn boundary whose suffix fits in the recent
-/// context budget. Returning items.len means "summarize everything". We never
-/// split at a tool output, so retained call/result history stays valid.
-pub fn recentContextStart(items: []const Value, token_budget: u64) usize {
-    if (items.len == 0 or token_budget == 0) return items.len;
-    var total: u64 = 0;
-    var start = items.len;
-    var i = items.len;
-    while (i > 0) {
-        i -= 1;
-        total +|= context_tokens.estimatedTokens(items[i]);
-        if (total > token_budget) break;
-        if (cleanUserTurn(items[i])) start = i;
-    }
-    // If the entire conversation fits, summarizing all is the only operation
-    // that can actually reduce context; otherwise compaction would be a no-op.
-    return if (start == 0) items.len else start;
-}
 
 /// Ask the model for a context-handoff summary (no tools), then restart
 /// history from that summary.
@@ -150,6 +135,13 @@ pub fn compact(self: *Agent) anyerror!usize {
     const live_context_local_tokens = self.context_local_tokens;
     const live_effective_context = self.effectiveContextTokens();
     const recent_start = recentContextStart(live_messages.items, recent_context_tokens);
+    compact_cut.noteCut(self.tracer, live_messages.items, recent_start);
+    // #581: pinning the live prompt at index 0 means there is no completed
+    // prefix to summarize. Dropping it would replace current images with text.
+    if (recent_start == 0) {
+        if (!main_mod.json_mode) try self.say("[compaction skipped: the current prompt's attachments must stay verbatim]\n", .{});
+        return error.ActivePromptPinned;
+    }
     const recent_messages = live_messages.items[recent_start..];
     var summary_messages = std.json.Array.init(compact_arena);
     try summary_messages.ensureTotalCapacity(recent_start);
@@ -329,28 +321,6 @@ pub fn pinChildTask(self: *Agent) void {
     self.task_prompt = self.arena.dupe(u8, c.string) catch null;
 }
 
-pub fn cleanUserTurn(m: Value) bool {
-    if (m != .object) return false;
-    const role = m.object.get("role") orelse return false;
-    if (role != .string or !std.mem.eql(u8, role.string, "user")) return false;
-    const content = m.object.get("content") orelse return true;
-    switch (content) {
-        .string => |s| return !peer_context.isPeerInjectContent(s),
-        .array => |arr| {
-            // An anthropic user message that only carries tool_result blocks
-            // is the response half of a tool call — it can't begin a
-            // conversation, so it is not a safe trim boundary.
-            for (arr.items) |blk| {
-                if (blk != .object) continue;
-                const t = blk.object.get("type") orelse continue;
-                if (t == .string and std.mem.eql(u8, t.string, "tool_result")) return false;
-            }
-            return true;
-        },
-        else => return true,
-    }
-}
-
 /// #174: drop Responses `reasoning` items older than the last user message,
 /// in place (no allocation). These are exactly the items the backend discards
 /// from chained context (previous_response_id), so removing them can't lose
@@ -379,19 +349,6 @@ pub fn dropPriorTurnReasoning(self: *Agent) usize {
     const dropped = self.messages.items.len - w;
     self.messages.shrinkRetainingCapacity(w);
     return dropped;
-}
-
-/// Index to cut history at for an emergency trim: the first clean user turn
-/// at or after the midpoint, so messages[cut..] is always a valid
-/// conversation start (never an orphaned tool_result). null when there is no
-/// safe cut — too short, or only tool_result user messages remain.
-pub fn emergencyCutIndex(items: []const Value) ?usize {
-    if (items.len < 4) return null;
-    var i: usize = items.len / 2;
-    while (i < items.len) : (i += 1) {
-        if (cleanUserTurn(items[i])) return i;
-    }
-    return null;
 }
 
 /// Re-pair the meter after removing locally measurable context. The server-only
@@ -560,7 +517,7 @@ pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
                 self.compact_transport_failures = 0;
                 return; // user hit Esc mid-compaction
             },
-            error.EmptySummary, error.IncompleteSummary => {}, // compact() already explained it
+            error.EmptySummary, error.IncompleteSummary, error.ActivePromptPinned => {}, // compact() already explained it
             else => {
                 if (main_mod.json_mode)
                     self.emit(.{ .type = "error", .message = std.fmt.allocPrint(self.arena, "auto-compaction failed: {s}", .{@errorName(err)}) catch "auto-compaction failed" })

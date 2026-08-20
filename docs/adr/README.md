@@ -22,6 +22,7 @@ record only when you need the evidence or the edge cases.
 | [0009](0009-gpt-5-6-explicit-prompt-cache-boundary.md) | GPT-5.6 OpenAI Platform marks the stable prefix explicitly; Codex and xAI stay on their supported keyed automatic-cache paths. |
 | [0010](0010-background-jobs-wait-for-exit.md) | `bash_output`/`agent_output` `wait_ms>0` blocks until exit (10h cap); do not poll every 30s. |
 | [0011](0011-prompt-cache-max-is-visible.md) | Prompt-cache max is `/cache` posture, not a new default; `/btw` rides the parent prefix. |
+| [0012](0012-ask-user-images-are-a-follow-up-user-message.md) | `ask_user` images ride a follow-up user message after the text tool result; Responses/OpenAI tool output stays text-only. |
 
 ## When to write one
 

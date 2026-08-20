@@ -22,6 +22,7 @@ const util = @import("util.zig");
 const eval_control = @import("agent_eval_control.zig");
 const codex_chain = @import("codex_chain.zig");
 const toolResultMessage = messages_mod.toolResultMessage;
+const vision_queue = @import("vision_queue.zig");
 
 fn surfaceUnstreamedText(self: *Agent, text: []const u8) !void {
     if (self.sub or self.streamed_text or text.len == 0) return;
@@ -141,6 +142,7 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
             const fco = try toolResultMessage(self.arena, .responses, call.id, r.text, r.is_error);
             try self.messages.append(fco);
         }
+        try vision_queue.flushPending(self);
         if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) {
             if (try grantRepairTurn(self)) return null;
             return eval_control.verifier_hard_stop;
@@ -201,6 +203,7 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
         try user_msg.put(self.arena, "role", .{ .string = "user" });
         try user_msg.put(self.arena, "content", .{ .array = blocks });
         try self.messages.append(.{ .object = user_msg });
+        try vision_queue.flushPending(self);
 
         if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) {
             if (try grantRepairTurn(self)) return null;
@@ -289,6 +292,7 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
             const tool_msg = try toolResultMessage(self.arena, .openai, call.id, r.text, r.is_error);
             try self.messages.append(tool_msg);
         }
+        try vision_queue.flushPending(self);
         if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) {
             if (try grantRepairTurn(self)) return null;
             return eval_control.verifier_hard_stop;

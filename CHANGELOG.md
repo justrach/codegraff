@@ -10,6 +10,18 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## Unreleased
+
+- `ask_user` pasted images reach the next model request as real vision
+  blocks (a follow-up user message after the text tool result). Nine
+  `[Image]` placeholders with no pixels was #580. If nothing staged, the
+  tool result says so and names path / paste-text / next-prompt fallbacks.
+- Compaction and emergency trim stop before an unresolved current user
+  prompt and keep its image blocks verbatim (#581). A retry does not move
+  that cut. If the live prompt is the whole history, compact fails
+  explicitly instead of summarizing attachments to text. Traces emit
+  `compact_cut` with the boundary and preserved image count, not pixels.
+
 ## v0.0.267 (2026-08-19)
 
 - Background jobs wait like grok-build: `bash_output(wait_ms>0)` and
