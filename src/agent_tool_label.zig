@@ -208,13 +208,13 @@ pub fn compactBash(line: []const u8, buf: []u8) []const u8 {
 
 /// Drop a result preview that only restates the verb/detail (the edit
 /// harness saying "applied N edit span(s)…" when `+12/-4` is already there).
-pub fn usefulPreview(name: []const u8, detail: []const u8, shown: []const u8) []const u8 {
+pub fn usefulPreview(name: []const u8, known: []const u8, shown: []const u8) []const u8 {
     if (shown.len == 0) return shown;
     if (std.mem.eql(u8, name, "edit_file")) {
         if (std.mem.indexOf(u8, shown, "edit span") != null) return "";
-        if (std.mem.indexOf(u8, detail, " · +") != null) return "";
+        if (std.mem.indexOf(u8, known, " · +") != null) return "";
     }
-    if (detail.len > 0 and std.mem.eql(u8, shown, detail)) return "";
+    if (known.len > 0 and std.mem.eql(u8, shown, known)) return "";
     return shown;
 }
 
