@@ -80,8 +80,13 @@ def parse_answer_and_usage(harness, stdout, stderr):
             if ev.get("type") == "result":
                 answer = ev.get("result") or ""
                 u = ev.get("usage", {})
-                usage = {"calls": ev.get("num_turns"), "in": u.get("input_tokens"),
-                         "cached": u.get("cache_read_input_tokens"),
+                # Grok reports ordinary input separately from cache reads.
+                # Graff's `in` is the full prompt (ordinary + read + write).
+                tread = u.get("cache_read_input_tokens") or 0
+                twrite = u.get("cache_creation_input_tokens") or u.get("cache_write_input_tokens") or 0
+                tin = (u.get("input_tokens") or 0) + tread + twrite
+                usage = {"calls": ev.get("num_turns"), "in": tin,
+                         "cached": tread, "writes": twrite,
                          "out": u.get("output_tokens"), "api_ms": ev.get("duration_api_ms")}
     if harness["answer"] == "pi-json":
         answer, calls, tin, tread, twrite, tout, cost = "", 0, 0, 0, 0, 0, 0.0
@@ -323,11 +328,20 @@ def self_test():
     })
     _, pi_u = parse_answer_and_usage(
         {"answer": "pi-json", "usage": "pi-json"}, pi_out, "")
+    grok_out = json.dumps({
+        "type": "result", "result": "pong", "num_turns": 1,
+        "usage": {"input_tokens": 4000, "cache_read_input_tokens": 8000,
+                  "output_tokens": 20},
+        "duration_api_ms": 1000,
+    })
+    _, grok_u = parse_answer_and_usage(
+        {"answer": "grok-stream", "usage": "grok-stream"}, grok_out, "")
     ok = (old == {"calls": 3, "in": 14000, "cached": 8000, "writes": 0, "out": 200}
           and new == {"calls": 3, "in": 14000, "cached": 8000, "writes": 4000, "out": 200}
           and parse_graff_usage("no footer") == {}
-          and pi_u == {"calls": 1, "in": 200, "cached": 80, "writes": 20, "out": 5, "cost_usd": 0.01})
-    print("ok    usage footer (old + writes+$) and pi-json writes" if ok else "FAIL usage footer")
+          and pi_u == {"calls": 1, "in": 200, "cached": 80, "writes": 20, "out": 5, "cost_usd": 0.01}
+          and grok_u == {"calls": 1, "in": 12000, "cached": 8000, "writes": 0, "out": 20, "api_ms": 1000})
+    print("ok    usage footer (old + writes+$), pi-json, grok-stream" if ok else "FAIL usage footer")
     return ok
 
 
