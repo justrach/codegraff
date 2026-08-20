@@ -15,6 +15,14 @@ current is part of cutting a release.
 - Cerebras Inference is a built-in OpenAI-chat provider (`CEREBRAS_API_KEY`,
   `graff key set cerebras …`, default `gpt-oss-120b`). Live `/v1/models`
   overlay; this is `api.cerebras.ai`, not the WSE CSL SDK.
+- imagegen's Codex engine uses a private features-only `config.toml` so
+  `codex exec` no longer dies with `input contains invalid characters at
+  line 1 column N` from the user's MCP/skills overlay (#576).
+- `/resume` restores the peer-channel byte cursor and parked inbox instead
+  of replaying the last 10 room lines (ADR 0014). Peer wakes are not a
+  human turn for title or meaningful-state.
+- Directory listing is `codedb list_dir` (in-process BFS, gitignore, 10k
+  cap), not a new always-on catalog tool (ADR 0013).
 - Custom subagent files can be Codex-shaped TOML: `name`, `description`,
   `developer_instructions`, plus `model` / `model_reasoning_effort` /
   `isolation` / `tier`. Loaded from `~/.codex/agents`, `~/.harness/agents`,
