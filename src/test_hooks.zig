@@ -128,6 +128,7 @@ const peer_inbox = @import("peer_inbox.zig"); // Claude-style list/inbox pull
 const peer_target = @import("peer_target.zig"); // exact DM / goal targeting
 const workspace_switch = @import("workspace_switch.zig"); // ADR 0006 mid-session worktree switch
 const result_read = @import("result_read.zig"); // overflow handle pager
+const handle_preview = @import("handle_preview.zig"); // notable lines on first spill
 const context_limits = @import("context_limits.zig"); // named prefix caps
 const workspace_roots = @import("workspace_roots.zig"); // --add-dir extra roots
 const mcp_select = @import("mcp_select.zig"); // search-then-select MCP
