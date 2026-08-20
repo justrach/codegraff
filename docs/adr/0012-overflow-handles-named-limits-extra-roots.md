@@ -1,4 +1,4 @@
-# 0011. Overflow handles, named prefix caps, and extra roots
+# 0012. Overflow handles, named prefix caps, and extra roots
 
 Status: accepted 2026-08-19
 
