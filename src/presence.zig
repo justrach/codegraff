@@ -16,77 +16,18 @@ const util = @import("util.zig");
 const main_mod = @import("main.zig"); // `unattended`: one-shots join channel rooms at the tail, not the backlog
 
 const unixMs = util.unixMs;
+const presence_mutate = @import("presence_mutate.zig");
 
 const Owner = worktree_lease.Owner;
+
+pub const isSharedTreeGit = presence_mutate.isSharedTreeGit;
+pub const isSharedTreeShell = presence_mutate.isSharedTreeShell;
 
 /// Per-user registry: <home>/.graff/live. Deliberately NOT the per-project .graff/sessions of session_index.zig — presence is device-local and keyed by worktree identity so two checkouts of one repo stay distinct (#320).
 pub const registry_subdir = ".graff/live";
 
 const max_peers = 16;
 const record_max = 4096;
-
-/// Git subcommands that mutate the index, refs, or working tree — the shared state the #469 collision tore up. Read-only git (status/log/diff) and remote-only git (fetch/push) stay ungated: the checkpoint exists because two sessions edit ONE uncommitted tree, not because git ran.
-fn isSharedTreeSubcommand(sub: []const u8) bool {
-    const subs = [_][]const u8{
-        "add",     "rm",       "mv",           "commit", "reset",
-        "restore", "checkout", "switch",       "stash",  "pull",
-        "rebase",  "merge",    "cherry-pick",  "revert", "am",
-        "apply",   "clean",    "update-index",
-    };
-    for (subs) |s| if (std.mem.eql(u8, sub, s)) return true;
-    return false;
-}
-
-/// Whether `cmd` runs an index/tree-mutating git subcommand. Tokenizes on
-/// shell separators so `cd x && git add -A` and `sh -c 'git rm y'` classify by
-/// the subcommand, and skips git's global options so `git -C repo reset` is
-/// seen as `reset`. A quoted "git add" inside an echo string is a known false
-/// positive — the cost is one needless checkpoint line, the same trade
-/// harness_policy.isDestructiveGit makes for its substring scan.
-pub fn isSharedTreeGit(cmd: []const u8) bool {
-    var it = std.mem.tokenizeAny(u8, cmd, " \t\r\n;&|\"'`()");
-    while (it.next()) |tok| {
-        if (!std.mem.eql(u8, tok, "git")) continue;
-        while (it.next()) |arg| {
-            if (arg[0] == '-') {
-                // -C/-c take the NEXT token as their value; skip it too.
-                if (std.mem.eql(u8, arg, "-C") or std.mem.eql(u8, arg, "-c")) _ = it.next();
-                continue;
-            }
-            return isSharedTreeSubcommand(arg);
-        }
-        return false; // a bare `git` mutates nothing
-    }
-    return false;
-}
-
-/// The shell half of the #469 incident vector: `mv` (any form — a rename can
-/// disappear a file a peer just wrote) and recursive `rm`. Plain `rm` of one
-/// file stays ungated: the checkpoint exists for tree-level disruption, and
-/// it fires once per peer regardless, so the odd false positive costs one
-/// line, never a workflow.
-pub fn isSharedTreeShell(cmd: []const u8) bool {
-    var it = std.mem.tokenizeAny(u8, cmd, " \t\r\n;&|\"'`()");
-    while (it.next()) |tok| {
-        if (std.mem.eql(u8, tok, "mv")) {
-            var operands: usize = 0;
-            while (it.next()) |arg| {
-                if (arg[0] == '-') continue;
-                operands += 1;
-            }
-            if (operands >= 2) return true;
-            continue;
-        }
-        if (std.mem.eql(u8, tok, "rm")) {
-            while (it.next()) |arg| {
-                if (arg[0] != '-') break;
-                if (std.mem.indexOfAny(u8, arg, "rR") != null) return true;
-            }
-            continue;
-        }
-    }
-    return false;
-}
 
 /// The on-disk shape. Older/newer graffs tolerate each other via
 /// ignore_unknown_fields both ways (a superset write parses down fine).
@@ -296,6 +237,7 @@ pub fn deinit(gpa: Allocator) void {
     g_chan = null;
     g_self = .{};
     g_inbox_off = 0;
+    g_device_off = 0;
     g_tail_seeked = false;
     g_acked_len = 0;
 }
@@ -438,6 +380,48 @@ pub fn ownIdentity() []const u8 {
 
 pub const device_room = "chan-all.jsonl";
 
+/// Byte cursors into the worktree and device JSONL rooms. Persist these on
+/// the session file so `/resume` continues instead of re-hearing the tail
+/// (ADR 0014). Codex keeps a thread cursor; Claude persists the inbox.
+pub const RoomCursor = struct { chan: u64, device: u64 };
+
+pub fn roomCursor() RoomCursor {
+    return .{ .chan = g_inbox_off, .device = g_device_off };
+}
+
+pub fn adoptRoomCursor(c: RoomCursor) void {
+    g_inbox_off = c.chan;
+    g_device_off = c.device;
+    g_tail_seeked = true;
+}
+
+/// Join at the live tail — same as a `-p` one-shot. Used when a resumed
+/// session has no saved cursor (legacy file) so we do not replay stale room.
+pub fn seekRoomsToTail(io: Io, arena: Allocator) void {
+    const dir_path = g_dir orelse {
+        g_tail_seeked = true;
+        return;
+    };
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch {
+        g_tail_seeked = true;
+        return;
+    };
+    defer dir.close(io);
+    if (g_chan) |chan| {
+        if (dir.readFileAlloc(io, chan, arena, .limited(16 * 1024 * 1024)) catch null) |text|
+            g_inbox_off = @intCast(text.len);
+    }
+    if (dir.readFileAlloc(io, device_room, arena, .limited(16 * 1024 * 1024)) catch null) |text|
+        g_device_off = @intCast(text.len);
+    g_tail_seeked = true;
+}
+
+pub fn resetRoomCursorForTest() void {
+    g_inbox_off = 0;
+    g_device_off = 0;
+    g_tail_seeked = false;
+}
+
 /// Every live session on this device, any worktree (self excluded) — the
 /// /tell target list. Like liveTreePeers but identity-blind.
 pub fn liveAllPeers(io: Io, arena: Allocator) []const Owner {
@@ -491,37 +475,15 @@ pub fn drainDevice(io: Io, arena: Allocator) []const Message {
     return out.items;
 }
 
-test "isSharedTreeGit: flags index/tree-mutating git, ignores read-only git" {
-    try std.testing.expect(isSharedTreeGit("git add -A"));
-    try std.testing.expect(isSharedTreeGit("git commit -m \"wip\""));
-    try std.testing.expect(isSharedTreeGit("GIT_EDITOR=true git commit --amend"));
-    try std.testing.expect(isSharedTreeGit("git -C /tmp/repo reset HEAD~1"));
-    try std.testing.expect(isSharedTreeGit("git -c user.name=x commit"));
-    try std.testing.expect(isSharedTreeGit("cd sub && git stash"));
-    try std.testing.expect(isSharedTreeGit("sh -c 'git rm -r old/'"));
-    try std.testing.expect(isSharedTreeGit("git checkout -- src/"));
-    try std.testing.expect(!isSharedTreeGit("git status"));
-    try std.testing.expect(!isSharedTreeGit("git log --oneline -5"));
-    try std.testing.expect(!isSharedTreeGit("git diff HEAD"));
-    try std.testing.expect(!isSharedTreeGit("git push origin main"));
-    try std.testing.expect(!isSharedTreeGit("git branch"));
-    try std.testing.expect(!isSharedTreeGit("gh issue list"));
-    try std.testing.expect(!isSharedTreeGit("git"));
-    try std.testing.expect(!isSharedTreeGit("ls src/"));
-}
-
-test "isSharedTreeShell: flags mv and recursive rm, leaves everyday commands alone" {
-    try std.testing.expect(isSharedTreeShell("mv old/ new/"));
-    try std.testing.expect(isSharedTreeShell("mv a.ts b.ts"));
-    try std.testing.expect(isSharedTreeShell("mv src/a src/b dest/"));
-    try std.testing.expect(isSharedTreeShell("rm -rf node_modules"));
-    try std.testing.expect(isSharedTreeShell("rm -r build"));
-    try std.testing.expect(isSharedTreeShell("cd x && mv a b"));
-    try std.testing.expect(!isSharedTreeShell("rm -f .lock"));
-    try std.testing.expect(!isSharedTreeShell("rm one-file.txt"));
-    try std.testing.expect(!isSharedTreeShell("mv")); // no operands: a usage error, not a tree event
-    try std.testing.expect(!isSharedTreeShell("ls -la"));
-    try std.testing.expect(!isSharedTreeShell("echo moved"));
+test "roomCursor adopt/reset: resume continues from the saved byte offset" {
+    resetRoomCursorForTest();
+    defer resetRoomCursorForTest();
+    adoptRoomCursor(.{ .chan = 4096, .device = 128 });
+    const cur = roomCursor();
+    try std.testing.expectEqual(@as(u64, 4096), cur.chan);
+    try std.testing.expectEqual(@as(u64, 128), cur.device);
+    resetRoomCursorForTest();
+    try std.testing.expectEqual(@as(u64, 0), roomCursor().chan);
 }
 
 test "presence record round-trips pid, identity, and goal" {
