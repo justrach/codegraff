@@ -22,6 +22,7 @@ pub const changelog_text =
     \\What's new
     \\──────────
     \\0.0.268
+    \\  • Cerebras Inference (CEREBRAS_API_KEY → gpt-oss-120b); not the WSE CSL SDK
     \\  • Codex-shaped .harness/agents/*.toml (and ~/.codex/agents) pin model/effort
     \\  • Live bash chunks + idle job notify + raw terminal (do not poll)
     \\  • ask_user pastes reach the model as vision blocks; compact keeps the live prompt's images

@@ -12,6 +12,9 @@ current is part of cutting a release.
 
 ## v0.0.268 (2026-08-20)
 
+- Cerebras Inference is a built-in OpenAI-chat provider (`CEREBRAS_API_KEY`,
+  `graff key set cerebras …`, default `gpt-oss-120b`). Live `/v1/models`
+  overlay; this is `api.cerebras.ai`, not the WSE CSL SDK.
 - Custom subagent files can be Codex-shaped TOML: `name`, `description`,
   `developer_instructions`, plus `model` / `model_reasoning_effort` /
   `isolation` / `tier`. Loaded from `~/.codex/agents`, `~/.harness/agents`,

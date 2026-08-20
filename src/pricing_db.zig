@@ -156,10 +156,10 @@ fn readFields(scanner: *std.json.Scanner, sa: Allocator) !Fields {
 /// models_cache's `canonical_providers`, read off the key so a row never has to
 /// be parsed before it can be ranked.
 const canonical_vendors = [_][]const u8{
-    "openai",    "anthropic",    "deepseek",     "xai",      "zai",
-    "z-ai",      "zhipuai",      "minimax",      "moonshot", "moonshotai",
-    "mistral",   "xiaomi",       "groq",         "google",   "gemini",
-    "fireworks", "fireworks_ai", "fireworks-ai",
+    "openai",  "anthropic", "deepseek",     "xai",          "zai",
+    "z-ai",    "zhipuai",   "minimax",      "moonshot",     "moonshotai",
+    "mistral", "xiaomi",    "groq",         "cerebras",     "google",
+    "gemini",  "fireworks", "fireworks_ai", "fireworks-ai",
 };
 
 /// A reseller quotes the same weights at its own margin. Trusting it for a
