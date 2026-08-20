@@ -204,6 +204,24 @@ pub const ContextMeter = struct {
     compact_at: u64,
 };
 
+/// Standing work the line REPL may draw above the model prompt. Empty
+/// strings and zeros mean "nothing to show" so a sink can skip the row.
+/// The engine snapshots facts the session already holds; the sink decides
+/// order, clip, and whether the row exists at all.
+pub const StandingWork = struct {
+    /// Human title, or a non-default session name. Empty = untitled `last`.
+    session: []const u8 = "",
+    /// Live standing goal (not complete). Empty = none.
+    goal: []const u8 = "",
+    /// Lifecycle when the goal is not the default active: "paused" / "blocked".
+    goal_status: []const u8 = "",
+    /// Current-epoch checklist. `todos_total == 0` means no list to show.
+    todos_done: u32 = 0,
+    todos_total: u32 = 0,
+    /// `/image` or Ctrl-V staged a picture for the next send.
+    image: bool = false,
+};
+
 /// Everything the status line printed before a human turn actually says.
 /// Deliberately semantic: no widths, no colors, no assembled segments. Which
 /// badges survive a narrow pane is a rendering decision (#209) and belongs to
@@ -230,6 +248,7 @@ pub const PromptStatus = struct {
     plan: bool = false,
     strict: bool = false,
     ultracode: bool = false,
+    standing: StandingWork = .{},
 };
 
 /// Everything the streaming path tells a frontend. Each doc comment states

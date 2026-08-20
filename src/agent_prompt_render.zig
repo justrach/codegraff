@@ -17,6 +17,7 @@ const Io = std.Io;
 const style = &@import("ansi.zig").style;
 const terminal = @import("term.zig");
 const engine_events = @import("engine_events.zig");
+const util = @import("util.zig");
 const PromptStatus = engine_events.PromptStatus;
 
 pub fn reasoningLabel(effort: anytype) []const u8 {
@@ -89,7 +90,67 @@ pub fn promptLine(w: *Io.Writer, st: PromptStatus) void {
     line(w, st, terminal.termCols()) catch return;
 }
 
+fn standingActive(sw: engine_events.StandingWork) bool {
+    return sw.goal.len > 0 or sw.todos_total > 0 or sw.image or sw.session.len > 0;
+}
+
+/// Dim row above `[model] ›` when the session has standing work. Drops from
+/// the right on a narrow pane (same #209 rule as the badges): Goal first,
+/// then the checklist, then the staged-image hint, then the session name.
+fn standingLine(w: *Io.Writer, sw: engine_events.StandingWork, cols: usize) !void {
+    if (!standingActive(sw)) return;
+    var parts: [4][]const u8 = undefined;
+    var n: usize = 0;
+    var goal_buf: [80]u8 = undefined;
+    if (sw.goal.len > 0) {
+        const clip = util.utf8Prefix(sw.goal, 40);
+        parts[n] = if (sw.goal_status.len > 0)
+            (std.fmt.bufPrint(&goal_buf, "Goal ({s})  {s}", .{ sw.goal_status, clip }) catch "Goal")
+        else
+            (std.fmt.bufPrint(&goal_buf, "Goal  {s}", .{clip}) catch "Goal");
+        n += 1;
+    }
+    var todo_buf: [24]u8 = undefined;
+    if (sw.todos_total > 0) {
+        parts[n] = std.fmt.bufPrint(&todo_buf, "{d}/{d}", .{ sw.todos_done, sw.todos_total }) catch "";
+        n += 1;
+    }
+    if (sw.image) {
+        parts[n] = "image ready";
+        n += 1;
+    }
+    if (sw.session.len > 0) {
+        parts[n] = sw.session;
+        n += 1;
+    }
+
+    // Two-space indent + the first segment, then ` · ` between survivors.
+    const avail = if (cols > 2) cols - 2 else 0;
+    var used: usize = 0;
+    var show: usize = 0;
+    while (show < n) : (show += 1) {
+        const extra = if (show == 0) parts[show].len else 3 + parts[show].len;
+        if (used + extra > avail) break;
+        used += extra;
+    }
+    if (show == 0) return; // even the Goal clip will not fit — skip the row
+
+    try w.print("{s}  ", .{style.dim});
+    var i: usize = 0;
+    while (i < show) : (i += 1) {
+        if (i > 0) try w.writeAll(" · ");
+        if (i == 0 and sw.goal.len > 0) {
+            try w.print("{s}{s}{s}{s}", .{ style.reset, style.accent, parts[i], style.dim });
+        } else {
+            try w.writeAll(parts[i]);
+        }
+    }
+    try w.print("{s}\n", .{style.reset});
+}
+
 fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
+    try w.writeByte('\n');
+    try standingLine(w, st.standing, cols);
     var cbuf: [40]u8 = undefined;
     const cost: []const u8 = switch (st.cost) {
         .hidden => "",
@@ -150,7 +211,7 @@ fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
     const show_cached = show_ctx and cached.len > 0 and fitsSegment(&used, avail, cached.len);
     const show_cost = cost.len > 0 and fitsSegment(&used, avail, cost.len);
 
-    try w.print("\n{s}[{s}{s}{s}{s}", .{ style.dim, style.reset, style.accent, st.model, style.reset });
+    try w.print("{s}[{s}{s}{s}{s}", .{ style.dim, style.reset, style.accent, st.model, style.reset });
     // Fast is the most operationally important model setting, so keep it
     // immediately beside the model instead of letting permission modes push
     // it deeper into the status line.
@@ -372,4 +433,74 @@ test "batch 3: the cache badge rides with the context meter, never alone" {
         .cache_read = 4096, // reported, but no context meter to ride with
     });
     try std.testing.expect(std.mem.indexOf(u8, out, "cached") == null);
+}
+
+test "standing row sits above the model prompt and is skipped when empty" {
+    const saved = style.*;
+    style.* = .{};
+    defer style.* = saved;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const bare: PromptStatus = .{
+        .model = "m",
+        .provider_id = "p",
+        .cwd = "/w",
+        .privacy_label = "Privacy:Local",
+        .privacy = .local,
+    };
+    try std.testing.expectEqualStrings(
+        "\n[m · p · Privacy:Local · cwd /w] › ",
+        renderPlain(&aw, bare),
+    );
+
+    aw.clearRetainingCapacity();
+    const out = renderPlain(&aw, .{
+        .model = "m",
+        .provider_id = "p",
+        .cwd = "/w",
+        .privacy_label = "Privacy:Local",
+        .privacy = .local,
+        .standing = .{
+            .session = "login-fix",
+            .goal = "ship the repl standing line",
+            .goal_status = "paused",
+            .todos_done = 1,
+            .todos_total = 2,
+            .image = true,
+        },
+    });
+    try std.testing.expectEqualStrings(
+        "\n  Goal (paused)  ship the repl standing line · 1/2 · image ready · login-fix\n" ++
+            "[m · p · Privacy:Local · cwd /w] › ",
+        out,
+    );
+}
+
+test "standing row drops session then image then todos on a narrow pane" {
+    const saved = style.*;
+    style.* = .{};
+    defer style.* = saved;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const st: PromptStatus = .{
+        .model = "m",
+        .provider_id = "p",
+        .cwd = "/w",
+        .privacy_label = "Privacy:Local",
+        .privacy = .local,
+        .standing = .{
+            .session = "login-fix",
+            .goal = "ship it",
+            .todos_done = 1,
+            .todos_total = 2,
+            .image = true,
+        },
+    };
+    // Room for Goal + checklist only (image + session drop). The model
+    // badges still keep privacy at this width; cwd is the first to go.
+    try line(&aw.writer, st, 28);
+    try std.testing.expectEqualStrings(
+        "\n  Goal  ship it · 1/2\n[m · p · Privacy:Local] › ",
+        aw.writer.buffered(),
+    );
 }
