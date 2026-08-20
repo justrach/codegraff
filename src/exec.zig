@@ -57,6 +57,7 @@ const skill_docs = @import("skill_docs.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: refuse an MCP tool whose schema was never loaded
 const read_file = @import("read_file.zig");
 const result_read = @import("result_read.zig");
+const list_dir = @import("list_dir.zig"); // codedb list_dir: in-process BFS listing
 // #337: edit_file's verified write path, plus the file-tool helpers that moved
 // out with it (this file is at the 600-line ceiling).
 const edit_verify = @import("edit_verify.zig");
@@ -458,6 +459,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         const cmd = strField(input, "command") orelse return missingArg(gpa, "command");
         var it = std.mem.tokenizeAny(u8, cmd, " \t");
         const sub = it.next() orelse return .{ .text = try gpa.dupe(u8, "usage: codedb <subcommand> [args] — e.g. search <q>, symbol <name>, callers <name>, outline <path>"), .is_error = true };
+        if (std.mem.eql(u8, sub, "list_dir")) return list_dir.exec(ctx, it.rest());
         // Allowlist read-only subcommands: never run the long-lived daemons
         // (serve/mcp) — they'd block this tool forever — or the destructive
         // ones (update/nuke).
@@ -466,7 +468,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         for (ok_subs) |s| if (std.mem.eql(u8, s, sub)) {
             allowed = true;
         };
-        if (!allowed) return .{ .text = try std.fmt.allocPrint(gpa, "codedb subcommand '{s}' is not allowed here — use one of: search, symbol, callers, find, outline, read, tree, context, word, deps, glob, ls, file, hot", .{sub}), .is_error = true };
+        if (!allowed) return .{ .text = try std.fmt.allocPrint(gpa, "codedb subcommand '{s}' is not allowed here — use one of: search, symbol, callers, find, outline, read, tree, list_dir, context, word, deps, glob, ls, file, hot", .{sub}), .is_error = true };
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(gpa);
         argv.append(gpa, "codedb") catch {};
