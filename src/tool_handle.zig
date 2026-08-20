@@ -28,6 +28,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const util = @import("util.zig");
+const handle_preview = @import("handle_preview.zig");
 
 /// Where a handle's bytes live. Run-scoped rather than session-scoped: a
 /// subagent has no durable session (that is why the #409 spill skips it) but
@@ -136,9 +137,21 @@ pub fn forResult(gpa: Allocator, arena: Allocator, target: Target, text: []const
     // A marker that cannot fit under the threshold replaces the preview rather
     // than growing past it: the pointer matters more than the head.
     if (marker.len + 2 >= threshold) return .{ .text = marker, .path = path, .bytes = text.len };
-    const head = util.utf8Prefix(text, threshold - (marker.len + 2));
-    return .{
+    // Notable lines past the head (FAILED / ERROR / panic) ride the first
+    // payload so a fat log does not cost a pager turn for "what broke?".
+    const room = threshold - (marker.len + 2);
+    const excerpt_budget = @min(handle_preview.max_notable_bytes, room / 4);
+    const skip = if (room > excerpt_budget) room - excerpt_budget else room;
+    const excerpt = handle_preview.notableExcerpt(arena, text, skip, excerpt_budget) catch "";
+    const used = marker.len + excerpt.len + (if (excerpt.len == 0) @as(usize, 2) else 4);
+    const head = util.utf8Prefix(text, if (used < threshold) threshold - used else 0);
+    if (excerpt.len == 0) return .{
         .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ head, marker }),
+        .path = path,
+        .bytes = text.len,
+    };
+    return .{
+        .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}\n{s}", .{ head, excerpt, marker }),
         .path = path,
         .bytes = text.len,
     };
@@ -386,6 +399,27 @@ test "#440: over the threshold returns preview + handle path + byte count + shap
     try std.testing.expect(std.mem.indexOf(u8, stored, needle) != null);
     // (e) the preview really is the head of the result
     try std.testing.expect(std.mem.startsWith(u8, r.text, big[0..64]));
+}
+
+test "#440: a FAILED line past the head rides the first handle payload" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    resetForTest();
+    defer resetForTest();
+
+    const fail = "request_id=req-8c41de07 status=FAILED reason=undefined_symbol\n";
+    const big = try a.alloc(u8, 40_000);
+    @memset(big, 'x');
+    for (0..399) |i| big[(i + 1) * 100 - 1] = '\n';
+    @memcpy(big[38_000..][0..fail.len], fail);
+
+    const r = try forResult(std.testing.allocator, a, testTarget(&tmp), big, 4096);
+    try std.testing.expect(r.text.len <= 4096);
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "req-8c41de07") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "notable lines") != null);
 }
 
 test "#440: the threshold is a knob — the same payload is bounded by whatever it is set to" {

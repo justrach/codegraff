@@ -22,7 +22,8 @@ pub const tool_schema =
 pub const default_limit: usize = 4096;
 pub const max_limit: usize = 16384;
 const max_hits: usize = 8;
-const window_pad: usize = 80;
+const handle_preview = @import("handle_preview.zig");
+const max_hit_bytes: usize = 1024;
 
 /// Parse `tr_12` (or `TR_12`) into the sequence number. null when the token
 /// is not a handle id.
@@ -59,9 +60,12 @@ fn search(arena: std.mem.Allocator, text: []const u8, query: []const u8) ![]cons
         const rest = text[i..];
         const at = std.mem.indexOf(u8, rest, query) orelse break;
         const abs = i + at;
-        const lo = abs -| window_pad;
-        const hi = @min(text.len, abs + query.len + window_pad);
-        try aw.writer.print("hit {d} at byte {d}:\n{s}\n---\n", .{ hits + 1, abs, text[lo..hi] });
+        // Whole matching line, not an 80-byte pad: a long `status=FAILED`
+        // line has request_id before the match, and a pad cut it off.
+        const b = handle_preview.lineBounds(text, abs);
+        const span = text[b.lo..b.hi];
+        const shown = if (span.len > max_hit_bytes) span[0..max_hit_bytes] else span;
+        try aw.writer.print("hit {d} at byte {d}:\n{s}\n---\n", .{ hits + 1, abs, shown });
         hits += 1;
         i = abs + query.len;
     }
@@ -148,4 +152,14 @@ test "byte-range and query stay bounded" {
     const hits = try search(a, big, "NEEDLE");
     try std.testing.expect(std.mem.indexOf(u8, hits, "2 hit(s)") != null);
     try std.testing.expectError(error.EmptyQuery, search(a, big, ""));
+}
+
+test "query returns the whole matching line, including bytes before the needle" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const line = "request_id=req-8c41de07 stage=link status=FAILED reason=undefined_symbol";
+    const hits = try search(a, "ok\n" ++ line ++ "\nzz", "FAILED");
+    try std.testing.expect(std.mem.indexOf(u8, hits, "req-8c41de07") != null);
+    try std.testing.expect(std.mem.indexOf(u8, hits, "1 hit(s)") != null);
 }

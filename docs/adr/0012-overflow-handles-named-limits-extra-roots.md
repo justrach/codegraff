@@ -18,7 +18,8 @@ load, and extra roots that are not a `workspace` cwd switch.
 
 - A result over the handle threshold is stored as `.graff/tool-results/tr_N.txt`.
   The model pages it with `read_tool_result` (`offset`/`limit` or `query`).
-  The full blob does not re-enter history.
+  `query` returns the whole matching line. The first payload also includes a
+  bounded excerpt of error-shaped lines. The full blob does not re-enter history.
 - `--context-limit name=N` (and `GRAFF_CONTEXT_LIMIT`) caps
   `skill_catalog_bytes`, `mcp_schema_bytes`, and `agents_md_bytes`. `apply`
   never grows. Defaults 4 KiB / 8 KiB / 8 KiB.
@@ -30,7 +31,10 @@ load, and extra roots that are not a `workspace` cwd switch.
 
 ## Consequences
 
-- One fat bash/codedb hit costs one preview plus later slices.
+- One fat bash/codedb hit costs one preview plus later slices. The first
+  payload includes a bounded excerpt of error-shaped lines (fail / error /
+  panic / …) so "what broke?" does not need a pager turn; `query` returns
+  the whole matching line, not an 80-byte pad.
 - Named caps are prompt-cache-stable: shrinking a listing does not rewrite
   tool names or pin policy.
 - Extra-root absolute paths become `confinedPath` when they stay under a
