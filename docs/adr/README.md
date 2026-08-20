@@ -25,6 +25,7 @@ record only when you need the evidence or the edge cases.
 | [0012](0012-acp-is-an-adapter.md) | `graff acp` is a protocol adapter over the existing loop; PromptResponse.usage is the per-turn cache-aware tally. |
 | [0013](0013-acp-cards-idle-wake-monitor.md) | ACP streams tool cards and text deltas; idle jobs wake the next turn; `monitor` watches lines. |
 | [0014](0014-edit-file-is-search-replace.md) | `edit_file` is grok `search_replace`; no second name; no hashline; empty old_string does not create. |
+| [0015](0015-basic-tools-stay-graff-shaped.md) | `read_file` stays byte-exact; no grok offset/limit, list_dir, grep, or mkdir-p write. |
 
 ## When to write one
 

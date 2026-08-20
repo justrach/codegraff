@@ -162,6 +162,8 @@ const escalation_tests = @import("escalation_tests.zig");
 const edit_contract = @import("edit_contract.zig");
 // Grok-build search_replace / OpenCode edit cases on graff edit_file (ADR 0014).
 const edit_grok_contract = @import("edit_grok_contract.zig");
+// Grok-build read/write cases on graff read_file / write_file (ADR 0015).
+const basic_grok_contract = @import("basic_grok_contract.zig");
 const phase_budget = @import("phase_budget.zig");
 const orchestration_policy = @import("orchestration_policy.zig");
 const orchestration_policy_tests = @import("orchestration_policy_tests.zig");
@@ -298,6 +300,7 @@ test {
     _ = escalation_tests;
     _ = edit_contract;
     _ = edit_grok_contract;
+    _ = basic_grok_contract;
     _ = phase_budget;
     _ = orchestration_policy;
     _ = orchestration_policy_tests;
