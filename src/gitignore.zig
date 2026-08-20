@@ -204,20 +204,28 @@ pub fn loadClimb(io: Io, arena: Allocator, abs_root: []const u8) ![]Rule {
         }
         cur = parentOf(cur) orelse break;
     }
-    // dirs is leaf-first; reverse so the git root (or top) applies first.
-    var i: usize = dirs.items.len;
+    // With a git root: parent files first (nested wins). Without one: only
+    // the walk root — climbing into /tmp/.gitignore would make listings
+    // depend on the host.
     var out: std.ArrayList(Rule) = .empty;
-    while (i > 0) {
-        i -= 1;
-        const d = dirs.items[i];
+    if (git_root != null) {
+        var i: usize = dirs.items.len;
+        while (i > 0) {
+            i -= 1;
+            const d = dirs.items[i];
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const gi = std.fmt.bufPrint(&buf, "{s}/.gitignore", .{d}) catch continue;
+            loadFile(io, arena, gi, d, &out);
+        }
+        if (git_root) |g| {
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const ex = std.fmt.bufPrint(&buf, "{s}/.git/info/exclude", .{g}) catch return out.items;
+            loadFile(io, arena, ex, g, &out);
+        }
+    } else {
         var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const gi = std.fmt.bufPrint(&buf, "{s}/.gitignore", .{d}) catch continue;
-        loadFile(io, arena, gi, d, &out);
-    }
-    if (git_root) |g| {
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const ex = std.fmt.bufPrint(&buf, "{s}/.git/info/exclude", .{g}) catch return out.items;
-        loadFile(io, arena, ex, g, &out);
+        const gi = std.fmt.bufPrint(&buf, "{s}/.gitignore", .{abs_root}) catch return out.items;
+        loadFile(io, arena, gi, abs_root, &out);
     }
     return out.items;
 }
@@ -250,6 +258,23 @@ test "nested ignore file only covers its subtree" {
     const rules = try parse(a, "*.tmp\n", "/work/src");
     try std.testing.expect(try ignored(a, rules, "/work", "/work/src/x.tmp", false));
     try std.testing.expect(!try ignored(a, rules, "/work", "/work/x.tmp", false));
+}
+
+test "without a git root only the walk dir gitignore applies" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    tmp.dir.writeFile(io, .{ .sub_path = ".gitignore", .data = "local.skip\n" }) catch unreachable;
+    tmp.dir.writeFile(io, .{ .sub_path = "local.skip", .data = "x" }) catch unreachable;
+    tmp.dir.writeFile(io, .{ .sub_path = "keep.txt", .data = "x" }) catch unreachable;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &buf);
+    const rules = try loadClimb(io, a, buf[0..n]);
+    try std.testing.expect(try ignored(a, rules, buf[0..n], try std.fmt.allocPrint(a, "{s}/local.skip", .{buf[0..n]}), false));
+    try std.testing.expect(!try ignored(a, rules, buf[0..n], try std.fmt.allocPrint(a, "{s}/keep.txt", .{buf[0..n]}), false));
 }
 
 test "double-star and comments" {
