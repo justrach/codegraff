@@ -1,7 +1,7 @@
 /-
   Provider table kernel.
 
-  Eighteen baked rows. Each row is data: an id plus the axes `Kind`,
+  Nineteen baked rows. Each row is data: an id plus the axes `Kind`,
   `Auth`, login, catalog, and two bools. The program does not branch per
   brand. Adding a vendor is one constructor here and one line in
   `provider.zig`; the Zig fixture test is the ratchet.
@@ -51,6 +51,7 @@ def specs : List Row :=
   , { id := "minimax",    kind := .anthropic, auth := .bearer }
   , { id := "xiaomi",     kind := .openai,    auth := .bearer }
   , { id := "kilo",       kind := .openai,    auth := .bearer }
+  , { id := "vercel",     kind := .openai,    auth := .bearer,  catalog := .openai }
   , { id := "groq",       kind := .openai,    auth := .bearer }
   , { id := "mistral",    kind := .openai,    auth := .bearer }
   , { id := "kimi",       kind := .openai,    auth := .bearer,  login := .kimiDevice, catalog := .kimi, subLogin := true }
@@ -80,7 +81,7 @@ def xApiKeyCount : Nat := countWhere (fun r => r.auth == .xApiKey) specs
 
 def providerRows : Nat := specs.length
 
-theorem provider_cube : providerRows = 18 := by native_decide
+theorem provider_cube : providerRows = 19 := by native_decide
 theorem responses_vendors : responsesCount = 2 := by native_decide
 theorem one_x_api_key : xApiKeyCount = 1 := by native_decide
 

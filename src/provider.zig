@@ -90,6 +90,7 @@ pub const provider_specs = [_]ProviderSpec{
     .{ .id = "minimax", .display_name = "MiniMax", .kind = .anthropic, .auth = .bearer, .url = "https://api.minimax.io/anthropic/v1/messages", .env_key = "MINIMAX_API_KEY", .default_model = "MiniMax-M3" },
     .{ .id = "xiaomi", .display_name = "Xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
     .{ .id = "kilo", .display_name = "Kilo Gateway", .kind = .openai, .auth = .bearer, .url = "https://api.kilo.ai/api/gateway/v1/chat/completions", .env_key = "KILO_API_KEY", .default_model = "kilo-auto/small" },
+    .{ .id = "vercel", .display_name = "Vercel AI Gateway", .kind = .openai, .auth = .bearer, .url = "https://ai-gateway.vercel.sh/coding-agent/v1/chat/completions", .env_key = "AI_GATEWAY_API_KEY", .default_model = "anthropic/claude-sonnet-4.6", .catalog = .openai, .models_url = "https://ai-gateway.vercel.sh/coding-agent/v1/models" },
     .{ .id = "groq", .display_name = "Groq", .kind = .openai, .auth = .bearer, .url = "https://api.groq.com/openai/v1/chat/completions", .env_key = "GROQ_API_KEY", .default_model = "openai/gpt-oss-120b" },
     .{ .id = "mistral", .display_name = "Mistral", .kind = .openai, .auth = .bearer, .url = "https://api.mistral.ai/v1", .env_key = "MISTRAL_API_KEY", .default_model = "mistral-medium-latest" },
     // Kimi Code publishes the protocol per model. Missing/`kimi` is the native

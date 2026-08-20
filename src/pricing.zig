@@ -256,6 +256,9 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "groq", .name = "openai/gpt-oss-120b", .context = 131_072 },
     .{ .provider = "mistral", .name = "mistral-medium-latest", .context = 131_072 },
     .{ .provider = "kilo", .name = "kilo-auto/small", .context = 131_072 },
+    // Vercel AI Gateway: offline default so `--model vercel` boots before
+    // the live /models fetch. Slugs are provider/model (dots, not hyphens).
+    .{ .provider = "vercel", .name = "anthropic/claude-sonnet-4.6", .context = 1_000_000 },
     // codegraff gateway (its claude aliases use dots, so they don't collide
     // with the anthropic rows above)
     .{ .provider = "codegraff", .name = "claude-opus-4.8", .context = 1_000_000 },

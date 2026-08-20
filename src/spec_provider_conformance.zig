@@ -84,3 +84,23 @@ test "spec/provider: baked specs match the Lean table" {
         }
     }
 }
+
+test "vercel: coding-agent OpenAI wire, inert without AI_GATEWAY_API_KEY" {
+    const spec = provider_mod.specFor("vercel") orelse return error.MissingVercelSpec;
+    try std.testing.expectEqualStrings("AI_GATEWAY_API_KEY", spec.env_key);
+    try std.testing.expectEqualStrings("https://ai-gateway.vercel.sh/coding-agent/v1/chat/completions", spec.url);
+    try std.testing.expectEqualStrings("https://ai-gateway.vercel.sh/coding-agent/v1/models", spec.models_url);
+    try std.testing.expectEqual(Provider.Kind.openai, spec.kind);
+    try std.testing.expectEqual(ProviderSpec.CatalogKind.openai, spec.catalog);
+    try std.testing.expect(!spec.sub_login);
+    var values: [provider_mod.provider_specs.len]?[]const u8 = @splat(null);
+    for (provider_mod.provider_specs, 0..) |s, i| {
+        if (std.mem.eql(u8, s.id, "vercel")) values[i] = "k";
+    }
+    const keys = provider_mod.Keys{ .values = values };
+    const p = try keys.providerById("vercel", "anthropic/claude-sonnet-4.6");
+    try std.testing.expectEqualStrings("vercel", p.id);
+    try std.testing.expectEqualStrings(spec.url, p.url);
+    const none = provider_mod.Keys{ .values = @splat(null) };
+    try std.testing.expectError(error.MissingKey, none.providerById("vercel", "anthropic/claude-sonnet-4.6"));
+}

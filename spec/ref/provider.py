@@ -38,6 +38,7 @@ SPECS: list[dict] = [
     row("minimax", "anthropic", "bearer"),
     row("xiaomi", "openai", "bearer"),
     row("kilo", "openai", "bearer"),
+    row("vercel", "openai", "bearer", catalog="openai"),
     row("groq", "openai", "bearer"),
     row("mistral", "openai", "bearer"),
     row("kimi", "openai", "bearer", login="kimi_device", catalog="kimi", sub_login=True),

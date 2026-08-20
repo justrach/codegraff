@@ -12,6 +12,10 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- Vercel AI Gateway is a built-in provider (`vercel`). Set
+  `AI_GATEWAY_API_KEY` or `graff key set vercel …`; it stays inert
+  without a key. Default model is `anthropic/claude-sonnet-4.6`; the
+  live catalog is `GET /coding-agent/v1/models`.
 - `graff acp` reports per-turn `PromptResponse.usage` (full prompt + cache
   reads/writes) and a `usage_update` with session context size and cumulative
   cost. `initialize` carries `agentInfo`. String protocol versions and
