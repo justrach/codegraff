@@ -105,7 +105,7 @@ def parse_answer_and_usage(harness, stdout, stderr):
                 answer = "".join(c.get("text", "") for c in msg.get("content", [])
                                  if c.get("type") == "text") or answer
         usage = {"calls": calls, "in": tin + tread + twrite, "cached": tread,
-                 "out": tout, "cost_usd": round(cost, 6)}
+                 "writes": twrite, "out": tout, "cost_usd": round(cost, 6)}
     if harness.get("usage") == "graff-stderr":
         usage.update(parse_graff_usage(stderr))
     return answer, usage
@@ -312,10 +312,22 @@ def self_test():
     old = parse_graff_usage("[usage] 3 api call(s) · 14000 in (8000 cached) + 200 out tokens\n")
     new = parse_graff_usage(
         "[usage] 3 api call(s) · 14000 in (8000 cached, 4000 cache writes) + 200 out tokens · $0.0123\n")
+    pi_out = json.dumps({
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input": 100, "cacheRead": 80, "cacheWrite": 20, "output": 5,
+                      "cost": {"total": 0.01}},
+        },
+    })
+    _, pi_u = parse_answer_and_usage(
+        {"answer": "pi-json", "usage": "pi-json"}, pi_out, "")
     ok = (old == {"calls": 3, "in": 14000, "cached": 8000, "writes": 0, "out": 200}
           and new == {"calls": 3, "in": 14000, "cached": 8000, "writes": 4000, "out": 200}
-          and parse_graff_usage("no footer") == {})
-    print("ok    usage footer (old + writes+$)" if ok else "FAIL usage footer")
+          and parse_graff_usage("no footer") == {}
+          and pi_u == {"calls": 1, "in": 200, "cached": 80, "writes": 20, "out": 5, "cost_usd": 0.01})
+    print("ok    usage footer (old + writes+$) and pi-json writes" if ok else "FAIL usage footer")
     return ok
 
 
