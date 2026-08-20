@@ -213,6 +213,13 @@ const sandbox_docker = @import("sandbox_docker.zig");
 const commands_sandbox = @import("commands_sandbox.zig");
 const sandbox_tests = @import("sandbox_tests.zig");
 
+// wasm32 kernel surface (ADR 0012). wasm_main.zig is the freestanding
+// entry and must stay out of this graph — it overrides panic.
+const kernel_catalog = @import("kernel_catalog.zig");
+const kernel_path = @import("kernel_path.zig");
+const kernel_conformance = @import("kernel_conformance.zig");
+const wasm_abi = @import("wasm_abi.zig");
+
 test {
     _ = learn_holdout;
     _ = learn_receipt;
@@ -298,4 +305,8 @@ test {
     _ = sandbox_docker;
     _ = commands_sandbox;
     _ = sandbox_tests;
+    _ = kernel_catalog;
+    _ = kernel_path;
+    _ = kernel_conformance;
+    _ = wasm_abi;
 }

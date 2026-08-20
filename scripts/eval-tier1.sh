@@ -25,7 +25,7 @@ cd "$repo_root"
 # processes discover their repo from their cwd like they expect.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
 
-CHECKS=(fmt lines spec reach build tests tui tuiguard invariants sdk)
+CHECKS=(fmt lines spec reach build tests tui tuiguard invariants sdk wasm)
 
 usage() {
   cat <<'EOF'
@@ -43,6 +43,7 @@ checks, in order:
               and virtual-screen checks (test-tui-screenstate.py)
   invariants  the named goal/loop/todo tests actually ran, not just compiled
   sdk         the committed SDKs match `graff --schema`
+  wasm        zig build wasm (graff-kernel.wasm still compiles)
 EOF
 }
 
@@ -437,6 +438,21 @@ if wanted sdk; then
       printf '  sdk/generate.py failed\n'
       record_fail sdk
     fi
+  fi
+fi
+
+# --- wasm --------------------------------------------------------------
+# Compile-only: the kernels must keep targeting wasm32-freestanding. Semantics
+# stay in the native suite (kernel_catalog / kernel_path / wasm_abi). Does not
+# depend on zig-out/bin/graff.
+if wanted wasm; then
+  announce wasm "zig build wasm — graff-kernel.wasm still compiles"
+  if zig build wasm; then
+    printf '  zig-out/bin/graff-kernel.wasm is current\n'
+  else
+    printf '    the wasm32-freestanding kernel target failed to compile.\n'
+    printf '    fix: zig build wasm\n'
+    record_fail wasm
   fi
 fi
 

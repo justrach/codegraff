@@ -4,6 +4,10 @@ TypeScript (`ts/`) and Python (`py/`) clients that drive graff over its
 `--json` stdio protocol. **Both are auto-generated** — never hand-edit the
 generated files.
 
+`wasm/` is a separate, hand-written host for `graff-kernel.wasm` (the
+catalog + path cubes, not the agent). `generate.py` does not touch it.
+See [wasm/README.md](wasm/README.md) and ADR 0012.
+
 ## How it works
 
 The graff binary is the single source of truth. `graff --schema` emits its

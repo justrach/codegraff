@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## Unreleased
+
+- `zig build wasm` emits `graff-kernel.wasm`: the ToolCatalog cube and the
+  lexical path jail, callable from JS (`sdk/wasm/`). Not the agent — no
+  HTTP, bash, or TTY. Same predicates Lean exports (ADR 0012).
+
 ## v0.0.267 (2026-08-19)
 
 - Background jobs wait like grok-build: `bash_output(wait_ms>0)` and

@@ -1265,6 +1265,7 @@ skips). Alternatively, run in place:
 ```sh
 zig build run            # or: ./zig-out/bin/graff
 zig build test           # the test suite (also run by CI, .github/workflows/ci.yml)
+zig build wasm           # graff-kernel.wasm — catalog + path cubes, not the agent
 ```
 
 **Releases & verification.** Tagged releases ship a prebuilt **darwin-arm64**
@@ -1452,6 +1453,7 @@ about 20 seconds warm:
 | `tests` | `zig build test`, and a suite count that may grow but never shrink |
 | `invariants` | the named goal/loop/todo tests actually ran, not just compiled |
 | `sdk` | the committed SDKs still match `graff --schema` |
+| `wasm` | `zig build wasm` — `graff-kernel.wasm` still compiles |
 
 A push that only touches docs skips the whole thing. When a check fails it names
 the invariant, says which regression it guards, and prints the one-liner that

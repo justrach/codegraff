@@ -69,6 +69,9 @@ jobs:
       - name: zig build test
         run: zig build test --summary all
 
+      - name: zig build wasm
+        run: zig build wasm
+
       - name: Local learning lifecycle and security regression
         run: python3 tests/learn_e2e.py --graff zig-out/bin/graff
 
@@ -186,6 +189,9 @@ jobs:
 
       - name: zig build test
         run: zig build test --summary all
+
+      - name: zig build wasm
+        run: zig build wasm
 
       - name: Local learning lifecycle and security regression (Windows)
         run: python3 tests/learn_e2e.py --graff zig-out/bin/graff.exe

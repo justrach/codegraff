@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>graff-kernel.wasm</title>
+<style>
+  body { font: 15px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 2rem; max-width: 44rem; }
+  h1 { font-size: 1.1rem; }
+  pre { background: #0b1220; color: #d7ffe4; padding: 1rem; overflow: auto; }
+  .err { color: #c2410c; }
+</style>
+<h1>graff-kernel.wasm</h1>
+<p>The 64-cell catalog cube and the lexical path jail. Not the agent.</p>
+<pre id="out">loading…</pre>
+<script type="module">
+  import { loadGraffKernel } from "./graff-kernel.js";
+  const out = document.getElementById("out");
+  try {
+    const k = await loadGraffKernel("../../zig-out/bin/graff-kernel.wasm");
+    out.textContent = JSON.stringify(
+      {
+        abi: k.abiVersion(),
+        cube: k.cubeCells(),
+        root: k.catalog(),
+        lean: k.catalog({ lean: true }),
+        childSeesSubagent: k.advertised("subagent", { isSub: true }),
+        passwd: k.confined("/etc/passwd"),
+        mainZig: k.confined("src/main.zig"),
+      },
+      null,
+      2,
+    );
+  } catch (err) {
+    out.className = "err";
+    out.textContent =
+      String(err) +
+      "\n\nBuild first: zig build wasm\nThen serve the repo root so ../../zig-out/bin/graff-kernel.wasm resolves.";
+  }
+</script>

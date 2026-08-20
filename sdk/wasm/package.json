@@ -1,0 +1,6 @@
+{
+  "name": "graff-kernel",
+  "private": true,
+  "type": "module",
+  "description": "JS host for graff-kernel.wasm (catalog + path cubes, not the agent)"
+}

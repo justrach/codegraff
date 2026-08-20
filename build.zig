@@ -200,4 +200,27 @@ pub fn build(b: *std.Build) void {
 
     const tui_test_step = b.step("tui-test", "Run fullscreen TUI unit tests");
     tui_test_step.dependOn(&b.addRunArtifact(tui_tests).step);
+
+    // `zig build wasm` — the kernel cube as wasm32-freestanding. Not the
+    // agent (no HTTP, no bash, no TTY). A JS host loads graff-kernel.wasm
+    // and evaluates catalog/confined; see sdk/wasm/ and ADR 0012.
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+    const wasm_optimize = if (optimize == .Debug) .ReleaseSmall else optimize;
+    const wasm_exe = b.addExecutable(.{
+        .name = "graff-kernel",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wasm_main.zig"),
+            .target = wasm_target,
+            .optimize = wasm_optimize,
+            .strip = true,
+        }),
+    });
+    wasm_exe.entry = .disabled;
+    wasm_exe.rdynamic = true;
+    const install_wasm = b.addInstallArtifact(wasm_exe, .{});
+    const wasm_step = b.step("wasm", "Build graff-kernel.wasm (catalog + path kernels)");
+    wasm_step.dependOn(&install_wasm.step);
 }
