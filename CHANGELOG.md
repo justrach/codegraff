@@ -15,7 +15,9 @@ current is part of cutting a release.
 - graff-evals prints per-task calls, cache-read/write, hit rate, and
   first-token time; `--jobs N` overlaps tasks for suite wall clock. The
   `[usage]` parser accepts the current `cache writes` footer (it used to
-  miss every count).
+  miss every count). The README table lists all ten harnesses (defaults,
+  `--model` pin, usage columns, and that only graff rows run
+  `schema-output`).
 - Vercel AI Gateway is a built-in provider (`vercel`). Set
   `AI_GATEWAY_API_KEY` or `graff key set vercel …`; it stays inert
   without a key. Default model is `anthropic/claude-sonnet-4.6`; the
