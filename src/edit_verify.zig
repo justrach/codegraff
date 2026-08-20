@@ -186,6 +186,7 @@ pub fn execEdit(ctx: ToolCtx, input: Value) !ToolOutput {
     if (!confinedPath(path) or !noSymlinkEscape(ctx.io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
     const all = tools.json_args.flag(input, "replace_all");
     if (old.len == 0) return .{ .text = try gpa.dupe(u8, "old_string must not be empty"), .is_error = true };
+    if (std.mem.eql(u8, old, new)) return .{ .text = try gpa.dupe(u8, "old_string and new_string must differ"), .is_error = true };
 
     // #276 P0-1: resolve under the agent's isolated worktree when set.
     const resolved: []const u8 = if (ctx.agent_cwd) |base| try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, path }) else path;

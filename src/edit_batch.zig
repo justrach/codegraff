@@ -40,6 +40,7 @@ pub fn execBatch(ctx: ToolCtx, input: Value) !ToolOutput {
         const old = tools.strField(item, "old_string") orelse return spanErr(gpa, i, list.items.len, "missing old_string", applied, path);
         const new = tools.strField(item, "new_string") orelse return spanErr(gpa, i, list.items.len, "missing new_string", applied, path);
         if (old.len == 0) return spanErr(gpa, i, list.items.len, "old_string must not be empty", applied, path);
+        if (std.mem.eql(u8, old, new)) return spanErr(gpa, i, list.items.len, "old_string and new_string must differ", applied, path);
         const all = tools.json_args.flag(item, "replace_all");
         const r = try edit_verify.applyEdit(ctx, path, resolved, old, new, all);
         if (r.is_error) return spanErr(gpa, i, list.items.len, r.text, applied, path);

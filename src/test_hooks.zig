@@ -160,6 +160,8 @@ const mcp_schema_gate_tests = @import("mcp_schema_gate_tests.zig");
 const escalation = @import("escalation.zig");
 const escalation_tests = @import("escalation_tests.zig");
 const edit_contract = @import("edit_contract.zig");
+// Grok-build search_replace / OpenCode edit cases on graff edit_file (ADR 0014).
+const edit_grok_contract = @import("edit_grok_contract.zig");
 const phase_budget = @import("phase_budget.zig");
 const orchestration_policy = @import("orchestration_policy.zig");
 const orchestration_policy_tests = @import("orchestration_policy_tests.zig");
@@ -295,6 +297,7 @@ test {
     _ = escalation;
     _ = escalation_tests;
     _ = edit_contract;
+    _ = edit_grok_contract;
     _ = phase_budget;
     _ = orchestration_policy;
     _ = orchestration_policy_tests;
