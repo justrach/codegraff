@@ -42,11 +42,27 @@ fn fuzzySubseq(hay: []const u8, needle: []const u8) bool {
     return false;
 }
 
-/// Rank a fuzzy match for the pickers (higher = better, null = no match).
-/// Tiers: basename/whole-string prefix > substring (earlier and shorter is
-/// better) > bare subsequence — so "dem" puts demo.py above README.md, which
-/// only matches as a d…e…m subsequence.
+/// Rank a fuzzy match (higher = better). Prefix > substring > subsequence.
+/// Separators fold so "5.6 sol" matches `gpt-5.6-sol`.
 fn fuzzyScore(hay: []const u8, needle: []const u8) ?i32 {
+    if (needle.len == 0) return 0;
+    if (scoreFolded(hay, needle)) |s| return s;
+    var hb: [256]u8 = undefined;
+    var nb: [128]u8 = undefined;
+    return scoreFolded(foldSeps(&hb, hay), foldSeps(&nb, needle));
+}
+
+fn foldSeps(dst: []u8, s: []const u8) []const u8 {
+    var n: usize = 0;
+    for (s) |c| {
+        if (c == '-' or c == '_' or c == ' ' or c == '.' or c == '/' or n >= dst.len) continue;
+        dst[n] = std.ascii.toLower(c);
+        n += 1;
+    }
+    return dst[0..n];
+}
+
+fn scoreFolded(hay: []const u8, needle: []const u8) ?i32 {
     if (needle.len == 0) return 0;
     if (needle.len > hay.len) return null;
     const len_pen: i32 = @intCast(@min(hay.len, 200));
@@ -243,8 +259,13 @@ pub fn modelPicker(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer)
             scored.clearRetainingCapacity();
             for (model_table, 0..) |m, i| {
                 if ((keys.get(m.provider) != null) != want_keyed) continue;
-                if (pickScore(.{ .name = m.name, .desc = m.provider }, query.items)) |s|
-                    scored.append(arena, .{ .idx = i, .score = s }) catch {};
+                if (pickScore(.{ .name = m.name, .desc = m.provider }, query.items)) |s| {
+                    const plan: i32 = if (provider_mod.specFor(m.provider)) |spec|
+                        @as(i32, @intFromBool(spec.sub_login)) * 400_000
+                    else
+                        0;
+                    scored.append(arena, .{ .idx = i, .score = s + plan }) catch {};
+                }
             }
             std.mem.sort(Scored, scored.items, {}, scoredLess);
             for (scored.items) |s| filtered.append(arena, s.idx) catch {};
@@ -493,6 +514,7 @@ test "fuzzyScore ranks basename prefix above substring above subsequence" {
     // whole-string prefix counts even with directories in the hay
     try std.testing.expect(fuzzyScore("sdk/ts/harness.ts", "sdk").? >= 300_000 - 200);
     // no match at all → null; empty needle → 0
+    try std.testing.expect(fuzzyScore("gpt-5.6-sol", "5.6 sol").? > fuzzyScore("gpt-5.6", "5.6").?);
     try std.testing.expect(fuzzyScore("abc", "xyz") == null);
     try std.testing.expectEqual(@as(?i32, 0), fuzzyScore("abc", ""));
 }

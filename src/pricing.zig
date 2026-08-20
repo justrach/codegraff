@@ -492,15 +492,25 @@ pub fn resolveModelName(keys: anytype, query: []const u8) ?[]const u8 {
     for (models()) |m| if (familyAliasEquals(m.provider, m.name, query)) return m.name;
     var qbuf: [128]u8 = undefined;
     const qnorm = normalizeModelAlias(&qbuf, query);
-    var fallback: ?[]const u8 = null;
+    var best_name: ?[]const u8 = null;
+    var best_score: i32 = std.math.minInt(i32);
     for (models()) |m| {
         var nbuf: [128]u8 = undefined;
         const nnorm = normalizeModelAlias(&nbuf, m.name);
         if (util.indexOfIgnoreCase(m.name, query) == null and std.mem.indexOf(u8, nnorm, qnorm) == null) continue;
-        if (keys.get(m.provider) != null) return m.name;
-        if (fallback == null) fallback = m.name;
+        const keyed = keys.get(m.provider) != null;
+        var s: i32 = if (keyed) 1_000_000 else 0;
+        // A ChatGPT/Codex login beats a metered or gateway slug for the same
+        // needle ("5.6 sol" → gpt-5.6-sol on codex, not openai/gpt-5.6-sol).
+        if (keyed and std.mem.eql(u8, m.provider, "codex")) s += 400_000;
+        if (std.mem.eql(u8, nnorm, qnorm)) s += 300_000 else if (std.mem.endsWith(u8, nnorm, qnorm)) s += 200_000 else s += 100_000;
+        s -= @intCast(@min(m.name.len, 200));
+        if (s > best_score) {
+            best_score = s;
+            best_name = m.name;
+        }
     }
-    return fallback;
+    return best_name;
 }
 
 /// Exact membership test against the active model table — used to ignore a

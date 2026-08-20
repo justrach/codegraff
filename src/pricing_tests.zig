@@ -53,6 +53,22 @@ test "resolveModelName (#377): family-prefixed spelling resolves to the provider
     try std.testing.expect(!pricing.familyAliasEquals("codex", "k3", "kimi-k3"));
 }
 
+test "resolveModelName: 5.6 sol prefers Codex gpt-5.6-sol over a gateway slug" {
+    const saved = pricing.active_model_table;
+    defer pricing.active_model_table = saved;
+    const rows = [_]pricing.ModelInfo{
+        .{ .provider = "codegraff", .name = "openai/gpt-5.6-sol", .context = 272_000 },
+        .{ .provider = "openai", .name = "gpt-5.6", .context = 1_050_000 },
+        .{ .provider = "codex", .name = "gpt-5.6-sol", .context = 272_000 },
+    };
+    pricing.active_model_table = &rows;
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    _ = keys.set("codex", "tok", .login);
+    _ = keys.set("openai", "sk", .environment);
+    _ = keys.set("codegraff", "cg", .login);
+    try std.testing.expectEqualStrings("gpt-5.6-sol", pricing.resolveModelName(keys, "5.6 sol").?);
+}
+
 test "usdFor: per-million math, cache writes, and negative clamping" {
     const p = pricing.priceFor("gpt-5.5").?; // $5 in / $30 out / $0.5 cache per 1M
     try std.testing.expectApproxEqAbs(@as(f64, 5.0), pricing.usdFor(p, 1_000_000, 0, 0), 1e-9);
