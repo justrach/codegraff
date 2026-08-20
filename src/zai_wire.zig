@@ -21,13 +21,34 @@ pub fn reasoningEffort(requested: []const u8) []const u8 {
     return "high";
 }
 
-/// OpenAI-chat extras after `prompt_cache_key`: Z.AI thinking, then the
-/// shared `reasoning_effort` hint (Z.AI remapped; others pass through).
+/// Vercel AI Gateway Chat Completions uses `reasoning.effort`
+/// (none|minimal|low|medium|high|xhigh), not top-level reasoning_effort.
+/// Graff `max`/`ultra` → `xhigh`.
+pub fn vercelEffort(requested: []const u8) []const u8 {
+    if (std.mem.eql(u8, requested, "low")) return "low";
+    if (std.mem.eql(u8, requested, "medium")) return "medium";
+    if (std.mem.eql(u8, requested, "high")) return "high";
+    if (std.mem.eql(u8, requested, "xhigh")) return "xhigh";
+    if (std.mem.eql(u8, requested, "max") or std.mem.eql(u8, requested, "ultra")) return "xhigh";
+    return "medium";
+}
+
+/// OpenAI-chat extras after `prompt_cache_key`: Z.AI thinking, Vercel
+/// `reasoning.effort`, then the shared `reasoning_effort` hint.
 pub fn writeChatExtras(s: *std.json.Stringify, provider_id: []const u8, send_effort: bool, requested: []const u8) !void {
     const is_zai = std.mem.eql(u8, provider_id, "zai");
+    const is_vercel = std.mem.eql(u8, provider_id, "vercel");
     if (is_zai) {
         try s.objectField("thinking");
         try s.print("{s}", .{"{\"type\":\"enabled\",\"clear_thinking\":false}"});
+    }
+    if (is_vercel and send_effort) {
+        try s.objectField("reasoning");
+        try s.beginObject();
+        try s.objectField("effort");
+        try s.write(vercelEffort(requested));
+        try s.endObject();
+        return;
     }
     if (!std.mem.eql(u8, provider_id, "kimi") and send_effort) {
         try s.objectField("reasoning_effort");
@@ -98,4 +119,56 @@ test "Keys.build: GRAFF_ZAI_URL rewires only the Z.AI endpoint" {
     try std.testing.expectEqualStrings(provider_mod.zai_coding_url, zai.url);
     const deepseek = try all.providerById("deepseek", "deepseek-v4-pro");
     try std.testing.expectEqualStrings("https://api.deepseek.com/chat/completions", deepseek.url);
+}
+
+test "Vercel maps graff efforts onto reasoning.effort" {
+    try std.testing.expectEqualStrings("low", vercelEffort("low"));
+    try std.testing.expectEqualStrings("medium", vercelEffort("medium"));
+    try std.testing.expectEqualStrings("high", vercelEffort("high"));
+    try std.testing.expectEqualStrings("xhigh", vercelEffort("xhigh"));
+    try std.testing.expectEqualStrings("xhigh", vercelEffort("max"));
+    try std.testing.expectEqualStrings("xhigh", vercelEffort("ultra"));
+}
+
+test "Vercel chat body sends reasoning.effort and not reasoning_effort" {
+    const Agent = @import("agent.zig").Agent;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var messages = std.json.Array.init(arena);
+    var user: std.json.ObjectMap = .empty;
+    try user.put(arena, "role", .{ .string = "user" });
+    try user.put(arena, "content", .{ .string = "hello" });
+    try messages.append(.{ .object = user });
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{
+            .id = "vercel",
+            .kind = .openai,
+            .auth = .bearer,
+            .url = "https://ai-gateway.vercel.sh/coding-agent/v1/chat/completions",
+            .api_key = "k",
+            .model = "alibaba/qwen3.8-27b",
+            .context = 1_000_000,
+        },
+        .messages = messages,
+        .sub = false,
+        .label = "",
+        .out = null,
+        .sys_normal = "system",
+        .reasoning = .medium,
+    };
+    const body = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning\":{\"effort\":\"medium\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning_effort\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"prompt_cache_key\":\"") != null);
+
+    agent.reasoning = .max;
+    const max_body = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(max_body);
+    try std.testing.expect(std.mem.indexOf(u8, max_body, "\"reasoning\":{\"effort\":\"xhigh\"}") != null);
 }

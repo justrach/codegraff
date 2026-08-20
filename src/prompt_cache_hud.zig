@@ -217,6 +217,7 @@ pub fn render(w: *Io.Writer) !void {
         \\    append-only messages    official xAI prefix; edit/remove/reorder is a miss
         \\    replay reasoning        Chat reasoning_content · Responses encrypted_content
         \\    Z.AI                    implicit prefix (cached_tokens); thinking.clear_thinking=false
+        \\    Vercel                  gateway implicit cache (cached_tokens); coding-agent /v1
         \\    /btw                    parent tools + system + cache key; note is the user message
         \\
     );
@@ -302,6 +303,7 @@ test "render stays content-free and names remaining levers" {
     try std.testing.expect(contains(text, "prefix"));
     try std.testing.expect(contains(text, "GRAFF_STABLE_CATALOG"));
     try std.testing.expect(contains(text, "clear_thinking"));
+    try std.testing.expect(contains(text, "Vercel"));
     try std.testing.expect(contains(text, "/goal"));
     try std.testing.expect(contains(text, "x-grok-conv-id"));
     try std.testing.expect(contains(text, "append-only"));

@@ -276,6 +276,9 @@ pub fn parse(init: std.process.Init) !Flags {
         const on = std.mem.eql(u8, zc, "1") or std.ascii.eqlIgnoreCase(zc, "true") or std.ascii.eqlIgnoreCase(zc, "on") or std.ascii.eqlIgnoreCase(zc, "yes");
         if (on) @import("provider.zig").g_zai_url_override = @import("provider.zig").zai_coding_url;
     }
+    if (init.environ_map.get("GRAFF_VERCEL_URL")) |vu| {
+        if (vu.len > 0) @import("provider.zig").g_vercel_url_override = vu;
+    }
 
     return flags;
 }

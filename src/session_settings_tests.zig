@@ -50,6 +50,7 @@ const knobs = [_]Knob{
     .{ .name = "GRAFF_WS_FORCE_FAIL_ONCE", .value = "1" },
     .{ .name = "GRAFF_WS_FORCE_FAIL_COUNT", .value = "3" },
     .{ .name = "GRAFF_NO_PLUGINS", .value = "1" },
+    .{ .name = "GRAFF_VERCEL_URL", .value = "https://ai-gateway.vercel.sh/v1/chat/completions" },
 };
 
 /// A stand-in for the process environment that records which names were asked

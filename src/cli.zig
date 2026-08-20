@@ -22,6 +22,7 @@ pub const changelog_text =
     \\What's new
     \\──────────
     \\0.0.269
+    \\  • Vercel AI Gateway (AI_GATEWAY_API_KEY → alibaba/qwen3.8-27b); coding-agent /v1
     \\  • Z.AI defaults to GLM-5.3 (1M); thinking.enabled + implicit prefix cache
     \\  • GLM Coding Plan: ZAI_CODING=1 / GRAFF_ZAI_URL; not image/video
     \\
