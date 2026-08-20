@@ -67,20 +67,19 @@ pub fn contributesSessions(_: []const u8) bool {
     return false;
 }
 
-fn realDir(io: Io, raw: []const u8) ![]const u8 {
+fn realDir(io: Io, arena: std.mem.Allocator, raw: []const u8) ![]const u8 {
     var dir = Io.Dir.cwd().openDir(io, raw, .{}) catch return error.NotADir;
     defer dir.close(io);
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const n = dir.realPath(io, &buf) catch return error.NotADir;
-    return buf[0..n];
+    return arena.dupe(u8, buf[0..n]);
 }
 
 /// Register one extra root. Resolves to a real directory now so later
 /// `--worktree` chdir cannot rewrite a relative `--add-dir`.
 pub fn add(io: Io, arena: std.mem.Allocator, raw: []const u8) !void {
     if (g_n >= max_roots) return error.TooManyRoots;
-    const abs = try realDir(io, raw);
-    const owned = try arena.dupe(u8, abs);
+    const owned = try realDir(io, arena, raw);
     // De-dupe: adding the same tree twice is harmless.
     for (g_roots[0..g_n]) |r| if (std.mem.eql(u8, r, owned)) return;
     g_roots[g_n] = owned;
@@ -111,4 +110,26 @@ test "add refuses a 17th root and skips a duplicate" {
     try std.testing.expect(!(try accept(1, &existing, "/work/docs")));
     try std.testing.expect(try accept(1, &existing, "/work/other"));
     try std.testing.expectError(error.TooManyRoots, accept(max_roots, &existing, "/work/other"));
+}
+
+test "add stores a live path that confined accepts" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(io, .{ .sub_path = "marker.txt", .data = "ok" }) catch unreachable;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    resetForTest();
+    defer resetForTest();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &buf);
+    const root = try a.dupe(u8, buf[0..n]);
+    try add(io, a, root);
+    try std.testing.expectEqual(@as(usize, 1), count());
+    const child = try std.fmt.allocPrint(a, "{s}/marker.txt", .{items()[0]});
+    try std.testing.expect(confined(child));
+    try std.testing.expect(confined(items()[0]));
+    try std.testing.expect(!confined("/etc/passwd"));
 }
