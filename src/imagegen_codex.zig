@@ -79,7 +79,21 @@ pub fn buildArgv(arena: Allocator, private_home: []const u8, prompt: []const u8)
 /// Credentials that make a private CODEX_HOME usable. Symlinked rather than
 /// copied where the OS allows it, so a token never lands as a second plaintext
 /// file in a temp dir; see `prepareHome` for the copy fallback.
-pub const linked_files = [_][]const u8{ "auth.json", "config.toml" };
+///
+/// `config.toml` is NOT linked (#576). The user's real config can be several
+/// KB of MCP/skills/session overlay; Codex 0.144+ then JSON-parses that
+/// overlay and dies with `input contains invalid characters at line 1 column
+/// N` at a fixed column even for a one-line prompt. A private home gets a
+/// tiny features-only config instead (written in `prepareHome`).
+pub const linked_files = [_][]const u8{"auth.json"};
+
+/// Private-home config: enable image_generation and nothing else. Model
+/// selection stays Codex's default for this CLI — same as not pinning `-m`.
+pub const private_config =
+    \\[features]
+    \\image_generation = true
+    \\
+;
 
 /// Build a private CODEX_HOME for ONE run.
 ///
@@ -104,6 +118,8 @@ pub const linked_files = [_][]const u8{ "auth.json", "config.toml" };
 /// idempotent, and losing one is far cheaper than cross-attributing an image.
 pub fn prepareHome(io: Io, arena: Allocator, private_home: []const u8, real_home: []const u8) !void {
     try Io.Dir.cwd().createDirPath(io, private_home);
+    const cfg = try std.fmt.allocPrint(arena, "{s}/config.toml", .{private_home});
+    Io.Dir.cwd().writeFile(io, .{ .sub_path = cfg, .data = private_config }) catch {};
     for (linked_files) |name| {
         const target = try std.fmt.allocPrint(arena, "{s}/{s}", .{ real_home, name });
         _ = Io.Dir.cwd().statFile(io, target, .{}) catch continue; // config.toml is optional
@@ -223,6 +239,16 @@ pub fn tooOld(text: []const u8) bool {
         std.mem.indexOf(u8, text, "requires a newer version of codex") != null;
 }
 
+/// #576: Codex 0.144+ serde-parses an exec overlay and rejects it at a
+/// fixed column (`input contains invalid characters at line 1 column 4224`)
+/// when the private home inherited the user's MCP/skills config. Detected
+/// so the tool result names the cause instead of dumping a raw transcript.
+pub fn badJsonInput(text: []const u8) bool {
+    return std.mem.indexOf(u8, text, "input contains invalid characters") != null;
+}
+
+pub const bad_json_text = "codex exec rejected its input JSON (\"input contains invalid characters\") — usually leftover MCP/skills overlay from the user's config.toml, not the image prompt. This run uses a private config that only enables image_generation. If you still see this, upgrade the Codex CLI or pass engine \"openai_api\". Nothing was generated.";
+
 pub const too_old_text = "the installed codex CLI is too old for the model your codex config selects, so the hosted image_gen tool was never offered. Upgrade it (bun install -g @openai/codex) and call imagegen again, or pass engine \"openai_api\" to use the OPENAI_API_KEY path instead. Nothing was generated.";
 
 /// The model told us outright that it had no image_gen tool. Worth its own
@@ -288,6 +314,7 @@ test "#352: a private CODEX_HOME links only credentials, so its save_root starts
     const real_home = try std.fmt.allocPrint(arena, "{s}/codex", .{base});
     try Io.Dir.cwd().createDirPath(io, try std.fmt.allocPrint(arena, "{s}/generated_images/other", .{real_home}));
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/auth.json", .{real_home}), .data = "{\"tok\":1}" });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/config.toml", .{real_home}), .data = "[mcp_servers.evil]\ncommand = \"x\"\n" });
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/generated_images/other/exec-theirs.png", .{real_home}), .data = "\x89PNG\r\n\x1a\n" ++ "theirs" });
 
     const private_home = try std.fmt.allocPrint(arena, "{s}/run-a/home", .{base});
@@ -296,8 +323,10 @@ test "#352: a private CODEX_HOME links only credentials, so its save_root starts
     // Credentials reachable through the link...
     const auth = try Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(arena, "{s}/auth.json", .{private_home}), arena, .limited(64));
     try testing.expectEqualStrings("{\"tok\":1}", auth);
-    // ...and no config.toml link, because the source had none.
-    try testing.expect(Io.Dir.cwd().statFile(io, try std.fmt.allocPrint(arena, "{s}/config.toml", .{private_home}), .{}) == error.FileNotFound);
+    // Private config is written here (features only) — the user's config.toml
+    // is never linked, even when they have one (#576).
+    const cfg = try Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(arena, "{s}/config.toml", .{private_home}), arena, .limited(256));
+    try testing.expectEqualStrings(private_config, cfg);
 
     // The private save_root is empty: a sibling's fresh artifact is invisible.
     const mine = try saveRoot(arena, private_home);
@@ -416,6 +445,9 @@ test "#352: a too-old CLI and a self-reported missing tool each get their own ac
     try testing.expect(saidUnavailable("IMAGE_GEN_UNAVAILABLE"));
     try testing.expect(!saidUnavailable("image generated fine"));
     try testing.expect(std.mem.indexOf(u8, unavailable_text, "codex features list") != null);
+    try testing.expect(badJsonInput("input contains invalid characters at line 1 column 4224"));
+    try testing.expect(!badJsonInput("some other 400"));
+    try testing.expect(std.mem.indexOf(u8, bad_json_text, "openai_api") != null);
     // The empty-handed success case names #352 so the failure is recognisable.
     try testing.expect(std.mem.indexOf(u8, no_artifact_text, "#352") != null);
 }

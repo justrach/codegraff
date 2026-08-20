@@ -373,6 +373,7 @@ fn runCodex(gpa: Allocator, arena: Allocator, io: Io, prompt: []const u8, resolv
         .is_error = true,
     } };
     if (codex.tooOld(out.stdout) or codex.tooOld(out.stderr)) return .{ .fail = try errText(gpa, codex.too_old_text) };
+    if (codex.badJsonInput(out.stdout) or codex.badJsonInput(out.stderr)) return .{ .fail = try errText(gpa, codex.bad_json_text) };
     if (codex.saidUnavailable(out.stdout)) return .{ .fail = try errText(gpa, codex.unavailable_text) };
     if (!out.ranClean()) return .{ .fail = .{
         .text = try std.fmt.allocPrint(gpa, "codex exec failed (exit {?d}) — nothing was generated.\ntranscript tail:\n{s}", .{ out.exit_code, tails }),
