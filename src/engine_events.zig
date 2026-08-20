@@ -204,10 +204,16 @@ pub const ContextMeter = struct {
     compact_at: u64,
 };
 
+/// One current-epoch checklist row for the git-style WORKING block.
+pub const StandingTodo = struct {
+    content: []const u8 = "",
+    done: bool = false,
+};
+
 /// Standing work the line REPL may draw above the model prompt. Empty
-/// strings and zeros mean "nothing to show" so a sink can skip the row.
+/// strings and zeros mean "nothing to show" so a sink can skip the block.
 /// The engine snapshots facts the session already holds; the sink decides
-/// order, clip, and whether the row exists at all.
+/// order, clip, and whether the block exists at all.
 pub const StandingWork = struct {
     /// Human title, or a non-default session name. Empty = untitled `last`.
     session: []const u8 = "",
@@ -218,6 +224,9 @@ pub const StandingWork = struct {
     /// Current-epoch checklist. `todos_total == 0` means no list to show.
     todos_done: u32 = 0,
     todos_total: u32 = 0,
+    /// Current-epoch items in list order, already clipped. May be shorter
+    /// than `todos_total` when the snapshot capped the block.
+    todos: []const StandingTodo = &.{},
     /// `/image` or Ctrl-V staged a picture for the next send.
     image: bool = false,
 };
@@ -249,6 +258,8 @@ pub const PromptStatus = struct {
     strict: bool = false,
     ultracode: bool = false,
     standing: StandingWork = .{},
+    /// Saved conversations in `.graff/sessions` (0 = none / don't mention).
+    saved_sessions: u32 = 0,
 };
 
 /// Everything the streaming path tells a frontend. Each doc comment states

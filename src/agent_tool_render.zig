@@ -36,123 +36,31 @@ const engine_events = @import("engine_events.zig");
 const ToolInvocation = engine_events.ToolInvocation;
 const ToolOutcome = engine_events.ToolOutcome;
 const BatchOutcome = engine_events.BatchOutcome;
+const label = @import("agent_tool_label.zig");
 
-/// Keep tool activity useful without dumping model-facing JSON into the REPL.
-const detail_preview_bytes: usize = 96;
-/// How much of a result's first line the ✓ line shows.
-const result_preview_bytes: usize = 100;
+/// How many sibling tools are still outstanding in the current parallel batch.
+/// 0 = sequential (no tree). The layout, not a "↯ N in parallel" line, is
+/// what shows fan-out (variation 4).
+var batch_left: usize = 0;
 
-fn stringField(input: std.json.Value, field: []const u8) ?[]const u8 {
-    if (input != .object) return null;
-    const value = input.object.get(field) orelse return null;
-    return if (value == .string) value.string else null;
+fn treePrefix() []const u8 {
+    if (batch_left == 0) return "  ";
+    const last = batch_left == 1;
+    batch_left -= 1;
+    return if (last) "  └─ " else "  ├─ ";
 }
 
-fn firstLine(s: []const u8) []const u8 {
-    const end = std.mem.indexOfScalar(u8, s, '\n') orelse s.len;
-    return std.mem.trim(u8, s[0..end], " \t\r");
-}
-
-fn newlineCount(s: []const u8) usize {
-    if (s.len == 0) return 0;
-    var n: usize = 1;
-    for (s) |c| {
-        if (c == '\n') n += 1;
-    }
-    if (s[s.len - 1] == '\n') n -= 1;
-    return n;
-}
-
-/// MCP and unknown tools still get a one-liner when a common field is present.
-const fallback_fields = [_][]const u8{ "command", "path", "query", "url", "pattern", "file", "prompt", "uri", "text" };
-
-fn namedDetailField(name: []const u8, input: std.json.Value) ?[]const u8 {
-    if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "codedb")) return "command";
-    if (std.mem.eql(u8, name, "read_file") or
-        std.mem.eql(u8, name, "write_file") or
-        std.mem.eql(u8, name, "edit_file")) return "path";
-    if (std.mem.eql(u8, name, "webfetch")) return "url";
-    if (std.mem.eql(u8, name, "subagent")) return "description";
-    if (std.mem.eql(u8, name, "imagegen")) return "prompt";
-    if (std.mem.eql(u8, name, "peer_message")) {
-        if (stringField(input, "action")) |act| {
-            if (act.len > 0 and !std.mem.eql(u8, act, "send")) return "action";
-        }
-        return "text";
-    }
-    if (std.mem.eql(u8, name, "workspace")) {
-        if (stringField(input, "path")) |p| if (p.len > 0) return "path";
-        return "action";
-    }
-    return null;
-}
-
-fn fallbackDetail(input: std.json.Value) []const u8 {
-    for (fallback_fields) |field| {
-        const raw = stringField(input, field) orelse continue;
-        const shown = firstLine(raw);
-        if (shown.len > 0) return shown;
-    }
-    return "";
-}
-
-fn addSpanDelta(old: []const u8, new: []const u8, plus: *usize, minus: *usize, spans: *usize) void {
-    plus.* += newlineCount(new);
-    minus.* += newlineCount(old);
-    spans.* += 1;
-}
-
-fn editDelta(input: std.json.Value, path: []const u8, buf: []u8) []const u8 {
-    var plus: usize = 0;
-    var minus: usize = 0;
-    var spans: usize = 0;
-    if (stringField(input, "old_string")) |old| {
-        if (stringField(input, "new_string")) |new| addSpanDelta(old, new, &plus, &minus, &spans);
-    }
-    if (input == .object) if (input.object.get("edits")) |v| if (v == .array) {
-        for (v.array.items) |item| {
-            const old = stringField(item, "old_string") orelse continue;
-            const new = stringField(item, "new_string") orelse continue;
-            addSpanDelta(old, new, &plus, &minus, &spans);
-        }
-    };
-    if (spans == 0) return path;
-    if (spans == 1)
-        return std.fmt.bufPrint(buf, "{s} · +{d}/-{d}", .{ path, plus, minus }) catch path;
-    return std.fmt.bufPrint(buf, "{s} · {d} spans · +{d}/-{d}", .{ path, spans, plus, minus }) catch path;
-}
-
-/// One human-readable field (or an edit +N/-N). Never the raw argument object.
-fn toolDetail(t: ToolInvocation, buf: []u8) []const u8 {
-    if (std.mem.eql(u8, t.name, "edit_file")) {
-        const path = stringField(t.input, "path") orelse return "";
-        return editDelta(t.input, firstLine(path), buf);
-    }
-    if (namedDetailField(t.name, t.input)) |field| {
-        const raw = stringField(t.input, field) orelse return "";
-        return firstLine(raw);
-    }
-    return fallbackDetail(t.input);
-}
-
-/// A terse activity line: always show ordinary tool calls, but never their raw
-/// argument object. Suppress only user-facing prose that already streamed live.
+/// Remember the call so the ✓ line can say `test` / `edit` instead of `bash`.
+/// Default session is result-only — announce lines doubled the visual weight.
 pub fn toolUseLine(a: *Agent, t: ToolInvocation) void {
+    _ = a;
     if (t.arg_streamed) return;
+    var vbuf: [16]u8 = undefined;
     var dbuf: [128]u8 = undefined;
-    const detail = toolDetail(t, &dbuf);
-    const shown = if (detail.len > detail_preview_bytes) detail[0..detail_preview_bytes] else detail;
-    var line: Io.Writer.Allocating = .init(a.gpa);
-    defer line.deinit();
-    line.writer.print("{s}⚙{s} {s}{s}{s}", .{ style.dim, style.reset, style.accent, t.name, style.reset }) catch return;
-    if (shown.len > 0) line.writer.print("{s} · {s}{s}{s}", .{
-        style.dim,
-        shown,
-        if (shown.len < detail.len) "…" else "",
-        style.reset,
-    }) catch return;
-    line.writer.writeByte('\n') catch return;
-    sayText(a, line.writer.buffered());
+    const v = label.verb(t.name, t.input, &vbuf);
+    const d = label.detail(t, &dbuf);
+    const shown = if (d.len > label.detail_preview_bytes) d[0..label.detail_preview_bytes] else d;
+    label.remember(t.name, v, shown);
 }
 
 /// The #440 marker prefixes forResult tags oversized results with. Detected
@@ -198,13 +106,14 @@ fn resultPreview(name: []const u8, all: []const u8, buf: []u8) Preview {
     if (handleBadge(all) != null) return .{ .text = "", .clipped = false };
     if (std.mem.startsWith(u8, all, handle_marker) or std.mem.startsWith(u8, all, truncated_marker))
         return .{ .text = "", .clipped = false };
-    const lines = newlineCount(all);
+    const lines = label.newlineCount(all);
     if (std.mem.eql(u8, name, "read_file") and lines > 1) {
         const text = std.fmt.bufPrint(buf, "{d} lines", .{lines}) catch all;
         return .{ .text = text, .clipped = false };
     }
-    const raw = if (std.mem.eql(u8, name, "bash") and lines > 1) lastNonEmptyLine(all) else firstLine(all);
-    if (raw.len > result_preview_bytes) return .{ .text = raw[0..result_preview_bytes], .clipped = true };
+    var raw = if (std.mem.eql(u8, name, "bash") and lines > 1) lastNonEmptyLine(all) else label.firstLine(all);
+    if (std.mem.eql(u8, name, "bash")) raw = label.compactBash(raw, buf);
+    if (raw.len > label.result_preview_bytes) return .{ .text = raw[0..label.result_preview_bytes], .clipped = true };
     return .{ .text = raw, .clipped = false };
 }
 
@@ -230,7 +139,6 @@ pub fn toolResultLine(a: *Agent, r: ToolOutcome) void {
         (std.fmt.bufPrint(&tbuf, " ({d}ms)", .{r.ms}) catch "")
     else
         "";
-    // Badge colors are self-contained; ordinary result lines stay byte-identical.
     var bbuf: [48]u8 = undefined;
     const badge = if (handleBadge(all)) |h| blk: {
         const kib = @as(f64, @floatFromInt(h.bytes)) / 1024.0;
@@ -239,12 +147,16 @@ pub fn toolResultLine(a: *Agent, r: ToolOutcome) void {
         else
             std.fmt.bufPrint(&bbuf, "{s}⇢ {d:.1} KiB handle{s}", .{ style.accent, kib, style.reset }) catch "";
     } else "";
-    w.print("  {s}{s}{s} {s}{s}{s}{s}{s}{s}{s}{s}", .{
-        mc,          mark,                           style.reset, style.accent, r.name, style.reset, style.dim, timing,
-        style.reset, if (badge.len > 0) " " else "", badge,
-    }) catch return;
-    if (shown.len > 0) w.print(" · {s}{s}", .{ shown, if (truncated) "…" else "" }) catch return;
-    w.print("{s}\n", .{style.reset}) catch return;
+    const remembered = label.take(r.name);
+    const verb = if (remembered) |mem| mem.verb else r.name;
+    const detail = if (remembered) |mem| mem.detail else "";
+    const prefix = treePrefix();
+    w.print("{s}{s}{s}{s} {s}", .{ prefix, mc, mark, style.reset, verb }) catch return;
+    if (detail.len > 0) w.print("  {s}", .{detail}) catch return;
+    w.print("{s}{s}{s}", .{ style.dim, timing, style.reset }) catch return;
+    if (badge.len > 0) w.print(" {s}", .{badge}) catch return;
+    if (shown.len > 0) w.print("  {s}{s}{s}{s}", .{ style.dim, shown, if (truncated) "…" else "", style.reset }) catch return;
+    w.writeAll("\n") catch return;
     w.flush() catch return;
 }
 
@@ -268,22 +180,20 @@ pub fn routedEffortLine(a: *Agent) void {
 const notice_buf_bytes: usize = 192;
 
 pub fn parallelBatchStarted(a: *Agent, count: usize) void {
-    var buf: [notice_buf_bytes]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "  {s}↯ {d} in parallel{s}\n", .{ style.dim, count, style.reset }) catch return;
-    sayText(a, line);
+    _ = a;
+    batch_left = if (count >= 2) count else 0;
 }
 
 pub fn parallelBatchFinished(a: *Agent, o: BatchOutcome) void {
+    batch_left = 0;
+    if (o.failed == 0 and o.cancelled == 0) return;
     var buf: [notice_buf_bytes]u8 = undefined;
-    const total = o.done + o.failed + o.cancelled;
-    const line = if (o.failed == 0 and o.cancelled == 0)
-        std.fmt.bufPrint(&buf, "  {s}↯ {d}/{d} done{s}\n", .{ style.dim, o.done, total, style.reset })
-    else if (o.cancelled == 0)
-        std.fmt.bufPrint(&buf, "  {s}↯ {d} done · {d} failed{s}\n", .{ style.dim, o.done, o.failed, style.reset })
+    const line = if (o.cancelled == 0)
+        std.fmt.bufPrint(&buf, "  {s}↯ {d} failed{s}\n", .{ style.dim, o.failed, style.reset })
     else if (o.failed == 0)
-        std.fmt.bufPrint(&buf, "  {s}↯ {d} done · {d} cancelled{s}\n", .{ style.dim, o.done, o.cancelled, style.reset })
+        std.fmt.bufPrint(&buf, "  {s}↯ {d} cancelled{s}\n", .{ style.dim, o.cancelled, style.reset })
     else
-        std.fmt.bufPrint(&buf, "  {s}↯ {d} done · {d} failed · {d} cancelled{s}\n", .{ style.dim, o.done, o.failed, o.cancelled, style.reset });
+        std.fmt.bufPrint(&buf, "  {s}↯ {d} failed · {d} cancelled{s}\n", .{ style.dim, o.failed, o.cancelled, style.reset });
     sayText(a, line catch return);
 }
 
@@ -306,6 +216,8 @@ pub fn toolTextLine(a: *Agent, text: []const u8) void {
 }
 
 fn testAgent(w: *Io.Writer) Agent {
+    batch_left = 0;
+    label.resetPending();
     return .{
         .gpa = std.testing.allocator,
         .arena = std.testing.allocator,
@@ -319,13 +231,14 @@ fn testAgent(w: *Io.Writer) Agent {
     };
 }
 
-test "the ⚙ line reproduces the old inline announcement, cap and ellipsis included" {
+test "announce is silent and the ✓ line uses the remembered verb" {
     const saved = ansi.style;
-    ansi.style = .{}; // no color: assert the text, not the palette
+    ansi.style = .{};
     defer ansi.style = saved;
-    const saved_json = main_mod.json_mode; // sayText's root gate reads it
+    const saved_json = main_mod.json_mode;
     main_mod.json_mode = false;
     defer main_mod.json_mode = saved_json;
+    label.resetPending();
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
@@ -334,32 +247,13 @@ test "the ⚙ line reproduces the old inline announcement, cap and ellipsis incl
 
     const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"path\":\"fixture.txt\"}", .{});
     toolUseLine(&a, .{ .name = "read_file", .input = input });
-    try std.testing.expectEqualStrings("⚙ read_file · fixture.txt\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+    toolResultLine(&a, .{ .name = "read_file", .text = "line one\nline two\n", .is_error = false });
+    try std.testing.expectEqualStrings("  ✓ read  fixture.txt  2 lines\n", aw.writer.buffered());
 
-    // Prose that already streamed live is not announced a second time.
     aw.clearRetainingCapacity();
     toolUseLine(&a, .{ .name = "attempt_completion", .input = input, .arg_streamed = true });
     try std.testing.expectEqualStrings("", aw.writer.buffered());
-
-    // Unknown tools stay visible; a common field becomes the one-liner, never JSON.
-    aw.clearRetainingCapacity();
-    toolUseLine(&a, .{ .name = "todo_write", .input = input });
-    try std.testing.expectEqualStrings("⚙ todo_write · fixture.txt\n", aw.writer.buffered());
-
-    aw.clearRetainingCapacity();
-    const opaque_input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"foo\":1}", .{});
-    toolUseLine(&a, .{ .name = "mystery_tool", .input = opaque_input });
-    try std.testing.expectEqualStrings("⚙ mystery_tool\n", aw.writer.buffered());
-
-    // Long readable details are capped to one terse line.
-    aw.clearRetainingCapacity();
-    const long = try std.fmt.allocPrint(arena_state.allocator(), "{{\"command\":\"{s}\"}}", .{&util.repeatBytes("x", 400)});
-    const long_input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), long, .{});
-    toolUseLine(&a, .{ .name = "bash", .input = long_input });
-    const line = aw.writer.buffered();
-    try std.testing.expect(std.mem.startsWith(u8, line, "⚙ bash · xxx"));
-    try std.testing.expect(std.mem.endsWith(u8, line, "…\n"));
-    try std.testing.expectEqual(@as(usize, 96), line.len - "⚙ bash · ".len - "…\n".len);
 }
 
 test "the result line marks success, failure and cancellation and previews one line" {
@@ -373,16 +267,17 @@ test "the result line marks success, failure and cancellation and previews one l
     defer aw.deinit();
     var a = testAgent(&aw.writer);
 
+    label.resetPending();
     toolResultLine(&a, .{ .name = "read_file", .text = "line one\nline two\n", .is_error = false });
-    try std.testing.expectEqualStrings("  ✓ read_file · 2 lines\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ read_file  2 lines\n", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
     toolResultLine(&a, .{ .name = "bash", .text = "boom", .is_error = true });
-    try std.testing.expectEqualStrings("  ✗ bash · boom\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✗ bash  boom\n", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
     toolResultLine(&a, .{ .name = "bash", .text = "stopped", .is_error = true, .cancelled = true });
-    try std.testing.expectEqualStrings("  ⊘ bash · stopped\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ⊘ bash  stopped\n", aw.writer.buffered());
 
     // Meta tools draw their own UX; the ✓ line stays out of their way.
     aw.clearRetainingCapacity();
@@ -396,13 +291,12 @@ test "the result line marks success, failure and cancellation and previews one l
     toolResultLine(&a, .{ .name = "bash", .text = &long, .is_error = false });
     const rline = aw.writer.buffered();
     try std.testing.expect(std.mem.endsWith(u8, rline, "…\n"));
-    try std.testing.expectEqual(@as(usize, 100), rline.len - "  ✓ bash · ".len - "…\n".len);
+    try std.testing.expectEqual(@as(usize, 100), rline.len - "  ✓ bash  ".len - "…\n".len);
 
-    // --timing adds the measured duration between the mark and the preview.
     aw.clearRetainingCapacity();
     main_mod.show_timing = true;
     toolResultLine(&a, .{ .name = "bash", .text = "ok", .is_error = false, .ms = 42 });
-    try std.testing.expectEqualStrings("  ✓ bash (42ms) · ok\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ bash (42ms)  ok\n", aw.writer.buffered());
 
     // A #440 handle spill badges its size; the marker text stays off the line.
     aw.clearRetainingCapacity();
@@ -450,15 +344,24 @@ test "batch tallies and meta notices render the old wording verbatim" {
     var a = testAgent(&aw.writer);
 
     parallelBatchStarted(&a, 3);
-    try std.testing.expectEqualStrings("  ↯ 3 in parallel\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+    label.resetPending();
+    toolResultLine(&a, .{ .name = "read_file", .text = "a\nb\n", .is_error = false });
+    try std.testing.expectEqualStrings("  ├─ ✓ read_file  2 lines\n", aw.writer.buffered());
+    aw.clearRetainingCapacity();
+    toolResultLine(&a, .{ .name = "read_file", .text = "a\nb\n", .is_error = false });
+    try std.testing.expectEqualStrings("  ├─ ✓ read_file  2 lines\n", aw.writer.buffered());
+    aw.clearRetainingCapacity();
+    toolResultLine(&a, .{ .name = "read_file", .text = "a\nb\n", .is_error = false });
+    try std.testing.expectEqualStrings("  └─ ✓ read_file  2 lines\n", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
     parallelBatchFinished(&a, .{ .done = 2, .failed = 0, .cancelled = 0 });
-    try std.testing.expectEqualStrings("  ↯ 2/2 done\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
     parallelBatchFinished(&a, .{ .done = 2, .failed = 1, .cancelled = 0 });
-    try std.testing.expectEqualStrings("  ↯ 2 done · 1 failed\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ↯ 1 failed\n", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
     completionDeferred(&a);
@@ -491,9 +394,11 @@ test "unknown tools pick a readable field instead of staying name-only" {
     defer aw.deinit();
     var a = testAgent(&aw.writer);
 
+    label.resetPending();
     const q = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"query\":\"standing line\"}", .{});
     toolUseLine(&a, .{ .name = "mcp_search", .input = q });
-    try std.testing.expectEqualStrings("⚙ mcp_search · standing line\n", aw.writer.buffered());
+    toolResultLine(&a, .{ .name = "mcp_search", .text = "4 matches", .is_error = false });
+    try std.testing.expectEqualStrings("  ✓ search  standing line  4 matches\n", aw.writer.buffered());
 }
 
 test "edit_file one-liner includes a +N/-N delta" {
@@ -512,15 +417,10 @@ test "edit_file one-liner includes a +N/-N delta" {
     const one = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(),
         \\{"path":"src/a.zig","old_string":"a\nb","new_string":"a\nb\nc"}
     , .{});
+    label.resetPending();
     toolUseLine(&a, .{ .name = "edit_file", .input = one });
-    try std.testing.expectEqualStrings("⚙ edit_file · src/a.zig · +3/-2\n", aw.writer.buffered());
-
-    aw.clearRetainingCapacity();
-    const batch = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(),
-        \\{"path":"src/a.zig","edits":[{"old_string":"x","new_string":"x\ny"},{"old_string":"z\nz","new_string":"z"}]}
-    , .{});
-    toolUseLine(&a, .{ .name = "edit_file", .input = batch });
-    try std.testing.expectEqualStrings("⚙ edit_file · src/a.zig · 2 spans · +3/-3\n", aw.writer.buffered());
+    toolResultLine(&a, .{ .name = "edit_file", .text = "applied 1 edit span(s) to src/a.zig (each verified)", .is_error = false });
+    try std.testing.expectEqualStrings("  ✓ edit  src/a.zig · +3/-2  applied 1 edit span(s) to src/a.zig (each verified)\n", aw.writer.buffered());
 }
 
 test "bash result prefers the last line of a multi-line run" {
@@ -536,5 +436,5 @@ test "bash result prefers the last line of a multi-line run" {
         .text = "[1/3] a...\n[2/3] b...\nAll 1475 tests passed\n",
         .is_error = false,
     });
-    try std.testing.expectEqualStrings("  ✓ bash · All 1475 tests passed\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ bash  1475 passed\n", aw.writer.buffered());
 }

@@ -59,7 +59,6 @@ const repl = @import("repl.zig");
 const repl_glue = @import("repl_glue.zig");
 const messages_mod = @import("messages.zig");
 const session = @import("session.zig");
-const session_index = @import("session_index.zig");
 
 /// `graff title <prompt>` — print the tab-title the model would generate for
 /// that prompt (one title call, no session). For A/B-ing title prompts/styles.
@@ -150,9 +149,6 @@ pub fn setupWorktreeAndBanner(
     // `graff tui --yolo` look like bare `graff` never left.
     if (!main_mod.json_mode and flags.oneshot_prompt == null and !flags.isPager()) {
         sink.emit(io, .{ .session_banner = .{ .cwd = main_mod.g_cwd_display, .trace_path = trace_path } });
-        var hint_buf: [72]u8 = undefined;
-        const hint = session_index.savedSessionsHint(session_index.countSavedSessions(io), &hint_buf);
-        if (hint.len > 0) sink.emit(io, .{ .session_notice = .{ .text = try arena.dupe(u8, hint), .tone = .dim } });
         if (environ_map.get("GRAFF_REPL_DEBUG") != null) if (codex_account) |acct| sink.emit(io, .{ .session_notice = .{
             .text = try std.fmt.allocPrint(arena, "logged into Codex (ChatGPT account {s}…) — /model codex", .{acct[0..@min(acct.len, 8)]}),
         } });
