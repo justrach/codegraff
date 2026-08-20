@@ -356,6 +356,32 @@ test "an eager tool is never blocked, and the load tool is advertised only when 
     try testing.expect(!gate.blocked(fat, "mcp__fat__ghost"));
 }
 
+test "folded listing omits gated and lean-dropped natives (monitor)" {
+    const no_local_tools = @import("no_local_tools.zig");
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const empty: []const mcp.Tool = &.{};
+
+    no_local_tools.enabled = false;
+    no_local_tools.lean = false;
+    const open = try gate.descWithListing(arena, empty);
+    try testing.expect(std.mem.indexOf(u8, open, "monitor") != null);
+
+    no_local_tools.enabled = true;
+    defer {
+        no_local_tools.enabled = false;
+        no_local_tools.lean = false;
+    }
+    const gated = try gate.descWithListing(arena, empty);
+    try testing.expect(std.mem.indexOf(u8, gated, "monitor") == null);
+
+    no_local_tools.enabled = false;
+    no_local_tools.lean = true;
+    const lean = try gate.descWithListing(arena, empty);
+    try testing.expect(std.mem.indexOf(u8, lean, "monitor") == null);
+}
+
 test "tool_desc stays JSON-escape-free (it is spliced into a raw schema string)" {
     for (gate.tool_desc) |c| try testing.expect(c != '"' and c != '\\' and c >= 0x20);
     try testing.expect(std.mem.indexOf(u8, gate.tool_desc, "CANNOT be called") != null);

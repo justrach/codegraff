@@ -492,10 +492,15 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
     // every session re-pays after the tools load. Same stable-catalog rule
     // as the MCP half — stable mode lists by policy, never by load state.
     const native_fold = @import("native_fold.zig");
+    const no_local_tools = @import("no_local_tools.zig");
     var natives: std.ArrayList([]const u8) = .empty;
     if (native_fold.anyFolded()) {
         for (native_fold.folded) |name| {
             if (!g_stable_catalog and native_fold.isLoaded(name)) continue;
+            // Fold listing is how the model learns a zero-stub exists. A
+            // gated or --lean-dropped name must not appear here either.
+            if (no_local_tools.blocks(name)) continue;
+            if (no_local_tools.lean and !no_local_tools.leanKeeps(name)) continue;
             try natives.append(arena, name);
         }
     }

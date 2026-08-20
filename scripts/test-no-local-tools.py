@@ -6,8 +6,8 @@ for the embedder's shape: the harness runs on the trusted host, the sandbox is
 reached only through MCP. Two scenarios run the same script.
 
 gated (`--no-local-tools`)
-  * the tools array the provider receives carries none of the seven local
-    execution tools, still carries webfetch/orchestration, and still carries the
+    * the tools array the provider receives carries none of the gated local
+    execution tools (including folded `monitor`), still carries webfetch/orchestration, and still carries the
     MCP server's tool;
   * a hallucinated `bash` call comes back as a tool error naming the flag, and
     the command never runs (the marker it would print appears nowhere);
@@ -309,19 +309,18 @@ def assert_gated(requests: list[RecordedRequest], events: list[dict]) -> None:
             f"expected both root and child requests, saw {len(root)}/{len(child)}"
         )
 
-    # Layer 1, root: nothing local advertised; webfetch, orchestration and the
-    # MCP-sourced sandbox tool all survive.
-    wire = tool_names(root[0])
-    leaked = [n for n in wire if n in GATED_TOOLS]
+    # Layer 1, root: nothing local advertised (wire OR the fold listing);
+    # webfetch, orchestration and the MCP-sourced sandbox tool all survive.
+    names = catalog_names(root[0])
+    leaked = [n for n in names if n in GATED_TOOLS]
     if leaked:
         raise AssertionError(f"root catalog still advertises {leaked!r}")
-    names = catalog_names(root[0])
     for expected in ("webfetch", "subagent", "workflow", "todo_write"):
         if expected not in names:
             raise AssertionError(f"root catalog lost {expected}: {names!r}")
     mcp_tool_name(names)
 
-    # Layer 1, child: subagents inherit the gate.
+    # Layer 1, child: subagents inherit the gate (their catalogs are not folded).
     child_names = tool_names(child[0])
     child_leaked = [n for n in child_names if n in GATED_TOOLS]
     if child_leaked:
@@ -368,7 +367,9 @@ def assert_gated(requests: list[RecordedRequest], events: list[dict]) -> None:
 
 
 def assert_control(requests: list[RecordedRequest], events: list[dict]) -> None:
-    names = tool_names(requests[0])
+    # monitor is folded: it is not a wire tool until load_tool_schemas, so
+    # the control catalog is wire names plus the Folded native listing.
+    names = catalog_names(requests[0])
     missing = [n for n in GATED_TOOLS if n not in names]
     if missing:
         raise AssertionError(f"ungated catalog is missing {missing!r}")

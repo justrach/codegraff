@@ -12,6 +12,8 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `--no-local-tools` no longer lists folded `monitor` on `load_tool_schemas`;
+  the embedder control catalog reads the Folded native listing so CI sees it.
 - graff-evals prints per-task calls, cache-read/write, hit rate, and
   first-token time; `--jobs N` overlaps tasks for suite wall clock. The
   `[usage]` parser accepts the current `cache writes` footer (it used to
