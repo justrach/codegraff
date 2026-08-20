@@ -77,13 +77,7 @@ const native_fold = @import("native_fold.zig"); // folded native power tools: la
 const vision = @import("vision.zig"); // read_file stages images like MCP image results (#249)
 const input_util = @import("input_util.zig");
 const imagegen = @import("imagegen.zig"); // #352: the codex-gated image tool (advertising lives in schema.zig/tool_gates.zig)
-
-/// Wall-clock ceiling for one *subagent* bash command. Subagents run on pool
-/// threads with no TTY, so there is no Esc to kill a runaway command — without
-/// this, a codedb refusal that pushes a subagent onto an unfiltered `grep ~/`
-/// hangs the whole workflow for ~48 min (#93). The root keeps its Esc-only,
-/// no-deadline behavior (a human is watching and may want a long build).
-const subagent_bash_deadline_ms: u64 = 120 * 1000;
+const bash_timeout = @import("bash_timeout.zig"); // optional foreground timeout_ms; root omit stays unbounded
 
 /// #266: killing a local `ssh` proves nothing about the remote command it was
 /// running — a cancelled or timed-out ssh result carries a caveat saying so.
@@ -324,7 +318,9 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             }) };
         }
         const sh = shellArgv(cmd);
-        const deadline: u64 = if (ctx.from_sub) subagent_bash_deadline_ms else 0;
+        const asked = intField(input, "timeout_ms");
+        if (asked) |n| if (n < 0) return .{ .text = try gpa.dupe(u8, bash_timeout.invalid), .is_error = true };
+        const deadline = bash_timeout.resolve(ctx.from_sub, asked);
         // #276 P0-1: a worktree-isolated agent's bash calls run pinned to its
         // own worktree — via std.process.Child.Cwd, per spawn, never a
         // process-wide chdir — so parallel siblings never share a cwd.
@@ -349,7 +345,8 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (run.cancelled) {
             try w.writeAll("\n[cancelled by user; local process group killed]");
         } else if (run.timed_out) {
-            try w.print("\n[timed out after {d}s and was killed — too long for a subagent. Don't retry as-is: scope it to specific paths or globs instead of scanning the whole directory, or report back what you need run.]", .{subagent_bash_deadline_ms / 1000});
+            var note_buf: [256]u8 = undefined;
+            try w.writeAll(bash_timeout.killedNote(&note_buf, deadline, ctx.from_sub, asked != null));
         } else if (exit_code) |code| {
             if (code != 0) try w.print("\n[exit code {d}]", .{code});
         } else try w.writeAll("\n[terminated abnormally]");
@@ -459,6 +456,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             },
             .no_match => .{
                 .text = try std.fmt.allocPrint(gpa, "No lines in {s} contain the exact literal {s}.", .{ path, contains orelse "" }),
+                .is_error = true,
             },
         };
     }

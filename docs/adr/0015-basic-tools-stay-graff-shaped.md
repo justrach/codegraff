@@ -26,8 +26,10 @@ like grok's would break the edit contract: `edit_file` needs the bytes
 - **`write_file` does not mkdir -p.** Missing parent is an error; create
   the directory with bash. Overwrite is the create path (ADR 0014).
 - **`bash` / `bash_output` / `bash_kill` / `monitor` stay as shipped.**
-  Do not persist cwd across calls (ADR 0006). Do not add grok `grep` or
-  `list_dir` — that is `codedb` plus bash.
+  Optional `timeout_ms` is foreground-only (10h cap). Root omit/0 stays
+  unbounded (Esc). Subagents still default to 120s (#93). Do not persist
+  cwd across calls (ADR 0006). Do not add grok `grep` or `list_dir` —
+  that is `codedb` plus bash. Do not default the root to grok's 120s.
 - **`webfetch` stays one URL in.** Do not copy grok's client-side fetch zoo.
 
 Cases: `src/basic_grok_contract.zig`, through `exec.execTool`.

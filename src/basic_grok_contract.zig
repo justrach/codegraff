@@ -197,6 +197,9 @@ test "grok read_file: contains returns numbered matching lines" {
     const out = try runRead(a, path, null, null, "hello");
     try expectOk(out);
     try std.testing.expectEqualStrings("2: hello world\n3: omega hello\n", out.text);
+    const miss = try runRead(a, path, null, null, "nope");
+    try std.testing.expect(miss.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, miss.text, "No lines") != null);
 }
 
 test "grok read_file: PDF is bash, not a built-in extractor" {
@@ -247,4 +250,20 @@ test "grok write_file: missing parent is not mkdir -p" {
     const out = try runWrite(a, path, "x\n");
     try std.testing.expect(out.is_error);
     try std.testing.expect(std.mem.indexOf(u8, out.text, "parent directory") != null);
+}
+
+test "bash timeout_ms kills a foreground sleep" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const g = Guard.arm();
+    defer g.disarm();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var obj: std.json.ObjectMap = .empty;
+    try obj.put(a, "command", .{ .string = "sleep 5" });
+    try obj.put(a, "timeout_ms", .{ .integer = 300 });
+    const out = runNamed(a, "bash", .{ .object = obj });
+    try std.testing.expect(out.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "timed out") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "timeout_ms") != null);
 }

@@ -164,6 +164,7 @@ const edit_contract = @import("edit_contract.zig");
 const edit_grok_contract = @import("edit_grok_contract.zig");
 // Grok-build read/write cases on graff read_file / write_file (ADR 0015).
 const basic_grok_contract = @import("basic_grok_contract.zig");
+const bash_timeout = @import("bash_timeout.zig");
 const phase_budget = @import("phase_budget.zig");
 const orchestration_policy = @import("orchestration_policy.zig");
 const orchestration_policy_tests = @import("orchestration_policy_tests.zig");
@@ -301,6 +302,7 @@ test {
     _ = edit_contract;
     _ = edit_grok_contract;
     _ = basic_grok_contract;
+    _ = bash_timeout;
     _ = phase_budget;
     _ = orchestration_policy;
     _ = orchestration_policy_tests;
