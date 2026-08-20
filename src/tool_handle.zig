@@ -164,7 +164,7 @@ pub fn withFirstNote(arena: Allocator, r: Result, shown: *bool) ![]const u8 {
 fn markerText(arena: Allocator, path: ?[]const u8, total: usize, threshold: usize, shape: []const u8) ![]const u8 {
     if (path) |p| return std.fmt.allocPrint(
         arena,
-        "[tool result handle: {d} bytes, {s} — the COMPLETE result is at {s}. Slice what you need out of that file (read_file with start_line/end_line, a grep-style bash command, codedb) instead of re-running the tool (#440).]",
+        "[tool result handle: {d} bytes, {s} — the COMPLETE result is at {s}. Slice what you need out of that file (read_file with start_line/end_line, codedb outline/symbol/list_dir, or a grep-style bash command) instead of re-running the tool (#440).]",
         .{ total, shape, p },
     );
     return std.fmt.allocPrint(

@@ -399,8 +399,8 @@ const ultracode_explicit_head =
     \\this turn into multi-agent orchestration. The workflow tool is
     \\available for it — available, not mandatory.
     \\Tell code-exploration subagents to go through the repo with the
-    \\codedb tool (search / symbol / callers / outline / context) before
-    \\reaching for bash grep — it is indexed and structural.
+    \\codedb tool (search / symbol / callers / outline / list_dir / context) before
+    \\reaching for bash grep/ls — it is indexed and structural.
     \\Escalate to the smallest rung that fits: work solo for a task scoped
     \\to 1-2 known files; spawn ONE scout when exploration would flood your
     \\own context; spawn a fleet only for 3+ genuinely independent
@@ -426,7 +426,7 @@ const ultracode_persistent_note =
     \\rather than freeforming a structure. Below that bar, do the work
     \\yourself: 1-2 known files is solo work. Tell code-exploration
     \\subagents to go through the repo with the codedb tool (search /
-    \\symbol / callers / outline / context) before reaching for bash grep —
+    \\symbol / callers / outline / list_dir / context) before reaching for bash grep/ls —
     \\it is indexed and structural.]
 ;
 

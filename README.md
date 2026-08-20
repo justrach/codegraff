@@ -209,6 +209,8 @@ whole-file reads. Instead of paying for a 2,000-line file to find one function,
 the model asks for exactly the shape it needs:
 
 ```
+codedb list_dir src                  # live tree (gitignore, 10k cap; no index needed)
+codedb status                        # is codedb.snapshot present?
 codedb outline src/main.zig          # just the symbol map, functions/types, no bodies
 codedb symbol switchProvider --body  # one function, by name
 codedb callers recordUsage           # who calls it (call sites, not files)
@@ -233,8 +235,11 @@ Why this keeps token cost low:
 
 Pure-Zig client to a pure-Zig server, zero dependencies on either side. Allowed
 subcommands: `search · symbol · callers · find · outline · read · tree ·
-context · word · deps · glob · ls · file · hot`. Not installed? The tool says so
-and points at the one-line install; everything else keeps working without it.
+list_dir · status · context · word · deps · glob · ls · file · hot`.
+`list_dir` and `status` are in-process (PathConfine; they work without the
+binary). Path-bearing queries stay inside the cwd, same jail as `read_file`.
+Not installed? Structural search says so and points at the one-line install;
+folder listing still works.
 
 ---
 
@@ -840,7 +845,7 @@ get web-request economics, and no boot-and-provision tax on time to first token.
 | `read_file`          | built-in | `Io.Dir.cwd().readFileAlloc` (256 KB cap)                 |
 | `edit_file`          | built-in | exact string replace; unique match required unless `replace_all` |
 | `write_file`         | built-in | `Io.Dir.cwd().writeFile`                                  |
-| `codedb`             | built-in | shells out to [codedb](https://github.com/justrach/codedb): read-only code-intel (search/symbol/callers/outline/…) |
+| `codedb`             | built-in | [codedb](https://github.com/justrach/codedb) index plus in-process `list_dir`/`status` (search/symbol/callers/outline/…) |
 | `subagent`           | built-in | this same agent loop, recursively (root agent only)       |
 | `workflow`           | built-in | phases of parallel subagents; `{{prev}}` carries results forward (root only) |
 | `todo_write`/`_read` | meta     | mutate/read the agent's own task list                     |

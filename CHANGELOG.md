@@ -10,6 +10,14 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## Unreleased
+
+- codedb pairing: `list_dir <path>` is in-process (gitignore, PathConfine,
+  works without the binary), `status` reports `codedb.snapshot`, and
+  path-bearing subcommands (`read`/`outline`/`deps`/`file`) share the
+  file-tool jail. The codedb guard now redirects `ls`/`find`/`tree` even
+  when the CLI is missing (ADR 0013).
+
 ## v0.0.267 (2026-08-19)
 
 - Background jobs wait like grok-build: `bash_output(wait_ms>0)` and

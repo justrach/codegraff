@@ -107,7 +107,7 @@ const base_specs = [_]ToolSpec{
     .{ .name = skill_docs.tool_name, .desc = skill_docs.tool_desc, .schema = skill_docs.tool_schema },
     .{
         .name = "codedb",
-        .desc = "Query codedb (github.com/justrach/codedb) — the code-intelligence index for this repo (fast & structural; prefer over grep/bash for navigating code). `command` is a codedb subcommand line: search <query> | symbol <name> [--body] | callers <name> | outline <path> | find <name> | deps <path> | tree | context <task...> | read <path>.",
+        .desc = "Query codedb (github.com/justrach/codedb) — indexed + structural nav; prefer over bash grep/find/ls. `command` is a subcommand line: search <q> | symbol <name> [--body] | callers <name> | outline <path> | find <name> | deps <path> | tree | list_dir <path> | status | context <task...> | read <path>. list_dir is in-process (gitignore, PathConfine, works without the binary). status reports codedb.snapshot. Paths stay inside the cwd.",
         .schema =
         \\{"type": "object", "properties": {"command": {"type": "string", "description": "codedb subcommand + args, e.g. \"search parseHeader\", \"symbol buildBody --body\", \"callers switchProvider\""}}, "required": ["command"]}
         ,

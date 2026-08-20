@@ -275,8 +275,8 @@ pub const ultracode_system_note =
     \\
     \\ULTRACODE MODE: use the workflow tool for coding tasks. Tell
     \\code-exploration subagents to go through the repo with the codedb tool
-    \\(search / symbol / callers / outline / context) before reaching for
-    \\bash grep — it is indexed and structural.
+    \\(search / symbol / callers / outline / list_dir / context) before reaching for
+    \\bash grep/ls — it is indexed and structural.
     \\
     \\
 ++ shapes.shape_catalog_note;

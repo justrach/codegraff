@@ -200,9 +200,7 @@ pub fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
 
     // First word must be a code scan/read utility (basename, so /usr/bin/grep
     // counts; sudo/env prefixes are intentionally not unwrapped).
-    const trimmed = std.mem.trim(u8, cmd, " \t");
-    const word_end = std.mem.indexOfAny(u8, trimmed, " \t") orelse trimmed.len;
-    const tool = std.fs.path.basename(trimmed[0..word_end]);
+    const tool = bashToolName(cmd);
     const scanners = [_][]const u8{
         "grep", "egrep",  "fgrep", "rg",   "ripgrep", "ag", "ack",
         "sed",  "awk",    "cat",   "head", "tail",    "wc", "nl",
@@ -212,6 +210,13 @@ pub fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
     for (scanners) |s| if (std.mem.eql(u8, s, tool)) {
         is_scanner = true;
     };
+    const is_lister = isListerName(tool);
+    // list_dir is in-process — no codedb binary required. Redirect ls/find/tree
+    // even on a machine that has not installed the CLI yet.
+    if (is_lister) {
+        const msg = std.fmt.allocPrint(ctx.gpa, "blocked: don't shell out to `{s}` to list the tree. Use the codedb tool: list_dir <path> (in-process, gitignore, 10k cap) · glob <pattern> · tree (index). If you genuinely need raw bash here, set GRAFF_NO_CODEDB_GUARD=1.", .{tool}) catch return .{ .text = &.{}, .is_error = true };
+        return .{ .text = msg, .is_error = true };
+    }
     if (!is_scanner) return null;
 
     // …aimed at a concrete source file (not a glob — codedb glob/tree cover that).
@@ -227,8 +232,20 @@ pub fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
     // codedb result. Let bash through for un-indexed files (issue #54).
     if (!hooks.codedbFileIndexed(ctx.io, ctx.gpa, src_path)) return null;
 
-    const msg = std.fmt.allocPrint(ctx.gpa, "blocked: this repo is codedb-indexed — don't shell out to `{s}` to read or search source. Use the codedb tool (indexed + structural): search <query> · symbol <name> [--body] · callers <name> · deps <path> · outline <path> · read <path> · context <task>. If you genuinely need raw bash here, set GRAFF_NO_CODEDB_GUARD=1.", .{tool}) catch return .{ .text = &.{}, .is_error = true };
+    const msg = std.fmt.allocPrint(ctx.gpa, "blocked: this repo is codedb-indexed — don't shell out to `{s}` to read or search source. Use the codedb tool (indexed + structural): search <query> · symbol <name> [--body] · callers <name> · deps <path> · outline <path> · read <path> · list_dir <path> · context <task>. If you genuinely need raw bash here, set GRAFF_NO_CODEDB_GUARD=1.", .{tool}) catch return .{ .text = &.{}, .is_error = true };
     return .{ .text = msg, .is_error = true };
+}
+
+fn bashToolName(cmd: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, cmd, " \t");
+    const word_end = std.mem.indexOfAny(u8, trimmed, " \t") orelse trimmed.len;
+    return std.fs.path.basename(trimmed[0..word_end]);
+}
+
+fn isListerName(tool: []const u8) bool {
+    const listers = [_][]const u8{ "ls", "find", "tree" };
+    for (listers) |s| if (std.mem.eql(u8, s, tool)) return true;
+    return false;
 }
 
 /// Extract the first concrete source file path from a bash command (after
@@ -441,6 +458,14 @@ test "codedbGuard.referencesSourceFile: concrete code paths, not globs/logs/conf
     try std.testing.expect(!referencesSourceFile("ls -la"));
     // The command word itself ending in a code ext must not self-trigger.
     try std.testing.expect(!referencesSourceFile("./build.zig"));
+}
+
+test "codedbGuard: ls/find/tree are listers, grep is not" {
+    try std.testing.expect(isListerName(bashToolName("ls -la src")));
+    try std.testing.expect(isListerName(bashToolName("/bin/find . -name '*.zig'")));
+    try std.testing.expect(isListerName(bashToolName("tree -L 2")));
+    try std.testing.expect(!isListerName(bashToolName("grep -n foo src/main.zig")));
+    try std.testing.expect(!isListerName(bashToolName("echo ls")));
 }
 
 test "blankText: webfetch empty-output heuristic" {

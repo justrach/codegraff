@@ -122,6 +122,7 @@ pub fn buildSystemPrompt(
     if (environ.get("GRAFF_NO_REPO_MAP") == null) {
         if (@import("repo_map.zig").segment(io, arena)) |map| sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, map });
     }
+    if (@import("codedb_health.zig").segment(io, arena)) |note| sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, note });
     if (unattended) sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, prompts.unattended_note });
     // Codex-style skills: one capability line per installed optional
     // companion (skills_registry) — metadata in context, --help on demand.

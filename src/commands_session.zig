@@ -374,7 +374,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.eql(u8, line, "/hooks")) {
-        try out.print("{s}codedb guard{s} (built-in, issue #626): {s} — blocks bash grep/sed/cat/wc on indexed source files and redirects to the codedb tool; GRAFF_NO_CODEDB_GUARD=1 disables.\n", .{ style.bold, style.reset, if (main_mod.g_codedb_guard) "on" else "off" });
+        try out.print("{s}codedb guard{s} (built-in, issue #626): {s} — blocks bash grep/sed/cat/wc on indexed source files and bash ls/find/tree (use codedb list_dir); GRAFF_NO_CODEDB_GUARD=1 disables.\n", .{ style.bold, style.reset, if (main_mod.g_codedb_guard) "on" else "off" });
         if (main_mod.g_hooks.total() == 0) {
             try out.print("no lifecycle hooks. Add them to {s}:\n  {s}{{\"hooks\": {{\"pre_tool\": [{{\"match\": \"bash\", \"command\": \"./guard.sh\"}}]}}}}{s}\n  events: pre_tool (exit 2 blocks, stderr → model) · post_tool · turn_end; loaded at startup\n", .{ Approvals.settings_path, style.dim, style.reset });
             try out.flush();
