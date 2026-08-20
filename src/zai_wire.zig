@@ -3,6 +3,11 @@
 //! GLM-5.3 always reasons: `thinking.type` is only `enabled` (disabled fails)
 //! and `reasoning_effort` is `low` | `high` | `max` (docs default `max`).
 //! Graff's default is `medium`, which the API rejects — map it here.
+//!
+//! Context cache is implicit on identical prefixes
+//! (`usage.prompt_tokens_details.cached_tokens`). Preserved thinking
+//! (`clear_thinking: false`) keeps replayed `reasoning_content` in that
+//! prefix so a tool turn does not drop the hit (docs.z.ai thinking-mode).
 
 const std = @import("std");
 
@@ -22,7 +27,7 @@ pub fn writeChatExtras(s: *std.json.Stringify, provider_id: []const u8, send_eff
     const is_zai = std.mem.eql(u8, provider_id, "zai");
     if (is_zai) {
         try s.objectField("thinking");
-        try s.print("{s}", .{"{\"type\":\"enabled\"}"});
+        try s.print("{s}", .{"{\"type\":\"enabled\",\"clear_thinking\":false}"});
     }
     if (!std.mem.eql(u8, provider_id, "kimi") and send_effort) {
         try s.objectField("reasoning_effort");
@@ -72,7 +77,8 @@ test "Z.AI chat body sends thinking.enabled and remaps medium to high" {
     };
     const body = try agent.buildBody(null, false, true, true);
     defer std.testing.allocator.free(body);
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"thinking\":{\"type\":\"enabled\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"thinking\":{\"type\":\"enabled\",\"clear_thinking\":false}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"prompt_cache_key\":\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning_effort\":\"high\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning_effort\":\"medium\"") == null);
 
