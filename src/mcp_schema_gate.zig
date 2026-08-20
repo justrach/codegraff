@@ -290,7 +290,10 @@ pub fn anyDeferred(all: []const mcp.Tool) bool {
 /// session with no MCP (or with everything eager) is never charged for it —
 /// the same "advertise only what can be used" rule #330/#352 apply.
 pub fn hiddenSpec(name: []const u8, all: []const mcp.Tool) bool {
-    return std.mem.eql(u8, name, tool_name) and !anyDeferred(all);
+    const progressive = std.mem.eql(u8, name, tool_name) or
+        std.mem.eql(u8, name, "mcp_search_tools") or
+        std.mem.eql(u8, name, "mcp_select_tool");
+    return progressive and !anyDeferred(all);
 }
 
 /// The description a deferred tool advertises: the first line (or paragraph)
@@ -532,7 +535,7 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
         }
         try aw.writer.writeAll(");");
     }
-    return aw.writer.buffered();
+    return @import("context_limits.zig").applyAlloc(arena, aw.writer.buffered(), @import("context_limits.zig").mcp_schema_bytes);
 }
 
 /// What is deferred right now, names + short descriptions. Doubles as the

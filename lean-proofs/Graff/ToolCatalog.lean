@@ -23,22 +23,24 @@ deriving Repr, BEq
 
 def localTools : List String :=
   ["bash", "bash_output", "bash_kill", "read_file", "edit_file",
-   "write_file", "codedb", "imagegen"]
+   "write_file", "codedb", "read_tool_result", "imagegen"]
 
 def leanTools : List String :=
   ["bash", "read_file", "edit_file", "write_file", "codedb",
-   "subagent", "attempt_completion", "load_tool_schemas"]
+   "read_tool_result", "subagent", "attempt_completion",
+   "load_tool_schemas"]
 
 def optionalTools : List String :=
   ["imagegen"]
 
 def baseTools : List String :=
   ["bash", "bash_output", "bash_kill", "read_file", "edit_file",
-   "write_file", "webfetch", "skill", "codedb"]
+   "write_file", "webfetch", "skill", "codedb", "read_tool_result"]
 
 def metaTools : List String :=
   ["todo_write", "todo_read", "eval", "note_constraint", "ask_user",
-   "attempt_completion", "load_tool_schemas", "clock_sleep"]
+   "attempt_completion", "load_tool_schemas", "mcp_search_tools",
+   "mcp_select_tool", "clock_sleep"]
 
 def rootExtras : List String :=
   ["subagent", "workflow", "agent_output", "learn_candidate", "peer_message",
@@ -132,7 +134,8 @@ example : unique (baseTools ++ metaTools ++ rootExtras) = true := by native_deci
 example : catalog {} =
     (baseTools ++
       ["todo_write", "todo_read", "eval", "note_constraint", "ask_user",
-       "attempt_completion", "load_tool_schemas"] ++
+       "attempt_completion", "load_tool_schemas", "mcp_search_tools",
+       "mcp_select_tool"] ++
       ["subagent", "workflow", "agent_output", "peer_message", "workspace"]) := by native_decide
 
 example : catalog { imagegen := true } =

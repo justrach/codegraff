@@ -25,6 +25,7 @@ const Allocator = std.mem.Allocator;
 const main_mod = @import("main.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: `--no-local-tools` arms the process-global gate (same set-only pattern as the main_mod globals)
+const context_limits = @import("context_limits.zig");
 
 /// Every CLI-flag local main() used to declare, plus the resolved
 /// positionals/subcommand-detection/one-shot-prompt outputs computed right
@@ -63,6 +64,8 @@ pub const Flags = struct {
     goal_flag: ?[]const u8 = null, // --goal: standing objective (todos) every turn gets, incl. --json/-p
     eval_cmd_flag: ?[]const u8 = null, // --eval: scoring command for the eval-driven loop
     worktree_flag: ?[]const u8 = null, // --worktree/-w: isolate this session in a git worktree (parallel agents, no file collisions)
+    add_dirs: std.ArrayList([]const u8) = .empty, // --add-dir: extra file-tool roots, max 16
+    context_limits: std.ArrayList([]const u8) = .empty, // --context-limit name=N
     eval_target_flag: ?u8 = null, // --until: target score 0-100 for the eval loop
     eval_niche_flag: ?[]const u8 = null, // --niche: fleet niche this eval-driven session optimizes (tags submitted scores)
     output_schema_flag: ?[]const u8 = null, // --output-schema: JSON schema (inline or @file) the final answer must satisfy (#502)
@@ -130,6 +133,13 @@ pub fn parse(init: std.process.Init) !Flags {
                     flags.lean_flag = true;
                 } else if (std.mem.eql(u8, arg, "--worktree") or std.mem.eql(u8, arg, "-w")) {
                     flags.worktree_flag = it.next() orelse std.process.fatal("--worktree needs a name (e.g. --worktree agent1)", .{});
+                } else if (std.mem.eql(u8, arg, "--add-dir")) {
+                    const dir = it.next() orelse std.process.fatal("--add-dir needs a directory (repeatable, max 16)", .{});
+                    flags.add_dirs.append(arena, try arena.dupe(u8, dir)) catch std.process.fatal("--add-dir: out of memory", .{});
+                } else if (std.mem.eql(u8, arg, "--context-limit")) {
+                    const pair = it.next() orelse std.process.fatal("--context-limit needs name=N (skill_catalog_bytes|mcp_schema_bytes|agents_md_bytes)", .{});
+                    context_limits.applyPair(pair) catch std.process.fatal("invalid --context-limit '{s}' (want name=N)", .{pair});
+                    flags.context_limits.append(arena, try arena.dupe(u8, pair)) catch {};
                 } else if (std.mem.eql(u8, arg, "--goal")) {
                     flags.goal_flag = it.next() orelse std.process.fatal("--goal needs an objective", .{});
                 } else if (std.mem.eql(u8, arg, "--eval")) {

@@ -284,7 +284,7 @@ pub fn promptCatalog(arena: Allocator, list: []const Skill) []const u8 {
         const sk = list[i];
         aw.writer.print("- {s} ({s}): {s}\n", .{ sk.name, sk.source.label(), util.utf8Prefix(sk.desc, desc_cap) }) catch return "";
     }
-    return aw.writer.buffered();
+    return @import("context_limits.zig").applyAlloc(arena, aw.writer.buffered(), @import("context_limits.zig").skill_catalog_bytes);
 }
 
 /// The `skill` tool. A named load already in the session catalog (`g_skills`)

@@ -1,12 +1,4 @@
-//! Tool dispatch: `execTool` (the timed/traced/hooked outer wrapper, whose
-//! guard chain starts with the #330 `--no-local-tools` refusal) and
-//! `execToolInner` (the big per-tool-name switch — bash, bash_output,
-//! bash_kill, webfetch, read_file, codedb, edit_file, write_file, subagent,
-//! workflow, learn_candidate). Split out of main.zig (600-line goal); LAST in
-//! the tool-exec region since it's the glue that imports tools.zig/
-//! subagent.zig/workflow.zig as siblings, plus approvals.zig/mcp.zig/jobs.zig/
-//! skills.zig/telemetry.zig. Back-imports main (`main_mod`) for `ToolCall`/
-//! `plan_mode` (pub-flipped) and `utf8Prefix`.
+//! Tool dispatch: `execTool` + `execToolInner`. Split out of main.zig.
 
 const std = @import("std");
 const Io = std.Io;
@@ -64,6 +56,7 @@ const skills = @import("skills.zig");
 const skill_docs = @import("skill_docs.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: refuse an MCP tool whose schema was never loaded
 const read_file = @import("read_file.zig");
+const result_read = @import("result_read.zig");
 // #337: edit_file's verified write path, plus the file-tool helpers that moved
 // out with it (this file is at the 600-line ceiling).
 const edit_verify = @import("edit_verify.zig");
@@ -394,6 +387,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         }
         return rawFetch(gpa, ctx.client, url);
     }
+    if (std.mem.eql(u8, call.name, result_read.tool_name)) return result_read.exec(ctx, call);
     if (std.mem.eql(u8, call.name, "read_file")) {
         const path = strField(input, "path") orelse return missingArg(gpa, "path");
         if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);

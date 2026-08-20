@@ -161,11 +161,16 @@ pub fn withFirstNote(arena: Allocator, r: Result, shown: *bool) ![]const u8 {
     return std.fmt.allocPrint(arena, "{s}{s}", .{ r.text, first_note });
 }
 
+fn handleId(path: []const u8) []const u8 {
+    const base = std.fs.path.basename(path);
+    return if (std.mem.endsWith(u8, base, ".txt")) base[0 .. base.len - 4] else base;
+}
+
 fn markerText(arena: Allocator, path: ?[]const u8, total: usize, threshold: usize, shape: []const u8) ![]const u8 {
     if (path) |p| return std.fmt.allocPrint(
         arena,
-        "[tool result handle: {d} bytes, {s} — the COMPLETE result is at {s}. Slice what you need out of that file (read_file with start_line/end_line, a grep-style bash command, codedb) instead of re-running the tool (#440).]",
-        .{ total, shape, p },
+        "[tool result handle: {d} bytes, {s} — handle {s} at {s}. Page it with read_tool_result (offset/limit or query); do not re-run the tool (#440).]",
+        .{ total, shape, handleId(p), p },
     );
     return std.fmt.allocPrint(
         arena,
@@ -183,11 +188,19 @@ fn persist(arena: Allocator, target: Target, text: []const u8) ?[]const u8 {
     if (!reserve(text.len)) return null;
     // createDirPath is idempotent; `.graff` normally already exists (trace setup).
     target.dir.createDirPath(target.io, handles_dir) catch return refund(text.len);
-    const seq = g_seq.fetchAdd(1, .monotonic);
-    const run_id = if (target.run_id.len > 0) target.run_id else "untraced";
-    const rel = std.fmt.allocPrint(arena, "{s}/{s}-{d}.txt", .{ handles_dir, run_id, seq }) catch return refund(text.len);
-    target.dir.writeFile(target.io, .{ .sub_path = rel, .data = text, .flags = .{ .exclusive = true } }) catch return refund(text.len);
-    return absolute(target, arena, rel);
+    // `g_seq` is per-process. A prior graff in this cwd may have left tr_N;
+    // exclusive create must skip those instead of dropping the handle.
+    var spins: u32 = 0;
+    while (spins < 1024) : (spins += 1) {
+        const seq = g_seq.fetchAdd(1, .monotonic);
+        const rel = std.fmt.allocPrint(arena, "{s}/tr_{d}.txt", .{ handles_dir, seq }) catch return refund(text.len);
+        target.dir.writeFile(target.io, .{ .sub_path = rel, .data = text, .flags = .{ .exclusive = true } }) catch |err| {
+            if (err == error.PathAlreadyExists) continue;
+            return refund(text.len);
+        };
+        return absolute(target, arena, rel);
+    }
+    return refund(text.len);
 }
 
 /// Resolved through the same dir handle the file was written with, so the path
@@ -356,13 +369,14 @@ test "#440: over the threshold returns preview + handle path + byte count + shap
     try std.testing.expect(std.unicode.utf8ValidateSlice(r.text));
 
     // (a) the handle holds the complete original bytes
-    const rel = handles_dir ++ "/run-0.txt";
+    const rel = handles_dir ++ "/tr_0.txt";
     const stored = try tmp.dir.readFileAlloc(io, rel, std.testing.allocator, .limited(1 << 20));
     defer std.testing.allocator.free(stored);
     try std.testing.expectEqualStrings(big, stored);
     // (b) the path handed to the model is absolute and names that file
     try std.testing.expect(std.fs.path.isAbsolute(r.path.?));
-    try std.testing.expect(std.mem.endsWith(u8, r.path.?, "run-0.txt"));
+    try std.testing.expect(std.mem.endsWith(u8, r.path.?, "tr_0.txt"));
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "handle tr_0") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.text, r.path.?) != null);
     // (c) the byte count and the shape hint are both in the marker
     try std.testing.expect(std.mem.indexOf(u8, r.text, "40000 bytes") != null);
@@ -504,5 +518,28 @@ test "#440: the run byte budget bounds the handle dir, and over it the result is
     try std.testing.expect(std.mem.indexOf(u8, second.text, "8192 bytes total") != null);
     try std.testing.expect(std.mem.indexOf(u8, second.text, "No handle could be written") != null);
     try std.testing.expect(second.text.len <= 1024);
-    try std.testing.expect(tmp.dir.statFile(io, handles_dir ++ "/run-1.txt", .{}) == error.FileNotFound);
+    try std.testing.expect(tmp.dir.statFile(io, handles_dir ++ "/tr_1.txt", .{}) == error.FileNotFound);
+}
+
+test "#440: a leftover tr_N from a prior process still gets a handle" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    resetForTest();
+    defer resetForTest();
+
+    const big = try a.alloc(u8, 8192);
+    @memset(big, 'x');
+    const first = try forResult(std.testing.allocator, a, testTarget(&tmp), big, 1024);
+    try std.testing.expect(first.path != null);
+    try std.testing.expect(std.mem.endsWith(u8, first.path.?, "tr_0.txt"));
+
+    // New process: seq restarts at 0, leftover file stays.
+    resetForTest();
+    const second = try forResult(std.testing.allocator, a, testTarget(&tmp), big, 1024);
+    try std.testing.expect(second.path != null);
+    try std.testing.expect(std.mem.endsWith(u8, second.path.?, "tr_1.txt"));
+    try std.testing.expect(std.mem.indexOf(u8, second.text, "handle tr_1") != null);
 }
