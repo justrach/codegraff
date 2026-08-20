@@ -188,10 +188,19 @@ fn persist(arena: Allocator, target: Target, text: []const u8) ?[]const u8 {
     if (!reserve(text.len)) return null;
     // createDirPath is idempotent; `.graff` normally already exists (trace setup).
     target.dir.createDirPath(target.io, handles_dir) catch return refund(text.len);
-    const seq = g_seq.fetchAdd(1, .monotonic);
-    const rel = std.fmt.allocPrint(arena, "{s}/tr_{d}.txt", .{ handles_dir, seq }) catch return refund(text.len);
-    target.dir.writeFile(target.io, .{ .sub_path = rel, .data = text, .flags = .{ .exclusive = true } }) catch return refund(text.len);
-    return absolute(target, arena, rel);
+    // `g_seq` is per-process. A prior graff in this cwd may have left tr_N;
+    // exclusive create must skip those instead of dropping the handle.
+    var spins: u32 = 0;
+    while (spins < 1024) : (spins += 1) {
+        const seq = g_seq.fetchAdd(1, .monotonic);
+        const rel = std.fmt.allocPrint(arena, "{s}/tr_{d}.txt", .{ handles_dir, seq }) catch return refund(text.len);
+        target.dir.writeFile(target.io, .{ .sub_path = rel, .data = text, .flags = .{ .exclusive = true } }) catch |err| {
+            if (err == error.PathAlreadyExists) continue;
+            return refund(text.len);
+        };
+        return absolute(target, arena, rel);
+    }
+    return refund(text.len);
 }
 
 /// Resolved through the same dir handle the file was written with, so the path
@@ -510,4 +519,27 @@ test "#440: the run byte budget bounds the handle dir, and over it the result is
     try std.testing.expect(std.mem.indexOf(u8, second.text, "No handle could be written") != null);
     try std.testing.expect(second.text.len <= 1024);
     try std.testing.expect(tmp.dir.statFile(io, handles_dir ++ "/tr_1.txt", .{}) == error.FileNotFound);
+}
+
+test "#440: a leftover tr_N from a prior process still gets a handle" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    resetForTest();
+    defer resetForTest();
+
+    const big = try a.alloc(u8, 8192);
+    @memset(big, 'x');
+    const first = try forResult(std.testing.allocator, a, testTarget(&tmp), big, 1024);
+    try std.testing.expect(first.path != null);
+    try std.testing.expect(std.mem.endsWith(u8, first.path.?, "tr_0.txt"));
+
+    // New process: seq restarts at 0, leftover file stays.
+    resetForTest();
+    const second = try forResult(std.testing.allocator, a, testTarget(&tmp), big, 1024);
+    try std.testing.expect(second.path != null);
+    try std.testing.expect(std.mem.endsWith(u8, second.path.?, "tr_1.txt"));
+    try std.testing.expect(std.mem.indexOf(u8, second.text, "handle tr_1") != null);
 }
