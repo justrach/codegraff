@@ -10,7 +10,7 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.0.268 (2026-08-20)
+## v0.0.269 (2026-08-20)
 
 - Z.AI's existing seat now defaults to GLM-5.3 (1M context) with live
   `/api/paas/v4/models`, `thinking.type=enabled`, and `/effort` remapped
@@ -20,6 +20,10 @@ current is part of cutting a release.
   (`cached_tokens`) plus `thinking.clear_thinking=false` so replayed
   `reasoning_content` stays in that prefix. This is the GLM chat API,
   not image/video.
+- Test ratchet: unit suite 1531.
+
+## v0.0.268 (2026-08-20)
+
 - Cerebras Inference is a built-in OpenAI-chat provider (`CEREBRAS_API_KEY`,
   `graff key set cerebras …`, default `gpt-oss-120b`). Live `/v1/models`
   overlay; this is `api.cerebras.ai`, not the WSE CSL SDK.

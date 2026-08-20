@@ -21,6 +21,10 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.269
+    \\  • Z.AI defaults to GLM-5.3 (1M); thinking.enabled + implicit prefix cache
+    \\  • GLM Coding Plan: ZAI_CODING=1 / GRAFF_ZAI_URL; not image/video
+    \\
     \\0.0.268
     \\  • Cerebras Inference (CEREBRAS_API_KEY → gpt-oss-120b); not the WSE CSL SDK
     \\  • Codex-shaped .harness/agents/*.toml (and ~/.codex/agents) pin model/effort
