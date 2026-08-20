@@ -20,8 +20,12 @@ cd graff-evals
 # one task, three reps, on the grok CLI
 ./run.py --harness grok --task fix-fib --reps 3
 
-# harness-vs-harness on the same model
+# harness-vs-harness on the same model (fair wall/cache compare)
 ./run.py --harness graff,grok --model grok-4.6
+./run.py --harness graff-dev,pi-codegraff --model gemini-3.7-flash
+
+# suite wall clock: run 4 tasks at once (rate-limit aware)
+./run.py --harness graff-dev --jobs 4
 
 # a different model through graff
 ./run.py --harness graff --model claude-opus-4-8

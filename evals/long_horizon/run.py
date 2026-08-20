@@ -25,7 +25,7 @@ REPO = ROOT.parents[1]
 HARNESS_CONFIG = REPO / "graff-evals" / "harnesses.json"
 RESULTS = ROOT / "results"
 USAGE_RE = re.compile(
-    r"\[usage\] (\d+) api call\(s\) · (\d+) in \((\d+) cached\) \+ (\d+) out tokens"
+    r"\[usage\] (\d+) api call\(s\) · (\d+) in \((\d+) cached(?:, (\d+) cache writes)?\) \+ (\d+) out tokens"
 )
 
 
@@ -102,11 +102,16 @@ def usage_from(stderr: str) -> dict[str, int]:
     match = USAGE_RE.search(stderr)
     if not match:
         return {}
-    calls, input_tokens, cached_tokens, output_tokens = map(int, match.groups())
+    calls = int(match.group(1))
+    input_tokens = int(match.group(2))
+    cached_tokens = int(match.group(3))
+    cache_writes = int(match.group(4) or 0)
+    output_tokens = int(match.group(5))
     return {
         "model_calls": calls,
         "input_tokens": input_tokens,
         "cached_tokens": cached_tokens,
+        "cache_write_tokens": cache_writes,
         "output_tokens": output_tokens,
     }
 

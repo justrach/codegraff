@@ -20,8 +20,11 @@ TASKS_DIR = os.path.join(ROOT, "tasks")
 RESULTS_DIR = os.path.join(ROOT, "results")
 SANDBOX_DIR = os.path.join(ROOT, ".sandboxes")
 
+# Current footer: `[usage] N api call(s) · IN in (CACHED cached, W cache writes) + OUT tokens · $X`
+# Older footers omitted writes and the dollar tail. Both must parse.
 GRAFF_USAGE_RE = re.compile(
-    r"\[usage\] (\d+) api call\(s\) · (\d+) in \((\d+) cached\) \+ (\d+) out tokens")
+    r"\[usage\] (\d+) api call\(s\) · (\d+) in \((\d+) cached(?:, (\d+) cache writes)?\) \+ (\d+) out tokens"
+)
 
 
 def load_tasks():
@@ -104,11 +107,17 @@ def parse_answer_and_usage(harness, stdout, stderr):
         usage = {"calls": calls, "in": tin + tread + twrite, "cached": tread,
                  "out": tout, "cost_usd": round(cost, 6)}
     if harness.get("usage") == "graff-stderr":
-        m = GRAFF_USAGE_RE.search(stderr)
-        if m:
-            usage = {"calls": int(m.group(1)), "in": int(m.group(2)),
-                     "cached": int(m.group(3)), "out": int(m.group(4))}
+        usage.update(parse_graff_usage(stderr))
     return answer, usage
+
+
+def parse_graff_usage(stderr):
+    m = GRAFF_USAGE_RE.search(stderr)
+    if not m:
+        return {}
+    writes = int(m.group(4) or 0)
+    return {"calls": int(m.group(1)), "in": int(m.group(2)),
+            "cached": int(m.group(3)), "writes": writes, "out": int(m.group(5))}
 
 
 def one_run(hname, harness, task, model, rep, live=False):
@@ -167,18 +176,44 @@ def one_run(hname, harness, task, model, rep, live=False):
     return rec
 
 
+def _hit(tin, cached):
+    return (100.0 * cached / tin) if tin else 0.0
+
+
 def summarize(records):
+    print(f"\n{'task':<18} {'harness':<14} {'ok':>3} {'calls':>5} {'wall':>7} {'ttft':>6} "
+          f"{'in':>8} {'cached':>8} {'write':>7} {'out':>6} {'hit':>5}")
+    for r in records:
+        tin = r.get("tok_in") or 0
+        cached = r.get("tok_cached") or 0
+        print(f"{r.get('task', '?'):<18} {r.get('harness', '?'):<14} "
+              f"{'✓' if r.get('outcome_ok') else '✗':>3} "
+              f"{r.get('tok_calls') or 0:>5} {r.get('wall_s') or 0:>6.1f}s "
+              f"{r.get('first_out_s') or 0:>5.1f}s {tin:>8} {cached:>8} "
+              f"{r.get('tok_writes') or 0:>7} {r.get('tok_out') or 0:>6} "
+              f"{_hit(tin, cached):>4.0f}%")
+
     by = {}
     for r in records:
-        b = by.setdefault(r["harness"], {"n": 0, "ok": 0, "wall": 0.0, "tin": 0, "tout": 0})
+        b = by.setdefault(r["harness"], {
+            "n": 0, "ok": 0, "wall": 0.0, "ttft": 0.0, "calls": 0,
+            "tin": 0, "cached": 0, "writes": 0, "tout": 0,
+        })
         b["n"] += 1
         b["ok"] += bool(r.get("outcome_ok"))
-        b["wall"] += r.get("wall_s", 0) or 0
+        b["wall"] += r.get("wall_s") or 0
+        b["ttft"] += r.get("first_out_s") or 0
+        b["calls"] += r.get("tok_calls") or 0
         b["tin"] += r.get("tok_in") or 0
+        b["cached"] += r.get("tok_cached") or 0
+        b["writes"] += r.get("tok_writes") or 0
         b["tout"] += r.get("tok_out") or 0
-    print(f"\n{'harness':<12} {'pass':>7} {'wall':>8} {'in_tok':>9} {'out_tok':>8}")
+    print(f"\n{'harness':<14} {'pass':>7} {'calls':>6} {'wall':>8} {'ttft':>7} "
+          f"{'in_tok':>9} {'cached':>8} {'writes':>7} {'out':>7} {'hit':>5}")
     for h, b in by.items():
-        print(f"{h:<12} {b['ok']}/{b['n']:<5} {b['wall']:>7.1f}s {b['tin']:>9} {b['tout']:>8}")
+        print(f"{h:<14} {b['ok']}/{b['n']:<5} {b['calls']:>6} {b['wall']:>7.1f}s "
+              f"{b['ttft']:>6.1f}s {b['tin']:>9} {b['cached']:>8} {b['writes']:>7} "
+              f"{b['tout']:>7} {_hit(b['tin'], b['cached']):>4.0f}%")
 
 
 def interactive(tasks, harnesses):
@@ -207,8 +242,14 @@ def main():
     ap.add_argument("--model", default=None, help="model id (default: per-harness default_model)")
     ap.add_argument("--task", action="append", help="task id filter (repeatable)")
     ap.add_argument("--reps", type=int, default=1)
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="run this many tasks at once (suite wall clock; default 1)")
     ap.add_argument("--interactive", action="store_true", help="pick a task+harness, watch it live")
+    ap.add_argument("--self-test", action="store_true", help="parse the usage footer shapes and exit")
     args = ap.parse_args()
+
+    if args.self_test:
+        return 0 if self_test() else 2
 
     tasks = load_tasks()
     harnesses = load_harnesses()
@@ -221,26 +262,62 @@ def main():
     out_path = os.path.join(RESULTS_DIR, f"run-{stamp}.jsonl")
     picked = {tid: t for tid, t in tasks.items() if not args.task or tid in args.task}
     records = []
+    jobs = []
+    for hname in args.harness.split(","):
+        harness = harnesses[hname]
+        model = args.model or harness.get("default_model", "")
+        for task in picked.values():
+            missing = [c for c in task.get("requires", []) if c not in harness.get("capabilities", [])]
+            if missing:
+                print(f"skip {task['id']} on {hname}: needs {missing}", flush=True)
+                continue
+            for rep in range(1, args.reps + 1):
+                jobs.append((hname, harness, task, model, rep))
+
+    def emit(rec, fh, lock=None):
+        line = json.dumps(rec, ensure_ascii=False) + "\n"
+        if lock:
+            with lock:
+                fh.write(line)
+                fh.flush()
+                records.append(rec)
+        else:
+            fh.write(line)
+            fh.flush()
+            records.append(rec)
+        ok = "✓" if rec.get("outcome_ok") else "✗"
+        tin, cached = rec.get("tok_in") or 0, rec.get("tok_cached") or 0
+        print(f"{ok} {rec.get('harness', '?'):<12} {rec.get('task', '?'):<18} "
+              f"r{rec.get('rep', '?')} {rec.get('wall_s', '?')}s "
+              f"calls={rec.get('tok_calls', '?')} in={tin} cached={cached} "
+              f"hit={_hit(tin, cached):.0f}% out={rec.get('tok_out', '?')}", flush=True)
+
     with open(out_path, "w") as f:
-        for hname in args.harness.split(","):
-            harness = harnesses[hname]
-            model = args.model or harness.get("default_model", "")
-            for task in picked.values():
-                missing = [c for c in task.get("requires", []) if c not in harness.get("capabilities", [])]
-                if missing:
-                    print(f"skip {task['id']} on {hname}: needs {missing}", flush=True)
-                    continue
-                for rep in range(1, args.reps + 1):
-                    rec = one_run(hname, harness, task, model, rep)
-                    records.append(rec)
-                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                    f.flush()
-                    ok = "✓" if rec.get("outcome_ok") else "✗"
-                    print(f"{ok} {hname:<12} {task['id']:<18} r{rep} {rec.get('wall_s', '?')}s "
-                          f"in={rec.get('tok_in', '?')} out={rec.get('tok_out', '?')}", flush=True)
+        if args.jobs <= 1:
+            for job in jobs:
+                emit(one_run(*job), f)
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            import threading
+            lock = threading.Lock()
+            with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+                futs = {pool.submit(one_run, *job): job for job in jobs}
+                for fut in as_completed(futs):
+                    emit(fut.result(), f, lock)
     summarize(records)
     print(f"\nresults: {out_path}")
 
 
+def self_test():
+    old = parse_graff_usage("[usage] 3 api call(s) · 14000 in (8000 cached) + 200 out tokens\n")
+    new = parse_graff_usage(
+        "[usage] 3 api call(s) · 14000 in (8000 cached, 4000 cache writes) + 200 out tokens · $0.0123\n")
+    ok = (old == {"calls": 3, "in": 14000, "cached": 8000, "writes": 0, "out": 200}
+          and new == {"calls": 3, "in": 14000, "cached": 8000, "writes": 4000, "out": 200}
+          and parse_graff_usage("no footer") == {})
+    print("ok    usage footer (old + writes+$)" if ok else "FAIL usage footer")
+    return ok
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main() or 0)
