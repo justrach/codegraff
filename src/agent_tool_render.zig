@@ -48,42 +48,99 @@ fn stringField(input: std.json.Value, field: []const u8) ?[]const u8 {
     return if (value == .string) value.string else null;
 }
 
-/// Pick one human-readable field for tools whose intent is obvious from a path,
-/// command, URL, or short label. Unknown tools still get a name-only line.
-fn toolDetail(t: ToolInvocation) []const u8 {
-    const field = if (std.mem.eql(u8, t.name, "bash"))
-        "command"
-    else if (std.mem.eql(u8, t.name, "read_file") or
-        std.mem.eql(u8, t.name, "edit_file") or
-        std.mem.eql(u8, t.name, "write_file"))
-        "path"
-    else if (std.mem.eql(u8, t.name, "webfetch"))
-        "url"
-    else if (std.mem.eql(u8, t.name, "codedb"))
-        "command"
-    else if (std.mem.eql(u8, t.name, "subagent"))
-        "description"
-    else if (std.mem.eql(u8, t.name, "imagegen"))
-        "prompt"
-    else if (std.mem.eql(u8, t.name, "peer_message")) blk: {
-        if (stringField(t.input, "action")) |act| {
-            if (act.len > 0 and !std.mem.eql(u8, act, "send")) break :blk "action";
+fn firstLine(s: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, s, '\n') orelse s.len;
+    return std.mem.trim(u8, s[0..end], " \t\r");
+}
+
+fn newlineCount(s: []const u8) usize {
+    if (s.len == 0) return 0;
+    var n: usize = 1;
+    for (s) |c| {
+        if (c == '\n') n += 1;
+    }
+    if (s[s.len - 1] == '\n') n -= 1;
+    return n;
+}
+
+/// MCP and unknown tools still get a one-liner when a common field is present.
+const fallback_fields = [_][]const u8{ "command", "path", "query", "url", "pattern", "file", "prompt", "uri", "text" };
+
+fn namedDetailField(name: []const u8, input: std.json.Value) ?[]const u8 {
+    if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "codedb")) return "command";
+    if (std.mem.eql(u8, name, "read_file") or
+        std.mem.eql(u8, name, "write_file") or
+        std.mem.eql(u8, name, "edit_file")) return "path";
+    if (std.mem.eql(u8, name, "webfetch")) return "url";
+    if (std.mem.eql(u8, name, "subagent")) return "description";
+    if (std.mem.eql(u8, name, "imagegen")) return "prompt";
+    if (std.mem.eql(u8, name, "peer_message")) {
+        if (stringField(input, "action")) |act| {
+            if (act.len > 0 and !std.mem.eql(u8, act, "send")) return "action";
         }
-        break :blk "text";
-    } else if (std.mem.eql(u8, t.name, "workspace")) blk: {
-        if (stringField(t.input, "path")) |p| if (p.len > 0) break :blk "path";
-        break :blk "action";
-    } else return "";
-    const detail = stringField(t.input, field) orelse return "";
-    const end = std.mem.indexOfScalar(u8, detail, '\n') orelse detail.len;
-    return std.mem.trim(u8, detail[0..end], " \t\r");
+        return "text";
+    }
+    if (std.mem.eql(u8, name, "workspace")) {
+        if (stringField(input, "path")) |p| if (p.len > 0) return "path";
+        return "action";
+    }
+    return null;
+}
+
+fn fallbackDetail(input: std.json.Value) []const u8 {
+    for (fallback_fields) |field| {
+        const raw = stringField(input, field) orelse continue;
+        const shown = firstLine(raw);
+        if (shown.len > 0) return shown;
+    }
+    return "";
+}
+
+fn addSpanDelta(old: []const u8, new: []const u8, plus: *usize, minus: *usize, spans: *usize) void {
+    plus.* += newlineCount(new);
+    minus.* += newlineCount(old);
+    spans.* += 1;
+}
+
+fn editDelta(input: std.json.Value, path: []const u8, buf: []u8) []const u8 {
+    var plus: usize = 0;
+    var minus: usize = 0;
+    var spans: usize = 0;
+    if (stringField(input, "old_string")) |old| {
+        if (stringField(input, "new_string")) |new| addSpanDelta(old, new, &plus, &minus, &spans);
+    }
+    if (input == .object) if (input.object.get("edits")) |v| if (v == .array) {
+        for (v.array.items) |item| {
+            const old = stringField(item, "old_string") orelse continue;
+            const new = stringField(item, "new_string") orelse continue;
+            addSpanDelta(old, new, &plus, &minus, &spans);
+        }
+    };
+    if (spans == 0) return path;
+    if (spans == 1)
+        return std.fmt.bufPrint(buf, "{s} · +{d}/-{d}", .{ path, plus, minus }) catch path;
+    return std.fmt.bufPrint(buf, "{s} · {d} spans · +{d}/-{d}", .{ path, spans, plus, minus }) catch path;
+}
+
+/// One human-readable field (or an edit +N/-N). Never the raw argument object.
+fn toolDetail(t: ToolInvocation, buf: []u8) []const u8 {
+    if (std.mem.eql(u8, t.name, "edit_file")) {
+        const path = stringField(t.input, "path") orelse return "";
+        return editDelta(t.input, firstLine(path), buf);
+    }
+    if (namedDetailField(t.name, t.input)) |field| {
+        const raw = stringField(t.input, field) orelse return "";
+        return firstLine(raw);
+    }
+    return fallbackDetail(t.input);
 }
 
 /// A terse activity line: always show ordinary tool calls, but never their raw
 /// argument object. Suppress only user-facing prose that already streamed live.
 pub fn toolUseLine(a: *Agent, t: ToolInvocation) void {
     if (t.arg_streamed) return;
-    const detail = toolDetail(t);
+    var dbuf: [128]u8 = undefined;
+    const detail = toolDetail(t, &dbuf);
     const shown = if (detail.len > detail_preview_bytes) detail[0..detail_preview_bytes] else detail;
     var line: Io.Writer.Allocating = .init(a.gpa);
     defer line.deinit();
@@ -96,24 +153,6 @@ pub fn toolUseLine(a: *Agent, t: ToolInvocation) void {
     }) catch return;
     line.writer.writeByte('\n') catch return;
     sayText(a, line.writer.buffered());
-}
-
-/// Normal-mode announcement: name only. The JSON preview stays behind
-/// GRAFF_REPL_DEBUG so the default session is not a dump.
-pub fn toolCompactUse(a: *Agent, name: []const u8) void {
-    var buf: [160]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "{s}⚙{s} {s}\n", .{ style.dim, style.reset, name }) catch return;
-    sayText(a, line);
-}
-
-/// Normal-mode result: mark + name. The one-line preview stays in debug.
-pub fn toolCompactResult(a: *Agent, r: ToolOutcome) void {
-    if (r.meta) return;
-    const w = a.out orelse return;
-    const mark = if (r.cancelled) "⊘" else if (r.is_error) "✗" else "✓";
-    const mc = if (r.cancelled) style.yellow else if (r.is_error) style.red else style.green;
-    w.print("  {s}{s}{s} {s}\n", .{ mc, mark, style.reset, r.name }) catch return;
-    w.flush() catch {};
 }
 
 /// The #440 marker prefixes forResult tags oversized results with. Detected
@@ -144,6 +183,31 @@ fn handleBadge(text: []const u8) ?HandleBadge {
     return null;
 }
 
+fn lastNonEmptyLine(text: []const u8) []const u8 {
+    const rest = std.mem.trim(u8, text, " \t\r\n");
+    if (std.mem.lastIndexOfScalar(u8, rest, '\n')) |nl|
+        return std.mem.trim(u8, rest[nl + 1 ..], " \t\r");
+    return rest;
+}
+
+const Preview = struct { text: []const u8, clipped: bool };
+
+/// First useful line — or a short summary. Handle markers stay off the line;
+/// the badge already said the result spilled.
+fn resultPreview(name: []const u8, all: []const u8, buf: []u8) Preview {
+    if (handleBadge(all) != null) return .{ .text = "", .clipped = false };
+    if (std.mem.startsWith(u8, all, handle_marker) or std.mem.startsWith(u8, all, truncated_marker))
+        return .{ .text = "", .clipped = false };
+    const lines = newlineCount(all);
+    if (std.mem.eql(u8, name, "read_file") and lines > 1) {
+        const text = std.fmt.bufPrint(buf, "{d} lines", .{lines}) catch all;
+        return .{ .text = text, .clipped = false };
+    }
+    const raw = if (std.mem.eql(u8, name, "bash") and lines > 1) lastNonEmptyLine(all) else firstLine(all);
+    if (raw.len > result_preview_bytes) return .{ .text = raw[0..result_preview_bytes], .clipped = true };
+    return .{ .text = raw, .clipped = false };
+}
+
 /// Compact result feedback for one finished tool call: a green ✓ / red ✗ /
 /// yellow ⊘ and a one-line preview of what it returned. A result that spilled
 /// to a #440 handle (or was truncated without one) also badges the spill size —
@@ -155,11 +219,10 @@ pub fn toolResultLine(a: *Agent, r: ToolOutcome) void {
     const w = a.out orelse return;
     if (r.meta) return;
     const all = std.mem.trim(u8, r.text, " \t\r\n");
-    var preview = all;
-    if (std.mem.indexOfScalar(u8, preview, '\n')) |nl| preview = preview[0..nl];
-    preview = std.mem.trim(u8, preview, " \t\r");
-    const shown = if (preview.len > result_preview_bytes) preview[0..result_preview_bytes] else preview;
-    const truncated = shown.len < all.len; // more content (extra lines or >100 chars)
+    var pbuf: [32]u8 = undefined;
+    const preview = resultPreview(r.name, all, &pbuf);
+    const shown = preview.text;
+    const truncated = preview.clipped;
     const mark = if (r.cancelled) "⊘" else if (r.is_error) "✗" else "✓";
     const mc = if (r.cancelled) style.yellow else if (r.is_error) style.red else style.green;
     var tbuf: [24]u8 = undefined;
@@ -185,25 +248,6 @@ pub fn toolResultLine(a: *Agent, r: ToolOutcome) void {
     w.flush() catch return;
 }
 
-/// Normal-mode spill notice (#440): the one tool-result moment the terminal
-/// draws outside debug mode. A spilled result costs the model a follow-up
-/// read round-trip, and that cost should be visible rather than silent —
-/// debug mode already shows it as the badge on the full ✓ line, so this
-/// stays quiet there (and in --json, where the wire event carries it).
-pub fn handleSpillLine(a: *Agent, bytes: usize, has_handle: bool) void {
-    if (main_mod.json_mode) return;
-    if (repl.g_debug) return;
-    const w = a.out orelse return;
-    const kib = @as(f64, @floatFromInt(bytes)) / 1024.0;
-    var buf: [72]u8 = undefined;
-    const line = if (has_handle)
-        std.fmt.bufPrint(&buf, "  {s}⇢ {d:.1} KiB handle{s}\n", .{ style.accent, kib, style.reset }) catch return
-    else
-        std.fmt.bufPrint(&buf, "  {s}⇠ {d:.1} KiB lost{s}\n", .{ style.yellow, kib, style.reset }) catch return;
-    w.writeAll(line) catch return;
-    w.flush() catch return;
-}
-
 /// Turn-start note when effort routing (effort_route.zig) moved a
 /// lookup-shaped turn to low effort: the prompt line was drawn before the
 /// prompt existed, so it still shows the session knob — this one dim line is
@@ -225,14 +269,22 @@ const notice_buf_bytes: usize = 192;
 
 pub fn parallelBatchStarted(a: *Agent, count: usize) void {
     var buf: [notice_buf_bytes]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "  {s}↯ running {d} tools in parallel{s}\n", .{ style.dim, count, style.reset }) catch return;
+    const line = std.fmt.bufPrint(&buf, "  {s}↯ {d} in parallel{s}\n", .{ style.dim, count, style.reset }) catch return;
     sayText(a, line);
 }
 
 pub fn parallelBatchFinished(a: *Agent, o: BatchOutcome) void {
     var buf: [notice_buf_bytes]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "  {s}↯ parallel tools finished: {d} completed, {d} failed, {d} cancelled{s}\n", .{ style.dim, o.done, o.failed, o.cancelled, style.reset }) catch return;
-    sayText(a, line);
+    const total = o.done + o.failed + o.cancelled;
+    const line = if (o.failed == 0 and o.cancelled == 0)
+        std.fmt.bufPrint(&buf, "  {s}↯ {d}/{d} done{s}\n", .{ style.dim, o.done, total, style.reset })
+    else if (o.cancelled == 0)
+        std.fmt.bufPrint(&buf, "  {s}↯ {d} done · {d} failed{s}\n", .{ style.dim, o.done, o.failed, style.reset })
+    else if (o.failed == 0)
+        std.fmt.bufPrint(&buf, "  {s}↯ {d} done · {d} cancelled{s}\n", .{ style.dim, o.done, o.cancelled, style.reset })
+    else
+        std.fmt.bufPrint(&buf, "  {s}↯ {d} done · {d} failed · {d} cancelled{s}\n", .{ style.dim, o.done, o.failed, o.cancelled, style.reset });
+    sayText(a, line catch return);
 }
 
 /// #318: the checklist isn't settled, so the completion parks. The escapes are
@@ -289,10 +341,15 @@ test "the ⚙ line reproduces the old inline announcement, cap and ellipsis incl
     toolUseLine(&a, .{ .name = "attempt_completion", .input = input, .arg_streamed = true });
     try std.testing.expectEqualStrings("", aw.writer.buffered());
 
-    // Unknown tools remain visible without leaking arbitrary argument JSON.
+    // Unknown tools stay visible; a common field becomes the one-liner, never JSON.
     aw.clearRetainingCapacity();
     toolUseLine(&a, .{ .name = "todo_write", .input = input });
-    try std.testing.expectEqualStrings("⚙ todo_write\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("⚙ todo_write · fixture.txt\n", aw.writer.buffered());
+
+    aw.clearRetainingCapacity();
+    const opaque_input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"foo\":1}", .{});
+    toolUseLine(&a, .{ .name = "mystery_tool", .input = opaque_input });
+    try std.testing.expectEqualStrings("⚙ mystery_tool\n", aw.writer.buffered());
 
     // Long readable details are capped to one terse line.
     aw.clearRetainingCapacity();
@@ -317,7 +374,7 @@ test "the result line marks success, failure and cancellation and previews one l
     var a = testAgent(&aw.writer);
 
     toolResultLine(&a, .{ .name = "read_file", .text = "line one\nline two\n", .is_error = false });
-    try std.testing.expectEqualStrings("  ✓ read_file · line one…\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ read_file · 2 lines\n", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
     toolResultLine(&a, .{ .name = "bash", .text = "boom", .is_error = true });
@@ -347,21 +404,19 @@ test "the result line marks success, failure and cancellation and previews one l
     toolResultLine(&a, .{ .name = "bash", .text = "ok", .is_error = false, .ms = 42 });
     try std.testing.expectEqualStrings("  ✓ bash (42ms) · ok\n", aw.writer.buffered());
 
-    // A #440 handle spill badges its size after the tool name while the preview
-    // still leads with the marker, so the handle path stays visible.
+    // A #440 handle spill badges its size; the marker text stays off the line.
     aw.clearRetainingCapacity();
     main_mod.show_timing = false;
     toolResultLine(&a, .{ .name = "bash", .text = "[tool result handle: 44690 bytes, JSON object — the COMPLETE result is at /tmp/h-0.txt. Slice what you need out of that file (read_file with start_line/end_line, a grep-style bash command, codedb) instead of re-running the tool (#440).]", .is_error = false });
-    const hline = aw.writer.buffered();
-    try std.testing.expect(std.mem.startsWith(u8, hline, "  ✓ bash ⇢ 43.6 KiB handle · [tool result handle: 44690 bytes"));
+    try std.testing.expectEqualStrings("  ✓ bash ⇢ 43.6 KiB handle\n", aw.writer.buffered());
 
     // The no-handle truncation variant badges the loss instead.
     aw.clearRetainingCapacity();
     toolResultLine(&a, .{ .name = "bash", .text = "[tool result truncated to 16384 bytes: 90000 bytes total, JSON object. No handle could be written, so the rest is gone — narrow the command and run it again (#440).]", .is_error = false });
-    try std.testing.expect(std.mem.startsWith(u8, aw.writer.buffered(), "  ✓ bash ⇠ 87.9 KiB lost · [tool result truncated"));
+    try std.testing.expectEqualStrings("  ✓ bash ⇠ 87.9 KiB lost\n", aw.writer.buffered());
 }
 
-test "the spill notice draws in normal mode and stays quiet in debug mode" {
+test "the effort-routing note draws in normal mode and stays quiet in debug mode" {
     const saved = ansi.style;
     ansi.style = .{};
     defer ansi.style = saved;
@@ -375,22 +430,6 @@ test "the spill notice draws in normal mode and stays quiet in debug mode" {
     defer aw.deinit();
     var a = testAgent(&aw.writer);
 
-    handleSpillLine(&a, 44690, true);
-    try std.testing.expectEqualStrings("  ⇢ 43.6 KiB handle\n", aw.writer.buffered());
-
-    aw.clearRetainingCapacity();
-    handleSpillLine(&a, 90000, false);
-    try std.testing.expectEqualStrings("  ⇠ 87.9 KiB lost\n", aw.writer.buffered());
-
-    // Debug mode already draws the badge on the full ✓ line — no double draw.
-    aw.clearRetainingCapacity();
-    repl.g_debug = true;
-    handleSpillLine(&a, 44690, true);
-    try std.testing.expectEqualStrings("", aw.writer.buffered());
-
-    // The effort-routing note follows the same gates: normal mode only.
-    repl.g_debug = false;
-    aw.clearRetainingCapacity();
     routedEffortLine(&a);
     try std.testing.expectEqualStrings("  ⇣ lookup turn — routed to effort low for this turn\n", aw.writer.buffered());
     aw.clearRetainingCapacity();
@@ -411,11 +450,15 @@ test "batch tallies and meta notices render the old wording verbatim" {
     var a = testAgent(&aw.writer);
 
     parallelBatchStarted(&a, 3);
-    try std.testing.expectEqualStrings("  ↯ running 3 tools in parallel\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ↯ 3 in parallel\n", aw.writer.buffered());
+
+    aw.clearRetainingCapacity();
+    parallelBatchFinished(&a, .{ .done = 2, .failed = 0, .cancelled = 0 });
+    try std.testing.expectEqualStrings("  ↯ 2/2 done\n", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
     parallelBatchFinished(&a, .{ .done = 2, .failed = 1, .cancelled = 0 });
-    try std.testing.expectEqualStrings("  ↯ parallel tools finished: 2 completed, 1 failed, 0 cancelled\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ↯ 2 done · 1 failed\n", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
     completionDeferred(&a);
@@ -433,4 +476,65 @@ test "batch tallies and meta notices render the old wording verbatim" {
     // `!self.sub` gates live at the emit sites (agent_tools.runTools /
     // handleMeta), so a subagent never produces the moment at all and this
     // file needs no read into the Agent to suppress it.
+}
+
+test "unknown tools pick a readable field instead of staying name-only" {
+    const saved = ansi.style;
+    ansi.style = .{};
+    defer ansi.style = saved;
+    const saved_json = main_mod.json_mode;
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+
+    const q = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"query\":\"standing line\"}", .{});
+    toolUseLine(&a, .{ .name = "mcp_search", .input = q });
+    try std.testing.expectEqualStrings("⚙ mcp_search · standing line\n", aw.writer.buffered());
+}
+
+test "edit_file one-liner includes a +N/-N delta" {
+    const saved = ansi.style;
+    ansi.style = .{};
+    defer ansi.style = saved;
+    const saved_json = main_mod.json_mode;
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+
+    const one = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(),
+        \\{"path":"src/a.zig","old_string":"a\nb","new_string":"a\nb\nc"}
+    , .{});
+    toolUseLine(&a, .{ .name = "edit_file", .input = one });
+    try std.testing.expectEqualStrings("⚙ edit_file · src/a.zig · +3/-2\n", aw.writer.buffered());
+
+    aw.clearRetainingCapacity();
+    const batch = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(),
+        \\{"path":"src/a.zig","edits":[{"old_string":"x","new_string":"x\ny"},{"old_string":"z\nz","new_string":"z"}]}
+    , .{});
+    toolUseLine(&a, .{ .name = "edit_file", .input = batch });
+    try std.testing.expectEqualStrings("⚙ edit_file · src/a.zig · 2 spans · +3/-3\n", aw.writer.buffered());
+}
+
+test "bash result prefers the last line of a multi-line run" {
+    const saved = ansi.style;
+    ansi.style = .{};
+    defer ansi.style = saved;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+
+    toolResultLine(&a, .{
+        .name = "bash",
+        .text = "[1/3] a...\n[2/3] b...\nAll 1475 tests passed\n",
+        .is_error = false,
+    });
+    try std.testing.expectEqualStrings("  ✓ bash · All 1475 tests passed\n", aw.writer.buffered());
 }

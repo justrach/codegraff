@@ -28,7 +28,6 @@ const parseAnswerRequest = tools_mod.parseAnswerRequest;
 // which belongs to the input-inversion issue (#430), not to this one.
 const engine_events = @import("engine_events.zig");
 const engine_sink = @import("engine_sink.zig");
-const tool_render = @import("agent_tool_render.zig");
 const terminal = @import("term.zig");
 const tty = terminal.tty;
 
@@ -182,9 +181,6 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             // Over the threshold, the bytes go to a durable handle; the model
             // gets a bounded preview + path + byte count + shape hint.
             const handled = try tool_handle.forResult(self.gpa, self.arena, handle_target, output.text, handle_threshold);
-            // Surface spill round-trips in normal mode; debug already draws the badged ✓ line.
-            if (output.text.len > handle_threshold)
-                tool_render.handleSpillLine(self, output.text.len, handled.path != null);
             // #541: the handle-protocol lesson rides this agent's FIRST handle
             // instead of standing in every request's system prompt.
             const text = try tool_handle.withFirstNote(self.arena, handled, &self.handle_note_shown);

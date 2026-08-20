@@ -256,7 +256,7 @@ test "a frontendless agent's wire sink burns no ids for the lines it cannot writ
     try std.testing.expectEqual(@as(u64, 0), protocol_seq.current());
 }
 
-test "TuiSink shows compact tool lines; debug adds args/preview (slice 1c)" {
+test "TuiSink shows tool one-liners with args and a result preview (slice 1c)" {
     const saved_color = main_mod.use_color;
     main_mod.use_color = false;
     defer main_mod.use_color = saved_color;
@@ -282,17 +282,15 @@ test "TuiSink shows compact tool lines; debug adds args/preview (slice 1c)" {
     const done: engine_events.ToolOutcome = .{ .name = "read_file", .text = "line one\nline two\n", .is_error = false };
     s.emit(undefined, .{ .tool_call_announced = call });
     s.emit(undefined, .{ .tool_result = done });
-    try std.testing.expectEqualStrings("⚙ read_file\n  ✓ read_file\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("⚙ read_file · fixture.txt\n  ✓ read_file · 2 lines\n", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
-    repl.g_debug = true;
     s.emit(undefined, .{ .tool_call_announced = call });
     s.emit(undefined, .{ .tool_call_started = call }); // silent: the ⚙ line already said it
     s.emit(undefined, .{ .tool_result = done });
     s.emit(undefined, .{ .tool_call_finished = done }); // silent
     s.emit(undefined, .{ .tool_rejected = .{ .name = "bash", .input = input, .reason = "budget", .message = "no" } }); // silent
-    // Debug adds the human-readable path and preview without dumping raw JSON.
-    try std.testing.expectEqualStrings("⚙ read_file · fixture.txt\n  ✓ read_file · line one…\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("⚙ read_file · fixture.txt\n  ✓ read_file · 2 lines\n", aw.writer.buffered());
 }
 
 test "TuiSink renders a plain text delta exactly as the no-color TTY did" {

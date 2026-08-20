@@ -112,7 +112,7 @@ fn standingLine(w: *Io.Writer, sw: engine_events.StandingWork, cols: usize) !voi
     }
     var todo_buf: [24]u8 = undefined;
     if (sw.todos_total > 0) {
-        parts[n] = std.fmt.bufPrint(&todo_buf, "{d}/{d}", .{ sw.todos_done, sw.todos_total }) catch "";
+        parts[n] = std.fmt.bufPrint(&todo_buf, "{d}/{d} todos", .{ sw.todos_done, sw.todos_total }) catch "";
         n += 1;
     }
     if (sw.image) {
@@ -454,7 +454,7 @@ test "standing row sits above the model prompt and is skipped when empty" {
     );
 
     aw.clearRetainingCapacity();
-    const out = renderPlain(&aw, .{
+    const full: PromptStatus = .{
         .model = "m",
         .provider_id = "p",
         .cwd = "/w",
@@ -468,11 +468,12 @@ test "standing row sits above the model prompt and is skipped when empty" {
             .todos_total = 2,
             .image = true,
         },
-    });
+    };
+    try line(&aw.writer, full, 100);
     try std.testing.expectEqualStrings(
-        "\n  Goal (paused)  ship the repl standing line · 1/2 · image ready · login-fix\n" ++
+        "\n  Goal (paused)  ship the repl standing line · 1/2 todos · image ready · login-fix\n" ++
             "[m · p · Privacy:Local · cwd /w] › ",
-        out,
+        aw.writer.buffered(),
     );
 }
 
@@ -498,9 +499,15 @@ test "standing row drops session then image then todos on a narrow pane" {
     };
     // Room for Goal + checklist only (image + session drop). The model
     // badges still keep privacy at this width; cwd is the first to go.
-    try line(&aw.writer, st, 28);
+    try line(&aw.writer, st, 36);
     try std.testing.expectEqualStrings(
-        "\n  Goal  ship it · 1/2\n[m · p · Privacy:Local] › ",
+        "\n  Goal  ship it · 1/2 todos\n[m · p · Privacy:Local · cwd /w] › ",
+        aw.writer.buffered(),
+    );
+    aw.clearRetainingCapacity();
+    try line(&aw.writer, st, 26);
+    try std.testing.expectEqualStrings(
+        "\n  Goal  ship it\n[m · p · cwd /w] › ",
         aw.writer.buffered(),
     );
 }

@@ -109,6 +109,27 @@ pub fn listSavedSessions(root: *Agent, arena: Allocator) std.ArrayList(SessionEn
     return entries;
 }
 
+/// Count `.session.json` files without parsing them — startup's banner hint.
+pub fn countSavedSessions(io: Io) usize {
+    var n: usize = 0;
+    var dir = Io.Dir.cwd().openDir(io, sessions_dir, .{ .iterate = true }) catch return 0;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (std.mem.endsWith(u8, entry.name, session_ext)) n += 1;
+    }
+    return n;
+}
+
+pub fn savedSessionsHint(n: usize, buf: []u8) []const u8 {
+    if (n == 0) return "";
+    return std.fmt.bufPrint(buf, "{d} saved session{s} · /resume to continue", .{
+        n,
+        if (n == 1) "" else "s",
+    }) catch "";
+}
+
 test "sessionMetaFromBytes reads title + updated_ms from the header only" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -135,4 +156,11 @@ test "sessionMetaFromBytes falls back cleanly on legacy/invalid headers" {
     try std.testing.expectEqualStrings("T", tricky.title.?);
     try std.testing.expectEqual(@as(i64, 5), tricky.updated_ms);
     try std.testing.expect(sessionMetaFromBytes(arena, "not json").title == null);
+}
+
+test "savedSessionsHint is silent at zero and pluralizes" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("", savedSessionsHint(0, &buf));
+    try std.testing.expectEqualStrings("1 saved session · /resume to continue", savedSessionsHint(1, &buf));
+    try std.testing.expectEqualStrings("3 saved sessions · /resume to continue", savedSessionsHint(3, &buf));
 }
