@@ -171,12 +171,15 @@ describe("RemoteHarness transport", () => {
   test("constructor observes create rejection even when the caller never awaits it", async () => {
     let unhandled = 0;
     const listener = () => { unhandled += 1; };
-    process.on("unhandledRejection", listener);
+    // bun-types narrows Process.on/off to memoryPressure; Node's
+    // unhandledRejection is the event this test actually needs.
+    const proc = process as unknown as NodeJS.EventEmitter;
+    proc.on("unhandledRejection", listener);
     globalThis.fetch = (async () => { throw new Error("create failed"); }) as unknown as typeof fetch;
     const h = new RemoteHarness({ url: "http://bridge.test" });
     live.push(h);
     await Bun.sleep(30);
-    process.off("unhandledRejection", listener);
+    proc.off("unhandledRejection", listener);
     expect(unhandled).toBe(0);
     await expect(h.sessionId).rejects.toThrow("create failed");
   });
