@@ -17,7 +17,7 @@ root or an unindexed tree.
 
 `codedb list_dir <path>` is implemented in-process in graff (PathConfine,
 including extra roots) **and** as a real codedb CLI/MCP command
-(`github.com/justrach/codedb`, issue #696). Same algorithm: BFS, gitignore,
+(`github.com/justrach/codedb`, issue #696 / PR #697). Same algorithm: BFS, gitignore,
 10k-character cap. Graff keeps the in-process path so `--add-dir` and a
 missing binary still work. `codedb ls` / `tree` stay index queries.
 
