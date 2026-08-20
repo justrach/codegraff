@@ -143,3 +143,37 @@ Expected suite cache-read rate is ~45–60% of input tokens (12 cold writes,
 warmth only on call 2+ inside a task). OpenCode's ~85% is one long-lived
 process — different shape. Do not default `GRAFF_STABLE_CATALOG` (ADR 0011;
 measured empty). Title-gen does not run on `-p`.
+
+## Live run (2026-08-20, this VM)
+
+Same model `grok-4.6`, SuperGrok OAuth, one rep, `--jobs 2`. Graff is
+ReleaseFast `v0.0.267-14-g028016a`. Grok CLI is `1.0.5`. `pi` / `claude` /
+`dsh` are not installed here and have no keys.
+
+Grok's `in` is ordinary + cache-read (same as graff). `schema-output` is
+graff-only — the shared-task row is the fair wall/cache compare.
+
+| harness | tasks | pass | calls | sum wall | in | cached | hit | out |
+|---|---|---|---|---|---|---|---|---|
+| `graff` (`--lean`) | 12 | 12/12 | 43 | 149.8s | 169,088 | 62,720 | 37% | 4,061 |
+| `graff` 11 shared | 11 | 11/11 | 40 | 142.0s | 159,261 | 62,464 | 39% | 3,714 |
+| `graff-full` | 12 | 12/12 | 56 | 130.8s | 264,271 | 129,408 | 49% | 5,082 |
+| `graff-full` 11 shared | 11 | 11/11 | 53 | 122.2s | 253,385 | 125,056 | 49% | 4,732 |
+| `grok` | 11 | 11/11 | 36 | 108.2s | 579,184 | 485,504 | 84% | 4,516 |
+
+Suite elapsed (`graff`+`grok` overlapping) was **132s**. `graff-full` alone
+was **67s**. Sum wall is the scorecard total (add the task clocks); it is
+not elapsed.
+
+What the numbers say:
+
+- **Grok is faster** on the 11 shared tasks (108s vs 142s) and uses **fewer
+  calls** (36 vs 40). Its prefix is ~3.6× graff-lean (579k vs 159k) but
+  **84% cache-read** — first-call hits across new sandboxes, so it is not
+  keyed the way graff's cwd `projectRootId` is.
+- **`--lean` earns its keep on tokens and calls** (43 vs 56, 169k vs 264k).
+  Sum wall can still lose a one-rep race (`file-ops` 35s/5 calls vs
+  graff-full 10s/4) — do not read 131s vs 150s as “full is faster.”
+- Biggest single graff-lean miss vs grok: `file-ops` (5 calls / 35s vs
+  2 calls / 7s). Several other tasks are a wash or graff-lean wins
+  (`fix-fib` 15s vs 18s, `refactor-rename` 14s vs 19s).
