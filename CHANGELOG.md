@@ -16,7 +16,10 @@ current is part of cutting a release.
   works without the binary), `status` reports `codedb.snapshot`, and
   path-bearing subcommands (`read`/`outline`/`deps`/`file`) share the
   file-tool jail. The codedb guard now redirects `ls`/`find`/`tree` even
-  when the CLI is missing (ADR 0013).
+  when the CLI is missing (ADR 0013). One-shot verbs first (ADR 0014):
+  `context <task>`, `around <name>` (def+callers), `callpath A B`
+  (codedb's shortest call chain; `path` is an alias) — not
+  search→outline→read.
 
 ## v0.0.267 (2026-08-19)
 

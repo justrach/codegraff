@@ -15,6 +15,7 @@ const ToolOutput = tools.ToolOutput;
 const harness_policy = @import("harness_policy.zig");
 const list_dir = @import("list_dir.zig");
 const codedb_health = @import("codedb_health.zig");
+const codedb_around = @import("codedb_around.zig");
 const jobs = @import("jobs.zig");
 const main_mod = @import("main.zig");
 const hooks = @import("hooks.zig");
@@ -22,9 +23,10 @@ const hooks = @import("hooks.zig");
 pub const deadline_ms: u64 = 60 * 1000;
 
 const ok_subs = [_][]const u8{
-    "search",   "symbol", "callers", "find", "outline", "read", "tree",
-    "list_dir", "status", "context", "word", "deps",    "glob", "ls",
-    "file",     "hot",
+    "search", "symbol",   "callers", "find",    "outline",  "read",
+    "tree",   "list_dir", "status",  "context", "word",     "deps",
+    "glob",   "ls",       "file",    "hot",     "callpath", "path",
+    "around", "explain",
 };
 
 const path_subs = [_][]const u8{ "outline", "read", "deps", "file" };
@@ -73,13 +75,15 @@ pub fn exec(ctx: ToolCtx, input: std.json.Value) !ToolOutput {
     const cmd = tools.strField(input, "command") orelse return tools.missingArg(gpa, "command");
     var it = std.mem.tokenizeAny(u8, cmd, " \t");
     const sub = it.next() orelse return .{
-        .text = try gpa.dupe(u8, "usage: codedb <subcommand> [args] — e.g. search <q>, symbol <name>, callers <name>, outline <path>, list_dir <path>, status"),
+        .text = try gpa.dupe(u8, "usage: codedb <subcommand> [args] — start with context <task>, around <name>, or callpath A B; also search/symbol/callers/outline/list_dir/status"),
         .is_error = true,
     };
     if (std.mem.eql(u8, sub, "list_dir")) return list_dir.exec(ctx, it.rest());
     if (std.mem.eql(u8, sub, "status")) return codedb_health.exec(ctx);
+    if (std.mem.eql(u8, sub, "around") or std.mem.eql(u8, sub, "explain")) return codedb_around.execAround(ctx, it.rest());
+    if (std.mem.eql(u8, sub, "path")) return codedb_around.execPath(ctx, it.rest());
     if (!allowed(sub)) return .{
-        .text = try std.fmt.allocPrint(gpa, "codedb subcommand '{s}' is not allowed here — use one of: search, symbol, callers, find, outline, read, tree, list_dir, status, context, word, deps, glob, ls, file, hot", .{sub}),
+        .text = try std.fmt.allocPrint(gpa, "codedb subcommand '{s}' is not allowed here — use one of: context, around, callpath, search, symbol, callers, find, outline, read, tree, list_dir, status, word, deps, glob, ls, file, hot, path, explain", .{sub}),
         .is_error = true,
     };
 
@@ -177,6 +181,8 @@ test "allowed subcommands include list_dir and status, not update" {
     try std.testing.expect(allowed("list_dir"));
     try std.testing.expect(allowed("status"));
     try std.testing.expect(allowed("search"));
+    try std.testing.expect(allowed("callpath"));
+    try std.testing.expect(allowed("around"));
     try std.testing.expect(!allowed("update"));
     try std.testing.expect(!allowed("nuke"));
     try std.testing.expect(!allowed("mcp"));

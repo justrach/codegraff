@@ -32,7 +32,7 @@ pub fn probe(io: Io, cwd: []const u8) Snapshot {
 
 pub fn render(gpa: Allocator, snap: Snapshot) ![]u8 {
     if (snap.present) {
-        return std.fmt.allocPrint(gpa, "codedb.snapshot present ({d} bytes). Structural queries (search/symbol/callers/outline) read this index. Folder listing does not: codedb list_dir <path>.", .{snap.bytes});
+        return std.fmt.allocPrint(gpa, "codedb.snapshot present ({d} bytes). Prefer one-shot queries on this index: context <task>, around <name>, callpath A B. Folder listing does not need it: codedb list_dir <path>.", .{snap.bytes});
     }
     return gpa.dupe(u8, "codedb index missing — no codedb.snapshot in this cwd. Run `codedb` once in the repo to build it. Folder listing still works without an index: codedb list_dir .");
 }

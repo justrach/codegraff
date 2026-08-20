@@ -23,6 +23,7 @@ record only when you need the evidence or the edge cases.
 | [0010](0010-background-jobs-wait-for-exit.md) | `bash_output`/`agent_output` `wait_ms>0` blocks until exit (10h cap); do not poll every 30s. |
 | [0011](0011-prompt-cache-max-is-visible.md) | Prompt-cache max is `/cache` posture, not a new default; `/btw` rides the parent prefix. |
 | [0013](0013-list-dir-lives-in-codedb.md) | Directory listing is `codedb list_dir`, not a catalog tool; path-bearing codedb commands share the file-tool jail. |
+| [0014](0014-codedb-one-shot-over-hop-chains.md) | Prefer `context` / `around` / `callpath` over search→outline→read; do not copy graphify's LLM extractors. |
 
 ## When to write one
 

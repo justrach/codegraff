@@ -845,7 +845,7 @@ get web-request economics, and no boot-and-provision tax on time to first token.
 | `read_file`          | built-in | `Io.Dir.cwd().readFileAlloc` (256 KB cap)                 |
 | `edit_file`          | built-in | exact string replace; unique match required unless `replace_all` |
 | `write_file`         | built-in | `Io.Dir.cwd().writeFile`                                  |
-| `codedb`             | built-in | [codedb](https://github.com/justrach/codedb) index plus in-process `list_dir`/`status` (search/symbol/callers/outline/…) |
+| `codedb`             | built-in | [codedb](https://github.com/justrach/codedb) index plus in-process `list_dir`/`status`/`around` (context/callpath/symbol/…) |
 | `subagent`           | built-in | this same agent loop, recursively (root agent only)       |
 | `workflow`           | built-in | phases of parallel subagents; `{{prev}}` carries results forward (root only) |
 | `todo_write`/`_read` | meta     | mutate/read the agent's own task list                     |
