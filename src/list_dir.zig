@@ -2,8 +2,10 @@
 //!
 //! Not a new catalog tool (that tax is how #574 lost its first A/B). The
 //! model already has `codedb` and is told to prefer it over bash ls. This
-//! subcommand is in-process — no codedb binary, no index — so it works on
-//! extra `--add-dir` roots and unindexed trees.
+//! subcommand is in-process — PathConfine, extra `--add-dir` roots, works
+//! without a codedb binary. The same command lives in the codedb repo
+//! (`src/list_dir.zig` there, issue #696) for CLI/MCP; keep the output
+//! aligned. `codedb ls` / `tree` remain index queries.
 //!
 //! BFS seed of depth-1 first, then a budgeted deep walk. `.gitignore` (and
 //! `.git/info/exclude`) hide noise. Output is capped at 10k characters;

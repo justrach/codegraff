@@ -15,13 +15,14 @@ root or an unindexed tree.
 
 ## Decision
 
-`codedb list_dir <path>` is implemented in-process in graff (no codedb
-binary). Same PathConfine jail as `read_file`, including extra roots.
-`.gitignore` and `.git/info/exclude` apply; `.git` is omitted; other
-dotfiles stay visible. Output is BFS-budgeted at 10k characters.
+`codedb list_dir <path>` is implemented in-process in graff (PathConfine,
+including extra roots) **and** as a real codedb CLI/MCP command
+(`github.com/justrach/codedb`, issue #696). Same algorithm: BFS, gitignore,
+10k-character cap. Graff keeps the in-process path so `--add-dir` and a
+missing binary still work. `codedb ls` / `tree` stay index queries.
 
-Do not add a sibling `list_dir` tool unless an A/B shows the extra schema
-bytes beat this subcommand.
+Do not add a sibling graff `list_dir` catalog tool unless an A/B shows the
+extra schema bytes beat this subcommand.
 
 ## Consequences
 
