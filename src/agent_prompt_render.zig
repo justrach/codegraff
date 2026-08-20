@@ -90,6 +90,28 @@ fn writeRule(w: *Io.Writer, cols: usize) !void {
     try w.print("{s}\n", .{style.reset});
 }
 
+/// Variation 4's playhead under the git-status count: filled work is accent,
+/// the rest recedes, so the checklist is state rather than more narration.
+fn writeProgress(w: *Io.Writer, done: u32, total: u32, cols: usize) !void {
+    if (total == 0) return;
+    const width: usize = @min(if (cols > 4) cols - 2 else 20, 40);
+    const filled: usize = @min(width, (@as(usize, done) * width) / @as(usize, total));
+    try w.writeAll(style.accent);
+    var i: usize = 0;
+    while (i < width) : (i += 1) {
+        if (i < filled) {
+            try w.writeAll("━");
+        } else if (i == filled and done < total) {
+            try w.writeAll("╺");
+            try w.writeAll(style.dim);
+        } else {
+            if (i == filled) try w.writeAll(style.dim);
+            try w.writeAll("━");
+        }
+    }
+    try w.print("{s}\n", .{style.reset});
+}
+
 /// Git-style WORKING block: the goal and checklist live here, not in the
 /// agent narration and not mixed into the `›` prompt (variations 4+5).
 fn workingBlock(w: *Io.Writer, sw: engine_events.StandingWork, cols: usize) !void {
@@ -104,6 +126,7 @@ fn workingBlock(w: *Io.Writer, sw: engine_events.StandingWork, cols: usize) !voi
     }
     if (sw.todos_total > 0) {
         try w.print("{s}{d} of {d}{s}\n", .{ style.dim, sw.todos_done, sw.todos_total, style.reset });
+        try writeProgress(w, sw.todos_done, sw.todos_total, cols);
         for (sw.todos) |t| {
             if (t.done) {
                 try w.print("{s}✓{s} {s}\n", .{ style.green, style.reset, t.content });
@@ -409,8 +432,10 @@ test "WORKING block sits above a bare prompt and is skipped when empty" {
     };
     try line(&aw.writer, full, 32);
     const rule = "────────────────────────────────";
+    const bar = "━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━"; // 15 filled + playhead + 14 rest at 30 cells
     try std.testing.expectEqualStrings(
-        "\n" ++ rule ++ "\nWORKING (paused)\nship the repl standing line\n1 of 2\n✓ inspect current prompt\n○ update implementation\n" ++
+        "\n" ++ rule ++ "\nWORKING (paused)\nship the repl standing line\n1 of 2\n" ++ bar ++
+            "\n✓ inspect current prompt\n○ update implementation\n" ++
             rule ++ "\nm · image · login-fix\n› ",
         aw.writer.buffered(),
     );

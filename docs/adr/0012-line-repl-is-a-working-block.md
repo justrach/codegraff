@@ -16,7 +16,8 @@ should be the eye's rest.
 ## Decision
 
 - Standing goal and its checklist render as a `WORKING` block above the prompt,
-  not as badges on the input line.
+  not as badges on the input line. A progress bar sits under `N of M` so the
+  checklist is state, not more narration.
 - The prompt is a bare `›`. Model, ctx, cost, `/resume N`, and a staged image
   sit on one dim line above it.
 - Parallel tool batches are a `├─` / `└─` tree. Sequential calls are flat.

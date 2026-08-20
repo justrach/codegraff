@@ -150,12 +150,13 @@ pub fn toolResultLine(a: *Agent, r: ToolOutcome) void {
     const remembered = label.take(r.name);
     const verb = if (remembered) |mem| mem.verb else r.name;
     const detail = if (remembered) |mem| mem.detail else "";
+    const shown_final = label.usefulPreview(r.name, detail, shown);
     const prefix = treePrefix();
     w.print("{s}{s}{s}{s} {s}", .{ prefix, mc, mark, style.reset, verb }) catch return;
     if (detail.len > 0) w.print("  {s}", .{detail}) catch return;
     w.print("{s}{s}{s}", .{ style.dim, timing, style.reset }) catch return;
     if (badge.len > 0) w.print(" {s}", .{badge}) catch return;
-    if (shown.len > 0) w.print("  {s}{s}{s}{s}", .{ style.dim, shown, if (truncated) "…" else "", style.reset }) catch return;
+    if (shown_final.len > 0) w.print("  {s}{s}{s}{s}", .{ style.dim, shown_final, if (truncated) "…" else "", style.reset }) catch return;
     w.writeAll("\n") catch return;
     w.flush() catch return;
 }
@@ -420,7 +421,7 @@ test "edit_file one-liner includes a +N/-N delta" {
     label.resetPending();
     toolUseLine(&a, .{ .name = "edit_file", .input = one });
     toolResultLine(&a, .{ .name = "edit_file", .text = "applied 1 edit span(s) to src/a.zig (each verified)", .is_error = false });
-    try std.testing.expectEqualStrings("  ✓ edit  src/a.zig · +3/-2  applied 1 edit span(s) to src/a.zig (each verified)\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ edit  src/a.zig · +3/-2\n", aw.writer.buffered());
 }
 
 test "bash result prefers the last line of a multi-line run" {

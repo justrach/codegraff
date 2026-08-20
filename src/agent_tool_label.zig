@@ -206,6 +206,18 @@ pub fn compactBash(line: []const u8, buf: []u8) []const u8 {
     return line;
 }
 
+/// Drop a result preview that only restates the verb/detail (the edit
+/// harness saying "applied N edit span(s)…" when `+12/-4` is already there).
+pub fn usefulPreview(name: []const u8, detail: []const u8, shown: []const u8) []const u8 {
+    if (shown.len == 0) return shown;
+    if (std.mem.eql(u8, name, "edit_file")) {
+        if (std.mem.indexOf(u8, shown, "edit span") != null) return "";
+        if (std.mem.indexOf(u8, detail, " · +") != null) return "";
+    }
+    if (detail.len > 0 and std.mem.eql(u8, shown, detail)) return "";
+    return shown;
+}
+
 test "verb never says bash" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -220,4 +232,10 @@ test "compactBash keeps the count and drops the boilerplate" {
     var buf: [24]u8 = undefined;
     try std.testing.expectEqualStrings("1475 passed", compactBash("All 1475 tests passed", &buf));
     try std.testing.expectEqualStrings("ok", compactBash("ok", &buf));
+}
+
+test "usefulPreview drops edit-span boilerplate once +N/-N is known" {
+    try std.testing.expectEqualStrings("", usefulPreview("edit_file", "src/a.zig · +3/-2", "applied 1 edit span(s) to src/a.zig (each verified)"));
+    try std.testing.expectEqualStrings("4 matches", usefulPreview("mcp_search", "standing line", "4 matches"));
+    try std.testing.expectEqualStrings("", usefulPreview("webfetch", "https://ex", "https://ex"));
 }
