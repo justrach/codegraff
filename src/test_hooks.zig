@@ -126,6 +126,8 @@ const peer_context = @import("peer_context.zig"); // ADR 0004 / #563 slice F
 const peer_context_compact_test = @import("peer_context_compact_test.zig");
 const peer_inbox = @import("peer_inbox.zig"); // Claude-style list/inbox pull
 const peer_target = @import("peer_target.zig"); // exact DM / goal targeting
+const session_peer = @import("session_peer.zig"); // ADR 0014 room cursor + inbox
+const presence_mutate = @import("presence_mutate.zig"); // shared-tree classifiers
 const workspace_switch = @import("workspace_switch.zig"); // ADR 0006 mid-session worktree switch
 const result_read = @import("result_read.zig"); // overflow handle pager
 const handle_preview = @import("handle_preview.zig"); // notable lines on first spill
@@ -270,6 +272,8 @@ test {
     _ = peer_context_compact_test;
     _ = peer_inbox;
     _ = peer_target;
+    _ = session_peer;
+    _ = presence_mutate;
     _ = workspace_switch;
     _ = result_read;
     _ = context_limits;

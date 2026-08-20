@@ -24,6 +24,7 @@ const extractText = providers.extractText;
 
 const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
+const peer_context = @import("peer_context.zig");
 
 pub fn titleFromPrompt(prompt: []const u8) []const u8 {
     const trimmed = std.mem.trim(u8, prompt, " \t\r\n");
@@ -59,6 +60,7 @@ pub fn firstUserTitle(arena: Allocator, msgs: std.json.Array) []const u8 {
         if (m != .object) continue;
         const role = if (m.object.get("role")) |r| (if (r == .string) r.string else "") else "";
         if (!std.mem.eql(u8, role, "user")) continue;
+        if (peer_context.isPeerInject(m)) continue;
         return titleFromPrompt(extractText(arena, m));
     }
     return "Chat";
@@ -247,6 +249,7 @@ test "firstUserTitle: first user message becomes the header title, else Chat (#8
 
     var msgs = std.json.Array.init(a);
     try msgs.append(mk(a, "{\"role\":\"assistant\",\"content\":\"hi\"}"));
+    try msgs.append(mk(a, "{\"role\":\"user\",\"content\":\"[peer] 1 unread from s-2 — peer_message action=inbox\"}"));
     try msgs.append(mk(a, "{\"role\":\"user\",\"content\":\"Fix the parser\\nmore detail\"}"));
     try std.testing.expectEqualStrings("Fix the parser", firstUserTitle(a, msgs));
 

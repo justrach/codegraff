@@ -129,6 +129,12 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
 pub const backlog_tail_max = 10;
 var g_backlog_tail_cut = false;
 
+/// Resume already restored the room cursor — the next drain is incremental,
+/// never a first-join backlog replay.
+pub fn markCaughtUp() void {
+    g_backlog_tail_cut = true;
+}
+
 /// Of a first-drain backlog the REPL prints only this many trailing lines;
 /// the rest still lands in history (the model coordinates from it) behind a
 /// "delivered to context" marker. Live drains are unaffected.
