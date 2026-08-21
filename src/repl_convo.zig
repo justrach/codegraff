@@ -127,7 +127,20 @@ fn isUserPrompt(v: Value) bool {
     const role = v.object.get("role") orelse return false;
     if (role != .string or !std.mem.eql(u8, role.string, "user")) return false;
     const content = v.object.get("content") orelse return false;
-    return content == .string;
+    if (content == .string) return true;
+    // Image user messages are an array of text + image blocks (#577), not a
+    // tool_result wrapper (those also ride the user role).
+    if (content != .array) return false;
+    for (content.array.items) |b| {
+        if (b != .object) continue;
+        const ty = b.object.get("type") orelse continue;
+        if (ty != .string) continue;
+        if (std.mem.eql(u8, ty.string, "tool_result")) return false;
+        if (std.mem.eql(u8, ty.string, "image") or
+            std.mem.eql(u8, ty.string, "image_url") or
+            std.mem.eql(u8, ty.string, "input_image")) return true;
+    }
+    return false;
 }
 
 const testing = std.testing;
@@ -198,5 +211,20 @@ test "a tool result is not mistaken for the human prompt on rewind" {
 
     convo.rewind();
     // Back to before "run it" — not to just before the tool result.
+    try testing.expectEqual(@as(usize, 0), convo.len());
+}
+
+test "rewind treats an image user message as the human prompt (#577)" {
+    var convo = Conversation.init(testing.allocator);
+    defer convo.deinit();
+    const a = convo.alloc();
+    const img = try @import("vision.zig").imageMessage(a, .anthropic, "look", .{
+        .media_type = "image/png",
+        .b64 = "AAA=",
+        .label = "/tmp/a.png",
+    });
+    try convo.list().append(img);
+    try testing.expectEqual(@as(usize, 1), convo.len());
+    convo.rewind();
     try testing.expectEqual(@as(usize, 0), convo.len());
 }

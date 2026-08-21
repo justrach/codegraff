@@ -5,6 +5,7 @@ const diff = @import("diff.zig");
 const theme_mod = @import("theme.zig");
 const mdtable = @import("mdtable.zig");
 const syntax = @import("syntax.zig");
+const image = @import("image.zig");
 
 /// Headers, fences, bullets, `code`, **bold**, and `/slash` tokens.
 pub fn render(a: std.mem.Allocator, src: []const u8, accent: []const u8) ![]const u8 {
@@ -250,9 +251,16 @@ pub fn renderUser(a: std.mem.Allocator, src: []const u8, accent: []const u8, tex
                 img_n += 1;
                 var chip: [24]u8 = undefined;
                 const label = std.fmt.bufPrint(&chip, "[Image #{d}]", .{img_n}) catch "[Image]";
-                try out.appendSlice(accent);
-                try out.appendSlice(label);
-                try out.appendSlice(text);
+                const path = clean[i + 2 .. close];
+                // Accent only when the file is still there (#577). A stale or
+                // typed `@[path]` is ordinary text, not an attachment chip.
+                if (image.pathBacked(path)) {
+                    try out.appendSlice(accent);
+                    try out.appendSlice(label);
+                    try out.appendSlice(text);
+                } else {
+                    try out.appendSlice(label);
+                }
                 i = close + 1;
                 if (i < clean.len and clean[i] == ' ') i += 1;
                 continue;
