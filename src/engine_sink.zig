@@ -245,10 +245,8 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
             }
         },
         // grok-build RawTerminal/Append: live bash bytes, not markdown.
-        .tool_output_delta => |d| if (a.out) |w| {
-            w.writeAll(d.text) catch return;
-            w.flush() catch return;
-        },
+        // Line REPL keeps them off the transcript unless /debug (ADR 0020).
+        .tool_output_delta => |d| tool_render.liveOutput(a, d.text),
         .job_completed => |j| {
             var buf: [80]u8 = undefined;
             const msg = if (j.killed)
@@ -323,7 +321,10 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         // The status line before a human turn (#429). Its drawing — palette,
         // badge frame, and the #209 width budget that decides which segments
         // survive a narrow pane — lives in agent_prompt_render.
-        .prompt_ready => |st| if (a.out) |w| prompt_render.promptLine(w, st),
+        .prompt_ready => |st| {
+            tool_render.resetInfra();
+            if (a.out) |w| prompt_render.promptLine(w, st);
+        },
     }
 }
 

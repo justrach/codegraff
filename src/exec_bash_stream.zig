@@ -55,6 +55,9 @@ fn emitOne(ctx: ?*anyopaque, which: u8, chunk: []const u8) void {
         w.flush() catch {};
         return;
     }
+    // Line REPL: live bytes are inspectable via /debug, not conversational.
+    // The hosted TUI sink (above) still streams into the fold.
+    if (!@import("repl.zig").g_debug) return;
     w.writeAll(chunk) catch return;
     w.flush() catch {};
 }

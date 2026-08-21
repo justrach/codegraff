@@ -91,13 +91,6 @@ fn handleBadge(text: []const u8) ?HandleBadge {
     return null;
 }
 
-fn lastNonEmptyLine(text: []const u8) []const u8 {
-    const rest = std.mem.trim(u8, text, " \t\r\n");
-    if (std.mem.lastIndexOfScalar(u8, rest, '\n')) |nl|
-        return std.mem.trim(u8, rest[nl + 1 ..], " \t\r");
-    return rest;
-}
-
 const Preview = struct { text: []const u8, clipped: bool };
 
 /// First useful line — or a short summary. Handle markers stay off the line;
@@ -106,15 +99,27 @@ fn resultPreview(name: []const u8, all: []const u8, buf: []u8) Preview {
     if (handleBadge(all) != null) return .{ .text = "", .clipped = false };
     if (std.mem.startsWith(u8, all, handle_marker) or std.mem.startsWith(u8, all, truncated_marker))
         return .{ .text = "", .clipped = false };
-    const lines = label.newlineCount(all);
-    if (std.mem.eql(u8, name, "read_file") and lines > 1) {
-        const text = std.fmt.bufPrint(buf, "{d} lines", .{lines}) catch all;
-        return .{ .text = text, .clipped = false };
-    }
-    var raw = if (std.mem.eql(u8, name, "bash") and lines > 1) lastNonEmptyLine(all) else label.firstLine(all);
-    if (std.mem.eql(u8, name, "bash")) raw = label.compactBash(raw, buf);
+    const raw = label.interpret(name, all, buf);
     if (raw.len > label.result_preview_bytes) return .{ .text = raw[0..label.result_preview_bytes], .clipped = true };
     return .{ .text = raw, .clipped = false };
+}
+
+/// Same family of transport death already named this turn. The transcript
+/// says it once; later rows are inspectable in /debug, not conversational.
+var infra_fam: []const u8 = "";
+var infra_count: usize = 0;
+
+pub fn resetInfra() void {
+    infra_fam = "";
+    infra_count = 0;
+}
+
+/// Live bash bytes belong in /debug (and the TUI fold), not the line REPL.
+pub fn liveOutput(a: *Agent, text: []const u8) void {
+    if (!repl.g_debug) return;
+    const w = a.out orelse return;
+    w.writeAll(text) catch return;
+    w.flush() catch return;
 }
 
 /// Compact result feedback for one finished tool call: a green ✓ / red ✗ /
@@ -128,7 +133,18 @@ pub fn toolResultLine(a: *Agent, r: ToolOutcome) void {
     const w = a.out orelse return;
     if (r.meta) return;
     const all = std.mem.trim(u8, r.text, " \t\r\n");
-    var pbuf: [32]u8 = undefined;
+    if (r.is_error) {
+        if (label.infraFamily(r.name, all)) |fam| {
+            _ = treePrefix();
+            infra_count += 1;
+            if (infra_fam.len > 0 and std.mem.eql(u8, infra_fam, fam)) return;
+            infra_fam = fam;
+            w.print("  {s}! {s} unavailable{s}\n", .{ style.yellow, fam, style.reset }) catch return;
+            w.flush() catch return;
+            return;
+        }
+    }
+    var pbuf: [48]u8 = undefined;
     const preview = resultPreview(r.name, all, &pbuf);
     const shown = preview.text;
     const truncated = preview.clipped;
@@ -187,6 +203,12 @@ pub fn parallelBatchStarted(a: *Agent, count: usize) void {
 
 pub fn parallelBatchFinished(a: *Agent, o: BatchOutcome) void {
     batch_left = 0;
+    const infra_only = infra_count > 0 and o.failed == infra_count;
+    if (infra_only) {
+        resetInfra();
+        return;
+    }
+    resetInfra();
     if (o.failed == 0 and o.cancelled == 0) return;
     var buf: [notice_buf_bytes]u8 = undefined;
     const line = if (o.cancelled == 0)
@@ -219,6 +241,7 @@ pub fn toolTextLine(a: *Agent, text: []const u8) void {
 fn testAgent(w: *Io.Writer) Agent {
     batch_left = 0;
     label.resetPending();
+    resetInfra();
     return .{
         .gpa = std.testing.allocator,
         .arena = std.testing.allocator,
@@ -438,4 +461,63 @@ test "bash result prefers the last line of a multi-line run" {
         .is_error = false,
     });
     try std.testing.expectEqualStrings("  ✓ bash  1475 passed\n", aw.writer.buffered());
+}
+
+test "bash git log is a count, never the command" {
+    const saved = ansi.style;
+    ansi.style = .{};
+    defer ansi.style = saved;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"command\":\"git log --oneline v0.0.267..HEAD\"}", .{});
+    toolUseLine(&a, .{ .name = "bash", .input = input });
+    toolResultLine(&a, .{
+        .name = "bash",
+        .text = "d022479 feat(ui): cache\n8f75b5b fix(tui): chips\n4ba84b3 feat(models): seats\n",
+        .is_error = false,
+    });
+    try std.testing.expectEqualStrings("  ✓ git  3 commits\n", aw.writer.buffered());
+}
+
+test "repeated McpClosed collapses to one notice and skips the batch tally" {
+    const saved = ansi.style;
+    ansi.style = .{};
+    defer ansi.style = saved;
+    const saved_json = main_mod.json_mode;
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+
+    parallelBatchStarted(&a, 3);
+    toolResultLine(&a, .{ .name = "mcp__codedbpro__read", .text = "McpClosed", .is_error = true });
+    toolResultLine(&a, .{ .name = "mcp__codedbpro__read", .text = "McpClosed", .is_error = true });
+    toolResultLine(&a, .{ .name = "mcp__codedbpro__faster_search", .text = "McpClosed", .is_error = true });
+    try std.testing.expectEqualStrings("  ! codedb unavailable\n", aw.writer.buffered());
+    aw.clearRetainingCapacity();
+    parallelBatchFinished(&a, .{ .done = 0, .failed = 3, .cancelled = 0 });
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+}
+
+test "codedb JSON read is basename plus mode, not the envelope" {
+    const saved = ansi.style;
+    ansi.style = .{};
+    defer ansi.style = saved;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"file\":\"/Users/rachpradhan/codedb/docs/architecture.md\",\"mode\":\"section\"}", .{});
+    toolUseLine(&a, .{ .name = "mcp__codedbpro__read", .input = input });
+    toolResultLine(&a, .{
+        .name = "mcp__codedbpro__read",
+        .text = "{\"ok\":true,\"file\":\"/Users/rachpradhan/codedb/docs/architecture.md\",\"mode\":\"section\",\"content\":\"a\\nb\\nc\"}",
+        .is_error = false,
+    });
+    try std.testing.expectEqualStrings("  ✓ read  architecture.md  section · 3 lines\n", aw.writer.buffered());
 }

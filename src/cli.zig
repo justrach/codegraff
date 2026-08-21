@@ -25,6 +25,7 @@ pub const changelog_text =
     \\  • Vercel AI Gateway (AI_GATEWAY_API_KEY → alibaba/qwen3.8-27b); coding-agent /v1
     \\  • Z.AI defaults to GLM-5.3 (1M); thinking.enabled + implicit prefix cache
     \\  • GLM Coding Plan: ZAI_CODING=1 / GRAFF_ZAI_URL; not image/video
+    \\  • Line REPL tool rows are decisions; live bash is /debug-only
     \\
     \\0.0.268
     \\  • Cerebras Inference (CEREBRAS_API_KEY → gpt-oss-120b); not the WSE CSL SDK

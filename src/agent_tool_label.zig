@@ -36,8 +36,18 @@ pub fn newlineCount(s: []const u8) usize {
     return n;
 }
 
+fn displayPath(path: []const u8) []const u8 {
+    if (path.len == 0) return path;
+    if (std.fs.path.isAbsolute(path)) {
+        const base = std.fs.path.basename(path);
+        return if (base.len > 0) base else path;
+    }
+    return path;
+}
+
 fn namedDetailField(name: []const u8, input: std.json.Value) ?[]const u8 {
-    if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "codedb")) return "command";
+    // bash's command is not conversational — the ✓ line interprets the result.
+    if (std.mem.eql(u8, name, "codedb")) return "command";
     if (std.mem.eql(u8, name, "read_file") or
         std.mem.eql(u8, name, "write_file") or
         std.mem.eql(u8, name, "edit_file")) return "path";
@@ -63,7 +73,10 @@ fn fallbackDetail(input: std.json.Value) []const u8 {
     for (fallback_fields) |field| {
         const raw = stringField(input, field) orelse continue;
         const shown = firstLine(raw);
-        if (shown.len > 0) return shown;
+        if (shown.len == 0) continue;
+        if (std.mem.eql(u8, field, "path") or std.mem.eql(u8, field, "file") or std.mem.eql(u8, field, "uri"))
+            return displayPath(shown);
+        return shown;
     }
     return "";
 }
@@ -95,13 +108,16 @@ pub fn editDelta(input: std.json.Value, path: []const u8, buf: []u8) []const u8 
 }
 
 pub fn detail(t: ToolInvocation, buf: []u8) []const u8 {
+    if (std.mem.eql(u8, t.name, "bash")) return "";
     if (std.mem.eql(u8, t.name, "edit_file")) {
         const path = stringField(t.input, "path") orelse return "";
-        return editDelta(t.input, firstLine(path), buf);
+        return editDelta(t.input, displayPath(firstLine(path)), buf);
     }
     if (namedDetailField(t.name, t.input)) |field| {
         const raw = stringField(t.input, field) orelse return "";
-        return firstLine(raw);
+        const shown = firstLine(raw);
+        if (std.mem.eql(u8, field, "path") or std.mem.eql(u8, field, "file")) return displayPath(shown);
+        return shown;
     }
     return fallbackDetail(t.input);
 }
@@ -139,9 +155,16 @@ pub fn verb(name: []const u8, input: std.json.Value, buf: []u8) []const u8 {
     }
     if (std.mem.eql(u8, name, "subagent")) return "agent";
     if (std.mem.eql(u8, name, "imagegen")) return "image";
-    if (std.mem.startsWith(u8, name, "mcp_")) {
-        const rest = name["mcp_".len..];
-        const n = copy(buf, if (rest.len > 12) rest[0..12] else rest);
+    if (std.mem.startsWith(u8, name, "mcp")) {
+        const leaf = blk: {
+            if (std.mem.lastIndexOf(u8, name, "__")) |u| {
+                if (u + 2 < name.len) break :blk name[u + 2 ..];
+            }
+            if (std.mem.startsWith(u8, name, "mcp_")) break :blk name["mcp_".len..];
+            break :blk name;
+        };
+        if (std.mem.endsWith(u8, leaf, "search")) return "search";
+        const n = copy(buf, if (leaf.len > 12) leaf[0..12] else leaf);
         return buf[0..n];
     }
     const n = copy(buf, if (name.len > 12) name[0..12] else name);
@@ -206,6 +229,158 @@ pub fn compactBash(line: []const u8, buf: []u8) []const u8 {
     return line;
 }
 
+pub fn lastNonEmptyLine(text: []const u8) []const u8 {
+    const rest = std.mem.trim(u8, text, " \t\r\n");
+    if (std.mem.lastIndexOfScalar(u8, rest, '\n')) |nl|
+        return std.mem.trim(u8, rest[nl + 1 ..], " \t\r");
+    return rest;
+}
+
+fn hexPrefix(s: []const u8) usize {
+    var i: usize = 0;
+    while (i < s.len and i < 40) : (i += 1) {
+        const c = s[i];
+        const hex = (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
+        if (!hex) break;
+    }
+    return i;
+}
+
+fn gitCommitCount(text: []const u8) ?usize {
+    var n: usize = 0;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |raw| {
+        const s = std.mem.trim(u8, raw, " \t\r");
+        const h = hexPrefix(s);
+        if (h >= 7 and (h == s.len or s[h] == ' ')) n += 1;
+    }
+    return if (n >= 3) n else null;
+}
+
+fn looksLikeRefs(text: []const u8) bool {
+    var n: usize = 0;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |raw| {
+        const s = std.mem.trim(u8, raw, " \t\r*");
+        if (std.mem.startsWith(u8, s, "refs/") or
+            std.mem.startsWith(u8, s, "remotes/") or
+            std.mem.startsWith(u8, s, "origin/") or
+            std.mem.startsWith(u8, s, "release/") or
+            std.mem.eql(u8, s, "main")) n += 1;
+    }
+    return n >= 3;
+}
+
+fn isSummaryLine(s: []const u8) bool {
+    if (s.len == 0 or s.len > 80) return false;
+    if (std.mem.indexOf(u8, s, "passed") != null) return true;
+    if (std.mem.indexOf(u8, s, "failed") != null) return true;
+    if (std.mem.startsWith(u8, s, "ok") or std.mem.startsWith(u8, s, "OK")) return true;
+    if (std.mem.startsWith(u8, s, "error") or std.mem.startsWith(u8, s, "Error")) return true;
+    if (std.mem.startsWith(u8, s, "All ")) return true;
+    for (s) |c| {
+        if (c < '0' or c > '9') return false;
+    }
+    return true;
+}
+
+/// Scan a JSON object for `"key":` then a string, bool, or integer. Not a parser.
+fn jsonQuoted(s: []const u8, key: []const u8) ?[]const u8 {
+    var pat: [48]u8 = undefined;
+    const p = std.fmt.bufPrint(&pat, "\"{s}\":", .{key}) catch return null;
+    const at = std.mem.indexOf(u8, s, p) orelse return null;
+    var j = at + p.len;
+    while (j < s.len and (s[j] == ' ' or s[j] == '\t')) j += 1;
+    if (j >= s.len) return null;
+    if (s[j] == '"') {
+        j += 1;
+        const start = j;
+        while (j < s.len) : (j += 1) {
+            if (s[j] == '\\') {
+                j += 1;
+                continue;
+            }
+            if (s[j] == '"') return s[start..j];
+        }
+        return null;
+    }
+    if (std.mem.startsWith(u8, s[j..], "true")) return "true";
+    if (std.mem.startsWith(u8, s[j..], "false")) return "false";
+    const start = j;
+    while (j < s.len and s[j] >= '0' and s[j] <= '9') j += 1;
+    if (j > start) return s[start..j];
+    return null;
+}
+
+fn escapedNewlineCount(json_string: []const u8) usize {
+    var n: usize = 1;
+    var i: usize = 0;
+    while (i + 1 < json_string.len) : (i += 1) {
+        if (json_string[i] == '\\' and json_string[i + 1] == 'n') n += 1;
+    }
+    return n;
+}
+
+/// JSON tool results (CodeDB Pro, MCP) become a decision, never the envelope.
+fn interpretJson(s: []const u8, buf: []u8) []const u8 {
+    if (jsonQuoted(s, "ok")) |ok| {
+        if (std.mem.eql(u8, ok, "false")) {
+            if (jsonQuoted(s, "error")) |err| {
+                return if (err.len > result_preview_bytes) err[0..result_preview_bytes] else err;
+            }
+            return "failed";
+        }
+    }
+    if (jsonQuoted(s, "matches")) |m|
+        return std.fmt.bufPrint(buf, "{s} matches", .{m}) catch m;
+    if (jsonQuoted(s, "mode")) |mode| {
+        const lines = if (jsonQuoted(s, "content")) |c| escapedNewlineCount(c) else 0;
+        if (lines > 1)
+            return std.fmt.bufPrint(buf, "{s} · {d} lines", .{ mode, lines }) catch mode;
+        return mode;
+    }
+    return "";
+}
+
+/// One-line decision the transcript shows. Raw output stays off this line.
+pub fn interpret(name: []const u8, all: []const u8, buf: []u8) []const u8 {
+    if (all.len == 0) return "";
+    const trimmed = std.mem.trimStart(u8, all, " \t\r\n");
+    if (trimmed.len > 0 and trimmed[0] == '{') return interpretJson(trimmed, buf);
+    const lines = newlineCount(all);
+    if (std.mem.eql(u8, name, "read_file") and lines > 1) {
+        return std.fmt.bufPrint(buf, "{d} lines", .{lines}) catch all;
+    }
+    const bashy = std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "codedb");
+    if (bashy and lines > 1) {
+        if (gitCommitCount(all)) |n|
+            return std.fmt.bufPrint(buf, "{d} commits", .{n}) catch lastNonEmptyLine(all);
+        if (looksLikeRefs(all) and lines >= 4)
+            return std.fmt.bufPrint(buf, "{d} branches", .{lines}) catch lastNonEmptyLine(all);
+        const last = lastNonEmptyLine(all);
+        const compacted = compactBash(last, buf);
+        if (!std.mem.eql(u8, compacted, last)) return compacted;
+        if (isSummaryLine(last)) {
+            return if (last.len > result_preview_bytes) last[0..result_preview_bytes] else last;
+        }
+        if (lines >= 4)
+            return std.fmt.bufPrint(buf, "{d} lines", .{lines}) catch last;
+        return if (last.len > result_preview_bytes) last[0..result_preview_bytes] else last;
+    }
+    if (bashy) return compactBash(firstLine(all), buf);
+    const raw = firstLine(all);
+    return if (raw.len > result_preview_bytes) raw[0..result_preview_bytes] else raw;
+}
+
+/// Transport death, not a tool bug. The transcript names the family once.
+pub fn infraFamily(name: []const u8, text: []const u8) ?[]const u8 {
+    const closed = std.mem.indexOf(u8, text, "McpClosed") != null or
+        std.mem.indexOf(u8, text, "McpHandshakeTimeout") != null;
+    if (!closed) return null;
+    if (std.mem.indexOf(u8, name, "codedb") != null) return "codedb";
+    return "mcp";
+}
+
 /// Drop a result preview that only restates the verb/detail (the edit
 /// harness saying "applied N edit span(s)…" when `+12/-4` is already there).
 pub fn usefulPreview(name: []const u8, known: []const u8, shown: []const u8) []const u8 {
@@ -215,6 +390,7 @@ pub fn usefulPreview(name: []const u8, known: []const u8, shown: []const u8) []c
         if (std.mem.indexOf(u8, known, " · +") != null) return "";
     }
     if (known.len > 0 and std.mem.eql(u8, shown, known)) return "";
+    if (shown.len > 0 and shown[0] == '{') return "";
     return shown;
 }
 
@@ -238,4 +414,65 @@ test "usefulPreview drops edit-span boilerplate once +N/-N is known" {
     try std.testing.expectEqualStrings("", usefulPreview("edit_file", "src/a.zig · +3/-2", "applied 1 edit span(s) to src/a.zig (each verified)"));
     try std.testing.expectEqualStrings("4 matches", usefulPreview("mcp_search", "standing line", "4 matches"));
     try std.testing.expectEqualStrings("", usefulPreview("webfetch", "https://ex", "https://ex"));
+}
+
+test "interpret turns git log and branch dumps into counts" {
+    var buf: [32]u8 = undefined;
+    const log =
+        \\d022479 feat(ui): cache
+        \\8f75b5b fix(tui): chips
+        \\4ba84b3 feat(models): seats
+        \\
+    ;
+    try std.testing.expectEqualStrings("3 commits", interpret("bash", log, &buf));
+    const refs =
+        \\* release/v0.0.269
+        \\  main
+        \\  remotes/origin/main
+        \\  remotes/origin/release/v0.0.269
+        \\
+    ;
+    try std.testing.expectEqualStrings("4 branches", interpret("bash", refs, &buf));
+    try std.testing.expectEqualStrings("29", interpret("bash", "29\n", &buf));
+}
+
+test "bash detail is empty so the command never becomes the transcript" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var buf: [16]u8 = undefined;
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"command\":\"git log --oneline v0.0.267..HEAD | wc -l\"}", .{});
+    try std.testing.expectEqualStrings("", detail(.{ .name = "bash", .input = input }, &buf));
+    try std.testing.expectEqualStrings("git", verb("bash", input, &buf));
+}
+
+test "mcp verb is the leaf, not _codedbpro_" {
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("read", verb("mcp__codedbpro__read", .null, &buf));
+    try std.testing.expectEqualStrings("search", verb("mcp__codedbpro__faster_search", .null, &buf));
+    try std.testing.expectEqualStrings("search", verb("mcp_search", .null, &buf));
+}
+
+test "infraFamily collapses McpClosed to a family name" {
+    try std.testing.expectEqualStrings("codedb", infraFamily("mcp__codedbpro__read", "McpClosed") orelse "");
+    try std.testing.expectEqualStrings("mcp", infraFamily("mcp__github__get", "McpHandshakeTimeout") orelse "");
+    try std.testing.expect(infraFamily("bash", "boom") == null);
+}
+
+test "interpretJson never leaks a CodeDB envelope" {
+    var buf: [48]u8 = undefined;
+    const section =
+        \\{"ok":true,"file":"/Users/rachpradhan/codedb/docs/architecture.md","mode":"section","content":"a\nb\nc"}
+    ;
+    try std.testing.expectEqualStrings("section · 3 lines", interpret("mcp__codedbpro__read", section, &buf));
+    try std.testing.expectEqualStrings("5 matches", interpret("mcp__codedbpro__faster_search", "{\"ok\":true,\"matches\":5}", &buf));
+    try std.testing.expectEqualStrings("outline", interpret("mcp__codedbpro__read", "{\"ok\":true,\"mode\":\"outline\"}", &buf));
+    try std.testing.expectEqualStrings("", interpret("mcp__codedbpro__read", "{\"ok\":true,\"file\":\"x.md\"}", &buf));
+}
+
+test "mcp file detail is the basename, not the absolute path" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var buf: [16]u8 = undefined;
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"file\":\"/Users/rachpradhan/codedb/docs/architecture.md\",\"mode\":\"section\"}", .{});
+    try std.testing.expectEqualStrings("architecture.md", detail(.{ .name = "mcp__codedbpro__read", .input = input }, &buf));
 }
