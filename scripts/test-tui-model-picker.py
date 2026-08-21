@@ -195,9 +195,19 @@ def check(h):
         if badge not in ("plan", "credits", "api", "local"):
             return f"a picker row has no cost badge: {row!r}"
 
+    # Signed-in plan seats sit above credits / api on the empty list (ADR 0017).
+    badges_in_order = [seat(r)[2] for r in rows]
+    if "plan" in badges_in_order and "credits" in badges_in_order:
+        if badges_in_order.index("plan") > badges_in_order.index("credits"):
+            return f"signed-in plan seats sit below credits\n{chr(10).join(rows)}"
+
     # (4) a provider with no credential keeps its rows, marked rather than gone.
-    if not any(r.rstrip().endswith("\u2014") for r in rows):
-        return f"no keyless row is marked\n{chr(10).join(rows)}"
+    # Keyed plan/credits now fill the first page, so filter to a keyless
+    # provider instead of requiring an em-dash on the resting window.
+    close_picker(h)
+    bare = open_picker(h, b"anthropic")
+    if not any(r.rstrip().endswith("\u2014") for r in bare):
+        return f"no keyless row is marked\n{chr(10).join(bare)}"
     # (2) THE report: one model, three providers, three different bills, and
     # three rows a human can tell apart.
     close_picker(h)

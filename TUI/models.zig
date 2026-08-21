@@ -6,6 +6,7 @@ const app = @import("app.zig");
 const engine = @import("engine.zig");
 const panel = @import("panel.zig");
 const theme_mod = @import("theme.zig");
+const models_rank = @import("models_rank");
 const Model = app.Model;
 
 pub const max_models = 256;
@@ -83,23 +84,16 @@ fn nameScore(name: []const u8, query: []const u8) i32 {
     return -len_pen;
 }
 
-/// Rank a keyed plan above a metered/reseller hit. "5.6 sol" with a Codex
-/// login should land on `gpt-5.6-sol` / codex, not openai or a gateway slug.
+/// Rank a keyed plan above a metered/reseller hit. Same `electionRank` the
+/// line-REPL `/model` picker and `/models` table use — an empty query is
+/// still an election, not catalog order. "5.6 sol" with a Codex login
+/// lands on `gpt-5.6-sol` / codex, not openai or a gateway slug.
 fn entryScore(e: engine.ModelEntry, query: []const u8) i32 {
-    var s: i32 = nameScore(e.name, query);
-    if (e.has_key) s += 1_000_000;
-    s += switch (e.cost) {
-        .plan => 400_000,
-        .local => 300_000,
-        .credits => 200_000,
-        .api => 0,
-    };
-    return s;
+    return nameScore(e.name, query) + models_rank.electionRank(e.has_key, e.cost);
 }
 
-/// Keep the catalog rows matching `query`. An empty query stays in catalog
-/// order (the map of what exists). A typed query ranks: keyed plan first,
-/// then tighter name match, then original order.
+/// Keep the catalog rows matching `query`, ranked: keyed plan first, then
+/// local, then credits, then api; a typed query adds the name score.
 pub fn filterModels(list: []const engine.ModelEntry, query: []const u8, out: []engine.ModelEntry) usize {
     var tmp: [max_models]Ranked = undefined;
     var k: usize = 0;
@@ -107,10 +101,10 @@ pub fn filterModels(list: []const engine.ModelEntry, query: []const u8, out: []e
         if (e.name.len == 0) continue;
         if (!entryMatch(e, query)) continue;
         if (k >= tmp.len) break;
-        tmp[k] = .{ .e = e, .score = if (query.len == 0) 0 else entryScore(e, query), .idx = i };
+        tmp[k] = .{ .e = e, .score = entryScore(e, query), .idx = i };
         k += 1;
     }
-    if (query.len > 0) std.mem.sort(Ranked, tmp[0..k], {}, rankedLess);
+    std.mem.sort(Ranked, tmp[0..k], {}, rankedLess);
     const n = @min(k, out.len);
     for (0..n) |i| out[i] = tmp[i].e;
     return n;
@@ -357,12 +351,21 @@ test "a 5.6 sol search ranks keyed Codex above openai and a gateway slug" {
     try std.testing.expectEqualStrings("openai/gpt-5.6-sol", buf[1].name);
 }
 
-test "an empty query keeps catalog order" {
+test "an empty query ranks signed-in plan above credits above api" {
+    // Catalog order is openai / codegraff / keyless-codex / fireworks / keyed-codex.
+    // Opening /models with a Codex login should put that plan on top, not
+    // leave it at the bake position under Codegraff.
     var buf: [8]engine.ModelEntry = undefined;
     const n = filterModels(&sample, "", &buf);
     try std.testing.expectEqual(@as(usize, 5), n);
-    try std.testing.expectEqualStrings("aaa", buf[0].name);
-    try std.testing.expectEqualStrings("gpt-5.6", buf[4].name);
+    try std.testing.expectEqualStrings("gpt-5.6", buf[0].name);
+    try std.testing.expectEqualStrings("codex", buf[0].provider);
+    try std.testing.expect(buf[0].has_key);
+    try std.testing.expectEqualStrings("bbb", buf[1].name);
+    try std.testing.expectEqualStrings("codegraff", buf[1].provider);
+    try std.testing.expectEqualStrings("aaa", buf[2].name);
+    try std.testing.expectEqualStrings("ccc", buf[4].name);
+    try std.testing.expect(!buf[4].has_key);
 }
 
 /// `line` with its SGR sequences removed, written into `buf`. The padding is

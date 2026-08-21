@@ -16,6 +16,8 @@ const term = @import("term.zig");
 const tty = term.tty;
 
 const pricing = @import("pricing.zig");
+const billing = @import("billing.zig");
+const models_rank = @import("models_rank");
 
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
@@ -251,25 +253,18 @@ pub fn modelPicker(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer)
     while (true) {
         const layout = modelPickerLayout(term.termRows(), term.termCols());
         filtered.clearRetainingCapacity();
-        // Two passes: models whose provider has a key/login first, so the
-        // initial selection (and Enter) lands on something usable; keyless
-        // rows trail with their ·no key tag. Within each pass the best
-        // fuzzy match ranks first (ties keep table order).
-        for ([2]bool{ true, false }) |want_keyed| {
-            scored.clearRetainingCapacity();
-            for (model_table, 0..) |m, i| {
-                if ((keys.get(m.provider) != null) != want_keyed) continue;
-                if (pickScore(.{ .name = m.name, .desc = m.provider }, query.items)) |s| {
-                    const plan: i32 = if (provider_mod.specFor(m.provider)) |spec|
-                        @as(i32, @intFromBool(spec.sub_login)) * 400_000
-                    else
-                        0;
-                    scored.append(arena, .{ .idx = i, .score = s + plan }) catch {};
-                }
+        scored.clearRetainingCapacity();
+        // Same election as the TUI overlay and `/models` (models_rank.zig):
+        // keyed plan, then local, then credits, then api; keyless rows trail.
+        for (model_table, 0..) |m, i| {
+            if (pickScore(.{ .name = m.name, .desc = m.provider }, query.items)) |s| {
+                const has_key = keys.get(m.provider) != null;
+                const seat = billing.costFor(m.provider, keys.source(m.provider));
+                scored.append(arena, .{ .idx = i, .score = s + models_rank.electionRank(has_key, seat) }) catch {};
             }
-            std.mem.sort(Scored, scored.items, {}, scoredLess);
-            for (scored.items) |s| filtered.append(arena, s.idx) catch {};
         }
+        std.mem.sort(Scored, scored.items, {}, scoredLess);
+        for (scored.items) |s| filtered.append(arena, s.idx) catch {};
         if (filtered.items.len == 0) sel = 0 else if (sel >= filtered.items.len) sel = filtered.items.len - 1;
         if (select_current) {
             for (filtered.items, 0..) |model_idx, row| {

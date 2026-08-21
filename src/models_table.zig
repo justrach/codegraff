@@ -4,10 +4,18 @@
 //! 80-column budget is something a test can hold us to. The `cost` column is
 //! the point: `/models` used to say WHICH provider serves a model but not what
 //! that seat costs, and the TUI picker did not even say the provider — the two
-//! surfaces now print the same provider and the same badge.
+//! surfaces now print the same provider and the same badge. Row order is the
+//! shared election (`models_rank.zig`): signed-in plan, then local, then
+//! credits, then api.
 
 const std = @import("std");
 const Io = std.Io;
+const Allocator = std.mem.Allocator;
+
+const billing = @import("billing.zig");
+const models_rank = @import("models_rank");
+const pricing = @import("pricing.zig");
+const provider_mod = @import("provider.zig");
 
 pub const header = "model                    ctx      compact@ provider   cost     key vision\n";
 const row_fmt = "{s:<24} {d:>5}k   {d:>5}k   {s:<10} {s:<7}  {s}   {s}{s}\n";
@@ -23,6 +31,43 @@ pub const Row = struct {
     vision: bool = false,
     current: bool = false,
 };
+
+/// Catalog rows in election order. The TUI overlay ranks the same way
+/// through `models_rank.electionRank`; this is the dump that has to agree.
+pub fn writeRows(
+    out: *Io.Writer,
+    alloc: Allocator,
+    models: []const pricing.ModelInfo,
+    keys: provider_mod.Keys,
+    current_model: []const u8,
+    current_provider: []const u8,
+    is_vision: *const fn ([]const u8) bool,
+) !void {
+    const ranked = try alloc.alloc(models_rank.Scored, models.len);
+    defer alloc.free(ranked);
+    for (models, 0..) |m, i| {
+        ranked[i] = .{
+            .idx = i,
+            .score = models_rank.electionRank(
+                keys.get(m.provider) != null,
+                billing.costFor(m.provider, keys.source(m.provider)),
+            ),
+        };
+    }
+    std.mem.sort(models_rank.Scored, ranked, {}, models_rank.scoredLess);
+    for (ranked) |r| {
+        const m = models[r.idx];
+        try writeRow(out, .{
+            .name = m.name,
+            .context = pricing.contextFor(m.provider, m.name),
+            .provider = m.provider,
+            .cost = billing.costFor(m.provider, keys.source(m.provider)).badge(),
+            .has_key = keys.get(m.provider) != null,
+            .vision = is_vision(m.name),
+            .current = std.mem.eql(u8, m.name, current_model) and std.mem.eql(u8, m.provider, current_provider),
+        });
+    }
+}
 
 pub fn writeRow(out: *Io.Writer, r: Row) !void {
     try out.print(row_fmt, .{
@@ -115,4 +160,34 @@ test "a keyless row is marked, not dropped" {
     try std.testing.expect(std.mem.indexOf(u8, line, "fugu") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "—") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "✓") == null);
+}
+
+test "electionRank: a signed-in plan outranks credits and a metered key" {
+    const rank = models_rank.electionRank;
+    try std.testing.expect(rank(true, .plan) > rank(true, .local));
+    try std.testing.expect(rank(true, .local) > rank(true, .credits));
+    try std.testing.expect(rank(true, .credits) > rank(true, .api));
+    // Unsigned Codex is a map entry; keyed Codegraff is a seat.
+    try std.testing.expect(rank(true, .credits) > rank(false, .plan));
+}
+
+test "writeRows puts a signed-in Codex plan above Codegraff credits" {
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    _ = keys.set("codex", "tok", .login);
+    _ = keys.set("codegraff", "cg", .login);
+    const models = [_]pricing.ModelInfo{
+        .{ .provider = "codegraff", .name = "gpt-5.6", .context = 200_000 },
+        .{ .provider = "codex", .name = "gpt-5.6", .context = 200_000 },
+    };
+    var buf: [512]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try writeRows(&w, std.testing.allocator, &models, keys, "", "", struct {
+        fn v(_: []const u8) bool {
+            return false;
+        }
+    }.v);
+    const out = w.buffered();
+    const plan = std.mem.indexOf(u8, out, "codex") orelse return error.MissingPlan;
+    const credits = std.mem.indexOf(u8, out, "codegraff") orelse return error.MissingCredits;
+    try std.testing.expect(plan < credits);
 }

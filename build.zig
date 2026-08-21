@@ -54,11 +54,20 @@ pub fn build(b: *std.Build) void {
     // standalone graff-repl exe below). The repo's first dependency.
     const zigzag = b.dependency("zigzag", .{ .target = target, .optimize = optimize });
     exe.root_module.addImport("zigzag", zigzag.module("zigzag"));
+    // Shared by the line-REPL picker and the TUI overlay so they cannot
+    // drift: a file import from both modules is illegal in Zig 0.17.
+    const models_rank_mod = b.createModule(.{
+        .root_source_file = b.path("src/models_rank.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("models_rank", models_rank_mod);
     const tui_mod = b.createModule(.{
         .root_source_file = b.path("TUI/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    tui_mod.addImport("models_rank", models_rank_mod);
     exe.root_module.addImport("tui", tui_mod);
     const install_graff = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&install_graff.step);
@@ -90,6 +99,7 @@ pub fn build(b: *std.Build) void {
     });
     unit_tests.root_module.addOptions("build_options", opts);
     unit_tests.root_module.addImport("zigzag", zigzag.module("zigzag"));
+    unit_tests.root_module.addImport("models_rank", models_rank_mod);
     unit_tests.root_module.addImport("tui", tui_mod);
     // spec/ fixtures live outside src/; importing them here makes @embedFile
     // legal and rebuilds the suite when the exported semantics change.
@@ -180,6 +190,7 @@ pub fn build(b: *std.Build) void {
             .strip = lean_release,
         }),
     });
+    tui_exe.root_module.addImport("models_rank", models_rank_mod);
     b.installArtifact(tui_exe);
 
     const tui_tests = b.addTest(.{
@@ -196,6 +207,7 @@ pub fn build(b: *std.Build) void {
         // be runnable on its own, ReleaseFast, without the rest of the suite.
         .filters = test_filters,
     });
+    tui_tests.root_module.addImport("models_rank", models_rank_mod);
     tui_tests.root_module.addAnonymousImport("spec_terminal_modes", .{ .root_source_file = b.path("spec/kernels/terminal_modes.json") });
 
     const tui_test_step = b.step("tui-test", "Run fullscreen TUI unit tests");
