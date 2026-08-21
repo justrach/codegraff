@@ -47,7 +47,7 @@ Each window is `raw[cursor:]`, with `cursor` taken just before sending input.
 The obvious way to write that is:
 
 ```python
-s.wait_for_literal("] ›")
+s.wait_for_prompt()
 cursor = len(s.raw)          # WRONG
 ```
 
@@ -65,7 +65,7 @@ looks exactly like a real difference until you diff the remainder.
 The fix, applied at every window here: **settle before opening a window.**
 
 ```python
-s.wait_for_literal("] ›")
+s.wait_for_prompt()
 s.pump_for(1.0)              # let the terminal go quiet
 cursor = len(s.raw)          # now the boundary is deterministic
 ```

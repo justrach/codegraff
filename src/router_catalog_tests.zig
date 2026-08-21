@@ -30,6 +30,25 @@ test "OpenAI catalog configuration carries its models endpoint" {
     }
 }
 
+test "parseModels reads Vercel context_window and skips non-language types" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const snapshot = parseModels(state.allocator(), "vercel",
+        \\{"object":"list","data":[
+        \\ {"id":"alibaba/qwen3.8-27b","context_window":1000000,"type":"language","supported_parameters":["reasoning","tools"]},
+        \\ {"id":"alibaba/wan-video","context_window":0,"type":"video"},
+        \\ {"id":"openai/text-embedding-3-large","type":"embedding"},
+        \\ {"id":"no-window","type":"language"}
+        \\]}
+    ) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), snapshot.models.len);
+    try std.testing.expectEqualStrings("alibaba/qwen3.8-27b", snapshot.models[0].name);
+    try std.testing.expectEqual(@as(u64, 1_000_000), snapshot.models[0].context);
+    try std.testing.expect(snapshot.models[0].supports_reasoning);
+    try std.testing.expectEqualStrings("no-window", snapshot.models[1].name);
+    try std.testing.expectEqual(pricing.default_context, snapshot.models[1].context);
+}
+
 test "parseModels is reusable for a newly configured router" {
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();

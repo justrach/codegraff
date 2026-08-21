@@ -6,6 +6,7 @@ const app = @import("app.zig");
 const engine = @import("engine.zig");
 const panel = @import("panel.zig");
 const theme_mod = @import("theme.zig");
+const models_rank = @import("models_rank");
 const Model = app.Model;
 
 pub const max_models = 256;
@@ -13,7 +14,23 @@ pub const max_models = 256;
 /// reads the same window the renderer draws rather than a second copy of it.
 pub const visible_rows = 14;
 
+fn isSep(c: u8) bool {
+    return c == '-' or c == '_' or c == ' ' or c == '.' or c == '/';
+}
+
+/// Fold separators so "5.6 sol" and "gpt-5.6-sol" share a needle.
+fn foldSeps(dst: []u8, s: []const u8) []const u8 {
+    var n: usize = 0;
+    for (s) |c| {
+        if (isSep(c) or n >= dst.len) continue;
+        dst[n] = std.ascii.toLower(c);
+        n += 1;
+    }
+    return dst[0..n];
+}
+
 /// Case-insensitive substring, else fzf-style subsequence ("gpt56" -> gpt-5.6).
+/// Spaces/hyphens/dots are ignored so "5.6 sol" hits `gpt-5.6-sol`.
 pub fn modelMatch(name: []const u8, query: []const u8) bool {
     if (query.len == 0) return true;
     if (containsIgnoreCase(name, query)) return true;
@@ -21,7 +38,12 @@ pub fn modelMatch(name: []const u8, query: []const u8) bool {
     for (name) |c| {
         if (qi < query.len and std.ascii.toLower(c) == std.ascii.toLower(query[qi])) qi += 1;
     }
-    return qi == query.len;
+    if (qi == query.len) return true;
+    var nb: [128]u8 = undefined;
+    var qb: [128]u8 = undefined;
+    const n = foldSeps(&nb, name);
+    const q = foldSeps(&qb, query);
+    return q.len > 0 and containsIgnoreCase(n, q);
 }
 
 fn containsIgnoreCase(hay: []const u8, needle: []const u8) bool {
@@ -41,16 +63,50 @@ pub fn entryMatch(e: engine.ModelEntry, query: []const u8) bool {
     return modelMatch(e.name, query) or containsIgnoreCase(e.provider, query);
 }
 
-/// Keep the catalog rows matching `query`, in catalog order.
+const Ranked = struct { e: engine.ModelEntry, score: i32, idx: usize };
+
+fn rankedLess(_: void, a: Ranked, b: Ranked) bool {
+    if (a.score != b.score) return a.score > b.score;
+    return a.idx < b.idx;
+}
+
+fn nameScore(name: []const u8, query: []const u8) i32 {
+    if (query.len == 0) return 0;
+    var nb: [128]u8 = undefined;
+    var qb: [128]u8 = undefined;
+    const n = foldSeps(&nb, name);
+    const q = foldSeps(&qb, query);
+    const len_pen: i32 = @intCast(@min(name.len, 200));
+    if (q.len == 0) return -len_pen;
+    if (std.mem.eql(u8, n, q)) return 300_000 - len_pen;
+    if (std.mem.endsWith(u8, n, q)) return 200_000 - len_pen;
+    if (std.mem.indexOf(u8, n, q) != null) return 100_000 - len_pen;
+    return -len_pen;
+}
+
+/// Rank a keyed plan above a metered/reseller hit. Same `electionRank` the
+/// line-REPL `/model` picker and `/models` table use — an empty query is
+/// still an election, not catalog order. "5.6 sol" with a Codex login
+/// lands on `gpt-5.6-sol` / codex, not openai or a gateway slug.
+fn entryScore(e: engine.ModelEntry, query: []const u8) i32 {
+    return nameScore(e.name, query) + models_rank.electionRank(e.has_key, e.cost);
+}
+
+/// Keep the catalog rows matching `query`, ranked: keyed plan first, then
+/// local, then credits, then api; a typed query adds the name score.
 pub fn filterModels(list: []const engine.ModelEntry, query: []const u8, out: []engine.ModelEntry) usize {
-    var n: usize = 0;
-    for (list) |e| {
+    var tmp: [max_models]Ranked = undefined;
+    var k: usize = 0;
+    for (list, 0..) |e, i| {
         if (e.name.len == 0) continue;
         if (!entryMatch(e, query)) continue;
-        if (n >= out.len) break;
-        out[n] = e;
-        n += 1;
+        if (k >= tmp.len) break;
+        tmp[k] = .{ .e = e, .score = entryScore(e, query), .idx = i };
+        k += 1;
     }
+    std.mem.sort(Ranked, tmp[0..k], {}, rankedLess);
+    const n = @min(k, out.len);
+    for (0..n) |i| out[i] = tmp[i].e;
     return n;
 }
 
@@ -154,6 +210,7 @@ fn tailId(name: []const u8) []const u8 {
 test "modelMatch: substring and subsequence" {
     try std.testing.expect(modelMatch("gpt-5.6", "gpt"));
     try std.testing.expect(modelMatch("gpt-5.6", "gpt56"));
+    try std.testing.expect(modelMatch("gpt-5.6-sol", "5.6 sol"));
     try std.testing.expect(modelMatch("accounts/fireworks/models/deepseek-v4-pro", "deepseek"));
     try std.testing.expect(!modelMatch("gpt-5.6", "claude"));
 }
@@ -180,8 +237,9 @@ test "the query searches the provider column too" {
     var buf: [8]engine.ModelEntry = undefined;
     const n = filterModels(&sample, "codex", &buf);
     try std.testing.expectEqual(@as(usize, 2), n);
-    try std.testing.expectEqualStrings("ccc", buf[0].name);
-    try std.testing.expectEqualStrings("gpt-5.6", buf[1].name);
+    // Keyed plan first; the keyless codex row still matches the provider column.
+    try std.testing.expectEqualStrings("gpt-5.6", buf[0].name);
+    try std.testing.expectEqualStrings("ccc", buf[1].name);
     try std.testing.expectEqual(@as(usize, 1), filterModels(&sample, "codegraff", &buf));
     try std.testing.expectEqual(@as(usize, 0), filterModels(&sample, "anthropic", &buf));
 }
@@ -275,6 +333,39 @@ test "the provider column lines up under ragged model names" {
         seen += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), seen);
+}
+
+test "a 5.6 sol search ranks keyed Codex above openai and a gateway slug" {
+    const rows = [_]engine.ModelEntry{
+        .{ .name = "gpt-5.6", .provider = "openai", .has_key = true, .cost = .api },
+        .{ .name = "openai/gpt-5.6-sol", .provider = "vercel", .has_key = true, .cost = .api },
+        .{ .name = "gpt-5.6-sol", .provider = "codex", .has_key = true, .cost = .plan },
+        .{ .name = "gpt-5.6-sol", .provider = "codex", .cost = .plan },
+    };
+    var buf: [8]engine.ModelEntry = undefined;
+    const n = filterModels(&rows, "5.6 sol", &buf);
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expectEqualStrings("gpt-5.6-sol", buf[0].name);
+    try std.testing.expectEqualStrings("codex", buf[0].provider);
+    try std.testing.expect(buf[0].has_key);
+    try std.testing.expectEqualStrings("openai/gpt-5.6-sol", buf[1].name);
+}
+
+test "an empty query ranks signed-in plan above credits above api" {
+    // Catalog order is openai / codegraff / keyless-codex / fireworks / keyed-codex.
+    // Opening /models with a Codex login should put that plan on top, not
+    // leave it at the bake position under Codegraff.
+    var buf: [8]engine.ModelEntry = undefined;
+    const n = filterModels(&sample, "", &buf);
+    try std.testing.expectEqual(@as(usize, 5), n);
+    try std.testing.expectEqualStrings("gpt-5.6", buf[0].name);
+    try std.testing.expectEqualStrings("codex", buf[0].provider);
+    try std.testing.expect(buf[0].has_key);
+    try std.testing.expectEqualStrings("bbb", buf[1].name);
+    try std.testing.expectEqualStrings("codegraff", buf[1].provider);
+    try std.testing.expectEqualStrings("aaa", buf[2].name);
+    try std.testing.expectEqualStrings("ccc", buf[4].name);
+    try std.testing.expect(!buf[4].has_key);
 }
 
 /// `line` with its SGR sequences removed, written into `buf`. The padding is

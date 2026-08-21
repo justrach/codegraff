@@ -46,7 +46,7 @@ pub fn promptBox(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
     var body = std.array_list.Managed(u8).init(a);
     try body.appendSlice(glyphs.caret ++ " ");
     if (self.images.items.len > 0) {
-        try body.appendSlice(try imageChips(self, a));
+        try body.appendSlice(try imageChips(self, a, th.accent, th.text));
         try body.appendSlice("  ");
     }
     try body.appendSlice(try self.input.view(a));
@@ -68,22 +68,29 @@ pub fn promptBox(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
     // centred, so a meter ticking 9% → 10% used to widen the label by one and
     // slide every character of the footer half a cell sideways mid-turn — the
     // same class of jitter a two-column spinner frame causes (glyphs.zig).
-    var pct_buf: [16]u8 = undefined;
-    const pct: []const u8 = if (self.contextPercent()) |p|
-        (std.fmt.bufPrint(&pct_buf, " · {d: >3}%", .{p}) catch "")
-    else
-        "";
+    var pct_buf: [32]u8 = undefined;
+    const pct: []const u8 = if (self.contextPercent()) |p| blk: {
+        const cache = if (self.status) |st| st.cachePercent() else null;
+        break :blk (std.fmt.bufPrint(&pct_buf, " · {d: >3}% · {d: >3}%c", .{ p, cache orelse 0 }) catch "");
+    } else "";
     const label = try std.fmt.allocPrint(a, " {s} ({s}) · {s}{s} ", .{ model, @tagName(self.effort), self.modeSlug(), pct });
     try out.appendSlice(try footer(a, border, th.muted, label, inner));
     return out.items;
 }
 
-fn imageChips(self: *const Model, a: std.mem.Allocator) ![]const u8 {
+fn imageChips(self: *const Model, a: std.mem.Allocator, accent: []const u8, text: []const u8) ![]const u8 {
     var chips = std.array_list.Managed(u8).init(a);
-    for (self.images.items, 0..) |_, i| {
+    for (self.images.items, 0..) |path, i| {
         if (i > 0) try chips.append(' ');
         var buf: [24]u8 = undefined;
-        try chips.appendSlice(try std.fmt.bufPrint(&buf, "[Image #{d}]", .{i + 1}));
+        const label = try std.fmt.bufPrint(&buf, "[Image #{d}]", .{i + 1});
+        if (@import("image.zig").pathBacked(path)) {
+            try chips.appendSlice(accent);
+            try chips.appendSlice(label);
+            try chips.appendSlice(text);
+        } else {
+            try chips.appendSlice(label);
+        }
     }
     return chips.items;
 }
@@ -353,7 +360,14 @@ test "the composer footer holds its columns as the context meter ticks" {
     defer arena.deinit();
     var col: ?usize = null;
     for ([_]u64{ 5, 9, 10, 99, 100 }) |pct| {
-        m.setStatus(.{ .model = "grok-4", .provider_id = "xai", .has_context = true, .tokens = pct, .window = 100 });
+        m.setStatus(.{
+            .model = "grok-4",
+            .provider_id = "xai",
+            .has_context = true,
+            .tokens = pct,
+            .window = 100,
+            .cache_read = pct / 2,
+        });
         const box = try promptBox(&m, arena.allocator(), 80);
         var it = std.mem.splitScalar(u8, box, '\n');
         var footer_row: []const u8 = "";
@@ -364,7 +378,29 @@ test "the composer footer holds its columns as the context meter ticks" {
         const start = theme_mod.visibleLen(footer_row[0..at]);
         if (col) |want| try std.testing.expectEqual(want, start) else col = start;
         try std.testing.expectEqual(@as(usize, 80), theme_mod.visibleLen(footer_row));
+        try std.testing.expect(std.mem.indexOf(u8, footer_row, "%c") != null);
     }
+}
+
+test "composer footer prints last-turn cache hit next to context share" {
+    engine.g_model_name = "grok-4";
+    defer engine.g_model_name = "";
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    m.setStatus(.{
+        .model = "grok-4",
+        .provider_id = "xai",
+        .has_context = true,
+        .tokens = 12_345,
+        .window = 200_000,
+        .cache_read = 2048,
+    });
+    const box = try promptBox(&m, arena.allocator(), 80);
+    try std.testing.expect(std.mem.indexOf(u8, box, "  6%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, " 16%c") != null);
 }
 
 test "prompt box wraps a long draft onto several rows" {

@@ -93,7 +93,7 @@ def main() -> None:
                 unset_env=ambient,
                 timeout=15.0,
             ) as session:
-                session.wait_for_literal("] ›")
+                session.wait_for_prompt()
                 session.send_line("ask me for details")
                 session.wait_for_literal("your answer ›")
 

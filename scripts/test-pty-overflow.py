@@ -9,8 +9,8 @@ precise:
   A. error.code = context_length_exceeded with a message that matches none of the
      English substrings (Dutch). graff must still detect the overflow via the
      STRUCTURED code (#203/G2), pin the meter to the window, and stay responsive
-     rather than wedge (#201/#202). Observable: the prompt's ctx meter reads
-     "<W>k/<W>k ctx (100% ...)".
+     rather than wedge (#201/#202). Observable: the standing line pins at
+     `ctx 100%` (ADR 0016).
   B. error.code = rate_limit_exceeded with a non-overflow message. graff must NOT
      mistake it for an overflow: the meter must not pin. Proves detection is precise.
 
@@ -44,9 +44,9 @@ from pty_harness import PtySession, terminal_text
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
 
-# "<used>k/<window>k ctx (<pct>% · compact@<X>k)" — the "·" is U+00B7.
-METER_RE = re.compile(r"(\d+)k/(\d+)k ctx \((\d+)% · compact@(\d+)k\)")
-PINNED_RE = re.compile(r"(\d+)k/(\d+)k ctx \(100% · compact@\d+k\)")
+# ADR 0016: standing chrome is `ctx N%`. Overflow pins at 100%.
+PINNED_RE = re.compile(r"ctx 100%")
+ACTIVE_WINDOW_RE = re.compile(r"active: .+ · (\d+)k ctx")
 
 # lmstudio/lmstudio is a CATALOGUED model (pricing.zig context_overlay), so its
 # window is fixed at 200k and GRAFF_CONTEXT deliberately cannot shrink it (#203).
@@ -126,18 +126,23 @@ def _run(error_obj: dict, tmp: str, *, raw: dict | None = None, wait_for: str = 
             unset_env=ambient,
             timeout=20.0,
         ) as session:
-            session.wait_for_literal("] ›")
+            session.wait_for_prompt()
             cursor = len(session.raw)
             session.send_line("hello")
             session.wait_for_literal(wait_for, start=cursor)
             session.pump_for(1.5)
-            rendered = terminal_text(bytes(session.raw[cursor:]))
 
             # Session must remain usable after the failed turn (no wedge): a local
-            # command still works and the REPL exits cleanly.
+            # command still works and the REPL exits cleanly. `/models health`
+            # is also how we read the catalog window now that the standing line
+            # is percent-only (ADR 0016).
             c2 = len(session.raw)
             session.send_line("/help")
             session.wait_for_literal("/models [health]", start=c2)
+            c3 = len(session.raw)
+            session.send_line("/models health")
+            session.wait_for(ACTIVE_WINDOW_RE, start=c3)
+            rendered = terminal_text(bytes(session.raw[cursor:]))
             session.send_key("ctrl-d")
             result = session.read_until_exit(5.0)
             if result.timed_out or result.exit_code != 0:
@@ -187,10 +192,7 @@ def main() -> None:
                 "A: meter did not pin to the window — the structured error.code "
                 f"(context_length_exceeded) was not detected as overflow (#203/G2):\n{rendered}"
             )
-        m = METER_RE.search(rendered)
-        if m.group(1) != m.group(2):
-            raise AssertionError(f"A: meter used != window despite pin: {m.group(0)!r}")
-        print(f"ok    overflow-by-code detected end to end; meter pinned to {m.group(2)}k (100%)")
+        print("ok    overflow-by-code detected end to end; standing line pinned at ctx 100%")
 
         # Scenario B: a non-overflow code + non-overflow message must NOT pin.
         rendered, _ = _run(
@@ -248,8 +250,12 @@ def main() -> None:
         pinned = PINNED_RE.search(rendered)
         if not pinned:
             raise AssertionError(f"D: silent overflow did not pin the meter to the window:\n{rendered}")
-        if pinned.group(2) != str(LMSTUDIO_WINDOW // 1000):
-            raise AssertionError(f"D: lmstudio's catalogued window moved; update LMSTUDIO_WINDOW ({pinned.group(0)!r})")
+        window = ACTIVE_WINDOW_RE.search(rendered)
+        if window is None or window.group(1) != str(LMSTUDIO_WINDOW // 1000):
+            raise AssertionError(
+                "D: lmstudio's catalogued window moved; update LMSTUDIO_WINDOW "
+                f"({None if window is None else window.group(0)!r})"
+            )
         print("ok    silent 200 (empty completion, usage at the window) classified as overflow (#414)")
 
         # Scenario E (#414): MiMo truncates an oversized input to fit the window,

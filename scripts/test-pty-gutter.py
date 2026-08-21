@@ -35,7 +35,7 @@ def main() -> None:
             unset_env=("CODEX_HOME", "NO_COLOR"),
             timeout=15.0,
         ) as session:
-            session.wait_for_literal("] ›")
+            session.wait_for_prompt()
 
             # A local slash command produces output without touching a backend.
             cursor = len(session.raw)

@@ -179,6 +179,19 @@ pub fn providerHeadersWithConv(io: Io, provider: Provider, bearer: []const u8, b
         const identity = kimi_catalog.identityHeaders(buf[count..]);
         count += identity.len;
     }
+    // Z.AI docs default the response language this way; omit and some
+    // accounts still answer, but the cache examples all send it.
+    if (std.mem.eql(u8, provider.id, "zai")) {
+        buf[count] = .{ .name = "Accept-Language", .value = "en-US,en" };
+        count += 1;
+    }
+    // Optional app attribution (vercel.com/docs/ai-gateway/ecosystem/app-attribution).
+    if (std.mem.eql(u8, provider.id, "vercel")) {
+        buf[count] = .{ .name = "http-referer", .value = "https://codegraff.com" };
+        count += 1;
+        buf[count] = .{ .name = "x-title", .value = "graff" };
+        count += 1;
+    }
     // These identify the ChatGPT/Codex backend. The official Platform Responses
     // endpoint needs only normal bearer auth and rejects backend-only identity.
     if (std.mem.eql(u8, provider.id, "codex")) {
@@ -239,6 +252,44 @@ test "official OpenAI Responses uses Platform headers, not ChatGPT backend ident
     try std.testing.expectEqual(@as(usize, 1), headers.len);
     try std.testing.expectEqualStrings("authorization", headers[0].name);
     try std.testing.expectEqualStrings("Bearer k", headers[0].value);
+}
+
+test "Z.AI chat sends Accept-Language and no grok conv headers" {
+    const io = std.testing.io;
+    var buf: [12]std.http.Header = undefined;
+    const p: Provider = .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .api_key = "k", .model = "glm-5.3", .context = 1_000_000 };
+    const headers = providerHeaders(io, p, "Bearer k", &buf);
+    var saw_lang = false;
+    for (headers) |h| {
+        try std.testing.expect(!std.mem.eql(u8, h.name, "x-grok-conv-id"));
+        if (std.mem.eql(u8, h.name, "Accept-Language")) {
+            saw_lang = true;
+            try std.testing.expectEqualStrings("en-US,en", h.value);
+        }
+    }
+    try std.testing.expect(saw_lang);
+}
+
+test "Vercel chat sends app attribution and no grok conv headers" {
+    const io = std.testing.io;
+    var buf: [12]std.http.Header = undefined;
+    const p: Provider = .{ .id = "vercel", .kind = .openai, .auth = .bearer, .url = "https://ai-gateway.vercel.sh/coding-agent/v1/chat/completions", .api_key = "k", .model = "alibaba/qwen3.8-27b", .context = 1_000_000 };
+    const headers = providerHeaders(io, p, "Bearer k", &buf);
+    var saw_ref = false;
+    var saw_title = false;
+    for (headers) |h| {
+        try std.testing.expect(!std.mem.eql(u8, h.name, "x-grok-conv-id"));
+        if (std.mem.eql(u8, h.name, "http-referer")) {
+            saw_ref = true;
+            try std.testing.expectEqualStrings("https://codegraff.com", h.value);
+        }
+        if (std.mem.eql(u8, h.name, "x-title")) {
+            saw_title = true;
+            try std.testing.expectEqualStrings("graff", h.value);
+        }
+    }
+    try std.testing.expect(saw_ref);
+    try std.testing.expect(saw_title);
 }
 
 test "project and prefix cache keys preserve conversation and sharing boundaries" {

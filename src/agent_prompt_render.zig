@@ -17,6 +17,7 @@ const Io = std.Io;
 const style = &@import("ansi.zig").style;
 const terminal = @import("term.zig");
 const engine_events = @import("engine_events.zig");
+const util = @import("util.zig");
 const PromptStatus = engine_events.PromptStatus;
 
 pub fn reasoningLabel(effort: anytype) []const u8 {
@@ -39,18 +40,6 @@ pub fn reasoningColor(effort: anytype) []const u8 {
         .max => style.red,
         .ultra => style.accent,
     };
-}
-
-fn privacyColor(tier: engine_events.PrivacyTier) []const u8 {
-    return switch (tier) {
-        .local, .aggregate => style.green,
-        .templates => style.yellow,
-        .examples => style.red,
-    };
-}
-
-pub fn writeBadge(writer: *Io.Writer, color: []const u8, label: []const u8) !void {
-    try writer.print("{s} · {s}{s}{s}{s}", .{ style.dim, style.reset, color, label, style.reset });
 }
 
 /// Include a status-line segment only if its width still fits the remaining
@@ -89,85 +78,134 @@ pub fn promptLine(w: *Io.Writer, st: PromptStatus) void {
     line(w, st, terminal.termCols()) catch return;
 }
 
+fn workingActive(sw: engine_events.StandingWork) bool {
+    return sw.goal.len > 0 or sw.todos_total > 0;
+}
+
+fn writeRule(w: *Io.Writer, cols: usize) !void {
+    const n = @min(if (cols > 2) cols else 2, 64);
+    try w.writeAll(style.dim);
+    var i: usize = 0;
+    while (i < n) : (i += 1) try w.writeAll("─");
+    try w.print("{s}\n", .{style.reset});
+}
+
+/// Variation 4's playhead under the git-status count: filled work is accent,
+/// the rest recedes, so the checklist is state rather than more narration.
+fn writeProgress(w: *Io.Writer, done: u32, total: u32, cols: usize) !void {
+    if (total == 0) return;
+    const width: usize = @min(if (cols > 4) cols - 2 else 20, 40);
+    const filled: usize = @min(width, (@as(usize, done) * width) / @as(usize, total));
+    try w.writeAll(style.accent);
+    var i: usize = 0;
+    while (i < width) : (i += 1) {
+        if (i < filled) {
+            try w.writeAll("━");
+        } else if (i == filled and done < total) {
+            try w.writeAll("╺");
+            try w.writeAll(style.dim);
+        } else {
+            if (i == filled) try w.writeAll(style.dim);
+            try w.writeAll("━");
+        }
+    }
+    try w.print("{s}\n", .{style.reset});
+}
+
+/// Git-style WORKING block: the goal and checklist live here, not in the
+/// agent narration and not mixed into the `›` prompt (variations 4+5).
+fn workingBlock(w: *Io.Writer, sw: engine_events.StandingWork, cols: usize) !void {
+    if (!workingActive(sw)) return;
+    try writeRule(w, cols);
+    try w.print("{s}WORKING", .{style.dim});
+    if (sw.goal_status.len > 0) try w.print(" ({s})", .{sw.goal_status});
+    try w.print("{s}\n", .{style.reset});
+    if (sw.goal.len > 0) {
+        const clip = util.utf8Prefix(sw.goal, if (cols > 8) cols - 2 else 40);
+        try w.print("{s}{s}{s}\n", .{ style.accent, clip, style.reset });
+    }
+    if (sw.todos_total > 0) {
+        try w.print("{s}{d} of {d}{s}\n", .{ style.dim, sw.todos_done, sw.todos_total, style.reset });
+        try writeProgress(w, sw.todos_done, sw.todos_total, cols);
+        for (sw.todos) |t| {
+            if (t.done) {
+                try w.print("{s}✓{s} {s}\n", .{ style.green, style.reset, t.content });
+            } else {
+                try w.print("{s}○{s} {s}\n", .{ style.dim, style.reset, t.content });
+            }
+        }
+    }
+    try writeRule(w, cols);
+}
+
 fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
-    var cbuf: [40]u8 = undefined;
+    try w.writeByte('\n');
+    try workingBlock(w, st.standing, cols);
+
+    var cbuf: [24]u8 = undefined;
     const cost: []const u8 = switch (st.cost) {
         .hidden => "",
-        .subscription => " · sub",
-        .unpriced => " · $?",
-        .usd => |usd| std.fmt.bufPrint(&cbuf, " · ${d:.4}", .{usd}) catch "",
+        .subscription => "sub",
+        .unpriced => "$?",
+        .usd => |usd| std.fmt.bufPrint(&cbuf, "${d:.2}", .{usd}) catch "",
     };
-    // Prompt-cache hit from the last response — proof caching is working.
-    var kbuf: [32]u8 = undefined;
-    var kval: [24]u8 = undefined;
-    const cached: []const u8 = if (st.cache_read > 0)
-        (std.fmt.bufPrint(&kbuf, " · ⚡{s} cached", .{compactTokenCount(&kval, st.cache_read)}) catch "")
+    var ctxbuf: [24]u8 = undefined;
+    const ctx: []const u8 = if (st.context) |meter|
+        (std.fmt.bufPrint(&ctxbuf, "ctx {d}%", .{contextPercent(meter.tokens, meter.window)}) catch "")
     else
         "";
-    var ctxbuf: [80]u8 = undefined;
-    var used_buf: [24]u8 = undefined;
-    const ctx: []const u8 = if (st.context) |meter|
-        (std.fmt.bufPrint(&ctxbuf, " · {s}/{d}k ctx ({d}% · compact@{d}k)", .{
-            compactTokenCount(&used_buf, meter.tokens),
-            meter.window / 1000,
-            contextPercent(meter.tokens, meter.window),
-            meter.compact_at / 1000,
-        }) catch "")
+    var cachebuf: [24]u8 = undefined;
+    // Last-turn hit rate: cached tokens over the prompt that produced them.
+    // Rides with ctx — a lone cache badge has no denominator. 0% after a
+    // measured turn is still a reading (the fun is watching it jump).
+    const cache: []const u8 = if (st.context) |meter|
+        (if (meter.tokens > 0)
+            (std.fmt.bufPrint(&cachebuf, "cache {d}%", .{contextPercent(st.cache_read, meter.tokens)}) catch "")
+        else
+            "")
+    else
+        "";
+    var resumebuf: [24]u8 = undefined;
+    const resume_hint: []const u8 = if (st.saved_sessions > 0)
+        (std.fmt.bufPrint(&resumebuf, "/resume {d}", .{st.saved_sessions}) catch "")
     else
         "";
 
-    // Budget the status line against terminal width so a narrow pane never
-    // soft-wraps mid-badge (splitting e.g. `codex`) and strands the cursor
-    // inside a label (#209). The model plus the badges that disambiguate the
-    // cursor (effort/provider/mode/privacy) are offered first; cwd/context/
-    // cache/cost are the first to drop when they no longer fit. readline.zig
-    // still gives the input its own row if what remains is cramped. Byte
-    // length (not display-column width) is used as the budget metric: for
-    // UTF-8 it is always >= true display width, so the estimate only ever
-    // errs conservative and can't itself cause an overflow/wrap.
-    //
-    // Reserve the fixed frame ('[' + '] › ' = 5 cols) plus 1 column of slack
-    // so a width miscount can't tip the line into a wrap.
-    const avail = cols -| 6;
+    // Dim meter above a bare `›`. Operational badges (Fast/Plan/Strict)
+    // stay; cwd and the old bracket frame do not — they competed with input.
+    // #209: drop from the right so a narrow pane never splits a label.
+    const avail = cols -| 1;
     var used: usize = st.model.len;
     const show_fast = st.fast and fitsSegment(&used, avail, 3 + "Fast".len);
     const show_effort = st.effort != null and
         fitsSegment(&used, avail, 3 + reasoningLabel(st.effort.?).len);
-    const show_provider = fitsSegment(&used, avail, 3 + st.provider_id.len);
     const show_fallback = st.fallback and
         fitsSegment(&used, avail, 3 + "Fallback".len);
     const show_plan = st.plan and fitsSegment(&used, avail, 3 + "Plan".len);
     const show_strict = st.strict and fitsSegment(&used, avail, 3 + "Strict".len);
     const show_ultra = st.ultracode and fitsSegment(&used, avail, 3 + "Ultracode".len);
-    const show_privacy = fitsSegment(&used, avail, 3 + st.privacy_label.len);
-    // The context meter outranks cwd for the budget (it is the urgent,
-    // changing signal near the compaction threshold) but still renders after
-    // cwd below, preserving the familiar order when both fit.
-    const show_ctx = ctx.len > 0 and fitsSegment(&used, avail, ctx.len);
-    const show_cwd = fitsSegment(&used, avail, 7 + st.cwd.len);
-    // cached only ever accompanies the context meter (both come from the
-    // same response's usage payload), matching the pre-#209 layout.
-    const show_cached = show_ctx and cached.len > 0 and fitsSegment(&used, avail, cached.len);
-    const show_cost = cost.len > 0 and fitsSegment(&used, avail, cost.len);
+    const show_ctx = ctx.len > 0 and fitsSegment(&used, avail, 3 + ctx.len);
+    const show_cache = show_ctx and cache.len > 0 and fitsSegment(&used, avail, 3 + cache.len);
+    const show_cost = cost.len > 0 and fitsSegment(&used, avail, 3 + cost.len);
+    const show_resume = resume_hint.len > 0 and fitsSegment(&used, avail, 3 + resume_hint.len);
+    const show_image = st.standing.image and fitsSegment(&used, avail, 3 + "image".len);
+    const show_session = st.standing.session.len > 0 and
+        fitsSegment(&used, avail, 3 + st.standing.session.len);
 
-    try w.print("\n{s}[{s}{s}{s}{s}", .{ style.dim, style.reset, style.accent, st.model, style.reset });
-    // Fast is the most operationally important model setting, so keep it
-    // immediately beside the model instead of letting permission modes push
-    // it deeper into the status line.
-    if (show_fast) try writeBadge(w, style.green, "Fast");
-    if (show_effort) try writeBadge(w, reasoningColor(st.effort.?), reasoningLabel(st.effort.?));
-    if (show_provider) try writeBadge(w, style.accent, st.provider_id);
-    if (show_fallback) try writeBadge(w, style.yellow, "Fallback");
-    if (show_plan) try writeBadge(w, style.yellow, "Plan");
-    if (show_strict) try writeBadge(w, style.red, "Strict");
-    if (show_ultra) try writeBadge(w, style.accent, "Ultracode");
-    if (show_privacy) try writeBadge(w, privacyColor(st.privacy), st.privacy_label);
-    try w.print("{s}", .{style.dim});
-    if (show_cwd) try w.print(" · cwd {s}{s}{s}", .{ style.reset, st.cwd, style.dim });
-    if (show_ctx) try w.print("{s}", .{ctx});
-    if (show_cached) try w.print("{s}", .{cached});
-    if (show_cost) try w.print("{s}", .{cost});
-    try w.print("{s}]{s} {s}{s}›{s} ", .{ style.reset, style.reset, style.bold, style.accent, style.reset });
+    try w.print("{s}{s}", .{ style.dim, st.model });
+    if (show_fast) try w.print(" · Fast", .{});
+    if (show_effort) try w.print(" · {s}", .{reasoningLabel(st.effort.?)});
+    if (show_fallback) try w.print(" · Fallback", .{});
+    if (show_plan) try w.print(" · Plan", .{});
+    if (show_strict) try w.print(" · Strict", .{});
+    if (show_ultra) try w.print(" · Ultracode", .{});
+    if (show_ctx) try w.print(" · {s}", .{ctx});
+    if (show_cache) try w.print(" · {s}", .{cache});
+    if (show_cost) try w.print(" · {s}", .{cost});
+    if (show_resume) try w.print(" · {s}", .{resume_hint});
+    if (show_image) try w.print(" · image", .{});
+    if (show_session) try w.print(" · {s}", .{st.standing.session});
+    try w.print("{s}\n{s}{s}›{s} ", .{ style.reset, style.bold, style.accent, style.reset });
     try w.flush();
 }
 
@@ -269,15 +307,14 @@ test "batch 3: every status-line segment renders exactly as it did inline" {
         .ultracode = true,
     };
     try std.testing.expectEqualStrings(
-        "\n[gpt-5.6 · Fast · High · codex · Fallback · Plan · Strict · Ultracode · Privacy:Aggregate" ++
-            " · cwd ~/src/graff · 12k/200k ctx (6% · compact@160k) · ⚡2k cached · $0.5000] › ",
+        "\ngpt-5.6 · Fast · High · Fallback · Plan · Strict · Ultracode · ctx 6% · cache 16% · $0.50\n› ",
         renderPlain(&aw, full),
     );
 
-    // The bare line: no usage yet, no cache, meter off, no optional badge.
+    // The bare line: no usage yet, meter off, no optional badge.
     aw.clearRetainingCapacity();
     try std.testing.expectEqualStrings(
-        "\n[lmstudio · lmstudio · Privacy:Local · cwd /w] › ",
+        "\nlmstudio\n› ",
         renderPlain(&aw, .{
             .model = "lmstudio",
             .provider_id = "lmstudio",
@@ -291,7 +328,7 @@ test "batch 3: every status-line segment renders exactly as it did inline" {
     // unpriced model admits it rather than printing a fabricated 0.0000.
     aw.clearRetainingCapacity();
     try std.testing.expectEqualStrings(
-        "\n[m · p · Privacy:Local · cwd /w · sub] › ",
+        "\nm · sub\n› ",
         renderPlain(&aw, .{
             .model = "m",
             .provider_id = "p",
@@ -303,7 +340,7 @@ test "batch 3: every status-line segment renders exactly as it did inline" {
     );
     aw.clearRetainingCapacity();
     try std.testing.expectEqualStrings(
-        "\n[m · p · Privacy:Local · cwd /w · $?] › ",
+        "\nm · $?\n› ",
         renderPlain(&aw, .{
             .model = "m",
             .provider_id = "p",
@@ -336,16 +373,9 @@ test "batch 3: a shrinking pane sheds segments in the #209 priority order" {
         .cost = .unpriced,
     };
     const cases = [_]struct { cols: usize, want: []const u8 }{
-        // Roomy: everything, in the familiar order (cwd before the meter).
-        .{ .cols = 130, .want = "\n[gpt-5.6 · High · codex · Privacy:Local · cwd ~/src/graff · 12k/200k ctx (6% · compact@160k) · ⚡2k cached · $?] › " },
-        // Tighter: cwd is the first to go, but the meter it outranks stays.
-        .{ .cols = 90, .want = "\n[gpt-5.6 · High · codex · Privacy:Local · 12k/200k ctx (6% · compact@160k) · $?] › " },
-        // Cramped: the meter goes too, and the cache badge goes with it
-        // rather than floating free of the usage it came from.
-        .{ .cols = 50, .want = "\n[gpt-5.6 · High · codex · Privacy:Local · $?] › " },
-        // Pathological: only the badges that disambiguate the cursor survive,
-        // and never a half-drawn one.
-        .{ .cols = 28, .want = "\n[gpt-5.6 · High · codex] › " },
+        .{ .cols = 80, .want = "\ngpt-5.6 · High · ctx 6% · cache 16% · $?\n› " },
+        .{ .cols = 28, .want = "\ngpt-5.6 · High · ctx 6%\n› " },
+        .{ .cols = 18, .want = "\ngpt-5.6 · High\n› " },
     };
     for (cases) |c| {
         aw.clearRetainingCapacity();
@@ -372,4 +402,75 @@ test "batch 3: the cache badge rides with the context meter, never alone" {
         .cache_read = 4096, // reported, but no context meter to ride with
     });
     try std.testing.expect(std.mem.indexOf(u8, out, "cached") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "cache ") == null);
+}
+
+test "a measured turn prints last-turn cache hit next to ctx" {
+    const saved = style.*;
+    style.* = .{};
+    defer style.* = saved;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    // 2048 of 12345 input tokens ≈ 16%; the window share stays ctx 6%.
+    const out = renderPlain(&aw, .{
+        .model = "m",
+        .provider_id = "p",
+        .cwd = "/w",
+        .privacy_label = "Privacy:Local",
+        .privacy = .local,
+        .context = .{ .tokens = 12_345, .window = 200_000, .compact_at = 160_000 },
+        .cache_read = 2048,
+    });
+    try std.testing.expect(std.mem.indexOf(u8, out, "ctx 6%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "cache 16%") != null);
+}
+
+test "WORKING block sits above a bare prompt and is skipped when empty" {
+    const saved = style.*;
+    style.* = .{};
+    defer style.* = saved;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const bare: PromptStatus = .{
+        .model = "m",
+        .provider_id = "p",
+        .cwd = "/w",
+        .privacy_label = "Privacy:Local",
+        .privacy = .local,
+    };
+    try std.testing.expectEqualStrings(
+        "\nm\n› ",
+        renderPlain(&aw, bare),
+    );
+
+    aw.clearRetainingCapacity();
+    const items = [_]engine_events.StandingTodo{
+        .{ .content = "inspect current prompt", .done = true },
+        .{ .content = "update implementation", .done = false },
+    };
+    const full: PromptStatus = .{
+        .model = "m",
+        .provider_id = "p",
+        .cwd = "/w",
+        .privacy_label = "Privacy:Local",
+        .privacy = .local,
+        .standing = .{
+            .session = "login-fix",
+            .goal = "ship the repl standing line",
+            .goal_status = "paused",
+            .todos_done = 1,
+            .todos_total = 2,
+            .todos = &items,
+            .image = true,
+        },
+    };
+    try line(&aw.writer, full, 32);
+    const rule = "────────────────────────────────";
+    const bar = "━━━━━━━━━━━━━━━╺━━━━━━━━━━━━━━"; // 15 filled + playhead + 14 rest at 30 cells
+    try std.testing.expectEqualStrings(
+        "\n" ++ rule ++ "\nWORKING (paused)\nship the repl standing line\n1 of 2\n" ++ bar ++
+            "\n✓ inspect current prompt\n○ update implementation\n" ++
+            rule ++ "\nm · image · login-fix\n› ",
+        aw.writer.buffered(),
+    );
 }

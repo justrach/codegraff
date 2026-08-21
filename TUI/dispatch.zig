@@ -20,7 +20,7 @@ pub const busy_note = "an engine call is still running — press Esc to cancel i
 pub fn applyLine(self: *Model, raw: []const u8) Effect {
     const line = std.mem.trim(u8, raw, " \t\r\n");
     if (line.len == 0 and self.images.items.len == 0) return .stay;
-    if (line.len > 0) rememberPrompt(self, line);
+    if (line.len > 0 or self.images.items.len > 0) rememberPrompt(self, line);
     if (line.len > 0 and line[0] == '/') return runCommand(self, line);
     if (line.len > 1 and line[0] == '!') return bang(self, std.mem.trim(u8, line[1..], " \t"));
     if (self.bg != null) {
@@ -44,10 +44,7 @@ pub fn applyLine(self: *Model, raw: []const u8) Effect {
 }
 
 fn rememberPrompt(self: *Model, line: []const u8) void {
-    if (self.alloc.dupe(u8, line)) |dup| {
-        self.prompt_hist.append(dup) catch self.alloc.free(dup);
-    } else |_| {}
-    self.hist_idx = null;
+    @import("prompt_history.zig").remember(self, line);
 }
 
 pub fn runCommand(self: *Model, line: []const u8) Effect {
@@ -308,21 +305,11 @@ pub fn compact(self: *Model) void {
 }
 
 pub fn recallPrev(self: *Model) void {
-    if (self.prompt_hist.items.len == 0) return;
-    const next_i: usize = if (self.hist_idx) |i| (if (i == 0) 0 else i - 1) else self.prompt_hist.items.len - 1;
-    self.hist_idx = next_i;
-    self.input.setValue(self.prompt_hist.items[next_i]) catch {};
+    @import("prompt_history.zig").recallPrev(self);
 }
 
 pub fn recallNext(self: *Model) void {
-    const i = self.hist_idx orelse return;
-    if (i + 1 >= self.prompt_hist.items.len) {
-        self.hist_idx = null;
-        self.input.setValue("") catch {};
-        return;
-    }
-    self.hist_idx = i + 1;
-    self.input.setValue(self.prompt_hist.items[i + 1]) catch {};
+    @import("prompt_history.zig").recallNext(self);
 }
 
 pub fn pasteClipboard(self: *Model) void {

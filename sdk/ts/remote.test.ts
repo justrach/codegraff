@@ -176,7 +176,8 @@ describe("RemoteHarness transport", () => {
     const h = new RemoteHarness({ url: "http://bridge.test" });
     live.push(h);
     await Bun.sleep(30);
-    process.off("unhandledRejection", listener);
+    // Current @types/node overloads collapse off/removeListener to memoryPressure.
+    (process as NodeJS.EventEmitter).removeListener("unhandledRejection", listener);
     expect(unhandled).toBe(0);
     await expect(h.sessionId).rejects.toThrow("create failed");
   });

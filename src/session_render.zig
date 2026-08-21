@@ -29,9 +29,6 @@ const EngineEvent = engine_events.EngineEvent;
 
 /// The `-w` line's suffix when the session will checkpoint each turn.
 const autocommit_suffix = " · auto-committing each turn (`graff worktree merge` to land it)";
-/// What the startup banner says a session can do. Frontend knowledge: these
-/// are this TUI's keys, and a different client's would differ.
-const banner_hints = " · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → ";
 
 /// Startup found a color-capable terminal. A capability handshake rather than
 /// an event — nothing has been drawn yet — but the palette is this half's own
@@ -47,8 +44,8 @@ pub fn enableColor() void {
 pub fn emit(w: ?*Io.Writer, ev: EngineEvent) void {
     switch (ev) {
         .session_notice => |n| notice(w, n),
-        .session_banner => |b| line(w, "{s}codegraff{s} · folder: {s}{s}{s}" ++ banner_hints ++ "{s}\n", .{
-            style.bold, style.reset, style.accent, b.cwd, style.reset, b.trace_path,
+        .session_banner => |b| line(w, "{s}codegraff{s}  {s}{s}{s}\n", .{
+            style.bold, style.reset, style.accent, b.cwd, style.reset,
         }),
         .worktree_entered => |t| line(w, "{s}worktree:{s} {s}{s}{s} (branch {s}) — edits isolated from the main checkout{s}\n", .{
             style.dim,                                   style.reset, style.accent, t.path, style.reset, t.branch,
@@ -166,7 +163,7 @@ test "slice 2: the startup lines render exactly as the inline prints did" {
     defer aw.deinit();
 
     try std.testing.expectEqualStrings(
-        "codegraff · folder: /repo · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → .graff/traces/ab.jsonl\n",
+        "codegraff  /repo\n",
         renderTest(&aw, .{ .session_banner = .{ .cwd = "/repo", .trace_path = ".graff/traces/ab.jsonl" } }),
     );
     try std.testing.expectEqualStrings(

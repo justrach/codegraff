@@ -76,6 +76,10 @@ pub const Model = struct {
     input: input_mod.Input,
     history: std.array_list.Managed(Entry),
     prompt_hist: std.array_list.Managed([]const u8),
+    /// Image paths index-aligned with `prompt_hist` (#577). Empty slice = text-only.
+    prompt_hist_images: std.array_list.Managed([]const []const u8),
+    draft_text: ?[]u8 = null,
+    draft_images: ?[]const []const u8 = null,
     steer_queue: std.array_list.Managed([]const u8),
     images: std.array_list.Managed([]const u8),
     pending: ?*engine.Job = null,
@@ -205,6 +209,7 @@ pub const Model = struct {
             .input = input_mod.Input.init(alloc),
             .history = std.array_list.Managed(Entry).init(alloc),
             .prompt_hist = std.array_list.Managed([]const u8).init(alloc),
+            .prompt_hist_images = std.array_list.Managed([]const []const u8).init(alloc),
             .steer_queue = std.array_list.Managed([]const u8).init(alloc),
             .images = std.array_list.Managed([]const u8).init(alloc),
             .chat = engine.g_turn_fn != null,
@@ -229,6 +234,7 @@ pub const Model = struct {
         self.history.deinit();
         for (self.prompt_hist.items) |s| self.alloc.free(s);
         self.prompt_hist.deinit();
+        @import("prompt_history.zig").deinit(self);
         for (self.steer_queue.items) |s| self.alloc.free(s);
         self.steer_queue.deinit();
         for (self.images.items) |s| self.alloc.free(s);

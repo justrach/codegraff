@@ -138,6 +138,13 @@ class PtyResult:
         return terminal_text(self.raw)
 
 
+# Line REPL ready marker after ADR 0016: a bare `›` on its own line,
+# not `[model · …] ›`. A picker highlight is `› name`; the overlay
+# title is `Model ›` — neither is a line of only the glyph.
+PROMPT = "›"
+PROMPT_RE = re.compile(r"(?m)^›\s*$")
+
+
 class PtySession:
     """A real terminal session with incremental send/wait/capture operations."""
 
@@ -284,6 +291,9 @@ class PtySession:
         self, expected: str, *, start: int = 0, timeout: float | None = None
     ) -> int:
         return self.wait_for(re.compile(re.escape(expected)), start=start, timeout=timeout)
+
+    def wait_for_prompt(self, *, start: int = 0, timeout: float | None = None) -> int:
+        return self.wait_for(PROMPT_RE, start=start, timeout=timeout)
 
     def read_until_exit(self, timeout: float | None = None) -> PtyResult:
         deadline = time.monotonic() + (self.timeout if timeout is None else timeout)

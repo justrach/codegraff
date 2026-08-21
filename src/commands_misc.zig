@@ -34,7 +34,6 @@ const jobs = @import("jobs.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: which listed MCP tools are still schema-deferred
 const subagent = @import("subagent.zig"); // #276 P0-3: g_agent_jobs, for /jobs
 
-const billing = @import("billing.zig");
 const models_table = @import("models_table.zig");
 
 test { // main.zig is the test root, so this reference is what runs its tests
@@ -383,15 +382,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         // (plan), codegraff (credits) and openai (api) is three different
         // bills. Same wording as the TUI picker; the surfaces must agree.
         try out.writeAll(models_table.header);
-        for (pricing.models()) |m| try models_table.writeRow(out, .{
-            .name = m.name,
-            .context = pricing.contextFor(m.provider, m.name),
-            .provider = m.provider,
-            .cost = billing.costFor(m.provider, keys.source(m.provider)).badge(),
-            .has_key = keys.get(m.provider) != null,
-            .vision = visionModel(m.name),
-            .current = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id),
-        });
+        try models_table.writeRows(out, arena, pricing.models(), keys.*, root.provider.model, root.provider.id, visionModel);
         try out.print("(codex catalog: {s})\n", .{models_cache.codex_catalog_source});
         try out.print("(kimi catalog: {s})\n", .{kimi_catalog.catalog_source});
         if (pricing_db.source.len != 0) try out.print("(price db: {s})\n", .{pricing_db.source});

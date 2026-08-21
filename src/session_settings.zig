@@ -173,6 +173,19 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     if (environ_map.get("GRAFF_XAI_URL")) |v| {
         if (v.len > 0) provider_mod.g_xai_url_override = v;
     }
+    // Pay-go stays on /api/paas/v4/. Coding Plan keys need /api/coding/paas/v4
+    // (docs.z.ai). GRAFF_ZAI_URL wins; ZAI_CODING=1 picks the coding host.
+    if (environ_map.get("GRAFF_ZAI_URL")) |v| {
+        if (v.len > 0) provider_mod.g_zai_url_override = v;
+    } else if (environ_map.get("ZAI_CODING")) |v| {
+        const on = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
+        if (on) provider_mod.g_zai_url_override = provider_mod.zai_coding_url;
+    }
+    // Vercel AI Gateway defaults to the coding-agent surface. GRAFF_VERCEL_URL
+    // rewrites the chat URL (docs also accept the generic /v1 host).
+    if (environ_map.get("GRAFF_VERCEL_URL")) |v| {
+        if (v.len > 0) provider_mod.g_vercel_url_override = v;
+    }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
     // #502 follow-up: opt-in xAI on-socket chaining (see codex_chain.g_xai_ws_chain).
     if (environ_map.get("GRAFF_XAI_WS_CHAIN")) |v|

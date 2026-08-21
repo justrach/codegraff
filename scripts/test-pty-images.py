@@ -117,7 +117,7 @@ def main() -> None:
                 unset_env=ambient,
                 timeout=20.0,
             ) as session:
-                session.wait_for_literal("] ›")
+                session.wait_for_prompt()
 
                 # Zero-image path: nothing in the conversation yet.
                 c0 = len(session.raw)

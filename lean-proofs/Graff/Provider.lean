@@ -1,7 +1,7 @@
 /-
   Provider table kernel.
 
-  Nineteen baked rows. Each row is data: an id plus the axes `Kind`,
+  Twenty baked rows. Each row is data: an id plus the axes `Kind`,
   `Auth`, login, catalog, and two bools. The program does not branch per
   brand. Adding a vendor is one constructor here and one line in
   `provider.zig`; the Zig fixture test is the ratchet.
@@ -57,7 +57,8 @@ def specs : List Row :=
   , { id := "kimi",       kind := .openai,    auth := .bearer,  login := .kimiDevice, catalog := .kimi, subLogin := true }
   , { id := "moonshot",   kind := .openai,    auth := .bearer }
   , { id := "xai",        kind := .openai,    auth := .bearer,  login := .xaiDevice, catalog := .openai, subLogin := true }
-  , { id := "zai",        kind := .openai,    auth := .bearer }
+  , { id := "zai",        kind := .openai,    auth := .bearer,  catalog := .openai, takesEffort := true }
+  , { id := "vercel",     kind := .openai,    auth := .bearer,  catalog := .openai, takesEffort := true }
   , { id := "fugu",       kind := .openai,    auth := .bearer }
   , { id := "fireworks",  kind := .openai,    auth := .bearer,  catalog := .openai }
   , { id := "mlx",        kind := .openai,    auth := .bearer }
@@ -81,7 +82,7 @@ def xApiKeyCount : Nat := countWhere (fun r => r.auth == .xApiKey) specs
 
 def providerRows : Nat := specs.length
 
-theorem provider_cube : providerRows = 19 := by native_decide
+theorem provider_cube : providerRows = 20 := by native_decide
 theorem responses_vendors : responsesCount = 2 := by native_decide
 theorem one_x_api_key : xApiKeyCount = 1 := by native_decide
 

@@ -227,7 +227,7 @@ pub fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
     // codedb result. Let bash through for un-indexed files (issue #54).
     if (!hooks.codedbFileIndexed(ctx.io, ctx.gpa, src_path)) return null;
 
-    const msg = std.fmt.allocPrint(ctx.gpa, "blocked: this repo is codedb-indexed — don't shell out to `{s}` to read or search source. Use the codedb tool (indexed + structural): search <query> · symbol <name> [--body] · callers <name> · deps <path> · outline <path> · read <path> · context <task>. If you genuinely need raw bash here, set GRAFF_NO_CODEDB_GUARD=1.", .{tool}) catch return .{ .text = &.{}, .is_error = true };
+    const msg = std.fmt.allocPrint(ctx.gpa, "blocked: this repo is codedb-indexed — don't shell out to `{s}` to read or search source. Use the codedb tool: context <task> · around <name> · callpath A B · list_dir <path> · status. If you genuinely need raw bash here, set GRAFF_NO_CODEDB_GUARD=1.", .{tool}) catch return .{ .text = &.{}, .is_error = true };
     return .{ .text = msg, .is_error = true };
 }
 
@@ -286,7 +286,7 @@ pub fn companionRoute(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
 fn companionNativeFallback(bare: []const u8) []const u8 {
     if (std.mem.eql(u8, bare, "read")) return "read_file tool";
     if (std.mem.eql(u8, bare, "search") or std.mem.eql(u8, bare, "faster_search") or std.mem.eql(u8, bare, "meta_search"))
-        return "codedb tool (search/symbol/callers/outline), or bash grep";
+        return "codedb tool (context/around/callpath), or bash grep";
     if (std.mem.eql(u8, bare, "edit") or std.mem.eql(u8, bare, "patch") or std.mem.eql(u8, bare, "replace"))
         return "edit_file tool";
     if (std.mem.eql(u8, bare, "create")) return "write_file tool";

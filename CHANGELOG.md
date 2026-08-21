@@ -10,6 +10,28 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.269 (2026-08-20)
+
+- codedb pairing (ADR 0019): advertise five one-shots — `context <task>`,
+  `around <name>` (def+callers), `callpath A B`, `list_dir <path>`,
+  `status`. Hop verbs stay callable, not on the catalog menu.
+- Vercel AI Gateway is a built-in OpenAI-chat seat (`AI_GATEWAY_API_KEY`,
+  `graff key set vercel …`, default `alibaba/qwen3.8-27b`). Chat goes to
+  `ai-gateway.vercel.sh/coding-agent/v1` (docs: marks harness traffic;
+  `GRAFF_VERCEL_URL` rewrites to generic `/v1`). Live `/models` overlays
+  language rows only; image/video/embedding are not chat seats. `/effort`
+  becomes `reasoning.effort` (`max`/`ultra` → `xhigh`). Attribution
+  headers `http-referer` + `x-title`. Provider kernel 20.
+- Z.AI's existing seat now defaults to GLM-5.3 (1M context) with live
+  `/api/paas/v4/models`, `thinking.type=enabled`, and `/effort` remapped
+  onto `low`/`high`/`max` (graff `medium` → `high`). Pay-go stays on
+  `api.z.ai/api/paas/v4`; GLM Coding Plan keys use `ZAI_CODING=1` or
+  `GRAFF_ZAI_URL`. Prompt-cache max: implicit prefix reuse
+  (`cached_tokens`) plus `thinking.clear_thinking=false` so replayed
+  `reasoning_content` stays in that prefix. This is the GLM chat API,
+  not image/video.
+- Test ratchet: unit suite 1531.
+
 ## v0.0.268 (2026-08-20)
 
 - Cerebras Inference is a built-in OpenAI-chat provider (`CEREBRAS_API_KEY`,

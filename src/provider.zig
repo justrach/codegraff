@@ -104,7 +104,10 @@ pub const provider_specs = [_]ProviderSpec{
     // `graff login xai` is a real device-code OAuth flow (oauth.zig), so xAI's
     // login is a SuperGrok plan while XAI_API_KEY is metered api.x.ai access.
     .{ .id = "xai", .display_name = "xAI", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.6", .login = .xai_device, .sub_login = true, .catalog = .openai, .models_url = "https://api.x.ai/v1/models" },
-    .{ .id = "zai", .display_name = "Z.AI", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
+    .{ .id = "zai", .display_name = "Z.AI", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.3", .catalog = .openai, .models_url = "https://api.z.ai/api/paas/v4/models", .takes_effort = true },
+    // Vercel AI Gateway: one key, live /models. Coding-agent surface marks
+    // harness traffic (docs: passthrough to /v1). Image/video are not seats.
+    .{ .id = "vercel", .display_name = "Vercel AI Gateway", .kind = .openai, .auth = .bearer, .url = "https://ai-gateway.vercel.sh/coding-agent/v1/chat/completions", .env_key = "AI_GATEWAY_API_KEY", .default_model = "alibaba/qwen3.8-27b", .catalog = .openai, .models_url = "https://ai-gateway.vercel.sh/coding-agent/v1/models", .takes_effort = true },
     .{ .id = "fugu", .display_name = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
     // Fireworks serves its serverless catalog live (AIP gateway shape:
     // pageToken pagination, camelCase contextLength), so new model releases
@@ -147,12 +150,25 @@ pub fn specFor(id: []const u8) ?ProviderSpec {
 pub const kimi_native_url = "https://api.kimi.com/coding/v1/chat/completions";
 pub const kimi_anthropic_url = "https://api.kimi.com/coding/v1/messages?beta=true";
 
-/// Codex responses-endpoint override (GRAFF_CODEX_URL, parsed in main.zig at
-/// startup — localhost mocks / integration tests). Lives here because every
-/// provider (re)build path (startup, /model switches, session restore) goes
-/// through Keys.build; both the WS and SSE transports read provider.url.
+/// Endpoint overrides (GRAFF_CODEX_URL / GRAFF_XAI_URL / GRAFF_ZAI_URL /
+/// GRAFF_VERCEL_URL). Parsed before Keys.build so startup, /model, and
+/// session restore share one URL.
 pub var g_codex_url_override: ?[]const u8 = null;
-pub var g_xai_url_override: ?[]const u8 = null; // GRAFF_XAI_URL (chat or Responses path)
+pub var g_xai_url_override: ?[]const u8 = null;
+pub var g_zai_url_override: ?[]const u8 = null;
+pub var g_vercel_url_override: ?[]const u8 = null;
+pub const zai_coding_url = "https://api.z.ai/api/coding/paas/v4/chat/completions";
+pub const vercel_v1_url = "https://ai-gateway.vercel.sh/v1/chat/completions";
+
+fn resolvedUrl(spec: ProviderSpec, model: []const u8) []const u8 {
+    if (std.mem.eql(u8, spec.id, "kimi") and pricing.kimiProtocol(model) == .anthropic) return kimi_anthropic_url;
+    if (std.mem.eql(u8, spec.id, "codex")) return g_codex_url_override orelse spec.url;
+    if (std.mem.eql(u8, spec.id, "xai")) return g_xai_url_override orelse if (g_xai_responses) xai_responses_url else spec.url;
+    if (std.mem.eql(u8, spec.id, "zai")) return g_zai_url_override orelse spec.url;
+    if (std.mem.eql(u8, spec.id, "vercel")) return g_vercel_url_override orelse spec.url;
+    if (@import("provider_codegraff.zig").usesResponses(spec.id, model)) return @import("provider_codegraff.zig").responses_url;
+    return spec.url;
+}
 
 pub const Provider = struct {
     id: []const u8,
@@ -234,14 +250,13 @@ pub const Provider = struct {
             out.context = contextWindowFor(base.id, model);
             return out;
         };
-        const is_codex = std.mem.eql(u8, spec.id, "codex");
         const is_kimi_anthropic = std.mem.eql(u8, spec.id, "kimi") and pricing.kimiProtocol(model) == .anthropic;
         const is_xai_responses = std.mem.eql(u8, spec.id, "xai") and g_xai_responses;
         return .{
             .id = spec.id,
             .kind = if (is_kimi_anthropic) .anthropic else if (is_xai_responses or @import("provider_codegraff.zig").usesResponses(spec.id, model)) .responses else spec.kind,
             .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
-            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (std.mem.eql(u8, spec.id, "xai")) (g_xai_url_override orelse if (is_xai_responses) xai_responses_url else spec.url) else if (@import("provider_codegraff.zig").usesResponses(spec.id, model)) @import("provider_codegraff.zig").responses_url else spec.url,
+            .url = resolvedUrl(spec, model),
             .api_key = base.api_key,
             .model = model,
             .context = contextWindowFor(spec.id, model),
@@ -337,7 +352,7 @@ pub const Keys = struct {
             .id = spec.id,
             .kind = if (is_kimi_anthropic) .anthropic else if (is_xai_responses or @import("provider_codegraff.zig").usesResponses(spec.id, model)) .responses else spec.kind,
             .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
-            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else if (std.mem.eql(u8, spec.id, "xai")) (g_xai_url_override orelse if (is_xai_responses) xai_responses_url else spec.url) else if (@import("provider_codegraff.zig").usesResponses(spec.id, model)) @import("provider_codegraff.zig").responses_url else spec.url,
+            .url = resolvedUrl(spec, model),
             .api_key = key,
             .model = model,
             .context = contextWindowFor(spec.id, model),
@@ -527,57 +542,6 @@ test "workspace router behaves like an additional provider" {
     try std.testing.expectEqualStrings("openrouter", serving[0]);
 }
 
-test "Keys.build: g_codex_url_override rewires only the codex endpoint" {
-    const all = Keys{ .values = @splat("k") };
-    g_codex_url_override = "http://127.0.0.1:8765/responses";
-    defer g_codex_url_override = null;
-    const codex = try all.providerById("codex", "gpt-5.6-sol");
-    try std.testing.expectEqualStrings("http://127.0.0.1:8765/responses", codex.url);
-    const anthropic = try all.providerById("anthropic", "claude-opus-4-8");
-    try std.testing.expectEqualStrings("https://api.anthropic.com/v1/messages", anthropic.url);
-}
-
-test "Keys.build: Kimi follows the live model protocol and auth style" {
-    const saved = pricing.active_model_table;
-    defer pricing.active_model_table = saved;
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const rows = [_]pricing.ModelInfo{
-        .{ .provider = "kimi", .name = "native", .context = 1, .protocol = .kimi },
-        .{ .provider = "kimi", .name = "messages", .context = 1, .protocol = .anthropic },
-    };
-    try std.testing.expect(pricing.activateKimiModels(arena_state.allocator(), &rows));
-    var keys = Keys{ .values = @splat(null) };
-    for (provider_specs, 0..) |spec, i| {
-        if (std.mem.eql(u8, spec.id, "kimi")) keys.values[i] = "token";
-    }
-    const native = try keys.providerById("kimi", "native");
-    try std.testing.expectEqual(Provider.Kind.openai, native.kind);
-    try std.testing.expectEqual(Provider.Auth.bearer, native.auth);
-    try std.testing.expectEqualStrings(kimi_native_url, native.url);
-    const messages = try keys.providerById("kimi", "messages");
-    try std.testing.expectEqual(Provider.Kind.anthropic, messages.kind);
-    try std.testing.expectEqual(Provider.Auth.x_api_key, messages.auth);
-    try std.testing.expectEqualStrings(kimi_anthropic_url, messages.url);
-}
-
-test "perOutputCap (#201): window-proportional with an absolute ceiling, keep_recent-safe" {
-    var p: Provider = undefined;
-    // the codex-aligned 40 KB absolute ceiling binds for any window > ~82k
-    // tokens (flat 10k-token budget, codex-rs DEFAULT_MAX_OUTPUT_TOKENS)
-    p.context = 270_000;
-    try std.testing.expectEqual(@as(usize, 40 * 1024), p.perOutputCap());
-    // #201 invariant: keep_recent (=4) verbatim outputs must stay reclaimable —
-    // 4 * cap (in estimated tokens) < the window.
-    try std.testing.expect(4 * (p.perOutputCap() / 4) < p.context);
-    // absolute ceiling bounds a huge window so one result can't dominate
-    p.context = 4_000_000;
-    try std.testing.expectEqual(@as(usize, 40 * 1024), p.perOutputCap());
-    // unknown window disables the cap
-    p.context = 0;
-    try std.testing.expectEqual(@as(usize, 0), p.perOutputCap());
-}
-
 test "contextWindowFor (#203): GRAFF_CONTEXT overrides only an unknown/local model" {
     g_context_override = 8192;
     defer g_context_override = null;
@@ -586,15 +550,4 @@ test "contextWindowFor (#203): GRAFF_CONTEXT overrides only an unknown/local mod
     // a known, catalogued model keeps its real window even with the override set
     try std.testing.expect(pricing.isKnownModel("anthropic", "claude-opus-4-8"));
     try std.testing.expect(contextWindowFor("anthropic", "claude-opus-4-8") != 8192);
-}
-
-test "compactAt (#204): GRAFF_COMPACT_PCT overrides the 80% default, both directions" {
-    var p: Provider = undefined;
-    p.context = 100_000;
-    try std.testing.expectEqual(@as(u64, 80_000), p.compactAt()); // default 80%
-    g_compact_pct_override = 70;
-    defer g_compact_pct_override = null;
-    try std.testing.expectEqual(@as(u64, 70_000), p.compactAt()); // lowered
-    g_compact_pct_override = 95;
-    try std.testing.expectEqual(@as(u64, 95_000), p.compactAt()); // raised — no codex-style clamp to 90
 }

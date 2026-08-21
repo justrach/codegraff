@@ -124,9 +124,18 @@
       "kind": "openai",
       "auth": "bearer",
       "login": "api_key",
-      "catalog": "baked",
+      "catalog": "openai",
       "sub_login": false,
-      "takes_effort": false
+      "takes_effort": true
+    },
+    {
+      "id": "vercel",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "openai",
+      "sub_login": false,
+      "takes_effort": true
     },
     {
       "id": "fugu",
