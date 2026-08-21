@@ -8,6 +8,15 @@
 //! from both the harness and TUI modules is illegal in Zig 0.17. The
 //! class itself is `billing.CostClass`; this module is only the order.
 
+const std = @import("std");
+
+pub const Class = enum { plan, local, credits, api };
+
+/// Map a `billing.CostClass` / TUI `engine.CostClass` / `.plan` literal.
+pub fn from(cost: anytype) Class {
+    return std.meta.stringToEnum(Class, @tagName(cost)) orelse .api;
+}
+
 /// Higher wins. A credential is the first cut — a signed-in Codegraff
 /// seat is usable and an unsigned Codex seat is not — then the bill:
 /// plan, then a machine-local server, then gateway credits, then a
@@ -15,7 +24,7 @@
 /// caller so a stable empty-query list does not reshuffle every render.
 pub fn electionRank(has_key: bool, cost: anytype) i32 {
     const keyed: i32 = if (has_key) 1_000_000 else 0;
-    const seat: i32 = switch (cost) {
+    const seat: i32 = switch (from(cost)) {
         .plan => 400_000,
         .local => 300_000,
         .credits => 200_000,
