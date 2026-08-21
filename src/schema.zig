@@ -104,9 +104,9 @@ const base_specs = [_]ToolSpec{
     .{ .name = skill_docs.tool_name, .desc = skill_docs.tool_desc, .schema = skill_docs.tool_schema },
     .{
         .name = "codedb",
-        .desc = "Query codedb (github.com/justrach/codedb) — the code-intelligence index for this repo (fast & structural; prefer over grep/bash for navigating code). `command` is a codedb subcommand line: search <query> | symbol <name> [--body] | callers <name> | outline <path> | find <name> | deps <path> | tree | list_dir <path> | context <task...> | read <path>. list_dir is a live BFS listing (gitignore, 10k-char cap): in-process here so PathConfine and --add-dir work without a codedb binary; the same command exists on the codedb CLI.",
+        .desc = "Indexed code nav (github.com/justrach/codedb). ONE command — not a hop chain: context <task> · around <name> · callpath A B · list_dir <path> · status. Prefer over bash grep/find/ls. list_dir is in-process (gitignore, PathConfine; no binary). status reports codedb.snapshot. Paths stay in the cwd.",
         .schema =
-        \\{"type": "object", "properties": {"command": {"type": "string", "description": "codedb subcommand + args, e.g. \"search parseHeader\", \"list_dir src\", \"symbol buildBody --body\""}}, "required": ["command"]}
+        \\{"type": "object", "properties": {"command": {"type": "string", "description": "One of: \"context how does auth work\", \"around codedbGuard\", \"callpath exec codedbGuard\", \"list_dir src\", \"status\"."}}, "required": ["command"]}
         ,
     },
     .{ .name = result_read.tool_name, .desc = result_read.tool_desc, .schema = result_read.tool_schema },
