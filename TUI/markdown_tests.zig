@@ -109,11 +109,26 @@ test "no code background leaks past a closed fence or off the last fence row" {
 }
 
 test "renderUser chips @[path] and paints slash commands" {
-    const text = try renderUser(std.testing.allocator, "@[/tmp/a.png] /goal look at this", theme_mod.emerald, theme_mod.zinc200);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "a.png", .data = "png" });
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const live = try tmp.dir.realpath("a.png", &path_buf);
+    const src = try std.fmt.allocPrint(std.testing.allocator, "@[{s}] /goal look at this", .{live});
+    defer std.testing.allocator.free(src);
+    const text = try renderUser(std.testing.allocator, src, theme_mod.emerald, theme_mod.zinc200);
     defer std.testing.allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "[Image #1]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "/tmp/a.png") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, live) == null);
     try std.testing.expect(std.mem.indexOf(u8, text, "/goal") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, theme_mod.emerald ++ "[Image #1]") != null);
+}
+
+test "renderUser leaves an unbacked @[path] uncolored (#577)" {
+    const text = try renderUser(std.testing.allocator, "@[/no/such/image-577.png] look", theme_mod.emerald, theme_mod.zinc200);
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "[Image #1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, theme_mod.emerald ++ "[Image #1]") == null);
 }
 
 test "render paints a Grok-style box table and hides raw pipes" {

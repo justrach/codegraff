@@ -314,3 +314,22 @@ test "Ctrl+R walks prompt history" {
     _ = handle(&m, .up);
     try std.testing.expectEqualStrings("older", m.input.getValue());
 }
+
+test "Ctrl+R after an image prompt restores the attachment (#577)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "shot.png", .data = "png" });
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const live = try tmp.dir.realpath("shot.png", &path_buf);
+
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    m.attachImage(live);
+    _ = @import("dispatch.zig").applyLine(&m, "what is this");
+    try std.testing.expectEqual(@as(usize, 0), m.images.items.len);
+    _ = handle(&m, .{ .ctrl = 'r' });
+    try std.testing.expectEqualStrings("what is this", m.input.getValue());
+    try std.testing.expectEqual(@as(usize, 1), m.images.items.len);
+    try std.testing.expectEqualStrings(live, m.images.items[0]);
+}

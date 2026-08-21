@@ -6,6 +6,16 @@ const theme_mod = @import("theme.zig");
 const key_mod = @import("key.zig");
 const Model = app.Model;
 
+/// A path still has bytes behind it. Used to decide whether a chip is a real
+/// attachment (#577) or just the letters `[Image]`.
+pub fn pathBacked(path: []const u8) bool {
+    if (path.len == 0) return false;
+    const io = ioHandle();
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+    file.close(io);
+    return true;
+}
+
 pub fn render(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u8 {
     const th = self.theme();
     const path = self.preview_path;
@@ -487,6 +497,17 @@ test "click on a user image chip opens the preview overlay" {
     try std.testing.expectEqual(app.Overlay.image, m.overlay);
     try std.testing.expectEqualStrings("/tmp/shot.png", m.preview_path);
     try std.testing.expect(m.preview_pin);
+}
+
+test "pathBacked is true only when the file is there (#577)" {
+    try std.testing.expect(!pathBacked(""));
+    try std.testing.expect(!pathBacked("/no/such/image-577.png"));
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "y.png", .data = "y" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const live = try tmp.dir.realpath("y.png", &buf);
+    try std.testing.expect(pathBacked(live));
 }
 
 test "hover on a composer chip opens an unpinned preview" {

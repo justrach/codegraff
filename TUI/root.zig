@@ -53,6 +53,7 @@ test {
     _ = catalog;
     _ = app;
     _ = @import("dispatch.zig");
+    _ = @import("prompt_history.zig");
     _ = @import("meters.zig");
     _ = @import("key.zig");
     _ = @import("key_orphan.zig");

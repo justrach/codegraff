@@ -46,7 +46,7 @@ pub fn promptBox(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
     var body = std.array_list.Managed(u8).init(a);
     try body.appendSlice(glyphs.caret ++ " ");
     if (self.images.items.len > 0) {
-        try body.appendSlice(try imageChips(self, a));
+        try body.appendSlice(try imageChips(self, a, th.accent, th.text));
         try body.appendSlice("  ");
     }
     try body.appendSlice(try self.input.view(a));
@@ -78,12 +78,19 @@ pub fn promptBox(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
     return out.items;
 }
 
-fn imageChips(self: *const Model, a: std.mem.Allocator) ![]const u8 {
+fn imageChips(self: *const Model, a: std.mem.Allocator, accent: []const u8, text: []const u8) ![]const u8 {
     var chips = std.array_list.Managed(u8).init(a);
-    for (self.images.items, 0..) |_, i| {
+    for (self.images.items, 0..) |path, i| {
         if (i > 0) try chips.append(' ');
         var buf: [24]u8 = undefined;
-        try chips.appendSlice(try std.fmt.bufPrint(&buf, "[Image #{d}]", .{i + 1}));
+        const label = try std.fmt.bufPrint(&buf, "[Image #{d}]", .{i + 1});
+        if (@import("image.zig").pathBacked(path)) {
+            try chips.appendSlice(accent);
+            try chips.appendSlice(label);
+            try chips.appendSlice(text);
+        } else {
+            try chips.appendSlice(label);
+        }
     }
     return chips.items;
 }

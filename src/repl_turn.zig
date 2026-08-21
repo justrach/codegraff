@@ -24,6 +24,8 @@ const providers = @import("providers.zig");
 const repl = @import("repl.zig");
 const repl_glue = @import("repl_glue.zig");
 const ReplCtx = repl_glue.ReplCtx;
+const vision = @import("vision.zig");
+const vision_queue = @import("vision_queue.zig");
 
 /// What a turn's permission mode means to the engine. One place, so the gate
 /// and the badge can never drift again.
@@ -119,18 +121,33 @@ pub fn turnAgent(
 fn borrowHistory(c: *ReplCtx, agent: *Agent, history: []const repl.Turn, arena: Allocator, scratch: *std.heap.ArenaAllocator) !void {
     const cv = c.convo orelse {
         for (history) |t| {
-            const role = switch (t.role) {
-                .user => "user",
-                .assistant => "assistant",
-            };
-            try agent.messages.append(try textMessage(arena, role, t.text));
+            try agent.messages.append(try userOrText(agent, arena, t));
         }
         return;
     };
     try cv.adopt(history);
+    try promoteTailImages(agent, cv, history);
     agent.messages = cv.list().*;
     // Transient parse garbage goes here instead of the session arena (#124).
     agent.scratch_arena = scratch;
+}
+
+/// A recalled TUI prompt carries `@[path]` markers. Stage the files so the
+/// model gets pixels, not the literal marker (#577).
+fn userOrText(agent: *Agent, arena: Allocator, t: repl.Turn) !std.json.Value {
+    if (t.role != .user) return textMessage(arena, "assistant", t.text);
+    vision.stageGuiImageAttachment(agent, t.text);
+    return vision_queue.consumePromptImages(arena, agent, t.text);
+}
+
+fn promoteTailImages(agent: *Agent, cv: anytype, history: []const repl.Turn) !void {
+    if (history.len == 0 or history[history.len - 1].role != .user) return;
+    const text = history[history.len - 1].text;
+    vision.stageGuiImageAttachment(agent, text);
+    if (agent.pending_image_len == 0) return;
+    const msgs = cv.list();
+    if (msgs.items.len == 0) return;
+    msgs.items[msgs.items.len - 1] = try vision_queue.consumePromptImages(cv.alloc(), agent, text);
 }
 
 /// Hand the conversation back. runTurn appended this turn's assistant message
