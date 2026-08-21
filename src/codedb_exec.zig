@@ -22,11 +22,14 @@ const hooks = @import("hooks.zig");
 
 pub const deadline_ms: u64 = 60 * 1000;
 
-const ok_subs = [_][]const u8{
-    "search", "symbol",   "callers", "find",    "outline",  "read",
-    "tree",   "list_dir", "status",  "context", "word",     "deps",
-    "glob",   "ls",       "file",    "hot",     "callpath", "path",
-    "around", "explain",
+/// What the catalog and prompt name. Hop verbs stay callable so a
+/// follow-up is not a dead end, but they are not advertised (ADR 0014).
+const advertised_subs = [_][]const u8{ "context", "around", "callpath", "list_dir", "status" };
+
+const ok_subs = advertised_subs ++ [_][]const u8{
+    "search",  "symbol", "callers", "find", "outline", "read", "tree",
+    "word",    "deps",   "glob",    "ls",   "file",    "hot",  "path",
+    "explain",
 };
 
 const path_subs = [_][]const u8{ "outline", "read", "deps", "file" };
@@ -75,7 +78,7 @@ pub fn exec(ctx: ToolCtx, input: std.json.Value) !ToolOutput {
     const cmd = tools.strField(input, "command") orelse return tools.missingArg(gpa, "command");
     var it = std.mem.tokenizeAny(u8, cmd, " \t");
     const sub = it.next() orelse return .{
-        .text = try gpa.dupe(u8, "usage: codedb <subcommand> [args] — start with context <task>, around <name>, or callpath A B; also search/symbol/callers/outline/list_dir/status"),
+        .text = try gpa.dupe(u8, "usage: codedb <command> — context <task> · around <name> · callpath A B · list_dir <path> · status"),
         .is_error = true,
     };
     if (std.mem.eql(u8, sub, "list_dir")) return list_dir.exec(ctx, it.rest());
@@ -83,7 +86,7 @@ pub fn exec(ctx: ToolCtx, input: std.json.Value) !ToolOutput {
     if (std.mem.eql(u8, sub, "around") or std.mem.eql(u8, sub, "explain")) return codedb_around.execAround(ctx, it.rest());
     if (std.mem.eql(u8, sub, "path")) return codedb_around.execPath(ctx, it.rest());
     if (!allowed(sub)) return .{
-        .text = try std.fmt.allocPrint(gpa, "codedb subcommand '{s}' is not allowed here — use one of: context, around, callpath, search, symbol, callers, find, outline, read, tree, list_dir, status, word, deps, glob, ls, file, hot, path, explain", .{sub}),
+        .text = try std.fmt.allocPrint(gpa, "codedb command '{s}' is not allowed here — advertised: context <task> · around <name> · callpath A B · list_dir <path> · status", .{sub}),
         .is_error = true,
     };
 
@@ -186,4 +189,18 @@ test "allowed subcommands include list_dir and status, not update" {
     try std.testing.expect(!allowed("update"));
     try std.testing.expect(!allowed("nuke"));
     try std.testing.expect(!allowed("mcp"));
+}
+
+test "advertised surface is the one-shots, hop verbs stay callable" {
+    const advertised = advertised_subs;
+    try std.testing.expectEqual(@as(usize, 5), advertised.len);
+    for (advertised) |s| try std.testing.expect(allowed(s));
+    try std.testing.expect(allowed("search"));
+    try std.testing.expect(allowed("outline"));
+    try std.testing.expect(allowed("read"));
+    for (advertised) |s| {
+        try std.testing.expect(!std.mem.eql(u8, s, "search"));
+        try std.testing.expect(!std.mem.eql(u8, s, "outline"));
+        try std.testing.expect(!std.mem.eql(u8, s, "read"));
+    }
 }

@@ -16,12 +16,14 @@ was implemented in codedb and blocked here.
 
 ## Decision
 
-Steer the native `codedb` tool at one-shots first: `context <task>`,
+The catalog advertises five commands only: `context <task>`,
 `around <name>` (def body + callers in one harness call), `callpath A B`
-(`path` is an alias). Narrow lookups stay available. Do not add a
-graphify-style LLM extract / wiki / GRAPH_REPORT inside graff — that is
-a different product. Do not add a sibling catalog tool for "ask the
-graph."
+(`path` is an alias), `list_dir <path>`, `status`. Hop verbs
+(`search` / `symbol` / `callers` / `outline` / `read` / …) stay
+callable so a follow-up is not a dead end; they are not named in the
+tool description or the system prompt. Do not add a graphify-style LLM
+extract / wiki / GRAPH_REPORT inside graff — that is a different
+product. Do not add a sibling catalog tool for "ask the graph."
 
 ## Consequences
 

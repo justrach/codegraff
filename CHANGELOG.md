@@ -18,8 +18,9 @@ current is part of cutting a release.
   file-tool jail. The codedb guard now redirects `ls`/`find`/`tree` even
   when the CLI is missing (ADR 0013). One-shot verbs first (ADR 0014):
   `context <task>`, `around <name>` (def+callers), `callpath A B`
-  (codedb's shortest call chain; `path` is an alias) — not
-  search→outline→read.
+  (codedb's shortest call chain; `path` is an alias). The catalog
+  advertises only those plus `list_dir`/`status`; hop verbs stay
+  callable, not on the menu.
 
 ## v0.0.267 (2026-08-19)
 

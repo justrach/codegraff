@@ -107,9 +107,9 @@ const base_specs = [_]ToolSpec{
     .{ .name = skill_docs.tool_name, .desc = skill_docs.tool_desc, .schema = skill_docs.tool_schema },
     .{
         .name = "codedb",
-        .desc = "Query codedb (github.com/justrach/codedb) — indexed + structural nav; prefer over bash grep/find/ls. Prefer ONE call: context <task> (defs + neighbors + snippets) · around <name> (def body + callers) · callpath A B (shortest call chain). Narrow follow-ups: search <q> | symbol <name> [--body] | callers <name> | outline <path> | find <name> | deps <path> | tree | list_dir <path> | status | read <path>. Do not search then outline then read unless those missed. list_dir is in-process (gitignore, PathConfine, works without the binary). status reports codedb.snapshot. Paths stay inside the cwd.",
+        .desc = "Indexed code nav (github.com/justrach/codedb). ONE command — not a hop chain: context <task> · around <name> · callpath A B · list_dir <path> · status. Prefer over bash grep/find/ls. list_dir is in-process (gitignore, PathConfine; no binary). status reports codedb.snapshot. Paths stay in the cwd.",
         .schema =
-        \\{"type": "object", "properties": {"command": {"type": "string", "description": "Start with a one-shot: \"context how does auth work\", \"around handleCallpath\", \"callpath handleContext handleCallpath\". Narrow: \"symbol buildBody --body\", \"callers switchProvider\"."}}, "required": ["command"]}
+        \\{"type": "object", "properties": {"command": {"type": "string", "description": "One of: \"context how does auth work\", \"around codedbGuard\", \"callpath exec codedbGuard\", \"list_dir src\", \"status\"."}}, "required": ["command"]}
         ,
     },
 };

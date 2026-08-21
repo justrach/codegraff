@@ -209,13 +209,11 @@ whole-file reads. Instead of paying for a 2,000-line file to find one function,
 the model asks for exactly the shape it needs:
 
 ```
+codedb context "add a new provider"  # defs + neighbors + snippets (one call)
+codedb around switchProvider         # definition body + callers (one call)
+codedb callpath exec codedbGuard     # shortest resolved call chain
 codedb list_dir src                  # live tree (gitignore, 10k cap; no index needed)
 codedb status                        # is codedb.snapshot present?
-codedb outline src/main.zig          # just the symbol map, functions/types, no bodies
-codedb symbol switchProvider --body  # one function, by name
-codedb callers recordUsage           # who calls it (call sites, not files)
-codedb search "parse SSE"            # indexed search, ranked hits, not a grep dump
-codedb context "add a new provider"  # task-shaped orientation across the codebase
 ```
 
 Why this keeps token cost low:
@@ -233,13 +231,13 @@ Why this keeps token cost low:
 - **Same index powers the `@` file picker** (`codedb glob`), so attaching a file
   by name never shells out to a directory walk.
 
-Pure-Zig client to a pure-Zig server, zero dependencies on either side. Allowed
-subcommands: `search · symbol · callers · find · outline · read · tree ·
-list_dir · status · context · word · deps · glob · ls · file · hot`.
-`list_dir` and `status` are in-process (PathConfine; they work without the
-binary). Path-bearing queries stay inside the cwd, same jail as `read_file`.
-Not installed? Structural search says so and points at the one-line install;
-folder listing still works.
+Pure-Zig client to a pure-Zig server, zero dependencies on either side. The
+catalog advertises five commands: `context · around · callpath · list_dir ·
+status`. Hop verbs (`search`, `outline`, `read`, …) still run if the model
+already knows them; they are not on the menu. `list_dir` and `status` are
+in-process (PathConfine; they work without the binary). Path-bearing queries
+stay inside the cwd, same jail as `read_file`. Not installed? Structural
+search says so and points at the one-line install; folder listing still works.
 
 ---
 
@@ -845,7 +843,7 @@ get web-request economics, and no boot-and-provision tax on time to first token.
 | `read_file`          | built-in | `Io.Dir.cwd().readFileAlloc` (256 KB cap)                 |
 | `edit_file`          | built-in | exact string replace; unique match required unless `replace_all` |
 | `write_file`         | built-in | `Io.Dir.cwd().writeFile`                                  |
-| `codedb`             | built-in | [codedb](https://github.com/justrach/codedb) index plus in-process `list_dir`/`status`/`around` (context/callpath/symbol/…) |
+| `codedb`             | built-in | [codedb](https://github.com/justrach/codedb) — advertised: `context` / `around` / `callpath` / `list_dir` / `status` |
 | `subagent`           | built-in | this same agent loop, recursively (root agent only)       |
 | `workflow`           | built-in | phases of parallel subagents; `{{prev}}` carries results forward (root only) |
 | `todo_write`/`_read` | meta     | mutate/read the agent's own task list                     |

@@ -232,7 +232,7 @@ pub fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
     // codedb result. Let bash through for un-indexed files (issue #54).
     if (!hooks.codedbFileIndexed(ctx.io, ctx.gpa, src_path)) return null;
 
-    const msg = std.fmt.allocPrint(ctx.gpa, "blocked: this repo is codedb-indexed — don't shell out to `{s}` to read or search source. Use the codedb tool (indexed + structural): context <task> · around <name> · callpath A B · symbol <name> [--body] · callers <name> · deps <path> · outline <path> · read <path> · list_dir <path>. If you genuinely need raw bash here, set GRAFF_NO_CODEDB_GUARD=1.", .{tool}) catch return .{ .text = &.{}, .is_error = true };
+    const msg = std.fmt.allocPrint(ctx.gpa, "blocked: this repo is codedb-indexed — don't shell out to `{s}` to read or search source. Use the codedb tool: context <task> · around <name> · callpath A B · list_dir <path> · status. If you genuinely need raw bash here, set GRAFF_NO_CODEDB_GUARD=1.", .{tool}) catch return .{ .text = &.{}, .is_error = true };
     return .{ .text = msg, .is_error = true };
 }
 
