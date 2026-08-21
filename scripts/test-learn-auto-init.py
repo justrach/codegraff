@@ -63,12 +63,12 @@ def run_session(tmp: str, port: int, prompts: int) -> str:
         unset_env=ambient,
         timeout=30.0,
     ) as session:
-        session.wait_for_literal("] ›")
+        session.wait_for_prompt()
         for _ in range(prompts):
             cursor = len(session.raw)
             session.send_line("do a little work")
             session.wait_for_literal(REPLY, start=cursor)
-            session.wait_for_literal("] ›", start=cursor)
+            session.wait_for_prompt(start=cursor)
         session.send_key("ctrl-d")
         # Bootstrapping materializes a kit and generates two suites, so the
         # exit path is slower than an ordinary session's (siblings use 5s).

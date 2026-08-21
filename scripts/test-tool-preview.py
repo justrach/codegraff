@@ -115,11 +115,11 @@ def main() -> None:
                 unset_env=ambient,
                 timeout=10.0,
             ) as session:
-                session.wait_for_literal("] ›")
+                session.wait_for_prompt()
                 cursor = len(session.raw)
                 session.send_line("read the large file, then finish")
                 session.wait_for_literal(FINAL_REPLY, start=cursor)
-                session.wait_for_literal("] ›", start=cursor)
+                session.wait_for_prompt(start=cursor)
                 session.send_key("ctrl-d")
                 result = session.read_until_exit(5.0)
                 if result.timed_out or result.exit_code != 0:

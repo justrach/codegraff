@@ -160,15 +160,15 @@ def main() -> None:
                 unset_env=ambient,
                 timeout=20.0,
             ) as session:
-                session.wait_for_literal("] ›")
+                session.wait_for_prompt()
                 cursor = len(session.raw)
                 session.send_line("say hello")
                 session.wait_for_literal(FINAL_REPLY, start=cursor)
-                session.wait_for_literal("] ›", start=cursor)
+                session.wait_for_prompt(start=cursor)
                 cursor = len(session.raw)
                 session.send_line("say hello again")
                 session.wait_for_literal(SECOND_REPLY, start=cursor)
-                session.wait_for_literal("] ›", start=cursor)
+                session.wait_for_prompt(start=cursor)
                 session.send_key("ctrl-d")
                 result = session.read_until_exit(5.0)
                 if result.timed_out or result.exit_code != 0:

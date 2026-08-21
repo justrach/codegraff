@@ -29,7 +29,7 @@ def main() -> None:
             timeout=15.0,
             cols=240,
         ) as session:
-            session.wait_for_literal("] ›")
+            session.wait_for_prompt()
 
             cursor = len(session.raw)
             session.send_line("/debug")

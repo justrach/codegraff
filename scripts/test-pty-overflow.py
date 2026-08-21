@@ -126,7 +126,7 @@ def _run(error_obj: dict, tmp: str, *, raw: dict | None = None, wait_for: str = 
             unset_env=ambient,
             timeout=20.0,
         ) as session:
-            session.wait_for_literal("] ›")
+            session.wait_for_prompt()
             cursor = len(session.raw)
             session.send_line("hello")
             session.wait_for_literal(wait_for, start=cursor)

@@ -220,7 +220,7 @@ def scenario(graff: str, outdir: pathlib.Path, label: str, cols: int) -> None:
         rows=40,
         cols=cols,
     ) as s:
-        s.wait_for_literal("] ›")
+        s.wait_for_prompt()
         # Let readline's terminal setup (bracketed paste, the DSR cursor probe)
         # land BEFORE the first window opens. Without this those 12 bytes fall
         # on one side or the other of the cursor by luck. See README.

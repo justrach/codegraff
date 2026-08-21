@@ -332,7 +332,7 @@ def run_scenario(
         unset_env=ambient,
         timeout=45.0,  # compaction legs stream 128 KiB of scripted reasoning; 20s flakes on loaded runners
     ) as session:
-        session.wait_for_literal("] ›")
+        session.wait_for_prompt()
         cursor = len(session.raw)
         session.send_line("ping")
         session.wait_for_literal(REPLY_TEXT, start=cursor)
@@ -356,7 +356,7 @@ def run_scenario(
         cursor = len(session.raw)
         session.send_line("/models health")
         session.wait_for_literal(f"Codex transport: {health}", start=cursor)
-        session.wait_for_literal("] ›", start=cursor)
+        session.wait_for_prompt(start=cursor)
         session.send_key("ctrl-d")
         result = session.read_until_exit(5.0)
         if result.timed_out or result.exit_code != 0:
@@ -687,7 +687,7 @@ def run_midturn_compaction_scenario(
         unset_env=ambient,
         timeout=45.0,  # compaction legs stream 128 KiB of scripted reasoning; 20s flakes on loaded runners
     ) as session:
-        session.wait_for_literal("] ›")
+        session.wait_for_prompt()
         cursor = len(session.raw)
         session.send_line(MIDTURN_PROMPT)
         session.wait_for_literal(MIDTURN_FINAL, start=cursor)
@@ -731,7 +731,7 @@ def run_transactional_compaction_scenario(
         unset_env=ambient,
         timeout=45.0,  # compaction legs stream 128 KiB of scripted reasoning; 20s flakes on loaded runners
     ) as session:
-        session.wait_for_literal("] ›")
+        session.wait_for_prompt()
         cursor = len(session.raw)
         session.send_line(TRANSACTIONAL_PROMPT)
         session.wait_for_literal(

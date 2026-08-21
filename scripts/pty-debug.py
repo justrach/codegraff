@@ -37,7 +37,7 @@ Options:
   --cols N            terminal width (default: 120)
   --raw-out PATH      save exact PTY bytes, including ANSI/control sequences
   --text-out PATH     save the cleaned readable transcript
-  --no-ready          do not wait for the initial `] ›` prompt
+  --no-ready          do not wait for the initial `›` prompt
   --no-color          set NO_COLOR=1 and skip the interactive-prompt wait
   --quiet             print only failures and the final transcript
 
@@ -47,7 +47,7 @@ Ordered actions:
   --key NAME          enter/up/down/left/right/esc/tab/backspace/ctrl-c/ctrl-d
   --expect TEXT       wait for literal cleaned terminal text
   --expect-re REGEX   wait for a regular expression
-  --expect-prompt     wait for the next `] ›` prompt
+  --expect-prompt     wait for the next `›` prompt
   --sleep SECONDS     keep capturing output for a fixed interval
 """
 
@@ -191,7 +191,7 @@ def main() -> int:
     failed: Exception | None = None
     try:
         if config["ready"]:
-            cursor = session.wait_for_literal("] ›", start=cursor)
+            cursor = session.wait_for_prompt(start=cursor)
             note(quiet, "✓ initial REPL prompt")
         for action, value in actions:
             if action == "--cmd":
@@ -213,7 +213,7 @@ def main() -> int:
                 session.wait_for(re.compile(value), start=cursor)
                 note(quiet, f"✓ expect-re {value!r}")
             elif action == "--expect-prompt":
-                session.wait_for_literal("] ›", start=cursor)
+                session.wait_for_prompt(start=cursor)
                 note(quiet, "✓ next REPL prompt")
             elif action == "--sleep":
                 session.pump_for(float(value))

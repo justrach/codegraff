@@ -145,14 +145,14 @@ def main() -> None:
                 "GRAFF_SHUTDOWN_DEBUG": "1",
             }
             with PtySession(GRAFF, ["--model", "lmstudio", "--no-telemetry"], cwd=tmp, env=env, timeout=20) as session:
-                session.wait_for_literal("] ›")
+                session.wait_for_prompt()
                 session.send_line("/yolo")
                 session.wait_for_literal("yolo mode ON")
                 cursor = len(session.raw)
                 session.send_line("run both checks")
                 wait_for_pid_files(session, pid_paths)
                 session.send_key("esc")
-                session.wait_for(r"⊘ bash\s+⊘ bash", start=cursor)
+                session.wait_for(r"⊘ sleep[\s\S]+⊘ sleep", start=cursor)
                 session.wait_for_literal("interrupted (esc)", start=cursor)
                 assert_processes_gone(pid_paths)
                 session.send_key("ctrl-d")
