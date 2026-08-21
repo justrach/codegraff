@@ -318,9 +318,12 @@ test "Ctrl+R walks prompt history" {
 test "Ctrl+R after an image prompt restores the attachment (#577)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "shot.png", .data = "png" });
+    const io = std.testing.io;
+    try tmp.dir.writeFile(io, .{ .sub_path = "shot.png", .data = "png" });
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_n = try tmp.dir.realPath(io, &dir_buf);
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const live = try tmp.dir.realpath("shot.png", &path_buf);
+    const live = try std.fmt.bufPrint(&path_buf, "{s}/shot.png", .{dir_buf[0..dir_n]});
 
     var m: Model = undefined;
     m.setup(std.testing.allocator);

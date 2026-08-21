@@ -504,9 +504,12 @@ test "pathBacked is true only when the file is there (#577)" {
     try std.testing.expect(!pathBacked("/no/such/image-577.png"));
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "y.png", .data = "y" });
+    const io = std.testing.io;
+    try tmp.dir.writeFile(io, .{ .sub_path = "y.png", .data = "y" });
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_n = try tmp.dir.realPath(io, &dir_buf);
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const live = try tmp.dir.realpath("y.png", &buf);
+    const live = try std.fmt.bufPrint(&buf, "{s}/y.png", .{dir_buf[0..dir_n]});
     try std.testing.expect(pathBacked(live));
 }
 

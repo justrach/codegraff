@@ -117,12 +117,21 @@ fn freePaths(self: *Model, paths: []const []const u8) void {
     if (paths.len > 0) self.alloc.free(paths);
 }
 
+fn writeTmp(tmp: anytype, name: []const u8, data: []const u8, buf: []u8) ![]const u8 {
+    const io = std.testing.io;
+    try tmp.dir.writeFile(io, .{ .sub_path = name, .data = data });
+    const n = try tmp.dir.realPath(io, buf);
+    if (n + 1 + name.len > buf.len) return error.NameTooLong;
+    buf[n] = '/';
+    @memcpy(buf[n + 1 ..][0..name.len], name);
+    return buf[0 .. n + 1 + name.len];
+}
+
 test "remember + recall restores backed image paths and drops missing ones" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "shot.png", .data = "png" });
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const live = try tmp.dir.realpath("shot.png", &path_buf);
+    const live = try writeTmp(&tmp, "shot.png", "png", &path_buf);
 
     var m: Model = undefined;
     m.setup(std.testing.allocator);
@@ -146,12 +155,10 @@ test "remember + recall restores backed image paths and drops missing ones" {
 test "down past newest restores the draft and its attachments" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "a.png", .data = "a" });
-    try tmp.dir.writeFile(.{ .sub_path = "b.png", .data = "b" });
     var a_buf: [std.fs.max_path_bytes]u8 = undefined;
     var b_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const older = try tmp.dir.realpath("a.png", &a_buf);
-    const draft_path = try tmp.dir.realpath("b.png", &b_buf);
+    const older = try writeTmp(&tmp, "a.png", "a", &a_buf);
+    const draft_path = try writeTmp(&tmp, "b.png", "b", &b_buf);
 
     var m: Model = undefined;
     m.setup(std.testing.allocator);

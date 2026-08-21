@@ -111,9 +111,12 @@ test "no code background leaks past a closed fence or off the last fence row" {
 test "renderUser chips @[path] and paints slash commands" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "a.png", .data = "png" });
+    const io = std.testing.io;
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.png", .data = "png" });
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_n = try tmp.dir.realPath(io, &dir_buf);
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const live = try tmp.dir.realpath("a.png", &path_buf);
+    const live = try std.fmt.bufPrint(&path_buf, "{s}/a.png", .{dir_buf[0..dir_n]});
     const src = try std.fmt.allocPrint(std.testing.allocator, "@[{s}] /goal look at this", .{live});
     defer std.testing.allocator.free(src);
     const text = try renderUser(std.testing.allocator, src, theme_mod.emerald, theme_mod.zinc200);
