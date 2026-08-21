@@ -22,6 +22,12 @@ JSON against `codedb.snapshot` mtime. Named one-shots stay dispatchable;
 those verbs to the native catalog or change `read_file` / `bash` /
 `edit_file`.
 
+Advertise compact `tools/list` JSON (no titles/annotations; `read` enum
+is `full`/`outline`/`symbol`/`lines`). Handlers still accept extra
+properties — do not set `additionalProperties: false`. Graff already
+defers the whole server behind `load_tool_schemas`; other hosts pay the
+catalog every turn, so the advertised bytes are the lever.
+
 When codedb-pro is licensed, native `codedb` stays callable. Do not
 block it and do not redirect it through `mcp__codedbpro__*`. Licensed
 enforcement covers `read_file` and leading shell searches only.
@@ -35,3 +41,7 @@ Unlicensed sessions keep the conservative “try free codedb first” note.
 - Licensed refusals name pro read/search, never “use pro instead of codedb”.
 - Repeat questions hit the process-lifetime LRU instead of recomposing.
 - Native codedb pairing (ADR 0019) is unchanged.
+- Mini `tools/list` stays under 1.6 KiB. Shrinking further by dropping
+  routing keys (`file`, `pattern`, `from`/`to`) hides how `lookup`
+  dispatches. Growing it with hop schemas or annotations is a regression
+  for hosts that embed the catalog every turn.

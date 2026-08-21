@@ -17,7 +17,10 @@ current is part of cutting a release.
   also covers a file path (outline) and a content `pattern` (search
   hits), so those questions are not a read/search hop. Named one-shots
   stay dispatchable. Only `read_file` and leading shell searches
-  redirect to the paid suite.
+  redirect to the paid suite. The paid suite's advertised `tools/list`
+  stays compact (routing keys, no titles/annotations); handlers still
+  accept the extra fields. Graff still defers the server behind
+  `load_tool_schemas`.
 
 ## v0.0.269 (2026-08-20)
 

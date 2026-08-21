@@ -30,7 +30,7 @@ record only when you need the evidence or the edge cases.
 | [0017](0017-model-election-ranks-signed-in-plans-first.md) | `/model` and `/models` on both frontends rank signed-in plan seats above credits and metered keys (`src/models_rank.zig`). |
 | [0018](0018-standing-chrome-shows-last-turn-cache-hit.md) | Last-turn cache hit % rides with `ctx` on the line-REPL meter and the TUI footer; `/cache` stays the posture HUD. |
 | [0019](0019-codedb-one-shot-over-hop-chains.md) | Advertise only `context` / `around` / `callpath` / `list_dir` / `status`; hop verbs stay callable, not on the menu. |
-| [0020](0020-zigrepper-oneshots-match-codedb-menu.md) | Zigrepper mini catalog is `lookup` + read/edit/batch; licensed sessions do not block or redirect the free `codedb` tool. |
+| [0020](0020-zigrepper-oneshots-match-codedb-menu.md) | Zigrepper mini catalog is `lookup` + read/edit/batch with compact `tools/list`; licensed sessions do not block or redirect free `codedb`. |
 
 ## When to write one
 
