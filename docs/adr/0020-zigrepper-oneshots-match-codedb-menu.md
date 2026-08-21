@@ -15,8 +15,9 @@ are not substitutes.
 
 Zigrepper's default MCP menu is `lookup` + `read` / `edit` / `batch`.
 `lookup` routes `name` → explain, `task`/`query` → context, `from`+`to`
-→ callpath, directory path → list_dir, and caches the composed JSON
-against `codedb.snapshot` mtime. Named one-shots stay dispatchable;
+→ callpath, directory path → list_dir, file path → outline (inspect),
+`pattern` or regex-shaped query → search+hits, and caches the composed
+JSON against `codedb.snapshot` mtime. Named one-shots stay dispatchable;
 `CODEDBPRO_TOOLS_PROFILE=full` advertises them plus hops. Do not add
 those verbs to the native catalog or change `read_file` / `bash` /
 `edit_file`.

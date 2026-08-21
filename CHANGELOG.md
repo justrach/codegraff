@@ -13,9 +13,11 @@ current is part of cutting a release.
 ## Unreleased
 
 - Licensed codedb-pro (ADR 0020): prefer `mcp__codedbpro__lookup` (one
-  RPC; cached) next to native `codedb`, which stays callable. Named
-  one-shots stay dispatchable. Only `read_file` and leading shell
-  searches redirect to the paid suite.
+  RPC; cached) next to native `codedb`, which stays callable. Lookup
+  also covers a file path (outline) and a content `pattern` (search
+  hits), so those questions are not a read/search hop. Named one-shots
+  stay dispatchable. Only `read_file` and leading shell searches
+  redirect to the paid suite.
 
 ## v0.0.269 (2026-08-20)
 

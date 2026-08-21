@@ -69,6 +69,8 @@ def harness_table(graff: str) -> None:
         "codedb-oneshot-around-is-one-rpc",
         "codedb-hop-explain-is-two-rpcs",
         "codedbpro-lookup-is-one-rpc",
+        "codedbpro-lookup-file-is-one-rpc",
+        "codedbpro-lookup-pattern-is-one-rpc",
         "codedbpro-hop-explain-is-three-rpcs",
     ]
     cases = {c["id"]: c for c in load_cases() if c["id"] in ids}

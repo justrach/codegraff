@@ -33,6 +33,14 @@ fn companionPathKey(tool: []const u8) ?[]const u8 {
     return null;
 }
 
+/// lookup accepts `file` (inspect) or `path` (search root / list_dir).
+fn companionPathKeyFor(tool: []const u8, input: std.json.Value) ?[]const u8 {
+    if (std.mem.eql(u8, tool, "mcp__codedbpro__lookup") and input == .object) {
+        if (input.object.get("file") != null) return "file";
+    }
+    return companionPathKey(tool);
+}
+
 /// Errors caused by model arguments or session path context should open the
 /// native fallback but must not generate upstream CodeDB Pro bug reports.
 pub fn callerError(text: []const u8) bool {
@@ -65,7 +73,7 @@ pub fn callerError(text: []const u8) bool {
 /// boundary so relative model arguments keep their documented session-cwd
 /// meaning instead of accidentally resolving inside the daemon's first repo.
 pub fn prepareInput(gpa: Allocator, io: Io, agent_cwd: ?[]const u8, tool: []const u8, input: std.json.Value) !PreparedInput {
-    const key = companionPathKey(tool) orelse return .{ .value = input };
+    const key = companionPathKeyFor(tool, input) orelse return .{ .value = input };
     if (input != .object) return .{ .value = input };
     const path_value = input.object.get(key) orelse return .{ .value = input };
     if (path_value != .string or std.fs.path.isAbsolute(path_value.string)) return .{ .value = input };
@@ -109,6 +117,12 @@ test "prepareInput resolves CodeDB Pro paths against the agent cwd" {
     defer prepared_search.deinit(std.testing.allocator);
     const expected_search = if (@import("builtin").os.tag == .windows) "\\tmp\\graff-worktree\\src" else "/tmp/graff-worktree/src";
     try std.testing.expectEqualStrings(expected_search, prepared_search.value.object.get("path").?.string);
+
+    const lookup_file = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"file\":\"src/main.zig\"}", .{});
+    var prepared_lookup = try prepareInput(std.testing.allocator, std.testing.io, "/tmp/graff-worktree", "mcp__codedbpro__lookup", lookup_file);
+    defer prepared_lookup.deinit(std.testing.allocator);
+    const expected_lookup = if (@import("builtin").os.tag == .windows) "\\tmp\\graff-worktree\\src\\main.zig" else "/tmp/graff-worktree/src/main.zig";
+    try std.testing.expectEqualStrings(expected_lookup, prepared_lookup.value.object.get("file").?.string);
 }
 
 test "caller errors are not filed as CodeDB Pro defects" {
