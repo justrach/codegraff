@@ -21,11 +21,12 @@ _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
 
 
-# The reported 1500-token usage is conservatively floored by graff's serialized
-# request estimate, so the displayed used count can move with the built-in tool
-# schema. Assert the meter shape and invariants rather than freezing either the
-# prefill estimate or the Codex catalog window.
-METER_RE = re.compile(r"(\d+)(k?)/(\d+)k ctx \((\d+)% · compact@(\d+)k\)")
+# ADR 0016/0018: the standing line is `ctx N%` (optional ` · cache N%`). Used,
+# window, and compact@ left that line. `/models health` still prints
+# `active: … · {d}k ctx · compact@{d}k` — that is how smoke scenarios learn the
+# runtime Codex window without freezing the catalog.
+CTX_RE = re.compile(r"ctx (\d+)%")
+ACTIVE_WINDOW_RE = re.compile(r"active: .+ · (\d+)k ctx · compact@(\d+)k")
 COMPACTING_RE = re.compile(r"compacting ~(\d+) tokens")
 
 MIDTURN_PROMPT = "exercise the server-side context meter"
@@ -336,18 +337,11 @@ def run_scenario(
         cursor = len(session.raw)
         session.send_line("ping")
         session.wait_for_literal(REPLY_TEXT, start=cursor)
-        session.wait_for(METER_RE, start=cursor)
-        meter = METER_RE.search(terminal_text(bytes(session.raw[cursor:])))
-        used = int(meter.group(1)) * (1000 if meter.group(2) == "k" else 1)
-        ctx_k, pct, compact_k = map(int, meter.group(3, 4, 5))
-        if used <= 0 or not 0 <= pct <= 100:
-            raise AssertionError(
-                f"{label}: invalid context meter values used={used} pct={pct}"
-            )
-        if ctx_k <= 0 or not 79 * ctx_k <= 100 * compact_k <= 81 * ctx_k:
-            raise AssertionError(
-                f"{label}: inconsistent meter context={ctx_k}k compact@={compact_k}k"
-            )
+        session.wait_for(CTX_RE, start=cursor)
+        standing = terminal_text(bytes(session.raw[cursor:]))
+        pct = int(CTX_RE.search(standing).group(1))
+        if not 0 <= pct <= 100:
+            raise AssertionError(f"{label}: invalid standing ctx percent {pct}")
         if mock.ws_turns != expect_ws or mock.sse_turns != expect_sse:
             raise AssertionError(
                 f"{label}: transport mismatch — ws_turns={mock.ws_turns} "
@@ -356,6 +350,15 @@ def run_scenario(
         cursor = len(session.raw)
         session.send_line("/models health")
         session.wait_for_literal(f"Codex transport: {health}", start=cursor)
+        session.wait_for(ACTIVE_WINDOW_RE, start=cursor)
+        health_text = terminal_text(bytes(session.raw[cursor:]))
+        window = ACTIVE_WINDOW_RE.search(health_text)
+        ctx_k, compact_k = map(int, window.group(1, 2))
+        if ctx_k <= 0 or not 79 * ctx_k <= 100 * compact_k <= 81 * ctx_k:
+            raise AssertionError(
+                f"{label}: inconsistent /models health context={ctx_k}k "
+                f"compact@={compact_k}k"
+            )
         session.wait_for_prompt(start=cursor)
         session.send_key("ctrl-d")
         result = session.read_until_exit(5.0)
