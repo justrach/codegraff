@@ -26,6 +26,7 @@ record only when you need the evidence or the edge cases.
 | [0013](0013-list-dir-lives-in-codedb.md) | Directory listing is `codedb list_dir` (in-process BFS, gitignore, 10k cap), not a new always-on catalog tool. |
 | [0014](0014-session-resume-carries-the-room-cursor.md) | `/resume` restores the peer-channel byte cursor and inbox; it does not replay the room into history. |
 | [0015](0015-ask-user-images-are-a-follow-up-user-message.md) | `ask_user` images ride a follow-up user message after the text tool result; Responses/OpenAI tool output stays text-only. |
+| [0016](0016-line-repl-is-a-working-block.md) | Line REPL chrome is a `WORKING` block plus a bare `›`; tool fan-out is a tree, never `✓ bash`. |
 
 ## When to write one
 

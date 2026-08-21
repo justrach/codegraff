@@ -14,10 +14,14 @@ const learning_privacy = @import("learning_privacy.zig");
 const engine_events = @import("engine_events.zig");
 const engine_sink = @import("engine_sink.zig");
 const agent_mod = @import("agent.zig");
+const goal_state = @import("goal_state.zig");
+const session_index = @import("session_index.zig");
+const util = @import("util.zig");
 const Agent = agent_mod.Agent;
 
 /// The interactive status line printed before each human turn: model,
-/// mode/permission badges, cwd, and the live context/cache/cost meter.
+/// mode/permission badges, cwd, the live context/cache/cost meter, and
+/// (when present) a standing-work row for goal / todos / image / session.
 pub fn prompt(self: *Agent) !void {
     if (main_mod.json_mode) return; // SDK drives turns; no human prompt
     if (self.out == null) return; // nothing to draw on
@@ -51,7 +55,49 @@ fn status(self: *Agent) engine_events.PromptStatus {
         .plan = main_mod.plan_mode,
         .strict = self.strict,
         .ultracode = self.ultracode_mode,
+        .standing = standing(self),
+        .saved_sessions = @intCast(@min(session_index.countSavedSessions(self.io), std.math.maxInt(u32))),
     };
+}
+
+/// Facts the prompt row itself never carried: a standing goal, its
+/// checklist, a staged image, a named session. Empty means skip the row.
+fn standing(self: *const Agent) engine_events.StandingWork {
+    var out: engine_events.StandingWork = .{};
+    if (self.session_title) |t| {
+        if (t.len > 0) out.session = t;
+    }
+    if (out.session.len == 0 and self.session_name.len > 0 and
+        !std.mem.eql(u8, self.session_name, "last"))
+        out.session = self.session_name;
+    if (self.goal) |g| {
+        if (g.status != .complete and g.objective.len > 0) {
+            out.goal = g.objective;
+            out.goal_status = switch (g.status) {
+                .active => "",
+                .paused => "paused",
+                .blocked => "blocked",
+                .complete => "",
+            };
+        }
+    }
+    const epoch = goal_state.currentEpoch(self.goal);
+    var items: std.ArrayList(engine_events.StandingTodo) = .empty;
+    for (self.todos.items) |t| {
+        if (t.epoch != epoch or t.retired) continue;
+        out.todos_total += 1;
+        const done = std.mem.eql(u8, t.status, "completed");
+        if (done) out.todos_done += 1;
+        if (items.items.len < 8) {
+            items.append(self.arena, .{
+                .content = util.utf8Prefix(t.content, 48),
+                .done = done,
+            }) catch {};
+        }
+    }
+    out.todos = items.items;
+    out.image = self.pending_image != null;
+    return out;
 }
 
 /// Same order of questions the inline meter asked: off, then flat-rate, then
@@ -149,4 +195,62 @@ test "kimi effort badge names the normalized wire effort, not the raw knob" {
     // No catalog row, no wire effort, no badge.
     agent.provider.model = "unknown-xyz";
     try std.testing.expectEqual(@as(?engine_events.ReasoningEffort, null), effectiveEffort(&agent));
+}
+
+test "standing work snapshots goal, checklist, session, and a staged image" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "grok-4", .context = 200_000 },
+        .messages = std.json.Array.init(arena),
+        .sub = false,
+        .label = "",
+        .out = null,
+        .sys_normal = "",
+    };
+    defer agent.todos.deinit(agent.gpa);
+
+    // Default session `last` and no goal: the standing row stays empty.
+    var sw = standing(&agent);
+    try std.testing.expectEqualStrings("", sw.session);
+    try std.testing.expectEqualStrings("", sw.goal);
+    try std.testing.expectEqual(@as(u32, 0), sw.todos_total);
+    try std.testing.expect(!sw.image);
+
+    agent.session_name = "login-fix";
+    agent.session_title = "fix the login flash";
+    agent.goal = .{ .objective = "ship the repl standing line", .status = .paused, .epoch = 1 };
+    try agent.todos.append(agent.gpa, .{ .content = "done item", .status = "completed", .epoch = 1 });
+    try agent.todos.append(agent.gpa, .{ .content = "open item", .status = "pending", .epoch = 1 });
+    try agent.todos.append(agent.gpa, .{ .content = "parked other goal", .status = "pending", .epoch = 0 });
+    try agent.todos.append(agent.gpa, .{ .content = "retired", .status = "completed", .epoch = 1, .retired = true });
+    agent.pending_image = .{ .media_type = "image/png", .b64 = "xx", .label = "shot.png" };
+
+    sw = standing(&agent);
+    try std.testing.expectEqualStrings("fix the login flash", sw.session);
+    try std.testing.expectEqualStrings("ship the repl standing line", sw.goal);
+    try std.testing.expectEqualStrings("paused", sw.goal_status);
+    try std.testing.expectEqual(@as(u32, 2), sw.todos_total);
+    try std.testing.expectEqual(@as(u32, 1), sw.todos_done);
+    try std.testing.expectEqual(@as(usize, 2), sw.todos.len);
+    try std.testing.expectEqualStrings("done item", sw.todos[0].content);
+    try std.testing.expect(sw.todos[0].done);
+    try std.testing.expectEqualStrings("open item", sw.todos[1].content);
+    try std.testing.expect(!sw.todos[1].done);
+    try std.testing.expect(sw.image);
+
+    // A completed goal is not standing work; the default session name stays hidden.
+    agent.goal.?.status = .complete;
+    agent.session_title = null;
+    agent.session_name = "last";
+    agent.pending_image = null;
+    sw = standing(&agent);
+    try std.testing.expectEqualStrings("", sw.goal);
+    try std.testing.expectEqualStrings("", sw.session);
+    try std.testing.expect(!sw.image);
 }
