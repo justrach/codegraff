@@ -28,10 +28,11 @@ pub fn contextInfo(self: *Model) void {
         self.pushFmt(.system, "context: {s} has not reported usage yet", .{st.model}) catch {};
         return;
     }
-    self.pushFmt(.system, "context: {d} / {d} tokens ({d}%) · compacts at {d} · {d} cached", .{
+    self.pushFmt(.system, "context: {d} / {d} tokens ({d}%) · cache {d}% · compacts at {d} · {d} cached", .{
         st.tokens,
         st.window,
         st.percent(),
+        st.cachePercent() orelse 0,
         st.compact_at,
         st.cache_read,
     }) catch {};
@@ -88,6 +89,7 @@ test "/context reports the engine's tokens, never a character count (#551)" {
     try testing.expect(std.mem.indexOf(u8, line, "12345") != null);
     try testing.expect(std.mem.indexOf(u8, line, "200000") != null);
     try testing.expect(std.mem.indexOf(u8, line, "6%") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "cache 16%") != null);
     try testing.expect(std.mem.indexOf(u8, line, "160000") != null);
     try testing.expect(std.mem.indexOf(u8, line, "2048") != null);
     try testing.expect(std.mem.indexOf(u8, line, "chars") == null);

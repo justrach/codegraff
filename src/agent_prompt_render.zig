@@ -154,6 +154,17 @@ fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
         (std.fmt.bufPrint(&ctxbuf, "ctx {d}%", .{contextPercent(meter.tokens, meter.window)}) catch "")
     else
         "";
+    var cachebuf: [24]u8 = undefined;
+    // Last-turn hit rate: cached tokens over the prompt that produced them.
+    // Rides with ctx — a lone cache badge has no denominator. 0% after a
+    // measured turn is still a reading (the fun is watching it jump).
+    const cache: []const u8 = if (st.context) |meter|
+        (if (meter.tokens > 0)
+            (std.fmt.bufPrint(&cachebuf, "cache {d}%", .{contextPercent(st.cache_read, meter.tokens)}) catch "")
+        else
+            "")
+    else
+        "";
     var resumebuf: [24]u8 = undefined;
     const resume_hint: []const u8 = if (st.saved_sessions > 0)
         (std.fmt.bufPrint(&resumebuf, "/resume {d}", .{st.saved_sessions}) catch "")
@@ -174,6 +185,7 @@ fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
     const show_strict = st.strict and fitsSegment(&used, avail, 3 + "Strict".len);
     const show_ultra = st.ultracode and fitsSegment(&used, avail, 3 + "Ultracode".len);
     const show_ctx = ctx.len > 0 and fitsSegment(&used, avail, 3 + ctx.len);
+    const show_cache = show_ctx and cache.len > 0 and fitsSegment(&used, avail, 3 + cache.len);
     const show_cost = cost.len > 0 and fitsSegment(&used, avail, 3 + cost.len);
     const show_resume = resume_hint.len > 0 and fitsSegment(&used, avail, 3 + resume_hint.len);
     const show_image = st.standing.image and fitsSegment(&used, avail, 3 + "image".len);
@@ -188,6 +200,7 @@ fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
     if (show_strict) try w.print(" · Strict", .{});
     if (show_ultra) try w.print(" · Ultracode", .{});
     if (show_ctx) try w.print(" · {s}", .{ctx});
+    if (show_cache) try w.print(" · {s}", .{cache});
     if (show_cost) try w.print(" · {s}", .{cost});
     if (show_resume) try w.print(" · {s}", .{resume_hint});
     if (show_image) try w.print(" · image", .{});
@@ -294,7 +307,7 @@ test "batch 3: every status-line segment renders exactly as it did inline" {
         .ultracode = true,
     };
     try std.testing.expectEqualStrings(
-        "\ngpt-5.6 · Fast · High · Fallback · Plan · Strict · Ultracode · ctx 6% · $0.50\n› ",
+        "\ngpt-5.6 · Fast · High · Fallback · Plan · Strict · Ultracode · ctx 6% · cache 16% · $0.50\n› ",
         renderPlain(&aw, full),
     );
 
@@ -360,7 +373,7 @@ test "batch 3: a shrinking pane sheds segments in the #209 priority order" {
         .cost = .unpriced,
     };
     const cases = [_]struct { cols: usize, want: []const u8 }{
-        .{ .cols = 80, .want = "\ngpt-5.6 · High · ctx 6% · $?\n› " },
+        .{ .cols = 80, .want = "\ngpt-5.6 · High · ctx 6% · cache 16% · $?\n› " },
         .{ .cols = 28, .want = "\ngpt-5.6 · High · ctx 6%\n› " },
         .{ .cols = 18, .want = "\ngpt-5.6 · High\n› " },
     };
@@ -389,6 +402,27 @@ test "batch 3: the cache badge rides with the context meter, never alone" {
         .cache_read = 4096, // reported, but no context meter to ride with
     });
     try std.testing.expect(std.mem.indexOf(u8, out, "cached") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "cache ") == null);
+}
+
+test "a measured turn prints last-turn cache hit next to ctx" {
+    const saved = style.*;
+    style.* = .{};
+    defer style.* = saved;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    // 2048 of 12345 input tokens ≈ 16%; the window share stays ctx 6%.
+    const out = renderPlain(&aw, .{
+        .model = "m",
+        .provider_id = "p",
+        .cwd = "/w",
+        .privacy_label = "Privacy:Local",
+        .privacy = .local,
+        .context = .{ .tokens = 12_345, .window = 200_000, .compact_at = 160_000 },
+        .cache_read = 2048,
+    });
+    try std.testing.expect(std.mem.indexOf(u8, out, "ctx 6%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "cache 16%") != null);
 }
 
 test "WORKING block sits above a bare prompt and is skipped when empty" {
