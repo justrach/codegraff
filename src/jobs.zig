@@ -236,11 +236,7 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
     try out.print("unknown worktree command '{s}' — use: graff worktree list | merge <name> | remove <name> | prune [older-than <days>]\n", .{action});
 }
 
-/// One background bash job (`bash` with run_in_background:true). A pump task
-/// continuously drains stdout+stderr into `buf` so the child never blocks on
-/// a full pipe; bash_output returns the bytes past `cursor`; bash_kill stops
-/// it. Jobs are session-global — they deliberately survive the turn (and the
-/// Esc cancel) that started them — and are reaped at exit.
+/// One background bash job. Pump drains pipes; session-global (survives Esc).
 const Job = struct {
     id: u32,
     cmd: []u8, // gpa-owned, for /jobs display
@@ -257,6 +253,7 @@ const Job = struct {
 
 const job_unread_cap = 256 * 1024;
 const job_wait = @import("job_wait.zig");
+const job_notify = @import("job_notify.zig");
 
 /// POSIX process groups; windows/wasi have none, so the group kills below and
 /// the job's own pgid are compiled out there (#198).
@@ -336,7 +333,10 @@ fn jobPump(job: *Job, gpa: Allocator, io: Io) void {
     job.exit_code = code;
     job.killed = killed;
     job.done = true;
+    const id = job.id;
+    const cmd = job.cmd;
     g_jobs.mutex.unlock(io);
+    job_notify.record(io, id, code, killed, cmd);
 }
 
 /// Argv that runs a shell command string: `/bin/sh -c` on POSIX, `cmd.exe /c`
@@ -511,7 +511,7 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
 test { // split-out modules: unreferenced, their tests silently never run
     _ = worktree_prune;
     _ = @import("worktree_lease.zig");
-    _ = job_wait;
+    _ = .{ job_wait, job_notify };
 }
 
 test "foreground tool subprocesses own their process group (#266, #198)" {

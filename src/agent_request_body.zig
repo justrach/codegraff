@@ -175,13 +175,8 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             var ckbuf: [96]u8 = undefined;
             try s.objectField("prompt_cache_key");
             try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
-            // Reasoning-effort hint for OpenAI-compatible providers that
-            // honor it (codegraff gateway, deepseek). Mirrors the
-            // Responses `reasoning.effort` set in the branch below.
-            if (!is_kimi and self.sendReasoningEffort()) {
-                try s.objectField("reasoning_effort");
-                try s.write(if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
-            }
+            // reasoning_effort (codegraff/deepseek/zai) + Z.AI thinking.enabled.
+            try @import("zai_wire.zig").writeChatExtras(&s, self.provider.id, self.sendReasoningEffort(), @tagName(self.reasoning));
             // --output-schema: structured outputs (xAI docs' response_format).
             // A provider that rejected json_schema (#543, deepseek) degrades
             // dsh-style: the tools-off formatting turn carries the schema as a

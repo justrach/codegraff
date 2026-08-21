@@ -112,5 +112,6 @@ build rather than going quietly absent.
   context for every turn. Use for conventions that apply to all work.
 - Skills: loaded on demand. Use for detailed procedures that only matter
   sometimes.
-- `.harness/agents/*.md` personas: whole system prompts for delegated
-  subagents, not instructions for the current agent.
+- `.harness/agents/*.{md,toml}` personas: whole system prompts for delegated
+  subagents, not instructions for the current agent. TOML uses Codex field
+  names (`developer_instructions`, `model_reasoning_effort`).

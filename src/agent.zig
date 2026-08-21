@@ -34,6 +34,7 @@ const prompt_ui = @import("agent_prompt.zig");
 const agent_tests = @import("agent_tests.zig");
 const goal_state = @import("goal_state.zig");
 const peer_channel = @import("peer_channel.zig"); // #469: turn-boundary peer message delivery
+const job_notify = @import("job_notify.zig");
 
 pub const TodoItem = struct {
     content: []const u8,
@@ -134,7 +135,9 @@ pub const Agent = struct {
     md_indent: usize = 0, // hanging indent for wrapped continuation lines
     md_width: usize = 0, // cached termCols() for the current line (0 = unset)
     snapshots: ?*tools_mod.Snapshots = null, // file-edit history for /rewind (root only)
-    pending_image: ?vision.PendingImage = null, // staged by /image, sent with the next turn
+    pending_image: ?vision.PendingImage = null, // last staged image (history nav)
+    pending_images: [16]vision.PendingImage = @splat(.{ .media_type = "", .b64 = "", .label = "" }),
+    pending_image_len: u8 = 0, // queued pastes for this turn (#580)
     home: []const u8 = "", // $HOME, for /key persistence (set by main)
     model_catalog: ?models_cache.LazyCodexCatalog = null, // demand-loaded dynamic Codex rows (root only)
     stored_keys_loaded: bool = true, // false after an explicit-provider launch; model surfaces fill the remaining Keychain slots
@@ -351,6 +354,7 @@ pub const Agent = struct {
             // turn — durable in history, visible as an event. Offset-based:
             // an empty channel costs one small stat per step.
             peer_channel.deliverInbound(self);
+            job_notify.deliver(self);
             // #193: pre-send overflow gate. A single turn's tool-output burst can
             // push the input past the model's wall before the between-turns 80%
             // meter (last_context_tokens, server-reported) catches up. Estimate the
@@ -429,8 +433,8 @@ pub const Agent = struct {
     pub const gateTool = @import("agent_tools.zig").gateTool;
     pub const firstWord = @import("agent_tools.zig").firstWord;
     pub const handleMeta = @import("agent_tools.zig").handleMeta;
-    pub const askUser = @import("agent_tools.zig").askUser;
-    pub const emitAskUser = @import("agent_tools.zig").emitAskUser;
+    pub const askUser = @import("ask_user.zig").askUser;
+    pub const emitAskUser = @import("ask_user.zig").emitAskUser;
     pub const sayToolUse = @import("agent_tools.zig").sayToolUse;
     pub const sayToolResult = @import("agent_tools.zig").sayToolResult;
     pub const renderTodos = goal_state.renderTodos; // body in goal_state.zig (600-line cap)

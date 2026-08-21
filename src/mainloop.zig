@@ -389,10 +389,7 @@ pub fn run(ctx: *Ctx) !void {
         var review_context = review.Context.begin(ctx.arena, ctx.root, ctx.root.review_mode);
         if (ctx.root.review_mode) ctx.root.rebaseContextMeter();
         defer if (review_context.restore(ctx.root)) ctx.root.rebaseContextMeter();
-        if (ctx.root.pending_image) |img| {
-            try ctx.root.messages.append(try vision.imageMessage(ctx.arena, ctx.root.provider.kind, ultracode_msg.text, img));
-            ctx.root.pending_image = null;
-        } else try ctx.root.messages.append(try messages.textMessage(ctx.arena, "user", ultracode_msg.text));
+        try ctx.root.messages.append(try @import("vision_queue.zig").consumePromptImages(ctx.arena, ctx.root, ultracode_msg.text));
         ctx.root.snapshots.?.turn += 1; // tag file edits in this turn (matches /rewind numbering)
         ctx.root.recap_generation +%= 1; // #419: a starting turn supersedes any recap job still in flight
         if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(base_msg.len, std.math.maxInt(u32))), ctx.root.provider.model);

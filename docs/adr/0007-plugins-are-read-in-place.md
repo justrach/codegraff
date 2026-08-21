@@ -42,7 +42,9 @@ config.
   `${CLAUDE_PROJECT_DIR}` expand in MCP strings. Bodies still load only when
   the model calls `skill`. Project `.harness/skills` still wins.
 - Plugin `agents/` join the fleet after personal `~/.harness/agents` and
-  before project `.harness/agents`.
+  before project `.harness/agents`. Codex custom agents (`~/.codex/agents`,
+  `.codex/agents`, `*.toml` or `*.md`) load in the matching personal/project
+  slot *before* `.harness/agents`, so a graff file of the same name wins.
 - Plugin `.mcp.json` / `mcp.json` plus Claude/Cursor/Grok MCP files
   (`~/.claude.json`, `~/.cursor/mcp.json`, `.cursor/mcp.json`, …) fill
   **missing** server names only. graff's `~/.codegraff/mcp.json` and

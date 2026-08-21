@@ -1,12 +1,4 @@
-//! Tool dispatch: `execTool` (the timed/traced/hooked outer wrapper, whose
-//! guard chain starts with the #330 `--no-local-tools` refusal) and
-//! `execToolInner` (the big per-tool-name switch — bash, bash_output,
-//! bash_kill, webfetch, read_file, codedb, edit_file, write_file, subagent,
-//! workflow, learn_candidate). Split out of main.zig (600-line goal); LAST in
-//! the tool-exec region since it's the glue that imports tools.zig/
-//! subagent.zig/workflow.zig as siblings, plus approvals.zig/mcp.zig/jobs.zig/
-//! skills.zig/telemetry.zig. Back-imports main (`main_mod`) for `ToolCall`/
-//! `plan_mode` (pub-flipped) and `utf8Prefix`.
+//! Tool dispatch: `execTool` + `execToolInner`. Split out of main.zig.
 
 const std = @import("std");
 const Io = std.Io;
@@ -54,6 +46,7 @@ const noSymlinkEscape = approvals_mod.noSymlinkEscape;
 const jobs = @import("jobs.zig");
 const runCapped = jobs.runCapped;
 const runCappedWithOptions = jobs.runCappedWithOptions;
+const exec_bash_stream = @import("exec_bash_stream.zig");
 const toolRunOptions = jobs.toolRunOptions; // #266/#198: own the child's process group
 const spawnJob = jobs.spawnJob;
 const jobOutput = jobs.jobOutput;
@@ -63,6 +56,8 @@ const skills = @import("skills.zig");
 const skill_docs = @import("skill_docs.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: refuse an MCP tool whose schema was never loaded
 const read_file = @import("read_file.zig");
+const result_read = @import("result_read.zig");
+const list_dir = @import("list_dir.zig"); // codedb list_dir: in-process BFS listing
 // #337: edit_file's verified write path, plus the file-tool helpers that moved
 // out with it (this file is at the 600-line ceiling).
 const edit_verify = @import("edit_verify.zig");
@@ -316,7 +311,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
                     try std.fmt.allocPrint(gpa, "could not start background job ({t}) — run it in the foreground instead", .{err}),
                 .is_error = true,
             };
-            return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. Do not poll. bash_output(id {d}, wait_ms>0) blocks until it exits; omit wait_ms for a snapshot. bash_kill stops it.{s}", .{
+            return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. You are notified on exit — do not poll. bash_output(id {d}, wait_ms>0) blocks until it exits; omit wait_ms for a snapshot. bash_kill stops it.{s}", .{
                 job.id,
                 job.cmd,
                 job.id,
@@ -325,13 +320,10 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         }
         const sh = shellArgv(cmd);
         const deadline: u64 = if (ctx.from_sub) subagent_bash_deadline_ms else 0;
-        // #276 P0-1: a worktree-isolated agent's bash calls run pinned to its
-        // own worktree — via std.process.Child.Cwd, per spawn, never a
-        // process-wide chdir — so parallel siblings never share a cwd.
-        // #266/#198: toolRunOptions also gives the command its own process
-        // group, so an Esc cancel or the deadline kills what it spawned (ssh,
-        // xcodebuild) instead of leaving it running against a dead turn.
-        const run = try runCappedWithOptions(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, deadline, toolRunOptions(ctx.agent_cwd));
+        var opts = toolRunOptions(ctx.agent_cwd);
+        var live = exec_bash_stream.Ctx{ .io = io };
+        exec_bash_stream.attach(&opts, !ctx.from_sub, &live);
+        const run = try runCappedWithOptions(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, deadline, opts);
         defer gpa.free(run.stdout);
         defer gpa.free(run.stderr);
 
@@ -396,6 +388,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         }
         return rawFetch(gpa, ctx.client, url);
     }
+    if (std.mem.eql(u8, call.name, result_read.tool_name)) return result_read.exec(ctx, call);
     if (std.mem.eql(u8, call.name, "read_file")) {
         const path = strField(input, "path") orelse return missingArg(gpa, "path");
         if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
@@ -466,6 +459,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         const cmd = strField(input, "command") orelse return missingArg(gpa, "command");
         var it = std.mem.tokenizeAny(u8, cmd, " \t");
         const sub = it.next() orelse return .{ .text = try gpa.dupe(u8, "usage: codedb <subcommand> [args] — e.g. search <q>, symbol <name>, callers <name>, outline <path>"), .is_error = true };
+        if (std.mem.eql(u8, sub, "list_dir")) return list_dir.exec(ctx, it.rest());
         // Allowlist read-only subcommands: never run the long-lived daemons
         // (serve/mcp) — they'd block this tool forever — or the destructive
         // ones (update/nuke).
@@ -474,7 +468,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         for (ok_subs) |s| if (std.mem.eql(u8, s, sub)) {
             allowed = true;
         };
-        if (!allowed) return .{ .text = try std.fmt.allocPrint(gpa, "codedb subcommand '{s}' is not allowed here — use one of: search, symbol, callers, find, outline, read, tree, context, word, deps, glob, ls, file, hot", .{sub}), .is_error = true };
+        if (!allowed) return .{ .text = try std.fmt.allocPrint(gpa, "codedb subcommand '{s}' is not allowed here — use one of: search, symbol, callers, find, outline, read, tree, list_dir, context, word, deps, glob, ls, file, hot", .{sub}), .is_error = true };
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(gpa);
         argv.append(gpa, "codedb") catch {};
@@ -594,6 +588,7 @@ test "internal learning respects the parent privacy ceiling" {
 }
 
 test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, so the compiled-in references live here (the reach check diffs the test binary, not which file holds the line)
+    _ = exec_bash_stream;
     _ = @import("codedbpro_report.zig");
     _ = @import("tool_balance.zig");
 }

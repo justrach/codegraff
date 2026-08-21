@@ -18,6 +18,7 @@ LOCAL_TOOLS = (
     "edit_file",
     "write_file",
     "codedb",
+    "read_tool_result",
     "imagegen",
 )
 LEAN_TOOLS = (
@@ -26,6 +27,7 @@ LEAN_TOOLS = (
     "edit_file",
     "write_file",
     "codedb",
+    "read_tool_result",
     "subagent",
     "attempt_completion",
     "load_tool_schemas",
@@ -41,6 +43,7 @@ BASE_TOOLS = (
     "webfetch",
     "skill",
     "codedb",
+    "read_tool_result",
 )
 META_TOOLS = (
     "todo_write",
@@ -50,6 +53,8 @@ META_TOOLS = (
     "ask_user",
     "attempt_completion",
     "load_tool_schemas",
+    "mcp_search_tools",
+    "mcp_select_tool",
     "clock_sleep",
 )
 ROOT_EXTRAS = (

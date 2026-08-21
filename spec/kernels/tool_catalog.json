@@ -11,7 +11,8 @@
       "write_file",
       "webfetch",
       "skill",
-      "codedb"
+      "codedb",
+      "read_tool_result"
     ],
     "meta": [
       "todo_write",
@@ -21,6 +22,8 @@
       "ask_user",
       "attempt_completion",
       "load_tool_schemas",
+      "mcp_search_tools",
+      "mcp_select_tool",
       "clock_sleep"
     ],
     "root_extras": [
@@ -42,6 +45,7 @@
       "edit_file",
       "write_file",
       "codedb",
+      "read_tool_result",
       "imagegen"
     ],
     "lean": [
@@ -50,6 +54,7 @@
       "edit_file",
       "write_file",
       "codedb",
+      "read_tool_result",
       "subagent",
       "attempt_completion",
       "load_tool_schemas"
@@ -76,6 +81,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "todo_write",
         "todo_read",
         "eval",
@@ -83,6 +89,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "subagent",
         "workflow",
         "agent_output",
@@ -112,7 +120,8 @@
         "write_file",
         "webfetch",
         "skill",
-        "codedb"
+        "codedb",
+        "read_tool_result"
       ],
       "blocked": [
         "imagegen"
@@ -138,6 +147,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "todo_write",
         "todo_read",
         "eval",
@@ -145,6 +155,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "subagent",
         "workflow",
         "agent_output",
@@ -175,7 +187,8 @@
         "write_file",
         "webfetch",
         "skill",
-        "codedb"
+        "codedb",
+        "read_tool_result"
       ],
       "blocked": [
         "imagegen"
@@ -201,6 +214,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "todo_write",
         "todo_read",
         "eval",
@@ -208,6 +222,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "clock_sleep",
         "subagent",
         "workflow",
@@ -238,7 +254,8 @@
         "write_file",
         "webfetch",
         "skill",
-        "codedb"
+        "codedb",
+        "read_tool_result"
       ],
       "blocked": [
         "imagegen"
@@ -264,6 +281,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "todo_write",
         "todo_read",
         "eval",
@@ -271,6 +289,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "clock_sleep",
         "subagent",
         "workflow",
@@ -302,7 +322,8 @@
         "write_file",
         "webfetch",
         "skill",
-        "codedb"
+        "codedb",
+        "read_tool_result"
       ],
       "blocked": [
         "imagegen"
@@ -328,6 +349,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "todo_write",
         "todo_read",
         "eval",
@@ -335,6 +357,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "subagent",
         "workflow",
         "agent_output",
@@ -364,6 +388,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "imagegen"
       ],
       "blocked": []
@@ -388,6 +413,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "todo_write",
         "todo_read",
         "eval",
@@ -395,6 +421,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "subagent",
         "workflow",
         "agent_output",
@@ -425,6 +453,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "imagegen"
       ],
       "blocked": []
@@ -449,6 +478,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "todo_write",
         "todo_read",
         "eval",
@@ -456,6 +486,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "clock_sleep",
         "subagent",
         "workflow",
@@ -486,6 +518,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "imagegen"
       ],
       "blocked": []
@@ -510,6 +543,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "todo_write",
         "todo_read",
         "eval",
@@ -517,6 +551,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "clock_sleep",
         "subagent",
         "workflow",
@@ -548,6 +584,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "imagegen"
       ],
       "blocked": []
@@ -568,6 +605,7 @@
         "edit_file",
         "write_file",
         "codedb",
+        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -595,7 +633,8 @@
         "write_file",
         "webfetch",
         "skill",
-        "codedb"
+        "codedb",
+        "read_tool_result"
       ],
       "blocked": [
         "imagegen"
@@ -617,6 +656,7 @@
         "edit_file",
         "write_file",
         "codedb",
+        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -644,7 +684,8 @@
         "write_file",
         "webfetch",
         "skill",
-        "codedb"
+        "codedb",
+        "read_tool_result"
       ],
       "blocked": [
         "imagegen"
@@ -666,6 +707,7 @@
         "edit_file",
         "write_file",
         "codedb",
+        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -693,7 +735,8 @@
         "write_file",
         "webfetch",
         "skill",
-        "codedb"
+        "codedb",
+        "read_tool_result"
       ],
       "blocked": [
         "imagegen"
@@ -715,6 +758,7 @@
         "edit_file",
         "write_file",
         "codedb",
+        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -742,7 +786,8 @@
         "write_file",
         "webfetch",
         "skill",
-        "codedb"
+        "codedb",
+        "read_tool_result"
       ],
       "blocked": [
         "imagegen"
@@ -764,6 +809,7 @@
         "edit_file",
         "write_file",
         "codedb",
+        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -790,6 +836,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "imagegen"
       ],
       "blocked": []
@@ -810,6 +857,7 @@
         "edit_file",
         "write_file",
         "codedb",
+        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -836,6 +884,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "imagegen"
       ],
       "blocked": []
@@ -856,6 +905,7 @@
         "edit_file",
         "write_file",
         "codedb",
+        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -882,6 +932,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "imagegen"
       ],
       "blocked": []
@@ -902,6 +953,7 @@
         "edit_file",
         "write_file",
         "codedb",
+        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -928,6 +980,7 @@
         "webfetch",
         "skill",
         "codedb",
+        "read_tool_result",
         "imagegen"
       ],
       "blocked": []
@@ -952,6 +1005,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "subagent",
         "workflow",
         "agent_output",
@@ -966,6 +1021,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -991,6 +1047,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1014,6 +1071,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "subagent",
         "workflow",
         "agent_output",
@@ -1029,6 +1088,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1054,6 +1114,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1077,6 +1138,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "clock_sleep",
         "subagent",
         "workflow",
@@ -1092,6 +1155,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1117,6 +1181,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1140,6 +1205,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "clock_sleep",
         "subagent",
         "workflow",
@@ -1156,6 +1223,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1181,6 +1249,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1204,6 +1273,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "subagent",
         "workflow",
         "agent_output",
@@ -1218,6 +1289,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1243,6 +1315,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1266,6 +1339,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "subagent",
         "workflow",
         "agent_output",
@@ -1281,6 +1356,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1306,6 +1382,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1329,6 +1406,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "clock_sleep",
         "subagent",
         "workflow",
@@ -1344,6 +1423,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1369,6 +1449,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1392,6 +1473,8 @@
         "ask_user",
         "attempt_completion",
         "load_tool_schemas",
+        "mcp_search_tools",
+        "mcp_select_tool",
         "clock_sleep",
         "subagent",
         "workflow",
@@ -1408,6 +1491,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1433,6 +1517,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1459,6 +1544,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1484,6 +1570,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1510,6 +1597,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1535,6 +1623,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1561,6 +1650,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1586,6 +1676,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1612,6 +1703,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1637,6 +1729,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1663,6 +1756,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1688,6 +1782,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1714,6 +1809,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1739,6 +1835,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1765,6 +1862,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1790,6 +1888,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1816,6 +1915,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     },
@@ -1841,6 +1941,7 @@
         "edit_file",
         "imagegen",
         "read_file",
+        "read_tool_result",
         "write_file"
       ]
     }

@@ -41,6 +41,7 @@ pub const gated_tools = [_][]const u8{
     "edit_file",
     "write_file",
     "codedb",
+    "read_tool_result",
     // #352: imagegen looks like a content tool but is a local write-and-spawn
     // primitive — it starts `codex exec --sandbox workspace-write` or python3
     // on THIS host and writes a file into the working tree. Being optional
@@ -88,6 +89,7 @@ pub const lean_tools = [_][]const u8{
     "edit_file",
     "write_file",
     "codedb",
+    "read_tool_result",
     "subagent",
     "attempt_completion",
     "load_tool_schemas",
@@ -136,7 +138,7 @@ pub fn compactLeanSpecs(comptime Spec: type, arena: Allocator, specs: []const Sp
 
 /// Refusal text. Names the flag so the model stops retrying the same call, and
 /// points it at what does work in this deployment.
-pub const refusal_text = "--no-local-tools is set for this process: the built-in bash, bash_output, bash_kill, read_file, edit_file, write_file and codedb tools are hard-disabled and cannot be re-enabled by asking. Run commands and touch files through the sandbox tools the connected MCP server provides instead; webfetch still works.";
+pub const refusal_text = "--no-local-tools is set for this process: the built-in bash, bash_output, bash_kill, read_file, edit_file, write_file, codedb and read_tool_result tools are hard-disabled and cannot be re-enabled by asking. Run commands and touch files through the sandbox tools the connected MCP server provides instead; webfetch still works.";
 
 /// `GRAFF_NO_LOCAL_TOOLS` - affirmative-only, like GRAFF_CLOCK_SLEEP, and OR'd
 /// onto the CLI flag by the caller so a stray value can never turn
@@ -182,7 +184,7 @@ test "#330: the gated set is exactly the host-touching built-ins; webfetch, meta
     defer enabled = saved;
 
     for (gated_tools) |tool| try std.testing.expect(isLocalTool(tool));
-    try std.testing.expectEqual(@as(usize, 8), gated_tools.len);
+    try std.testing.expectEqual(@as(usize, 9), gated_tools.len);
     try std.testing.expect(isLocalTool("imagegen")); // #352: optional, but still a local spawn+write
     for ([_][]const u8{ "webfetch", "skill", "subagent", "workflow", "todo_write", "eval", "mcp__sandbox__exec", "mcp__sandbox__bash" }) |tool|
         try std.testing.expect(!isLocalTool(tool));
@@ -229,10 +231,10 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
     try std.testing.expectEqualStrings("read_file", kept[1].name);
     try std.testing.expectEqualStrings("subagent", kept[2].name);
     try std.testing.expectEqualStrings("attempt_completion", kept[3].name);
-    // The keep-list is exactly the eight documented tools — subagent stays
+    // The keep-list is exactly the nine documented tools — subagent stays
     // (the unattended delegation path), load_tool_schemas stays (lean folds
     // MCP behind it), everything orchestration/meta goes.
-    try std.testing.expectEqual(@as(usize, 8), lean_tools.len);
+    try std.testing.expectEqual(@as(usize, 9), lean_tools.len);
     for (lean_tools) |tool| try std.testing.expect(leanKeeps(tool));
     try std.testing.expect(!leanKeeps("workflow"));
     try std.testing.expect(!leanKeeps("todo_write"));

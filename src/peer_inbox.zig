@@ -36,9 +36,13 @@ var g_items: [inbox_cap]Parked = undefined;
 var g_head: usize = 0;
 var g_len: usize = 0;
 
-pub fn resetForTest() void {
+pub fn clear() void {
     g_head = 0;
     g_len = 0;
+}
+
+pub fn resetForTest() void {
+    clear();
 }
 
 pub fn unread() usize {
@@ -125,6 +129,53 @@ pub fn takeAll(arena: Allocator) []const u8 {
     return buf.items;
 }
 
+/// Digest parked bodies so a save skips only when the mailbox is unchanged.
+pub fn mixFingerprint(f: anytype) void {
+    f.num(g_len);
+    var i: usize = 0;
+    while (i < g_len) : (i += 1) {
+        const p = itemAt(i);
+        f.text(fromSlice(p));
+        f.text(textSlice(p));
+        f.flag(p.dm);
+        f.flag(p.device);
+    }
+}
+
+/// The parked ring as a JSON array for `.session.json`.
+pub fn writeJson(s: *std.json.Stringify) !void {
+    try s.beginArray();
+    var i: usize = 0;
+    while (i < g_len) : (i += 1) {
+        const p = itemAt(i);
+        try s.beginObject();
+        try s.objectField("from");
+        try s.write(fromSlice(p));
+        try s.objectField("text");
+        try s.write(textSlice(p));
+        try s.objectField("dm");
+        try s.write(p.dm);
+        try s.objectField("device");
+        try s.write(p.device);
+        try s.endObject();
+    }
+    try s.endArray();
+}
+
+/// Replace the ring from a saved `peer_inbox` array. Garbage is skipped.
+pub fn restoreJson(v: std.json.Value) void {
+    clear();
+    if (v != .array) return;
+    for (v.array.items) |item| {
+        if (item != .object) continue;
+        const from = if (item.object.get("from")) |f| (if (f == .string) f.string else continue) else continue;
+        const text = if (item.object.get("text")) |t| (if (t == .string) t.string else continue) else continue;
+        const dm = if (item.object.get("dm")) |d| (d == .bool and d.bool) else false;
+        const device = if (item.object.get("device")) |d| (d == .bool and d.bool) else false;
+        parkOne(from, text, dm, device);
+    }
+}
+
 /// Claude ListAgents: who is live, one short line each. Pull, not a push.
 pub fn formatList(arena: Allocator, peers: []const Owner, mine: []const u8) []const u8 {
     if (peers.len == 0) return "no other live graff sessions";
@@ -199,4 +250,22 @@ test "formatList: one short line per peer; empty is honest" {
     try testing.expect(std.mem.startsWith(u8, text, "2 live:\n"));
     try testing.expect(std.mem.indexOf(u8, text, "session-aaa pid 11 this-folder · rewrite the targeting") != null);
     try testing.expect(std.mem.indexOf(u8, text, "session-bbb pid 22 /other/.git · paint chips") != null);
+}
+
+test "inbox JSON round-trip: restoreJson rebuilds the ring" {
+    resetForTest();
+    defer resetForTest();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    _ = parkHeard(&.{msg("s-a", "hold the tree", "")}, &.{});
+    var aw: std.Io.Writer.Allocating = .init(a);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try writeJson(&s);
+    clear();
+    try testing.expectEqual(@as(usize, 0), unread());
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, aw.writer.buffered(), .{});
+    restoreJson(parsed);
+    try testing.expectEqual(@as(usize, 1), unread());
+    try testing.expect(std.mem.indexOf(u8, takeAll(a), "hold the tree") != null);
 }

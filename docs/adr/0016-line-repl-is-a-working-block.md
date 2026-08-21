@@ -1,4 +1,4 @@
-# 0012. Line REPL chrome is a WORKING block plus a bare ›
+# 0016. Line REPL chrome is a WORKING block plus a bare ›
 
 Status: accepted 2026-08-20
 

@@ -105,7 +105,7 @@ TASKS = {
 }
 
 USAGE_RE = re.compile(
-    r"\[usage\]\s+(\d+)\s+api call\(s\)\s+.\s+(\d+)\s+in\s+\((\d+)\s+cached\)\s*\+\s*(\d+)\s+out tokens"
+    r"\[usage\]\s+(\d+)\s+api call\(s\)\s+.\s+(\d+)\s+in\s+\((\d+)\s+cached[^)]*\)\s*\+\s*(\d+)\s+out tokens"
 )
 
 

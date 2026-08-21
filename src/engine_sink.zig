@@ -163,18 +163,29 @@ pub var hosted_frontend: bool = false;
 /// its own Agent finds nothing here and keeps the process-mode default, which
 /// is exactly right — a child's output is not the frontend's transcript.
 threadlocal var g_turn_sink: ?EngineSink = null;
+/// Process-wide copy of the bound frontend sink so a root tool running on the
+/// Io pool (every `execTool` is `io.async`) can still emit live progress.
+/// Subagent construction still uses the thread-local `turnSink` and sees null.
+var g_hosted_sink: ?EngineSink = null;
 
 pub fn bindTurnSink(s: EngineSink) void {
     g_turn_sink = s;
+    g_hosted_sink = s;
 }
 
 pub fn unbindTurnSink() void {
+    g_hosted_sink = null;
     g_turn_sink = null;
 }
 
 /// The bound sink, or null when no frontend claimed this turn.
 pub fn turnSink() ?EngineSink {
     return g_turn_sink;
+}
+
+/// The TUI/hosted sink, visible to pool threads for the duration of the turn.
+pub fn hostedSink() ?EngineSink {
+    return g_hosted_sink;
 }
 
 const tui_vtable: VTable = .{ .emit = tuiEmit, .durable = false };
@@ -232,6 +243,21 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
                 w.writeAll(d.text) catch return;
                 w.flush() catch return;
             }
+        },
+        // grok-build RawTerminal/Append: live bash bytes, not markdown.
+        .tool_output_delta => |d| if (a.out) |w| {
+            w.writeAll(d.text) catch return;
+            w.flush() catch return;
+        },
+        .job_completed => |j| {
+            var buf: [80]u8 = undefined;
+            const msg = if (j.killed)
+                std.fmt.bufPrint(&buf, "\n[job {d} killed]\n", .{j.id})
+            else if (j.exit_code) |c|
+                std.fmt.bufPrint(&buf, "\n[job {d} exited {d}]\n", .{ j.id, c })
+            else
+                std.fmt.bufPrint(&buf, "\n[job {d} ended]\n", .{j.id});
+            notice(a, msg catch return);
         },
         .thinking_fold_toggle => render.toggleThinkingFold(a),
         // Transport cuts carry no partial answer (nothing streamed on the ws
@@ -319,6 +345,14 @@ fn hostedEmit(a: *Agent, ev: EngineEvent) void {
             w.writeAll(d.text) catch {};
             w.flush() catch {};
         },
+        .tool_output_delta => |d| {
+            w.writeAll(d.text) catch {};
+            w.flush() catch {};
+        },
+        .job_completed => |j| {
+            if (j.killed) w.print("[job {d} killed]\n", .{j.id}) catch {} else if (j.exit_code) |c| w.print("[job {d} exited {d}]\n", .{ j.id, c }) catch {} else w.print("[job {d} ended]\n", .{j.id}) catch {};
+            w.flush() catch {};
+        },
         .completion_text, .todo_list_updated => |t| {
             w.writeAll(t.text) catch {};
             w.writeAll("\n") catch {};
@@ -366,6 +400,18 @@ fn jsonEmit(ctx: *anyopaque, ev: Stamped) void {
     // deliberate schema-gated change, not refactor fallout.)
     if (!engine_events.durable(ev.event)) return switch (ev.event) {
         .stream_aborted, .stream_complete => a.flushStreamTail(),
+        .tool_output_delta => |d| jsonLine(w, ev.cursor, .{
+            .type = "bash_output_chunk",
+            .name = d.name,
+            .stream = if (d.stderr) "stderr" else "stdout",
+            .text = d.text,
+        }),
+        .job_completed => |j| jsonLine(w, ev.cursor, .{
+            .type = "job_completed",
+            .id = j.id,
+            .exit_code = j.exit_code,
+            .killed = j.killed,
+        }),
         else => {},
     };
     switch (ev.event) {

@@ -220,7 +220,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
 }
 
 /// Loads persisted command/tool approvals + lifecycle hooks + the MAP-Elites
-/// agent-type registry (builtins + .harness/agents/*.md), and prints the
+/// agent-type registry (builtins + .harness/agents/*.{md,toml}), and prints the
 /// startup status lines for both. Moved out of main() (600-line goal).
 /// `approvals` is an out-param: main() declares it (`var approvals: Approvals
 /// = undefined;`) and this fills it in place, so main() can still register
@@ -230,7 +230,7 @@ pub fn initApprovalsHooksFleet(io: Io, gpa: Allocator, arena: Allocator, environ
     approvals.* = .{ .yolo = flags.effectiveYolo() }; // -p implies yolo unless --safe
     const persisted_approvals = approvals.loadPersisted(io, gpa, arena);
 
-    // Agent types: builtins + .harness/agents/*.md (the MAP-Elites niches).
+    // Agent types: builtins + .harness/agents/*.{md,toml} (the MAP-Elites niches).
     fleet.g_home = keys_cli.homeEnv(environ_map); // for /agents promote's personal tier
     fleet.g_agent_types = fleet.loadAgentTypes(io, arena, fleet.g_home); // builtin < ~/.harness/agents (personal) < ./.harness/agents (private)
     const sink = engine_sink.writerSink(out);

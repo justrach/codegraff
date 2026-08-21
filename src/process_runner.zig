@@ -88,10 +88,18 @@ pub const CappedRun = struct {
 /// Supplying an explicit environment replaces (rather than augments) the
 /// parent environment. `kill_process_tree` creates an owned process group/job
 /// so descendants cannot outlive the orchestrated command.
+///
+/// `stream` is grok-build's bash_output_chunk: each newly-arrived stdout (0)
+/// or stderr (1) slice while the child is still running. Foreground bash used
+/// to stay silent until exit, so a long build looked like a hang.
+pub const StreamFn = *const fn (ctx: ?*anyopaque, which: u8, chunk: []const u8) void;
+
 pub const CappedRunOptions = struct {
     cwd: std.process.Child.Cwd = .inherit,
     environ_map: ?*const std.process.Environ.Map = null,
     kill_process_tree: bool = false,
+    stream: ?StreamFn = null,
+    stream_ctx: ?*anyopaque = null,
 };
 
 /// #253: RLIMIT_NOFILE as this process actually observes it. main() calls
@@ -208,21 +216,31 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
     const caps = [2]usize{ stdout_cap, stderr_cap };
     var saved: [2]?[]u8 = .{ null, null };
     errdefer for (saved) |item| if (item) |bytes| gpa.free(bytes);
+    var streamed: [2]usize = .{ 0, 0 };
 
     var esc_killed = false;
     var timed_out = false;
     const started: Io.Timestamp = .now(io, .awake);
     loop: while (true) {
+        var eof = false;
         multi_reader.fill(64, .{ .duration = .{ .raw = .fromMilliseconds(200), .clock = .awake } }) catch |err| switch (err) {
-            error.EndOfStream => break :loop,
+            error.EndOfStream => eof = true,
             error.Timeout => {},
             else => |other| return other,
         };
-        for (readers, caps, &saved) |reader, cap, *item| {
+        for (readers, caps, &saved, &streamed, [_]u8{ 0, 1 }) |reader, cap, *item, *seen, which| {
             const buffered = reader.buffered();
+            if (options.stream) |fn_emit| {
+                if (buffered.len > seen.*) {
+                    const end = if (item.* != null) @min(buffered.len, cap) else buffered.len;
+                    if (end > seen.*) fn_emit(options.stream_ctx, which, buffered[seen.*..end]);
+                    seen.* = end;
+                }
+            }
             if (item.* == null and buffered.len > cap) item.* = try gpa.dupe(u8, buffered[0..cap]);
             if (item.* != null) reader.toss(buffered.len);
         }
+        if (eof) break :loop;
         if (Agent.esc_cancel.load(.acquire)) {
             esc_killed = true;
             terminateTree(&child, io, &windows_job, group_id, options.kill_process_tree);
@@ -337,4 +355,27 @@ test "#253: fdQuotaNote names the error and the observed limit" {
     try std.testing.expect(std.mem.indexOf(u8, with, "#253") != null);
     const without = fdQuotaNote(&buf, "SystemFdQuotaExceeded", null);
     try std.testing.expect(std.mem.indexOf(u8, without, "unavailable") != null);
+}
+
+test "runCapped streams stdout before the child exits" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const State = struct {
+        seen: bool = false,
+        fn emit(ctx: ?*anyopaque, which: u8, chunk: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx orelse return));
+            if (which == 0 and std.mem.indexOf(u8, chunk, "STREAM_MARK") != null) self.seen = true;
+        }
+    };
+    var state = State{};
+    const r = try runCappedWithOptions(gpa, io, &.{ "/bin/sh", "-c", "printf STREAM_MARK; sleep 0.4; printf DONE" }, 1024, 1024, 2000, .{
+        .stream = &State.emit,
+        .stream_ctx = &state,
+    });
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+    try std.testing.expect(state.seen);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "STREAM_MARK") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "DONE") != null);
 }

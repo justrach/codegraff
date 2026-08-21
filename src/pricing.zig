@@ -46,10 +46,13 @@ pub const price_table = [_]ModelPrice{
     .{ .name = "grok-4.6", .in = 2, .out = 6, .cache = 0.5, .high_at = 200_000, .high_in = 4, .high_out = 12, .high_cache = 1 },
     .{ .name = "grok-4.3", .in = 1.25, .out = 2.5, .cache = 0.3 },
     .{ .name = "grok-build", .in = 1, .out = 2, .cache = 0.1 },
-    .{ .name = "glm-5.2", .in = 1, .out = 3.2, .cache = 0.1 },
-    .{ .name = "glm-5", .in = 1, .out = 3.2, .cache = 0.1 },
-    .{ .name = "glm-4.7", .in = 0.6, .out = 2.2, .cache = 0.06 },
-    .{ .name = "glm-4.5", .in = 0.6, .out = 2.2, .cache = 0.06 },
+    .{ .name = "glm-5.3", .in = 1.4, .out = 4.4, .cache = 0.26 },
+    .{ .name = "glm-5.2", .in = 1.4, .out = 4.4, .cache = 0.26 },
+    .{ .name = "glm-5", .in = 1, .out = 3.2, .cache = 0.2 },
+    .{ .name = "glm-5-turbo", .in = 1.2, .out = 4.0, .cache = 0.24 },
+    .{ .name = "glm-5v-turbo", .in = 1.2, .out = 4.0, .cache = 0.24 },
+    .{ .name = "glm-4.7", .in = 0.6, .out = 2.2, .cache = 0.11 },
+    .{ .name = "glm-4.5", .in = 0.6, .out = 2.2, .cache = 0.11 },
 };
 
 /// Runtime price overlay populated by `graff models refresh` (models.dev
@@ -254,6 +257,9 @@ pub const model_table = [_]ModelInfo{
     // row for the same weights; kilo-auto routes dynamically, so its row
     // carries the conservative small-model window.
     .{ .provider = "groq", .name = "openai/gpt-oss-120b", .context = 131_072 },
+    // Cerebras Inference (api.cerebras.ai OpenAI chat) — not the WSE CSL SDK.
+    .{ .provider = "cerebras", .name = "gpt-oss-120b", .context = 131_072 },
+    .{ .provider = "cerebras", .name = "gemma-4-31b", .context = 131_072 },
     .{ .provider = "mistral", .name = "mistral-medium-latest", .context = 131_072 },
     .{ .provider = "kilo", .name = "kilo-auto/small", .context = 131_072 },
     // codegraff gateway (its claude aliases use dots, so they don't collide
@@ -281,7 +287,10 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "xai", .name = "grok-4.6", .context = 500_000, .supports_reasoning = true },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
-    .{ .provider = "zai", .name = "glm-5.2", .context = 204_800 },
+    .{ .provider = "zai", .name = "glm-5.3", .context = 1_000_000, .supports_reasoning = true },
+    .{ .provider = "zai", .name = "glm-5.2", .context = 1_000_000, .supports_reasoning = true },
+    .{ .provider = "zai", .name = "glm-5-turbo", .context = 204_800, .supports_reasoning = true },
+    .{ .provider = "zai", .name = "glm-5v-turbo", .context = 204_800, .supports_reasoning = true },
     .{ .provider = "zai", .name = "glm-5", .context = 204_800 },
     .{ .provider = "zai", .name = "glm-4.7", .context = 204_800 },
     .{ .provider = "zai", .name = "glm-4.5", .context = 131_072 },
@@ -508,88 +517,5 @@ pub fn providerModelInTable(provider_id: []const u8, model: []const u8) bool {
     return false;
 }
 
-test "contextFor known model and default fallback" {
-    try std.testing.expectEqual(@as(u64, 1_048_576), contextFor("kimi", "k3"));
-    try std.testing.expectEqual(@as(u64, default_context), contextFor("nope", "unknown-xyz"));
-}
-
-test "Kimi discovery preserves Codex and chooses the newest pure generation" {
-    const saved = active_model_table;
-    defer active_model_table = saved;
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const discovered = [_]ModelInfo{
-        .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144 },
-        .{ .provider = "kimi", .name = "k2p7", .context = 262_144 },
-        .{ .provider = "kimi", .name = "k3", .context = 1_048_576, .protocol = .anthropic, .supports_reasoning = true, .support_efforts = &.{"max"}, .default_effort = "max" },
-    };
-    try std.testing.expect(activateKimiModels(arena_state.allocator(), &discovered));
-    try std.testing.expectEqualStrings("k3", providerDefaultModel("kimi", "fallback"));
-    try std.testing.expectEqual(ModelProtocol.anthropic, kimiProtocol("k3"));
-    try std.testing.expect(kimiSupportsThinking("k3"));
-    try std.testing.expectEqualStrings("max", kimiThinkingEffort("k3", "medium").?);
-    try std.testing.expect(providerModelInTable("codex", "gpt-5.6-sol"));
-    try std.testing.expect(!providerModelInTable("kimi", "kimi-for-coding-highspeed"));
-    const codex = [_]ModelInfo{.{ .provider = "codex", .name = "future-sol", .context = 270_000 }};
-    try std.testing.expect(activateCodexModels(arena_state.allocator(), &codex));
-    try std.testing.expect(providerModelInTable("kimi", "k3"));
-}
-
-test "Codex discovery replaces only the baked Codex fallback" {
-    const saved = active_model_table;
-    defer active_model_table = saved;
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const discovered = [_]ModelInfo{
-        .{ .provider = "codex", .name = "future-sol", .context = 372_000 },
-        .{ .provider = "codex", .name = "future-luna", .context = 128_000 },
-    };
-    try std.testing.expect(activateCodexModels(arena_state.allocator(), &discovered));
-    try std.testing.expect(providerModelInTable("codex", "future-sol"));
-    try std.testing.expect(providerModelInTable("codex", "future-luna"));
-    try std.testing.expect(!providerModelInTable("codex", "gpt-5.5"));
-    try std.testing.expectEqual(codex_context_window, contextFor("codex", "future-sol")); // live 372k row clamps to the codex cap
-    try std.testing.expectEqualStrings("future-sol", providerDefaultModel("codex", "fallback"));
-    try std.testing.expect(providerModelInTable("openai", "gpt-5.6"));
-}
-
-test "baked Codex catalog is an offline fallback, not rollout data" {
-    try std.testing.expect(providerModelInTable("codex", "gpt-5.6-sol"));
-    try std.testing.expect(providerModelInTable("codex", "gpt-5.6-terra"));
-    try std.testing.expect(providerModelInTable("codex", "gpt-5.6-luna"));
-    try std.testing.expect(providerModelInTable("codex", "gpt-5.5"));
-    try std.testing.expect(providerModelInTable("codex", "gpt-5.4"));
-    try std.testing.expect(providerModelInTable("codex", "gpt-5.3-codex-spark"));
-    try std.testing.expectEqual(codex_context_window, contextFor("codex", "gpt-5.6-sol")); // baked 272k row clamps to the codex cap
-    try std.testing.expectEqualStrings("gpt-5.6-sol", providerDefaultModel("codex", "fallback"));
-    try std.testing.expect(!providerModelInTable("codex", "gpt-5.5-codex"));
-    try std.testing.expect(!providerModelInTable("codex", "gpt-5-codex"));
-    try std.testing.expect(providerModelInTable("openai", "gpt-5-codex"));
-    try std.testing.expect(providerModelInTable("openai", "gpt-5.6"));
-}
-
-test "every built-in provider default_model is catalog-present for that provider" {
-    // Workspace routers are runtime configuration and are tested separately.
-    const specs = @import("provider.zig").provider_specs;
-    for (specs) |spec|
-        try std.testing.expect(providerModelInTable(spec.id, spec.default_model));
-}
-
-test "refresh overlay augments price/context lookups (codex cap still applies)" {
-    const saved_p = price_overlay;
-    const saved_c = context_overlay;
-    defer price_overlay = saved_p;
-    defer context_overlay = saved_c;
-    const po = [_]ModelPrice{.{ .name = "future-model-x", .in = 9, .out = 9, .cache = 1 }};
-    const co = [_]ModelInfo{.{ .provider = "", .name = "future-model-x", .context = 999_000 }};
-    price_overlay = &po;
-    context_overlay = &co;
-    try std.testing.expect(priceFor("future-model-x") != null);
-    try std.testing.expectEqual(@as(u64, 999_000), contextFor("openai", "future-model-x"));
-    try std.testing.expectEqual(codex_context_window, contextFor("codex", "future-model-x"));
-}
-
-// Seat classification moved to billing.zig with #471 — it needs the provider
-// spec and the credential source, not the price sheet. Its tests live there.
-
-// usdFor + grok-4.6 window/band tests live in pricing_tests.zig (600-line cap).
+// Seat classification lives in billing.zig. Discovery / price-overlay / default
+// catalog tests live in pricing_tests.zig (600-line cap).
