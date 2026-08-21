@@ -28,6 +28,7 @@ record only when you need the evidence or the edge cases.
 | [0015](0015-ask-user-images-are-a-follow-up-user-message.md) | `ask_user` images ride a follow-up user message after the text tool result; Responses/OpenAI tool output stays text-only. |
 | [0016](0016-line-repl-is-a-working-block.md) | Line REPL chrome is a `WORKING` block plus a bare `›`; tool fan-out is a tree, never `✓ bash`. |
 | [0017](0017-model-election-ranks-signed-in-plans-first.md) | `/model` and `/models` on both frontends rank signed-in plan seats above credits and metered keys (`src/models_rank.zig`). |
+| [0018](0018-standing-chrome-shows-last-turn-cache-hit.md) | Last-turn cache hit % rides with `ctx` on the line-REPL meter and the TUI footer; `/cache` stays the posture HUD. |
 
 ## When to write one
 

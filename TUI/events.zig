@@ -72,6 +72,13 @@ pub const Status = struct {
         if (!self.has_context or self.window == 0) return 0;
         return @min((self.tokens *| 100) / self.window, 100);
     }
+
+    /// Last-turn prompt-cache hit: cached tokens over the prompt that
+    /// produced them. Null until a turn has reported a context size.
+    pub fn cachePercent(self: Status) ?u64 {
+        if (!self.has_context or self.tokens == 0) return null;
+        return @min((self.cache_read *| 100) / self.tokens, 100);
+    }
 };
 
 pub const Event = union(enum) {
