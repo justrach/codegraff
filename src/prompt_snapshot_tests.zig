@@ -41,7 +41,7 @@ const golden_full_prompt =
     \\call read_file once with contains set to the exact key and answer from its
     \\output; do not request the whole file first. To navigate code — finding symbols,
     \\definitions, or where logic lives — prefer the codedb tool (it's indexed
-    \\and structural) over bash grep/find/ls. For a folder, codedb list_dir <path> is a bounded BFS listing that honors .gitignore — use it instead of bash ls. Before an exact edit, read one current uncompressed target span, apply the smallest edit that preserves terminal-newline state, do not verify after success, and reread/retry only on stale source, ambiguity, or failure. Some bash commands need user approval — if one
+    \\and structural) over bash grep/find/ls. The codedb commands are context <task>, around <name>, callpath A B, list_dir <path>, and status — one call, not a chain. List a folder with codedb list_dir <path> (in-process; no index required). Before an exact edit, read one current uncompressed target span, apply the smallest edit that preserves terminal-newline state, do not verify after success, and reread/retry only on stale source, ambiguity, or failure. Some bash commands need user approval — if one
     \\is declined, try another approach or ask. Native file tools deliberately
     \\stay inside the current working directory. If the user explicitly names
     \\a repository or path outside it, the root agent may inspect and modify

@@ -12,6 +12,9 @@ current is part of cutting a release.
 
 ## v0.0.269 (2026-08-20)
 
+- codedb pairing (ADR 0019): advertise five one-shots — `context <task>`,
+  `around <name>` (def+callers), `callpath A B`, `list_dir <path>`,
+  `status`. Hop verbs stay callable, not on the catalog menu.
 - Vercel AI Gateway is a built-in OpenAI-chat seat (`AI_GATEWAY_API_KEY`,
   `graff key set vercel …`, default `alibaba/qwen3.8-27b`). Chat goes to
   `ai-gateway.vercel.sh/coding-agent/v1` (docs: marks harness traffic;

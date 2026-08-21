@@ -30,7 +30,6 @@ const rawFetch = tools.rawFetch;
 const bash_stdout_cap = tools.bash_stdout_cap;
 const bash_stderr_cap = tools.bash_stderr_cap;
 const webfetch_cap = tools.webfetch_cap;
-const codedb_result_cap = tools.codedb_result_cap;
 
 const subagent = @import("subagent.zig");
 const execSubagent = subagent.execSubagent;
@@ -57,7 +56,7 @@ const skill_docs = @import("skill_docs.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: refuse an MCP tool whose schema was never loaded
 const read_file = @import("read_file.zig");
 const result_read = @import("result_read.zig");
-const list_dir = @import("list_dir.zig"); // codedb list_dir: in-process BFS listing
+const codedb_exec = @import("codedb_exec.zig"); // native codedb dispatch (list_dir / status / one-shots)
 // #337: edit_file's verified write path, plus the file-tool helpers that moved
 // out with it (this file is at the 600-line ceiling).
 const edit_verify = @import("edit_verify.zig");
@@ -95,12 +94,6 @@ test "isSshCommand: bare and pathed ssh, not scp or substrings" {
     try std.testing.expect(!isSshCommand("echo ssh"));
     try std.testing.expect(!isSshCommand(""));
 }
-
-/// Wall-clock ceiling for one `codedb` query (#198). Every allowed subcommand
-/// is a read that normally answers in seconds; a query that has not returned
-/// in a minute is stuck, and before this it stayed stuck forever — the tool
-/// blocked on EOF with no deadline at all.
-const codedb_deadline_ms: u64 = 60 * 1000;
 
 fn learningArgv(argv: *[10][]const u8, exe_path: []const u8, contribute: bool) usize {
     var argc: usize = 0;
@@ -407,11 +400,8 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         // #276: skipped entirely for a worktree-isolated agent — codedb's index is
         // built over the main checkout, not the scratch worktree, so a compact
         // read there could show stale or altogether wrong content.
-        if (want_compact and ctx.agent_cwd == null) {
-            if (main_mod.g_codedb_present == null) main_mod.g_codedb_present = skills.binOnPath(io, "codedb");
-            if (main_mod.g_codedb_present == true and hooks.codedbFileIndexed(io, gpa, path)) {
-                if (try codedbCompactRead(gpa, io, path, start_line, end_line)) |out| return out;
-            }
+        if (want_compact) {
+            if (try codedb_exec.maybeCompactRead(ctx, path, start_line, end_line)) |out| return out;
         }
         // #276 P0-1: resolve under the agent's isolated worktree when set —
         // path itself stays relative (that's the agent's own view, used in
@@ -455,51 +445,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             },
         };
     }
-    if (std.mem.eql(u8, call.name, "codedb")) {
-        const cmd = strField(input, "command") orelse return missingArg(gpa, "command");
-        var it = std.mem.tokenizeAny(u8, cmd, " \t");
-        const sub = it.next() orelse return .{ .text = try gpa.dupe(u8, "usage: codedb <subcommand> [args] — e.g. search <q>, symbol <name>, callers <name>, outline <path>"), .is_error = true };
-        if (std.mem.eql(u8, sub, "list_dir")) return list_dir.exec(ctx, it.rest());
-        // Allowlist read-only subcommands: never run the long-lived daemons
-        // (serve/mcp) — they'd block this tool forever — or the destructive
-        // ones (update/nuke).
-        const ok_subs = [_][]const u8{ "search", "symbol", "callers", "find", "outline", "read", "tree", "context", "word", "deps", "glob", "ls", "file", "hot" };
-        var allowed = false;
-        for (ok_subs) |s| if (std.mem.eql(u8, s, sub)) {
-            allowed = true;
-        };
-        if (!allowed) return .{ .text = try std.fmt.allocPrint(gpa, "codedb subcommand '{s}' is not allowed here — use one of: search, symbol, callers, find, outline, read, tree, list_dir, context, word, deps, glob, ls, file, hot", .{sub}), .is_error = true };
-        var argv: std.ArrayList([]const u8) = .empty;
-        defer argv.deinit(gpa);
-        argv.append(gpa, "codedb") catch {};
-        argv.append(gpa, sub) catch {};
-        while (it.next()) |tok| argv.append(gpa, tok) catch {};
-        // #198: this used to spawn by hand and block until EOF — no deadline, no
-        // process group, no Esc check — which is how abandoned sessions ended up
-        // owning dozens of `codedb search` children still asleep days later. The
-        // capped runner owns the group and tears it down on Esc or the deadline.
-        const run = runCappedWithOptions(gpa, io, argv.items, 512 * 1024, 4096, codedb_deadline_ms, toolRunOptions(null)) catch |e| switch (e) {
-            error.FileNotFound => return .{ .text = try gpa.dupe(u8, "codedb isn't installed — it's open source at github.com/justrach/codedb; install it, then run `codedb` once in the repo to index it"), .is_error = true },
-            else => return failure(gpa, e),
-        };
-        gpa.free(run.stderr);
-        const text = run.stdout;
-        if (run.timed_out) {
-            defer gpa.free(text);
-            return .{ .text = try std.fmt.allocPrint(gpa, "codedb {s} timed out after {d}s and was killed — narrow the query, or run it through bash if it really needs that long", .{ sub, codedb_deadline_ms / 1000 }), .is_error = true };
-        }
-        if (text.len == 0) {
-            defer gpa.free(text);
-            return .{ .text = try gpa.dupe(u8, "(codedb returned nothing — try `codedb tree` to confirm the repo is indexed, or refine the query)") };
-        }
-        // #440: this used to truncate anything past 64 KB, because an unbounded
-        // `read <big file>` once dumped 500KB into a subagent's context and
-        // ballooned it to 160k tokens. The guard was right and its method was
-        // destructive: the same 500KB now becomes a handle at tool time, so the
-        // context is bounded harder than it ever was here AND the bytes survive
-        // for a targeted read of the part that mattered.
-        return .{ .text = text };
-    }
+    if (std.mem.eql(u8, call.name, "codedb")) return codedb_exec.exec(ctx, input);
     // #337: the read/splice/write/VERIFY path lives in edit_verify.zig, where
     // the post-edit check sits ON the success path — a write that did not land
     // can no longer be reported as `replaced N occurrence(s)`.
@@ -553,32 +499,6 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     return .{ .text = try std.fmt.allocPrint(gpa, "unknown tool: {s}", .{call.name}), .is_error = true };
 }
 
-/// Opt-in exploratory read via `codedb read <path> [-L a-b] --compact`. Lossy view
-/// for reasoning only; returns null on any codedb failure so the caller falls back
-/// to the native byte-exact read (#66).
-fn codedbCompactRead(gpa: Allocator, io: Io, path: []const u8, start: ?i64, end: ?i64) !?ToolOutput {
-    var argv: std.ArrayList([]const u8) = .empty;
-    defer argv.deinit(gpa);
-    var lbuf: [48]u8 = undefined;
-    try argv.append(gpa, "codedb");
-    try argv.append(gpa, "read");
-    try argv.append(gpa, path);
-    if (start != null and end != null and start.? >= 1 and end.? >= start.?) {
-        try argv.append(gpa, "-L");
-        try argv.append(gpa, std.fmt.bufPrint(&lbuf, "{d}-{d}", .{ start.?, end.? }) catch return null);
-    }
-    try argv.append(gpa, "--compact");
-    const run = runCapped(gpa, io, argv.items, codedb_result_cap, 4096, 0) catch return null;
-    defer gpa.free(run.stdout);
-    defer gpa.free(run.stderr);
-    const ok = switch (run.term) {
-        .exited => |c| c == 0,
-        else => false,
-    };
-    if (!ok or run.stdout.len == 0) return null;
-    return ToolOutput{ .text = try std.fmt.allocPrint(gpa, "{s}\n[compact view — comments/blank lines stripped, line numbers shown; re-read WITHOUT compact before building an edit_file old_string]", .{run.stdout}) };
-}
-
 test "internal learning respects the parent privacy ceiling" {
     var argv: [10][]const u8 = undefined;
     var len = learningArgv(&argv, "graff", false);
@@ -591,4 +511,8 @@ test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, 
     _ = exec_bash_stream;
     _ = @import("codedbpro_report.zig");
     _ = @import("tool_balance.zig");
+    _ = @import("codedb_exec.zig");
+    _ = @import("codedb_around.zig");
+    _ = @import("codedb_health.zig");
+    _ = @import("list_dir.zig");
 }
