@@ -52,6 +52,7 @@ test {
     _ = theme;
     _ = catalog;
     _ = app;
+    _ = @import("app_tests.zig");
     _ = @import("dispatch.zig");
     _ = @import("prompt_history.zig");
     _ = @import("meters.zig");
