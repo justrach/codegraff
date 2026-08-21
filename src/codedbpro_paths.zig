@@ -25,6 +25,7 @@ fn companionPathKey(tool: []const u8) ?[]const u8 {
         std.mem.eql(u8, tool, "mcp__codedbpro__faster_search") or
         std.mem.eql(u8, tool, "mcp__codedbpro__meta_search") or
         std.mem.eql(u8, tool, "mcp__codedbpro__list_dir") or
+        std.mem.eql(u8, tool, "mcp__codedbpro__lookup") or
         std.mem.eql(u8, tool, "mcp__codedbpro__explain") or
         std.mem.eql(u8, tool, "mcp__codedbpro__context") or
         std.mem.eql(u8, tool, "mcp__codedbpro__callpath"))

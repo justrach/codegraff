@@ -13,11 +13,13 @@ are not substitutes.
 
 ## Decision
 
-Zigrepper ships the same five one-shots (`explain` / `context` /
-`callpath` / `list_dir` / `status`) on its own catalog so the paid tool
-can answer those questions in one RPC. Hop twins stay dispatchable.
-Do not add those verbs to the native catalog or change `read_file` /
-`bash` / `edit_file`.
+Zigrepper's default MCP menu is `lookup` + `read` / `edit` / `batch`.
+`lookup` routes `name` → explain, `task`/`query` → context, `from`+`to`
+→ callpath, directory path → list_dir, and caches the composed JSON
+against `codedb.snapshot` mtime. Named one-shots stay dispatchable;
+`CODEDBPRO_TOOLS_PROFILE=full` advertises them plus hops. Do not add
+those verbs to the native catalog or change `read_file` / `bash` /
+`edit_file`.
 
 When codedb-pro is licensed, native `codedb` stays callable. Do not
 block it and do not redirect it through `mcp__codedbpro__*`. Licensed
@@ -28,7 +30,7 @@ Unlicensed sessions keep the conservative “try free codedb first” note.
 ## Consequences
 
 - A licensed session can use native `codedb around` and
-  `mcp__codedbpro__explain` in the same turn — different engines.
+  `mcp__codedbpro__lookup` in the same turn — different engines.
 - Licensed refusals name pro read/search, never “use pro instead of codedb”.
-- Zigrepper must ship the five tools (hops remain callable).
+- Repeat questions hit the process-lifetime LRU instead of recomposing.
 - Native codedb pairing (ADR 0019) is unchanged.

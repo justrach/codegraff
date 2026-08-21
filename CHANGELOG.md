@@ -12,9 +12,9 @@ current is part of cutting a release.
 
 ## Unreleased
 
-- Licensed codedb-pro (ADR 0020): zigrepper one-shots (`explain` /
-  `context` / `callpath` / `list_dir` / `status`) sit next to native
-  `codedb`, which stays callable. Only `read_file` and leading shell
+- Licensed codedb-pro (ADR 0020): prefer `mcp__codedbpro__lookup` (one
+  RPC; cached) next to native `codedb`, which stays callable. Named
+  one-shots stay dispatchable. Only `read_file` and leading shell
   searches redirect to the paid suite.
 
 ## v0.0.269 (2026-08-20)

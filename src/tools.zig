@@ -286,7 +286,7 @@ pub fn companionRoute(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
 fn companionNativeFallback(bare: []const u8) []const u8 {
     if (std.mem.eql(u8, bare, "read")) return "read_file tool";
     if (std.mem.eql(u8, bare, "search") or std.mem.eql(u8, bare, "faster_search") or std.mem.eql(u8, bare, "meta_search") or
-        std.mem.eql(u8, bare, "explain") or std.mem.eql(u8, bare, "around") or std.mem.eql(u8, bare, "callpath") or
+        std.mem.eql(u8, bare, "lookup") or std.mem.eql(u8, bare, "explain") or std.mem.eql(u8, bare, "around") or std.mem.eql(u8, bare, "callpath") or
         std.mem.eql(u8, bare, "context") or std.mem.eql(u8, bare, "list_dir") or std.mem.eql(u8, bare, "status"))
         return "codedb tool (context/around/callpath), or bash grep";
     if (std.mem.eql(u8, bare, "edit") or std.mem.eql(u8, bare, "patch") or std.mem.eql(u8, bare, "replace"))
@@ -458,6 +458,7 @@ test "companionNativeFallback: every companion tool maps to a native equivalent"
     try std.testing.expectEqualStrings("edit_file tool", companionNativeFallback("edit"));
     try std.testing.expectEqualStrings("write_file tool", companionNativeFallback("create"));
     try std.testing.expect(std.mem.indexOf(u8, companionNativeFallback("faster_search"), "codedb") != null);
+    try std.testing.expect(std.mem.indexOf(u8, companionNativeFallback("lookup"), "codedb") != null);
     try std.testing.expect(std.mem.indexOf(u8, companionNativeFallback("explain"), "codedb") != null);
     // an unknown/new companion tool still gets a sane native pointer
     try std.testing.expect(std.mem.indexOf(u8, companionNativeFallback("memo"), "native") != null);

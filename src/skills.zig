@@ -67,13 +67,13 @@ pub const skills_registry = [_]SkillDef{
 /// Edits inside the cwd stay native: edit_file/write_file are
 /// /rewind-snapshotted and already splice via zigpatch, whereas codedb-pro
 /// edit/patch/replace bypass /rewind. Explicit external targets use gated bash.
-const codedbpro_note_licensed = "The codedb-pro MCP server is connected and LICENSED — its mcp__codedbpro__* tools (load once per session via load_tool_schemas, e.g. by query) REPLACE native read_file and leading shell search, which are BLOCKED while the server is healthy. Native codedb STAYS — it is the free index (context/around/callpath/list_dir/status) and a different job from the paid suite. Pro ONE-SHOTS: explain <name> (def+callers), context <task>, callpath A B, list_dir <path>, status — not a hop chain of search/symbol/callers. Hop tools stay callable. Size reads: mode=full in ONE call for small files; outline/symbol/lines for files too big to read whole. Shell searches go to `zigrep` via bash. Any codedb-pro failure unblocks read_file/shell-search for the rest of the session. KEEP EDITS on native edit_file/write_file — codedb-pro edit/patch/replace bypass /rewind.";
+const codedbpro_note_licensed = "The codedb-pro MCP server is connected and LICENSED — its mcp__codedbpro__* tools (load once per session via load_tool_schemas, e.g. by query) REPLACE native read_file and leading shell search, which are BLOCKED while the server is healthy. Native codedb STAYS — it is the free index (context/around/callpath/list_dir/status) and a different job from the paid suite. Pro LOOKUP first: mcp__codedbpro__lookup (name / task / from+to / path) is one RPC and caches the composed answer. Named one-shots (explain <name>, context <task>, callpath A B, list_dir, status) stay callable — not a hop chain of search/symbol/callers. Hop tools stay callable. Size reads: mode=full in ONE call for small files; outline/symbol/lines for files too big to read whole. Shell searches go to `zigrep` via bash. Any codedb-pro failure unblocks read_file/shell-search for the rest of the session. KEEP EDITS on native edit_file/write_file — codedb-pro edit/patch/replace bypass /rewind.";
 
 const McpNote = struct { server: []const u8, note: []const u8 };
 pub const mcp_notes = [_]McpNote{
     .{
         .server = "codedbpro",
-        .note = "The codedb-pro MCP server is connected (mcp__codedbpro__* tools). SEARCH ORDER: the native codedb tool is free and indexed — always try it first (context/around/callpath/list_dir/status); reach for mcp__codedbpro__faster_search or meta_search only when codedb can't answer (raw literal/regex content matches, fuzzy queries, non-indexed files) — codedb-pro is metered. Prefer mcp__codedbpro__read (mode=outline first, then symbol) over read_file for navigating large code files, and mcp__codedbpro__batch to run several independent reads/searches/edits in one round-trip. Keep edits on the native edit_file/write_file tools (/rewind-tracked; the cwd and explicit-external-target rules above apply). These tools are accelerators, not requirements: if an mcp__codedbpro__ call fails, fall back to read_file/codedb/bash and continue.",
+        .note = "The codedb-pro MCP server is connected (mcp__codedbpro__* tools). SEARCH ORDER: the native codedb tool is free and indexed — always try it first (context/around/callpath/list_dir/status); reach for mcp__codedbpro__lookup (one RPC: name/task/from+to/path) only when codedb can't answer (raw literal/regex content matches, fuzzy queries, non-indexed files) — codedb-pro is metered. Prefer mcp__codedbpro__read (mode=outline first, then symbol) over read_file for navigating large code files, and mcp__codedbpro__batch to run several independent reads/searches/edits in one round-trip. Keep edits on the native edit_file/write_file tools (/rewind-tracked; the cwd and explicit-external-target rules above apply). These tools are accelerators, not requirements: if an mcp__codedbpro__ call fails, fall back to read_file/codedb/bash and continue.",
     },
     .{
         .server = "muonry",
@@ -98,7 +98,7 @@ pub const companion_servers = [_]CompanionServer{
 
 /// Read-only tool names on the companion server, mirroring its own
 /// readOnlyHint annotations.
-const companion_readonly_tools = [_][]const u8{ "read", "search", "faster_search", "meta_search", "diff", "lint", "explain", "around", "callpath", "context", "list_dir", "status", "symbol_search" };
+const companion_readonly_tools = [_][]const u8{ "read", "search", "faster_search", "meta_search", "diff", "lint", "lookup", "explain", "around", "callpath", "context", "list_dir", "status", "symbol_search" };
 
 fn companionToolReadOnly(t: []const u8) bool {
     for (companion_readonly_tools) |ok| if (std.mem.eql(u8, t, ok)) return true;
@@ -302,6 +302,7 @@ test "companionReadOnly: the plan-mode classifier mirrors readOnlyHint" {
     try std.testing.expect(companionReadOnly("mcp__codedbpro__read", none));
     try std.testing.expect(companionReadOnly("mcp__codedbpro__search", none));
     try std.testing.expect(companionReadOnly("mcp__codedbpro__faster_search", none));
+    try std.testing.expect(companionReadOnly("mcp__codedbpro__lookup", none));
     try std.testing.expect(companionReadOnly("mcp__codedbpro__explain", none));
     try std.testing.expect(companionReadOnly("mcp__codedbpro__callpath", none));
     try std.testing.expect(companionReadOnly("mcp__codedbpro__context", none));
@@ -405,6 +406,7 @@ test "codedbproNote: licensed flips codedbpro to the lean-in note" {
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "mcp__codedbpro__*") != null);
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "load_tool_schemas") != null);
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "/rewind") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "lookup") != null);
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "explain <name>") != null);
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "callpath") != null);
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "Native codedb STAYS") != null);

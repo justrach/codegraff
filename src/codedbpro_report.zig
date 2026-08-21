@@ -178,9 +178,9 @@ fn replacementFor(call_name: []const u8, is_bash_search: bool, zigrep_installed:
     if (is_bash_search) return if (zigrep_installed)
         "zigrep — run it directly via bash (e.g. `zigrep PATTERN src/`); it is the suite's search CLI. Caveat: zigrep always skips vendor dirs (node_modules & co) even with --no-ignore — use `rg -uu` for vendor dives"
     else
-        "mcp__codedbpro__faster_search / meta_search";
+        "mcp__codedbpro__lookup (or faster_search / meta_search)";
     if (std.mem.eql(u8, call_name, "read_file")) return "mcp__codedbpro__read (mode=outline first, then symbol/lines)";
-    return "mcp__codedbpro__faster_search / meta_search";
+    return "mcp__codedbpro__lookup (or faster_search / meta_search)";
 }
 
 /// exec.zig consults this on every tool call: when the licensed pro tools are
