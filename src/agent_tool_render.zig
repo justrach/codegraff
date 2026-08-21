@@ -132,6 +132,7 @@ pub fn liveOutput(a: *Agent, text: []const u8) void {
 pub fn toolResultLine(a: *Agent, r: ToolOutcome) void {
     const w = a.out orelse return;
     if (r.meta) return;
+    if (label.skipLineRepl(r.name)) return;
     const all = std.mem.trim(u8, r.text, " \t\r\n");
     if (r.is_error) {
         if (label.infraFamily(r.name, all)) |fam| {
@@ -306,6 +307,13 @@ test "the result line marks success, failure and cancellation and previews one l
     // Meta tools draw their own UX; the ✓ line stays out of their way.
     aw.clearRetainingCapacity();
     toolResultLine(&a, .{ .name = "todo_write", .text = "todos", .is_error = false, .meta = true });
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+
+    // ADR 0021: skill load and spilled-result paging are not conversational.
+    aw.clearRetainingCapacity();
+    toolResultLine(&a, .{ .name = "skill", .text = "# skill: deploy (plugin)\n", .is_error = false });
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+    toolResultLine(&a, .{ .name = "read_tool_result", .text = "hit 1 at byte 17378:\n", .is_error = false });
     try std.testing.expectEqualStrings("", aw.writer.buffered());
 
     // Over the cap: exactly 100 bytes of the first line, then the ellipsis —

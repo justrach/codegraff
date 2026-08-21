@@ -212,28 +212,32 @@ pub fn drainEvents(self: *Model) void {
 
 fn applyEvent(self: *Model, ev: engine.Event) void {
     switch (ev) {
-        .tool_started => |t| self.pushTool(.{ .name = t.name, .detail = t.detail }) catch {},
-        .tool_finished => |t| self.pushTool(.{
-            .name = t.name,
-            .detail = t.detail,
-            .done = true,
-            .is_error = t.is_error,
-        }) catch {},
-        // A refusal is a finished tool row in the error state: the TUI has a
-        // surface for that today, and dropping it (as the old sink did) left
-        // the user watching a call that simply never came back.
-        .tool_rejected => |t| self.pushTool(.{
-            .name = t.name,
-            .detail = t.detail,
-            .done = true,
-            .is_error = true,
-            .denied = true,
-        }) catch {},
+        .tool_started => |t| {
+            if (std.mem.startsWith(u8, t.name, "internal_")) return;
+            self.pushTool(.{ .name = t.name, .summary = t.detail, .detail = t.detail }) catch {};
+        },
+        .tool_finished => |t| {
+            if (std.mem.startsWith(u8, t.name, "internal_")) return;
+            self.pushTool(.{
+                .name = t.name,
+                .summary = t.detail,
+                .detail = t.detail,
+                .done = true,
+                .is_error = t.is_error,
+            }) catch {};
+        },
+        .tool_rejected => |t| {
+            if (std.mem.startsWith(u8, t.name, "internal_")) return;
+            self.pushTool(.{
+                .name = t.name,
+                .summary = t.detail,
+                .detail = t.detail,
+                .done = true,
+                .is_error = true,
+                .denied = true,
+            }) catch {};
+        },
         .notice => |s| self.push(.system, s) catch {},
-        // A mid-turn failover changes what the status bar must say. The event's
-        // copy dies with this drain, so the Model takes ownership of the name
-        // the global points at.
-        // The engine's meters, measured against the request it actually sent.
         .status => |st| self.setStatus(st),
         .model_changed => |s| if (self.alloc.dupe(u8, s)) |owned| {
             if (self.model_override) |old| self.alloc.free(old);

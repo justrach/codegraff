@@ -67,7 +67,8 @@ pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
     };
     @import("prompt_cache_hud.zig").noteBust(.playbook);
     refreshRoot(agent, agent.arena);
-    agent.say("  {s}⛔ constraint recorded ({s}){s} {s}\n", .{ style.yellow, r.id, style.reset, text }) catch {};
+    // ADR 0021: the user just said this. Echoing "constraint recorded" is
+    // machine state, not progress. The tool result still tells the model.
     return .{ .text = std.fmt.allocPrint(agent.arena, "constraint recorded as {s}. It is now in {s} and rides every subagent, workflow and pipeline brief from here on, in this session and in later ones — you do not need to restate it.", .{ r.id, playbook.path }) catch "constraint recorded", .is_error = false };
 }
 

@@ -206,7 +206,20 @@ pub fn deliverInbound(root: *Agent) void {
             lines.append(root.arena, line) catch {};
         }
     }
-    renderPeerBlock(sink, root.io, any_visible, markers.items, lines.items[window.start..]);
+    // Foreground chrome: one tally. Full peer lines stay in /debug and in the
+    // parked inbox the model reads. Unrelated coordination must not steal
+    // the first screenful of a turn.
+    if (repl.g_debug) {
+        renderPeerBlock(sink, root.io, any_visible, markers.items, lines.items[window.start..]);
+    } else if (any_visible) {
+        const n = lines.items.len;
+        const summary = if (n == 0)
+            ""
+        else
+            (std.fmt.allocPrint(root.arena, "↯ {d} peer update{s}", .{ n, if (n == 1) "" else "s" }) catch "↯ peer updates");
+        if (summary.len > 0)
+            renderPeerBlock(sink, root.io, true, &.{}, &.{summary});
+    }
     if (peer_inbox.parkHeard(local_msgs, device_msgs) == 0) return;
     // History gets the wake only (ADR 0004). Bodies wait in the ring.
     var obj: std.json.ObjectMap = .empty;

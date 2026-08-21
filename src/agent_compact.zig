@@ -116,7 +116,9 @@ pub fn compact(self: *Agent) anyerror!usize {
         if (!main_mod.json_mode) try self.say("nothing to compact\n", .{});
         return 0;
     };
-    if (!main_mod.json_mode) try self.say("[compacting ~{d} tokens…]\n", .{pending_tokens});
+    // ADR 0021: successful compaction is a status-bar fact, not a transcript
+    // row. `/debug` still prints the archaeology.
+    if (!main_mod.json_mode and @import("repl.zig").g_debug) try self.say("[compacting ~{d} tokens…]\n", .{pending_tokens});
     // #391: the agent writes its own handoff BEFORE the summarizer rewrites the
     // history it describes. Gated, budgeted, best-effort: every refusal is a
     // named skip, so everything below runs unconditionally.
@@ -219,7 +221,7 @@ pub fn compact(self: *Agent) anyerror!usize {
     // Responses wire. Manual /compact on codex lands here too — correctly
     // labeled, since it IS a client compaction.
     if (self.provider.kind == .responses) server_compact.noteClientSummary(summary.len);
-    if (!main_mod.json_mode) try self.say("[history compacted to a {d}-char summary]\n", .{summary.len});
+    if (!main_mod.json_mode and @import("repl.zig").g_debug) try self.say("[history compacted to a {d}-char summary]\n", .{summary.len});
     return summary.len;
 }
 

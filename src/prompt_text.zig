@@ -24,6 +24,9 @@ pub const intro_note =
     \\a tool, a parameter, or a wrapper API around one, and never assume a
     \\capability that is not listed for you — when the thing you want is absent,
     \\say so and finish the task with what is here.
+    \\Inspect before you commit to an architecture: say what you found, then
+    \\what you will do, then do it. Do not announce a solution and hunt for
+    \\confirmation of it.
 ;
 
 /// Gate: `caps.local_tools`. #330 `--no-local-tools` hard-removes bash,

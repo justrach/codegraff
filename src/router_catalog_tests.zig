@@ -176,6 +176,7 @@ test "alwaysLive is xAI-only so other OpenAI routers keep the disk TTL" {
     try std.testing.expect(!alwaysLive(provider.specFor("codegraff").?));
     try std.testing.expect(!alwaysLive(provider.specFor("anthropic").?));
     try std.testing.expect(!alwaysLive(provider.specFor("fireworks").?));
+    try std.testing.expectEqual(@as(i64, 500), rc.live_budget_ms);
 }
 
 test "xAI /v1/models rows inherit baked context windows" {
@@ -299,6 +300,9 @@ test "startup catalog loads fan out concurrently with Kimi" {
     try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(fetchSpecTask") != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(kimiFetchTask") != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "fn spawnKimi") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "startBackgroundRefresh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "live_budget_ms") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "if (alwaysLive(spec)) return false") == null);
 }
 
 // ── provider.zig routing tests parked here under its 600-line ceiling ──────

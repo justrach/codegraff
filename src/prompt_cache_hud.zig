@@ -219,6 +219,7 @@ pub fn render(w: *Io.Writer) !void {
         \\    Z.AI                    implicit prefix (cached_tokens); thinking.clear_thinking=false
         \\    Vercel                  gateway implicit cache (cached_tokens); coding-agent /v1
         \\    /btw                    parent tools + system + cache key; note is the user message
+        \\    subagents               prefix lanes (OpenAI/chat); xAI conv stays isolated
         \\
     );
 }
@@ -307,6 +308,7 @@ test "render stays content-free and names remaining levers" {
     try std.testing.expect(contains(text, "/goal"));
     try std.testing.expect(contains(text, "x-grok-conv-id"));
     try std.testing.expect(contains(text, "append-only"));
+    try std.testing.expect(contains(text, "subagents"));
     try std.testing.expect(!contains(text, "SECRET-PROMPT"));
     try std.testing.expect(!contains(text, "/Users/me"));
     try std.testing.expect(!contains(text, "bash"));

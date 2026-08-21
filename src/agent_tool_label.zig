@@ -128,7 +128,34 @@ fn copy(dst: []u8, src: []const u8) usize {
     return n;
 }
 
-/// Short verb the human reads. Never "bash".
+fn mcpLeaf(name: []const u8) []const u8 {
+    if (std.mem.lastIndexOf(u8, name, "__")) |u| {
+        if (u + 2 < name.len) return name[u + 2 ..];
+    }
+    if (std.mem.startsWith(u8, name, "mcp_")) return name["mcp_".len..];
+    return name;
+}
+
+/// ADR 0021 bookkeeping: the model still gets the result; no frontend should
+/// print it. Subagents are NOT this — they have a one-line card in the line
+/// REPL and a scout row in the TUI.
+pub fn skipTranscript(name: []const u8) bool {
+    const leaf = mcpLeaf(name);
+    if (std.mem.eql(u8, name, "skill") or std.mem.eql(u8, leaf, "skill")) return true;
+    if (std.mem.eql(u8, name, "read_tool_result")) return true;
+    if (std.mem.eql(u8, name, "note_constraint")) return true;
+    if (std.mem.eql(u8, name, "load_tool_schemas")) return true;
+    return false;
+}
+
+/// Line-REPL only: the scout card already said this.
+pub fn skipLineRepl(name: []const u8) bool {
+    if (skipTranscript(name)) return true;
+    return std.mem.eql(u8, name, "subagent") or std.mem.eql(u8, name, "workflow") or
+        std.mem.eql(u8, name, "agent_output");
+}
+
+/// Short verb the human reads. Never "bash". Never a truncated harness name.
 pub fn verb(name: []const u8, input: std.json.Value, buf: []u8) []const u8 {
     if (std.mem.eql(u8, name, "bash")) {
         const cmd = stringField(input, "command") orelse return "run";
@@ -153,16 +180,12 @@ pub fn verb(name: []const u8, input: std.json.Value, buf: []u8) []const u8 {
         }
         return "search";
     }
-    if (std.mem.eql(u8, name, "subagent")) return "agent";
+    if (std.mem.eql(u8, name, "subagent") or std.mem.eql(u8, name, "workflow")) return "scout";
     if (std.mem.eql(u8, name, "imagegen")) return "image";
+    if (std.mem.eql(u8, name, "read_tool_result")) return "inspect";
+    const leaf = mcpLeaf(name);
+    if (std.mem.eql(u8, leaf, "batch")) return "inspect";
     if (std.mem.startsWith(u8, name, "mcp")) {
-        const leaf = blk: {
-            if (std.mem.lastIndexOf(u8, name, "__")) |u| {
-                if (u + 2 < name.len) break :blk name[u + 2 ..];
-            }
-            if (std.mem.startsWith(u8, name, "mcp_")) break :blk name["mcp_".len..];
-            break :blk name;
-        };
         if (std.mem.endsWith(u8, leaf, "search")) return "search";
         const n = copy(buf, if (leaf.len > 12) leaf[0..12] else leaf);
         return buf[0..n];
@@ -402,6 +425,14 @@ test "verb never says bash" {
     try std.testing.expectEqualStrings("test", verb("bash", input, &buf));
     try std.testing.expectEqualStrings("edit", verb("edit_file", .null, &buf));
     try std.testing.expectEqualStrings("read", verb("read_file", .null, &buf));
+    try std.testing.expectEqualStrings("inspect", verb("read_tool_result", .null, &buf));
+    try std.testing.expectEqualStrings("inspect", verb("mcp__codedbpro__batch", .null, &buf));
+    try std.testing.expectEqualStrings("scout", verb("subagent", .null, &buf));
+    try std.testing.expect(skipTranscript("skill"));
+    try std.testing.expect(skipTranscript("read_tool_result"));
+    try std.testing.expect(!skipTranscript("subagent"));
+    try std.testing.expect(skipLineRepl("subagent"));
+    try std.testing.expect(!skipTranscript("read_file"));
 }
 
 test "compactBash keeps the count and drops the boilerplate" {

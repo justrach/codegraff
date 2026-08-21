@@ -1,10 +1,6 @@
-//! Subagent cards (#51): the parallel-subagent launch/done cards (sprite +
-//! stable id + label + one-line activity), the box-drawing helpers, whitespace
-//! collapse, and the per-subagent inspect-report writer (.graff/subagents/
-//! <id>.md). Split out of main.zig (600-line goal). Imports ansi (palette) +
-//! term (termCols); back-imports main for utf8Prefix and the live
-//! use_color/json_mode toggles. main aliases the 5 renderers back and
-//! mod-qualifies g_subagent_seq.
+//! Subagent cards (#51): launch/done one-liners (`↯ scout` / `✓ scout`) and
+//! the inspect-report writer (`.graff/subagents/<id>.md`). The sa- id is not
+//! foreground UI (ADR 0021). Split out of main.zig (600-line goal).
 
 const std = @import("std");
 const Io = std.Io;
@@ -13,12 +9,7 @@ const Allocator = std.mem.Allocator;
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
-const term = @import("term.zig");
-const termCols = term.termCols;
-
 const root = @import("main.zig");
-const util = @import("util.zig");
-const utf8Prefix = util.utf8Prefix;
 
 // #tui-tick: cards go through the line-boundary gate, not straight to stderr.
 const tick_gate = @import("tick_gate.zig");
@@ -69,94 +60,57 @@ pub fn subagentId(buf: []u8, ordinal: u32, label: []const u8, prompt: []const u8
     return std.fmt.bufPrint(buf, "sa-{d:0>3}-{s}", .{ ordinal, hex }) catch buf[0..0];
 }
 
-/// Render the launch card for a subagent to stderr as one block. `kind` is
-/// "subagent" or "workflow_task"; `activity` is the one-line task preview.
+/// One-line launch: `↯ scout   {label}`. The sa- id and the boxed prompt are
+/// not foreground UI (ADR 0021); `/debug` still names the id.
 pub fn subagentLaunchCard(arena: Allocator, id: []const u8, sprite: []const u8, label: []const u8, kind: []const u8, activity: []const u8) void {
-    if (root.json_mode) return; // SDK consumers get structured events, not TUI cards
-    const cols = termCols();
-    // Inner width: clamp to the terminal, but keep cards readable and never
-    // wider than a comfortable card. -2 leaves room for the box borders.
-    const inner: usize = @min(@max(cols, 24) - 2, 58);
-    const tag = if (std.mem.eql(u8, kind, "workflow_task")) "workflow" else "subagent";
-    var aw: Io.Writer.Allocating = .init(arena);
-    const w = &aw.writer;
-    // Header line carries the sprite (kept outside the box so emoji width can't
-    // skew the borders) plus the agent label and its stable id.
-    const sep = if (root.use_color) "·" else "-";
-    w.print("  {s} {s}{s}{s} {s}{s} {s} [{s}]{s}\n", .{
-        sprite, style.bold, label, style.reset, style.dim, sep, tag, id, style.reset,
-    }) catch return;
-    boxRule(w, inner, .top);
-    boxLine(w, inner, if (root.use_color) "▸ " else "> ", activity);
-    boxRule(w, inner, .bottom);
-    tick_gate.workerLine(aw.writer.buffered());
-}
-
-/// Render the completion card: status, elapsed, tools, and the inspect: path.
-pub fn subagentDoneCard(arena: Allocator, id: []const u8, sprite: []const u8, label: []const u8, ok: bool, run_ms: i64, tools: []const u8, detail_path: ?[]const u8) void {
+    _ = sprite;
+    _ = kind;
+    _ = activity;
     if (root.json_mode) return;
-    const cols = termCols();
-    const inner: usize = @min(@max(cols, 24) - 2, 58);
-    const mark = if (ok) (if (root.use_color) "✓ done" else "done") else (if (root.use_color) "✗ failed" else "failed");
-    const mark_style = if (ok) style.green else style.red;
     var aw: Io.Writer.Allocating = .init(arena);
     const w = &aw.writer;
-    const sep = if (root.use_color) "·" else "-";
-    w.print("  {s} {s}{s}{s} {s}{s}{s} {s}{s} {d}ms [{s}]{s}\n", .{
-        sprite,     style.bold, label,       style.reset,
-        mark_style, mark,       style.reset, style.dim,
-        sep,        run_ms,     id,          style.reset,
-    }) catch return;
-    boxRule(w, inner, .top);
-    const tool_line = if (tools.len > 0)
-        std.fmt.allocPrint(arena, "tools: {s}", .{tools}) catch "tools: (n/a)"
-    else
-        "tools: (none)";
-    const bullet = if (root.use_color) "· " else "- ";
-    boxLine(w, inner, bullet, tool_line);
-    if (detail_path) |p|
-        boxLine(w, inner, bullet, std.fmt.allocPrint(arena, "inspect: {s}", .{p}) catch p);
-    boxRule(w, inner, .bottom);
+    const shown = collapseWs(label);
+    if (@import("repl.zig").g_debug) {
+        w.print("  {s}↯ scout{s}   {s}{s}{s}  [{s}]\n", .{ style.dim, style.reset, style.bold, shown, style.reset, id }) catch return;
+    } else {
+        w.print("  {s}↯ scout{s}   {s}{s}{s}\n", .{ style.dim, style.reset, style.bold, shown, style.reset }) catch return;
+    }
     tick_gate.workerLine(aw.writer.buffered());
 }
 
-const BoxEdge = enum { top, bottom };
-
-/// One horizontal box rule of `inner` light box-drawing dashes. ASCII '+---+'
-/// when color (and thus likely Unicode-friendly rendering) is off.
-fn boxRule(w: *Io.Writer, inner: usize, edge: BoxEdge) void {
-    const corners = if (root.use_color)
-        (if (edge == .top) [2][]const u8{ "╭", "╮" } else [2][]const u8{ "╰", "╯" })
-    else
-        [2][]const u8{ "+", "+" };
-    const dash = if (root.use_color) "─" else "-";
-    w.print("  {s}{s}", .{ style.dim, corners[0] }) catch return;
-    var i: usize = 0;
-    while (i < inner) : (i += 1) w.writeAll(dash) catch return;
-    w.print("{s}{s}\n", .{ corners[1], style.reset }) catch return;
-}
-
-/// One box content row: "│ <prefix><text…> │", text clamped (UTF-8 safe) to the
-/// inner width so the right border lands in the same column every row. The
-/// closing border is omitted when the text was truncated (a trailing ellipsis
-/// reads cleaner than a misaligned border under variable-width glyphs).
-fn boxLine(w: *Io.Writer, inner: usize, prefix: []const u8, text: []const u8) void {
-    const bar = if (root.use_color) "│" else "|";
-    // One column of padding inside each border.
-    const budget = if (inner >= 2) inner - 2 else 0;
-    const flat = collapseWs(text);
-    const want = if (prefix.len + flat.len <= budget) flat else utf8Prefix(flat, if (budget > prefix.len + 1) budget - prefix.len - 1 else 0);
-    const truncated = want.len != flat.len;
-    w.print("  {s}{s}{s} {s}{s}", .{ style.dim, bar, style.reset, prefix, want }) catch return;
-    if (truncated) w.writeAll(if (root.use_color) "…" else "~") catch return;
-    // Pad to the right border using the byte length as an approximation; the
-    // border is decorative, so a few off columns under wide glyphs are benign.
-    const used = prefix.len + want.len + (if (truncated) @as(usize, 1) else 0);
-    if (used < budget) {
-        var i: usize = used;
-        while (i < budget) : (i += 1) w.writeByte(' ') catch return;
+/// One-line settle: `✓ scout   {label}` (or ✗). Cache hit rides when the
+/// worker reported usage (ADR 0018 for scouts). Elapsed/tools/inspect path
+/// stay in `.graff/subagents/<id>.md`.
+pub fn subagentDoneCard(
+    arena: Allocator,
+    id: []const u8,
+    sprite: []const u8,
+    label: []const u8,
+    ok: bool,
+    run_ms: i64,
+    tools: []const u8,
+    detail_path: ?[]const u8,
+    cache_read: u64,
+    context_tokens: u64,
+) void {
+    _ = sprite;
+    _ = run_ms;
+    _ = tools;
+    _ = detail_path;
+    if (root.json_mode) return;
+    var aw: Io.Writer.Allocating = .init(arena);
+    const w = &aw.writer;
+    const shown = collapseWs(label);
+    const mark: []const u8 = if (ok) "✓" else "✗";
+    const mc: []const u8 = if (ok) style.green else style.red;
+    w.print("  {s}{s} scout{s}   {s}", .{ mc, mark, style.reset, shown }) catch return;
+    if (context_tokens > 0) {
+        const pct = @min((cache_read *| 100) / context_tokens, 100);
+        w.print("  {s}cache {d}%{s}", .{ style.dim, pct, style.reset }) catch return;
     }
-    w.print(" {s}{s}{s}\n", .{ style.dim, bar, style.reset }) catch return;
+    if (@import("repl.zig").g_debug) w.print("  [{s}]", .{id}) catch return;
+    w.writeAll("\n") catch return;
+    tick_gate.workerLine(aw.writer.buffered());
 }
 
 /// Collapse every run of whitespace (spaces, newlines, tabs) to a single space

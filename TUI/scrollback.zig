@@ -288,13 +288,12 @@ fn toolTitle(a: std.mem.Allocator, named: app.Entry, status: app.Entry) ![]const
     else
         "";
     const name = displayName(t.name);
-    // A finished row's detail is its RESULT preview and belongs in the body.
     const args = if (t.done) "" else t.detail;
     if (args.len == 0) return if (mark.len == 0) name else std.fmt.allocPrint(a, "{s}{s}", .{ mark, name });
     return std.fmt.allocPrint(a, "{s}{s}  {s}", .{ mark, name, args });
 }
 
-/// The one-line body under a tool card: the outcome's result preview.
+/// The one-line body under a tool card: the outcome's useful detail.
 fn toolPreview(e: app.Entry) ?[]const u8 {
     const t = e.tool orelse return null;
     if (!t.done or t.detail.len == 0) return null;
@@ -322,11 +321,9 @@ fn toolCard(a: std.mem.Allocator, th: theme_mod.Theme, call: app.Entry, outcome:
     const preview = toolPreview(outcome);
     const head = try std.fmt.allocPrint(a, "{s}{s}{s}{s}{s} {s}", .{ sel, if (selected) th.accent else th.muted, glyphs.tool, theme_mod.reset, th.text, title });
     if (preview == null) return theme_mod.wrapToWidth(a, head, width);
-    // A patch-shaped result is banded, not quoted: diff.zig owns its wrap.
     if (diff_mod.looksLikeUnified(preview.?)) return std.fmt.allocPrint(a, "{s}\n{s}", .{ try theme_mod.wrapToWidth(a, head, width), try diff_mod.renderThemed(a, preview.?, th, width) });
     const body = try std.fmt.allocPrint(a, "{s}{s}│  {s}{s}", .{ sel, th.muted, preview.?, theme_mod.reset });
-    const joined = try std.fmt.allocPrint(a, "{s}\n{s}", .{ try theme_mod.wrapToWidth(a, head, width), try theme_mod.wrapToWidth(a, body, width) });
-    return joined;
+    return std.fmt.allocPrint(a, "{s}\n{s}", .{ try theme_mod.wrapToWidth(a, head, width), try theme_mod.wrapToWidth(a, body, width) });
 }
 
 fn thinkingGlyph(now_ms: u64) []const u8 {

@@ -11,9 +11,6 @@ const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
-const ansi = @import("ansi.zig");
-const style = &ansi.style;
-
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
@@ -76,15 +73,12 @@ pub fn setTerminalTitle(w: *Io.Writer, title: []const u8, folder: []const u8) vo
 }
 
 pub fn printSessionHeader(w: *Io.Writer, title: []const u8, folder: []const u8) !void {
+    _ = w;
+    _ = title;
+    _ = folder;
+    // The › status line owns model · effort · ~/folder. Restating the ask
+    // in a Codegraff box was vertical tax: the prompt is already on screen.
     if (main_mod.json_mode) return;
-    try w.print("\n{s}╭─ Codegraff{s}\n{s}│ Working on:{s} {s}\n{s}│ Folder:{s} {s}\n{s}╰────────────────────────────{s}\n", .{
-        style.dim,   style.reset,
-        style.dim,   style.reset,
-        title,       style.dim,
-        style.reset, folder,
-        style.dim,   style.reset,
-    });
-    try w.flush();
 }
 
 /// Extracts the reasoning/thinking text from one streamed SSE delta object for
@@ -267,7 +261,7 @@ test "titleFromPrompt: truncates long prompts at a word boundary, UTF-8 intact (
     try std.testing.expectEqualStrings("héllo wörld", titleFromPrompt("héllo wörld"));
 }
 
-test "printSessionHeader renders the working-on title and folder (#83)" {
+test "printSessionHeader is silent; the ask is not restated (#83)" {
     const saved = main_mod.json_mode;
     main_mod.json_mode = false;
     defer main_mod.json_mode = saved;
@@ -276,9 +270,9 @@ test "printSessionHeader renders the working-on title and folder (#83)" {
     defer aw.deinit();
     try printSessionHeader(&aw.writer, "Fix the bug", "/tmp/proj");
     const s = aw.writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, s, "Codegraff") != null);
-    try std.testing.expect(std.mem.indexOf(u8, s, "Fix the bug") != null);
-    try std.testing.expect(std.mem.indexOf(u8, s, "/tmp/proj") != null);
+    try std.testing.expectEqual(@as(usize, 0), s.len);
+    try std.testing.expect(std.mem.indexOf(u8, s, "Working on:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "Fix the bug") == null);
 
     // JSON mode emits nothing (the header would corrupt the event stream).
     main_mod.json_mode = true;

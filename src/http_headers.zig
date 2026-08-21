@@ -58,6 +58,15 @@ pub fn promptPrefixCacheKey(io: Io, label: []const u8, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "{s}-child-{d}", .{ base, lane }) catch base;
 }
 
+/// Partition for one request. xAI conversation affinity is per-agent (append-only
+/// conv-id). Everyone else uses a prefix lane so repeated subagent roles hit
+/// the warm system+tools cache instead of writing a unique suffix (ADR 0011).
+pub fn requestCacheKey(io: Io, label: []const u8, agent: *const anyopaque, provider_id: []const u8, buf: []u8) []const u8 {
+    if (std.mem.eql(u8, provider_id, "xai"))
+        return promptCacheKey(io, label, agent, buf);
+    return promptPrefixCacheKey(io, label, buf);
+}
+
 var project_id_buf: [36]u8 = undefined;
 var project_id_len: usize = 0;
 var project_id_lock: std.atomic.Value(bool) = .init(false);
@@ -326,6 +335,17 @@ test "project and prefix cache keys preserve conversation and sharing boundaries
     try std.testing.expectEqualStrings(prefix1, prefix2);
     try std.testing.expect(std.mem.startsWith(u8, prefix1, a));
     try std.testing.expect(!std.mem.eql(u8, prefix1, a));
+
+    // Chat-wire OpenAI scouts share a role lane; xAI scouts stay isolated.
+    var oai1: [96]u8 = undefined;
+    var oai2: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        requestCacheKey(std.testing.io, "implement", agent, "openai", &oai1),
+        requestCacheKey(std.testing.io, "implement", sibling, "openai", &oai2),
+    );
+    var x1: [96]u8 = undefined;
+    var x2: [96]u8 = undefined;
+    try std.testing.expect(!std.mem.eql(u8, requestCacheKey(std.testing.io, "implement", agent, "xai", &x1), requestCacheKey(std.testing.io, "implement", sibling, "xai", &x2)));
 }
 
 test "x-grok-conv-id with no explicit conv still uses the project root id" {

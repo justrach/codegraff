@@ -208,6 +208,8 @@ pub const ContextMeter = struct {
 pub const StandingTodo = struct {
     content: []const u8 = "",
     done: bool = false,
+    /// `todo_write` in_progress — the ◌ mark in the WORKING tree.
+    active: bool = false,
 };
 
 /// Standing work the line REPL may draw above the model prompt. Empty

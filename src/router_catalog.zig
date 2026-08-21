@@ -1,17 +1,9 @@
 //! Model discovery for Codegraff, Anthropic, xAI, and the optional workspace router.
 //!
-//! The workspace router is declared by `.graff/.config.router`; its catalog
-//! cache stays beside that config. xAI is always-live (never TTL-short-circuits).
-//! Startup fans live GETs out concurrently (with Kimi) so REPL boot pays
-//! max(latency), not the sum. Catalog failures never prevent startup.
-//! Anthropic's `/v1/models` (catalog kind `.anthropic`) rides the same
-//! machinery so new Claude releases appear without a rebuild. It differs in
-//! auth (x-api-key + anthropic-version, like Messages) and in pagination:
-//! the Models API pages with after_id/has_more/last_id rather than the
-//! page/next_page scheme, so fetch follows has_more until the list is
-//! complete. Discovery replaces the provider's slice, keeping graff's list
-//! 1:1 with the official one; the baked pricing.zig rows remain purely the
-//! no-key/offline fallback.
+//! Workspace router cache: `.graff/.config.router`. xAI prefers a live GET but
+//! boot activates any disk cache, waits at most 500ms to recache, else
+//! refreshes in the background. `/models` is the blocking freshness moment.
+//! Catalog failures never prevent startup. Baked pricing.zig rows are offline fallback.
 
 const std = @import("std");
 const Io = std.Io;
@@ -33,11 +25,43 @@ const cache_ttl_ms: i64 = 6 * 60 * 60 * 1000;
 var attempted: [provider.provider_specs.len]bool = @splat(false);
 var additional_attempted = false;
 
-/// Providers whose live `/models` list must win over a disk cache every load.
-/// xAI ships new Grok ids often enough that a 6h snapshot is actively wrong;
-/// always hit api.x.ai and only fall back to cache/baked when offline.
+/// xAI boot uses any disk cache; live GET is budgeted, else background. `/models` still blocks.
+pub const live_budget_ms: i64 = 500;
 pub fn alwaysLive(spec: provider.ProviderSpec) bool {
     return std.mem.eql(u8, spec.id, "xai");
+}
+
+var bg_refresh: Io.Future(void) = undefined;
+var bg_refresh_live = false;
+var bg_done: Io.Event = .unset;
+
+fn refreshCacheTask(io: Io, gpa: Allocator, home: []u8, spec: provider.ProviderSpec, key: []u8, source: provider.Keys.CredentialSource) void {
+    defer gpa.free(home);
+    defer gpa.free(key);
+    defer bg_done.set(io);
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const snapshot = fetch(io, gpa, arena_state.allocator(), spec, key, source) orelse return;
+    writeCache(io, arena_state.allocator(), home, spec, snapshot.models);
+}
+
+fn startBackgroundRefresh(io: Io, gpa: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource) void {
+    if (bg_refresh_live) return;
+    const home_d = gpa.dupe(u8, home) catch return;
+    const key_d = gpa.dupe(u8, key) catch {
+        gpa.free(home_d);
+        return;
+    };
+    bg_done.reset();
+    const args = .{ io, gpa, home_d, spec, key_d, source };
+    bg_refresh = io.concurrent(refreshCacheTask, args) catch io.async(refreshCacheTask, args);
+    bg_refresh_live = true;
+}
+
+fn joinBackground(io: Io) void {
+    if (!bg_refresh_live) return;
+    bg_refresh.await(io);
+    bg_refresh_live = false;
 }
 
 pub const Snapshot = struct {
@@ -326,18 +350,14 @@ pub fn activate(arena: Allocator, spec: provider.ProviderSpec, discovered: []con
 fn loadSpec(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, spec: provider.ProviderSpec, key: []const u8, source: provider.Keys.CredentialSource, force_refresh: bool) bool {
     if (!dynamic(spec) or key.len == 0) return false;
     const cached = cachedSnapshot(io, arena, home, spec);
-    // alwaysLive providers (xAI) never short-circuit on a fresh disk cache —
-    // every load tries the network so new Grok ids appear without waiting for
-    // TTL or `graff models refresh`. Cache remains offline fallback only.
-    const skip_cache = force_refresh or alwaysLive(spec);
-    if (!skip_cache) if (cached) |snapshot| {
+    // xAI may use a stale cache at boot; only `force_refresh` (`/models`) skips it.
+    if (!force_refresh) if (cached) |snapshot| {
         const age = util.unixMs(io) - snapshot.fetched_at_ms;
-        if (age >= 0 and age <= cache_ttl_ms and activate(arena, spec, snapshot.models)) return true;
+        const usable = alwaysLive(spec) or (age >= 0 and age <= cache_ttl_ms);
+        if (usable and activate(arena, spec, snapshot.models)) return true;
     };
     if (fetch(io, gpa, arena, spec, key, source)) |snapshot| {
         if (activate(arena, spec, snapshot.models)) {
-            // Still write for offline/`--schema` fallback, but never treat it as
-            // authoritative for alwaysLive providers on the next load.
             if (home.len != 0 or isAdditional(spec)) writeCache(io, arena, home, spec, snapshot.models);
             return true;
         }
@@ -421,8 +441,8 @@ fn finishFetch(io: Io, arena: Allocator, home: []const u8, outcome: FetchOutcome
 }
 
 fn cacheFresh(io: Io, arena: Allocator, home: []const u8, spec: provider.ProviderSpec) bool {
-    if (alwaysLive(spec)) return false;
     const snapshot = cachedSnapshot(io, arena, home, spec) orelse return false;
+    if (alwaysLive(spec)) return activate(arena, spec, snapshot.models);
     const age = util.unixMs(io) - snapshot.fetched_at_ms;
     return age >= 0 and age <= cache_ttl_ms and activate(arena, spec, snapshot.models);
 }
@@ -452,9 +472,10 @@ fn spawnKimi(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: p
     return io.concurrent(kimiFetchTask, args) catch io.async(kimiFetchTask, args);
 }
 
-/// Startup catalog load. Fresh disk caches activate inline; every live GET
-/// (xAI, stale Anthropic/Codegraff, Kimi, …) runs concurrently so boot pays
-/// the slowest host, not the sum. Table mutation stays on this thread.
+/// Startup catalog load. Fresh disk caches activate inline; live GETs run
+/// concurrently so boot pays the slowest host, not the sum. xAI activates any
+/// cache immediately, waits `live_budget_ms` only when there is none, and
+/// otherwise refreshes the cache file in the background.
 pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) void {
     var kimi_task = spawnKimi(io, gpa, arena, home, keys, model_flag, saved);
     defer if (kimi_task) |*fut| {
@@ -470,8 +491,18 @@ pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const 
         const key = keys.get(spec.id) orelse continue;
         if (key.len == 0) continue;
         attempted[index] = true;
-        if (cacheFresh(io, arena, home, spec)) continue;
-        futures[index] = spawnFetch(io, gpa, home, spec, key, keys.source(spec.id));
+        const source = keys.source(spec.id);
+        if (cacheFresh(io, arena, home, spec)) {
+            if (alwaysLive(spec)) startBackgroundRefresh(io, gpa, home, spec, key, source);
+            continue;
+        }
+        if (alwaysLive(spec)) {
+            startBackgroundRefresh(io, gpa, home, spec, key, source);
+            bg_done.waitTimeout(io, .{ .duration = .{ .raw = .fromMilliseconds(live_budget_ms), .clock = .awake } }) catch {};
+            if (cachedSnapshot(io, arena, home, spec)) |snapshot| _ = activate(arena, spec, snapshot.models);
+            continue;
+        }
+        futures[index] = spawnFetch(io, gpa, home, spec, key, source);
     }
     if (provider.additional_router) |spec| {
         if (catalog_selection.startupMayUse(keys, spec.id, model_flag, saved) and !additional_attempted) {
@@ -495,6 +526,7 @@ pub fn ensureForStartup(io: Io, gpa: Allocator, arena: Allocator, home: []const 
 /// remains the offline fallback, and each live list is re-cached for the
 /// next boot. Returns how many providers were pinged.
 pub fn refreshForListing(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: provider.Keys) usize {
+    joinBackground(io);
     pricing_db.ensure(io, gpa, arena, home, true); // the same freshness moment covers the price sheet, network and all
     var futures: [provider.provider_specs.len + 1]?Io.Future(FetchOutcome) = @splat(null);
     var pinged: usize = 0;

@@ -39,6 +39,10 @@ A `/cache` after a miss names the lever. Revisit defaulting stable-catalog
 only if a new live measurement shows load-after-load cache-read returning
 from 0% without discovery or compaction regressions.
 
+Subagents (2026-08-21): non-xAI children share four role-lane prefix keys so
+repeated scouts reuse system+tools. xAI children stay per-agent — mixing them
+into the root conv-id would break append-only prefix matching (ADR 0009).
+
 Live Grok 4.6 (Responses, SuperGrok OAuth, 2026-08-19): same-process
 append-only turn 2 cached 3,712 of turn 1's 3,721 input tokens. `/btw` after
 that turn reused **3,712** tokens (99.8% of the prior prompt). A new process
