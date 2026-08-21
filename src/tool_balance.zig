@@ -72,7 +72,10 @@ pub fn classOf(call: tools.ToolCall) Class {
         return .other;
     }
     if (std.mem.eql(u8, name, "mcp__codedbpro__read")) return .pro_read;
-    if (std.mem.eql(u8, name, "mcp__codedbpro__faster_search") or std.mem.eql(u8, name, "mcp__codedbpro__meta_search")) return .pro_search;
+    if (std.mem.eql(u8, name, "mcp__codedbpro__faster_search") or std.mem.eql(u8, name, "mcp__codedbpro__meta_search") or
+        std.mem.eql(u8, name, "mcp__codedbpro__explain") or std.mem.eql(u8, name, "mcp__codedbpro__callpath") or
+        std.mem.eql(u8, name, "mcp__codedbpro__context") or std.mem.eql(u8, name, "mcp__codedbpro__list_dir") or
+        std.mem.eql(u8, name, "mcp__codedbpro__status")) return .pro_search;
     if (std.mem.eql(u8, name, "mcp__codedbpro__batch")) return .pro_batch;
     if (std.mem.startsWith(u8, name, "mcp__codedbpro__")) return .pro_other;
     return .other;
@@ -199,6 +202,8 @@ test "classOf sorts pro tools, zigrep, shell search and natives" {
     };
     try std.testing.expectEqual(Class.pro_read, classOf(.{ .id = "t", .name = "mcp__codedbpro__read", .input = .null }));
     try std.testing.expectEqual(Class.pro_search, classOf(.{ .id = "t", .name = "mcp__codedbpro__meta_search", .input = .null }));
+    try std.testing.expectEqual(Class.pro_search, classOf(.{ .id = "t", .name = "mcp__codedbpro__explain", .input = .null }));
+    try std.testing.expectEqual(Class.pro_search, classOf(.{ .id = "t", .name = "mcp__codedbpro__list_dir", .input = .null }));
     try std.testing.expectEqual(Class.pro_batch, classOf(.{ .id = "t", .name = "mcp__codedbpro__batch", .input = .null }));
     try std.testing.expectEqual(Class.zigrep, classOf(bash.call(a, "zigrep TODO src")));
     try std.testing.expectEqual(Class.native_search, classOf(bash.call(a, "find . -name '*.zig'")));

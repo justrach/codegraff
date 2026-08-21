@@ -462,16 +462,17 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
 /// Licensed startup path (main.zig): probe the companion's license so the
 /// session can lean into the paid tools. Schemas stay DEFERRED like every
 /// other server: routing to the suite is enforced by the codedbpro guard
-/// (codedbpro_report.nativeRefusal blocks the native read/search tools and
-/// points at the pro replacements), so the old eager pin paid ~17 KiB of
+/// (codedbpro_report.nativeRefusal blocks native read_file and leading
+/// shell search and points at the pro replacements; native codedb stays), so the old eager pin paid ~17 KiB of
 /// schema bytes on every request for behavior the guard already guarantees
 /// (#476). GRAFF_MCP_EAGER=codedbpro restores the eager surface opt-in.
 pub fn probeLicensed(gpa: Allocator, io: Io) bool {
     return skills.probeCodedbproLicensed(gpa, io);
 }
 
-/// A licensed codedb-pro is IN CHARGE of reads/searches (its guard refuses
-/// the native codedb/read_file and points at these tools), which inverts the
+/// A licensed codedb-pro is IN CHARGE of read_file and leading shell
+/// searches (its guard refuses those and points at these tools; native
+/// codedb stays — different job), which inverts the
 /// #416 deferral premise: this is not a server "most sessions never call" —
 /// the guard makes it mandatory, and the load_tool_schemas discovery dance is
 /// a measured ~2 model round-trips (~8-12s) per task on K3. Pin it eager.

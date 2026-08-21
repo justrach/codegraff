@@ -10,6 +10,13 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## Unreleased
+
+- Licensed codedb-pro (ADR 0020): zigrepper one-shots (`explain` /
+  `context` / `callpath` / `list_dir` / `status`) sit next to native
+  `codedb`, which stays callable. Only `read_file` and leading shell
+  searches redirect to the paid suite.
+
 ## v0.0.269 (2026-08-20)
 
 - codedb pairing (ADR 0019): advertise five one-shots — `context <task>`,

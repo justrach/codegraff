@@ -510,6 +510,7 @@ test "internal learning respects the parent privacy ceiling" {
 test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, so the compiled-in references live here (the reach check diffs the test binary, not which file holds the line)
     _ = exec_bash_stream;
     _ = @import("codedbpro_report.zig");
+    _ = @import("codedbpro_redirect.zig");
     _ = @import("tool_balance.zig");
     _ = @import("codedb_exec.zig");
     _ = @import("codedb_around.zig");
