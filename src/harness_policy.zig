@@ -181,6 +181,7 @@ pub fn destructiveGitAllowed(yolo: bool, sub: bool) bool {
 /// elsewhere). Returns true when the path is safe.
 pub fn confinedPath(path: []const u8) bool {
     if (path.len == 0) return false;
+    if (@import("workspace_roots.zig").confined(path)) return true;
     if (std.fs.path.isAbsolute(path)) return false;
     var it = std.mem.tokenizeAny(u8, path, "/\\");
     while (it.next()) |comp| {

@@ -34,7 +34,8 @@ pub fn render(self: *const Model, a: std.mem.Allocator, width: usize, now_ms: u6
     }
     if (self.pending) |job| {
         if (!self.cancel_requested) {
-            if (job.stream.snapshot(a)) |live| {
+            const src = if (job.raw.len.load(.acquire) > 0) &job.raw else &job.stream;
+            if (src.snapshot(a)) |live| {
                 if (!first) try out.append('\n');
                 first = false;
                 try out.appendSlice(try theme_mod.paint(a, self.theme().muted, try tail(a, strip(a, live), width, 4)));
@@ -350,9 +351,7 @@ fn firstLine(s: []const u8) []const u8 {
     return s;
 }
 
-/// The live tail is raw model bytes: escapes, C0 controls (a CR would rewind
-/// the row) and the half glyph a delta boundary left behind all have to go
-/// before it reaches a frame. Same filter the finished message gets.
+/// Drop escapes/C0 from the live tail so a CR cannot rewind the row.
 pub fn strip(a: std.mem.Allocator, s: []const u8) []const u8 {
     return @import("markdown.zig").sanitize(a, s) catch s;
 }
@@ -360,10 +359,7 @@ pub fn strip(a: std.mem.Allocator, s: []const u8) []const u8 {
 pub fn tail(a: std.mem.Allocator, s: []const u8, width: usize, max_lines: usize) ![]const u8 {
     var lines = std.array_list.Managed([]const u8).init(a);
     var it = std.mem.splitScalar(u8, s, '\n');
-    // No tool-line filter any more: the live buffer carries PROSE only —
-    // answer text and (with /thinking on) reasoning. Tool activity reaches the
-    // transcript as typed events, so nothing here has to guess which lines the
-    // sink drew (#551).
+    // Live tail is prose, or the raw bash projection when that buf is live.
     while (it.next()) |ln| try lines.append(ln);
     const start = if (lines.items.len > max_lines) lines.items.len - max_lines else 0;
     var out = std.array_list.Managed(u8).init(a);

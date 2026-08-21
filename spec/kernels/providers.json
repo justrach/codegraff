@@ -75,6 +75,15 @@
       "takes_effort": false
     },
     {
+      "id": "cerebras",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "openai",
+      "sub_login": false,
+      "takes_effort": true
+    },
+    {
       "id": "mistral",
       "kind": "openai",
       "auth": "bearer",

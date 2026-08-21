@@ -10,6 +10,40 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.268 (2026-08-20)
+
+- Cerebras Inference is a built-in OpenAI-chat provider (`CEREBRAS_API_KEY`,
+  `graff key set cerebras …`, default `gpt-oss-120b`). Live `/v1/models`
+  overlay; this is `api.cerebras.ai`, not the WSE CSL SDK.
+- imagegen's Codex engine uses a private features-only `config.toml` so
+  `codex exec` no longer dies with `input contains invalid characters at
+  line 1 column N` from the user's MCP/skills overlay (#576).
+- `/resume` restores the peer-channel byte cursor and parked inbox instead
+  of replaying the last 10 room lines (ADR 0014). Peer wakes are not a
+  human turn for title or meaningful-state.
+- Directory listing is `codedb list_dir` (in-process BFS, gitignore, 10k
+  cap), not a new always-on catalog tool (ADR 0013).
+- Custom subagent files can be Codex-shaped TOML: `name`, `description`,
+  `developer_instructions`, plus `model` / `model_reasoning_effort` /
+  `isolation` / `tier`. Loaded from `~/.codex/agents`, `~/.harness/agents`,
+  `.codex/agents`, and `.harness/agents` (a graff file of the same name
+  wins). Markdown frontmatter still works; `/agents promote` still writes
+  `.md`.
+- Foreground bash streams as `bash_output_chunk` frames (16 KiB) onto a
+  raw terminal buffer, not the prose stream. Background jobs inject a
+  grok-build-style completion wake at the next step and, in the TUI,
+  start a turn while idle. Do not poll.
+- `ask_user` pasted images reach the next model request as real vision
+  blocks (a follow-up user message after the text tool result). Nine
+  `[Image]` placeholders with no pixels was #580. If nothing staged, the
+  tool result says so and names path / paste-text / next-prompt fallbacks.
+- Compaction and emergency trim stop before an unresolved current user
+  prompt and keep its image blocks verbatim (#581). A retry does not move
+  that cut. If the live prompt is the whole history, compact fails
+  explicitly instead of summarizing attachments to text. Traces emit
+  `compact_cut` with the boundary and preserved image count, not pixels.
+- Test ratchet: unit suite 1486.
+
 ## v0.0.267 (2026-08-19)
 
 - Background jobs wait like grok-build: `bash_output(wait_ms>0)` and

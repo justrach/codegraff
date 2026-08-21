@@ -1,5 +1,5 @@
 //! The MAP-Elites agent-type / fleet subsystem (docs/hyperagents.md): the
-//! AgentType niche registry (builtins + .harness/agents/*.md tiers), the
+//! AgentType niche registry (builtins + .harness/agents/*.{md,toml} tiers), the
 //! backgrounded elite pull from the fleet worker, /agents promote, and the
 //! niche/override resolvers for subagent + workflow spawns. Split out of
 //! main.zig (#123). Owns the session agent-type globals; back-imports main for
@@ -23,15 +23,15 @@ const learning_privacy = @import("learning_privacy.zig");
 const Telemetry = telemetry_mod.Telemetry;
 const http = @import("http.zig");
 const plugins = @import("plugins.zig");
+const agent_file = @import("agent_file.zig");
 
 // ── Agent types (the MAP-Elites niches) ─────────────────────────────────────
 
 /// A named, reusable subagent persona: the unit the MAP-Elites archive is
 /// organized around (docs/hyperagents.md §MAP-Elites). Each niche keeps one
 /// elite prompt; builtins ship compiled in, and `.harness/agents/<name>.md`
-/// files (frontmatter: name/description/score/isolation/model/tier/effort, body: the system prompt)
-/// override or extend them — that's where an evolution driver promotes
-/// archive winners. Spawn one with subagent/workflow `agent: "<name>"`.
+/// or `.toml` files override or extend them — that's where an evolution driver
+/// promotes archive winners (still as `.md`). Spawn with `agent: "<name>"`.
 /// #276 P0-1: per-agent git-worktree isolation. `.shared_cwd` (default) is
 /// today's behavior — every fanned-out subagent shares the caller's working
 /// tree. `.worktree` gives the child its own scratch `git worktree`, threaded
@@ -104,8 +104,8 @@ const builtin_agent_types = [_]AgentType{
 };
 
 /// Resolved agent types for this session, in precedence order:
-/// builtin < personal (~/.harness/agents) < private (./.harness/agents). A later
-/// tier's <name>.md shadows the same niche from an earlier one. Set by main();
+/// builtin < ~/.codex/agents < ~/.harness/agents < plugins < ./.codex/agents <
+/// ./.harness/agents. A later tier shadows the same niche. Set by main();
 /// arena-owned strings.
 pub var g_agent_types: []const AgentType = &builtin_agent_types;
 pub var g_elites_future: ?Io.Future([]const AgentType) = null; // backgrounded pullElites; joined on the main thread before the first turn
@@ -113,16 +113,18 @@ pub var g_home: ?[]const u8 = null; // resolved HOME (set in main); used by /age
 
 pub const agents_dir = ".harness/agents";
 
-/// Build the session's agent types: the compiled builtins, then the personal
-/// tier (~/.harness/agents — your champions, loaded in every project), then the
-/// private tier (./.harness/agents — this project only). Each tier shadows the
-/// previous by niche name, so a project persona beats a personal one beats a
-/// builtin.
+/// Build the session's agent types: compiled builtins, then Codex personal
+/// (`~/.codex/agents`), then graff personal (`~/.harness/agents`), then plugins,
+/// then project `.codex/agents`, then `.harness/agents`. Each later tier
+/// shadows the previous by niche name — a graff file beats a Codex file of the
+/// same name, project beats personal, file beats builtin.
 pub fn loadAgentTypes(io: Io, arena: Allocator, home: ?[]const u8) []const AgentType {
     @import("bench_priors.zig").loadInto(io, arena, home); // bench score/cost priors ride the same registry load (startup + auto-promote hot-reload)
     var list: std.ArrayList(AgentType) = .empty;
     list.appendSlice(arena, &builtin_agent_types) catch return &builtin_agent_types;
     if (home) |h| {
+        const codex = std.fmt.allocPrint(arena, "{s}/.codex/agents", .{h}) catch "";
+        if (codex.len > 0) loadAgentDir(io, arena, &list, codex);
         const personal = std.fmt.allocPrint(arena, "{s}/{s}", .{ h, agents_dir }) catch "";
         if (personal.len > 0) loadAgentDir(io, arena, &list, personal);
     }
@@ -135,84 +137,64 @@ pub fn loadAgentTypes(io: Io, arena: Allocator, home: ?[]const u8) []const Agent
         if (p.personal) continue;
         for (p.agent_dirs) |d| loadAgentDir(io, arena, &list, d);
     }
+    loadAgentDir(io, arena, &list, ".codex/agents");
     loadAgentDir(io, arena, &list, agents_dir);
     // A verified learning ref is the highest-precedence project policy. The
     // loader fails closed: incomplete/corrupt learning state contributes no
     // agent and can be diagnosed with `graff learn verify`.
     if (learn_store.loadActiveAgent(io, arena)) |learned| {
-        const at: AgentType = .{
+        upsertAgent(&list, arena, .{
             .name = learned.name,
             .desc = learned.description,
             .prompt = learned.prompt,
             .learned = true,
-        };
-        var replaced = false;
-        for (list.items) |*existing| {
-            if (std.mem.eql(u8, existing.name, at.name)) {
-                existing.* = at;
-                replaced = true;
-                break;
-            }
-        }
-        if (!replaced) list.append(arena, at) catch {};
+        });
     }
     return list.items;
 }
 
-/// Merge `<dir>/*.md` personas into `list`: YAML-ish frontmatter
-/// (name/description/score/isolation/model/tier/effort) + body as the prompt. A
-/// file shadows any existing
-/// type (builtin or earlier tier) of the same name — the elite for a niche is
-/// whatever the highest tier last promoted.
+/// Merge `<dir>/*.{md,toml}` into `list`. Markdown first, then TOML so a
+/// hand-authored `.toml` shadows a promoted `<name>.md` of the same niche.
 fn loadAgentDir(io: Io, arena: Allocator, list: *std.ArrayList(AgentType), dir_path: []const u8) void {
+    loadAgentExt(io, arena, list, dir_path, ".md");
+    loadAgentExt(io, arena, list, dir_path, ".toml");
+}
+
+fn loadAgentExt(io: Io, arena: Allocator, list: *std.ArrayList(AgentType), dir_path: []const u8, ext: []const u8) void {
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
     defer dir.close(io);
     var it = dir.iterate();
     while (it.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
+        if (!std.mem.endsWith(u8, entry.name, ext)) continue;
         const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
         const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(256 * 1024)) catch continue;
-        var at: AgentType = .{
-            .name = arena.dupe(u8, entry.name[0 .. entry.name.len - ".md".len]) catch continue,
-            .desc = "",
-            .prompt = std.mem.trim(u8, data, " \t\r\n"),
-        };
-        // Frontmatter: leading "---\n…\n---\n" with name:/description:/score:.
-        if (std.mem.startsWith(u8, data, "---\n")) {
-            if (std.mem.indexOfPos(u8, data, 4, "\n---")) |fm_end| {
-                var lines = std.mem.tokenizeScalar(u8, data[4..fm_end], '\n');
-                while (lines.next()) |ln| {
-                    const sep = std.mem.indexOfScalar(u8, ln, ':') orelse continue;
-                    const key = std.mem.trim(u8, ln[0..sep], " \t");
-                    const val = std.mem.trim(u8, ln[sep + 1 ..], " \t\"");
-                    if (std.mem.eql(u8, key, "name") and val.len > 0) at.name = val;
-                    if (std.mem.eql(u8, key, "description")) at.desc = val;
-                    if (std.mem.eql(u8, key, "score")) at.score = std.fmt.parseFloat(f64, val) catch null;
-                    if (std.mem.eql(u8, key, "isolation")) at.isolation = Isolation.parse(val); // #276: e.g. an "implementer" persona opting into worktree isolation by default
-                    // #292: a persona's own worker-model pin. An unknown tier
-                    // name parses to null (no opinion) rather than failing the
-                    // load, and an unknown model name is caught per spawn.
-                    if (std.mem.eql(u8, key, "model")) at.model = if (val.len > 0) val else null;
-                    if (std.mem.eql(u8, key, "tier")) at.tier = Tier.parse(val);
-                    if (std.mem.eql(u8, key, "effort")) at.effort = @import("subagent_pin.zig").parseEffort(val); // #292 follow-up: persona effort pin; off-vocabulary (incl. ultra) is "no opinion"
-                }
-                const body_start = fm_end + "\n---".len;
-                at.prompt = std.mem.trim(u8, data[@min(body_start + 1, data.len)..], " \t\r\n");
-            }
-        }
-        if (at.prompt.len == 0) continue;
-        // A file shadows an existing type (builtin or earlier tier) of the same name.
-        var replaced = false;
-        for (list.items) |*existing| {
-            if (std.mem.eql(u8, existing.name, at.name)) {
-                existing.* = at;
-                replaced = true;
-                break;
-            }
-        }
-        if (!replaced) list.append(arena, at) catch continue;
+        const draft = agent_file.parse(arena, entry.name, data) orelse continue;
+        upsertAgent(list, arena, draftToType(draft));
     }
+}
+
+fn draftToType(d: agent_file.Draft) AgentType {
+    return .{
+        .name = d.name,
+        .desc = d.desc,
+        .prompt = d.prompt,
+        .score = d.score,
+        .isolation = if (d.isolation) |s| Isolation.parse(s) else null,
+        .model = d.model,
+        .tier = if (d.tier) |s| Tier.parse(s) else null,
+        .effort = if (d.effort) |s| @import("subagent_pin.zig").parseEffort(s) else null,
+    };
+}
+
+fn upsertAgent(list: *std.ArrayList(AgentType), arena: Allocator, at: AgentType) void {
+    for (list.items) |*existing| {
+        if (std.mem.eql(u8, existing.name, at.name)) {
+            existing.* = at;
+            return;
+        }
+    }
+    list.append(arena, at) catch {};
 }
 
 /// Local single-tenant promote — the "grow for me" loop. Mine
@@ -466,6 +448,7 @@ pub fn resolveIsolationFallback(obj: std.json.ObjectMap) bool {
 }
 
 test "resolveIsolation: explicit field wins, then the named persona's default, then shared_cwd" {
+    _ = agent_file;
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -563,4 +546,24 @@ test "remote elites cannot replace a verified learned policy" {
     try std.testing.expectEqualStrings("verified-local", types[0].prompt);
     try std.testing.expect(applyRemoteElite(arena, &types, "reviewer", "new-remote"));
     try std.testing.expectEqualStrings("new-remote", types[1].prompt);
+}
+
+test "loadAgentDir: toml shadows md of the same niche" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try tmp.dir.writeFile(io, .{ .sub_path = "echoer.md", .data = "---\nname: echoer\ndescription: md\n---\nfrom md\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "echoer.toml", .data = "name = \"echoer\"\ndescription = \"toml\"\ndeveloper_instructions = \"from toml\"\nmodel = \"grok-4.6\"\n" });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &buf);
+    var list: std.ArrayList(AgentType) = .empty;
+    loadAgentDir(io, arena, &list, buf[0..n]);
+    try std.testing.expectEqual(@as(usize, 1), list.items.len);
+    try std.testing.expectEqualStrings("echoer", list.items[0].name);
+    try std.testing.expectEqualStrings("from toml", list.items[0].prompt);
+    try std.testing.expectEqualStrings("toml", list.items[0].desc);
+    try std.testing.expectEqualStrings("grok-4.6", list.items[0].model.?);
 }

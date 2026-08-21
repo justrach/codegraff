@@ -150,6 +150,7 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         } else |_| {}
     }
     if (environ_map.get("GRAFF_TOOL_HANDLE_BYTES")) |v| tool_handle.applyEnv(v); // #440: bytes at which a tool result becomes preview + handle
+    if (environ_map.get("GRAFF_CONTEXT_LIMIT")) |v| @import("context_limits.zig").applyEnv(v);
     // #204: GRAFF_COMPACT_PCT overrides the auto-compaction threshold as a percent
     // of the window (default 80). Clamped to 1..100; ignored if unparseable or 0.
     if (environ_map.get("GRAFF_COMPACT_PCT")) |v| {

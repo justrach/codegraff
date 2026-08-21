@@ -96,6 +96,9 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
             }
             b.stream.appendBytes(d.text);
         },
+        // grok-build RawTerminal: bash bytes go to the dedicated raw buf,
+        // never the prose stream (that mixing is what #551 took apart).
+        .tool_output_delta => |d| if (tui.rawStream()) |raw| raw.appendBytes(d.text),
         // A meta tool owns this text's layout, so it arrives whole.
         .completion_text, .todo_list_updated => |t| {
             b.stream.appendBytes(t.text);
@@ -107,11 +110,14 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
             .name = t.name,
             .detail = capLine(engine_sink.compactArg(t.input), arg_cap),
         } }),
-        .tool_result => |r| b.queue.push(.{ .tool_finished = .{
-            .name = r.name,
-            .detail = capLine(r.text, preview_cap),
-            .is_error = r.is_error,
-        } }),
+        .tool_result => |r| {
+            if (tui.rawStream()) |raw| raw.len.store(0, .release);
+            b.queue.push(.{ .tool_finished = .{
+                .name = r.name,
+                .detail = capLine(r.text, preview_cap),
+                .is_error = r.is_error,
+            } });
+        },
         // The harness refused the call before it ran. hostedEmit dropped this
         // outright, so the row simply never closed and the user watched a tool
         // that looked stuck.
@@ -123,6 +129,16 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
         } }),
 
         // ── notices: system rows ─────────────────────────────────────────
+        .job_completed => |j| {
+            var buf: [64]u8 = undefined;
+            const msg = if (j.killed)
+                std.fmt.bufPrint(&buf, "job {d} killed", .{j.id})
+            else if (j.exit_code) |c|
+                std.fmt.bufPrint(&buf, "job {d} exited {d}", .{ j.id, c })
+            else
+                std.fmt.bufPrint(&buf, "job {d} ended", .{j.id});
+            b.queue.push(.{ .notice = msg catch "job ended" });
+        },
         .session_notice => |n| {
             // A notice may open with an emphasized badge ("⚠ YOLO"); the TUI's
             // system row has one style, so the two halves are joined here
@@ -214,13 +230,14 @@ test "prose streams into the live tail; structure never does" {
 
     sink.emit(undefined, .{ .text_delta = .{ .text = "hello" } });
     sink.emit(undefined, .{ .tool_call_announced = .{ .name = "bash", .input = .null } });
+    sink.emit(undefined, .{ .tool_output_delta = .{ .name = "bash", .text = "ls\n" } });
     sink.emit(undefined, .{ .tool_result = .{ .name = "bash", .text = "ok\nmore", .is_error = false } });
     sink.emit(undefined, .{ .text_delta = .{ .text = " world" } });
 
     const snap = stream.snapshot(std.testing.allocator) orelse return error.NoStream;
     defer std.testing.allocator.free(snap);
-    // The tool cluster left no bytes in the prose buffer — that mixing is what
-    // the TUI used to have to un-mix by scanning for glyphs.
+    // Tool *structure* left no bytes in the prose buffer. Live bash output
+    // is the terminal projection (grok-build bash_output_chunk) and does.
     try std.testing.expectEqualStrings("hello world", snap);
 
     const evs = qbuf.drain();

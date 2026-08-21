@@ -28,6 +28,7 @@ const shutdown_trace = @import("shutdown_trace.zig"); // #364: teardown phase st
 const protocol_seq = @import("protocol_seq.zig"); // #330: the --json event sequence survives a resume
 const http_headers = @import("http_headers.zig"); // the k3/codex prompt-cache key survives one too
 const session_transcript = @import("session_transcript.zig"); // #441: the append-only history this file's rewrites discard
+const session_peer = @import("session_peer.zig"); // ADR 0014: room cursor + inbox ride the session file
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
 const unixMs = util.unixMs;
@@ -94,8 +95,7 @@ pub fn sessionTitle(root: *Agent) []const u8 {
     if (root.session_title) |title| return title;
     for (root.messages.items) |m| {
         if (m != .object) continue;
-        const role = if (m.object.get("role")) |v| (if (v == .string) v.string else "") else "";
-        if (!std.mem.eql(u8, role, "user")) continue;
+        if (!session_peer.isHumanUserTurn(m)) continue;
         if (m.object.get("content")) |c| switch (c) {
             .string => |text| return utf8Prefix(std.mem.trim(u8, text, " \t\r\n"), 80),
             .array => |arr| for (arr.items) |part| {
@@ -128,8 +128,7 @@ pub fn hasMeaningfulState(root: *Agent) bool {
     if (root.tools_used.entries.items.len > 0) return true;
     for (root.messages.items) |m| {
         if (m != .object) continue;
-        const role = if (m.object.get("role")) |v| (if (v == .string) v.string else "") else "";
-        if (std.mem.eql(u8, role, "user")) return true;
+        if (session_peer.isHumanUserTurn(m)) return true;
     }
     return false;
 }
@@ -169,6 +168,7 @@ fn fingerprint(root: *Agent, name: []const u8) u64 {
     f.num(root.context_local_tokens);
     f.num(protocol_seq.current());
     f.json(Value{ .array = root.messages });
+    session_peer.mixFingerprint(&f);
     return f.final();
 }
 
@@ -299,8 +299,9 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     try s.objectField("updated_ms");
     try s.write(unixMs(root.io));
     try s.objectField("messages");
+    const saved_msgs = try session_peer.messagesForSave(arena, root.messages.items);
     const messages_start = aw.writer.buffered().len;
-    try s.write(Value{ .array = root.messages });
+    try s.write(Value{ .array = saved_msgs });
     const messages_bytes = aw.writer.buffered().len - messages_start;
     const context_estimate = root.contextEstimateFromInputBytes(messages_bytes);
     // Preserve the last authoritative provider reading across resume. Responses
@@ -325,6 +326,7 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     // kimi-code/codex key cache affinity on the durable conversation id; persisting ours keeps /resume warm.
     try s.objectField("cache_key");
     try s.write(http_headers.sessionId(root.io));
+    try session_peer.writeFields(&s);
     try s.endObject();
 
     // #289: two graffs in one workspace share this file — the writer makes the
@@ -376,7 +378,7 @@ pub fn appendTodosFromValue(arena: Allocator, todos: *std.ArrayList(agent_mod.To
     }
 }
 
-fn contextTokensFromSession(obj: std.json.ObjectMap) u64 {
+pub fn contextTokensFromSession(obj: std.json.ObjectMap) u64 {
     const v = obj.get("context_tokens") orelse return 0;
     if (v != .integer or v.integer <= 0) return 0;
     return @intCast(v.integer);
@@ -389,19 +391,19 @@ pub fn cacheKeyFromSession(obj: std.json.ObjectMap) ?[]const u8 {
 }
 /// The persisted --json sequence high-water mark (#330); 0 for sessions saved
 /// before it existed, so a resume of one starts the numbering fresh.
-fn eventSeqFromSession(obj: std.json.ObjectMap) u64 {
+pub fn eventSeqFromSession(obj: std.json.ObjectMap) u64 {
     const v = obj.get("event_seq") orelse return 0;
     if (v != .integer or v.integer <= 0) return 0;
     return @intCast(v.integer);
 }
 
-fn contextLocalTokensFromSession(obj: std.json.ObjectMap) ?u64 {
+pub fn contextLocalTokensFromSession(obj: std.json.ObjectMap) ?u64 {
     const v = obj.get("context_local_tokens") orelse return null;
     if (v != .integer or v.integer < 0) return null;
     return @intCast(v.integer);
 }
 
-fn restoreContextMeter(root: *Agent, saved_context_tokens: u64, saved_local_tokens: ?u64) void {
+pub fn restoreContextMeter(root: *Agent, saved_context_tokens: u64, saved_local_tokens: ?u64) void {
     const current_local = root.fullRequestEstimateTokens();
     // A provider reading is meaningful across resume only after separating its
     // locally measurable component. Preserve the server-only delta (encrypted
@@ -512,89 +514,5 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     root.last_request_write_failed = false;
     root.fallback_active = false;
     root.fallback_blocked = false;
-}
-
-test "session context meter restores hidden delta and legacy sessions re-estimate" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    const current = try std.json.parseFromSliceLeaky(Value, a, "{\"context_tokens\":90000,\"context_local_tokens\":20000}", .{});
-    try std.testing.expectEqual(@as(u64, 90_000), contextTokensFromSession(current.object));
-    try std.testing.expectEqual(@as(u64, 20_000), contextLocalTokensFromSession(current.object).?);
-    const legacy = try std.json.parseFromSliceLeaky(Value, a, "{}", .{});
-    try std.testing.expectEqual(@as(u64, 0), contextTokensFromSession(legacy.object));
-    try std.testing.expect(contextLocalTokensFromSession(legacy.object) == null);
-    const invalid = try std.json.parseFromSliceLeaky(Value, a, "{\"context_tokens\":-1}", .{});
-    try std.testing.expectEqual(@as(u64, 0), contextTokensFromSession(invalid.object));
-    const invalid_local = try std.json.parseFromSliceLeaky(Value, a, "{\"context_local_tokens\":-1}", .{});
-    try std.testing.expect(contextLocalTokensFromSession(invalid_local.object) == null);
-
-    // Model a resumed Responses history whose compact encrypted-reasoning handle
-    // serializes much smaller than the authoritative server token reading.
-    var msgs = std.json.Array.init(a);
-    const reasoning = "{\"type\":\"reasoning\",\"encrypted_content\":\"" ++ util.repeatBytes("x", 8192) ++ "\"}";
-    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, reasoning, .{}));
-    var root: Agent = undefined;
-    root.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100_000 };
-    root.messages = msgs;
-    root.sub = false;
-    root.strict = false;
-    root.sys_normal = "";
-    root.sys_strict = "";
-    root.tools_responses = "";
-    root.last_cache_read = 12_345;
-
-    const local_estimate = root.fullRequestEstimateTokens();
-    try std.testing.expect(local_estimate < 90_000);
-    restoreContextMeter(&root, contextTokensFromSession(current.object), contextLocalTokensFromSession(current.object));
-    try std.testing.expectEqual(local_estimate + 70_000, root.last_context_tokens);
-    try std.testing.expectEqual(@as(u64, 0), root.last_cache_read);
-    try std.testing.expect(root.last_context_tokens > local_estimate);
-
-    // A legitimate over-window reading remains evidence when its paired local
-    // estimate matches the current request.
-    restoreContextMeter(&root, 150_000, local_estimate);
-    try std.testing.expectEqual(@as(u64, 150_000), root.last_context_tokens);
-
-    // An unknown window still preserves the paired hidden delta; no clamping is
-    // needed or safe.
-    root.provider.context = 0;
-    restoreContextMeter(&root, 90_000, local_estimate);
-    try std.testing.expectEqual(root.fullRequestEstimateTokens() + (90_000 - local_estimate), root.last_context_tokens);
-    root.provider.context = 100_000;
-
-    // A legacy session has no saved meter, but non-empty restored history must
-    // still produce a live local reading rather than resetting to zero.
-    root.last_cache_read = 99;
-    restoreContextMeter(&root, contextTokensFromSession(legacy.object), contextLocalTokensFromSession(legacy.object));
-    try std.testing.expectEqual(local_estimate, root.last_context_tokens);
-    try std.testing.expectEqual(@as(u64, 0), root.last_cache_read);
-
-    // A meter from an intermediate build without the paired local component is
-    // also ungrounded and must not force destructive recovery after resume.
-    const unpaired = try std.json.parseFromSliceLeaky(Value, a, "{\"context_tokens\":99000}", .{});
-    restoreContextMeter(&root, contextTokensFromSession(unpaired.object), contextLocalTokensFromSession(unpaired.object));
-    try std.testing.expectEqual(local_estimate, root.last_context_tokens);
-}
-
-test "event_seq round-trips so a replacement graff continues the sequence (#330)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    const saved = try std.json.parseFromSliceLeaky(Value, a, "{\"event_seq\":41}", .{});
-    try std.testing.expectEqual(@as(u64, 41), eventSeqFromSession(saved.object));
-    // Legacy sessions and corrupt values leave the live counter alone.
-    const legacy = try std.json.parseFromSliceLeaky(Value, a, "{}", .{});
-    try std.testing.expectEqual(@as(u64, 0), eventSeqFromSession(legacy.object));
-    const bad = try std.json.parseFromSliceLeaky(Value, a, "{\"event_seq\":-3}", .{});
-    try std.testing.expectEqual(@as(u64, 0), eventSeqFromSession(bad.object));
-
-    protocol_seq.resetForTest();
-    defer protocol_seq.resetForTest();
-    protocol_seq.restore(eventSeqFromSession(saved.object));
-    try std.testing.expectEqual(@as(u64, 42), protocol_seq.next()); // no id is ever reissued
-    protocol_seq.restore(eventSeqFromSession(legacy.object));
-    try std.testing.expectEqual(@as(u64, 43), protocol_seq.next());
+    session_peer.restore(root, obj);
 }

@@ -33,5 +33,6 @@ A 20-minute CI watch is one tool call, not ~40 model completions.
 A snapshot (`wait_ms` omitted/0) still returns immediately. A model
 that wanted "wake me every 30s of silence" can no longer do that
 through `wait_ms=30000`; that was the measured failure mode.
-Idle auto-wake (grok-build's `maybe_drain_notifications`) is a
-follow-up: the in-turn wait is the tax we measured.
+Idle auto-wake (grok-build's `maybe_drain_notifications`) lives in
+`job_notify.zig`: a finished job injects a wake at the next step and,
+in the TUI, starts a turn while idle.

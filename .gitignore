@@ -35,6 +35,8 @@ dist/
 
 # surfer lives in its own repo (~/surfer, github.com/justrach/surfer) — never track it here
 surfer/
+# codedb lives in its own repo (github.com/justrach/codedb) — local checkout only
+codedb/
 graff-evals/results/
 graff-evals/.sandboxes/
 

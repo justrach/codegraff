@@ -28,6 +28,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const util = @import("util.zig");
+const handle_preview = @import("handle_preview.zig");
 
 /// Where a handle's bytes live. Run-scoped rather than session-scoped: a
 /// subagent has no durable session (that is why the #409 spill skips it) but
@@ -136,9 +137,21 @@ pub fn forResult(gpa: Allocator, arena: Allocator, target: Target, text: []const
     // A marker that cannot fit under the threshold replaces the preview rather
     // than growing past it: the pointer matters more than the head.
     if (marker.len + 2 >= threshold) return .{ .text = marker, .path = path, .bytes = text.len };
-    const head = util.utf8Prefix(text, threshold - (marker.len + 2));
-    return .{
+    // Notable lines past the head (FAILED / ERROR / panic) ride the first
+    // payload so a fat log does not cost a pager turn for "what broke?".
+    const room = threshold - (marker.len + 2);
+    const excerpt_budget = @min(handle_preview.max_notable_bytes, room / 4);
+    const skip = if (room > excerpt_budget) room - excerpt_budget else room;
+    const excerpt = handle_preview.notableExcerpt(arena, text, skip, excerpt_budget) catch "";
+    const used = marker.len + excerpt.len + (if (excerpt.len == 0) @as(usize, 2) else 4);
+    const head = util.utf8Prefix(text, if (used < threshold) threshold - used else 0);
+    if (excerpt.len == 0) return .{
         .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ head, marker }),
+        .path = path,
+        .bytes = text.len,
+    };
+    return .{
+        .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}\n{s}", .{ head, excerpt, marker }),
         .path = path,
         .bytes = text.len,
     };
@@ -161,11 +174,16 @@ pub fn withFirstNote(arena: Allocator, r: Result, shown: *bool) ![]const u8 {
     return std.fmt.allocPrint(arena, "{s}{s}", .{ r.text, first_note });
 }
 
+fn handleId(path: []const u8) []const u8 {
+    const base = std.fs.path.basename(path);
+    return if (std.mem.endsWith(u8, base, ".txt")) base[0 .. base.len - 4] else base;
+}
+
 fn markerText(arena: Allocator, path: ?[]const u8, total: usize, threshold: usize, shape: []const u8) ![]const u8 {
     if (path) |p| return std.fmt.allocPrint(
         arena,
-        "[tool result handle: {d} bytes, {s} — the COMPLETE result is at {s}. Slice what you need out of that file (read_file with start_line/end_line, a grep-style bash command, codedb) instead of re-running the tool (#440).]",
-        .{ total, shape, p },
+        "[tool result handle: {d} bytes, {s} — handle {s} at {s}. Page it with read_tool_result (offset/limit or query); do not re-run the tool (#440).]",
+        .{ total, shape, handleId(p), p },
     );
     return std.fmt.allocPrint(
         arena,
@@ -183,11 +201,19 @@ fn persist(arena: Allocator, target: Target, text: []const u8) ?[]const u8 {
     if (!reserve(text.len)) return null;
     // createDirPath is idempotent; `.graff` normally already exists (trace setup).
     target.dir.createDirPath(target.io, handles_dir) catch return refund(text.len);
-    const seq = g_seq.fetchAdd(1, .monotonic);
-    const run_id = if (target.run_id.len > 0) target.run_id else "untraced";
-    const rel = std.fmt.allocPrint(arena, "{s}/{s}-{d}.txt", .{ handles_dir, run_id, seq }) catch return refund(text.len);
-    target.dir.writeFile(target.io, .{ .sub_path = rel, .data = text, .flags = .{ .exclusive = true } }) catch return refund(text.len);
-    return absolute(target, arena, rel);
+    // `g_seq` is per-process. A prior graff in this cwd may have left tr_N;
+    // exclusive create must skip those instead of dropping the handle.
+    var spins: u32 = 0;
+    while (spins < 1024) : (spins += 1) {
+        const seq = g_seq.fetchAdd(1, .monotonic);
+        const rel = std.fmt.allocPrint(arena, "{s}/tr_{d}.txt", .{ handles_dir, seq }) catch return refund(text.len);
+        target.dir.writeFile(target.io, .{ .sub_path = rel, .data = text, .flags = .{ .exclusive = true } }) catch |err| {
+            if (err == error.PathAlreadyExists) continue;
+            return refund(text.len);
+        };
+        return absolute(target, arena, rel);
+    }
+    return refund(text.len);
 }
 
 /// Resolved through the same dir handle the file was written with, so the path
@@ -356,13 +382,14 @@ test "#440: over the threshold returns preview + handle path + byte count + shap
     try std.testing.expect(std.unicode.utf8ValidateSlice(r.text));
 
     // (a) the handle holds the complete original bytes
-    const rel = handles_dir ++ "/run-0.txt";
+    const rel = handles_dir ++ "/tr_0.txt";
     const stored = try tmp.dir.readFileAlloc(io, rel, std.testing.allocator, .limited(1 << 20));
     defer std.testing.allocator.free(stored);
     try std.testing.expectEqualStrings(big, stored);
     // (b) the path handed to the model is absolute and names that file
     try std.testing.expect(std.fs.path.isAbsolute(r.path.?));
-    try std.testing.expect(std.mem.endsWith(u8, r.path.?, "run-0.txt"));
+    try std.testing.expect(std.mem.endsWith(u8, r.path.?, "tr_0.txt"));
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "handle tr_0") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.text, r.path.?) != null);
     // (c) the byte count and the shape hint are both in the marker
     try std.testing.expect(std.mem.indexOf(u8, r.text, "40000 bytes") != null);
@@ -372,6 +399,27 @@ test "#440: over the threshold returns preview + handle path + byte count + shap
     try std.testing.expect(std.mem.indexOf(u8, stored, needle) != null);
     // (e) the preview really is the head of the result
     try std.testing.expect(std.mem.startsWith(u8, r.text, big[0..64]));
+}
+
+test "#440: a FAILED line past the head rides the first handle payload" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    resetForTest();
+    defer resetForTest();
+
+    const fail = "request_id=req-8c41de07 status=FAILED reason=undefined_symbol\n";
+    const big = try a.alloc(u8, 40_000);
+    @memset(big, 'x');
+    for (0..399) |i| big[(i + 1) * 100 - 1] = '\n';
+    @memcpy(big[38_000..][0..fail.len], fail);
+
+    const r = try forResult(std.testing.allocator, a, testTarget(&tmp), big, 4096);
+    try std.testing.expect(r.text.len <= 4096);
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "req-8c41de07") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "notable lines") != null);
 }
 
 test "#440: the threshold is a knob — the same payload is bounded by whatever it is set to" {
@@ -504,5 +552,28 @@ test "#440: the run byte budget bounds the handle dir, and over it the result is
     try std.testing.expect(std.mem.indexOf(u8, second.text, "8192 bytes total") != null);
     try std.testing.expect(std.mem.indexOf(u8, second.text, "No handle could be written") != null);
     try std.testing.expect(second.text.len <= 1024);
-    try std.testing.expect(tmp.dir.statFile(io, handles_dir ++ "/run-1.txt", .{}) == error.FileNotFound);
+    try std.testing.expect(tmp.dir.statFile(io, handles_dir ++ "/tr_1.txt", .{}) == error.FileNotFound);
+}
+
+test "#440: a leftover tr_N from a prior process still gets a handle" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    resetForTest();
+    defer resetForTest();
+
+    const big = try a.alloc(u8, 8192);
+    @memset(big, 'x');
+    const first = try forResult(std.testing.allocator, a, testTarget(&tmp), big, 1024);
+    try std.testing.expect(first.path != null);
+    try std.testing.expect(std.mem.endsWith(u8, first.path.?, "tr_0.txt"));
+
+    // New process: seq restarts at 0, leftover file stays.
+    resetForTest();
+    const second = try forResult(std.testing.allocator, a, testTarget(&tmp), big, 1024);
+    try std.testing.expect(second.path != null);
+    try std.testing.expect(std.mem.endsWith(u8, second.path.?, "tr_1.txt"));
+    try std.testing.expect(std.mem.indexOf(u8, second.text, "handle tr_1") != null);
 }

@@ -53,7 +53,9 @@ pub fn startJob(self: *Model) void {
         // longer disagree.
         .params = paramsOf(self),
         .stream = .{ .buf = self.alloc.alloc(u8, 256 * 1024) catch &.{} },
+        .raw = .{ .buf = self.alloc.alloc(u8, 64 * 1024) catch &.{} },
     };
+    engine.g_raw = &job.raw;
     // The queue must own its copies before the turn thread can push: the
     // engine's payloads live in a per-turn arena that dies with the turn.
     job.events.attach(self.alloc);
@@ -65,6 +67,16 @@ pub fn startJob(self: *Model) void {
         job.threaded = false;
         engine.jobRun(job);
     }
+}
+
+/// grok-build notify: a finished background job starts a turn while idle.
+pub fn maybeJobWake(self: *Model) void {
+    if (self.pending != null or self.bg != null) return;
+    const f = engine.g_idle_wake_fn orelse return;
+    var buf: [512]u8 = undefined;
+    const text = f(engine.g_turn_ctx, &buf) orelse return;
+    self.push(.user, text) catch return;
+    startJob(self);
 }
 
 pub fn finishJob(self: *Model) void {
@@ -87,7 +99,9 @@ pub fn finishJob(self: *Model) void {
     }
     for (job.history) |t| self.alloc.free(t.text);
     self.alloc.free(job.history);
+    if (engine.g_raw == &job.raw) engine.g_raw = null;
     if (job.stream.buf.len > 0) self.alloc.free(job.stream.buf);
+    if (job.raw.buf.len > 0) self.alloc.free(job.raw.buf);
     job.events.deinit();
     self.alloc.destroy(job);
     self.pending = null;
@@ -552,6 +566,7 @@ test "Model.deinit never joins a running turn thread (#534)" {
     for (job.history) |t| std.testing.allocator.free(t.text);
     std.testing.allocator.free(job.history);
     if (job.stream.buf.len > 0) std.testing.allocator.free(job.stream.buf);
+    if (job.raw.buf.len > 0) std.testing.allocator.free(job.raw.buf);
     std.testing.allocator.destroy(job);
 }
 

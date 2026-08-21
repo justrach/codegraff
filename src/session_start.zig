@@ -102,6 +102,11 @@ pub fn setupWorktreeAndBanner(
         engine_sink.enableColor();
     }
     const sink = engine_sink.writerSink(out);
+    // --add-dir before --worktree chdir so a relative extra root is resolved
+    // against the launch cwd, not the scratch tree.
+    for (flags.add_dirs.items) |dir| {
+        @import("workspace_roots.zig").add(io, arena, dir) catch |err| std.process.fatal("--add-dir '{s}': {t}", .{ dir, err });
+    }
     // --worktree/-w: run this session in an isolated git worktree so parallel
     // agents don't collide on files. Creates .graff/worktrees/<name> on branch
     // worktree-<name> (from HEAD) and enters it; reuses it if it already exists.

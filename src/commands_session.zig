@@ -281,7 +281,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.eql(u8, line, "/agents")) {
-        try out.print("{s}agent types{s} — MAP-Elites niches: builtins + {s}/*.md (file shadows builtin); spawn via subagent agent:\"<name>\"\n", .{ style.bold, style.reset, fleet.agents_dir });
+        try out.print("{s}agent types{s} — MAP-Elites niches: builtins + {s}/*.md|*.toml (file shadows builtin); spawn via subagent agent:\"<name>\"\n", .{ style.bold, style.reset, fleet.agents_dir });
         for (fleet.g_agent_types) |t| {
             const fp = promptFingerprint(t.prompt);
             try out.print("  {s}{s:<14}{s} {s} {s}{s}{s}", .{

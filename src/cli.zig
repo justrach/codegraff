@@ -21,6 +21,13 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.268
+    \\  • Cerebras Inference (CEREBRAS_API_KEY → gpt-oss-120b); not the WSE CSL SDK
+    \\  • Codex-shaped .harness/agents/*.toml (and ~/.codex/agents) pin model/effort
+    \\  • imagegen Codex engine: private config so exec no longer rejects JSON (#576)
+    \\  • Live bash chunks + idle job notify + raw terminal (do not poll)
+    \\  • ask_user pastes reach the model as vision blocks; compact keeps the live prompt's images
+    \\
     \\0.0.267
     \\  • bash_output/agent_output wait_ms>0 blocks until exit (10h), not a 30s poll
     \\
@@ -205,9 +212,11 @@ pub const usage_text =
     \\  --until <0-100>                 eval-loop target score; stop when reached (default 90)
     \\  --niche <name>                  fleet niche this eval optimizes (reviewer/researcher/implementer/skeptic or a custom agent); tags submitted scores so the DGM can promote a champion for that role
     \\  -w, --worktree <name>           isolate this session in a git worktree (.graff/worktrees/<name>) so parallel agents don't collide on files
+    \\  --add-dir <path>                extra file-tool root (repeatable, max 16). Not a cwd switch; no skills/sessions from it
+    \\  --context-limit name=N          cap a named prefix: skill_catalog_bytes|mcp_schema_bytes|agents_md_bytes
     \\  --no-autocommit                 with -w, don't auto-commit each turn (default on; land work with `graff worktree merge`)
     \\  --yolo           skip all permission prompts for the session
-    \\  --lean           slim tool surface (8 core tools) + MCP deferred behind load_tool_schemas — the DEFAULT for -p one-shots (GRAFF_LEAN=1)
+    \\  --lean           slim tool surface (9 core tools) + MCP deferred behind load_tool_schemas — the DEFAULT for -p one-shots (GRAFF_LEAN=1)
     \\  --no-lean        opt a one-shot out of the implied --lean: full tool surface + eager MCP, the pre-default -p behavior
     \\  --no-local-tools embedder mode: hard-disable the built-in bash/bash_output/bash_kill/read_file/edit_file/write_file/codedb tools for the whole process (subagents included), so graff can run outside the sandbox and get its coding tools from an MCP server instead; webfetch, orchestration and MCP tools still work (GRAFF_NO_LOCAL_TOOLS=1)
     \\  -p, --print      one-shot print mode (answer on stdout, progress on stderr)

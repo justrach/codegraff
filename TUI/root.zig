@@ -17,6 +17,10 @@ pub const HudKind = engine.HudKind;
 pub const Turn = engine.Turn;
 pub const Params = engine.Params;
 pub const StreamBuf = engine.StreamBuf;
+/// Live bash raw tail the sink writes from the tool pool.
+pub fn rawStream() ?*engine.StreamBuf {
+    return engine.g_raw;
+}
 pub const Event = engine.Event;
 pub const EventQueue = engine.EventQueue;
 pub const ToolEvent = engine.ToolEvent;
