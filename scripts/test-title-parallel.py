@@ -126,12 +126,12 @@ def main() -> None:
                 unset_env=ambient,
                 timeout=10.0,
             ) as session:
-                session.wait_for_literal("] ›")
+                session.wait_for_prompt()
                 cursor = len(session.raw)
                 sent_at = time.monotonic()
                 session.send_line("make the title and answer overlap")
                 session.wait_for_literal(MAIN_REPLY, start=cursor)
-                session.wait_for_literal("] ›", start=cursor)
+                session.wait_for_prompt(start=cursor)
                 prompt_elapsed = time.monotonic() - sent_at
                 if prompt_elapsed >= TITLE_DELAY_SECONDS - 0.4:
                     raise AssertionError(

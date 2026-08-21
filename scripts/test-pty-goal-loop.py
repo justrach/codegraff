@@ -121,7 +121,7 @@ def main() -> None:
                 unset_env=ambient,
                 timeout=10.0,
             ) as session:
-                session.wait_for_literal("] ›")
+                session.wait_for_prompt()
 
                 # 1. "/goal ship the thing" adopts a standing goal AND runs a turn
                 # immediately: the goal-set line prints, and the loop controller's
@@ -131,7 +131,7 @@ def main() -> None:
                 session.send_line("/goal ship the thing")
                 session.wait_for_literal("Goal set: ship the thing", start=cursor)
                 session.wait_for_literal("run stopped — idle", start=cursor, timeout=10.0)
-                session.wait_for_literal("] ›", start=cursor)
+                session.wait_for_prompt(start=cursor)
 
                 # 2. "/goal 30m ship the thing" prints the budget line (the arm
                 # announcement), and the recorded objective must NOT contain "30m" —
@@ -142,14 +142,14 @@ def main() -> None:
                 session.wait_for_literal("/loop budget: 30m", start=cursor)
                 session.wait_for_literal("Goal set: ship the thing", start=cursor)
                 session.wait_for_literal("run stopped — idle", start=cursor, timeout=10.0)
-                session.wait_for_literal("] ›", start=cursor)
+                session.wait_for_prompt(start=cursor)
 
                 # 4. "/goal status" stays a COMMAND: no turn runs.
                 before_status = len(mock.recorded_requests())
                 cursor = len(session.raw)
                 session.send_line("/goal status")
                 session.wait_for_literal("Status: active", start=cursor)
-                session.wait_for_literal("] ›", start=cursor)
+                session.wait_for_prompt(start=cursor)
                 if len(mock.recorded_requests()) != before_status:
                     raise AssertionError(
                         "/goal status ran a model turn; it must stay a lifecycle command"

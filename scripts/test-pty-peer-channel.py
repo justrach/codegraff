@@ -74,7 +74,7 @@ def main() -> None:
                 unset_env=("CODEX_HOME", "NO_COLOR"),
                 timeout=25.0,
             ) as session:
-                session.wait_for_literal("] ›")
+                session.wait_for_prompt()
 
                 live = os.path.join(home, ".graff", "live")
                 deadline = time.time() + 10
