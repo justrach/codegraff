@@ -164,14 +164,26 @@ def run():
         boot(fd)
         # Marker lines via a printf FORMAT: the echoed command carries "LC%04d"
         # and bare integers, never a marker, so a hit on screen is transcript.
+        # `!cmd` is a single background op: send the next only after this block's
+        # last marker has been painted, or the rest bounce as "engine still running".
         for b in range(BLOCKS):
+            last = b * PER_BLOCK + PER_BLOCK - 1
+            needle = f"LC{last:04d}".encode()
             args = " ".join(str(b * PER_BLOCK + k) for k in range(PER_BLOCK))
             cmd = (
                 r"!printf 'LC%04d filler text long enough that it rewraps at "
                 r"every width this probe drives\n' " + args
             )
             os.write(fd, (cmd + "\r").encode())
-            drain(fd, 1.6)
+            got = b""
+            end = time.time() + 8.0
+            while time.time() < end:
+                got += drain(fd, 0.3)
+                if needle in got:
+                    break
+            else:
+                return f"block {b} never painted LC{last:04d} (no `!` output)"
+
 
         total = BLOCKS * PER_BLOCK
         seen = marks(reread(fd))

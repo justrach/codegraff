@@ -40,6 +40,8 @@ const fixtures = [_][]const u8{
     "```12:34:src/main.rs\nlet v: Vec<u8> = vec![1, 2, 3];\n```\n",
     // 9 — headings, rules and a fence opened immediately after a table.
     "## Heading\n| a | b |\n|---|---|\n| 1 | 2 |\n```sh\necho \"hi \\\n```\n",
+    // 10 — numbered lists, quotes, tasks, a rule, italic.
+    "1. first\n> note\n- [x] done\n- [ ] todo\n---\n_em_ and snake_case\n",
 };
 
 fn oneShot(a: std.mem.Allocator, src: []const u8, th: theme_mod.Theme, width: usize) ![]const u8 {

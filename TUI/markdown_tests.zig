@@ -15,6 +15,26 @@ const renderThemed = markdown.renderThemed;
 const renderTinted = markdown.renderTinted;
 const renderUser = markdown.renderUser;
 
+test "numbered lists, quotes, and tasks render as blocks" {
+    const text = try render(std.testing.allocator, "1. first\n> note\n- [x] done\n- [ ] todo\n+ plus", theme_mod.emerald);
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "1.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "│ ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "☑") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "☐") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "•") != null);
+}
+
+test "rules, nested bullets, and _italic_ paint; #needspace is not a heading" {
+    const text = try render(std.testing.allocator, "---\n  - nested\n_em_ and snake_case\n#needspace", theme_mod.emerald);
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "────────────") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "◦") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, theme_mod.dim ++ "em" ++ "\x1b[22m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "snake_case") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "#needspace") != null);
+}
+
 test "render paints headers, code, bold, and bullets" {
     const text = try render(std.testing.allocator, "# Title\n- item\n`code` and **bold**\n```zig\nconst x = 1;\n```", theme_mod.emerald);
     defer std.testing.allocator.free(text);
