@@ -147,6 +147,13 @@ pub fn parseModels(arena: Allocator, provider_id: []const u8, data: []const u8) 
         if (item != .object) continue;
         const id = util.strFieldObj(item.object, "id") orelse util.strFieldObj(item.object, "name") orelse continue;
         if (!validModelId(id)) continue;
+        // Vercel AI Gateway lists image/video/embedding/rerank next to chat.
+        // Anthropic uses type=model — only skip the known non-chat kinds.
+        if (util.strFieldObj(item.object, "type")) |kind| {
+            if (std.mem.eql(u8, kind, "image") or std.mem.eql(u8, kind, "video") or
+                std.mem.eql(u8, kind, "embedding") or std.mem.eql(u8, kind, "reranking"))
+                continue;
+        }
         var duplicate = false;
         for (rows.items) |row| if (std.mem.eql(u8, row.name, id)) {
             duplicate = true;
@@ -156,6 +163,8 @@ pub fn parseModels(arena: Allocator, provider_id: []const u8, data: []const u8) 
         if (context == 0) context = positiveInt(item.object, "context");
         // Fireworks declares the window in camelCase (AIP gateway shape).
         if (context == 0) context = positiveInt(item.object, "contextLength");
+        // Vercel AI Gateway (and some OpenAI-compat hosts) use context_window.
+        if (context == 0) context = positiveInt(item.object, "context_window");
         // Anthropic declares the input window as max_input_tokens. Its sibling
         // max_tokens is the OUTPUT cap (128k on Opus 5) — never read it as a
         // window, or a 1M-context model would compact at ~102k.

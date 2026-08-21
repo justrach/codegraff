@@ -181,6 +181,11 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         const on = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
         if (on) provider_mod.g_zai_url_override = provider_mod.zai_coding_url;
     }
+    // Vercel AI Gateway defaults to the coding-agent surface. GRAFF_VERCEL_URL
+    // rewrites the chat URL (docs also accept the generic /v1 host).
+    if (environ_map.get("GRAFF_VERCEL_URL")) |v| {
+        if (v.len > 0) provider_mod.g_vercel_url_override = v;
+    }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
     // #502 follow-up: opt-in xAI on-socket chaining (see codex_chain.g_xai_ws_chain).
     if (environ_map.get("GRAFF_XAI_WS_CHAIN")) |v|

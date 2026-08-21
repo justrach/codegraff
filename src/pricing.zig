@@ -53,6 +53,7 @@ pub const price_table = [_]ModelPrice{
     .{ .name = "glm-5v-turbo", .in = 1.2, .out = 4.0, .cache = 0.24 },
     .{ .name = "glm-4.7", .in = 0.6, .out = 2.2, .cache = 0.11 },
     .{ .name = "glm-4.5", .in = 0.6, .out = 2.2, .cache = 0.11 },
+    .{ .name = "alibaba/qwen3.8-27b", .in = 0.55, .out = 3.3, .cache = 0.11 },
 };
 
 /// Runtime price overlay populated by `graff models refresh` (models.dev
@@ -294,6 +295,7 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "zai", .name = "glm-5", .context = 204_800 },
     .{ .provider = "zai", .name = "glm-4.7", .context = 204_800 },
     .{ .provider = "zai", .name = "glm-4.5", .context = 131_072 },
+    .{ .provider = "vercel", .name = "alibaba/qwen3.8-27b", .context = 1_000_000, .supports_reasoning = true },
 };
 
 /// Active catalog for routing, pickers, completion, and runtime listings.

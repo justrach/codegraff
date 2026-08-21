@@ -303,6 +303,7 @@ from [models.dev](https://models.dev)'s `api.json` (snapshot 2026-06-10).
 | `kilo`      | OpenAI chat, bearer         | `KILO_API_KEY`       |
 | `groq`      | OpenAI chat, bearer         | `GROQ_API_KEY`       |
 | `cerebras`  | OpenAI chat, bearer         | `CEREBRAS_API_KEY`   |
+| `vercel`    | OpenAI chat, bearer (AI Gateway coding-agent) | `AI_GATEWAY_API_KEY` |
 | `mistral`   | OpenAI chat, bearer         | `MISTRAL_API_KEY`    |
 | `kimi` | Live catalog-selected: native Kimi chat + bearer, or Anthropic beta Messages + x-api-key when declared | `graff login kimi` or `KIMI_API_KEY` |
 | `xai` (grok) / `zai` (GLM) | OpenAI chat, bearer | `XAI_API_KEY` / `ZAI_API_KEY` (via `graff key set`) |
@@ -1284,7 +1285,7 @@ elsewhere a `0600` `~/.simple-harness-keys.json`; the harness auto-loads them at
 startup for any provider whose env var isn't set (env always wins). `graff key
 list` shows which providers have a stored key. Providers
 (OpenAI/Anthropic-format, matched to graff): anthropic, openai, deepseek,
-**kimi**, **xai** (grok), **zai** (GLM), minimax, xiaomi, codegraff, plus the
+**kimi**, **xai** (grok), **zai** (GLM), **vercel** (AI Gateway), minimax, xiaomi, codegraff, plus the
 codex & claude subscription logins.
 
 `graff login` runs graff's codegraff device-code flow (a `user_code` to enter at

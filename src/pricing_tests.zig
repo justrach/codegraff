@@ -197,3 +197,19 @@ test "Z.AI default is GLM-5.3 with official prices and a 1M window" {
     try std.testing.expectEqual(@as(f64, 4.4), p.out);
     try std.testing.expectEqual(@as(f64, 0.26), p.cache);
 }
+
+test "Vercel AI Gateway defaults to Qwen3.8-27B on the coding-agent surface" {
+    const spec = provider_mod.specFor("vercel") orelse return error.MissingVercelSpec;
+    try std.testing.expectEqualStrings("alibaba/qwen3.8-27b", spec.default_model);
+    try std.testing.expect(spec.takes_effort);
+    try std.testing.expectEqual(provider_mod.ProviderSpec.CatalogKind.openai, spec.catalog);
+    try std.testing.expectEqualStrings("https://ai-gateway.vercel.sh/coding-agent/v1/chat/completions", spec.url);
+    try std.testing.expectEqualStrings("https://ai-gateway.vercel.sh/coding-agent/v1/models", spec.models_url);
+    try std.testing.expectEqualStrings("AI_GATEWAY_API_KEY", spec.env_key);
+    try std.testing.expect(pricing.providerModelInTable("vercel", "alibaba/qwen3.8-27b"));
+    try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("vercel", "alibaba/qwen3.8-27b"));
+    const p = pricing.priceFor("alibaba/qwen3.8-27b") orelse return error.MissingQwen38Price;
+    try std.testing.expectEqual(@as(f64, 0.55), p.in);
+    try std.testing.expectEqual(@as(f64, 3.3), p.out);
+    try std.testing.expectEqual(@as(f64, 0.11), p.cache);
+}

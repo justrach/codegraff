@@ -43,7 +43,7 @@ properties are load-bearing, and a missed combination is a real bug.
 |---|---|---|
 | `tool_catalog` | live | 64 catalog cubes. `#330` / `#352` / `--lean`. |
 | `transport` | live | Process kernel. 96 turns, **1** WebSocket cell. Sub never WS. |
-| `provider` | live | 19 baked rows over 3 wire kinds. |
+| `provider` | live | 20 baked rows over 3 wire kinds. |
 | `goal_loop` | live | Process kernel (`Event`/`step`, not a TM). 360 snapshot cells. Standing does not retire. |
 | `prompt_cache` | live | Process kernel. 48 cells. Sub never spawns. Child key isolated. Join restores root. |
 | `prompt_prefix` | live | Process kernel. 6 cells. Names-only catalog, pin once. Skill events do not rewrite the prefix. |
