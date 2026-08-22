@@ -296,6 +296,7 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "zai", .name = "glm-4.7", .context = 204_800 },
     .{ .provider = "zai", .name = "glm-4.5", .context = 131_072 },
     .{ .provider = "vercel", .name = "alibaba/qwen3.8-27b", .context = 1_000_000, .supports_reasoning = true },
+    .{ .provider = "openrouter", .name = "anthropic/claude-sonnet-4.6", .context = 1_000_000, .supports_reasoning = true },
 };
 
 /// Active catalog for routing, pickers, completion, and runtime listings.

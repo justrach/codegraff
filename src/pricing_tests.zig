@@ -229,3 +229,15 @@ test "Vercel AI Gateway defaults to Qwen3.8-27B on the coding-agent surface" {
     try std.testing.expectEqual(@as(f64, 3.3), p.out);
     try std.testing.expectEqual(@as(f64, 0.11), p.cache);
 }
+
+test "OpenRouter defaults to Claude Sonnet 4.6 on the chat completions surface" {
+    const spec = provider_mod.specFor("openrouter") orelse return error.MissingOpenRouterSpec;
+    try std.testing.expectEqualStrings("anthropic/claude-sonnet-4.6", spec.default_model);
+    try std.testing.expect(spec.takes_effort);
+    try std.testing.expectEqual(provider_mod.ProviderSpec.CatalogKind.openai, spec.catalog);
+    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/chat/completions", spec.url);
+    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/models", spec.models_url);
+    try std.testing.expectEqualStrings("OPENROUTER_API_KEY", spec.env_key);
+    try std.testing.expect(pricing.providerModelInTable("openrouter", "anthropic/claude-sonnet-4.6"));
+    try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("openrouter", "anthropic/claude-sonnet-4.6"));
+}

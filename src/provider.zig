@@ -108,6 +108,9 @@ pub const provider_specs = [_]ProviderSpec{
     // Vercel AI Gateway: one key, live /models. Coding-agent surface marks
     // harness traffic (docs: passthrough to /v1). Image/video are not seats.
     .{ .id = "vercel", .display_name = "Vercel AI Gateway", .kind = .openai, .auth = .bearer, .url = "https://ai-gateway.vercel.sh/coding-agent/v1/chat/completions", .env_key = "AI_GATEWAY_API_KEY", .default_model = "alibaba/qwen3.8-27b", .catalog = .openai, .models_url = "https://ai-gateway.vercel.sh/coding-agent/v1/models", .takes_effort = true },
+    // OpenRouter: one key, live /models. OpenAI chat; HTTP-Referer + X-Title
+    // (openrouter.ai/docs). Not Anthropic Messages and not image/video gen.
+    .{ .id = "openrouter", .display_name = "OpenRouter", .kind = .openai, .auth = .bearer, .url = "https://openrouter.ai/api/v1/chat/completions", .env_key = "OPENROUTER_API_KEY", .default_model = "anthropic/claude-sonnet-4.6", .catalog = .openai, .models_url = "https://openrouter.ai/api/v1/models", .takes_effort = true },
     .{ .id = "fugu", .display_name = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
     // Fireworks serves its serverless catalog live (AIP gateway shape:
     // pageToken pagination, camelCase contextLength), so new model releases
@@ -514,32 +517,32 @@ test "workspace router behaves like an additional provider" {
         pricing.active_model_table = saved_models;
     }
     additional_router = .{
-        .id = "openrouter",
-        .display_name = "OpenRouter",
+        .id = "myrouter",
+        .display_name = "My Router",
         .kind = .openai,
         .auth = .bearer,
-        .url = "https://openrouter.ai/api/v1/chat/completions",
-        .env_key = "OPENROUTER_API_KEY",
-        .default_model = "anthropic/claude-sonnet-4",
+        .url = "https://router.example.com/v1/chat/completions",
+        .env_key = "MYROUTER_API_KEY",
+        .default_model = "example/model",
         .catalog = .openai,
-        .models_url = "https://openrouter.ai/api/v1/models",
+        .models_url = "https://router.example.com/v1/models",
     };
     const rows = [_]pricing.ModelInfo{
-        .{ .provider = "openrouter", .name = "anthropic/claude-sonnet-4", .context = 200_000 },
+        .{ .provider = "myrouter", .name = "example/model", .context = 200_000 },
     };
-    try std.testing.expect(pricing.activateProviderModels(arena_state.allocator(), "openrouter", &rows));
+    try std.testing.expect(pricing.activateProviderModels(arena_state.allocator(), "myrouter", &rows));
 
     var keys: Keys = .{ .values = @splat(null) };
-    try std.testing.expect(keys.set("openrouter", "token", .session));
-    try std.testing.expectEqualStrings("token", keys.get("openrouter").?);
-    try std.testing.expectEqual(Keys.CredentialSource.session, keys.source("openrouter"));
-    const explicit = try keys.providerById("openrouter", "anthropic/claude-sonnet-4");
-    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/chat/completions", explicit.url);
-    try std.testing.expectEqualStrings("openrouter", (try keys.providerFor("anthropic/claude-sonnet-4")).id);
-    try std.testing.expectEqualStrings("openrouter", (try keys.defaultProvider()).id);
+    try std.testing.expect(keys.set("myrouter", "token", .session));
+    try std.testing.expectEqualStrings("token", keys.get("myrouter").?);
+    try std.testing.expectEqual(Keys.CredentialSource.session, keys.source("myrouter"));
+    const explicit = try keys.providerById("myrouter", "example/model");
+    try std.testing.expectEqualStrings("https://router.example.com/v1/chat/completions", explicit.url);
+    try std.testing.expectEqualStrings("myrouter", (try keys.providerFor("example/model")).id);
+    try std.testing.expectEqualStrings("myrouter", (try keys.defaultProvider()).id);
     var ids: [provider_specs.len + 1][]const u8 = undefined;
-    const serving = catalogProvidersFor(&ids, "anthropic/claude-sonnet-4");
-    try std.testing.expectEqualStrings("openrouter", serving[0]);
+    const serving = catalogProvidersFor(&ids, "example/model");
+    try std.testing.expectEqualStrings("myrouter", serving[0]);
 }
 
 test "contextWindowFor (#203): GRAFF_CONTEXT overrides only an unknown/local model" {

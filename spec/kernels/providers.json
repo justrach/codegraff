@@ -138,6 +138,15 @@
       "takes_effort": true
     },
     {
+      "id": "openrouter",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "openai",
+      "sub_login": false,
+      "takes_effort": true
+    },
+    {
       "id": "fugu",
       "kind": "openai",
       "auth": "bearer",

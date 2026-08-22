@@ -15,13 +15,20 @@ current is part of cutting a release.
 - codedb pairing (ADR 0019): advertise five one-shots — `context <task>`,
   `around <name>` (def+callers), `callpath A B`, `list_dir <path>`,
   `status`. Hop verbs stay callable, not on the catalog menu.
+- OpenRouter is a built-in OpenAI-chat seat (`OPENROUTER_API_KEY`,
+  `graff key set openrouter …`, default `anthropic/claude-sonnet-4.6`).
+  Chat goes to `openrouter.ai/api/v1`; live `/models` overlays the
+  catalog (`context_length`). Attribution headers `http-referer` +
+  `x-title` (OpenRouter rankings). `/effort` is `reasoning_effort`.
+  This is not Anthropic Messages or image/video generation. Provider
+  kernel 21.
 - Vercel AI Gateway is a built-in OpenAI-chat seat (`AI_GATEWAY_API_KEY`,
   `graff key set vercel …`, default `alibaba/qwen3.8-27b`). Chat goes to
   `ai-gateway.vercel.sh/coding-agent/v1` (docs: marks harness traffic;
   `GRAFF_VERCEL_URL` rewrites to generic `/v1`). Live `/models` overlays
   language rows only; image/video/embedding are not chat seats. `/effort`
   becomes `reasoning.effort` (`max`/`ultra` → `xhigh`). Attribution
-  headers `http-referer` + `x-title`. Provider kernel 20.
+  headers `http-referer` + `x-title`.
 - Z.AI's existing seat now defaults to GLM-5.3 (1M context) with live
   `/api/paas/v4/models`, `thinking.type=enabled`, and `/effort` remapped
   onto `low`/`high`/`max` (graff `medium` → `high`). Pay-go stays on

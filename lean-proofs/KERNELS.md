@@ -48,7 +48,7 @@ not a skip: TUI, prompts, and SSE bytes stay out of Lean on purpose.
 |---|---|---|
 | `ToolCatalog` | 64 flag cubes | MCP names, descriptions, JSON wrappers |
 | `Transport` | 96 turns + `Event`/`step`; **1** WS cell | frames, TLS, idle-kill timing of the server |
-| `Provider` | 20 baked rows | live `/models` overlay, Kimi protocol flip |
+| `Provider` | 21 baked rows | live `/models` overlay, Kimi protocol flip |
 | `GoalLoop` | 360 gate cells + `Event`/`step` | model wording, whether the work is correct |
 | `PromptCache` | 48 cells + `Event`/`step` | provider cache HIT, uuid5 cwd bytes, vision pin |
 | `PromptPrefix` | 6 cells + `Event`/`step` | catalog wording, provider HIT, compaction |

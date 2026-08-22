@@ -304,6 +304,7 @@ from [models.dev](https://models.dev)'s `api.json` (snapshot 2026-06-10).
 | `groq`      | OpenAI chat, bearer         | `GROQ_API_KEY`       |
 | `cerebras`  | OpenAI chat, bearer         | `CEREBRAS_API_KEY`   |
 | `vercel`    | OpenAI chat, bearer (AI Gateway coding-agent) | `AI_GATEWAY_API_KEY` |
+| `openrouter` | OpenAI chat, bearer | `OPENROUTER_API_KEY` |
 | `mistral`   | OpenAI chat, bearer         | `MISTRAL_API_KEY`    |
 | `kimi` | Live catalog-selected: native Kimi chat + bearer, or Anthropic beta Messages + x-api-key when declared | `graff login kimi` or `KIMI_API_KEY` |
 | `xai` (grok) / `zai` (GLM) | OpenAI chat, bearer | `XAI_API_KEY` / `ZAI_API_KEY` (via `graff key set`) |
@@ -326,18 +327,18 @@ create `.graff/.config.router`:
 
 ```json
 {
-  "id": "openrouter",
-  "name": "OpenRouter",
-  "base_url": "https://openrouter.ai/api/v1",
-  "env_key": "OPENROUTER_API_KEY",
-  "default_model": "anthropic/claude-sonnet-4"
+  "id": "myrouter",
+  "name": "My Router",
+  "base_url": "https://router.example.com/v1",
+  "env_key": "MYROUTER_API_KEY",
+  "default_model": "example/model"
 }
 ```
 
 `name` is optional. `takes_effort: true` is also available for routers that
 accept OpenAI-style reasoning-effort requests. The file contains no secret;
-use `export OPENROUTER_API_KEY=...` or `graff key set openrouter ...`.
-Select it with `graff --model openrouter` or `/model openrouter`;
+use `export MYROUTER_API_KEY=...` or `graff key set myrouter ...`.
+Select it with `graff --model myrouter` or `/model myrouter`;
 `graff models refresh` pulls its full catalog. Graff derives
 `/chat/completions` and `/models` from `base_url`, caches that router's model
 catalog in `.graff/.models.router`, and exposes it to the CLI and GUI schema.
@@ -1285,7 +1286,7 @@ elsewhere a `0600` `~/.simple-harness-keys.json`; the harness auto-loads them at
 startup for any provider whose env var isn't set (env always wins). `graff key
 list` shows which providers have a stored key. Providers
 (OpenAI/Anthropic-format, matched to graff): anthropic, openai, deepseek,
-**kimi**, **xai** (grok), **zai** (GLM), **vercel** (AI Gateway), minimax, xiaomi, codegraff, plus the
+**kimi**, **xai** (grok), **zai** (GLM), **vercel** (AI Gateway), **openrouter**, minimax, xiaomi, codegraff, plus the
 codex & claude subscription logins.
 
 `graff login` runs graff's codegraff device-code flow (a `user_code` to enter at

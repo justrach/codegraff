@@ -49,6 +49,23 @@ test "parseModels reads Vercel context_window and skips non-language types" {
     try std.testing.expectEqual(pricing.default_context, snapshot.models[1].context);
 }
 
+test "parseModels reads OpenRouter context_length and include_reasoning" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const snapshot = parseModels(state.allocator(), "openrouter",
+        \\{"data":[
+        \\ {"id":"anthropic/claude-sonnet-4.6","context_length":1000000,"supported_parameters":["tools","include_reasoning"]},
+        \\ {"id":"openai/gpt-oss:free","context_length":131072}
+        \\]}
+    ) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), snapshot.models.len);
+    try std.testing.expectEqualStrings("anthropic/claude-sonnet-4.6", snapshot.models[0].name);
+    try std.testing.expectEqual(@as(u64, 1_000_000), snapshot.models[0].context);
+    try std.testing.expect(snapshot.models[0].supports_reasoning);
+    try std.testing.expectEqualStrings("openai/gpt-oss:free", snapshot.models[1].name);
+    try std.testing.expect(!snapshot.models[1].supports_reasoning);
+}
+
 test "parseModels is reusable for a newly configured router" {
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();

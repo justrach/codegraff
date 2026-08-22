@@ -323,6 +323,7 @@ test "two logins split the tiers: k3 is mid, luna is the mechanical rung (#471)"
     for (pin_mod.subscription_providers) |sid| {
         try std.testing.expect(!std.mem.eql(u8, sid, "zai"));
         try std.testing.expect(!std.mem.eql(u8, sid, "vercel"));
+        try std.testing.expect(!std.mem.eql(u8, sid, "openrouter"));
         try std.testing.expect(!std.mem.eql(u8, sid, "codegraff"));
         if (std.mem.eql(u8, sid, "kimi")) saw_kimi = true;
     }

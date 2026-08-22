@@ -154,7 +154,7 @@ fn listsReasoning(obj: std.json.ObjectMap) bool {
     const params = obj.get("supported_parameters") orelse return false;
     if (params != .array) return false;
     for (params.array.items) |param| {
-        if (param == .string and std.mem.eql(u8, param.string, "reasoning")) return true;
+        if (param == .string and (std.mem.eql(u8, param.string, "reasoning") or std.mem.eql(u8, param.string, "include_reasoning"))) return true;
     }
     return false;
 }
