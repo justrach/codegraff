@@ -22,9 +22,13 @@ pub const win = @import("win_api.zig");
 pub const tty = struct {
     const is_windows = builtin.os.tag == .windows;
 
-    /// Saved terminal state for restore(): termios on POSIX, the prior console
-    /// input-mode word on Windows.
-    pub const RawState = if (is_windows) struct { in_mode: u32 } else std.posix.termios;
+    /// Saved terminal state for restore(): termios on POSIX; on Windows the
+    /// prior console input-mode word plus the code pages enterRaw replaced.
+    pub const RawState = if (is_windows) struct {
+        in_mode: u32,
+        output_cp: u32 = 0,
+        input_cp: u32 = 0,
+    } else std.posix.termios;
 
     /// POSIX job control can move a process group out of the foreground between
     /// a readiness check and the actual read/tcsetattr. A background terminal
@@ -145,10 +149,12 @@ pub const tty = struct {
     /// as CP437 (#607); zigzag already did this in its raw-mode path.
     pub fn enableVtOutput() void {
         if (!is_windows) return;
-        const h = win.GetStdHandle(win.STD_OUTPUT_HANDLE);
-        var mode: u32 = 0;
-        if (win.GetConsoleMode(h, &mode) != 0) {
-            _ = win.SetConsoleMode(h, mode | win.ENABLE_VIRTUAL_TERMINAL_PROCESSING | win.ENABLE_PROCESSED_OUTPUT);
+        for ([_]win.DWORD{ win.STD_OUTPUT_HANDLE, win.STD_ERROR_HANDLE }) |id| {
+            const h = win.GetStdHandle(id);
+            var mode: u32 = 0;
+            if (win.GetConsoleMode(h, &mode) != 0) {
+                _ = win.SetConsoleMode(h, mode | win.ENABLE_VIRTUAL_TERMINAL_PROCESSING | win.ENABLE_PROCESSED_OUTPUT);
+            }
         }
         _ = win.SetConsoleOutputCP(win.CP_UTF8);
         _ = win.SetConsoleCP(win.CP_UTF8);
@@ -195,8 +201,17 @@ pub const tty = struct {
             raw |= win.ENABLE_VIRTUAL_TERMINAL_INPUT;
             if (blocking) raw &= ~@as(u32, win.ENABLE_PROCESSED_INPUT) else raw |= win.ENABLE_PROCESSED_INPUT;
             if (win.SetConsoleMode(h, raw) == 0) return null;
-            if (life.entered()) raw_outer = .{ .in_mode = mode };
-            return .{ .in_mode = mode };
+            // Line REPL (#607): readline/pickers go through here, not TUI/tty.
+            // Same CP 65001 switch zigzag uses, so `›` chrome is not CP437.
+            const orig: RawState = .{
+                .in_mode = mode,
+                .output_cp = win.GetConsoleOutputCP(),
+                .input_cp = win.GetConsoleCP(),
+            };
+            _ = win.SetConsoleOutputCP(win.CP_UTF8);
+            _ = win.SetConsoleCP(win.CP_UTF8);
+            if (life.entered()) raw_outer = orig;
+            return orig;
         }
         const fd = std.posix.STDIN_FILENO;
         const orig = std.posix.tcgetattr(fd) catch return null;
@@ -221,6 +236,8 @@ pub const tty = struct {
         if (life.restored()) raw_outer = null;
         if (is_windows) {
             _ = win.SetConsoleMode(win.GetStdHandle(win.STD_INPUT_HANDLE), state.in_mode);
+            if (state.output_cp != 0) _ = win.SetConsoleOutputCP(state.output_cp);
+            if (state.input_cp != 0) _ = win.SetConsoleCP(state.input_cp);
             return;
         }
         var job_control = JobControlGuard.init(.output);
@@ -532,4 +549,18 @@ test "Windows VT enable also switches the console to UTF-8 (#607)" {
     try std.testing.expect(std.mem.indexOf(u8, window, "SetConsoleCP(win.CP_UTF8)") != null);
     const main_src = @embedFile("main.zig");
     try std.testing.expect(std.mem.indexOf(u8, main_src, "tty.enableVtOutput()") != null);
+}
+
+test "line REPL raw mode switches the Windows console to UTF-8 (#607)" {
+    const src = @embedFile("term.zig");
+    const enter_at = std.mem.indexOf(u8, src, "pub fn enterRaw(blocking: bool) ?RawState {").?;
+    const enter = src[enter_at..std.mem.indexOf(u8, src, "pub fn restore(").?];
+    try std.testing.expect(std.mem.indexOf(u8, enter, "SetConsoleOutputCP(win.CP_UTF8)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, enter, "SetConsoleCP(win.CP_UTF8)") != null);
+    const rest_at = std.mem.indexOf(u8, src, "pub fn restore(state: RawState) void {").?;
+    const rest = src[rest_at..std.mem.indexOfPos(u8, src, rest_at, "pub fn poll(").?];
+    try std.testing.expect(std.mem.indexOf(u8, rest, "SetConsoleOutputCP(state.output_cp)") != null);
+    // readline.zig is the line REPL prompt — not TUI/tty, not zigzag.
+    const rl = @embedFile("readline.zig");
+    try std.testing.expect(std.mem.indexOf(u8, rl, "tty.enterRaw(true)") != null);
 }
