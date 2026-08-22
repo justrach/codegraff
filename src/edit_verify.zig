@@ -323,15 +323,16 @@ pub fn fsErrorText(gpa: Allocator, op: FileOp, path: []const u8, err: anyerror) 
     }) catch null;
 }
 
-/// Re-apply a file's saved permission bits after a rewrite. edit_file's atomic
-/// zigpatch splice — and write_file overwriting an existing file — land the new
-/// content on a fresh inode with the default 0644, silently dropping a 0755
-/// executable bit; restore it (#179). `prev` is null for a brand-new file (keep
-/// the default) or when the pre-write stat failed. Best-effort: a chmod failure
-/// never fails the write itself.
+/// Re-apply a file's saved permission bits after a rewrite (#179). Atomic
+/// splice lands a fresh 0644 inode; restore the pre-edit mode. `prev` is null
+/// for a new file or a failed pre-write stat. Best-effort: chmod never fails
+/// the write. Path chmod panics on Windows in Zig 0.17 (#606); handle chmod
+/// (`File.setPermissions`) is implemented on every OS we ship.
 pub fn preserveMode(io: Io, path: []const u8, prev: ?Io.Dir.Stat) void {
     const st = prev orelse return;
-    Io.Dir.cwd().setFilePermissions(io, path, st.permissions, .{}) catch {};
+    const file = Io.Dir.cwd().openFile(io, path, .{ .mode = .read_write }) catch return;
+    defer file.close(io);
+    file.setPermissions(io, st.permissions) catch {};
 }
 
 // --- tests ----------------------------------------------------------------

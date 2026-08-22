@@ -12,6 +12,10 @@ current is part of cutting a release.
 
 ## v0.0.269 (2026-08-20)
 
+- Windows: `edit_file`/`write_file` no longer panic the session on Zig 0.17's
+  unimplemented path chmod (`dirSetFilePermissions`). Mode restore uses handle
+  chmod; directory chmod is skipped on Windows the same way the rest of the
+  tree already did (#606).
 - codedb pairing (ADR 0019): advertise five one-shots — `context <task>`,
   `around <name>` (def+callers), `callpath A B`, `list_dir <path>`,
   `status`. Hop verbs stay callable, not on the catalog menu.

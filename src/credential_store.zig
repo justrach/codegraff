@@ -89,7 +89,8 @@ pub fn writeOAuth(io: Io, arena: Allocator, home: []const u8, provider_dir: []co
         // O_PATH on Linux, where fchmod panics EBADF instead of erroring.
         const dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch continue;
         defer dir.close(io);
-        dir.setPermissions(io, private_dir) catch {};
+        // Dir.setPermissions panics on Windows in Zig 0.17 (`dirSetPermissionsWindows`).
+        if (builtin.os.tag != .windows) dir.setPermissions(io, private_dir) catch {};
     }
     var obj: std.json.ObjectMap = .empty;
     try obj.put(arena, "access_token", .{ .string = access });
