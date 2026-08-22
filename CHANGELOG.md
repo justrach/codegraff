@@ -10,6 +10,15 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.273 (2026-08-22)
+
+- Long-running tool calls no longer read as a hang: after 15s of
+  silence (then every interval) a dim `· bash still running · 2m10s`
+  pulse prints on the line REPL and the TUI — for foreground bash and
+  for blocking `bash_output` waits alike.
+- CI: `scripts/test-pty-repl.py` follows cwd back onto the prompt meter.
+- Test ratchet: unit suite 1586.
+
 ## v0.0.272 (2026-08-22)
 
 - Windows: the line REPL prompt (`readline` / pickers) and standalone
