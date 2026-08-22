@@ -10,6 +10,14 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.271 (2026-08-22)
+
+- Windows: line REPL and fullscreen TUI switch the console to UTF-8
+  (CP 65001) before any chrome is printed, so box-drawing and icons are
+  not decoded as CP437/1252 in PowerShell 5.1 (#607). zigzag's `graff repl`
+  already did this; `graff` and `graff tui` did not.
+- Test ratchet: unit suite 1580.
+
 ## v0.0.270 (2026-08-22)
 
 - OpenRouter is a built-in OpenAI-chat seat (`OPENROUTER_API_KEY`,

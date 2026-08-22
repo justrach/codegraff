@@ -21,6 +21,9 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.271
+    \\  • Windows: TUI/REPL box-drawing is UTF-8 (CP 65001), not CP437 mojibake (#607)
+    \\
     \\0.0.270
     \\  • OpenRouter (OPENROUTER_API_KEY → anthropic/claude-sonnet-4.6); live /models
     \\  • Windows: edit_file/write_file no longer panic on path chmod (#606)
