@@ -10,22 +10,25 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.0.269 (2026-08-20)
+## v0.0.270 (2026-08-22)
 
-- Windows: `edit_file`/`write_file` no longer panic the session on Zig 0.17's
-  unimplemented path chmod (`dirSetFilePermissions`). Mode restore uses handle
-  chmod; directory chmod is skipped on Windows the same way the rest of the
-  tree already did (#606).
-- codedb pairing (ADR 0019): advertise five one-shots — `context <task>`,
-  `around <name>` (def+callers), `callpath A B`, `list_dir <path>`,
-  `status`. Hop verbs stay callable, not on the catalog menu.
 - OpenRouter is a built-in OpenAI-chat seat (`OPENROUTER_API_KEY`,
   `graff key set openrouter …`, default `anthropic/claude-sonnet-4.6`).
   Chat goes to `openrouter.ai/api/v1`; live `/models` overlays the
-  catalog (`context_length`). Attribution headers `http-referer` +
-  `x-title` (OpenRouter rankings). `/effort` is `reasoning_effort`.
-  This is not Anthropic Messages or image/video generation. Provider
+  catalog. Attribution headers `http-referer` + `x-title`. Provider
   kernel 21.
+- Windows: `edit_file`/`write_file` no longer panic the session on Zig 0.17's
+  unimplemented path chmod (`dirSetFilePermissions`). Mode restore uses handle
+  chmod (#606).
+- Line REPL transcript is the task, not the event bus (ADR 0021).
+- TUI markdown paints numbered lists, quotes, tasks, rules, and `_italic_`.
+- Test ratchet: unit suite 1578.
+
+## v0.0.269 (2026-08-20)
+
+- codedb pairing (ADR 0019): advertise five one-shots — `context <task>`,
+  `around <name>` (def+callers), `callpath A B`, `list_dir <path>`,
+  `status`. Hop verbs stay callable, not on the catalog menu.
 - Vercel AI Gateway is a built-in OpenAI-chat seat (`AI_GATEWAY_API_KEY`,
   `graff key set vercel …`, default `alibaba/qwen3.8-27b`). Chat goes to
   `ai-gateway.vercel.sh/coding-agent/v1` (docs: marks harness traffic;

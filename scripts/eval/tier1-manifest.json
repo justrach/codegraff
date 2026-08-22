@@ -15,7 +15,7 @@
     "src/repl.zig",
     "TUI/root.zig"
   ],
-  "test_count_baseline": 1557,
+  "test_count_baseline": 1578,
   "test_count_slack": 25,
   "required_invariants": [
     {

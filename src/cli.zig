@@ -21,8 +21,13 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
-    \\0.0.269
+    \\0.0.270
     \\  • OpenRouter (OPENROUTER_API_KEY → anthropic/claude-sonnet-4.6); live /models
+    \\  • Windows: edit_file/write_file no longer panic on path chmod (#606)
+    \\  • Line REPL transcript is the task, not the event bus
+    \\  • TUI markdown: lists, quotes, tasks, rules, italic
+    \\
+    \\0.0.269
     \\  • Vercel AI Gateway (AI_GATEWAY_API_KEY → alibaba/qwen3.8-27b); coding-agent /v1
     \\  • Z.AI defaults to GLM-5.3 (1M); thinking.enabled + implicit prefix cache
     \\  • GLM Coding Plan: ZAI_CODING=1 / GRAFF_ZAI_URL; not image/video
