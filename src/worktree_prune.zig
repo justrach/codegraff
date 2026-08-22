@@ -22,6 +22,24 @@ const keepReasonText = agent_worktree.keepReasonText;
 const worktree_lease = @import("worktree_lease.zig");
 const unixMs = @import("util.zig").unixMs;
 
+/// True if the current git working tree has uncommitted *tracked* changes
+/// (staged or unstaged). Untracked files (`?? …`) don't count —
+/// `git reset --hard` leaves them alone, so they are safe around a land.
+/// Moved from jobs.zig, which sits against the 600-line cap.
+pub fn treeDirty(gpa: Allocator, io: Io) bool {
+    const r = runCapped(gpa, io, &.{ "git", "status", "--porcelain" }, 1 << 16, 8192, 30_000) catch return false;
+    defer {
+        gpa.free(r.stdout);
+        gpa.free(r.stderr);
+    }
+    if (!ranOk(r)) return false;
+    var it = std.mem.tokenizeScalar(u8, r.stdout, '\n');
+    while (it.next()) |line| {
+        if (line.len >= 2 and !std.mem.startsWith(u8, line, "??")) return true;
+    }
+    return false;
+}
+
 /// Age we could not establish. Never "0" — an unreadable mtime must keep the
 /// worktree, not make it look brand new (or, worse, infinitely old).
 pub const unknown_age_ms: i64 = -1;
