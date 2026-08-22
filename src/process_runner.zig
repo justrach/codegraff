@@ -10,6 +10,7 @@ const posix_process_groups = switch (builtin.os.tag) {
     .windows, .wasi => false,
     else => true,
 };
+const tool_pulse = @import("tool_pulse.zig");
 const GroupId = if (posix_process_groups) std.posix.pid_t else void;
 const WindowsJobHandle = if (builtin.os.tag == .windows) ?std.os.windows.HANDLE else void;
 
@@ -100,6 +101,13 @@ pub const CappedRunOptions = struct {
     kill_process_tree: bool = false,
     stream: ?StreamFn = null,
     stream_ctx: ?*anyopaque = null,
+    /// Silence heartbeat (#607): called with ms since spawn once a run has
+    /// been quiet past tool_pulse's schedule, so a long build never reads as
+    /// a hang. Raw chunks still go through `stream`; this is chrome only.
+    pulse: ?*const fn (ctx: ?*anyopaque, elapsed_ms: u64) void = null,
+    /// Schedule overrides (tests run the real thresholds in milliseconds).
+    pulse_first_ms: u64 = tool_pulse.first_silence_ms,
+    pulse_interval_ms: u64 = tool_pulse.silence_interval_ms,
 };
 
 /// #253: RLIMIT_NOFILE as this process actually observes it. main() calls
@@ -221,6 +229,10 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
     var esc_killed = false;
     var timed_out = false;
     const started: Io.Timestamp = .now(io, .awake);
+    // Silence-heartbeat clock (#607): reset whenever either pipe produces a
+    // fresh byte, read by tool_pulse's schedule at each 200ms poll tick.
+    var quiet_since: Io.Timestamp = started;
+    var pulse: tool_pulse.Pulse = .{ .next_at_ms = options.pulse_first_ms, .interval_ms = options.pulse_interval_ms };
     loop: while (true) {
         var eof = false;
         multi_reader.fill(64, .{ .duration = .{ .raw = .fromMilliseconds(200), .clock = .awake } }) catch |err| switch (err) {
@@ -230,6 +242,9 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
         };
         for (readers, caps, &saved, &streamed, [_]u8{ 0, 1 }) |reader, cap, *item, *seen, which| {
             const buffered = reader.buffered();
+            // Fresh bytes this tick: anything past the streamed mark, or any
+            // residue at all once capping started tossing what it saved.
+            if ((item.* != null and buffered.len > 0) or buffered.len > seen.*) quiet_since = .now(io, .awake);
             if (options.stream) |fn_emit| {
                 if (buffered.len > seen.*) {
                     const end = if (item.* != null) @min(buffered.len, cap) else buffered.len;
@@ -239,6 +254,11 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
             }
             if (item.* == null and buffered.len > cap) item.* = try gpa.dupe(u8, buffered[0..cap]);
             if (item.* != null) reader.toss(buffered.len);
+        }
+        if (!eof) {
+            const silence: u64 = @intCast(@max(0, quiet_since.untilNow(io, .awake).toMilliseconds()));
+            if (pulse.due(silence))
+                if (options.pulse) |pulse_fn| pulse_fn(options.stream_ctx, @intCast(@max(0, started.untilNow(io, .awake).toMilliseconds())));
         }
         if (eof) break :loop;
         if (Agent.esc_cancel.load(.acquire)) {
@@ -273,6 +293,48 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
 
 pub fn ranOk(run: CappedRun) bool {
     return run.term == .exited and run.term.exited == 0;
+}
+
+const PulseCapture = struct {
+    var fired: usize = 0;
+    var last_ms: u64 = 0;
+    fn fire(ctx: ?*anyopaque, elapsed_ms: u64) void {
+        _ = ctx;
+        fired += 1;
+        last_ms = elapsed_ms;
+    }
+};
+
+test "#607: a quiet run fires the silence heartbeat; output resets it" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    PulseCapture.fired = 0;
+    const quiet = try runCappedWithOptions(gpa, io, &.{ "/bin/sh", "-c", "sleep 0.45" }, 1024, 1024, 0, .{
+        .pulse = PulseCapture.fire,
+        .pulse_first_ms = 50,
+        .pulse_interval_ms = 120,
+    });
+    defer {
+        gpa.free(quiet.stdout);
+        gpa.free(quiet.stderr);
+    }
+    // ~450ms of silence past a 50ms first beat at 120ms spacing: several beats.
+    try std.testing.expect(PulseCapture.fired >= 2);
+    try std.testing.expect(PulseCapture.last_ms >= 50);
+
+    // A run that keeps producing never crosses the silence schedule.
+    PulseCapture.fired = 0;
+    const chatty = try runCappedWithOptions(gpa, io, &.{ "/bin/sh", "-c", "i=0; while [ $i -lt 12 ]; do echo tick; i=$((i+1)); sleep 0.05; done" }, 4096, 1024, 0, .{
+        .pulse = PulseCapture.fire,
+        .pulse_first_ms = 50,
+        .pulse_interval_ms = 120,
+    });
+    defer {
+        gpa.free(chatty.stdout);
+        gpa.free(chatty.stderr);
+    }
+    try std.testing.expectEqual(@as(usize, 0), PulseCapture.fired);
 }
 
 /// #253: descriptor high-water probe. `dup` always hands back the LOWEST free

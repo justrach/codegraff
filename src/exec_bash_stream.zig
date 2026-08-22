@@ -11,6 +11,7 @@ const Io = std.Io;
 const engine_sink = @import("engine_sink.zig");
 const jobs = @import("jobs.zig");
 const main_mod = @import("main.zig");
+const tool_pulse = @import("tool_pulse.zig");
 
 /// grok-build `StreamingSpec.max_delta_bytes` for `bash_output_chunk`.
 pub const max_delta_bytes: usize = 16 * 1024;
@@ -23,6 +24,16 @@ pub fn attach(opts: *jobs.CappedRunOptions, live: bool, stream: *Ctx) void {
     if (!live) return;
     opts.stream = &emit;
     opts.stream_ctx = stream;
+    opts.pulse = &pulse;
+}
+
+/// The silence half (#607): one dim chrome line per tool_pulse threshold so a
+/// quiet build never reads as a hang. Not gated on /debug — it is an elapsed
+/// notice (ADR 0020 keeps RAW bytes behind /debug), and --json drops it.
+fn pulse(ctx: ?*anyopaque, elapsed_ms: u64) void {
+    const c: *const Ctx = @ptrCast(@alignCast(ctx orelse return));
+    var ebuf: [16]u8 = undefined;
+    tool_pulse.emitNotice(c.io, "· bash still running · {s}", .{tool_pulse.formatElapsed(&ebuf, elapsed_ms)});
 }
 
 pub fn emit(ctx: ?*anyopaque, which: u8, chunk: []const u8) void {

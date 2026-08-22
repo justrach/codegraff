@@ -7,6 +7,7 @@ const Io = std.Io;
 
 const agent_mod = @import("agent.zig");
 const engine_sink = @import("engine_sink.zig");
+const tool_pulse = @import("tool_pulse.zig");
 const Agent = agent_mod.Agent;
 
 pub const Notice = struct {
@@ -64,6 +65,15 @@ pub fn record(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8) vo
     if (engine_sink.hostedSink()) |sink| {
         sink.emit(io, .{ .job_completed = .{ .id = id, .exit_code = exit_code, .killed = killed } });
     }
+}
+
+/// One dim chrome line per tool_pulse threshold while a blocking bash_output
+/// wait runs long (#607). ADR 0010 keeps the wait single-hop; this only tells
+/// the human it is alive. Presentation pulse: --json drops it, and a session
+/// with no bound sink (subagents) stays quiet.
+pub fn stillRunning(io: Io, id: u32, waited_ms: u64) void {
+    var ebuf: [16]u8 = undefined;
+    tool_pulse.emitNotice(io, "· bash_output · job {d} still running · {s}", .{ id, tool_pulse.formatElapsed(&ebuf, waited_ms) });
 }
 
 /// Drain queued notices into `buf`. Null when nothing finished.

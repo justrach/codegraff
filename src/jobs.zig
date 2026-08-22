@@ -67,23 +67,6 @@ pub const keepReasonText = agent_worktree.keepReasonText;
 // identity) live in their own modules: jobs.zig is at the 600-line cap.
 const worktree_prune = @import("worktree_prune.zig");
 
-/// True if the current git working tree has uncommitted *tracked* changes
-/// (staged or unstaged). Untracked files (`?? …`) don't count — `git reset
-/// --hard` leaves them alone, so they're safe around a worktree land.
-fn gitTreeDirty(gpa: Allocator, io: Io) bool {
-    const r = runCapped(gpa, io, &.{ "git", "status", "--porcelain" }, 1 << 16, 8192, 30_000) catch return false;
-    defer {
-        gpa.free(r.stdout);
-        gpa.free(r.stderr);
-    }
-    if (!ranOk(r)) return false;
-    var it = std.mem.tokenizeScalar(u8, r.stdout, '\n');
-    while (it.next()) |line| {
-        if (line.len >= 2 and !std.mem.startsWith(u8, line, "??")) return true;
-    }
-    return false;
-}
-
 /// Per-turn checkpoint commit for `-w` sessions. The worktree branch is a
 /// throwaway scratch branch, so committing every turn is free and gives durable
 /// rewind points across restarts; `graff worktree merge` later --squashes the
@@ -142,7 +125,7 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
         // Refuse to land into a dirty tree: the conflict-recovery below resets
         // tracked files, which would eat uncommitted work. Untracked files (the
         // worktrees, traces) are fine — reset --hard leaves them be.
-        if (gitTreeDirty(gpa, io)) {
+        if (worktree_prune.treeDirty(gpa, io)) {
             try out.print("✗ your working tree has uncommitted changes — commit or stash them first, then `graff worktree merge {s}`\n", .{name});
             return;
         }
@@ -254,6 +237,7 @@ const Job = struct {
 const job_unread_cap = 256 * 1024;
 const job_wait = @import("job_wait.zig");
 const job_notify = @import("job_notify.zig");
+const tool_pulse = @import("tool_pulse.zig");
 
 /// POSIX process groups; windows/wasi have none, so the group kills below and
 /// the job's own pgid are compiled out there (#198).
@@ -409,6 +393,9 @@ pub fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8) !*Job {
 pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
     const deadline = job_wait.resolveDeadline(wait_ms);
     var waited: u64 = 0;
+    // #607: one dim chrome line per silence threshold so a long blocking wait
+    // never reads as a hang. ADR 0010 keeps the wait itself single-hop.
+    var still = tool_pulse.Pulse{};
     while (true) {
         g_jobs.mutex.lockUncancelable(io);
         const job = g_jobs.find(id) orelse {
@@ -453,6 +440,7 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             continue;
         };
         waited += 100;
+        if (still.due(waited)) job_notify.stillRunning(io, id, waited);
     }
 }
 
