@@ -21,6 +21,9 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.272
+    \\  • Windows: line REPL prompt and graff-repl also use UTF-8, not only the TUI (#607)
+    \\
     \\0.0.271
     \\  • Windows: TUI/REPL box-drawing is UTF-8 (CP 65001), not CP437 mojibake (#607)
     \\

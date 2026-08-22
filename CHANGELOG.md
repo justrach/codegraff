@@ -10,6 +10,14 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.272 (2026-08-22)
+
+- Windows: the line REPL prompt (`readline` / pickers) and standalone
+  `graff-repl` also switch the console to UTF-8 (CP 65001). 0.0.271 did
+  this at process start and in the fullscreen TUI; the `›` editor path
+  did not (#607).
+- Test ratchet: unit suite 1582.
+
 ## v0.0.271 (2026-08-22)
 
 - Windows: line REPL and fullscreen TUI switch the console to UTF-8
