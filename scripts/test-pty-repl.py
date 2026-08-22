@@ -55,9 +55,11 @@ def main() -> None:
                 if color_bytes is not None and color_bytes not in bytes(session.raw[cursor:]):
                     raise AssertionError(f"missing colored badge {color_bytes!r} after {line}")
 
-            # Dim meter above a bare › (ADR 0016): model · effort · badges.
-            # Provider, privacy, and cwd left the line; ctx/session may follow.
-            base = "deepseek-v4-pro · Extra high"
+            # Dim meter above a bare › (ADR 0016): model · effort · ~/cwd ·
+            # badges. Provider and privacy left the line; ctx/session follow.
+            # Cwd returned as a `~/folder` segment (98958fc) — use the temp
+            # dir's basename so the literals stay deterministic.
+            base = f"deepseek-v4-pro · Extra high · ~/{os.path.basename(tmp)}"
             command(
                 "/effort xhigh",
                 "reasoning effort: Extra high",
