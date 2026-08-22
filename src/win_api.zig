@@ -13,9 +13,14 @@
 pub const HANDLE = *anyopaque;
 pub const BOOL = i32;
 pub const DWORD = u32;
+pub const UINT = u32;
 pub const WORD = u16;
 pub const WCHAR = u16;
 pub const SHORT = i16;
+
+/// UTF-8. PowerShell 5.1/conhost default to CP437/1252, which turns box-drawing
+/// and icons into mojibake (#607). zigzag already switches; the line REPL did not.
+pub const CP_UTF8: UINT = 65001;
 
 pub const STD_INPUT_HANDLE: DWORD = 0xFFFFFFF6; // (DWORD)-10
 pub const STD_OUTPUT_HANDLE: DWORD = 0xFFFFFFF5; // (DWORD)-11
@@ -63,3 +68,7 @@ pub extern "kernel32" fn GetNumberOfConsoleInputEvents(hConsoleInput: HANDLE, lp
 pub extern "kernel32" fn ReadConsoleInputW(hConsoleInput: HANDLE, lpBuffer: [*]INPUT_RECORD, nLength: DWORD, lpRead: *DWORD) callconv(.winapi) BOOL;
 pub extern "kernel32" fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn PeekNamedPipe(hNamedPipe: HANDLE, lpBuffer: ?*anyopaque, nBufferSize: DWORD, lpBytesRead: ?*DWORD, lpTotalBytesAvail: ?*DWORD, lpBytesLeftThisMessage: ?*DWORD) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetConsoleOutputCP() callconv(.winapi) UINT;
+pub extern "kernel32" fn SetConsoleOutputCP(wCodePageID: UINT) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetConsoleCP() callconv(.winapi) UINT;
+pub extern "kernel32" fn SetConsoleCP(wCodePageID: UINT) callconv(.winapi) BOOL;

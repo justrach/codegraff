@@ -139,14 +139,19 @@ pub const tty = struct {
     /// from anywhere (including a path that never reached the editor's defer).
     var raw_outer: ?RawState = null;
 
-    /// One-time: let the Windows console interpret ANSI/VT escapes. No-op
-    /// elsewhere. Call once from main before any styled output.
+    /// One-time: let the Windows console interpret ANSI/VT escapes and decode
+    /// stdout as UTF-8 (CP 65001). No-op elsewhere. Call once from main before
+    /// any styled output. PowerShell 5.1/conhost otherwise treat box-drawing
+    /// as CP437 (#607); zigzag already did this in its raw-mode path.
     pub fn enableVtOutput() void {
         if (!is_windows) return;
         const h = win.GetStdHandle(win.STD_OUTPUT_HANDLE);
         var mode: u32 = 0;
-        if (win.GetConsoleMode(h, &mode) == 0) return;
-        _ = win.SetConsoleMode(h, mode | win.ENABLE_VIRTUAL_TERMINAL_PROCESSING | win.ENABLE_PROCESSED_OUTPUT);
+        if (win.GetConsoleMode(h, &mode) != 0) {
+            _ = win.SetConsoleMode(h, mode | win.ENABLE_VIRTUAL_TERMINAL_PROCESSING | win.ENABLE_PROCESSED_OUTPUT);
+        }
+        _ = win.SetConsoleOutputCP(win.CP_UTF8);
+        _ = win.SetConsoleCP(win.CP_UTF8);
     }
 
     /// Terminal width in columns; 80 on any failure.
@@ -516,4 +521,15 @@ test "#396 firewall: both completion paths release the terminal" {
     const flush_at = std.mem.indexOf(u8, loop, "defer session.flushSavesAtExit();").?;
     const loop_release_at = std.mem.indexOf(u8, loop, "defer terminal.tty.releaseTerminal();").?;
     try std.testing.expect(flush_at < loop_release_at);
+}
+
+test "Windows VT enable also switches the console to UTF-8 (#607)" {
+    try std.testing.expectEqual(@as(u32, 65001), win.CP_UTF8);
+    const src = @embedFile("term.zig");
+    const fn_at = std.mem.indexOf(u8, src, "pub fn enableVtOutput() void {").?;
+    const window = src[fn_at..std.mem.indexOfPos(u8, src, fn_at, "fn cols()").?];
+    try std.testing.expect(std.mem.indexOf(u8, window, "SetConsoleOutputCP(win.CP_UTF8)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, window, "SetConsoleCP(win.CP_UTF8)") != null);
+    const main_src = @embedFile("main.zig");
+    try std.testing.expect(std.mem.indexOf(u8, main_src, "tty.enableVtOutput()") != null);
 }
