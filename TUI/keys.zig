@@ -357,19 +357,12 @@ fn esc(self: *Model) Effect {
         self.input.setValue("") catch {};
         return .stay;
     }
-    if (self.bg != null) {
-        // A background engine op (/compact, !cmd) is exactly as interruptible
-        // as a turn now that it no longer blocks this thread (#533).
-        @import("bgop.zig").cancel(self);
-        self.setToast("cancelled");
-        return .stay;
-    }
-    if (self.pending != null) {
-        turn.cancelTurn(self);
-        self.setToast("cancelled");
-        return .stay;
-    }
     const empty = std.mem.trim(u8, self.input.getValue(), " \t\r\n").len == 0;
+    // A draft in the composer outranks every interrupt. While a turn or
+    // background op runs, the composer is the STEER channel — pressing Esc to
+    // fix your wording must not abort the work in flight (observed live:
+    // "✗ interrupted (esc)" right after steering text landed). Same armed
+    // two-press flow as the idle path below: first Esc arms, second clears.
     if (!empty) {
         if (self.esc_arm == .clear and self.now_ms <= self.esc_until_ms) {
             self.input.setValue("") catch {};
@@ -380,6 +373,18 @@ fn esc(self: *Model) Effect {
             self.esc_until_ms = self.now_ms + app.ESC_MS;
             self.setToast("press again to clear");
         }
+        return .stay;
+    }
+    if (self.bg != null) {
+        // A background engine op (/compact, !cmd) is exactly as interruptible
+        // as a turn now that it no longer blocks this thread (#533).
+        @import("bgop.zig").cancel(self);
+        self.setToast("cancelled");
+        return .stay;
+    }
+    if (self.pending != null) {
+        turn.cancelTurn(self);
+        self.setToast("cancelled");
         return .stay;
     }
     if (self.userTurnCount() > 0) {
