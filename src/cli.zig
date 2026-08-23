@@ -21,6 +21,9 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.274
+    \\  • rate-limit retries no longer dump the provider's raw error JSON
+    \\
     \\0.0.273
     \\  • long tool calls print a dim "still running" heartbeat instead of going quiet
     \\
