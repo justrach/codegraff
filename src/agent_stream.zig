@@ -178,8 +178,8 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     const status_code = @intFromEnum(response.head.status);
     if (status_code == 429 or status_code >= 500) {
         http.captureRetryAfter(&response); // #retry-after: honor the provider's requested backoff
-        // Drain a snippet of the error body so the retry message surfaces the
-        // gateway's diagnostic instead of a bare "server error (5xx)".
+        // Drain a snippet for quota classifiers. Do not echo it on the REPL
+        // retry line — vendor envelopes include user ids and routing docs.
         capture5xxBodyStream(self.gpa, &response);
         if (req.connection) |conn| conn.closing = true;
         return if (status_code == 429) error.RateLimited else error.ServerError;
