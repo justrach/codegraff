@@ -28,8 +28,24 @@ const telemetry = @import("telemetry.zig");
 const tool_spill = @import("tool_spill.zig"); // #409: did the cap preserve the bytes, or destroy them?
 const run_budget_mod = @import("run_budget.zig");
 const wire_messages = @import("messages.zig");
-
 const policy = @import("agent_request_policy.zig");
+
+const max_server_retries: usize = 3; // bounded retries for a keep-alive-only response body
+
+/// A response body of only SSE comment lines (`: OPENROUTER PROCESSING` …)
+/// means the gateway queued us and never produced tokens — back off and re-ask
+/// like a 5xx instead of dying on an "unparseable" JSON parse.
+fn retryKeepAliveOnlyResponse(self: *Agent, body: []const u8, retries: *usize) !bool {
+    if (!policy.sseKeepAliveOnly(body)) return false;
+    if (retries.* >= max_server_retries) return false;
+    retries.* += 1;
+    self.partial_text.clearRetainingCapacity();
+    const delay_ms = RetryPlan.delayMs(true, retries.* - 1); // 1·2·4s
+    try self.say("[provider queued the request (keep-alive only, no tokens) — retrying in {d}s ({d}/{d})]\n", .{ delay_ms / 1000, retries.*, max_server_retries });
+    self.sleepInterruptible(delay_ms) catch return error.Interrupted;
+    return true;
+}
+
 const overflow = @import("agent_overflow.zig");
 const errorCode = policy.errorCode;
 const isQuotaExceeded = policy.isQuotaExceeded;
@@ -488,6 +504,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         const resp = std.json.parseFromSliceLeaky(Value, self.messageMutationAlloc(), resp_body, .{
             .allocate = .alloc_always,
         }) catch {
+            if (try retryKeepAliveOnlyResponse(self, resp_body, &server_retries)) continue;
             try self.sayApiError("unparseable response: {s}", .{resp_body[0..@min(resp_body.len, 400)]});
             return error.ApiError;
         };
