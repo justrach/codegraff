@@ -13,6 +13,7 @@ const Agent = agent_mod.Agent;
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
+const util = @import("util.zig");
 
 const terminal = @import("term.zig");
 const termCols = terminal.termCols;
@@ -173,15 +174,16 @@ pub fn wrapCell(gpa: Allocator, cell: []const u8, width: usize, out: *std.ArrayL
             out.append(gpa, cell[ls..le]) catch return;
             lv = 0;
         }
-        if (lv == 0 and av > budget) { // oversized atom: hard-split
+        if (lv == 0 and av > budget) { // oversized atom: split at punctuation when one is in reach
             var j = i;
             var v: usize = 0;
             while (j < ae and v < budget) {
                 j += std.unicode.utf8ByteSequenceLength(cell[j]) catch 1;
                 v += 1;
             }
-            out.append(gpa, cell[i..j]) catch return;
-            i = j;
+            const cut = util.softCut(cell, i, j);
+            out.append(gpa, cell[i..cut]) catch return;
+            i = cut;
             continue;
         }
         if (lv == 0) ls = i else lv += 1; // joining space

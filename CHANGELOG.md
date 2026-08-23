@@ -10,6 +10,13 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.274 (2026-08-23)
+
+- Rate-limit and 5xx retries no longer dump the provider's raw error JSON
+  onto the REPL (user ids, BYOK/settings links, routing docs). The line is
+  `[rate limited (429) — retrying in 1s (1/5)]` and nothing else. Quota
+  classifiers still read the captured body internally.
+
 ## v0.0.273 (2026-08-22)
 
 - Long-running tool calls no longer read as a hang: after 15s of

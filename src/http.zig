@@ -31,9 +31,8 @@ pub const providerHeaders = headers.providerHeaders;
 pub const postWithConv = post;
 
 /// Copy up to root.g_5xx_body_buf.len bytes of an error response body into the
-/// global buffer so request()'s retry message can surface the gateway's
-/// diagnostic (e.g. "upstream timeout connecting to anthropic") instead of a
-/// bare "server error (5xx)".
+/// global buffer so quota/overflow classifiers can inspect it. The REPL retry
+/// line must not echo this: vendor envelopes include user ids and routing docs.
 fn capture5xxBody(src: []const u8) void {
     const n = @min(src.len, root.g_5xx_body_buf.len);
     if (n > 0) @memcpy(root.g_5xx_body_buf[0..n], src[0..n]);
@@ -156,8 +155,8 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
 
     const code = @intFromEnum(response.head.status);
     if (code == 429 or code >= 500) {
-        // Drain a snippet of the error body for the retry message, then
-        // poison: the connection still holds unread body bytes.
+        // Drain a snippet for quota classifiers, then poison: the connection
+        // still holds unread body bytes.
         captureRetryAfter(&response); // #retry-after: honor the provider's requested backoff
         capture5xxBodyStream(gpa, &response);
         if (req.connection) |conn| conn.closing = true;

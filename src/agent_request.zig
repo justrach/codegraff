@@ -339,7 +339,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         // with a working credential sitting unused. One-way
                         // and announced — see credential_failover.
                         if (policy.handOffExhaustedPlan(self)) continue;
-                        self.last_api_error = std.fmt.allocPrint(self.arena, "rate limited (429): {s} — {s}", .{ policy.quota_cap_marker, main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] }) catch "rate limited (429): quota exceeded";
+                        self.last_api_error = std.fmt.allocPrint(self.arena, "rate limited (429): {s}", .{policy.quota_cap_marker}) catch "rate limited (429): quota exceeded";
                         if (telemetry.g_telem) |t| t.errorEvent("quota", self.last_api_error orelse "quota exceeded");
                         if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, 0, body.len, 0, 0, 0, true);
                         return error.ApiError;
@@ -353,12 +353,11 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             const delay_ms = if (server_ra > 0) server_ra else RetryPlan.delayMs(throttled, attempt);
                             const ra_note: []const u8 = if (server_ra > 0) " (server retry-after)" else "";
                             const what: []const u8 = if (err == error.RateLimited) "rate limited (429)" else "server error (5xx)";
-                            if (main_mod.g_5xx_body_len > 0) {
-                                try self.say("[{s}{s} — retrying in {d}s ({d}/{d})] {s}\n", .{ what, ra_note, delay_ms / 1000, attempt + 1, max_attempts, main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] });
-                            } else {
-                                try self.say("[{s}{s} — retrying in {d}s ({d}/{d})]\n", .{ what, ra_note, delay_ms / 1000, attempt + 1, max_attempts });
-                            }
-                            if (self.tracer) |tr| tr.note("retry", if (main_mod.g_5xx_body_len > 0) main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] else what);
+                            // Never echo the captured 429/5xx body. Envelopes from
+                            // OpenRouter and similar include user ids, BYOK/settings
+                            // URLs, and routing docs. Classifiers still read g_5xx_body_buf.
+                            try self.say("[{s}{s} — retrying in {d}s ({d}/{d})]\n", .{ what, ra_note, delay_ms / 1000, attempt + 1, max_attempts });
+                            if (self.tracer) |tr| tr.note("retry", what);
                             self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                         } else {
                             // Transport flake (HttpConnectionClosing, a reset,
@@ -377,11 +376,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         }
                         continue;
                     }
-                    if (main_mod.g_5xx_body_len > 0) {
-                        try self.say("[request failed: {t} — giving up this turn] {s}\n", .{ err, main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] });
-                    } else {
-                        try self.say("[request failed: {t} — giving up this turn]\n", .{err});
-                    }
+                    try self.say("[request failed: {t} — giving up this turn]\n", .{err});
                     // Network give-up is its own error kind: the ApiError
                     // handler's last_api_error would otherwise be an API
                     // envelope, stale or null on a pure transport failure —
