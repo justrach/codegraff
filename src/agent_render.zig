@@ -55,7 +55,7 @@ pub fn atLineStart(self: *const Agent) bool {
     return self.md_kind == .classify and self.md_buf.items.len == 0 and self.md_word.items.len == 0;
 }
 
-pub const MdKind = enum { classify, hold, prose, header, fenced };
+pub const MdKind = enum { classify, hold, prose, header, fenced, pre };
 
 pub const MdSpan = enum { normal, star, bold, bold_star, code };
 
@@ -94,6 +94,7 @@ fn mdStartItem(self: *Agent, w: *Io.Writer, held: []const u8, lead: usize, prefi
 }
 
 pub fn mdByte(self: *Agent, w: *Io.Writer, b: u8) void {
+    if (b == '\r') return; // CRLF deltas: a stray CR must not poison classification
     if (b == '\n') {
         // A swallowed line (table row joining the buffer) keeps its
         // newline too — the table renders with its own line breaks.
@@ -107,7 +108,7 @@ pub fn mdByte(self: *Agent, w: *Io.Writer, b: u8) void {
         },
         .hold => self.md_buf.append(self.gpa, b) catch {},
         .prose => self.mdSpanByte(w, b),
-        .header, .fenced => w.writeByte(b) catch {},
+        .header, .fenced, .pre => w.writeByte(b) catch {},
     }
 }
 
@@ -124,7 +125,6 @@ pub fn mdTryClassify(self: *Agent, w: *Io.Writer) void {
     // A buffered table ends at the first line that isn't another row —
     // render it before this line emits anything.
     if (self.md_table.items.len > 0 and body[0] != '|') self.flushTable(w);
-
     if (self.md_fence) {
         // Inside a fence the only special line is the ``` closer.
         const bt = countPrefix(body, '`');
@@ -134,6 +134,14 @@ pub fn mdTryClassify(self: *Agent, w: *Io.Writer) void {
         }
         self.md_kind = .fenced; // body text: dim it and stream
         w.writeAll(style.dim) catch {};
+        w.writeAll(held) catch {};
+        self.md_buf.clearRetainingCapacity();
+        return;
+    }
+    // Indented code block (4+ leading spaces): preformatted — stream raw.
+    // The prose wrapper's word-wrap shredded code formatting (#v0.0.274).
+    if (lead >= 4) {
+        self.md_kind = .pre;
         w.writeAll(held) catch {};
         self.md_buf.clearRetainingCapacity();
         return;
@@ -369,6 +377,7 @@ pub fn mdFinishLine(self: *Agent, w: *Io.Writer) bool {
         },
         .prose => self.mdSpanEnd(w),
         .header, .fenced => w.writeAll(style.reset) catch {},
+        .pre => {}, // nothing was styled
     }
     self.md_buf.clearRetainingCapacity();
     self.md_kind = .classify;

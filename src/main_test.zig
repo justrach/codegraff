@@ -115,6 +115,40 @@ test "incremental markdown streaming renders like renderMdLine" {
     try std.testing.expectEqualStrings("abc defghijklm\n", aw.writer.buffered());
 }
 
+test "streamed markdown: pipe-less tables align; lone candidates stay prose; indented code streams raw" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = std.testing.allocator,
+        .io = undefined,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = &aw.writer,
+    };
+    defer a.md_buf.deinit(std.testing.allocator);
+    defer a.md_word.deinit(std.testing.allocator);
+    defer {
+        for (a.md_table.items) |r| std.testing.allocator.free(r);
+        a.md_table.deinit(std.testing.allocator);
+    }
+
+    // Indented code blocks (4+ spaces) stream raw — never word-wrapped.
+    a.md_width = 12;
+    a.streamMarkdown("    const x = longcall(a, b);\n");
+    try std.testing.expectEqualStrings("    const x = longcall(a, b);\n", aw.writer.buffered());
+    aw.clearRetainingCapacity();
+
+    // CRLF deltas: a stray \r must not turn the row into wrapped prose.
+    a.streamMarkdown("| a | b |\r\n| --- | --- |\r\n");
+    try std.testing.expectEqualStrings("", aw.writer.buffered()); // still buffering, not printed
+    a.flushStreamTail();
+    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), " │ ") != null);
+}
+
 test "/bash slash command runs the bash tool and frees its gpa-allocated result" {
     // Regression guard for PR #38: the /bash slash handler routes through execTool, whose result.text is gpa-owned (NOT arena-owned — every other
     // caller frees it). Forgetting `defer root.gpa.free(result.text)` in handleCommand leaks on every /bash call; std.testing.allocator catches it here.

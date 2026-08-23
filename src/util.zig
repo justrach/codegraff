@@ -105,6 +105,36 @@ pub fn unixMs(io: Io) i64 {
     return @intCast(@divTrunc(ts.nanoseconds, 1_000_000));
 }
 
+/// Preferred split offset for an over-wide atom (a table cell token that
+/// cannot fit its column whole): the LAST identifier/path punctuation
+/// (`/ _ - . : = > ) ]`) at or before `hi`, so `foo/bar__baz` breaks after
+/// a punctuation run instead of mid-word. Keeps at least the first third
+/// of the budget on the line; returns `hi` when no such break exists.
+pub fn softCut(s: []const u8, lo: usize, hi: usize) usize {
+    if (hi <= lo or hi > s.len) return hi;
+    const min_keep = lo + (hi - lo) / 3;
+    var i: usize = hi;
+    while (i > min_keep) {
+        i -= 1;
+        const brk = switch (s[i]) {
+            '/', '_', '-', '.', ':', '=', '>', ')', ']' => true,
+            else => false,
+        };
+        if (brk) return i + 1;
+    }
+    return hi;
+}
+
+test "softCut: break after punctuation, keep the floor, else hard-split" {
+    // "mcp__codedbpro" in a 12-col cell: the '_' run at index 4 is inside
+    // the keep-floor's reach from the right, and the cut lands after it.
+    try std.testing.expectEqual(@as(usize, 5), softCut("mcp__codedbpro", 0, 12));
+    // A later '/' wins over an earlier '_'.
+    try std.testing.expectEqual(@as(usize, 15), softCut("aa/bb/cc/dd/ee/ff", 0, 15));
+    // No punctuation in reach: hard-split unchanged.
+    try std.testing.expectEqual(@as(usize, 8), softCut("abcdefghij", 0, 8));
+}
+
 const json_bytes_max_depth = 32;
 
 /// Serialized byte count of a JSON value, near enough for a budget decision

@@ -7,6 +7,7 @@ const std = @import("std");
 const zz = @import("zigzag");
 
 const util = @import("repl_util.zig");
+const softCut = @import("util.zig").softCut;
 const accent = util.accent;
 
 /// Render a markdown string to ANSI for display — approximates the harness's
@@ -52,6 +53,16 @@ pub fn renderMarkdown(gpa: std.mem.Allocator, src: []const u8, width_hint: usize
             idx = end - 1;
             continue;
         }
+        // Pipe-less GFM table ("a | b" / "--- | ---"): same box form. Only
+        // whole-buffer rendering can see the separator row, so this lives
+        // here rather than in the streaming classifier.
+        if (hasPipeCells(t) and idx + 1 < lines.len and isPipelessSep(std.mem.trim(u8, lines[idx + 1], " \t"))) {
+            var end = idx;
+            while (end < lines.len and hasPipeCells(std.mem.trimStart(u8, lines[end], " "))) end += 1;
+            try renderTable(&out, a, lines[idx..end], width_hint);
+            idx = end - 1;
+            continue;
+        }
         if (std.mem.startsWith(u8, t, "#")) {
             var h = t;
             while (h.len > 0 and h[0] == '#') h = h[1..];
@@ -70,6 +81,30 @@ pub fn renderMarkdown(gpa: std.mem.Allocator, src: []const u8, width_hint: usize
 
 fn isTableRow(t: []const u8) bool {
     return t.len >= 2 and t[0] == '|';
+}
+
+/// Cells joined by ` | ` somewhere in the line — a GFM row written without
+/// leading/trailing pipes. Never true for a leading-pipe row (checked first).
+fn hasPipeCells(t: []const u8) bool {
+    var i: usize = 1;
+    while (i + 1 < t.len) : (i += 1) {
+        if (t[i] == '|' and t[i - 1] == ' ' and t[i + 1] == ' ') return true;
+    }
+    return false;
+}
+
+/// `--- | ---` alignment row in the pipe-less shape: dashes required, only
+/// separator characters otherwise, and at least one pipe.
+fn isPipelessSep(t: []const u8) bool {
+    var dash = false;
+    var pipe = false;
+    for (t) |c| switch (c) {
+        ':', ' ', '\t' => {},
+        '-' => dash = true,
+        '|' => pipe = true,
+        else => return false,
+    };
+    return dash and pipe;
 }
 
 /// `|---|:--:|` style alignment row: pipes/colons/spaces only, dashes required.
@@ -191,8 +226,9 @@ fn wrapCell(a: std.mem.Allocator, s: []const u8, w: usize) ![]const []const u8 {
                 bytes += clen;
                 cw += cpw;
             }
-            try lines.append(try a.dupe(u8, rem[0..bytes]));
-            rem = rem[bytes..];
+            const cut = softCut(rem, 0, bytes); // break after / _ - . : rather than mid-token
+            try lines.append(try a.dupe(u8, rem[0..cut]));
+            rem = rem[cut..];
         }
         const ww = dispWidth(rem);
         if (ww == 0) continue;
@@ -466,4 +502,18 @@ test "renderMarkdown: table honors column alignment" {
     const lout = try renderMarkdown(gpa, "| Count |\n| --- |\n| 5 |", 100);
     defer gpa.free(lout);
     try std.testing.expect(std.mem.indexOf(u8, util.stripControl(a, lout), "    5") == null);
+}
+
+test "renderMarkdown: pipe-less GFM table renders as box-drawing" {
+    const gpa = std.testing.allocator;
+    const md = "Item | Desc\n--- | ---\n1 | Inspect files";
+    const out = try renderMarkdown(gpa, md, 80);
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "┌") != null); // box form
+    try std.testing.expect(std.mem.indexOf(u8, out, "Inspect files") != null);
+    // A lone pipe-less line with NO separator row stays prose.
+    const prose = try renderMarkdown(gpa, "left | right\njust text", 80);
+    defer gpa.free(prose);
+    try std.testing.expect(std.mem.indexOf(u8, prose, "┌") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prose, "left | right") != null);
 }
