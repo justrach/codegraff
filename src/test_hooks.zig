@@ -197,6 +197,7 @@ const engine_sink = @import("engine_sink.zig");
 // surface moved into, plus the policy leaf approvals.zig split its pure half
 // out to. Production reaches all three through calls or aliases only.
 const agent_prompt_render = @import("agent_prompt_render.zig");
+const agent_working = @import("agent_working.zig");
 const skill_docs_render = @import("skill_docs_render.zig");
 const harness_policy = @import("harness_policy.zig");
 
@@ -292,6 +293,7 @@ test {
     _ = engine_events;
     _ = engine_sink;
     _ = agent_prompt_render;
+    _ = agent_working;
     _ = skill_docs_render;
     _ = harness_policy;
     _ = verify_fingerprint;

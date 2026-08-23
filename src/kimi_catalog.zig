@@ -30,7 +30,8 @@ fn secureDir(io: Io, path: []const u8) void {
     // panic, not a catchable error. A readable handle chmods fine everywhere.
     const dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
-    dir.setPermissions(io, private_dir_permissions) catch {};
+    // Dir.setPermissions panics on Windows in Zig 0.17 (`dirSetPermissionsWindows`).
+    if (builtin.os.tag != .windows) dir.setPermissions(io, private_dir_permissions) catch {};
 }
 
 fn validDeviceId(value: []const u8) bool {

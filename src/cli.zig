@@ -21,6 +21,21 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.273
+    \\  • long tool calls print a dim "still running" heartbeat instead of going quiet
+    \\
+    \\0.0.272
+    \\  • Windows: line REPL prompt and graff-repl also use UTF-8, not only the TUI (#607)
+    \\
+    \\0.0.271
+    \\  • Windows: TUI/REPL box-drawing is UTF-8 (CP 65001), not CP437 mojibake (#607)
+    \\
+    \\0.0.270
+    \\  • OpenRouter (OPENROUTER_API_KEY → anthropic/claude-sonnet-4.6); live /models
+    \\  • Windows: edit_file/write_file no longer panic on path chmod (#606)
+    \\  • Line REPL transcript is the task, not the event bus
+    \\  • TUI markdown: lists, quotes, tasks, rules, italic
+    \\
     \\0.0.269
     \\  • Vercel AI Gateway (AI_GATEWAY_API_KEY → alibaba/qwen3.8-27b); coding-agent /v1
     \\  • Z.AI defaults to GLM-5.3 (1M); thinking.enabled + implicit prefix cache

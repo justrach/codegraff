@@ -45,6 +45,7 @@ const render = @import("agent_stream_render.zig");
 const tool_render = @import("agent_tool_render.zig"); // slice 1c: the tool cluster's terminal half
 const session_render = @import("session_render.zig"); // slice 2: the lifecycle cluster's terminal half
 const prompt_render = @import("agent_prompt_render.zig"); // batch 3: the status line's terminal half
+const working = @import("agent_working.zig");
 const tick_gate = @import("tick_gate.zig"); // #tui-tick: child ticks wait for a foreground line boundary
 
 /// An event plus its position, as delivered to a sink.
@@ -303,7 +304,16 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         .parallel_batch_finished => |b| tool_render.parallelBatchFinished(a, b),
         .completion_deferred => tool_render.completionDeferred(a),
         .goal_completed => tool_render.goalCompleted(a),
-        .completion_text, .todo_list_updated => |t| tool_render.toolTextLine(a, t.text),
+        .completion_text => |t| tool_render.toolTextLine(a, t.text),
+        .todo_list_updated => |t| {
+            const w = a.out orelse return;
+            const title = if (a.goal) |g|
+                (if (g.status != .complete and g.objective.len > 0) g.objective else "work")
+            else
+                "work";
+            working.writeFromTodoText(w, title, t.text);
+            w.flush() catch {};
+        },
         // The lifecycle cluster (slice 2). An Agent-backed TUI sink reaches
         // these only when one is injected (tests, a future frontend): the
         // engine's own lifecycle emitters use writerSink, whose terminal

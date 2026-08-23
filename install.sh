@@ -56,12 +56,29 @@ need_zig() {
   printf "  ${D}zig${N}       $v\n"
 }
 
+# Apple Silicon SIGKILLs a binary whose signature no longer matches the
+# kernel cache for that path. Leave a notarized Developer ID alone (re-signing
+# strips the staple). Do NOT Developer-ID-sign a local zig build: unnotarized
+# Developer ID + hardened runtime is `SIGKILL (Code Signature Invalid)` once
+# --yolo pages in more than --version. Ad-hoc is the correct local signature.
+darwin_sign() {
+  [ "$(uname -s)" = Darwin ] || return 0
+  local bin="$1"
+  [ -f "$bin" ] || return 0
+  if codesign --verify --strict "$bin" >/dev/null 2>&1 \
+    && codesign -dv --verbose=2 "$bin" 2>&1 | grep -q 'Authority=Developer ID Application'; then
+    return 0
+  fi
+  codesign -s - --force --identifier graff "$bin" >/dev/null 2>&1 || true
+}
+
 # Drop the binary onto a *fresh inode*: overwriting a running macOS binary in
 # place gets the replacement SIGKILLed by the kernel's signature cache.
 place_bin() {
   mkdir -p "$INSTALL_DIR"
   rm -f "$INSTALL_DIR/$BIN"
   install -m 0755 "$1" "$INSTALL_DIR/$BIN"
+  darwin_sign "$INSTALL_DIR/$BIN"
 
   # Overwrite any *other* graff already on PATH (e.g. an older copy in
   # ~/.local/bin from the codegraff stack) so the binary we just installed
@@ -74,6 +91,7 @@ place_bin() {
     [ "$d" = "$INSTALL_DIR" ] && continue
     if [ -f "$d/$BIN" ] && [ -w "$d/$BIN" ]; then
       if rm -f "$d/$BIN" && install -m 0755 "$1" "$d/$BIN" 2>/dev/null; then
+        darwin_sign "$d/$BIN"
         printf "  ${D}│${N} %-10s ${G}✓${N} (overwrote stale $d/$BIN)\n" "replace"
       fi
     fi
@@ -127,14 +145,6 @@ fetch_release() {
   fi
   [ -n "$binpath" ] && [ -f "$binpath" ] || { rm -rf "$tmpd"; return 1; }
   place_bin "$binpath"
-  if [ "$(uname -s)" = "Darwin" ]; then
-    # The release binary is already Developer-ID-signed + notarized — that both
-    # satisfies Gatekeeper and avoids the Apple-Silicon SIGKILL, so leave it be.
-    # Only ad-hoc re-sign when it does NOT already verify (older unsigned tarballs
-    # or a source build); re-signing a notarized binary would strip its Developer ID.
-    codesign --verify --strict "$INSTALL_DIR/$BIN" >/dev/null 2>&1 \
-      || codesign -s - --force "$INSTALL_DIR/$BIN" >/dev/null 2>&1 || true
-  fi
   rm -rf "$tmpd"
   # Fail closed: if the binary didn't actually land, return non-zero so the
   # caller falls back to a source build instead of falsely reporting success.

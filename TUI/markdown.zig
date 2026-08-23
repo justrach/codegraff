@@ -7,7 +7,7 @@ const mdtable = @import("mdtable.zig");
 const syntax = @import("syntax.zig");
 const image = @import("image.zig");
 
-/// Headers, fences, bullets, `code`, **bold**, and `/slash` tokens.
+/// Headers, fences, lists, quotes, tasks, `code`, **bold**, `_italic_`, and `/slash` tokens.
 pub fn render(a: std.mem.Allocator, src: []const u8, accent: []const u8) ![]const u8 {
     return renderTinted(a, src, accent, theme_mod.zinc400, theme_mod.zinc200);
 }
@@ -150,25 +150,7 @@ pub fn renderThemed(a: std.mem.Allocator, src: []const u8, th: theme_mod.Theme, 
             i += n;
             continue;
         }
-        if (std.mem.startsWith(u8, t, "#")) {
-            var h = t;
-            while (h.len > 0 and h[0] == '#') h = h[1..];
-            try out.appendSlice(theme_mod.bold);
-            try out.appendSlice(th.accent);
-            try out.appendSlice(std.mem.trimStart(u8, h, " "));
-            try out.appendSlice(theme_mod.reset);
-            i += 1;
-            continue;
-        }
-        try out.appendSlice(th.text);
-        var rest = line;
-        if (std.mem.startsWith(u8, t, "- ") or std.mem.startsWith(u8, t, "* ")) {
-            try out.appendSlice(th.accent);
-            try out.appendSlice("  • ");
-            try out.appendSlice(th.text);
-            rest = t[2..];
-        }
-        try inlineSpans(&out, rest, th.accent, th.text);
+        try appendBlock(&out, line, th.accent, th.muted, th.text);
         i += 1;
     }
     return out.toOwnedSlice();
@@ -213,25 +195,7 @@ pub fn renderTinted(a: std.mem.Allocator, src: []const u8, accent: []const u8, m
             i += n;
             continue;
         }
-        if (std.mem.startsWith(u8, t, "#")) {
-            var h = t;
-            while (h.len > 0 and h[0] == '#') h = h[1..];
-            try out.appendSlice(theme_mod.bold);
-            try out.appendSlice(accent);
-            try out.appendSlice(std.mem.trimStart(u8, h, " "));
-            try out.appendSlice(theme_mod.reset);
-            i += 1;
-            continue;
-        }
-        try out.appendSlice(text);
-        var rest = line;
-        if (std.mem.startsWith(u8, t, "- ") or std.mem.startsWith(u8, t, "* ")) {
-            try out.appendSlice(accent);
-            try out.appendSlice("  • ");
-            try out.appendSlice(text);
-            rest = t[2..];
-        }
-        try inlineSpans(&out, rest, accent, text);
+        try appendBlock(&out, line, accent, muted, text);
         i += 1;
     }
     return out.toOwnedSlice();
@@ -283,7 +247,67 @@ pub fn renderUser(a: std.mem.Allocator, src: []const u8, accent: []const u8, tex
     return out.toOwnedSlice();
 }
 
-/// `code`, **bold** and bare URLs, painted in place. Public for table.zig,
+/// Headers, lists, quotes, and tasks — the pager's prose blocks. Shared by
+/// the themed and tinted renderers so they cannot drift.
+fn appendBlock(out: *std.array_list.Managed(u8), line: []const u8, accent: []const u8, muted: []const u8, text: []const u8) !void {
+    var lead: usize = 0;
+    while (lead < line.len and line[lead] == ' ') lead += 1;
+    const body = line[lead..];
+    var h: usize = 0;
+    while (h < body.len and body[h] == '#') h += 1;
+    if (h >= 1 and h <= 6 and h < body.len and body[h] == ' ') {
+        try out.appendSlice(theme_mod.bold);
+        try out.appendSlice(accent);
+        try inlineSpans(out, std.mem.trimStart(u8, body[h + 1 ..], " "), accent, text);
+        try out.appendSlice(theme_mod.reset);
+        return;
+    }
+    if (body.len >= 3 and isRule(body)) {
+        try out.appendSlice(muted);
+        try out.appendSlice("────────────");
+        try out.appendSlice(theme_mod.reset);
+        return;
+    }
+    if (taskItem(body)) |task| {
+        try out.appendSlice(line[0..lead]);
+        try out.appendSlice(accent);
+        try out.appendSlice(if (task.checked) "☑ " else "☐ ");
+        try out.appendSlice(text);
+        try inlineSpans(out, task.text, accent, text);
+        return;
+    }
+    if (std.mem.startsWith(u8, body, "> ")) {
+        try out.appendSlice(line[0..lead]);
+        try out.appendSlice(muted);
+        try out.appendSlice("│ ");
+        try out.appendSlice(text);
+        try inlineSpans(out, body[2..], accent, text);
+        return;
+    }
+    if (std.mem.startsWith(u8, body, "- ") or std.mem.startsWith(u8, body, "* ") or std.mem.startsWith(u8, body, "+ ")) {
+        try out.appendSlice(line[0..lead]);
+        try out.appendSlice(accent);
+        try out.appendSlice(if (lead == 0) "  • " else "  ◦ ");
+        try out.appendSlice(text);
+        try inlineSpans(out, body[2..], accent, text);
+        return;
+    }
+    var d: usize = 0;
+    while (d < body.len and body[d] >= '0' and body[d] <= '9') d += 1;
+    if (d >= 1 and d + 1 < body.len and (body[d] == '.' or body[d] == ')') and body[d + 1] == ' ') {
+        try out.appendSlice(line[0..lead]);
+        try out.appendSlice(accent);
+        try out.appendSlice(body[0 .. d + 1]);
+        try out.appendSlice(" ");
+        try out.appendSlice(text);
+        try inlineSpans(out, body[d + 2 ..], accent, text);
+        return;
+    }
+    try out.appendSlice(text);
+    try inlineSpans(out, line, accent, text);
+}
+
+/// `code`, **bold** and `_italic_`, painted in place. Public for table.zig,
 /// which renders a cell the same way prose is rendered rather than measuring
 /// markers by hand — see the note at the head of that file.
 pub fn inlineSpans(out: *std.array_list.Managed(u8), line: []const u8, accent: []const u8, text: []const u8) !void {
@@ -306,10 +330,37 @@ pub fn inlineSpans(out: *std.array_list.Managed(u8), line: []const u8, accent: [
                 i = end + 2;
                 continue;
             }
+        } else if (line[i] == '_' and (i == 0 or line[i - 1] == ' ')) {
+            if (std.mem.indexOfScalarPos(u8, line, i + 1, '_')) |end| {
+                if (end > i + 1) {
+                    try out.appendSlice(theme_mod.dim);
+                    try out.appendSlice(line[i + 1 .. end]);
+                    try out.appendSlice("\x1b[22m"); // dim OFF; a 38;2 fg alone cannot clear SGR 2
+                    try out.appendSlice(text);
+                    i = end + 1;
+                    continue;
+                }
+            }
         }
         try out.append(line[i]);
         i += 1;
     }
+}
+
+const TaskItem = struct { checked: bool, text: []const u8 };
+
+fn taskItem(body: []const u8) ?TaskItem {
+    if (body.len < 6 or (body[0] != '-' and body[0] != '*' and body[0] != '+') or body[1] != ' ' or body[2] != '[' or body[4] != ']' or body[5] != ' ') return null;
+    if (body[3] != ' ' and body[3] != 'x' and body[3] != 'X') return null;
+    return .{ .checked = body[3] != ' ', .text = body[6..] };
+}
+
+/// True if every char is one of '-', '*', or '_' (markdown thematic break).
+fn isRule(body: []const u8) bool {
+    const c0 = body[0];
+    if (c0 != '-' and c0 != '*' and c0 != '_') return false;
+    for (body) |c| if (c != c0) return false;
+    return true;
 }
 
 fn isBreak(c: u8) bool {

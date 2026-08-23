@@ -87,11 +87,13 @@ fn standing(self: *const Agent) engine_events.StandingWork {
         if (t.epoch != epoch or t.retired) continue;
         out.todos_total += 1;
         const done = std.mem.eql(u8, t.status, "completed");
+        const active = std.mem.eql(u8, t.status, "in_progress");
         if (done) out.todos_done += 1;
         if (items.items.len < 8) {
             items.append(self.arena, .{
                 .content = util.utf8Prefix(t.content, 48),
                 .done = done,
+                .active = active,
             }) catch {};
         }
     }

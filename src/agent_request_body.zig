@@ -169,12 +169,11 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 }
                 try s.endObject();
             }
-            // Sticky cache partition from the first request. Durable per
-            // project so a new session still hits the warm system+tools
-            // prefix; children suffix so they do not evict the root.
+            // Sticky cache partition. xAI stays per-agent; everyone else uses
+            // a prefix lane so repeated subagent roles reuse system+tools.
             var ckbuf: [96]u8 = undefined;
             try s.objectField("prompt_cache_key");
-            try s.write(http_headers.promptCacheKey(self.io, self.label, self, &ckbuf));
+            try s.write(http_headers.requestCacheKey(self.io, self.label, self, self.provider.id, &ckbuf));
             // reasoning_effort (codegraff/deepseek/zai) + Z.AI thinking + Vercel reasoning.effort.
             try @import("zai_wire.zig").writeChatExtras(&s, self.provider.id, self.sendReasoningEffort(), @tagName(self.reasoning));
             // --output-schema: structured outputs (xAI docs' response_format).
@@ -584,6 +583,14 @@ test "openai-wire bodies send a sticky prompt_cache_key; children isolate" {
     const ce = std.mem.indexOfScalarPos(u8, cb, cs + needle.len, '"') orelse return error.MissingPromptCacheKey;
     const child_key = cb[cs + needle.len .. ce];
     try std.testing.expect(!std.mem.eql(u8, root_key, child_key));
+    try std.testing.expect(std.mem.indexOf(u8, child_key, "-child-") != null);
+    // Same role, different Agent: one prefix lane (prompt-cache max).
+    var twin = child;
+    const tb = try twin.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(tb);
+    const ts = std.mem.indexOf(u8, tb, needle) orelse return error.MissingPromptCacheKey;
+    const te = std.mem.indexOfScalarPos(u8, tb, ts + needle.len, '"') orelse return error.MissingPromptCacheKey;
+    try std.testing.expectEqualStrings(child_key, tb[ts + needle.len .. te]);
 
     var oai = root;
     oai.provider = .{ .id = "openai", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 1_050_000 };

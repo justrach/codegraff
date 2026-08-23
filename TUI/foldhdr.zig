@@ -55,7 +55,7 @@ fn verbOf(f: Family) Verb {
         .bash => .{ .present = "Running", .past = "Ran", .noun = "command", .solo_tool = true },
         .search => .{ .present = "Searching", .past = "Searched", .noun = "pattern" },
         .web => .{ .present = "Fetching", .past = "Fetched", .noun = "page" },
-        .task => .{ .present = "Running", .past = "Ran", .noun = "task" },
+        .task => .{ .present = "Scouting", .past = "Scouted", .noun = "scout" },
         .todo => .{ .present = "Updating", .past = "Updated", .noun = "todo" },
         .mcp => .{ .present = "Calling", .past = "Called", .noun = "MCP tool" },
         .other => .{ .present = "Calling", .past = "Called", .noun = "tool", .solo_tool = true },
@@ -99,7 +99,11 @@ pub fn leafOf(name: []const u8) []const u8 {
 pub fn displayName(name: []const u8) []const u8 {
     if (std.mem.eql(u8, name, "read_file")) return "read";
     if (std.mem.eql(u8, name, "write_file")) return "write";
-    return leafOf(name);
+    if (std.mem.eql(u8, name, "read_tool_result")) return "inspect";
+    const leaf = leafOf(name);
+    if (std.mem.eql(u8, leaf, "batch")) return "inspect";
+    if (std.mem.eql(u8, name, "subagent") or std.mem.eql(u8, name, "workflow")) return "scout";
+    return leaf;
 }
 
 /// Which verb family a tool name belongs to. Exact names first — they are what
@@ -294,7 +298,7 @@ test "each family gets its own verb and object" {
         .{ .f = .edit, .n = 3, .want = "Edited 3 files" },
         .{ .f = .search, .n = 2, .want = "Searched 2 patterns" },
         .{ .f = .web, .n = 1, .want = "Fetched 1 page" },
-        .{ .f = .task, .n = 2, .want = "Ran 2 tasks" },
+        .{ .f = .task, .n = 2, .want = "Scouted 2 scouts" },
         .{ .f = .todo, .n = 1, .want = "Updated 1 todo" },
         .{ .f = .mcp, .n = 2, .want = "Called 2 MCP tools" },
         .{ .f = .mixed, .n = 3, .want = "Called 3 tools" },

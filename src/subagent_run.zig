@@ -427,7 +427,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     // the #381 constraint block too. Reading a report against the raw prompt
     // is how "the subagent ignored my instruction" becomes unfalsifiable.
     const detail = cards.writeSubagentDetail(ctx.io, arena, sub_id, label, kind, task_prompt, report_body, !empty, run_ms, used_tools);
-    cards.subagentDoneCard(arena, sub_id, sprite, label, !empty, run_ms, used_tools, detail);
+    cards.subagentDoneCard(arena, sub_id, sprite, label, !empty, run_ms, used_tools, detail, usage.cache_read_tokens, usage.context_tokens);
 
     var extra: []const u8 = isolation_note;
     var extra_owned = false;

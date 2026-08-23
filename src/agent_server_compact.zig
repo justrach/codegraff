@@ -297,7 +297,7 @@ pub fn manualCompact(self: *Agent) anyerror!usize {
         return 0;
     }
     const pending_tokens = self.effectiveContextTokens();
-    if (!main_mod.json_mode) try self.say("[compacting ~{d} tokens with OpenAI…]\n", .{pending_tokens});
+    if (!main_mod.json_mode and @import("repl.zig").g_debug) try self.say("[compacting ~{d} tokens with OpenAI…]\n", .{pending_tokens});
     const result = switch (route) {
         .standalone => compactStandalone(self),
         .in_stream => compactInStream(self),
@@ -435,7 +435,7 @@ pub fn explicitCompact(self: *Agent) bool {
     defer self.gpa.free(body);
     var cp = self.provider;
     cp.url = compact_url;
-    if (!main_mod.json_mode) self.say("[compacting server-side: {d} item(s)…]\n", .{self.messages.items.len}) catch {};
+    if (!main_mod.json_mode and @import("repl.zig").g_debug) self.say("[compacting server-side: {d} item(s)…]\n", .{self.messages.items.len}) catch {};
     var conv_buf: [96]u8 = undefined;
     const conv = @import("http_headers.zig").promptCacheKey(self.io, self.label, self, &conv_buf);
     const resp = http.postWatched(self.gpa, self.io, self.client, cp, body, conv) catch |err| {

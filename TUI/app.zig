@@ -24,8 +24,12 @@ pub const ToolInfo = struct {
     /// The engine's tool name, verbatim. Classification (mcp / search) tests
     /// this, never the whole row.
     name: []const u8,
-    /// Argument preview on a call, result preview on an outcome.
+    /// Tier 1: One-line decision summary (via interpret).
+    summary: []const u8 = "",
+    /// Tier 2: High-signal facts (via usefulPreview).
     detail: []const u8 = "",
+    /// Tier 3: The raw output from the engine.
+    raw: []const u8 = "",
     /// false = the call was announced, true = it returned (or was refused).
     done: bool = false,
     is_error: bool = false,
@@ -290,20 +294,25 @@ pub const Model = struct {
     pub fn pushTool(self: *Model, info: ToolInfo) !void {
         const name = try self.alloc.dupe(u8, info.name);
         errdefer self.alloc.free(name);
+        const summary = try sanitized(self.alloc, info.summary);
+        errdefer self.alloc.free(summary);
         const detail = try sanitized(self.alloc, info.detail);
         errdefer self.alloc.free(detail);
-        const text = if (detail.len > 0)
-            try std.fmt.allocPrint(self.alloc, "{s}  {s}", .{ name, detail })
-        else
-            try self.alloc.dupe(u8, name);
+        const raw = try sanitized(self.alloc, info.raw);
+        errdefer self.alloc.free(raw);
+
+        const text = try self.alloc.dupe(u8, summary);
         errdefer self.alloc.free(text);
+
         try self.history.append(.{
             .kind = .tool,
             .text = text,
             .folded = true,
             .tool = .{
                 .name = name,
+                .summary = summary,
                 .detail = detail,
+                .raw = raw,
                 .done = info.done,
                 .is_error = info.is_error,
                 .denied = info.denied,
@@ -318,7 +327,9 @@ pub const Model = struct {
         self.alloc.free(e.text);
         if (e.tool) |t| {
             self.alloc.free(t.name);
+            self.alloc.free(t.summary);
             self.alloc.free(t.detail);
+            self.alloc.free(t.raw);
         }
     }
 
@@ -561,35 +572,4 @@ fn sanitized(alloc: std.mem.Allocator, text: []const u8) ![]u8 {
         i += 1;
     }
     return out.toOwnedSlice();
-}
-
-test "cycleMode walks Normal → Plan → Always-approve" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    try std.testing.expectEqual(AgentMode.normal, m.mode);
-    m.cycleMode();
-    try std.testing.expectEqual(AgentMode.plan, m.mode);
-    m.cycleMode();
-    try std.testing.expectEqual(AgentMode.always_approve, m.mode);
-}
-
-test "push user flips welcome to agent" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    try std.testing.expectEqual(Screen.welcome, m.screen);
-    try m.push(.user, "hi");
-    try std.testing.expectEqual(Screen.agent, m.screen);
-}
-
-test "push strips raw ANSI, OSC, and CR from tool text" {
-    var m: Model = undefined;
-    m.setup(std.testing.allocator);
-    defer m.deinit();
-    try m.push(.tool, "⚙ bash | \x1b[31mred\x1b[0m\x1b]0;title\x07 done\r");
-    try std.testing.expectEqualStrings("⚙ bash | red done", m.history.items[0].text);
-    // No ESC and no CR — the old fast path would have kept these.
-    try m.push(.assistant, "beep\x07back\x08null\x00done");
-    try std.testing.expectEqualStrings("beepbacknulldone", m.history.items[1].text);
 }

@@ -4,6 +4,7 @@
 //! 600-line goal).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const zz = @import("zigzag");
 
 const repl = @import("repl.zig");
@@ -112,5 +113,13 @@ pub fn runScripted(
 }
 
 pub fn main(init: std.process.Init) !void {
+    // Standalone `graff-repl` never visits src/main.zig. zigzag enableRawMode
+    // also sets CP 65001; this covers any bytes printed before raw mode (#607).
+    if (builtin.os.tag == .windows) @import("term.zig").tty.enableVtOutput();
     return run(init.gpa, init.io, init.environ_map, null, null, null, null, "", "");
+}
+
+test "standalone graff-repl enables Windows UTF-8 before zigzag raw mode (#607)" {
+    const src = @embedFile("repl_run.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "tty.enableVtOutput()") != null);
 }

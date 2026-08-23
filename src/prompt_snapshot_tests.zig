@@ -35,6 +35,9 @@ const golden_full_prompt =
     \\a tool, a parameter, or a wrapper API around one, and never assume a
     \\capability that is not listed for you — when the thing you want is absent,
     \\say so and finish the task with what is here.
+    \\Inspect before you commit to an architecture: say what you found, then
+    \\what you will do, then do it. Do not announce a solution and hunt for
+    \\confirmation of it.
     \\read_file before editing; prefer
     \\edit_file for changes to existing files and write_file only for new
     \\files or full rewrites. For a read-only exact-key lookup in one known file,

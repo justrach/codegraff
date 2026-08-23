@@ -49,6 +49,23 @@ test "parseModels reads Vercel context_window and skips non-language types" {
     try std.testing.expectEqual(pricing.default_context, snapshot.models[1].context);
 }
 
+test "parseModels reads OpenRouter context_length and include_reasoning" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const snapshot = parseModels(state.allocator(), "openrouter",
+        \\{"data":[
+        \\ {"id":"anthropic/claude-sonnet-4.6","context_length":1000000,"supported_parameters":["tools","include_reasoning"]},
+        \\ {"id":"openai/gpt-oss:free","context_length":131072}
+        \\]}
+    ) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), snapshot.models.len);
+    try std.testing.expectEqualStrings("anthropic/claude-sonnet-4.6", snapshot.models[0].name);
+    try std.testing.expectEqual(@as(u64, 1_000_000), snapshot.models[0].context);
+    try std.testing.expect(snapshot.models[0].supports_reasoning);
+    try std.testing.expectEqualStrings("openai/gpt-oss:free", snapshot.models[1].name);
+    try std.testing.expect(!snapshot.models[1].supports_reasoning);
+}
+
 test "parseModels is reusable for a newly configured router" {
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
@@ -176,6 +193,7 @@ test "alwaysLive is xAI-only so other OpenAI routers keep the disk TTL" {
     try std.testing.expect(!alwaysLive(provider.specFor("codegraff").?));
     try std.testing.expect(!alwaysLive(provider.specFor("anthropic").?));
     try std.testing.expect(!alwaysLive(provider.specFor("fireworks").?));
+    try std.testing.expectEqual(@as(i64, 500), rc.live_budget_ms);
 }
 
 test "xAI /v1/models rows inherit baked context windows" {
@@ -299,6 +317,9 @@ test "startup catalog loads fan out concurrently with Kimi" {
     try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(fetchSpecTask") != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(kimiFetchTask") != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "fn spawnKimi") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "startBackgroundRefresh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "live_budget_ms") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "if (alwaysLive(spec)) return false") == null);
 }
 
 // ── provider.zig routing tests parked here under its 600-line ceiling ──────

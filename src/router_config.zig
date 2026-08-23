@@ -135,17 +135,17 @@ test "parse derives OpenAI-compatible endpoints without accepting a secret" {
     defer state.deinit();
     const spec = try parse(state.allocator(),
         \\{
-        \\  "id": "openrouter",
-        \\  "name": "OpenRouter",
-        \\  "base_url": "https://openrouter.ai/api/v1/",
-        \\  "env_key": "OPENROUTER_API_KEY",
-        \\  "default_model": "anthropic/claude-sonnet-4",
+        \\  "id": "myrouter",
+        \\  "name": "My Router",
+        \\  "base_url": "https://router.example.com/v1/",
+        \\  "env_key": "MYROUTER_API_KEY",
+        \\  "default_model": "example/model",
         \\  "takes_effort": true
         \\}
     );
-    try std.testing.expectEqualStrings("openrouter", spec.id);
-    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/chat/completions", spec.url);
-    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/models", spec.models_url);
+    try std.testing.expectEqualStrings("myrouter", spec.id);
+    try std.testing.expectEqualStrings("https://router.example.com/v1/chat/completions", spec.url);
+    try std.testing.expectEqualStrings("https://router.example.com/v1/models", spec.models_url);
     try std.testing.expect(spec.takes_effort);
 }
 

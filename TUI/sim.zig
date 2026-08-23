@@ -221,6 +221,25 @@ test "typeText lands in the composer dump" {
     try std.testing.expect(std.mem.indexOf(u8, vis, "›") != null);
 }
 
+test "assistant markdown shows lists, quotes, tasks, and rules" {
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    try term.model.push(.assistant, "# Title\n1. first\n> quoted\n- [x] done\n- [ ] todo\n- item\n---\n_italic_");
+    const vis = try term.screen();
+    defer std.testing.allocator.free(vis);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "Title") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "1.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "│") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "quoted") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "☑") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "☐") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "•") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "────────") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "italic") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "_italic_") == null);
+}
+
 test "clickText on the verb header expands the folded tools" {
     var term: Term = undefined;
     term.init(std.testing.allocator, 80, 24);

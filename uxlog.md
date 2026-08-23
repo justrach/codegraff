@@ -6,6 +6,23 @@ UX = how it behaves. Add an entry whenever a change alters what the user
 sees or how an interaction flows — small entries are fine; the point is
 that "why does it work this way?" always has an answer here.
 
+## 2026-08-21
+
+### Transcript is the task, not the event bus (UI)
+The line REPL was still printing harness vocabulary: `⛔ constraint recorded`,
+`# skill:`, `[compacting…]`, `[~]` todo dumps, truncated `read_tool_re` rows,
+and eight-line subagent cards with `sa-000-…` ids. Those are now classified
+(ADR 0021). Bookkeeping is silent (compaction only under `/debug`). Todos
+reprint as a `WORKING` tree on change and sit above `›`. Subagents are one
+line (`↯ scout` / `✓ scout`). `batch` / `read_tool_result` are `inspect` or
+hidden. The root prompt tells the model to observe, then conclude, then act.
+
+### Scout cache (UX)
+Repeated subagents on OpenAI/chat now share a prompt-cache prefix lane, so the
+second "implement" scout can hit instead of writing a unique suffix. xAI scouts
+stay isolated (append-only conv-id). The settle line shows `cache N%` when the
+worker reported usage.
+
 ## 2026-06-22
 
 ### TUI `/ultracode` opens an on/off picker (UX)

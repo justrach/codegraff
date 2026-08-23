@@ -1,6 +1,7 @@
 //! Tool dispatch: `execTool` + `execToolInner`. Split out of main.zig.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
@@ -497,6 +498,27 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         return agentOutput(gpa, io, @intCast(id), @intCast(@max(wait_ms, 0)));
     }
     return .{ .text = try std.fmt.allocPrint(gpa, "unknown tool: {s}", .{call.name}), .is_error = true };
+}
+
+test "preserveMode restores bits via handle chmod so Windows cannot panic (#179/#606)" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "x.sh", .data = "a" });
+    if (builtin.os.tag != .windows) {
+        try tmp.dir.setFilePermissions(io, "x.sh", Io.File.Permissions.fromMode(0o755), .{});
+    }
+    const st = try tmp.dir.statFile(io, "x.sh", .{});
+    try tmp.dir.writeFile(io, .{ .sub_path = "x.sh", .data = "b" });
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &real_buf);
+    const path = try std.fmt.allocPrint(std.testing.allocator, "{s}/x.sh", .{real_buf[0..n]});
+    defer std.testing.allocator.free(path);
+    preserveMode(io, path, st);
+    if (builtin.os.tag != .windows) {
+        const after = try tmp.dir.statFile(io, "x.sh", .{});
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o755), after.permissions.toMode() & 0o777);
+    }
 }
 
 test "internal learning respects the parent privacy ceiling" {

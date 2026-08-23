@@ -17,8 +17,8 @@ const Io = std.Io;
 const style = &@import("ansi.zig").style;
 const terminal = @import("term.zig");
 const engine_events = @import("engine_events.zig");
-const util = @import("util.zig");
 const PromptStatus = engine_events.PromptStatus;
+const working = @import("agent_working.zig");
 
 pub fn reasoningLabel(effort: anytype) []const u8 {
     return switch (effort) {
@@ -78,41 +78,21 @@ pub fn promptLine(w: *Io.Writer, st: PromptStatus) void {
     line(w, st, terminal.termCols()) catch return;
 }
 
-fn workingActive(sw: engine_events.StandingWork) bool {
-    return sw.goal.len > 0 or sw.todos_total > 0;
-}
-
-/// Compact WORKING block: goal + N/M on one line, checklist as a tree.
-/// No rules, no progress bar — those competed with the tool rows (ADR 0020).
-fn workingBlock(w: *Io.Writer, sw: engine_events.StandingWork, cols: usize) !void {
-    if (!workingActive(sw)) return;
-    try w.print("{s}WORKING", .{style.dim});
-    if (sw.goal_status.len > 0) try w.print(" ({s})", .{sw.goal_status});
-    if (sw.goal.len > 0) {
-        var used: usize = "WORKING".len;
-        if (sw.goal_status.len > 0) used += 3 + sw.goal_status.len;
-        used += 2;
-        if (sw.todos_total > 0) used += 7; // "  99/99"
-        const room = if (cols > used) cols - used else 12;
-        const clip = util.utf8Prefix(sw.goal, room);
-        try w.print("  {s}{s}{s}", .{ style.accent, clip, style.dim });
+fn cwdName(cwd: []const u8) []const u8 {
+    var end = cwd.len;
+    while (end > 1 and cwd[end - 1] == '/') end -= 1;
+    const t = cwd[0..end];
+    if (t.len == 0) return cwd;
+    if (std.mem.lastIndexOfScalar(u8, t, '/')) |idx| {
+        const rest = t[idx + 1 ..];
+        return if (rest.len == 0) t else rest;
     }
-    if (sw.todos_total > 0) try w.print("  {d}/{d}", .{ sw.todos_done, sw.todos_total });
-    try w.print("{s}\n", .{style.reset});
-    for (sw.todos, 0..) |t, i| {
-        const branch: []const u8 = if (i + 1 == sw.todos.len) "└─" else "├─";
-        const clip = util.utf8Prefix(t.content, if (cols > 6) cols - 6 else 20);
-        if (t.done) {
-            try w.print("{s} {s}✓{s} {s}\n", .{ branch, style.green, style.reset, clip });
-        } else {
-            try w.print("{s} {s}○{s} {s}\n", .{ branch, style.dim, style.reset, clip });
-        }
-    }
+    return t;
 }
 
 fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
+    working.writeFromStanding(w, st.standing);
     try w.writeByte('\n');
-    try workingBlock(w, st.standing, cols);
 
     var cbuf: [24]u8 = undefined;
     const cost: []const u8 = switch (st.cost) {
@@ -144,13 +124,15 @@ fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
         "";
 
     // Dim meter above a bare `›`. Operational badges (Fast/Plan/Strict)
-    // stay; cwd and the old bracket frame do not — they competed with input.
-    // #209: drop from the right so a narrow pane never splits a label.
+    // stay. Cwd is a high-priority one-liner (`~/folder`) so the Codegraff
+    // box does not have to restate the ask. #209: drop from the right.
     const avail = cols -| 1;
     var used: usize = st.model.len;
+    const folder = cwdName(st.cwd);
     const show_fast = st.fast and fitsSegment(&used, avail, 3 + "Fast".len);
     const show_effort = st.effort != null and
         fitsSegment(&used, avail, 3 + reasoningLabel(st.effort.?).len);
+    const show_cwd = folder.len > 0 and fitsSegment(&used, avail, 3 + 2 + folder.len);
     const show_fallback = st.fallback and
         fitsSegment(&used, avail, 3 + "Fallback".len);
     const show_plan = st.plan and fitsSegment(&used, avail, 3 + "Plan".len);
@@ -167,6 +149,7 @@ fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
     try w.print("{s}{s}", .{ style.dim, st.model });
     if (show_fast) try w.print(" · Fast", .{});
     if (show_effort) try w.print(" · {s}", .{reasoningLabel(st.effort.?)});
+    if (show_cwd) try w.print(" · ~/{s}", .{folder});
     if (show_fallback) try w.print(" · Fallback", .{});
     if (show_plan) try w.print(" · Plan", .{});
     if (show_strict) try w.print(" · Strict", .{});
@@ -279,14 +262,14 @@ test "batch 3: every status-line segment renders exactly as it did inline" {
         .ultracode = true,
     };
     try std.testing.expectEqualStrings(
-        "\ngpt-5.6 · Fast · High · Fallback · Plan · Strict · Ultracode · ctx 6% · cache 16% · $0.50\n› ",
+        "\ngpt-5.6 · Fast · High · ~/graff · Fallback · Plan · Strict · Ultracode · ctx 6% · cache 16% · $0.50\n› ",
         renderPlain(&aw, full),
     );
 
     // The bare line: no usage yet, meter off, no optional badge.
     aw.clearRetainingCapacity();
     try std.testing.expectEqualStrings(
-        "\nlmstudio\n› ",
+        "\nlmstudio · ~/w\n› ",
         renderPlain(&aw, .{
             .model = "lmstudio",
             .provider_id = "lmstudio",
@@ -300,7 +283,7 @@ test "batch 3: every status-line segment renders exactly as it did inline" {
     // unpriced model admits it rather than printing a fabricated 0.0000.
     aw.clearRetainingCapacity();
     try std.testing.expectEqualStrings(
-        "\nm · sub\n› ",
+        "\nm · ~/w · sub\n› ",
         renderPlain(&aw, .{
             .model = "m",
             .provider_id = "p",
@@ -312,7 +295,7 @@ test "batch 3: every status-line segment renders exactly as it did inline" {
     );
     aw.clearRetainingCapacity();
     try std.testing.expectEqualStrings(
-        "\nm · $?\n› ",
+        "\nm · ~/w · $?\n› ",
         renderPlain(&aw, .{
             .model = "m",
             .provider_id = "p",
@@ -345,8 +328,8 @@ test "batch 3: a shrinking pane sheds segments in the #209 priority order" {
         .cost = .unpriced,
     };
     const cases = [_]struct { cols: usize, want: []const u8 }{
-        .{ .cols = 80, .want = "\ngpt-5.6 · High · ctx 6% · cache 16% · $?\n› " },
-        .{ .cols = 28, .want = "\ngpt-5.6 · High · ctx 6%\n› " },
+        .{ .cols = 80, .want = "\ngpt-5.6 · High · ~/graff · ctx 6% · cache 16% · $?\n› " },
+        .{ .cols = 28, .want = "\ngpt-5.6 · High · ~/graff\n› " },
         .{ .cols = 18, .want = "\ngpt-5.6 · High\n› " },
     };
     for (cases) |c| {
@@ -397,7 +380,7 @@ test "a measured turn prints last-turn cache hit next to ctx" {
     try std.testing.expect(std.mem.indexOf(u8, out, "cache 16%") != null);
 }
 
-test "WORKING block sits above a bare prompt and is skipped when empty" {
+test "standing work draws a WORKING block above the prompt" {
     const saved = style.*;
     style.* = .{};
     defer style.* = saved;
@@ -411,7 +394,7 @@ test "WORKING block sits above a bare prompt and is skipped when empty" {
         .privacy = .local,
     };
     try std.testing.expectEqualStrings(
-        "\nm\n› ",
+        "\nm · ~/w\n› ",
         renderPlain(&aw, bare),
     );
 
@@ -438,9 +421,14 @@ test "WORKING block sits above a bare prompt and is skipped when empty" {
     };
     try line(&aw.writer, full, 80);
     try std.testing.expectEqualStrings(
-        "\nWORKING (paused)  ship the repl standing line  1/2\n" ++
-            "├─ ✓ inspect current prompt\n└─ ○ update implementation\n" ++
-            "m · image · login-fix\n› ",
+        "WORKING  ship the repl standing line  1/2\n" ++
+            "├ ✓ inspect current prompt\n" ++
+            "└ ○ update implementation\n" ++
+            "\nm · ~/w · image · login-fix\n› ",
         aw.writer.buffered(),
     );
+}
+
+test {
+    _ = working;
 }

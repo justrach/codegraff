@@ -26,6 +26,8 @@ const EngineEvent = engine_events.EngineEvent;
 const engine_sink = @import("engine_sink.zig");
 const repl = @import("repl.zig");
 const tui = @import("tui");
+const label = @import("agent_tool_label.zig");
+const working = @import("agent_working.zig");
 
 /// Result previews are one line, capped — the same budget hostedEmit used, so
 /// a row's body stays a body and a 20 KB tool result never reaches the queue.
@@ -100,18 +102,28 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
         // never the prose stream (that mixing is what #551 took apart).
         .tool_output_delta => |d| if (tui.rawStream()) |raw| raw.appendBytes(d.text),
         // A meta tool owns this text's layout, so it arrives whole.
-        .completion_text, .todo_list_updated => |t| {
+        .completion_text => |t| {
             b.stream.appendBytes(t.text);
             b.stream.appendBytes("\n");
         },
+        .todo_list_updated => |t| {
+            var aw: std.Io.Writer.Allocating = .init(std.heap.page_allocator);
+            defer aw.deinit();
+            working.writeFromTodoText(&aw.writer, "work", t.text);
+            b.stream.appendBytes(aw.writer.buffered());
+        },
 
         // ── structure: typed rows ────────────────────────────────────────
-        .tool_call_announced => |t| b.queue.push(.{ .tool_started = .{
-            .name = t.name,
-            .detail = capLine(engine_sink.compactArg(t.input), arg_cap),
-        } }),
+        .tool_call_announced => |t| {
+            if (label.skipTranscript(t.name)) return;
+            b.queue.push(.{ .tool_started = .{
+                .name = t.name,
+                .detail = capLine(engine_sink.compactArg(t.input), arg_cap),
+            } });
+        },
         .tool_result => |r| {
             if (tui.rawStream()) |raw| raw.len.store(0, .release);
+            if (label.skipTranscript(r.name)) return;
             b.queue.push(.{ .tool_finished = .{
                 .name = r.name,
                 .detail = capLine(r.text, preview_cap),

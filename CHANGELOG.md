@@ -10,6 +10,45 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.273 (2026-08-22)
+
+- Long-running tool calls no longer read as a hang: after 15s of
+  silence (then every interval) a dim `· bash still running · 2m10s`
+  pulse prints on the line REPL and the TUI — for foreground bash and
+  for blocking `bash_output` waits alike.
+- CI: `scripts/test-pty-repl.py` follows cwd back onto the prompt meter.
+- Test ratchet: unit suite 1586.
+
+## v0.0.272 (2026-08-22)
+
+- Windows: the line REPL prompt (`readline` / pickers) and standalone
+  `graff-repl` also switch the console to UTF-8 (CP 65001). 0.0.271 did
+  this at process start and in the fullscreen TUI; the `›` editor path
+  did not (#607).
+- Test ratchet: unit suite 1582.
+
+## v0.0.271 (2026-08-22)
+
+- Windows: line REPL and fullscreen TUI switch the console to UTF-8
+  (CP 65001) before any chrome is printed, so box-drawing and icons are
+  not decoded as CP437/1252 in PowerShell 5.1 (#607). zigzag's `graff repl`
+  already did this; `graff` and `graff tui` did not.
+- Test ratchet: unit suite 1580.
+
+## v0.0.270 (2026-08-22)
+
+- OpenRouter is a built-in OpenAI-chat seat (`OPENROUTER_API_KEY`,
+  `graff key set openrouter …`, default `anthropic/claude-sonnet-4.6`).
+  Chat goes to `openrouter.ai/api/v1`; live `/models` overlays the
+  catalog. Attribution headers `http-referer` + `x-title`. Provider
+  kernel 21.
+- Windows: `edit_file`/`write_file` no longer panic the session on Zig 0.17's
+  unimplemented path chmod (`dirSetFilePermissions`). Mode restore uses handle
+  chmod (#606).
+- Line REPL transcript is the task, not the event bus (ADR 0021).
+- TUI markdown paints numbered lists, quotes, tasks, rules, and `_italic_`.
+- Test ratchet: unit suite 1578.
+
 ## v0.0.269 (2026-08-20)
 
 - codedb pairing (ADR 0019): advertise five one-shots — `context <task>`,
@@ -21,7 +60,7 @@ current is part of cutting a release.
   `GRAFF_VERCEL_URL` rewrites to generic `/v1`). Live `/models` overlays
   language rows only; image/video/embedding are not chat seats. `/effort`
   becomes `reasoning.effort` (`max`/`ultra` → `xhigh`). Attribution
-  headers `http-referer` + `x-title`. Provider kernel 20.
+  headers `http-referer` + `x-title`.
 - Z.AI's existing seat now defaults to GLM-5.3 (1M context) with live
   `/api/paas/v4/models`, `thinking.type=enabled`, and `/effort` remapped
   onto `low`/`high`/`max` (graff `medium` → `high`). Pay-go stays on

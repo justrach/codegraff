@@ -260,7 +260,7 @@ pub fn main(init: std.process.Init) !void {
     g_session_arena = init.arena;
     g_mem_debug = init.environ_map.get("GRAFF_MEM_DEBUG") != null;
     g_no_browser = init.environ_map.get("GRAFF_NO_BROWSER") != null;
-    // Windows: let the console interpret ANSI/VT escapes so the harness's color and cursor sequences render instead of literal text.
+    // Windows: VT + UTF-8 (CP 65001) so color/cursor work and box-drawing is not CP437 (#607).
     if (builtin.os.tag == .windows) tty.enableVtOutput();
     // Environment supplies the default; an explicit CLI flag parsed below has
     // the usual higher precedence for this invocation.
