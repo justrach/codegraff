@@ -28,6 +28,16 @@ fn companionPathKey(tool: []const u8) ?[]const u8 {
     return null;
 }
 
+/// The native read/search tools this suite replaces use `path`; a model
+/// steered here from the block message copies that name verbatim, so a
+/// `file`-keyed call arrives as `{path: …}` and fails "missing 'file'"
+/// (#609). Accept the native name as an alias wherever it differs.
+fn companionAliasKey(tool: []const u8) ?[]const u8 {
+    const key = companionPathKey(tool) orelse return null;
+    if (std.mem.eql(u8, key, "path")) return null;
+    return "path";
+}
+
 /// Errors caused by model arguments or session path context should open the
 /// native fallback but must not generate upstream CodeDB Pro bug reports.
 pub fn callerError(text: []const u8) bool {
@@ -36,6 +46,8 @@ pub fn callerError(text: []const u8) bool {
         "path not found",
         "no content provided",
         "missing content",
+        // Model-argument mistakes must not be filed as CodeDB Pro defects.
+        "missing 'file'",
         "missing 'hash'",
         "is a directory",
         "permission denied",
@@ -62,8 +74,32 @@ pub fn callerError(text: []const u8) bool {
 pub fn prepareInput(gpa: Allocator, io: Io, agent_cwd: ?[]const u8, tool: []const u8, input: std.json.Value) !PreparedInput {
     const key = companionPathKey(tool) orelse return .{ .value = input };
     if (input != .object) return .{ .value = input };
-    const path_value = input.object.get(key) orelse return .{ .value = input };
-    if (path_value != .string or std.fs.path.isAbsolute(path_value.string)) return .{ .value = input };
+
+    var working = input;
+    var owned_object: ?std.json.ObjectMap = null;
+    var found = working.object.get(key);
+    if (found == null) {
+        // #609: accept the native tool's argument name before failing.
+        const alias = companionAliasKey(tool) orelse return .{ .value = input };
+        const v = working.object.get(alias) orelse return .{ .value = input };
+        if (v != .string) return .{ .value = input };
+        var renamed: std.json.ObjectMap = .empty;
+        errdefer renamed.deinit(gpa);
+        var ren_it = working.object.iterator();
+        while (ren_it.next()) |entry| {
+            if (std.mem.eql(u8, entry.key_ptr.*, alias)) continue;
+            try renamed.put(gpa, entry.key_ptr.*, entry.value_ptr.*);
+        }
+        try renamed.put(gpa, key, v);
+        working = .{ .object = renamed };
+        owned_object = renamed;
+        found = renamed.get(key);
+    }
+    const path_value = found.?;
+    if (path_value != .string or std.fs.path.isAbsolute(path_value.string)) {
+        // Pass through; hand any rename ownership to the caller.
+        return .{ .value = working, .owned_object = owned_object };
+    }
 
     var cwd_buf: [4096]u8 = undefined;
     const base = if (agent_cwd) |worktree|
@@ -77,9 +113,10 @@ pub fn prepareInput(gpa: Allocator, io: Io, agent_cwd: ?[]const u8, tool: []cons
 
     var object: std.json.ObjectMap = .empty;
     errdefer object.deinit(gpa);
-    var it = input.object.iterator();
+    var it = working.object.iterator();
     while (it.next()) |entry| try object.put(gpa, entry.key_ptr.*, entry.value_ptr.*);
     try object.put(gpa, key, .{ .string = absolute });
+    if (owned_object) |*m| m.deinit(gpa); // the renamed scratch map; `object` supersedes it
     return .{
         .value = .{ .object = object },
         .owned_object = object,
@@ -110,8 +147,28 @@ test "caller errors are not filed as CodeDB Pro defects" {
     try std.testing.expect(callerError("{\"ok\":false,\"error\":\"path not found\"}"));
     try std.testing.expect(callerError("{\"ok\":false,\"error\":\"no content provided\"}"));
     try std.testing.expect(callerError("{\"ok\":false,\"error\":\"memo get: missing 'hash'\"}"));
+    try std.testing.expect(callerError("{\"ok\":false,\"error\":\"read: missing 'file'\"}"));
     try std.testing.expect(callerError("WriteFailed"));
     try std.testing.expect(callerError("McpResponseTooLarge"));
     try std.testing.expect(callerError("McpClosed"));
     try std.testing.expect(!callerError("lint: failed to spawn eslint"));
+}
+
+test "#609: a native-shaped {path: …} read call is accepted under file" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const native_named = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"path\":\"src/main.zig\",\"mode\":\"full\"}", .{});
+    var prepared = try prepareInput(std.testing.allocator, std.testing.io, "/tmp/graff-worktree", "mcp__codedbpro__read", native_named);
+    defer prepared.deinit(std.testing.allocator);
+    const expected = if (@import("builtin").os.tag == .windows) "\\tmp\\graff-worktree\\src\\main.zig" else "/tmp/graff-worktree/src/main.zig";
+    try std.testing.expectEqualStrings(expected, prepared.value.object.get("file").?.string);
+    try std.testing.expect(prepared.value.object.get("path") == null); // alias consumed
+
+    // search tools already use `path`: no rename, still resolves
+    const search_input = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"path\":\"src\"}", .{});
+    var prepared_search = try prepareInput(std.testing.allocator, std.testing.io, "/tmp/graff-worktree", "mcp__codedbpro__faster_search", search_input);
+    defer prepared_search.deinit(std.testing.allocator);
+    try std.testing.expect(prepared_search.value.object.get("path") != null);
 }

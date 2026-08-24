@@ -32,6 +32,7 @@ const run_budget_mod = @import("run_budget.zig");
 // agent_prompt.zig owns the width-budgeted status line (#209); aliased below.
 const prompt_ui = @import("agent_prompt.zig");
 const agent_tests = @import("agent_tests.zig");
+const empty_completion = @import("agent_empty_completion.zig");
 const goal_state = @import("goal_state.zig");
 const peer_channel = @import("peer_channel.zig"); // #469: turn-boundary peer message delivery
 const job_notify = @import("job_notify.zig");
@@ -201,6 +202,7 @@ pub const Agent = struct {
     last_request_write_failed: bool = false, // transport gave up specifically with WriteFailed this request
     compact_transport_failures: u8 = 0, // bounded escape for repeated opaque over-cap WriteFailed/network failures
     compact_summary_failures: u8 = 0, // #379: consecutive complete-but-unusable (empty/truncated) summaries
+    empty_completion_retries: u8 = 0, // degenerate empty completions re-asked this turn (agent_empty_completion.zig)
     precompact_note_gen: ?u32 = null, // #391: history_rewrites at the last pre-compaction note-to-self, so one history generation buys at most one note however often compaction is retried (compact_note.decideCalls)
     ws_off: bool = false, // codex ws transport disabled for this session after a handshake/transport fallback to SSE (#codex-ws)
     ws_transport_failures: u8 = 0, // consecutive WS failures; retry once before latching persistent SSE
@@ -381,13 +383,20 @@ pub const Agent = struct {
                 self.autocompact(recovery_meter);
                 self.closeCodexWs();
             }
+            const hist_len = self.messages.items.len;
             const root = try self.request(if (self.text_only) null else self.toolsJson());
             const done = switch (self.provider.kind) {
                 .anthropic => try self.stepAnthropic(root),
                 .openai => try self.stepOpenAI(root),
                 .responses => try self.stepResponses(root),
             };
-            if (done) |final_text| return final_text;
+            if (done) |final_text| {
+                // A completion with no text and no tool calls used to end the turn
+                // silently — mid-task that just looks like a dead session.
+                if (try empty_completion.handle(self, final_text, hist_len)) continue;
+                return final_text;
+            }
+            self.empty_completion_retries = 0;
         }
     }
 

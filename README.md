@@ -174,6 +174,41 @@ First things to try once you're at the `›` prompt:
 › /help                          # everything else
 ```
 
+### Zed (External Agents / ACP)
+
+`graff acp` speaks the Agent Client Protocol, so Zed can drive it as an
+External Agent. Register it in `~/.config/zed/settings.json`:
+
+```json
+{
+  "agent_servers": {
+    "graff": {
+      "type": "custom",
+      "command": "/path/to/graff",
+      "args": ["acp", "--model", "<default-model>"],
+      "env": {}
+    }
+  }
+}
+```
+
+Then fully quit and reopen Zed (`agent_servers` is read at startup), and start
+a thread via `agent: new external agent thread` in the command palette — or the
+Agent Panel's new-thread menu → **graff** under External Agents.
+
+Gotchas worth knowing:
+
+- **Pin a default model** (`--model <name>`) — otherwise the ACP turn fails
+  with `no language model configured`. Verify the route first with `graff route <name>`.
+- **Zed's own model picker is empty for external agents** — it shows
+  "no match / configure a provider", which looks like an error but isn't.
+  Switch models inside the thread with `/model`.
+- **Old threads stay broken**: a thread created before auth/model was
+  configured keeps failing even after restart; start a fresh one.
+- Provider logins are shared with terminal graff (codegraff OAuth etc.), but
+  e.g. Codex models need their own `graff login codex`.
+- Debugging: `dev: open acp logs` in Zed shows the raw ACP traffic.
+
 ---
 
 ## Why

@@ -21,6 +21,11 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.275
+    \\  • OpenRouter requests carry app attribution (categories: cli-agent, programming-app)
+    \\  • TUI: Esc with a draft in the composer never kills a live turn
+    \\  • agent: retry degenerate empty completions and keep-alive-only bodies
+    \\
     \\0.0.274
     \\  • rate-limit retries no longer dump the provider's raw error JSON
     \\

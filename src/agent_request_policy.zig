@@ -391,6 +391,30 @@ pub fn retryTransientServerError(self: *Agent, etype: []const u8, code: ?[]const
     return true;
 }
 
+/// SSE keep-alive-only body: every non-blank line is an SSE comment (':' prefix)
+/// — OpenRouter's ": OPENROUTER PROCESSING" queue pings. No data events ever
+/// arrived, so the stream reassembler returns null and the plain-JSON fallback
+/// parse fails. A retry is exactly right: the upstream was queued, not broken.
+pub fn sseKeepAliveOnly(body: []const u8) bool {
+    var any_comment = false;
+    var it = std.mem.splitScalar(u8, body, '\n');
+    while (it.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0) continue;
+        if (line[0] != ':') return false;
+        any_comment = true;
+    }
+    return any_comment;
+}
+
+test "sseKeepAliveOnly: comment-only bodies true, data/error/JSON bodies false" {
+    try std.testing.expect(sseKeepAliveOnly(": OPENROUTER PROCESSING\n: OPENROUTER PROCESSING\n"));
+    try std.testing.expect(sseKeepAliveOnly("\n\n: ping\n"));
+    try std.testing.expect(!sseKeepAliveOnly(""));
+    try std.testing.expect(!sseKeepAliveOnly("data: {\"choices\":[]}\n"));
+    try std.testing.expect(!sseKeepAliveOnly("{\"error\":{\"message\":\"x\"}}"));
+}
+
 test "isTransientServerError (#opencode-parity): overload/server_error retry; quota/invalid/auth do not" {
     // transient server conditions → retry like a 5xx
     try std.testing.expect(isTransientServerError("overloaded_error", null, ""));
