@@ -202,6 +202,12 @@ pub fn providerHeadersWithConv(io: Io, provider: Provider, bearer: []const u8, b
         buf[count] = .{ .name = "x-title", .value = "graff" };
         count += 1;
     }
+    // OpenRouter marketplace categories. Max 2 per request; only recognized
+    // slugs count — unrecognized values are dropped server-side, silently.
+    if (std.mem.eql(u8, provider.id, "openrouter")) {
+        buf[count] = .{ .name = "x-openrouter-categories", .value = "cli-agent,programming-app" };
+        count += 1;
+    }
     // These identify the ChatGPT/Codex backend. The official Platform Responses
     // endpoint needs only normal bearer auth and rejects backend-only identity.
     if (std.mem.eql(u8, provider.id, "codex")) {
@@ -309,6 +315,7 @@ test "OpenRouter chat sends app attribution and no grok conv headers" {
     const headers = providerHeaders(io, p, "Bearer k", &buf);
     var saw_ref = false;
     var saw_title = false;
+    var saw_categories = false;
     for (headers) |h| {
         try std.testing.expect(!std.mem.eql(u8, h.name, "x-grok-conv-id"));
         if (std.mem.eql(u8, h.name, "http-referer")) {
@@ -319,9 +326,14 @@ test "OpenRouter chat sends app attribution and no grok conv headers" {
             saw_title = true;
             try std.testing.expectEqualStrings("graff", h.value);
         }
+        if (std.mem.eql(u8, h.name, "x-openrouter-categories")) {
+            saw_categories = true;
+            try std.testing.expectEqualStrings("cli-agent,programming-app", h.value);
+        }
     }
     try std.testing.expect(saw_ref);
     try std.testing.expect(saw_title);
+    try std.testing.expect(saw_categories);
 }
 
 test "project and prefix cache keys preserve conversation and sharing boundaries" {
