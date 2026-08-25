@@ -374,6 +374,7 @@ test "lean prompt diet: no fan-out / trace / issue-filing; short local-tools not
     try std.testing.expect(std.mem.indexOf(u8, out, "gh issue create") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "fan out") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Parallelize") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "ONE response") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "not covered by /rewind") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "rlm") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "SPEC.md") != null);

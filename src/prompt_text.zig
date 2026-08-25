@@ -263,12 +263,22 @@ pub const lean_local_tools_note =
     \\read_file before editing; prefer edit_file for existing files and
     \\write_file only for new files. Navigate with codedb (context, around,
     \\callpath, list_dir, status) or one rlm script of those functions.
-    \\Prefer one rlm over a chain of calls when the reads are independent.
+    \\Independent reads belong in ONE response or one rlm script, not a chain of turns.
+;
+
+/// --lean swap-in for `parallel_core_note`. The long Parallelize / fan-out
+/// essay is dropped; without this clause -p never asks for a batch and the
+/// model spends one API call per read (ADR 0024 leftover vs grok).
+pub const lean_parallel_note =
+    \\
+    \\Independent reads and checks belong in ONE response; they run concurrently.
+    \\A call that needs an earlier result, or two writes to the same file, stays
+    \\in its own turn.
 ;
 
 pub const lean_intro_note =
     \\You are a coding agent. Use the cataloged tools; never invent one.
-    \\Prefer one rlm script when several reads or edits are independent.
+    \\Independent reads belong in ONE response (or one rlm script), not one per turn.
 ;
 
 pub const lean_work_note =
@@ -295,7 +305,9 @@ pub fn leanSegment(name: []const u8, original: []const u8, is_lean: bool) ?[]con
     if (!is_lean) return original;
     if (std.mem.eql(u8, name, "trace") or std.mem.eql(u8, name, "harness_issue") or
         std.mem.eql(u8, name, "headsup") or std.mem.eql(u8, name, "git_safety") or
-        std.mem.eql(u8, name, "root_cause") or std.mem.startsWith(u8, name, "parallel_")) return null;
+        std.mem.eql(u8, name, "root_cause") or std.mem.eql(u8, name, "parallel_examples") or
+        std.mem.eql(u8, name, "parallel_tail")) return null;
+    if (std.mem.eql(u8, name, "parallel_core")) return lean_parallel_note;
     if (std.mem.eql(u8, name, "intro")) return lean_intro_note;
     if (std.mem.eql(u8, name, "local_tools")) return lean_local_tools_note;
     if (std.mem.eql(u8, name, "work")) return lean_work_note;
