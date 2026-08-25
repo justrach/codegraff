@@ -211,4 +211,17 @@ RSS still ~9M. `cookie-store` 19→12 calls / 322k→152k;
 no RS; grok skips content before the first RS and yields nothing).
 The follow-up `work_note` sentence is that clause: a required
 delimiter applies to records that exist; a payload with no records
-is empty, not malformed. Do not copy grok's 159M heap.
+is empty, not malformed.
+
+Confirm after that sentence (`run-20260825-064129.jsonl`, graff-dev
+only):
+
+| harness | pass | wall (sum) | first | RSS | in | out | calls |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| default rlm | **5/6** | **441.0s** | 3.6s | 9.2M | **447074** | 28909 | **50** |
+
+Tied with grok-build on pass (both miss `label-sort`). Versus `061731`
+default rlm: **+1 pass**, **−41% wall** (743s → 441s), **−65% input
+tokens** (1.26M → 447k), **−48% calls** (96 → 50). Still ~3× grok's
+tokens/calls (fatter prefix + more turns) and **~17× less RSS**. Do
+not copy grok's 159M heap.
