@@ -320,3 +320,46 @@ SWE after the prefix cuts + restore (`run-20260825-080147.jsonl` + cookie-store 
 `cookie-store` timed out once on `080147` (no token row); retry passed in 85s / 34k / 7 calls. `label-sort` still fails both harnesses.
 
 Per-call input is **5.0k vs grok 5.2k** — the prefix tax is gone. The leftover vs grok's 150–185k / ~31 calls is **20 extra API calls** (49 vs 29), not catalog bytes. Transferable Zig prefix/catalog cuts are exhausted: hiding more tools tanks pass rate (rlm-only 4/6). Do not copy grok's 172M heap for those 20 calls.
+
+## Turn tax was `print(read_file)` printing the literal
+
+After the prefix floor, a "batch independent reads" note (`081621`) did not
+cut calls: graff **5/6, 284k, 48 calls** vs grok 201k / 29. The first `rlm`
+already batched `read_file` of SPEC + sources — then the model re-read them.
+
+The re-read was a Zig miss, not a stubborn model. `print(read_file("SPEC.md"))`
+is what grok-4.6 writes. `extractCall` skipped `print(...)`, and `renderPrint`
+only resolved binds, so the tool result was the literal
+`read_file("SPEC.md")`. The next turn re-read for real.
+
+**Rejected:** drop catalog `read_file` on lean so the model cannot re-read
+(`4b71647`). `run-20260825-085320.jsonl`: graff **5/6, 311k, 63 calls, 9.7M
+RSS** vs grok 5/6, 217k, 32, 172M. Without catalog `read_file` it retried
+`rlm` / `bash cat`. Restored the eight-name keep-list.
+
+**Take:** speculate nested host calls inside `print(...)` and claim their
+results (`7a564b7`). `print(read_file("p"))` now returns the file. Same-batch
+`bash`/`codedb` + `attempt_completion` runs verify first and accepts
+completion only if those tools succeed (edit/write/rlm still refuse).
+
+SWE (`run-20260825-090155.jsonl`, SuperGrok grok-4.6, `-j 6`):
+
+| harness | pass | wall (sum) | first | RSS | in | out | calls |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| default rlm | **5/6** | **427s** | 10.2s | 9.2M | **255109** | 27528 | **42** |
+| grok-build | **5/6** | **440s** | 2.6s | 159M | **154474** | 28489 | **31** |
+
+| task | graff in / calls | grok in / calls |
+|---|---:|---:|
+| config-parse | 42k / 7 | 12k / 6 |
+| cookie-store | **29k / 4** | 34k / 6 |
+| json-stream | **30k / 5** | 57k / 5 |
+| label-sort (fail both) | 50k / 8 | 21k / 4 |
+| map-conflict | 54k / 9 | 8k / 6 |
+| validated | 50k / 9 | 24k / 4 |
+
+`cookie-store` and `json-stream` are in grok's per-task band (rlm → edits →
+test → done). Leftover suite tokens/calls are **edit_file/write_file retries**
+on validated / map-conflict / config-parse (same failed span three times,
+then a full rewrite) — not prefix, not catalog `read_file`, not grok's heap.
+RSS still ~9M. Do not copy 159M. `label-sort` still fails both harnesses.

@@ -34,7 +34,7 @@ record only when you need the evidence or the edge cases.
 | [0021](0021-transcript-is-the-task-not-the-bus.md) | Transcript is the task, not the event bus: bookkeeping is silent, todos are WORKING, subagents are scouts. |
 | [0022](0022-rlm-is-opt-in-speculative-ptc.md) | `rlm` (Alex Zhang spec-ptc + RLM, Zig) is the default loop. `--old` restores structured-only. Prime persist + `subagent()` only — no IPython. |
 | [0023](0023-codex-subagent-is-sidecar-not-v8.md) | Codex check: take sidecar-vs-critical-path spawn prompts; reject V8 Code Mode, extra spawn tools, and parent-history fork. |
-| [0024](0024-three-harness-compare-prompt-subagent-rss.md) | Steal short child briefs + sidecar spawn from grok-build/kimi/dsh; lean catalog must not claim root is approval-denied under yolo; reject root conv-id share, datetime/tree prefix, fork-seed, Harbor. |
+| [0024](0024-three-harness-compare-prompt-subagent-rss.md) | Steal short child briefs + sidecar spawn from grok-build/kimi/dsh; `print(read_file)` must return the file; do not drop catalog `read_file` on lean; reject root conv-id share, datetime/tree prefix, fork-seed, Harbor, grok heap. |
 | [0025](0025-io-uring-is-not-the-process-io.md) | Process Io stays Zig `Threaded`. spec-ptc is already the default loop (ADR 0022). Do not take ublk or switch `main` to `std.Io.Uring`. |
 
 ## When to write one
