@@ -9,11 +9,12 @@ outcome, and writes JSONL results plus a summary table.
 
   ./run.py --harness graff --model grok-4.6              # full suite (core + rlm + swe)
   ./run.py --suite rlm --harness graff-dev,graff-dev-rlm # scatter-gather A/B
-  ./run.py --suite swe --harness graff-dev,graff-dev-rlm # DeepSWE-shaped A/B
+  ./run.py --suite swe --harness graff-dev,graff-dev-rlm -j 12  # DeepSWE-shaped A/B, parallel
   ./run.py --harness grok --task fix-fib --reps 3        # one task, 3 reps
   ./run.py --interactive                                 # pick + watch live
 """
-import argparse, json, os, re, resource, shutil, subprocess, sys, time
+import argparse, json, os, re, resource, shutil, subprocess, sys, threading, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(ROOT)
@@ -252,7 +253,7 @@ def one_run(hname, harness, task, model, rep, live=False):
            "category": task.get("category", ""), "model": model, "rep": rep,
            "wall_s": wall, "first_out_s": first_out, "exit": rc, "timed_out": timed_out,
            "outcome_ok": check.returncode == 0, "answer_head": answer[:120],
-           "rss_peak_kb": rss_peak, "rss_child_hwm_kb": max(0, ru1[2] - ru0[2]) or ru1[2],
+           "rss_peak_kb": rss_peak, "rss_child_hwm_kb": ru1[2],
            "cpu_user_s": round(max(0.0, ru1[0] - ru0[0]), 3),
            "cpu_sys_s": round(max(0.0, ru1[1] - ru0[1]), 3),
            "cpu_sample_s": round(cpu_sample, 3),
@@ -280,7 +281,10 @@ def _bucket(records):
         b["tout"] += r.get("tok_out") or 0
         b["calls"] += r.get("tok_calls") or 0
         b["rss"] = max(b["rss"], r.get("rss_peak_kb") or 0)
-        b["cpu"] += (r.get("cpu_user_s") or 0) + (r.get("cpu_sys_s") or 0)
+        cpu = r.get("cpu_sample_s")
+        if not cpu:
+            cpu = (r.get("cpu_user_s") or 0) + (r.get("cpu_sys_s") or 0)
+        b["cpu"] += cpu
     return by
 
 
@@ -299,6 +303,15 @@ def summarize(records):
     if len(suites) > 1:
         for s in suites:
             _print_table(f"suite {s}", _bucket([r for r in records if (r.get("suite") or "core") == s]))
+
+
+def _line(rec):
+    cpu = rec.get("cpu_sample_s") or ((rec.get("cpu_user_s") or 0) + (rec.get("cpu_sys_s") or 0))
+    ok = "✓" if rec.get("outcome_ok") else "✗"
+    return (f"{ok} {rec.get('harness', '?'):<16} {rec.get('task', '?'):<18} "
+            f"r{rec.get('rep', '?')} {rec.get('wall_s', '?')}s "
+            f"first={rec.get('first_out_s', '—')}s rss={_fmt_mib(rec.get('rss_peak_kb'))} "
+            f"cpu={cpu:.1f}s in={rec.get('tok_in', '?')} out={rec.get('tok_out', '?')}")
 
 
 def interactive(tasks, harnesses):
@@ -328,6 +341,8 @@ def main():
     ap.add_argument("--task", action="append", help="task id filter (repeatable)")
     ap.add_argument("--suite", default="all", help="core, rlm, swe, comma-mix, or all (default all)")
     ap.add_argument("--reps", type=int, default=1)
+    ap.add_argument("--jobs", "-j", type=int, default=1,
+                    help="parallel task×harness runs (default 1; each has its own sandbox)")
     ap.add_argument("--interactive", action="store_true", help="pick a task+harness, watch it live")
     args = ap.parse_args()
 
@@ -349,26 +364,37 @@ def main():
         if "all" not in suites and suite not in suites:
             continue
         picked[tid] = t
+    work = []
+    for hname in args.harness.split(","):
+        harness = harnesses[hname]
+        model = args.model or harness.get("default_model", "")
+        for task in picked.values():
+            missing = [c for c in task.get("requires", []) if c not in harness.get("capabilities", [])]
+            if missing:
+                print(f"skip {task['id']} on {hname}: needs {missing}", flush=True)
+                continue
+            for rep in range(1, args.reps + 1):
+                work.append((hname, harness, task, model, rep))
+    jobs = max(1, args.jobs)
+    print(f"{len(work)} runs · {jobs} worker{'s' if jobs != 1 else ''} · {out_path}", flush=True)
     records = []
+    lock = threading.Lock()
     with open(out_path, "w") as f:
-        for hname in args.harness.split(","):
-            harness = harnesses[hname]
-            model = args.model or harness.get("default_model", "")
-            for task in picked.values():
-                missing = [c for c in task.get("requires", []) if c not in harness.get("capabilities", [])]
-                if missing:
-                    print(f"skip {task['id']} on {hname}: needs {missing}", flush=True)
-                    continue
-                for rep in range(1, args.reps + 1):
-                    rec = one_run(hname, harness, task, model, rep)
-                    records.append(rec)
-                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                    f.flush()
-                    ok = "✓" if rec.get("outcome_ok") else "✗"
-                    print(f"{ok} {hname:<16} {task['id']:<18} r{rep} {rec.get('wall_s', '?')}s "
-                          f"first={rec.get('first_out_s', '—')}s rss={_fmt_mib(rec.get('rss_peak_kb'))} "
-                          f"cpu={((rec.get('cpu_user_s') or 0) + (rec.get('cpu_sys_s') or 0)):.1f}s "
-                          f"in={rec.get('tok_in', '?')} out={rec.get('tok_out', '?')}", flush=True)
+        def finish(rec):
+            with lock:
+                records.append(rec)
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                f.flush()
+                print(_line(rec), flush=True)
+
+        if jobs == 1:
+            for item in work:
+                finish(one_run(*item))
+        else:
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                futs = [pool.submit(one_run, *item) for item in work]
+                for fut in as_completed(futs):
+                    finish(fut.result())
     summarize(records)
     print(f"\nresults: {out_path}")
 

@@ -22,8 +22,8 @@ harness under test spends model calls.
 | `swe` | DeepSWE-shaped multi-file bugfixes, distilled from [deepswe.datacurve.ai/run](https://deepswe.datacurve.ai/run) (no Harbor/Docker) |
 
 ```sh
-./run.py --suite swe --harness graff-dev,graff-dev-rlm --model grok-4.6
-./run.py --suite core,rlm,swe --harness graff-dev,graff-dev-rlm
+./run.py --suite swe --harness graff-dev,graff-dev-rlm --model grok-4.6 -j 12
+./run.py --suite core,rlm,swe --harness graff-dev,graff-dev-rlm -j 8
 ```
 
 ## Run it
