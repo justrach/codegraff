@@ -76,22 +76,17 @@ pub fn blocks(name: []const u8) bool {
 /// hallucinated call fails like any bad tool name.
 pub var lean: bool = false;
 
-/// The lean keep-list. `subagent` stays despite being the priciest schema
-/// (5.1k bytes): unattended non-yolo still needs a sanctioned delegation
-/// path (`prompts.unattended_note` — that note is the approval-denied
-/// fact, not this catalog), and yolo/`-p` still needs fan-out for
-/// independent work. Dropping it would strand the first case. The compact
-/// desc must not claim root is always approval-denied: evals and `-p`
-/// run `--yolo`, so that claim was a token/call tax (ADR 0024).
-/// `load_tool_schemas` stays because lean folds MCP behind that meta tool
-/// (mcp_schema_gate.deferAllRuntime) instead of skipping it.
+/// The lean keep-list. `subagent` stays in the list (unattended !yolo
+/// still delegates; catalogSkips folds it off the wire until loaded).
+/// `load_tool_schemas` stays so a connected MCP server can unfold; it
+/// is hidden on lean when nothing is deferred (schema.zig). Overflow
+/// paging (`read_tool_result`) is interactive — drop it from -p.
 pub const lean_tools = [_][]const u8{
     "bash",
     "read_file",
     "edit_file",
     "write_file",
     "codedb",
-    "read_tool_result",
     "subagent",
     "attempt_completion",
     "load_tool_schemas",
@@ -235,10 +230,10 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
     try std.testing.expectEqualStrings("read_file", kept[1].name);
     try std.testing.expectEqualStrings("subagent", kept[2].name);
     try std.testing.expectEqualStrings("attempt_completion", kept[3].name);
-    // The keep-list is exactly the nine documented tools — subagent stays
-    // (unattended-non-yolo delegation + independent fan-out), load_tool_schemas
-    // stays (lean folds MCP behind it), everything orchestration/meta goes.
-    try std.testing.expectEqual(@as(usize, 9), lean_tools.len);
+    // Keep-list is eight names: subagent stays (unattended !yolo), load_tool_schemas
+    // stays (MCP unfold). Overflow pager is gone. Render may hide both.
+    try std.testing.expectEqual(@as(usize, 8), lean_tools.len);
+    try std.testing.expect(!leanKeeps("read_tool_result"));
     for (lean_tools) |tool| try std.testing.expect(leanKeeps(tool));
     try std.testing.expect(!leanKeeps("workflow"));
     try std.testing.expect(!leanKeeps("todo_write"));
@@ -388,4 +383,22 @@ test "lean prompt diet: no fan-out / trace / issue-filing; short local-tools not
     try std.testing.expect(std.mem.indexOf(u8, out, "not covered by /rewind") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "list_dir") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "SPEC.md") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "discard work") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Fix root causes") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Co-Authored-By") == null);
+}
+
+test "lean catalog drops overflow pager and empty load_tool_schemas" {
+    const schema = @import("schema.zig");
+    const saved = lean;
+    defer lean = saved;
+    lean = true;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const specs = try schema.effectiveRootSpecs(arena);
+    const json = try schema.renderRootTools(arena, .openai, specs, &.{});
+    try std.testing.expect(std.mem.indexOf(u8, json, "read_tool_result") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "load_tool_schemas") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") != null);
 }

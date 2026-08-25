@@ -143,7 +143,7 @@ pub fn detectCaps() Caps {
         .subagents = toolAdvertised("subagent") and !no_local_tools.lean, // lean: no fan-out essay
         .todos = toolAdvertised("todo_write") and !no_local_tools.lean,
         .constraints = toolAdvertised("note_constraint") and !no_local_tools.lean,
-        .git_repo = g_git_repo,
+        .git_repo = g_git_repo and !no_local_tools.lean, // -p: no commit/PR essay
     };
 }
 

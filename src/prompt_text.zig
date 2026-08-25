@@ -267,11 +267,39 @@ pub const lean_local_tools_note =
     \\span, smallest edit, do not verify after success.
 ;
 
-/// --lean composition: drop harness-debug / narration; swap the long
-/// local-tools essay. `null` means skip the segment entirely.
+pub const lean_intro_note =
+    \\You are a coding agent. Use only the tools in this session's catalog —
+    \\never invent a tool or a wrapper. Inspect, then do the work.
+;
+
+pub const lean_work_note =
+    \\
+    \\Assume the user wants the work done. Verify with the project's own
+    \\tests in its OWN environment. Use named files and tests directly.
+    \\Do not add unrequested tests. Never repeat a tool call with identical
+    \\parameters. When a named SPEC.md is in the task, satisfy every clause
+    \\— a green public test is not the whole spec. Empty input includes
+    \\whitespace-only: yield nothing, do not raise. A required record
+    \\delimiter applies to records that exist; a payload with no records
+    \\is empty, not malformed.
+;
+
+pub const lean_closing_note =
+    \\
+    \\Write the final message as a short teammate update. Cite path:line.
+    \\Be direct and concise.
+;
+
+/// --lean composition: drop harness-debug / narration / git-safety; swap
+/// the long intro/work/closing essays. `null` means skip the segment.
 pub fn leanSegment(name: []const u8, original: []const u8, is_lean: bool) ?[]const u8 {
     if (!is_lean) return original;
-    if (std.mem.eql(u8, name, "trace") or std.mem.eql(u8, name, "harness_issue") or std.mem.eql(u8, name, "headsup")) return null;
+    if (std.mem.eql(u8, name, "trace") or std.mem.eql(u8, name, "harness_issue") or
+        std.mem.eql(u8, name, "headsup") or std.mem.eql(u8, name, "git_safety") or
+        std.mem.eql(u8, name, "root_cause")) return null;
+    if (std.mem.eql(u8, name, "intro")) return lean_intro_note;
     if (std.mem.eql(u8, name, "local_tools")) return lean_local_tools_note;
+    if (std.mem.eql(u8, name, "work")) return lean_work_note;
+    if (std.mem.eql(u8, name, "closing")) return lean_closing_note;
     return original;
 }

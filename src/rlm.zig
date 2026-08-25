@@ -22,6 +22,9 @@ const rlm_spec = @import("rlm_spec.zig");
 
 pub const tool_name = "rlm";
 pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Script whose functions ARE this session's tools. Independent literal read_file/codedb/bash/webfetch/sleep_ms/llm_query/subagent calls start as the script streams. Binds persist across rlm calls. subagent(\"task\") is sidecar-only (keep the critical-path next step local; sync in v1; run_in_background=true returns an id). print() is the answer. Example: a = read_file(\"src/main.zig\"); b = codedb(\"status\"); print(a, b). No imports, no control flow. Prefer one rlm over N tool calls.";
+/// --lean catalog desc: same contract, no REPL essay. maybeAppend is after
+/// compactLeanSpecs, so this is the one-shot wire text.
+pub const lean_tool_desc = "Script of this session's tools. Literal read_file/codedb/bash/llm_query start as it streams. Binds persist. print(...) is the answer. Prefer one rlm over N tool calls.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\") / subagent(\"task\"); print(...) is the result. Assignments persist across rlm calls. Semicolons or newlines separate statements."}}, "required": ["code"]}
 ;
@@ -67,7 +70,7 @@ pub fn maybeAppend(comptime Spec: type, arena: Allocator, specs: []const Spec) !
     for (specs) |s| if (std.mem.eql(u8, s.name, tool_name)) return specs;
     const buf = try arena.alloc(Spec, specs.len + 1);
     @memcpy(buf[0..specs.len], specs);
-    buf[specs.len] = .{ .name = tool_name, .desc = tool_desc, .schema = tool_schema };
+    buf[specs.len] = .{ .name = tool_name, .desc = if (no_local_tools.lean) lean_tool_desc else tool_desc, .schema = tool_schema };
     return buf;
 }
 

@@ -298,7 +298,7 @@ pub fn renderRootTools(
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginArray();
     for (specs) |t| {
-        if (mcp_schema_gate.hiddenSpec(t.name, mcp_tools) and !native_fold.anyFolded()) continue; // #416: load_tool_schemas hides only with nothing deferred OR folded
+        if (mcp_schema_gate.hiddenSpec(t.name, mcp_tools) and (!native_fold.anyFolded() or no_local_tools.lean)) continue; // lean: no empty load_tool_schemas
         if (native_fold.catalogSkips(t.name)) continue; // zero-stub like the MCP half: folded natives ride the meta tool's listing (#476)
         if (std.mem.eql(u8, t.name, mcp_schema_gate.tool_name))
             try writeToolEntry(&s, kind, t.name, try mcp_schema_gate.descWithListing(out, mcp_tools), .{ .raw = t.schema })
