@@ -270,6 +270,10 @@ test "unloaded MCP name is refused; loaded name is prepared for exec" {
     }
 }
 
+test "MCP-inside-rlm host functions are on by default" {
+    try std.testing.expect(host_enabled);
+}
+
 test "short name resolves when unique and loaded; consent/deferral still block" {
     const gpa = std.testing.allocator;
     var arena_state = std.heap.ArenaAllocator.init(gpa);

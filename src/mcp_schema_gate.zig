@@ -295,9 +295,9 @@ pub fn hiddenSpec(name: []const u8, all: []const mcp.Tool) bool {
         std.mem.eql(u8, name, "mcp_search_tools") or
         std.mem.eql(u8, name, "mcp_select_tool");
     if (!progressive) return false;
-    // -p: even a deferred home MCP kept the 1.4kB meta tool on every
-    // turn. One-shots that need MCP pass --no-lean (ADR 0024).
-    if (@import("no_local_tools.zig").lean) return true;
+    // Lean used to hide this even when MCP was connected, which made
+    // default `-p` unable to unfold `.mcp.json`. Show it whenever
+    // something is deferred; hide it when the listing would be empty.
     return !anyDeferred(all);
 }
 

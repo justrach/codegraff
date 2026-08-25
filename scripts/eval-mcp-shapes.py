@@ -136,6 +136,12 @@ VARIANTS = [
         "task": "linear-reduce-warm",
         "label": "learnt slim + len/project recipe, warm",
     },
+    {
+        "id": "R",
+        "harness": "graff-dev",
+        "task": "linear-nohint",
+        "label": "out of the box: default -p (lean + yolo), no each() hint",
+    },
 ]
 
 

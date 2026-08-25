@@ -27,7 +27,7 @@ pub const tool_name = "rlm";
 pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Functions ARE this session's tools. Literal read_file/codedb/bash/webfetch/sleep_ms/llm_query/subagent start as the script streams. Binds persist. subagent(\"task\") is sidecar-only (keep the critical-path next step local). Loaded MCP names are host functions after load_tool_schemas; each(arr, tool, field) maps a JSON array; len(x)/project(x, field) slim it. print() is the answer. Prefer one rlm over N tool calls.";
 /// --lean catalog desc: same contract, no REPL essay. maybeAppend is after
 /// compactLeanSpecs, so this is the one-shot wire text.
-pub const lean_tool_desc = "Batch independent read_file/codedb/bash here. print(read_file(\"p\")) returns the file — do not catalog-read it again. Then edit_file/write_file/bash as catalog tools. Literal calls start as it streams. Binds persist.";
+pub const lean_tool_desc = "Batch independent read_file/codedb/bash here. print(read_file(\"p\")) returns the file — do not catalog-read it again. Then edit_file/write_file/bash as catalog tools. Literal calls start as it streams. Binds persist. Loaded MCP names are host functions after load_tool_schemas.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\") / subagent(\"task\") / loaded mcp__server__tool(); each(arr, tool, field) maps a JSON array; len(x) and project(x, field) slim it; print(...) is the result. Assignments persist across rlm calls."}}, "required": ["code"]}
 ;

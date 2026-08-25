@@ -138,7 +138,7 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         }
     }
     if (environ_map.get("GRAFF_NO_LOCAL_TOOLS")) |v| no_local_tools.enabled = no_local_tools.enabled or no_local_tools.envEnables(v);
-    // GRAFF_LEAN: presence-based, exactly matching session_start.leanSkipsMcp
+    // GRAFF_LEAN: presence-based, matching session_start.leanMode
     // (the MCP half of the same switch) — a "0" still means lean, by design.
     if (environ_map.get("GRAFF_LEAN") != null) no_local_tools.lean = true;
     // GRAFF_REQ_STATS: presence-based request-anatomy print (req_stats).

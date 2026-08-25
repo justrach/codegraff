@@ -143,3 +143,15 @@ called `rlm`). The learnt part is therefore applied in Zig: after
 When two MCP shapes are stored, `annotate` adds a one-line `# muscle:`
 playbook on the load **result** (never the catalog prefix). No new
 `GRAFF_` knob. Live L–Q sweep: `eval-mcp-shapes.py --only L,M,N,O,P,Q`.
+
+## Out of the box (default `-p`)
+
+Lean used to **skip MCP connect** and **hide** `load_tool_schemas` even
+when a workspace `.mcp.json` was present. That forced `--no-lean` for
+every MCP one-shot (ADR 0024 leftover). Default `-p` implies lean +
+yolo: now it **connects** and **folds** (names + one-liners, full
+schemas a load away). Empty `-p` (no deferred MCP) still hides the meta
+tool. Consent is unchanged. `--no-lean` is the eager-schema opt-out, not
+the MCP on-switch.
+
+Prove with variant **R**: `graff-dev` (no `--no-lean`) + `linear-nohint`.

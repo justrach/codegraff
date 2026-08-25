@@ -370,6 +370,8 @@ test "rlm prompt: subagent() is advertised as sidecar-only, not a critical-path 
     try std.testing.expect(std.mem.indexOf(u8, rlm_spec.system_note, "sidecar-only") != null);
     try std.testing.expect(std.mem.indexOf(u8, rlm_spec.system_note, "critical-path") != null);
     try std.testing.expect(rlm.tool_desc.len < 600);
+    try std.testing.expect(std.mem.indexOf(u8, rlm.lean_tool_desc, "load_tool_schemas") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rlm.lean_tool_desc, "MCP") != null);
 }
 
 test "runScript refuses an unloaded MCP name and does not treat it as a host tool" {
