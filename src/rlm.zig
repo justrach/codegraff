@@ -465,7 +465,7 @@ test "maybeAppend keeps subagent and workflow; rlm is never the only catalog too
     try std.testing.expect(!catalogHas(off, tool_name));
 }
 
-test "effectiveRootSpecs: default rlm keeps subagent; --old keeps it; --lean drops structured tools" {
+test "effectiveRootSpecs: default rlm keeps subagent; --old and --lean do not drop it" {
     const schema = @import("schema.zig");
     const root = @import("main.zig");
     const learn_store = @import("learn_store.zig");
@@ -509,11 +509,11 @@ test "effectiveRootSpecs: default rlm keeps subagent; --old keeps it; --lean dro
     no_local_tools.lean = true;
     sync();
     const lean_on = try schema.effectiveRootSpecs(arena);
-    try std.testing.expect(!catalogHas(lean_on, "subagent"));
+    try std.testing.expect(catalogHas(lean_on, "subagent"));
     try std.testing.expect(catalogHas(lean_on, tool_name));
     try std.testing.expect(!catalogHas(lean_on, "workflow"));
-    try std.testing.expect(!catalogHas(lean_on, "bash"));
-    try std.testing.expect(!no_local_tools.leanKeeps("subagent"));
+    try std.testing.expect(catalogHas(lean_on, "bash"));
+    try std.testing.expect(no_local_tools.leanKeeps("subagent"));
     try std.testing.expect(!no_local_tools.leanKeeps(tool_name));
 }
 

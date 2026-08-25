@@ -260,14 +260,15 @@ pub const parallel_tools_note = parallel_core_note ++ parallel_examples_note ++ 
 /// covers the !yolo map). Same edit discipline, ~1k fewer prefix bytes.
 pub const lean_local_tools_note =
     \\
-    \\File and shell work is inside rlm: read_file, edit_file, write_file,
-    \\codedb, and bash are script functions, not catalog tools. print() is
-    \\the answer. Prefer one rlm over a chain of calls.
+    \\read_file before editing; prefer edit_file for existing files and
+    \\write_file only for new files. Navigate with codedb (context, around,
+    \\callpath, list_dir, status) or one rlm script of those functions.
+    \\Prefer one rlm over a chain of calls when the reads are independent.
 ;
 
 pub const lean_intro_note =
-    \\You are a coding agent. Do the work with rlm — a script whose
-    \\functions ARE this session's tools. Never invent a catalog tool.
+    \\You are a coding agent. Use the cataloged tools; never invent one.
+    \\Prefer one rlm script when several reads or edits are independent.
 ;
 
 pub const lean_work_note =

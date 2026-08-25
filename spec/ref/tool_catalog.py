@@ -22,6 +22,12 @@ LOCAL_TOOLS = (
     "imagegen",
 )
 LEAN_TOOLS = (
+    "bash",
+    "read_file",
+    "edit_file",
+    "write_file",
+    "codedb",
+    "subagent",
     "attempt_completion",
     "load_tool_schemas",
 )
