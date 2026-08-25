@@ -34,28 +34,31 @@ A live comparison is `scripts/compare-ptc.py`. The eval A/B is
 `graff-evals/run.py --harness graff-dev,graff-dev-rlm`.
 
 Measured 2026-08-25 on grok-4.6 (SuperGrok login, one rep, full
-`graff-evals` suite). Both harnesses **12/12**. `--rlm` added ~7k input
-tokens (the extra tool schema) and was 6s faster on wall (99.6s vs 105.7s).
-These tasks are sequential single-file work with ~0ms local reads, so
-sPTC overlap is not the story — the number that matters is *no correctness
-regression* while the catalog grows by one opt-in tool. The biggest wall
-delta (`git-ops` 17.4s → 11.8s) is one-rep variance, not a claimed speedup.
+`graff-evals` suite). Both harnesses **12/12** in both catalog shapes.
 
-| task | native s | `--rlm` s |
-|---|---:|---:|
-| exact-reply | 3.84 | 3.21 |
-| regex-count | 10.81 | 8.89 |
-| csv-sum | 6.92 | 6.25 |
-| recall-noise | 4.43 | 4.15 |
-| json-transform | 7.79 | 7.01 |
-| file-ops | 8.62 | 8.99 |
-| fix-fib | 11.46 | 11.62 |
-| write-tests | 8.98 | 10.68 |
-| git-ops | 17.42 | 11.83 |
-| refactor-rename | 10.34 | 10.07 |
-| schema-output | 10.14 | 11.32 |
-| dead-code | 4.90 | 5.60 |
-| **total** | **105.7** | **99.6** |
+First cut appended the full `rlm` spec to every request: **+7,411** input
+tokens (164,481 vs 157,070) and 99.6s vs 105.7s wall. Folding `rlm` onto
+the `load_tool_schemas` stack (this revision) drops that to **+304** input
+tokens (157,212 vs 156,908) and a dead-heat wall (86.4s vs 86.6s). These
+tasks are sequential single-file work with ~0ms local reads, so sPTC
+overlap is not the story — the number that matters is *no correctness
+regression* without a catalog tax. Per-task swings are one-rep variance.
+
+| task | native s | `--rlm` s | native in/out | `--rlm` in/out |
+|---|---:|---:|---:|---:|
+| exact-reply | 2.59 | 2.49 | 4291 / 36 | 4294 / 42 |
+| regex-count | 9.91 | 9.43 | 13836 / 466 | 13853 / 395 |
+| csv-sum | 5.59 | 5.52 | 13227 / 172 | 13237 / 172 |
+| recall-noise | 3.43 | 3.45 | 8909 / 65 | 8915 / 87 |
+| json-transform | 7.08 | 7.27 | 13365 / 233 | 13352 / 252 |
+| file-ops | 8.52 | 7.39 | 13303 / 321 | 13272 / 276 |
+| fix-fib | 11.10 | 10.49 | 19073 / 531 | 19118 / 551 |
+| write-tests | 7.53 | 8.35 | 17968 / 283 | 18073 / 316 |
+| git-ops | 10.75 | 12.18 | 14187 / 541 | 14216 / 495 |
+| refactor-rename | 7.59 | 7.13 | 18111 / 301 | 18109 / 281 |
+| schema-output | 8.21 | 8.61 | 11773 / 372 | 11871 / 463 |
+| dead-code | 4.34 | 4.04 | 8865 / 109 | 8902 / 117 |
+| **total** | **86.6** | **86.4** | **156908 / 3430** | **157212 / 3447** |
 
 ## Consequences
 

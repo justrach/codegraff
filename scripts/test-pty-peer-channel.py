@@ -103,7 +103,7 @@ def main() -> None:
                 assert idx is not None, (
                     "peer block never rendered\n--- transcript ---\n" + rendered
                 )
-                print("ok: device-room broadcast renders as a peer line mid-session")
+                print("ok: device-room broadcast renders as a peer tally mid-session")
     finally:
         model.stop()
 
