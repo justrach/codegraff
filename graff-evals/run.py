@@ -21,7 +21,7 @@ RESULTS_DIR = os.path.join(ROOT, "results")
 SANDBOX_DIR = os.path.join(ROOT, ".sandboxes")
 
 GRAFF_USAGE_RE = re.compile(
-    r"\[usage\] (\d+) api call\(s\) · (\d+) in \((\d+) cached\) \+ (\d+) out tokens")
+    r"\[usage\] (\d+) api call\(s\) · (\d+) in \((\d+) cached(?:, \d+ cache writes)?\) \+ (\d+) out tokens")
 
 
 def load_tasks():

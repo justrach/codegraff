@@ -332,6 +332,9 @@ test "extractCall reads positional and keyword literals; print and names are ski
     try std.testing.expectEqualStrings("{\"command\":\"status\"}", k.args_json);
     const s = (try extractCall(a, "sleep_ms(40)")).?;
     try std.testing.expectEqualStrings("{\"ms\":40}", s.args_json);
+    const q = (try extractCall(a, "n = llm_query(\"summarize this chunk\")")).?;
+    try std.testing.expectEqualStrings("llm_query", q.name);
+    try std.testing.expectEqualStrings("{\"prompt\":\"summarize this chunk\"}", q.args_json);
     try std.testing.expect(try extractCall(a, "print(x)") == null);
     try std.testing.expect(try extractCall(a, "read_file(path)") == null);
     try std.testing.expect(try extractCall(a, "# just a comment") == null);

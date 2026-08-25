@@ -18,6 +18,7 @@ const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 
 const engine_sink = @import("engine_sink.zig"); // #422: every emission goes through the sink
+const rlm_spec = @import("rlm_spec.zig");
 
 const reasoningDelta = @import("title.zig").reasoningDelta;
 const stream_tests = @import("agent_stream_tests.zig");
@@ -387,13 +388,15 @@ test "openaiComplete (#133): finish_reason marks completion, deltas do not" {
 /// typed events through the sink. Best-effort: parse failures are ignored
 /// (the buffered body is parsed afterwards).
 pub fn printDelta(self: *Agent, raw_line: []const u8) void {
-    if (self.out == null) return; // pool-thread subagents have no frontend writer: skip entirely (capture included), as ever
+    const no_ui = self.out == null;
+    if (no_ui and !rlm_spec.available) return; // -p still feeds rlm so sPTC can launch mid-stream
     const payload = ssePayload(raw_line) orelse return;
     const parsed = std.json.parseFromSlice(Value, self.gpa, payload, .{}) catch return;
     defer parsed.deinit();
     if (parsed.value != .object) return;
     const obj = parsed.value.object;
     self.argLiveDelta(obj);
+    if (no_ui) return;
     const text: []const u8 = switch (self.provider.kind) {
         .anthropic => blk: {
             const t = obj.get("type") orelse break :blk "";

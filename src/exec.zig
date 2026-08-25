@@ -539,5 +539,7 @@ test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, 
     _ = @import("codedb_health.zig");
     _ = @import("list_dir.zig");
     _ = @import("rlm.zig");
+    _ = @import("rlm_spec.zig");
+    _ = @import("rlm_query.zig");
     _ = @import("spec_ptc.zig");
 }

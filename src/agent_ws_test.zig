@@ -520,6 +520,12 @@ test "#401: whitelisted tool-argument prose is a tokens-flowing signal too (SSE 
     try std.testing.expect(!ask.flowing(gpa, "{\"type\":\"response.output_item.added\",\"output_index\":7,\"item\":{\"type\":\"function_call\",\"name\":\"ask_user\"}}"));
     try std.testing.expect(ask.flowing(gpa, "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":7,\"delta\":\"{\\\"question\\\":\\\"?\"}"));
 
+    // rlm's `code` is speculated, not printed — same as an ordinary tool:
+    // tightening here would drift from SSE (emitArgText does not grow partial_text).
+    var rlm_sig: agent_ws.TokenSignal = .{};
+    try std.testing.expect(!rlm_sig.flowing(gpa, "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"name\":\"rlm\"}}"));
+    try std.testing.expect(!rlm_sig.flowing(gpa, arg_delta));
+
     // An ORDINARY tool's arguments stream invisibly on SSE, so the identical
     // delta must leave the pre-first-token budget standing.
     var edit: agent_ws.TokenSignal = .{};

@@ -14,16 +14,18 @@ const agent_mod = @import("agent.zig");
 const tools_mod = @import("tools.zig");
 const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
+const rlm_spec = @import("rlm_spec.zig");
 
 // sseIndex lives in agent_stream.zig; reached through the Agent struct's
 // member alias.
 const sseIndex = Agent.sseIndex;
 
-pub const ArgTool = enum { none, attempt_completion, ask_user };
+pub const ArgTool = enum { none, attempt_completion, ask_user, rlm };
 
 pub fn argToolFor(name: []const u8) ArgTool {
     if (std.mem.eql(u8, name, "attempt_completion")) return .attempt_completion;
     if (std.mem.eql(u8, name, "ask_user")) return .ask_user;
+    if (std.mem.eql(u8, name, "rlm")) return .rlm;
     return .none;
 }
 
@@ -31,7 +33,30 @@ pub fn argField(tool: ArgTool) []const u8 {
     return switch (tool) {
         .attempt_completion => "result",
         .ask_user => "question",
+        .rlm => "code",
         .none => "",
+    };
+}
+
+fn toolCtx(self: *Agent) tools_mod.ToolCtx {
+    return .{
+        .gpa = self.gpa,
+        .io = self.io,
+        .client = self.client,
+        .provider = self.provider,
+        .subagent_provider = self.subagent_provider,
+        .subagent_cross_provider = self.subagent_cross_provider,
+        .registry = if (self.sub) null else self.registry,
+        .from_sub = self.sub,
+        .has_eval = self.eval_cmd != null,
+        .approvals = self.approvals,
+        .tracer = self.tracer,
+        .run_budget = self.run_budget,
+        .depth = self.depth,
+        .snapshots = self.snapshots,
+        .tools_used = &self.tools_used,
+        .loop_deadline_ms = self.loop_deadline_ms,
+        .agent_cwd = self.agent_cwd,
     };
 }
 
@@ -240,7 +265,9 @@ pub fn outputIndex(obj: std.json.ObjectMap) ?i64 {
 /// extractor for live printing. Root interactive streams only — SDK
 /// (--json) clients get the assembled tool_call event instead.
 pub fn argLiveDelta(self: *Agent, obj: std.json.ObjectMap) void {
-    if (self.sub or main_mod.json_mode or self.stream_quiet) return;
+    if (self.sub) return;
+    const ui = !main_mod.json_mode and !self.stream_quiet;
+    if (!ui and !rlm_spec.available) return;
     switch (self.provider.kind) {
         .anthropic => {
             const t = obj.get("type") orelse return;
@@ -252,7 +279,7 @@ pub fn argLiveDelta(self: *Agent, obj: std.json.ObjectMap) void {
                 const bt = cb.object.get("type") orelse return;
                 if (bt != .string or !std.mem.eql(u8, bt.string, "tool_use")) return;
                 const name = cb.object.get("name") orelse return;
-                if (name == .string) self.arg_live.open(name.string, @intCast(ix));
+                if (name == .string) openLive(self, name.string, @intCast(ix));
             } else if (std.mem.eql(u8, t.string, "content_block_delta")) {
                 const ix = sseIndex(obj) orelse return;
                 const d = obj.get("delta") orelse return;
@@ -284,7 +311,7 @@ pub fn argLiveDelta(self: *Agent, obj: std.json.ObjectMap) void {
                 const f = tc.object.get("function") orelse continue;
                 if (f != .object) continue;
                 if (f.object.get("name")) |n| if (n == .string and n.string.len > 0)
-                    self.arg_live.open(n.string, ix);
+                    openLive(self, n.string, ix);
                 if (f.object.get("arguments")) |a| if (a == .string)
                     self.arg_live.feed(self, ix, a.string);
             }
@@ -299,7 +326,7 @@ pub fn argLiveDelta(self: *Agent, obj: std.json.ObjectMap) void {
                 const it = item.object.get("type") orelse return;
                 if (it != .string or !std.mem.eql(u8, it.string, "function_call")) return;
                 const name = item.object.get("name") orelse return;
-                if (name == .string) self.arg_live.open(name.string, ix);
+                if (name == .string) openLive(self, name.string, ix);
             } else if (std.mem.eql(u8, t.string, "response.function_call_arguments.delta")) {
                 const ix = outputIndex(obj) orelse return;
                 const dl = obj.get("delta") orelse return;
@@ -319,7 +346,16 @@ pub fn argLiveDelta(self: *Agent, obj: std.json.ObjectMap) void {
 /// exactly like a text delta (spinner handoff included); the --json wire
 /// never carried these moments (argLiveDelta gates --json off), so JsonSink
 /// stays silent.
+fn openLive(self: *Agent, name: []const u8, ix: i64) void {
+    if (argToolFor(name) == .rlm) rlm_spec.resetLive(self.gpa, self.io);
+    self.arg_live.open(name, ix);
+}
+
 pub fn emitArgText(self: *Agent, tool: ArgTool, text: []const u8) void {
+    if (tool == .rlm) {
+        if (rlm_spec.available and text.len > 0) rlm_spec.feedLive(toolCtx(self), text);
+        return;
+    }
     if (self.out == null) return; // frontendless agents skip capture too, as ever
     if (text.len == 0) return;
     self.streamed_text = true;

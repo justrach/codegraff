@@ -129,6 +129,7 @@ const Saved = struct {
         main_mod.g_codex_ws = s.codex_ws;
         main_mod.g_clock_sleep = s.clock_sleep;
         @import("rlm.zig").available = s.rlm;
+        @import("rlm.zig").sync();
         http.stream_stall_ms = s.stream_stall_ms;
         http.post_deadline_ms = s.post_deadline_ms;
         agent_ws.codex_ws_idle_ms = s.codex_ws_idle_ms;
@@ -175,6 +176,7 @@ test "applyEnvKnobs actually applies the values it reads" {
     main_mod.g_codex_ws = true;
     main_mod.g_clock_sleep = false;
     @import("rlm.zig").available = false;
+    @import("rlm.zig").sync();
     no_local_tools.enabled = false;
     ws.g_debug = false;
     provider_mod.g_context_override = null;
