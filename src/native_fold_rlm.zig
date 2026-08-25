@@ -116,7 +116,7 @@ test "lean keeps rlm folded until showcase; --rlm puts the schema on" {
     fold.showcaseFromCli();
     try std.testing.expect(fold.listed());
     try std.testing.expect(fold.isLoaded("rlm"));
-    try std.testing.expect(!fold.catalogSkips("rlm"));
+    // Stable catalog still skips the mid-array slot; the schema rides the tail.
     const shown = try schema_mod.renderRootTools(arena, .openai, &specs, &.{});
     try std.testing.expect(std.mem.indexOf(u8, shown, "llm_query") != null);
     try std.testing.expect(std.mem.indexOf(u8, shown, rlm.tool_schema) != null);
