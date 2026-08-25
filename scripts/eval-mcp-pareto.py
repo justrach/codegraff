@@ -37,6 +37,10 @@ HISTORY = [
     {"id": "G", "wall": 155.6, "tok_in": 279981, "calls": 21, "ok": True, "note": "quiet + warm"},
     {"id": "H", "wall": 28.0, "tok_in": 112073, "calls": 7, "ok": True, "note": "no each() recipe"},
     {"id": "I", "wall": 31.1, "tok_in": 107284, "calls": 7, "ok": True, "note": "no recipe + warm"},
+    {"id": "A-live", "wall": 36.13, "tok_in": 133403, "calls": 8, "ok": True, "note": "--old (pareto session)"},
+    {"id": "H-live", "wall": 70.1, "tok_in": 178473, "calls": 14, "ok": True, "note": "no recipe (pareto session; variance)"},
+    {"id": "J-live", "wall": 47.31, "tok_in": 84041, "calls": 9, "ok": True, "note": "len/project recipe, cold"},
+    {"id": "K-live", "wall": 75.46, "tok_in": 113688, "calls": 11, "ok": True, "note": "len/project recipe, warm"},
 ]
 
 

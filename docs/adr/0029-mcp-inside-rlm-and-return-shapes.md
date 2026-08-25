@@ -109,3 +109,27 @@ signal. H/I 7-call structured is the stable cheap path today.
 - A later `len`/`for` would cut C/D/F/G retries; do not grow a general
   language without that measurement.
 - Prompting "prefer one rlm script" is not free. Default no-hint.
+
+## Pareto front (wall / tok_in / calls)
+
+Minimize all three among passing SuperGrok grok-4.6 runs. `len(x)` /
+`project(x, field)` landed in `src/rlm_reduce.zig` so a script can print
+a slim summary. Rerun: `python3 scripts/eval-mcp-pareto.py`
+
+A point is on the front if nothing else is ≤ on every axis and < on one.
+
+| id | wall | in | calls | why it stays |
+|---|---:|---:|---:|---|
+| **H** | **28.0s** | 112k | **7** | fastest / fewest calls (no-hint structured) |
+| **I** | 31.1s | 107k | 7 | same path, slightly fewer tokens |
+| **D-r1** | 41.1s | 107k | 10 | rlm+each, one lucky rep |
+| **J-live** | 47.3s | **84k** | 9 | `each` + `len`/`project`; first script printed ids only |
+
+Everything else is dominated (including `--old`, sidecar, split,
+quiet-print, K-live, and H-live's 70s variance rep).
+
+J used rlm for real (`issues = list_issues(); comments = each(...);
+print(len, project)`). It is the **token vertex**. H is the **wall
+vertex**. There is still no point that wins both. Warm shapes (K) did
+not help J. Do not ship rlm-as-default for this MCP task; keep
+len/project so the token vertex is reachable.
