@@ -94,6 +94,11 @@ regression* without a catalog tax. Per-task swings are one-rep variance.
   **652s / 816k in / 9.4M RSS**. `map-conflict` was the only clear
   `--rlm` win (84s → 52s). Same pass rate, no memory win, no wall win
   on this suite — RLM stays opt-in.
+- Prime persist (`bind-reuse`): grok-4.6 one rep. `--rlm` **41.4s /
+  6 calls / 30.9k in** and the model actually did `s = read_file(...)`
+  then a second script `print(s)`. Native **97.5s / 12 calls / 145k
+  in** — it spent a turn discovering `rlm` is off, then wrote
+  `found.txt` the long way. `subagent()` was not exercised live.
 
 Graff's `--rlm` is a Zig subset of [Prime Agent's RLM programming
 model](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/rlm.md),
