@@ -225,3 +225,22 @@ default rlm: **+1 pass**, **−41% wall** (743s → 441s), **−65% input
 tokens** (1.26M → 447k), **−48% calls** (96 → 50). Still ~3× grok's
 tokens/calls (fatter prefix + more turns) and **~17× less RSS**. Do
 not copy grok's 159M heap.
+
+## Why still ~3× tokens (and the next cut)
+
+447k vs grok's 157–185k is **not** their heap. Per-call ~9k vs ~5k,
+and 50 calls vs 31. Two leftover taxes on `-p --yolo --lean`:
+
+1. **`rlm` was folded out of the catalog.** Stable-catalog + native
+   fold hid the default loop behind `load_tool_schemas`. The model
+   did N structured bash/read/edit calls instead of one script.
+   Lean now unfolds `rlm` onto the catalog (ADR 0022: it is the
+   one-shot loop, not a late power tool).
+2. **Interactive essays on every one-shot turn.** Fan-out /
+   `.graff/traces` / `gh issue create` / heads-up / the outside-cwd
+   local-tools essay / the repo map / the folded-native listing.
+   None of that helps a 5-file SWE sandbox. Dropped or swapped for
+   a short `lean_local_tools_note`.
+
+Live A/B after this diet: `--suite swe --harness graff-dev`. Goal:
+same 5/6, fewer calls and input tokens, RSS stays ~9M.

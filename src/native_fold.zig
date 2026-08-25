@@ -64,7 +64,12 @@ pub const folded = [_][]const u8{
 /// `rlm` joins the stack while available (default); `--old` drops it so the
 /// structured-only catalog and the meta-tool listing stay unchanged.
 pub fn isFolded(name: []const u8) bool {
-    if (std.mem.eql(u8, name, "rlm")) return @import("rlm_spec.zig").available;
+    // --lean / -p: rlm is the default loop (ADR 0022), not a late power
+    // tool. Folding it behind load_tool_schemas on a 5–10 turn one-shot
+    // made the model do N structured calls instead of one script (ADR 0024
+    // leftover token tax vs grok-build).
+    if (std.mem.eql(u8, name, "rlm"))
+        return @import("rlm_spec.zig").available and !@import("no_local_tools.zig").lean;
     for (folded) |tool| {
         if (std.mem.eql(u8, name, tool)) return true;
     }
@@ -441,4 +446,43 @@ test "folded rlm is a listing name, not a catalog schema; off stays off the list
     try std.testing.expect(std.mem.indexOf(u8, on, "rlm") != null); // listing
     try std.testing.expect(std.mem.indexOf(u8, on, "llm_query") == null); // full desc/schema stay folded
     try std.testing.expect(std.mem.indexOf(u8, on, rlm.tool_schema) == null);
+}
+
+test "lean unfolds rlm into the catalog (one-shot loop, not a listing stub)" {
+    const schema_mod = @import("schema.zig");
+    const rlm = @import("rlm.zig");
+    const rlm_spec = @import("rlm_spec.zig");
+    const no_local = @import("no_local_tools.zig");
+    const saved_avail = rlm.available;
+    const saved_spec = rlm_spec.available;
+    const saved_enabled = enabled;
+    const saved_lean = no_local.lean;
+    const saved_loaded = g_loaded;
+    const saved_loaded_len = g_loaded_len;
+    defer {
+        rlm.available = saved_avail;
+        rlm_spec.available = saved_spec;
+        rlm.sync();
+        enabled = saved_enabled;
+        no_local.lean = saved_lean;
+        g_loaded = saved_loaded;
+        g_loaded_len = saved_loaded_len;
+    }
+    enabled = true;
+    g_loaded_len = 0;
+    no_local.lean = true;
+    rlm.available = true;
+    rlm.sync();
+    try std.testing.expect(!isFolded("rlm"));
+    try std.testing.expect(!catalogSkips("rlm"));
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const specs = [_]schema_mod.ToolSpec{
+        .{ .name = rlm.tool_name, .desc = rlm.tool_desc, .schema = rlm.tool_schema },
+    };
+    const json = try schema_mod.renderRootTools(arena, .openai, &specs, &.{});
+    try std.testing.expect(std.mem.indexOf(u8, json, "llm_query") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, rlm.tool_schema) != null);
 }

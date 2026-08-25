@@ -120,7 +120,9 @@ pub fn buildSystemPrompt(
     }
     // Repo map (repo_map.zig): the top of the working tree, so the model reads
     // the files it needs instead of spending opening turns on ls/find.
-    if (environ.get("GRAFF_NO_REPO_MAP") == null) {
+    // Lean one-shots name their files; the map is an interactive opener
+    // and was prefix bytes on every -p turn (ADR 0024).
+    if (environ.get("GRAFF_NO_REPO_MAP") == null and !@import("no_local_tools.zig").lean) {
         if (@import("repo_map.zig").segment(io, arena)) |map| sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, map });
     }
     if (unattended) sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, prompts.unattended_note });

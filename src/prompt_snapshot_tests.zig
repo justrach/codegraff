@@ -565,7 +565,7 @@ test "lean drops the todo/constraint capabilities from the prompt, never the loc
     no_local_tools.lean = true;
     const lean = prompts.detectCaps();
     try std.testing.expect(!lean.todos and !lean.constraints);
-    try std.testing.expect(lean.local_tools and lean.subagents); // the lean seven keep both
+    try std.testing.expect(lean.local_tools and !lean.subagents); // one-shot: no fan-out essay
     // …and the composition carries it: the dropped segments' bytes are gone.
     var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer a_state.deinit();

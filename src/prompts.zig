@@ -140,7 +140,7 @@ pub fn detectCaps() Caps {
     // is also not a capability the prompt may instruct about.
     return .{
         .local_tools = toolAdvertised("read_file") and toolAdvertised("bash"),
-        .subagents = toolAdvertised("subagent"),
+        .subagents = toolAdvertised("subagent") and !no_local_tools.lean, // lean: no fan-out essay
         .todos = toolAdvertised("todo_write") and !no_local_tools.lean,
         .constraints = toolAdvertised("note_constraint") and !no_local_tools.lean,
         .git_repo = g_git_repo,
@@ -173,7 +173,9 @@ pub fn probeGitRepo(io: Io) void {
 pub fn composeSegments(arena: Allocator, caps: Caps) ![]const u8 {
     var aw: Io.Writer.Allocating = .init(arena);
     for (segments) |seg| {
-        if (caps.has(seg.gate)) try aw.writer.writeAll(seg.text);
+        if (!caps.has(seg.gate)) continue;
+        const bytes = text.leanSegment(seg.name, seg.text, no_local_tools.lean) orelse continue;
+        try aw.writer.writeAll(bytes);
     }
     return aw.writer.buffered();
 }

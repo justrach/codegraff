@@ -373,3 +373,19 @@ test "#330: dispatch refuses a hallucinated bash call for the root AND for a sub
         try std.testing.expect(std.mem.indexOf(u8, out.text, "gate-escaped") == null); // never ran
     }
 }
+
+test "lean prompt diet: no fan-out / trace / issue-filing; short local-tools note" {
+    const prompts = @import("prompts.zig");
+    const saved = lean;
+    defer lean = saved;
+    lean = true;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const out = try prompts.composeBase(arena_state.allocator(), prompts.detectCaps());
+    try std.testing.expect(std.mem.indexOf(u8, out, ".graff/traces") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "gh issue create") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "fan out") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "not covered by /rewind") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "list_dir") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "SPEC.md") != null);
+}

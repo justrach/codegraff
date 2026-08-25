@@ -497,7 +497,7 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
     // as the MCP half — stable mode lists by policy, never by load state.
     const native_fold = @import("native_fold.zig");
     var natives: std.ArrayList([]const u8) = .empty;
-    if (native_fold.anyFolded()) {
+    if (native_fold.anyFolded() and !@import("no_local_tools.zig").lean) {
         for (native_fold.folded) |name| {
             if (!native_fold.isFolded(name)) continue; // rlm stays off the default listing
             if (!g_stable_catalog and native_fold.isLoaded(name)) continue;

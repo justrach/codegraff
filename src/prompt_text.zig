@@ -8,6 +8,8 @@
 //! Read this file as the prompt itself; read prompts.zig for when each part of
 //! it is sent.
 
+const std = @import("std");
+
 // ── ROOT PROMPT BEGIN ── examples/prepare_graff_tournament.py extracts every
 // multiline-literal line between these two markers as the seed root policy, so
 // this comment deliberately carries no literal marker of its own.
@@ -252,3 +254,24 @@ pub const parallel_tail_note =
 pub const parallel_tools_note = parallel_core_note ++ parallel_examples_note ++ parallel_tail_note;
 
 // ── ROOT PROMPT END ─────────────────────────────────────────────────────────
+
+/// --lean / -p swap-in for `local_tools_note`. Drops the outside-cwd
+/// exception and the approval essay (evals are --yolo; unattended_note
+/// covers the !yolo map). Same edit discipline, ~1k fewer prefix bytes.
+pub const lean_local_tools_note =
+    \\
+    \\read_file before editing; prefer edit_file for existing files and
+    \\write_file only for new files or full rewrites. Exact-key lookup:
+    \\read_file once with contains. Navigate with codedb (context, around,
+    \\callpath, list_dir, status), not bash grep/find/ls. Read one current
+    \\span, smallest edit, do not verify after success.
+;
+
+/// --lean composition: drop harness-debug / narration; swap the long
+/// local-tools essay. `null` means skip the segment entirely.
+pub fn leanSegment(name: []const u8, original: []const u8, is_lean: bool) ?[]const u8 {
+    if (!is_lean) return original;
+    if (std.mem.eql(u8, name, "trace") or std.mem.eql(u8, name, "harness_issue") or std.mem.eql(u8, name, "headsup")) return null;
+    if (std.mem.eql(u8, name, "local_tools")) return lean_local_tools_note;
+    return original;
+}
