@@ -379,7 +379,7 @@ test "lean prompt diet: no fan-out / trace / issue-filing; short local-tools not
     try std.testing.expect(std.mem.indexOf(u8, out, "Parallelize") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "ONE response") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "not covered by /rewind") == null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "rlm") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "rlm") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "SPEC.md") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "discard work") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Fix root causes") == null);
@@ -398,6 +398,6 @@ test "lean catalog drops overflow pager and empty load_tool_schemas" {
     const json = try schema.renderRootTools(arena, .openai, specs, &.{});
     try std.testing.expect(std.mem.indexOf(u8, json, "read_tool_result") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"load_tool_schemas\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"read_file\"") != null);
 }

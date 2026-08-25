@@ -507,7 +507,8 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
     var natives: std.ArrayList([]const u8) = .empty;
     if (native_fold.anyFolded() and !@import("no_local_tools.zig").lean) {
         for (native_fold.folded) |name| {
-            if (!native_fold.isFolded(name)) continue; // rlm stays off the default listing
+            if (!native_fold.isFolded(name)) continue;
+            if (std.mem.eql(u8, name, "rlm")) continue; // tail-only; listing rewrites the head
             if (!g_stable_catalog and native_fold.isLoaded(name)) continue;
             if (tool_surface.hideBuiltin(name)) continue;
             try natives.append(arena, name);

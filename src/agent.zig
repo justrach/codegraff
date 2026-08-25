@@ -362,6 +362,15 @@ pub const Agent = struct {
                 self.autocompact(recovery_meter);
                 self.closeCodexWs();
             }
+            // ADR 0030: showcase rlm once the existing compact meter is
+            // actually large. Schema rides the tail; head bytes stay put.
+            if (!self.sub) {
+                const fold = @import("native_fold.zig");
+                if (fold.noticeContext(self.effectiveContextTokens(), self.provider.compactAt())) {
+                    self.invalidateRootTools();
+                    try self.ensureRootTools(self.provider.kind);
+                }
+            }
             const hist_len = self.messages.items.len;
             const root = try self.request(if (self.text_only) null else self.toolsJson());
             const done = switch (self.provider.kind) {

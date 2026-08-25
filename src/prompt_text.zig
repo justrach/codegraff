@@ -262,9 +262,8 @@ pub const lean_local_tools_note =
     \\
     \\read_file before editing; prefer edit_file for existing files and
     \\write_file only for new files. Navigate with codedb (context, around,
-    \\callpath, list_dir, status) or one rlm script of those functions.
-    \\print(read_file("path")) returns the file — do not read it again.
-    \\Independent reads belong in ONE response or one rlm script, not a chain of turns.
+    \\callpath, list_dir, status).
+    \\Independent reads belong in ONE response, not a chain of turns.
     \\A passing verify command and attempt_completion belong in ONE response.
 ;
 
@@ -280,7 +279,7 @@ pub const lean_parallel_note =
 
 pub const lean_intro_note =
     \\You are a coding agent. Use the cataloged tools; never invent one.
-    \\Independent reads belong in ONE response (or one rlm script), not one per turn.
+    \\Independent reads belong in ONE response, not one per turn.
     \\A passing test and attempt_completion belong in ONE response.
 ;
 

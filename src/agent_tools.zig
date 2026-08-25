@@ -67,6 +67,12 @@ const rawNonblockStdin = Agent.rawNonblockStdin;
 /// Bash calls must clear the permission gate before dispatch. Results
 /// are returned in call order, arena-owned.
 pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
+    if (!self.sub and calls.len >= 4) {
+        var names: [32][]const u8 = undefined;
+        const n = @min(calls.len, names.len);
+        for (calls[0..n], 0..) |c, i| names[i] = c.name;
+        if (native_fold.noticeWideNative(names[0..n])) self.invalidateRootTools();
+    }
     const results = try self.arena.alloc(ExecResult, calls.len);
     const eval_index = eval_control.evalCallIndex(calls);
     const blocks_completion = eval_control.batchBlocksCompletion(calls);
