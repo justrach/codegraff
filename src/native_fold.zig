@@ -72,10 +72,79 @@ pub fn isFolded(name: []const u8) bool {
     return false;
 }
 
-/// Session-discovered rlm (a wide native batch). `--rlm` sets `g_cli_forced`
-/// so /new does not hide it again. Never set this because MCP slims.
+/// Session-discovered rlm (wide native batch or context threshold). `--rlm`
+/// sets `g_cli_forced` so /new does not hide it again. Never set this
+/// because MCP slims or a fat first payload.
 var g_showcased: bool = false;
 var g_cli_forced: bool = false;
+
+/// GRAFF_RLM_CONTEXT. Unset = 50% of `compactAt`. `0`/`off` disables.
+/// `1`–`100` or `50%` is a percent of compactAt; `32k` / `32768` is an
+/// absolute token floor. Zhang's 32k is an RL curriculum, not the default.
+pub var g_context_off: bool = false;
+pub var g_context_pct: ?u8 = null;
+pub var g_context_tokens: ?u64 = null;
+
+pub fn resetContextKnob() void {
+    g_context_off = false;
+    g_context_pct = null;
+    g_context_tokens = null;
+}
+
+pub fn applyContextEnv(v: []const u8) void {
+    const t = std.mem.trim(u8, v, " \t");
+    if (t.len == 0) return;
+    if (std.mem.eql(u8, t, "0") or std.ascii.eqlIgnoreCase(t, "off") or
+        std.ascii.eqlIgnoreCase(t, "false") or std.ascii.eqlIgnoreCase(t, "no"))
+    {
+        g_context_off = true;
+        g_context_pct = null;
+        g_context_tokens = null;
+        return;
+    }
+    g_context_off = false;
+    if (std.mem.endsWith(u8, t, "%")) {
+        if (std.fmt.parseInt(u8, std.mem.trim(u8, t[0 .. t.len - 1], " \t"), 10)) |n| {
+            if (n > 0) g_context_pct = @min(n, 100);
+            g_context_tokens = null;
+        } else |_| {}
+        return;
+    }
+    var num = t;
+    var mul: u64 = 1;
+    if (t.len > 1 and (t[t.len - 1] == 'k' or t[t.len - 1] == 'K')) {
+        num = t[0 .. t.len - 1];
+        mul = 1000;
+    }
+    const n = std.fmt.parseInt(u64, std.mem.trim(u8, num, " \t"), 10) catch return;
+    if (n == 0) return;
+    if (mul == 1 and n <= 100) {
+        g_context_pct = @intCast(n);
+        g_context_tokens = null;
+    } else {
+        g_context_tokens = n * mul;
+        g_context_pct = null;
+    }
+}
+
+/// Named threshold on the existing compact meter. `null` = disabled.
+pub fn contextThreshold(compact_at: u64) ?u64 {
+    if (g_context_off) return null;
+    if (g_context_tokens) |abs| return abs;
+    if (compact_at == 0) return null;
+    const pct: u64 = g_context_pct orelse 50;
+    return compact_at * pct / 100;
+}
+
+/// True when this sample newly showcased rlm (caller rebuilds the catalog).
+pub fn noticeContext(tokens: u64, compact_at: u64) bool {
+    if (listed() or !@import("rlm_spec.zig").available) return false;
+    const threshold = contextThreshold(compact_at) orelse return false;
+    if (tokens < threshold) return false;
+    showcaseRlm();
+    markLoaded("rlm");
+    return true;
+}
 
 /// Folded-native listing and catalog discovery: hidden on small turns.
 pub fn listed() bool {

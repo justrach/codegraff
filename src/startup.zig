@@ -127,8 +127,9 @@ pub fn buildSystemPrompt(
     }
     if (unattended) sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, prompts.unattended_note });
     // ADR 0030 / 0011: do not splice rlm_spec.system_note onto the always-on
-    // prefix. Small turns must not advertise rlm/sPTC; discovery is listing
-    // or autoLoad after showcase (--rlm or a wide native batch).
+    // prefix. Small turns must not advertise rlm/sPTC; discovery is the
+    // catalog tail after showcase (--rlm, a wide native batch, or context
+    // ≥50% of compactAt).
     // Codex-style skills: one capability line per installed optional
     // companion (skills_registry) — metadata in context, --help on demand.
     // Lean one-shots do not need companion essays (ADR 0024 prefix tax).

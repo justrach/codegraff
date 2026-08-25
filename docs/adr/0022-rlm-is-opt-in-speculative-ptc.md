@@ -85,8 +85,8 @@ regression* without a catalog tax. Per-task swings are one-rep variance.
 - Semicolons (outside strings) are statements, so a one-line script still
   speculates. Host positional fields include `bash` / `webfetch`. `print(a, b)`
   joins binds. Do not splice `system_note` onto the always-on prefix
-  (ADR 0011 / 0030): small turns hide `rlm` until `--rlm` or a wide
-  native batch. sPTC stays wired for after unfold.
+  (ADR 0011 / 0030): small turns hide `rlm` until `--rlm`, a wide
+  native batch, or context ≥50% of compactAt. sPTC stays wired for after unfold.
 - Scatter-gather tasks live in the `rlm` eval suite (`graff-evals/run.py
   --suite rlm`). Default `--suite all` runs core + rlm + swe. Measured
   2026-08-25 on grok-4.6 (one rep): both **4/4**, native **86.8s / 53564

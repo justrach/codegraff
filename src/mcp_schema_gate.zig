@@ -508,7 +508,9 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
     if (native_fold.anyFolded() and !@import("no_local_tools.zig").lean) {
         for (native_fold.folded) |name| {
             if (!native_fold.isFolded(name)) continue;
-            if (std.mem.eql(u8, name, "rlm") and !native_fold.listed()) continue;
+            // rlm never rides the meta desc: listing it on showcase would
+            // rewrite the tools head (ADR 0011 / 0030). Discovery is the tail.
+            if (std.mem.eql(u8, name, "rlm")) continue;
             if (!g_stable_catalog and native_fold.isLoaded(name)) continue;
             if (tool_surface.hideBuiltin(name)) continue;
             try natives.append(arena, name);

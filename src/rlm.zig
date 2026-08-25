@@ -65,9 +65,9 @@ pub fn feedLive(ctx: ToolCtx, delta: []const u8) void {
 }
 
 /// Append `rlm` after the lean/no-local filters so a later showcase can
-/// put the spec on the catalog. Folded and unlisted until `--rlm`, a
-/// wide native batch, or an explicit load (ADR 0030). No-op when `--old`
-/// or embedder mode stripped host tools.
+/// put the spec on the catalog tail. Folded and unlisted until `--rlm`,
+/// a wide native batch, context ≥50% of compactAt, or an explicit load
+/// (ADR 0030). No-op when `--old` or embedder mode stripped host tools.
 pub fn maybeAppend(comptime Spec: type, arena: Allocator, specs: []const Spec) ![]const Spec {
     sync();
     if (!available or no_local_tools.enabled) return specs;
