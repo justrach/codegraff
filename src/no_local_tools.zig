@@ -74,11 +74,13 @@ pub var lean: bool = false;
 
 /// The lean keep-list. File/shell tools stay on the wire: an rlm-only
 /// catalog (ADR 0024 follow-up) made grok-4.6 retry scripts for 122
-/// calls / 4/6. `load_tool_schemas` stays so MCP can unfold; it is
-/// hidden on lean. Overflow paging (`read_tool_result`) is interactive.
+/// calls / 4/6. Catalog `read_file` is the leftover re-read tax — the
+/// model already printed those files via rlm, then called read_file
+/// again (ADR 0024). Reads stay as rlm host functions + codedb.
+/// `load_tool_schemas` stays so MCP can unfold; it is hidden on lean.
+/// Overflow paging (`read_tool_result`) is interactive.
 pub const lean_tools = [_][]const u8{
     "bash",
-    "read_file",
     "edit_file",
     "write_file",
     "codedb",
@@ -220,13 +222,13 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
 
     lean = true;
     const kept = try filterLeanSpecs(Spec, arena, &specs);
-    try std.testing.expectEqual(@as(usize, 4), kept.len);
+    try std.testing.expectEqual(@as(usize, 3), kept.len);
     try std.testing.expectEqualStrings("bash", kept[0].name);
-    try std.testing.expectEqualStrings("read_file", kept[1].name);
-    try std.testing.expectEqualStrings("subagent", kept[2].name);
-    try std.testing.expectEqualStrings("attempt_completion", kept[3].name);
-    try std.testing.expectEqual(@as(usize, 8), lean_tools.len);
+    try std.testing.expectEqualStrings("subagent", kept[1].name);
+    try std.testing.expectEqualStrings("attempt_completion", kept[2].name);
+    try std.testing.expectEqual(@as(usize, 7), lean_tools.len);
     try std.testing.expect(!leanKeeps("read_tool_result"));
+    try std.testing.expect(!leanKeeps("read_file")); // host fn on rlm, not a catalog tool on -p
     for (lean_tools) |tool| try std.testing.expect(leanKeeps(tool));
     try std.testing.expect(!leanKeeps("workflow"));
     try std.testing.expect(!leanKeeps("todo_write"));
@@ -396,4 +398,5 @@ test "lean catalog drops overflow pager and empty load_tool_schemas" {
     try std.testing.expect(std.mem.indexOf(u8, json, "read_tool_result") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "load_tool_schemas") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"read_file\"") == null);
 }

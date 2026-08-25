@@ -59,6 +59,42 @@ test "workspace-changing tools stale verification while read-only tools do not" 
     try std.testing.expect(agent_tools.toolInvalidatesEval(try call(arena, "mcp__codedbpro__edit", "{}")));
 }
 
+test "verify bash does not block same-batch attempt_completion; edit/rlm still do" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const bash_done = [_]ToolCall{
+        try call(arena, "bash", "{}"),
+        try call(arena, "attempt_completion", "{\"result\":\"done\"}"),
+    };
+    try std.testing.expect(!eval_control.batchBlocksCompletion(&bash_done));
+    try std.testing.expect(eval_control.shouldDeferCompletion(&bash_done));
+    try std.testing.expectEqual(@as(?usize, 1), eval_control.completionIndex(&bash_done));
+
+    const read_done = [_]ToolCall{
+        try call(arena, "codedb", "{}"),
+        try call(arena, "attempt_completion", "{\"result\":\"done\"}"),
+    };
+    try std.testing.expect(eval_control.shouldDeferCompletion(&read_done));
+
+    const edit_done = [_]ToolCall{
+        try call(arena, "edit_file", "{}"),
+        try call(arena, "attempt_completion", "{\"result\":\"done\"}"),
+    };
+    try std.testing.expect(eval_control.batchBlocksCompletion(&edit_done));
+    try std.testing.expect(!eval_control.shouldDeferCompletion(&edit_done));
+
+    const rlm_done = [_]ToolCall{
+        try call(arena, "rlm", "{}"),
+        try call(arena, "attempt_completion", "{\"result\":\"done\"}"),
+    };
+    try std.testing.expect(eval_control.batchBlocksCompletion(&rlm_done));
+    try std.testing.expect(!eval_control.shouldDeferCompletion(&rlm_done));
+
+    const only_done = [_]ToolCall{try call(arena, "attempt_completion", "{\"result\":\"done\"}")};
+    try std.testing.expect(!eval_control.shouldDeferCompletion(&only_done));
+}
+
 test "eval is a solo verifier boundary in a tool batch" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

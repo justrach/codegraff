@@ -24,7 +24,7 @@ pub const tool_name = "rlm";
 pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Script whose functions ARE this session's tools. Independent literal read_file/codedb/bash/webfetch/sleep_ms/llm_query/subagent calls start as the script streams. Binds persist across rlm calls. subagent(\"task\") is sidecar-only (keep the critical-path next step local; sync in v1; run_in_background=true returns an id). print() is the answer. Example: a = read_file(\"src/main.zig\"); b = codedb(\"status\"); print(a, b). No imports, no control flow. Prefer one rlm over N tool calls.";
 /// --lean catalog desc: same contract, no REPL essay. maybeAppend is after
 /// compactLeanSpecs, so this is the one-shot wire text.
-pub const lean_tool_desc = "Batch independent read_file/edit_file/write_file/codedb/bash here. Those names are also catalog tools — use either a script or several catalog calls in ONE response. Literal calls start as it streams. Binds persist. print(...) is the answer.";
+pub const lean_tool_desc = "Read files here (host read_file/codedb/bash). Those reads are not a catalog tool on -p — print() is the answer, then edit_file/write_file/bash as catalog tools. Literal calls start as it streams. Binds persist.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\") / subagent(\"task\"); print(...) is the result. Assignments persist across rlm calls. Semicolons or newlines separate statements."}}, "required": ["code"]}
 ;

@@ -40,3 +40,43 @@ pub fn toolInvalidatesEval(call: ToolCall) bool {
     if (std.mem.startsWith(u8, call.name, "mcp__")) return !companionReadOnly(call.name, call.input);
     return true;
 }
+
+/// edit/write/rlm/subagent in the same batch as attempt_completion still
+/// refuse immediately: those calls change the tree the claim is about and
+/// may fail. bash/read/codedb are verify/read — they run first, then
+/// completion is accepted only if none failed (ADR 0024 turn tax vs grok).
+pub fn batchBlocksCompletion(calls: []const ToolCall) bool {
+    for (calls) |call| {
+        if (std.mem.eql(u8, call.name, "edit_file") or
+            std.mem.eql(u8, call.name, "write_file") or
+            std.mem.eql(u8, call.name, "rlm") or
+            std.mem.eql(u8, call.name, "subagent")) return true;
+        if (std.mem.startsWith(u8, call.name, "mcp__")) return !companionReadOnly(call.name, call.input);
+    }
+    return false;
+}
+
+pub fn completionIndex(calls: []const ToolCall) ?usize {
+    for (calls, 0..) |call, index| {
+        if (std.mem.eql(u8, call.name, "attempt_completion")) return index;
+    }
+    return null;
+}
+
+/// True when attempt_completion shares the batch with a verify/read tool
+/// and no workspace mutation. runTools executes those tools first, then
+/// accepts completion only if none failed.
+pub fn shouldDeferCompletion(calls: []const ToolCall) bool {
+    if (completionIndex(calls) == null) return false;
+    if (batchBlocksCompletion(calls)) return false;
+    for (calls) |call| {
+        if (!isMetaName(call.name)) return true;
+    }
+    return false;
+}
+
+pub const completion_with_mutation =
+    "attempt_completion must be a separate post-verification action; this batch also contains a workspace-changing tool";
+
+pub const completion_verify_failed =
+    "attempt_completion was not accepted: a verify tool in this batch failed. Fix that result, then complete.";

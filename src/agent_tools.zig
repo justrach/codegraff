@@ -69,13 +69,8 @@ const rawNonblockStdin = Agent.rawNonblockStdin;
 pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
     const results = try self.arena.alloc(ExecResult, calls.len);
     const eval_index = eval_control.evalCallIndex(calls);
-    var batch_may_change_workspace = false;
-    for (calls) |call| {
-        if (toolInvalidatesEval(call)) {
-            batch_may_change_workspace = true;
-            break;
-        }
-    }
+    const blocks_completion = eval_control.batchBlocksCompletion(calls);
+    const defer_completion = eval_control.shouldDeferCompletion(calls);
 
     // Collect the indices of external (non-meta) calls for parallel exec.
     var ext_idx: std.ArrayList(usize) = .empty;
@@ -86,10 +81,12 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             results[i] = .{ .text = eval_control.verifier_boundary, .is_error = true };
             continue;
         };
-        if (batch_may_change_workspace and std.mem.eql(u8, call.name, "attempt_completion")) {
-            const message = "attempt_completion must be a separate post-verification action; this batch also contains a workspace-changing tool";
-            self.emitToolRejected(call, "eval_stale", message);
-            results[i] = .{ .text = message, .is_error = true };
+        if (std.mem.eql(u8, call.name, "attempt_completion") and blocks_completion) {
+            self.emitToolRejected(call, "eval_stale", eval_control.completion_with_mutation);
+            results[i] = .{ .text = eval_control.completion_with_mutation, .is_error = true };
+            continue;
+        }
+        if (std.mem.eql(u8, call.name, "attempt_completion") and defer_completion) {
             continue;
         }
         if (try self.rejectToolCall(call)) |denied| {
@@ -195,6 +192,21 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             engine_sink.forAgent(self).emit(self.io, .{ .parallel_batch_finished = tally });
         }
     }
+    if (defer_completion) if (eval_control.completionIndex(calls)) |i| {
+        var verify_failed = ext_idx.items.len == 0;
+        for (ext_idx.items) |j| {
+            if (results[j].is_error or results[j].cancelled) verify_failed = true;
+        }
+        if (verify_failed) {
+            self.emitToolRejected(calls[i], "eval_stale", eval_control.completion_verify_failed);
+            results[i] = .{ .text = eval_control.completion_verify_failed, .is_error = true };
+        } else if (try self.rejectToolCall(calls[i])) |denied| {
+            results[i] = denied;
+        } else {
+            try self.sayToolUse(calls[i]);
+            results[i] = try self.handleMeta(calls[i]);
+        }
+    };
     // Show a compact ✓/✗ + preview for each non-meta call (no-op for subs).
     for (calls, results) |call, r| self.sayToolResult(call.name, r);
     return results;

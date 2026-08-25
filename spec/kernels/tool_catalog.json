@@ -50,7 +50,6 @@
     ],
     "lean": [
       "bash",
-      "read_file",
       "edit_file",
       "write_file",
       "codedb",
@@ -600,7 +599,6 @@
       },
       "advertised": [
         "bash",
-        "read_file",
         "edit_file",
         "write_file",
         "codedb",
@@ -650,7 +648,6 @@
       },
       "advertised": [
         "bash",
-        "read_file",
         "edit_file",
         "write_file",
         "codedb",
@@ -700,7 +697,6 @@
       },
       "advertised": [
         "bash",
-        "read_file",
         "edit_file",
         "write_file",
         "codedb",
@@ -750,7 +746,6 @@
       },
       "advertised": [
         "bash",
-        "read_file",
         "edit_file",
         "write_file",
         "codedb",
@@ -800,7 +795,6 @@
       },
       "advertised": [
         "bash",
-        "read_file",
         "edit_file",
         "write_file",
         "codedb",
@@ -847,7 +841,6 @@
       },
       "advertised": [
         "bash",
-        "read_file",
         "edit_file",
         "write_file",
         "codedb",
@@ -894,7 +887,6 @@
       },
       "advertised": [
         "bash",
-        "read_file",
         "edit_file",
         "write_file",
         "codedb",
@@ -941,7 +933,6 @@
       },
       "advertised": [
         "bash",
-        "read_file",
         "edit_file",
         "write_file",
         "codedb",
