@@ -21,7 +21,7 @@ const rlm_query = @import("rlm_query.zig");
 const rlm_spec = @import("rlm_spec.zig");
 
 pub const tool_name = "rlm";
-pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Run a short Python-like script whose functions ARE this session's tools. Independent read_file/codedb/bash/webfetch/sleep_ms/llm_query/subagent calls with literal arguments start in parallel as the script streams (speculated), then print() is the answer. Assignments persist across rlm calls in this session. subagent(\"task\") is Prime-style recursion (graff's subagent tool; sync in v1; run_in_background=true returns an id). Semicolons or newlines separate statements. llm_query(prompt) is a tools-off sub-LM call. Example: a = read_file(\"src/main.zig\"); b = codedb(\"status\"); print(a, b). No imports, no control flow — assignments and calls only. Prefer this over N separate tool calls when the work does not depend on itself.";
+pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Script whose functions ARE this session's tools. Independent literal read_file/codedb/bash/webfetch/sleep_ms/llm_query/subagent calls start as the script streams. Binds persist across rlm calls. subagent(\"task\") is sidecar-only (keep the critical-path next step local; sync in v1; run_in_background=true returns an id). print() is the answer. Example: a = read_file(\"src/main.zig\"); b = codedb(\"status\"); print(a, b). No imports, no control flow. Prefer one rlm over N tool calls.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\") / subagent(\"task\"); print(...) is the result. Assignments persist across rlm calls. Semicolons or newlines separate statements."}}, "required": ["code"]}
 ;
@@ -568,4 +568,12 @@ test "feedLive launches two independent subagent() calls before runScript claims
         try std.testing.expect(e.value_ptr.is_error);
         try std.testing.expect(std.mem.indexOf(u8, e.value_ptr.text, "prompt") != null);
     }
+}
+
+test "rlm prompt: subagent() is advertised as sidecar-only, not a critical-path handoff" {
+    try std.testing.expect(std.mem.indexOf(u8, tool_desc, "sidecar-only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tool_desc, "critical-path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rlm_spec.system_note, "sidecar-only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rlm_spec.system_note, "critical-path") != null);
+    try std.testing.expect(tool_desc.len < 600);
 }

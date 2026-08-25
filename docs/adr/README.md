@@ -33,6 +33,8 @@ record only when you need the evidence or the edge cases.
 | [0020](0020-transcript-shows-decisions.md) | Transcript shows decisions: one interpreted tool line, collapsed infra failures, compact WORKING; raw output is `/debug` / TUI-fold. |
 | [0021](0021-transcript-is-the-task-not-the-bus.md) | Transcript is the task, not the event bus: bookkeeping is silent, todos are WORKING, subagents are scouts. |
 | [0022](0022-rlm-is-opt-in-speculative-ptc.md) | `rlm` (Alex Zhang spec-ptc + RLM, Zig) is the default loop. `--old` restores structured-only. Prime persist + `subagent()` only — no IPython. |
+| [0023](0023-codex-subagent-is-sidecar-not-v8.md) | Codex check: take sidecar-vs-critical-path spawn prompts; reject V8 Code Mode, extra spawn tools, and parent-history fork. |
+| [0024](0024-three-harness-compare-prompt-subagent-rss.md) | Steal short child briefs + sidecar spawn from grok-build/kimi/dsh; reject root conv-id share, datetime/tree prefix, fork-seed, Harbor. |
 
 ## When to write one
 

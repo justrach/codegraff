@@ -458,10 +458,10 @@ pub fn resetSessionCompacted(agent: *Agent, arena: Allocator) void {
 
 pub const sub_system_prompt =
     \\You are a subagent spawned by an orchestrator agent inside a terminal
-    \\harness. Complete the assigned task using your tools, without asking
-    \\questions — make reasonable assumptions. Your final message is returned
-    \\verbatim to the orchestrator as the result of the task: make it a
-    \\concise, complete report with the concrete facts you found.
+    \\harness. Complete only the assigned task; do not broaden scope or ask
+    \\questions — make reasonable assumptions. Do not narrate tool calls.
+    \\Your final message is returned verbatim to the orchestrator: a concise
+    \\report of the concrete facts you found.
 ++ parallel_tools_note;
 
 pub const compact_instruction =
@@ -495,6 +495,9 @@ test "both prompts ask for parallel tool calls, with the dependency caveat" {
     }
     // Composing must not have cost either prompt its own identity.
     try std.testing.expect(std.mem.indexOf(u8, sub_system_prompt, "subagent spawned by an orchestrator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sub_system_prompt, "do not broaden") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sub_system_prompt, "Do not narrate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sub_system_prompt, "rlm(code)") == null);
     try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "Be direct and concise") != null);
     try std.testing.expect(std.mem.indexOf(u8, main_system_prompt_strict, "STRICT MODE") != null);
 }

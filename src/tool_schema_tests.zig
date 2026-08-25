@@ -383,3 +383,18 @@ test "note_constraint (#381): root-only, append-only, and a valid one-property s
     try std.testing.expect(std.mem.indexOf(u8, schema.tools_openai_sub, "note_constraint") == null);
     try std.testing.expect(std.mem.indexOf(u8, schema.tools_anthropic_sub, "note_constraint") == null);
 }
+
+test "subagent desc: Codex sidecar rules, no routing essay on the catalog prefix" {
+    var found = false;
+    for (schema.root_specs) |t| if (std.mem.eql(u8, t.name, "subagent")) {
+        found = true;
+        try std.testing.expect(std.mem.indexOf(u8, t.desc, "critical-path") != null);
+        try std.testing.expect(std.mem.indexOf(u8, t.desc, "sidecar") != null);
+        try std.testing.expect(std.mem.indexOf(u8, t.desc, "disjoint") != null);
+        try std.testing.expect(std.mem.indexOf(u8, t.desc, "Do not set model") != null);
+        try std.testing.expect(std.mem.indexOf(u8, t.desc, "default tier ladder") == null);
+        try std.testing.expect(std.mem.indexOf(u8, t.desc, "sub-first routing") == null);
+        try std.testing.expect(t.desc.len < 900);
+    };
+    try std.testing.expect(found);
+}

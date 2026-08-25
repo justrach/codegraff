@@ -22,7 +22,7 @@ pub var run_host: ?*const fn (ToolCtx, spec_ptc.Call) ToolOutput = null;
 /// `subagent("task")` is Prime-style recursion via graff's existing subagent
 /// tool. v1 is synchronous; speculate() still overlaps independent calls.
 /// Keyword `run_in_background=true` returns an agent id (a handle).
-pub const system_note = "\n\nrlm(code) is available: a short script whose functions are this session's tools. Independent read_file/codedb/bash/llm_query/subagent calls with literal args start in parallel as the script streams. Bindings persist across rlm calls until /new or /clear. subagent(\"task\") is Prime-style recursion (graff's subagent tool; sync in v1). Prefer one rlm script over N separate tool calls when the work does not depend on itself. Semicolons or newlines separate statements; print(...) is the answer.";
+pub const system_note = "\n\nrlm(code): script of this session's tools. Independent literal read_file/codedb/bash/llm_query/subagent calls start as it streams. Binds persist until /new or /clear. subagent(\"task\") is sidecar-only — keep the critical-path next step local. Prefer one rlm over N tool calls. print(...) is the answer.";
 
 /// One REPL assignment. `runScript` seeds these from the process-local store
 /// so a later `rlm` call can `print(prev)` without re-reading. Owned by the
@@ -248,4 +248,23 @@ fn absorbUnlocked(gpa: Allocator, io: Io) void {
         };
     }
     live.inflight.clearRetainingCapacity();
+}
+
+test "system_note stays short and keeps persist / sidecar / print" {
+    try std.testing.expect(system_note.len < 360);
+    try std.testing.expect(std.mem.indexOf(u8, system_note, "rlm(code)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, system_note, "persist") != null);
+    try std.testing.expect(std.mem.indexOf(u8, system_note, "/new") != null);
+    try std.testing.expect(std.mem.indexOf(u8, system_note, "sidecar-only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, system_note, "critical-path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, system_note, "print(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, system_note, "Prime-style") == null);
+}
+
+test "children never see the rlm discovery note (different prefix, different cache key)" {
+    const prompts = @import("prompts.zig");
+    try std.testing.expect(std.mem.indexOf(u8, prompts.sub_system_prompt, "rlm(code)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prompts.sub_system_prompt, "do not broaden") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompts.sub_system_prompt, "Do not narrate") != null);
+    try std.testing.expect(prompts.sub_system_prompt.len < prompts.main_system_prompt.len);
 }
