@@ -366,6 +366,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             // just-closed keep-alive almost always re-fail
                             // (#86). 250ms·2ⁿ, capped at 4s over 6 tries; Esc cancels.
                             const delay_ms = RetryPlan.delayMs(throttled, attempt);
+                            @import("turn_chrome.zig").emitRetryNotice(self.io, @errorName(err), attempt + 1, max_attempts);
                             if (showRecoveredTransportRetry(self.call_kind))
                                 try self.say("[network error: {t} — retrying in {d}ms ({d}/{d})]\n", .{ err, delay_ms, attempt + 1, max_attempts });
                             // Same trace breadcrumb the 429/5xx branch leaves: a

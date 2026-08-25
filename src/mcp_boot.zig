@@ -103,6 +103,7 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
     var it = merged.servers.iterator();
     while (it.next()) |entry| {
         if (std.mem.eql(u8, entry.key_ptr.*, "smolify")) continue;
+        if (@import("tool_surface.zig").skipOptionalServer(entry.key_ptr.*, environ_map)) continue;
         if (entry.value_ptr.* != .object) continue;
         try entries.append(a, .{ .name = try a.dupe(u8, entry.key_ptr.*), .cfg = entry.value_ptr.*.object });
     }

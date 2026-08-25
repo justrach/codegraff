@@ -67,7 +67,7 @@ pub const skills_registry = [_]SkillDef{
 /// Edits inside the cwd stay native: edit_file/write_file are
 /// /rewind-snapshotted and already splice via zigpatch, whereas codedb-pro
 /// edit/patch/replace bypass /rewind. Explicit external targets use gated bash.
-const codedbpro_note_licensed = "The codedb-pro MCP server is connected and LICENSED — its mcp__codedbpro__* tools (load once per session via load_tool_schemas, e.g. by query) REPLACE the native read/search defaults, which are BLOCKED while the server is healthy: read/search calls are refused with a pointer to the pro equivalent, shell searches to `zigrep` via bash; any codedb-pro failure unblocks the natives for the rest of the session. Size reads to the file: mode=full in ONE call for small files — outline/symbol/lines modes are for files too big to read whole. KEEP EDITS on the native edit_file/write_file tools — codedb-pro edit/patch/replace bypass /rewind; the cwd and explicit-external-target rules above apply unchanged.";
+const codedbpro_note_licensed = "The codedb-pro MCP server is connected and LICENSED — its mcp__codedbpro__* tools (load once per session via load_tool_schemas, e.g. by query) REPLACE native read/search (read_file and the legacy codedb tool are hidden). Shell cat/grep/sed/head of source is redirected or refused. KEEP EDITS on native edit_file/write_file — codedb-pro write tools are hidden because they bypass /rewind. Size reads to the file: mode=full in ONE call for small files — outline/symbol/lines for files too big to read whole. Any codedb-pro failure unblocks the natives for the rest of the session.";
 
 const McpNote = struct { server: []const u8, note: []const u8 };
 pub const mcp_notes = [_]McpNote{

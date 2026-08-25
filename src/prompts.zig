@@ -37,6 +37,7 @@ const playbook = @import("playbook.zig"); // #381: the user-constraint block com
 const compact_note = @import("compact_note.zig"); // #391: the pre-compaction note-to-self, composed the same way and for the same reason
 const no_local_tools = @import("no_local_tools.zig"); // #330's subtractive gate — one half of every capability answer below
 const tool_gates = @import("tool_gates.zig"); // #352's additive gate — the other half
+const tool_surface = @import("tool_surface.zig");
 const session_index = @import("session_index.zig"); // #410: where the durable transcript lives
 
 /// The prompt text itself lives next door; this file owns when each part
@@ -130,7 +131,7 @@ pub const Caps = struct {
 /// can remove a built-in, and nothing else — the same pair `exec.zig` refuses
 /// a hallucinated call with, so the prompt can never disagree with dispatch.
 pub fn toolAdvertised(name: []const u8) bool {
-    return !no_local_tools.blocks(name) and !tool_gates.blocks(name);
+    return !no_local_tools.blocks(name) and !tool_gates.blocks(name) and !tool_surface.hideBuiltin(name);
 }
 
 /// The live gates. Every flag and env knob feeding them is settled before
@@ -139,7 +140,7 @@ pub fn detectCaps() Caps {
     // The lean halves agree: a tool the catalog filtered out (no_local_tools)
     // is also not a capability the prompt may instruct about.
     return .{
-        .local_tools = toolAdvertised("read_file") and toolAdvertised("bash"),
+        .local_tools = toolAdvertised("edit_file") and toolAdvertised("bash"),
         .subagents = toolAdvertised("subagent") and !no_local_tools.lean, // lean: no fan-out essay
         .todos = toolAdvertised("todo_write") and !no_local_tools.lean,
         .constraints = toolAdvertised("note_constraint") and !no_local_tools.lean,

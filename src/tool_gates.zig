@@ -91,6 +91,18 @@ pub fn withAvailable(comptime Spec: type, arena: Allocator, base: []const Spec, 
     return buf[0..i];
 }
 
+/// One catalog-assembly pass: optional tools, then #330/#lean, then the
+/// licensed surface filter (hide read_file/codedb when codedb-pro is in charge).
+pub fn assembleRoot(comptime Spec: type, arena: Allocator, base: []const Spec, optional: []const Spec) ![]const Spec {
+    const no_local_tools = @import("no_local_tools.zig");
+    const tool_surface = @import("tool_surface.zig");
+    const with_opt = try withAvailable(Spec, arena, base, optional);
+    const gated = try no_local_tools.filterRootSpecs(Spec, arena, with_opt);
+    const lean = try no_local_tools.filterLeanSpecs(Spec, arena, gated);
+    const compact = try no_local_tools.compactLeanSpecs(Spec, arena, lean);
+    return tool_surface.filterSpecs(Spec, arena, compact);
+}
+
 test { // the served catalogs' wire-compatibility guard (an unreferenced module's tests never run)
     _ = @import("tool_schema_tests.zig");
     _ = @import("spec_catalog_conformance.zig");

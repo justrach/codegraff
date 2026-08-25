@@ -231,6 +231,9 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     if (environ_map.get("GRAFF_WS_FORCE_FAIL_COUNT")) |v| {
         ws.g_force_connect_failure_count = std.fmt.parseInt(u8, std.mem.trim(u8, v, " \t"), 10) catch 0;
     }
+    if (environ_map.get("GRAFF_MAX_TURN_MODEL_CALLS")) |v| {
+        @import("turn_chrome.zig").max_turn_model_calls = @import("turn_chrome.zig").parseMaxTurnCalls(v);
+    }
 }
 
 pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool, cwd_display: []const u8) !ThemeSetup {

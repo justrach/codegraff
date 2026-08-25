@@ -156,7 +156,7 @@ fn leadingSearchCommand(cmd: []const u8) bool {
     const trimmed = std.mem.trimStart(u8, cmd, " \t");
     const end = std.mem.indexOfAny(u8, trimmed, " \t") orelse trimmed.len;
     const first = trimmed[0..end];
-    return std.mem.eql(u8, first, "grep") or std.mem.eql(u8, first, "rg") or std.mem.eql(u8, first, "find");
+    return @import("tool_surface.zig").isSearchBash(first);
 }
 
 /// Whether the licensed-pro enforcement applies to this call right now.
@@ -465,9 +465,9 @@ test "nativeRefusal: licensed pro tools block the natives they replaced" {
     try std.testing.expect(nativeRefusal(ctx, namedCall("codedb")) != null);
     try std.testing.expect(nativeRefusal(ctx, bashCall(a, "find . -name '*.zig'")) != null);
     try std.testing.expect(nativeRefusal(ctx, bashCall(a, "rg TODO src")) != null);
-    // Untouched: edits stay native, non-search bash stays open, a piped grep
-    // filters command output rather than searching the tree.
-    try std.testing.expect(nativeRefusal(ctx, namedCall("edit_file")) == null);
+    try std.testing.expect(nativeRefusal(ctx, bashCall(a, "cat src/main.zig")) != null);
+    try std.testing.expect(nativeRefusal(ctx, bashCall(a, "head src/main.zig")) != null);
+    try std.testing.expect(nativeRefusal(ctx, namedCall("edit_file")) == null); // edits stay native
     try std.testing.expect(nativeRefusal(ctx, bashCall(a, "git status")) == null);
     try std.testing.expect(nativeRefusal(ctx, bashCall(a, "curl -s x | grep err")) == null);
 }

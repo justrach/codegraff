@@ -9,6 +9,7 @@ const Allocator = std.mem.Allocator;
 const main_mod = @import("main.zig");
 const util = @import("util.zig");
 const codedbpro_report = @import("codedbpro_report.zig"); // licensed-companion failure → redacted issue filer
+const tool_surface = @import("tool_surface.zig"); // companion-write gate + licensed hide
 const codedbpro_paths = @import("codedbpro_paths.zig"); // session-cwd paths for the resident companion daemon
 const tool_balance = @import("tool_balance.zig"); // session-wide tool-class tally (/tools)
 const ToolCall = tools.ToolCall;
@@ -120,7 +121,7 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     // #255: reserved before any gate/dispatch runs so tool_started/
     // tool_finished bracket the whole call, including a gate denial below.
     const call_id: u64 = if (ctx.tracer) |tr| tr.toolStarted(call.name, call.input) else 0;
-    if (noLocalToolsGate(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call) orelse codedbpro_report.licensedGate(ctx, call) orelse native_fold.gateExec(ctx.gpa, call.name, ctx.from_sub)) |blocked| {
+    if (noLocalToolsGate(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call) orelse codedbpro_report.licensedGate(ctx, call) orelse tool_surface.gate(ctx, call) orelse native_fold.gateExec(ctx.gpa, call.name, ctx.from_sub)) |blocked| {
         var out = blocked;
         out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
         if (ctx.tracer) |tr| {

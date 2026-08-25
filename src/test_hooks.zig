@@ -148,6 +148,10 @@ const plugin_codex = @import("plugin_codex.zig"); // Codex config.toml → Plugi
 // decls, but the hook makes the coverage explicit rather than contingent on
 // that staying true.
 const mcp_config = @import("mcp_config.zig");
+const turn_chrome = @import("turn_chrome.zig"); // #624 pulse + retry chrome
+const tool_surface = @import("tool_surface.zig");
+const agent_catalog = @import("agent_catalog.zig");
+const session_connect_tests = @import("session_connect_tests.zig");
 const effort_route = @import("effort_route.zig");
 
 // #416: two-phase MCP tool exposure. schema.zig/exec.zig reach the gate, but
@@ -320,4 +324,8 @@ test {
     _ = commands_sandbox;
     _ = sandbox_tests;
     _ = provider_tests;
+    _ = turn_chrome;
+    _ = tool_surface;
+    _ = agent_catalog;
+    _ = session_connect_tests;
 }

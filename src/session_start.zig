@@ -527,9 +527,8 @@ pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags
         }
     }
 
-    // Smolify schemas are bundled and its hosted transport stays offline until
-    // an approved call. Full/authenticated/write tools require explicit opt-in.
-    if (environ_map.get("GRAFF_NO_SMOLIFY") != null) return;
+    // Smolify is opt-in: GRAFF_SMOLIFY=1 or GRAFF_SMOLIFY_ACCESS=public|full.
+    if (!@import("tool_surface.zig").smolifyWanted(environ_map)) return;
     const access = environ_map.get("GRAFF_SMOLIFY_ACCESS") orelse "public";
     const full_access = std.ascii.eqlIgnoreCase(access, "full") or std.ascii.eqlIgnoreCase(access, "authenticated");
     const added = registry.connectSmolify(full_access) catch |err| {
