@@ -1,0 +1,14 @@
+{
+  "id": "scatter-sum",
+  "suite": "rlm",
+  "category": "scatter",
+  "prompt": "n1.txt, n2.txt, n3.txt, and n4.txt each contain one integer. Write their sum as a bare integer (no spaces) to total.txt.",
+  "files": {
+    "n1.txt": "17\n",
+    "n2.txt": "8\n",
+    "n3.txt": "25\n",
+    "n4.txt": "10\n"
+  },
+  "check": "test \"$(cat total.txt | tr -d ' \\n')\" = 60",
+  "timeout_s": 180
+}

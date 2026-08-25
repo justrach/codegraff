@@ -7,7 +7,8 @@ drives any configured harness (harnesses.json) with any model, captures wall
 time / first-output latency / token usage, verifies the outcome, and writes
 JSONL results plus a summary table.
 
-  ./run.py --harness graff --model grok-4.6              # full suite
+  ./run.py --harness graff --model grok-4.6              # full suite (core + rlm)
+  ./run.py --suite rlm --harness graff-dev,graff-dev-rlm # scatter-gather A/B
   ./run.py --harness grok --task fix-fib --reps 3        # one task, 3 reps
   ./run.py --harness graff,grok --model grok-4.6         # side by side
   ./run.py --interactive                                 # pick + watch live
@@ -206,6 +207,7 @@ def main():
     ap.add_argument("--harness", default="graff", help="comma-separated harness names (see harnesses.json)")
     ap.add_argument("--model", default=None, help="model id (default: per-harness default_model)")
     ap.add_argument("--task", action="append", help="task id filter (repeatable)")
+    ap.add_argument("--suite", default="all", help="core, rlm, or all (default all)")
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--interactive", action="store_true", help="pick a task+harness, watch it live")
     args = ap.parse_args()
@@ -219,7 +221,15 @@ def main():
     os.makedirs(RESULTS_DIR, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out_path = os.path.join(RESULTS_DIR, f"run-{stamp}.jsonl")
-    picked = {tid: t for tid, t in tasks.items() if not args.task or tid in args.task}
+    suites = {s.strip() for s in args.suite.split(",") if s.strip()}
+    picked = {}
+    for tid, t in tasks.items():
+        if args.task and tid not in args.task:
+            continue
+        suite = t.get("suite", "core")
+        if "all" not in suites and suite not in suites:
+            continue
+        picked[tid] = t
     records = []
     with open(out_path, "w") as f:
         for hname in args.harness.split(","):

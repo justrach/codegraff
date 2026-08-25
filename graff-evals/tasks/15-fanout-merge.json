@@ -1,0 +1,13 @@
+{
+  "id": "fanout-merge",
+  "suite": "rlm",
+  "category": "scatter",
+  "prompt": "host.cfg, port.cfg, and name.cfg each hold one key=value line. Write merged.cfg containing all three keys (host, port, name) with those values, one key=value per line.",
+  "files": {
+    "host.cfg": "host=edge-7\n",
+    "port.cfg": "port=8443\n",
+    "name.cfg": "name=relay\n"
+  },
+  "check": "python3 -c \"t=open('merged.cfg').read(); assert 'host=edge-7' in t and 'port=8443' in t and 'name=relay' in t, t\"",
+  "timeout_s": 180
+}

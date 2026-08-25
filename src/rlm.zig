@@ -21,9 +21,9 @@ const rlm_query = @import("rlm_query.zig");
 const rlm_spec = @import("rlm_spec.zig");
 
 pub const tool_name = "rlm";
-pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Run a short Python-like script whose functions ARE this session's tools. Independent read_file/codedb/sleep_ms/llm_query calls with literal arguments start in parallel as the script streams (speculated), then print() is the answer. llm_query(prompt) is a tools-off sub-LM call. Example: a = read_file(\"src/main.zig\"); b = codedb(\"status\"); print(a); print(b). No imports, no control flow — assignments and calls only. Prefer this over N separate tool calls when the reads do not depend on each other.";
+pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Run a short Python-like script whose functions ARE this session's tools. Independent read_file/codedb/bash/webfetch/sleep_ms/llm_query calls with literal arguments start in parallel as the script streams (speculated), then print() is the answer. Semicolons or newlines separate statements. llm_query(prompt) is a tools-off sub-LM call. Example: a = read_file(\"src/main.zig\"); b = codedb(\"status\"); print(a, b). No imports, no control flow — assignments and calls only. Prefer this over N separate tool calls when the work does not depend on itself.";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / sleep_ms(ms) / llm_query(\"prompt\"); print(...) is the result"}}, "required": ["code"]}
+    \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\"); print(...) is the result. Semicolons or newlines separate statements."}}, "required": ["code"]}
 ;
 
 /// Process-global: `--rlm` / GRAFF_RLM=1. Never flipped mid-session.
@@ -84,21 +84,16 @@ pub fn runScript(ctx: ToolCtx, code: []const u8) !ToolOutput {
     }
     rlm_spec.takeLive(ctx, &claimed, arena);
 
-    var stmts: std.ArrayList([]const u8) = .empty;
-    var it = std.mem.splitScalar(u8, code, '\n');
-    while (it.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len > 0) try stmts.append(arena, line);
-    }
+    const stmts = try spec_ptc.splitStatements(arena, code);
 
-    const calls = try spec_ptc.extractCalls(arena, stmts.items);
+    const calls = try spec_ptc.extractCalls(arena, stmts);
     try speculate(ctx, arena, calls, &claimed);
 
     var binds: std.ArrayList(Binding) = .empty;
     var printed: std.ArrayList(u8) = .empty;
     defer printed.deinit(ctx.gpa);
 
-    for (stmts.items) |stmt| {
+    for (stmts) |stmt| {
         if (try evalStmt(ctx, arena, stmt, binds.items, &claimed, &printed, &binds)) |err| {
             return .{ .text = err, .is_error = true };
         }
@@ -191,6 +186,17 @@ fn printArgs(stmt: []const u8) ?[]const u8 {
 }
 
 fn renderPrint(arena: Allocator, inner: []const u8, binds: []const Binding) ![]const u8 {
+    const parts = try spec_ptc.splitTopLevel(arena, inner, ',');
+    if (parts.len == 0) return "";
+    var out: std.ArrayList(u8) = .empty;
+    for (parts, 0..) |part, i| {
+        if (i > 0) try out.append(arena, '\n');
+        try out.appendSlice(arena, try renderPrintPart(arena, part, binds));
+    }
+    return out.toOwnedSlice(arena);
+}
+
+fn renderPrintPart(arena: Allocator, inner: []const u8, binds: []const Binding) ![]const u8 {
     const t = std.mem.trim(u8, inner, " \t");
     if (t.len >= 2 and (t[0] == '"' or t[0] == '\'') and t[t.len - 1] == t[0]) return t[1 .. t.len - 1];
     for (binds) |b| if (std.mem.eql(u8, b.name, t)) return b.text;
@@ -278,6 +284,24 @@ test "runScript reads a fixture via speculated read_file and prints it" {
     try std.testing.expect(std.mem.indexOf(u8, out.text, "hello-rlm") != null);
 }
 
+test "runScript splits a semicolon one-liner and prints both binds" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer dummy_client.deinit();
+    const saved = available;
+    defer available = saved;
+    available = true;
+    const ctx = testCtx(gpa, io, &dummy_client);
+    const t0: Io.Timestamp = .now(io, .awake);
+    const out = try runScript(ctx, "a = sleep_ms(40); b = sleep_ms(41); print(a, b)");
+    defer gpa.free(out.text);
+    const dt = t0.untilNow(io, .awake).toMilliseconds();
+    try std.testing.expect(!out.is_error);
+    try std.testing.expectEqualStrings("slept 40ms\nslept 41ms", out.text);
+    try std.testing.expect(dt < 90);
+}
+
 test "feedLive launches sleeps before runScript, so claim is a hit not a re-run" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
@@ -300,4 +324,26 @@ test "feedLive launches sleeps before runScript, so claim is a hit not a re-run"
     try std.testing.expect(!out.is_error);
     try std.testing.expectEqualStrings("slept 40ms", out.text);
     try std.testing.expect(dt < 100);
+}
+
+test "feedLive splits a semicolon line before runScript claims" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer dummy_client.deinit();
+    const saved = available;
+    defer {
+        available = saved;
+        resetLive(gpa, io);
+    }
+    available = true;
+    const ctx = testCtx(gpa, io, &dummy_client);
+    const t0: Io.Timestamp = .now(io, .awake);
+    feedLive(ctx, "a = sleep_ms(40); b = sleep_ms(41)\n");
+    const out = try runScript(ctx, "a = sleep_ms(40); b = sleep_ms(41); print(a, b)");
+    defer gpa.free(out.text);
+    const dt = t0.untilNow(io, .awake).toMilliseconds();
+    try std.testing.expect(!out.is_error);
+    try std.testing.expectEqualStrings("slept 40ms\nslept 41ms", out.text);
+    try std.testing.expect(dt < 90);
 }

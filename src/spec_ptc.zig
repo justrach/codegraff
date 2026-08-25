@@ -292,7 +292,101 @@ fn hostField(tool: []const u8) []const u8 {
     if (std.mem.eql(u8, tool, "codedb")) return "command";
     if (std.mem.eql(u8, tool, "sleep_ms")) return "ms";
     if (std.mem.eql(u8, tool, "llm_query")) return "prompt";
+    if (std.mem.eql(u8, tool, "bash")) return "command";
+    if (std.mem.eql(u8, tool, "webfetch")) return "url";
     return "arg";
+}
+
+/// Split a script on newlines and semicolons that are outside strings and
+/// parentheses. Models often emit `a = read_file("x"); b = read_file("y")`
+/// on one line; each call must be its own statement or sPTC never launches.
+pub fn splitStatements(arena: Allocator, src: []const u8) ![][]const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    var i: usize = 0;
+    var start: usize = 0;
+    var in_str: ?u8 = null;
+    var esc = false;
+    var depth: usize = 0;
+    while (i < src.len) : (i += 1) {
+        const c = src[i];
+        if (in_str) |q| {
+            if (esc) {
+                esc = false;
+                continue;
+            }
+            if (c == '\\') {
+                esc = true;
+                continue;
+            }
+            if (c == q) in_str = null;
+            continue;
+        }
+        if (c == '"' or c == '\'') {
+            in_str = c;
+            continue;
+        }
+        if (c == '(') {
+            depth += 1;
+            continue;
+        }
+        if (c == ')' and depth > 0) {
+            depth -= 1;
+            continue;
+        }
+        if (depth == 0 and (c == ';' or c == '\n')) {
+            const piece = std.mem.trim(u8, src[start..i], " \t\r");
+            if (piece.len > 0) try out.append(arena, piece);
+            start = i + 1;
+        }
+    }
+    const tail = std.mem.trim(u8, src[start..], " \t\r\n");
+    if (tail.len > 0) try out.append(arena, tail);
+    return out.toOwnedSlice(arena);
+}
+
+/// Comma-split at depth 0 outside strings — `print(a, b)` and keyword lists.
+pub fn splitTopLevel(arena: Allocator, src: []const u8, sep: u8) ![][]const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    var i: usize = 0;
+    var start: usize = 0;
+    var in_str: ?u8 = null;
+    var esc = false;
+    var depth: usize = 0;
+    while (i < src.len) : (i += 1) {
+        const c = src[i];
+        if (in_str) |q| {
+            if (esc) {
+                esc = false;
+                continue;
+            }
+            if (c == '\\') {
+                esc = true;
+                continue;
+            }
+            if (c == q) in_str = null;
+            continue;
+        }
+        if (c == '"' or c == '\'') {
+            in_str = c;
+            continue;
+        }
+        if (c == '(') {
+            depth += 1;
+            continue;
+        }
+        if (c == ')' and depth > 0) {
+            depth -= 1;
+            continue;
+        }
+        if (depth == 0 and c == sep) {
+            const piece = std.mem.trim(u8, src[start..i], " \t");
+            if (piece.len > 0) try out.append(arena, piece);
+            start = i + 1;
+        }
+    }
+    const tail = std.mem.trim(u8, src[start..], " \t");
+    if (tail.len > 0) try out.append(arena, tail);
+    return out.toOwnedSlice(arena);
 }
 
 fn putValue(arena: Allocator, obj: *std.json.ObjectMap, key: []const u8, v: Value) !void {
@@ -353,4 +447,18 @@ test "extractCalls finds independent sleeps in a three-call script" {
     const calls = try extractCalls(a, &src);
     try std.testing.expectEqual(@as(usize, 3), calls.len);
     try std.testing.expectEqualStrings("sleep_ms", calls[0].name);
+}
+
+test "splitStatements breaks semicolon one-liners; strings keep their commas" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const parts = try splitStatements(a, "a = read_file(\"x;y.txt\"); b = bash(\"ls\"); print(a, b)");
+    try std.testing.expectEqual(@as(usize, 3), parts.len);
+    try std.testing.expectEqualStrings("a = read_file(\"x;y.txt\")", parts[0]);
+    try std.testing.expectEqualStrings("b = bash(\"ls\")", parts[1]);
+    try std.testing.expectEqualStrings("print(a, b)", parts[2]);
+    const bash = (try extractCall(a, "b = bash(\"ls -la\")")).?;
+    try std.testing.expectEqualStrings("bash", bash.name);
+    try std.testing.expectEqualStrings("{\"command\":\"ls -la\"}", bash.args_json);
 }

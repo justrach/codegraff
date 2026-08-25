@@ -124,6 +124,8 @@ pub fn buildSystemPrompt(
         if (@import("repo_map.zig").segment(io, arena)) |map| sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, map });
     }
     if (unattended) sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, prompts.unattended_note });
+    if (@import("rlm_spec.zig").available)
+        sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, @import("rlm_spec.zig").system_note });
     // Codex-style skills: one capability line per installed optional
     // companion (skills_registry) — metadata in context, --help on demand.
     for (skills.skills_registry) |sk| {

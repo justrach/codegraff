@@ -1,0 +1,14 @@
+{
+  "id": "multi-read",
+  "suite": "rlm",
+  "category": "scatter",
+  "prompt": "Each of a.txt, b.txt, c.txt, and d.txt has one token on its first line. Write tokens.txt with those four tokens, one per line, in that file order. Do not invent tokens.",
+  "files": {
+    "a.txt": "ALPHA-9\nnoise a\n",
+    "b.txt": "BRAVO-2\nnoise b\n",
+    "c.txt": "CHARLIE-7\nnoise c\n",
+    "d.txt": "DELTA-4\nnoise d\n"
+  },
+  "check": "python3 -c \"t=open('tokens.txt').read().split(); assert t[:4]==['ALPHA-9','BRAVO-2','CHARLIE-7','DELTA-4'], t\"",
+  "timeout_s": 180
+}

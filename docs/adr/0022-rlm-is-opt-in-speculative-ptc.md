@@ -70,3 +70,9 @@ regression* without a catalog tax. Per-task swings are one-rep variance.
   (`src/rlm_query.zig`). Nested spend is real; the host function exists so
   sPTC can overlap an expensive sub-LM with the rest of the script.
 - SDK / `--schema` do not list `rlm` until it graduates off the flag.
+- Semicolons (outside strings) are statements, so a one-line script still
+  speculates. Host positional fields include `bash` / `webfetch`. `print(a, b)`
+  joins binds. A short system note is spliced only while the flag is on so
+  the folded spec is discoverable without paying its schema.
+- Scatter-gather tasks live in the `rlm` eval suite (`graff-evals/run.py
+  --suite rlm`). Default `--suite all` runs core + rlm.

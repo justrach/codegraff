@@ -14,6 +14,10 @@ const ToolOutput = tools.ToolOutput;
 pub var available: bool = false;
 pub var run_host: ?*const fn (ToolCtx, spec_ptc.Call) ToolOutput = null;
 
+/// Cheap discovery while the full spec stays folded (ADR 0022). Startup
+/// splices this only when `--rlm` is on.
+pub const system_note = "\n\nrlm(code) is available: a short script whose functions are this session's tools. Independent read_file/codedb/bash/llm_query calls with literal args start in parallel as the script streams. Prefer one rlm script over N separate tool calls when the work does not depend on itself. Semicolons or newlines separate statements; print(...) is the answer.";
+
 const Inflight = struct {
     fut: Io.Future(ToolOutput),
     key: []u8,
@@ -118,29 +122,37 @@ fn launchStmts(ctx: ToolCtx, stmts: []const []const u8) void {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     for (stmts) |stmt| {
-        const call = (spec_ptc.extractCall(arena, stmt) catch continue) orelse continue;
-        const key = call.key(arena) catch continue;
-        if (live.launched.contains(key) or live.done.contains(key)) continue;
-        const owned_key = ctx.gpa.dupe(u8, key) catch continue;
-        const owned_name = ctx.gpa.dupe(u8, call.name) catch {
-            ctx.gpa.free(owned_key);
-            continue;
-        };
-        const owned_args = ctx.gpa.dupe(u8, call.args_json) catch {
-            ctx.gpa.free(owned_key);
-            ctx.gpa.free(owned_name);
-            continue;
-        };
-        live.launched.put(owned_key, {}) catch {
-            ctx.gpa.free(owned_key);
-            ctx.gpa.free(owned_name);
-            ctx.gpa.free(owned_args);
-            continue;
-        };
-        const owned: spec_ptc.Call = .{ .name = owned_name, .args_json = owned_args };
-        const fut = ctx.io.async(runHostThunk, .{ ctx, owned });
-        live.inflight.append(ctx.gpa, .{ .fut = fut, .key = owned_key, .name = owned_name, .args = owned_args }) catch {};
+        const pieces = spec_ptc.splitStatements(arena, stmt) catch continue;
+        for (pieces) |piece| {
+            launchOne(ctx, arena, piece);
+        }
     }
+}
+
+fn launchOne(ctx: ToolCtx, arena: Allocator, stmt: []const u8) void {
+    if (run_host == null) return;
+    const call = (spec_ptc.extractCall(arena, stmt) catch return) orelse return;
+    const key = call.key(arena) catch return;
+    if (live.launched.contains(key) or live.done.contains(key)) return;
+    const owned_key = ctx.gpa.dupe(u8, key) catch return;
+    const owned_name = ctx.gpa.dupe(u8, call.name) catch {
+        ctx.gpa.free(owned_key);
+        return;
+    };
+    const owned_args = ctx.gpa.dupe(u8, call.args_json) catch {
+        ctx.gpa.free(owned_key);
+        ctx.gpa.free(owned_name);
+        return;
+    };
+    live.launched.put(owned_key, {}) catch {
+        ctx.gpa.free(owned_key);
+        ctx.gpa.free(owned_name);
+        ctx.gpa.free(owned_args);
+        return;
+    };
+    const owned: spec_ptc.Call = .{ .name = owned_name, .args_json = owned_args };
+    const fut = ctx.io.async(runHostThunk, .{ ctx, owned });
+    live.inflight.append(ctx.gpa, .{ .fut = fut, .key = owned_key, .name = owned_name, .args = owned_args }) catch {};
 }
 
 fn absorbUnlocked(gpa: Allocator, io: Io) void {

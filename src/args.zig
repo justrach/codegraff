@@ -177,6 +177,7 @@ pub fn parse(init: std.process.Init) !Flags {
                 } else if (std.mem.eql(u8, arg, "--rlm")) {
                     @import("rlm.zig").available = true; // ADR 0022: opt-in programmatic tool calling (also GRAFF_RLM=1)
                     @import("rlm.zig").sync();
+                    @import("rlm.zig").sync();
                 } else if (std.mem.eql(u8, arg, "--no-autocommit")) {
                     main_mod.g_worktree_autocommit = false;
                 } else if (std.mem.eql(u8, arg, "--schema")) {
