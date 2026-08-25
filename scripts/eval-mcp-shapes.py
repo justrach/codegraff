@@ -64,6 +64,30 @@ VARIANTS = [
         "task": "linear-split",
         "label": "two sibling subagents split 8 issues",
     },
+    {
+        "id": "F",
+        "harness": "graff-dev-nolean",
+        "task": "linear-quiet",
+        "label": "rlm+MCP host, cold, no fat print()",
+    },
+    {
+        "id": "G",
+        "harness": "graff-dev-nolean",
+        "task": "linear-quiet-warm",
+        "label": "rlm+MCP host, warm, no fat print()",
+    },
+    {
+        "id": "H",
+        "harness": "graff-dev-nolean",
+        "task": "linear-nohint",
+        "label": "rlm+MCP host, cold, no each() recipe",
+    },
+    {
+        "id": "I",
+        "harness": "graff-dev-nolean",
+        "task": "linear-nohint-warm",
+        "label": "rlm+MCP host, warm, no each() recipe",
+    },
 ]
 
 
@@ -100,11 +124,15 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mock", action="store_true", help="skip live provider (print harness plan only)")
     ap.add_argument("--model", default="grok-4.6")
+    ap.add_argument("--only", default="", help="comma-separated variant ids (A,D,F,...)")
     args = ap.parse_args()
+
+    wanted = {x.strip().upper() for x in args.only.split(",") if x.strip()}
+    variants = [v for v in VARIANTS if not wanted or v["id"] in wanted]
 
     if args.mock:
         print("mock: not driving a provider. Unit tests cover dispatch/shapes; live A/B needs SuperGrok.")
-        for v in VARIANTS:
+        for v in variants:
             print(f"  {v['id']}  {v['harness']}  {v['task']}  {v['label']}")
         return 0
 
@@ -114,7 +142,7 @@ def main() -> int:
         return 2
 
     rows = []
-    for v in VARIANTS:
+    for v in variants:
         cmd = [
             sys.executable,
             str(EVALS / "run.py"),
