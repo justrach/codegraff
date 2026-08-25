@@ -75,4 +75,8 @@ regression* without a catalog tax. Per-task swings are one-rep variance.
   joins binds. A short system note is spliced only while the flag is on so
   the folded spec is discoverable without paying its schema.
 - Scatter-gather tasks live in the `rlm` eval suite (`graff-evals/run.py
-  --suite rlm`). Default `--suite all` runs core + rlm.
+  --suite rlm`). Default `--suite all` runs core + rlm. Measured 2026-08-25
+  on grok-4.6 (one rep): both **4/4**, native **86.8s / 53564 in**, `--rlm`
+  **23.7s / 54496 in**. `needle-files` (62.8s → 5.6s) dominates the wall
+  delta; `multi-read` was 1s slower on `--rlm` (one-rep noise). Extra input
+  is the system note (~900 tokens across four tasks), not a catalog schema.
