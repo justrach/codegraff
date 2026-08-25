@@ -10,6 +10,30 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.277 (2026-08-25)
+
+- MCP tools that `load_tool_schemas` has unfolded are `rlm` host functions
+  (`each` / `len` / `project`). Return **shapes** (keys + broad types, never
+  values) persist in `.graff/mcp-shapes.json` and splice onto the next load
+  **result**, never the catalog prefix (ADR 0029).
+- Fat MCP JSON arrays auto-slim after `remember()`: identity keys on
+  issue-like rows; comments fold to `{n, latest_author}`. Two stored shapes
+  add a `# muscle:` playbook on the load result.
+- Full-harness SuperGrok grok-4.6 (`graff-dev-nolean`): **L** (warm slim)
+  14.8s / 31k / 5 and **N** (cold slim) 20.8s / 30k / 5 dominate the
+  pre-slim H/I/J front. Lean catalog (R) is a different prefix and is not
+  on that front.
+- Default `-p` connects a workspace `.mcp.json` and folds schemas; it no
+  longer skips MCP. `--no-lean` is eager schemas, not the MCP on-switch.
+- Licensed codedb-pro: one read/search surface (hide native `read_file` /
+  `codedb`, omit companion writes, keep native edits) (#626/#627).
+- Long turns and transport retries pulse without a default 16-call cap
+  (#624/#625).
+- Smolify / deepwiki / mobbin stay out of the default catalog unless opted
+  in (`GRAFF_SMOLIFY`) (#628).
+- No `v0.0.277` git tag on this cut.
+- Test ratchet: unit suite 1664.
+
 ## v0.0.276 (2026-08-25)
 
 - `rlm` (Zhang/Khattab RLM + alexzhang13 spec-ptc, Zig — not Prime's

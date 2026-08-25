@@ -21,6 +21,11 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.277
+    \\  • MCP-inside-rlm + learnt slim: fat MCP results drop to id/title; comments fold to n+latest_author (ADR 0029)
+    \\  • L (warm slim, --no-lean) 14.8s/31k/5 vs H 28s/112k/7 on SuperGrok grok-4.6; no v0.0.277 tag
+    \\  • licensed codedb-pro is one read/search surface; Smolify is opt-in; turns pulse without a 16-call cap
+    \\
     \\0.0.276
     \\  • rlm (RLM + mid-stream spec-ptc) is the default loop; --old / --no-rlm restores structured-only
     \\  • prompt-cache max: stable catalog is the default (loads no longer rewrite tools JSON); children share prefix lanes
