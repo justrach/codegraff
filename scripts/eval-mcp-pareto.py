@@ -41,6 +41,9 @@ HISTORY = [
     {"id": "H-live", "wall": 70.1, "tok_in": 178473, "calls": 14, "ok": True, "note": "no recipe (pareto session; variance)"},
     {"id": "J-live", "wall": 47.31, "tok_in": 84041, "calls": 9, "ok": True, "note": "len/project recipe, cold"},
     {"id": "K-live", "wall": 75.46, "tok_in": 113688, "calls": 11, "ok": True, "note": "len/project recipe, warm"},
+    {"id": "L", "wall": 14.75, "tok_in": 31348, "calls": 5, "ok": True, "note": "slim+playbook, nohint, warm, --no-lean"},
+    {"id": "N", "wall": 20.84, "tok_in": 30314, "calls": 5, "ok": True, "note": "slim mid-run, nohint, cold, --no-lean"},
+    {"id": "P", "wall": 48.07, "tok_in": 66260, "calls": 9, "ok": True, "note": "slim+reduce recipe, cold, --no-lean"},
     # R (16.3s / 14k / 4) used graff-dev lean catalog — excluded from this front.
 ]
 

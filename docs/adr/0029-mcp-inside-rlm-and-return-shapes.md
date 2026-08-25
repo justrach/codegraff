@@ -120,20 +120,21 @@ A point is on the front if nothing else is ≤ on every axis and < on one.
 
 | id | wall | in | calls | why it stays |
 |---|---:|---:|---:|---|
-| **H** | **28.0s** | 112k | **7** | fastest / fewest calls (no-hint structured, `--no-lean`) |
-| **I** | 31.1s | 107k | 7 | same path, slightly fewer tokens |
-| **D-r1** | 41.1s | 107k | 10 | rlm+each, one lucky rep |
-| **J-live** | 47.3s | **84k** | 9 | `each` + `len`/`project`; first script printed ids only |
+| **L** | **14.8s** | 31k | **5** | slim + warm playbook, no hint, **`--no-lean`** |
+| **N** | 20.8s | **30k** | 5 | slim mid-run, no hint, cold, **`--no-lean`** |
 
-Everything else is dominated (including `--old`, sidecar, split,
-quiet-print, K-live, and H-live's 70s variance rep). **R is not on
-this front:** it ran the lean catalog (`graff-dev`), a different
-harness. The MCP bench is `--no-lean` only (`graff-dev-nolean`).
+Both dominate the pre-slim front (H 28s/112k/7, I 31s/107k/7, J 47s/84k/9).
+P (48s/66k/9, reduce recipe + slim) is dominated by L/N. **R is not on
+this front:** lean catalog (`graff-dev`), a different prefix. The MCP
+bench is `--no-lean` only.
 
-J used rlm for real (`issues = list_issues(); comments = each(...);
-print(len, project)`). It is the **token vertex**. H is the **wall
-vertex**. There is still no point that wins both. Warm shapes (K) did
-not help J. Keep len/project so the token vertex is reachable.
+Live SuperGrok grok-4.6, ReleaseSafe, `graff-dev-nolean` (`c4901bd` binary):
+
+| var | vs | wall | in | calls |
+|---|---|---:|---:|---:|
+| **L** warm + slim | I 31s/107k/7 | **14.8s** | **31348** | **5** |
+| **N** cold + slim | H 28s/112k/7 | **20.8s** | **30314** | **5** |
+| **P** reduce + slim | J 47s/84k/9 | 48.1s | 66260 | 9 |
 
 ## Learnt slim (the muscle, not another hint)
 
@@ -158,4 +159,4 @@ the MCP on-switch.
 Variant **R** (`graff-dev`, implied `--lean`) did pass at 16.3s / 14k / 4
 calls. That is a **different catalog** (lean keep-list). It is not an
 A/B against H/J. The bench stays `graff-dev-nolean`. Learnt slim on
-that harness is N/L/P.
+that harness is N/L/P (measured: L 14.8s/31k/5, N 20.8s/30k/5).
