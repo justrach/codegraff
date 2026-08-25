@@ -1,0 +1,12 @@
+{
+  "id": "linear-nohint",
+  "suite": "mcp",
+  "category": "mcp-shapes",
+  "prompt": "This workspace has a Linear-shaped MCP server named linear (stdio, deferred). Load its schemas, then fetch all 8 issues and every issue's comments. Write report.json as {\"issue_count\": N, \"issues\": [{\"id\", \"title\", \"comment_count\", \"latest_author\"}, ...]} in ISS-1..ISS-8 order. latest_author is the author.name of the newest comment (last in that issue's list). Do not invent ids or authors.",
+  "files": {
+    ".mcp.json": "{\"mcpServers\":{\"linear\":{\"command\":\"python3\",\"args\":[\"linear_fixture_mcp.py\"]}}}\n"
+  },
+  "setup": ["python3 -c \"import pathlib,shutil; p=pathlib.Path('.').resolve(); root=next(x for x in p.parents if (x/'scripts'/'linear_fixture_mcp.py').exists()); shutil.copy(root/'scripts'/'linear_fixture_mcp.py','.')\""],
+  "check": "python3 \"$TASK_ROOT/hidden/check_linear_report.py\"",
+  "timeout_s": 240
+}

@@ -34,7 +34,7 @@ pub const Flags = struct {
     yolo_flag: bool = false,
     safe_flag: bool = false, // --safe: one-shot WITHOUT the implied --yolo (approval-gated, the old -p default)
     no_lean_flag: bool = false, // --no-lean: one-shot WITHOUT the implied --lean (full tool surface + eager MCP, the old -p default)
-    lean_flag: bool = false, // --lean: skip connecting MCP servers entirely (GRAFF_LEAN=1) — a smaller per-turn prefix for one-shot/CI runs
+    lean_flag: bool = false, // --lean: slim catalog + MCP schemas folded behind load_tool_schemas (GRAFF_LEAN=1); does not skip connect
     no_telemetry_flag: bool = false,
     learning_privacy_flag: ?learning_privacy.Mode = null,
     schema_flag: bool = false,

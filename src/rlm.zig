@@ -3,8 +3,8 @@
 //! On unless `--old` / `--no-rlm` / `GRAFF_OLD=1` / `GRAFF_RLM=0`. `--rlm`
 //! and `GRAFF_RLM=1` force it back on. Host functions: `read_file`, `codedb`
 //! (real graff tools), `sleep_ms` (overlap proof), `llm_query` (RLM tools-off
-//! sub-LM), `print` (answer). Closed literal calls launch as the `code`
-//! argument streams (spec-ptc) and again at exec for anything the stream missed.
+//! sub-LM), `print` (answer), plus loaded MCP names (ADR 0029). Closed literal
+//! calls launch as the `code` argument streams (spec-ptc) and again at exec.
 
 const std = @import("std");
 const Io = std.Io;
@@ -19,14 +19,17 @@ const no_local_tools = @import("no_local_tools.zig");
 const exec_mod = @import("exec.zig");
 const rlm_query = @import("rlm_query.zig");
 const rlm_spec = @import("rlm_spec.zig");
+const rlm_mcp = @import("rlm_mcp.zig");
+const rlm_reduce = @import("rlm_reduce.zig");
+const mcp_shapes = @import("mcp_shapes.zig");
 
 pub const tool_name = "rlm";
-pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Script whose functions ARE this session's tools. Independent literal read_file/codedb/bash/webfetch/sleep_ms/llm_query/subagent calls start as the script streams. Binds persist across rlm calls. subagent(\"task\") is sidecar-only (keep the critical-path next step local; sync in v1; run_in_background=true returns an id). print() is the answer. Example: a = read_file(\"src/main.zig\"); b = codedb(\"status\"); print(a, b). No imports, no control flow. Prefer one rlm over N tool calls.";
+pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Functions ARE this session's tools. Literal read_file/codedb/bash/webfetch/sleep_ms/llm_query/subagent start as the script streams. Binds persist. subagent(\"task\") is sidecar-only (keep the critical-path next step local). Loaded MCP names are host functions after load_tool_schemas; each(arr, tool, field) maps a JSON array; len(x)/project(x, field) slim it. print() is the answer. Prefer one rlm over N tool calls.";
 /// --lean catalog desc: same contract, no REPL essay. maybeAppend is after
 /// compactLeanSpecs, so this is the one-shot wire text.
-pub const lean_tool_desc = "Batch independent read_file/codedb/bash here. print(read_file(\"p\")) returns the file — do not catalog-read it again. Then edit_file/write_file/bash as catalog tools. Literal calls start as it streams. Binds persist.";
+pub const lean_tool_desc = "Batch independent read_file/codedb/bash here. print(read_file(\"p\")) returns the file — do not catalog-read it again. Then edit_file/write_file/bash as catalog tools. Literal calls start as it streams. Binds persist. Loaded MCP names are host functions after load_tool_schemas.";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\") / subagent(\"task\"); print(...) is the result. Assignments persist across rlm calls. Semicolons or newlines separate statements."}}, "required": ["code"]}
+    \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\") / subagent(\"task\") / loaded mcp__server__tool(); each(arr, tool, field) maps a JSON array; len(x) and project(x, field) slim it; print(...) is the result. Assignments persist across rlm calls."}}, "required": ["code"]}
 ;
 
 /// Process-global: on by default. `--old` / `--no-rlm` turn it off; `--rlm`
@@ -144,11 +147,23 @@ fn speculate(ctx: ToolCtx, arena: Allocator, calls: []const spec_ptc.Call, claim
 fn runHost(ctx: ToolCtx, call: spec_ptc.Call) ToolOutput {
     if (std.mem.eql(u8, call.name, "sleep_ms")) return runSleep(ctx, call.args_json);
     if (std.mem.eql(u8, call.name, "llm_query")) return rlm_query.run(ctx, call.args_json);
-    var parsed = std.json.parseFromSlice(Value, ctx.gpa, call.args_json, .{}) catch {
+    if (std.mem.eql(u8, call.name, "each") or std.mem.eql(u8, call.name, "len") or std.mem.eql(u8, call.name, "project")) {
+        return .{ .text = ctx.gpa.dupe(u8, "rlm: each/len/project need binds, not speculation") catch &.{}, .is_error = true };
+    }
+    var arena_state = std.heap.ArenaAllocator.init(ctx.gpa);
+    defer arena_state.deinit();
+    const ready = if (rlm_mcp.looksMcp(call.name) or rlm_mcp.resolve(ctx, call.name) != null)
+        switch (rlm_mcp.prepare(ctx, arena_state.allocator(), call)) {
+            .refuse => |r| return r,
+            .run => |c| c,
+        }
+    else
+        call;
+    var parsed = std.json.parseFromSlice(Value, ctx.gpa, ready.args_json, .{}) catch {
         return .{ .text = ctx.gpa.dupe(u8, "rlm: bad args") catch &.{}, .is_error = true };
     };
     defer parsed.deinit();
-    return exec_mod.execTool(ctx, .{ .id = "rlm", .name = call.name, .input = parsed.value });
+    return exec_mod.execTool(ctx, .{ .id = "rlm", .name = ready.name, .input = parsed.value });
 }
 
 fn runSleep(ctx: ToolCtx, args_json: []const u8) ToolOutput {
@@ -171,6 +186,16 @@ fn evalStmt(
     printed: *std.ArrayList(u8),
     bind_out: *std.ArrayList(Binding),
 ) !?[]u8 {
+    switch (try rlm_mcp.evalEach(ctx, arena, stmt, binds, bind_out, runHost)) {
+        .miss => {},
+        .ok => return null,
+        .fail => |e| return e,
+    }
+    switch (try rlm_reduce.evalStmt(arena, ctx.gpa, stmt, binds, bind_out)) {
+        .miss => {},
+        .ok => return null,
+        .fail => |e| return e,
+    }
     const call = try spec_ptc.extractCall(arena, stmt);
     if (call) |c| {
         const key = try c.key(arena);
@@ -215,380 +240,23 @@ fn renderPrint(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []const
 fn renderPrintPart(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []const Binding, claimed: *std.StringHashMap(ToolOutput)) ![]const u8 {
     const t = std.mem.trim(u8, inner, " \t");
     if (t.len >= 2 and (t[0] == '"' or t[0] == '\'') and t[t.len - 1] == t[0]) return t[1 .. t.len - 1];
+    if (rlm_reduce.evalExpr(arena, t, binds)) |text| return maybeSlim(arena, text) else |_| {}
     var i = binds.len;
     while (i > 0) {
         i -= 1;
-        if (std.mem.eql(u8, binds[i].name, t)) return binds[i].text;
+        if (std.mem.eql(u8, binds[i].name, t)) return maybeSlim(arena, binds[i].text);
     }
     if (try spec_ptc.extractCall(arena, t)) |c| {
         const key = try c.key(arena);
-        if (claimed.get(key)) |hit| return try arena.dupe(u8, hit.text);
+        if (claimed.get(key)) |hit| return maybeSlim(arena, hit.text);
         const out = runHost(ctx, c);
         defer ctx.gpa.free(out.text);
+        if (mcp_shapes.slim(arena, out.text)) |s| return s;
         return try arena.dupe(u8, out.text);
     }
     return try arena.dupe(u8, t);
 }
 
-fn testCtx(gpa: Allocator, io: Io, client: *std.http.Client) ToolCtx {
-    return .{
-        .gpa = gpa,
-        .io = io,
-        .client = client,
-        .provider = undefined,
-        .registry = null,
-        .from_sub = false,
-        .approvals = null,
-        .tracer = null,
-    };
-}
-
-test "maybeAppend is a no-op when --old, and refuses to double-append" {
-    const gpa = std.testing.allocator;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const Spec = struct { name: []const u8, desc: []const u8 = "", schema: []const u8 = "{}" };
-    const base = [_]Spec{.{ .name = "read_file" }};
-    const saved = available;
-    const saved_local = no_local_tools.enabled;
-    defer {
-        available = saved;
-        no_local_tools.enabled = saved_local;
-    }
-    available = false;
-    no_local_tools.enabled = false;
-    try std.testing.expectEqual(@as(usize, 1), (try maybeAppend(Spec, arena, &base)).len);
-    available = true;
-    const one = try maybeAppend(Spec, arena, &base);
-    try std.testing.expectEqual(@as(usize, 2), one.len);
-    try std.testing.expectEqualStrings(tool_name, one[1].name);
-    const two = try maybeAppend(Spec, arena, one);
-    try std.testing.expectEqual(@as(usize, 2), two.len);
-    available = true;
-    no_local_tools.enabled = true;
-    try std.testing.expectEqual(@as(usize, 1), (try maybeAppend(Spec, arena, &base)).len);
-}
-
-test "runScript speculates three sleeps so wall time is ~one sleep, not three" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer dummy_client.deinit();
-    const saved = available;
-    defer {
-        available = saved;
-        resetLive(gpa, io);
-    }
-    available = true;
-    const ctx = testCtx(gpa, io, &dummy_client);
-    const t0: Io.Timestamp = .now(io, .awake);
-    const out = try runScript(ctx, "a = sleep_ms(40)\nb = sleep_ms(41)\nc = sleep_ms(42)\nprint(a)");
-    defer gpa.free(out.text);
-    const dt = t0.untilNow(io, .awake).toMilliseconds();
-    try std.testing.expect(!out.is_error);
-    try std.testing.expectEqualStrings("slept 40ms", out.text);
-    // Sequential would be ~120ms. Parallel speculation should land well under 100.
-    try std.testing.expect(dt < 100);
-}
-
-test "runScript reads a fixture via speculated read_file and prints it" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "note.txt", .data = "hello-rlm\n" });
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const n = try tmp.dir.realPath(io, &path_buf);
-    const dir = path_buf[0..n];
-    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer dummy_client.deinit();
-    const saved = available;
-    defer {
-        available = saved;
-        resetLive(gpa, io);
-    }
-    available = true;
-    var ctx = testCtx(gpa, io, &dummy_client);
-    ctx.agent_cwd = dir;
-    const out = try runScript(ctx, "x = read_file(\"note.txt\")\nprint(x)");
-    defer gpa.free(out.text);
-    try std.testing.expect(!out.is_error);
-    try std.testing.expect(std.mem.indexOf(u8, out.text, "hello-rlm") != null);
-    const nested = try runScript(ctx, "print(read_file(\"note.txt\"))");
-    defer gpa.free(nested.text);
-    try std.testing.expect(!nested.is_error);
-    try std.testing.expect(std.mem.indexOf(u8, nested.text, "hello-rlm") != null);
-}
-
-test "runScript splits a semicolon one-liner and prints both binds" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer dummy_client.deinit();
-    const saved = available;
-    defer {
-        available = saved;
-        resetLive(gpa, io);
-    }
-    available = true;
-    const ctx = testCtx(gpa, io, &dummy_client);
-    const t0: Io.Timestamp = .now(io, .awake);
-    const out = try runScript(ctx, "a = sleep_ms(40); b = sleep_ms(41); print(a, b)");
-    defer gpa.free(out.text);
-    const dt = t0.untilNow(io, .awake).toMilliseconds();
-    try std.testing.expect(!out.is_error);
-    try std.testing.expectEqualStrings("slept 40ms\nslept 41ms", out.text);
-    try std.testing.expect(dt < 90);
-}
-
-test "feedLive launches sleeps before runScript, so claim is a hit not a re-run" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer dummy_client.deinit();
-    const saved = available;
-    defer {
-        available = saved;
-        resetLive(gpa, io);
-    }
-    available = true;
-    const ctx = testCtx(gpa, io, &dummy_client);
-    const t0: Io.Timestamp = .now(io, .awake);
-    feedLive(ctx, "a = sleep_ms(40)\n");
-    feedLive(ctx, "b = sleep_ms(41)\n");
-    feedLive(ctx, "c = sleep_ms(42)\n");
-    const out = try runScript(ctx, "a = sleep_ms(40)\nb = sleep_ms(41)\nc = sleep_ms(42)\nprint(a)");
-    defer gpa.free(out.text);
-    const dt = t0.untilNow(io, .awake).toMilliseconds();
-    try std.testing.expect(!out.is_error);
-    try std.testing.expectEqualStrings("slept 40ms", out.text);
-    try std.testing.expect(dt < 100);
-}
-
-test "feedLive splits a semicolon line before runScript claims" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer dummy_client.deinit();
-    const saved = available;
-    defer {
-        available = saved;
-        resetLive(gpa, io);
-    }
-    available = true;
-    const ctx = testCtx(gpa, io, &dummy_client);
-    const t0: Io.Timestamp = .now(io, .awake);
-    feedLive(ctx, "a = sleep_ms(40); b = sleep_ms(41)\n");
-    const out = try runScript(ctx, "a = sleep_ms(40); b = sleep_ms(41); print(a, b)");
-    defer gpa.free(out.text);
-    const dt = t0.untilNow(io, .awake).toMilliseconds();
-    try std.testing.expect(!out.is_error);
-    try std.testing.expectEqualStrings("slept 40ms\nslept 41ms", out.text);
-    try std.testing.expect(dt < 90);
-}
-
-test "runScript reuses last-script binds; resetLive drops them" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer dummy_client.deinit();
-    const saved = available;
-    defer {
-        available = saved;
-        resetLive(gpa, io);
-    }
-    available = true;
-    const ctx = testCtx(gpa, io, &dummy_client);
-    const first = try runScript(ctx, "prev = sleep_ms(1)");
-    defer gpa.free(first.text);
-    try std.testing.expect(!first.is_error);
-    const reuse = try runScript(ctx, "print(prev)");
-    defer gpa.free(reuse.text);
-    try std.testing.expect(!reuse.is_error);
-    try std.testing.expectEqualStrings("slept 1ms", reuse.text);
-    const overwrite = try runScript(ctx, "prev = sleep_ms(2); print(prev)");
-    defer gpa.free(overwrite.text);
-    try std.testing.expectEqualStrings("slept 2ms", overwrite.text);
-    const kept = try runScript(ctx, "print(prev)");
-    defer gpa.free(kept.text);
-    try std.testing.expectEqualStrings("slept 2ms", kept.text);
-    resetLive(gpa, io);
-    const gone = try runScript(ctx, "print(prev)");
-    defer gpa.free(gone.text);
-    try std.testing.expectEqualStrings("prev", gone.text);
-}
-
-test "runScript last assignment wins when a name is rebound in one script" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer dummy_client.deinit();
-    const saved = available;
-    defer {
-        available = saved;
-        resetLive(gpa, io);
-    }
-    available = true;
-    const ctx = testCtx(gpa, io, &dummy_client);
-    const out = try runScript(ctx, "a = sleep_ms(1); a = sleep_ms(2); print(a)");
-    defer gpa.free(out.text);
-    try std.testing.expect(!out.is_error);
-    try std.testing.expectEqualStrings("slept 2ms", out.text);
-}
-
-fn catalogHas(specs: anytype, name: []const u8) bool {
-    for (specs) |s| if (std.mem.eql(u8, s.name, name)) return true;
-    return false;
-}
-
-test "maybeAppend keeps subagent and workflow; rlm is never the only catalog tool" {
-    const gpa = std.testing.allocator;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const Spec = struct { name: []const u8, desc: []const u8 = "", schema: []const u8 = "{}" };
-    const base = [_]Spec{
-        .{ .name = "read_file" },
-        .{ .name = "subagent" },
-        .{ .name = "workflow" },
-    };
-    const saved = available;
-    const saved_local = no_local_tools.enabled;
-    defer {
-        available = saved;
-        no_local_tools.enabled = saved_local;
-        sync();
-    }
-    available = true;
-    no_local_tools.enabled = false;
-    const on = try maybeAppend(Spec, arena, &base);
-    try std.testing.expectEqual(@as(usize, 4), on.len);
-    try std.testing.expect(catalogHas(on, "subagent"));
-    try std.testing.expect(catalogHas(on, "workflow"));
-    try std.testing.expect(catalogHas(on, tool_name));
-    try std.testing.expect(on.len > 1);
-
-    available = false;
-    const off = try maybeAppend(Spec, arena, &base);
-    try std.testing.expectEqual(@as(usize, 3), off.len);
-    try std.testing.expect(catalogHas(off, "subagent"));
-    try std.testing.expect(!catalogHas(off, tool_name));
-}
-
-test "effectiveRootSpecs: default rlm keeps subagent; --old and --lean do not drop it" {
-    const schema = @import("schema.zig");
-    const root = @import("main.zig");
-    const learn_store = @import("learn_store.zig");
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const saved = available;
-    const saved_lean = no_local_tools.lean;
-    const saved_local = no_local_tools.enabled;
-    const saved_clock = root.g_clock_sleep;
-    const saved_learn = learn_store.active_agent_loaded;
-    defer {
-        available = saved;
-        no_local_tools.lean = saved_lean;
-        no_local_tools.enabled = saved_local;
-        root.g_clock_sleep = saved_clock;
-        learn_store.active_agent_loaded = saved_learn;
-        sync();
-    }
-    no_local_tools.enabled = false;
-    root.g_clock_sleep = false;
-    learn_store.active_agent_loaded = true;
-
-    available = true;
-    no_local_tools.lean = false;
-    sync();
-    const def = try schema.effectiveRootSpecs(arena);
-    try std.testing.expect(catalogHas(def, "subagent"));
-    try std.testing.expect(catalogHas(def, "workflow"));
-    try std.testing.expect(catalogHas(def, tool_name));
-    try std.testing.expect(def.len > 2);
-
-    available = false;
-    sync();
-    const old = try schema.effectiveRootSpecs(arena);
-    try std.testing.expect(catalogHas(old, "subagent"));
-    try std.testing.expect(catalogHas(old, "workflow"));
-    try std.testing.expect(!catalogHas(old, tool_name));
-
-    available = true;
-    no_local_tools.lean = true;
-    sync();
-    const lean_on = try schema.effectiveRootSpecs(arena);
-    try std.testing.expect(catalogHas(lean_on, "subagent"));
-    try std.testing.expect(catalogHas(lean_on, tool_name));
-    try std.testing.expect(!catalogHas(lean_on, "workflow"));
-    try std.testing.expect(catalogHas(lean_on, "bash"));
-    try std.testing.expect(no_local_tools.leanKeeps("subagent"));
-    try std.testing.expect(!no_local_tools.leanKeeps(tool_name));
-}
-
-test "runScript empty subagent() reaches execSubagent; persist binds do not break that" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer dummy_client.deinit();
-    const saved = available;
-    defer {
-        available = saved;
-        resetLive(gpa, io);
-    }
-    available = true;
-    const ctx = testCtx(gpa, io, &dummy_client);
-    const first = try runScript(ctx, "prev = sleep_ms(1)");
-    defer gpa.free(first.text);
-    try std.testing.expect(!first.is_error);
-    const miss = try runScript(ctx, "h = subagent()");
-    defer gpa.free(miss.text);
-    try std.testing.expect(miss.is_error);
-    try std.testing.expect(std.mem.indexOf(u8, miss.text, "missing required") != null);
-    try std.testing.expect(std.mem.indexOf(u8, miss.text, "prompt") != null);
-    const reuse = try runScript(ctx, "print(prev)");
-    defer gpa.free(reuse.text);
-    try std.testing.expect(!reuse.is_error);
-    try std.testing.expectEqualStrings("slept 1ms", reuse.text);
-}
-
-test "feedLive launches two independent subagent() calls before runScript claims" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer dummy_client.deinit();
-    const saved = available;
-    defer {
-        available = saved;
-        resetLive(gpa, io);
-    }
-    available = true;
-    const ctx = testCtx(gpa, io, &dummy_client);
-    feedLive(ctx, "a = subagent()\n");
-    feedLive(ctx, "b = subagent(\"\")\n");
-    var claimed = std.StringHashMap(ToolOutput).init(gpa);
-    defer {
-        var it = claimed.iterator();
-        while (it.next()) |e| gpa.free(e.value_ptr.text);
-        claimed.deinit();
-    }
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    rlm_spec.takeLive(ctx, &claimed, arena_state.allocator());
-    try std.testing.expectEqual(@as(usize, 2), claimed.count());
-    var it = claimed.iterator();
-    while (it.next()) |e| {
-        try std.testing.expect(e.value_ptr.is_error);
-        try std.testing.expect(std.mem.indexOf(u8, e.value_ptr.text, "prompt") != null);
-    }
-}
-
-test "rlm prompt: subagent() is advertised as sidecar-only, not a critical-path handoff" {
-    try std.testing.expect(std.mem.indexOf(u8, tool_desc, "sidecar-only") != null);
-    try std.testing.expect(std.mem.indexOf(u8, tool_desc, "critical-path") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rlm_spec.system_note, "sidecar-only") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rlm_spec.system_note, "critical-path") != null);
-    try std.testing.expect(tool_desc.len < 600);
+fn maybeSlim(arena: Allocator, payload: []const u8) []const u8 {
+    return mcp_shapes.slim(arena, payload) orelse payload;
 }

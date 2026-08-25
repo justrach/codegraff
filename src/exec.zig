@@ -212,6 +212,11 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             return failure(gpa, err);
         };
         if (r.is_error) codedbpro_report.onFailure(ctx, call.name, r.text);
+        if (!r.is_error) {
+            const shapes = @import("mcp_shapes.zig");
+            shapes.remember(ctx, call.name, r.text);
+            return .{ .text = shapes.takeSlim(gpa, r.text), .is_error = false };
+        }
         return .{ .text = r.text, .is_error = r.is_error };
     }
 
@@ -452,5 +457,9 @@ test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, 
     _ = @import("rlm.zig");
     _ = @import("rlm_spec.zig");
     _ = @import("rlm_query.zig");
+    _ = @import("rlm_mcp.zig");
+    _ = @import("rlm_reduce.zig");
+    _ = @import("rlm_tests.zig");
+    _ = @import("mcp_shapes.zig");
     _ = @import("spec_ptc.zig");
 }

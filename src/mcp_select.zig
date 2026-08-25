@@ -97,10 +97,17 @@ pub fn handleSelect(agent: anytype, input: Value) tools_mod.ExecResult {
     return mcp_schema_gate.handleLoad(agent, selectInput(agent.arena, input));
 }
 
+fn withShapes(agent: anytype, r: tools_mod.ExecResult) tools_mod.ExecResult {
+    if (r.is_error) return r;
+    const cwd = agent.agent_cwd;
+    const text = @import("mcp_shapes.zig").annotate(agent.gpa, agent.arena, agent.io, cwd, r.text) catch r.text;
+    return .{ .text = text, .is_error = r.is_error };
+}
+
 pub fn dispatch(agent: anytype, call: tools_mod.ToolCall) tools_mod.ExecResult {
-    if (std.mem.eql(u8, call.name, search_name)) return handleSearch(agent, call.input);
-    if (std.mem.eql(u8, call.name, select_name)) return handleSelect(agent, call.input);
-    return mcp_schema_gate.handleLoad(agent, call.input);
+    if (std.mem.eql(u8, call.name, search_name)) return withShapes(agent, handleSearch(agent, call.input));
+    if (std.mem.eql(u8, call.name, select_name)) return withShapes(agent, handleSelect(agent, call.input));
+    return withShapes(agent, mcp_schema_gate.handleLoad(agent, call.input));
 }
 
 test "search lists matches and does not enable them" {

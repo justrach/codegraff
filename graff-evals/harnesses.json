@@ -34,6 +34,36 @@
     "default_model": "grok-4.6",
     "note": "explicit --rlm (same as graff-dev after RLM became the default)"
   },
+  "graff-dev-nolean": {
+    "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo", "--no-lean"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": ["output-schema"],
+    "schema_args": ["--output-schema", "{schema}"],
+    "env": {"GRAFF_POST_DEADLINE_SECS": "90"},
+    "default_model": "grok-4.6",
+    "note": "full harness for the MCP bench: --no-lean (complete catalog). Lean is a different prefix and is not comparable."
+  },
+  "graff-dev-rlm-struct": {
+    "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo", "--no-lean"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": ["output-schema"],
+    "schema_args": ["--output-schema", "{schema}"],
+    "env": {"GRAFF_POST_DEADLINE_SECS": "90", "GRAFF_RLM_MCP": "0"},
+    "default_model": "grok-4.6",
+    "note": "default rlm but MCP stays structured-only (today's gap / variant B)"
+  },
+  "graff-dev-old-nolean": {
+    "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo", "--old", "--no-lean"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": ["output-schema"],
+    "schema_args": ["--output-schema", "{schema}"],
+    "env": {"GRAFF_POST_DEADLINE_SECS": "90"},
+    "default_model": "grok-4.6",
+    "note": "--old structured MCP only + --no-lean so load_tool_schemas is visible"
+  },
   "graff-dev-old": {
     "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo", "--old"],
     "answer": "stdout",

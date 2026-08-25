@@ -13,13 +13,14 @@ harness under test spends model calls.
 
 ## Suites
 
-`--suite` selects which tasks run (`all` is the default):
+`--suite` selects which tasks run (`all` is core+rlm+swe; `mcp` is opt-in):
 
 | suite | what it measures |
 |---|---|
 | `core` | sequential single-file work (instruction, debug, git, schema, …) |
 | `rlm` | scatter-gather / multi-file reads (where default rlm can overlap) |
 | `swe` | DeepSWE-shaped multi-file bugfixes, distilled from [deepswe.datacurve.ai/run](https://deepswe.datacurve.ai/run) (no Harbor/Docker) |
+| `mcp` | Linear-shaped fixture MCP (Blacksmith code-mode + muscle memory). Always `--no-lean` (`graff-dev-nolean`): lean is a different catalog and is not on the front. |
 
 ```sh
 ./run.py --suite swe --harness graff-dev-old,graff-dev --model grok-4.6 -j 12
