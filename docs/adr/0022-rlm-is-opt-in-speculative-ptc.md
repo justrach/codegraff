@@ -106,14 +106,54 @@ regression* without a catalog tax. Per-task swings are one-rep variance.
   **652s / 816k in / 9.4M RSS**. `map-conflict` was the only clear
   `--rlm` win (84s → 52s). Same pass rate, no memory win, no wall win
   on this suite — `--old` stays as the structured-only escape. Default
-  flipped anyway because scatter (`needle-files` 62.8s → 5.6s) and Prime
-  persist (`bind-reuse` 97.5s → 41.4s) are the loops that matter, and
-  core/swe did not regress.
-- Prime persist (`bind-reuse`): grok-4.6 one rep. `--rlm` **41.4s /
-  6 calls / 30.9k in** and the model actually did `s = read_file(...)`
-  then a second script `print(s)`. Native **97.5s / 12 calls / 145k
-  in** — it spent a turn discovering `rlm` is off, then wrote
-  `found.txt` the long way. `subagent()` was not exercised live.
+  flipped anyway because persist (`bind-reuse`) is the spend win, #619
+  scatter showed a wall win that is one-rep fragile, and core/swe did
+  not regress.
+
+## Default vs `--old` (this branch, 2026-08-25)
+
+Live `graff-evals/run.py --suite rlm --harness graff-dev-old,graff-dev
+--model grok-4.6` (one rep, SuperGrok OAuth, `run-20260825-043814.jsonl`).
+`graff-dev` is default RLM; `graff-dev-old` is `--old`. The `[usage]`
+footer printed `$0.0000 · N subscription call(s), flat-rate (not in $)`
+both ways — token/call counts are the cost axis on a plan seat.
+
+| harness | pass | wall | in | out | calls | $ |
+|---|---:|---:|---:|---:|---:|---:|
+| `--old` | 5/5 | 161.0s | 203276 | 4186 | 26 | $0.0000 |
+| default rlm | 5/5 | 135.7s | 105414 | 1669 | 22 | $0.0000 |
+| **delta** | wash | **−25.3s (−16%)** | **−97862 (−48%)** | **−2517 (−60%)** | −4 | wash |
+
+| task | `--old` s | default s | `--old` in/out | default in/out |
+|---|---:|---:|---:|---:|
+| multi-read | 38.25 | 40.49 | 23212 / 337 | 23887 / 357 |
+| scatter-sum | 10.24 | 9.93 | 18318 / 379 | 18800 / 389 |
+| fanout-merge | 6.12 | 39.33 | 13303 / 157 | 23590 / 297 |
+| needle-files | 6.82 | 6.70 | 13475 / 197 | 13836 / 211 |
+| bind-reuse | 99.58 | 39.21 | 134968 / 3116 | 25301 / 415 |
+
+**Saved:** persist `bind-reuse` — 99.6s / 135k in / 11 calls → 39.2s /
+25.3k in / 5 calls (−61% wall, −81% input). The model did
+`s = read_file(...)` then `print(s)`. `--old` spent a turn discovering
+`rlm` is off, then wrote `found.txt` the long way. Confirms #619
+(97.5s / 145k → 41.4s / 30.9k).
+
+**Wash:** the four scatter tasks this rep. `--old` `needle-files` was
+already 6.8s (no 62.8s hang), so #619's 86.8s → 23.7s did not
+reproduce. Default `fanout-merge` wrote a correct `merged.cfg` then
+hung until the runner killed it (`timed_out`, still pass) — one-rep
+noise, not a catalog tax. Scatter-only totals: 61.4s / 68.3k in vs
+96.5s / 80.1k in.
+
+**$:** SuperGrok is flat-rate. Do not read `$0.0000` as "free on a
+metered key" — the 98k input / 2.5k output token cut *is* the spend
+win if the same seats were `XAI_API_KEY`.
+
+Core 12/12 dead heat (~86s, +304 in) and SWE 4/6 (~624s vs 652s,
+822k vs 816k in) were not re-run; cite #619. `subagent()` has no live
+eval task; unit pins landed on this branch (`maybeAppend` keeps
+`subagent`, `feedLive` launches two independent `subagent()` calls,
+persist does not break `execSubagent`, `emitArgText` stays rlm-only).
 
 Graff's `--rlm` is a Zig subset of [Prime Agent's RLM programming
 model](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/rlm.md),

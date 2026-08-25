@@ -19,6 +19,11 @@ current is part of cutting a release.
   clobber `--old` / `--rlm`.
 - The spec stays folded behind `load_tool_schemas`. `--schema` / the
   64-cell tool-catalog kernel do not grow a new tool.
+- Measured default-RLM vs `--old` on grok-4.6 SuperGrok (one `rlm`
+  suite rep): both 5/5, $0.0000 / $0.0000 (flat-rate). Persist
+  `bind-reuse` 99.6s / 135k in → 39.2s / 25.3k in. Suite totals
+  161s / 203k in → 136s / 105k in. Scatter wall is a wash this rep
+  (#619's 86.8s → 23.7s did not reproduce). See ADR 0022.
 
 ## v0.0.274 (2026-08-23)
 

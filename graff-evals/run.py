@@ -123,6 +123,12 @@ def parse_answer_and_usage(harness, stdout, stderr):
         if m:
             usage = {"calls": int(m.group(1)), "in": int(m.group(2)),
                      "cached": int(m.group(3)), "out": int(m.group(4))}
+        cost_m = re.search(r"\$([0-9.]+)", stderr)
+        if cost_m:
+            usage["cost_usd"] = float(cost_m.group(1))
+        sub_m = re.search(r"(\d+) subscription call\(s\)", stderr)
+        if sub_m:
+            usage["sub_calls"] = int(sub_m.group(1))
     return answer, usage
 
 
@@ -270,6 +276,7 @@ def _bucket(records):
         b = by.setdefault(r["harness"], {
             "n": 0, "ok": 0, "wall": 0.0, "first": 0.0, "first_n": 0,
             "tin": 0, "tout": 0, "calls": 0, "rss": 0, "cpu": 0.0,
+            "usd": 0.0, "usd_n": 0,
         })
         b["n"] += 1
         b["ok"] += bool(r.get("outcome_ok"))
@@ -280,6 +287,9 @@ def _bucket(records):
         b["tin"] += r.get("tok_in") or 0
         b["tout"] += r.get("tok_out") or 0
         b["calls"] += r.get("tok_calls") or 0
+        if r.get("tok_cost_usd") is not None:
+            b["usd"] += r["tok_cost_usd"]
+            b["usd_n"] += 1
         b["rss"] = max(b["rss"], r.get("rss_peak_kb") or 0)
         cpu = r.get("cpu_sample_s")
         if not cpu:
@@ -290,11 +300,12 @@ def _bucket(records):
 
 def _print_table(title, by):
     print(f"\n{title}")
-    print(f"{'harness':<16} {'pass':>7} {'wall':>8} {'first':>7} {'rss':>8} {'cpu':>7} {'in_tok':>9} {'out_tok':>8} {'calls':>6}")
+    print(f"{'harness':<16} {'pass':>7} {'wall':>8} {'first':>7} {'rss':>8} {'cpu':>7} {'in_tok':>9} {'out_tok':>8} {'calls':>6} {'usd':>8}")
     for h, b in by.items():
         first = (b["first"] / b["first_n"]) if b["first_n"] else 0.0
+        usd = f"${b['usd']:.4f}" if b["usd_n"] else "—"
         print(f"{h:<16} {b['ok']}/{b['n']:<5} {b['wall']:>7.1f}s {first:>6.1f}s "
-              f"{_fmt_mib(b['rss']):>8} {b['cpu']:>6.1f}s {b['tin']:>9} {b['tout']:>8} {b['calls']:>6}")
+              f"{_fmt_mib(b['rss']):>8} {b['cpu']:>6.1f}s {b['tin']:>9} {b['tout']:>8} {b['calls']:>6} {usd:>8}")
 
 
 def summarize(records):
