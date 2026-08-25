@@ -422,3 +422,150 @@ test "runScript last assignment wins when a name is rebound in one script" {
     try std.testing.expect(!out.is_error);
     try std.testing.expectEqualStrings("slept 2ms", out.text);
 }
+
+fn catalogHas(specs: anytype, name: []const u8) bool {
+    for (specs) |s| if (std.mem.eql(u8, s.name, name)) return true;
+    return false;
+}
+
+test "maybeAppend keeps subagent and workflow; rlm is never the only catalog tool" {
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const Spec = struct { name: []const u8, desc: []const u8 = "", schema: []const u8 = "{}" };
+    const base = [_]Spec{
+        .{ .name = "read_file" },
+        .{ .name = "subagent" },
+        .{ .name = "workflow" },
+    };
+    const saved = available;
+    const saved_local = no_local_tools.enabled;
+    defer {
+        available = saved;
+        no_local_tools.enabled = saved_local;
+        sync();
+    }
+    available = true;
+    no_local_tools.enabled = false;
+    const on = try maybeAppend(Spec, arena, &base);
+    try std.testing.expectEqual(@as(usize, 4), on.len);
+    try std.testing.expect(catalogHas(on, "subagent"));
+    try std.testing.expect(catalogHas(on, "workflow"));
+    try std.testing.expect(catalogHas(on, tool_name));
+    try std.testing.expect(on.len > 1);
+
+    available = false;
+    const off = try maybeAppend(Spec, arena, &base);
+    try std.testing.expectEqual(@as(usize, 3), off.len);
+    try std.testing.expect(catalogHas(off, "subagent"));
+    try std.testing.expect(!catalogHas(off, tool_name));
+}
+
+test "effectiveRootSpecs: default rlm keeps subagent; --old and --lean do not drop it" {
+    const schema = @import("schema.zig");
+    const root = @import("main.zig");
+    const learn_store = @import("learn_store.zig");
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const saved = available;
+    const saved_lean = no_local_tools.lean;
+    const saved_local = no_local_tools.enabled;
+    const saved_clock = root.g_clock_sleep;
+    const saved_learn = learn_store.active_agent_loaded;
+    defer {
+        available = saved;
+        no_local_tools.lean = saved_lean;
+        no_local_tools.enabled = saved_local;
+        root.g_clock_sleep = saved_clock;
+        learn_store.active_agent_loaded = saved_learn;
+        sync();
+    }
+    no_local_tools.enabled = false;
+    root.g_clock_sleep = false;
+    learn_store.active_agent_loaded = true;
+
+    available = true;
+    no_local_tools.lean = false;
+    sync();
+    const def = try schema.effectiveRootSpecs(arena);
+    try std.testing.expect(catalogHas(def, "subagent"));
+    try std.testing.expect(catalogHas(def, "workflow"));
+    try std.testing.expect(catalogHas(def, tool_name));
+    try std.testing.expect(def.len > 2);
+
+    available = false;
+    sync();
+    const old = try schema.effectiveRootSpecs(arena);
+    try std.testing.expect(catalogHas(old, "subagent"));
+    try std.testing.expect(catalogHas(old, "workflow"));
+    try std.testing.expect(!catalogHas(old, tool_name));
+
+    available = true;
+    no_local_tools.lean = true;
+    sync();
+    const lean_on = try schema.effectiveRootSpecs(arena);
+    try std.testing.expect(catalogHas(lean_on, "subagent"));
+    try std.testing.expect(catalogHas(lean_on, tool_name));
+    try std.testing.expect(!catalogHas(lean_on, "workflow"));
+    try std.testing.expect(no_local_tools.leanKeeps("subagent"));
+    try std.testing.expect(!no_local_tools.leanKeeps(tool_name));
+}
+
+test "runScript empty subagent() reaches execSubagent; persist binds do not break that" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer dummy_client.deinit();
+    const saved = available;
+    defer {
+        available = saved;
+        resetLive(gpa, io);
+    }
+    available = true;
+    const ctx = testCtx(gpa, io, &dummy_client);
+    const first = try runScript(ctx, "prev = sleep_ms(1)");
+    defer gpa.free(first.text);
+    try std.testing.expect(!first.is_error);
+    const miss = try runScript(ctx, "h = subagent()");
+    defer gpa.free(miss.text);
+    try std.testing.expect(miss.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, miss.text, "missing required") != null);
+    try std.testing.expect(std.mem.indexOf(u8, miss.text, "prompt") != null);
+    const reuse = try runScript(ctx, "print(prev)");
+    defer gpa.free(reuse.text);
+    try std.testing.expect(!reuse.is_error);
+    try std.testing.expectEqualStrings("slept 1ms", reuse.text);
+}
+
+test "feedLive launches two independent subagent() calls before runScript claims" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer dummy_client.deinit();
+    const saved = available;
+    defer {
+        available = saved;
+        resetLive(gpa, io);
+    }
+    available = true;
+    const ctx = testCtx(gpa, io, &dummy_client);
+    feedLive(ctx, "a = subagent()\n");
+    feedLive(ctx, "b = subagent(\"\")\n");
+    var claimed = std.StringHashMap(ToolOutput).init(gpa);
+    defer {
+        var it = claimed.iterator();
+        while (it.next()) |e| gpa.free(e.value_ptr.text);
+        claimed.deinit();
+    }
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    rlm_spec.takeLive(ctx, &claimed, arena_state.allocator());
+    try std.testing.expectEqual(@as(usize, 2), claimed.count());
+    var it = claimed.iterator();
+    while (it.next()) |e| {
+        try std.testing.expect(e.value_ptr.is_error);
+        try std.testing.expect(std.mem.indexOf(u8, e.value_ptr.text, "prompt") != null);
+    }
+}

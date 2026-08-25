@@ -453,3 +453,81 @@ test "ArgLive streams the target argument field across fragment splits" {
     try std.testing.expectEqualStrings("", aw.writer.buffered());
     try std.testing.expect(a.streamed_args == .none);
 }
+
+test "argToolFor: structured tools stay none; only rlm is mid-stream speculated" {
+    try std.testing.expectEqual(ArgTool.none, argToolFor("subagent"));
+    try std.testing.expectEqual(ArgTool.none, argToolFor("workflow"));
+    try std.testing.expectEqual(ArgTool.none, argToolFor("bash"));
+    try std.testing.expectEqual(ArgTool.none, argToolFor("agent_output"));
+    try std.testing.expectEqual(ArgTool.none, argToolFor("codedb"));
+    try std.testing.expectEqual(ArgTool.rlm, argToolFor("rlm"));
+    try std.testing.expectEqual(ArgTool.attempt_completion, argToolFor("attempt_completion"));
+    try std.testing.expectEqual(ArgTool.ask_user, argToolFor("ask_user"));
+
+    var live: ArgLive = .{};
+    live.open("subagent", 0);
+    try std.testing.expectEqual(ArgTool.none, live.tool);
+    live.open("workflow", 1);
+    try std.testing.expectEqual(ArgTool.none, live.tool);
+    live.open("rlm", 2);
+    try std.testing.expectEqual(ArgTool.rlm, live.tool);
+    try std.testing.expectEqualStrings("code", argField(.rlm));
+}
+
+test "emitArgText feeds live only for rlm, even when available is the default" {
+    const spec_ptc = @import("spec_ptc.zig");
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer dummy_client.deinit();
+    const saved_avail = rlm_spec.available;
+    const saved_host = rlm_spec.run_host;
+    defer {
+        rlm_spec.available = saved_avail;
+        rlm_spec.run_host = saved_host;
+        rlm_spec.resetLive(gpa, io);
+    }
+    rlm_spec.available = true;
+    rlm_spec.run_host = struct {
+        fn host(ctx: tools_mod.ToolCtx, call: spec_ptc.Call) tools_mod.ToolOutput {
+            _ = call;
+            return .{ .text = ctx.gpa.dupe(u8, "launched") catch &.{}, .is_error = false };
+        }
+    }.host;
+
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    var a: Agent = .{
+        .gpa = gpa,
+        .arena = gpa,
+        .io = io,
+        .client = &dummy_client,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = &aw.writer,
+    };
+    defer a.partial_text.deinit(gpa);
+
+    emitArgText(&a, .attempt_completion, "a = sleep_ms(1)\n");
+    a.arg_live.open("subagent", 0);
+    a.arg_live.feed(&a, 0, "{\"prompt\":\"a = sleep_ms(1)\\n\"}");
+    const ctx = toolCtx(&a);
+    var claimed = std.StringHashMap(tools_mod.ToolOutput).init(gpa);
+    defer {
+        var it = claimed.iterator();
+        while (it.next()) |e| gpa.free(e.value_ptr.text);
+        claimed.deinit();
+    }
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    rlm_spec.takeLive(ctx, &claimed, arena_state.allocator());
+    try std.testing.expectEqual(@as(usize, 0), claimed.count());
+
+    emitArgText(&a, .rlm, "a = sleep_ms(1)\n");
+    rlm_spec.takeLive(ctx, &claimed, arena_state.allocator());
+    try std.testing.expectEqual(@as(usize, 1), claimed.count());
+    const hit = claimed.get("sleep_ms\n{\"ms\":1}").?;
+    try std.testing.expectEqualStrings("launched", hit.text);
+}
