@@ -357,6 +357,32 @@ test "an eager tool is never blocked, and the load tool is advertised only when 
     try testing.expect(!gate.blocked(fat, "mcp__fat__ghost"));
 }
 
+test "lean hides load_tool_schemas only when nothing is deferred" {
+    // -p / --lean must not always-hide: Smolify (and any connected MCP)
+    // lists public tools in the meta tool's description. Empty MCP still
+    // drops the 1.4kB stub (schema.zig's lean-or-!anyFolded skip).
+    const schema = @import("schema.zig");
+    const no_local = @import("no_local_tools.zig");
+    withDefaults();
+    defer withDefaults();
+    const saved = no_local.lean;
+    defer no_local.lean = saved;
+    no_local.lean = true;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    try testing.expect(gate.hiddenSpec(gate.tool_name, &.{}));
+    const specs = try schema.effectiveRootSpecs(arena);
+    const empty = try schema.renderRootTools(arena, .openai, specs, &.{});
+    try testing.expect(std.mem.indexOf(u8, empty, gate.tool_name) == null);
+
+    const fat = try fixture(arena, "fat", 8, 2000);
+    try testing.expect(!gate.hiddenSpec(gate.tool_name, fat));
+    const with_mcp = try schema.renderRootTools(arena, .openai, specs, fat);
+    try testing.expect(std.mem.indexOf(u8, with_mcp, gate.tool_name) != null);
+}
+
 test "tool_desc stays JSON-escape-free (it is spliced into a raw schema string)" {
     for (gate.tool_desc) |c| try testing.expect(c != '"' and c != '\\' and c >= 0x20);
     try testing.expect(std.mem.indexOf(u8, gate.tool_desc, "CANNOT be called") != null);

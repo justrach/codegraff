@@ -267,12 +267,18 @@ A "say OK" one-shot was **3880 in** (13.9kB body): `load_tool_schemas`
 `read_tool_result` overflow paging, long intro/work/closing/git
 essays, duplicate `rlm` system_note.
 
-**Take:** hide the meta tool on lean even when home MCP is deferred
-(need MCP? `--no-lean`); drop the pager from `lean_tools`; short
-`lean_intro` / `lean_work` / `lean_closing` (SPEC clause kept); no
-git-safety / root-cause / authoring / rlm system_note on -p.
+**Take:** drop the pager from `lean_tools`; short `lean_intro` /
+`lean_work` / `lean_closing` (SPEC clause kept); no git-safety /
+root-cause / authoring / rlm system_note on -p. Hide
+`load_tool_schemas` on lean only when nothing is deferred (empty
+MCP / all eager) — SWE sandboxes stay cheap. Do **not** always-hide
+on lean: a connected server (Smolify CI) lists public tools in that
+description. Home MCP that actually connects pays the 1.4kB tool
+again; that is correct (the tool is usable). Need the full catalog?
+`--no-lean`.
 
-First-request after that: **2660 in**, 8.7kB body, 7 tools
+First-request after that (empty MCP, the SWE sandbox shape): **2660
+in**, 8.7kB body, 7 tools
 (bash/read/edit/write/codedb/attempt_completion/rlm).
 
 SWE (`run-20260825-073458.jsonl`, graff-dev):

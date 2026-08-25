@@ -295,9 +295,9 @@ pub fn hiddenSpec(name: []const u8, all: []const mcp.Tool) bool {
         std.mem.eql(u8, name, "mcp_search_tools") or
         std.mem.eql(u8, name, "mcp_select_tool");
     if (!progressive) return false;
-    // -p: home MCP still counts as deferred and kept the 1.4kB meta tool
-    // on every turn. One-shots that need MCP pass --no-lean.
-    if (@import("no_local_tools.zig").lean) return true;
+    // Lean still consults this: schema.zig skips only when nothing is
+    // deferred (empty MCP / all eager). A connected server (Smolify)
+    // stays advertised so the listing in the description is reachable.
     return !anyDeferred(all);
 }
 
