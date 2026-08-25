@@ -294,7 +294,7 @@ pub fn leanSegment(name: []const u8, original: []const u8, is_lean: bool) ?[]con
     if (!is_lean) return original;
     if (std.mem.eql(u8, name, "trace") or std.mem.eql(u8, name, "harness_issue") or
         std.mem.eql(u8, name, "headsup") or std.mem.eql(u8, name, "git_safety") or
-        std.mem.eql(u8, name, "root_cause")) return null;
+        std.mem.eql(u8, name, "root_cause") or std.mem.startsWith(u8, name, "parallel_")) return null;
     if (std.mem.eql(u8, name, "intro")) return lean_intro_note;
     if (std.mem.eql(u8, name, "local_tools")) return lean_local_tools_note;
     if (std.mem.eql(u8, name, "work")) return lean_work_note;

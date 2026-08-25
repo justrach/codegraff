@@ -131,17 +131,21 @@ pub fn buildSystemPrompt(
         sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, @import("rlm_spec.zig").system_note });
     // Codex-style skills: one capability line per installed optional
     // companion (skills_registry) — metadata in context, --help on demand.
-    for (skills.skills_registry) |sk| {
-        if (sk.note.len == 0 or !skills.skillActive(io, sk)) continue;
-        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, sk.note });
-    }
-    // Same idea for known MCP servers: a usage note enters the context only
-    // when the server actually connected this session (consent given, spawn
-    // succeeded). Native tools remain the fallback either way.
-    for (skills.mcp_notes) |mn| {
-        if (!skills.mcpServerConnected(mcp_tools, mn.server)) continue;
-        const note = skills.codedbproNote(mn.server, codedbpro_licensed, mn.note);
-        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, note });
+    // Lean one-shots do not need companion essays (ADR 0024 prefix tax).
+    const lean = @import("no_local_tools.zig").lean;
+    if (!lean) {
+        for (skills.skills_registry) |sk| {
+            if (sk.note.len == 0 or !skills.skillActive(io, sk)) continue;
+            sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, sk.note });
+        }
+        // Same idea for known MCP servers: a usage note enters the context only
+        // when the server actually connected this session (consent given, spawn
+        // succeeded). Native tools remain the fallback either way.
+        for (skills.mcp_notes) |mn| {
+            if (!skills.mcpServerConnected(mcp_tools, mn.server)) continue;
+            const note = skills.codedbproNote(mn.server, codedbpro_licensed, mn.note);
+            sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, note });
+        }
     }
     // #352: mirror the Codex imagegen skill into ~/.harness/skills BEFORE the
     // scan below, so the copied playbook is in this session's catalog. The same
@@ -156,10 +160,12 @@ pub fn buildSystemPrompt(
     // Pinned once into the system-prompt prefix so later turns hit the
     // prompt cache (Codex: old prompt is an exact prefix of the new one).
     // The `skill` tool rescans without rewriting this prefix.
-    skill_docs.g_skills = skill_docs.load(io, arena, fleet.g_home);
-    const skill_catalog = skill_docs.promptCatalog(arena, skill_docs.g_skills);
-    if (skill_catalog.len > 0) {
-        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, skill_catalog });
+    if (!lean) {
+        skill_docs.g_skills = skill_docs.load(io, arena, fleet.g_home);
+        const skill_catalog = skill_docs.promptCatalog(arena, skill_docs.g_skills);
+        if (skill_catalog.len > 0) {
+            sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, skill_catalog });
+        }
     }
     // #326: this returns the composed BASE only. prompts.setSystemPrompts()
     // (called once by buildRootAgent, the sole consumer) derives
