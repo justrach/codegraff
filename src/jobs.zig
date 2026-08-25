@@ -1,9 +1,5 @@
-//! Subprocess execution: the capped-output runner (runCapped), git-worktree
-//! management (`graff worktree` add/merge/remove + the -w auto-checkpoint
-//! commits), and the background bash-job pool (spawn/output/kill/reap). Split
-//! out of main.zig (600-line goal). Back-imports main for ToolOutput (the job
-//! tools' result shape). main re-exports runCapped (hooks.zig back-imports it)
-//! and aliases the worktree + job entry points back.
+//! Capped runner, worktree commands, and the background bash-job pool.
+//! Split out of main.zig (600-line goal). Back-imports main for ToolOutput.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -19,7 +15,7 @@ pub const CappedRun = process_runner.CappedRun;
 pub const CappedRunOptions = process_runner.CappedRunOptions;
 pub const runCapped = process_runner.runCapped;
 pub const runCappedWithOptions = process_runner.runCappedWithOptions;
-const ranOk = process_runner.ranOk;
+pub const ranOk = process_runner.ranOk;
 
 /// Commit-message trailer that credits the harness assist. The commit AUTHOR
 /// stays the user's own git identity (their GitHub account) — graff never
@@ -219,25 +215,27 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
     try out.print("unknown worktree command '{s}' — use: graff worktree list | merge <name> | remove <name> | prune [older-than <days>]\n", .{action});
 }
 
-/// One background bash job. Pump drains pipes; session-global (survives Esc).
-const Job = struct {
+const Job = struct { // session-global; pump drains pipes; survives Esc
     id: u32,
-    cmd: []u8, // gpa-owned, for /jobs display
+    cmd: []u8,
     child: std.process.Child,
-    buf: std.ArrayList(u8) = .empty, // interleaved stdout+stderr
-    cursor: usize = 0, // start of unread output
-    exit_code: ?u8 = null, // meaningful once done
+    buf: std.ArrayList(u8) = .empty,
+    cursor: usize = 0,
+    exit_code: ?u8 = null,
     done: bool = false,
-    killed: bool = false, // ended via bash_kill rather than naturally
-    kill_requested: bool = false, // pump notices within one 200ms tick
-    dropped: bool = false, // unread output overflowed job_unread_cap
-    future: Io.Future(void) = undefined, // the pump; awaited only by jobsReap
+    killed: bool = false,
+    kill_requested: bool = false,
+    dropped: bool = false,
+    quiet: bool = false, // skip job_notify until auto-bg (#620)
+    future: Io.Future(void) = undefined,
+    stream: ?process_runner.StreamFn = null,
+    stream_ctx: ?*anyopaque = null,
 };
 
-const job_unread_cap = 256 * 1024;
+pub const job_unread_cap = 256 * 1024;
 const job_wait = @import("job_wait.zig");
 const job_notify = @import("job_notify.zig");
-const tool_pulse = @import("tool_pulse.zig");
+const tool_pulse = @import("tool_pulse.zig"); // silence heartbeat during waitForeground
 
 /// POSIX process groups; windows/wasi have none, so the group kills below and
 /// the job's own pgid are compiled out there (#198).
@@ -261,9 +259,10 @@ pub var g_jobs: Jobs = .{};
 /// dropping the oldest *unread* bytes past the cap (a chatty server must not
 /// grow memory unboundedly between bash_output polls). Caller holds the mutex.
 fn jobDrain(job: *Job, gpa: Allocator, readers: []const *Io.Reader) void {
-    for (readers) |r| {
+    for (readers, 0..) |r, i| {
         const b = r.buffered();
         if (b.len == 0) continue;
+        if (job.stream) |emit| emit(job.stream_ctx, @intCast(i), b);
         job.buf.appendSlice(gpa, b) catch {};
         r.toss(b.len);
     }
@@ -319,33 +318,38 @@ fn jobPump(job: *Job, gpa: Allocator, io: Io) void {
     job.done = true;
     const id = job.id;
     const cmd = job.cmd;
+    const quiet = job.quiet;
     g_jobs.mutex.unlock(io);
-    job_notify.record(io, id, code, killed, cmd);
+    if (!quiet) job_notify.record(io, id, code, killed, cmd);
 }
 
-/// Argv that runs a shell command string: `/bin/sh -c` on POSIX, `cmd.exe /c`
-/// on Windows (which has no /bin/sh). The bash tool routes through this so the
-/// model's shell commands run on every platform.
-pub fn shellArgv(cmd: []const u8) [3][]const u8 {
+pub fn shellArgv(cmd: []const u8) [3][]const u8 { // /bin/sh -c, or cmd.exe /c on Windows
     return if (builtin.os.tag == .windows)
         .{ "cmd.exe", "/c", cmd }
     else
         .{ "/bin/sh", "-c", cmd };
 }
 
-/// Spawn a background job and its pump. Uses io.concurrent (NOT io.async,
-/// which may run inline and block this tool forever on a long-lived child);
-/// no spare concurrency cleans up and surfaces the error to the model.
+pub const SpawnOpts = struct {
+    cwd: ?[]const u8 = null,
+    stream: ?process_runner.StreamFn = null,
+    stream_ctx: ?*anyopaque = null,
+    quiet: bool = false,
+};
+
 pub fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8) !*Job {
+    return spawnJobOpts(gpa, io, cmd, .{});
+}
+
+pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*Job {
     const argv = shellArgv(cmd);
     var child = try std.process.spawn(io, .{
         .argv = &argv,
+        .cwd = if (opts.cwd) |path| .{ .path = path } else .inherit,
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
-        // #198: the job leads its own process group, so bash_kill / jobsReap
-        // reach everything it spawned, not just the shell.
-        .pgid = if (posix_groups) 0 else null,
+        .pgid = if (posix_groups) 0 else null, // #198: bash_kill reaches grandchildren
     });
     const cmd_copy = gpa.dupe(u8, cmd) catch |e| {
         child.kill(io);
@@ -356,7 +360,7 @@ pub fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8) !*Job {
         child.kill(io);
         return e;
     };
-    job.* = .{ .id = 0, .cmd = cmd_copy, .child = child };
+    job.* = .{ .id = 0, .cmd = cmd_copy, .child = child, .stream = opts.stream, .stream_ctx = opts.stream_ctx, .quiet = opts.quiet };
     g_jobs.mutex.lockUncancelable(io);
     job.id = g_jobs.next_id;
     g_jobs.next_id += 1;
@@ -476,8 +480,102 @@ pub fn jobKill(gpa: Allocator, io: Io, id: u32) !ToolOutput {
     return .{ .text = try std.fmt.allocPrint(gpa, "job {d}: kill requested (still shutting down — check bash_output)", .{id}) };
 }
 
-/// Session end: kill every job, await the pumps (sole owner of the futures),
-/// free everything. Runs from main's defer, after the REPL/one-shot returns.
+/// Outcome of a root foreground wait (#620 / grok-build auto-background).
+pub const FgDone = struct { exit_code: ?u8, killed: bool, output: []u8, dropped: bool };
+pub const FgPartial = struct { id: u32, output: []u8, dropped: bool };
+pub const FgWait = union(enum) { done: FgDone, running: FgPartial, cancelled: FgPartial };
+
+fn takeUnread(gpa: Allocator, job: *Job) error{OutOfMemory}!struct { []u8, bool } {
+    job.stream = null;
+    job.stream_ctx = null;
+    const out = try gpa.dupe(u8, job.buf.items[job.cursor..]);
+    job.cursor = job.buf.items.len;
+    const dropped = job.dropped;
+    job.dropped = false;
+    return .{ out, dropped };
+}
+
+fn freeJob(gpa: Allocator, io: Io, job: *Job) void {
+    job.future.await(io);
+    job.buf.deinit(gpa);
+    gpa.free(job.cmd);
+    gpa.destroy(job);
+}
+
+pub fn reapFinished(gpa: Allocator, io: Io, id: u32) void {
+    g_jobs.mutex.lockUncancelable(io);
+    var found: ?*Job = null;
+    for (g_jobs.list.items, 0..) |j, i| {
+        if (j.id == id) {
+            if (j.done) found = g_jobs.list.swapRemove(i);
+            break;
+        }
+    }
+    if (g_jobs.list.items.len == 0) {
+        g_jobs.list.deinit(gpa);
+        g_jobs.list = .empty;
+    }
+    g_jobs.mutex.unlock(io);
+    if (found) |job| freeJob(gpa, io, job);
+}
+
+pub fn waitForeground(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !FgWait {
+    const deadline = if (wait_ms == 0) job_wait.wait_cap_ms else @min(wait_ms, job_wait.wait_cap_ms);
+    var waited: u64 = 0;
+    var still = tool_pulse.Pulse{};
+    while (true) {
+        g_jobs.mutex.lockUncancelable(io);
+        const job = g_jobs.find(id) orelse {
+            g_jobs.mutex.unlock(io);
+            return error.NoSuchJob;
+        };
+        if (job.done) {
+            const pair = takeUnread(gpa, job) catch {
+                g_jobs.mutex.unlock(io);
+                return error.OutOfMemory;
+            };
+            const result: FgWait = .{ .done = .{ .exit_code = job.exit_code, .killed = job.killed, .output = pair[0], .dropped = pair[1] } };
+            g_jobs.mutex.unlock(io);
+            return result;
+        }
+        if (waited >= deadline) {
+            const pair = takeUnread(gpa, job) catch {
+                g_jobs.mutex.unlock(io);
+                return error.OutOfMemory;
+            };
+            job.quiet = false; // completion should now notify (#620)
+            const result: FgWait = .{ .running = .{ .id = id, .output = pair[0], .dropped = pair[1] } };
+            g_jobs.mutex.unlock(io);
+            return result;
+        }
+        g_jobs.mutex.unlock(io);
+        if (Agent.esc_cancel.load(.acquire)) {
+            _ = jobKill(gpa, io, id) catch {};
+            g_jobs.mutex.lockUncancelable(io);
+            if (g_jobs.find(id)) |j| {
+                const pair = takeUnread(gpa, j) catch {
+                    g_jobs.mutex.unlock(io);
+                    return error.OutOfMemory;
+                };
+                g_jobs.mutex.unlock(io);
+                return .{ .cancelled = .{ .id = id, .output = pair[0], .dropped = pair[1] } };
+            }
+            g_jobs.mutex.unlock(io);
+            return .{ .cancelled = .{ .id = id, .output = try gpa.dupe(u8, ""), .dropped = false } };
+        }
+        io.sleep(.fromMilliseconds(100), .awake) catch {
+            waited = deadline;
+            continue;
+        };
+        waited += 100;
+        if (still.due(waited)) {
+            var ebuf: [16]u8 = undefined;
+            tool_pulse.emitNotice(io, "· bash still running · {s}", .{tool_pulse.formatElapsed(&ebuf, waited)});
+        }
+    }
+}
+
+/// Session end: kill every job, await pumps, free. From main's defer.
 pub fn jobsReap(gpa: Allocator, io: Io) void {
     g_jobs.mutex.lockUncancelable(io);
     const jobs = g_jobs.list.toOwnedSlice(gpa) catch {
@@ -486,12 +584,7 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
     };
     for (jobs) |job| job.kill_requested = true;
     g_jobs.mutex.unlock(io);
-    for (jobs) |job| {
-        job.future.await(io);
-        job.buf.deinit(gpa);
-        gpa.free(job.cmd);
-        gpa.destroy(job);
-    }
+    for (jobs) |job| freeJob(gpa, io, job);
     gpa.free(jobs);
     g_jobs.list.deinit(gpa);
 }
@@ -500,89 +593,5 @@ test { // split-out modules: unreferenced, their tests silently never run
     _ = worktree_prune;
     _ = @import("worktree_lease.zig");
     _ = .{ job_wait, job_notify };
-}
-
-test "foreground tool subprocesses own their process group (#266, #198)" {
-    const inherited = toolRunOptions(null);
-    try std.testing.expect(inherited.kill_process_tree);
-    try std.testing.expect(std.meta.activeTag(inherited.cwd) == .inherit);
-    const pinned = toolRunOptions("/tmp/graff-worktree");
-    try std.testing.expect(pinned.kill_process_tree);
-    try std.testing.expectEqualStrings("/tmp/graff-worktree", pinned.cwd.path);
-}
-
-test "killing a background job takes its grandchildren with it (#198)" {
-    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
-    g_jobs = .{};
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    // The job inherits this process's cwd, the one tmpDir resolved .zig-cache
-    // against, so the marker path is reachable from the shell. The grandchild
-    // detaches from the job's pipes or the pump never sees EOF; `sh` execs the
-    // trailing sleep, so a bare child kill orphans the marker subshell.
-    const cmd = try std.fmt.allocPrint(gpa, "(sleep 0.8; printf survived > .zig-cache/tmp/{s}/marker) >/dev/null 2>&1 & sleep 30", .{&tmp.sub_path});
-    defer gpa.free(cmd);
-    const id = (try spawnJob(gpa, io, cmd)).id;
-    defer jobsReap(gpa, io);
-    const killed = try jobKill(gpa, io, id);
-    gpa.free(killed.text);
-    io.sleep(.fromMilliseconds(1_200), .awake) catch {};
-    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "marker", .{}));
-}
-
-test "isolated capped runs clean descendants after timeout and normal exit" {
-    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const timed = try runCappedWithOptions(
-        std.testing.allocator,
-        io,
-        &.{ "/bin/sh", "-c", "(sleep 0.8; printf survived > timeout-marker) >/dev/null 2>&1 & sleep 30" },
-        1024,
-        1024,
-        50,
-        .{ .cwd = .{ .dir = tmp.dir }, .kill_process_tree = true },
-    );
-    defer {
-        std.testing.allocator.free(timed.stdout);
-        std.testing.allocator.free(timed.stderr);
-    }
-    try std.testing.expect(timed.timed_out);
-
-    const completed = try runCappedWithOptions(
-        std.testing.allocator,
-        io,
-        &.{ "/bin/sh", "-c", "(sleep 0.8; printf survived > completed-marker) >/dev/null 2>&1 & exit 0" },
-        1024,
-        1024,
-        2_000,
-        .{ .cwd = .{ .dir = tmp.dir }, .kill_process_tree = true },
-    );
-    defer {
-        std.testing.allocator.free(completed.stdout);
-        std.testing.allocator.free(completed.stderr);
-    }
-    try std.testing.expect(ranOk(completed));
-    io.sleep(.fromMilliseconds(1_000), .awake) catch {};
-    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "timeout-marker", .{}));
-    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "completed-marker", .{}));
-}
-
-test "bash_output wait_ms>0 waits for exit, not the next byte (ADR 0010)" {
-    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
-    g_jobs = .{};
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    const id = (try spawnJob(gpa, io, "printf start; sleep 0.15; printf done; exit 7")).id;
-    defer jobsReap(gpa, io);
-    const snap = try jobOutput(gpa, io, id, 0);
-    defer gpa.free(snap.text);
-    const done = try jobOutput(gpa, io, id, 30_000);
-    defer gpa.free(done.text);
-    const text = if (std.mem.indexOf(u8, done.text, "exited with code 7") != null) done.text else snap.text;
-    try std.testing.expect(std.mem.indexOf(u8, text, "exited with code 7") != null);
+    _ = @import("jobs_tests.zig");
 }

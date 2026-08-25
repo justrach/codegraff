@@ -52,9 +52,9 @@ const empty_schema =
 const base_specs = [_]ToolSpec{
     .{
         .name = "bash",
-        .desc = "Run a shell command via /bin/sh -c in the current working directory. Returns stdout, stderr, and the exit code. A user-cancelled command reports cancelled (its whole local process group is killed; a remote process started over ssh may survive on the remote host). For long-running commands set run_in_background true: it returns a job id immediately and you are notified on completion — do not poll. bash_output(wait_ms>0) blocks until exit (up to 10h); omit wait_ms for a snapshot. Stop it with bash_kill.",
+        .desc = "Run a shell command via /bin/sh -c in the current working directory. Returns stdout, stderr, and the exit code. A user-cancelled command reports cancelled (its whole local process group is killed; a remote process started over ssh may survive on the remote host). Foreground commands that are still running after 120s (or timeout ms) are moved to the background and return a job id — the process keeps running. For long-running commands set run_in_background true to skip the wait. You are notified on completion — do not poll. bash_output(wait_ms>0) blocks until exit (up to 10h); omit wait_ms for a snapshot. Stop it with bash_kill.",
         .schema =
-        \\{"type": "object", "properties": {"command": {"type": "string", "description": "Shell command to execute"}, "run_in_background": {"type": "boolean", "description": "Start as a background job and return its id immediately instead of waiting (default false)"}}, "required": ["command"]}
+        \\{"type": "object", "properties": {"command": {"type": "string", "description": "Shell command to execute"}, "timeout": {"type": "integer", "description": "Optional foreground wait in milliseconds before auto-background (default 120000, max 36000000). 0 uses the default. Ignored when run_in_background is true."}, "run_in_background": {"type": "boolean", "description": "Start as a background job and return its id immediately instead of waiting (default false)"}}, "required": ["command"]}
         ,
     },
     .{

@@ -10,6 +10,20 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.276 (2026-08-25)
+
+- Root foreground `bash` no longer waits forever: after 120s (or `timeout`
+  ms) a still-running command is moved to the background and the model
+  gets a job id, matching grok-build. Esc still kills; the cancelled
+  result tells the model to use `run_in_background`. Subagents keep the
+  #93 120s kill. (#620)
+
+## v0.0.275 (2026-08-24)
+
+- OpenRouter requests carry app attribution (`categories: cli-agent, programming-app`).
+- TUI: Esc with a draft in the composer never kills a live turn.
+- Agent retries degenerate empty completions and keep-alive-only bodies.
+
 ## v0.0.274 (2026-08-23)
 
 - Rate-limit and 5xx retries no longer dump the provider's raw error JSON

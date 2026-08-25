@@ -21,6 +21,9 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.276
+    \\  • foreground bash auto-backgrounds after 120s instead of waiting forever (#620)
+    \\
     \\0.0.275
     \\  • OpenRouter requests carry app attribution (categories: cli-agent, programming-app)
     \\  • TUI: Esc with a draft in the composer never kills a live turn

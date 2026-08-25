@@ -28,8 +28,6 @@ const outsideCwd = tools.outsideCwd;
 const beforeFromRead = tools.beforeFromRead; // /rewind snapshot classifier (snapshots.zig)
 const blankText = tools.blankText;
 const rawFetch = tools.rawFetch;
-const bash_stdout_cap = tools.bash_stdout_cap;
-const bash_stderr_cap = tools.bash_stderr_cap;
 const webfetch_cap = tools.webfetch_cap;
 
 const subagent = @import("subagent.zig");
@@ -45,13 +43,9 @@ const confinedPath = approvals_mod.confinedPath;
 const noSymlinkEscape = approvals_mod.noSymlinkEscape;
 const jobs = @import("jobs.zig");
 const runCapped = jobs.runCapped;
-const runCappedWithOptions = jobs.runCappedWithOptions;
-const exec_bash_stream = @import("exec_bash_stream.zig");
-const toolRunOptions = jobs.toolRunOptions; // #266/#198: own the child's process group
-const spawnJob = jobs.spawnJob;
 const jobOutput = jobs.jobOutput;
 const jobKill = jobs.jobKill;
-const shellArgv = jobs.shellArgv;
+const exec_bash = @import("exec_bash.zig");
 const skills = @import("skills.zig");
 const skill_docs = @import("skill_docs.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: refuse an MCP tool whose schema was never loaded
@@ -72,29 +66,6 @@ const native_fold = @import("native_fold.zig"); // folded native power tools: la
 const vision = @import("vision.zig"); // read_file stages images like MCP image results (#249)
 const input_util = @import("input_util.zig");
 const imagegen = @import("imagegen.zig"); // #352: the codex-gated image tool (advertising lives in schema.zig/tool_gates.zig)
-
-/// Wall-clock ceiling for one *subagent* bash command. Subagents run on pool
-/// threads with no TTY, so there is no Esc to kill a runaway command — without
-/// this, a codedb refusal that pushes a subagent onto an unfiltered `grep ~/`
-/// hangs the whole workflow for ~48 min (#93). The root keeps its Esc-only,
-/// no-deadline behavior (a human is watching and may want a long build).
-const subagent_bash_deadline_ms: u64 = 120 * 1000;
-
-/// #266: killing a local `ssh` proves nothing about the remote command it was
-/// running — a cancelled or timed-out ssh result carries a caveat saying so.
-fn isSshCommand(cmd: []const u8) bool {
-    var it = std.mem.tokenizeAny(u8, cmd, " \t\r\n");
-    const first = it.next() orelse return false;
-    return std.mem.eql(u8, std.fs.path.basename(first), "ssh");
-}
-
-test "isSshCommand: bare and pathed ssh, not scp or substrings" {
-    try std.testing.expect(isSshCommand("ssh host uptime"));
-    try std.testing.expect(isSshCommand("  /usr/bin/ssh -T host"));
-    try std.testing.expect(!isSshCommand("scp file host:"));
-    try std.testing.expect(!isSshCommand("echo ssh"));
-    try std.testing.expect(!isSshCommand(""));
-}
 
 fn learningArgv(argv: *[10][]const u8, exe_path: []const u8, contribute: bool) usize {
     var argc: usize = 0;
@@ -283,68 +254,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (run.stdout.len == 0 and run.stderr.len == 0) try aw.writer.writeAll(if (ok) "learning run completed" else "learning run failed without output");
         return .{ .text = try aw.toOwnedSlice(), .is_error = !ok };
     }
-    if (std.mem.eql(u8, call.name, "bash")) {
-        const cmd = strField(input, "command") orelse return missingArg(gpa, "command");
-        // Subagents have no stdin to prompt on; their gate is the allowlist.
-        if (ctx.from_sub) if (ctx.approvals) |ap| if (!ap.allowed(ctx.io, cmd)) return .{
-            .text = try gpa.dupe(u8, "command not pre-approved — subagents may only run user-approved or read-only commands, with no chaining/pipes/redirection. Use read_file/edit_file/write_file, or report back what you need run."),
-            .is_error = true,
-        };
-        const bg = tools.json_args.flag(input, "run_in_background");
-        if (bg) {
-            const job = spawnJob(gpa, io, cmd) catch |err| return .{
-                // #122: backgrounding costs MORE fds (pipes + pump task), so the
-                // generic "run it in the foreground" advice is right for every
-                // error except the fd-quota ones — special-case those. #253: for
-                // SYSTEM-wide exhaustion neither foregrounding nor ulimit helps.
-                .text = if (err == error.ProcessFdQuotaExceeded)
-                    try gpa.dupe(u8, "could not start background job (ProcessFdQuotaExceeded) — graff hit its open-file limit. Wait for running jobs/tools to finish, then retry with less parallel fan-out; if it recurs, raise the limit (`ulimit -n 4096`) before starting graff.")
-                else if (err == error.SystemFdQuotaExceeded)
-                    try gpa.dupe(u8, "could not start background job (SystemFdQuotaExceeded) — the SYSTEM-wide open-file table is full, so neither foregrounding nor `ulimit` helps. Wait for other processes to release files (or close some applications), then retry.")
-                else
-                    try std.fmt.allocPrint(gpa, "could not start background job ({t}) — run it in the foreground instead", .{err}),
-                .is_error = true,
-            };
-            return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. You are notified on exit — do not poll. bash_output(id {d}, wait_ms>0) blocks until it exits; omit wait_ms for a snapshot. bash_kill stops it.{s}", .{
-                job.id,
-                job.cmd,
-                job.id,
-                if (isSshCommand(cmd)) " Killing the local SSH job cannot prove a detached remote process stopped; verify the remote host." else "",
-            }) };
-        }
-        const sh = shellArgv(cmd);
-        const deadline: u64 = if (ctx.from_sub) subagent_bash_deadline_ms else 0;
-        var opts = toolRunOptions(ctx.agent_cwd);
-        var live = exec_bash_stream.Ctx{ .io = io };
-        exec_bash_stream.attach(&opts, !ctx.from_sub, &live);
-        const run = try runCappedWithOptions(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, deadline, opts);
-        defer gpa.free(run.stdout);
-        defer gpa.free(run.stderr);
-
-        const exit_code: ?u8 = switch (run.term) {
-            .exited => |code| code,
-            else => null,
-        };
-        var aw: Io.Writer.Allocating = .init(gpa);
-        errdefer aw.deinit();
-        const w = &aw.writer;
-        if (run.stdout.len > 0) try w.writeAll(run.stdout);
-        if (run.stdout_truncated) try w.print("\n[stdout truncated at {d} KB]", .{bash_stdout_cap / 1024});
-        if (run.stderr.len > 0) try w.print("\n[stderr]\n{s}", .{run.stderr});
-        if (run.stderr_truncated) try w.print("\n[stderr truncated at {d} KB]", .{bash_stderr_cap / 1024});
-        if (run.cancelled) {
-            try w.writeAll("\n[cancelled by user; local process group killed]");
-        } else if (run.timed_out) {
-            try w.print("\n[timed out after {d}s and was killed — too long for a subagent. Don't retry as-is: scope it to specific paths or globs instead of scanning the whole directory, or report back what you need run.]", .{subagent_bash_deadline_ms / 1000});
-        } else if (exit_code) |code| {
-            if (code != 0) try w.print("\n[exit code {d}]", .{code});
-        } else try w.writeAll("\n[terminated abnormally]");
-        if ((run.cancelled or run.timed_out) and isSshCommand(cmd)) {
-            try w.writeAll("\n[ssh note: the local SSH client was killed, but a detached or disconnect-resistant remote process may survive; verify it on the remote host]");
-        }
-        if (run.stdout.len == 0 and run.stderr.len == 0 and exit_code == 0) try w.writeAll("(no output)");
-        return .{ .text = try aw.toOwnedSlice(), .is_error = exit_code == null or exit_code.? != 0, .cancelled = run.cancelled };
-    }
+    if (std.mem.eql(u8, call.name, "bash")) return exec_bash.exec(ctx, call);
     if (std.mem.eql(u8, call.name, "bash_output")) {
         const id = intField(input, "id") orelse return missingArg(gpa, "id");
         const wait_ms = intField(input, "wait_ms") orelse 0;
@@ -530,7 +440,7 @@ test "internal learning respects the parent privacy ceiling" {
 }
 
 test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, so the compiled-in references live here (the reach check diffs the test binary, not which file holds the line)
-    _ = exec_bash_stream;
+    _ = exec_bash;
     _ = @import("codedbpro_report.zig");
     _ = @import("tool_balance.zig");
     _ = @import("codedb_exec.zig");
