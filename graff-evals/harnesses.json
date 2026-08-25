@@ -42,7 +42,7 @@
     "schema_args": ["--output-schema", "{schema}"],
     "env": {"GRAFF_POST_DEADLINE_SECS": "90"},
     "default_model": "grok-4.6",
-    "note": "default rlm + MCP visible (need --no-lean for load_tool_schemas); MCP host functions on"
+    "note": "full harness for the MCP bench: --no-lean (complete catalog). Lean is a different prefix and is not comparable."
   },
   "graff-dev-rlm-struct": {
     "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo", "--no-lean"],

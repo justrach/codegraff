@@ -140,7 +140,7 @@ VARIANTS = [
         "id": "R",
         "harness": "graff-dev",
         "task": "linear-nohint",
-        "label": "out of the box: default -p (lean + yolo), no each() hint",
+        "label": "lean catalog (NOT the MCP bench; different prefix than H/J)",
     },
 ]
 

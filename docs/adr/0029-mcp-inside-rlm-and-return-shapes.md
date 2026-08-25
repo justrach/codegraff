@@ -120,19 +120,20 @@ A point is on the front if nothing else is ≤ on every axis and < on one.
 
 | id | wall | in | calls | why it stays |
 |---|---:|---:|---:|---|
-| **R** | **16.3s** | **14k** | **4** | default `-p` (lean fold + slim); dominates H |
+| **H** | **28.0s** | 112k | **7** | fastest / fewest calls (no-hint structured, `--no-lean`) |
 | **I** | 31.1s | 107k | 7 | same path, slightly fewer tokens |
 | **D-r1** | 41.1s | 107k | 10 | rlm+each, one lucky rep |
 | **J-live** | 47.3s | **84k** | 9 | `each` + `len`/`project`; first script printed ids only |
 
 Everything else is dominated (including `--old`, sidecar, split,
-quiet-print, K-live, and H-live's 70s variance rep).
+quiet-print, K-live, and H-live's 70s variance rep). **R is not on
+this front:** it ran the lean catalog (`graff-dev`), a different
+harness. The MCP bench is `--no-lean` only (`graff-dev-nolean`).
 
 J used rlm for real (`issues = list_issues(); comments = each(...);
 print(len, project)`). It is the **token vertex**. H is the **wall
 vertex**. There is still no point that wins both. Warm shapes (K) did
-not help J. Do not ship rlm-as-default for this MCP task; keep
-len/project so the token vertex is reachable.
+not help J. Keep len/project so the token vertex is reachable.
 
 ## Learnt slim (the muscle, not another hint)
 
@@ -154,13 +155,7 @@ schemas a load away). Empty `-p` (no deferred MCP) still hides the meta
 tool. Consent is unchanged. `--no-lean` is the eager-schema opt-out, not
 the MCP on-switch.
 
-Prove with variant **R**: `graff-dev` (no `--no-lean`) + `linear-nohint`.
-
-Live SuperGrok grok-4.6, ReleaseSafe, one rep (`9ec5884`):
-
-| var | harness | pass | wall | RSS | in | out | calls |
-|---|---|---:|---:|---:|---:|---:|---:|
-| **R** default `-p` | graff-dev (lean+yolo) | ✓ | **16.3s** | 9.5M | **14113** | 928 | **4** |
-| H (prior, `--no-lean`) | graff-dev-nolean | ✓ | 28.0s | 10.6M | 112073 | 1607 | 7 |
-
-R dominates H on wall, tokens, and calls. The `--no-lean` MCP one-shot was the expensive path: full catalog + fat results. Default `-p` + fold + slim is the box.
+Variant **R** (`graff-dev`, implied `--lean`) did pass at 16.3s / 14k / 4
+calls. That is a **different catalog** (lean keep-list). It is not an
+A/B against H/J. The bench stays `graff-dev-nolean`. Learnt slim on
+that harness is N/L/P.
