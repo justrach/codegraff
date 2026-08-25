@@ -294,6 +294,7 @@ fn hostField(tool: []const u8) []const u8 {
     if (std.mem.eql(u8, tool, "llm_query")) return "prompt";
     if (std.mem.eql(u8, tool, "bash")) return "command";
     if (std.mem.eql(u8, tool, "webfetch")) return "url";
+    if (std.mem.eql(u8, tool, "subagent")) return "prompt";
     return "arg";
 }
 
@@ -461,4 +462,21 @@ test "splitStatements breaks semicolon one-liners; strings keep their commas" {
     const bash = (try extractCall(a, "b = bash(\"ls -la\")")).?;
     try std.testing.expectEqualStrings("bash", bash.name);
     try std.testing.expectEqualStrings("{\"command\":\"ls -la\"}", bash.args_json);
+}
+
+test "extractCall maps subagent(\"task\") onto prompt; two calls stay independent" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const one = (try extractCall(a, "h = subagent(\"review auth\")")).?;
+    try std.testing.expectEqualStrings("subagent", one.name);
+    try std.testing.expectEqualStrings("{\"prompt\":\"review auth\"}", one.args_json);
+    const bg = (try extractCall(a, "subagent(prompt=\"audit tests\", run_in_background=true)")).?;
+    try std.testing.expectEqualStrings("subagent", bg.name);
+    try std.testing.expectEqualStrings("{\"prompt\":\"audit tests\",\"run_in_background\":true}", bg.args_json);
+    const stmts = try splitStatements(a, "a = subagent(\"read a.txt\"); b = subagent(\"read b.txt\")");
+    const calls = try extractCalls(a, stmts);
+    try std.testing.expectEqual(@as(usize, 2), calls.len);
+    try std.testing.expectEqualStrings("{\"prompt\":\"read a.txt\"}", calls[0].args_json);
+    try std.testing.expectEqualStrings("{\"prompt\":\"read b.txt\"}", calls[1].args_json);
 }

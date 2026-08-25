@@ -80,3 +80,13 @@ regression* without a catalog tax. Per-task swings are one-rep variance.
   **23.7s / 54496 in**. `needle-files` (62.8s → 5.6s) dominates the wall
   delta; `multi-read` was 1s slower on `--rlm` (one-rep noise). Extra input
   is the system note (~900 tokens across four tasks), not a catalog schema.
+
+Graff's `--rlm` is a Zig subset of [Prime Agent's RLM programming
+model](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/rlm.md),
+not an IPython/ZeroMQ kernel. Prime's invariants we keep in graff shape:
+assignments persist across `rlm` tool calls in a session (context as
+variables; `/new` and `/clear` drop them), and `subagent("task")` is
+Prime-style recursion via graff's existing `subagent` tool (positional
+`prompt`; v1 is synchronous so `print(h)` is the child's report;
+`run_in_background=true` returns an id). We do not make `rlm` the only
+catalog tool, and we do not add control flow. The speculator is still Zig.

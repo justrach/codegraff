@@ -78,6 +78,7 @@ pub fn resetConversationSteering(root: *Agent) void {
     // the user set a fresh /goal, got a RETIRABLE one, and the next
     // attempt_completion ended their steering - #318 through the /clear door.
     if (root.goal_flag) |g| root.goal = goal_flow.standingGoalFromFlag(g, null, root.todos.items, 0);
+    @import("rlm_spec.zig").resetBindsSession(root.io);
 }
 
 /// Try to handle a session/environment slash command. Returns false (line

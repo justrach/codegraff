@@ -10,6 +10,7 @@ const resetConversationSteering = @import("commands_session.zig").resetConversat
 
 test "/clear + /new reset conversation steering — goal and ultracode_mode don't survive (#178)" {
     var root: Agent = undefined;
+    root.io = std.testing.io;
     root.goal = .{ .objective = "ultracode: index the statutes" };
     root.ultracode_mode = true;
     root.goal_flag = null; // no --goal: the conversation's goal dies with it
@@ -21,6 +22,7 @@ test "/clear + /new reset conversation steering — goal and ultracode_mode don'
 
 test "/clear keeps a --goal standing objective standing (#318 through the /clear door)" {
     var root: Agent = undefined;
+    root.io = std.testing.io;
     root.ultracode_mode = false;
     root.todos = .empty;
     root.goal_flag = "keep the tree green"; // the user passed --goal
@@ -31,4 +33,24 @@ test "/clear keeps a --goal standing objective standing (#318 through the /clear
     const g = root.goal orelse return error.TestExpectedNonNull;
     try std.testing.expect(g.standing);
     try std.testing.expectEqualStrings("keep the tree green", g.objective);
+}
+
+test "/clear drops persisted rlm binds" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const rlm_spec = @import("rlm_spec.zig");
+    try rlm_spec.commitBinds(gpa, io, &.{.{ .name = "prev", .text = "keep" }});
+    defer rlm_spec.resetBinds(gpa, io);
+    var root: Agent = undefined;
+    root.io = io;
+    root.goal = null;
+    root.ultracode_mode = false;
+    root.goal_flag = null;
+    root.todos = .empty;
+    resetConversationSteering(&root);
+    var seeded: std.ArrayList(rlm_spec.Binding) = .empty;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    try rlm_spec.seedBinds(gpa, io, arena_state.allocator(), &seeded);
+    try std.testing.expectEqual(@as(usize, 0), seeded.items.len);
 }

@@ -21,9 +21,9 @@ const rlm_query = @import("rlm_query.zig");
 const rlm_spec = @import("rlm_spec.zig");
 
 pub const tool_name = "rlm";
-pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Run a short Python-like script whose functions ARE this session's tools. Independent read_file/codedb/bash/webfetch/sleep_ms/llm_query calls with literal arguments start in parallel as the script streams (speculated), then print() is the answer. Semicolons or newlines separate statements. llm_query(prompt) is a tools-off sub-LM call. Example: a = read_file(\"src/main.zig\"); b = codedb(\"status\"); print(a, b). No imports, no control flow — assignments and calls only. Prefer this over N separate tool calls when the work does not depend on itself.";
+pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Run a short Python-like script whose functions ARE this session's tools. Independent read_file/codedb/bash/webfetch/sleep_ms/llm_query/subagent calls with literal arguments start in parallel as the script streams (speculated), then print() is the answer. Assignments persist across rlm calls in this session. subagent(\"task\") is Prime-style recursion (graff's subagent tool; sync in v1; run_in_background=true returns an id). Semicolons or newlines separate statements. llm_query(prompt) is a tools-off sub-LM call. Example: a = read_file(\"src/main.zig\"); b = codedb(\"status\"); print(a, b). No imports, no control flow — assignments and calls only. Prefer this over N separate tool calls when the work does not depend on itself.";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\"); print(...) is the result. Semicolons or newlines separate statements."}}, "required": ["code"]}
+    \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\") / subagent(\"task\"); print(...) is the result. Assignments persist across rlm calls. Semicolons or newlines separate statements."}}, "required": ["code"]}
 ;
 
 /// Process-global: `--rlm` / GRAFF_RLM=1. Never flipped mid-session.
@@ -39,6 +39,7 @@ pub fn sync() void {
 pub fn resetLive(gpa: Allocator, io: Io) void {
     sync();
     rlm_spec.resetLive(gpa, io);
+    rlm_spec.resetBinds(gpa, io);
 }
 
 pub fn feedLive(ctx: ToolCtx, delta: []const u8) void {
@@ -68,7 +69,7 @@ pub fn exec(ctx: ToolCtx, input: Value) !ToolOutput {
     return runScript(ctx, code);
 }
 
-const Binding = struct { name: []const u8, text: []const u8 };
+const Binding = rlm_spec.Binding;
 
 pub fn runScript(ctx: ToolCtx, code: []const u8) !ToolOutput {
     sync();
@@ -90,6 +91,8 @@ pub fn runScript(ctx: ToolCtx, code: []const u8) !ToolOutput {
     try speculate(ctx, arena, calls, &claimed);
 
     var binds: std.ArrayList(Binding) = .empty;
+    try rlm_spec.seedBinds(ctx.gpa, ctx.io, arena, &binds);
+    defer rlm_spec.commitBinds(ctx.gpa, ctx.io, binds.items) catch {};
     var printed: std.ArrayList(u8) = .empty;
     defer printed.deinit(ctx.gpa);
 
@@ -199,7 +202,11 @@ fn renderPrint(arena: Allocator, inner: []const u8, binds: []const Binding) ![]c
 fn renderPrintPart(arena: Allocator, inner: []const u8, binds: []const Binding) ![]const u8 {
     const t = std.mem.trim(u8, inner, " \t");
     if (t.len >= 2 and (t[0] == '"' or t[0] == '\'') and t[t.len - 1] == t[0]) return t[1 .. t.len - 1];
-    for (binds) |b| if (std.mem.eql(u8, b.name, t)) return b.text;
+    var i = binds.len;
+    while (i > 0) {
+        i -= 1;
+        if (std.mem.eql(u8, binds[i].name, t)) return binds[i].text;
+    }
     return try arena.dupe(u8, t);
 }
 
@@ -249,7 +256,10 @@ test "runScript speculates three sleeps so wall time is ~one sleep, not three" {
     var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer dummy_client.deinit();
     const saved = available;
-    defer available = saved;
+    defer {
+        available = saved;
+        resetLive(gpa, io);
+    }
     available = true;
     const ctx = testCtx(gpa, io, &dummy_client);
     const t0: Io.Timestamp = .now(io, .awake);
@@ -274,7 +284,10 @@ test "runScript reads a fixture via speculated read_file and prints it" {
     var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer dummy_client.deinit();
     const saved = available;
-    defer available = saved;
+    defer {
+        available = saved;
+        resetLive(gpa, io);
+    }
     available = true;
     var ctx = testCtx(gpa, io, &dummy_client);
     ctx.agent_cwd = dir;
@@ -290,7 +303,10 @@ test "runScript splits a semicolon one-liner and prints both binds" {
     var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer dummy_client.deinit();
     const saved = available;
-    defer available = saved;
+    defer {
+        available = saved;
+        resetLive(gpa, io);
+    }
     available = true;
     const ctx = testCtx(gpa, io, &dummy_client);
     const t0: Io.Timestamp = .now(io, .awake);
@@ -346,4 +362,53 @@ test "feedLive splits a semicolon line before runScript claims" {
     try std.testing.expect(!out.is_error);
     try std.testing.expectEqualStrings("slept 40ms\nslept 41ms", out.text);
     try std.testing.expect(dt < 90);
+}
+
+test "runScript reuses last-script binds; resetLive drops them" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer dummy_client.deinit();
+    const saved = available;
+    defer {
+        available = saved;
+        resetLive(gpa, io);
+    }
+    available = true;
+    const ctx = testCtx(gpa, io, &dummy_client);
+    const first = try runScript(ctx, "prev = sleep_ms(1)");
+    defer gpa.free(first.text);
+    try std.testing.expect(!first.is_error);
+    const reuse = try runScript(ctx, "print(prev)");
+    defer gpa.free(reuse.text);
+    try std.testing.expect(!reuse.is_error);
+    try std.testing.expectEqualStrings("slept 1ms", reuse.text);
+    const overwrite = try runScript(ctx, "prev = sleep_ms(2); print(prev)");
+    defer gpa.free(overwrite.text);
+    try std.testing.expectEqualStrings("slept 2ms", overwrite.text);
+    const kept = try runScript(ctx, "print(prev)");
+    defer gpa.free(kept.text);
+    try std.testing.expectEqualStrings("slept 2ms", kept.text);
+    resetLive(gpa, io);
+    const gone = try runScript(ctx, "print(prev)");
+    defer gpa.free(gone.text);
+    try std.testing.expectEqualStrings("prev", gone.text);
+}
+
+test "runScript last assignment wins when a name is rebound in one script" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer dummy_client.deinit();
+    const saved = available;
+    defer {
+        available = saved;
+        resetLive(gpa, io);
+    }
+    available = true;
+    const ctx = testCtx(gpa, io, &dummy_client);
+    const out = try runScript(ctx, "a = sleep_ms(1); a = sleep_ms(2); print(a)");
+    defer gpa.free(out.text);
+    try std.testing.expect(!out.is_error);
+    try std.testing.expectEqualStrings("slept 2ms", out.text);
 }

@@ -16,7 +16,89 @@ pub var run_host: ?*const fn (ToolCtx, spec_ptc.Call) ToolOutput = null;
 
 /// Cheap discovery while the full spec stays folded (ADR 0022). Startup
 /// splices this only when `--rlm` is on.
-pub const system_note = "\n\nrlm(code) is available: a short script whose functions are this session's tools. Independent read_file/codedb/bash/llm_query calls with literal args start in parallel as the script streams. Prefer one rlm script over N separate tool calls when the work does not depend on itself. Semicolons or newlines separate statements; print(...) is the answer.";
+///
+/// Graff's rlm is a Zig subset of Prime Agent's programming model: assignments
+/// persist across rlm calls (context as variables, not an IPython kernel), and
+/// `subagent("task")` is Prime-style recursion via graff's existing subagent
+/// tool. v1 is synchronous; speculate() still overlaps independent calls.
+/// Keyword `run_in_background=true` returns an agent id (a handle).
+pub const system_note = "\n\nrlm(code) is available: a short script whose functions are this session's tools. Independent read_file/codedb/bash/llm_query/subagent calls with literal args start in parallel as the script streams. Bindings persist across rlm calls until /new or /clear. subagent(\"task\") is Prime-style recursion (graff's subagent tool; sync in v1). Prefer one rlm script over N separate tool calls when the work does not depend on itself. Semicolons or newlines separate statements; print(...) is the answer.";
+
+/// One REPL assignment. `runScript` seeds these from the process-local store
+/// so a later `rlm` call can `print(prev)` without re-reading. Owned by the
+/// caller's arena when seeded; the store holds gpa copies.
+pub const Binding = struct { name: []const u8, text: []const u8 };
+
+const BindStore = struct {
+    mu: Io.Mutex = .init,
+    items: std.ArrayList(Binding) = .empty,
+    gpa: ?Allocator = null,
+};
+
+var binds: BindStore = .{};
+
+/// Copy last-script binds into `out` (arena-owned). No-op until a script has
+/// committed at least one assignment.
+pub fn seedBinds(gpa: Allocator, io: Io, arena: Allocator, out: *std.ArrayList(Binding)) !void {
+    _ = gpa;
+    binds.mu.lockUncancelable(io);
+    defer binds.mu.unlock(io);
+    for (binds.items.items) |b| {
+        try out.append(arena, .{
+            .name = try arena.dupe(u8, b.name),
+            .text = try arena.dupe(u8, b.text),
+        });
+    }
+}
+
+/// Replace the process-local store with last-wins unique copies of `items`.
+pub fn commitBinds(gpa: Allocator, io: Io, items: []const Binding) !void {
+    binds.mu.lockUncancelable(io);
+    defer binds.mu.unlock(io);
+    clearBindsUnlocked(binds.gpa orelse gpa);
+    binds.gpa = gpa;
+    var i: usize = 0;
+    while (i < items.len) : (i += 1) {
+        if (laterSameName(items, i)) continue;
+        try binds.items.append(gpa, .{
+            .name = try gpa.dupe(u8, items[i].name),
+            .text = try gpa.dupe(u8, items[i].text),
+        });
+    }
+}
+
+fn laterSameName(items: []const Binding, i: usize) bool {
+    const name = items[i].name;
+    for (items[i + 1 ..]) |b| if (std.mem.eql(u8, b.name, name)) return true;
+    return false;
+}
+
+fn clearBindsUnlocked(gpa: Allocator) void {
+    for (binds.items.items) |b| {
+        gpa.free(b.name);
+        gpa.free(b.text);
+    }
+    binds.items.clearRetainingCapacity();
+}
+
+/// Drop persisted binds. `rlm.resetLive` calls this (session / test cleanup).
+/// `rlm_spec.resetLive` does not — that is the per-call speculation cache.
+pub fn resetBinds(gpa: Allocator, io: Io) void {
+    binds.mu.lockUncancelable(io);
+    defer binds.mu.unlock(io);
+    const a = binds.gpa orelse gpa;
+    clearBindsUnlocked(a);
+    binds.items.deinit(a);
+    binds.items = .empty;
+    binds.gpa = null;
+}
+
+/// Session doors (`/new`, `/clear`, TUI history reset) that may not have
+/// allocated binds yet: no-op until a script has committed.
+pub fn resetBindsSession(io: Io) void {
+    const gpa = binds.gpa orelse return;
+    resetBinds(gpa, io);
+}
 
 const Inflight = struct {
     fut: Io.Future(ToolOutput),
