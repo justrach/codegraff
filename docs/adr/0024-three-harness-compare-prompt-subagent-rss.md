@@ -259,3 +259,31 @@ Do not copy grok's heap. The remaining ~2× vs grok's 157k is still
 turns + prefix (they do ~5 calls of a shorter catalog). Further cuts
 are smaller: we already dropped the interactive essays and put `rlm`
 on the one-shot catalog.
+
+## Dead catalog tools on -p (this revision)
+
+A "say OK" one-shot was **3880 in** (13.9kB body): `load_tool_schemas`
+1.4kB with no MCP (home config still counts as deferred),
+`read_tool_result` overflow paging, long intro/work/closing/git
+essays, duplicate `rlm` system_note.
+
+**Take:** hide the meta tool on lean even when home MCP is deferred
+(need MCP? `--no-lean`); drop the pager from `lean_tools`; short
+`lean_intro` / `lean_work` / `lean_closing` (SPEC clause kept); no
+git-safety / root-cause / authoring / rlm system_note on -p.
+
+First-request after that: **2660 in**, 8.7kB body, 7 tools
+(bash/read/edit/write/codedb/attempt_completion/rlm).
+
+SWE (`run-20260825-073458.jsonl`, graff-dev):
+
+| harness | pass | wall | first | RSS | in | out | calls |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| default rlm | **5/6** | **294.8s** | 8.9s | 9.4M | **234533** | 19186 | **41** |
+
+Versus `061731` (4/6, 743s, 1.26M, 96): **+1 pass**, **−60% wall**,
+**−81% input tokens**, **−57% calls**. Versus grok `063211` (5/6,
+377s, 157k, 31): same pass, **faster wall**, still ~1.5× tokens
+(41 vs 31 calls; per-call ~5.7k vs ~5.1k — prefix is close).
+`cookie-store` 32k (grok was 44k). `json-stream` passed. `label-sort`
+still fails. RSS ~9M. Do not copy their heap.
