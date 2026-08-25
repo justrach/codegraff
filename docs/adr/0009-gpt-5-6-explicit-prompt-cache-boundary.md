@@ -35,9 +35,11 @@ unsupported parameter, so its supported automatic/keyed path must remain.
   documented approximately 15 requests/minute per-key guidance while preserving
   reuse across repeated workflow roles. Codex uses this supported keyed,
   automatic path without explicit options.
-- xAI keeps automatic caching and distinct child conversation ids; its header
-  and body continue to carry the same affinity value. It never receives OpenAI
-  Platform breakpoint/options fields.
+- xAI keeps automatic prefix caching. Header `x-grok-conv-id` and body
+  `prompt_cache_key` are the same sticky-routing id (official maximize-hits
+  guidance). Root uses the project id; children share role lanes, not the
+  root id and not a per-agent suffix. It never receives OpenAI Platform
+  breakpoint/options fields.
 - Cache writes are parsed separately from reads and ordinary input, shown in the
   cost summary, and billed at the documented 1.25× rate for GPT-5.6 and
   Anthropic ephemeral cache creation.

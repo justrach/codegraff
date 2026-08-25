@@ -19,6 +19,14 @@ current is part of cutting a release.
   clobber `--old` / `--rlm`.
 - The spec stays folded behind `load_tool_schemas`. `--schema` / the
   64-cell tool-catalog kernel do not grow a new tool.
+- Prompt-cache max: `GRAFF_STABLE_CATALOG` is on by default so
+  `load_tool_schemas` (including `rlm`) does not rewrite tools JSON.
+  Spawned subagents inherit it. Children share four role-lane
+  `x-grok-conv-id` / `prompt_cache_key` values (official xAI sticky
+  routing — same id, same server). rlm's `subagent("task")` uses
+  label `subagent`, so siblings hit one lane. They do not reuse the
+  root id. Opt out of stable catalog with `GRAFF_STABLE_CATALOG=0`
+  or `GRAFF_NO_STABLE_CATALOG=1`.
 - Measured default-RLM vs `--old` on grok-4.6 SuperGrok (one `rlm`
   suite rep): both 5/5, $0.0000 / $0.0000 (flat-rate). Persist
   `bind-reuse` 99.6s / 135k in → 39.2s / 25.3k in. Suite totals

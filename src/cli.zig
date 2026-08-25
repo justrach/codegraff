@@ -23,6 +23,7 @@ pub const changelog_text =
     \\──────────
     \\0.0.276
     \\  • rlm (RLM + mid-stream spec-ptc) is the default loop; --old / --no-rlm restores structured-only
+    \\  • prompt-cache max: stable catalog is the default (loads no longer rewrite tools JSON); children share prefix lanes
     \\
     \\0.0.275
     \\  • OpenRouter requests carry app attribution (categories: cli-agent, programming-app)

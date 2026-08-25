@@ -24,6 +24,7 @@ const http = @import("http.zig");
 const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig");
 const plugins = @import("plugins.zig");
+const mcp_schema_gate = @import("mcp_schema_gate.zig");
 
 const Knob = struct { name: []const u8, value: []const u8 };
 
@@ -52,6 +53,8 @@ const knobs = [_]Knob{
     .{ .name = "GRAFF_WS_FORCE_FAIL_ONCE", .value = "1" },
     .{ .name = "GRAFF_WS_FORCE_FAIL_COUNT", .value = "3" },
     .{ .name = "GRAFF_NO_PLUGINS", .value = "1" },
+    .{ .name = "GRAFF_STABLE_CATALOG", .value = "1" },
+    .{ .name = "GRAFF_NO_STABLE_CATALOG", .value = "1" },
     .{ .name = "GRAFF_VERCEL_URL", .value = "https://ai-gateway.vercel.sh/v1/chat/completions" },
 };
 
@@ -97,6 +100,7 @@ const Saved = struct {
     ws_fail_once: bool,
     ws_fail_count: u8,
     plugins_off: bool,
+    stable_catalog: bool,
 
     fn capture() Saved {
         return .{
@@ -120,6 +124,7 @@ const Saved = struct {
             .ws_fail_once = ws.g_force_connect_failure_once,
             .ws_fail_count = ws.g_force_connect_failure_count,
             .plugins_off = plugins.disabled,
+            .stable_catalog = mcp_schema_gate.g_stable_catalog,
         };
     }
 
@@ -145,6 +150,7 @@ const Saved = struct {
         ws.g_force_connect_failure_once = s.ws_fail_once;
         ws.g_force_connect_failure_count = s.ws_fail_count;
         plugins.disabled = s.plugins_off;
+        mcp_schema_gate.g_stable_catalog = s.stable_catalog;
     }
 };
 
@@ -188,6 +194,7 @@ test "applyEnvKnobs actually applies the values it reads" {
     provider_mod.g_compact_pct_override = null;
     tool_handle.threshold_bytes = tool_handle.default_threshold_bytes;
     plugins.disabled = false;
+    mcp_schema_gate.g_stable_catalog = false;
 
     var asked: [knobs.len]bool = @splat(false);
     try session_settings.applyEnvKnobs(arena_state.allocator(), RecordingEnv{ .asked = &asked });
@@ -208,6 +215,7 @@ test "applyEnvKnobs actually applies the values it reads" {
     try std.testing.expect(ws.g_force_connect_failure_once);
     try std.testing.expectEqual(@as(u8, 3), ws.g_force_connect_failure_count);
     try std.testing.expect(plugins.disabled);
+    try std.testing.expect(mcp_schema_gate.g_stable_catalog); // GRAFF_STABLE_CATALOG=1 wins over GRAFF_NO_STABLE_CATALOG=1
 }
 
 const PairEnv = struct {
@@ -243,4 +251,19 @@ test "GRAFF_OLD / GRAFF_RLM=0 turn default rlm off; --old is not clobbered by en
     try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_RLM", .value = "1" }} });
     try std.testing.expect(!rlm.available);
     try std.testing.expect(rlm.cli_set);
+}
+
+test "GRAFF_STABLE_CATALOG=0 / GRAFF_NO_STABLE_CATALOG turn default-on catalog off" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const saved = Saved.capture();
+    defer saved.restore();
+
+    mcp_schema_gate.g_stable_catalog = true;
+    try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_STABLE_CATALOG", .value = "0" }} });
+    try std.testing.expect(!mcp_schema_gate.g_stable_catalog);
+
+    mcp_schema_gate.g_stable_catalog = true;
+    try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_NO_STABLE_CATALOG", .value = "1" }} });
+    try std.testing.expect(!mcp_schema_gate.g_stable_catalog);
 }

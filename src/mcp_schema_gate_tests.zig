@@ -286,8 +286,9 @@ test "stable catalog: a load only appends tail bytes, and the tool stays visible
     const meta_spec = [_]@import("schema.zig").ToolSpec{.{ .name = gate.tool_name, .desc = gate.tool_desc, .schema = gate.tool_schema }};
     const schema_mod = @import("schema.zig");
 
+    const saved_stable = gate.g_stable_catalog;
     gate.g_stable_catalog = true;
-    defer gate.g_stable_catalog = false;
+    defer gate.g_stable_catalog = saved_stable;
     const before = try schema_mod.renderRootTools(arena, .anthropic, &meta_spec, fat);
     const req = try std.json.parseFromSliceLeaky(Value, arena, "{\"tools\":[\"mcp__fat__t0\"]}", .{ .allocate = .alloc_always });
     const loaded = try gate.loadInto(arena, fat, req);

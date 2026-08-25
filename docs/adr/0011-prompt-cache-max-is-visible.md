@@ -26,22 +26,29 @@ intentional. `/debug` counted tokens; it did not say why a miss happened.
 - Named busts (`goal`, `playbook`, `compact`, `persona`, `tools`, `mcp`) are
   recorded at the mutation site and counted only when the next request's
   system+tools hash actually changes. Startup compose is not a bust.
-- Do not default `GRAFF_STABLE_CATALOG`. Do not move playbook / compact notes
-  / standing goal off the prefix — those ride the system prompt on purpose
-  (ADR 0005, #381, #391) and already share the compaction boundary.
+- `GRAFF_STABLE_CATALOG` is the default (2026-08-25). RLM default makes
+  `load_tool_schemas("rlm")` a guaranteed first-turn load; rewriting tools
+  JSON there was a 0% cache-read on the next call. The loaded schema still
+  rides the load result; the catalog head stays byte-identical. Opt out
+  with `GRAFF_STABLE_CATALOG=0` or `GRAFF_NO_STABLE_CATALOG=1`. Do not move
+  playbook / compact notes / standing goal off the prefix — those ride the
+  system prompt on purpose (ADR 0005, #381, #391) and already share the
+  compaction boundary.
 - `/btw` is a grok-build side-call: same system prompt, same tools JSON, same
   `prompt_cache_key` as the parent. The side-question note is appended as a
   user message. Tools are advertised for the prefix and not executed.
 
 ## Consequences
 
-A `/cache` after a miss names the lever. Revisit defaulting stable-catalog
-only if a new live measurement shows load-after-load cache-read returning
-from 0% without discovery or compaction regressions.
+A `/cache` after a miss names the lever. Stable-catalog is now the default
+so an `rlm` (or MCP) load does not rewrite the tools prefix. Children
+inherit the process-global catalog mode.
 
-Subagents (2026-08-21): non-xAI children share four role-lane prefix keys so
-repeated scouts reuse system+tools. xAI children stay per-agent — mixing them
-into the root conv-id would break append-only prefix matching (ADR 0009).
+Subagents (2026-08-25): children share four role-lane `x-grok-conv-id` /
+`prompt_cache_key` values so sibling scouts with the same system+tools
+land on the same xAI server (official sticky routing). They do not reuse
+the root id — the child prefix is a different messages array. A
+per-agent pointer suffix was a forced miss.
 
 Live Grok 4.6 (Responses, SuperGrok OAuth, 2026-08-19): same-process
 append-only turn 2 cached 3,712 of turn 1's 3,721 input tokens. `/btw` after

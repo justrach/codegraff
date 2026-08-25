@@ -99,13 +99,14 @@ pub const Policy = struct {
 
 pub var g_policy: Policy = .{};
 
-/// GRAFF_STABLE_CATALOG=1 experiment (#476): a loaded tool's schema rides the
-/// load_tool_schemas RESULT in the conversation, so the catalog does not need
-/// to re-render it — skipping policy-deferred tools even after load keeps the
-/// request prefix byte-identical all session, which is what provider prefix
-/// caching charges against. Every load otherwise busts the cache (measured:
-/// 0% cache on the calls right after each load).
-pub var g_stable_catalog = false;
+/// Default on (ADR 0011, 2026-08-25): a loaded tool's schema rides the
+/// load_tool_schemas RESULT, so the catalog does not re-render it. Skipping
+/// policy-deferred tools even after load keeps the request prefix
+/// byte-identical all session — what provider prefix caching charges
+/// against. A load otherwise busts the cache (measured: 0% cache on the
+/// calls right after each load). `GRAFF_STABLE_CATALOG=0` /
+/// `GRAFF_NO_STABLE_CATALOG=1` restore the mutating catalog.
+pub var g_stable_catalog = true;
 
 /// Deferred by POLICY, ignoring load state — the stable-catalog render rule
 /// and (in stable mode) the listing, which must not change as tools load.

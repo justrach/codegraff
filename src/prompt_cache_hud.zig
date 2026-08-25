@@ -211,7 +211,7 @@ pub fn render(w: *Io.Writer) !void {
     }
     try w.writeAll(
         \\  remaining max
-        \\    GRAFF_STABLE_CATALOG=1  opt-in: keep tools JSON byte-identical after load
+        \\    GRAFF_STABLE_CATALOG=0  opt out: loads rewrite tools JSON (stable is the default)
         \\    /goal /never /strict    each prefix rewrite is one miss; compaction already pays one
         \\    leave skill bodies      and file: paths out of the prefix (already the default)
         \\    append-only messages    official xAI prefix; edit/remove/reorder is a miss
@@ -219,7 +219,7 @@ pub fn render(w: *Io.Writer) !void {
         \\    Z.AI                    implicit prefix (cached_tokens); thinking.clear_thinking=false
         \\    Vercel                  gateway implicit cache (cached_tokens); coding-agent /v1
         \\    /btw                    parent tools + system + cache key; note is the user message
-        \\    subagents               prefix lanes (OpenAI/chat); xAI conv stays isolated
+        \\    subagents               role-lane x-grok-conv-id / prompt_cache_key (not the root id)
         \\
     );
 }

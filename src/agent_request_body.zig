@@ -169,8 +169,9 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 }
                 try s.endObject();
             }
-            // Sticky cache partition. xAI stays per-agent; everyone else uses
-            // a prefix lane so repeated subagent roles reuse system+tools.
+            // Sticky cache partition. Same value as x-grok-conv-id (xAI
+            // official maximize-hits). Root is the project id; children
+            // share a role lane so sibling scouts reuse system+tools.
             var ckbuf: [96]u8 = undefined;
             try s.objectField("prompt_cache_key");
             try s.write(http_headers.requestCacheKey(self.io, self.label, self, self.provider.id, &ckbuf));
