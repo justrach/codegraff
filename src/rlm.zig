@@ -47,6 +47,8 @@ pub fn feedLive(ctx: ToolCtx, delta: []const u8) void {
 }
 
 /// Append `rlm` after the lean/no-local filters so `--rlm -p` still sees it.
+/// The spec is folded behind `load_tool_schemas` (native_fold) until the
+/// model loads or calls it — the prefix stays the lean catalog plus a name.
 /// No-op when the flag is off or embedder mode stripped host tools.
 pub fn maybeAppend(comptime Spec: type, arena: Allocator, specs: []const Spec) ![]const Spec {
     sync();

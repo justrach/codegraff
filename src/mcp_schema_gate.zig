@@ -498,6 +498,7 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
     var natives: std.ArrayList([]const u8) = .empty;
     if (native_fold.anyFolded()) {
         for (native_fold.folded) |name| {
+            if (!native_fold.isFolded(name)) continue; // rlm stays off the default listing
             if (!g_stable_catalog and native_fold.isLoaded(name)) continue;
             try natives.append(arena, name);
         }

@@ -20,7 +20,10 @@ measurable against the native loop without that cost.
 ## Decision
 
 `rlm` is an opt-in native tool (`--rlm` / `GRAFF_RLM=1`). Off, the catalog is
-unchanged. On, the model gets one REPL whose functions *are* graff tools
+unchanged. On, the spec joins the `native_fold` stack (the same meta-tool
+listing as `workflow` / `subagent`): name only on `load_tool_schemas` until
+the model loads or calls it, so `--rlm -p` (lean) does not pay the full
+description on every turn. The REPL's functions *are* graff tools
 (`read_file`, `codedb`) plus `sleep_ms` / `llm_query` / `print`. The
 speculator is Zig (`src/spec_ptc.zig` + `rlm.feedLive`): closed statements
 with literal args launch as the `code` argument streams (including `-p`,
