@@ -1,0 +1,10 @@
+{
+  "id": "cookie-store",
+  "suite": "swe",
+  "category": "swe",
+  "source": "https://deepswe.datacurve.ai/run — httpx-deterministic-cookie-store (distilled, no Harbor)",
+  "files_dir": "fixtures/cookie-store",
+  "prompt": "CookieStore is incomplete. Read SPEC.md and cookie_store.py, then make `python3 test_cookie_store.py` print OK. Do not edit the tests. Path matching, eviction, Max-Age, and Secure prefixes must match SPEC.md.",
+  "check": "python3 test_cookie_store.py && python3 \"$TASK_ROOT/hidden/cookie-store.py\"",
+  "timeout_s": 300
+}

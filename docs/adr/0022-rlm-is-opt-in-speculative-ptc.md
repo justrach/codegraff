@@ -75,11 +75,19 @@ regression* without a catalog tax. Per-task swings are one-rep variance.
   joins binds. A short system note is spliced only while the flag is on so
   the folded spec is discoverable without paying its schema.
 - Scatter-gather tasks live in the `rlm` eval suite (`graff-evals/run.py
-  --suite rlm`). Default `--suite all` runs core + rlm. Measured 2026-08-25
-  on grok-4.6 (one rep): both **4/4**, native **86.8s / 53564 in**, `--rlm`
-  **23.7s / 54496 in**. `needle-files` (62.8s → 5.6s) dominates the wall
-  delta; `multi-read` was 1s slower on `--rlm` (one-rep noise). Extra input
-  is the system note (~900 tokens across four tasks), not a catalog schema.
+  --suite rlm`). Default `--suite all` runs core + rlm + swe. Measured
+  2026-08-25 on grok-4.6 (one rep): both **4/4**, native **86.8s / 53564
+  in**, `--rlm` **23.7s / 54496 in**. `needle-files` (62.8s → 5.6s)
+  dominates the wall delta; `multi-read` was 1s slower on `--rlm`
+  (one-rep noise). Extra input is the system note (~900 tokens across
+  four tasks), not a catalog schema.
+- DeepSWE-shaped multi-file bugfixes live in `--suite swe`, distilled
+  from [deepswe.datacurve.ai/run](https://deepswe.datacurve.ai/run)
+  (cookie-store, label-sort, config-parse, map-conflict, json-stream,
+  validated). Held-out checks stay in `graff-evals/hidden/` so the
+  agent cannot read them. The runner records peak RSS, child CPU, and
+  first-output latency next to wall and tokens. Full Harbor/Pier/Docker
+  DeepSWE is out of scope; this suite is the graff-shaped subset.
 
 Graff's `--rlm` is a Zig subset of [Prime Agent's RLM programming
 model](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/rlm.md),

@@ -1,0 +1,10 @@
+{
+  "id": "config-parse",
+  "suite": "swe",
+  "category": "swe",
+  "source": "https://deepswe.datacurve.ai/run — cliffy-config-file-parsing (distilled, no Harbor)",
+  "files_dir": "fixtures/config-parse",
+  "prompt": "load_config is wrong. Read SPEC.md and config.py, then make `python3 test_config.py` print OK. Do not edit the tests. CLI > env > config, kebab-case → camelCase, first-file vs merge, and RC comments all matter.",
+  "check": "python3 test_config.py && python3 \"$TASK_ROOT/hidden/config-parse.py\"",
+  "timeout_s": 300
+}

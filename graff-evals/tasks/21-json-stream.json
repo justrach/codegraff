@@ -1,0 +1,10 @@
+{
+  "id": "json-stream",
+  "suite": "swe",
+  "category": "swe",
+  "source": "https://deepswe.datacurve.ai/run — httpx-streaming-json-iteration (distilled, no Harbor)",
+  "files_dir": "fixtures/json-stream",
+  "prompt": "iter_json is incomplete. Read SPEC.md and json_stream.py, then make `python3 test_json_stream.py` print OK. Do not edit the tests. +json is application-only, trailing data is an error, NDJSON skips blanks, json-seq uses RS records.",
+  "check": "python3 test_json_stream.py && python3 \"$TASK_ROOT/hidden/json-stream.py\"",
+  "timeout_s": 300
+}

@@ -1,0 +1,10 @@
+{
+  "id": "label-sort",
+  "suite": "swe",
+  "category": "swe",
+  "source": "https://deepswe.datacurve.ai/run — prometheus-typed-label-sorting (distilled, no Harbor)",
+  "files_dir": "fixtures/label-sort",
+  "prompt": "sort_labels does not implement the typed total order in SPEC.md. Read SPEC.md and label_sort.py, then make `python3 test_label_sort.py` print OK. Do not edit the tests. Leading-whitespace, NaN, and IPv4-before-IPv6 are part of the contract.",
+  "check": "python3 test_label_sort.py && python3 \"$TASK_ROOT/hidden/label-sort.py\"",
+  "timeout_s": 300
+}
