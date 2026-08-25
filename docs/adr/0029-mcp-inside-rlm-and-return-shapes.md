@@ -68,14 +68,44 @@ language (`len`/`for`), not `issue_id` vs `id`.
 **E1** kept MCP on the root (ADR 0023) and matched A's wall; no token
 win. **E2** passed but is the expensive split (18 calls / 75s).
 
-Verdict: ship MCP-inside-rlm + shape cache. Do not copy Blacksmith's
-V8 sandbox. SuperGrok $ is a wash; the 60k input cut on D is the
-metered-key spend win.
+Verdict (rep 1): MCP-inside-rlm + shape cache can cut tokens. Do not
+copy Blacksmith's V8 sandbox. SuperGrok $ is a wash; the 60k input cut
+on D is the metered-key spend win **when the model stays in `each()`**.
+
+## Follow-up A/B (2026-08-25, same day)
+
+Second live rep of A/D plus four new prompts. SuperGrok grok-4.6,
+ReleaseSafe, one rep each. `python3 scripts/eval-mcp-shapes.py --only A,D,F,G,H,I`
+
+| var | prompt | pass | wall | RSS | in | cached | out | calls | what it did |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| A-r2 | `--old` + each() hint (ignored) | ✓ | 36.4s | 10.4M | 145497 | 96896 | 2075 | 9 | structured 1+8 again; wall stable |
+| D-r2 | rlm+MCP, warm, each() hint | ✓ | 60.5s | 10.8M | 158769 | 122752 | 3101 | 11 | rlm then `report_issues = []`; **D token win did not hold** |
+| F | each() hint + never print() fat arrays | ✓ | 220s | 10.8M | 462379 | 426880 | 9944 | 29 | `def`/`for`/`len`/`import`; grepped graff src |
+| G | F + warm shapes | ✓ | 156s | 10.9M | 279981 | 166528 | 7947 | 21 | same dialect hole, slightly less lost |
+| H | **no each() recipe**, cold | ✓ | **28.0s** | 10.6M | 112073 | 85248 | 1607 | **7** | never used rlm; parallel structured MCP |
+| I | no each() recipe, warm shapes | ✓ | 31.1s | 10.5M | **107284** | 81536 | 1865 | **7** | same as H; shapes on the load result unused |
+
+**The `each()` hint is a footgun on grok-4.6.** It pushes the model into
+a dialect that cannot map/filter without `print()`ing the fat bind
+(C/D) or inventing Python (F/G). Telling it not to print made it
+*worse* — mapping without print needs `for`/`len` we do not have.
+
+**No-hint (H/I) beat `--old` on wall and tokens** by doing the classic
+loop well: one `load_tool_schemas`, then `list_issues` + 8
+`list_comments` in one batch. That is not code mode. Muscle memory did
+not change the path (I still never called `rlm`).
+
+D-r1 107k / 41s vs D-r2 159k / 61s: one-rep token wins are not a ship
+signal. H/I 7-call structured is the stable cheap path today.
 
 ## Consequences
 
 - `--no-lean` remains the MCP one-shot. Lean still hides
   `load_tool_schemas`.
-- `each()` is the only new control-flow helper. A later `len`/`for`
-  would cut C/D retries; do not grow a general language without another
-  measured A/B.
+- Keep MCP-inside-rlm + shape splice (the host path is real). Do not
+  advertise `each()` on this task until a `len`/project helper exists
+  and beats H in a new A/B.
+- A later `len`/`for` would cut C/D/F/G retries; do not grow a general
+  language without that measurement.
+- Prompting "prefer one rlm script" is not free. Default no-hint.
