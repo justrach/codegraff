@@ -10,6 +10,7 @@ outcome, and writes JSONL results plus a summary table.
   ./run.py --harness graff --model grok-4.6              # full suite (core + rlm + swe)
   ./run.py --suite rlm --harness graff-dev-old,graff-dev # scatter-gather A/B
   ./run.py --suite swe --harness graff-dev-old,graff-dev -j 12  # DeepSWE-shaped A/B, parallel
+  ./run.py --suite mcp --harness graff-dev-old-nolean,graff-dev-rlm-struct,graff-dev-nolean
   ./run.py --harness grok --task fix-fib --reps 3        # one task, 3 reps
   ./run.py --interactive                                 # pick + watch live
 """
@@ -350,7 +351,7 @@ def main():
     ap.add_argument("--harness", default="graff", help="comma-separated harness names (see harnesses.json)")
     ap.add_argument("--model", default=None, help="model id (default: per-harness default_model)")
     ap.add_argument("--task", action="append", help="task id filter (repeatable)")
-    ap.add_argument("--suite", default="all", help="core, rlm, swe, comma-mix, or all (default all)")
+    ap.add_argument("--suite", default="all", help="core, rlm, swe, mcp, comma-mix, or all (core+rlm+swe; mcp is opt-in)")
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--jobs", "-j", type=int, default=1,
                     help="parallel task×harness runs (default 1; each has its own sandbox)")
@@ -367,12 +368,15 @@ def main():
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out_path = os.path.join(RESULTS_DIR, f"run-{stamp}.jsonl")
     suites = {s.strip() for s in args.suite.split(",") if s.strip()}
+    if "all" in suites:
+        suites.update({"core", "rlm", "swe"})
+        suites.discard("all")
     picked = {}
     for tid, t in tasks.items():
         if args.task and tid not in args.task:
             continue
         suite = t.get("suite", "core")
-        if "all" not in suites and suite not in suites:
+        if suite not in suites:
             continue
         picked[tid] = t
     work = []

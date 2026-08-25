@@ -43,6 +43,7 @@ const knobs = [_]Knob{
     .{ .name = "GRAFF_CODEX_WS", .value = "off" },
     .{ .name = "GRAFF_CLOCK_SLEEP", .value = "1" },
     .{ .name = "GRAFF_RLM", .value = "1" },
+    .{ .name = "GRAFF_RLM_MCP", .value = "0" },
     .{ .name = "GRAFF_OLD", .value = "1" },
     .{ .name = "GRAFF_NO_LOCAL_TOOLS", .value = "1" },
     .{ .name = "GRAFF_CODEX_WS_IDLE_SECS", .value = "11" },
@@ -89,6 +90,7 @@ const Saved = struct {
     clock_sleep: bool,
     rlm: bool,
     rlm_cli: bool,
+    rlm_mcp: bool,
     stream_stall_ms: u64,
     post_deadline_ms: u64,
     codex_ws_idle_ms: i64,
@@ -113,6 +115,7 @@ const Saved = struct {
             .clock_sleep = main_mod.g_clock_sleep,
             .rlm = @import("rlm.zig").available,
             .rlm_cli = @import("rlm.zig").cli_set,
+            .rlm_mcp = @import("rlm_mcp.zig").host_enabled,
             .stream_stall_ms = http.stream_stall_ms,
             .post_deadline_ms = http.post_deadline_ms,
             .codex_ws_idle_ms = agent_ws.codex_ws_idle_ms,
@@ -139,6 +142,7 @@ const Saved = struct {
         @import("rlm.zig").available = s.rlm;
         @import("rlm.zig").cli_set = s.rlm_cli;
         @import("rlm.zig").sync();
+        @import("rlm_mcp.zig").host_enabled = s.rlm_mcp;
         http.stream_stall_ms = s.stream_stall_ms;
         http.post_deadline_ms = s.post_deadline_ms;
         agent_ws.codex_ws_idle_ms = s.codex_ws_idle_ms;
@@ -251,6 +255,17 @@ test "GRAFF_OLD / GRAFF_RLM=0 turn default rlm off; --old is not clobbered by en
     try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_RLM", .value = "1" }} });
     try std.testing.expect(!rlm.available);
     try std.testing.expect(rlm.cli_set);
+}
+
+test "GRAFF_RLM_MCP=0 turns MCP-inside-rlm host functions off" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const saved = Saved.capture();
+    defer saved.restore();
+    const rlm_mcp = @import("rlm_mcp.zig");
+    rlm_mcp.host_enabled = true;
+    try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_RLM_MCP", .value = "0" }} });
+    try std.testing.expect(!rlm_mcp.host_enabled);
 }
 
 test "GRAFF_STABLE_CATALOG=0 / GRAFF_NO_STABLE_CATALOG turn default-on catalog off" {

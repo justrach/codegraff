@@ -22,7 +22,7 @@ pub var run_host: ?*const fn (ToolCtx, spec_ptc.Call) ToolOutput = null;
 /// `subagent("task")` is Prime-style recursion via graff's existing subagent
 /// tool. v1 is synchronous; speculate() still overlaps independent calls.
 /// Keyword `run_in_background=true` returns an agent id (a handle).
-pub const system_note = "\n\nrlm(code): script of this session's tools. Independent literal read_file/codedb/bash/llm_query/subagent calls start as it streams. Binds persist until /new or /clear. subagent(\"task\") is sidecar-only — keep the critical-path next step local. Prefer one rlm over N tool calls. print(...) is the answer.";
+pub const system_note = "\n\nrlm(code): session tools as a script. Literal read_file/codedb/bash/llm_query/subagent start as it streams. Binds persist until /new or /clear. subagent(\"task\") is sidecar-only — keep the critical-path next step local. Loaded MCP names are host functions; each(arr, tool, field) maps a JSON array. print(...) is the answer.";
 
 /// One REPL assignment. `runScript` seeds these from the process-local store
 /// so a later `rlm` call can `print(prev)` without re-reading. Owned by the
