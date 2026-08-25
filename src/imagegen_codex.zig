@@ -157,6 +157,36 @@ pub fn saveRoot(arena: Allocator, private_home: []const u8) ![]const u8 {
 /// The instruction codex actually receives. It pins the tool, forbids the file
 /// handling graff is about to do itself, and asks for a short reply so a long
 /// narrative cannot crowd out the stderr tail we keep for diagnostics.
+/// #576: drop C0 control characters and invalid UTF-8 from the model-supplied
+/// prompt. Codex 0.144+ JSON-parses the exec input and rejects the whole call
+/// at a fixed column when either sneaks through, so they never reach it.
+/// Readable bytes are preserved verbatim; only offending ones are removed.
+fn sanitizePrompt(arena: Allocator, user_prompt: []const u8) ![]const u8 {
+    var out = try arena.alloc(u8, user_prompt.len);
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < user_prompt.len) {
+        const len = std.unicode.utf8ByteSequenceLength(user_prompt[i]) catch {
+            i += 1; // invalid leading byte: dropped
+            continue;
+        };
+        if (i + len > user_prompt.len) break; // truncated sequence: dropped
+        const seq = user_prompt[i .. i + len];
+        const cp = std.unicode.utf8Decode(seq) catch {
+            i += 1;
+            continue;
+        };
+        if (cp < 0x20 and cp != '\t' and cp != '\n' and cp != '\r') {
+            i += len;
+            continue;
+        }
+        @memcpy(out[n..][0..len], seq);
+        n += len;
+        i += len;
+    }
+    return out[0..n];
+}
+
 pub fn buildPrompt(arena: Allocator, user_prompt: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena,
         \\Call the built-in image_gen tool exactly once to generate this image:
@@ -169,7 +199,7 @@ pub fn buildPrompt(arena: Allocator, user_prompt: []const u8) ![]const u8 {
         \\itself. If the image_gen tool is not available to you, say exactly
         \\IMAGE_GEN_UNAVAILABLE and stop. Otherwise reply with one short line once the
         \\tool call has returned.
-    , .{user_prompt});
+    , .{try sanitizePrompt(arena, user_prompt)});
 }
 
 pub const Artifact = struct {
@@ -450,4 +480,34 @@ test "#352: a too-old CLI and a self-reported missing tool each get their own ac
     try testing.expect(std.mem.indexOf(u8, bad_json_text, "openai_api") != null);
     // The empty-handed success case names #352 so the failure is recognisable.
     try testing.expect(std.mem.indexOf(u8, no_artifact_text, "#352") != null);
+}
+
+// #576: Codex 0.144+ JSON-parses the exec input and rejects it at a fixed
+// column ("input contains invalid characters at line 1 column 4224") when the
+// model-supplied prompt carries C0 control characters or invalid UTF-8 — even
+// for a one-line prompt. The instruction wrapper is fixed text and never the
+// cause; the caller's `prompt` field is. Sanitization happens inside
+// buildPrompt so the argv we actually spawn is always clean.
+test "#576: buildPrompt strips control characters and invalid UTF-8 from the user's prompt" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // \x00 NUL, \x0b vertical tab, \x1f unit separator, a lone \xff invalid
+    // byte, and a truncated two-byte sequence; plus text that must survive.
+    const dirty = "a\x00b\x0bc\x1fd\xff e\xc3";
+    const p = try buildPrompt(arena, dirty);
+
+    // Valid UTF-8 end to end.
+    try testing.expect(std.unicode.utf8ValidateSlice(p));
+    // No C0 control characters survive.
+    for (p) |c| try testing.expect(c >= 0x20 or c == '\t' or c == '\n' or c == '\r');
+    // Readable content is kept; only the offending bytes are dropped.
+    try testing.expect(std.mem.indexOf(u8, p, "abcd e") != null);
+    // And the controlled wrapper still pins the tool.
+    try testing.expect(std.mem.indexOf(u8, p, "image_gen tool exactly once") != null);
+
+    // A clean prompt passes through byte-identical (modulo the wrapper).
+    const clean = try buildPrompt(arena, "a red circle on white");
+    try testing.expect(std.mem.indexOf(u8, clean, "a red circle on white") != null);
 }
