@@ -94,9 +94,27 @@ pub fn extractCall(arena: Allocator, stmt: []const u8) !?Call {
 pub fn extractCalls(arena: Allocator, statements: []const []const u8) ![]Call {
     var out: std.ArrayList(Call) = .empty;
     for (statements) |stmt| {
-        if (try extractCall(arena, stmt)) |c| try out.append(arena, c);
+        if (try extractCall(arena, stmt)) |c| {
+            try out.append(arena, c);
+            continue;
+        }
+        // print(read_file("p")) is a print, not an assign — still speculate
+        // the nested host call so print() can claim the file, not the literal.
+        if (printInner(stmt)) |inner| {
+            const parts = try splitTopLevel(arena, inner, ',');
+            for (parts) |part| {
+                if (try extractCall(arena, std.mem.trim(u8, part, " \t"))) |c|
+                    try out.append(arena, c);
+            }
+        }
     }
     return out.toOwnedSlice(arena);
+}
+
+fn printInner(stmt: []const u8) ?[]const u8 {
+    const t = std.mem.trim(u8, stmt, " \t");
+    if (!std.mem.startsWith(u8, t, "print(") or t[t.len - 1] != ')') return null;
+    return t["print(".len .. t.len - 1];
 }
 
 fn stripComment(stmt: []const u8) []const u8 {
@@ -450,6 +468,12 @@ test "extractCalls finds independent sleeps in a three-call script" {
     const calls = try extractCalls(a, &src);
     try std.testing.expectEqual(@as(usize, 3), calls.len);
     try std.testing.expectEqualStrings("sleep_ms", calls[0].name);
+    const nested = [_][]const u8{ "print(read_file(\"note.txt\"))", "print(codedb(\"list_dir .\"), bash(\"ls\"))" };
+    const inside = try extractCalls(a, &nested);
+    try std.testing.expectEqual(@as(usize, 3), inside.len);
+    try std.testing.expectEqualStrings("read_file", inside[0].name);
+    try std.testing.expectEqualStrings("codedb", inside[1].name);
+    try std.testing.expectEqualStrings("bash", inside[2].name);
 }
 
 test "splitStatements breaks semicolon one-liners; strings keep their commas" {

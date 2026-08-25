@@ -260,9 +260,11 @@ pub const parallel_tools_note = parallel_core_note ++ parallel_examples_note ++ 
 /// covers the !yolo map). Same edit discipline, ~1k fewer prefix bytes.
 pub const lean_local_tools_note =
     \\
-    \\Read files through one rlm script (host read_file/codedb) or codedb.
-    \\Prefer edit_file for existing files and write_file only for new files.
-    \\Independent reads belong in ONE rlm script, not a chain of turns.
+    \\read_file before editing; prefer edit_file for existing files and
+    \\write_file only for new files. Navigate with codedb (context, around,
+    \\callpath, list_dir, status) or one rlm script of those functions.
+    \\print(read_file("path")) returns the file — do not read it again.
+    \\Independent reads belong in ONE response or one rlm script, not a chain of turns.
     \\A passing verify command and attempt_completion belong in ONE response.
 ;
 
@@ -271,15 +273,15 @@ pub const lean_local_tools_note =
 /// model spends one API call per read (ADR 0024 leftover vs grok).
 pub const lean_parallel_note =
     \\
-    \\Independent reads belong in one rlm script; they run as it streams.
+    \\Independent reads and checks belong in ONE response; they run concurrently.
     \\A call that needs an earlier result, or two writes to the same file, stays
     \\in its own turn. A passing verify and attempt_completion share a response.
 ;
 
 pub const lean_intro_note =
     \\You are a coding agent. Use the cataloged tools; never invent one.
-    \\Read files through rlm (or codedb), then edit. A passing test and
-    \\attempt_completion belong in ONE response.
+    \\Independent reads belong in ONE response (or one rlm script), not one per turn.
+    \\A passing test and attempt_completion belong in ONE response.
 ;
 
 pub const lean_work_note =

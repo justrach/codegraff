@@ -11,9 +11,8 @@ always in this order:
    two compile-time optional rows).
 2. **Add** every `#352` optional whose flag is on (`imagegen` today).
 3. **Subtract** `#330` `--no-local-tools` (host-touching built-ins).
-4. **Keep** `--lean` (seven one-shot tools; catalog `read_file` is
-   dropped — reads go through `rlm` host functions or `codedb`).
-   Description compaction does not change names.
+4. **Keep** `--lean` (eight one-shot tools). Description compaction does
+   not change names.
 
 A subagent starts from `base_specs` only (no meta, no `subagent`), then
 applies (2) and (3). `--lean` is a root-prefix concern; children do not
@@ -28,7 +27,7 @@ run the keep-list.
 | root extras | `subagent` `workflow` `agent_output` `learn_candidate` `peer_message` `workspace` |
 | optional | `imagegen` |
 | local (`#330`) | `bash` `bash_output` `bash_kill` `read_file` `edit_file` `write_file` `codedb` `read_tool_result` `imagegen` |
-| lean keep | `bash` `edit_file` `write_file` `codedb` `subagent` `attempt_completion` `load_tool_schemas` |
+| lean keep | `bash` `read_file` `edit_file` `write_file` `codedb` `subagent` `attempt_completion` `load_tool_schemas` |
 
 `webfetch`, every meta tool except the lean keepers, and every `mcp__*`
 name are **not** local. MCP is outside this kernel.

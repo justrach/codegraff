@@ -23,6 +23,7 @@ LOCAL_TOOLS = (
 )
 LEAN_TOOLS = (
     "bash",
+    "read_file",
     "edit_file",
     "write_file",
     "codedb",

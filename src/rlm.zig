@@ -24,7 +24,7 @@ pub const tool_name = "rlm";
 pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Script whose functions ARE this session's tools. Independent literal read_file/codedb/bash/webfetch/sleep_ms/llm_query/subagent calls start as the script streams. Binds persist across rlm calls. subagent(\"task\") is sidecar-only (keep the critical-path next step local; sync in v1; run_in_background=true returns an id). print() is the answer. Example: a = read_file(\"src/main.zig\"); b = codedb(\"status\"); print(a, b). No imports, no control flow. Prefer one rlm over N tool calls.";
 /// --lean catalog desc: same contract, no REPL essay. maybeAppend is after
 /// compactLeanSpecs, so this is the one-shot wire text.
-pub const lean_tool_desc = "Read files here (host read_file/codedb/bash). Those reads are not a catalog tool on -p — print() is the answer, then edit_file/write_file/bash as catalog tools. Literal calls start as it streams. Binds persist.";
+pub const lean_tool_desc = "Batch independent read_file/codedb/bash here. print(read_file(\"p\")) returns the file — do not catalog-read it again. Then edit_file/write_file/bash as catalog tools. Literal calls start as it streams. Binds persist.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\") / subagent(\"task\"); print(...) is the result. Assignments persist across rlm calls. Semicolons or newlines separate statements."}}, "required": ["code"]}
 ;
@@ -180,7 +180,7 @@ fn evalStmt(
         return null;
     }
     if (printArgs(stmt)) |inner| {
-        const text = try renderPrint(arena, inner, binds);
+        const text = try renderPrint(ctx, arena, inner, binds, claimed);
         if (printed.items.len > 0) try printed.append(ctx.gpa, '\n');
         try printed.appendSlice(ctx.gpa, text);
         return null;
@@ -201,24 +201,31 @@ fn printArgs(stmt: []const u8) ?[]const u8 {
     return t["print(".len .. t.len - 1];
 }
 
-fn renderPrint(arena: Allocator, inner: []const u8, binds: []const Binding) ![]const u8 {
+fn renderPrint(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []const Binding, claimed: *std.StringHashMap(ToolOutput)) ![]const u8 {
     const parts = try spec_ptc.splitTopLevel(arena, inner, ',');
     if (parts.len == 0) return "";
     var out: std.ArrayList(u8) = .empty;
     for (parts, 0..) |part, i| {
         if (i > 0) try out.append(arena, '\n');
-        try out.appendSlice(arena, try renderPrintPart(arena, part, binds));
+        try out.appendSlice(arena, try renderPrintPart(ctx, arena, part, binds, claimed));
     }
     return out.toOwnedSlice(arena);
 }
 
-fn renderPrintPart(arena: Allocator, inner: []const u8, binds: []const Binding) ![]const u8 {
+fn renderPrintPart(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []const Binding, claimed: *std.StringHashMap(ToolOutput)) ![]const u8 {
     const t = std.mem.trim(u8, inner, " \t");
     if (t.len >= 2 and (t[0] == '"' or t[0] == '\'') and t[t.len - 1] == t[0]) return t[1 .. t.len - 1];
     var i = binds.len;
     while (i > 0) {
         i -= 1;
         if (std.mem.eql(u8, binds[i].name, t)) return binds[i].text;
+    }
+    if (try spec_ptc.extractCall(arena, t)) |c| {
+        const key = try c.key(arena);
+        if (claimed.get(key)) |hit| return try arena.dupe(u8, hit.text);
+        const out = runHost(ctx, c);
+        defer ctx.gpa.free(out.text);
+        return try arena.dupe(u8, out.text);
     }
     return try arena.dupe(u8, t);
 }
@@ -308,6 +315,10 @@ test "runScript reads a fixture via speculated read_file and prints it" {
     defer gpa.free(out.text);
     try std.testing.expect(!out.is_error);
     try std.testing.expect(std.mem.indexOf(u8, out.text, "hello-rlm") != null);
+    const nested = try runScript(ctx, "print(read_file(\"note.txt\"))");
+    defer gpa.free(nested.text);
+    try std.testing.expect(!nested.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, nested.text, "hello-rlm") != null);
 }
 
 test "runScript splits a semicolon one-liner and prints both binds" {

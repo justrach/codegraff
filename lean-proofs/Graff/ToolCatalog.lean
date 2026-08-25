@@ -26,7 +26,7 @@ def localTools : List String :=
    "write_file", "codedb", "read_tool_result", "imagegen"]
 
 def leanTools : List String :=
-  ["bash", "edit_file", "write_file", "codedb",
+  ["bash", "read_file", "edit_file", "write_file", "codedb",
    "subagent", "attempt_completion", "load_tool_schemas"]
 
 def optionalTools : List String :=
@@ -128,8 +128,6 @@ example : mem "webfetch" localTools = false := by native_decide
 example : mem "imagegen" localTools = true := by native_decide
 example : mem "imagegen" leanTools = false := by native_decide
 example : mem "subagent" leanTools = true := by native_decide
-example : mem "read_file" leanTools = false := by native_decide
-example : advertised { lean := true } "read_file" = false := by native_decide
 example : unique (baseTools ++ metaTools ++ rootExtras) = true := by native_decide
 
 example : catalog {} =
