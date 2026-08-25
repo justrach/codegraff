@@ -54,7 +54,6 @@
       "edit_file",
       "write_file",
       "codedb",
-      "read_tool_result",
       "subagent",
       "attempt_completion",
       "load_tool_schemas"
@@ -605,7 +604,6 @@
         "edit_file",
         "write_file",
         "codedb",
-        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -656,7 +654,6 @@
         "edit_file",
         "write_file",
         "codedb",
-        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -707,7 +704,6 @@
         "edit_file",
         "write_file",
         "codedb",
-        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -758,7 +754,6 @@
         "edit_file",
         "write_file",
         "codedb",
-        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -809,7 +804,6 @@
         "edit_file",
         "write_file",
         "codedb",
-        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -857,7 +851,6 @@
         "edit_file",
         "write_file",
         "codedb",
-        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -905,7 +898,6 @@
         "edit_file",
         "write_file",
         "codedb",
-        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
@@ -953,7 +945,6 @@
         "edit_file",
         "write_file",
         "codedb",
-        "read_tool_result",
         "attempt_completion",
         "load_tool_schemas",
         "subagent"
