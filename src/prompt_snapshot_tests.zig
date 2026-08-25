@@ -114,6 +114,9 @@ const golden_full_prompt =
     \\will not change; reread only on stale source, ambiguity, or failure.
     \\When a Project layout segment is present, it is the tree — read the
     \\files you need straight from it instead of ls/find exploration turns.
+    \\When a named SPEC.md (or equivalent contract) is in the task, satisfy
+    \\every clause — a green public test is not the whole spec. Empty input
+    \\includes whitespace-only unless the spec says otherwise.
     \\
     \\Before a large chunk of work, give a one- or two-sentence heads-up on what
     \\you are about to do; on long tasks, drop a brief note as each phase lands.

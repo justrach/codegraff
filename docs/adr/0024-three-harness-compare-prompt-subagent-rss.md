@@ -158,3 +158,42 @@ Zig process model, not a prompt trick. grok's token win is real (185k
 in vs 1.0–1.3M) — shorter catalog + fewer calls (39 vs 88–96). Do not
 copy their V8/Rust heap to chase the pass; steal prompt brevity if
 anything.
+
+## Why grok-build looked better (and what we took)
+
+Two separate facts. Neither is "their loop is smarter."
+
+**1. `json-stream` is a spec-contract miss, not an architecture miss.**
+The hidden check is `iter_json("application/json-seq", "   ") == []`.
+`SPEC.md` says "Empty payload yields nothing." Public tests never cover
+whitespace-only json-seq. Grok's sandbox `lstrip`s JSON whitespace and
+returns; graff treated `"   "` as a record and `json.loads` failed. Do
+not copy their heap for that extra pass.
+
+**2. The lean catalog lied under `-p --yolo`.** Evals run `graff -p --yolo
+--lean`. `unattended_note` (the real "AUTO-DENIED" sentence) is *not*
+appended when yolo is on (`main.zig` passes `unattended and
+!effectiveYolo()`). But `lean_subagent_desc` still said the root's
+bash/edit tools are approval-denied and the model should delegate. That
+is why graff spent 88–96 calls / 1.0–1.3M input tokens against grok's
+39 / 185k: the model spawned children for work the root could do. Grok's
+root prompt says do clear local work this turn; only launch Task when
+the user asked or the work is independent (same Codex sidecar rule we
+already put on the *full* `subagent` desc, not on lean).
+
+**Take (this revision):**
+
+- Rewrite `lean_subagent_desc` to sidecar-only. Keep critical path
+  local. Drop the approval-denied claim — that fact lives on
+  `unattended_note` only.
+- Two sentences on `work_note`: a named `SPEC.md` is the contract; a
+  green public test is not the whole spec; empty includes
+  whitespace-only unless the spec says otherwise. Does not leak hidden
+  checks.
+
+**Still reject:** V8 / grok heap, extra spawn tools, parent-history
+fork, share root `prompt_cache_key` with children, IPython.
+
+Live A/B after this revision: `--suite swe --harness
+graff-dev-old,graff-dev,grok -j 12`. Goal: graff passes `json-stream`
+(5/6) and/or fewer calls/tokens, RSS stays ~9M.

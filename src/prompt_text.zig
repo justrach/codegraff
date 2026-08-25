@@ -160,6 +160,9 @@ pub const work_note =
     \\will not change; reread only on stale source, ambiguity, or failure.
     \\When a Project layout segment is present, it is the tree — read the
     \\files you need straight from it instead of ls/find exploration turns.
+    \\When a named SPEC.md (or equivalent contract) is in the task, satisfy
+    \\every clause — a green public test is not the whole spec. Empty input
+    \\includes whitespace-only unless the spec says otherwise.
 ;
 
 /// Always present: narration is a habit, not a capability.

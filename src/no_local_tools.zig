@@ -77,12 +77,14 @@ pub fn blocks(name: []const u8) bool {
 pub var lean: bool = false;
 
 /// The lean keep-list. `subagent` stays despite being the priciest schema
-/// (5.1k bytes): in an unattended non-yolo one-shot the root is
-/// approval-gated out of bash/edit_file and delegation is the sanctioned
-/// path (prompts.unattended_note) — dropping it would strand exactly the
-/// runs lean is built for. `load_tool_schemas` stays because lean folds MCP
-/// behind that meta tool (mcp_schema_gate.deferAllRuntime) instead of
-/// skipping it: the one-shot keeps full MCP capability a load call away.
+/// (5.1k bytes): unattended non-yolo still needs a sanctioned delegation
+/// path (`prompts.unattended_note` — that note is the approval-denied
+/// fact, not this catalog), and yolo/`-p` still needs fan-out for
+/// independent work. Dropping it would strand the first case. The compact
+/// desc must not claim root is always approval-denied: evals and `-p`
+/// run `--yolo`, so that claim was a token/call tax (ADR 0024).
+/// `load_tool_schemas` stays because lean folds MCP behind that meta tool
+/// (mcp_schema_gate.deferAllRuntime) instead of skipping it.
 pub const lean_tools = [_][]const u8{
     "bash",
     "read_file",
@@ -120,10 +122,12 @@ pub fn filterLeanSpecs(comptime Spec: type, arena: Allocator, specs: []const Spe
 
 /// --lean's compact subagent description: same name and JSON schema, a
 /// fraction of the prose. The full description is 1.9k bytes of workflow,
-/// persona and tier/effort precedence detail a one-shot never exercises;
-/// the lean seven keep this tool BECAUSE unattended delegation goes through
-/// it, so its price is the one worth shrinking (~350 tokens/turn saved).
-pub const lean_subagent_desc = "Spawn a subagent for a self-contained task. It has bash, read_file, edit_file, write_file, codedb and does NOT share your context — the prompt must say everything. Returns its final report. In an unattended session the root's bash/edit tools are approval-denied and a subagent's are not: delegate implementation and command execution to one (tier \"small\" for mechanical work).";
+/// persona and tier/effort precedence detail a one-shot never exercises.
+/// Sidecar-only (ADR 0023): keep the critical-path next step local. Do
+/// not claim root bash/edit are approval-denied — that is true only when
+/// `unattended_note` is appended (`unattended and !yolo`). `-p --yolo`
+/// (evals) can act locally; the old lie forced extra child turns.
+pub const lean_subagent_desc = "Spawn a sidecar for a self-contained task. Child has bash, read_file, edit_file, write_file, codedb; it does NOT share your context — the prompt must say everything. Returns the final report. Keep the critical-path next step local; do not hand off the blocker and wait. Do file and command work yourself this turn; spawn only for independent work.";
 
 /// schema.zig chains this after filterLeanSpecs: identical names and JSON
 /// schemas, compact prose. Returns the input untouched when lean is off.
@@ -232,8 +236,8 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
     try std.testing.expectEqualStrings("subagent", kept[2].name);
     try std.testing.expectEqualStrings("attempt_completion", kept[3].name);
     // The keep-list is exactly the nine documented tools — subagent stays
-    // (the unattended delegation path), load_tool_schemas stays (lean folds
-    // MCP behind it), everything orchestration/meta goes.
+    // (unattended-non-yolo delegation + independent fan-out), load_tool_schemas
+    // stays (lean folds MCP behind it), everything orchestration/meta goes.
     try std.testing.expectEqual(@as(usize, 9), lean_tools.len);
     for (lean_tools) |tool| try std.testing.expect(leanKeeps(tool));
     try std.testing.expect(!leanKeeps("workflow"));
@@ -249,7 +253,9 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
     for (compact) |s| {
         if (std.mem.eql(u8, s.name, "subagent")) try std.testing.expectEqualStrings(lean_subagent_desc, s.desc) else try std.testing.expectEqualStrings("", s.desc);
     }
-    try std.testing.expect(std.mem.indexOf(u8, lean_subagent_desc, "approval-denied") != null); // keeps the one fact delegation needs
+    try std.testing.expect(std.mem.indexOf(u8, lean_subagent_desc, "sidecar") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lean_subagent_desc, "critical-path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lean_subagent_desc, "approval-denied") == null); // that fact lives on unattended_note, not here
 }
 
 test "#330: filterRootSpecs drops only the gated names, and does not allocate when the gate is off" {
