@@ -99,6 +99,7 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
             };
         } else if (std.mem.eql(u8, itype, "function_call")) {
             const name = if (item.object.get("name")) |n| (if (n == .string) n.string else continue) else continue;
+            if (@import("xai_hosted.zig").isServerSideCall(itype, name)) continue;
             const call_id = if (item.object.get("call_id")) |c| (if (c == .string) c.string else continue) else continue;
             const args = if (item.object.get("arguments")) |a| (if (a == .string) a.string else "") else "";
             const input: Value = if (args.len == 0)

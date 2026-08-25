@@ -31,8 +31,11 @@ current is part of cutting a release.
   (#624/#625).
 - Smolify / deepwiki / mobbin stay out of the default catalog unless opted
   in (`GRAFF_SMOLIFY`) (#628).
+- xAI Responses splices hosted `x_search` onto tools turns (ADR 0031).
+  Not a catalog tool. `GRAFF_XAI_X_SEARCH=0` opts out. Same-prompt
+  SuperGrok A/B vs scrape: 101s / 7 calls / 64k in → 37s / 1 call / 28k.
 - No `v0.0.277` git tag on this cut.
-- Test ratchet: unit suite 1664.
+- Test ratchet: unit suite 1672 (floor 1664).
 
 ## v0.0.276 (2026-08-25)
 
