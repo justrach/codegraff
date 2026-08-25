@@ -242,5 +242,20 @@ and 50 calls vs 31. Two leftover taxes on `-p --yolo --lean`:
    None of that helps a 5-file SWE sandbox. Dropped or swapped for
    a short `lean_local_tools_note`.
 
-Live A/B after this diet: `--suite swe --harness graff-dev`. Goal:
-same 5/6, fewer calls and input tokens, RSS stays ~9M.
+Live A/B after this diet (`run-20260825-070918.jsonl`, graff-dev):
+
+| harness | pass | wall | first | RSS | in | out | calls |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| default rlm | 4/6 | 737.3s | 17.4s | 9.7M | **356795** | 27941 | **42** |
+
+Versus `064129` (5/6, 441s, 447k, 50 calls): **−20% input tokens**,
+**−16% calls**. `cookie-store` 119k→65k / 12→7 calls. `json-stream`
+timed out this rep (no token row); a follow-up (`071533`) finished in
+45s / 29k / 5 calls but missed the whitespace-only json-seq clause
+again — one-rep flake, same bug as before the diet, not a new
+regression from unfolding `rlm`. `label-sort` still fails.
+
+Do not copy grok's heap. The remaining ~2× vs grok's 157k is still
+turns + prefix (they do ~5 calls of a shorter catalog). Further cuts
+are smaller: we already dropped the interactive essays and put `rlm`
+on the one-shot catalog.
