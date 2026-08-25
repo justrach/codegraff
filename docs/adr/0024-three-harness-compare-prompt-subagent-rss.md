@@ -363,3 +363,37 @@ test → done). Leftover suite tokens/calls are **edit_file/write_file retries**
 on validated / map-conflict / config-parse (same failed span three times,
 then a full rewrite) — not prefix, not catalog `read_file`, not grok's heap.
 RSS still ~9M. Do not copy 159M. `label-sort` still fails both harnesses.
+
+## The retries were the shared-tree checkpoint under `-j 6`
+
+Those "failed spans" were `#469` presence: SWE sandboxes live *inside* the
+harness git checkout, so `rev-parse --git-dir` is the parent repo. Six
+parallel `-p` sessions shared one identity; each `edit_file`/`write_file`
+checkpointed once per sibling (`action was NOT performed`). grok has no
+such lock.
+
+**Take:** `--lean` / `-p` does not `announce` and `gateCheck` is a no-op
+(`3dc8937`). Interactive multi-session still checkpoints. One-shots and
+eval sandboxes do not tax each other.
+
+SWE (`run-20260825-091123.jsonl`, SuperGrok grok-4.6, `-j 6`):
+
+| harness | pass | wall (sum) | first | RSS | in | out | calls |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| default rlm | **5/6** | **198s** | 11.3s | **8.5M** | **106210** | 11969 | **24** |
+| grok-build | **5/6** | **506s** | 1.6s | 177M | **194069** | 33577 | **39** |
+
+Every graff task is **4 API calls** (rlm → edit(s) → test → done). Versus
+grok's historical 157–185k / ~31 and this-rep 194k / 39: **fewer tokens,
+fewer calls, ~20× less RSS, faster wall**. `label-sort` still fails both.
+
+| task | graff in / calls | grok in / calls |
+|---|---:|---:|
+| config-parse | 16k / 4 | 43k / 5 |
+| cookie-store | 23k / 4 | 36k / 7 |
+| json-stream | 19k / 4 | 89k / 13 |
+| label-sort (fail both) | 18k / 4 | 9k / 4 |
+| map-conflict | 16k / 4 | 8k / 6 |
+| validated | 15k / 4 | 9k / 4 |
+
+Do not copy grok's 177M heap. Do not re-enable presence announce on `-p`.
