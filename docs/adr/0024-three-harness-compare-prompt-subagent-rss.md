@@ -194,6 +194,21 @@ already put on the *full* `subagent` desc, not on lean).
 **Still reject:** V8 / grok heap, extra spawn tools, parent-history
 fork, share root `prompt_cache_key` with children, IPython.
 
-Live A/B after this revision: `--suite swe --harness
-graff-dev-old,graff-dev,grok -j 12`. Goal: graff passes `json-stream`
-(5/6) and/or fewer calls/tokens, RSS stays ~9M.
+Live A/B after the lean-desc rewrite (`run-20260825-063211.jsonl`,
+same OAuth / grok-4.6 / `-j 12`):
+
+| harness | pass | wall (sum) | first | RSS | in | out | calls |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `--old` | 4/6 | 551.8s | 16.2s | 9.5M | 819087 | 40858 | 80 |
+| default rlm | 4/6 | 572.2s | 9.6s | 9.4M | **678343** | 42606 | **67** |
+| grok-build | **5/6** | **376.6s** | **1.8s** | 158.7M | **157065** | 24438 | **31** |
+
+Versus the pre-cut grok-inclusive file (`061731`): default rlm
+**−46% input tokens** (1.26M → 678k) and **−30% calls** (96 → 67),
+RSS still ~9M. `cookie-store` 19→12 calls / 322k→152k;
+`label-sort` 22→11 / 354k→125k. Pass rate stayed 4/6 —
+`json-stream` still raised on whitespace-only json-seq (`"   "` has
+no RS; grok skips content before the first RS and yields nothing).
+The follow-up `work_note` sentence is that clause: a required
+delimiter applies to records that exist; a payload with no records
+is empty, not malformed. Do not copy grok's 159M heap.

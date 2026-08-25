@@ -162,7 +162,9 @@ pub const work_note =
     \\files you need straight from it instead of ls/find exploration turns.
     \\When a named SPEC.md (or equivalent contract) is in the task, satisfy
     \\every clause — a green public test is not the whole spec. Empty input
-    \\includes whitespace-only unless the spec says otherwise.
+    \\includes whitespace-only: yield nothing, do not raise. A required
+    \\record delimiter applies to records that exist; a payload with no
+    \\records is empty, not malformed.
 ;
 
 /// Always present: narration is a habit, not a capability.
