@@ -12,12 +12,15 @@ A follow-up asked whether
 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)
 beat that story on cache, child spawn, prompt tokens, or RSS.
 
-Cloned 2026-08-25 (shallow). None of the three binaries ran here:
-grok-build needs Rust + DotSlash (or `x.ai/cli` install + an xAI
-account the SuperGrok OAuth file does not unlock as `grok`); kimi-cli
-is Python and wants a Moonshot login; dsh is a pnpm/Node plugin host
-and wants a DeepSeek key. Architecture is the evidence; live numbers
-are graff `--old` vs default RLM (see below, filled after the A/B).
+Cloned 2026-08-25 (shallow). **grok-build uses the same SuperGrok OAuth
+we already have.** `graff login xai` writes
+`~/.xai/credentials/graff-oauth.json` with grok-build's public client
+(`b1a00492-…`, issuer `https://auth.x.ai`, same 10-scope set). Mapped
+into `~/.grok/auth.json` as `auth_mode=oidc` under
+`https://auth.x.ai::<client>` — `grok -p` answers in ~3s. Install is
+`npm i -g --prefix ~/.local @xai-official/grok` (1.0.5 here). kimi-cli
+and dsh still need Moonshot / DeepSeek keys; those two stay architecture
+compare only.
 
 ## Decision
 
@@ -75,12 +78,13 @@ fewer prefix bytes, not a new heap.
 ## Live A/B (2026-08-25, after this revision)
 
 SuperGrok OAuth, grok-4.6, one rep. `[usage]` is `$0.0000 · N subscription
-call(s), flat-rate` both ways. External harnesses (grok-build / kimi-cli /
-dsh) did not run: no binaries, no Moonshot/DeepSeek keys, grok-build needs
-Rust+DotSlash or an xAI CLI login this OAuth file does not unlock as `grok`.
+call(s), flat-rate` for graff. grok-build ran on the same login (mapped
+`graff-oauth.json` → `~/.grok/auth.json`). kimi-cli / dsh still did not
+run (no Moonshot / DeepSeek keys).
 
 `graff-evals/results/run-20260825-061442.jsonl` (`--suite rlm`) and
-`run-20260825-061746.jsonl` (`--suite swe -j 12`).
+`run-20260825-061746.jsonl` (`--suite swe -j 12`, graff-only). The
+grok-inclusive SWE retry is `run-20260825-061731.jsonl`.
 
 ### rlm suite (5 tasks)
 
@@ -118,7 +122,39 @@ is the clear default-rlm win (108s / 148k → 38s / 41k). `--old` has a
 slightly higher cache *rate* because it sends a fatter prefix; default rlm
 sends fewer total input tokens.
 
-**Verdict:** keep default RLM. After cache-max + this prompt/subagent cut,
-rlm-suite is a pass-rate win and a wall/token/RSS win; swe is a token/call
-win at the same 4/6. SuperGrok $ is a wash (flat-rate); the token cut is
-the metered-key spend win.
+**Verdict (graff-only swe, prior rep):** keep default RLM. After cache-max
++ this prompt/subagent cut, rlm-suite is a pass-rate win and a
+wall/token/RSS win; swe is a token/call win at the same 4/6. SuperGrok $
+is a wash (flat-rate); the token cut is the metered-key spend win.
+
+### swe retry vs grok-build (same OAuth, `run-20260825-061731.jsonl`)
+
+`--suite swe --harness graff-dev-old,graff-dev,grok -j 12`. grok 1.0.5
+(`@xai-official/grok`), `--always-approve`, `streaming-messages-json`.
+
+| harness | pass | wall (sum) | first | RSS | in | out | calls | $ |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `--old` | 4/6 | 576.3s | 10.6s | 8.7M | 1015137 | 42267 | 88 | $0.0000 |
+| default rlm | 4/6 | 742.7s | 4.9s | 9.1M | 1259428 | 48430 | 96 | $0.0000 |
+| grok-build | **5/6** | **500.2s** | **3.4s** | 164.6M | **184880** | 32040 | **39** | — |
+
+| task | `--old` | default | grok |
+|---|---:|---:|---:|
+| config-parse | ✓ 84s / 150k | ✓ 76s / 153k | ✓ 69s / 11k |
+| cookie-store | ✓ 103s / 236k | ✓ 230s / 322k | ✓ 123s / 53k |
+| json-stream | ✗ 90s / 190k | ✗ 100s / 149k | **✓ 202s / 81k** |
+| label-sort | ✗ 81s / 79k | ✗ 170s / 354k | ✗ 49s / 20k |
+| map-conflict | ✓ 126s / 205k | ✓ 56s / 111k | ✓ 25s / 13k |
+| validated | ✓ 94s / 154k | ✓ 112s / 170k | ✓ 33s / 8k |
+
+All three fail `label-sort` (held-out check). grok is the only pass on
+`json-stream`. Default rlm vs `--old` is a wash on pass (4/6) and a
+loss on this rep's summed wall — `cookie-store` 103s→230s and
+`label-sort` 81s→170s dominate; `map-conflict` still wins (126s→56s).
+One-rep noise vs the earlier swe file (default was −11% wall there).
+
+**RSS:** graff stays ~9M. grok-build peaks **165M** (~18×). That is the
+Zig process model, not a prompt trick. grok's token win is real (185k
+in vs 1.0–1.3M) — shorter catalog + fewer calls (39 vs 88–96). Do not
+copy their V8/Rust heap to chase the pass; steal prompt brevity if
+anything.

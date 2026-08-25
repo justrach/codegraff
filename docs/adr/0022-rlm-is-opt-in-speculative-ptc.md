@@ -104,11 +104,12 @@ regression* without a catalog tax. Per-task swings are one-rep variance.
   (label-sort and json-stream failed on both). Parallel clock ~140s;
   summed per-task wall native **624s / 822k in / 9.7M RSS** vs `--rlm`
   **652s / 816k in / 9.4M RSS**. `map-conflict` was the only clear
-  `--rlm` win (84s → 52s). Same pass rate, no memory win, no wall win
-  on this suite — `--old` stays as the structured-only escape. Default
-  flipped anyway because persist (`bind-reuse`) is the spend win, #619
-  scatter showed a wall win that is one-rep fragile, and core/swe did
-  not regress.
+  `--rlm` win (84s → 52s). Retry after default-RLM + prompt cut +
+  grok-build on the same SuperGrok OAuth: graff still **4/6** both
+  ways (`--old` 576s / 1.02M in / 8.7M RSS; default 743s / 1.26M in /
+  9.1M RSS this rep); grok-build **5/6** (500s / 185k in / **165M**
+  RSS). Same OAuth client — see ADR 0024. `--old` stays the
+  structured-only escape.
 
 ## Default vs `--old` (this branch, 2026-08-25)
 
