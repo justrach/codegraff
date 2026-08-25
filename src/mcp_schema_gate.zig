@@ -294,7 +294,11 @@ pub fn hiddenSpec(name: []const u8, all: []const mcp.Tool) bool {
     const progressive = std.mem.eql(u8, name, tool_name) or
         std.mem.eql(u8, name, "mcp_search_tools") or
         std.mem.eql(u8, name, "mcp_select_tool");
-    return progressive and !anyDeferred(all);
+    if (!progressive) return false;
+    // -p: home MCP still counts as deferred and kept the 1.4kB meta tool
+    // on every turn. One-shots that need MCP pass --no-lean.
+    if (@import("no_local_tools.zig").lean) return true;
+    return !anyDeferred(all);
 }
 
 /// The description a deferred tool advertises: the first line (or paragraph)
