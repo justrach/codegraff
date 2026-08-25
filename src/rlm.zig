@@ -20,15 +20,16 @@ const exec_mod = @import("exec.zig");
 const rlm_query = @import("rlm_query.zig");
 const rlm_spec = @import("rlm_spec.zig");
 const rlm_mcp = @import("rlm_mcp.zig");
+const rlm_reduce = @import("rlm_reduce.zig");
 const mcp_shapes = @import("mcp_shapes.zig");
 
 pub const tool_name = "rlm";
-pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Functions ARE this session's tools. Literal read_file/codedb/bash/webfetch/sleep_ms/llm_query/subagent start as the script streams. Binds persist. subagent(\"task\") is sidecar-only (keep the critical-path next step local). Loaded MCP names are host functions after load_tool_schemas; each(arr, tool, field) maps a JSON array. print() is the answer. Prefer one rlm over N tool calls.";
+pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Functions ARE this session's tools. Literal read_file/codedb/bash/webfetch/sleep_ms/llm_query/subagent start as the script streams. Binds persist. subagent(\"task\") is sidecar-only (keep the critical-path next step local). Loaded MCP names are host functions after load_tool_schemas; each(arr, tool, field) maps a JSON array; len(x)/project(x, field) slim it. print() is the answer. Prefer one rlm over N tool calls.";
 /// --lean catalog desc: same contract, no REPL essay. maybeAppend is after
 /// compactLeanSpecs, so this is the one-shot wire text.
 pub const lean_tool_desc = "Batch independent read_file/codedb/bash here. print(read_file(\"p\")) returns the file — do not catalog-read it again. Then edit_file/write_file/bash as catalog tools. Literal calls start as it streams. Binds persist.";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\") / subagent(\"task\") / loaded mcp__server__tool(); each(arr, tool, field) maps a JSON array; print(...) is the result. Assignments persist across rlm calls."}}, "required": ["code"]}
+    \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\") / subagent(\"task\") / loaded mcp__server__tool(); each(arr, tool, field) maps a JSON array; len(x) and project(x, field) slim it; print(...) is the result. Assignments persist across rlm calls."}}, "required": ["code"]}
 ;
 
 /// Process-global: on by default. `--old` / `--no-rlm` turn it off; `--rlm`
@@ -146,8 +147,8 @@ fn speculate(ctx: ToolCtx, arena: Allocator, calls: []const spec_ptc.Call, claim
 fn runHost(ctx: ToolCtx, call: spec_ptc.Call) ToolOutput {
     if (std.mem.eql(u8, call.name, "sleep_ms")) return runSleep(ctx, call.args_json);
     if (std.mem.eql(u8, call.name, "llm_query")) return rlm_query.run(ctx, call.args_json);
-    if (std.mem.eql(u8, call.name, "each")) {
-        return .{ .text = ctx.gpa.dupe(u8, "rlm: each() needs binds, not speculation") catch &.{}, .is_error = true };
+    if (std.mem.eql(u8, call.name, "each") or std.mem.eql(u8, call.name, "len") or std.mem.eql(u8, call.name, "project")) {
+        return .{ .text = ctx.gpa.dupe(u8, "rlm: each/len/project need binds, not speculation") catch &.{}, .is_error = true };
     }
     var arena_state = std.heap.ArenaAllocator.init(ctx.gpa);
     defer arena_state.deinit();
@@ -188,6 +189,11 @@ fn evalStmt(
     bind_out: *std.ArrayList(Binding),
 ) !?[]u8 {
     switch (try rlm_mcp.evalEach(ctx, arena, stmt, binds, bind_out, runHost)) {
+        .miss => {},
+        .ok => return null,
+        .fail => |e| return e,
+    }
+    switch (try rlm_reduce.evalStmt(arena, ctx.gpa, stmt, binds, bind_out)) {
         .miss => {},
         .ok => return null,
         .fail => |e| return e,
@@ -236,6 +242,7 @@ fn renderPrint(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []const
 fn renderPrintPart(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []const Binding, claimed: *std.StringHashMap(ToolOutput)) ![]const u8 {
     const t = std.mem.trim(u8, inner, " \t");
     if (t.len >= 2 and (t[0] == '"' or t[0] == '\'') and t[t.len - 1] == t[0]) return t[1 .. t.len - 1];
+    if (rlm_reduce.evalExpr(arena, t, binds)) |text| return text else |_| {}
     var i = binds.len;
     while (i > 0) {
         i -= 1;

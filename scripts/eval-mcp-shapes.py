@@ -88,6 +88,18 @@ VARIANTS = [
         "task": "linear-nohint-warm",
         "label": "rlm+MCP host, warm, no each() recipe",
     },
+    {
+        "id": "J",
+        "harness": "graff-dev-nolean",
+        "task": "linear-reduce",
+        "label": "rlm+MCP host, cold, len/project recipe",
+    },
+    {
+        "id": "K",
+        "harness": "graff-dev-nolean",
+        "task": "linear-reduce-warm",
+        "label": "rlm+MCP host, warm, len/project recipe",
+    },
 ]
 
 
