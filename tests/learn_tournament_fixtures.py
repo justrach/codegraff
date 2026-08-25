@@ -6,14 +6,16 @@ assert operation == "mutate"
 request = json.loads(pathlib.Path(request_path).read_text())
 index = request["candidate_index"]
 barrier = pathlib.Path(os.environ["TOURNAMENT_BARRIER"])
-(barrier / f"mutation-{index}").write_text("started")
-deadline = time.monotonic() + 10
-while len(list(barrier.glob("mutation-*"))) != 4:
-    assert time.monotonic() < deadline, "mutations did not run concurrently"
-    time.sleep(0.01)
+# Record the invocation before the rendezvous so retry accounting survives a
+# peer that lags past the deadline (issue #467).
 attempt_path = barrier / f"mutator-attempts-{index}"
 attempts = int(attempt_path.read_text()) if attempt_path.exists() else 0
 attempt_path.write_text(str(attempts + 1))
+(barrier / f"mutation-{index}").write_text("started")
+deadline = time.monotonic() + float(os.environ.get("TOURNAMENT_BARRIER_DEADLINE", "120"))
+while len(list(barrier.glob("mutation-*"))) != 4:
+    assert time.monotonic() < deadline, "mutations did not run concurrently"
+    time.sleep(0.01)
 retry_marker = barrier / f"mutator-retried-{index}"
 if index == 0 and not retry_marker.exists():
     retry_marker.write_text("retry")
