@@ -10,6 +10,16 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.276 (2026-08-25)
+
+- `rlm` (Zhang/Khattab RLM + alexzhang13 spec-ptc, Zig — not Prime's
+  IPython kernel) is the default loop. `--old` / `--no-rlm` (or
+  `GRAFF_OLD=1` / `GRAFF_RLM=0`) restore the structured-only catalog.
+  `--rlm` stays as an explicit on. Last CLI flag wins; env does not
+  clobber `--old` / `--rlm`.
+- The spec stays folded behind `load_tool_schemas`. `--schema` / the
+  64-cell tool-catalog kernel do not grow a new tool.
+
 ## v0.0.274 (2026-08-23)
 
 - Rate-limit and 5xx retries no longer dump the provider's raw error JSON

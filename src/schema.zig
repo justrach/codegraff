@@ -535,13 +535,13 @@ test "effectiveRootSpecs: drops clock_sleep from the root tool catalog unless th
 
     root.g_clock_sleep = false;
     const off_specs = try effectiveRootSpecs(a);
-    try std.testing.expectEqual(root_specs.len - 1, off_specs.len);
+    try std.testing.expectEqual(root_specs.len, off_specs.len); // -clock_sleep +rlm
     for (off_specs) |t| try std.testing.expect(!std.mem.eql(u8, t.name, "clock_sleep"));
-    try std.testing.expectEqual(@as(usize, 0), arena_state.queryCapacity());
+    try std.testing.expect(arena_state.queryCapacity() > 0); // maybeAppend copies to append rlm
 
     root.g_clock_sleep = true;
     const on_specs = try effectiveRootSpecs(a);
-    try std.testing.expectEqual(root_specs.len, on_specs.len);
+    try std.testing.expectEqual(root_specs.len + 1, on_specs.len); // +rlm
     var found = false;
     for (on_specs) |t| {
         if (std.mem.eql(u8, t.name, "clock_sleep")) found = true;
@@ -551,7 +551,7 @@ test "effectiveRootSpecs: drops clock_sleep from the root tool catalog unless th
     root.g_clock_sleep = false;
     learn_store.active_agent_loaded = false;
     const minimal_specs = try effectiveRootSpecs(a);
-    try std.testing.expectEqual(root_specs.len - 2, minimal_specs.len);
+    try std.testing.expectEqual(root_specs.len - 1, minimal_specs.len); // -clock -learn +rlm
     for (minimal_specs) |tool| try std.testing.expect(!std.mem.eql(u8, tool.name, "learn_candidate"));
 }
 test "learn_candidate is root-only and cannot become a subagent tool" {

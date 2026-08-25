@@ -113,10 +113,25 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     if (environ_map.get("GRAFF_CLOCK_SLEEP")) |v| {
         main_mod.g_clock_sleep = main_mod.g_clock_sleep or std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
     }
-    if (environ_map.get("GRAFF_RLM")) |v| {
+    {
+        // Always query so session_settings_tests can catch a dropped parse.
+        // CLI (`--rlm` / `--old`) wins: env must not clobber an explicit flag.
         const rlm = @import("rlm.zig");
-        rlm.available = rlm.available or std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
-        rlm.sync();
+        const old_v = environ_map.get("GRAFF_OLD");
+        const rlm_v = environ_map.get("GRAFF_RLM");
+        if (!rlm.cli_set) {
+            if (old_v) |v| {
+                if (std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes"))
+                    rlm.available = false;
+            }
+            if (rlm_v) |v| {
+                const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "no");
+                const on = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
+                if (off) rlm.available = false;
+                if (on) rlm.available = true; // GRAFF_RLM=1 wins over GRAFF_OLD=1
+            }
+            rlm.sync();
+        }
     }
     if (environ_map.get("GRAFF_NO_LOCAL_TOOLS")) |v| no_local_tools.enabled = no_local_tools.enabled or no_local_tools.envEnables(v);
     // GRAFF_LEAN: presence-based, exactly matching session_start.leanSkipsMcp

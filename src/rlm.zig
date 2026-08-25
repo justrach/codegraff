@@ -1,10 +1,10 @@
-//! Opt-in `rlm` tool: one programmatic-tool-calling REPL per call.
+//! Default `rlm` tool: one programmatic-tool-calling REPL per call (ADR 0022).
 //!
-//! Off unless `--rlm` / `GRAFF_RLM=1`. The default catalog stays byte-stable
-//! (ADR 0022). Host functions: `read_file`, `codedb` (real graff tools),
-//! `sleep_ms` (overlap proof), `llm_query` (RLM tools-off sub-LM), `print`
-//! (answer). Closed literal calls launch as the `code` argument streams
-//! (spec-ptc) and again at exec for anything the stream missed.
+//! On unless `--old` / `--no-rlm` / `GRAFF_OLD=1` / `GRAFF_RLM=0`. `--rlm`
+//! and `GRAFF_RLM=1` force it back on. Host functions: `read_file`, `codedb`
+//! (real graff tools), `sleep_ms` (overlap proof), `llm_query` (RLM tools-off
+//! sub-LM), `print` (answer). Closed literal calls launch as the `code`
+//! argument streams (spec-ptc) and again at exec for anything the stream missed.
 
 const std = @import("std");
 const Io = std.Io;
@@ -26,14 +26,24 @@ pub const tool_schema =
     \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\") / subagent(\"task\"); print(...) is the result. Assignments persist across rlm calls. Semicolons or newlines separate statements."}}, "required": ["code"]}
 ;
 
-/// Process-global: `--rlm` / GRAFF_RLM=1. Never flipped mid-session.
-/// Keep in sync with rlm_spec.available (`sync`) so the SSE path can see it
-/// without importing this file (exec.zig would cycle through Agent).
-pub var available: bool = false;
+/// Process-global: on by default. `--old` / `--no-rlm` turn it off; `--rlm`
+/// turns it on. Never flipped mid-session. Keep in sync with
+/// rlm_spec.available (`sync`) so the SSE path can see it without importing
+/// this file (exec.zig would cycle through Agent).
+pub var available: bool = true;
+/// True after `--rlm` / `--old` / `--no-rlm` so env knobs cannot clobber CLI.
+pub var cli_set: bool = false;
 
 pub fn sync() void {
     rlm_spec.available = available;
     rlm_spec.run_host = runHost;
+}
+
+/// Last CLI flag wins. Marks `cli_set` so GRAFF_RLM / GRAFF_OLD stay off this path.
+pub fn setFromCli(on: bool) void {
+    available = on;
+    cli_set = true;
+    sync();
 }
 
 pub fn resetLive(gpa: Allocator, io: Io) void {
@@ -47,10 +57,10 @@ pub fn feedLive(ctx: ToolCtx, delta: []const u8) void {
     rlm_spec.feedLive(ctx, delta);
 }
 
-/// Append `rlm` after the lean/no-local filters so `--rlm -p` still sees it.
-/// The spec is folded behind `load_tool_schemas` (native_fold) until the
-/// model loads or calls it — the prefix stays the lean catalog plus a name.
-/// No-op when the flag is off or embedder mode stripped host tools.
+/// Append `rlm` after the lean/no-local filters so the default `-p` still
+/// sees it. The spec is folded behind `load_tool_schemas` (native_fold)
+/// until the model loads or calls it — the prefix stays the lean catalog
+/// plus a name. No-op when `--old` or embedder mode stripped host tools.
 pub fn maybeAppend(comptime Spec: type, arena: Allocator, specs: []const Spec) ![]const Spec {
     sync();
     if (!available or no_local_tools.enabled) return specs;
@@ -63,7 +73,7 @@ pub fn maybeAppend(comptime Spec: type, arena: Allocator, specs: []const Spec) !
 
 pub fn exec(ctx: ToolCtx, input: Value) !ToolOutput {
     sync();
-    if (!available) return .{ .text = try ctx.gpa.dupe(u8, "rlm is off — pass --rlm (or GRAFF_RLM=1)"), .is_error = true };
+    if (!available) return .{ .text = try ctx.gpa.dupe(u8, "rlm is off — pass --rlm or drop --old"), .is_error = true };
     if (no_local_tools.enabled) return .{ .text = try ctx.gpa.dupe(u8, "rlm is a host tool and is disabled under --no-local-tools"), .is_error = true };
     const code = tools.strField(input, "code") orelse return tools.missingArg(ctx.gpa, "code");
     return runScript(ctx, code);
@@ -223,7 +233,7 @@ fn testCtx(gpa: Allocator, io: Io, client: *std.http.Client) ToolCtx {
     };
 }
 
-test "maybeAppend is a no-op until --rlm, and refuses to double-append" {
+test "maybeAppend is a no-op when --old, and refuses to double-append" {
     const gpa = std.testing.allocator;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();

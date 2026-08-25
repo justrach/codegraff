@@ -175,9 +175,9 @@ pub fn parse(init: std.process.Init) !Flags {
                 } else if (std.mem.eql(u8, arg, "--clock-sleep")) {
                     main_mod.g_clock_sleep = true; // #225: opt in to the root-only clock_sleep meta tool (also GRAFF_CLOCK_SLEEP=1)
                 } else if (std.mem.eql(u8, arg, "--rlm")) {
-                    @import("rlm.zig").available = true; // ADR 0022: opt-in programmatic tool calling (also GRAFF_RLM=1)
-                    @import("rlm.zig").sync();
-                    @import("rlm.zig").sync();
+                    @import("rlm.zig").setFromCli(true); // ADR 0022: default RLM; last flag wins vs --old
+                } else if (std.mem.eql(u8, arg, "--old") or std.mem.eql(u8, arg, "--no-rlm")) {
+                    @import("rlm.zig").setFromCli(false); // structured-only catalog (also GRAFF_OLD=1 / GRAFF_RLM=0)
                 } else if (std.mem.eql(u8, arg, "--no-autocommit")) {
                     main_mod.g_worktree_autocommit = false;
                 } else if (std.mem.eql(u8, arg, "--schema")) {

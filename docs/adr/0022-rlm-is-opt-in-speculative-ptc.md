@@ -1,6 +1,6 @@
-# 0022. `rlm` is opt-in speculative programmatic tool calling
+# 0022. RLM + spec-ptc is the default loop; `--old` restores structured-only
 
-Status: accepted 2026-08-25
+Status: accepted 2026-08-25; default flipped 2026-08-25
 
 ## Context
 
@@ -14,24 +14,35 @@ calls, and `runTools` fans a *finished* batch across the pool. That is
 parallelism after the arguments close, not speculation from partial source.
 
 Dropping spec-ptc's Python shadow REPL into the default catalog would change
-every prefix and the 64-cell tool-catalog kernel. A first cut has to be
-measurable against the native loop without that cost.
+every prefix and the 64-cell tool-catalog kernel. The first cut stayed
+opt-in so it was measurable against the native loop without that cost.
+Scatter and persist then won by enough that the loop itself became the
+default; `--old` is the escape hatch, not a second implementation.
 
 ## Decision
 
-`rlm` is an opt-in native tool (`--rlm` / `GRAFF_RLM=1`). Off, the catalog is
-unchanged. On, the spec joins the `native_fold` stack (the same meta-tool
-listing as `workflow` / `subagent`): name only on `load_tool_schemas` until
-the model loads or calls it, so `--rlm -p` (lean) does not pay the full
+`rlm` is the default native tool. `--old` / `--no-rlm` / `GRAFF_OLD=1` /
+`GRAFF_RLM=0` restore the structured-only catalog. `--rlm` / `GRAFF_RLM=1`
+force it on. Last CLI flag wins; env does not clobber `--old` or `--rlm`.
+
+This is **Alex Zhang's spec-ptc + RLM**, implemented in Zig — not Prime
+Agent's IPython/ZeroMQ kernel, and not a Python fan-out process. Prime's
+shape we kept: persistent binds across `rlm` calls and `subagent("task")`
+via graff's existing `subagent` tool.
+
+The spec joins the `native_fold` stack (the same meta-tool listing as
+`workflow` / `subagent`): name only on `load_tool_schemas` until the model
+loads or calls it, so default `-p` (lean) does not pay the full
 description on every turn. The REPL's functions *are* graff tools
-(`read_file`, `codedb`) plus `sleep_ms` / `llm_query` / `print`. The
-speculator is Zig (`src/spec_ptc.zig` + `rlm.feedLive`): closed statements
-with literal args launch as the `code` argument streams (including `-p`,
-where `Agent.out` is null), then `runScript` claims the futures. Default
-structured tools stay the main harness.
+(`read_file`, `codedb`, `bash`, `webfetch`) plus `sleep_ms` / `llm_query`
+/ `print` / `subagent`. The speculator is Zig (`src/spec_ptc.zig` +
+`rlm.feedLive`): closed statements with literal args launch as the `code`
+argument streams (including `-p`, where `Agent.out` is null), then
+`runScript` claims the futures. `--schema` and the 64-cell tool-catalog
+kernel do not grow a new always-on tool.
 
 A live comparison is `scripts/compare-ptc.py`. The eval A/B is
-`graff-evals/run.py --harness graff-dev,graff-dev-rlm`.
+`graff-evals/run.py --harness graff-dev-old,graff-dev`.
 
 Measured 2026-08-25 on grok-4.6 (SuperGrok login, one rep, full
 `graff-evals` suite). Both harnesses **12/12** in both catalog shapes.
@@ -63,13 +74,14 @@ regression* without a catalog tax. Per-task swings are one-rep variance.
 ## Consequences
 
 - Mid-stream speculation is on the SSE path even when the one-shot frontend
-  is quiet (`printDelta` still feeds `ArgLive` for `rlm` when `--rlm` is set).
+  is quiet (`printDelta` still feeds `ArgLive` for `rlm` when it is on).
   `rlm` is *not* visible-prose for the WS stall signal (SSE does not grow
   `partial_text` for `code`).
 - `llm_query` is a bounded tools-off sub-call on the session provider
   (`src/rlm_query.zig`). Nested spend is real; the host function exists so
   sPTC can overlap an expensive sub-LM with the rest of the script.
-- SDK / `--schema` do not list `rlm` until it graduates off the flag.
+- SDK / `--schema` do not list `rlm` as a catalog tool (fold + `maybeAppend`
+  only). Launch flags `--rlm` / `--old` are in the `--schema` flags list.
 - Semicolons (outside strings) are statements, so a one-line script still
   speculates. Host positional fields include `bash` / `webfetch`. `print(a, b)`
   joins binds. A short system note is spliced only while the flag is on so
@@ -93,7 +105,10 @@ regression* without a catalog tax. Per-task swings are one-rep variance.
   summed per-task wall native **624s / 822k in / 9.7M RSS** vs `--rlm`
   **652s / 816k in / 9.4M RSS**. `map-conflict` was the only clear
   `--rlm` win (84s → 52s). Same pass rate, no memory win, no wall win
-  on this suite — RLM stays opt-in.
+  on this suite — `--old` stays as the structured-only escape. Default
+  flipped anyway because scatter (`needle-files` 62.8s → 5.6s) and Prime
+  persist (`bind-reuse` 97.5s → 41.4s) are the loops that matter, and
+  core/swe did not regress.
 - Prime persist (`bind-reuse`): grok-4.6 one rep. `--rlm` **41.4s /
   6 calls / 30.9k in** and the model actually did `s = read_file(...)`
   then a second script `print(s)`. Native **97.5s / 12 calls / 145k

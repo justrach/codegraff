@@ -1,6 +1,6 @@
 //! Mid-stream spec-ptc cache for `rlm`. Leaf on purpose: the SSE / ArgLive
 //! path must feed closed lines without importing exec.zig (that would cycle
-//! through Agent). `run_host` is installed by rlm.zig once `--rlm` is on.
+//! through Agent). `run_host` is installed by rlm.zig (`sync` / `setFromCli`).
 
 const std = @import("std");
 const Io = std.Io;
@@ -11,11 +11,11 @@ const tools = @import("tools.zig");
 const ToolCtx = tools.ToolCtx;
 const ToolOutput = tools.ToolOutput;
 
-pub var available: bool = false;
+pub var available: bool = true;
 pub var run_host: ?*const fn (ToolCtx, spec_ptc.Call) ToolOutput = null;
 
 /// Cheap discovery while the full spec stays folded (ADR 0022). Startup
-/// splices this only when `--rlm` is on.
+/// splices this only while `available` (off under `--old`).
 ///
 /// Graff's rlm is a Zig subset of Prime Agent's programming model: assignments
 /// persist across rlm calls (context as variables, not an IPython kernel), and

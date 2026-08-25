@@ -53,18 +53,26 @@ test "spec/tool_catalog: implementation matches executable semantics" {
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, fixtures_json, .{});
     defer parsed.deinit();
 
+    const rlm = @import("rlm.zig");
     const saved_local = no_local_tools.enabled;
     const saved_lean = no_local_tools.lean;
     const saved_img = imagegen.available;
     const saved_clock = root.g_clock_sleep;
     const saved_learn = learn_store.active_agent_loaded;
+    const saved_rlm = rlm.available;
     defer {
         no_local_tools.enabled = saved_local;
         no_local_tools.lean = saved_lean;
         imagegen.available = saved_img;
         root.g_clock_sleep = saved_clock;
         learn_store.active_agent_loaded = saved_learn;
+        rlm.available = saved_rlm;
+        rlm.sync();
     }
+    // The 64-cell kernel is the structured catalog (`--old`). rlm is a
+    // session overlay (ADR 0022) and must not grow this cube.
+    rlm.available = false;
+    rlm.sync();
 
     const cases = parsed.value.object.get("cases").?.array.items;
     try std.testing.expect(cases.len == 64);

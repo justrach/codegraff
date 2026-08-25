@@ -8,8 +8,8 @@ time / first-output latency / token usage / peak RSS / CPU, verifies the
 outcome, and writes JSONL results plus a summary table.
 
   ./run.py --harness graff --model grok-4.6              # full suite (core + rlm + swe)
-  ./run.py --suite rlm --harness graff-dev,graff-dev-rlm # scatter-gather A/B
-  ./run.py --suite swe --harness graff-dev,graff-dev-rlm -j 12  # DeepSWE-shaped A/B, parallel
+  ./run.py --suite rlm --harness graff-dev-old,graff-dev # scatter-gather A/B
+  ./run.py --suite swe --harness graff-dev-old,graff-dev -j 12  # DeepSWE-shaped A/B, parallel
   ./run.py --harness grok --task fix-fib --reps 3        # one task, 3 reps
   ./run.py --interactive                                 # pick + watch live
 """

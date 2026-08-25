@@ -314,7 +314,7 @@ test "#330: neither catalog advertises a local tool under the gate, and webfetch
         if (std.mem.eql(u8, spec.name, "webfetch")) kept_webfetch = true;
         if (std.mem.eql(u8, spec.name, "subagent")) kept_subagent = true;
     }
-    try std.testing.expectEqual(open.len - gated_tools.len, gated.len);
+    try std.testing.expectEqual(open.len - gated_tools.len - 1, gated.len); // rlm also drops under #330
     try std.testing.expect(kept_webfetch); // pure host HTTP: no sandbox to escape
     try std.testing.expect(kept_subagent); // orchestration stays; the child inherits the gate
 

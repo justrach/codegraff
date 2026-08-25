@@ -18,12 +18,12 @@ harness under test spends model calls.
 | suite | what it measures |
 |---|---|
 | `core` | sequential single-file work (instruction, debug, git, schema, …) |
-| `rlm` | scatter-gather / multi-file reads (where `--rlm` can overlap) |
+| `rlm` | scatter-gather / multi-file reads (where default rlm can overlap) |
 | `swe` | DeepSWE-shaped multi-file bugfixes, distilled from [deepswe.datacurve.ai/run](https://deepswe.datacurve.ai/run) (no Harbor/Docker) |
 
 ```sh
-./run.py --suite swe --harness graff-dev,graff-dev-rlm --model grok-4.6 -j 12
-./run.py --suite core,rlm,swe --harness graff-dev,graff-dev-rlm -j 8
+./run.py --suite swe --harness graff-dev-old,graff-dev --model grok-4.6 -j 12
+./run.py --suite core,rlm,swe --harness graff-dev-old,graff-dev -j 8
 ```
 
 ## Run it

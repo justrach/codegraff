@@ -42,6 +42,7 @@ const knobs = [_]Knob{
     .{ .name = "GRAFF_CODEX_WS", .value = "off" },
     .{ .name = "GRAFF_CLOCK_SLEEP", .value = "1" },
     .{ .name = "GRAFF_RLM", .value = "1" },
+    .{ .name = "GRAFF_OLD", .value = "1" },
     .{ .name = "GRAFF_NO_LOCAL_TOOLS", .value = "1" },
     .{ .name = "GRAFF_CODEX_WS_IDLE_SECS", .value = "11" },
     .{ .name = "GRAFF_CONTEXT", .value = "123456" },
@@ -84,6 +85,7 @@ const Saved = struct {
     codex_ws: bool,
     clock_sleep: bool,
     rlm: bool,
+    rlm_cli: bool,
     stream_stall_ms: u64,
     post_deadline_ms: u64,
     codex_ws_idle_ms: i64,
@@ -106,6 +108,7 @@ const Saved = struct {
             .codex_ws = main_mod.g_codex_ws,
             .clock_sleep = main_mod.g_clock_sleep,
             .rlm = @import("rlm.zig").available,
+            .rlm_cli = @import("rlm.zig").cli_set,
             .stream_stall_ms = http.stream_stall_ms,
             .post_deadline_ms = http.post_deadline_ms,
             .codex_ws_idle_ms = agent_ws.codex_ws_idle_ms,
@@ -129,6 +132,7 @@ const Saved = struct {
         main_mod.g_codex_ws = s.codex_ws;
         main_mod.g_clock_sleep = s.clock_sleep;
         @import("rlm.zig").available = s.rlm;
+        @import("rlm.zig").cli_set = s.rlm_cli;
         @import("rlm.zig").sync();
         http.stream_stall_ms = s.stream_stall_ms;
         http.post_deadline_ms = s.post_deadline_ms;
@@ -176,6 +180,7 @@ test "applyEnvKnobs actually applies the values it reads" {
     main_mod.g_codex_ws = true;
     main_mod.g_clock_sleep = false;
     @import("rlm.zig").available = false;
+    @import("rlm.zig").cli_set = false;
     @import("rlm.zig").sync();
     no_local_tools.enabled = false;
     ws.g_debug = false;
@@ -203,4 +208,39 @@ test "applyEnvKnobs actually applies the values it reads" {
     try std.testing.expect(ws.g_force_connect_failure_once);
     try std.testing.expectEqual(@as(u8, 3), ws.g_force_connect_failure_count);
     try std.testing.expect(plugins.disabled);
+}
+
+const PairEnv = struct {
+    pairs: []const Knob,
+    pub fn get(self: PairEnv, name: []const u8) ?[]const u8 {
+        for (self.pairs) |k| {
+            if (std.mem.eql(u8, k.name, name)) return k.value;
+        }
+        return null;
+    }
+};
+
+test "GRAFF_OLD / GRAFF_RLM=0 turn default rlm off; --old is not clobbered by env" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const saved = Saved.capture();
+    defer saved.restore();
+    const rlm = @import("rlm.zig");
+
+    rlm.available = true;
+    rlm.cli_set = false;
+    rlm.sync();
+    try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_OLD", .value = "1" }} });
+    try std.testing.expect(!rlm.available);
+
+    rlm.available = true;
+    rlm.cli_set = false;
+    rlm.sync();
+    try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_RLM", .value = "0" }} });
+    try std.testing.expect(!rlm.available);
+
+    rlm.setFromCli(false);
+    try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_RLM", .value = "1" }} });
+    try std.testing.expect(!rlm.available);
+    try std.testing.expect(rlm.cli_set);
 }

@@ -55,14 +55,14 @@ pub const folded = [_][]const u8{
     "agent_output",
     "skill",
     "webfetch",
-    // Opt-in (ADR 0022). isFolded is false until --rlm so the default
+    // ADR 0022: isFolded is false under --old so the structured-only
     // load_tool_schemas listing stays byte-stable.
     "rlm",
 };
 
 /// A name test only, independent of whether the fold is on.
-/// `rlm` joins the stack only while `--rlm` / GRAFF_RLM=1 is set — otherwise
-/// the default catalog and the meta-tool listing stay unchanged (ADR 0022).
+/// `rlm` joins the stack while available (default); `--old` drops it so the
+/// structured-only catalog and the meta-tool listing stay unchanged.
 pub fn isFolded(name: []const u8) bool {
     if (std.mem.eql(u8, name, "rlm")) return @import("rlm_spec.zig").available;
     for (folded) |tool| {
@@ -371,7 +371,7 @@ test "explicit native loads rebuild the active provider catalog (#492)" {
     try std.testing.expectEqual(@as(usize, 1), agent.rebuilds);
 }
 
-test "rlm joins the fold only while --rlm is on" {
+test "rlm joins the fold only while available (off under --old)" {
     const rlm_spec = @import("rlm_spec.zig");
     const saved_avail = rlm_spec.available;
     const saved_enabled = enabled;

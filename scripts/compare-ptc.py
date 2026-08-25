@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare native structured tool calls vs --rlm (spec-ptc) on the same prompt.
+"""Compare --old structured tool calls vs default rlm (spec-ptc) on the same prompt.
 
 Runs graff twice against a three-file fixture and prints tool_call shape +
 timing. Default binary: zig-out/bin/graff, then $PATH graff.
@@ -92,11 +92,11 @@ def main() -> int:
         Path(td, "b.txt").write_text("bravo-first\nrest-b\n")
         Path(td, "c.txt").write_text("charlie-first\nrest-c\n")
         print(f"graff={args.graff}", flush=True)
-        print("=== native (structured tools) ===", flush=True)
-        native = run(args.graff, [], PROMPT, td)
+        print("=== old (structured tools, --old) ===", flush=True)
+        native = run(args.graff, ["--old"], PROMPT, td)
         print(json.dumps({k: native[k] for k in ("ok", "ms", "names", "tools", "finished_ms", "usage")}, indent=2))
-        print("=== rlm (--rlm, speculated reads) ===", flush=True)
-        rlm = run(args.graff, ["--rlm"], PROMPT + RLM_HINT, td)
+        print("=== rlm (default, speculated reads) ===", flush=True)
+        rlm = run(args.graff, [], PROMPT + RLM_HINT, td)
         print(json.dumps({k: rlm[k] for k in ("ok", "ms", "names", "tools", "finished_ms", "usage")}, indent=2))
         print("=== answers ===")
         print("native:\n", native.get("answer") or native.get("stderr"))

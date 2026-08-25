@@ -21,6 +21,9 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.276
+    \\  • rlm (RLM + mid-stream spec-ptc) is the default loop; --old / --no-rlm restores structured-only
+    \\
     \\0.0.275
     \\  • OpenRouter requests carry app attribution (categories: cli-agent, programming-app)
     \\  • TUI: Esc with a draft in the composer never kills a live turn
@@ -245,7 +248,8 @@ pub const usage_text =
     \\  --context-limit name=N          cap a named prefix: skill_catalog_bytes|mcp_schema_bytes|agents_md_bytes
     \\  --no-autocommit                 with -w, don't auto-commit each turn (default on; land work with `graff worktree merge`)
     \\  --yolo           skip all permission prompts for the session
-    \\  --rlm            advertise the rlm REPL (persistent binds, subagent(), llm_query, mid-stream spec-ptc; GRAFF_RLM=1)
+    \\  --rlm            advertise the rlm REPL (default; persistent binds, subagent(), llm_query, mid-stream spec-ptc; GRAFF_RLM=1)
+    \\  --old, --no-rlm  restore the pre-rlm structured-only catalog (GRAFF_OLD=1 or GRAFF_RLM=0)
     \\  --lean           slim tool surface (9 core tools) + MCP deferred behind load_tool_schemas — the DEFAULT for -p one-shots (GRAFF_LEAN=1)
     \\  --no-lean        opt a one-shot out of the implied --lean: full tool surface + eager MCP, the pre-default -p behavior
     \\  --no-local-tools embedder mode: hard-disable the built-in bash/bash_output/bash_kill/read_file/edit_file/write_file/codedb tools for the whole process (subagents included), so graff can run outside the sandbox and get its coding tools from an MCP server instead; webfetch, orchestration and MCP tools still work (GRAFF_NO_LOCAL_TOOLS=1)
