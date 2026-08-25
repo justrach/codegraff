@@ -72,7 +72,53 @@ fewer prefix bytes, not a new heap.
   never re-measured with these prompt bytes). Suite: `--suite rlm`
   then `--suite swe`. Harnesses: `graff-dev-old,graff-dev`.
 
-## Live A/B (filled after the run)
+## Live A/B (2026-08-25, after this revision)
 
-_Pending. `graff-evals/run.py --suite rlm --harness graff-dev-old,graff-dev`
-then swe. Columns: pass / wall / in / out / calls / RSS / $ / cache-read._
+SuperGrok OAuth, grok-4.6, one rep. `[usage]` is `$0.0000 · N subscription
+call(s), flat-rate` both ways. External harnesses (grok-build / kimi-cli /
+dsh) did not run: no binaries, no Moonshot/DeepSeek keys, grok-build needs
+Rust+DotSlash or an xAI CLI login this OAuth file does not unlock as `grok`.
+
+`graff-evals/results/run-20260825-061442.jsonl` (`--suite rlm`) and
+`run-20260825-061746.jsonl` (`--suite swe -j 12`).
+
+### rlm suite (5 tasks)
+
+| harness | pass | wall | in | cached | out | calls | RSS | $ |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `--old` | 4/5 | 104.6s | 96683 | 60928 (63%) | 2441 | 19 | 91.1M | $0.0000 |
+| default rlm | 5/5 | 35.5s | 79549 | 52992 (67%) | 1279 | 17 | 9.1M | $0.0000 |
+| **delta** | **+1** | **−69.1s (−66%)** | **−17134 (−18%)** | +4pt hit | **−1162** | −2 | **−82M** | wash |
+
+| task | `--old` s | default s | `--old` in/out/cached | default in/out/cached |
+|---|---:|---:|---:|---:|
+| multi-read | 20.98 | 6.31 | 13420 / 215 / 4992 | 13686 / 255 / 9344 |
+| scatter-sum | 6.65 | 5.85 | 13327 / 169 / 9216 | 13583 / 171 / 9344 |
+| fanout-merge | 6.42 | 6.02 | 13291 / 151 / 6528 | 13547 / 159 / 9344 |
+| needle-files | 8.14 | 5.17 | 13478 / 212 / 9344 | 13720 / 202 / 9472 |
+| bind-reuse | 62.4 ✗ | 12.12 ✓ | 43167 / 1694 / 30848 | 25013 / 492 / 15488 |
+
+`--old` `bind-reuse` failed this rep: the model noticed `rlm` is off and
+never wrote `found.txt` (prior A/B it still passed the long way). Default
+rlm reused the bind (12s / 25k / 5 calls). `--old` scatter RSS of ~91M
+looks like a leftover child (`timed_out` on 6s tasks); SWE below is the
+fairer RSS compare (~9M both ways). Default `bind-reuse` RSS is 9.1M vs
+`--old` 26.5M.
+
+### swe suite (6 DeepSWE-shaped tasks, `-j 12`)
+
+| harness | pass | wall (sum) | in | cached | out | calls | RSS | $ |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `--old` | 4/6 | 520.6s | 740197 | 541184 (73%) | 39842 | 75 | 9.6M | $0.0000 |
+| default rlm | 4/6 | 462.3s | 527559 | 368640 (70%) | 33274 | 56 | 9.3M | $0.0000 |
+| **delta** | wash | **−58.3s (−11%)** | **−212638 (−29%)** | −3pt hit | **−6568** | **−19** | wash | wash |
+
+Same 4/6 as #619 (label-sort and json-stream fail both ways). `map-conflict`
+is the clear default-rlm win (108s / 148k → 38s / 41k). `--old` has a
+slightly higher cache *rate* because it sends a fatter prefix; default rlm
+sends fewer total input tokens.
+
+**Verdict:** keep default RLM. After cache-max + this prompt/subagent cut,
+rlm-suite is a pass-rate win and a wall/token/RSS win; swe is a token/call
+win at the same 4/6. SuperGrok $ is a wash (flat-rate); the token cut is
+the metered-key spend win.
