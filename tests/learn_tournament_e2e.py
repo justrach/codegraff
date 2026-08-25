@@ -65,13 +65,15 @@ elif operation == "evaluate_primary":
     index = request["candidate_index"]
     baseline = json.loads(pathlib.Path(request["baseline"]["path"]).read_text())
     (barrier / f"primary-start-{index}").write_text("started")
-    deadline = time.monotonic() + 10
-    while len(list(barrier.glob("primary-start-*"))) != 4:
-        assert time.monotonic() < deadline, "primary evaluations did not run concurrently"
-        time.sleep(0.01)
+    # Record the invocation before the rendezvous so retry accounting survives
+    # a peer that lags past the deadline (issue #467).
     attempt_path = barrier / f"primary-attempts-{index}"
     attempts = int(attempt_path.read_text()) if attempt_path.exists() else 0
     attempt_path.write_text(str(attempts + 1))
+    deadline = time.monotonic() + float(os.environ.get("TOURNAMENT_BARRIER_DEADLINE", "120"))
+    while len(list(barrier.glob("primary-start-*"))) != 4:
+        assert time.monotonic() < deadline, "primary evaluations did not run concurrently"
+        time.sleep(0.01)
     if (barrier / f"fail-primary-{index}").exists():
         raise SystemExit(29)
     retry_marker = barrier / f"primary-retried-{index}"
@@ -159,8 +161,8 @@ def exercise(graff: Path, root: Path) -> None:
         write_posix_shebang(mutator_path, python, MUTATOR)
         mutator = {"program": str(mutator_path.resolve()), "sha256": raw_sha256(mutator_path)}
     evaluator, _ = write_interpreter_shim(tools, "tournament-evaluator", python, EVALUATOR)
-    mutator["pass_env"] = ["TOURNAMENT_BARRIER"]
-    evaluator["pass_env"] = ["TOURNAMENT_BARRIER"]
+    mutator["pass_env"] = ["TOURNAMENT_BARRIER", "TOURNAMENT_BARRIER_DEADLINE"]
+    evaluator["pass_env"] = ["TOURNAMENT_BARRIER", "TOURNAMENT_BARRIER_DEADLINE"]
 
     primary = tools / "primary.json"
     holdout = tools / "holdout.json"
