@@ -25,6 +25,7 @@ pub const changelog_text =
     \\  • MCP-inside-rlm + learnt slim: fat MCP results drop to id/title; comments fold to n+latest_author (ADR 0029)
     \\  • L (warm slim, --no-lean) 14.8s/31k/5 vs H 28s/112k/7 on SuperGrok grok-4.6; no v0.0.277 tag
     \\  • xAI Responses hosts x_search on grok-4.6 tools turns (ADR 0031); GRAFF_XAI_X_SEARCH=0 opts out
+    \\  • rlm stays hidden on small turns; showcase at --rlm, a 4-wide native batch, or 50% of compactAt (ADR 0030)
     \\  • licensed codedb-pro is one read/search surface; Smolify is opt-in; turns pulse without a 16-call cap
     \\
     \\0.0.276
