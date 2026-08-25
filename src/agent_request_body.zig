@@ -592,7 +592,6 @@ test "openai-wire bodies send a sticky prompt_cache_key; children isolate" {
     const ts = std.mem.indexOf(u8, tb, needle) orelse return error.MissingPromptCacheKey;
     const te = std.mem.indexOfScalarPos(u8, tb, ts + needle.len, '"') orelse return error.MissingPromptCacheKey;
     try std.testing.expectEqualStrings(child_key, tb[ts + needle.len .. te]);
-
     var oai = root;
     oai.provider = .{ .id = "openai", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 1_050_000 };
     const ob = try oai.buildBody(null, false, true, true);
