@@ -44,9 +44,12 @@ def graff_bin() -> str:
 
 
 def run(bin: str, extra: list[str], prompt: str, cwd: str) -> dict:
-    cmd = [bin, "-p", "--json", "--yolo", "--model", "grok-4.6", *extra, prompt]
+    # --json is the NDJSON protocol (stdin request, stdout events). -p prints
+    # the human answer on stdout and hides tool_call events.
+    cmd = [bin, "--json", "--yolo", "--no-lean", "--model", "grok-4.6", *extra]
+    req = json.dumps({"type": "user", "text": prompt}) + "\n"
     t0 = time.perf_counter()
-    proc = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
+    proc = subprocess.run(cmd, cwd=cwd, text=True, input=req, capture_output=True)
     ms = int((time.perf_counter() - t0) * 1000)
     events = []
     for line in (proc.stdout or "").splitlines():
@@ -59,15 +62,18 @@ def run(bin: str, extra: list[str], prompt: str, cwd: str) -> dict:
             continue
     tools = [e for e in events if e.get("type") == "tool_call"]
     finished = [e for e in events if e.get("type") == "tool_call_finished"]
-    text_bits = [e.get("text", "") for e in events if e.get("type") in ("text", "assistant", "turn") and e.get("text")]
+    turns = [e for e in events if e.get("type") == "turn"]
+    answer = turns[-1].get("text", "") if turns else ""
     return {
         "ok": proc.returncode == 0,
         "ms": ms,
         "stderr": (proc.stderr or "")[-800:],
+        "event_types": [e.get("type") for e in events],
         "tools": [{"name": t.get("name"), "input": t.get("input")} for t in tools],
         "finished_ms": [e.get("ms") for e in finished],
         "names": [t.get("name") for t in tools],
-        "answer": "\n".join(text_bits)[-500:],
+        "answer": answer[-800:],
+        "usage": {k: turns[-1].get(k) for k in ("api_calls", "input_tokens", "output_tokens", "cache_read_tokens")} if turns else {},
     }
 
 
@@ -87,11 +93,11 @@ def main() -> int:
         Path(td, "c.txt").write_text("charlie-first\nrest-c\n")
         print(f"graff={args.graff}", flush=True)
         print("=== native (structured tools) ===", flush=True)
-        native = run(args.graff, ["--no-lean"], PROMPT, td)
-        print(json.dumps({k: native[k] for k in ("ok", "ms", "names", "finished_ms")}, indent=2))
+        native = run(args.graff, [], PROMPT, td)
+        print(json.dumps({k: native[k] for k in ("ok", "ms", "names", "finished_ms", "usage", "event_types")}, indent=2))
         print("=== rlm (--rlm, speculated reads) ===", flush=True)
-        rlm = run(args.graff, ["--no-lean", "--rlm"], PROMPT + RLM_HINT, td)
-        print(json.dumps({k: rlm[k] for k in ("ok", "ms", "names", "finished_ms")}, indent=2))
+        rlm = run(args.graff, ["--rlm"], PROMPT + RLM_HINT, td)
+        print(json.dumps({k: rlm[k] for k in ("ok", "ms", "names", "finished_ms", "usage", "event_types")}, indent=2))
         print("=== answers ===")
         print("native:\n", native.get("answer") or native.get("stderr"))
         print("rlm:\n", rlm.get("answer") or rlm.get("stderr"))
