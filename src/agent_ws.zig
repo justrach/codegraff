@@ -361,12 +361,12 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     // pair: x-grok-session-id (durable project) + x-grok-conv-id (root/sub
     // partition, same value as the Responses body's prompt_cache_key).
     var conv_buf: [96]u8 = undefined;
-    const conv = http_headers.promptCacheKey(self.io, self.label, self, &conv_buf);
+    const conv = http_headers.requestCacheKey(self.io, self.label, self, provider.id, &conv_buf);
     var hdrs: [7]ws.Header = undefined;
     var hn: usize = 1;
     hdrs[0] = .{ .name = "Authorization", .value = bearer };
     if (std.mem.eql(u8, provider.id, "codex")) {
-        hdrs[1] = .{ .name = "session_id", .value = http_headers.sessionId(self.io) };
+        hdrs[1] = .{ .name = "session_id", .value = conv };
         hdrs[2] = .{ .name = "chatgpt-account-id", .value = provider.account };
         hdrs[3] = .{ .name = "OpenAI-Beta", .value = "responses_websockets=2026-02-06" };
         hdrs[4] = .{ .name = "originator", .value = "codex_cli_rs" };
@@ -418,7 +418,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     }
     // Hold ONE WS across the turn's tool loop (codex-style): the first request
     // dials; subsequent requests reuse it and send previous_response_id + delta.
-    // The open connection IS the sticky context (no x-codex-turn-state to echo).
+    // session_id matches prompt_cache_key (openai/codex ModelClient default).
     //
     // (#401) …and which of the two it is decides the FIRST-frame budget below: a
     // socket dialed just now finished a TLS + upgrade handshake milliseconds
@@ -505,14 +505,14 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         //     2-slot stall budget — the SSE head guard's contract for "sent,
         //     nothing came back". A FRESH connect skips this: its handshake just
         //     proved liveness, so it keeps the full pre-first-token budget.
-        //   * otherwise → the inter-frame budget: full while only protocol /
-        //     reasoning frames have landed, a quarter once prose has flowed.
+        //   * otherwise → the inter-frame budget: full stream_stall_ms after
+        //     protocol frames (encrypted thinking), a quarter once prose flowed.
         //     http_stall.budgetMs is what streamStallWatch asks the SSE reader's
         //     budget of on every tick; it cannot change mid-wait, so deciding it
         //     here is equivalent and lets both regimes share one watchdog arm.
         read: {
             const head_wait = reused and frames_seen == 0;
-            const budget = if (head_wait) http.head_stall_ms else http_stall.budgetMs(http.stream_stall_ms, text_seen);
+            const budget = if (head_wait) http.head_stall_ms else http_stall.interFrameBudgetMs(http.stream_stall_ms, frames_seen > 0, text_seen);
             const ReadDone = union(enum) { msg: ws.Error!ws.Opcode, stall: WatchdogFired };
             var rd_buf: [2]ReadDone = undefined;
             var rsel: Io.Select(ReadDone) = .init(self.io, &rd_buf);
@@ -521,7 +521,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
                 // blocking readMessage can hang forever on a half-open ws with no
                 // watchdog; end the turn as StreamStalled (never a hang, never a user
                 // Esc), exactly as the .deadline arm below does.
-                emitAbort(self, .stalled, true);
+                emitAbort(self, .stalled, false);
                 if (self.tracer) |tr| tr.note("ws", "stall");
                 return error.StreamStalled;
             };
@@ -550,7 +550,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
                     return watchdogError(w, error.HungRequest);
                 } else {
                     // Only the deadline gets a notice; a user Esc stays silent.
-                    if (w == .deadline) emitAbort(self, .stalled, true);
+                    if (w == .deadline) emitAbort(self, .stalled, false);
                     if (self.tracer) |tr| tr.note("ws", if (w == .esc) "esc" else "stall");
                     return watchdogError(w, error.StreamStalled);
                 },

@@ -1,0 +1,15 @@
+{
+  "id": "needle-files",
+  "suite": "rlm",
+  "category": "scatter",
+  "prompt": "Five notes (p1.txt through p5.txt). Exactly one contains a line NEEDLE=<word>. Write that word (the value only) to found.txt.",
+  "files": {
+    "p1.txt": "status=idle\nqueue=3\n",
+    "p2.txt": "status=warm\nqueue=0\n",
+    "p3.txt": "status=live\nNEEDLE=FOXTROT\nqueue=1\n",
+    "p4.txt": "status=idle\nqueue=9\n",
+    "p5.txt": "status=drain\nqueue=2\n"
+  },
+  "check": "test \"$(cat found.txt | tr -d ' \\n')\" = FOXTROT",
+  "timeout_s": 180
+}

@@ -169,8 +169,9 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 }
                 try s.endObject();
             }
-            // Sticky cache partition. xAI stays per-agent; everyone else uses
-            // a prefix lane so repeated subagent roles reuse system+tools.
+            // Sticky cache partition. Same value as x-grok-conv-id (xAI
+            // official maximize-hits). Root is the project id; children
+            // share a role lane so sibling scouts reuse system+tools.
             var ckbuf: [96]u8 = undefined;
             try s.objectField("prompt_cache_key");
             try s.write(http_headers.requestCacheKey(self.io, self.label, self, self.provider.id, &ckbuf));
@@ -591,7 +592,6 @@ test "openai-wire bodies send a sticky prompt_cache_key; children isolate" {
     const ts = std.mem.indexOf(u8, tb, needle) orelse return error.MissingPromptCacheKey;
     const te = std.mem.indexOfScalarPos(u8, tb, ts + needle.len, '"') orelse return error.MissingPromptCacheKey;
     try std.testing.expectEqualStrings(child_key, tb[ts + needle.len .. te]);
-
     var oai = root;
     oai.provider = .{ .id = "openai", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 1_050_000 };
     const ob = try oai.buildBody(null, false, true, true);

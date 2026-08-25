@@ -24,6 +24,26 @@
     "schema_args": ["--output-schema", "{schema}"],
     "default_model": "grok-4.6"
   },
+  "graff-dev-rlm": {
+    "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo", "--rlm"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": ["output-schema"],
+    "schema_args": ["--output-schema", "{schema}"],
+    "env": {"GRAFF_POST_DEADLINE_SECS": "90"},
+    "default_model": "grok-4.6",
+    "note": "explicit --rlm (same as graff-dev after RLM became the default)"
+  },
+  "graff-dev-old": {
+    "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo", "--old"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": ["output-schema"],
+    "schema_args": ["--output-schema", "{schema}"],
+    "env": {"GRAFF_POST_DEADLINE_SECS": "90"},
+    "default_model": "grok-4.6",
+    "note": "pre-rlm structured-only catalog (--old)"
+  },
   "grok": {
     "cmd": ["grok", "-p", "{prompt}", "-m", "{model}", "--always-approve", "--output-format", "streaming-messages-json"],
     "answer": "grok-stream",

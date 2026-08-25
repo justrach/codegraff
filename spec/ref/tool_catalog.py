@@ -27,7 +27,6 @@ LEAN_TOOLS = (
     "edit_file",
     "write_file",
     "codedb",
-    "read_tool_result",
     "subagent",
     "attempt_completion",
     "load_tool_schemas",

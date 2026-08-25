@@ -12,10 +12,9 @@ var session_id_len: usize = 0;
 /// with, and the critical section is a single one-time 36-byte format.
 var session_id_lock: std.atomic.Value(bool) = .init(false);
 
-/// A UUIDv4 minted once per process. Codex still sends this as the `session_id`
-/// header (ChatGPT backend identity). Prompt-cache affinity is `projectRootId`,
-/// not this value — a per-process random key made every new session's first
-/// call a cold partition.
+/// A UUIDv4 minted once per process. Persisted on the graff session record.
+/// Codex's HTTP `session_id` is the prompt-cache key (openai/codex ModelClient
+/// defaults `prompt_cache_key` to `session_id`), not this value.
 pub fn sessionId(io: Io) []const u8 {
     while (session_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
     defer session_id_lock.store(false, .release);
@@ -39,12 +38,17 @@ pub fn sessionId(io: Io) []const u8 {
     return session_id_buf[0..session_id_len];
 }
 
-/// Conversation affinity for one agent. xAI routes `x-grok-conv-id` (Chat
-/// Completions) and `prompt_cache_key` (Responses) to the same server — that
-/// is how an append-only conversation can keep finding its cached prefix.
-/// Root is the durable project id; each concurrent child gets its own suffix.
+/// Conversation affinity for one request. xAI routes `x-grok-conv-id` (Chat
+/// Completions) and `prompt_cache_key` (Responses) to the same server — cache
+/// entries are per-server, so a sticky id is how prefix hits stay reliable
+/// (docs.x.ai prompt-caching / maximizing-cache-hits). Root is the durable
+/// project id. Children share four role lanes so sibling scouts with the
+/// same system+tools land together; they do **not** reuse the root id
+/// (different prefix). `agent` is unused: a pointer suffix would split
+/// siblings onto different servers and miss on purpose.
 pub fn promptCacheKey(io: Io, label: []const u8, agent: *const anyopaque, buf: []u8) []const u8 {
-    return projectCacheKey(io, label, agent, buf);
+    _ = agent;
+    return promptPrefixCacheKey(io, label, buf);
 }
 
 /// OpenAI/Codex cache affinity for requests sharing a stable prompt prefix.
@@ -58,13 +62,12 @@ pub fn promptPrefixCacheKey(io: Io, label: []const u8, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "{s}-child-{d}", .{ base, lane }) catch base;
 }
 
-/// Partition for one request. xAI conversation affinity is per-agent (append-only
-/// conv-id). Everyone else uses a prefix lane so repeated subagent roles hit
-/// the warm system+tools cache instead of writing a unique suffix (ADR 0011).
+/// Partition for one request. Header (`x-grok-conv-id`) and body
+/// (`prompt_cache_key`) must be the same value — xAI treats them as the
+/// same sticky-routing id. Role lanes for every provider, including xAI.
 pub fn requestCacheKey(io: Io, label: []const u8, agent: *const anyopaque, provider_id: []const u8, buf: []u8) []const u8 {
-    if (std.mem.eql(u8, provider_id, "xai"))
-        return promptCacheKey(io, label, agent, buf);
-    return promptPrefixCacheKey(io, label, buf);
+    _ = provider_id;
+    return promptCacheKey(io, label, agent, buf);
 }
 
 var project_id_buf: [36]u8 = undefined;
@@ -115,8 +118,8 @@ pub fn projectRootId(io: Io) []const u8 {
 }
 
 /// Side-calls that replay the parent history (`/btw`) share the root
-/// partition. Concurrent workers stay isolated. grok-build's recap does the
-/// same: same `prompt_cache_key` as the parent so the prefix stays warm.
+/// partition. Workers use a role lane, not the root id. grok-build's recap
+/// does the same as `/btw`: same `prompt_cache_key` as the parent.
 pub fn sharesParentCache(label: []const u8) bool {
     return std.mem.eql(u8, label, "btw");
 }
@@ -217,7 +220,8 @@ pub fn providerHeadersWithConv(io: Io, provider: Provider, bearer: []const u8, b
         count += 1;
         buf[count] = .{ .name = "originator", .value = "codex_cli_rs" };
         count += 1;
-        buf[count] = .{ .name = "session_id", .value = sessionId(io) };
+        // openai/codex ModelClient: prompt_cache_key defaults to session_id.
+        buf[count] = .{ .name = "session_id", .value = conv_id orelse projectRootId(io) };
         count += 1;
     }
     if (wantsGrokConvId(provider.id)) {
@@ -251,13 +255,8 @@ test "session_id is a stable per-process UUIDv4, not a shared constant" {
     var buf: [12]std.http.Header = undefined;
     const p: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 272_000, .account = "acct" };
     const headers = providerHeaders(io, p, "Bearer k", &buf);
-    for (headers) |h| {
-        if (std.mem.eql(u8, h.name, "session_id")) {
-            try std.testing.expectEqualStrings(a, h.value);
-            return;
-        }
-    }
-    return error.SessionIdHeaderMissing;
+    try std.testing.expectEqualStrings(projectRootId(io), headerValue(headers, "session_id") orelse return error.SessionIdHeaderMissing);
+    try std.testing.expect(!std.mem.eql(u8, a, headerValue(headers, "session_id").?));
 }
 
 test "official OpenAI Responses uses Platform headers, not ChatGPT backend identity" {
@@ -351,12 +350,14 @@ test "project and prefix cache keys preserve conversation and sharing boundaries
     try std.testing.expectEqualStrings(a, projectRootId(std.testing.io));
     try std.testing.expect(!std.mem.eql(u8, a, sessionId(std.testing.io)));
 
-    // xAI conversation affinity stays distinct for concurrent children.
+    // Live keys (promptCacheKey) share a role lane — xAI cache is per-server
+    // and prefix-matched; a unique suffix per sibling is a forced miss.
     var buf3: [96]u8 = undefined;
     var buf4: [96]u8 = undefined;
-    const sub = projectCacheKey(std.testing.io, "sub", agent, &buf3);
-    const sibling_sub = projectCacheKey(std.testing.io, "sub", sibling, &buf4);
-    try std.testing.expect(!std.mem.eql(u8, sub, sibling_sub));
+    const sub = promptCacheKey(std.testing.io, "sub", agent, &buf3);
+    const sibling_sub = promptCacheKey(std.testing.io, "sub", sibling, &buf4);
+    try std.testing.expectEqualStrings(sub, sibling_sub);
+    try std.testing.expect(!std.mem.eql(u8, sub, a));
 
     var btw_buf: [96]u8 = undefined;
     try std.testing.expectEqualStrings(a, projectCacheKey(std.testing.io, "btw", sibling, &btw_buf));
@@ -371,16 +372,24 @@ test "project and prefix cache keys preserve conversation and sharing boundaries
     try std.testing.expect(std.mem.startsWith(u8, prefix1, a));
     try std.testing.expect(!std.mem.eql(u8, prefix1, a));
 
-    // Chat-wire OpenAI scouts share a role lane; xAI scouts stay isolated.
+    // OpenAI and xAI scouts share a role lane (header and body use this).
     var oai1: [96]u8 = undefined;
     var oai2: [96]u8 = undefined;
-    try std.testing.expectEqualStrings(
-        requestCacheKey(std.testing.io, "implement", agent, "openai", &oai1),
-        requestCacheKey(std.testing.io, "implement", sibling, "openai", &oai2),
-    );
-    var x1: [96]u8 = undefined;
-    var x2: [96]u8 = undefined;
-    try std.testing.expect(!std.mem.eql(u8, requestCacheKey(std.testing.io, "implement", agent, "xai", &x1), requestCacheKey(std.testing.io, "implement", sibling, "xai", &x2)));
+    const oai_lane = requestCacheKey(std.testing.io, "implement", agent, "openai", &oai1);
+    try std.testing.expectEqualStrings(oai_lane, requestCacheKey(std.testing.io, "implement", sibling, "openai", &oai2));
+    var xai1: [96]u8 = undefined;
+    var xai2: [96]u8 = undefined;
+    const xai_lane = requestCacheKey(std.testing.io, "implement", agent, "xai", &xai1);
+    try std.testing.expectEqualStrings(xai_lane, requestCacheKey(std.testing.io, "implement", sibling, "xai", &xai2));
+    try std.testing.expectEqualStrings(oai_lane, xai_lane);
+
+    // rlm's subagent("task") defaults description to "subagent" — siblings
+    // share one prefix lane on every provider, including xAI.
+    var rlm1: [96]u8 = undefined;
+    var rlm2: [96]u8 = undefined;
+    const rlm_lane = requestCacheKey(std.testing.io, "subagent", agent, "xai", &rlm1);
+    try std.testing.expectEqualStrings(rlm_lane, requestCacheKey(std.testing.io, "subagent", sibling, "xai", &rlm2));
+    try std.testing.expect(std.mem.indexOf(u8, rlm_lane, "-child-") != null);
 }
 
 test "x-grok-conv-id with no explicit conv still uses the project root id" {
@@ -479,4 +488,23 @@ test "xai login tokens send X-XAI-Token-Auth; API keys do not" {
     for (env_headers) |h| {
         try std.testing.expect(!std.mem.eql(u8, h.name, "X-XAI-Token-Auth"));
     }
+}
+
+test "Kimi chat sends graff identity and kimi-code device headers (#617)" {
+    const io = std.testing.io;
+    var buf: [12]std.http.Header = undefined;
+    const p: Provider = .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "k3", .context = 256_000 };
+    const headers = providerHeaders(io, p, "Bearer k", &buf);
+    try std.testing.expectEqualStrings("kimi_code_cli", headerValue(headers, "X-Msh-Platform").?);
+    try std.testing.expect(headerValue(headers, "X-Msh-Device-Name").?.len > 0);
+    try std.testing.expect(!std.mem.eql(u8, headerValue(headers, "X-Msh-Device-Name").?, "unknown"));
+    const model = headerValue(headers, "X-Msh-Device-Model").?;
+    const prefix = switch (@import("builtin").os.tag) {
+        .windows => "Windows ",
+        .macos => "macOS ",
+        .linux => "Linux ",
+        else => "",
+    };
+    if (prefix.len != 0) try std.testing.expect(std.mem.startsWith(u8, model, prefix));
+    try std.testing.expect(!std.mem.eql(u8, headerValue(headers, "X-Msh-Os-Version").?, @tagName(@import("builtin").os.tag)));
 }

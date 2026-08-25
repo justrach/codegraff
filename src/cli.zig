@@ -21,6 +21,15 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.276
+    \\  • rlm (RLM + mid-stream spec-ptc) is the default loop; --old / --no-rlm restores structured-only
+    \\  • prompt-cache max: stable catalog is the default (loads no longer rewrite tools JSON); children share prefix lanes
+    \\  • foreground bash auto-backgrounds after 120s instead of waiting forever (#620)
+    \\  • Kimi identity: graff/<version> User-Agent; device headers match kimi-code (#617)
+    \\  • Codex session_id header matches prompt_cache_key (openai/codex)
+    \\  • Codex thinking silence uses the full stall budget; stall notice is honest
+    \\  • REPL/TUI prints a dim line when a newer graff release is available
+    \\
     \\0.0.275
     \\  • OpenRouter requests carry app attribution (categories: cli-agent, programming-app)
     \\  • TUI: Esc with a draft in the composer never kills a live turn
@@ -245,7 +254,9 @@ pub const usage_text =
     \\  --context-limit name=N          cap a named prefix: skill_catalog_bytes|mcp_schema_bytes|agents_md_bytes
     \\  --no-autocommit                 with -w, don't auto-commit each turn (default on; land work with `graff worktree merge`)
     \\  --yolo           skip all permission prompts for the session
-    \\  --lean           slim tool surface (9 core tools) + MCP deferred behind load_tool_schemas — the DEFAULT for -p one-shots (GRAFF_LEAN=1)
+    \\  --rlm            advertise the rlm REPL (default; persistent binds, subagent(), llm_query, mid-stream spec-ptc; GRAFF_RLM=1)
+    \\  --old, --no-rlm  restore the pre-rlm structured-only catalog (GRAFF_OLD=1 or GRAFF_RLM=0)
+    \\  --lean           slim tool surface (8 core tools) + MCP deferred behind load_tool_schemas — the DEFAULT for -p one-shots (GRAFF_LEAN=1)
     \\  --no-lean        opt a one-shot out of the implied --lean: full tool surface + eager MCP, the pre-default -p behavior
     \\  --no-local-tools embedder mode: hard-disable the built-in bash/bash_output/bash_kill/read_file/edit_file/write_file/codedb tools for the whole process (subagents included), so graff can run outside the sandbox and get its coding tools from an MCP server instead; webfetch, orchestration and MCP tools still work (GRAFF_NO_LOCAL_TOOLS=1)
     \\  -p, --print      one-shot print mode (answer on stdout, progress on stderr)
@@ -329,6 +340,41 @@ fn isCleanReleaseVersion(s: []const u8) bool {
     return dots == 2;
 }
 
+fn fetchLatestReleaseTag(io: Io, gpa: Allocator, arena: Allocator, repo_api: []const u8) ?[]const u8 {
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var aw: Io.Writer.Allocating = .init(arena);
+    defer aw.deinit();
+    const extra = [_]std.http.Header{.{ .name = "Accept", .value = "application/vnd.github+json" }};
+    const res = client.fetch(.{
+        .location = .{ .url = repo_api },
+        .method = .GET,
+        .response_writer = &aw.writer,
+        .headers = .{ .user_agent = .{ .override = "simple-harness/" ++ harness_version } },
+        .extra_headers = &extra,
+    }) catch return null;
+    if (@intFromEnum(res.status) != 200) return null;
+    if (aw.writer.buffered().len > 64 * 1024) return null;
+    const v = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch return null;
+    if (v != .object) return null;
+    const t = v.object.get("tag_name") orelse return null;
+    return if (t == .string) t.string else null;
+}
+
+/// Dim REPL/TUI line when GitHub has a newer release. Null if current, newer,
+/// offline, or GRAFF_NO_UPDATE_CHECK is set.
+pub fn updateAvailableLine(io: Io, gpa: Allocator, arena: Allocator, skip: bool) ?[]const u8 {
+    if (skip) return null;
+    const repo_api = "https://api.github.com/repos/justrach/codegraff/releases/latest";
+    const latest_tag = fetchLatestReleaseTag(io, gpa, arena, repo_api) orelse return null;
+    const cur_raw = if (std.mem.startsWith(u8, harness_version, "v")) harness_version[1..] else harness_version;
+    const latest_raw = if (std.mem.startsWith(u8, latest_tag, "v")) latest_tag[1..] else latest_tag;
+    const cur = parseVersion(cur_raw) orelse return null;
+    const latest = parseVersion(latest_raw) orelse return null;
+    if (cur.order(latest) != .lt) return null;
+    return std.fmt.allocPrint(arena, "graff v{s} is available (you have {s}) — graff update", .{ latest_raw, cur_raw }) catch null;
+}
+
 /// `graff update [--force|--check]` — bring the installed binary up to the
 /// latest GitHub release. Checks the release tag first and skips when already
 /// current (unless --force); --check only reports, never installs. The actual
@@ -366,32 +412,7 @@ pub fn updateCommand(
     const cur = parseVersion(cur_raw);
     const cur_is_release = cur != null and isCleanReleaseVersion(cur_raw);
 
-    // Query the latest release tag. GitHub's API requires a User-Agent; the
-    // Accept header pins the v3 JSON response. Any failure → null, handled below.
-    const latest_tag: ?[]const u8 = blk: {
-        var client: std.http.Client = .{ .allocator = gpa, .io = io };
-        defer client.deinit();
-        var aw: Io.Writer.Allocating = .init(arena);
-        defer aw.deinit();
-        const extra = [_]std.http.Header{.{ .name = "Accept", .value = "application/vnd.github+json" }};
-        const res = client.fetch(.{
-            .location = .{ .url = repo_api },
-            .method = .GET,
-            .response_writer = &aw.writer,
-            .headers = .{ .user_agent = .{ .override = "simple-harness/" ++ harness_version } },
-            .extra_headers = &extra,
-        }) catch break :blk null;
-        if (@intFromEnum(res.status) != 200) break :blk null;
-        // Cap the response before parsing: the endpoint is pinned to GitHub's
-        // API (normally a small JSON blob), but a captive-portal redirect or a
-        // TLS MITM could stream an unbounded body and exhaust memory. 64 KiB is
-        // far above any legitimate /releases/latest payload.
-        if (aw.writer.buffered().len > 64 * 1024) break :blk null;
-        const v = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch break :blk null;
-        if (v != .object) break :blk null;
-        const t = v.object.get("tag_name") orelse break :blk null;
-        break :blk if (t == .string) t.string else null;
-    };
+    const latest_tag = fetchLatestReleaseTag(io, gpa, arena, repo_api);
 
     // `latest` is a release tag from GitHub, so it parses to a clean triple.
     const latest_raw = if (latest_tag) |tag| (if (std.mem.startsWith(u8, tag, "v")) tag[1..] else tag) else null;

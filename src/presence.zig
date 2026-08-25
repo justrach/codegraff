@@ -17,6 +17,7 @@ const main_mod = @import("main.zig"); // `unattended`: one-shots join channel ro
 
 const unixMs = util.unixMs;
 const presence_mutate = @import("presence_mutate.zig");
+const no_local_tools = @import("no_local_tools.zig");
 
 const Owner = worktree_lease.Owner;
 
@@ -169,6 +170,10 @@ fn writeOwn(io: Io, arena: Allocator) void {
 /// presence must never be the reason graff did not start.
 pub fn announce(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, session_id: []const u8, goal: []const u8) ?Owner {
     if (builtin.is_test) return null; // tests get the parameterized store, never the real registry
+    // -p / --lean one-shots (evals) live in sibling sandboxes inside the
+    // harness repo. git rev-parse walks up to that repo, so parallel -j N
+    // sessions share one identity and checkpoint every edit (ADR 0024 SWE).
+    if (no_local_tools.lean) return null;
     if (home.len == 0) return null;
     const dir_path = std.fmt.allocPrint(gpa, "{s}/{s}", .{ home, registry_subdir }) catch return null;
     var dir_owned = true; // deinit frees only what the globals point at, so every bail before `g_dir` is set owns dir_path — it used to leak (#549)
@@ -269,6 +274,7 @@ pub fn noteGoal(io: Io, gpa: Allocator, arena: Allocator, goal: []const u8) void
 /// peer ACKs it, so the re-issued command runs and one process checkpoints at
 /// most once per peer — awareness is the goal, not a tollbooth.
 pub fn gateCheck(io: Io, arena: Allocator) ?[]const u8 {
+    if (no_local_tools.lean) return null;
     const dir_path = g_dir orelse return null;
     if (g_identity.len == 0) return null;
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return null;
@@ -559,4 +565,11 @@ test "unackedPeer: returns the live foreign co-owner once, then yields to the ac
     const records2 = [_]Owner{reused};
     const probes2 = [_]proc_identity.Probe{.{ .id = 100 }};
     try std.testing.expect(unackedPeer(.{ .records = &records2, .probes = &probes2 }, my_identity, 1, &.{key}) != null);
+}
+
+test "lean one-shots skip the shared-tree checkpoint" {
+    const saved = no_local_tools.lean;
+    defer no_local_tools.lean = saved;
+    no_local_tools.lean = true;
+    try std.testing.expect(gateCheck(std.testing.io, std.testing.allocator) == null);
 }

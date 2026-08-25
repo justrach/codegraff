@@ -1,0 +1,10 @@
+{
+  "id": "map-conflict",
+  "suite": "swe",
+  "category": "swe",
+  "source": "https://deepswe.datacurve.ai/run — yjs-map-conflict-detection (distilled, no Harbor)",
+  "files_dir": "fixtures/map-conflict",
+  "prompt": "Doc map-conflict policy is incomplete. Read SPEC.md and doc.py, then make `python3 test_doc.py` print OK. Do not edit the tests. collect must record, error must expose .conflicts and roll back the transaction, nested dict values are ambiguous.",
+  "check": "python3 test_doc.py && python3 \"$TASK_ROOT/hidden/map-conflict.py\"",
+  "timeout_s": 300
+}

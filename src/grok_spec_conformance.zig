@@ -40,7 +40,7 @@ fn cacheKeyIn(body: []const u8) ?[]const u8 {
     return body[from..end];
 }
 
-test "grok spec: Chat Completions x-grok-conv-id is stable for root and isolated for a child" {
+test "grok spec: Chat Completions x-grok-conv-id is stable for root; child is a role lane not the root id" {
     const io = std.testing.io;
     var root_slot: usize = 1;
     var child_slot: usize = 2;
@@ -53,6 +53,9 @@ test "grok spec: Chat Completions x-grok-conv-id is stable for root and isolated
     try std.testing.expect(!std.mem.eql(u8, root_id, http_headers.sessionId(io)));
     const child_id = http_headers.promptCacheKey(io, "sub", @ptrCast(&child_slot), &cbuf);
     try std.testing.expect(!std.mem.eql(u8, root_id, child_id));
+    var sib_slot: usize = 3;
+    var sbuf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(child_id, http_headers.promptCacheKey(io, "sub", @ptrCast(&sib_slot), &sbuf));
 
     const xai: @import("provider.zig").Provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "grok-4.6", .context = 500_000 };
     var h1: [12]std.http.Header = undefined;

@@ -114,6 +114,11 @@ const golden_full_prompt =
     \\will not change; reread only on stale source, ambiguity, or failure.
     \\When a Project layout segment is present, it is the tree — read the
     \\files you need straight from it instead of ls/find exploration turns.
+    \\When a named SPEC.md (or equivalent contract) is in the task, satisfy
+    \\every clause — a green public test is not the whole spec. Empty input
+    \\includes whitespace-only: yield nothing, do not raise. A required
+    \\record delimiter applies to records that exist; a payload with no
+    \\records is empty, not malformed.
     \\
     \\Before a large chunk of work, give a one- or two-sentence heads-up on what
     \\you are about to do; on long tasks, drop a brief note as each phase lands.
@@ -560,7 +565,7 @@ test "lean drops the todo/constraint capabilities from the prompt, never the loc
     no_local_tools.lean = true;
     const lean = prompts.detectCaps();
     try std.testing.expect(!lean.todos and !lean.constraints);
-    try std.testing.expect(lean.local_tools and lean.subagents); // the lean seven keep both
+    try std.testing.expect(lean.local_tools and !lean.subagents); // one-shot: no fan-out essay
     // …and the composition carries it: the dropped segments' bytes are gone.
     var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer a_state.deinit();

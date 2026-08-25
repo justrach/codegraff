@@ -14,16 +14,18 @@ const agent_mod = @import("agent.zig");
 const tools_mod = @import("tools.zig");
 const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
+const rlm_spec = @import("rlm_spec.zig");
 
 // sseIndex lives in agent_stream.zig; reached through the Agent struct's
 // member alias.
 const sseIndex = Agent.sseIndex;
 
-pub const ArgTool = enum { none, attempt_completion, ask_user };
+pub const ArgTool = enum { none, attempt_completion, ask_user, rlm };
 
 pub fn argToolFor(name: []const u8) ArgTool {
     if (std.mem.eql(u8, name, "attempt_completion")) return .attempt_completion;
     if (std.mem.eql(u8, name, "ask_user")) return .ask_user;
+    if (std.mem.eql(u8, name, "rlm")) return .rlm;
     return .none;
 }
 
@@ -31,7 +33,30 @@ pub fn argField(tool: ArgTool) []const u8 {
     return switch (tool) {
         .attempt_completion => "result",
         .ask_user => "question",
+        .rlm => "code",
         .none => "",
+    };
+}
+
+fn toolCtx(self: *Agent) tools_mod.ToolCtx {
+    return .{
+        .gpa = self.gpa,
+        .io = self.io,
+        .client = self.client,
+        .provider = self.provider,
+        .subagent_provider = self.subagent_provider,
+        .subagent_cross_provider = self.subagent_cross_provider,
+        .registry = if (self.sub) null else self.registry,
+        .from_sub = self.sub,
+        .has_eval = self.eval_cmd != null,
+        .approvals = self.approvals,
+        .tracer = self.tracer,
+        .run_budget = self.run_budget,
+        .depth = self.depth,
+        .snapshots = self.snapshots,
+        .tools_used = &self.tools_used,
+        .loop_deadline_ms = self.loop_deadline_ms,
+        .agent_cwd = self.agent_cwd,
     };
 }
 
@@ -240,7 +265,9 @@ pub fn outputIndex(obj: std.json.ObjectMap) ?i64 {
 /// extractor for live printing. Root interactive streams only — SDK
 /// (--json) clients get the assembled tool_call event instead.
 pub fn argLiveDelta(self: *Agent, obj: std.json.ObjectMap) void {
-    if (self.sub or main_mod.json_mode or self.stream_quiet) return;
+    if (self.sub) return;
+    const ui = !main_mod.json_mode and !self.stream_quiet;
+    if (!ui and !rlm_spec.available) return;
     switch (self.provider.kind) {
         .anthropic => {
             const t = obj.get("type") orelse return;
@@ -252,7 +279,7 @@ pub fn argLiveDelta(self: *Agent, obj: std.json.ObjectMap) void {
                 const bt = cb.object.get("type") orelse return;
                 if (bt != .string or !std.mem.eql(u8, bt.string, "tool_use")) return;
                 const name = cb.object.get("name") orelse return;
-                if (name == .string) self.arg_live.open(name.string, @intCast(ix));
+                if (name == .string) openLive(self, name.string, @intCast(ix));
             } else if (std.mem.eql(u8, t.string, "content_block_delta")) {
                 const ix = sseIndex(obj) orelse return;
                 const d = obj.get("delta") orelse return;
@@ -284,7 +311,7 @@ pub fn argLiveDelta(self: *Agent, obj: std.json.ObjectMap) void {
                 const f = tc.object.get("function") orelse continue;
                 if (f != .object) continue;
                 if (f.object.get("name")) |n| if (n == .string and n.string.len > 0)
-                    self.arg_live.open(n.string, ix);
+                    openLive(self, n.string, ix);
                 if (f.object.get("arguments")) |a| if (a == .string)
                     self.arg_live.feed(self, ix, a.string);
             }
@@ -299,7 +326,7 @@ pub fn argLiveDelta(self: *Agent, obj: std.json.ObjectMap) void {
                 const it = item.object.get("type") orelse return;
                 if (it != .string or !std.mem.eql(u8, it.string, "function_call")) return;
                 const name = item.object.get("name") orelse return;
-                if (name == .string) self.arg_live.open(name.string, ix);
+                if (name == .string) openLive(self, name.string, ix);
             } else if (std.mem.eql(u8, t.string, "response.function_call_arguments.delta")) {
                 const ix = outputIndex(obj) orelse return;
                 const dl = obj.get("delta") orelse return;
@@ -319,7 +346,16 @@ pub fn argLiveDelta(self: *Agent, obj: std.json.ObjectMap) void {
 /// exactly like a text delta (spinner handoff included); the --json wire
 /// never carried these moments (argLiveDelta gates --json off), so JsonSink
 /// stays silent.
+fn openLive(self: *Agent, name: []const u8, ix: i64) void {
+    if (argToolFor(name) == .rlm) rlm_spec.resetLive(self.gpa, self.io);
+    self.arg_live.open(name, ix);
+}
+
 pub fn emitArgText(self: *Agent, tool: ArgTool, text: []const u8) void {
+    if (tool == .rlm) {
+        if (rlm_spec.available and text.len > 0) rlm_spec.feedLive(toolCtx(self), text);
+        return;
+    }
     if (self.out == null) return; // frontendless agents skip capture too, as ever
     if (text.len == 0) return;
     self.streamed_text = true;
@@ -416,4 +452,82 @@ test "ArgLive streams the target argument field across fragment splits" {
     a.arg_live.feed(&a, 3, "{\"result\": \"nope\"}");
     try std.testing.expectEqualStrings("", aw.writer.buffered());
     try std.testing.expect(a.streamed_args == .none);
+}
+
+test "argToolFor: structured tools stay none; only rlm is mid-stream speculated" {
+    try std.testing.expectEqual(ArgTool.none, argToolFor("subagent"));
+    try std.testing.expectEqual(ArgTool.none, argToolFor("workflow"));
+    try std.testing.expectEqual(ArgTool.none, argToolFor("bash"));
+    try std.testing.expectEqual(ArgTool.none, argToolFor("agent_output"));
+    try std.testing.expectEqual(ArgTool.none, argToolFor("codedb"));
+    try std.testing.expectEqual(ArgTool.rlm, argToolFor("rlm"));
+    try std.testing.expectEqual(ArgTool.attempt_completion, argToolFor("attempt_completion"));
+    try std.testing.expectEqual(ArgTool.ask_user, argToolFor("ask_user"));
+
+    var live: ArgLive = .{};
+    live.open("subagent", 0);
+    try std.testing.expectEqual(ArgTool.none, live.tool);
+    live.open("workflow", 1);
+    try std.testing.expectEqual(ArgTool.none, live.tool);
+    live.open("rlm", 2);
+    try std.testing.expectEqual(ArgTool.rlm, live.tool);
+    try std.testing.expectEqualStrings("code", argField(.rlm));
+}
+
+test "emitArgText feeds live only for rlm, even when available is the default" {
+    const spec_ptc = @import("spec_ptc.zig");
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer dummy_client.deinit();
+    const saved_avail = rlm_spec.available;
+    const saved_host = rlm_spec.run_host;
+    defer {
+        rlm_spec.available = saved_avail;
+        rlm_spec.run_host = saved_host;
+        rlm_spec.resetLive(gpa, io);
+    }
+    rlm_spec.available = true;
+    rlm_spec.run_host = struct {
+        fn host(ctx: tools_mod.ToolCtx, call: spec_ptc.Call) tools_mod.ToolOutput {
+            _ = call;
+            return .{ .text = ctx.gpa.dupe(u8, "launched") catch &.{}, .is_error = false };
+        }
+    }.host;
+
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    var a: Agent = .{
+        .gpa = gpa,
+        .arena = gpa,
+        .io = io,
+        .client = &dummy_client,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = &aw.writer,
+    };
+    defer a.partial_text.deinit(gpa);
+
+    emitArgText(&a, .attempt_completion, "a = sleep_ms(1)\n");
+    a.arg_live.open("subagent", 0);
+    a.arg_live.feed(&a, 0, "{\"prompt\":\"a = sleep_ms(1)\\n\"}");
+    const ctx = toolCtx(&a);
+    var claimed = std.StringHashMap(tools_mod.ToolOutput).init(gpa);
+    defer {
+        var it = claimed.iterator();
+        while (it.next()) |e| gpa.free(e.value_ptr.text);
+        claimed.deinit();
+    }
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    rlm_spec.takeLive(ctx, &claimed, arena_state.allocator());
+    try std.testing.expectEqual(@as(usize, 0), claimed.count());
+
+    emitArgText(&a, .rlm, "a = sleep_ms(1)\n");
+    rlm_spec.takeLive(ctx, &claimed, arena_state.allocator());
+    try std.testing.expectEqual(@as(usize, 1), claimed.count());
+    const hit = claimed.get("sleep_ms\n{\"ms\":1}").?;
+    try std.testing.expectEqualStrings("launched", hit.text);
 }

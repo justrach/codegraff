@@ -2,12 +2,29 @@
 
 A self-contained eval environment for coding harnesses: run any model through
 any harness on a fixed task suite and get pass rate, wall time, first-output
-latency, and token usage side by side.
+latency, peak RSS, CPU, and token usage side by side.
 
-Every task is one JSON file in `tasks/` — fixture files inline, a prompt, and
-a deterministic shell `check` that decides pass/fail inside the sandbox. No
-network is needed to author or verify tasks; only the harness under test
-spends model calls.
+Every task is one JSON file in `tasks/` — fixture files inline or via
+`files_dir`, a prompt, and a deterministic shell `check` that decides
+pass/fail inside the sandbox. Held-out checks live in `hidden/` and are
+injected through `$TASK_ROOT` after the harness exits (the agent never
+sees them). No network is needed to author or verify tasks; only the
+harness under test spends model calls.
+
+## Suites
+
+`--suite` selects which tasks run (`all` is the default):
+
+| suite | what it measures |
+|---|---|
+| `core` | sequential single-file work (instruction, debug, git, schema, …) |
+| `rlm` | scatter-gather / multi-file reads (where default rlm can overlap) |
+| `swe` | DeepSWE-shaped multi-file bugfixes, distilled from [deepswe.datacurve.ai/run](https://deepswe.datacurve.ai/run) (no Harbor/Docker) |
+
+```sh
+./run.py --suite swe --harness graff-dev-old,graff-dev --model grok-4.6 -j 12
+./run.py --suite core,rlm,swe --harness graff-dev-old,graff-dev -j 8
+```
 
 ## Run it
 
@@ -52,11 +69,11 @@ Add a harness by adding an entry; add a model by passing `--model`.
 
 ## Tasks
 
-12 tasks across categories: instruction-following, debugging, shell, data
-(JSON/CSV), text extraction, refactoring, test-writing, git, long-context
-recall, structured output, and code comprehension. The check runs in the
-sandbox with `$ANSWER_FILE` pointing at the captured final answer, so checks
-can assert on the answer text and on filesystem/git state.
+Tasks span instruction-following, debugging, shell, data (JSON/CSV), text
+extraction, refactoring, test-writing, git, long-context recall, structured
+output, scatter-gather, and DeepSWE-shaped SWE fixes. The check runs in the
+sandbox with `$ANSWER_FILE` pointing at the captured final answer and
+`$TASK_ROOT` pointing at `graff-evals/` for held-out scripts.
 
 Authoring rules that keep results comparable:
 

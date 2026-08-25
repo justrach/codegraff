@@ -174,6 +174,10 @@ pub fn parse(init: std.process.Init) !Flags {
                     no_local_tools.enabled = true; // #330: hard-disable the host-touching built-ins for the whole process (also GRAFF_NO_LOCAL_TOOLS=1)
                 } else if (std.mem.eql(u8, arg, "--clock-sleep")) {
                     main_mod.g_clock_sleep = true; // #225: opt in to the root-only clock_sleep meta tool (also GRAFF_CLOCK_SLEEP=1)
+                } else if (std.mem.eql(u8, arg, "--rlm")) {
+                    @import("rlm.zig").setFromCli(true); // ADR 0022: default RLM; last flag wins vs --old
+                } else if (std.mem.eql(u8, arg, "--old") or std.mem.eql(u8, arg, "--no-rlm")) {
+                    @import("rlm.zig").setFromCli(false); // structured-only catalog (also GRAFF_OLD=1 / GRAFF_RLM=0)
                 } else if (std.mem.eql(u8, arg, "--no-autocommit")) {
                     main_mod.g_worktree_autocommit = false;
                 } else if (std.mem.eql(u8, arg, "--schema")) {

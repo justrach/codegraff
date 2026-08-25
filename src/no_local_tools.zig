@@ -67,29 +67,23 @@ pub fn blocks(name: []const u8) bool {
 
 /// --lean / GRAFF_LEAN=1 tool surface — the token-cost counterpart of the MCP
 /// skip (session_start.leanSkipsMcp reads the same flag/env). A one-shot
-/// coding task needs seven tools; every other schema is prefix re-sent on
-/// EVERY model turn. Measured on the full root catalog: 25.9k schema bytes
-/// (~6.5k tokens) against 8.6k (~2.1k) for this subset — ~4.3k tokens saved
-/// per turn, the difference between a ~10.7k and a ~6.4k one-shot prefix.
-/// Unlike #330 this is NOT a security boundary, so there is no dispatch
-/// layer: an unadvertised tool is simply unknown to the model, and a
-/// hallucinated call fails like any bad tool name.
+/// coding task keeps the file/shell tools plus attempt_completion; every
+/// other schema is prefix re-sent on EVERY model turn. Unlike #330 this
+/// is NOT a security boundary: an unadvertised tool is simply unknown.
 pub var lean: bool = false;
 
-/// The lean keep-list. `subagent` stays despite being the priciest schema
-/// (5.1k bytes): in an unattended non-yolo one-shot the root is
-/// approval-gated out of bash/edit_file and delegation is the sanctioned
-/// path (prompts.unattended_note) — dropping it would strand exactly the
-/// runs lean is built for. `load_tool_schemas` stays because lean folds MCP
-/// behind that meta tool (mcp_schema_gate.deferAllRuntime) instead of
-/// skipping it: the one-shot keeps full MCP capability a load call away.
+/// The lean keep-list. File/shell tools stay on the wire: an rlm-only
+/// catalog (ADR 0024 follow-up) made grok-4.6 retry scripts for 122
+/// calls / 4/6. Dropping catalog `read_file` (085320) made it worse
+/// (63 calls) — the model retried rlm/bash cat when print(read_file)
+/// was a no-op. `load_tool_schemas` stays so MCP can unfold; it is
+/// hidden on lean. Overflow paging (`read_tool_result`) is interactive.
 pub const lean_tools = [_][]const u8{
     "bash",
     "read_file",
     "edit_file",
     "write_file",
     "codedb",
-    "read_tool_result",
     "subagent",
     "attempt_completion",
     "load_tool_schemas",
@@ -120,10 +114,12 @@ pub fn filterLeanSpecs(comptime Spec: type, arena: Allocator, specs: []const Spe
 
 /// --lean's compact subagent description: same name and JSON schema, a
 /// fraction of the prose. The full description is 1.9k bytes of workflow,
-/// persona and tier/effort precedence detail a one-shot never exercises;
-/// the lean seven keep this tool BECAUSE unattended delegation goes through
-/// it, so its price is the one worth shrinking (~350 tokens/turn saved).
-pub const lean_subagent_desc = "Spawn a subagent for a self-contained task. It has bash, read_file, edit_file, write_file, codedb and does NOT share your context — the prompt must say everything. Returns its final report. In an unattended session the root's bash/edit tools are approval-denied and a subagent's are not: delegate implementation and command execution to one (tier \"small\" for mechanical work).";
+/// persona and tier/effort precedence detail a one-shot never exercises.
+/// Sidecar-only (ADR 0023): keep the critical-path next step local. Do
+/// not claim root bash/edit are approval-denied — that is true only when
+/// `unattended_note` is appended (`unattended and !yolo`). `-p --yolo`
+/// (evals) can act locally; the old lie forced extra child turns.
+pub const lean_subagent_desc = "Spawn a sidecar for a self-contained task. Child has bash, read_file, edit_file, write_file, codedb; it does NOT share your context — the prompt must say everything. Returns the final report. Keep the critical-path next step local; do not hand off the blocker and wait. Do file and command work yourself this turn; spawn only for independent work.";
 
 /// schema.zig chains this after filterLeanSpecs: identical names and JSON
 /// schemas, compact prose. Returns the input untouched when lean is off.
@@ -231,10 +227,8 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
     try std.testing.expectEqualStrings("read_file", kept[1].name);
     try std.testing.expectEqualStrings("subagent", kept[2].name);
     try std.testing.expectEqualStrings("attempt_completion", kept[3].name);
-    // The keep-list is exactly the nine documented tools — subagent stays
-    // (the unattended delegation path), load_tool_schemas stays (lean folds
-    // MCP behind it), everything orchestration/meta goes.
-    try std.testing.expectEqual(@as(usize, 9), lean_tools.len);
+    try std.testing.expectEqual(@as(usize, 8), lean_tools.len);
+    try std.testing.expect(!leanKeeps("read_tool_result"));
     for (lean_tools) |tool| try std.testing.expect(leanKeeps(tool));
     try std.testing.expect(!leanKeeps("workflow"));
     try std.testing.expect(!leanKeeps("todo_write"));
@@ -249,7 +243,9 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
     for (compact) |s| {
         if (std.mem.eql(u8, s.name, "subagent")) try std.testing.expectEqualStrings(lean_subagent_desc, s.desc) else try std.testing.expectEqualStrings("", s.desc);
     }
-    try std.testing.expect(std.mem.indexOf(u8, lean_subagent_desc, "approval-denied") != null); // keeps the one fact delegation needs
+    try std.testing.expect(std.mem.indexOf(u8, lean_subagent_desc, "sidecar") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lean_subagent_desc, "critical-path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lean_subagent_desc, "approval-denied") == null); // that fact lives on unattended_note, not here
 }
 
 test "#330: filterRootSpecs drops only the gated names, and does not allocate when the gate is off" {
@@ -314,7 +310,7 @@ test "#330: neither catalog advertises a local tool under the gate, and webfetch
         if (std.mem.eql(u8, spec.name, "webfetch")) kept_webfetch = true;
         if (std.mem.eql(u8, spec.name, "subagent")) kept_subagent = true;
     }
-    try std.testing.expectEqual(open.len - gated_tools.len, gated.len);
+    try std.testing.expectEqual(open.len - gated_tools.len - 1, gated.len); // rlm also drops under #330
     try std.testing.expect(kept_webfetch); // pure host HTTP: no sandbox to escape
     try std.testing.expect(kept_subagent); // orchestration stays; the child inherits the gate
 
@@ -366,4 +362,41 @@ test "#330: dispatch refuses a hallucinated bash call for the root AND for a sub
         try std.testing.expect(std.mem.indexOf(u8, out.text, "--no-local-tools") != null);
         try std.testing.expect(std.mem.indexOf(u8, out.text, "gate-escaped") == null); // never ran
     }
+}
+
+test "lean prompt diet: no fan-out / trace / issue-filing; short local-tools note" {
+    const prompts = @import("prompts.zig");
+    const saved = lean;
+    defer lean = saved;
+    lean = true;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const out = try prompts.composeBase(arena_state.allocator(), prompts.detectCaps());
+    try std.testing.expect(std.mem.indexOf(u8, out, ".graff/traces") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "gh issue create") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "fan out") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Parallelize") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "ONE response") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "not covered by /rewind") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "rlm") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "SPEC.md") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "discard work") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Fix root causes") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Co-Authored-By") == null);
+}
+
+test "lean catalog drops overflow pager and empty load_tool_schemas" {
+    const schema = @import("schema.zig");
+    const saved = lean;
+    defer lean = saved;
+    lean = true;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const specs = try schema.effectiveRootSpecs(arena);
+    const json = try schema.renderRootTools(arena, .openai, specs, &.{});
+    try std.testing.expect(std.mem.indexOf(u8, json, "read_tool_result") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "load_tool_schemas") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"read_file\"") != null);
 }

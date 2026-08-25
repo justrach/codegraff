@@ -10,6 +10,49 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.276 (2026-08-25)
+
+- `rlm` (Zhang/Khattab RLM + alexzhang13 spec-ptc, Zig — not Prime's
+  IPython kernel) is the default loop. `--old` / `--no-rlm` (or
+  `GRAFF_OLD=1` / `GRAFF_RLM=0`) restore the structured-only catalog.
+  `--rlm` stays as an explicit on. Last CLI flag wins; env does not
+  clobber `--old` / `--rlm`.
+- The spec stays folded behind `load_tool_schemas`. `--schema` / the
+  64-cell tool-catalog kernel do not grow a new tool.
+- Prompt-cache max: `GRAFF_STABLE_CATALOG` is on by default so
+  `load_tool_schemas` (including `rlm`) does not rewrite tools JSON.
+  Spawned subagents inherit it. Children share four role-lane
+  `x-grok-conv-id` / `prompt_cache_key` values (official xAI sticky
+  routing — same id, same server). rlm's `subagent("task")` uses
+  label `subagent`, so siblings hit one lane. They do not reuse the
+  root id. Opt out of stable catalog with `GRAFF_STABLE_CATALOG=0`
+  or `GRAFF_NO_STABLE_CATALOG=1`.
+- Measured default-RLM vs `--old` on grok-4.6 SuperGrok (one `rlm`
+  suite rep): both 5/5, $0.0000 / $0.0000 (flat-rate). Persist
+  `bind-reuse` 99.6s / 135k in → 39.2s / 25.3k in. Suite totals
+  161s / 203k in → 136s / 105k in. Scatter wall is a wash this rep
+  (#619's 86.8s → 23.7s did not reproduce). See ADR 0022.
+- Root foreground `bash` no longer waits forever: after 120s (or `timeout`
+  ms) a still-running command is moved to the background and the model
+  gets a job id, matching grok-build. Esc still kills; the cancelled
+  result tells the model to use `run_in_background`. Subagents keep the
+  #93 120s kill. (#620)
+- Kimi Coding keeps User-Agent `graff/<version>` (Moonshot forbids spoofing)
+  and matches kimi-code's X-Msh device fields: hostname, `Windows ${release}
+  ${arch}` / `macOS ${product} ${arch}`, kernel `os.release()` (#617)
+- Codex `session_id` header is the same value as `prompt_cache_key` (openai/codex
+  ModelClient default), not a per-process random UUID
+- Codex high-effort thinking no longer trips the 45s stall watchdog after
+  `in_progress` (encrypted reasoning is silent). A stall notice no longer says
+  "ending turn" while reconnect still has retries. Interactive sessions print a
+  dim `graff update` line when GitHub has a newer release.
+
+## v0.0.275 (2026-08-24)
+
+- OpenRouter requests carry app attribution (`categories: cli-agent, programming-app`).
+- TUI: Esc with a draft in the composer never kills a live turn.
+- Agent retries degenerate empty completions and keep-alive-only bodies.
+
 ## v0.0.274 (2026-08-23)
 
 - Rate-limit and 5xx retries no longer dump the provider's raw error JSON

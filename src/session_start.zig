@@ -59,6 +59,7 @@ const repl = @import("repl.zig");
 const repl_glue = @import("repl_glue.zig");
 const messages_mod = @import("messages.zig");
 const session = @import("session.zig");
+const cli = @import("cli.zig");
 
 /// `graff title <prompt>` — print the tab-title the model would generate for
 /// that prompt (one title call, no session). For A/B-ing title prompts/styles.
@@ -177,6 +178,10 @@ pub fn setupWorktreeAndBanner(
                 if (main_mod.show_timing) " per-tool timing" else "",
                 if (main_mod.show_cost) " session cost" else "",
             }),
+            .tone = .dim,
+        } });
+        if (cli.updateAvailableLine(io, gpa, arena, environ_map.get("GRAFF_NO_UPDATE_CHECK") != null)) |line| sink.emit(io, .{ .session_notice = .{
+            .text = line,
             .tone = .dim,
         } });
     }
@@ -435,6 +440,9 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     const mcp_count = mcp_cli.countMcpServers(merged);
     const defer_join = flags.effectiveYolo() and flags.oneshot_prompt == null and !json_mode;
     var connect_mcp = flags.yolo_flag or mcp_count == 0;
+    // Lean: home MCP (Smolify) was 1.4kB of load_tool_schemas on every
+    // turn. Sessions that need MCP pass --no-lean (ADR 0024).
+    if (leanMode(flags.effectiveLean(), environ_map)) connect_mcp = false;
     if (mcp_count > 0 and !flags.yolo_flag and !json_mode and use_color) {
         sink.emit(io, .{ .mcp_consent_prompt = .{ .count = mcp_count } });
         // Still an inline read: only the QUESTION is inverted here, and the

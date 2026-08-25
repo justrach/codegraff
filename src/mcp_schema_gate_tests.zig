@@ -286,8 +286,9 @@ test "stable catalog: a load only appends tail bytes, and the tool stays visible
     const meta_spec = [_]@import("schema.zig").ToolSpec{.{ .name = gate.tool_name, .desc = gate.tool_desc, .schema = gate.tool_schema }};
     const schema_mod = @import("schema.zig");
 
+    const saved_stable = gate.g_stable_catalog;
     gate.g_stable_catalog = true;
-    defer gate.g_stable_catalog = false;
+    defer gate.g_stable_catalog = saved_stable;
     const before = try schema_mod.renderRootTools(arena, .anthropic, &meta_spec, fat);
     const req = try std.json.parseFromSliceLeaky(Value, arena, "{\"tools\":[\"mcp__fat__t0\"]}", .{ .allocate = .alloc_always });
     const loaded = try gate.loadInto(arena, fat, req);
@@ -354,6 +355,31 @@ test "an eager tool is never blocked, and the load tool is advertised only when 
     try testing.expect(!gate.hiddenSpec(gate.tool_name, fat));
     // A name no server advertises stays mcp.Registry.call's problem, not ours.
     try testing.expect(!gate.blocked(fat, "mcp__fat__ghost"));
+}
+
+test "lean hides load_tool_schemas even when MCP is deferred" {
+    // Home Smolify still counts as deferred and used to keep the 1.4kB
+    // meta tool on every -p turn. --no-lean is the MCP one-shot.
+    const schema = @import("schema.zig");
+    const no_local = @import("no_local_tools.zig");
+    withDefaults();
+    defer withDefaults();
+    const saved = no_local.lean;
+    defer no_local.lean = saved;
+    no_local.lean = true;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    try testing.expect(gate.hiddenSpec(gate.tool_name, &.{}));
+    const specs = try schema.effectiveRootSpecs(arena);
+    const empty = try schema.renderRootTools(arena, .openai, specs, &.{});
+    try testing.expect(std.mem.indexOf(u8, empty, gate.tool_name) == null);
+
+    const fat = try fixture(arena, "fat", 8, 2000);
+    try testing.expect(gate.hiddenSpec(gate.tool_name, fat));
+    const with_mcp = try schema.renderRootTools(arena, .openai, specs, fat);
+    try testing.expect(std.mem.indexOf(u8, with_mcp, gate.tool_name) == null);
 }
 
 test "tool_desc stays JSON-escape-free (it is spliced into a raw schema string)" {

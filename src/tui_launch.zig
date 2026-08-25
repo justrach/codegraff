@@ -129,7 +129,10 @@ fn historyCb(ctx: ?*anyopaque, op: tui.HistoryOp) void {
     const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return));
     const convo = c.convo orelse return;
     switch (op) {
-        .reset => convo.reset(),
+        .reset => {
+            convo.reset();
+            @import("rlm_spec.zig").resetBindsSession(c.io);
+        },
         .rewind => convo.rewind(),
     }
 }

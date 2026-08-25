@@ -113,6 +113,26 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     if (environ_map.get("GRAFF_CLOCK_SLEEP")) |v| {
         main_mod.g_clock_sleep = main_mod.g_clock_sleep or std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
     }
+    {
+        // Always query so session_settings_tests can catch a dropped parse.
+        // CLI (`--rlm` / `--old`) wins: env must not clobber an explicit flag.
+        const rlm = @import("rlm.zig");
+        const old_v = environ_map.get("GRAFF_OLD");
+        const rlm_v = environ_map.get("GRAFF_RLM");
+        if (!rlm.cli_set) {
+            if (old_v) |v| {
+                if (std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes"))
+                    rlm.available = false;
+            }
+            if (rlm_v) |v| {
+                const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "no");
+                const on = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
+                if (off) rlm.available = false;
+                if (on) rlm.available = true; // GRAFF_RLM=1 wins over GRAFF_OLD=1
+            }
+            rlm.sync();
+        }
+    }
     if (environ_map.get("GRAFF_NO_LOCAL_TOOLS")) |v| no_local_tools.enabled = no_local_tools.enabled or no_local_tools.envEnables(v);
     // GRAFF_LEAN: presence-based, exactly matching session_start.leanSkipsMcp
     // (the MCP half of the same switch) — a "0" still means lean, by design.
@@ -125,11 +145,24 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // GRAFF_NO_NATIVE_FOLD: presence-based — restore full power-tool schemas
     // in every request (the pre-fold interactive surface).
     if (environ_map.get("GRAFF_NO_NATIVE_FOLD") != null) native_fold.enabled = false;
-    // GRAFF_STABLE_CATALOG: presence-based experiment (#476) — policy-deferred
-    // tools stay out of the catalog even after load_tool_schemas enables them,
-    // keeping the request prefix byte-identical all session for the provider's
-    // prefix cache. The loaded schema rides the load result in-conversation.
-    if (environ_map.get("GRAFF_STABLE_CATALOG") != null) mcp_schema_gate.g_stable_catalog = true;
+    // GRAFF_STABLE_CATALOG is on by default (ADR 0011). Always query so a
+    // dropped parse is visible. GRAFF_NO_STABLE_CATALOG=1 or
+    // GRAFF_STABLE_CATALOG=0|off|false|no restores the mutating catalog;
+    // GRAFF_STABLE_CATALOG=1 wins if both are set.
+    {
+        const no_sc = environ_map.get("GRAFF_NO_STABLE_CATALOG");
+        const sc = environ_map.get("GRAFF_STABLE_CATALOG");
+        if (no_sc) |v| {
+            if (std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes"))
+                mcp_schema_gate.g_stable_catalog = false;
+        }
+        if (sc) |v| {
+            const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "no");
+            const on = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
+            if (off) mcp_schema_gate.g_stable_catalog = false;
+            if (on) mcp_schema_gate.g_stable_catalog = true;
+        }
+    }
     // (#codex-ws) GRAFF_CODEX_WS_IDLE_SECS raises/lowers the held-WS idle limit
     // (default 4 min — the backend killed ours within 8.5 min idle; opencode
     // pools at 5). Mirrors GRAFF_STREAM_STALL_SECS above: seconds, ignored if

@@ -122,7 +122,7 @@ def main() -> None:
         # across providers until the workspace explicitly allowlists it.
         with launch(str(cwd), env, codex_home=None) as session:
             session.wait_for_literal("Cross-provider use is blocked")
-            session.wait_for_literal("deepseek-v4-pro · Medium · Fallback")
+            session.wait_for_literal("deepseek-v4-pro · Medium · ~/repo · Fallback")
             session.wait_for_prompt()
             cursor = len(session.raw)
             session.send_line("must not reach a provider")
@@ -136,7 +136,7 @@ def main() -> None:
         # With explicit consent persisted, the same fallback is ready for use.
         with launch(str(cwd), env, codex_home=None) as session:
             session.wait_for_literal("saved preference kept")
-            session.wait_for_literal("deepseek-v4-pro · Medium · Fallback")
+            session.wait_for_literal("deepseek-v4-pro · Medium · ~/repo · Fallback")
             session.wait_for_prompt()
             clean_exit(session)
 
@@ -160,7 +160,7 @@ def main() -> None:
         )
         with launch(str(cwd), env, codex_home=str(codex_home)) as session:
             session.wait_for_literal("saved preference kept")
-            session.wait_for_literal("gpt-5.6-luna · Medium · Fallback")
+            session.wait_for_literal("gpt-5.6-luna · Medium · ~/repo · Fallback")
             session.wait_for_prompt()
             clean_exit(session)
         assert preference.read_text(encoding="utf-8") == "codex\ngpt-5.6-sol\n"

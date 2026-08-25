@@ -8,6 +8,8 @@
 //! Read this file as the prompt itself; read prompts.zig for when each part of
 //! it is sent.
 
+const std = @import("std");
+
 // ── ROOT PROMPT BEGIN ── examples/prepare_graff_tournament.py extracts every
 // multiline-literal line between these two markers as the seed root policy, so
 // this comment deliberately carries no literal marker of its own.
@@ -160,6 +162,11 @@ pub const work_note =
     \\will not change; reread only on stale source, ambiguity, or failure.
     \\When a Project layout segment is present, it is the tree — read the
     \\files you need straight from it instead of ls/find exploration turns.
+    \\When a named SPEC.md (or equivalent contract) is in the task, satisfy
+    \\every clause — a green public test is not the whole spec. Empty input
+    \\includes whitespace-only: yield nothing, do not raise. A required
+    \\record delimiter applies to records that exist; a payload with no
+    \\records is empty, not malformed.
 ;
 
 /// Always present: narration is a habit, not a capability.
@@ -247,3 +254,66 @@ pub const parallel_tail_note =
 pub const parallel_tools_note = parallel_core_note ++ parallel_examples_note ++ parallel_tail_note;
 
 // ── ROOT PROMPT END ─────────────────────────────────────────────────────────
+
+/// --lean / -p swap-in for `local_tools_note`. Drops the outside-cwd
+/// exception and the approval essay (evals are --yolo; unattended_note
+/// covers the !yolo map). Same edit discipline, ~1k fewer prefix bytes.
+pub const lean_local_tools_note =
+    \\
+    \\read_file before editing; prefer edit_file for existing files and
+    \\write_file only for new files. Navigate with codedb (context, around,
+    \\callpath, list_dir, status) or one rlm script of those functions.
+    \\print(read_file("path")) returns the file — do not read it again.
+    \\Independent reads belong in ONE response or one rlm script, not a chain of turns.
+    \\A passing verify command and attempt_completion belong in ONE response.
+;
+
+/// --lean swap-in for `parallel_core_note`. The long Parallelize / fan-out
+/// essay is dropped; without this clause -p never asks for a batch and the
+/// model spends one API call per read (ADR 0024 leftover vs grok).
+pub const lean_parallel_note =
+    \\
+    \\Independent reads and checks belong in ONE response; they run concurrently.
+    \\A call that needs an earlier result, or two writes to the same file, stays
+    \\in its own turn. A passing verify and attempt_completion share a response.
+;
+
+pub const lean_intro_note =
+    \\You are a coding agent. Use the cataloged tools; never invent one.
+    \\Independent reads belong in ONE response (or one rlm script), not one per turn.
+    \\A passing test and attempt_completion belong in ONE response.
+;
+
+pub const lean_work_note =
+    \\
+    \\Assume the user wants the work done. Verify with the project's own
+    \\tests in its OWN environment. Use named files and tests directly.
+    \\Do not add unrequested tests. Never repeat a tool call with identical
+    \\parameters. When a named SPEC.md is in the task, satisfy every clause
+    \\— a green public test is not the whole spec. Empty input includes
+    \\whitespace-only: yield nothing, do not raise. A required record
+    \\delimiter applies to records that exist; a payload with no records
+    \\is empty, not malformed.
+;
+
+pub const lean_closing_note =
+    \\
+    \\Write the final message as a short teammate update. Cite path:line.
+    \\Be direct and concise.
+;
+
+/// --lean composition: drop harness-debug / narration / git-safety; swap
+/// the long intro/work/closing essays. `null` means skip the segment.
+pub fn leanSegment(name: []const u8, original: []const u8, is_lean: bool) ?[]const u8 {
+    if (!is_lean) return original;
+    if (std.mem.eql(u8, name, "trace") or std.mem.eql(u8, name, "harness_issue") or
+        std.mem.eql(u8, name, "headsup") or std.mem.eql(u8, name, "git_safety") or
+        std.mem.eql(u8, name, "root_cause") or std.mem.eql(u8, name, "parallel_examples") or
+        std.mem.eql(u8, name, "parallel_tail")) return null;
+    if (std.mem.eql(u8, name, "parallel_core")) return lean_parallel_note;
+    if (std.mem.eql(u8, name, "intro")) return lean_intro_note;
+    if (std.mem.eql(u8, name, "local_tools")) return lean_local_tools_note;
+    if (std.mem.eql(u8, name, "work")) return lean_work_note;
+    if (std.mem.eql(u8, name, "closing")) return lean_closing_note;
+    return original;
+}

@@ -27,7 +27,9 @@ GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
 # runtime Codex window without freezing the catalog.
 CTX_RE = re.compile(r"ctx (\d+)%")
 ACTIVE_WINDOW_RE = re.compile(r"active: .+ · (\d+)k ctx · compact@(\d+)k")
-COMPACTING_RE = re.compile(r"compacting ~(\d+) tokens")
+# ADR 0020/0021: compacting ~N / compacted-to-a-summary are /debug-only.
+# Crossing compact@ always writes this public #391 note.
+PRE_COMPACT_NOTE_RE = re.compile(r"wrote a pre-compaction note to self")
 
 MIDTURN_PROMPT = "exercise the server-side context meter"
 MIDTURN_SUMMARY = "The user asked to exercise the server-side context meter."
@@ -267,21 +269,17 @@ def concurrent_tool_events(request: RecordedRequest) -> list[dict]:
 
 
 def assert_compaction_meter(label: str, rendered: str) -> None:
-    match = COMPACTING_RE.search(rendered)
-    if match is None:
+    """Public proof the server-reported usage crossed compact@.
+
+    The token window itself is the request choreography in
+    assert_midturn_requests / assert_transactional_requests (first-turn usage
+    is MIDTURN_TOTAL_TOKENS, 90% of the runtime window). The debug bus line
+    that used to print `compacting ~N tokens` is no longer on the transcript.
+    """
+    if PRE_COMPACT_NOTE_RE.search(rendered) is None:
         raise AssertionError(
             f"{label}: server-reported usage did not trigger pre-send "
-            f"compaction:\n{rendered}"
-        )
-    observed = int(match.group(1))
-    # The provider sample is the lower bound. A tool result appended after that
-    # sample should increase the anchored effective meter slightly, while the
-    # compaction still runs before the advertised context wall.
-    if not MIDTURN_TOTAL_TOKENS <= observed < MIDTURN_CONTEXT_TOKENS:
-        raise AssertionError(
-            f"{label}: compacted at {observed} tokens, expected at least the "
-            f"{MIDTURN_TOTAL_TOKENS} provider sample and below the "
-            f"{MIDTURN_CONTEXT_TOKENS} context window"
+            f"compaction (no pre-compaction note):\n{rendered}"
         )
 
 
@@ -693,8 +691,8 @@ def run_midturn_compaction_scenario(
         session.wait_for_prompt()
         cursor = len(session.raw)
         session.send_line(MIDTURN_PROMPT)
+        session.wait_for_literal("wrote a pre-compaction note to self", start=cursor)
         session.wait_for_literal(MIDTURN_FINAL, start=cursor)
-        session.wait_for_literal("history compacted to a", start=cursor)
         session.pump_for(0.1)
         rendered = terminal_text(bytes(session.raw[cursor:]))
         assert_compaction_meter("midturn", rendered)

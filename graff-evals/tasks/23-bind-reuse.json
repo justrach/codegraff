@@ -1,0 +1,11 @@
+{
+  "id": "bind-reuse",
+  "suite": "rlm",
+  "category": "scatter",
+  "prompt": "secret.txt has one token on its first line. Use the rlm tool twice: first script binds it (s = read_file(\"secret.txt\")), second script only print(s) and write that exact token to found.txt. Do not call read_file in the second script — the bind survives across rlm calls.",
+  "files": {
+    "secret.txt": "QUORUM-11\n"
+  },
+  "check": "test \"$(cat found.txt | tr -d ' \\n')\" = QUORUM-11",
+  "timeout_s": 180
+}

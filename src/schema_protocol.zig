@@ -15,6 +15,8 @@ pub const flags =
     \\  {"flag": "--allow-cross-provider-subagents", "arg": null, "description": "explicitly consent to sending worker prompts, code, and tool results to a provider different from the root"},
     \\  {"flag": "--no-subagent-tier", "arg": null, "description": "opt out of the default worker tier ladder; workers inherit the root model unless an explicit --subagent-model is given"},
     \\  {"flag": "--yolo", "arg": null, "description": "skip all permission prompts for the session"},
+    \\  {"flag": "--rlm", "arg": null, "description": "advertise the rlm REPL (default). Last flag wins vs --old. GRAFF_RLM=1 is the env form"},
+    \\  {"flag": "--old", "arg": null, "description": "restore the pre-rlm structured-only catalog. --no-rlm is an alias. GRAFF_OLD=1 or GRAFF_RLM=0"},
     \\  {"flag": "--lean", "arg": null, "description": "slim the tool surface to 8 core tools and connect MCP servers DEFERRED behind the load_tool_schemas meta tool (names + one-line descriptions up front, full schemas on demand) instead of paying every server's schemas in every model turn. DEFAULT for -p one-shots; GRAFF_LEAN=1 forces it on anywhere"},
     \\  {"flag": "--no-lean", "arg": null, "description": "opt a one-shot out of the implied --lean: full tool surface and eager MCP schemas, the pre-default -p behavior"},
     \\  {"flag": "--add-dir", "arg": "path", "description": "extra workspace root file tools may touch (repeatable, max 16). Complementary to workspace switch; extra roots do not contribute skills or sessions"},

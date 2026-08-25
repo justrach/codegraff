@@ -1,0 +1,10 @@
+{
+  "id": "validated",
+  "suite": "swe",
+  "category": "swe",
+  "source": "https://deepswe.datacurve.ai/run — returns-validated-error-accumulation (distilled, no Harbor)",
+  "files_dir": "fixtures/validated",
+  "prompt": "Valid/Invalid do not accumulate errors correctly. Read SPEC.md and validated.py, then make `python3 test_validated.py` print OK. Do not edit the tests. from_failure wraps a 1-tuple, apply concatenates left-then-right, swap wraps Valid in a 1-tuple, bind short-circuits.",
+  "check": "python3 test_validated.py && python3 \"$TASK_ROOT/hidden/validated.py\"",
+  "timeout_s": 300
+}

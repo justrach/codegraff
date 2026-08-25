@@ -2,9 +2,10 @@
 """Real-PTY smoke test for the #469 peer-message delivery pipeline.
 
 A device-room broadcast planted while the session sits at the prompt must
-render as a [peer message from ...] line during the next turn's first step
-boundary. This pins the end-to-end plumbing (chan-all.jsonl -> drainDevice ->
-deliverInbound -> session_notice), which no unit test reaches.
+render as a public peer tally (`↯ 1 peer update`) during the next turn's
+first step boundary (ADR 0021: full `[peer message from …]` lines stay in
+`/debug`). This pins the end-to-end plumbing (chan-all.jsonl -> drainDevice
+-> deliverInbound -> session_notice), which no unit test reaches.
 
 It deliberately does NOT assert the blank-line bracket: a rendered PTY
 transcript cannot attribute a blank line to the drain (the turn card, tool-row
@@ -34,7 +35,7 @@ from pty_harness import PtySession, terminal_text  # noqa: E402
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
 
-PEER_LINE = "[peer message from session-fake-peer"
+PEER_LINE = "↯ 1 peer update"
 TITLE_MARK = "You summarize what a coding session is about"
 
 
@@ -102,7 +103,7 @@ def main() -> None:
                 assert idx is not None, (
                     "peer block never rendered\n--- transcript ---\n" + rendered
                 )
-                print("ok: device-room broadcast renders as a peer line mid-session")
+                print("ok: device-room broadcast renders as a peer tally mid-session")
     finally:
         model.stop()
 

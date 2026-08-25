@@ -107,7 +107,11 @@ pub const TokenSignal = struct {
             const name = item.object.get("name") orelse return false;
             // Exactly ArgLive.open's gate: a non-whitelisted name opens nothing
             // (and cannot clobber an open index — output indices are unique).
-            if (name == .string and argToolFor(name.string) != .none) self.arg_ix = ix;
+            if (name == .string) {
+                const t = argToolFor(name.string);
+                // Visible prose only — rlm's `code` is speculated, not printed.
+                if (t == .attempt_completion or t == .ask_user) self.arg_ix = ix;
+            }
             return false;
         }
         if (std.mem.eql(u8, ty.string, "response.output_item.done")) {

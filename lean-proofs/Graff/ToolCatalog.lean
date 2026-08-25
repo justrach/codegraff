@@ -27,8 +27,7 @@ def localTools : List String :=
 
 def leanTools : List String :=
   ["bash", "read_file", "edit_file", "write_file", "codedb",
-   "read_tool_result", "subagent", "attempt_completion",
-   "load_tool_schemas"]
+   "subagent", "attempt_completion", "load_tool_schemas"]
 
 def optionalTools : List String :=
   ["imagegen"]

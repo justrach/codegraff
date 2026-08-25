@@ -99,13 +99,14 @@ pub const Policy = struct {
 
 pub var g_policy: Policy = .{};
 
-/// GRAFF_STABLE_CATALOG=1 experiment (#476): a loaded tool's schema rides the
-/// load_tool_schemas RESULT in the conversation, so the catalog does not need
-/// to re-render it — skipping policy-deferred tools even after load keeps the
-/// request prefix byte-identical all session, which is what provider prefix
-/// caching charges against. Every load otherwise busts the cache (measured:
-/// 0% cache on the calls right after each load).
-pub var g_stable_catalog = false;
+/// Default on (ADR 0011, 2026-08-25): a loaded tool's schema rides the
+/// load_tool_schemas RESULT, so the catalog does not re-render it. Skipping
+/// policy-deferred tools even after load keeps the request prefix
+/// byte-identical all session — what provider prefix caching charges
+/// against. A load otherwise busts the cache (measured: 0% cache on the
+/// calls right after each load). `GRAFF_STABLE_CATALOG=0` /
+/// `GRAFF_NO_STABLE_CATALOG=1` restore the mutating catalog.
+pub var g_stable_catalog = true;
 
 /// Deferred by POLICY, ignoring load state — the stable-catalog render rule
 /// and (in stable mode) the listing, which must not change as tools load.
@@ -293,7 +294,11 @@ pub fn hiddenSpec(name: []const u8, all: []const mcp.Tool) bool {
     const progressive = std.mem.eql(u8, name, tool_name) or
         std.mem.eql(u8, name, "mcp_search_tools") or
         std.mem.eql(u8, name, "mcp_select_tool");
-    return progressive and !anyDeferred(all);
+    if (!progressive) return false;
+    // -p: even a deferred home MCP kept the 1.4kB meta tool on every
+    // turn. One-shots that need MCP pass --no-lean (ADR 0024).
+    if (@import("no_local_tools.zig").lean) return true;
+    return !anyDeferred(all);
 }
 
 /// The description a deferred tool advertises: the first line (or paragraph)
@@ -496,8 +501,9 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
     // as the MCP half — stable mode lists by policy, never by load state.
     const native_fold = @import("native_fold.zig");
     var natives: std.ArrayList([]const u8) = .empty;
-    if (native_fold.anyFolded()) {
+    if (native_fold.anyFolded() and !@import("no_local_tools.zig").lean) {
         for (native_fold.folded) |name| {
+            if (!native_fold.isFolded(name)) continue; // rlm stays off the default listing
             if (!g_stable_catalog and native_fold.isLoaded(name)) continue;
             try natives.append(arena, name);
         }

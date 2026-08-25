@@ -13,7 +13,8 @@ const peer_channel = @import("peer_channel.zig");
 const workspace_switch = @import("workspace_switch.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-local-tools gate (layer 1 lives here, layer 2 in exec.zig)
 const tool_gates = @import("tool_gates.zig"); // #352: the additive twin — optional tools that only exist when startup found their backing capability
-const imagegen = @import("imagegen.zig"); // #352: name/desc/schema as plain strings, like skill_docs, so this catalog needs one entry and no import cycle
+const imagegen = @import("imagegen.zig");
+const rlm = @import("rlm.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: load_tool_schemas strings
 const mcp_select = @import("mcp_select.zig"); // fx search-then-select
 const result_read = @import("result_read.zig"); // overflow handle pager
@@ -52,9 +53,9 @@ const empty_schema =
 const base_specs = [_]ToolSpec{
     .{
         .name = "bash",
-        .desc = "Run a shell command via /bin/sh -c in the current working directory. Returns stdout, stderr, and the exit code. A user-cancelled command reports cancelled (its whole local process group is killed; a remote process started over ssh may survive on the remote host). For long-running commands set run_in_background true: it returns a job id immediately and you are notified on completion — do not poll. bash_output(wait_ms>0) blocks until exit (up to 10h); omit wait_ms for a snapshot. Stop it with bash_kill.",
+        .desc = "Run a shell command via /bin/sh -c in the current working directory. Returns stdout, stderr, and the exit code. A user-cancelled command reports cancelled (its whole local process group is killed; a remote process started over ssh may survive on the remote host). Foreground commands that are still running after 120s (or timeout ms) are moved to the background and return a job id — the process keeps running. For long-running commands set run_in_background true to skip the wait. You are notified on completion — do not poll. bash_output(wait_ms>0) blocks until exit (up to 10h); omit wait_ms for a snapshot. Stop it with bash_kill.",
         .schema =
-        \\{"type": "object", "properties": {"command": {"type": "string", "description": "Shell command to execute"}, "run_in_background": {"type": "boolean", "description": "Start as a background job and return its id immediately instead of waiting (default false)"}}, "required": ["command"]}
+        \\{"type": "object", "properties": {"command": {"type": "string", "description": "Shell command to execute"}, "timeout": {"type": "integer", "description": "Optional foreground wait in milliseconds before auto-background (default 120000, max 36000000). 0 uses the default. Ignored when run_in_background is true."}, "run_in_background": {"type": "boolean", "description": "Start as a background job and return its id immediately instead of waiting (default false)"}}, "required": ["command"]}
         ,
     },
     .{
@@ -171,7 +172,7 @@ const meta_specs = [_]ToolSpec{
 
 const subagent_spec = ToolSpec{
     .name = "subagent",
-    .desc = "Delegate a self-contained task to a subagent. It has bash, read_file, edit_file, write_file, codedb (code search), and skill (load an installed playbook); it cannot spawn further subagents and does NOT share your context — the prompt must be self-contained. Returns the subagent final report. Call several times in one response to run tasks in parallel. Pick a persona with agent (builtins: reviewer, researcher, implementer, skeptic — plus any in .harness/agents/), or give the child a custom system_prompt; the trajectory log records the lineage either way. Set run_in_background true to launch it asynchronously instead: you get the agent id back immediately and keep working. Do not poll; agent_output(wait_ms>0) blocks until it finishes. Which model this child runs on is decided in this order: model/tier given on THIS call > the chosen persona's own model:/tier: frontmatter > the session default (--subagent-model, else the default tier ladder) > the root model; within one level an exact model wins over tier. The child's reasoning effort is pinned the same way: effort on THIS call > the persona's effort: frontmatter > the worker default (medium) — an independent axis, so an effort-only override keeps the persona's model pin. Exact model pins resolve provider-locally first — a name the child's own provider serves always wins; one it does not serve falls through to a logged-in flat-rate subscription serving that exact name (never a fuzzy match). An explicit tier ask is the portable lever: when the child's own provider has no such rung, sub-first routing checks every logged-in flat-rate subscription and seats the worker on the best sub serving that rung (the login is the standing consent; metered cross-provider routing still needs --subagent-provider + --allow-cross-provider-subagents). A pin that cannot be honored is ignored (the spawn still runs on the session default) rather than failing.",
+    .desc = "Delegate a self-contained sidecar task. The child has bash, read_file, edit_file, write_file, codedb, and skill; it cannot spawn further subagents and does NOT share your context — the prompt must be complete. Returns the final report. Call several times in one response for disjoint parallel slices. Keep the critical-path next step local; do not hand off the blocker and wait. Prefer concrete code-change work with disjoint write sets over read-only exploration. Do not set model unless the user asked or a task-specific reason is clear. Personas: agent=reviewer|researcher|implementer|skeptic or a .harness/agents/ name; system_prompt overrides. run_in_background=true returns an id immediately — do not poll; agent_output(wait_ms>0) blocks until done.",
     .schema =
     \\{"type": "object", "properties": {"description": {"type": "string", "description": "Short label for logs, 3-5 words"}, "prompt": {"type": "string", "description": "Complete, self-contained task description"}, "agent": {"type": "string", "description": "Optional: a named agent type (reviewer, researcher, implementer, skeptic, or a .harness/agents/ name) whose persona the child runs with"}, "system_prompt": {"type": "string", "description": "Optional: replace the child's system prompt with a custom one (overrides agent)"}, "model": {"type": "string", "description": "Optional: run THIS child on an exact model name available on the current provider (e.g. \"gpt-5.6-luna\"). Highest precedence — beats the persona's own pin and the session default. Ignored (spawn still runs on the session default, with a trace note) if the name is unknown, ambiguous, or not served by this provider — except that a logged-in flat-rate subscription serving the exact name honors it (sub-first routing; the login is the standing consent). For a portable 'cheapest seat' ask, tier is still the better lever."}, "tier": {"type": "string", "enum": ["frontier", "mid", "small"], "description": "Optional: run THIS child on a rung of the current provider's model ladder instead of an exact name — frontier (planner/judge class), mid (reviewers, implementers, researchers), small (mechanical transform/extract/label). Prefer this over model: it stays correct when the root model changes. If the provider has no ladder or no model at that rung, sub-first routing seats the child on a logged-in flat-rate subscription's rung when one exists (no login → the pin is ignored); model wins if both are given."}, "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"], "description": "Optional: reasoning effort for THIS child — beats the persona's effort: frontmatter; unpinned children run at medium. An axis independent of model/tier: an effort-only override keeps the persona's model pin. An off-vocabulary value is ignored with a trace note."}, "isolation": {"type": "string", "enum": ["shared_cwd", "worktree"], "description": "Optional: \"worktree\" gives this child its own scratch git worktree (auto-removed if it finishes with no changes, kept + reported if it has any) instead of the shared working tree — use for parallel agents that edit files. Default shared_cwd (today's behavior), unless the chosen agent persona sets its own default."}, "isolation_fallback": {"type": "boolean", "description": "Optional: if isolation:\"worktree\" fails to set up (not a git repo, git error), run in the shared working tree instead of failing the spawn. Default false (fails the spawn on setup failure)."}, "run_in_background": {"type": "boolean", "description": "Optional: start this subagent asynchronously and return its agent id immediately instead of waiting for it to finish (default false). Do not poll; agent_output(wait_ms>0) blocks until it finishes. A spawn beyond the concurrency cap is queued, never failed."}}, "required": ["description", "prompt"]}
     ,
@@ -297,7 +298,7 @@ pub fn renderRootTools(
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginArray();
     for (specs) |t| {
-        if (mcp_schema_gate.hiddenSpec(t.name, mcp_tools) and !native_fold.anyFolded()) continue; // #416: load_tool_schemas hides only with nothing deferred OR folded
+        if (mcp_schema_gate.hiddenSpec(t.name, mcp_tools) and (!native_fold.anyFolded() or no_local_tools.lean)) continue; // lean: no empty load_tool_schemas
         if (native_fold.catalogSkips(t.name)) continue; // zero-stub like the MCP half: folded natives ride the meta tool's listing (#476)
         if (std.mem.eql(u8, t.name, mcp_schema_gate.tool_name))
             try writeToolEntry(&s, kind, t.name, try mcp_schema_gate.descWithListing(out, mcp_tools), .{ .raw = t.schema })
@@ -326,7 +327,7 @@ pub fn effectiveRootSpecs(arena: Allocator) ![]const ToolSpec {
     else
         (if (learn_store.active_agent_loaded) &root_specs_without_clock else &root_specs_without_optional);
     // Optionals are appended BEFORE the #330 filter, never after (optional ≠ exempt); the --lean token filter chains last.
-    return no_local_tools.compactLeanSpecs(ToolSpec, arena, try no_local_tools.filterLeanSpecs(ToolSpec, arena, try no_local_tools.filterRootSpecs(ToolSpec, arena, try tool_gates.withAvailable(ToolSpec, arena, chosen, &optional_specs))));
+    return rlm.maybeAppend(ToolSpec, arena, try no_local_tools.compactLeanSpecs(ToolSpec, arena, try no_local_tools.filterLeanSpecs(ToolSpec, arena, try no_local_tools.filterRootSpecs(ToolSpec, arena, try tool_gates.withAvailable(ToolSpec, arena, chosen, &optional_specs)))));
 }
 
 const Schema = union(enum) { raw: []const u8, value: Value };
@@ -534,13 +535,13 @@ test "effectiveRootSpecs: drops clock_sleep from the root tool catalog unless th
 
     root.g_clock_sleep = false;
     const off_specs = try effectiveRootSpecs(a);
-    try std.testing.expectEqual(root_specs.len - 1, off_specs.len);
+    try std.testing.expectEqual(root_specs.len, off_specs.len); // -clock_sleep +rlm
     for (off_specs) |t| try std.testing.expect(!std.mem.eql(u8, t.name, "clock_sleep"));
-    try std.testing.expectEqual(@as(usize, 0), arena_state.queryCapacity());
+    try std.testing.expect(arena_state.queryCapacity() > 0); // maybeAppend copies to append rlm
 
     root.g_clock_sleep = true;
     const on_specs = try effectiveRootSpecs(a);
-    try std.testing.expectEqual(root_specs.len, on_specs.len);
+    try std.testing.expectEqual(root_specs.len + 1, on_specs.len); // +rlm
     var found = false;
     for (on_specs) |t| {
         if (std.mem.eql(u8, t.name, "clock_sleep")) found = true;
@@ -550,7 +551,7 @@ test "effectiveRootSpecs: drops clock_sleep from the root tool catalog unless th
     root.g_clock_sleep = false;
     learn_store.active_agent_loaded = false;
     const minimal_specs = try effectiveRootSpecs(a);
-    try std.testing.expectEqual(root_specs.len - 2, minimal_specs.len);
+    try std.testing.expectEqual(root_specs.len - 1, minimal_specs.len); // -clock -learn +rlm
     for (minimal_specs) |tool| try std.testing.expect(!std.mem.eql(u8, tool.name, "learn_candidate"));
 }
 test "learn_candidate is root-only and cannot become a subagent tool" {
