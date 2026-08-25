@@ -30,6 +30,30 @@ structured tools stay the main harness.
 A live comparison is `scripts/compare-ptc.py`. The eval A/B is
 `graff-evals/run.py --harness graff-dev,graff-dev-rlm`.
 
+Measured 2026-08-25 on grok-4.6 (SuperGrok login, one rep, full
+`graff-evals` suite). Both harnesses **12/12**. `--rlm` added ~7k input
+tokens (the extra tool schema) and was 6s faster on wall (99.6s vs 105.7s).
+These tasks are sequential single-file work with ~0ms local reads, so
+sPTC overlap is not the story — the number that matters is *no correctness
+regression* while the catalog grows by one opt-in tool. The biggest wall
+delta (`git-ops` 17.4s → 11.8s) is one-rep variance, not a claimed speedup.
+
+| task | native s | `--rlm` s |
+|---|---:|---:|
+| exact-reply | 3.84 | 3.21 |
+| regex-count | 10.81 | 8.89 |
+| csv-sum | 6.92 | 6.25 |
+| recall-noise | 4.43 | 4.15 |
+| json-transform | 7.79 | 7.01 |
+| file-ops | 8.62 | 8.99 |
+| fix-fib | 11.46 | 11.62 |
+| write-tests | 8.98 | 10.68 |
+| git-ops | 17.42 | 11.83 |
+| refactor-rename | 10.34 | 10.07 |
+| schema-output | 10.14 | 11.32 |
+| dead-code | 4.90 | 5.60 |
+| **total** | **105.7** | **99.6** |
+
 ## Consequences
 
 - Mid-stream speculation is on the SSE path even when the one-shot frontend
