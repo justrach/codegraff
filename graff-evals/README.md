@@ -20,7 +20,7 @@ harness under test spends model calls.
 | `core` | sequential single-file work (instruction, debug, git, schema, …) |
 | `rlm` | scatter-gather / multi-file reads (where default rlm can overlap) |
 | `swe` | DeepSWE-shaped multi-file bugfixes, distilled from [deepswe.datacurve.ai/run](https://deepswe.datacurve.ai/run) (no Harbor/Docker) |
-| `mcp` | Linear-shaped fixture MCP (Blacksmith code-mode + muscle memory). Use `--no-lean` harnesses. Variants include warm shapes, quiet `print()`, and no-`each()` prompts. |
+| `mcp` | Linear-shaped fixture MCP (Blacksmith code-mode + muscle memory). Use `--no-lean` harnesses. Variants include warm shapes, quiet `print()`, no-`each()` prompts, and learnt slim (L–Q). |
 
 ```sh
 ./run.py --suite swe --harness graff-dev-old,graff-dev --model grok-4.6 -j 12

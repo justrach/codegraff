@@ -163,9 +163,7 @@ fn runHost(ctx: ToolCtx, call: spec_ptc.Call) ToolOutput {
         return .{ .text = ctx.gpa.dupe(u8, "rlm: bad args") catch &.{}, .is_error = true };
     };
     defer parsed.deinit();
-    const out = exec_mod.execTool(ctx, .{ .id = "rlm", .name = ready.name, .input = parsed.value });
-    if (!out.is_error and rlm_mcp.looksMcp(ready.name)) mcp_shapes.remember(ctx, ready.name, out.text);
-    return out;
+    return exec_mod.execTool(ctx, .{ .id = "rlm", .name = ready.name, .input = parsed.value });
 }
 
 fn runSleep(ctx: ToolCtx, args_json: []const u8) ToolOutput {
@@ -242,18 +240,23 @@ fn renderPrint(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []const
 fn renderPrintPart(ctx: ToolCtx, arena: Allocator, inner: []const u8, binds: []const Binding, claimed: *std.StringHashMap(ToolOutput)) ![]const u8 {
     const t = std.mem.trim(u8, inner, " \t");
     if (t.len >= 2 and (t[0] == '"' or t[0] == '\'') and t[t.len - 1] == t[0]) return t[1 .. t.len - 1];
-    if (rlm_reduce.evalExpr(arena, t, binds)) |text| return text else |_| {}
+    if (rlm_reduce.evalExpr(arena, t, binds)) |text| return maybeSlim(arena, text) else |_| {}
     var i = binds.len;
     while (i > 0) {
         i -= 1;
-        if (std.mem.eql(u8, binds[i].name, t)) return binds[i].text;
+        if (std.mem.eql(u8, binds[i].name, t)) return maybeSlim(arena, binds[i].text);
     }
     if (try spec_ptc.extractCall(arena, t)) |c| {
         const key = try c.key(arena);
-        if (claimed.get(key)) |hit| return try arena.dupe(u8, hit.text);
+        if (claimed.get(key)) |hit| return maybeSlim(arena, hit.text);
         const out = runHost(ctx, c);
         defer ctx.gpa.free(out.text);
+        if (mcp_shapes.slim(arena, out.text)) |s| return s;
         return try arena.dupe(u8, out.text);
     }
     return try arena.dupe(u8, t);
+}
+
+fn maybeSlim(arena: Allocator, payload: []const u8) []const u8 {
+    return mcp_shapes.slim(arena, payload) orelse payload;
 }

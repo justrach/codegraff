@@ -91,7 +91,7 @@ def live_row(variant: str) -> dict | None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--history", action="store_true", help="do not drive a provider")
-    ap.add_argument("--only", default="A,H,J,K", help="live variant ids")
+    ap.add_argument("--only", default="L,M,N,O,P,Q", help="live variant ids")
     args = ap.parse_args()
 
     points = [dict(p) for p in HISTORY]

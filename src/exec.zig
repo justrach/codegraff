@@ -211,7 +211,11 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             return failure(gpa, err);
         };
         if (r.is_error) codedbpro_report.onFailure(ctx, call.name, r.text);
-        if (!r.is_error) @import("mcp_shapes.zig").remember(ctx, call.name, r.text);
+        if (!r.is_error) {
+            const shapes = @import("mcp_shapes.zig");
+            shapes.remember(ctx, call.name, r.text);
+            return .{ .text = shapes.takeSlim(gpa, r.text), .is_error = false };
+        }
         return .{ .text = r.text, .is_error = r.is_error };
     }
 

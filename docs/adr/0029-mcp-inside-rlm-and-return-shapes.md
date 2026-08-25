@@ -133,3 +133,13 @@ print(len, project)`). It is the **token vertex**. H is the **wall
 vertex**. There is still no point that wins both. Warm shapes (K) did
 not help J. Do not ship rlm-as-default for this MCP task; keep
 len/project so the token vertex is reachable.
+
+## Learnt slim (the muscle, not another hint)
+
+Shapes on the load result did not change grok-4.6's path (I still never
+called `rlm`). The learnt part is therefore applied in Zig: after
+`remember()` of the fat payload, `takeSlim` / `print()` drop
+`description`/`body` and fold comment arrays to `{n, latest_author}`.
+When two MCP shapes are stored, `annotate` adds a one-line `# muscle:`
+playbook on the load **result** (never the catalog prefix). No new
+`GRAFF_` knob. Live L–Q sweep: `eval-mcp-shapes.py --only L,M,N,O,P,Q`.

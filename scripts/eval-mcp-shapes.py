@@ -100,6 +100,42 @@ VARIANTS = [
         "task": "linear-reduce-warm",
         "label": "rlm+MCP host, warm, len/project recipe",
     },
+    {
+        "id": "L",
+        "harness": "graff-dev-nolean",
+        "task": "linear-nohint-warm",
+        "label": "learnt slim + playbook, no each() hint, warm",
+    },
+    {
+        "id": "M",
+        "harness": "graff-dev-nolean",
+        "task": "linear-warm",
+        "label": "learnt slim + each() hint, warm",
+    },
+    {
+        "id": "N",
+        "harness": "graff-dev-nolean",
+        "task": "linear-nohint",
+        "label": "learnt slim mid-run, no each() hint, cold",
+    },
+    {
+        "id": "O",
+        "harness": "graff-dev-nolean",
+        "task": "linear-quiet",
+        "label": "learnt slim, quiet print, cold",
+    },
+    {
+        "id": "P",
+        "harness": "graff-dev-nolean",
+        "task": "linear-reduce",
+        "label": "learnt slim + len/project recipe, cold",
+    },
+    {
+        "id": "Q",
+        "harness": "graff-dev-nolean",
+        "task": "linear-reduce-warm",
+        "label": "learnt slim + len/project recipe, warm",
+    },
 ]
 
 

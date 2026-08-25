@@ -280,6 +280,141 @@ fn closeBase(io: Io, opened: Opened, _: ?[]const u8) void {
     }
 }
 
+/// Fat enough that dumping the bind is the token problem C/D/F hit.
+pub const slim_min_bytes: usize = 800;
+
+const identity_keys = [_][]const u8{ "id", "identifier", "title", "name" };
+
+/// Learnt projection: identity keys on issue-like rows; comments fold to
+/// `{n, latest_author}`. Values of `description`/`body` never survive.
+/// Returns null when the payload is small, not a JSON array of objects, or
+/// has nothing to cut. Caller owns a non-null result.
+pub fn slim(alloc: Allocator, payload: []const u8) ?[]u8 {
+    if (payload.len < slim_min_bytes) return null;
+    const trimmed = std.mem.trim(u8, payload, " \t\r\n");
+    const parsed = std.json.parseFromSlice(Value, alloc, trimmed, .{}) catch return null;
+    defer parsed.deinit();
+    const items = arrayItems(parsed.value) orelse return null;
+    if (items.len == 0 or items[0] != .object) return null;
+    if (looksLikeComments(items[0].object)) return slimComments(alloc, items);
+    return slimIdentity(alloc, items);
+}
+
+/// Remember the fat payload, then replace it with the learnt cut when one
+/// exists. `text` is owned by `gpa`.
+pub fn takeSlim(gpa: Allocator, text: []u8) []u8 {
+    const cut = slim(gpa, text) orelse return text;
+    gpa.free(text);
+    return cut;
+}
+
+fn arrayItems(v: Value) ?[]const Value {
+    if (v == .array) return v.array.items;
+    if (v != .object) return null;
+    var it = v.object.iterator();
+    while (it.next()) |e| {
+        if (e.value_ptr.* == .array) return e.value_ptr.array.items;
+    }
+    return null;
+}
+
+fn looksLikeComments(obj: std.json.ObjectMap) bool {
+    return obj.get("body") != null and obj.get("author") != null;
+}
+
+fn slimComments(alloc: Allocator, items: []const Value) ?[]u8 {
+    var latest_i: usize = items.len - 1;
+    var latest_at: []const u8 = "";
+    for (items, 0..) |item, i| {
+        if (item != .object) continue;
+        const at = if (item.object.get("createdAt")) |c| (if (c == .string) c.string else "") else "";
+        if (at.len == 0) continue;
+        if (latest_at.len == 0 or std.mem.order(u8, at, latest_at) == .gt) {
+            latest_at = at;
+            latest_i = i;
+        }
+    }
+    const name = authorName(items[latest_i]);
+    var aw: Io.Writer.Allocating = .init(alloc);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    s.beginObject() catch {
+        aw.deinit();
+        return null;
+    };
+    s.objectField("n") catch {
+        aw.deinit();
+        return null;
+    };
+    s.write(items.len) catch {
+        aw.deinit();
+        return null;
+    };
+    s.objectField("latest_author") catch {
+        aw.deinit();
+        return null;
+    };
+    s.write(name orelse "") catch {
+        aw.deinit();
+        return null;
+    };
+    s.endObject() catch {
+        aw.deinit();
+        return null;
+    };
+    return aw.toOwnedSlice() catch null;
+}
+
+fn authorName(item: Value) ?[]const u8 {
+    if (item != .object) return null;
+    const author = item.object.get("author") orelse return null;
+    if (author == .string) return author.string;
+    if (author != .object) return null;
+    const n = author.object.get("name") orelse return null;
+    return if (n == .string) n.string else null;
+}
+
+fn slimIdentity(alloc: Allocator, items: []const Value) ?[]u8 {
+    if (!hasIdentity(items[0].object)) return null;
+    var aw: Io.Writer.Allocating = .init(alloc);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    s.beginArray() catch {
+        aw.deinit();
+        return null;
+    };
+    for (items) |item| {
+        if (item != .object) continue;
+        s.beginObject() catch {
+            aw.deinit();
+            return null;
+        };
+        for (identity_keys) |k| {
+            const v = item.object.get(k) orelse continue;
+            s.objectField(k) catch {
+                aw.deinit();
+                return null;
+            };
+            s.write(v) catch {
+                aw.deinit();
+                return null;
+            };
+        }
+        s.endObject() catch {
+            aw.deinit();
+            return null;
+        };
+    }
+    s.endArray() catch {
+        aw.deinit();
+        return null;
+    };
+    return aw.toOwnedSlice() catch null;
+}
+
+fn hasIdentity(obj: std.json.ObjectMap) bool {
+    for (identity_keys) |k| if (obj.get(k) != null) return true;
+    return false;
+}
+
 /// Splice stored shapes onto a load_tool_schemas / search RESULT. Never call
 /// this from catalog render (ADR 0011 prefix must stay byte-stable).
 pub fn annotate(gpa: Allocator, arena: Allocator, io: Io, cwd: ?[]const u8, text: []const u8) ![]const u8 {
@@ -293,6 +428,11 @@ pub fn annotate(gpa: Allocator, arena: Allocator, io: Io, cwd: ?[]const u8, text
     var it = store.map.iterator();
     while (it.next()) |e| {
         try aw.writer.print("  {s}: {s}\n", .{ e.key_ptr.*, e.value_ptr.* });
+    }
+    if (store.map.count() >= 2) {
+        try aw.writer.writeAll(
+            "# muscle: fat MCP print() auto-slims (id/title; comments → n+latest_author). issues=list_issues(); comments=each(issues,\"list_comments\",\"id\"); print(len(issues), project(issues,\"id\"), project(comments,\"latest_author\"))\n",
+        );
     }
     return aw.toOwnedSlice();
 }
@@ -354,5 +494,67 @@ test "remember merges keys; annotate splices shapes; prefix text is untouched" {
     const annotated = try annotate(gpa, arena_state.allocator(), io, dir, "1 tool schema(s) below\nmcp__linear__list_issues");
     try std.testing.expect(std.mem.indexOf(u8, annotated, "return_shapes") != null);
     try std.testing.expect(std.mem.indexOf(u8, annotated, "mcp__linear__list_issues") != null);
+    try std.testing.expect(std.mem.indexOf(u8, annotated, "muscle:") == null);
     try std.testing.expect(std.mem.indexOf(u8, @import("mcp_schema_gate.zig").tool_desc, "return_shapes") == null);
+    try std.testing.expect(std.mem.indexOf(u8, @import("rlm.zig").tool_desc, "muscle:") == null);
+}
+
+test "slim drops description/body; comments fold to n and latest_author" {
+    const gpa = std.testing.allocator;
+    try std.testing.expect(slim(gpa, "[{\"id\":1}]") == null);
+    const pad: [400]u8 = @splat('x');
+    const pad_s: []const u8 = &pad;
+    const issues = try std.fmt.allocPrint(gpa, "[{{\"id\":\"ISS-1\",\"identifier\":\"ENG-101\",\"title\":\"Login\",\"description\":\"{s}\",\"body\":\"KEEP-OUT\"}},{{\"id\":\"ISS-2\",\"identifier\":\"ENG-102\",\"title\":\"Tax\",\"description\":\"{s}\"}}]", .{ pad_s, pad_s });
+    defer gpa.free(issues);
+    const cut = slim(gpa, issues) orelse return error.ExpectedSlim;
+    defer gpa.free(cut);
+    try std.testing.expect(std.mem.indexOf(u8, cut, "ISS-1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cut, "ENG-101") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cut, "Login") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cut, "description") == null);
+    try std.testing.expect(std.mem.indexOf(u8, cut, "KEEP-OUT") == null);
+    try std.testing.expect(std.mem.indexOf(u8, cut, pad_s) == null);
+
+    const comments = try std.fmt.allocPrint(gpa, "[{{\"body\":\"old {s}\",\"author\":{{\"name\":\"ada\"}},\"createdAt\":\"2026-08-11T01:00:00Z\"}},{{\"body\":\"new {s}\",\"author\":{{\"name\":\"bev\"}},\"createdAt\":\"2026-08-12T02:00:00Z\"}}]", .{ pad_s, pad_s });
+    defer gpa.free(comments);
+    const folded = slim(gpa, comments) orelse return error.ExpectedCommentSlim;
+    defer gpa.free(folded);
+    try std.testing.expect(std.mem.indexOf(u8, folded, "\"n\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, folded, "bev") != null);
+    try std.testing.expect(std.mem.indexOf(u8, folded, "ada") == null);
+    try std.testing.expect(std.mem.indexOf(u8, folded, "old ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, folded, pad_s) == null);
+}
+
+test "annotate writes a muscle playbook once two MCP shapes are stored" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &path_buf);
+    const dir = path_buf[0..n];
+    reset(gpa, io);
+    defer reset(gpa, io);
+    var dummy_client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer dummy_client.deinit();
+    const ctx: ToolCtx = .{
+        .gpa = gpa,
+        .io = io,
+        .client = &dummy_client,
+        .provider = undefined,
+        .registry = null,
+        .from_sub = false,
+        .approvals = null,
+        .tracer = null,
+        .agent_cwd = dir,
+    };
+    remember(ctx, "mcp__linear__list_issues", "[{\"id\":\"A\"}]");
+    remember(ctx, "mcp__linear__list_comments", "[{\"body\":\"b\",\"author\":\"ada\"}]");
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const annotated = try annotate(gpa, arena_state.allocator(), io, dir, "2 tool schema(s)");
+    try std.testing.expect(std.mem.indexOf(u8, annotated, "muscle:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, annotated, "each(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, @import("mcp_schema_gate.zig").tool_desc, "muscle:") == null);
 }
