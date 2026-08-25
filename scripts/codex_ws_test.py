@@ -675,6 +675,9 @@ def run_midturn_compaction_scenario(
         "GRAFF_NO_TELEMETRY": "1",
         "GRAFF_CODEX_URL": f"http://127.0.0.1:{port}/backend-api/codex/responses",
         "GRAFF_SERVER_COMPACT": "0",
+        # ADR 0020/0021: compacting / compacted bus lines are /debug-only.
+        # This scenario asserts those lines and the token count they carry.
+        "GRAFF_REPL_DEBUG": "1",
     }
     ambient = tuple(
         key
@@ -719,6 +722,9 @@ def run_transactional_compaction_scenario(
         "GRAFF_NO_TELEMETRY": "1",
         "GRAFF_CODEX_URL": f"http://127.0.0.1:{port}/backend-api/codex/responses",
         "GRAFF_SERVER_COMPACT": "0",
+        # Same /debug gate as mid-turn: assert_compaction_meter reads the
+        # compacting line. Empty-summary rollback stays on the public bus.
+        "GRAFF_REPL_DEBUG": "1",
     }
     ambient = tuple(
         key
