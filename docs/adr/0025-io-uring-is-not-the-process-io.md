@@ -37,8 +37,8 @@ HTTP client, or TTY.
 ## Consequences
 
 A 64×4 KiB batch (200 rounds) on this host (`zig run
-scripts/io-uring-probe.zig`, two reps): serial `pread` **20 µs/round**,
-io_uring submit-and-wait **75 µs/round** (~3.7× slower — setup + enter
+scripts/io-uring-probe.zig`, two reps): serial `pread` **19–20 µs/round**,
+io_uring submit-and-wait **69–75 µs/round** (~3.5× slower — setup + enter
 dominate small reads). SWE is 41 model turns vs grok's 31; the prefix is
 already ~5.7k vs ~5.1k per call. An io_uring process Io would also break
 Windows, fight the TTY, and re-expose the `/proc` EBADF panic. Revisit
