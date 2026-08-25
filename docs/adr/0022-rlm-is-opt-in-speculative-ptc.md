@@ -88,6 +88,12 @@ regression* without a catalog tax. Per-task swings are one-rep variance.
   agent cannot read them. The runner records peak RSS, child CPU, and
   first-output latency next to wall and tokens. Full Harbor/Pier/Docker
   DeepSWE is out of scope; this suite is the graff-shaped subset.
+  Measured 2026-08-25 on grok-4.6 (one rep, `-j 12`): both **4/6**
+  (label-sort and json-stream failed on both). Parallel clock ~140s;
+  summed per-task wall native **624s / 822k in / 9.7M RSS** vs `--rlm`
+  **652s / 816k in / 9.4M RSS**. `map-conflict` was the only clear
+  `--rlm` win (84s → 52s). Same pass rate, no memory win, no wall win
+  on this suite — RLM stays opt-in.
 
 Graff's `--rlm` is a Zig subset of [Prime Agent's RLM programming
 model](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/rlm.md),
