@@ -28,6 +28,7 @@ const no_local_tools = @import("no_local_tools.zig"); // #330: GRAFF_NO_LOCAL_TO
 const tool_handle = @import("tool_handle.zig"); // #440: GRAFF_TOOL_HANDLE_BYTES
 const server_compact = @import("agent_server_compact.zig"); // GRAFF_SERVER_COMPACT + #compact-ab assignment
 const provider_mod = @import("provider.zig");
+const xai_hosted = @import("xai_hosted.zig"); // GRAFF_XAI_X_SEARCH
 const skills = @import("skills.zig");
 const anim = @import("anim.zig");
 
@@ -206,6 +207,10 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     // but "responses") moves it back to chat completions; unset keeps the default.
     if (environ_map.get("GRAFF_XAI_WIRE")) |v| {
         provider_mod.g_xai_responses = std.ascii.eqlIgnoreCase(std.mem.trim(u8, v, " \t"), "responses");
+    }
+    if (environ_map.get("GRAFF_XAI_X_SEARCH")) |v| {
+        const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "no");
+        xai_hosted.enabled = !off;
     }
     if (environ_map.get("GRAFF_XAI_URL")) |v| {
         if (v.len > 0) provider_mod.g_xai_url_override = v;

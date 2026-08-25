@@ -57,6 +57,7 @@ const knobs = [_]Knob{
     .{ .name = "GRAFF_STABLE_CATALOG", .value = "1" },
     .{ .name = "GRAFF_NO_STABLE_CATALOG", .value = "1" },
     .{ .name = "GRAFF_VERCEL_URL", .value = "https://ai-gateway.vercel.sh/v1/chat/completions" },
+    .{ .name = "GRAFF_XAI_X_SEARCH", .value = "0" },
 };
 
 /// A stand-in for the process environment that records which names were asked
@@ -103,6 +104,7 @@ const Saved = struct {
     ws_fail_count: u8,
     plugins_off: bool,
     stable_catalog: bool,
+    x_search: bool,
 
     fn capture() Saved {
         return .{
@@ -128,6 +130,7 @@ const Saved = struct {
             .ws_fail_count = ws.g_force_connect_failure_count,
             .plugins_off = plugins.disabled,
             .stable_catalog = mcp_schema_gate.g_stable_catalog,
+            .x_search = @import("xai_hosted.zig").enabled,
         };
     }
 
@@ -155,6 +158,7 @@ const Saved = struct {
         ws.g_force_connect_failure_count = s.ws_fail_count;
         plugins.disabled = s.plugins_off;
         mcp_schema_gate.g_stable_catalog = s.stable_catalog;
+        @import("xai_hosted.zig").enabled = s.x_search;
     }
 };
 
@@ -199,6 +203,7 @@ test "applyEnvKnobs actually applies the values it reads" {
     tool_handle.threshold_bytes = tool_handle.default_threshold_bytes;
     plugins.disabled = false;
     mcp_schema_gate.g_stable_catalog = false;
+    @import("xai_hosted.zig").enabled = true;
 
     var asked: [knobs.len]bool = @splat(false);
     try session_settings.applyEnvKnobs(arena_state.allocator(), RecordingEnv{ .asked = &asked });
@@ -220,6 +225,7 @@ test "applyEnvKnobs actually applies the values it reads" {
     try std.testing.expectEqual(@as(u8, 3), ws.g_force_connect_failure_count);
     try std.testing.expect(plugins.disabled);
     try std.testing.expect(mcp_schema_gate.g_stable_catalog); // GRAFF_STABLE_CATALOG=1 wins over GRAFF_NO_STABLE_CATALOG=1
+    try std.testing.expect(!@import("xai_hosted.zig").enabled); // GRAFF_XAI_X_SEARCH=0
 }
 
 const PairEnv = struct {
@@ -281,4 +287,15 @@ test "GRAFF_STABLE_CATALOG=0 / GRAFF_NO_STABLE_CATALOG turn default-on catalog o
     mcp_schema_gate.g_stable_catalog = true;
     try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_NO_STABLE_CATALOG", .value = "1" }} });
     try std.testing.expect(!mcp_schema_gate.g_stable_catalog);
+}
+
+test "GRAFF_XAI_X_SEARCH=0 turns hosted x_search off" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const saved = Saved.capture();
+    defer saved.restore();
+    const hosted = @import("xai_hosted.zig");
+    hosted.enabled = true;
+    try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_XAI_X_SEARCH", .value = "0" }} });
+    try std.testing.expect(!hosted.enabled);
 }

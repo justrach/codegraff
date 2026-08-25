@@ -38,6 +38,8 @@ back onto chat completions.
   full-resend over the held socket.
 - Revisit if xAI's wire diverges from OpenAI Responses semantics or the
   compact endpoint's blob replay pricing changes the cost picture.
+- Hosted `x_search` rides this wire by default (ADR
+  [0031](0031-xai-hosted-x-search.md)); chat completions cannot host it.
 
 Evidence: #502, #503, #505, the recall A/B kit (session scratchpad
 recall-ab/), ADR [0001](0001-structured-outputs-are-a-formatting-step.md)

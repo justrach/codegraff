@@ -462,4 +462,5 @@ test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, 
     _ = @import("rlm_tests.zig");
     _ = @import("mcp_shapes.zig");
     _ = @import("spec_ptc.zig");
+    _ = @import("xai_hosted.zig");
 }
