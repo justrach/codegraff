@@ -26,8 +26,7 @@ def localTools : List String :=
    "write_file", "codedb", "read_tool_result", "imagegen"]
 
 def leanTools : List String :=
-  ["bash", "read_file", "edit_file", "write_file", "codedb",
-   "subagent", "attempt_completion", "load_tool_schemas"]
+  ["attempt_completion", "load_tool_schemas"]
 
 def optionalTools : List String :=
   ["imagegen"]
@@ -127,7 +126,8 @@ theorem cube_unique :
 example : mem "webfetch" localTools = false := by native_decide
 example : mem "imagegen" localTools = true := by native_decide
 example : mem "imagegen" leanTools = false := by native_decide
-example : mem "subagent" leanTools = true := by native_decide
+example : mem "subagent" leanTools = false := by native_decide
+example : mem "attempt_completion" leanTools = true := by native_decide
 example : unique (baseTools ++ metaTools ++ rootExtras) = true := by native_decide
 
 example : catalog {} =

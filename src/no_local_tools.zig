@@ -67,27 +67,21 @@ pub fn blocks(name: []const u8) bool {
 
 /// --lean / GRAFF_LEAN=1 tool surface — the token-cost counterpart of the MCP
 /// skip (session_start.leanSkipsMcp reads the same flag/env). A one-shot
-/// coding task needs seven tools; every other schema is prefix re-sent on
-/// EVERY model turn. Measured on the full root catalog: 25.9k schema bytes
-/// (~6.5k tokens) against 8.6k (~2.1k) for this subset — ~4.3k tokens saved
-/// per turn, the difference between a ~10.7k and a ~6.4k one-shot prefix.
-/// Unlike #330 this is NOT a security boundary, so there is no dispatch
-/// layer: an unadvertised tool is simply unknown to the model, and a
-/// hallucinated call fails like any bad tool name.
+/// coding task advertises rlm + attempt_completion; file/shell work is
+/// rlm host functions so the prefix is not re-sent as five native schemas
+/// on every turn. Unlike #330 this is NOT a security boundary, so there
+/// is no dispatch layer: an unadvertised tool is simply unknown to the
+/// model, and a hallucinated call fails like any bad tool name.
 pub var lean: bool = false;
 
-/// The lean keep-list. `subagent` stays in the list (unattended !yolo
-/// still delegates; catalogSkips folds it off the wire until loaded).
+/// The lean keep-list. Structured file/shell tools stay callable as
+/// `rlm` host functions (maybeAppend adds `rlm`); advertising them as
+/// their own catalog entries made grok-4.6 do N read/edit turns
+/// instead of one script (ADR 0024: 41 calls vs grok's 31).
 /// `load_tool_schemas` stays so a connected MCP server can unfold; it
-/// is hidden on lean when nothing is deferred (schema.zig). Overflow
-/// paging (`read_tool_result`) is interactive — drop it from -p.
+/// is hidden on lean (schema.zig / hiddenSpec). Overflow paging
+/// (`read_tool_result`) is interactive — drop it from -p.
 pub const lean_tools = [_][]const u8{
-    "bash",
-    "read_file",
-    "edit_file",
-    "write_file",
-    "codedb",
-    "subagent",
     "attempt_completion",
     "load_tool_schemas",
 };
@@ -225,15 +219,15 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
 
     lean = true;
     const kept = try filterLeanSpecs(Spec, arena, &specs);
-    try std.testing.expectEqual(@as(usize, 4), kept.len);
-    try std.testing.expectEqualStrings("bash", kept[0].name);
-    try std.testing.expectEqualStrings("read_file", kept[1].name);
-    try std.testing.expectEqualStrings("subagent", kept[2].name);
-    try std.testing.expectEqualStrings("attempt_completion", kept[3].name);
-    // Keep-list is eight names: subagent stays (unattended !yolo), load_tool_schemas
-    // stays (MCP unfold). Overflow pager is gone. Render may hide both.
-    try std.testing.expectEqual(@as(usize, 8), lean_tools.len);
+    try std.testing.expectEqual(@as(usize, 1), kept.len);
+    try std.testing.expectEqualStrings("attempt_completion", kept[0].name);
+    // Keep-list is two names: attempt_completion + load_tool_schemas (MCP
+    // unfold). File/shell work is rlm host functions, not catalog rows.
+    try std.testing.expectEqual(@as(usize, 2), lean_tools.len);
     try std.testing.expect(!leanKeeps("read_tool_result"));
+    try std.testing.expect(!leanKeeps("bash"));
+    try std.testing.expect(!leanKeeps("read_file"));
+    try std.testing.expect(!leanKeeps("subagent"));
     for (lean_tools) |tool| try std.testing.expect(leanKeeps(tool));
     try std.testing.expect(!leanKeeps("workflow"));
     try std.testing.expect(!leanKeeps("todo_write"));
@@ -381,7 +375,7 @@ test "lean prompt diet: no fan-out / trace / issue-filing; short local-tools not
     try std.testing.expect(std.mem.indexOf(u8, out, "gh issue create") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "fan out") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "not covered by /rewind") == null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "list_dir") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "rlm") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "SPEC.md") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "discard work") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Fix root causes") == null);
@@ -400,5 +394,7 @@ test "lean catalog drops overflow pager and empty load_tool_schemas" {
     const json = try schema.renderRootTools(arena, .openai, specs, &.{});
     try std.testing.expect(std.mem.indexOf(u8, json, "read_tool_result") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "load_tool_schemas") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"bash\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"read_file\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") != null);
 }

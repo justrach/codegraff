@@ -289,6 +289,8 @@ fn canonicalize(arena: Allocator, tool: []const u8, args: []const Arg) ![]const 
 
 fn hostField(tool: []const u8) []const u8 {
     if (std.mem.eql(u8, tool, "read_file")) return "path";
+    if (std.mem.eql(u8, tool, "edit_file")) return "path";
+    if (std.mem.eql(u8, tool, "write_file")) return "path";
     if (std.mem.eql(u8, tool, "codedb")) return "command";
     if (std.mem.eql(u8, tool, "sleep_ms")) return "ms";
     if (std.mem.eql(u8, tool, "llm_query")) return "prompt";

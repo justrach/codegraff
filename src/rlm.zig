@@ -24,7 +24,7 @@ pub const tool_name = "rlm";
 pub const tool_desc = "Programmatic tool calling (RLM + sPTC). Script whose functions ARE this session's tools. Independent literal read_file/codedb/bash/webfetch/sleep_ms/llm_query/subagent calls start as the script streams. Binds persist across rlm calls. subagent(\"task\") is sidecar-only (keep the critical-path next step local; sync in v1; run_in_background=true returns an id). print() is the answer. Example: a = read_file(\"src/main.zig\"); b = codedb(\"status\"); print(a, b). No imports, no control flow. Prefer one rlm over N tool calls.";
 /// --lean catalog desc: same contract, no REPL essay. maybeAppend is after
 /// compactLeanSpecs, so this is the one-shot wire text.
-pub const lean_tool_desc = "Script of this session's tools. Literal read_file/codedb/bash/llm_query start as it streams. Binds persist. print(...) is the answer. Prefer one rlm over N tool calls.";
+pub const lean_tool_desc = "Script of this session's tools. read_file/edit_file/write_file/codedb/bash/llm_query are functions here, not catalog tools. Literal calls start as it streams. Binds persist. print(...) is the answer. Prefer one rlm over N calls.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"code": {"type": "string", "description": "Python-like script: name = read_file(\"path\") / codedb(\"command\") / bash(\"cmd\") / sleep_ms(ms) / llm_query(\"prompt\") / subagent(\"task\"); print(...) is the result. Assignments persist across rlm calls. Semicolons or newlines separate statements."}}, "required": ["code"]}
 ;
@@ -465,7 +465,7 @@ test "maybeAppend keeps subagent and workflow; rlm is never the only catalog too
     try std.testing.expect(!catalogHas(off, tool_name));
 }
 
-test "effectiveRootSpecs: default rlm keeps subagent; --old and --lean do not drop it" {
+test "effectiveRootSpecs: default rlm keeps subagent; --old keeps it; --lean drops structured tools" {
     const schema = @import("schema.zig");
     const root = @import("main.zig");
     const learn_store = @import("learn_store.zig");
@@ -509,10 +509,11 @@ test "effectiveRootSpecs: default rlm keeps subagent; --old and --lean do not dr
     no_local_tools.lean = true;
     sync();
     const lean_on = try schema.effectiveRootSpecs(arena);
-    try std.testing.expect(catalogHas(lean_on, "subagent"));
+    try std.testing.expect(!catalogHas(lean_on, "subagent"));
     try std.testing.expect(catalogHas(lean_on, tool_name));
     try std.testing.expect(!catalogHas(lean_on, "workflow"));
-    try std.testing.expect(no_local_tools.leanKeeps("subagent"));
+    try std.testing.expect(!catalogHas(lean_on, "bash"));
+    try std.testing.expect(!no_local_tools.leanKeeps("subagent"));
     try std.testing.expect(!no_local_tools.leanKeeps(tool_name));
 }
 
