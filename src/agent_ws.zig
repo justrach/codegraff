@@ -505,14 +505,14 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         //     2-slot stall budget — the SSE head guard's contract for "sent,
         //     nothing came back". A FRESH connect skips this: its handshake just
         //     proved liveness, so it keeps the full pre-first-token budget.
-        //   * otherwise → the inter-frame budget: full while only protocol /
-        //     reasoning frames have landed, a quarter once prose has flowed.
+        //   * otherwise → the inter-frame budget: full stream_stall_ms after
+        //     protocol frames (encrypted thinking), a quarter once prose flowed.
         //     http_stall.budgetMs is what streamStallWatch asks the SSE reader's
         //     budget of on every tick; it cannot change mid-wait, so deciding it
         //     here is equivalent and lets both regimes share one watchdog arm.
         read: {
             const head_wait = reused and frames_seen == 0;
-            const budget = if (head_wait) http.head_stall_ms else http_stall.budgetMs(http.stream_stall_ms, text_seen);
+            const budget = if (head_wait) http.head_stall_ms else http_stall.interFrameBudgetMs(http.stream_stall_ms, frames_seen > 0, text_seen);
             const ReadDone = union(enum) { msg: ws.Error!ws.Opcode, stall: WatchdogFired };
             var rd_buf: [2]ReadDone = undefined;
             var rsel: Io.Select(ReadDone) = .init(self.io, &rd_buf);
@@ -521,7 +521,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
                 // blocking readMessage can hang forever on a half-open ws with no
                 // watchdog; end the turn as StreamStalled (never a hang, never a user
                 // Esc), exactly as the .deadline arm below does.
-                emitAbort(self, .stalled, true);
+                emitAbort(self, .stalled, false);
                 if (self.tracer) |tr| tr.note("ws", "stall");
                 return error.StreamStalled;
             };
@@ -550,7 +550,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
                     return watchdogError(w, error.HungRequest);
                 } else {
                     // Only the deadline gets a notice; a user Esc stays silent.
-                    if (w == .deadline) emitAbort(self, .stalled, true);
+                    if (w == .deadline) emitAbort(self, .stalled, false);
                     if (self.tracer) |tr| tr.note("ws", if (w == .esc) "esc" else "stall");
                     return watchdogError(w, error.StreamStalled);
                 },

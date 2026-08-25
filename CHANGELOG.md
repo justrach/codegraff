@@ -22,6 +22,10 @@ current is part of cutting a release.
   ${arch}` / `macOS ${product} ${arch}`, kernel `os.release()` (#617)
 - Codex `session_id` header is the same value as `prompt_cache_key` (openai/codex
   ModelClient default), not a per-process random UUID
+- Codex high-effort thinking no longer trips the 45s stall watchdog after
+  `in_progress` (encrypted reasoning is silent). A stall notice no longer says
+  "ending turn" while reconnect still has retries. Interactive sessions print a
+  dim `graff update` line when GitHub has a newer release.
 
 ## v0.0.275 (2026-08-24)
 

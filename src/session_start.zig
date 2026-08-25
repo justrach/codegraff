@@ -59,6 +59,7 @@ const repl = @import("repl.zig");
 const repl_glue = @import("repl_glue.zig");
 const messages_mod = @import("messages.zig");
 const session = @import("session.zig");
+const cli = @import("cli.zig");
 
 /// `graff title <prompt>` — print the tab-title the model would generate for
 /// that prompt (one title call, no session). For A/B-ing title prompts/styles.
@@ -177,6 +178,10 @@ pub fn setupWorktreeAndBanner(
                 if (main_mod.show_timing) " per-tool timing" else "",
                 if (main_mod.show_cost) " session cost" else "",
             }),
+            .tone = .dim,
+        } });
+        if (cli.updateAvailableLine(io, gpa, arena, environ_map.get("GRAFF_NO_UPDATE_CHECK") != null)) |line| sink.emit(io, .{ .session_notice = .{
+            .text = line,
             .tone = .dim,
         } });
     }
