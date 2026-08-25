@@ -361,12 +361,12 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     // pair: x-grok-session-id (durable project) + x-grok-conv-id (root/sub
     // partition, same value as the Responses body's prompt_cache_key).
     var conv_buf: [96]u8 = undefined;
-    const conv = http_headers.promptCacheKey(self.io, self.label, self, &conv_buf);
+    const conv = http_headers.requestCacheKey(self.io, self.label, self, provider.id, &conv_buf);
     var hdrs: [7]ws.Header = undefined;
     var hn: usize = 1;
     hdrs[0] = .{ .name = "Authorization", .value = bearer };
     if (std.mem.eql(u8, provider.id, "codex")) {
-        hdrs[1] = .{ .name = "session_id", .value = http_headers.sessionId(self.io) };
+        hdrs[1] = .{ .name = "session_id", .value = conv };
         hdrs[2] = .{ .name = "chatgpt-account-id", .value = provider.account };
         hdrs[3] = .{ .name = "OpenAI-Beta", .value = "responses_websockets=2026-02-06" };
         hdrs[4] = .{ .name = "originator", .value = "codex_cli_rs" };
@@ -418,7 +418,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     }
     // Hold ONE WS across the turn's tool loop (codex-style): the first request
     // dials; subsequent requests reuse it and send previous_response_id + delta.
-    // The open connection IS the sticky context (no x-codex-turn-state to echo).
+    // session_id matches prompt_cache_key (openai/codex ModelClient default).
     //
     // (#401) …and which of the two it is decides the FIRST-frame budget below: a
     // socket dialed just now finished a TLS + upgrade handshake milliseconds

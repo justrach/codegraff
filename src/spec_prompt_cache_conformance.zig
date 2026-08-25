@@ -40,6 +40,11 @@ fn agentFor(arena: std.mem.Allocator, spec: provider_mod.ProviderSpec, label: []
     };
 }
 
+fn headerNamed(headers: []const std.http.Header, name: []const u8) ?[]const u8 {
+    for (headers) |h| if (std.mem.eql(u8, h.name, name)) return h.value;
+    return null;
+}
+
 fn cacheKeyIn(body: []const u8) ?[]const u8 {
     const needle = "\"prompt_cache_key\":\"";
     const start = std.mem.indexOf(u8, body, needle) orelse return null;
@@ -140,9 +145,12 @@ test "prompt cache: xAI Responses header and body agree; OpenAI Responses has a 
     var ca = try agentFor(a, cd, "main", .responses);
     const cb = try ca.buildBody(null, false, true, true);
     defer std.testing.allocator.free(cb);
+    const body_key = cacheKeyIn(cb) orelse return error.MissingPromptCacheKey;
     var ckbuf: [96]u8 = undefined;
-    try std.testing.expectEqualStrings(http_headers.promptCacheKey(ca.io, ca.label, &ca, &ckbuf), cacheKeyIn(cb) orelse return error.MissingPromptCacheKey);
-    try std.testing.expect(!std.mem.eql(u8, http_headers.sessionId(ca.io), cacheKeyIn(cb).?));
+    try std.testing.expectEqualStrings(http_headers.requestCacheKey(ca.io, ca.label, &ca, "codex", &ckbuf), body_key);
+    var cbuf: [12]std.http.Header = undefined;
+    const ch = http_headers.providerHeadersWithConv(ca.io, ca.provider, "Bearer k", &cbuf, body_key);
+    try std.testing.expectEqualStrings(body_key, headerNamed(ch, "session_id") orelse return error.SessionIdHeaderMissing);
 }
 
 test "prompt cache: effort is never auto-flipped (prefix stays)" {

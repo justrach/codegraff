@@ -20,6 +20,8 @@ current is part of cutting a release.
 - Kimi Coding keeps User-Agent `graff/<version>` (Moonshot forbids spoofing)
   and matches kimi-code's X-Msh device fields: hostname, `Windows ${release}
   ${arch}` / `macOS ${product} ${arch}`, kernel `os.release()` (#617)
+- Codex `session_id` header is the same value as `prompt_cache_key` (openai/codex
+  ModelClient default), not a per-process random UUID
 
 ## v0.0.275 (2026-08-24)
 

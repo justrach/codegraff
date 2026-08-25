@@ -75,7 +75,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     defer if (bearer.len > 0) gpa.free(bearer);
     var headers_buf: [12]std.http.Header = undefined;
     var conv_buf: [96]u8 = undefined;
-    const conv = http_headers.promptCacheKey(self.io, self.label, self, &conv_buf);
+    const conv = http_headers.requestCacheKey(self.io, self.label, self, provider.id, &conv_buf);
     const extra = http_headers.providerHeadersWithConv(self.io, provider, bearer, &headers_buf, conv);
 
     self.md_buf.clearRetainingCapacity(); // fresh markdown state per stream

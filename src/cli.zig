@@ -24,6 +24,7 @@ pub const changelog_text =
     \\0.0.276
     \\  • foreground bash auto-backgrounds after 120s instead of waiting forever (#620)
     \\  • Kimi identity: graff/<version> User-Agent; device headers match kimi-code (#617)
+    \\  • Codex session_id header matches prompt_cache_key (openai/codex)
     \\
     \\0.0.275
     \\  • OpenRouter requests carry app attribution (categories: cli-agent, programming-app)
