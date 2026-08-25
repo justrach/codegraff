@@ -491,6 +491,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     if (std.mem.eql(u8, call.name, imagegen.tool_name)) return imagegen.execImagegen(ctx, input);
     if (std.mem.eql(u8, call.name, "subagent")) return execSubagent(ctx, input);
     if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
+    if (std.mem.eql(u8, call.name, @import("rlm.zig").tool_name)) return @import("rlm.zig").exec(ctx, input);
     if (std.mem.eql(u8, call.name, "agent_output")) {
         const id = intField(input, "id") orelse return missingArg(gpa, "id");
         const wait_ms = intField(input, "wait_ms") orelse 0;
@@ -537,4 +538,6 @@ test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, 
     _ = @import("codedb_around.zig");
     _ = @import("codedb_health.zig");
     _ = @import("list_dir.zig");
+    _ = @import("rlm.zig");
+    _ = @import("spec_ptc.zig");
 }

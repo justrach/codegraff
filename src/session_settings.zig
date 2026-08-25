@@ -113,6 +113,10 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     if (environ_map.get("GRAFF_CLOCK_SLEEP")) |v| {
         main_mod.g_clock_sleep = main_mod.g_clock_sleep or std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
     }
+    if (environ_map.get("GRAFF_RLM")) |v| {
+        const rlm = @import("rlm.zig");
+        rlm.available = rlm.available or std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
+    }
     if (environ_map.get("GRAFF_NO_LOCAL_TOOLS")) |v| no_local_tools.enabled = no_local_tools.enabled or no_local_tools.envEnables(v);
     // GRAFF_LEAN: presence-based, exactly matching session_start.leanSkipsMcp
     // (the MCP half of the same switch) — a "0" still means lean, by design.

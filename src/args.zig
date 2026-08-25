@@ -174,6 +174,8 @@ pub fn parse(init: std.process.Init) !Flags {
                     no_local_tools.enabled = true; // #330: hard-disable the host-touching built-ins for the whole process (also GRAFF_NO_LOCAL_TOOLS=1)
                 } else if (std.mem.eql(u8, arg, "--clock-sleep")) {
                     main_mod.g_clock_sleep = true; // #225: opt in to the root-only clock_sleep meta tool (also GRAFF_CLOCK_SLEEP=1)
+                } else if (std.mem.eql(u8, arg, "--rlm")) {
+                    @import("rlm.zig").available = true; // ADR 0022: opt-in programmatic tool calling (also GRAFF_RLM=1)
                 } else if (std.mem.eql(u8, arg, "--no-autocommit")) {
                     main_mod.g_worktree_autocommit = false;
                 } else if (std.mem.eql(u8, arg, "--schema")) {

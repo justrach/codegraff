@@ -13,7 +13,8 @@ const peer_channel = @import("peer_channel.zig");
 const workspace_switch = @import("workspace_switch.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-local-tools gate (layer 1 lives here, layer 2 in exec.zig)
 const tool_gates = @import("tool_gates.zig"); // #352: the additive twin — optional tools that only exist when startup found their backing capability
-const imagegen = @import("imagegen.zig"); // #352: name/desc/schema as plain strings, like skill_docs, so this catalog needs one entry and no import cycle
+const imagegen = @import("imagegen.zig");
+const rlm = @import("rlm.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: load_tool_schemas strings
 const mcp_select = @import("mcp_select.zig"); // fx search-then-select
 const result_read = @import("result_read.zig"); // overflow handle pager
@@ -326,7 +327,7 @@ pub fn effectiveRootSpecs(arena: Allocator) ![]const ToolSpec {
     else
         (if (learn_store.active_agent_loaded) &root_specs_without_clock else &root_specs_without_optional);
     // Optionals are appended BEFORE the #330 filter, never after (optional ≠ exempt); the --lean token filter chains last.
-    return no_local_tools.compactLeanSpecs(ToolSpec, arena, try no_local_tools.filterLeanSpecs(ToolSpec, arena, try no_local_tools.filterRootSpecs(ToolSpec, arena, try tool_gates.withAvailable(ToolSpec, arena, chosen, &optional_specs))));
+    return rlm.maybeAppend(ToolSpec, arena, try no_local_tools.compactLeanSpecs(ToolSpec, arena, try no_local_tools.filterLeanSpecs(ToolSpec, arena, try no_local_tools.filterRootSpecs(ToolSpec, arena, try tool_gates.withAvailable(ToolSpec, arena, chosen, &optional_specs)))));
 }
 
 const Schema = union(enum) { raw: []const u8, value: Value };

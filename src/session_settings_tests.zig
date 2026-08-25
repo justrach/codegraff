@@ -41,6 +41,7 @@ const knobs = [_]Knob{
     .{ .name = "GRAFF_POST_DEADLINE_SECS", .value = "90" },
     .{ .name = "GRAFF_CODEX_WS", .value = "off" },
     .{ .name = "GRAFF_CLOCK_SLEEP", .value = "1" },
+    .{ .name = "GRAFF_RLM", .value = "1" },
     .{ .name = "GRAFF_NO_LOCAL_TOOLS", .value = "1" },
     .{ .name = "GRAFF_CODEX_WS_IDLE_SECS", .value = "11" },
     .{ .name = "GRAFF_CONTEXT", .value = "123456" },
@@ -82,6 +83,7 @@ const Saved = struct {
     drop_always: bool,
     codex_ws: bool,
     clock_sleep: bool,
+    rlm: bool,
     stream_stall_ms: u64,
     post_deadline_ms: u64,
     codex_ws_idle_ms: i64,
@@ -103,6 +105,7 @@ const Saved = struct {
             .drop_always = main_mod.g_force_drop_always,
             .codex_ws = main_mod.g_codex_ws,
             .clock_sleep = main_mod.g_clock_sleep,
+            .rlm = @import("rlm.zig").available,
             .stream_stall_ms = http.stream_stall_ms,
             .post_deadline_ms = http.post_deadline_ms,
             .codex_ws_idle_ms = agent_ws.codex_ws_idle_ms,
@@ -125,6 +128,7 @@ const Saved = struct {
         main_mod.g_force_drop_always = s.drop_always;
         main_mod.g_codex_ws = s.codex_ws;
         main_mod.g_clock_sleep = s.clock_sleep;
+        @import("rlm.zig").available = s.rlm;
         http.stream_stall_ms = s.stream_stall_ms;
         http.post_deadline_ms = s.post_deadline_ms;
         agent_ws.codex_ws_idle_ms = s.codex_ws_idle_ms;
@@ -170,6 +174,7 @@ test "applyEnvKnobs actually applies the values it reads" {
     main_mod.g_force_stall_once = false;
     main_mod.g_codex_ws = true;
     main_mod.g_clock_sleep = false;
+    @import("rlm.zig").available = false;
     no_local_tools.enabled = false;
     ws.g_debug = false;
     provider_mod.g_context_override = null;
@@ -184,6 +189,7 @@ test "applyEnvKnobs actually applies the values it reads" {
     try std.testing.expect(main_mod.g_force_stall_once);
     try std.testing.expect(!main_mod.g_codex_ws); // "off" disables the WS transport
     try std.testing.expect(main_mod.g_clock_sleep);
+    try std.testing.expect(@import("rlm.zig").available);
     try std.testing.expect(no_local_tools.enabled);
     try std.testing.expect(ws.g_debug);
     try std.testing.expectEqual(@as(u64, 7_000), http.stream_stall_ms); // seconds → ms
