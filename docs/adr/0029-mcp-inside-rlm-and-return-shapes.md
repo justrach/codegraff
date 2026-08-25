@@ -109,6 +109,8 @@ signal. H/I 7-call structured is the stable cheap path today.
 - A later `len`/`for` would cut C/D/F/G retries; do not grow a general
   language without that measurement.
 - Prompting "prefer one rlm script" is not free. Default no-hint.
+- Small MCP/coding turns do not advertise `rlm` or sPTC (ADR 0030).
+  Do not showcase on first slim or an MCP comment fan-out.
 
 ## Pareto front (wall / tok_in / calls)
 

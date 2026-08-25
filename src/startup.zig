@@ -126,9 +126,9 @@ pub fn buildSystemPrompt(
         if (@import("repo_map.zig").segment(io, arena)) |map| sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, map });
     }
     if (unattended) sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, prompts.unattended_note });
-    // Lean already puts rlm on the catalog; the system_note is duplicate prefix.
-    if (@import("rlm_spec.zig").available and !@import("no_local_tools.zig").lean)
-        sys_normal = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, @import("rlm_spec.zig").system_note });
+    // ADR 0030 / 0011: do not splice rlm_spec.system_note onto the always-on
+    // prefix. Small turns must not advertise rlm/sPTC; discovery is listing
+    // or autoLoad after showcase (--rlm or a wide native batch).
     // Codex-style skills: one capability line per installed optional
     // companion (skills_registry) — metadata in context, --help on demand.
     // Lean one-shots do not need companion essays (ADR 0024 prefix tax).
