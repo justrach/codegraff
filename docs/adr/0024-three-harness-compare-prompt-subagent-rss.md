@@ -269,13 +269,10 @@ essays, duplicate `rlm` system_note.
 
 **Take:** drop the pager from `lean_tools`; short `lean_intro` /
 `lean_work` / `lean_closing` (SPEC clause kept); no git-safety /
-root-cause / authoring / rlm system_note on -p. Hide
-`load_tool_schemas` on lean only when nothing is deferred (empty
-MCP / all eager) — SWE sandboxes stay cheap. Do **not** always-hide
-on lean: a connected server (Smolify CI) lists public tools in that
-description. Home MCP that actually connects pays the 1.4kB tool
-again; that is correct (the tool is usable). Need the full catalog?
-`--no-lean`.
+root-cause / authoring / rlm system_note / skill catalog / MCP
+notes / parallel essay on -p. Hide `load_tool_schemas` on lean
+even when home MCP is deferred (Smolify was 1.4kB on every turn).
+Need MCP? `--no-lean`.
 
 First-request after that (empty MCP, the SWE sandbox shape): **2660
 in**, 8.7kB body, 7 tools
@@ -293,3 +290,33 @@ Versus `061731` (4/6, 743s, 1.26M, 96): **+1 pass**, **−60% wall**,
 (41 vs 31 calls; per-call ~5.7k vs ~5.1k — prefix is close).
 `cookie-store` 32k (grok was 44k). `json-stream` passed. `label-sort`
 still fails. RSS ~9M. Do not copy their heap.
+
+## Prefix is now at grok's per-call; leftover is turns
+
+Further one-shot cuts after `073458` (empty cwd, ReleaseSafe):
+
+```
+GRAFF_REQ_STATS=1 graff -p "Reply with the single word OK. Do not call any tools." --yolo --model grok-4.6
+[req] body=6606B tools=5252B system=992B messages~=362B
+[req]   read_file: 1234B
+[req]   edit_file: 1100B
+[req]   bash: 872B
+[req]   rlm: 644B
+[req]   codedb: 618B
+[usage] 1 api call · 2204 in + 34 out
+```
+
+3880 → **2204** first-request tokens. Tools are bash/read/edit/write/codedb/attempt_completion/rlm — no `load_tool_schemas`, no `read_tool_result`. System 5665B → **992B**.
+
+**Rejected:** an rlm-only lean catalog (drop bash/read/edit/write/codedb from the keep-list). Live SWE `run-20260825-075333.jsonl` was **4/6**, 777k in, **122 calls**, 834s. grok-4.6 retried scripts instead of editing. Restored the eight-name keep-list.
+
+SWE after the prefix cuts + restore (`run-20260825-080147.jsonl` + cookie-store retry `080839`; grok from `075333`):
+
+| harness | pass | wall (sum) | first | RSS | in | out | calls |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| default rlm | **5/6** | **357s** | 2.2s | 8.6M | **244545** | 22596 | **49** |
+| grok-build | **5/6** | **360s** | 1.7s | 172M | **149778** | 23944 | **29** |
+
+`cookie-store` timed out once on `080147` (no token row); retry passed in 85s / 34k / 7 calls. `label-sort` still fails both harnesses.
+
+Per-call input is **5.0k vs grok 5.2k** — the prefix tax is gone. The leftover vs grok's 150–185k / ~31 calls is **20 extra API calls** (49 vs 29), not catalog bytes. Transferable Zig prefix/catalog cuts are exhausted: hiding more tools tanks pass rate (rlm-only 4/6). Do not copy grok's 172M heap for those 20 calls.
