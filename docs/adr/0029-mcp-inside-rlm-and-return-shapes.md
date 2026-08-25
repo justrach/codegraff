@@ -120,7 +120,7 @@ A point is on the front if nothing else is ≤ on every axis and < on one.
 
 | id | wall | in | calls | why it stays |
 |---|---:|---:|---:|---|
-| **H** | **28.0s** | 112k | **7** | fastest / fewest calls (no-hint structured) |
+| **R** | **16.3s** | **14k** | **4** | default `-p` (lean fold + slim); dominates H |
 | **I** | 31.1s | 107k | 7 | same path, slightly fewer tokens |
 | **D-r1** | 41.1s | 107k | 10 | rlm+each, one lucky rep |
 | **J-live** | 47.3s | **84k** | 9 | `each` + `len`/`project`; first script printed ids only |
@@ -155,3 +155,12 @@ tool. Consent is unchanged. `--no-lean` is the eager-schema opt-out, not
 the MCP on-switch.
 
 Prove with variant **R**: `graff-dev` (no `--no-lean`) + `linear-nohint`.
+
+Live SuperGrok grok-4.6, ReleaseSafe, one rep (`9ec5884`):
+
+| var | harness | pass | wall | RSS | in | out | calls |
+|---|---|---:|---:|---:|---:|---:|---:|
+| **R** default `-p` | graff-dev (lean+yolo) | ✓ | **16.3s** | 9.5M | **14113** | 928 | **4** |
+| H (prior, `--no-lean`) | graff-dev-nolean | ✓ | 28.0s | 10.6M | 112073 | 1607 | 7 |
+
+R dominates H on wall, tokens, and calls. The `--no-lean` MCP one-shot was the expensive path: full catalog + fat results. Default `-p` + fold + slim is the box.
