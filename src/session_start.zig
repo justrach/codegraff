@@ -435,10 +435,9 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     const mcp_count = mcp_cli.countMcpServers(merged);
     const defer_join = flags.effectiveYolo() and flags.oneshot_prompt == null and !json_mode;
     var connect_mcp = flags.yolo_flag or mcp_count == 0;
-    // Lean -p: home MCP (Smolify) was 1.4kB of load_tool_schemas on every
-    // turn. One-shots that need MCP pass --no-lean (ADR 0024).
-    if (leanMode(flags.effectiveLean(), environ_map) and flags.oneshot_prompt != null)
-        connect_mcp = false;
+    // Lean: home MCP (Smolify) was 1.4kB of load_tool_schemas on every
+    // turn. Sessions that need MCP pass --no-lean (ADR 0024).
+    if (leanMode(flags.effectiveLean(), environ_map)) connect_mcp = false;
     if (mcp_count > 0 and !flags.yolo_flag and !json_mode and use_color) {
         sink.emit(io, .{ .mcp_consent_prompt = .{ .count = mcp_count } });
         // Still an inline read: only the QUESTION is inverted here, and the

@@ -357,10 +357,9 @@ test "an eager tool is never blocked, and the load tool is advertised only when 
     try testing.expect(!gate.blocked(fat, "mcp__fat__ghost"));
 }
 
-test "lean hides load_tool_schemas only when nothing is deferred" {
-    // -p / --lean must not always-hide: Smolify (and any connected MCP)
-    // lists public tools in the meta tool's description. Empty MCP still
-    // drops the 1.4kB stub (schema.zig's lean-or-!anyFolded skip).
+test "lean hides load_tool_schemas even when MCP is deferred" {
+    // Home Smolify still counts as deferred and used to keep the 1.4kB
+    // meta tool on every -p turn. --no-lean is the MCP one-shot.
     const schema = @import("schema.zig");
     const no_local = @import("no_local_tools.zig");
     withDefaults();
@@ -378,9 +377,9 @@ test "lean hides load_tool_schemas only when nothing is deferred" {
     try testing.expect(std.mem.indexOf(u8, empty, gate.tool_name) == null);
 
     const fat = try fixture(arena, "fat", 8, 2000);
-    try testing.expect(!gate.hiddenSpec(gate.tool_name, fat));
+    try testing.expect(gate.hiddenSpec(gate.tool_name, fat));
     const with_mcp = try schema.renderRootTools(arena, .openai, specs, fat);
-    try testing.expect(std.mem.indexOf(u8, with_mcp, gate.tool_name) != null);
+    try testing.expect(std.mem.indexOf(u8, with_mcp, gate.tool_name) == null);
 }
 
 test "tool_desc stays JSON-escape-free (it is spliced into a raw schema string)" {
