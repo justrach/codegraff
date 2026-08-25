@@ -31,8 +31,9 @@ const WatchdogFired = http.WatchdogFired;
 const sendHeadTask = http.sendHeadTask;
 const headStallTask = http.headStallTask;
 const streamLineTask = http.streamLineTask;
-const streamStallWatch = http.streamStallWatch;
+const deadlineStallTask = http.deadlineStallTask;
 const watchdogError = http.watchdogError;
+const http_stall = @import("http_stall.zig");
 
 // escPressed/drainSteerStdin/rawNonblockStdin/restoreStdin/ssePayload live in
 // agent_interrupt.zig; reached through the Agent struct's member aliases.
@@ -76,7 +77,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     defer if (bearer.len > 0) gpa.free(bearer);
     var headers_buf: [12]std.http.Header = undefined;
     var conv_buf: [96]u8 = undefined;
-    const conv = http_headers.promptCacheKey(self.io, self.label, self, &conv_buf);
+    const conv = http_headers.requestCacheKey(self.io, self.label, self, provider.id, &conv_buf);
     const extra = http_headers.providerHeadersWithConv(self.io, provider, bearer, &headers_buf, conv);
 
     self.md_buf.clearRetainingCapacity(); // fresh markdown state per stream
@@ -235,11 +236,12 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                 // flush the partial, poison, and end the turn as StreamStalled (never a
                 // hang, never a mislabeled StreamDropped or user Esc).
                 if (saw_done) break :stream;
-                sink.emit(self.io, .{ .stream_aborted = .stalled });
+                sink.emit(self.io, .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = false } });
                 if (req.connection) |conn| conn.closing = true;
                 return error.StreamStalled;
             };
-            rsel.concurrent(.stall, streamStallWatch, .{ self.io, orig_tio != null, self.partial_text.items.len != 0 }) catch {
+            const stall_budget = http_stall.interFrameBudgetMs(http.stream_stall_ms, got_body, self.partial_text.items.len != 0);
+            rsel.concurrent(.stall, deadlineStallTask, .{ self.io, orig_tio != null, stall_budget }) catch {
                 const r = rsel.await() catch |e| {
                     rsel.cancelDiscard();
                     return e;
@@ -274,7 +276,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                     // idle stream (silent past this read's budget) — end the turn as
                     // error.StreamStalled so it is never recorded as "[response
                     // interrupted by user]" (#134). Only the deadline gets a notice.
-                    sink.emit(self.io, .{ .stream_aborted = if (w == .deadline) .stalled else .interrupted });
+                    if (w == .deadline) sink.emit(self.io, .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = false } }) else sink.emit(self.io, .{ .stream_aborted = .interrupted });
                     if (req.connection) |conn| conn.closing = true;
                     return watchdogError(w, error.StreamStalled);
                 },

@@ -32,6 +32,26 @@ current is part of cutting a release.
   `bind-reuse` 99.6s / 135k in → 39.2s / 25.3k in. Suite totals
   161s / 203k in → 136s / 105k in. Scatter wall is a wash this rep
   (#619's 86.8s → 23.7s did not reproduce). See ADR 0022.
+- Root foreground `bash` no longer waits forever: after 120s (or `timeout`
+  ms) a still-running command is moved to the background and the model
+  gets a job id, matching grok-build. Esc still kills; the cancelled
+  result tells the model to use `run_in_background`. Subagents keep the
+  #93 120s kill. (#620)
+- Kimi Coding keeps User-Agent `graff/<version>` (Moonshot forbids spoofing)
+  and matches kimi-code's X-Msh device fields: hostname, `Windows ${release}
+  ${arch}` / `macOS ${product} ${arch}`, kernel `os.release()` (#617)
+- Codex `session_id` header is the same value as `prompt_cache_key` (openai/codex
+  ModelClient default), not a per-process random UUID
+- Codex high-effort thinking no longer trips the 45s stall watchdog after
+  `in_progress` (encrypted reasoning is silent). A stall notice no longer says
+  "ending turn" while reconnect still has retries. Interactive sessions print a
+  dim `graff update` line when GitHub has a newer release.
+
+## v0.0.275 (2026-08-24)
+
+- OpenRouter requests carry app attribution (`categories: cli-agent, programming-app`).
+- TUI: Esc with a draft in the composer never kills a live turn.
+- Agent retries degenerate empty completions and keep-alive-only bodies.
 
 ## v0.0.274 (2026-08-23)
 

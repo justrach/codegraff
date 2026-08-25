@@ -12,10 +12,9 @@ var session_id_len: usize = 0;
 /// with, and the critical section is a single one-time 36-byte format.
 var session_id_lock: std.atomic.Value(bool) = .init(false);
 
-/// A UUIDv4 minted once per process. Codex still sends this as the `session_id`
-/// header (ChatGPT backend identity). Prompt-cache affinity is `projectRootId`,
-/// not this value — a per-process random key made every new session's first
-/// call a cold partition.
+/// A UUIDv4 minted once per process. Persisted on the graff session record.
+/// Codex's HTTP `session_id` is the prompt-cache key (openai/codex ModelClient
+/// defaults `prompt_cache_key` to `session_id`), not this value.
 pub fn sessionId(io: Io) []const u8 {
     while (session_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
     defer session_id_lock.store(false, .release);
@@ -221,7 +220,8 @@ pub fn providerHeadersWithConv(io: Io, provider: Provider, bearer: []const u8, b
         count += 1;
         buf[count] = .{ .name = "originator", .value = "codex_cli_rs" };
         count += 1;
-        buf[count] = .{ .name = "session_id", .value = sessionId(io) };
+        // openai/codex ModelClient: prompt_cache_key defaults to session_id.
+        buf[count] = .{ .name = "session_id", .value = conv_id orelse projectRootId(io) };
         count += 1;
     }
     if (wantsGrokConvId(provider.id)) {
@@ -255,13 +255,8 @@ test "session_id is a stable per-process UUIDv4, not a shared constant" {
     var buf: [12]std.http.Header = undefined;
     const p: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 272_000, .account = "acct" };
     const headers = providerHeaders(io, p, "Bearer k", &buf);
-    for (headers) |h| {
-        if (std.mem.eql(u8, h.name, "session_id")) {
-            try std.testing.expectEqualStrings(a, h.value);
-            return;
-        }
-    }
-    return error.SessionIdHeaderMissing;
+    try std.testing.expectEqualStrings(projectRootId(io), headerValue(headers, "session_id") orelse return error.SessionIdHeaderMissing);
+    try std.testing.expect(!std.mem.eql(u8, a, headerValue(headers, "session_id").?));
 }
 
 test "official OpenAI Responses uses Platform headers, not ChatGPT backend identity" {
@@ -493,4 +488,23 @@ test "xai login tokens send X-XAI-Token-Auth; API keys do not" {
     for (env_headers) |h| {
         try std.testing.expect(!std.mem.eql(u8, h.name, "X-XAI-Token-Auth"));
     }
+}
+
+test "Kimi chat sends graff identity and kimi-code device headers (#617)" {
+    const io = std.testing.io;
+    var buf: [12]std.http.Header = undefined;
+    const p: Provider = .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "k3", .context = 256_000 };
+    const headers = providerHeaders(io, p, "Bearer k", &buf);
+    try std.testing.expectEqualStrings("kimi_code_cli", headerValue(headers, "X-Msh-Platform").?);
+    try std.testing.expect(headerValue(headers, "X-Msh-Device-Name").?.len > 0);
+    try std.testing.expect(!std.mem.eql(u8, headerValue(headers, "X-Msh-Device-Name").?, "unknown"));
+    const model = headerValue(headers, "X-Msh-Device-Model").?;
+    const prefix = switch (@import("builtin").os.tag) {
+        .windows => "Windows ",
+        .macos => "macOS ",
+        .linux => "Linux ",
+        else => "",
+    };
+    if (prefix.len != 0) try std.testing.expect(std.mem.startsWith(u8, model, prefix));
+    try std.testing.expect(!std.mem.eql(u8, headerValue(headers, "X-Msh-Os-Version").?, @tagName(@import("builtin").os.tag)));
 }

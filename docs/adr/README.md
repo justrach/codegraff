@@ -36,6 +36,9 @@ record only when you need the evidence or the edge cases.
 | [0023](0023-codex-subagent-is-sidecar-not-v8.md) | Codex check: take sidecar-vs-critical-path spawn prompts; reject V8 Code Mode, extra spawn tools, and parent-history fork. |
 | [0024](0024-three-harness-compare-prompt-subagent-rss.md) | Steal short child briefs + sidecar spawn; `print(read_file)` returns the file; `-p` skips the shared-tree checkpoint (evals are sibling sandboxes); reject rlm-only catalog, grok heap, Harbor. |
 | [0025](0025-io-uring-is-not-the-process-io.md) | Process Io stays Zig `Threaded`. spec-ptc is already the default loop (ADR 0022). Do not take ublk or switch `main` to `std.Io.Uring`. |
+| [0026](0026-foreground-bash-auto-backgrounds.md) | Root foreground `bash` auto-backgrounds after 120s (or `timeout` ms); it is not killed. Subagents still kill at 120s (#93). |
+| [0027](0027-kimi-identity-is-graff.md) | Kimi Coding User-Agent is `graff/<version>`, not a spoofed `kimi-code-cli` token. X-Msh device fields follow kimi-code's shapes. |
+| [0028](0028-codex-session-id-is-the-cache-key.md) | Codex HTTP/WS `session_id` is the `prompt_cache_key` (openai/codex ModelClient default), not a per-process random UUID. |
 
 ## When to write one
 

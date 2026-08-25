@@ -40,6 +40,16 @@ pub fn budgetMs(base_ms: u64, tokens_flowing: bool) u64 {
     return @min(base_ms, @max(idle_floor_ms, base_ms / idle_divisor));
 }
 
+/// Inter-frame wait. No bytes yet is a dead socket (head ceiling). Protocol
+/// frames without prose is a reasoning model (full `base_ms` — gpt-5.6-sol
+/// high/max often encrypts thinking and emits nothing for well over 45s).
+/// Visible prose tightens to the between-lines budget.
+pub fn interFrameBudgetMs(base_ms: u64, saw_protocol: bool, tokens_flowing: bool) u64 {
+    if (tokens_flowing) return budgetMs(base_ms, true);
+    if (saw_protocol) return base_ms;
+    return budgetMs(base_ms, false);
+}
+
 /// True once a silent read has outlasted its budget — the watchdog loop's only
 /// decision, split out so it can be exercised at the boundary in a unit test.
 pub fn expired(waited_ms: u64, base_ms: u64, tokens_flowing: bool) bool {
@@ -78,4 +88,11 @@ test "stall budget (#56): between-lines silence trips sooner than a pre-first-to
     try std.testing.expectEqual(idle_floor_ms, budgetMs(20 * 1000, true));
     try std.testing.expectEqual(@as(u64, 5 * 1000), budgetMs(5 * 1000, true));
     try std.testing.expect(expired(5 * 1000, 5 * 1000, true));
+}
+
+test "stall budget: protocol-seen thinking keeps the full wait, not the 45s ceiling" {
+    const base: u64 = 120 * 1000;
+    try std.testing.expectEqual(head_ceiling_ms, interFrameBudgetMs(base, false, false));
+    try std.testing.expectEqual(base, interFrameBudgetMs(base, true, false));
+    try std.testing.expectEqual(@as(u64, 30 * 1000), interFrameBudgetMs(base, true, true));
 }
