@@ -33,6 +33,7 @@ record only when you need the evidence or the edge cases.
 | [0020](0020-transcript-shows-decisions.md) | Transcript shows decisions: one interpreted tool line, collapsed infra failures, compact WORKING; raw output is `/debug` / TUI-fold. |
 | [0021](0021-transcript-is-the-task-not-the-bus.md) | Transcript is the task, not the event bus: bookkeeping is silent, todos are WORKING, subagents are scouts. |
 | [0022](0022-foreground-bash-auto-backgrounds.md) | Root foreground `bash` auto-backgrounds after 120s (or `timeout` ms); it is not killed. Subagents still kill at 120s (#93). |
+| [0023](0023-kimi-identity-is-graff.md) | Kimi Coding User-Agent is `graff/<version>`, not a spoofed `kimi-code-cli` token. X-Msh device fields follow kimi-code's shapes. |
 
 ## When to write one
 

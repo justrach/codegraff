@@ -17,6 +17,9 @@ current is part of cutting a release.
   gets a job id, matching grok-build. Esc still kills; the cancelled
   result tells the model to use `run_in_background`. Subagents keep the
   #93 120s kill. (#620)
+- Kimi Coding keeps User-Agent `graff/<version>` (Moonshot forbids spoofing)
+  and matches kimi-code's X-Msh device fields: hostname, `Windows ${release}
+  ${arch}` / `macOS ${product} ${arch}`, kernel `os.release()` (#617)
 
 ## v0.0.275 (2026-08-24)
 

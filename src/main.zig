@@ -562,8 +562,8 @@ pub const Agent = agent_mod.Agent;
 const messages_mod = @import("messages.zig");
 /// A base64-encoded image staged by `/image`, sent with the next user turn.
 const vision = @import("vision.zig"); // staged-image type, /image·/paste stagers, macOS clipboard grab
-/// User-Agent for outbound provider calls. The Kimi for Coding plan gates access by User-Agent (a graff/* or bare UA gets `access_terminated`), so
-/// graff identifies as claude-code/1.0.0 — a user's Kimi Code key then works here the same as in Kimi CLI or Claude Code. Other providers keep the default.
+/// User-Agent for outbound Kimi Coding calls is `graff/<version>` (Moonshot forbids spoofing).
+/// Device headers follow kimi-code's X-Msh-* shapes. Other providers keep the default UA.
 pub const kimi_user_agent = @import("kimi_catalog.zig").user_agent;
 // HTTP transport (auth headers, raw POST, 5xx-body capture, watchdogs) lives in http.zig.
 const http = @import("http.zig");

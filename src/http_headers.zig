@@ -480,3 +480,22 @@ test "xai login tokens send X-XAI-Token-Auth; API keys do not" {
         try std.testing.expect(!std.mem.eql(u8, h.name, "X-XAI-Token-Auth"));
     }
 }
+
+test "Kimi chat sends graff identity and kimi-code device headers (#617)" {
+    const io = std.testing.io;
+    var buf: [12]std.http.Header = undefined;
+    const p: Provider = .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "k3", .context = 256_000 };
+    const headers = providerHeaders(io, p, "Bearer k", &buf);
+    try std.testing.expectEqualStrings("kimi_code_cli", headerValue(headers, "X-Msh-Platform").?);
+    try std.testing.expect(headerValue(headers, "X-Msh-Device-Name").?.len > 0);
+    try std.testing.expect(!std.mem.eql(u8, headerValue(headers, "X-Msh-Device-Name").?, "unknown"));
+    const model = headerValue(headers, "X-Msh-Device-Model").?;
+    const prefix = switch (@import("builtin").os.tag) {
+        .windows => "Windows ",
+        .macos => "macOS ",
+        .linux => "Linux ",
+        else => "",
+    };
+    if (prefix.len != 0) try std.testing.expect(std.mem.startsWith(u8, model, prefix));
+    try std.testing.expect(!std.mem.eql(u8, headerValue(headers, "X-Msh-Os-Version").?, @tagName(@import("builtin").os.tag)));
+}
