@@ -74,6 +74,14 @@ def events(request: RecordedRequest) -> list[dict[str, object]]:
     )
 
 
+def last_answer(stdout: str) -> str:
+    """Headless `-p` prints ADR 0020 pulse chrome on stdout from model call 2.
+    The boundary check wants the final assistant line, not that meter."""
+    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
+    lines = [ln for ln in lines if not ln.startswith("· turn still going")]
+    return lines[-1] if lines else ""
+
+
 def run(graff: Path) -> None:
     mock = CodexMock(events_for_request=events)
     port = mock.start()
@@ -142,7 +150,7 @@ def run(graff: Path) -> None:
                 timeout=20,
                 check=False,
             )
-            if completed.returncode != 0 or completed.stdout.strip() != FINAL_REPLY:
+            if completed.returncode != 0 or last_answer(completed.stdout) != FINAL_REPLY:
                 raise AssertionError(
                     f"graff exit={completed.returncode}\n"
                     f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
