@@ -1,6 +1,6 @@
 //! Session/environment slash commands, split out of main.zig's handleCommand
 //! (600-line goal, issue #123): /clear /new /rename /goal /loop /bash /agents
-//! /animation /theme /hooks /skills /trajectory /plan, plus #554's /snapshot
+//! /animation /theme /hooks /skills /plan (/trajectory lives in commands_trajectory.zig), plus #554's /snapshot
 //! and the snapshot half of /rewind (dispatched to commands_sandbox.zig).
 
 const std = @import("std");
@@ -23,7 +23,6 @@ const Keys = provider_mod.Keys;
 const ToolCall = tools_mod.ToolCall;
 const saveSession = session_mod.saveSession;
 const unixMs = util.unixMs;
-const utf8Prefix = util.utf8Prefix;
 const session_ext = session_mod.session_ext;
 
 const ansi = @import("ansi.zig");
@@ -32,6 +31,7 @@ const style = &ansi.style;
 const exec = @import("exec.zig");
 const execTool = exec.execTool;
 const commands_sandbox = @import("commands_sandbox.zig"); // #554 /snapshot + /rewind <id>
+const commands_trajectory = @import("commands_trajectory.zig"); // /trajectory (#602)
 const workspace_switch = @import("workspace_switch.zig");
 const plugins = @import("plugins.zig");
 
@@ -90,6 +90,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     // #554: claims /snapshot, and /rewind ONLY when its argument is a snapshot
     // id — a numeric /rewind falls through to the conversation rewind below.
     if (try commands_sandbox.tryHandle(root, arena, line, out)) return true;
+    if (try commands_trajectory.tryHandle(root, arena, line, out)) return true;
     if (try workspace_switch.slashCommand(root, arena, line, out)) return true;
     if (try plugins.slashCommand(root.io, arena, root.home, line, out)) return true;
     if (std.mem.eql(u8, line, "/clear")) {
@@ -484,105 +485,6 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             });
         }
         try out.writeAll("  install/enable: /skills add <name> · disable: /skills remove <name>\n");
-        try out.flush();
-        return true;
-    }
-    if (std.mem.eql(u8, line, "/trajectory")) {
-        const data = trace.readTrajectoryArchive(root.io, arena, 4 << 20);
-        const S = struct {
-            fn str(o: std.json.ObjectMap, k: []const u8) []const u8 {
-                const v = o.get(k) orelse return "";
-                return if (v == .string) v.string else "";
-            }
-            fn int(o: std.json.ObjectMap, k: []const u8) i64 {
-                const v = o.get(k) orelse return 0;
-                return if (v == .integer) v.integer else 0;
-            }
-            fn flag(o: std.json.ObjectMap, k: []const u8) bool {
-                const v = o.get(k) orelse return false;
-                return v == .bool and v.bool;
-            }
-            // Latest score recorded for a prompt fingerprint, across the
-            // whole archive (scores persist between sessions).
-            fn scoreFor(all: []const std.json.ObjectMap, sha: []const u8) ?f64 {
-                var found: ?f64 = null;
-                for (all) |o| {
-                    if (!std.mem.eql(u8, str(o, "kind"), "score")) continue;
-                    if (!std.mem.eql(u8, str(o, "prompt_sha"), sha)) continue;
-                    const v = o.get("score") orelse continue;
-                    found = switch (v) {
-                        .float => |x| x,
-                        .integer => |x| @floatFromInt(x),
-                        else => found,
-                    };
-                }
-                return found;
-            }
-        };
-        var objs: std.ArrayList(std.json.ObjectMap) = .empty;
-        var it = std.mem.tokenizeScalar(u8, data, '\n');
-        while (it.next()) |ln| {
-            const v = std.json.parseFromSliceLeaky(Value, arena, ln, .{ .allocate = .alloc_always }) catch continue;
-            if (v == .object) objs.append(arena, v.object) catch {};
-        }
-        // Tree shows this invocation; scores still come from the whole archive.
-        const current_run_id = if (root.tracer) |tr| tr.identity.run_id else if (trace.g_traj) |tj| tj.identity.run_id else "";
-        var turns: usize = 0;
-        for (objs.items) |o| {
-            if (!std.mem.eql(u8, S.str(o, "run_id"), current_run_id)) continue;
-            if (std.mem.eql(u8, S.str(o, "kind"), "turn")) turns += 1;
-        }
-        if (turns == 0) {
-            try out.print("no trajectory recorded yet — run a turn first (current file: {s})\n", .{if (trace.g_traj) |tj| tj.path else trace.trajectories_dir});
-            try out.flush();
-            return true;
-        }
-        try out.print("{s}session trajectory{s} — {d} turn(s); current: {s}; archive: {s} ({d} record(s) total)\n", .{ style.bold, style.reset, turns, if (trace.g_traj) |tj| tj.path else "", trace.trajectories_dir, objs.items.len });
-        for (objs.items) |o| {
-            if (!std.mem.eql(u8, S.str(o, "run_id"), current_run_id)) continue;
-            if (!std.mem.eql(u8, S.str(o, "kind"), "turn")) continue;
-            const turn_id = S.int(o, "id");
-            out.print("{s}●{s} turn {d} {s} {d}ms · prompt {s}{s}{s}{s} · {s}", .{
-                style.accent,
-                style.reset,
-                turn_id,
-                if (S.flag(o, "ok")) "✓" else "✗",
-                S.int(o, "ms"),
-                style.dim,
-                S.str(o, "prompt_sha"),
-                if (S.flag(o, "prompt_mutated")) " (mutated)" else "",
-                style.reset,
-                utf8Prefix(S.str(o, "task"), 80),
-            }) catch {};
-            if (S.scoreFor(objs.items, S.str(o, "prompt_sha"))) |sc|
-                out.print(" {s}· score {d:.2}{s}", .{ style.green, sc, style.reset }) catch {};
-            out.writeAll("\n") catch {};
-            // children: subagents / workflow tasks spawned during this turn
-            var remaining: usize = 0;
-            for (objs.items) |c| {
-                if (!std.mem.eql(u8, S.str(c, "run_id"), current_run_id)) continue;
-                if (S.int(c, "parent") == turn_id and !std.mem.eql(u8, S.str(c, "kind"), "turn")) remaining += 1;
-            }
-            for (objs.items) |c| {
-                if (!std.mem.eql(u8, S.str(c, "run_id"), current_run_id)) continue;
-                if (S.int(c, "parent") != turn_id or std.mem.eql(u8, S.str(c, "kind"), "turn")) continue;
-                remaining -= 1;
-                out.print("  {s} {s} {s} {d}ms · prompt {s}{s}{s}{s} · {s}", .{
-                    if (remaining == 0) "└─" else "├─",
-                    S.str(c, "label"),
-                    if (S.flag(c, "ok")) "✓" else "✗",
-                    S.int(c, "ms"),
-                    style.dim,
-                    S.str(c, "prompt_sha"),
-                    if (S.flag(c, "prompt_mutated")) " (variant)" else "",
-                    style.reset,
-                    utf8Prefix(S.str(c, "task"), 70),
-                }) catch {};
-                if (S.scoreFor(objs.items, S.str(c, "prompt_sha"))) |sc|
-                    out.print(" {s}· score {d:.2}{s}", .{ style.green, sc, style.reset }) catch {};
-                out.writeAll("\n") catch {};
-            }
-        }
         try out.flush();
         return true;
     }

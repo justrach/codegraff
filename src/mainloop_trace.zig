@@ -87,7 +87,15 @@ pub fn finalResponseShape(messages: []const Value) ResponseShape {
         const kind = jsonStr(obj, "type");
         if (role.len > 0) {
             if (!std.mem.eql(u8, role, "assistant")) break; // user turn / tool result
-        } else if (!isModelItem(kind)) break; // function_call_output, …
+        } else if (!isModelItem(kind)) {
+            // #602: a Responses history can END on tool results — a turn cut
+            // after execution, attempt_completion's final call, a crash. Those
+            // trailing `function_call_output` items are not the response; skip
+            // them so the shape still describes the last model-authored run
+            // instead of archiving `resp_blocks=0` for every tool-using turn.
+            if (std.mem.eql(u8, kind, "function_call_output")) continue;
+            break;
+        }
         countEntry(&shape, obj, kind);
     }
     return shape;
@@ -324,4 +332,16 @@ test "#270: openai and Responses histories shape the same way" {
     try std.testing.expectEqual(@as(u32, 2), responses.blocks);
     try std.testing.expectEqual(@as(u64, "done".len), responses.text_len);
     try std.testing.expectEqualStrings("text+reasoning", responses.typeSet(&buf));
+
+    // #602: the same history with the turn cut AFTER execution — the tail is
+    // tool results, and there is no final message. The shape must describe the
+    // model-authored run that preceded them, not archive zero blocks.
+    const cut_after_tools = try testShape(
+        \\ [{"type":"message","role":"assistant","content":[{"type":"output_text","text":"merging"}]},
+        \\ {"type":"reasoning","summary":[]},
+        \\ {"type":"function_call","call_id":"c1","name":"bash","arguments":"{}"},
+        \\ {"type":"function_call_output","call_id":"c1","output":"ok"}]
+    );
+    try std.testing.expectEqual(@as(u32, 3), cut_after_tools.blocks);
+    try std.testing.expectEqualStrings("text+tool_use+reasoning", cut_after_tools.typeSet(&buf));
 }
