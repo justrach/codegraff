@@ -2,7 +2,11 @@
 // (contrast harness.ts/remote.ts's "Do not edit" header).
 // Spawn `graff acp` and speak ACP v1 JSON-RPC on stdio. See docs/embedding.md.
 
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable, Writable } from "node:stream";
+
+/** stdin/stdout piped; stderr inherited — same stdio as the generated Harness. */
+type AcpChild = ChildProcessByStdio<Writable, Readable, null>;
 
 export const ACP_PROTOCOL_VERSION = 1;
 
@@ -25,7 +29,7 @@ export interface SpawnAcpOptions {
 }
 
 export interface AcpConn {
-  readonly child: ChildProcessWithoutNullStreams;
+  readonly child: AcpChild;
   sessionId: string | null;
   request(method: string, params?: unknown): Promise<unknown>;
   notify(method: string, params?: unknown): void;
@@ -39,11 +43,11 @@ type Pending = {
   reject: (err: Error) => void;
 };
 
-function writeLine(child: ChildProcessWithoutNullStreams, obj: unknown): void {
+function writeLine(child: AcpChild, obj: unknown): void {
   child.stdin.write(`${JSON.stringify(obj)}\n`);
 }
 
-function spawnChild(opts: SpawnAcpOptions): ChildProcessWithoutNullStreams {
+function spawnChild(opts: SpawnAcpOptions): AcpChild {
   if (opts.command) {
     const [bin, ...argv] = opts.command;
     if (!bin) throw new Error("spawnAcp: command is empty");
