@@ -14,7 +14,6 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const file_cap: std.Io.Limit = .limited(1 << 20);
-const reserved = "smolify";
 
 /// Codex's order: `.codex-plugin` first, then Claude, then Cursor.
 const manifest_files = [_][]const u8{
@@ -84,6 +83,15 @@ fn readManifest(io: Io, arena: Allocator, plugin_path: []const u8) ?Value {
     return null;
 }
 
+/// Codex bundled plugins can select a host-provided content surface instead
+/// of their raw MCP declaration. Computer Use uses this to require the signed
+/// node_repl bridge (#618).
+pub fn usesNodeRepl(io: Io, arena: Allocator, plugin_path: []const u8) bool {
+    const manifest = readManifest(io, arena, plugin_path) orelse return false;
+    const variant = manifest.object.get("bundledContentVariant") orelse return false;
+    return variant == .string and std.mem.eql(u8, variant.string, "node-repl");
+}
+
 pub fn expandPlaceholders(arena: Allocator, text: []const u8, plugin_root: []const u8, project_dir: []const u8) []const u8 {
     if (std.mem.indexOf(u8, text, "${CLAUDE_") == null) return text;
     const step = std.mem.replaceOwned(u8, arena, text, "${CLAUDE_PLUGIN_ROOT}", plugin_root) catch text;
@@ -111,14 +119,35 @@ fn expandValue(arena: Allocator, v: Value, plugin_root: []const u8, project_dir:
     };
 }
 
-fn putServers(arena: Allocator, servers: *std.json.ObjectMap, found: *bool, v: ?Value) void {
+fn prepareServer(arena: Allocator, plugin_root: []const u8, cfg: std.json.ObjectMap) ?Value {
+    var out: std.json.ObjectMap = .empty;
+    var it = cfg.iterator();
+    while (it.next()) |e| out.put(arena, e.key_ptr.*, e.value_ptr.*) catch return null;
+
+    // Plugin MCP commands are resolved from the plugin, not from whichever
+    // repository launched graff. Codex's Computer Use package is the concrete
+    // #618 witness: command `./bin/computer-use-client-launcher`, cwd `.`.
+    if (out.get("cwd")) |cwd| {
+        if (cwd != .string) return null;
+        if (!std.fs.path.isAbsolute(cwd.string)) {
+            const resolved = resolveRel(arena, plugin_root, cwd.string) orelse return null;
+            out.put(arena, "cwd", .{ .string = resolved }) catch return null;
+        }
+    } else if (out.get("command")) |command| {
+        if (command == .string and std.mem.startsWith(u8, command.string, "./"))
+            out.put(arena, "cwd", .{ .string = plugin_root }) catch return null;
+    }
+    return .{ .object = out };
+}
+
+fn putServers(arena: Allocator, servers: *std.json.ObjectMap, found: *bool, v: ?Value, plugin_root: []const u8) void {
     const obj = if (v) |x| (if (x == .object) x.object else return) else return;
     var it = obj.iterator();
     while (it.next()) |e| {
-        if (std.mem.eql(u8, e.key_ptr.*, reserved)) continue;
         if (servers.get(e.key_ptr.*) != null) continue;
         if (e.value_ptr.* != .object) continue;
-        servers.put(arena, e.key_ptr.*, e.value_ptr.*) catch continue;
+        const prepared = prepareServer(arena, plugin_root, e.value_ptr.*.object) orelse continue;
+        servers.put(arena, e.key_ptr.*, prepared) catch continue;
         found.* = true;
     }
 }
@@ -129,11 +158,11 @@ fn ingestText(arena: Allocator, servers: *std.json.ObjectMap, found: *bool, text
     const expanded = expandValue(arena, parsed, plugin_root, project_dir);
     if (expanded != .object) return;
     if (expanded.object.get("mcpServers")) |inner| {
-        putServers(arena, servers, found, inner);
+        putServers(arena, servers, found, inner, plugin_root);
         return;
     }
     // Inline `{ "name": { "command": ... } }` — Claude plugin.json shape.
-    putServers(arena, servers, found, expanded);
+    putServers(arena, servers, found, expanded, plugin_root);
 }
 
 fn ingestFile(io: Io, arena: Allocator, servers: *std.json.ObjectMap, found: *bool, path: []const u8, plugin_root: []const u8, project_dir: []const u8) void {
@@ -151,9 +180,9 @@ fn ingestMcpField(io: Io, arena: Allocator, servers: *std.json.ObjectMap, found:
         .object => {
             const expanded = expandValue(arena, field, plugin_path, project_dir);
             if (expanded.object.get("mcpServers")) |inner| {
-                putServers(arena, servers, found, inner);
+                putServers(arena, servers, found, inner, plugin_path);
             } else {
-                putServers(arena, servers, found, expanded);
+                putServers(arena, servers, found, expanded, plugin_path);
             }
         },
         else => {},
@@ -339,6 +368,45 @@ test "mergeMcp: inline servers expand CLAUDE_PLUGIN_ROOT; extra file paths work"
     const cmd = servers.get("inline").?.object.get("command").?.string;
     try testing.expect(std.mem.endsWith(u8, cmd, "pack/bin/tool"));
     try testing.expect(std.mem.indexOf(u8, cmd, "${CLAUDE_") == null);
+}
+
+test "mergeMcp: plugin-relative command and cwd resolve from the plugin (#618)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = testing.io;
+    const base = try tmpBase(io, &tmp, arena);
+    const plug = join(arena, base, "computer-use");
+    try Io.Dir.cwd().createDirPath(io, plug);
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, plug, ".mcp.json"), .data = "{\"mcpServers\":{\"computer-use\":{\"command\":\"client\"}}}" });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = join(arena, plug, "mcp.json"), .data = "{\"mcpServers\":{\"relative\":{\"command\":\"./bin/server\",\"cwd\":\".\"}}}" });
+
+    var servers: std.json.ObjectMap = .empty;
+    var found = false;
+    mergeMcp(io, arena, plug, base, &servers, &found);
+    try testing.expect(found);
+    try testing.expectEqual(@as(usize, 2), servers.count());
+    const relative = servers.get("relative").?.object;
+    try testing.expectEqualStrings("./bin/server", relative.get("command").?.string);
+    try testing.expectEqualStrings(plug, relative.get("cwd").?.string);
+}
+
+test "usesNodeRepl reads the Codex bundled content variant (#618)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const base = try tmpBase(testing.io, &tmp, arena);
+    const plug = join(arena, base, "computer-use");
+    try Io.Dir.cwd().createDirPath(testing.io, join(arena, plug, ".codex-plugin"));
+    try Io.Dir.cwd().writeFile(testing.io, .{
+        .sub_path = join(arena, plug, ".codex-plugin/plugin.json"),
+        .data = "{\"name\":\"computer-use\",\"bundledContentVariant\":\"node-repl\"}",
+    });
+    try testing.expect(usesNodeRepl(testing.io, arena, plug));
 }
 
 test "resolveRel refuses parent-directory escapes" {

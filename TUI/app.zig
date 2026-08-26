@@ -35,6 +35,8 @@ pub const ToolInfo = struct {
     is_error: bool = false,
     /// Refused by the harness before it ran.
     denied: bool = false,
+    /// Engine-measured duration on a finished row. 0 while the call is live.
+    ms: u64 = 0,
 };
 
 pub const Entry = struct {
@@ -316,6 +318,7 @@ pub const Model = struct {
                 .done = info.done,
                 .is_error = info.is_error,
                 .denied = info.denied,
+                .ms = info.ms,
             },
             .at_ms = self.now_ms,
         });

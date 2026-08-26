@@ -57,6 +57,7 @@ test {
     _ = @import("prompt_history.zig");
     _ = @import("meters.zig");
     _ = @import("key.zig");
+    _ = @import("key_paste.zig");
     _ = @import("key_orphan.zig");
     _ = @import("key_tests.zig");
     _ = @import("spec_terminal_modes_conformance.zig");
@@ -71,6 +72,7 @@ test {
     _ = @import("glyphs.zig");
     _ = @import("foldhdr.zig");
     _ = @import("mdtable.zig");
+    _ = @import("tool_card.zig");
     _ = @import("scrollback.zig");
     _ = @import("layout_cache.zig");
     _ = @import("selection.zig");

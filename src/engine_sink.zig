@@ -103,7 +103,8 @@ pub fn tuiSink(a: *Agent) EngineSink {
 
 /// The --json wire, for an agent that HAS one. A frontendless agent — a
 /// pool-thread subagent (subagent_run.zig builds every child with
-/// `.out = null`) or the ACP root (acp.zig nulls it while json_mode is on) —
+/// `.out = null`) or the ACP root between prompts (acp.zig nulls `out`
+/// except during session/prompt, when a translating sink is installed) —
 /// gets the same emitter but a NON-durable vtable: jsonEmit drops every line
 /// for it, and a durable sink would have reserved a sequence id for each of
 /// those dropped lines, opening exactly the gap #330 promises cannot exist.

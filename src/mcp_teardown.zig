@@ -204,8 +204,8 @@ test "runBounded flags an abandon so the exit path can skip Io teardown (#325)" 
 }
 
 test "deinitHttpClient tears down a pooled client within the grace window" {
-    // Mirrors the smolify on-demand transport: an HTTP client that was
-    // connected (handshake done or not) must not hold session exit.
+    // Mirrors an on-demand HTTP transport: a client that was connected
+    // (handshake done or not) must not hold session exit.
     var registry_client: std.http.Client = .{ .allocator = std.testing.allocator, .io = std.testing.io };
     deinitHttpClient(&registry_client, std.testing.io, .init(std.testing.io, teardown_grace));
 }

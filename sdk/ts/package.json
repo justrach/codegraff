@@ -21,6 +21,11 @@
       "import": "./dist/orchestrate.js",
       "default": "./dist/orchestrate.js"
     },
+    "./acp": {
+      "types": "./dist/acp.d.ts",
+      "import": "./dist/acp.js",
+      "default": "./dist/acp.js"
+    },
     "./package.json": "./package.json"
   },
   "repository": {

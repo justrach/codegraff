@@ -37,6 +37,7 @@ const ToolInvocation = engine_events.ToolInvocation;
 const ToolOutcome = engine_events.ToolOutcome;
 const BatchOutcome = engine_events.BatchOutcome;
 const label = @import("agent_tool_label.zig");
+const disclosure = @import("line_repl_disclosure.zig");
 
 /// How many sibling tools are still outstanding in the current parallel batch.
 /// 0 = sequential (no tree). The layout, not a "↯ N in parallel" line, is
@@ -168,12 +169,14 @@ pub fn toolResultLine(a: *Agent, r: ToolOutcome) void {
     const verb = if (remembered) |mem| mem.verb else r.name;
     const detail = if (remembered) |mem| mem.detail else "";
     const shown_final = label.usefulPreview(r.name, detail, shown);
+    const disclosed = disclosure.record(a.io, verb, detail, all, shown_final);
     const prefix = treePrefix();
     w.print("{s}{s}{s}{s} {s}", .{ prefix, mc, mark, style.reset, verb }) catch return;
     if (detail.len > 0) w.print("  {s}", .{detail}) catch return;
     w.print("{s}{s}{s}", .{ style.dim, timing, style.reset }) catch return;
     if (badge.len > 0) w.print(" {s}", .{badge}) catch return;
     if (shown_final.len > 0) w.print("  {s}{s}{s}{s}", .{ style.dim, shown_final, if (truncated) "…" else "", style.reset }) catch return;
+    if (disclosed) w.print("  {s}↵ raw{s}", .{ style.dim, style.reset }) catch return;
     w.writeAll("\n") catch return;
     w.flush() catch return;
 }
@@ -243,10 +246,11 @@ fn testAgent(w: *Io.Writer) Agent {
     batch_left = 0;
     label.resetPending();
     resetInfra();
+    disclosure.reset(std.testing.io);
     return .{
         .gpa = std.testing.allocator,
         .arena = std.testing.allocator,
-        .io = undefined,
+        .io = std.testing.io,
         .client = undefined,
         .provider = undefined,
         .messages = undefined,
@@ -274,7 +278,7 @@ test "announce is silent and the ✓ line uses the remembered verb" {
     toolUseLine(&a, .{ .name = "read_file", .input = input });
     try std.testing.expectEqualStrings("", aw.writer.buffered());
     toolResultLine(&a, .{ .name = "read_file", .text = "line one\nline two\n", .is_error = false });
-    try std.testing.expectEqualStrings("  ✓ read  fixture.txt  2 lines\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ read  fixture.txt  2 lines  ↵ raw\n", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
     toolUseLine(&a, .{ .name = "attempt_completion", .input = input, .arg_streamed = true });
@@ -294,7 +298,7 @@ test "the result line marks success, failure and cancellation and previews one l
 
     label.resetPending();
     toolResultLine(&a, .{ .name = "read_file", .text = "line one\nline two\n", .is_error = false });
-    try std.testing.expectEqualStrings("  ✓ read_file  2 lines\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ read_file  2 lines  ↵ raw\n", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
     toolResultLine(&a, .{ .name = "bash", .text = "boom", .is_error = true });
@@ -322,8 +326,8 @@ test "the result line marks success, failure and cancellation and previews one l
     const long = util.repeatBytes("z", 250);
     toolResultLine(&a, .{ .name = "bash", .text = &long, .is_error = false });
     const rline = aw.writer.buffered();
-    try std.testing.expect(std.mem.endsWith(u8, rline, "…\n"));
-    try std.testing.expectEqual(@as(usize, 100), rline.len - "  ✓ bash  ".len - "…\n".len);
+    try std.testing.expect(std.mem.endsWith(u8, rline, "…  ↵ raw\n"));
+    try std.testing.expectEqual(@as(usize, 100), rline.len - "  ✓ bash  ".len - "…  ↵ raw\n".len);
 
     aw.clearRetainingCapacity();
     main_mod.show_timing = true;
@@ -334,12 +338,12 @@ test "the result line marks success, failure and cancellation and previews one l
     aw.clearRetainingCapacity();
     main_mod.show_timing = false;
     toolResultLine(&a, .{ .name = "bash", .text = "[tool result handle: 44690 bytes, JSON object — the COMPLETE result is at /tmp/h-0.txt. Slice what you need out of that file (read_file with start_line/end_line, a grep-style bash command, codedb) instead of re-running the tool (#440).]", .is_error = false });
-    try std.testing.expectEqualStrings("  ✓ bash ⇢ 43.6 KiB handle\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ bash ⇢ 43.6 KiB handle  ↵ raw\n", aw.writer.buffered());
 
     // The no-handle truncation variant badges the loss instead.
     aw.clearRetainingCapacity();
     toolResultLine(&a, .{ .name = "bash", .text = "[tool result truncated to 16384 bytes: 90000 bytes total, JSON object. No handle could be written, so the rest is gone — narrow the command and run it again (#440).]", .is_error = false });
-    try std.testing.expectEqualStrings("  ✓ bash ⇠ 87.9 KiB lost\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ bash ⇠ 87.9 KiB lost  ↵ raw\n", aw.writer.buffered());
 }
 
 test "the effort-routing note draws in normal mode and stays quiet in debug mode" {
@@ -379,13 +383,13 @@ test "batch tallies and meta notices render the old wording verbatim" {
     try std.testing.expectEqualStrings("", aw.writer.buffered());
     label.resetPending();
     toolResultLine(&a, .{ .name = "read_file", .text = "a\nb\n", .is_error = false });
-    try std.testing.expectEqualStrings("  ├─ ✓ read_file  2 lines\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ├─ ✓ read_file  2 lines  ↵ raw\n", aw.writer.buffered());
     aw.clearRetainingCapacity();
     toolResultLine(&a, .{ .name = "read_file", .text = "a\nb\n", .is_error = false });
-    try std.testing.expectEqualStrings("  ├─ ✓ read_file  2 lines\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ├─ ✓ read_file  2 lines  ↵ raw\n", aw.writer.buffered());
     aw.clearRetainingCapacity();
     toolResultLine(&a, .{ .name = "read_file", .text = "a\nb\n", .is_error = false });
-    try std.testing.expectEqualStrings("  └─ ✓ read_file  2 lines\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  └─ ✓ read_file  2 lines  ↵ raw\n", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
     parallelBatchFinished(&a, .{ .done = 2, .failed = 0, .cancelled = 0 });
@@ -452,7 +456,7 @@ test "edit_file one-liner includes a +N/-N delta" {
     label.resetPending();
     toolUseLine(&a, .{ .name = "edit_file", .input = one });
     toolResultLine(&a, .{ .name = "edit_file", .text = "applied 1 edit span(s) to src/a.zig (each verified)", .is_error = false });
-    try std.testing.expectEqualStrings("  ✓ edit  src/a.zig · +3/-2\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ edit  src/a.zig · +3/-2  ↵ raw\n", aw.writer.buffered());
 }
 
 test "bash result prefers the last line of a multi-line run" {
@@ -468,7 +472,7 @@ test "bash result prefers the last line of a multi-line run" {
         .text = "[1/3] a...\n[2/3] b...\nAll 1475 tests passed\n",
         .is_error = false,
     });
-    try std.testing.expectEqualStrings("  ✓ bash  1475 passed\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ bash  1475 passed  ↵ raw\n", aw.writer.buffered());
 }
 
 test "bash git log is a count, never the command" {
@@ -487,7 +491,7 @@ test "bash git log is a count, never the command" {
         .text = "d022479 feat(ui): cache\n8f75b5b fix(tui): chips\n4ba84b3 feat(models): seats\n",
         .is_error = false,
     });
-    try std.testing.expectEqualStrings("  ✓ git  3 commits\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ git  3 commits  ↵ raw\n", aw.writer.buffered());
 }
 
 test "repeated McpClosed collapses to one notice and skips the batch tally" {
@@ -527,5 +531,40 @@ test "codedb JSON read is basename plus mode, not the envelope" {
         .text = "{\"ok\":true,\"file\":\"/Users/rachpradhan/codedb/docs/architecture.md\",\"mode\":\"section\",\"content\":\"a\\nb\\nc\"}",
         .is_error = false,
     });
-    try std.testing.expectEqualStrings("  ✓ read  architecture.md  section · 3 lines\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ read  architecture.md  3 lines  ↵ raw\n", aw.writer.buffered());
+}
+
+test "blank Enter reveals hidden tool results newest-first and terminal-safe" {
+    const saved = ansi.style;
+    ansi.style = .{};
+    defer ansi.style = saved;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+
+    const input = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), "{\"path\":\"fixture.txt\"}", .{});
+    toolUseLine(&a, .{ .name = "read_file", .input = input });
+    toolResultLine(&a, .{ .name = "read_file", .text = "line one\nline two", .is_error = false });
+    toolResultLine(&a, .{ .name = "bash", .text = "\x1b[31mred\x1b[0m\nlast", .is_error = false });
+    aw.clearRetainingCapacity();
+
+    try std.testing.expect(!disclosure.handleInput(a.io, &aw.writer, "next task"));
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+    try std.testing.expect(disclosure.handleInput(a.io, &aw.writer, ""));
+    try std.testing.expectEqualStrings(
+        "  ┌ raw bash\n  │ red\n  │ last\n  └\n",
+        aw.writer.buffered(),
+    );
+
+    aw.clearRetainingCapacity();
+    try std.testing.expect(disclosure.handleInput(a.io, &aw.writer, ""));
+    try std.testing.expectEqualStrings(
+        "  ┌ raw read · fixture.txt\n  │ line one\n  │ line two\n  └\n",
+        aw.writer.buffered(),
+    );
+    aw.clearRetainingCapacity();
+    try std.testing.expect(disclosure.handleInput(a.io, &aw.writer, ""));
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
 }

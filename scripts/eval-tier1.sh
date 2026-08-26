@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Tier 1 of the internal eval set: every check here is deterministic, offline,
 # and free. No provider calls, no network, no model in the loop. This is what
-# the pre-push hook runs, so it has to stay honest and it has to stay fast
-# (~30s warm on an M-series laptop).
+# the pre-push hook runs, so it has to stay honest and it has to stay fast:
+# a warm fmt/reach/sdk subset is seconds; a post-src run rebuilds zig and
+# the PTY pool (minutes, see #641).
 #
 # Tier 2 is the model-backed behavioral eval set (scripts/eval-tier2.py). It is
 # deliberately NOT in the hook: it spends turns and it is slower.
@@ -10,6 +11,7 @@
 #   scripts/eval-tier1.sh              run every check
 #   scripts/eval-tier1.sh --list       show the check names
 #   scripts/eval-tier1.sh --only sdk   run one check
+#   scripts/eval-tier1.sh --only tui,tuiguard   run a comma-separated list (#641)
 #
 set -uo pipefail
 
@@ -29,7 +31,7 @@ CHECKS=(fmt lines spec reach build tests tui tuiguard invariants sdk)
 
 usage() {
   cat <<'EOF'
-usage: scripts/eval-tier1.sh [--only <check>] [--list]
+usage: scripts/eval-tier1.sh [--only <check[,check...]>] [--list]
 
 checks, in order:
   fmt         zig fmt --check src build.zig
@@ -46,27 +48,43 @@ checks, in order:
 EOF
 }
 
-only=""
+onlys=()
 while (($#)); do
   case "$1" in
     --list) printf '%s\n' "${CHECKS[@]}"; exit 0 ;;
-    --only) only=${2:-}; shift 2 || true ;;
-    --only=*) only=${1#--only=}; shift ;;
+    --only)
+      IFS=',' read -ra _parts <<< "${2:-}"
+      onlys+=("${_parts[@]}")
+      shift 2 || true
+      ;;
+    --only=*)
+      IFS=',' read -ra _parts <<< "${1#--only=}"
+      onlys+=("${_parts[@]}")
+      shift
+      ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'eval-tier1: unknown argument %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
-if [[ -n "$only" ]]; then
-  found=0
-  for name in "${CHECKS[@]}"; do [[ $name == "$only" ]] && found=1; done
-  if ((!found)); then
-    printf 'eval-tier1: no check named %s (try --list)\n' "$only" >&2
-    exit 2
-  fi
+if ((${#onlys[@]} > 0)); then
+  for only in "${onlys[@]}"; do
+    [[ -n "$only" ]] || continue
+    found=0
+    for name in "${CHECKS[@]}"; do [[ $name == "$only" ]] && found=1; done
+    if ((!found)); then
+      printf 'eval-tier1: no check named %s (try --list)\n' "$only" >&2
+      exit 2
+    fi
+  done
 fi
 
-wanted() { [[ -z "$only" || "$only" == "$1" ]]; }
+wanted() {
+  if ((${#onlys[@]} == 0)); then return 0; fi
+  local c=$1
+  for only in "${onlys[@]}"; do [[ $only == "$c" ]] && return 0; done
+  return 1
+}
 
 failed=()
 warned=()
@@ -184,8 +202,8 @@ if wanted tests; then
     else
       count=$(suite_count "$out")
       if [[ -z "$count" ]]; then
-        printf '  the cached build printed no test summary; counting from the compiled artifact\n'
-        count=$(artifact_count)
+        printf '  cached build; scanning the compiled artifact for the suite count\n'
+        count=$(python3 scripts/eval/tier1_test_binary.py scan)
       fi
       if [[ -z "$count" ]]; then
         printf '  FAIL could not read the test count from the build summary or the test artifact\n'
@@ -223,136 +241,10 @@ if wanted tuiguard; then
   if ((!build_ok)); then
     skip_dependent tuiguard
   else
-    announce tuiguard "tui-pty-guard.py — mode-balance / hostile-input / kill-restore on the real binary"
-    # grok-build's discipline as a gate: every latched DEC mode is reset on
-    # every exit path, the historical crasher corpus cannot kill a session,
-    # and SIGTERM never strands a raw terminal. Skips itself without a pty.
-    if python3 scripts/tui-pty-guard.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # #529: the drag gesture the mouse-tracking modes above swallow. Paints an
-    # inverse band and lands on the real clipboard (restored afterwards);
-    # skips itself off macOS, where there is no pbcopy/pbpaste.
-    if python3 scripts/test-tui-selection.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # #551: the TUI renders tool activity from the engine's TYPED events. Drives
-    # a real tool loop against the codex mock (no network, no model) and reads
-    # the screen back: one folded summary, a field-backed card under it, and an
-    # answer line that starts with "✓ " staying an answer.
-    if python3 scripts/test-tui-typed-events.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # The frame painter may never show anything but the current frame. Storms
-    # the window size, fills the screen with glyphs terminals measure
-    # differently from us, then reads the SCREEN back and compares it cell for
-    # cell against a forced full repaint of the same frame.
-    if python3 scripts/test-tui-painter.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # Scrolling is a viewport SLICE of one cached layout, not a re-layout
-    # (TUI/layout_cache.zig). Reads the screen back on every scroll step and
-    # after every width change: the markers on screen must be a contiguous
-    # ascending run, which a stale block or a mis-offset slice cannot fake.
-    if python3 scripts/test-tui-layout-cache.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # The viewport must not jump when the terminal changes width: drives
-    # TIOCSWINSZ across five widths mid-scroll and reads the screen back. With
-    # the logical scroll anchor removed the marker leaves the screen on the
-    # FIRST width change, so this is a real gate, not a smoke test.
-    if python3 scripts/test-tui-resize-anchor.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # grok-build's one-column rule for ANIMATED chrome: watches the live blink
-    # on a background op's pending row and fails if the label beside it moves a
-    # column, or if a frame is not East-Asian-Narrow. TUI/glyphs.zig holds the
-    # same law for the frame sets; this is the pixels.
-    if python3 scripts/test-tui-chrome-width.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # A wheel notch must be a scroll region + SU, not a screen rewrite — and a
-    # storm of them must still leave the screen equal to a forced full repaint.
-    # With the hint refused the probe fails on the FIRST notch (verified), so
-    # this is a gate on both halves, not a smoke test.
-    if python3 scripts/test-tui-scroll-paint.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # Trackpad momentum must be COALESCED and BUDGETED, not queued. Drives 500
-    # SGR wheel reports twice — all at once, then spread over ~1s the way
-    # momentum really arrives — and reads the loop's own paint counters back.
-    # With the frame budget removed the paced storm paints 503 times instead of
-    # ~105, so this is a real gate, not a smoke test.
-    if python3 scripts/test-tui-event-pacing.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # Same invariants, read off a VIRTUAL SCREEN instead of raw bytes
-    # (scripts/ptyharness.py): the VT interpreter's own selftest, the ported
-    # mode-balance check, and out-of-band screen corruption fed straight to the
-    # tty.
-    if python3 scripts/test-tui-screenstate.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # A tool run's fold header reads like grok-build's: present-progressive
-    # while the call is in flight, past tense on settle, tinted for a second.
-    # Drives a real `sleep` tool loop against the codex mock and reads the
-    # header row's TEXT and its cell BACKGROUNDS off a virtual screen. Both
-    # halves fail on their own when either is removed (verified).
-    if python3 scripts/test-tui-fold-headers.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # Streaming markdown: the answer arrives as 1-3 codepoint deltas whose
-    # boundaries land mid-escape, mid-fence and mid-marker. Both the live tail
-    # and the settled row must be free of the model's own CR/SGR bytes.
-    if python3 scripts/test-tui-stream-markdown.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # A clickable row has to LOOK clickable. Runs a real tool loop against the
-    # codex mock, then reads CELLS off a virtual screen: the hovered summary
-    # takes the theme's hover background and its ◆ becomes ›, its neighbour is
-    # untouched, leaving restores it, a single click still expands, and a
-    # double click is one net toggle. With the post-pass refused the probe
-    # fails on the tint (verified), so this is a gate on both halves.
-    if python3 scripts/test-tui-hover.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # A single click has to DO something. Drives real SGR press/release bytes
-    # through the same virtual screen: a motionless click paints no selection
-    # band and copies nothing (while the same press WITH motion does), a press
-    # on the scroll gutter seeks and a held one drags the viewport without ever
-    # anchoring a band, an overlay row selects and then confirms, the backdrop
-    # dismisses, and the highlighted completion row runs. Each of the five is a
-    # verified gate: disabling the gutter, the drag branch, the overlay press,
-    # the slash press, or making a press anchor a band each fails a different
-    # check.
-    if python3 scripts/test-tui-click.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # The scroll gutter has to land on a CELL and then leave no trace, and the
-    # OSC 52 copy has to leave the process — neither is visible to a unit test.
-    # Reads the thumb off the last column of the virtual screen, compares that
-    # column against a forced full repaint once it fades, and matches the
-    # base64 on the wire against the rows the drag covered. Each of the three
-    # is a verified gate: removing the fade rule, the fade EXPIRY, or the tty
-    # write each fails a different check.
-    if python3 scripts/test-tui-scrollbar-osc52.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # Every overlay is a bordered panel with its name in the top rule, docked to
-    # the composer, opened at its FIRST row; and the composer no longer claims a
-    # clipboard image on every idle frame. Border cells and the gap between the
-    # panel and the input box are geometry a unit test cannot see. Each of the
-    # four checks is verified: unframing the panel, undocking it, opening a
-    # sheet at its tail, or restoring the clipboard row each fails its own.
-    if python3 scripts/test-tui-overlay-panels.py zig-out/bin/graff; then :; else
-      record_fail tuiguard
-    fi
-    # #560: the picker has to say WHO serves each model. Reads the open overlay
-    # off the virtual screen and checks that every row carries a provider and a
-    # cost badge, that gpt-5.5 draws one distinguishable row per provider with
-    # the right badge on each (codex plan / openai api / codegraff credits),
-    # and that typing a provider name filters to that provider's seats.
-    if python3 scripts/test-tui-model-picker.py zig-out/bin/graff; then :; else
+    announce tuiguard "17 PTY probes in a 4–8 process pool (#641)"
+    # Same 17 scripts as the old serial loop (pty-guard through model-picker).
+    # Each owns its pty/tmp/mock; the pool is the wall-time win.
+    if python3 scripts/eval/tier1_tuiguard.py zig-out/bin/graff; then :; else
       record_fail tuiguard
     fi
   fi
@@ -363,39 +255,19 @@ if wanted invariants; then
   if ((!build_ok)); then
     skip_dependent invariants
   else
-    announce invariants "the named goal/loop/todo tests actually ran"
-    filters=()
-    counters=()
-    while IFS= read -r line; do
-      [[ -n "$line" ]] || continue
-      filters+=(-Dtest-filter="$line")
-      counters+=(--filter "$line")
-    done < <(python3 scripts/eval/tier1_invariants.py filters)
-    # Anonymous `test {}` blocks ignore -Dtest-filter and always run, so measure
-    # that floor with a filter that matches nothing and subtract it.
-    nothing="__tier1_matches_nothing__"
-    floor_out=$(zig build test --summary all -Dtest-filter="$nothing" 2>&1)
-    floor=$(suite_count "$floor_out")
-    # These two builds cache like any other, and a cached run prints no test
-    # summary (#439). Ask the artifacts instead - both are small and finish in
-    # under a second.
-    [[ -n "$floor" ]] || floor=$(artifact_count --filter "$nothing")
-    named_out=$(zig build test --summary all "${filters[@]}" 2>&1)
-    status=$?
-    named=$(suite_count "$named_out")
-    if ((status == 0)) && [[ -z "$named" ]]; then
-      named=$(artifact_count "${counters[@]}")
+    announce invariants "the named goal/loop/todo tests are compiled into the suite"
+    # #641: the unfiltered `tests` artifact already ran those names. Scanning
+    # it avoids two filtered `zig build test` recompiles (~1–3 min cold).
+    inv_ok=1
+    if ! python3 scripts/eval/tier1_test_binary.py resolve >/dev/null 2>&1; then
+      printf '  no test artifact yet; compiling the unfiltered suite once\n'
+      if ! zig build test --summary all >/dev/null; then
+        inv_ok=0
+        record_fail invariants
+      fi
     fi
-    if ((status != 0)); then
-      printf '%s\n' "$named_out" | tail -6
-      printf '    one of the named invariants is failing.\n'
-      record_fail invariants
-    elif [[ -z "$floor" || -z "$named" ]]; then
-      printf '  FAIL could not read the filtered test counts\n'
-      record_fail invariants
-    else
-      printf '  filtered run: %s tests, floor %s\n' "$named" "$floor"
-      if python3 scripts/eval/tier1_invariants.py invariants --observed "$((named - floor))"; then :; else
+    if ((inv_ok)); then
+      if python3 scripts/eval/tier1_invariants.py invariants --scan; then :; else
         printf '    the required set (scripts/eval/tier1-manifest.json):\n'
         python3 scripts/eval/tier1_invariants.py list
         record_fail invariants

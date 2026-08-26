@@ -315,7 +315,7 @@ test "BehaviorTrace: metadata-default upload is an exact content-free projection
         .behavior = &behavior,
     };
     tracer.api("repl", false, "test-model", 20, 100, 200, 300, 250, false);
-    tracer.tool("mcp__private_server__lookup_customer", 7, true, 80, true);
+    tracer.tool("mcp__private_server__lookup_customer", 1, 7, true, 80, true);
     behavior.finish(.closed);
     behavior.finish(.failed);
     // Late callbacks may race terminal teardown. They must observe closure and

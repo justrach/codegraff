@@ -60,7 +60,7 @@ pub fn handle(self: *Model, k: Key) Effect {
     }
     if (self.pasting) {
         switch (k) {
-            .enter => self.input.handle(.{ .char = '\n' }),
+            .enter, .shift_enter => self.input.handle(.{ .char = '\n' }),
             .char => |c| self.input.handle(.{ .char = c }),
             .codepoint => self.input.handle(k),
             // In-band escape hatch. A paste whose `CSI 201~` never arrived
@@ -164,6 +164,15 @@ fn promptKey(self: *Model, k: Key) Effect {
             scrollBy(self, if (k == .up) 3 else -3);
             return .stay;
         }
+    }
+    if (k == .backspace and std.mem.trim(u8, self.input.getValue(), " \t").len == 0) {
+        if (@import("image.zig").dropLast(self)) {
+            self.setToast("image detached");
+            return .stay;
+        }
+    }
+    if ((k == .delete_to_start or isCtrl(k, 'u')) and self.images.items.len > 0) {
+        @import("image.zig").clearAll(self);
     }
     self.input.handle(k);
     return .stay;

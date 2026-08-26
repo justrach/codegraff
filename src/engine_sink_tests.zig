@@ -67,13 +67,13 @@ test "a presentation sink never reserves sequence ids" {
 }
 
 /// The Agent shape every sink test renders through: allocator-backed, rooted
-/// (not a subagent), writing into the caller's buffer. `io` stays undefined —
-/// dispatch only touches it under the --json lock, which these tests pin off.
+/// (not a subagent), writing into the caller's buffer.
 fn testAgent(w: *Io.Writer) Agent {
+    @import("line_repl_disclosure.zig").reset(std.testing.io);
     return .{
         .gpa = std.testing.allocator,
         .arena = std.testing.allocator,
-        .io = undefined,
+        .io = std.testing.io,
         .client = undefined,
         .provider = undefined,
         .messages = undefined,
@@ -282,7 +282,7 @@ test "TuiSink shows tool one-liners with args and a result preview (slice 1c)" {
     const done: engine_events.ToolOutcome = .{ .name = "read_file", .text = "line one\nline two\n", .is_error = false };
     s.emit(undefined, .{ .tool_call_announced = call });
     s.emit(undefined, .{ .tool_result = done });
-    try std.testing.expectEqualStrings("  ✓ read  fixture.txt  2 lines\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ read  fixture.txt  2 lines  ↵ raw\n", aw.writer.buffered());
 
     aw.clearRetainingCapacity();
     s.emit(undefined, .{ .tool_call_announced = call });
@@ -290,7 +290,7 @@ test "TuiSink shows tool one-liners with args and a result preview (slice 1c)" {
     s.emit(undefined, .{ .tool_result = done });
     s.emit(undefined, .{ .tool_call_finished = done }); // silent
     s.emit(undefined, .{ .tool_rejected = .{ .name = "bash", .input = input, .reason = "budget", .message = "no" } }); // silent
-    try std.testing.expectEqualStrings("  ✓ read  fixture.txt  2 lines\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ read  fixture.txt  2 lines  ↵ raw\n", aw.writer.buffered());
 }
 
 test "TuiSink renders a plain text delta exactly as the no-color TTY did" {

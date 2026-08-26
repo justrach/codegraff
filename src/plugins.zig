@@ -15,7 +15,6 @@ const plugin_cap = 32;
 const walk_depth: u8 = 2;
 const visit_cap = 256;
 const file_cap: std.Io.Limit = .limited(1 << 20);
-const reserved = "smolify";
 
 pub const Plugin = struct {
     name: []const u8,
@@ -229,7 +228,6 @@ fn putServers(arena: Allocator, servers: *std.json.ObjectMap, found: *bool, v: ?
     const obj = if (v) |x| (if (x == .object) x.object else return) else return;
     var it = obj.iterator();
     while (it.next()) |e| {
-        if (std.mem.eql(u8, e.key_ptr.*, reserved)) continue;
         if (servers.get(e.key_ptr.*) != null) continue;
         if (e.value_ptr.* != .object) continue;
         servers.put(arena, e.key_ptr.*, e.value_ptr.*) catch continue;
@@ -268,12 +266,10 @@ fn takeRel(io: Io, arena: Allocator, dir: Io.Dir, servers: *std.json.ObjectMap, 
 pub fn mergeMcp(io: Io, arena: Allocator, home: []const u8, dir: Io.Dir, servers: *std.json.ObjectMap, found: *bool) void {
     if (off()) return;
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const n = dir.realPath(io, &buf) catch 0;
+    const n = dir.realPath(io, &buf) catch Io.Dir.cwd().realPathFile(io, ".", &buf) catch 0;
     const cwd = if (n > 0) buf[0..n] else null;
     const plugs = discover(io, arena, if (home.len > 0) home else null, dir);
-    for (plugs) |p| {
-        if (p.mcp) layout.mergeMcp(io, arena, p.path, cwd orelse "", servers, found);
-    }
+    @import("plugin_mcp_variant.zig").merge(io, arena, home, cwd orelse "", plugs, servers, found);
     if (home.len > 0) {
         takeAbs(io, arena, servers, found, join(arena, home, ".claude.json"), cwd);
         takeAbs(io, arena, servers, found, join(arena, home, ".claude/settings.json"), null);

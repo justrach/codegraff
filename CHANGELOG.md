@@ -10,6 +10,60 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.279 (2026-08-26)
+
+- Native Beautiful UI app (`apps/native`) is an ACP client. Next.js
+  `/api/acp` spawns `graff acp --yolo`; thinking and tool chips stream
+  from the first call. `graff serve` is not required (#637).
+- `graff acp` emits mid-turn `session/update`s for thought, text, and
+  `tool_call` / `tool_call_update` (ADR 0032). Protocol version stays 1.
+  After `session/new` it advertises `/never` via `available_commands_update`.
+- A user can retire a standing constraint from ACP or the REPL
+  (ADR 0033, #638). On a TTY, bare `/never` opens a searchable picker
+  (text prominent, id secondary) and requires two confirmations;
+  Esc/Keep leaves the ledger unchanged. `/never rm <id-or-text>` and
+  an explicit forget/override in the next message still work. The
+  model cannot retire a rule. `/never rm` without a needle lists
+  (or opens the TTY picker) instead of recording `rm` as a constraint;
+  a failed tombstone write says the rule is still active; traces
+  record `never_retire {id, ok}` with no text (#644).
+- `bash_output` / `agent_output` `wait_ms>0` always waits for exit
+  (10h). Mid-range values like 60s–240s are no longer a bounded
+  deadline (#640).
+- Host embed path: [docs/embedding.md](docs/embedding.md) names the two
+  stdio APIs (`graff acp` and `@codegraff/sdk` `Harness`), with a Node
+  JSON-RPC recipe and a thin `@codegraff/sdk/acp` helper (`spawnAcp` /
+  `acp`). Not WASM / libgraff.
+- TUI composer: a multiline paste stays one unsent draft. Embedded
+  `\n` / `\r\n` from a bracketed paste (or a wrap-less burst) cannot
+  steer or queue one prompt per line; Enter after the paste submits
+  exactly one (#643).
+- Existing Tauri `gui/` is unchanged.
+- First-turn tool delay: live chips paint immediately (no 300–450ms
+  fade), ACP `tool_call` is `in_progress` and flushed, and the first
+  model call no longer waits for a deferred MCP handshake (ADR 0035).
+  Running tools show elapsed from the moment they start.
+
+## v0.0.278 (2026-08-26)
+
+- Composer image pastes are marker-gated (#634). Deleting `[Image]`,
+  `[Image #N]`, or a TUI chip before submit drops that payload; a
+  text-only prompt no longer leaks native `input_image` blocks. Identical
+  `b64` collapses so two pastes cannot become four blocks.
+- `/image` and `/paste` stay sticky for the next text-only line.
+  `/image clear` clears the whole queue.
+- TUI: backspace on an empty composer drops the last chip; Ctrl+U /
+  Cmd+Delete clears chips with the draft; overlay backspace/`x` detaches
+  the previewed chip.
+- Bundled Smolify is gone: no reserved `smolify` name, no
+  `GRAFF_SMOLIFY` auto-connect, no CI boundary E2E. Add it like any
+  other remote MCP (`graff mcp add smolify --url https://app.smol.ly/mcp`).
+  A local secret-egress gate still rejects recognizable credentials on
+  `mcp__smolify__*` if you do. Schema-gate tests keep `smolify-tools.json`
+  as a fixture.
+- Test ratchet: unit suite 1683 (floor 1683; dropped the bundled-Smolify
+  registration test).
+
 ## v0.0.277 (2026-08-26)
 
 - MCP tools that `load_tool_schemas` has unfolded are `rlm` host functions

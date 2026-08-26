@@ -7,25 +7,41 @@
 // `harness --json` child over there, and one POST = one protocol request,
 // streamed back as NDJSON until that request's terminal event.
 
-export const HARNESS_VERSION = "0.4";
+export const HARNESS_VERSION = "0.12";
 
-export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "glm-4.5" | "glm-4.7" | "glm-5" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.4" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.5-codex" | "grok-4.3" | "grok-build" | "kimi-k2-thinking" | "kimi-k2.5" | "kimi-k2.6" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3";
-export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "codedb" | "todo_write" | "todo_read" | "ask_user" | "attempt_completion" | "subagent" | "workflow";
-export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kimi" | "xai" | "zai" | "codex";
+export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "accounts/fireworks/models/deepseek-v4-flash" | "accounts/fireworks/models/deepseek-v4-pro" | "accounts/fireworks/models/glm-5p2" | "accounts/fireworks/models/gpt-oss-120b" | "accounts/fireworks/models/kimi-k2p6" | "accounts/fireworks/models/kimi-k2p7-code" | "accounts/fireworks/models/minimax-m3" | "accounts/fireworks/models/qwen3p7-plus" | "alibaba/qwen3.8-27b" | "anthropic/claude-sonnet-4.6" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-opus-5" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "claude-sonnet-5" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "fugu" | "fugu-ultra" | "fugu-ultra-20260615" | "gemma-4-31b" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5-turbo" | "glm-5.2" | "glm-5.3" | "glm-5v-turbo" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.3-codex-spark" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-oss-120b" | "grok-4.3" | "grok-4.6" | "grok-build" | "k3" | "kilo-auto/small" | "kimi-for-coding" | "kimi-for-coding-highspeed" | "kimi-k2.6" | "kimi-latest" | "lmstudio" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3" | "mistral-medium-latest" | "mlx-community/Qwen3.6-27B-OptiQ-4bit" | "openai/gpt-oss-120b" | (string & {});
+export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "skill" | "codedb" | "read_tool_result" | "todo_write" | "todo_read" | "eval" | "note_constraint" | "ask_user" | "attempt_completion" | "load_tool_schemas" | "mcp_search_tools" | "mcp_select_tool" | "clock_sleep" | "subagent" | "workflow" | "agent_output" | "learn_candidate" | "peer_message" | "workspace" | "imagegen";
+export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kilo" | "groq" | "cerebras" | "mistral" | "kimi" | "moonshot" | "xai" | "zai" | "vercel" | "openrouter" | "fugu" | "fireworks" | "mlx" | "lmstudio" | "codex";
 
 /** Events streamed by the bridge (same `--json` contract as the stdio SDK).
+ *  `seq` is a monotonic, gap-free, 1-based per-session id the bridge forwards
+ *  unchanged from the child and persists; reconnect with `?from=seq+1` to pick
+ *  the stream back up exactly where you stopped (#330).
  *  Forward compatibility: a newer (edge) harness may stream event types not
  *  in this union; every loop here only terminates on its request's terminal
  *  event, so unknown events pass through and are safe to ignore. */
 export type Event =
-  | { type: "text"; text: string }
-  | { type: "tool_call"; name: string; input: Record<string, unknown> }
-  | { type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }
-  | { type: "tool_result"; name: string; is_error: boolean; text: string }
-  | { type: "turn"; text: string; context_tokens: number; cost_usd: number }
-  | { type: "system_prompt"; ok: boolean; append: boolean; chars: number }
-  | { type: "score"; ok: boolean; prompt_sha: string }
-  | { type: "error"; message: string };
+  | { seq: number; type: "text"; text: string }
+  | { seq: number; type: "reasoning"; text: string }
+  | { seq: number; type: "started"; provider: string; model: string }
+  | { seq: number; type: "model_call_started"; provider: string; model: string }
+  | { seq: number; type: "model_call_finished"; provider: string; model: string; ok: boolean; ms: number }
+  | { seq: number; type: "tool_call"; name: string; input: Record<string, unknown> }
+  | { seq: number; type: "tool_call_started"; name: string; input: Record<string, unknown> }
+  | { seq: number; type: "tool_rejected"; name: string; reason: "budget" | "duplicate" | string; input: Record<string, unknown>; message: string }
+  | { seq: number; type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }
+  | { seq: number; type: "tool_result"; name: string; is_error: boolean; text: string }
+  | { seq: number; type: "tool_call_finished"; name: string; is_error: boolean; ms: number }
+  | { seq: number; type: "agent_usage"; id: string; ok: boolean; duration_ms: number; tool_calls: number; context_tokens: number; cache_read_tokens: number }
+  | { seq: number; type: "finalizing" }
+  | { seq: number; type: "session_recap"; text: string; status: "needs_input" | "completed" | "failed"; source: "heuristic" | "model" }
+  | { seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; input_tokens: number; uncached_input_tokens: number; cache_read_tokens: number; output_tokens: number; api_calls: number; subscription_calls: number; unpriced_calls: number; complete?: boolean; metadata_complete?: boolean }
+  | { seq: number; type: "system_prompt"; ok: boolean; append: boolean; chars: number }
+  | { seq: number; type: "model"; ok: boolean; provider: string; model: string; context: number; note: string }
+  | { seq: number; type: "compact"; ok: boolean; chars: number }
+  | { seq: number; type: "effort"; ok: boolean; level: string; applies: boolean }
+  | { seq: number; type: "score"; ok: boolean; prompt_sha: string }
+  | { seq: number; type: "error"; message: string };
 
 /** Async (WebCrypto) variant of the trajectory-archive prompt fingerprint:
  *  first 8 bytes of SHA-256, hex (16 chars). */
@@ -48,12 +64,52 @@ export interface RemoteOptions {
   systemPrompt?: string;
   /** Append extra text to the system prompt. */
   appendSystemPrompt?: string;
-  /** Attach to an existing session instead of creating one. */
+  /** Hard per-turn root tool-call budget for the child session. */
+  maxToolCalls?: number;
+  /** Invocation-wide provider-call ceiling shared by all agent work. */
+  maxModelCalls?: number;
+  /** Reject duplicate root tool name+normalized-input calls per turn. */
+  dedupeToolCalls?: boolean;
+  /** Attach to an existing LIVE session on this bridge without creating one.
+   *  Skips the create call entirely — use `session` to create-or-resume. */
   sessionId?: string;
+  /** Name a DURABLE session (1-64 chars of [A-Za-z0-9._-]). The bridge runs
+   *  the child as `graff --json --resume <session>` in its workspace, so the
+   *  conversation is autosaved after every turn. Passing the same name to a
+   *  REPLACEMENT bridge picks the run up from the last persisted turn, with
+   *  the event sequence continuing rather than restarting (#330). Omitted:
+   *  the bridge mints a fresh 16-hex name, which is still durable. */
+  session?: string;
 }
+
+/** What the bridge reports when a session is created or resumed. */
+export interface SessionInfo {
+  /** The durable session id — also the graff session name on the server. */
+  session_id: string;
+  /** A session file already existed: this run continues an earlier one. */
+  resumed: boolean;
+  /** Highest seq on the persisted event tape. Reconnect from `last_seq + 1`. */
+  last_seq: number;
+}
+
+/** Native image input for a user turn. URLs stay URLs on every provider;
+ *  base64 is converted to that provider's image-content shape by Graff. */
+export type ImageInput =
+  | { type: "image_url"; url: string }
+  | { type: "image_base64"; mediaType: string; data: string };
 
 export interface ChatOptions {
   prompt: string;
+  /** Native vision parts (max 16); never flattened into prompt text. */
+  images?: ImageInput[];
+  review?: boolean;
+  /** Replay persisted events with seq >= from before this turn's live ones. */
+  from?: number;
+  /** Abort the turn mid-flight: on abort the SDK POSTs {"type":"cancel"}
+   *  (the bridge answers it ahead of the session's busy lock); the stream
+   *  still runs to the cancelled turn's terminal event — an `error` event
+   *  ("turn cancelled"). */
+  signal?: AbortSignal;
 }
 
 export interface AnswerOptions {
@@ -62,8 +118,37 @@ export interface AnswerOptions {
   callId?: string;
 }
 
+/** Reasoning effort levels accepted by setEffort (protocol set_effort). */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
+/** Structured result of one turn: the final assistant text plus the usage
+ *  the harness reported on the terminal `turn` event. */
+export interface AskResult {
+  /** Final assistant text. */
+  text: string;
+  /** Server-reported context size at turn end. */
+  contextTokens: number;
+  /** Turn cost in USD. */
+  costUsd: number;
+  inputTokens: number;
+  uncachedInputTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  /** Provider API calls made this turn. */
+  apiCalls: number;
+  /** Calls served under a subscription (unmetered) login. */
+  subscriptionCalls: number;
+  /** Calls with no pricing data. */
+  unpricedCalls: number;
+  /** False when the turn finished incomplete (interrupted/stalled). */
+  complete?: boolean;
+  metadataComplete?: boolean;
+}
+
 export interface RunAgentRemoteOptions extends RemoteOptions {
   prompt: string;
+  /** Native vision parts (max 16); never flattened into prompt text. */
+  images?: ImageInput[];
 }
 
 /** Parse a streaming NDJSON response body into events. */
@@ -73,37 +158,72 @@ async function* ndjson(res: Response): AsyncGenerator<Event> {
   const reader = body.getReader();
   const dec = new TextDecoder();
   let buf = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let i: number;
-    while ((i = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, i).trim();
-      buf = buf.slice(i + 1);
-      if (line) { try { yield JSON.parse(line) as Event; } catch { /* skip noise */ } }
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i: number;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (line) { try { yield JSON.parse(line) as Event; } catch { /* skip noise */ } }
+      }
     }
+    const tail = buf.trim();
+    if (tail) { try { yield JSON.parse(tail) as Event; } catch { /* skip noise */ } }
+  } finally {
+    // Release the body however the consumer left — terminal event, break,
+    // or throw — so the connection drains back to keep-alive and the
+    // server-side stream never dangles.
+    await reader.cancel().catch(() => {});
   }
-  const tail = buf.trim();
-  if (tail) { try { yield JSON.parse(tail) as Event; } catch { /* skip noise */ } }
 }
 
 const HEX16 = /^[0-9a-f]{16}$/;
 
 /** A session on a remote `harness serve` bridge — the fetch-transport
- *  analogue of the stdio `Harness` class, same method surface. */
+ *  analogue of the stdio `Harness` class, same method surface.
+ *
+ *  Resumability (#330): every event carries a monotonic `seq`, tracked here as
+ *  `lastSeq`. If a stream dies mid-turn, call `reconnect(h.lastSeq + 1)` — the
+ *  bridge kept draining the child into a persisted log the whole time, so you
+ *  get the events you missed and then the live tail. If the whole BRIDGE died,
+ *  point a new `RemoteHarness` at the replacement with the same `session` name
+ *  and the run continues from the last persisted turn. */
 export class RemoteHarness {
   private base: string;
   private token?: string;
+  /** Tail of the operation chain (see acquireOp). Always resolves. */
+  private opTail: Promise<void> = Promise.resolve();
+  private closed = false;
   /** Resolves to the session id (creation is lazy-started in the constructor). */
   readonly sessionId: Promise<string>;
+  /** Resolves to the bridge's create/resume report; null when attaching by
+   *  `sessionId` (no create call was made). */
+  readonly info: Promise<SessionInfo | null>;
+  /** Highest `seq` this client has seen. `reconnect(lastSeq + 1)` resumes
+   *  exactly where it stopped; 0 before the first event. */
+  lastSeq = 0;
 
   constructor(opts: RemoteOptions) {
     this.base = opts.url.replace(/\/+$/, "");
     this.token = opts.token;
-    this.sessionId = opts.sessionId
-      ? Promise.resolve(opts.sessionId)
-      : this.create(opts);
+    if (opts.sessionId) {
+      this.sessionId = Promise.resolve(opts.sessionId);
+      this.info = Promise.resolve(null);
+    } else {
+      const created = this.create(opts);
+      // Observe BOTH derived promises up front: a caller that only ever
+      // awaits one of info/sessionId must not trip an unhandled rejection on
+      // the other when creation fails — awaiting either still rejects with
+      // the original cause.
+      created.catch(() => {});
+      this.info = created;
+      const sid = created.then((d) => d.session_id);
+      sid.catch(() => {});
+      this.sessionId = sid;
+    }
   }
 
   /** Create a session (codegraff parity for `Graff.init`, remote edition). */
@@ -128,43 +248,150 @@ export class RemoteHarness {
     return res;
   }
 
-  private async create(opts: RemoteOptions): Promise<string> {
+  private async create(opts: RemoteOptions): Promise<SessionInfo> {
     const body: Record<string, unknown> = {};
+    if (opts.session) body.session = opts.session;
     if (opts.model) body.model = opts.model;
     if (opts.yolo !== undefined) body.yolo = opts.yolo;
     if (opts.systemPrompt) body.system_prompt = opts.systemPrompt;
     if (opts.appendSystemPrompt) body.append_system_prompt = opts.appendSystemPrompt;
+    if (opts.maxToolCalls !== undefined) body.maxToolCalls = opts.maxToolCalls;
+    if (opts.maxModelCalls !== undefined) body.maxModelCalls = opts.maxModelCalls;
+    if (opts.dedupeToolCalls !== undefined) body.dedupeToolCalls = opts.dedupeToolCalls;
     const res = await this.req("POST", "/v1/sessions", body);
-    const data = (await res.json()) as { session_id: string };
-    return data.session_id;
+    const data = (await res.json()) as SessionInfo;
+    this.lastSeq = data.last_seq ?? 0;
+    return data;
+  }
+
+  /** Track the sequence as events go by, so a reconnect needs no bookkeeping
+   *  from the caller. */
+  private note(ev: Event): Event {
+    if (typeof ev.seq === "number" && ev.seq > this.lastSeq) this.lastSeq = ev.seq;
+    return ev;
+  }
+
+  /** Operation chain, the client-side mirror of the bridge's
+   *  one-non-answer-request-in-flight rule: turns and acked controls run one
+   *  at a time. The tail always RESOLVES, so one operation's failure cannot
+   *  poison the queue behind it. answer(), cancel(), and reconnect() bypass
+   *  it — the bridge handles all three without taking the protocol lock. */
+  private acquireOp(): Promise<() => void> {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const acquired = this.opTail.then(() => release);
+    this.opTail = this.opTail.then(() => gate);
+    return acquired;
+  }
+
+  /** Run `op` holding the operation lock (see acquireOp). */
+  private async runOp<T>(op: () => Promise<T>): Promise<T> {
+    const release = await this.acquireOp();
+    try {
+      return await op();
+    } finally {
+      release();
+    }
   }
 
   /** Send one protocol request; stream its events. */
-  private async *send(payload: Record<string, unknown>): AsyncGenerator<Event> {
+  private async *send(payload: Record<string, unknown>, from?: number): AsyncGenerator<Event> {
     const id = await this.sessionId;
-    const res = await this.req("POST", `/v1/sessions/${id}`, payload);
-    yield* ndjson(res);
+    const q = from === undefined ? "" : `?from=${from}`;
+    const res = await this.req("POST", `/v1/sessions/${id}${q}`, payload);
+    for await (const ev of ndjson(res)) yield this.note(ev);
   }
 
-  /** Run one turn; async-iterate events up to and including `turn`/`error`. */
+  /** Run one turn; async-iterate events up to and including `turn`/`error`.
+   *  Holds the operation slot until the terminal event (the bridge itself
+   *  allows one non-answer request in flight per session). Pass `signal` to
+   *  cancel the turn (see ChatOptions.signal / cancel()). */
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {
     const prompt = typeof input === "string" ? input : input.prompt;
-    let terminal = false;
-    for await (const ev of this.send({ type: "user", text: prompt })) {
-      yield ev;
-      if (ev.type === "turn" || ev.type === "error") { terminal = true; break; }
+    const type = typeof input === "string" || !input.review ? "user" : "review";
+    const images = typeof input === "string" ? undefined : input.images?.map((image) =>
+      image.type === "image_base64"
+        ? { type: image.type, media_type: image.mediaType, data: image.data }
+        : image);
+    const from = typeof input === "string" ? undefined : input.from;
+    const signal = typeof input === "string" ? undefined : input.signal;
+    signal?.throwIfAborted();
+    const release = await this.acquireOp();
+    let aborted = false;
+    const onAbort = () => { if (aborted) return; aborted = true; void this.cancel(); };
+    try {
+      // Wait until the bridge has accepted the turn and returned stream headers
+      // before arming cancel. Otherwise an immediately-aborted signal can POST
+      // cancel first, receive 409, and leave the following turn running.
+      const id = await this.sessionId;
+      const q = from === undefined ? "" : `?from=${from}`;
+      const res = await this.req("POST", `/v1/sessions/${id}${q}`, { type, text: prompt, ...(images?.length ? { images } : {}) });
+      if (signal) {
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      }
+      let terminal = false;
+      for await (const raw of ndjson(res)) {
+        const ev = this.note(raw);
+        yield ev;
+        if (ev.type === "turn" || ev.type === "error") { terminal = true; break; }
+      }
+      if (!terminal) throw new Error("bridge stream ended mid-turn (session process died?)");
+    } finally {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      release();
     }
-    if (!terminal) throw new Error("bridge stream ended mid-turn (session process died?)");
+  }
+
+  /** Re-attach to a session after losing the stream: replay persisted events
+   *  with `seq >= from` (default: everything after what this client already
+   *  saw), then follow live until the in-flight request's terminal event.
+   *  Sends nothing to the model, so it is safe to call while a turn is
+   *  running — including from a different process than the one that started
+   *  it. Also the way to read a completed turn you never received. */
+  async *reconnect(from = this.lastSeq + 1): AsyncGenerator<Event> {
+    const id = await this.sessionId;
+    const res = await this.req("GET", `/v1/sessions/${id}/events?from=${from}`);
+    for await (const ev of ndjson(res)) yield this.note(ev);
+  }
+
+  /** Run a turn and return its final text plus the usage the harness
+   *  reported on the terminal `turn` event (tokens, cost, call breakdown).
+   *  Rejects on an `error` event — including a cancelled turn. */
+  async askResult(input: string | ChatOptions): Promise<AskResult> {
+    let result: AskResult | null = null;
+    for await (const ev of this.chat(input)) {
+      if (ev.type === "turn") {
+        result = {
+          text: ev.text,
+          contextTokens: ev.context_tokens,
+          costUsd: ev.cost_usd,
+          inputTokens: ev.input_tokens,
+          uncachedInputTokens: ev.uncached_input_tokens,
+          cacheReadTokens: ev.cache_read_tokens,
+          outputTokens: ev.output_tokens,
+          apiCalls: ev.api_calls,
+          subscriptionCalls: ev.subscription_calls,
+          unpricedCalls: ev.unpriced_calls,
+          complete: ev.complete,
+          metadataComplete: ev.metadata_complete,
+        };
+      }
+      if (ev.type === "error") throw new Error(ev.message);
+    }
+    if (!result) throw new Error("turn ended without a terminal event");
+    return result;
   }
 
   /** Run a turn and return just the final assistant text. */
   async ask(input: string | ChatOptions): Promise<string> {
-    let final = "";
-    for await (const ev of this.chat(input)) {
-      if (ev.type === "turn") final = ev.text;
-      if (ev.type === "error") throw new Error(ev.message);
-    }
-    return final;
+    return (await this.askResult(input)).text;
+  }
+
+  /** Run one isolated, read-only review turn and return its final report. */
+  review(input: string | ChatOptions): Promise<string> {
+    const options = typeof input === "string" ? { prompt: input } : input;
+    return this.ask({ ...options, review: true });
   }
 
   /** Answer an in-flight ask_user event. The original chat() stream continues
@@ -177,54 +404,122 @@ export class RemoteHarness {
     await res.text();
   }
 
+  /** Cancel the in-flight turn (REPL Esc equivalent): POSTs
+   *  {"type":"cancel"} to the bridge, which answers it AHEAD of the
+   *  session's busy lock and forwards it down the child's out-of-band cancel
+   *  path — so it bypasses the client operation queue too. Best-effort: the
+   *  bridge 409s when no request is in flight, which is not an error here. */
+  async cancel(): Promise<void> {
+    const id = await this.sessionId.catch(() => null);
+    if (id === null) return; // no live session: nothing to cancel
+    const res = await this.req("POST", `/v1/sessions/${id}`, { type: "cancel" }).catch(() => null);
+    if (res) await res.text().catch(() => {});
+  }
+
+  /** Switch provider/model mid-session — the provider-qualified form of the
+   *  protocol's set_model control. Resolves on the `model` ack, rejects on
+   *  the `error` event; serialized with chat() and the other controls. */
+  setModel(provider: ProviderId | string, model: ModelName | string): Promise<void> {
+    return this.runOp(async () => {
+      for await (const ev of this.send({ type: "set_model", provider, model })) {
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "model") return;
+      }
+      throw new Error("bridge stream ended before acking set_model");
+    });
+  }
+
+  /** Set the reasoning effort for later turns (protocol set_effort).
+   *  Resolves on the `effort` ack; serialized like the other controls. */
+  setEffort(level: EffortLevel): Promise<void> {
+    return this.runOp(async () => {
+      for await (const ev of this.send({ type: "set_effort", level })) {
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "effort") return;
+      }
+      throw new Error("bridge stream ended before acking set_effort");
+    });
+  }
+
+  /** Compact the conversation history now (protocol compact). Resolves on
+   *  the `compact` ack; rejects when compaction fails (history is left
+   *  unchanged in that case). Serialized like the other controls. */
+  compact(): Promise<void> {
+    return this.runOp(async () => {
+      for await (const ev of this.send({ type: "compact" })) {
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "compact") return;
+      }
+      throw new Error("bridge stream ended before acking compact");
+    });
+  }
+
 
   /** Replace (or with append=true, extend) the system prompt for later turns.
    *  Same KV-cache warning as the stdio SDK: any mutation invalidates the
    *  cached prefix for the whole conversation — prefer the creation-time
    *  options; mutate only at task boundaries. */
   async setSystemPrompt(text: string, append = false): Promise<void> {
-    for await (const ev of this.send({ type: "set_system_prompt", text, append })) {
-      if (ev.type === "error") throw new Error(ev.message);
-      if (ev.type === "system_prompt") return;
-    }
-    throw new Error("bridge stream ended before acking set_system_prompt");
+    return this.runOp(async () => {
+      for await (const ev of this.send({ type: "set_system_prompt", text, append })) {
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "system_prompt") return;
+      }
+      throw new Error("bridge stream ended before acking set_system_prompt");
+    });
   }
 
   appendSystemPrompt(text: string): Promise<void> { return this.setSystemPrompt(text, true); }
 
   /** Record an evaluation score in the server-side trajectory archive —
-   *  same semantics as the stdio SDK's `score()`. */
-  async score(promptOrSha: string, value: number, notes = "", parent?: string): Promise<void> {
+   *  same semantics as the stdio SDK's `score()`, including the optional
+   *  `scale` ("unit" | "percent") override of the harness's
+   *  value-normalization heuristic. */
+  async score(promptOrSha: string, value: number, notes = "", parent?: string, niche?: string, scale?: "unit" | "percent"): Promise<void> {
     const sha = HEX16.test(promptOrSha) ? promptOrSha : await promptFingerprint(promptOrSha);
     const parent_sha = parent === undefined ? undefined
       : HEX16.test(parent) ? parent : await promptFingerprint(parent);
-    for await (const ev of this.send({ type: "score", prompt_sha: sha, score: value, notes, parent_sha })) {
-      if (ev.type === "error") throw new Error(ev.message);
-      if (ev.type === "score") return;
-    }
-    throw new Error("bridge stream ended before acking score");
+    // `niche` files the score into a MAP-Elites cell so the fleet can promote a
+    // champion for the role; the remote harness reads it from the request and
+    // tags its own score/submit. (Genome capture rides the harness process,
+    // which holds the persona text the remote bridge only references by sha.)
+    return this.runOp(async () => {
+      for await (const ev of this.send({ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale })) {
+        if (ev.type === "error") throw new Error(ev.message);
+        if (ev.type === "score") return;
+      }
+      throw new Error("bridge stream ended before acking score");
+    });
   }
 
   /** The harness schema version this client was generated from. */
   version(): string { return HARNESS_VERSION; }
 
   /** Close the remote session (graceful: the bridge EOFs the child's stdin
-   *  so it flushes telemetry/trajectory on the way out). */
+   *  so it flushes telemetry/trajectory on the way out). Idempotent and
+   *  never throws — safe even when session creation failed. */
   async close(): Promise<void> {
-    const id = await this.sessionId;
-    await this.req("DELETE", `/v1/sessions/${id}`).catch(() => {});
+    if (this.closed) return;
+    this.closed = true;
+    const id = await this.sessionId.catch(() => null);
+    if (id === null) return; // creation failed or no session: nothing to close
+    const res = await this.req("DELETE", `/v1/sessions/${id}`).catch(() => null);
+    if (res) await res.text().catch(() => {});
   }
+
+  /** Alias for close(). */
+  dispose(): Promise<void> { return this.close(); }
 }
 
 /** Create a remote session, run a single turn, stream its events, close. */
 export async function* runAgentRemote(opts: RunAgentRemoteOptions): AsyncGenerator<Event> {
   const h = new RemoteHarness(opts);
   try {
-    yield* h.chat({ prompt: opts.prompt });
+    yield* h.chat({ prompt: opts.prompt, images: opts.images });
   } finally {
     await h.close();
   }
 }
 
-export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "glm-4.5", "glm-4.7", "glm-5", "gpt-5-codex", "gpt-5.2", "gpt-5.4", "gpt-5.4-pro", "gpt-5.5", "gpt-5.5-codex", "grok-4.3", "grok-build", "kimi-k2-thinking", "kimi-k2.5", "kimi-k2.6", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3"];
-export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "ask_user", "attempt_completion", "subagent", "workflow"];
+export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "alibaba/qwen3.8-27b", "anthropic/claude-sonnet-4.6", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-opus-5", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "claude-sonnet-5", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "gemma-4-31b", "glm-4.5", "glm-4.7", "glm-5", "glm-5-turbo", "glm-5.2", "glm-5.3", "glm-5v-turbo", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-oss-120b", "grok-4.3", "grok-4.6", "grok-build", "k3", "kilo-auto/small", "kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3", "mistral-medium-latest", "mlx-community/Qwen3.6-27B-OptiQ-4bit", "openai/gpt-oss-120b"];
+export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "skill", "codedb", "read_tool_result", "todo_write", "todo_read", "eval", "note_constraint", "ask_user", "attempt_completion", "load_tool_schemas", "mcp_search_tools", "mcp_select_tool", "clock_sleep", "subagent", "workflow", "agent_output", "learn_candidate", "peer_message", "workspace", "imagegen"];

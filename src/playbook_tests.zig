@@ -89,7 +89,7 @@ test "store round trip: add/dedupe/retire through the real .graff/playbook.jsonl
             // Retire is a TOMBSTONE: the add record stays on disk, and the
             // file only ever grows.
             const before = (try Io.Dir.cwd().readFileAlloc(io, playbook.path, arena, .limited(1 << 20))).len;
-            try std.testing.expect(playbook.retire(io, arena, first.id));
+            try std.testing.expectEqual(playbook.Retire.ok, playbook.retire(io, arena, first.id));
             const after = try Io.Dir.cwd().readFileAlloc(io, playbook.path, arena, .limited(1 << 20));
             try std.testing.expect(after.len > before);
             try std.testing.expect(std.mem.indexOf(u8, after, "never use emojis in code comments") != null); // history intact
@@ -98,7 +98,7 @@ test "store round trip: add/dedupe/retire through the real .graff/playbook.jsonl
             try std.testing.expectEqual(playbook.Source.learned, live[0].source);
 
             // Retiring an unknown id writes nothing and says so.
-            try std.testing.expect(!playbook.retire(io, arena, "pb-deadbeef"));
+            try std.testing.expectEqual(playbook.Retire.unknown, playbook.retire(io, arena, "pb-deadbeef"));
 
             // Re-adding a retired item works: the later op wins.
             try std.testing.expect(playbook.add(io, arena, "never use emojis in code comments", .user, "user:4").ok);
@@ -346,6 +346,103 @@ test "/never (#381): bare lists, text adds, rm retires — and a non-/never line
             const rm = try std.fmt.allocPrint(arena, "/never rm {s}", .{id});
             try std.testing.expect(try glue.command(&root, arena, rm, &aw.writer));
             try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "retired") != null);
+            try std.testing.expectEqual(@as(usize, 0), playbook.load(io, arena).len);
+        }
+    }.body);
+}
+
+test "/never rm matches unique text and applyUserOverride honors an explicit forget (#638)" {
+    try inScratch(struct {
+        fn body(io: Io, arena: std.mem.Allocator) !void {
+            var aw: Io.Writer.Allocating = .init(arena);
+            var root = stubRoot(std.testing.allocator, arena, &aw.writer);
+            try std.testing.expect(try glue.command(&root, arena, "/never no navigation dots or scroll hints", &aw.writer));
+            try std.testing.expectEqual(@as(usize, 1), playbook.load(io, arena).len);
+
+            aw.clearRetainingCapacity();
+            try std.testing.expect(try glue.command(&root, arena, "/never rm navigation dots", &aw.writer));
+            try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "retired") != null);
+            try std.testing.expectEqual(@as(usize, 0), playbook.load(io, arena).len);
+
+            try std.testing.expect(try glue.command(&root, arena, "/never never use emojis in comments", &aw.writer));
+            try std.testing.expectEqual(@as(usize, 0), glue.applyUserOverride(&root, arena, "please add a comment"));
+            try std.testing.expectEqual(@as(usize, 1), playbook.load(io, arena).len);
+            try std.testing.expectEqual(@as(usize, 1), glue.applyUserOverride(&root, arena, "forget the standing rule: never use emojis in comments"));
+            try std.testing.expectEqual(@as(usize, 0), playbook.load(io, arena).len);
+        }
+    }.body);
+}
+
+test "/never rm without a needle does not add or retire (#644)" {
+    try inScratch(struct {
+        fn body(io: Io, arena: std.mem.Allocator) !void {
+            var aw: Io.Writer.Allocating = .init(arena);
+            var root = stubRoot(std.testing.allocator, arena, &aw.writer);
+            try std.testing.expect(try glue.command(&root, arena, "/never no navigation dots or scroll hints", &aw.writer));
+            try std.testing.expectEqual(@as(usize, 1), playbook.load(io, arena).len);
+            const id = try arena.dupe(u8, playbook.load(io, arena)[0].id);
+
+            aw.clearRetainingCapacity();
+            try std.testing.expect(try glue.command(&root, arena, "/never rm", &aw.writer));
+            const bare = aw.writer.buffered();
+            try std.testing.expect(std.mem.indexOf(u8, bare, "rm needs an id") != null);
+            try std.testing.expect(std.mem.indexOf(u8, bare, "retired") == null);
+            const after_bare = playbook.load(io, arena);
+            try std.testing.expectEqual(@as(usize, 1), after_bare.len);
+            try std.testing.expectEqualStrings(id, after_bare[0].id);
+            try std.testing.expectEqualStrings("no navigation dots or scroll hints", after_bare[0].text);
+            const disk = try Io.Dir.cwd().readFileAlloc(io, playbook.path, arena, .limited(1 << 20));
+            try std.testing.expect(std.mem.indexOf(u8, disk, "\"op\":\"retire\"") == null);
+
+            aw.clearRetainingCapacity();
+            try std.testing.expect(try glue.command(&root, arena, "/never remove", &aw.writer));
+            try std.testing.expectEqual(@as(usize, 1), playbook.load(io, arena).len);
+            try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "recorded") == null);
+
+            aw.clearRetainingCapacity();
+            const tabbed = try std.fmt.allocPrint(arena, "/never rm\t{s}", .{id});
+            try std.testing.expect(try glue.command(&root, arena, tabbed, &aw.writer));
+            try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "retired") != null);
+            try std.testing.expectEqual(@as(usize, 0), playbook.load(io, arena).len);
+            const after = try Io.Dir.cwd().readFileAlloc(io, playbook.path, arena, .limited(1 << 20));
+            try std.testing.expect(std.mem.indexOf(u8, after, "\"op\":\"retire\"") != null);
+        }
+    }.body);
+}
+
+test "/never rm emits a privacy-safe never_retire trace (#644)" {
+    try inScratch(struct {
+        fn body(io: Io, arena: std.mem.Allocator) !void {
+            var taw: Io.Writer.Allocating = .init(arena);
+            var tracer: @import("trace.zig").Tracer = .{
+                .io = io,
+                .gpa = std.testing.allocator,
+                .out = &taw.writer,
+                .start = Io.Timestamp.now(io, .awake),
+                .identity = .{ .run_id = "t", .pid = 1, .session_id = "s" },
+            };
+            var aw: Io.Writer.Allocating = .init(arena);
+            var root = stubRoot(std.testing.allocator, arena, &aw.writer);
+            root.tracer = &tracer;
+
+            try std.testing.expect(try glue.command(&root, arena, "/never no scroll hints", &aw.writer));
+            const id = try arena.dupe(u8, playbook.load(io, arena)[0].id);
+
+            taw.clearRetainingCapacity();
+            try std.testing.expect(try glue.command(&root, arena, "/never rm pb-deadbeef", &aw.writer));
+            const miss = taw.writer.buffered();
+            try std.testing.expect(std.mem.indexOf(u8, miss, "\"ev\":\"never_retire\"") != null);
+            try std.testing.expect(std.mem.indexOf(u8, miss, "\"ok\":false") != null);
+            try std.testing.expect(std.mem.indexOf(u8, miss, "scroll") == null);
+
+            taw.clearRetainingCapacity();
+            const rm = try std.fmt.allocPrint(arena, "/never rm {s}", .{id});
+            try std.testing.expect(try glue.command(&root, arena, rm, &aw.writer));
+            const hit = taw.writer.buffered();
+            try std.testing.expect(std.mem.indexOf(u8, hit, "\"ev\":\"never_retire\"") != null);
+            try std.testing.expect(std.mem.indexOf(u8, hit, id) != null);
+            try std.testing.expect(std.mem.indexOf(u8, hit, "\"ok\":true") != null);
+            try std.testing.expect(std.mem.indexOf(u8, hit, "scroll") == null);
             try std.testing.expectEqual(@as(usize, 0), playbook.load(io, arena).len);
         }
     }.body);

@@ -25,6 +25,8 @@ means none of them. mtime only breaks ties.
 
   resolve [--filter TEXT]...  print the artifact path for that build
   count   [--filter TEXT]...  run that artifact and print how many tests it holds
+  scan                        count named + anonymous tests from the unfiltered
+                              artifact without executing it (#641)
 
 Both exit non-zero with a reason on stderr rather than guess. Neither builds:
 the caller runs `zig build test` (with the same filters) first, so a compile
@@ -44,6 +46,7 @@ SRC = ROOT / "src"
 CACHE = ROOT / ".zig-cache" / "o"
 
 TEST_NAME = re.compile(r'^test "((?:[^"\\]|\\.)*)"', re.M)
+ANON_TEST = re.compile(r"(?m)^test \{")
 ALL_PASSED = re.compile(r"^All (\d+) tests passed\.$", re.M)
 MIXED = re.compile(r"^(\d+) passed; (\d+) skipped; (\d+) failed\.$", re.M)
 
@@ -74,7 +77,7 @@ def declared_tests() -> dict[str, str]:
     return out
 
 
-def foreign_tests(declared: dict[str, str]) -> set[str]:
+def foreign_tests(declared: dict[str, str]) -> dict[str, str]:
     """Test names that belong to a DIFFERENT test root than src/.
 
     The name set alone cannot tell the src floor build (a filter matching
@@ -86,13 +89,15 @@ def foreign_tests(declared: dict[str, str]) -> set[str]:
     Any name declared outside src/ is proof the artifact is not the src root,
     whatever the filters were, so it settles that tie the other way.
     """
-    out: set[str] = set()
+    out: dict[str, str] = {}
     for path in sorted(ROOT.rglob("*.zig")):
         rel = path.relative_to(ROOT)
         if rel.parts[0] in ("src", "vendor", ".zig-cache", "zig-out"):
             continue
-        out.update(_names_in(path))
-    return out - set(declared)
+        for name in _names_in(path):
+            if name not in declared:
+                out[name] = path.name
+    return out
 
 
 class Selection:
@@ -131,6 +136,43 @@ class Selection:
         )
 
 
+def names_in_blob(blob: bytes, names: dict[str, str] | set[str] | list[str]) -> set[str]:
+    """Which of `names` occur in `blob`.
+
+    Zig 0.17 embeds each `test "name"` as the C string `test.<name>`. A
+    NUL-split plus that prefix is one C pass; `name in blob` once per
+    declared test is minutes on a 130MB artifact (#641).
+    """
+    wanted = {n.encode("utf-8"): n for n in names}
+    prefix = b"test."
+    present: set[str] = set()
+    for part in blob.split(b"\0"):
+        hit = wanted.get(part)
+        if hit is None and part.startswith(prefix):
+            hit = wanted.get(part[len(prefix) :])
+        if hit is not None:
+            present.add(hit)
+    # Zig 0.17 may pool adjacent test-name strings into one NUL-delimited blob:
+    # `module.test.firstmodule.test.second`. The exact-part pass above then
+    # sees neither. A fully-qualified fallback avoids false positives from a
+    # name merely mentioned elsewhere in the binary, while one compiled regex
+    # scans the artifact once instead of doing N names × 130 MiB (#641).
+    if isinstance(names, dict) and len(present) < len(names):
+        qualified: dict[bytes, str] = {}
+        for name, source in names.items():
+            if name in present:
+                continue
+            module = pathlib.Path(source).stem
+            qualified[f"{module}.test.{name}".encode("utf-8")] = name
+        if qualified:
+            pooled = re.compile(
+                b"(?:" + b"|".join(re.escape(p) for p in sorted(qualified, key=len, reverse=True)) + b")"
+            )
+            for match in pooled.finditer(blob):
+                present.add(qualified[match.group(0)])
+    return present
+
+
 def candidates() -> list[pathlib.Path]:
     """Every compiled test artifact, newest first."""
     found = [p for p in CACHE.glob("*/test") if p.is_file()]
@@ -155,24 +197,65 @@ def select(filters: list[str], declared: dict[str, str] | None = None) -> Select
     outsiders = foreign_tests(declared)
 
     ranked: list[Selection] = []
-    # candidates() is newest first and sort() below is stable, so ties stay in
-    # that order and the newest equally-good artifact wins.
+    newest: pathlib.Path | None = None
+    # candidates() is newest first. A perfect match (no missing, no foreign,
+    # no extras the filters did not ask for) is the answer — stop there
+    # instead of reading every stale filtered artifact (#641).
     for path in candidates():
+        if newest is None:
+            newest = path
         blob = path.read_bytes()
-        present = {n for n in declared if n.encode("utf-8") in blob}
-        alien = {n for n in outsiders if n.encode("utf-8") in blob}
+        present = names_in_blob(blob, declared)
+        # Foreign names only matter when `expected` is empty (floor vs tui-test).
+        alien = names_in_blob(blob, outsiders) if not expected else set()
         ranked.append(Selection(path, present, expected, alien))
+        # Unfiltered: every src name present is the full suite, even if one
+        # foreign string collides. Filtered: names must match the filter set.
+        # Either way, stop — do not read every stale artifact (#641).
+        if not ranked[-1].missing and (not filters or not ranked[-1].extra):
+            break
     if not ranked:
         raise ArtifactError(
             "no compiled test binary under .zig-cache/o - run `zig build test` first"
         )
 
-    newest = ranked[0].path
     ranked.sort(key=lambda s: (len(s.missing), len(s.foreign), len(s.extra)))
     best = ranked[0]
     best.considered = len(ranked)
-    best.was_newest = best.path == newest
+    best.was_newest = newest is not None and best.path == newest
     return best
+
+
+def anonymous_tests() -> int:
+    """`test {}` blocks in src/*.zig. Reachability already requires every
+    test-bearing file to be compiled in; adding the named-in-binary count
+    reproduces the suite total without executing the artifact (#641)."""
+    total = 0
+    for path in sorted(SRC.glob("*.zig")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        total += len(ANON_TEST.findall(text))
+    return total
+
+
+def scan_count(filters: list[str] | None = None) -> int:
+    """Suite size from the artifact's named tests + source anonymous tests.
+
+    A duplicate `test "name"` is two Zig tests and one dict key; count
+    source occurrences that are present in the artifact so the number
+    matches `All N tests passed.`
+    """
+    chosen = select(filters or [])
+    if filters:
+        return len(chosen.present)
+    named = 0
+    for path in sorted(SRC.glob("*.zig")):
+        for name in _names_in(path):
+            if name in chosen.present:
+                named += 1
+    return named + anonymous_tests()
 
 
 def artifact_count(path: pathlib.Path) -> tuple[int, str]:
@@ -201,7 +284,7 @@ def artifact_count(path: pathlib.Path) -> tuple[int, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ("resolve", "count"):
+    for name in ("resolve", "count", "scan"):
         cmd = sub.add_parser(name)
         cmd.add_argument(
             "--filter",
@@ -234,6 +317,18 @@ def main() -> int:
 
     if args.cmd == "resolve":
         print(chosen.path)
+        return 0
+
+    if args.cmd == "scan":
+        if args.filter:
+            print(len(chosen.present))
+            return 0
+        named = 0
+        for path in sorted(SRC.glob("*.zig")):
+            for name in _names_in(path):
+                if name in chosen.present:
+                    named += 1
+        print(named + anonymous_tests())
         return 0
 
     try:

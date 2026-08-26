@@ -11,11 +11,25 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Iterator, Optional
+from typing import Iterator, List, Literal, Optional, TypedDict, Union
 
 MODELS = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "alibaba/qwen3.8-27b", "anthropic/claude-sonnet-4.6", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-opus-5", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "claude-sonnet-5", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "gemma-4-31b", "glm-4.5", "glm-4.7", "glm-5", "glm-5-turbo", "glm-5.2", "glm-5.3", "glm-5v-turbo", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-oss-120b", "grok-4.3", "grok-4.6", "grok-build", "k3", "kilo-auto/small", "kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3", "mistral-medium-latest", "mlx-community/Qwen3.6-27B-OptiQ-4bit", "openai/gpt-oss-120b"]
 TOOLS = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "skill", "codedb", "read_tool_result", "todo_write", "todo_read", "eval", "note_constraint", "ask_user", "attempt_completion", "load_tool_schemas", "mcp_search_tools", "mcp_select_tool", "clock_sleep", "subagent", "workflow", "agent_output", "learn_candidate", "peer_message", "workspace", "imagegen"]
 PROVIDERS = ["anthropic", "codegraff", "deepseek", "openai", "minimax", "xiaomi", "kilo", "groq", "cerebras", "mistral", "kimi", "moonshot", "xai", "zai", "vercel", "openrouter", "fugu", "fireworks", "mlx", "lmstudio", "codex"]
+
+
+class ImageUrlInput(TypedDict):
+    type: Literal["image_url"]
+    url: str
+
+
+class ImageBase64Input(TypedDict):
+    type: Literal["image_base64"]
+    media_type: str
+    data: str
+
+
+ImageInput = Union[ImageUrlInput, ImageBase64Input]
 
 
 def _sdk_install_id() -> str:
@@ -246,13 +260,17 @@ class Harness:
             _report_error("spawn", f"{binary}: {e}")
             raise
 
-    def chat(self, text: str, review: bool = False) -> Iterator[dict]:
+    def chat(self, text: str, review: bool = False,
+             images: Optional[List[ImageInput]] = None) -> Iterator[dict]:
         """Send a user turn; yield events until (and including) the 'turn'
         event. Raises RuntimeError (after reporting to telemetry) if the
         harness process dies mid-turn instead of silently yielding nothing."""
         assert self.proc.stdin and self.proc.stdout
         try:
-            self.proc.stdin.write(json.dumps({"type": "review" if review else "user", "text": text}) + "\n")
+            payload = {"type": "review" if review else "user", "text": text}
+            if images:
+                payload["images"] = images
+            self.proc.stdin.write(json.dumps(payload) + "\n")
             self.proc.stdin.flush()
         except OSError as e:
             _report_error("died", f"harness pipe closed on send: {e}")
@@ -273,20 +291,20 @@ class Harness:
         _report_error("died", f"harness exited mid-turn (rc={rc})")
         raise RuntimeError(f"harness exited mid-turn (rc={rc})")
 
-    def ask(self, text: str) -> str:
+    def ask(self, text: str, images: Optional[List[ImageInput]] = None) -> str:
         """Run a turn and return just the final assistant text."""
         final = ""
-        for ev in self.chat(text):
+        for ev in self.chat(text, images=images):
             if ev.get("type") == "turn":
                 final = ev["text"]
             elif ev.get("type") == "error":
                 raise RuntimeError(ev["message"])
         return final
 
-    def review(self, text: str) -> str:
+    def review(self, text: str, images: Optional[List[ImageInput]] = None) -> str:
         """Run one isolated, read-only review turn and return its report."""
         final = ""
-        for ev in self.chat(text, review=True):
+        for ev in self.chat(text, review=True, images=images):
             if ev.get("type") == "turn":
                 final = ev["text"]
             elif ev.get("type") == "error":
@@ -552,12 +570,15 @@ class RemoteHarness:
         return self._stream(resp)
 
     def chat(self, text: str, review: bool = False,
-             from_seq: Optional[int] = None) -> Iterator[dict]:
+             from_seq: Optional[int] = None,
+             images: Optional[List[ImageInput]] = None) -> Iterator[dict]:
         """Send a user turn; yield events until (and including) the 'turn'
         event. Raises RuntimeError if the stream ends without one (the
         session process died server-side)."""
         terminal = False
         payload = {"type": "review" if review else "user", "text": text}
+        if images:
+            payload["images"] = images
         for ev in self._send(payload, from_seq):
             yield ev
             if ev.get("type") in ("turn", "error"):
@@ -566,20 +587,20 @@ class RemoteHarness:
         if not terminal:
             raise RuntimeError("bridge stream ended mid-turn (session process died?)")
 
-    def ask(self, text: str) -> str:
+    def ask(self, text: str, images: Optional[List[ImageInput]] = None) -> str:
         """Run a turn and return just the final assistant text."""
         final = ""
-        for ev in self.chat(text):
+        for ev in self.chat(text, images=images):
             if ev.get("type") == "turn":
                 final = ev["text"]
             elif ev.get("type") == "error":
                 raise RuntimeError(ev["message"])
         return final
 
-    def review(self, text: str) -> str:
+    def review(self, text: str, images: Optional[List[ImageInput]] = None) -> str:
         """Run one isolated, read-only review turn and return its report."""
         final = ""
-        for ev in self.chat(text, review=True):
+        for ev in self.chat(text, review=True, images=images):
             if ev.get("type") == "turn":
                 final = ev["text"]
             elif ev.get("type") == "error":

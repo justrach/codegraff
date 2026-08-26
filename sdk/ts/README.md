@@ -102,8 +102,19 @@ for await (const ev of runAgentRemote({ url: "https://my-bridge.example", token,
 
 const h = RemoteHarness.init({ url: "http://127.0.0.1:8787", token, yolo: true });
 console.log(await h.ask("what files are here?"));
+console.log(await h.ask({
+  prompt: "read the code in this image",
+  images: [
+    { type: "image_url", url: "https://example.com/code.png" },
+    { type: "image_base64", mediaType: "image/png", data: pngBase64 },
+  ],
+}));
 await h.close();
 ```
+
+`images` are native provider vision parts, not text pasted into the prompt.
+They work on local `Harness` and edge-safe `RemoteHarness` turns and are
+validated against the selected model and the 16-image/3.7 MB-per-image limits.
 
 ## Orchestration (#276): agent()/parallel()/pipeline(), budgets, resumable runs
 
@@ -153,9 +164,29 @@ See `orchestrate.ts`'s file header for the exact journal format and the
 concurrency/determinism guarantees (and their documented edges) for
 `parallel()`/`pipeline()`.
 
+## ACP (`graff acp`)
+
+A host that wants ACP v1 `session/update`s (thought / tool_call / text), not
+`--json` events, should spawn `graff acp` instead of `Harness`.
+`@codegraff/sdk/acp` is the spawn plus JSON-RPC write/read:
+
+```ts
+import { acp } from "@codegraff/sdk/acp";
+
+const session = await acp({ model: "gpt-5.5" });
+session.onUpdate((update) => console.log(update.sessionUpdate));
+const { stopReason, updates } = await session.prompt("hello");
+console.log(stopReason, updates.length);
+await session.close();
+```
+
+`spawnAcp()` skips the `initialize` → `session/new` handshake. Recipe, method
+names, `--no-local-tools`, and license: [Embedding graff](../../docs/embedding.md).
+
 ## Links
 
 - Repository: <https://github.com/justrach/codegraff>
+- Embedding graff: <https://github.com/justrach/codegraff/blob/main/docs/embedding.md>
 - This package (npm): <https://www.npmjs.com/package/@codegraff/sdk>
 - Python sibling (PyPI): <https://pypi.org/project/codegraff/>
 

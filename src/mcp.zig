@@ -26,7 +26,6 @@ const shutdown_trace = @import("shutdown_trace.zig"); // #364: teardown phase st
 const mcp_rpc = @import("mcp_rpc.zig");
 const mcp_cache = @import("mcp_cache.zig");
 const util = @import("util.zig");
-const smolify_manifest = @import("smolify_manifest.zig");
 const vision = @import("vision.zig"); // #249: MCP image results become staged vision blocks
 const renderContent = @import("mcp_content.zig").renderContent;
 
@@ -46,7 +45,6 @@ pub const Tool = struct {
     description: []const u8,
     input_schema: Value, // arena-owned parsed JSON Schema
 };
-pub const smolify_url = "https://app.smol.ly/mcp";
 
 pub const Registry = struct {
     gpa: Allocator,
@@ -93,6 +91,8 @@ pub const Registry = struct {
     task_arenas: []std.heap.ArenaAllocator = &.{},
     /// Unjoined startServer futures from a deferred --yolo boot.
     pending_starts: []Io.Future(mcp_boot.StartOutcome) = &.{},
+    /// First model call already declined to wait on `pending_starts` (ADR 0035).
+    first_request_join_skipped: bool = false,
 
     pub fn arena(self: *Registry) Allocator {
         return self.arena_state.allocator();
@@ -127,7 +127,6 @@ pub const Registry = struct {
     /// (no tool calls in flight).
     pub fn addServer(reg: *Registry, name: []const u8, command: []const u8, args: []const []const u8) !usize {
         for (reg.servers) |server| if (std.mem.eql(u8, server.name, name)) return error.McpServerAlreadyConnected;
-        if (std.mem.eql(u8, name, "smolify")) return error.ReservedMcpServerName;
         const a = reg.arena();
         var servers: std.ArrayList(*Server) = .empty;
         try servers.appendSlice(a, reg.servers);
@@ -151,7 +150,6 @@ pub const Registry = struct {
     /// registry storage and sent on every request (for example Authorization).
     pub fn addRemoteServer(reg: *Registry, name: []const u8, url: []const u8, headers: []const std.http.Header) !usize {
         for (reg.servers) |server| if (std.mem.eql(u8, server.name, name)) return error.McpServerAlreadyConnected;
-        if (std.mem.eql(u8, name, "smolify") and (!std.mem.eql(u8, url, smolify_url) or headers.len != 0)) return error.ReservedMcpServerName;
         const a = reg.arena();
         var servers: std.ArrayList(*Server) = .empty;
         try servers.appendSlice(a, reg.servers);
@@ -171,39 +169,6 @@ pub const Registry = struct {
         reg.servers = try a.dupe(*Server, servers.items);
         reg.tools = try a.dupe(Tool, tools.items);
         return tools.items.len - before;
-    }
-
-    /// Advertise bundled Smolify schemas without dialing the hosted endpoint.
-    /// The first approved tool call performs the MCP handshake. Default mode
-    /// is anonymous and public-read-only; full access also loads OAuth state.
-    pub fn connectSmolify(reg: *Registry, full_access: bool) !usize {
-        for (reg.servers) |server| if (std.mem.eql(u8, server.name, "smolify")) return 0;
-        const a = reg.arena();
-        var servers: std.ArrayList(*Server) = .empty;
-        try servers.appendSlice(a, reg.servers);
-        var tools: std.ArrayList(Tool) = .empty;
-        try tools.appendSlice(a, reg.tools);
-        const server = try a.create(Server);
-        server.* = .{
-            .name = "smolify",
-            .transport = .{ .http = .{
-                .url = smolify_url,
-                .client = .{ .allocator = reg.gpa, .io = reg.io },
-                .oauth_home = if (full_access and reg.home.len != 0) try a.dupe(u8, reg.home) else null,
-            } },
-            .initialized = false,
-            .protocol_version = "on-demand",
-        };
-        var registry_owns_server = false;
-        errdefer if (!registry_owns_server) deinitServer(server, reg.io, .init(reg.io, mcp_teardown.teardown_grace)); // fresh window: not the exit path (#305)
-        const added = try smolify_manifest.appendTools(Tool, a, &tools, servers.items.len, full_access);
-        try servers.append(a, server);
-        const new_servers = try a.dupe(*Server, servers.items);
-        const new_tools = try a.dupe(Tool, tools.items);
-        reg.servers = new_servers;
-        reg.tools = new_tools;
-        registry_owns_server = true;
-        return added;
     }
 
     /// Connect any configured server not already running — the in-session
@@ -229,7 +194,6 @@ pub const Registry = struct {
         var it = merged.servers.iterator();
         while (it.next()) |entry| {
             const name = entry.key_ptr.*;
-            if (std.mem.eql(u8, name, "smolify")) continue;
             if (entry.value_ptr.* != .object) continue;
             // Already connected (auto-activated muonry, or a prior /mcp trust)? skip.
             var present = false;
@@ -257,7 +221,6 @@ pub const Registry = struct {
         var n: usize = 0;
         var it = merged.servers.iterator();
         while (it.next()) |entry| {
-            if (std.mem.eql(u8, entry.key_ptr.*, "smolify")) continue;
             if (entry.value_ptr.* != .object) continue;
             var present = false;
             for (reg.servers) |s| if (std.mem.eql(u8, s.name, entry.key_ptr.*)) {
@@ -282,13 +245,14 @@ pub const Registry = struct {
     /// time: some legacy SDK servers close stdout on an unrecognized
     /// pre-`initialize` message (`server/discover`), and the only fix is a
     /// fresh process — the closed one can't be un-closed.
-    fn spawnStdio(reg: *Registry, a: Allocator, argv: []const []const u8, env_map: ?*std.process.Environ.Map) !Transport {
+    fn spawnStdio(reg: *Registry, a: Allocator, argv: []const []const u8, env_map: ?*std.process.Environ.Map, cwd: ?[]const u8) !Transport {
         var child = try std.process.spawn(reg.io, .{
             .argv = argv,
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .ignore,
             .environ_map = env_map,
+            .cwd = if (cwd) |path| .{ .path = path } else .inherit,
         });
         errdefer mcp_stdio.stopChild(reg.io, &child);
         const in_buf = try a.alloc(u8, 64 * 1024);
@@ -319,6 +283,11 @@ pub const Registry = struct {
         // stdio child -- can spawn a fresh process with the same argv/env.
         var stdio_argv: std.ArrayList([]const u8) = .empty;
         var stdio_env_map: ?*std.process.Environ.Map = null;
+        var stdio_cwd: ?[]const u8 = null;
+        // Environ.Map owns its key/value copies with reg.gpa even though the
+        // map struct itself is arena-backed. Spawn consumes the environment;
+        // keep it through the possible probe respawn below, then release it.
+        defer if (stdio_env_map) |map| map.deinit();
         if (url_v) |url| {
             if (url != .string) return error.BadMcpConfig;
             if (!validRemoteUrl(url.string)) return error.BadMcpUrl;
@@ -357,6 +326,11 @@ pub const Registry = struct {
                 }
             }
 
+            if (cfg.get("cwd")) |cwd| {
+                if (cwd != .string or cwd.string.len == 0) return error.BadMcpConfig;
+                stdio_cwd = cwd.string;
+            }
+
             // Optional per-server env overlaid on the parent environment.
             if (cfg.get("env")) |env| {
                 if (env != .object) return error.BadMcpConfig;
@@ -370,7 +344,7 @@ pub const Registry = struct {
                 stdio_env_map = m;
             }
 
-            server.* = .{ .name = name, .transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map) };
+            server.* = .{ .name = name, .transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map, stdio_cwd) };
         }
 
         var registry_owns_server = false;
@@ -412,7 +386,7 @@ pub const Registry = struct {
                         .closed => {
                             server.probe_fallback = .server_exited;
                             mcp_stdio.stopChild(reg.io, &server.transport.stdio.child);
-                            server.transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map);
+                            server.transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map, stdio_cwd);
                             break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
                         },
                     }

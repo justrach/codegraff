@@ -1,0 +1,32 @@
+{
+  "name": "@codegraff/native",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "NEXT_TELEMETRY_DISABLED=1 next dev --port 3000",
+    "build": "NEXT_TELEMETRY_DISABLED=1 next build",
+    "start": "NEXT_TELEMETRY_DISABLED=1 next start --port 3000",
+    "mock-serve": "node scripts/mock-serve.mjs",
+    "lint": "next lint",
+    "test": "node --experimental-strip-types --test lib/graff-events.test.ts lib/acp.test.ts"
+  },
+  "dependencies": {
+    "glimm": "^0.3.0",
+    "iconoir-react": "^7.11.1",
+    "liveline": "^0.0.7",
+    "next": "^15.3.3",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "shadow-plugin": "^2.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.8",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tailwindcss": "^4.1.8",
+    "typescript": "^5"
+  }
+}

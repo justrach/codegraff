@@ -36,7 +36,7 @@ pub fn render(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u
     // Pixels stay out of the cell stream: Kitty images sit above the grid and
     // survived scroll as a gray slab. Metadata + open is enough to inspect.
     _ = width;
-    try out.appendSlice(try theme_mod.paint(a, th.muted, " y copy path  ·  Enter open  ·  Esc"));
+    try out.appendSlice(try theme_mod.paint(a, th.muted, " backspace detach · y copy path · Enter open · Esc"));
     try out.append('\n');
     return out.toOwnedSlice();
 }
@@ -292,7 +292,46 @@ pub fn key(self: *Model, k: @import("key.zig").Key) bool {
         self.setToast("path copied");
         return true;
     }
+    if (k == .backspace or k == .delete or (k == .char and (k.char == 'x' or k.char == 'd'))) {
+        if (dropPreviewed(self)) {
+            self.setToast("image detached");
+            return true;
+        }
+    }
     return false;
+}
+
+/// Backspace on an empty composer drops the last chip (#634).
+pub fn dropLast(self: *Model) bool {
+    if (self.images.items.len == 0) return false;
+    const last = self.images.pop() orelse return false;
+    forgetPreview(self, last);
+    self.alloc.free(last);
+    return true;
+}
+
+pub fn clearAll(self: *Model) void {
+    for (self.images.items) |p| {
+        forgetPreview(self, p);
+        self.alloc.free(p);
+    }
+    self.images.clearRetainingCapacity();
+}
+
+pub fn dropPreviewed(self: *Model) bool {
+    if (self.preview_n == 0 or self.preview_n > self.images.items.len) return false;
+    const path = self.images.orderedRemove(self.preview_n - 1);
+    forgetPreview(self, path);
+    self.alloc.free(path);
+    return true;
+}
+
+fn forgetPreview(self: *Model, path: []const u8) void {
+    if (!std.mem.eql(u8, self.preview_path, path)) return;
+    self.preview_path = "";
+    self.preview_n = 0;
+    self.preview_pin = false;
+    if (self.overlay == .image) self.closeOverlay();
 }
 
 fn ioHandle() std.Io {
@@ -523,4 +562,19 @@ test "hover on a composer chip opens an unpinned preview" {
     try std.testing.expectEqual(app.Overlay.image, m.overlay);
     try std.testing.expectEqualStrings("/tmp/shot.png", m.preview_path);
     try std.testing.expect(!m.preview_pin);
+}
+
+test "overlay backspace detaches the previewed composer chip (#634)" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    m.attachImage("/tmp/a.png");
+    m.attachImage("/tmp/b.png");
+    m.preview_path = m.images.items[0];
+    m.preview_n = 1;
+    m.openOverlay(.image);
+    try std.testing.expect(key(&m, .backspace));
+    try std.testing.expectEqual(@as(usize, 1), m.images.items.len);
+    try std.testing.expectEqualStrings("/tmp/b.png", m.images.items[0]);
+    try std.testing.expectEqual(app.Overlay.none, m.overlay);
 }

@@ -33,6 +33,8 @@ pub const Tool = struct {
     is_error: bool = false,
     /// The harness refused the call before it ran (tool_rejected).
     denied: bool = false,
+    /// Wall-clock ms the engine measured (tool_finished). 0 while running.
+    ms: u64 = 0,
 };
 
 /// What the cost meter can say. Three of the four are STATES, not numbers, so
@@ -225,7 +227,7 @@ fn dupeTool(gpa: std.mem.Allocator, t: Tool) ?Tool {
         gpa.free(name);
         return null;
     };
-    return .{ .name = name, .detail = detail, .is_error = t.is_error, .denied = t.denied };
+    return .{ .name = name, .detail = detail, .is_error = t.is_error, .denied = t.denied, .ms = t.ms };
 }
 
 test "queue copies payloads, so an arena that dies with the turn cannot dangle" {

@@ -29,6 +29,7 @@ const Provider = @import("provider.zig").Provider;
 const http = @import("http.zig");
 const telemetry = @import("telemetry.zig");
 const goal_flow = @import("goal_flow.zig");
+const compact_cut = @import("compact_cut.zig");
 
 /// GRAFF_SERVER_COMPACT=0/false/off forces the client arm, =1 the server arm
 /// (session_settings.applyEnvKnobs). Default: server. The #compact-ab
@@ -330,6 +331,10 @@ pub fn pruneIf(self: *Agent, server_arm: bool) bool {
     }
     const k = blob_idx orelse return false;
     if (k == 0) return false; // already anchored on the blob
+    // #581: a blob after the live unresolved prompt would drop its images.
+    if (compact_cut.pinOpening(items)) |t| {
+        if (k > t) return false;
+    }
     // Collect the call_ids that survive, then reject if any surviving output
     // references a pruned call.
     var surviving: std.ArrayList([]const u8) = .empty;
@@ -421,6 +426,8 @@ fn buildCompactBody(self: *Agent) ![]u8 {
 pub fn explicitCompact(self: *Agent) bool {
     const compact_url = self.provider.serverCompactUrl() orelse return false;
     if (self.messages.items.len == 0) return false;
+    // #581: do not fold an unresolved image prompt into an opaque blob.
+    if (compact_cut.pinOpening(self.messages.items) != null) return false;
     // Anti-thrash: a history already anchored on a blob with only a few items
     // after it cannot meaningfully shrink — when the threshold sits below the
     // standing prompt overhead (a tiny GRAFF_COMPACT_PCT), re-compacting every

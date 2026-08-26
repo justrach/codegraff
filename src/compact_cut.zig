@@ -74,10 +74,48 @@ fn mustKeepOpening(items: []const Value, t: usize) bool {
     return t > 0 or messageHasImage(items[t]);
 }
 
-fn pinOpening(items: []const Value) ?usize {
+pub fn pinOpening(items: []const Value) ?usize {
     if (lastIsResolved(items)) return null;
     const t = turnOpeningUserIndex(items) orelse return null;
     return if (mustKeepOpening(items, t)) t else null;
+}
+
+pub fn suffixTokens(items: []const Value, start: usize) u64 {
+    var total: u64 = 0;
+    for (items[start..]) |m| total +|= context_tokens.estimatedTokens(m);
+    return total;
+}
+
+/// True when an unresolved pin is in force and that suffix alone is already
+/// over the recent-context keep budget. Compacting the completed prefix
+/// cannot get the live prompt under the line.
+pub fn pinOverBudget(items: []const Value, token_budget: u64) bool {
+    const t = pinOpening(items) orelse return false;
+    return suffixTokens(items, t) > token_budget;
+}
+
+pub const DegradeAction = enum { proceed, announce, silent };
+
+pub const CutPlan = struct {
+    start: usize,
+    pin_over_budget: bool,
+    action: DegradeAction,
+};
+
+/// #581 residual: budget-check the pinned suffix. Keep the pin (never drop
+/// live images). If the suffix alone is over budget, compact the completed
+/// prefix once, then degrade — do not spend a summarization every cycle.
+/// `already` is the per-turn latch (`Agent.compact_pin_degraded`).
+pub fn pinDegrade(items: []const Value, token_budget: u64, already: bool) CutPlan {
+    const start = recentContextStart(items, token_budget);
+    const over = pinOverBudget(items, token_budget);
+    const cannot_help = start == 0 or (over and already);
+    if (!cannot_help) return .{ .start = start, .pin_over_budget = over, .action = .proceed };
+    return .{
+        .start = start,
+        .pin_over_budget = over,
+        .action = if (already) .silent else .announce,
+    };
 }
 
 /// Pick the earliest clean user-turn boundary whose suffix fits in the recent
@@ -275,4 +313,85 @@ test "first-turn unresolved images refuse a summarize-all cut" {
     try toolTail(arena, &msgs, 6);
 
     try std.testing.expectEqual(@as(usize, 0), recentContextStart(msgs.items, 8_000));
+}
+
+fn fatImageUser(arena: std.mem.Allocator, n: usize) !Value {
+    var content = std.json.Array.init(arena);
+    var tb: std.json.ObjectMap = .empty;
+    try tb.put(arena, "type", .{ .string = "text" });
+    try tb.put(arena, "text", .{ .string = "read these screenshots" });
+    try content.append(.{ .object = tb });
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        var image: std.json.ObjectMap = .empty;
+        try image.put(arena, "type", .{ .string = "image_url" });
+        var image_url: std.json.ObjectMap = .empty;
+        try image_url.put(arena, "url", .{ .string = "data:image/png;base64,AAA" });
+        try image.put(arena, "image_url", .{ .object = image_url });
+        try content.append(.{ .object = image });
+    }
+    var user: std.json.ObjectMap = .empty;
+    try user.put(arena, "role", .{ .string = "user" });
+    try user.put(arena, "content", .{ .array = content });
+    return .{ .object = user };
+}
+
+test "pinned suffix over the keep budget is reported and still pinned" {
+    const a = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(a);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const textMessage = @import("messages.zig").textMessage;
+
+    var msgs = std.json.Array.init(arena);
+    try msgs.append(try textMessage(arena, "user", "old request"));
+    try msgs.append(try textMessage(arena, "assistant", "old answer"));
+    try msgs.append(try fatImageUser(arena, 3)); // 3 * 4096 image tokens > 8k
+
+    try std.testing.expect(pinOverBudget(msgs.items, 8_000));
+    try std.testing.expectEqual(@as(usize, 2), recentContextStart(msgs.items, 8_000));
+    try std.testing.expectEqual(@as(u32, 3), countImagesFrom(msgs.items[2..]));
+}
+
+test "pinDegrade: over-budget pin announces once, then stays silent" {
+    const a = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(a);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var msgs = std.json.Array.init(arena);
+    try msgs.append(try fatImageUser(arena, 3));
+    try toolTail(arena, &msgs, 2);
+
+    const first = pinDegrade(msgs.items, 8_000, false);
+    try std.testing.expectEqual(@as(usize, 0), first.start);
+    try std.testing.expect(first.pin_over_budget);
+    try std.testing.expectEqual(DegradeAction.announce, first.action);
+
+    const again = pinDegrade(msgs.items, 8_000, true);
+    try std.testing.expectEqual(@as(usize, 0), again.start);
+    try std.testing.expectEqual(DegradeAction.silent, again.action);
+}
+
+test "pinDegrade: prefix still compactable once; already-degraded skips the spend" {
+    const a = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(a);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const textMessage = @import("messages.zig").textMessage;
+    const util = @import("util.zig");
+
+    var msgs = std.json.Array.init(arena);
+    try msgs.append(try textMessage(arena, "user", "old request"));
+    try msgs.append(try textMessage(arena, "assistant", &util.repeatBytes("x", 20_000)));
+    try msgs.append(try fatImageUser(arena, 3));
+
+    const first = pinDegrade(msgs.items, 8_000, false);
+    try std.testing.expectEqual(@as(usize, 2), first.start);
+    try std.testing.expect(first.pin_over_budget);
+    try std.testing.expectEqual(DegradeAction.proceed, first.action);
+
+    const again = pinDegrade(msgs.items, 8_000, true);
+    try std.testing.expectEqual(@as(usize, 2), again.start);
+    try std.testing.expectEqual(DegradeAction.silent, again.action);
 }

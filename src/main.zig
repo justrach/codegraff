@@ -55,6 +55,7 @@ const learn_store = @import("learn_store.zig");
 const learn_eval = @import("learn_eval.zig");
 const learn_cli = @import("learn_cli.zig");
 test { // unit_tests' root is main.zig only, so reference every split-out module or its tests silently never run
+    _ = @import("codex_node_repl.zig");
     _ = pricing;
     _ = models_cache;
     _ = ansi;
@@ -304,7 +305,6 @@ pub fn main(init: std.process.Init) !void {
     var stdin_buf: [64 * 1024]u8 = undefined;
     var stdin_reader = Io.File.stdin().reader(io, &stdin_buf);
     const in = &stdin_reader.interface;
-
     var stdout_buf: [4096]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
     const out = &stdout_writer.interface;

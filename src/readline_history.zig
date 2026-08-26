@@ -115,7 +115,7 @@ pub fn repeatsLast(
 fn sameImage(a: ?PendingImage, b: ?PendingImage) bool {
     const x = a orelse return b == null;
     const y = b orelse return false;
-    return std.mem.eql(u8, x.media_type, y.media_type) and std.mem.eql(u8, x.b64, y.b64);
+    return std.mem.eql(u8, x.media_type, y.media_type) and std.mem.eql(u8, x.b64, y.b64) and std.mem.eql(u8, x.url, y.url);
 }
 
 const no_images: []const ?PendingImage = &.{};

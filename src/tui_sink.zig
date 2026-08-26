@@ -128,6 +128,7 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
                 .name = r.name,
                 .detail = capLine(r.text, preview_cap),
                 .is_error = r.is_error,
+                .ms = @intCast(@max(0, r.ms)),
             } });
         },
         // The harness refused the call before it ran. hostedEmit dropped this
@@ -258,6 +259,24 @@ test "prose streams into the live tail; structure never does" {
     try std.testing.expectEqualStrings("bash", evs[0].tool_started.name);
     try std.testing.expectEqualStrings("ok", evs[1].tool_finished.detail);
     try std.testing.expect(!evs[1].tool_finished.is_error);
+}
+
+test "tool_finished carries the engine's measured ms" {
+    var qbuf: tui.EventQueue = .{};
+    qbuf.attach(std.testing.allocator);
+    defer qbuf.deinit();
+    var sbuf: [64]u8 = undefined;
+    var stream: repl.StreamBuf = .{ .buf = &sbuf };
+    var bridge: Bridge = .{ .queue = &qbuf, .stream = &stream };
+    forBridge(&bridge).emit(undefined, .{ .tool_result = .{
+        .name = "read_file",
+        .text = "ok",
+        .is_error = false,
+        .ms = 240,
+    } });
+    const evs = qbuf.drain();
+    defer qbuf.free(evs);
+    try std.testing.expectEqual(@as(u64, 240), evs[0].tool_finished.ms);
 }
 
 test "reasoning reaches the tail only with /thinking on" {

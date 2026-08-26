@@ -117,7 +117,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // title task rendezvous here, then issue their requests concurrently.
     http.waitForClientReady(self.io);
     if (self.registry) |reg| {
-        if (@import("mcp_boot.zig").joinPending(reg)) {
+        if (@import("mcp_boot.zig").joinBeforeRequest(reg)) {
             self.invalidateRootTools();
             try self.ensureRootTools(self.provider.kind);
         }
@@ -235,6 +235,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         // GRAFF_REQ_STATS=1: per-call request anatomy + body dumps (req_stats.zig).
         req_stats.report(self.io, body, tools, self.sys_normal);
         const t0: Io.Timestamp = .now(self.io, .awake);
+        self.request_started = t0;
+        self.first_token_traced = false;
         if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_started", .provider = self.provider.id, .model = self.provider.model });
         // HTTP calls are flaky: a kept-alive connection the server closed
         // (HttpConnectionClosing), a reset, a truncated TLS read. Retry a
@@ -393,6 +395,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         };
         defer self.gpa.free(resp_body);
         const ms: i64 = t0.untilNow(self.io, .awake).toMilliseconds();
+        if (!live) self.traceFirstToken();
 
         // object — pull the final `response` out of it (or an error).
         // object — pull the final `response` out of it (or an error).

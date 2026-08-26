@@ -114,7 +114,7 @@ Much of this implementation and benchmark work was made possible by
 [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent): parallel agents in
 isolated environments, with measured evidence merged back into the harness.
 
-### What shipped in v0.0.277 and v0.0.278
+### What shipped in v0.0.277–v0.0.279
 
 - **MCP results learn to slim themselves.** On the Linear fixture, the warm
   learnt path moved from **28.0s to 14.8s**, **112k to 31k input**, and **7 to 5
@@ -128,9 +128,12 @@ isolated environments, with measured evidence merged back into the harness.
 - **Removed images really leave.** The v0.0.278 privacy follow-up drops a pasted
   screenshot if its composer chip is removed, collapses duplicate payloads, and
   makes `/image clear` clear the whole queue before anything reaches the model.
+- **The native app speaks ACP.** Thinking and tool chips stream mid-turn from
+  `graff acp` (ADR 0032). `graff serve` is not required.
 
-Read the full [v0.0.277 notes](docs/releases/v0.0.277.md) and the
-[v0.0.278 privacy follow-up](https://github.com/justrach/codegraff/blob/release/v0.0.278/docs/releases/v0.0.278.md).
+Read the full [v0.0.277 notes](docs/releases/v0.0.277.md), the
+[v0.0.278 privacy follow-up](docs/releases/v0.0.278.md), and the
+[v0.0.279 ACP native cut](docs/releases/v0.0.279.md).
 
 ### Broader comparison: model choice, footprint, and startup
 
@@ -274,7 +277,8 @@ First things to try once you're at the `›` prompt:
 ### Zed (External Agents / ACP)
 
 `graff acp` speaks the Agent Client Protocol, so Zed can drive it as an
-External Agent. Register it in `~/.config/zed/settings.json`:
+External Agent. The same spawn is the hosted-agent recipe — see
+[Embedding graff](docs/embedding.md). Register it in `~/.config/zed/settings.json`:
 
 ```json
 {
@@ -621,7 +625,8 @@ gateway rollouts appear without a restart.
 /loop [30m] <prompt>      the same autonomous run as /goal, without adopting a standing objective
 /review <target or instructions>
                           run one isolated read-only review pass; no edits, delegation, or workflows
-/never [<text>|rm <id>]   standing constraints that ride every subagent brief and survive compaction; bare lists them, rm <id> retires one (alias /constraint)
+/never [<text>|rm <id-or-text>]
+                          standing constraints that ride every subagent brief and survive compaction; bare lists them, rm <id-or-text> retires one (alias /constraint)
 /tell <session|all> <text>
                           message a running graff: <session> is a DM (only it hears, any folder); all broadcasts to every graff on this device; /sessions lists who's around
 /peek <session>           see what a live co-resident session is doing right now (its transcript tail)
@@ -739,22 +744,13 @@ Grok are read in place (plugin `mcp.json` / `.mcp.json`, `~/.claude.json`,
 `~/.cursor/mcp.json`, `.cursor/mcp.json`) and fill names graff does not
 already define; they still need `/mcp trust` or `--yolo`. Plugin manifests
 may also declare `mcpServers` inline or as a path (Claude's shape).
-`/plugins` and `graff plugins` show which plugin trees contributed. Smolify (`https://app.smol.ly/mcp`) is available as a
-core documentation service; it needs no Node bridge or project configuration.
-Its public-read schemas are bundled locally, so startup makes no Smolify
-request. The anonymous transport initializes only after an approved tool call,
-and recognizable credentials in arguments are blocked locally. Set
-`GRAFF_NO_SMOLIFY=1` to remove its tool surface entirely. Authenticated and
-write-capable tools are hidden unless the session explicitly opts in with
-`GRAFF_SMOLIFY_ACCESS=full`. Other servers can be added from the shell or during
-a session:
+`/plugins` and `graff plugins` show which plugin trees contributed. Other
+servers can be added from the shell or during a session:
 
 ```sh
 graff mcp add context7 -- npx -y @upstash/context7-mcp
 graff mcp add mobbin --url https://api.mobbin.com/mcp
 graff mcp login mobbin   # OAuth discovery + browser PKCE flow
-graff mcp login smolify  # optional access to authenticated Smolify tools
-GRAFF_SMOLIFY_ACCESS=full graff  # expose the authenticated/full catalog
 # In the REPL: /mcp add mobbin --url https://api.mobbin.com/mcp
 ```
 
@@ -874,7 +870,7 @@ structured `{"type":"answer","text":"...","cancelled":false}` line) and `graff -
 machine-readable interface, and the **TypeScript and Python SDKs in
 [`sdk/`](sdk/) are auto-generated from that schema**, so they never drift from
 the binary. On every release tag a GitHub Action rebuilds, regenerates, fails if
-the committed SDKs are stale, and publishes to npm (`@graff-new/sdk`) and PyPI
+the committed SDKs are stale, and publishes to npm (`@codegraff/sdk`) and PyPI
 (`simple-harness-sdk`).
 
 ```python
@@ -889,7 +885,7 @@ with Harness(yolo=True, model="gpt-5.5") as h:
 
 ```ts
 // TypeScript
-import { Harness, runAgent } from "@graff-new/sdk";
+import { Harness, runAgent } from "@codegraff/sdk";
 
 // one-shot, streamed
 for await (const ev of runAgent({ prompt: "summarize README.md", model: "gpt-5.5", yolo: true })) {
@@ -905,9 +901,14 @@ session.close();
 
 Can't spawn a local process (edge runtimes, browsers, other machines)? Run
 `graff serve` and both SDKs ship matching **remote clients** that drive it over
-HTTP: `@graff-new/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers) and
+HTTP: `@codegraff/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers) and
 Python's `RemoteHarness` (stdlib only). Same method surface, same event stream.
-See [`sdk/README.md`](sdk/README.md).
+Both remote clients accept URL/base64 `images` on a turn and preserve them as
+native provider vision parts through `graff serve`; no encoded pixels are
+flattened into prompt text.
+See [`sdk/README.md`](sdk/README.md). A host that wants ACP (thought / tool /
+text `session/update`s) instead of `--json` events should spawn `graff acp` —
+recipe and `@codegraff/sdk/acp` helper in [Embedding graff](docs/embedding.md).
 
 ---
 
@@ -915,7 +916,8 @@ See [`sdk/README.md`](sdk/README.md).
 
 If you are embedding graff in a product, the safe shape is to run the agent loop
 on your trusted backend and let it reach an isolated sandbox only through tool
-calls. `--no-local-tools` is what makes that shape enforceable:
+calls. How to spawn the binary (ACP vs `--json`) is [Embedding graff](docs/embedding.md).
+`--no-local-tools` is what makes the sandbox shape enforceable:
 
 ```bash
 graff --json --no-local-tools --model gpt-5.5
@@ -1448,7 +1450,7 @@ POSTs can be sent while the original stream is waiting on `ask_user`; they ack
 immediately and the original stream continues to the `tool_result`/`turn`.
 Bearer auth via `--token`/`HARNESS_SERVE_TOKEN` (required to bind beyond
 loopback); CORS opens only when a token gates access. The SDKs ship matching
-remote clients: `@graff-new/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers)
+remote clients: `@codegraff/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers)
 and Python's `RemoteHarness` (stdlib urllib). Endpoints are documented under the
 `serve` key of `graff --schema`.
 
@@ -1555,7 +1557,8 @@ issues for what's in flight:
   the host. It's the natural next layer above today's cwd-confinement and
   permission gate, and the safe substrate for hands-off evolutionary runs.
   [Embedder mode](#embedder-mode-run-the-harness-outside-the-sandbox) is the
-  first half of this today: `--no-local-tools` plus a sandbox MCP server. A
+  first half of this today: `--no-local-tools` plus a sandbox MCP server
+  ([Embedding graff](docs/embedding.md)). A
   first-class sandbox backend (create/exec/read/write/destroy with provider
   adapters) would remove the proxy you have to write yourself.
 - **Scaling the evolution loop.** The local half shipped in v0.0.219:

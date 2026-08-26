@@ -25,5 +25,7 @@ lines. The user-relevant fact was "CI is red."
 ## Consequences
 
 JSON `bash_output_chunk` events are unchanged. The hosted TUI sink still
-streams into the fold. Expanding a one-liner from the line REPL is not a
-feature yet; `/debug` is the escape hatch. ADR 0016's progress bar is retired.
+streams into the fold. In the line REPL, a row whose interpretation hid raw
+bytes carries `↵ raw`; empty Enter reveals the newest unseen result, explicitly
+and terminal-safely. `/debug` remains the continuous escape hatch. ADR 0016's
+progress bar is retired.

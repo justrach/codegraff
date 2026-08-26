@@ -24,6 +24,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         emit({ type: "ask_user", call_id: "ask-1", question: "continue?", options: ["yes"] });
         return;
       }
+      if (request.text === "images") {
+        turn(JSON.stringify(request.images));
+        active = null;
+        return;
+      }
       setTimeout(() => {
         turn(`${request.type}:${request.text}`);
         active = null;

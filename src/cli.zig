@@ -21,6 +21,20 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.279
+    \\  • native Beautiful UI app speaks ACP: thinking and tool chips stream mid-turn (ADR 0032)
+    \\  • graff acp emits thought / tool_call / text session/update; /never is an ACP slash command
+    \\  • /never on a TTY is a searchable picker with two confirms; rm and ACP list still work (#638)
+    \\  • bash_output wait_ms>0 always waits for exit — mid-range values are not a timeout (#640)
+    \\  • host recipe: docs/embedding.md; @codegraff/sdk/acp spawns graff acp
+    \\  • first-turn tools: no MCP handshake wait, live chips show elapsed from start (ADR 0035)
+    \\
+    \\0.0.278
+    \\  • deleted composer screenshots are not sent: submit keeps [Image #N] / @[path] only (#634)
+    \\  • /image and /paste stay sticky; /image clear drops the whole queue
+    \\  • TUI backspace / Ctrl+U / overlay backspace detaches chips
+    \\  • Smolify is no longer a reserved core MCP; add it via `graff mcp add` if you want it
+    \\
     \\0.0.277
     \\  • MCP-inside-rlm + learnt slim: fat MCP results drop to id/title; comments fold to n+latest_author (ADR 0029)
     \\  • L (warm slim, --no-lean) 14.8s/31k/5 vs H 28s/112k/7 on SuperGrok grok-4.6

@@ -125,7 +125,7 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
         var out = blocked;
         out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
         if (ctx.tracer) |tr| {
-            tr.tool(call.name, out.ms, true, out.text.len, ctx.from_sub);
+            tr.tool(call.name, call_id, out.ms, true, out.text.len, ctx.from_sub);
             tr.toolFinished(call.name, call_id, out.ms, true, out.text.len);
         }
         if (ctx.tools_used) |ts| ts.add(ctx.io, ctx.gpa, call.name, true);
@@ -142,7 +142,7 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     };
     out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
     if (ctx.tracer) |tr| {
-        tr.tool(call.name, out.ms, out.is_error, out.text.len, ctx.from_sub);
+        tr.tool(call.name, call_id, out.ms, out.is_error, out.text.len, ctx.from_sub);
         tr.toolFinished(call.name, call_id, out.ms, out.is_error, out.text.len);
     }
     if (ctx.tools_used) |ts| ts.add(ctx.io, ctx.gpa, call.name, out.is_error);
