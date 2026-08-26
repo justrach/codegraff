@@ -10,7 +10,7 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.0.277 (2026-08-25)
+## v0.0.277 (2026-08-26)
 
 - MCP tools that `load_tool_schemas` has unfolded are `rlm` host functions
   (`each` / `len` / `project`). Return **shapes** (keys + broad types, never
@@ -37,7 +37,6 @@ current is part of cutting a release.
 - Small turns hide `rlm` / sPTC (ADR 0030). Showcase on `--rlm`, a ≥4
   native batch, context ≥50% of `compactAt`, or an explicit load —
   never MCP fan-out, never the prefix. Tools head stays cache-stable.
-- No `v0.0.277` git tag on this cut.
 - Test ratchet: unit suite 1677 (floor 1664).
 
 ## v0.0.276 (2026-08-25)
