@@ -526,17 +526,6 @@ pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags
             }
         }
     }
-
-    // Smolify is opt-in: GRAFF_SMOLIFY=1 or GRAFF_SMOLIFY_ACCESS=public|full.
-    if (!@import("tool_surface.zig").smolifyWanted(environ_map)) return;
-    const access = environ_map.get("GRAFF_SMOLIFY_ACCESS") orelse "public";
-    const full_access = std.ascii.eqlIgnoreCase(access, "full") or std.ascii.eqlIgnoreCase(access, "authenticated");
-    const added = registry.connectSmolify(full_access) catch |err| {
-        if (speak) sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "[mcp:smolify] auto-connect failed ({t}) — continuing offline", .{err})));
-        return;
-    };
-    if (added > 0 and speak)
-        sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "[mcp:smolify] available on demand — {d} {s} tool(s)", .{ added, if (full_access) "full-access" else "anonymous public-read" })));
 }
 
 /// The startup cluster's most common line: dim, no badge. A helper rather than
@@ -554,22 +543,6 @@ test "lean mode: flag or GRAFF_LEAN env, never the default" {
     try env.put("GRAFF_LEAN", "1");
     try std.testing.expect(leanMode(false, env)); // env wins alone
     try std.testing.expect(leanMode(true, env));
-}
-
-test "core Smolify registration is offline and lazy" {
-    var registry = mcp.Registry.empty(std.testing.allocator, std.testing.io);
-    defer registry.deinit();
-    try std.testing.expectEqual(@as(usize, 8), try registry.connectSmolify(false));
-    try std.testing.expectEqual(@as(usize, 1), registry.servers.len);
-    try std.testing.expectEqualStrings("on-demand", registry.servers[0].protocol_version);
-    try std.testing.expectEqual(@as(usize, 8), registry.tools.len);
-    try std.testing.expect(registry.servers[0].transport.http.oauth_home == null);
-    try std.testing.expectEqual(@as(usize, 0), try registry.connectSmolify(false));
-
-    var full = mcp.Registry.emptyWithOAuthHome(std.testing.allocator, std.testing.io, "/not-read-during-registration");
-    defer full.deinit();
-    try std.testing.expectEqual(@as(usize, 13), try full.connectSmolify(true));
-    try std.testing.expectEqualStrings("/not-read-during-registration", full.servers[0].transport.http.oauth_home.?);
 }
 
 test "a licensed companion is pinned eager, once, so no discovery round-trip is needed" {

@@ -21,7 +21,14 @@ current is part of cutting a release.
 - TUI: backspace on an empty composer drops the last chip; Ctrl+U /
   Cmd+Delete clears chips with the draft; overlay backspace/`x` detaches
   the previewed chip.
-- Test ratchet: unit suite 1684 (floor 1684).
+- Bundled Smolify is gone: no reserved `smolify` name, no
+  `GRAFF_SMOLIFY` auto-connect, no CI boundary E2E. Add it like any
+  other remote MCP (`graff mcp add smolify --url https://app.smol.ly/mcp`).
+  A local secret-egress gate still rejects recognizable credentials on
+  `mcp__smolify__*` if you do. Schema-gate tests keep `smolify-tools.json`
+  as a fixture.
+- Test ratchet: unit suite 1683 (floor 1683; dropped the bundled-Smolify
+  registration test).
 
 ## v0.0.277 (2026-08-26)
 

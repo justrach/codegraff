@@ -36,8 +36,7 @@ pub fn isCompanionWrite(qualified: []const u8) bool {
     return false;
 }
 
-/// MCP names that must not appear in any catalog (companion writes + bundled
-/// smolify until opt-in connect actually adds it).
+/// MCP names that must not appear in any catalog (companion writes).
 pub fn omitMcp(qualified: []const u8) bool {
     return isCompanionWrite(qualified);
 }
@@ -64,7 +63,7 @@ pub fn filterSpecs(comptime Spec: type, arena: Allocator, specs: []const Spec) !
     return buf[0..i];
 }
 
-/// Worker MCP: companion read/search only (no writes, no smolify).
+/// Worker MCP: companion read/search only (no writes).
 pub fn keepWorkerMcp(qualified: []const u8) bool {
     if (omitMcp(qualified)) return false;
     return std.mem.startsWith(u8, qualified, "mcp__codedbpro__") or
@@ -94,11 +93,6 @@ pub fn gate(ctx: tools.ToolCtx, call: tools.ToolCall) ?tools.ToolOutput {
     if (!isCompanionWrite(call.name)) return null;
     const text = ctx.gpa.dupe(u8, companion_write_refusal) catch return .{ .text = &.{}, .is_error = true };
     return .{ .text = text, .is_error = true };
-}
-
-pub fn smolifyWanted(environ_map: anytype) bool {
-    if (environ_map.get("GRAFF_NO_SMOLIFY") != null) return false;
-    return environ_map.get("GRAFF_SMOLIFY") != null or environ_map.get("GRAFF_SMOLIFY_ACCESS") != null;
 }
 
 /// deepwiki / mobbin stay out of the default unauthenticated catalog unless
@@ -222,15 +216,12 @@ test "licensed root catalog drops read_file and codedb, keeps subagent and edit_
     try std.testing.expect(saw_sub2);
 }
 
-test "smolifyWanted and skipOptionalServer are opt-in" {
+test "skipOptionalServer keeps deepwiki/mobbin opt-in" {
     var env = std.process.Environ.Map.init(std.testing.allocator);
     defer env.deinit();
-    try std.testing.expect(!smolifyWanted(env));
     try std.testing.expect(skipOptionalServer("deepwiki", env));
     try std.testing.expect(skipOptionalServer("mobbin", env));
     try std.testing.expect(!skipOptionalServer("codedbpro", env));
-    try env.put("GRAFF_SMOLIFY", "1");
-    try std.testing.expect(smolifyWanted(env));
     try env.put("GRAFF_MCP_OPTIONAL", "deepwiki,mobbin");
     try std.testing.expect(!skipOptionalServer("deepwiki", env));
     try std.testing.expect(!skipOptionalServer("mobbin", env));
