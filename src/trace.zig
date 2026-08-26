@@ -112,6 +112,7 @@ pub const Tracer = struct {
     identity: Identity = .{},
     path: []const u8 = "",
     enabled: bool = true,
+    next_call_id: std.atomic.Value(u64) = .init(1),
     // Assigned once before the first root turn. Keeping this on the stable
     // shared tracer avoids a process-global pointer race on worker callbacks.
     behavior: ?*BehaviorTrace = null,
@@ -138,7 +139,7 @@ pub const Tracer = struct {
         });
     }
 
-    pub fn tool(self: *Tracer, name: []const u8, ms: i64, is_error: bool, result_bytes: usize, from_sub: bool) void {
+    pub fn tool(self: *Tracer, name: []const u8, call_id: u64, ms: i64, is_error: bool, result_bytes: usize, from_sub: bool) void {
         if (telemetry.g_telem) |t| t.countTool(is_error);
         const behavior_turn = if (self.behavior) |behavior|
             behavior.recordToolMetric(name, from_sub, ms, result_bytes, is_error)
@@ -148,6 +149,7 @@ pub const Tracer = struct {
             .t = self.elapsedMs(),
             .ev = "tool",
             .turn = behavior_turn,
+            .call_id = call_id,
             .name = name,
             .ms = ms,
             .result_bytes = result_bytes,
@@ -156,22 +158,37 @@ pub const Tracer = struct {
         });
     }
 
-    /// Reserve a call_id and emit `tool_started` (#255, opt-in rich capture
-    /// only — behavior.toolStarted no-ops when rich is off). 0 means there is
-    /// no behavioral sink to attribute against; toolFinished/actionTaken
-    /// below treat that the same way turn 0 means "unattributed" elsewhere
-    /// in this file. `args` is serialized into a bounded scratch buffer —
+    /// Reserve a process-local call_id for the operational trace, then emit
+    /// `tool_started` to the rich behavior stream when that privacy gate is
+    /// enabled. The operational id exists even without a behavior sink, so
+    /// every default `ev=tool` outcome is independently pairable (#602).
+    /// `args` is serialized into a bounded scratch buffer —
     /// BehaviorTrace's own max_tool_args_bytes cap does the real truncation,
     /// this just keeps an oversized adapter payload off the stack.
     pub fn toolStarted(self: *Tracer, name: []const u8, args: Value) u64 {
-        const behavior = self.behavior orelse return 0;
-        const call_id = behavior.reserveCallId();
+        const call_id = self.next_call_id.fetchAdd(1, .monotonic);
+        const behavior = self.behavior orelse return call_id;
         var buf: [8192]u8 = undefined;
         var w: Io.Writer = .fixed(&buf);
         var s: std.json.Stringify = .{ .writer = &w };
         s.write(args) catch {}; // a partial/overflowed buffer is fine: BehaviorTrace caps and truncates
         behavior.toolStarted(behavior.currentTurn(), call_id, name, w.buffered());
         return call_id;
+    }
+
+    /// First semantic model output for one API request. Content-free and
+    /// default-on: `ms` is time-to-first-token from request send (#602).
+    pub fn firstToken(self: *Tracer, label: []const u8, from_subagent: bool, model: []const u8, ms: i64) void {
+        const behavior_turn = if (self.behavior) |behavior| behavior.currentTurn() else 0;
+        self.write(.{
+            .t = self.elapsedMs(),
+            .ev = "first_token",
+            .turn = behavior_turn,
+            .agent = label,
+            .model = model,
+            .from_sub = from_subagent,
+            .ms = ms,
+        });
     }
 
     /// Emit `tool_finished`, then `action_taken` for state-mutating tool
@@ -461,6 +478,30 @@ test "writeJsonLine: one complete newline-terminated JSON record per call" {
         try std.testing.expectEqual(@as(i64, 42), p.value.object.get("pid").?.integer);
         try std.testing.expectEqualStrings("session-a", p.value.object.get("session_id").?.string);
     }
+}
+
+test "operational tool outcomes carry monotonic call ids without rich tracing (#602)" {
+    const io = std.testing.io;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var tracer: Tracer = .{
+        .io = io,
+        .gpa = std.testing.allocator,
+        .out = &aw.writer,
+        .start = Io.Timestamp.now(io, .awake),
+        .identity = .{ .run_id = "ops", .pid = 7, .session_id = "session" },
+    };
+    var args = try std.json.parseFromSlice(Value, std.testing.allocator, "{}", .{});
+    defer args.deinit();
+    const first = tracer.toolStarted("bash", args.value);
+    const second = tracer.toolStarted("read_file", args.value);
+    try std.testing.expectEqual(first + 1, second);
+    tracer.tool("bash", first, 9, false, 12, false);
+
+    var parsed = try std.json.parseFromSlice(Value, std.testing.allocator, std.mem.trimEnd(u8, aw.writer.buffered(), "\n"), .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("tool", parsed.value.object.get("ev").?.string);
+    try std.testing.expectEqual(@as(i64, @intCast(first)), parsed.value.object.get("call_id").?.integer);
 }
 
 test "writeJsonLine signals a file-write failure so the tracer can disable (#242)" {

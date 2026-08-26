@@ -75,26 +75,36 @@ pub fn tryHandle(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writ
     }
     // Tree shows this invocation; scores still come from the whole archive.
     const current_run_id = if (root.tracer) |tr| tr.identity.run_id else if (trace.g_traj) |tj| tj.identity.run_id else "";
-    var turns: usize = 0;
+    // A live turn and its closed outcome are append-only revisions with the
+    // same id. Keep only the newest revision for display/counting; archive
+    // readers still see the unchanged `kind:"turn"` record vocabulary.
+    var current_turns: std.ArrayList(std.json.ObjectMap) = .empty;
     for (objs.items) |o| {
         if (!std.mem.eql(u8, S.str(o, "run_id"), current_run_id)) continue;
-        if (std.mem.eql(u8, S.str(o, "kind"), "turn")) turns += 1;
+        if (!std.mem.eql(u8, S.str(o, "kind"), "turn")) continue;
+        var replaced = false;
+        for (current_turns.items, 0..) |prior, idx| {
+            if (S.int(prior, "id") != S.int(o, "id")) continue;
+            current_turns.items[idx] = o;
+            replaced = true;
+            break;
+        }
+        if (!replaced) current_turns.append(arena, o) catch {};
     }
+    const turns = current_turns.items.len;
     if (turns == 0) {
         try out.print("no trajectory recorded yet — run a turn first (current file: {s})\n", .{if (trace.g_traj) |tj| tj.path else trace.trajectories_dir});
         try out.flush();
         return true;
     }
     try out.print("{s}session trajectory{s} — {d} turn(s); current: {s}; archive: {s} ({d} record(s) total)\n", .{ style.bold, style.reset, turns, if (trace.g_traj) |tj| tj.path else "", trace.trajectories_dir, objs.items.len });
-    for (objs.items) |o| {
-        if (!std.mem.eql(u8, S.str(o, "run_id"), current_run_id)) continue;
-        if (!std.mem.eql(u8, S.str(o, "kind"), "turn")) continue;
+    for (current_turns.items) |o| {
         const turn_id = S.int(o, "id");
         out.print("{s}●{s} turn {d} {s} {d}ms · prompt {s}{s}{s}{s} · {s}", .{
             style.accent,
             style.reset,
             turn_id,
-            if (S.flag(o, "ok")) "✓" else "✗",
+            if (S.flag(o, "live")) "…" else if (S.flag(o, "ok")) "✓" else "✗",
             S.int(o, "ms"),
             style.dim,
             S.str(o, "prompt_sha"),

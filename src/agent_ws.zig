@@ -19,7 +19,6 @@
 
 const std = @import("std");
 const Io = std.Io;
-
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
@@ -570,6 +569,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         // fires (output_item.added/done open and close the tracked call).
         if (!text_seen and sig.flowing(gpa, fbuf.items)) {
             text_seen = true;
+            self.traceFirstToken();
             if (self.tracer) |tr| tr.note("ws", "first output text — tightening stall budget");
         }
 
@@ -594,6 +594,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         }
         if (orig_tio != null and escPressed(true)) return error.Interrupted;
     }
+    self.traceFirstToken(); // tool-only responses fall back to completion time
     self.codex_ws_used_ms = nowAwakeMs(self.io); // completed turn — restart the idle window (#codex-ws)
     return full.toOwnedSlice();
 }

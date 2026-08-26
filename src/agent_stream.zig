@@ -397,6 +397,7 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
     defer parsed.deinit();
     if (parsed.value != .object) return;
     const obj = parsed.value.object;
+    if (modelOutputStarted(self.provider.kind, obj)) self.traceFirstToken();
     self.argLiveDelta(obj);
     if (no_ui) return;
     const text: []const u8 = switch (self.provider.kind) {
@@ -432,9 +433,54 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
     // the wire's `reasoning` event, or the live "Thinking" block / spinner.
     const sink = engine_sink.forAgent(self);
     const reasoning = reasoningDelta(self.provider.kind, obj);
+    if (reasoning.len != 0 or text.len != 0) self.traceFirstToken();
     if (reasoning.len != 0) sink.emit(self.io, .{ .reasoning_delta = .{ .text = reasoning } });
     if (text.len == 0) return;
     self.streamed_text = true;
     self.partial_text.appendSlice(self.arena, text) catch {}; // Esc-interrupt capture
     sink.emit(self.io, .{ .text_delta = .{ .text = text } });
+}
+
+/// Protocol envelopes (response.created, ping, usage) are not tokens. These
+/// are the first event families that contain model-authored prose, reasoning,
+/// or function-call bytes across the three streaming wires.
+fn modelOutputStarted(kind: @import("provider.zig").Provider.Kind, obj: std.json.ObjectMap) bool {
+    return switch (kind) {
+        .anthropic => blk: {
+            const t = obj.get("type") orelse break :blk false;
+            if (t != .string) break :blk false;
+            break :blk std.mem.eql(u8, t.string, "content_block_start") or std.mem.eql(u8, t.string, "content_block_delta");
+        },
+        .openai => blk: {
+            const choices = obj.get("choices") orelse break :blk false;
+            if (choices != .array or choices.array.items.len == 0) break :blk false;
+            const first = choices.array.items[0];
+            if (first != .object) break :blk false;
+            const delta = first.object.get("delta") orelse break :blk false;
+            break :blk delta == .object and delta.object.count() > 0;
+        },
+        .responses => blk: {
+            const t = obj.get("type") orelse break :blk false;
+            if (t != .string) break :blk false;
+            break :blk std.mem.startsWith(u8, t.string, "response.output_") or
+                std.mem.startsWith(u8, t.string, "response.function_call_arguments.") or
+                std.mem.startsWith(u8, t.string, "response.reasoning_");
+        },
+    };
+}
+
+fn testModelOutputStarted(kind: @import("provider.zig").Provider.Kind, json: []const u8) !bool {
+    const parsed = try std.json.parseFromSlice(Value, std.testing.allocator, json, .{});
+    defer parsed.deinit();
+    return modelOutputStarted(kind, parsed.value.object);
+}
+
+test "first-token signal ignores envelopes and sees prose, reasoning, and tool bytes (#602)" {
+    try std.testing.expect(!try testModelOutputStarted(.responses, "{\"type\":\"response.created\"}"));
+    try std.testing.expect(try testModelOutputStarted(.responses, "{\"type\":\"response.output_item.added\"}"));
+    try std.testing.expect(try testModelOutputStarted(.responses, "{\"type\":\"response.function_call_arguments.delta\"}"));
+    try std.testing.expect(!try testModelOutputStarted(.openai, "{\"choices\":[{\"delta\":{}}]}"));
+    try std.testing.expect(try testModelOutputStarted(.openai, "{\"choices\":[{\"delta\":{\"tool_calls\":[{}]}}]}"));
+    try std.testing.expect(!try testModelOutputStarted(.anthropic, "{\"type\":\"message_start\"}"));
+    try std.testing.expect(try testModelOutputStarted(.anthropic, "{\"type\":\"content_block_delta\"}"));
 }

@@ -209,6 +209,8 @@ pub const Agent = struct {
     ws_off: bool = false, // codex ws transport disabled for this session after a handshake/transport fallback to SSE (#codex-ws)
     ws_transport_failures: u8 = 0, // consecutive WS failures; retry once before latching persistent SSE
     streamed_text: bool = false, // the last request printed its text live
+    request_started: ?Io.Timestamp = null, // operational TTFT origin for the active model call (#602)
+    first_token_traced: bool = false,
     thinking_open: bool = false, // a live "Thinking" reasoning block is currently streaming (/thinking)
     thinking_rows: usize = 0, // on-screen rows the live Thinking block spans (#75 collapse)
     thinking_col: usize = 0, // running column within the block, for soft-wrap counting
@@ -480,6 +482,7 @@ pub const Agent = struct {
     pub const postStream = @import("agent_stream.zig").postStream;
     pub const postStreamWithClient = @import("agent_stream.zig").postStreamWithClient;
     pub const printDelta = @import("agent_stream.zig").printDelta;
+    pub const traceFirstToken = @import("agent_observability.zig").firstToken;
     // Codex Responses-over-WebSocket transport (+ its fresh-client SSE fallback
     // wrapper postLive) lives in agent_ws.zig (#codex-ws). Member-aliased.
     pub const postResponsesWs = @import("agent_ws.zig").postResponsesWs;

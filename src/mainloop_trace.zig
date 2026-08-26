@@ -26,6 +26,35 @@ pub fn begin(root: *agent_mod.Agent, io: Io) Before {
     };
 }
 
+/// Append the open revision of a root turn before the provider runs. The DGM
+/// archive stays append-only and keeps its existing `kind:"turn"` vocabulary;
+/// record() appends the closed revision with the same id when the turn ends.
+pub fn recordLive(root: *agent_mod.Agent, task: []const u8, turn_id: u64, parent_turn_id: u64) void {
+    const trajectory = trace.g_traj orelse return;
+    if (turn_id == 0) return;
+    const prompt = root.systemPrompt();
+    const prompt_fp = scoring.promptFingerprint(prompt);
+    const task_class = recipe.classifyTask(task);
+    const current_recipe = recipe.snapshot(root.provider.id, root.provider.model, @tagName(root.reasoning), prompt, root.toolsJson(), task_class);
+    trajectory.capturePrompt(prompt_fp, prompt);
+    trajectory.node(.{
+        .id = turn_id,
+        .parent = parent_turn_id,
+        .kind = "turn",
+        .label = root.provider.model,
+        .t = trajectory.elapsedMs(),
+        .live = true,
+        .prompt_sha = &prompt_fp,
+        .recipe_sha = &current_recipe.recipe_sha,
+        .recipe_provider = root.provider.id,
+        .recipe_model = root.provider.model,
+        .recipe_effort = @tagName(root.reasoning),
+        .recipe_toolset_sha = &current_recipe.toolset_sha,
+        .task_class = task_class,
+        .task = util.utf8Prefix(task, 160),
+    });
+}
+
 /// Shape of the turn's final assistant response: counts and block types
 /// only, never a byte of the content itself (#270). An unrelated text-only
 /// refusal and a turn where the model emitted nothing looked identical in
@@ -260,6 +289,44 @@ fn testShape(json: []const u8) !ResponseShape {
     const parsed = try std.json.parseFromSlice(Value, std.testing.allocator, json, .{});
     defer parsed.deinit();
     return finalResponseShape(parsed.value.array.items);
+}
+
+test "live turn revision reaches the DGM archive before an outcome (#602)" {
+    const io = std.testing.io;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var trajectory: trace.Trajectory = .{
+        .io = io,
+        .gpa = std.testing.allocator,
+        .out = &aw.writer,
+        .start = Io.Timestamp.now(io, .awake),
+        .identity = .{ .run_id = "live-run", .pid = 9, .session_id = "session" },
+    };
+    defer trajectory.deinit();
+    const previous = trace.g_traj;
+    trace.g_traj = &trajectory;
+    defer trace.g_traj = previous;
+
+    var root: agent_mod.Agent = undefined;
+    root.provider = .{ .id = "xai", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "", .model = "grok-test", .context = 100_000 };
+    root.reasoning = .high;
+    root.review_mode = false;
+    root.sub = false;
+    root.strict = false;
+    root.ultracode_mode = false;
+    root.sys_normal = "system prompt";
+    root.tools_anthropic = "[]";
+    recordLive(&root, "inspect the workspace", 4, 3);
+
+    var lines = std.mem.tokenizeScalar(u8, aw.writer.buffered(), '\n');
+    _ = lines.next(); // prompt dictionary record
+    var parsed = try std.json.parseFromSlice(Value, std.testing.allocator, lines.next().?, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("turn", obj.get("kind").?.string);
+    try std.testing.expectEqual(@as(i64, 4), obj.get("id").?.integer);
+    try std.testing.expect(obj.get("live").?.bool);
+    try std.testing.expect(obj.get("ok") == null);
 }
 
 test "#270: the turn record separates a text-only response from an empty turn" {

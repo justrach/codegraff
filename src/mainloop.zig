@@ -410,6 +410,7 @@ pub fn run(ctx: *Ctx) !void {
             try ctx.out.flush();
         }
         const turn_before = mainloop_trace.begin(ctx.root, ctx.io);
+        mainloop_trace.recordLive(ctx.root, base_msg, turn_id, prev_turn_id);
         const turn_started = Io.Timestamp.now(ctx.io, .awake);
         // Turn failures are surfaced without killing the session.
         const turn_result = providers.runTurnWithFallback(ctx.root, ctx.keys, ctx.arena, ctx.out);
