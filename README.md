@@ -278,7 +278,10 @@ First things to try once you're at the `›` prompt:
 
 `graff acp` speaks the Agent Client Protocol, so Zed can drive it as an
 External Agent. The same spawn is the hosted-agent recipe — see
-[Embedding graff](docs/embedding.md). Register it in `~/.config/zed/settings.json`:
+[Embedding graff](docs/embedding.md). There is no "Install from Registry"
+row yet; the submit recipe and the auth blocker are
+[ACP Registry](docs/acp-registry.md) (#613). Until that lands, register it
+in `~/.config/zed/settings.json`:
 
 ```json
 {

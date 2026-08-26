@@ -129,6 +129,11 @@ graff acp --yolo --no-local-tools --model gpt-5.5
 graff --json --no-local-tools --model gpt-5.5
 ```
 
+The same `graff acp` spawn is what a registry listing would run
+(`args: ["acp"]`). Listing itself is the other-repo recipe in
+[acp-registry.md](acp-registry.md) (#613); this page does not grow a
+registry client.
+
 ## License
 
 codegraff is **Modified AGPLv3** ([`LICENSE`](../LICENSE)): a hosted or SaaS
@@ -137,5 +142,6 @@ written permission.
 
 ## Not this
 
-No `libgraff`, no WASM module, no Node addon, no in-process Zig. Those would
-be a different product. This page is the host recipe that already exists.
+No `libgraff`, no WASM module (`fx-core.wasm` included), no Node addon, no
+in-process Zig. Those would be a different product. The 279 continuation
+does not start them. This page is the host recipe that already exists.
