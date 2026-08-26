@@ -42,6 +42,7 @@ record only when you need the evidence or the edge cases.
 | [0029](0029-mcp-inside-rlm-and-return-shapes.md) | Loaded MCP tools are rlm host functions; persist return shapes on the load result, never the prefix; fat MCP results auto-slim; default `-p` connects `.mcp.json` (folded, not skipped). |
 | [0030](0030-rlm-late-showcase.md) | Small turns hide `rlm` (and sPTC). Showcase on `--rlm`, a ≥4 native batch, context ≥50% of compactAt, or an explicit load — never on MCP fan-out or the prefix. |
 | [0031](0031-xai-hosted-x-search.md) | xAI Responses splices hosted `x_search` onto tools turns. It is not a catalog function; `GRAFF_XAI_X_SEARCH=0` opts out. |
+| [0032](0032-acp-streams-mid-turn.md) | `graff acp` streams thought / tool / text `session/update`s mid-turn. The native app is an ACP client; it does not need `graff serve`. |
 
 ## When to write one
 
