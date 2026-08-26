@@ -6,10 +6,9 @@ no Electron, no merjs SSR). merjs itself stays a separate repo; we only
 copied the window shell.
 
 ```bash
-# UI + graff serve (any OS)
+# UI (any OS) — Next.js spawns `graff acp` itself
+# from the repo root: zig build
 cd apps/native && npm install && npm run dev
-# in another terminal, from the repo root
-./zig-out/bin/graff serve --port 8787
 
 # macOS window (after the UI is listening)
 zig build-exe apps/native/desktop/main.zig -O ReleaseSmall \

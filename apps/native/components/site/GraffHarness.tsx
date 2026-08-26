@@ -1,8 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import ApprovalCard from "@/components/primitives/ApprovalCard";
-import LoadingState from "@/components/primitives/LoadingState";
 import PromptBar from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
 import StreamingText from "@/components/primitives/StreamingText";
@@ -13,19 +11,13 @@ import { ThemeToggle } from "@/components/site/ThemeToggle";
 import {
   MODELS,
   STARTER_PROMPTS,
-  answer,
   cancel,
-  chat,
   checkHealth,
-  createSession,
-  setModel,
+  ensureSession,
+  prompt,
   type Health,
-} from "@/lib/graff-client";
-import {
-  applyEvent,
-  emptyTurn,
-  type AssistantTurn,
-} from "@/lib/graff-events";
+} from "@/lib/acp-client";
+import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
 
 const NAME = "there";
 
@@ -55,13 +47,7 @@ function UserBubble({ text }: { text: string }) {
   );
 }
 
-function AssistantBody({
-  turn,
-  onAnswer,
-}: {
-  turn: AssistantTurn;
-  onAnswer: (text: string, callId?: string) => void;
-}) {
+function AssistantBody({ turn }: { turn: AssistantTurn }) {
   const reasoningRows = turn.reasoning
     ? turn.reasoning
         .split(/\n+/)
@@ -102,24 +88,6 @@ function AssistantBody({
             loop={false}
             text={turn.text}
             streaming={turn.status === "streaming" || turn.status === "thinking"}
-          />
-        </div>
-      )}
-      {turn.ask && (
-        <div className="mt-5">
-          <ApprovalCard
-            resettable={false}
-            questions={[
-              {
-                q: turn.ask.question,
-                type: "radio",
-                options: ["Continue", "Skip"],
-              },
-            ]}
-            onSubmitted={(answers) => {
-              const text = answers?.[0] && answers[0] !== "Skip" ? answers[0] : answers?.[0] === "Skip" ? "" : "continue";
-              onAnswer(text || "continue", turn.ask?.callId);
-            }}
           />
         </div>
       )}
@@ -187,8 +155,8 @@ function EmptyState({
         />
         {health && !health.ok && (
           <p className="mt-3 text-[12.5px] text-orange">
-            graff serve is not reachable. From the repo root run{" "}
-            <span className="font-mono text-ink">graff serve --port 8787</span>
+            graff acp is not reachable. From the repo root run{" "}
+            <span className="font-mono text-ink">zig build</span>
             {health.detail ? ` — ${health.detail}` : ""}.
           </p>
         )}
@@ -213,7 +181,7 @@ function EmptyState({
         <div className="mt-1 flex items-center gap-5 pl-0.5 text-[13px] text-ink-3">
           <span className="flex items-center gap-2 py-1">
             <span className={`size-1.5 rounded-full ${health?.ok ? "bg-green" : "bg-orange"}`} />
-            {health?.ok ? "Connected to graff serve" : "Waiting for graff serve"}
+            {health?.ok ? "Connected over ACP" : "Waiting for graff acp"}
           </span>
           <button type="button" onClick={shuffle} className="flex items-center gap-2 py-1 transition-colors duration-150 hover:text-ink">
             Shuffle suggestions
@@ -249,10 +217,10 @@ export default function GraffHarness() {
       setHealth(h);
       if (!h.ok) return;
       try {
-        const info = await createSession({ model, yolo: true });
+        const id = await ensureSession(model);
         if (cancelled) return;
-        sessionRef.current = info.session_id;
-        setSessionId(info.session_id);
+        sessionRef.current = id;
+        setSessionId(id);
       } catch (err) {
         if (!cancelled) {
           setHealth({ ok: false, detail: err instanceof Error ? err.message : String(err) });
@@ -262,7 +230,7 @@ export default function GraffHarness() {
     return () => {
       cancelled = true;
     };
-    // session is created once per mount; model changes go through set_model
+    // ACP session is created once per mount; model changes respawn the agent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -279,13 +247,13 @@ export default function GraffHarness() {
     );
   };
 
-  const ensureSession = async (): Promise<string> => {
-    if (sessionRef.current) return sessionRef.current;
-    const info = await createSession({ model, yolo: true });
-    sessionRef.current = info.session_id;
-    setSessionId(info.session_id);
+  const requireSession = async (reset = false): Promise<string> => {
+    if (!reset && sessionRef.current) return sessionRef.current;
+    const id = await ensureSession(model, reset);
+    sessionRef.current = id;
+    setSessionId(id);
     setHealth({ ok: true });
-    return info.session_id;
+    return id;
   };
 
   const send = async (text: string) => {
@@ -304,39 +272,26 @@ export default function GraffHarness() {
               messages: [
                 ...c.messages,
                 { id: userId, role: "user", text: trimmed },
-                { id: asstId, role: "assistant", turn: emptyTurn() },
+                { id: asstId, role: "assistant", turn: { ...emptyTurn(), model } },
               ],
             },
       ),
     );
     setBusy(true);
-    let turn = emptyTurn();
+    let turn: AssistantTurn = { ...emptyTurn(), model };
     try {
-      const id = await ensureSession();
-      for await (const ev of chat(id, trimmed)) {
-        turn = applyEvent(turn, ev);
+      const id = await requireSession();
+      for await (const update of prompt(id, trimmed)) {
+        turn = applyAcpUpdate(turn, update);
         patchAssistant(chatThread.id, asstId, turn);
       }
+      turn = finishAcpTurn(turn);
+      patchAssistant(chatThread.id, asstId, turn);
     } catch (err) {
-      turn = applyEvent(turn, { type: "error", message: err instanceof Error ? err.message : String(err) });
+      turn = { ...turn, error: err instanceof Error ? err.message : String(err), status: "error" };
       patchAssistant(chatThread.id, asstId, turn);
     } finally {
       setBusy(false);
-    }
-  };
-
-  const answerAsk = async (text: string, callId?: string) => {
-    const id = sessionRef.current;
-    if (!id || !lastAssistant) return;
-    try {
-      await answer(id, { text, callId });
-      patchAssistant(chatThread.id, lastAssistant.id, { ...lastAssistant.turn, ask: undefined, status: "streaming" });
-    } catch (err) {
-      patchAssistant(chatThread.id, lastAssistant.id, {
-        ...lastAssistant.turn,
-        error: err instanceof Error ? err.message : String(err),
-        status: "error",
-      });
     }
   };
 
@@ -344,6 +299,8 @@ export default function GraffHarness() {
     const id = (chatIdRef.current += 1);
     setChats((current) => [...current, { id, title: null, messages: [] }]);
     setActiveId(id);
+    sessionRef.current = null;
+    void requireSession(true).catch(() => undefined);
   };
 
   const closeChat = (id: number) => {
@@ -452,13 +409,8 @@ export default function GraffHarness() {
                       message.role === "user" ? (
                         <UserBubble key={message.id} text={message.text} />
                       ) : (
-                        <AssistantBody key={message.id} turn={message.turn} onAnswer={answerAsk} />
+                        <AssistantBody key={message.id} turn={message.turn} />
                       ),
-                    )}
-                    {busy && lastAssistant?.turn.status === "thinking" && !lastAssistant.turn.reasoning && (
-                      <div className="flex min-h-6 items-center">
-                        <LoadingState label="Thinking" variant="Dots" />
-                      </div>
                     )}
                   </div>
                 </div>
@@ -472,7 +424,13 @@ export default function GraffHarness() {
                       modelKey={model}
                       onModelChange={(key) => {
                         setModelKey(key);
-                        if (sessionRef.current) void setModel(sessionRef.current, key);
+                        sessionRef.current = null;
+                        void ensureSession(key, true)
+                          .then((id) => {
+                            sessionRef.current = id;
+                            setSessionId(id);
+                          })
+                          .catch(() => undefined);
                       }}
                       onSend={send}
                       disabled={busy}
