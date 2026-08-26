@@ -10,6 +10,19 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.278 (2026-08-26)
+
+- Composer image pastes are marker-gated (#634). Deleting `[Image]`,
+  `[Image #N]`, or a TUI chip before submit drops that payload; a
+  text-only prompt no longer leaks native `input_image` blocks. Identical
+  `b64` collapses so two pastes cannot become four blocks.
+- `/image` and `/paste` stay sticky for the next text-only line.
+  `/image clear` clears the whole queue.
+- TUI: backspace on an empty composer drops the last chip; Ctrl+U /
+  Cmd+Delete clears chips with the draft; overlay backspace/`x` detaches
+  the previewed chip.
+- Test ratchet: unit suite 1684 (floor 1684).
+
 ## v0.0.277 (2026-08-26)
 
 - MCP tools that `load_tool_schemas` has unfolded are `rlm` host functions
