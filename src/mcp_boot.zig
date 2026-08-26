@@ -207,12 +207,12 @@ pub fn joinBeforeRequest(reg: *Registry) bool {
 /// when this call actually merged something, so the agent can rebuild catalogs.
 pub fn joinPending(reg: *Registry) bool {
     if (reg.pending_starts.len == 0) return false;
-    const t0 = std.time.milliTimestamp();
+    const t0 = Io.Timestamp.now(reg.io, .awake);
     const futures = reg.pending_starts;
     reg.pending_starts = &.{};
     mergeOutcomes(reg, futures);
     reg.gpa.free(futures);
-    const waited = std.time.milliTimestamp() - t0;
+    const waited = @max(0, t0.untilNow(reg.io, .awake).toMilliseconds());
     if (waited >= 80) {
         if (@import("engine_sink.zig").hostedSink()) |sink| {
             var buf: [80]u8 = undefined;
