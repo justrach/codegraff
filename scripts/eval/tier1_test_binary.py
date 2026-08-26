@@ -134,6 +134,25 @@ class Selection:
         )
 
 
+def names_in_blob(blob: bytes, names: dict[str, str] | set[str] | list[str]) -> set[str]:
+    """Which of `names` occur in `blob`.
+
+    Zig 0.17 embeds each `test "name"` as the C string `test.<name>`. A
+    NUL-split plus that prefix is one C pass; `name in blob` once per
+    declared test is minutes on a 130MB artifact (#641).
+    """
+    wanted = {n.encode("utf-8"): n for n in names}
+    prefix = b"test."
+    present: set[str] = set()
+    for part in blob.split(b"\0"):
+        hit = wanted.get(part)
+        if hit is None and part.startswith(prefix):
+            hit = wanted.get(part[len(prefix) :])
+        if hit is not None:
+            present.add(hit)
+    return present
+
+
 def candidates() -> list[pathlib.Path]:
     """Every compiled test artifact, newest first."""
     found = [p for p in CACHE.glob("*/test") if p.is_file()]
@@ -158,23 +177,32 @@ def select(filters: list[str], declared: dict[str, str] | None = None) -> Select
     outsiders = foreign_tests(declared)
 
     ranked: list[Selection] = []
-    # candidates() is newest first and sort() below is stable, so ties stay in
-    # that order and the newest equally-good artifact wins.
+    newest: pathlib.Path | None = None
+    # candidates() is newest first. A perfect match (no missing, no foreign,
+    # no extras the filters did not ask for) is the answer — stop there
+    # instead of reading every stale filtered artifact (#641).
     for path in candidates():
+        if newest is None:
+            newest = path
         blob = path.read_bytes()
-        present = {n for n in declared if n.encode("utf-8") in blob}
-        alien = {n for n in outsiders if n.encode("utf-8") in blob}
+        present = names_in_blob(blob, declared)
+        # Foreign names only matter when `expected` is empty (floor vs tui-test).
+        alien = names_in_blob(blob, outsiders) if not expected else set()
         ranked.append(Selection(path, present, expected, alien))
+        # Unfiltered: every src name present is the full suite, even if one
+        # foreign string collides. Filtered: names must match the filter set.
+        # Either way, stop — do not read every stale artifact (#641).
+        if not ranked[-1].missing and (not filters or not ranked[-1].extra):
+            break
     if not ranked:
         raise ArtifactError(
             "no compiled test binary under .zig-cache/o - run `zig build test` first"
         )
 
-    newest = ranked[0].path
     ranked.sort(key=lambda s: (len(s.missing), len(s.foreign), len(s.extra)))
     best = ranked[0]
     best.considered = len(ranked)
-    best.was_newest = best.path == newest
+    best.was_newest = newest is not None and best.path == newest
     return best
 
 
@@ -193,10 +221,21 @@ def anonymous_tests() -> int:
 
 
 def scan_count(filters: list[str] | None = None) -> int:
-    """Suite size from the artifact's named tests + source anonymous tests."""
+    """Suite size from the artifact's named tests + source anonymous tests.
+
+    A duplicate `test "name"` is two Zig tests and one dict key; count
+    source occurrences that are present in the artifact so the number
+    matches `All N tests passed.`
+    """
     chosen = select(filters or [])
-    extra = anonymous_tests() if not filters else 0
-    return len(chosen.present) + extra
+    if filters:
+        return len(chosen.present)
+    named = 0
+    for path in sorted(SRC.glob("*.zig")):
+        for name in _names_in(path):
+            if name in chosen.present:
+                named += 1
+    return named + anonymous_tests()
 
 
 def artifact_count(path: pathlib.Path) -> tuple[int, str]:
@@ -261,8 +300,15 @@ def main() -> int:
         return 0
 
     if args.cmd == "scan":
-        extra = anonymous_tests() if not args.filter else 0
-        print(len(chosen.present) + extra)
+        if args.filter:
+            print(len(chosen.present))
+            return 0
+        named = 0
+        for path in sorted(SRC.glob("*.zig")):
+            for name in _names_in(path):
+                if name in chosen.present:
+                    named += 1
+        print(named + anonymous_tests())
         return 0
 
     try:
