@@ -48,9 +48,6 @@ jobs:
   # codebase targets.
   zig:
     runs-on: ubuntu-latest
-    env:
-      # Integration tests are deterministic/offline; hosted MCP is covered separately.
-      GRAFF_NO_SMOLIFY: "1"
     steps:
       - uses: actions/checkout@v7
 
@@ -100,9 +97,6 @@ jobs:
 
       - name: Streamable HTTP MCP handshake and session regression
         run: python3 scripts/test-mcp-streamable-http.py --graff zig-out/bin/graff
-
-      - name: Smolify lazy public-only and secret-egress boundary
-        run: python3 scripts/test-smolify-boundary.py --graff zig-out/bin/graff
 
       - name: Embedder mode --no-local-tools gate (#330)
         run: python3 scripts/test-no-local-tools.py --graff zig-out/bin/graff

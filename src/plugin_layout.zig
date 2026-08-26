@@ -14,7 +14,6 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const file_cap: std.Io.Limit = .limited(1 << 20);
-const reserved = "smolify";
 
 /// Codex's order: `.codex-plugin` first, then Claude, then Cursor.
 const manifest_files = [_][]const u8{
@@ -115,7 +114,6 @@ fn putServers(arena: Allocator, servers: *std.json.ObjectMap, found: *bool, v: ?
     const obj = if (v) |x| (if (x == .object) x.object else return) else return;
     var it = obj.iterator();
     while (it.next()) |e| {
-        if (std.mem.eql(u8, e.key_ptr.*, reserved)) continue;
         if (servers.get(e.key_ptr.*) != null) continue;
         if (e.value_ptr.* != .object) continue;
         servers.put(arena, e.key_ptr.*, e.value_ptr.*) catch continue;

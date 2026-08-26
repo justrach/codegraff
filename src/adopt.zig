@@ -11,7 +11,6 @@ const Allocator = std.mem.Allocator;
 const mcp_config = @import("mcp_config.zig");
 const skill_docs = @import("skill_docs.zig");
 
-const reserved = "smolify";
 const file_cap: std.Io.Limit = .limited(2 << 20);
 const max_copy_depth: u8 = 6;
 /// Written after the first adopt so startup does not rescan Claude every launch.
@@ -151,7 +150,6 @@ fn harvest(arena: Allocator, dest: *std.json.ObjectMap, servers: ?Value) void {
     const obj = if (servers) |v| (if (v == .object) v.object else return) else return;
     var it = obj.iterator();
     while (it.next()) |e| {
-        if (std.mem.eql(u8, e.key_ptr.*, reserved)) continue;
         if (dest.get(e.key_ptr.*) != null) continue;
         const n = normalize(arena, e.value_ptr.*) orelse continue;
         dest.put(arena, e.key_ptr.*, n) catch {};
@@ -400,14 +398,14 @@ test "adopt writes missing Claude MCP into graff folders and skips existing name
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/.mcp.json", .{cwd}), .data = "{\"mcpServers\":{\"deepwiki\":{\"url\":\"https://keep.example/mcp\"}}}" });
 
     const r = try run(io, arena, home, cwd);
-    try testing.expectEqual(@as(usize, 2), r.added_user);
+    try testing.expectEqual(@as(usize, 3), r.added_user);
     try testing.expectEqual(@as(usize, 1), r.added_project);
     try testing.expectEqual(@as(usize, 0), r.skipped);
     try testing.expectEqual(@as(usize, 1), r.skills);
 
     const global = try Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(arena, "{s}/.codegraff/mcp.json", .{home}), arena, file_cap);
     try testing.expect(std.mem.indexOf(u8, global, "codedb") != null);
-    try testing.expect(std.mem.indexOf(u8, global, "smolify") == null);
+    try testing.expect(std.mem.indexOf(u8, global, "smolify") != null);
     const project = try Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(arena, "{s}/.mcp.json", .{cwd}), arena, file_cap);
     try testing.expect(std.mem.indexOf(u8, project, "relay") != null);
     try testing.expect(std.mem.indexOf(u8, project, "keep.example") != null);

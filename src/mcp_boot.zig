@@ -96,13 +96,10 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
 
     // Collect the entries first, in config order: the fan-out consumes them
     // concurrently, and a hash-map iterator is not a thing tasks can share.
-    // The core Smolify name is pinned and cannot be shadowed by repository or
-    // user configuration.
     const Entry = struct { name: []const u8, cfg: std.json.ObjectMap };
     var entries: std.ArrayList(Entry) = .empty;
     var it = merged.servers.iterator();
     while (it.next()) |entry| {
-        if (std.mem.eql(u8, entry.key_ptr.*, "smolify")) continue;
         if (@import("tool_surface.zig").skipOptionalServer(entry.key_ptr.*, environ_map)) continue;
         if (entry.value_ptr.* != .object) continue;
         try entries.append(a, .{ .name = try a.dupe(u8, entry.key_ptr.*), .cfg = entry.value_ptr.*.object });

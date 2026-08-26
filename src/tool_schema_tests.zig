@@ -211,7 +211,7 @@ test "the discovery path itself flattens, so nothing reaches a provider unlowere
 }
 
 /// #416's catalog half, measured against a REAL MCP manifest rather than a
-/// made-up one: the bundled Smolify server (13 tools, ~9.5 KB of description +
+/// made-up one: the Smolify fixture (13 tools, ~9.5 KB of description +
 /// schema — the same order as the companion server that provoked the issue at
 /// +2,568 input tokens per call).
 fn realServerTools(arena: Allocator) ![]const mcp.Tool {

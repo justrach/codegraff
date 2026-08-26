@@ -80,7 +80,7 @@ pub const modern_meta =
 /// LOAD-BEARING: when `modern` is false, this must produce exactly the bytes
 /// graff wrote before the 2026-07-28 migration — no `_meta`, nothing added.
 /// That byte-identity is the whole backward-compatibility guarantee for
-/// every server graff talks to today (codedbpro, smolify, every stdio
+/// every server graff talks to today (codedbpro, every stdio
 /// server in a workspace `.mcp.json`). See the "legacy byte-identity" test.
 pub fn buildRequest(a: Allocator, id: i64, method: []const u8, params: []const u8, modern: bool) ![]u8 {
     if (params.len < 2 or params[0] != '{' or params[params.len - 1] != '}') return error.BadMcpParams;
