@@ -90,7 +90,27 @@ export type LiveToolRow = {
   mono?: boolean;
   detailMono?: boolean;
   detail: { text: string; tone?: "add" }[];
+  status?: "running" | "ok" | "error";
+  startedAt?: number;
+  elapsedMs?: number;
 };
+
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = ms / 1000;
+  if (s < 60) return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
+  return `${Math.floor(s / 60)}m${String(Math.floor(s % 60)).padStart(2, "0")}s`;
+}
+
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [active]);
+  return now;
+}
 
 export type LiveDiff = {
   file: string;
@@ -112,6 +132,8 @@ export default function ToolChips({
   const diffLines: Record<string, { text: string; tone: "add" | "del" | "ctx" }[]> = live
     ? Object.fromEntries((liveDiffs ?? []).map((d) => [d.file, d.lines ?? []]))
     : DIFF_LINES;
+  const liveRunning = live && rows.some((row) => row.status === "running");
+  const now = useNow(Boolean(liveRunning));
   const [step, setStep] = useState(0);
   const [open, setOpen] = useState(true);
   const [openRows, setOpenRows] = useState<Set<string>>(new Set());
@@ -177,7 +199,7 @@ export default function ToolChips({
           {(live ? rows : rows.slice(0, step)).map((row) => {
             const rowOpen = openRows.has(row.label);
             return (
-            <div key={"id" in row && row.id ? row.id : row.label} style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
+            <div key={"id" in row && row.id ? row.id : row.label} style={live ? undefined : { animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
               <button
                 type="button"
                 aria-expanded={rowOpen}
@@ -200,6 +222,14 @@ export default function ToolChips({
                   </svg>
                 </span>
                 <span className="shrink-0 text-[12.5px] font-medium text-ink">{row.label}</span>
+                {live && (() => {
+                  const ms = row.status === "running" && row.startedAt
+                    ? now - row.startedAt
+                    : row.elapsedMs;
+                  return ms !== undefined && ms >= 100 ? (
+                    <span className="shrink-0 font-mono text-[11px] tabular-nums text-ink-3">{formatElapsed(ms)}</span>
+                  ) : null;
+                })()}
                 <span
                   className={`inline-flex h-5.5 min-w-0 flex-1 cursor-pointer items-center truncate rounded-chip bg-field px-1.5
                     text-[11.5px] text-ink-2 shadow-hairline transition-colors duration-100 hover:bg-hover-2
@@ -252,7 +282,7 @@ export default function ToolChips({
                 className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-chip
                   bg-surface px-2 font-mono text-[11.5px] text-ink shadow-btn
                   transition-colors duration-100 hover:bg-hover"
-                style={{ animation: `pop-in 250ms cubic-bezier(0.23,1,0.32,1) ${i * 80}ms both` }}
+                style={live ? undefined : { animation: `pop-in 250ms cubic-bezier(0.23,1,0.32,1) ${i * 80}ms both` }}
               >
                 <span className="min-w-0 truncate">{d.file}</span>
                 <span className="shrink-0 text-green tabular-nums">+{d.add}</span>
@@ -266,7 +296,7 @@ export default function ToolChips({
             className="inline-flex h-7 items-center rounded-chip px-1.5 font-mono text-[11.5px] text-ink-3
               underline decoration-transparent underline-offset-2 transition-colors duration-100
               hover:text-ink-2 hover:decoration-current"
-            style={{ animation: `fade-in 300ms ease-out ${DIFFS.length * 80}ms both` }}
+            style={live ? undefined : { animation: `fade-in 300ms ease-out ${DIFFS.length * 80}ms both` }}
           >
             {live ? `${diffs.length} files` : "+2 more"}
           </button>

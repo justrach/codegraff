@@ -27,6 +27,7 @@ pub const changelog_text =
     \\  • /never on a TTY is a searchable picker with two confirms; rm and ACP list still work (#638)
     \\  • bash_output wait_ms>0 always waits for exit — mid-range values are not a timeout (#640)
     \\  • host recipe: docs/embedding.md; @codegraff/sdk/acp spawns graff acp
+    \\  • first-turn tools: no MCP handshake wait, live chips show elapsed from start (ADR 0035)
     \\
     \\0.0.278
     \\  • deleted composer screenshots are not sent: submit keeps [Image #N] / @[path] only (#634)

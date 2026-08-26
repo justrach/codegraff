@@ -63,10 +63,13 @@ function AssistantBody({ turn }: { turn: AssistantTurn }) {
     mono: tool.icon === "run" || tool.icon === "write" || tool.icon === "read",
     detailMono: tool.icon === "run" || tool.icon === "write",
     detail: tool.detail,
+    status: tool.status,
+    startedAt: tool.startedAt,
+    elapsedMs: tool.elapsedMs,
   }));
 
   return (
-    <article className="min-w-0" style={{ animation: "fade-up 450ms cubic-bezier(0.23,1,0.32,1) both" }}>
+    <article className="min-w-0">
       {(turn.status === "thinking" || reasoningRows.length > 0) && (
         <ThinkingState
           variant="Reasoning"

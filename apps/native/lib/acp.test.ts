@@ -42,6 +42,7 @@ describe("applyAcpUpdate", () => {
     assert.equal(turn.tools[0]?.status, "running");
     assert.equal(turn.tools[0]?.chip, "src/main.zig");
     assert.equal(turn.tools[0]?.name, "Read");
+    assert.ok((turn.tools[0]?.startedAt ?? 0) > 0);
     turn = applyAcpUpdate(turn, {
       sessionUpdate: "tool_call_update",
       toolCallId: "call-1",

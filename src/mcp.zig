@@ -91,6 +91,8 @@ pub const Registry = struct {
     task_arenas: []std.heap.ArenaAllocator = &.{},
     /// Unjoined startServer futures from a deferred --yolo boot.
     pending_starts: []Io.Future(mcp_boot.StartOutcome) = &.{},
+    /// First model call already declined to wait on `pending_starts` (ADR 0035).
+    first_request_join_skipped: bool = false,
 
     pub fn arena(self: *Registry) Allocator {
         return self.arena_state.allocator();

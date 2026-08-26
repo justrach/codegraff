@@ -151,6 +151,11 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     : fromInput.length
       ? fromInput
       : (prev?.detail ?? []);
+  const startedAt = prev?.startedAt ?? Date.now();
+  const elapsedMs =
+    status === "running"
+      ? prev?.elapsedMs
+      : (prev?.elapsedMs ?? Math.max(0, Date.now() - startedAt));
   const row: ToolRow = {
     id,
     name: labelForKind(kind, title),
@@ -159,10 +164,12 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     status,
     detail,
     path,
+    startedAt,
+    elapsedMs,
   };
   const tools = turn.tools.slice();
   const merged: ToolRow = idx >= 0
-    ? { ...prev!, ...row, name: kind ? row.name : prev!.name, icon: kind ? row.icon : prev!.icon }
+    ? { ...prev!, ...row, name: kind ? row.name : prev!.name, icon: kind ? row.icon : prev!.icon, startedAt, elapsedMs }
     : row;
   if (idx >= 0) tools[idx] = merged;
   else tools.push(merged);

@@ -72,6 +72,7 @@ test {
     _ = @import("glyphs.zig");
     _ = @import("foldhdr.zig");
     _ = @import("mdtable.zig");
+    _ = @import("tool_card.zig");
     _ = @import("scrollback.zig");
     _ = @import("layout_cache.zig");
     _ = @import("selection.zig");

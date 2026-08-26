@@ -50,6 +50,10 @@ export type ToolRow = {
   status: "running" | "ok" | "error";
   detail: { text: string; tone?: "add" }[];
   path?: string;
+  /** Epoch ms when the chip first appeared — live elapsed from this. */
+  startedAt?: number;
+  /** Frozen duration once the tool finished. */
+  elapsedMs?: number;
 };
 
 export type DiffChip = {

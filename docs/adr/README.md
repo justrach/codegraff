@@ -45,6 +45,7 @@ record only when you need the evidence or the edge cases.
 | [0032](0032-acp-streams-mid-turn.md) | `graff acp` streams thought / tool / text `session/update`s mid-turn. The native app is an ACP client; it does not need `graff serve`. |
 | [0033](0033-user-can-retire-a-standing-constraint.md) | Only the user retires a standing constraint: TTY `/never` picker (two confirms), ACP/`rm`, or an explicit override. The model cannot. |
 | [0034](0034-remote-images-stay-native.md) | JSON/serve image inputs are a typed URL/base64 union, validated atomically and preserved as native provider vision blocks; never flatten pixels into prompt text. |
+| [0035](0035-first-turn-skips-deferred-mcp-join.md) | First model call after a deferred MCP boot does not wait for the handshake; native tools run now, MCP catalogs merge on the next request. |
 
 ## When to write one
 

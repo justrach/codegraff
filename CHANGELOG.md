@@ -36,6 +36,10 @@ current is part of cutting a release.
   steer or queue one prompt per line; Enter after the paste submits
   exactly one (#643).
 - Existing Tauri `gui/` is unchanged.
+- First-turn tool delay: live chips paint immediately (no 300–450ms
+  fade), ACP `tool_call` is `in_progress` and flushed, and the first
+  model call no longer waits for a deferred MCP handshake (ADR 0035).
+  Running tools show elapsed from the moment they start.
 
 ## v0.0.278 (2026-08-26)
 

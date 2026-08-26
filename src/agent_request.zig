@@ -117,7 +117,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // title task rendezvous here, then issue their requests concurrently.
     http.waitForClientReady(self.io);
     if (self.registry) |reg| {
-        if (@import("mcp_boot.zig").joinPending(reg)) {
+        if (@import("mcp_boot.zig").joinBeforeRequest(reg)) {
             self.invalidateRootTools();
             try self.ensureRootTools(self.provider.kind);
         }
