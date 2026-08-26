@@ -23,6 +23,12 @@
   <img alt="Built in Zig 0.17 dev" src="https://img.shields.io/badge/built%20in-Zig%200.17%20dev-f7a41d?logo=zig&logoColor=white">
 </p>
 
+<p align="center">
+  <strong>One of the most token-efficient coding harnesses we've tested.</strong><br/>
+  Prompt-cache max keeps repeated prefixes hot. RLM + spec-ptc turns wide work
+  into a small streaming program. Learnt slimming keeps fat results out of history.
+</p>
+
 ```sh
 curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
 ```
@@ -45,19 +51,109 @@ It works in your real terminal, on your real files, with the real internet, and 
 
 ---
 
-## How it compares
+## Token-efficient by construction
+
+<p align="center">
+  <img src="token-efficient-loop.png" alt="Stable cache layers feed a small programmatic loop that tests parallel tool paths, keeps the useful path, and gathers one slim result" width="960">
+  <br/>
+  <sub>Stable prefix → small program → parallel tools → slim result. Faint branches are measured variants; the proven path continues.</sub>
+</p>
+
+There is no single “token trick.” graff compounds three separate cuts:
+
+- **Keep the reusable prefix stable.** Prompt-cache max holds the system prompt
+  and tool-catalog head byte-identical, keeps provider cache keys sticky, and
+  shows the last hit rate in the UI. A live same-process grok-4.6 `/btw` turn
+  reused **3,712 of 3,721 prior prompt tokens (99.8%)**.
+- **Program over context instead of pasting it back.** The default Recursive
+  Language Model (RLM) loop is a Zig port of
+  [Alex Zhang's RLM](https://github.com/alexzhang13/rlm) and
+  [spec-ptc](https://alexzhang13.github.io/blog/2026/spec-ptc/) (speculative
+  programmatic tool calling): the model writes a tiny program, finished host
+  calls start while the rest of it is still streaming, and useful binds persist
+  across turns.
+- **Return the useful shape, not the payload.** Folded schemas, structural
+  `codedb` reads, 4 KB tool-result handles, and learnt MCP slimming keep bulky
+  tool output out of the model's working set.
+
+The [Darwin Gödel Machine-style evolutionary archive](#an-evolutionary-harness)
+supplies the measuring discipline: record prompt/persona variants, score them,
+and keep what holds up. Prompt-cache max is a separate harness decision built
+with that same measure-and-keep instinct; the archive did not autonomously
+invent the cache layout.
+
+### One stable RLM reuse case
+
+Live grok-4.6, same task, one rep. The model reads a file into a bind and reuses
+it on the next RLM call:
+
+| harness | wall | input tokens | model calls |
+|---|---:|---:|---:|
+| structured-only (`--old`) | 99.6s | 135k | 11 |
+| default RLM | **39.2s** | **25.3k** | **5** |
+| reduction | **61%** | **81%** | **55%** |
+
+The broader five-task RLM suite kept the same **5/5** pass rate while cutting
+input from **203k to 105k**, output from **4,186 to 1,669**, and wall time from
+**161s to 136s**. SuperGrok OAuth is flat-rate; on a metered xAI key, the token
+cut is the bill. Full method and caveats: [v0.0.276 release notes](docs/releases/v0.0.276.md).
+
+### Same grok-4.6, same six coding tasks
+
+<p align="center">
+  <img src="social/graff-vs-grok-build-grok46.png" alt="Same-model comparison on six coding tasks: graff and grok-build both pass 5 of 6; graff uses 198 seconds summed wall time, 106k input tokens, 24 calls, and 8.5 MB RSS versus grok-build at 506 seconds, 194k input tokens, 39 calls, and 177 MB RSS" width="960">
+</p>
+
+At the same **5/6** pass rate, graff used **61% less summed wall time, 45% less
+input, 38% fewer model calls, and 95% less peak RSS**. This is one live rep of
+six DeepSWE-shaped tasks, not a universal leaderboard; `label-sort` failed both
+harnesses. The exact run and the rejected shortcuts are documented in
+[v0.0.276](docs/releases/v0.0.276.md).
+
+Much of this implementation and benchmark work was made possible by
+[Cursor Cloud Agents](https://cursor.com/docs/cloud-agent): parallel agents in
+isolated environments, with measured evidence merged back into the harness.
+
+### What shipped in v0.0.277 and v0.0.278
+
+- **MCP results learn to slim themselves.** On the Linear fixture, the warm
+  learnt path moved from **28.0s to 14.8s**, **112k to 31k input**, and **7 to 5
+  calls**. Return shapes ride the load result, never the stable prefix.
+- **grok-4.6 gets xAI's hosted X search.** The same live prompt moved from a
+  seven-call scrape (**101s, 64k input**) to one hosted call (**37s, 28k**),
+  without adding another catalog tool.
+- **Small turns stay small.** RLM and spec-ptc appear when work gets wide, the
+  context crosses its measured threshold, or you explicitly ask for them; tiny
+  turns do not pay the schema tax.
+- **Removed images really leave.** The v0.0.278 privacy follow-up drops a pasted
+  screenshot if its composer chip is removed, collapses duplicate payloads, and
+  makes `/image clear` clear the whole queue before anything reaches the model.
+
+Read the full [v0.0.277 notes](docs/releases/v0.0.277.md) and the
+[v0.0.278 privacy follow-up](https://github.com/justrach/codegraff/blob/release/v0.0.278/docs/releases/v0.0.278.md).
+
+### Broader comparison: model choice, footprint, and startup
 
 <p align="center">
   <img src="comparison.png" alt="graff vs Claude Code vs Codex: ~20x cheaper ($0.022 vs $0.51 vs $0.42 per task), ~25 MB vs ~410 MB vs ~206 MB peak memory, 4.4s vs 8.9s one-shot gpt-5.5 latency" width="860">
 </p>
 
-Run the same job on graff, Claude Code, and Codex (three read-only questions about this repo, plus an 8-trial latency test), and here is what it means for you:
+The older cross-provider comparison answers a different question: what do model
+choice and a tiny native harness cost on three read-only repo tasks plus an
+eight-trial startup test?
 
-**Your AI bill is a fraction.** graff runs the same task on whatever model fits your budget. On `deepseek-v4-pro` it averaged **$0.022 per task**, against Claude Code's **$0.51** (Opus 4.8) and Codex's **$0.42** (gpt-5.5). That is roughly **20× cheaper**, because Claude Code only runs Claude and Codex only runs GPT, while graff runs deepseek, kimi, glm, grok, minimax, gpt, claude, and more. On the *same* model the token usage is comparable, so the win is the freedom to pick a cheaper one, not a token trick.
+**Model choice.** On `deepseek-v4-pro`, graff averaged **$0.022 per task**,
+against Claude Code's **$0.51** (Opus 4.8) and Codex's **$0.42** (gpt-5.5).
+That roughly 20× result comes from choosing a cheaper model; it is not the
+same-model harness comparison above.
 
-**It stays out of your way.** graff is one 2.7 MB Zig binary. In these runs it used about **25 MB of memory** for focused work (more when it reads a lot of code), against Claude Code's steady **~410 MB** (Node) and Codex's **~206 MB** (Rust). Leave it running next to everything else and your laptop won't notice.
+**Footprint.** The focused runs used about **25 MB** of memory, against Claude
+Code's steady **~410 MB** and Codex's **~206 MB**.
 
-**Scripts and CI finish in half the time.** For one-shot runs (`graff -p`, the SDKs, a CI step), graff completed a gpt-5.5 turn in **4.4 s** versus Codex's **8.9 s** on the identical ChatGPT endpoint, on every single trial. That is graff's near-instant startup beating a heavier per-call launch. In a long interactive session the startup amortizes and both settle to model latency, so this is a one-shot and automation win, not a blanket "graff is faster."
+**One-shot startup.** On the identical ChatGPT endpoint, graff completed a
+gpt-5.5 turn in **4.4s** versus Codex's **8.9s** in every paired trial. Long
+interactive sessions settle to model latency; this is a CLI/CI startup result,
+not a blanket speed claim.
 
 <sub><b>Method:</b> macOS, same machine, read-only code questions on this repo. Cost is each tool's own reported usage at <a href="https://codegraff.com/docs/models">codegraff gateway prices</a>; memory is peak RSS via <code>/usr/bin/time -l</code>; latency is 8 concurrent graff/Codex pairs on a tool-free prompt with reasoning effort matched. Your numbers will vary with the task, the model, and the network. Reproduce it yourself: <a href="benchmarks/">benchmarks/</a>.</sub>
 
@@ -81,6 +177,7 @@ context when the conversation gets long.
 
 **Contents**
 
+- [Token-efficient by construction](#token-efficient-by-construction)
 - [Install](#install) · [give it a key](#give-it-a-key) · [run it](#run-it)
 - [Why](#why)
 - [Code intelligence](#code-intelligence-token-efficient-by-default)

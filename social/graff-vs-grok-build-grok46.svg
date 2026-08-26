@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Graff default RLM versus grok-build on grok-4.6</title>
+  <desc id="desc">Both harnesses passed five of six DeepSWE-shaped tasks. Graff used 198 seconds of summed wall time, 106 thousand input tokens, 24 model calls, and 8.5 megabytes peak RSS. grok-build used 506 seconds, 194 thousand input tokens, 39 model calls, and 177 megabytes peak RSS.</desc>
+  <rect width="1600" height="900" fill="#f7f3ea"/>
+  <path d="M86 93 C295 77 530 101 736 88" fill="none" stroke="#059669" stroke-width="8" stroke-linecap="round" opacity="0.9"/>
+  <text x="88" y="72" font-family="Avenir Next" font-size="24" font-weight="500" letter-spacing="4" fill="#059669">GRAFF · GROK-4.6</text>
+  <text x="88" y="150" font-family="Avenir Next" font-size="66" font-weight="500" fill="#1d2522">same pass rate. much lighter loop.</text>
+  <text x="90" y="198" font-family="Avenir Next" font-size="26" fill="#56615d">Same model · same six DeepSWE-shaped tasks · one live rep</text>
+
+  <g transform="translate(1362 106)" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="65" cy="65" r="62" fill="none" stroke="#1d2522" stroke-width="7" opacity="0.9"/>
+    <circle cx="65" cy="65" r="53" fill="none" stroke="#059669" stroke-width="3" opacity="0.8"/>
+    <path d="M31 65 L49 48 M31 65 L49 82 M99 65 L81 48 M99 65 L81 82 M72 40 L57 90" fill="none" stroke="#1d2522" stroke-width="7"/>
+  </g>
+
+  <g transform="translate(88 250)">
+    <rect x="0" y="74" width="1424" height="126" rx="18" fill="#e3f2eb"/>
+    <rect x="0" y="74" width="10" height="126" rx="5" fill="#059669"/>
+    <line x1="0" y1="58" x2="1424" y2="58" stroke="#aeb7b3" stroke-width="2"/>
+    <line x1="0" y1="216" x2="1424" y2="216" stroke="#c4cbc8" stroke-width="2"/>
+    <line x1="0" y1="342" x2="1424" y2="342" stroke="#aeb7b3" stroke-width="2"/>
+
+    <g font-family="Avenir Next" font-size="19" font-weight="500" letter-spacing="2" fill="#66716c">
+      <text x="28" y="39">HARNESS</text>
+      <text x="625" y="39" text-anchor="middle">PASS</text>
+      <text x="825" y="39" text-anchor="middle">SUMMED WALL</text>
+      <text x="1035" y="39" text-anchor="middle">INPUT</text>
+      <text x="1194" y="39" text-anchor="middle">CALLS</text>
+      <text x="1370" y="39" text-anchor="middle">PEAK RSS</text>
+    </g>
+
+    <g font-family="Avenir Next" fill="#1d2522">
+      <text x="28" y="151" font-size="34" font-weight="500">graff + default RLM</text>
+      <text x="625" y="151" font-size="38" font-weight="500" text-anchor="middle">5/6</text>
+      <text x="825" y="151" font-size="38" font-weight="500" text-anchor="middle">198s</text>
+      <text x="1035" y="151" font-size="38" font-weight="500" text-anchor="middle">106k</text>
+      <text x="1194" y="151" font-size="38" font-weight="500" text-anchor="middle">24</text>
+      <text x="1370" y="151" font-size="38" font-weight="500" text-anchor="middle">8.5 MB</text>
+
+      <text x="28" y="291" font-size="34">grok-build</text>
+      <text x="625" y="291" font-size="38" text-anchor="middle">5/6</text>
+      <text x="825" y="291" font-size="38" text-anchor="middle">506s</text>
+      <text x="1035" y="291" font-size="38" text-anchor="middle">194k</text>
+      <text x="1194" y="291" font-size="38" text-anchor="middle">39</text>
+      <text x="1370" y="291" font-size="38" text-anchor="middle">177 MB</text>
+    </g>
+  </g>
+
+  <g transform="translate(88 650)" font-family="Avenir Next">
+    <g fill="#059669" font-size="38" font-weight="500">
+      <text x="0" y="0">61%</text>
+      <text x="358" y="0">45%</text>
+      <text x="716" y="0">38%</text>
+      <text x="1074" y="0">95%</text>
+    </g>
+    <g fill="#56615d" font-size="19" font-weight="500" letter-spacing="1.5">
+      <text x="0" y="34">LESS SUMMED WALL</text>
+      <text x="358" y="34">LESS INPUT</text>
+      <text x="716" y="34">FEWER CALLS</text>
+      <text x="1074" y="34">LESS PEAK RSS</text>
+    </g>
+  </g>
+
+  <path d="M90 737 C404 752 742 729 1051 742 C1242 750 1379 738 1510 742" fill="none" stroke="#1d2522" stroke-width="3" stroke-linecap="round" opacity="0.6"/>
+  <text x="88" y="806" font-family="Avenir Next" font-size="24" fill="#56615d">ReleaseSafe · -j 6 · grok-4.6 via SuperGrok OAuth · both harnesses missed label-sort</text>
+  <text x="88" y="850" font-family="Andale Mono" font-size="20" fill="#7a837f">run-20260825-091123 · source: codegraff v0.0.276 release notes</text>
+</svg>
