@@ -10,6 +10,15 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.279 (2026-08-26)
+
+- Native Beautiful UI app (`apps/native`) is an ACP client. Next.js
+  `/api/acp` spawns `graff acp --yolo`; thinking and tool chips stream
+  from the first call. `graff serve` is not required (#637).
+- `graff acp` emits mid-turn `session/update`s for thought, text, and
+  `tool_call` / `tool_call_update` (ADR 0032). Protocol version stays 1.
+- Existing Tauri `gui/` is unchanged. No `v0.0.279` tag until asked.
+
 ## v0.0.278 (2026-08-26)
 
 - Composer image pastes are marker-gated (#634). Deleting `[Image]`,

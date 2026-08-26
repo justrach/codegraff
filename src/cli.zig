@@ -21,6 +21,10 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.279
+    \\  • native Beautiful UI app speaks ACP: thinking and tool chips stream mid-turn (ADR 0032)
+    \\  • graff acp emits thought / tool_call / text session/update; graff serve is not required
+    \\
     \\0.0.278
     \\  • deleted composer screenshots are not sent: submit keeps [Image #N] / @[path] only (#634)
     \\  • /image and /paste stay sticky; /image clear drops the whole queue

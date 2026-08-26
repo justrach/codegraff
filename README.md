@@ -114,7 +114,7 @@ Much of this implementation and benchmark work was made possible by
 [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent): parallel agents in
 isolated environments, with measured evidence merged back into the harness.
 
-### What shipped in v0.0.277 and v0.0.278
+### What shipped in v0.0.277–v0.0.279
 
 - **MCP results learn to slim themselves.** On the Linear fixture, the warm
   learnt path moved from **28.0s to 14.8s**, **112k to 31k input**, and **7 to 5
@@ -128,9 +128,12 @@ isolated environments, with measured evidence merged back into the harness.
 - **Removed images really leave.** The v0.0.278 privacy follow-up drops a pasted
   screenshot if its composer chip is removed, collapses duplicate payloads, and
   makes `/image clear` clear the whole queue before anything reaches the model.
+- **The native app speaks ACP.** Thinking and tool chips stream mid-turn from
+  `graff acp` (ADR 0032). `graff serve` is not required.
 
-Read the full [v0.0.277 notes](docs/releases/v0.0.277.md) and the
-[v0.0.278 privacy follow-up](https://github.com/justrach/codegraff/blob/release/v0.0.278/docs/releases/v0.0.278.md).
+Read the full [v0.0.277 notes](docs/releases/v0.0.277.md), the
+[v0.0.278 privacy follow-up](docs/releases/v0.0.278.md), and the
+[v0.0.279 ACP native cut](docs/releases/v0.0.279.md).
 
 ### Broader comparison: model choice, footprint, and startup
 
