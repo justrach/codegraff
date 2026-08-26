@@ -37,6 +37,7 @@ const messages = @import("messages.zig");
 const anim = @import("anim.zig");
 const hooks = @import("hooks.zig");
 const readline = @import("readline.zig");
+const line_repl_disclosure = @import("line_repl_disclosure.zig");
 const title_mod = @import("title.zig");
 const mainloop_title = @import("mainloop_title.zig");
 const mainloop_recap = @import("mainloop_recap.zig");
@@ -119,7 +120,7 @@ pub fn run(ctx: *Ctx) !void {
         title_jobs.poll(ctx);
         recap_jobs.poll(ctx);
         const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0) continue;
+        if (line_repl_disclosure.handleInput(ctx.root.io, ctx.out, line)) continue;
         // `/goal [30m] <objective>` and `/loop [30m] <prompt>` are ONE autonomous run: same
         // plan-act-verify machine, same controller, same optional wall clock. Only /goal also
         // adopts a standing objective (goal_pacing.autonomousFromLine).
