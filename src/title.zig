@@ -326,7 +326,8 @@ test "cleanTitle: normalizes a model reply into a tab label, else null (/title)"
 /// Generate a terse tab-label title for the turn's first prompt — runs on its
 /// own arena + a throwaway one-message sub-Agent, so it can be spawned via
 /// io.async and overlap the real turn instead of blocking after it. Returns a
-/// gpa-owned title (caller frees), or null on any failure.
+/// gpa-owned title (caller frees), or null on any failure. Uses the session
+/// provider as-is (same model and wire as the turn).
 pub fn titleTask(gpa: std.mem.Allocator, io: Io, client: *std.http.Client, provider: Provider, prompt: []const u8, run_budget: ?*@import("run_budget.zig").RunBudget, tracer: ?*@import("trace.zig").Tracer) ?[]const u8 {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();

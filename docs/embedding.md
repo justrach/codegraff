@@ -129,13 +129,52 @@ graff acp --yolo --no-local-tools --model gpt-5.5
 graff --json --no-local-tools --model gpt-5.5
 ```
 
+The same `graff acp` spawn is what a registry listing would run
+(`args: ["acp"]`). Listing itself is the other-repo recipe in
+[acp-registry.md](acp-registry.md) (#613); this page does not grow a
+registry client.
+
 ## License
 
 codegraff is **Modified AGPLv3** ([`LICENSE`](../LICENSE)): a hosted or SaaS
 embed is a legal event (AGPL §13) unless both authors grant a separate
 written permission.
 
+## In-process (`createGraffAgent`)
+
+fx-shaped same-process embed (ADR [0038](adr/0038-in-process-acp-core.md)).
+The host loads `graff-core.wasm` (or links `libgraff`) and speaks ACP over
+in-memory slots — no child process.
+
+```ts
+import { graffAgent } from "@codegraff/sdk/embed";
+
+const agent = await graffAgent({ wasm: "./graff-core.wasm", cwd: process.cwd() });
+const { stopReason, updates } = await agent.prompt("hello");
+```
+
+Build the artifacts on this branch:
+
+```
+zig build wasm-core    # zig-out/bin/graff-core.wasm
+zig build libgraff     # zig-out/lib/libgraff.so (C ABI)
+```
+
+`createGraffAgent()` is the JS host. The first-slice turn is `echo:` —
+protocol + handshake in-process. Live tools / TLS / bash still go through
+`graff acp` (above). A host-imported model turn is the next slice.
+
+C ABI (wasm exports and the shared library):
+
+| export | role |
+|---|---|
+| `graff_acp_create(seed)` | reset session |
+| `graff_acp_in_ptr` / `in_cap` | write one JSON-RPC line |
+| `graff_acp_feed(len)` | dispatch |
+| `graff_acp_out_ptr` / `out_len` / `out_consume` | read newline-framed replies |
+
 ## Not this
 
-No `libgraff`, no WASM module, no Node addon, no in-process Zig. Those would
-be a different product. This page is the host recipe that already exists.
+No full-agent `fx-core.wasm` (HTTP + bash + git inside the isolate). No
+Node-API addon yet — `libgraff` is a C ABI, not a `.node`. Those stay a
+later slice on this continuation branch.

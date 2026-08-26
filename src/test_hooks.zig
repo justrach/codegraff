@@ -330,4 +330,8 @@ test {
     _ = tool_surface;
     _ = agent_catalog;
     _ = session_connect_tests;
+    _ = @import("experiment_pool.zig");
+    _ = @import("commands_experiment.zig");
+    _ = @import("acp_engine.zig");
+    _ = @import("libgraff.zig");
 }

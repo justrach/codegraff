@@ -66,6 +66,7 @@ pub const commands = [_]Item{
     .{ .name = "/resume", .usage = "/resume [name]", .desc = "restore a saved conversation (no arg → interactive picker)" },
     .{ .name = "/sessions", .desc = "list saved sessions in the cwd" },
     .{ .name = "/workspace", .usage = "/workspace [list|use <name>]", .desc = "list git worktrees or switch this session into one (file tools follow)" },
+    .{ .name = "/experiment", .usage = "/experiment [N|off|status]", .desc = "pre-mint N child worktrees (1-16) and seat the next spawns in them; off clears the pool" },
     .{ .name = "/todo", .desc = "show the current task list" },
     .{ .name = "/jobs", .desc = "list background jobs" },
     .{ .name = "/cost", .desc = "session token usage and cost" },

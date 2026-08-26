@@ -91,6 +91,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     // id — a numeric /rewind falls through to the conversation rewind below.
     if (try commands_sandbox.tryHandle(root, arena, line, out)) return true;
     if (try commands_trajectory.tryHandle(root, arena, line, out)) return true;
+    if (try @import("commands_experiment.zig").tryHandle(root, arena, line, out)) return true;
     if (try workspace_switch.slashCommand(root, arena, line, out)) return true;
     if (try plugins.slashCommand(root.io, arena, root.home, line, out)) return true;
     if (std.mem.eql(u8, line, "/clear")) {

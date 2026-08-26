@@ -150,6 +150,15 @@ pub fn setupWorktreeAndBanner(
     // model an ABSOLUTE path. Left unwired in tests, where the cap stays the
     // pre-#409 plain truncation.
     tool_spill.enable(.{ .io = io, .dir = .cwd(), .base_abs = main_mod.g_cwd_display });
+    if (flags.experiment_n > 0) {
+        const exp_id = flags.resume_flag orelse "live";
+        const n = @import("experiment_pool.zig").arm(gpa, io, arena, exp_id, flags.experiment_n) catch |err|
+            std.process.fatal("--experiment: {t}", .{err});
+        if (!main_mod.json_mode) sink.emit(io, .{ .session_notice = .{
+            .text = try std.fmt.allocPrint(arena, "experiment {s}: {d} trees — spawn into them, do not edit the caller tree", .{ exp_id, n }),
+            .tone = .dim,
+        } });
+    }
 
     // The pager owns the screen. Dumping the line-REPL banner first makes
     // `graff tui --yolo` look like bare `graff` never left.
