@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <strong>One of the most token-efficient coding harnesses we've tested.</strong><br/>
+  <strong>The most token-efficient coding harness we've built so far.</strong><br/>
   Prompt-cache max keeps repeated prefixes hot. RLM + spec-ptc turns wide work
   into a small streaming program. Learnt slimming keeps fat results out of history.
 </p>
