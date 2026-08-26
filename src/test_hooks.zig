@@ -117,6 +117,7 @@ const agent_eval_control_tests = @import("agent_eval_control_tests.zig");
 // reflector modules are only ever reached through a call, so their tests need
 // the hook.
 const playbook_glue = @import("playbook_glue.zig");
+const playbook_pick = @import("playbook_pick.zig");
 const playbook_reflect = @import("playbook_reflect.zig");
 
 // #391: the pre-compaction note store and its note turn. prompts.zig reaches
@@ -272,6 +273,7 @@ test {
     _ = acp;
     _ = agent_eval_control_tests;
     _ = playbook_glue;
+    _ = playbook_pick;
     _ = playbook_reflect;
     _ = compact_note;
     _ = compact_note_glue;

@@ -402,4 +402,5 @@ pub fn traceActive(arena: Allocator, items: []const Item) void {
 
 test {
     _ = @import("playbook_tests.zig");
+    _ = @import("playbook_pick.zig");
 }

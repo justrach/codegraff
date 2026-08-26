@@ -43,7 +43,7 @@ record only when you need the evidence or the edge cases.
 | [0030](0030-rlm-late-showcase.md) | Small turns hide `rlm` (and sPTC). Showcase on `--rlm`, a ≥4 native batch, context ≥50% of compactAt, or an explicit load — never on MCP fan-out or the prefix. |
 | [0031](0031-xai-hosted-x-search.md) | xAI Responses splices hosted `x_search` onto tools turns. It is not a catalog function; `GRAFF_XAI_X_SEARCH=0` opts out. |
 | [0032](0032-acp-streams-mid-turn.md) | `graff acp` streams thought / tool / text `session/update`s mid-turn. The native app is an ACP client; it does not need `graff serve`. |
-| [0033](0033-user-can-retire-a-standing-constraint.md) | Only the user retires a standing constraint: `/never` (REPL or ACP prompt) or an explicit override in the current message. The model cannot. |
+| [0033](0033-user-can-retire-a-standing-constraint.md) | Only the user retires a standing constraint: TTY `/never` picker (two confirms), ACP/`rm`, or an explicit override. The model cannot. |
 
 ## When to write one
 

@@ -16,7 +16,7 @@
 //! items and nothing else: no retire, no edit, no learned items, no reading
 //! back a ledger it could then rewrite. A model that finds a constraint
 //! inconvenient has no mechanism to remove it — only the user does, through
-//! `/never rm <id>`. Same shape as the #366 gate: the capability the model
+//! `/never` (picker or `rm`). Same shape as the #366 gate: the capability the model
 //! gets is strictly the one that makes it safer to run unattended.
 
 const std = @import("std");
@@ -28,6 +28,7 @@ const ExecResult = @import("tools.zig").ExecResult;
 const json_args = @import("json_args.zig");
 const prompts = @import("prompts.zig");
 const playbook = @import("playbook.zig");
+const playbook_pick = @import("playbook_pick.zig");
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
@@ -70,6 +71,15 @@ pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
     // ADR 0021: the user just said this. Echoing "constraint recorded" is
     // machine state, not progress. The tool result still tells the model.
     return .{ .text = std.fmt.allocPrint(agent.arena, "constraint recorded as {s}. It is now in {s} and rides every subagent, workflow and pipeline brief from here on, in this session and in later ones — you do not need to restate it.", .{ r.id, playbook.path }) catch "constraint recorded", .is_error = false };
+}
+
+fn retireOne(root: *Agent, arena: Allocator, out: *Io.Writer, id: []const u8, needle: []const u8) !void {
+    if (playbook.retire(root.io, arena, id)) {
+        @import("prompt_cache_hud.zig").noteBust(.playbook);
+        refreshRoot(root, arena);
+        try out.print("retired {s} — it no longer rides new briefs (the record stays in the log as a tombstone)\n", .{id});
+    } else try out.print("no live playbook item matching '{s}' — /never lists them (id or unique text)\n", .{needle});
+    try out.flush();
 }
 
 fn list(io: Io, arena: Allocator, out: *Io.Writer) !void {
@@ -148,7 +158,7 @@ pub fn applyUserOverride(root: *Agent, arena: Allocator, user_text: []const u8) 
 /// `/never` (alias `/constraint`). Returns false when `line` is neither, so
 /// the caller falls through to the rest of the command chain.
 ///
-///   /never                  list the live ledger
+///   /never                  TTY: searchable picker + two confirms; else list
 ///   /never <text>           record a user constraint
 ///   /never rm <id|text>     retire one (id, or a unique text fragment)
 pub fn command(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
@@ -159,19 +169,18 @@ pub fn command(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer
     } else return false;
     const arg = std.mem.trim(u8, rest, " \t");
     if (arg.len == 0) {
-        try list(root.io, arena, out);
+        switch (try playbook_pick.interactive(root, arena, out)) {
+            .fallback => try list(root.io, arena, out),
+            .handled => {},
+            .retire => |id| try retireOne(root, arena, out, id, id),
+        }
         return true;
     }
     if (std.mem.startsWith(u8, arg, "rm ") or std.mem.startsWith(u8, arg, "remove ")) {
         const needle = std.mem.trim(u8, arg[if (arg[0] == 'r' and arg[1] == 'm') 3 else 7..], " \t");
         const items = playbook.load(root.io, arena);
         const id = if (playbook.find(items, needle) != null) needle else if (playbook.findByUniqueText(items, needle)) |item| item.id else needle;
-        if (playbook.retire(root.io, arena, id)) {
-            @import("prompt_cache_hud.zig").noteBust(.playbook);
-            refreshRoot(root, arena);
-            try out.print("retired {s} — it no longer rides new briefs (the record stays in the log as a tombstone)\n", .{id});
-        } else try out.print("no live playbook item matching '{s}' — /never lists them (id or unique text)\n", .{needle});
-        try out.flush();
+        try retireOne(root, arena, out, id, needle);
         return true;
     }
     var prov_buf: [32]u8 = undefined;

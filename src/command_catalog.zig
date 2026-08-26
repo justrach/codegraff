@@ -29,7 +29,7 @@ pub const commands = [_]Item{
     .{ .name = "/goal", .usage = "/goal [30m] [text|pause|resume|status|clear]", .desc = "set a standing objective and work it autonomously; an optional 30s/30m/2h budget paces the run; pause/resume steering, status shows state, clear removes it" },
     .{ .name = "/loop", .usage = "/loop [30m] <prompt>", .desc = "the same autonomous run as /goal, without adopting a standing objective" },
     .{ .name = "/review", .usage = "/review <target or instructions>", .desc = "run one isolated read-only review pass; no edits, delegation, or workflows" },
-    .{ .name = "/never", .usage = "/never [<text>|rm <id-or-text>]", .desc = "standing constraints that ride every subagent brief and survive compaction; bare lists them, rm <id-or-text> retires one (alias /constraint)" },
+    .{ .name = "/never", .usage = "/never [<text>|rm <id-or-text>]", .desc = "standing constraints that ride every brief; bare opens a searchable picker (TTY) or lists them, rm <id-or-text> retires one (alias /constraint)" },
     .{ .name = "/tell", .usage = "/tell <session|all> <text>", .desc = "message a running graff: <session> is a DM (only it hears, any folder); all broadcasts to every graff on this device; /sessions lists who's around" },
     .{ .name = "/peek", .usage = "/peek <session>", .desc = "see what a live co-resident session is doing right now (its transcript tail)" },
     .{ .name = "/routes", .usage = "/routes [<set>|add <set> <frontier|mid|small> <provider/model>]", .desc = "your own priced model lanes across providers — view the set and which seat wins each lane now" },

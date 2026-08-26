@@ -18,9 +18,15 @@ current is part of cutting a release.
 - `graff acp` emits mid-turn `session/update`s for thought, text, and
   `tool_call` / `tool_call_update` (ADR 0032). Protocol version stays 1.
   After `session/new` it advertises `/never` via `available_commands_update`.
-- A user can retire a standing constraint from ACP or the REPL:
-  `/never rm <id-or-text>`, or an explicit forget/override in the next
-  message (ADR 0033, #638). The model still cannot.
+- A user can retire a standing constraint from ACP or the REPL
+  (ADR 0033, #638). On a TTY, bare `/never` opens a searchable picker
+  (text prominent, id secondary) and requires two confirmations;
+  Esc/Keep leaves the ledger unchanged. `/never rm <id-or-text>` and
+  an explicit forget/override in the next message still work. The
+  model cannot retire a rule.
+- `bash_output` / `agent_output` `wait_ms>0` always waits for exit
+  (10h). Mid-range values like 60s–240s are no longer a bounded
+  deadline (#640).
 - Existing Tauri `gui/` is unchanged. No `v0.0.279` tag until asked.
 
 ## v0.0.278 (2026-08-26)

@@ -302,9 +302,8 @@ pub fn agentStatusText(gpa: Allocator, id: u32, done: bool, is_error: bool, usag
     );
 }
 
-/// Same wait policy as bash_output (ADR 0010): 0 = snapshot, >0 waits for
-/// exit (legacy 1–30000 values promote to 10h). Inlined so this file stays
-/// at the line cap without importing job_wait.
+/// Same wait policy as bash_output (ADR 0010 / #640): 0 = snapshot, any
+/// >0 waits for exit (10h). Inlined so this file stays at the line cap.
 const agent_wait_cap_ms: u64 = 36_000_000;
 
 /// agent_output: fetch a background subagent's status/result. Non-
@@ -312,7 +311,7 @@ const agent_wait_cap_ms: u64 = 36_000_000;
 /// bash_output's cursor, a subagent's report is one-shot, not a stream).
 /// wait_ms > 0 blocks until the agent finishes (or Esc), not every 30s.
 pub fn agentOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
-    const deadline: u64 = if (wait_ms == 0) 0 else if (wait_ms <= 30_000) agent_wait_cap_ms else @min(wait_ms, agent_wait_cap_ms);
+    const deadline: u64 = if (wait_ms == 0) 0 else agent_wait_cap_ms;
     var waited: u64 = 0;
     while (true) {
         g_agent_jobs.mutex.lockUncancelable(io);

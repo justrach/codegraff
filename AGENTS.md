@@ -72,7 +72,7 @@ Install the tracked hooks once, and the checks run themselves:
 scripts/install-hooks.sh
 ```
 
-That points `core.hooksPath` at `.githooks/`, whose `pre-push` runs **tier 1** of the internal eval set: `zig fmt`, the 600-line ceiling, test reachability, `zig build`, the unit suite plus a count that may grow and never shrink, the named goal/loop/todo invariants, and SDK drift. It is deterministic and offline (no provider calls, no network, no spend) and takes about 20 seconds warm. A push that only touches docs skips it.
+That points `core.hooksPath` at `.githooks/`, whose `pre-push` runs **tier 1** of the internal eval set: `zig fmt`, the 600-line ceiling, test reachability, `zig build`, the unit suite plus a count that may grow and never shrink, the named goal/loop/todo invariants, SDK drift, plus the TUI / tuiguard legs. It is deterministic and offline (no provider calls, no network, no spend). A warm `fmt`/`reach`/`sdk` subset is seconds; a post-`src` change rebuilds zig and runs the PTY probes, which is minutes (see #641). Prefer `scripts/eval-tier1.sh --only <check>` for a local edit. A push that only touches docs skips it.
 
 ```bash
 scripts/eval-tier1.sh                 # run it by hand
