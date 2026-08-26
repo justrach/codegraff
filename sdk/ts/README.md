@@ -183,6 +183,9 @@ await session.close();
 `spawnAcp()` skips the `initialize` → `session/new` handshake. Recipe, method
 names, `--no-local-tools`, and license: [Embedding graff](../../docs/embedding.md).
 
+Same-process (no child): `@codegraff/sdk/embed` `createGraffAgent()` loads
+`graff-core.wasm` (`zig build wasm-core`). First-slice turn is `echo:`.
+
 ## Links
 
 - Repository: <https://github.com/justrach/codegraff>

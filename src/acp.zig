@@ -28,6 +28,7 @@ const session = @import("session.zig");
 const telemetry = @import("telemetry.zig");
 const util = @import("util.zig");
 const proto = @import("acp_protocol.zig");
+const engine = @import("acp_engine.zig");
 const stream = @import("acp_stream.zig");
 const playbook_glue = @import("playbook_glue.zig");
 
@@ -41,6 +42,8 @@ pub const flattenPrompt = proto.flattenPrompt;
 pub const writeResult = proto.writeResult;
 pub const writeError = proto.writeError;
 pub const writeSessionUpdate = proto.writeSessionUpdate;
+pub const TurnFn = engine.TurnFn;
+pub const Dispatch = engine.Dispatch;
 
 pub fn isAcpSubcommand(positional: []const u8) bool {
     if (!std.mem.eql(u8, positional, "acp")) return false;
@@ -48,101 +51,37 @@ pub fn isAcpSubcommand(positional: []const u8) bool {
     return true;
 }
 
-pub const TurnFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8;
-
-pub const Dispatch = struct {
-    turn: TurnFn,
-    ctx: *anyopaque,
-    session_id: ?[]const u8 = null,
-    seed: u64 = 0,
-    created: u32 = 0,
-    /// Set only for the real stdio agent so a prompt can publish the
-    /// session id onto the translating sink. Unit-test stubs leave this null.
-    live: ?*LiveTurn = null,
-};
-
-fn respond(w: *Io.Writer, req: Request, result: anytype) !void {
-    if (req.id == null) return;
-    try writeResult(w, req.id, result);
+fn syncEscCancel() void {
+    agent_mod.Agent.esc_cancel.store(true, .release);
 }
 
-fn respondError(w: *Io.Writer, req: Request, code: i32, message: []const u8) !void {
-    if (req.id == null) return;
-    try writeError(w, req.id, code, message);
+fn liveCancelled() bool {
+    return agent_mod.Agent.esc_cancel.load(.acquire);
 }
 
-fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: Request) !void {
-    const obj: ?std.json.ObjectMap = if (req.params) |p| (if (p == .object) p.object else null) else null;
-    const sid = blk: {
-        if (obj) |o| if (util.strFieldObj(o, "sessionId")) |s| break :blk s;
-        break :blk d.session_id orelse "";
-    };
-    if (d.live) |live| live.session_id = sid;
-    const text = try flattenPrompt(arena, if (obj) |o| o.get("prompt") else null);
-    if (playbook_glue.isCommand(text)) {
-        if (d.live) |live| {
-            var aw: Io.Writer.Allocating = .init(arena);
-            _ = try playbook_glue.command(live.root, arena, text, &aw.writer);
-            const plain = try stripSgr(arena, aw.writer.buffered());
-            if (plain.len > 0) try writeSessionUpdate(w, sid, plain);
-            return respond(w, req, .{ .stopReason = "end_turn" });
-        }
-    }
-    if (d.live) |live| _ = playbook_glue.applyUserOverride(live.root, arena, text);
-    const final = d.turn(d.ctx, arena, text) catch |err| {
-        if (err == error.RunBudgetExhausted)
-            return respond(w, req, .{ .stopReason = "max_turn_requests" });
-        return respondError(w, req, err_internal, @errorName(err));
-    };
-    // Stub turns (and live turns that never streamed a text delta) still
-    // publish the final answer as one chunk. A live turn that already
-    // streamed `agent_message_chunk` returns "" so we do not duplicate.
-    if (final.len > 0) try writeSessionUpdate(w, sid, final);
-    const stop: []const u8 = if (agent_mod.Agent.esc_cancel.load(.acquire)) "cancelled" else "end_turn";
-    try respond(w, req, .{ .stopReason = stop });
+fn liveSlash(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]const u8 {
+    const live: *LiveTurn = @ptrCast(@alignCast(ctx));
+    if (!playbook_glue.isCommand(text)) return null;
+    var aw: Io.Writer.Allocating = .init(arena);
+    _ = try playbook_glue.command(live.root, arena, text, &aw.writer);
+    return try engine.stripSgr(arena, aw.writer.buffered());
 }
 
-fn stripSgr(arena: Allocator, s: []const u8) ![]const u8 {
-    var buf: std.array_list.Managed(u8) = .init(arena);
-    var i: usize = 0;
-    while (i < s.len) {
-        if (s[i] == 0x1b and i + 1 < s.len and s[i + 1] == '[') {
-            i += 2;
-            while (i < s.len and (s[i] < '@' or s[i] > '~')) i += 1;
-            if (i < s.len) i += 1;
-            continue;
-        }
-        try buf.append(s[i]);
-        i += 1;
-    }
-    return buf.items;
+fn liveAfter(ctx: *anyopaque, arena: Allocator, text: []const u8) void {
+    const live: *LiveTurn = @ptrCast(@alignCast(ctx));
+    _ = playbook_glue.applyUserOverride(live.root, arena, text);
+}
+
+fn liveBind(ctx: *anyopaque, session_id: []const u8) void {
+    const live: *LiveTurn = @ptrCast(@alignCast(ctx));
+    live.session_id = session_id;
 }
 
 pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u8) !void {
-    const req = parseRequest(arena, line) orelse return;
-    if (std.mem.eql(u8, req.method, "initialize")) return respond(w, req, .{
-        .protocolVersion = negotiateVersion(req.params),
-        .agentCapabilities = .{
-            .loadSession = false,
-            .promptCapabilities = proto.PromptCapabilities{},
-        },
-        .agentImplementation = proto.AgentImplementation{ .version = main_mod.harness_version },
-    });
-    if (std.mem.eql(u8, req.method, "session/new")) {
-        d.created += 1;
-        d.session_id = try std.fmt.allocPrint(arena, "acp-{x}-{d}", .{ d.seed, d.created });
-        try respond(w, req, .{ .sessionId = d.session_id.? });
-        try proto.writeAvailableCommands(w, d.session_id.?, proto.slashCommands());
-        return;
-    }
-    if (std.mem.eql(u8, req.method, "session/cancel")) {
-        agent_mod.Agent.esc_cancel.store(true, .release);
-        if (req.id != null) return respond(w, req, .{});
-        return;
-    }
-    if (std.mem.eql(u8, req.method, "session/prompt")) return promptTurn(d, arena, w, req);
-    if (req.id == null) return;
-    try writeError(w, req.id, err_method_not_found, try std.fmt.allocPrint(arena, "method not found: {s}", .{req.method}));
+    engine.implementation_version = main_mod.harness_version;
+    engine.on_cancel = syncEscCancel;
+    engine.extra_cancelled = liveCancelled;
+    return engine.handleLine(d, arena, w, line);
 }
 
 const LiveTurn = struct {
@@ -182,8 +121,18 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     root.out = null;
     root.stream_quiet = true;
     main_mod.g_out = null;
+    engine.implementation_version = main_mod.harness_version;
+    engine.cancel_flag.store(false, .release);
+    engine.on_cancel = syncEscCancel;
     var live: LiveTurn = .{ .root = root, .keys = keys, .out = out };
-    var d: Dispatch = .{ .turn = LiveTurn.run, .ctx = &live, .live = &live, .seed = @bitCast(util.unixMs(io)) };
+    var d: Dispatch = .{
+        .turn = LiveTurn.run,
+        .ctx = &live,
+        .seed = @bitCast(util.unixMs(io)),
+        .slash = liveSlash,
+        .after_user = liveAfter,
+        .bind_session = liveBind,
+    };
     while (true) {
         const line = (in.takeDelimiter('\n') catch break) orelse break;
         handleLine(&d, arena, out, line) catch |err| {

@@ -26,6 +26,11 @@
       "import": "./dist/acp.js",
       "default": "./dist/acp.js"
     },
+    "./embed": {
+      "types": "./dist/embed.d.ts",
+      "import": "./dist/embed.js",
+      "default": "./dist/embed.js"
+    },
     "./package.json": "./package.json"
   },
   "repository": {
