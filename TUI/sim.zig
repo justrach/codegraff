@@ -240,6 +240,20 @@ test "assistant markdown shows lists, quotes, tasks, and rules" {
     try std.testing.expect(std.mem.indexOf(u8, vis, "_italic_") == null);
 }
 
+test "running tool row shows live elapsed from start" {
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    term.model.now_ms = 0;
+    try term.model.pushTool(.{ .name = "bash", .detail = "sleep 2" });
+    term.model.history.items[0].folded = false;
+    term.now_ms = 1500;
+    const vis = try term.screen();
+    defer std.testing.allocator.free(vis);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "1.5s") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "sleep 2") != null);
+}
+
 test "clickText on the verb header expands the folded tools" {
     var term: Term = undefined;
     term.init(std.testing.allocator, 80, 24);
