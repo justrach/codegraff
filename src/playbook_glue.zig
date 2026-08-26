@@ -73,13 +73,41 @@ pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
     return .{ .text = std.fmt.allocPrint(agent.arena, "constraint recorded as {s}. It is now in {s} and rides every subagent, workflow and pipeline brief from here on, in this session and in later ones — you do not need to restate it.", .{ r.id, playbook.path }) catch "constraint recorded", .is_error = false };
 }
 
+/// Privacy-safe operational trace: id + success, never constraint text (#644).
+fn emitRetire(root: *Agent, id: []const u8, ok: bool) void {
+    if (root.tracer) |tr| tr.write(.{
+        .t = tr.elapsedMs(),
+        .ev = "never_retire",
+        .id = id,
+        .ok = ok,
+    });
+}
+
+fn applyRetire(root: *Agent, arena: Allocator, id: []const u8) playbook.Retire {
+    const result = playbook.retire(root.io, arena, id);
+    emitRetire(root, id, result == .ok);
+    return result;
+}
+
 fn retireOne(root: *Agent, arena: Allocator, out: *Io.Writer, id: []const u8, needle: []const u8) !void {
-    if (playbook.retire(root.io, arena, id)) {
-        @import("prompt_cache_hud.zig").noteBust(.playbook);
-        refreshRoot(root, arena);
-        try out.print("retired {s} — it no longer rides new briefs (the record stays in the log as a tombstone)\n", .{id});
-    } else try out.print("no live playbook item matching '{s}' — /never lists them (id or unique text)\n", .{needle});
+    switch (applyRetire(root, arena, id)) {
+        .ok => {
+            @import("prompt_cache_hud.zig").noteBust(.playbook);
+            refreshRoot(root, arena);
+            try out.print("retired {s} — it no longer rides new briefs (the record stays in the log as a tombstone)\n", .{id});
+        },
+        .write_failed => try out.print("could not write the retirement tombstone to {s} — {s} is still active\n", .{ playbook.path, id }),
+        .unknown => try out.print("no live playbook item matching '{s}' — /never lists them (id or unique text)\n", .{needle}),
+    }
     try out.flush();
+}
+
+/// First whitespace-separated token and the rest. Tabs count as separators
+/// so `/never rm<TAB>pb-…` is `rm`, not a new constraint named "rm\t…".
+fn wordAndRest(arg: []const u8) struct { word: []const u8, rest: []const u8 } {
+    const t = std.mem.trim(u8, arg, " \t");
+    const end = std.mem.indexOfAny(u8, t, " \t") orelse t.len;
+    return .{ .word = t[0..end], .rest = std.mem.trim(u8, t[end..], " \t") };
 }
 
 fn list(io: Io, arena: Allocator, out: *Io.Writer) !void {
@@ -144,9 +172,9 @@ pub fn applyUserOverride(root: *Agent, arena: Allocator, user_text: []const u8) 
     if (items.len == 0) return 0;
     var n: usize = 0;
     if (extractPlaybookId(user_text)) |id| {
-        if (playbook.retire(root.io, arena, id)) n += 1;
+        if (applyRetire(root, arena, id) == .ok) n += 1;
     } else if (playbook.findByUniqueText(items, user_text)) |item| {
-        if (playbook.retire(root.io, arena, item.id)) n += 1;
+        if (applyRetire(root, arena, item.id) == .ok) n += 1;
     }
     if (n > 0) {
         @import("prompt_cache_hud.zig").noteBust(.playbook);
@@ -161,6 +189,7 @@ pub fn applyUserOverride(root: *Agent, arena: Allocator, user_text: []const u8) 
 ///   /never                  TTY: searchable picker + two confirms; else list
 ///   /never <text>           record a user constraint
 ///   /never rm <id|text>     retire one (id, or a unique text fragment)
+///   /never rm               TTY picker, else list + usage — never add "rm" (#644)
 pub fn command(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     const trimmed = std.mem.trim(u8, line, " \t\r");
     const rest = for ([_][]const u8{ "/never", "/constraint" }) |name| {
@@ -176,8 +205,23 @@ pub fn command(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer
         }
         return true;
     }
-    if (std.mem.startsWith(u8, arg, "rm ") or std.mem.startsWith(u8, arg, "remove ")) {
-        const needle = std.mem.trim(u8, arg[if (arg[0] == 'r' and arg[1] == 'm') 3 else 7..], " \t");
+    const parts = wordAndRest(arg);
+    if (std.mem.eql(u8, parts.word, "rm") or std.mem.eql(u8, parts.word, "remove")) {
+        // `/never rm` with no needle used to fall through to add("rm"), leaving
+        // the live constraint untouched and no tombstone (#644). List (or the
+        // TTY picker) instead; never record the verb as a constraint.
+        if (parts.rest.len == 0) {
+            switch (try playbook_pick.interactive(root, arena, out)) {
+                .fallback => {
+                    try out.print("rm needs an id or unique text fragment — /never lists them\n", .{});
+                    try list(root.io, arena, out);
+                },
+                .handled => {},
+                .retire => |id| try retireOne(root, arena, out, id, id),
+            }
+            return true;
+        }
+        const needle = parts.rest;
         const items = playbook.load(root.io, arena);
         const id = if (playbook.find(items, needle) != null) needle else if (playbook.findByUniqueText(items, needle)) |item| item.id else needle;
         try retireOne(root, arena, out, id, needle);

@@ -39,3 +39,7 @@ matches refuse rather than pick.
 - A vague "do it anyway" does **not** retire a rule; the user must
   name it or use retire language plus a unique match.
 - `note_constraint` stays append-only.
+- `/never rm` / `/never remove` without a needle lists (ACP/pipe) or
+  opens the picker (TTY). It never records the verb as a constraint
+  (#644). A failed tombstone write says the rule is still active.
+  Operational traces record `never_retire {id, ok}` and no text.

@@ -281,15 +281,20 @@ pub fn add(io: Io, arena: Allocator, text_in: []const u8, source: Source, proven
     return .{ .ok = true, .id = id };
 }
 
-/// Tombstone `id`. Returns false when no live item carries it, so a caller
-/// can say "unknown id" instead of writing a tombstone for nothing.
-pub fn retire(io: Io, arena: Allocator, id: []const u8) bool {
-    if (find(load(io, arena), id) == null) return false;
+/// Why a `retire` did or did not land. A write failure is not "unknown id":
+/// the item is still live and the caller must say so (#644).
+pub const Retire = enum { ok, unknown, write_failed };
+
+/// Tombstone `id`. `.unknown` when no live item carries it (no tombstone
+/// written). `.write_failed` when the item exists but the ledger append
+/// did not land — the constraint stays active.
+pub fn retire(io: Io, arena: Allocator, id: []const u8) Retire {
+    if (find(load(io, arena), id) == null) return .unknown;
     var aw: Io.Writer.Allocating = .init(arena);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
-    s.write(.{ .v = @as(u8, 1), .op = "retire", .id = id, .t = util.unixMs(io) }) catch return false;
-    aw.writer.writeByte('\n') catch return false;
-    return appendLine(io, aw.writer.buffered());
+    s.write(.{ .v = @as(u8, 1), .op = "retire", .id = id, .t = util.unixMs(io) }) catch return .write_failed;
+    aw.writer.writeByte('\n') catch return .write_failed;
+    return if (appendLine(io, aw.writer.buffered())) .ok else .write_failed;
 }
 
 fn writeSection(w: *Io.Writer, items: []const Item, source: Source, header: []const u8, cap_items: usize, cap_bytes: usize) !void {

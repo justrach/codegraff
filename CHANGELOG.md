@@ -23,7 +23,10 @@ current is part of cutting a release.
   (text prominent, id secondary) and requires two confirmations;
   Esc/Keep leaves the ledger unchanged. `/never rm <id-or-text>` and
   an explicit forget/override in the next message still work. The
-  model cannot retire a rule.
+  model cannot retire a rule. `/never rm` without a needle lists
+  (or opens the TTY picker) instead of recording `rm` as a constraint;
+  a failed tombstone write says the rule is still active; traces
+  record `never_retire {id, ok}` with no text (#644).
 - `bash_output` / `agent_output` `wait_ms>0` always waits for exit
   (10h). Mid-range values like 60s–240s are no longer a bounded
   deadline (#640).
