@@ -624,7 +624,8 @@ gateway rollouts appear without a restart.
 /loop [30m] <prompt>      the same autonomous run as /goal, without adopting a standing objective
 /review <target or instructions>
                           run one isolated read-only review pass; no edits, delegation, or workflows
-/never [<text>|rm <id>]   standing constraints that ride every subagent brief and survive compaction; bare lists them, rm <id> retires one (alias /constraint)
+/never [<text>|rm <id-or-text>]
+                          standing constraints that ride every subagent brief and survive compaction; bare lists them, rm <id-or-text> retires one (alias /constraint)
 /tell <session|all> <text>
                           message a running graff: <session> is a DM (only it hears, any folder); all broadcasts to every graff on this device; /sessions lists who's around
 /peek <session>           see what a live co-resident session is doing right now (its transcript tail)

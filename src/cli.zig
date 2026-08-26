@@ -23,7 +23,8 @@ pub const changelog_text =
     \\──────────
     \\0.0.279
     \\  • native Beautiful UI app speaks ACP: thinking and tool chips stream mid-turn (ADR 0032)
-    \\  • graff acp emits thought / tool_call / text session/update; graff serve is not required
+    \\  • graff acp emits thought / tool_call / text session/update; /never is an ACP slash command
+    \\  • a user can retire a standing constraint from ACP or /never rm (ADR 0033, #638)
     \\
     \\0.0.278
     \\  • deleted composer screenshots are not sent: submit keeps [Image #N] / @[path] only (#634)

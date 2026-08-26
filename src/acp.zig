@@ -29,6 +29,7 @@ const telemetry = @import("telemetry.zig");
 const util = @import("util.zig");
 const proto = @import("acp_protocol.zig");
 const stream = @import("acp_stream.zig");
+const playbook_glue = @import("playbook_glue.zig");
 
 pub const protocol_version = proto.protocol_version;
 pub const err_method_not_found = proto.err_method_not_found;
@@ -78,6 +79,16 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: Request) !void
     };
     if (d.live) |live| live.session_id = sid;
     const text = try flattenPrompt(arena, if (obj) |o| o.get("prompt") else null);
+    if (playbook_glue.isCommand(text)) {
+        if (d.live) |live| {
+            var aw: Io.Writer.Allocating = .init(arena);
+            _ = try playbook_glue.command(live.root, arena, text, &aw.writer);
+            const plain = try stripSgr(arena, aw.writer.buffered());
+            if (plain.len > 0) try writeSessionUpdate(w, sid, plain);
+            return respond(w, req, .{ .stopReason = "end_turn" });
+        }
+    }
+    if (d.live) |live| _ = playbook_glue.applyUserOverride(live.root, arena, text);
     const final = d.turn(d.ctx, arena, text) catch |err| {
         if (err == error.RunBudgetExhausted)
             return respond(w, req, .{ .stopReason = "max_turn_requests" });
@@ -87,19 +98,42 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: Request) !void
     // publish the final answer as one chunk. A live turn that already
     // streamed `agent_message_chunk` returns "" so we do not duplicate.
     if (final.len > 0) try writeSessionUpdate(w, sid, final);
-    try respond(w, req, .{ .stopReason = "end_turn" });
+    const stop: []const u8 = if (agent_mod.Agent.esc_cancel.load(.acquire)) "cancelled" else "end_turn";
+    try respond(w, req, .{ .stopReason = stop });
+}
+
+fn stripSgr(arena: Allocator, s: []const u8) ![]const u8 {
+    var buf: std.array_list.Managed(u8) = .init(arena);
+    var i: usize = 0;
+    while (i < s.len) {
+        if (s[i] == 0x1b and i + 1 < s.len and s[i + 1] == '[') {
+            i += 2;
+            while (i < s.len and (s[i] < '@' or s[i] > '~')) i += 1;
+            if (i < s.len) i += 1;
+            continue;
+        }
+        try buf.append(s[i]);
+        i += 1;
+    }
+    return buf.items;
 }
 
 pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u8) !void {
     const req = parseRequest(arena, line) orelse return;
     if (std.mem.eql(u8, req.method, "initialize")) return respond(w, req, .{
         .protocolVersion = negotiateVersion(req.params),
-        .agentCapabilities = .{ .loadSession = false, .promptCapabilities = proto.PromptCapabilities{} },
+        .agentCapabilities = .{
+            .loadSession = false,
+            .promptCapabilities = proto.PromptCapabilities{},
+        },
+        .agentImplementation = proto.AgentImplementation{ .version = main_mod.harness_version },
     });
     if (std.mem.eql(u8, req.method, "session/new")) {
         d.created += 1;
         d.session_id = try std.fmt.allocPrint(arena, "acp-{x}-{d}", .{ d.seed, d.created });
-        return respond(w, req, .{ .sessionId = d.session_id.? });
+        try respond(w, req, .{ .sessionId = d.session_id.? });
+        try proto.writeAvailableCommands(w, d.session_id.?, proto.slashCommands());
+        return;
     }
     if (std.mem.eql(u8, req.method, "session/cancel")) {
         agent_mod.Agent.esc_cancel.store(true, .release);
@@ -291,14 +325,19 @@ test "handleLine: initialize, session/new, then a prompt turn" {
     var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .seed = 0xabc };
 
     try handleLine(&d, a, &w, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":9,\"clientCapabilities\":{\"fs\":{}}}}");
-    try testing.expectEqualStrings(
-        "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"loadSession\":false,\"promptCapabilities\":{}}}}\n",
-        w.buffered(),
-    );
+    const init_line = w.buffered();
+    try testing.expect(std.mem.indexOf(u8, init_line, "\"protocolVersion\":1") != null);
+    try testing.expect(std.mem.indexOf(u8, init_line, "\"embeddedContext\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, init_line, "\"name\":\"graff\"") != null);
+    try testing.expect(std.mem.indexOf(u8, init_line, "\"loadSession\":false") != null);
 
     w = .fixed(&buf);
     try handleLine(&d, a, &w, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\",\"params\":{\"cwd\":\"/tmp\"}}");
-    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"acp-abc-1\"}}\n", w.buffered());
+    var new_lines = std.mem.splitScalar(u8, w.buffered(), '\n');
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"acp-abc-1\"}}", new_lines.next().?);
+    const cmds = new_lines.next().?;
+    try testing.expect(std.mem.indexOf(u8, cmds, "available_commands_update") != null);
+    try testing.expect(std.mem.indexOf(u8, cmds, "\"name\":\"never\"") != null);
     try testing.expectEqualStrings("acp-abc-1", d.session_id.?);
 
     w = .fixed(&buf);

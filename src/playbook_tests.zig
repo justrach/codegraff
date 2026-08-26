@@ -351,6 +351,28 @@ test "/never (#381): bare lists, text adds, rm retires — and a non-/never line
     }.body);
 }
 
+test "/never rm matches unique text and applyUserOverride honors an explicit forget (#638)" {
+    try inScratch(struct {
+        fn body(io: Io, arena: std.mem.Allocator) !void {
+            var aw: Io.Writer.Allocating = .init(arena);
+            var root = stubRoot(std.testing.allocator, arena, &aw.writer);
+            try std.testing.expect(try glue.command(&root, arena, "/never no navigation dots or scroll hints", &aw.writer));
+            try std.testing.expectEqual(@as(usize, 1), playbook.load(io, arena).len);
+
+            aw.clearRetainingCapacity();
+            try std.testing.expect(try glue.command(&root, arena, "/never rm navigation dots", &aw.writer));
+            try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "retired") != null);
+            try std.testing.expectEqual(@as(usize, 0), playbook.load(io, arena).len);
+
+            try std.testing.expect(try glue.command(&root, arena, "/never never use emojis in comments", &aw.writer));
+            try std.testing.expectEqual(@as(usize, 0), glue.applyUserOverride(&root, arena, "please add a comment"));
+            try std.testing.expectEqual(@as(usize, 1), playbook.load(io, arena).len);
+            try std.testing.expectEqual(@as(usize, 1), glue.applyUserOverride(&root, arena, "forget the standing rule: never use emojis in comments"));
+            try std.testing.expectEqual(@as(usize, 0), playbook.load(io, arena).len);
+        }
+    }.body);
+}
+
 test "note_constraint (#381): appends user items only, is idempotent, and can never retire one" {
     try inScratch(struct {
         fn body(io: Io, arena: std.mem.Allocator) !void {

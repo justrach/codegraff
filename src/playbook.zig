@@ -221,6 +221,25 @@ pub fn find(items: []const Item, id: []const u8) ?Item {
     return null;
 }
 
+/// Unique live item whose normalized text contains `query`, or whose text
+/// is contained in `query`. Ambiguous / too-short queries return null so a
+/// caller can ask for an id instead of retiring the wrong rule (#638).
+pub fn findByUniqueText(items: []const Item, query: []const u8) ?Item {
+    var qbuf: [max_text]u8 = undefined;
+    const q = normalize(&qbuf, query);
+    if (q.len < 4) return null;
+    var found: ?Item = null;
+    for (items) |item| {
+        var ibuf: [max_text]u8 = undefined;
+        const it = normalize(&ibuf, item.text);
+        if (it.len == 0) continue;
+        if (std.mem.indexOf(u8, it, q) == null and std.mem.indexOf(u8, q, it) == null) continue;
+        if (found != null) return null;
+        found = item;
+    }
+    return found;
+}
+
 /// Append one already-serialized record. Positional write at the current end
 /// of file so a whole line lands at once (serve_events.EventLog's shape).
 fn appendLine(io: Io, line: []const u8) bool {

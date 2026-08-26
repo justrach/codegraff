@@ -99,6 +99,7 @@ export const STARTER_PROMPTS = [
   { id: "readme", label: "Summarize README.md", prompt: "Read README.md and summarize it in a short paragraph." },
   { id: "review", label: "Review the last commit", prompt: "Review HEAD against the previous commit. Stay read-only." },
   { id: "todos", label: "What's on the checklist?", prompt: "Read the current todo list and tell me what's open." },
+  { id: "never", label: "List standing constraints", prompt: "/never" },
 ] as const;
 
 export const MODELS = [

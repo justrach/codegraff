@@ -14,8 +14,27 @@ pub const protocol_version: i64 = 1;
 pub const err_method_not_found: i32 = -32601;
 pub const err_internal: i32 = -32603;
 
-/// ACP's `promptCapabilities` — named empty struct, not `.{}` (that is a tuple).
-pub const PromptCapabilities = struct {};
+/// ACP v1 `promptCapabilities` (https://agentclientprotocol.com/protocol/v1/schema).
+/// Missing keys default to false; we send the three named fields so a client
+/// does not have to guess. `embeddedContext` is on because flattenPrompt
+/// already lifts `resource_link` blocks into the user text.
+pub const PromptCapabilities = struct {
+    image: bool = false,
+    audio: bool = false,
+    embeddedContext: bool = true,
+};
+
+pub const AgentImplementation = struct {
+    name: []const u8 = "graff",
+    title: []const u8 = "graff",
+    version: []const u8,
+};
+
+pub const AvailableCommand = struct {
+    name: []const u8,
+    description: []const u8,
+    input: struct { hint: []const u8 },
+};
 
 pub const Request = struct {
     id: ?Value = null,
@@ -121,4 +140,30 @@ pub fn writeSessionUpdate(w: *Io.Writer, session_id: []const u8, text: []const u
             .content = .{ .type = "text", .text = text },
         },
     });
+}
+
+/// ACP v1 slash-command advertisement (`available_commands_update`).
+pub fn writeAvailableCommands(w: *Io.Writer, session_id: []const u8, commands: []const AvailableCommand) !void {
+    try writeNotification(w, "session/update", .{
+        .sessionId = session_id,
+        .update = .{
+            .sessionUpdate = "available_commands_update",
+            .availableCommands = commands,
+        },
+    });
+}
+
+pub fn slashCommands() []const AvailableCommand {
+    return &.{
+        .{
+            .name = "never",
+            .description = "List, add, or retire a standing constraint. Bare lists them; `rm <id-or-text>` retires one.",
+            .input = .{ .hint = "[<text>|rm <id-or-text>]" },
+        },
+        .{
+            .name = "constraint",
+            .description = "Alias for never.",
+            .input = .{ .hint = "[<text>|rm <id-or-text>]" },
+        },
+    };
 }

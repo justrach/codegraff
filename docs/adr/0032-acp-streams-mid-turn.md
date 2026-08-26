@@ -31,7 +31,11 @@ A stub turn that emits no events still writes one final
 text returns `""` so the final chunk is not duplicated.
 
 Between prompts both writers are null (stdout stays JSON-RPC). Protocol
-version stays 1 for Zed. `session/cancel` sets `esc_cancel`.
+version stays 1 for Zed (we speak the
+[v1 session/update shapes](https://agentclientprotocol.com/protocol/v1/tool-calls),
+not the v2 upsert). `session/cancel` sets `esc_cancel` and the prompt
+result uses `stopReason: cancelled` when that latch is set. After
+`session/new` the agent advertises `/never` via `available_commands_update`.
 `session/request_permission` is not implemented: unattended + `--yolo` is
 how a UI that wants tools from the first call runs the agent.
 
