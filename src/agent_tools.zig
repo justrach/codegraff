@@ -67,6 +67,12 @@ const rawNonblockStdin = Agent.rawNonblockStdin;
 /// Bash calls must clear the permission gate before dispatch. Results
 /// are returned in call order, arena-owned.
 pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
+    if (!self.sub and calls.len >= 4) {
+        var names: [32][]const u8 = undefined;
+        const n = @min(calls.len, names.len);
+        for (calls[0..n], 0..) |c, i| names[i] = c.name;
+        if (native_fold.noticeWideNative(names[0..n])) self.invalidateRootTools();
+    }
     const results = try self.arena.alloc(ExecResult, calls.len);
     const eval_index = eval_control.evalCallIndex(calls);
     const blocks_completion = eval_control.batchBlocksCompletion(calls);
@@ -120,7 +126,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             .provider = self.provider,
             .subagent_provider = self.subagent_provider,
             .subagent_cross_provider = self.subagent_cross_provider,
-            .registry = if (self.sub) null else self.registry,
+            .registry = self.registry, // workers get licensed codedb-pro reads too (#627)
             .from_sub = self.sub,
             .has_eval = self.eval_cmd != null,
             .approvals = self.approvals,

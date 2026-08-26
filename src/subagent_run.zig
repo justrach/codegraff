@@ -277,6 +277,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         .label = label,
         .out = null,
         .approvals = ctx.approvals,
+        .registry = ctx.registry,
         .tracer = ctx.tracer,
         .run_budget = ctx.run_budget,
         .loop_deadline_ms = ctx.loop_deadline_ms, // a timed run's deadline reaches grandchildren too, not just depth 1

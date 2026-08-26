@@ -52,9 +52,9 @@ compare only.
 
 **Prompt hell-optimize (this revision):**
 
-- `rlm_spec.system_note` stays on the root prefix only (children use
-  `sub_system_prompt` — they never see `rlm(code)`). Shorten the note
-  without dropping persist / sidecar / print.
+- `rlm_spec.system_note` is not on the always-on prefix (ADR 0030).
+  Children already use `sub_system_prompt` and never see `rlm(code)`.
+  Keep the note short (persist / sidecar / print) for `--rlm` / load.
 - Child brief: do not broaden, do not narrate tool calls (grok + kimi).
 - Do not reshuffle messages. Keep `reasoning_content` replay (already
   pinned; grok's official top Chat cache-miss cause).

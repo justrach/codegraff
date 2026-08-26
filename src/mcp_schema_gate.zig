@@ -45,6 +45,8 @@ const mcp = @import("mcp.zig");
 const mcp_config = @import("mcp_config.zig");
 const tools_mod = @import("tools.zig");
 const util = @import("util.zig");
+const tool_surface = @import("tool_surface.zig");
+pub const omitMcp = tool_surface.omitMcp;
 
 const ExecResult = tools_mod.ExecResult;
 
@@ -295,9 +297,9 @@ pub fn hiddenSpec(name: []const u8, all: []const mcp.Tool) bool {
         std.mem.eql(u8, name, "mcp_search_tools") or
         std.mem.eql(u8, name, "mcp_select_tool");
     if (!progressive) return false;
-    // -p: even a deferred home MCP kept the 1.4kB meta tool on every
-    // turn. One-shots that need MCP pass --no-lean (ADR 0024).
-    if (@import("no_local_tools.zig").lean) return true;
+    // Lean used to hide this even when MCP was connected, which made
+    // default `-p` unable to unfold `.mcp.json`. Show it whenever
+    // something is deferred; hide it when the listing would be empty.
     return !anyDeferred(all);
 }
 
@@ -317,6 +319,7 @@ pub fn shortDesc(desc: []const u8) []const u8 {
 /// direction — same rule as the native fold's markIfFolded). The catalog's
 /// zero-stub listing is unchanged; the call itself was already provider-legal.
 pub fn autoLoad(arena: Allocator, all: []const mcp.Tool, qualified: []const u8) void {
+    if (omitMcp(qualified)) return;
     if (!blocked(all, qualified)) return;
     for (all) |t| {
         if (std.mem.eql(u8, t.qualified_name, qualified)) {
@@ -411,6 +414,7 @@ pub fn loadInto(arena: Allocator, all: []const mcp.Tool, input: Value) !Loaded {
         // Named twice in one call (`server` plus its own name, say), or loaded
         // by an earlier call: neither is an error, both are the cache working.
         if (std.mem.indexOfScalar(usize, wanted.items[0..k], i) != null) continue;
+        if (omitMcp(all[i].qualified_name)) continue;
         const first_time = !isLoaded(all[i].qualified_name);
         try aw.writer.print("{s}\n", .{try enable(arena, all[i])});
         emitted += 1;
@@ -503,8 +507,10 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
     var natives: std.ArrayList([]const u8) = .empty;
     if (native_fold.anyFolded() and !@import("no_local_tools.zig").lean) {
         for (native_fold.folded) |name| {
-            if (!native_fold.isFolded(name)) continue; // rlm stays off the default listing
+            if (!native_fold.isFolded(name)) continue;
+            if (std.mem.eql(u8, name, "rlm")) continue; // tail-only; listing rewrites the head
             if (!g_stable_catalog and native_fold.isLoaded(name)) continue;
+            if (tool_surface.hideBuiltin(name)) continue;
             try natives.append(arena, name);
         }
     }
@@ -514,6 +520,7 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
     const deferredRule: *const fn ([]const mcp.Tool, mcp.Tool) bool = if (g_stable_catalog) &policyDeferred else &isDeferred;
     var servers: std.ArrayList([]const u8) = .empty;
     for (all) |t| {
+        if (omitMcp(t.qualified_name)) continue;
         if (!deferredRule(all, t)) continue;
         const sv = serverOf(t.qualified_name);
         const seen = for (servers.items) |s| {
@@ -533,6 +540,7 @@ pub fn descWithListing(arena: Allocator, all: []const mcp.Tool) ![]const u8 {
         try aw.writer.print(" {s} (", .{sv});
         var first = true;
         for (all) |t| {
+            if (omitMcp(t.qualified_name)) continue;
             if (!deferredRule(all, t)) continue;
             if (!std.mem.eql(u8, serverOf(t.qualified_name), sv)) continue;
             if (!first) try aw.writer.writeAll(", ");

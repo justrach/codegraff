@@ -401,6 +401,7 @@ pub fn run(ctx: *Ctx) !void {
         } else 0;
         ctx.root.tools_used.clear(ctx.io); // per-turn tool log for the turn's node
         ctx.root.tool_calls_this_turn = 0;
+        ctx.root.model_calls_this_turn = 0;
         goal_state.beginTurn(ctx.root, !is_loop_continuation); // per-turn gate flags (the ARMED double-check is NOT one, #318) + the new-ask retirement of a finished checklist (#394)
         ctx.root.seen_tool_keys.clearRetainingCapacity();
         if (main_mod.json_mode) ctx.root.emit(.{ .type = "started", .provider = ctx.root.provider.id, .model = ctx.root.provider.model });

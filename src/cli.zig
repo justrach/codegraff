@@ -21,6 +21,13 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.277
+    \\  • MCP-inside-rlm + learnt slim: fat MCP results drop to id/title; comments fold to n+latest_author (ADR 0029)
+    \\  • L (warm slim, --no-lean) 14.8s/31k/5 vs H 28s/112k/7 on SuperGrok grok-4.6
+    \\  • xAI Responses hosts x_search on grok-4.6 tools turns (ADR 0031); GRAFF_XAI_X_SEARCH=0 opts out
+    \\  • rlm stays hidden on small turns; showcase at --rlm, a 4-wide native batch, or 50% of compactAt (ADR 0030)
+    \\  • licensed codedb-pro is one read/search surface; Smolify is opt-in; turns pulse without a 16-call cap
+    \\
     \\0.0.276
     \\  • rlm (RLM + mid-stream spec-ptc) is the default loop; --old / --no-rlm restores structured-only
     \\  • prompt-cache max: stable catalog is the default (loads no longer rewrite tools JSON); children share prefix lanes
@@ -256,8 +263,8 @@ pub const usage_text =
     \\  --yolo           skip all permission prompts for the session
     \\  --rlm            advertise the rlm REPL (default; persistent binds, subagent(), llm_query, mid-stream spec-ptc; GRAFF_RLM=1)
     \\  --old, --no-rlm  restore the pre-rlm structured-only catalog (GRAFF_OLD=1 or GRAFF_RLM=0)
-    \\  --lean           slim tool surface (8 core tools) + MCP deferred behind load_tool_schemas — the DEFAULT for -p one-shots (GRAFF_LEAN=1)
-    \\  --no-lean        opt a one-shot out of the implied --lean: full tool surface + eager MCP, the pre-default -p behavior
+    \\  --lean           slim tool surface (8 core tools) + MCP schemas folded behind load_tool_schemas — the DEFAULT for -p one-shots (GRAFF_LEAN=1). `.mcp.json` still connects.
+    \\  --no-lean        opt a one-shot out of the implied --lean: full tool surface + eager MCP schemas, the pre-default -p behavior
     \\  --no-local-tools embedder mode: hard-disable the built-in bash/bash_output/bash_kill/read_file/edit_file/write_file/codedb tools for the whole process (subagents included), so graff can run outside the sandbox and get its coding tools from an MCP server instead; webfetch, orchestration and MCP tools still work (GRAFF_NO_LOCAL_TOOLS=1)
     \\  -p, --print      one-shot print mode (answer on stdout, progress on stderr)
     \\  --timing         show per-tool wall-clock on result lines

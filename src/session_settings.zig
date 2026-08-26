@@ -28,6 +28,7 @@ const no_local_tools = @import("no_local_tools.zig"); // #330: GRAFF_NO_LOCAL_TO
 const tool_handle = @import("tool_handle.zig"); // #440: GRAFF_TOOL_HANDLE_BYTES
 const server_compact = @import("agent_server_compact.zig"); // GRAFF_SERVER_COMPACT + #compact-ab assignment
 const provider_mod = @import("provider.zig");
+const xai_hosted = @import("xai_hosted.zig"); // GRAFF_XAI_X_SEARCH
 const skills = @import("skills.zig");
 const anim = @import("anim.zig");
 
@@ -132,9 +133,14 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
             }
             rlm.sync();
         }
+        if (environ_map.get("GRAFF_RLM_MCP")) |v| {
+            const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "no");
+            @import("rlm_mcp.zig").host_enabled = !off;
+        }
+        if (environ_map.get("GRAFF_RLM_CONTEXT")) |v| native_fold.applyContextEnv(v);
     }
     if (environ_map.get("GRAFF_NO_LOCAL_TOOLS")) |v| no_local_tools.enabled = no_local_tools.enabled or no_local_tools.envEnables(v);
-    // GRAFF_LEAN: presence-based, exactly matching session_start.leanSkipsMcp
+    // GRAFF_LEAN: presence-based, matching session_start.leanMode
     // (the MCP half of the same switch) — a "0" still means lean, by design.
     if (environ_map.get("GRAFF_LEAN") != null) no_local_tools.lean = true;
     // GRAFF_REQ_STATS: presence-based request-anatomy print (req_stats).
@@ -203,6 +209,10 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     if (environ_map.get("GRAFF_XAI_WIRE")) |v| {
         provider_mod.g_xai_responses = std.ascii.eqlIgnoreCase(std.mem.trim(u8, v, " \t"), "responses");
     }
+    if (environ_map.get("GRAFF_XAI_X_SEARCH")) |v| {
+        const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "no");
+        xai_hosted.enabled = !off;
+    }
     if (environ_map.get("GRAFF_XAI_URL")) |v| {
         if (v.len > 0) provider_mod.g_xai_url_override = v;
     }
@@ -230,6 +240,9 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     }
     if (environ_map.get("GRAFF_WS_FORCE_FAIL_COUNT")) |v| {
         ws.g_force_connect_failure_count = std.fmt.parseInt(u8, std.mem.trim(u8, v, " \t"), 10) catch 0;
+    }
+    if (environ_map.get("GRAFF_MAX_TURN_MODEL_CALLS")) |v| {
+        @import("turn_chrome.zig").max_turn_model_calls = @import("turn_chrome.zig").parseMaxTurnCalls(v);
     }
 }
 

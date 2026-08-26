@@ -439,10 +439,10 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     }
     const mcp_count = mcp_cli.countMcpServers(merged);
     const defer_join = flags.effectiveYolo() and flags.oneshot_prompt == null and !json_mode;
+    // Lean folds schemas (deferAllRuntime); it does not skip connect.
+    // --yolo / -p still connect so `.mcp.json` works on the default one-shot
+    // (ADR 0029). Interactive without --yolo still asks.
     var connect_mcp = flags.yolo_flag or mcp_count == 0;
-    // Lean: home MCP (Smolify) was 1.4kB of load_tool_schemas on every
-    // turn. Sessions that need MCP pass --no-lean (ADR 0024).
-    if (leanMode(flags.effectiveLean(), environ_map)) connect_mcp = false;
     if (mcp_count > 0 and !flags.yolo_flag and !json_mode and use_color) {
         sink.emit(io, .{ .mcp_consent_prompt = .{ .count = mcp_count } });
         // Still an inline read: only the QUESTION is inverted here, and the
@@ -527,9 +527,8 @@ pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags
         }
     }
 
-    // Smolify schemas are bundled and its hosted transport stays offline until
-    // an approved call. Full/authenticated/write tools require explicit opt-in.
-    if (environ_map.get("GRAFF_NO_SMOLIFY") != null) return;
+    // Smolify is opt-in: GRAFF_SMOLIFY=1 or GRAFF_SMOLIFY_ACCESS=public|full.
+    if (!@import("tool_surface.zig").smolifyWanted(environ_map)) return;
     const access = environ_map.get("GRAFF_SMOLIFY_ACCESS") orelse "public";
     const full_access = std.ascii.eqlIgnoreCase(access, "full") or std.ascii.eqlIgnoreCase(access, "authenticated");
     const added = registry.connectSmolify(full_access) catch |err| {

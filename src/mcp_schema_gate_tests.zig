@@ -357,9 +357,9 @@ test "an eager tool is never blocked, and the load tool is advertised only when 
     try testing.expect(!gate.blocked(fat, "mcp__fat__ghost"));
 }
 
-test "lean hides load_tool_schemas even when MCP is deferred" {
-    // Home Smolify still counts as deferred and used to keep the 1.4kB
-    // meta tool on every -p turn. --no-lean is the MCP one-shot.
+test "lean shows load_tool_schemas only when MCP is actually deferred" {
+    // Empty -p stays cheap (no meta tool). A connected `.mcp.json` must
+    // still unfold on the default lean one-shot (ADR 0029).
     const schema = @import("schema.zig");
     const no_local = @import("no_local_tools.zig");
     withDefaults();
@@ -374,12 +374,12 @@ test "lean hides load_tool_schemas even when MCP is deferred" {
     try testing.expect(gate.hiddenSpec(gate.tool_name, &.{}));
     const specs = try schema.effectiveRootSpecs(arena);
     const empty = try schema.renderRootTools(arena, .openai, specs, &.{});
-    try testing.expect(std.mem.indexOf(u8, empty, gate.tool_name) == null);
+    try testing.expect(std.mem.indexOf(u8, empty, "\"name\":\"load_tool_schemas\"") == null);
 
     const fat = try fixture(arena, "fat", 8, 2000);
-    try testing.expect(gate.hiddenSpec(gate.tool_name, fat));
+    try testing.expect(!gate.hiddenSpec(gate.tool_name, fat));
     const with_mcp = try schema.renderRootTools(arena, .openai, specs, fat);
-    try testing.expect(std.mem.indexOf(u8, with_mcp, gate.tool_name) == null);
+    try testing.expect(std.mem.indexOf(u8, with_mcp, "\"name\":\"load_tool_schemas\"") != null);
 }
 
 test "tool_desc stays JSON-escape-free (it is spliced into a raw schema string)" {

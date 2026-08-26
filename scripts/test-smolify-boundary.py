@@ -128,8 +128,8 @@ def run(graff: Path) -> None:
                     "codex",
                     "--yolo",
                     "--no-telemetry",
-                    # -p implies --lean, which skips MCP (ADR 0024). This
-                    # test is the MCP advertisement/secret-egress boundary.
+                    # --no-lean so this test sees the full MCP advertisement
+                    # surface (secret-egress boundary), not the lean fold.
                     "--no-lean",
                     "-p",
                     "try the hosted docs query, then report",

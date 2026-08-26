@@ -10,6 +10,7 @@ const serde = @import("serde.zig");
 const http_headers = @import("http_headers.zig");
 const codex_chain = @import("codex_chain.zig");
 const server_compact = @import("agent_server_compact.zig");
+const xai_hosted = @import("xai_hosted.zig");
 
 pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_tool: bool) !void {
     // Responses API (codex / ChatGPT, xAI, and native Codegraff aliases).
@@ -57,8 +58,12 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     for (self.messages.items[from..]) |m| try s.write(m);
     try s.endArray();
     if (tools) |t| {
+        const payload = if (xai_hosted.active(self.provider.id, self.provider.kind))
+            xai_hosted.splice(self.scratchAlloc(), t) catch t
+        else
+            t;
         try s.objectField("tools");
-        try serde.writeOpenAITools(s, self.scratchAlloc(), t); // #261 follow-up
+        try serde.writeOpenAITools(s, self.scratchAlloc(), payload); // #261 follow-up
         try s.objectField("tool_choice");
         try s.write(if (force_tool) "required" else "auto");
         try s.objectField("parallel_tool_calls");
@@ -331,6 +336,37 @@ test "xai Responses body is bearer-clean: no codex-isms, xAI-legal fields only (
     try std.testing.expect(std.mem.indexOf(u8, body, "prompt_cache_options") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "context_management") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "previous_response_id") == null);
+}
+
+test "xAI Responses splices hosted x_search onto a tools turn; Codex and chat do not" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const tools = "[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":\"\",\"parameters\":{\"type\":\"object\"}}}]";
+    const saved = xai_hosted.enabled;
+    defer xai_hosted.enabled = saved;
+    xai_hosted.enabled = true;
+
+    var xai = try testAgentFor(a, "xai", .responses, "grok-4.6");
+    const body = try xai.buildBody(tools, false, true, true);
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"x_search\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"bash\"") != null);
+
+    var codex = try testAgentFor(a, "codex", .responses, "gpt-5.6-sol");
+    const cb = try codex.buildBody(tools, false, true, true);
+    defer std.testing.allocator.free(cb);
+    try std.testing.expect(std.mem.indexOf(u8, cb, "x_search") == null);
+
+    var chat = try testAgentFor(a, "xai", .openai, "grok-4.6");
+    const chat_body = try chat.buildBody(tools, false, true, true);
+    defer std.testing.allocator.free(chat_body);
+    try std.testing.expect(std.mem.indexOf(u8, chat_body, "x_search") == null);
+
+    xai_hosted.enabled = false;
+    const off = try xai.buildBody(tools, false, true, true);
+    defer std.testing.allocator.free(off);
+    try std.testing.expect(std.mem.indexOf(u8, off, "x_search") == null);
 }
 
 test "--output-schema rides text.format on Responses and response_format on chat (#502)" {

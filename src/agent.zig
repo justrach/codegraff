@@ -123,6 +123,7 @@ pub const Agent = struct {
     agent_cwd: ?[]const u8 = null, // subagent-only (#276 P0-1): absolute path of this agent's isolated git worktree, threaded through ToolCtx per tool call instead of a process-wide chdir — parallel siblings each keep their own
     tools_used: trace.ToolSink = .{}, // external tool calls this agent made (per turn for the root)
     tool_calls_this_turn: u64 = 0,
+    model_calls_this_turn: u64 = 0,
     handle_note_shown: bool = false, // #541: the handle-protocol lesson rides this agent's FIRST handle, once
     seen_tool_keys: std.ArrayList([]const u8) = .empty, // root-only per-turn dedupe keys
     md_buf: std.ArrayList(u8) = .empty, // current incomplete streamed line (markdown rendering)
@@ -264,33 +265,12 @@ pub const Agent = struct {
         return true;
     }
 
-    /// #330/#352: a child's catalog is a comptime constant, so both gates just
-    /// pick the pre-built twin rather than rebuilding one per subagent —
-    /// schema.subToolsJson owns that choice. Root catalogs are filtered where
-    /// they are assembled (schema.effectiveRootSpecs).
     pub fn toolsJson(self: *const Agent) []const u8 {
-        if (self.sub) return schema.subToolsJson(self.provider.kind, no_local_tools.enabled);
-        return switch (self.provider.kind) {
-            .anthropic => self.tools_anthropic,
-            .openai => self.tools_openai,
-            .responses => self.tools_responses,
-        };
+        return @import("agent_catalog.zig").toolsJson(self);
     }
 
-    /// Root catalogs include meta + MCP tools and are much larger than the
-    /// subagent constants. Materialize only a wire format the session actually
-    /// uses; provider switching calls this before updating the context meter.
     pub fn ensureRootTools(self: *Agent, kind: Provider.Kind) !void {
-        if (self.sub) return;
-        const slot = switch (kind) {
-            .anthropic => &self.tools_anthropic,
-            .openai => &self.tools_openai,
-            .responses => &self.tools_responses,
-        };
-        if (slot.*.len != 0) return;
-        const specs = try schema.effectiveRootSpecs(self.arena);
-        const connected: []const mcp.Tool = if (self.registry) |registry| registry.tools else &.{};
-        slot.* = try schema.renderRootTools(self.arena, kind, specs, connected);
+        return @import("agent_catalog.zig").ensureRootTools(self, kind);
     }
 
     /// A live MCP registry change invalidates provider-specific catalogs. The
@@ -343,9 +323,8 @@ pub const Agent = struct {
         self.completed = null;
         if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) esc_cancel.store(false, .release);
         while (true) {
-            // Esc during a tool join (set by escWatchTask) lands here: the
-            // root consumes the flag and aborts before the next request;
-            // subagents see it too and bail without consuming.
+            if (try @import("turn_chrome.zig").beforeRequest(self)) |paused| return paused;
+            // Esc during a tool join lands here; root consumes, subagents bail.
             if (esc_cancel.load(.acquire)) {
                 if (!self.sub) esc_cancel.store(false, .release);
                 return error.Interrupted;
@@ -382,6 +361,15 @@ pub const Agent = struct {
                 const recovery_meter = self.effectiveContextTokens();
                 self.autocompact(recovery_meter);
                 self.closeCodexWs();
+            }
+            // ADR 0030: showcase rlm once the existing compact meter is
+            // actually large. Schema rides the tail; head bytes stay put.
+            if (!self.sub) {
+                const fold = @import("native_fold.zig");
+                if (fold.noticeContext(self.effectiveContextTokens(), self.provider.compactAt())) {
+                    self.invalidateRootTools();
+                    try self.ensureRootTools(self.provider.kind);
+                }
             }
             const hist_len = self.messages.items.len;
             const root = try self.request(if (self.text_only) null else self.toolsJson());

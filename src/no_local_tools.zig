@@ -66,7 +66,7 @@ pub fn blocks(name: []const u8) bool {
 }
 
 /// --lean / GRAFF_LEAN=1 tool surface — the token-cost counterpart of the MCP
-/// skip (session_start.leanSkipsMcp reads the same flag/env). A one-shot
+/// fold (session_start.leanMode reads the same flag/env). A one-shot
 /// coding task keeps the file/shell tools plus attempt_completion; every
 /// other schema is prefix re-sent on EVERY model turn. Unlike #330 this
 /// is NOT a security boundary: an unadvertised tool is simply unknown.
@@ -77,7 +77,8 @@ pub var lean: bool = false;
 /// calls / 4/6. Dropping catalog `read_file` (085320) made it worse
 /// (63 calls) — the model retried rlm/bash cat when print(read_file)
 /// was a no-op. `load_tool_schemas` stays so MCP can unfold; it is
-/// hidden on lean. Overflow paging (`read_tool_result`) is interactive.
+/// hidden only when nothing is deferred. Overflow paging
+/// (`read_tool_result`) is interactive.
 pub const lean_tools = [_][]const u8{
     "bash",
     "read_file",
@@ -378,7 +379,7 @@ test "lean prompt diet: no fan-out / trace / issue-filing; short local-tools not
     try std.testing.expect(std.mem.indexOf(u8, out, "Parallelize") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "ONE response") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "not covered by /rewind") == null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "rlm") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "rlm") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "SPEC.md") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "discard work") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Fix root causes") == null);
@@ -396,7 +397,7 @@ test "lean catalog drops overflow pager and empty load_tool_schemas" {
     const specs = try schema.effectiveRootSpecs(arena);
     const json = try schema.renderRootTools(arena, .openai, specs, &.{});
     try std.testing.expect(std.mem.indexOf(u8, json, "read_tool_result") == null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "load_tool_schemas") == null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"load_tool_schemas\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"read_file\"") != null);
 }

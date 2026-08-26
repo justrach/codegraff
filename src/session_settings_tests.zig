@@ -43,6 +43,8 @@ const knobs = [_]Knob{
     .{ .name = "GRAFF_CODEX_WS", .value = "off" },
     .{ .name = "GRAFF_CLOCK_SLEEP", .value = "1" },
     .{ .name = "GRAFF_RLM", .value = "1" },
+    .{ .name = "GRAFF_RLM_MCP", .value = "0" },
+    .{ .name = "GRAFF_RLM_CONTEXT", .value = "32k" },
     .{ .name = "GRAFF_OLD", .value = "1" },
     .{ .name = "GRAFF_NO_LOCAL_TOOLS", .value = "1" },
     .{ .name = "GRAFF_CODEX_WS_IDLE_SECS", .value = "11" },
@@ -56,6 +58,7 @@ const knobs = [_]Knob{
     .{ .name = "GRAFF_STABLE_CATALOG", .value = "1" },
     .{ .name = "GRAFF_NO_STABLE_CATALOG", .value = "1" },
     .{ .name = "GRAFF_VERCEL_URL", .value = "https://ai-gateway.vercel.sh/v1/chat/completions" },
+    .{ .name = "GRAFF_XAI_X_SEARCH", .value = "0" },
 };
 
 /// A stand-in for the process environment that records which names were asked
@@ -89,6 +92,10 @@ const Saved = struct {
     clock_sleep: bool,
     rlm: bool,
     rlm_cli: bool,
+    rlm_mcp: bool,
+    rlm_context_off: bool,
+    rlm_context_pct: ?u8,
+    rlm_context_tokens: ?u64,
     stream_stall_ms: u64,
     post_deadline_ms: u64,
     codex_ws_idle_ms: i64,
@@ -101,6 +108,7 @@ const Saved = struct {
     ws_fail_count: u8,
     plugins_off: bool,
     stable_catalog: bool,
+    x_search: bool,
 
     fn capture() Saved {
         return .{
@@ -113,6 +121,10 @@ const Saved = struct {
             .clock_sleep = main_mod.g_clock_sleep,
             .rlm = @import("rlm.zig").available,
             .rlm_cli = @import("rlm.zig").cli_set,
+            .rlm_mcp = @import("rlm_mcp.zig").host_enabled,
+            .rlm_context_off = @import("native_fold.zig").g_context_off,
+            .rlm_context_pct = @import("native_fold.zig").g_context_pct,
+            .rlm_context_tokens = @import("native_fold.zig").g_context_tokens,
             .stream_stall_ms = http.stream_stall_ms,
             .post_deadline_ms = http.post_deadline_ms,
             .codex_ws_idle_ms = agent_ws.codex_ws_idle_ms,
@@ -125,6 +137,7 @@ const Saved = struct {
             .ws_fail_count = ws.g_force_connect_failure_count,
             .plugins_off = plugins.disabled,
             .stable_catalog = mcp_schema_gate.g_stable_catalog,
+            .x_search = @import("xai_hosted.zig").enabled,
         };
     }
 
@@ -139,6 +152,10 @@ const Saved = struct {
         @import("rlm.zig").available = s.rlm;
         @import("rlm.zig").cli_set = s.rlm_cli;
         @import("rlm.zig").sync();
+        @import("rlm_mcp.zig").host_enabled = s.rlm_mcp;
+        @import("native_fold.zig").g_context_off = s.rlm_context_off;
+        @import("native_fold.zig").g_context_pct = s.rlm_context_pct;
+        @import("native_fold.zig").g_context_tokens = s.rlm_context_tokens;
         http.stream_stall_ms = s.stream_stall_ms;
         http.post_deadline_ms = s.post_deadline_ms;
         agent_ws.codex_ws_idle_ms = s.codex_ws_idle_ms;
@@ -151,6 +168,7 @@ const Saved = struct {
         ws.g_force_connect_failure_count = s.ws_fail_count;
         plugins.disabled = s.plugins_off;
         mcp_schema_gate.g_stable_catalog = s.stable_catalog;
+        @import("xai_hosted.zig").enabled = s.x_search;
     }
 };
 
@@ -195,6 +213,8 @@ test "applyEnvKnobs actually applies the values it reads" {
     tool_handle.threshold_bytes = tool_handle.default_threshold_bytes;
     plugins.disabled = false;
     mcp_schema_gate.g_stable_catalog = false;
+    @import("xai_hosted.zig").enabled = true;
+    @import("native_fold.zig").resetContextKnob();
 
     var asked: [knobs.len]bool = @splat(false);
     try session_settings.applyEnvKnobs(arena_state.allocator(), RecordingEnv{ .asked = &asked });
@@ -216,6 +236,8 @@ test "applyEnvKnobs actually applies the values it reads" {
     try std.testing.expectEqual(@as(u8, 3), ws.g_force_connect_failure_count);
     try std.testing.expect(plugins.disabled);
     try std.testing.expect(mcp_schema_gate.g_stable_catalog); // GRAFF_STABLE_CATALOG=1 wins over GRAFF_NO_STABLE_CATALOG=1
+    try std.testing.expect(!@import("xai_hosted.zig").enabled); // GRAFF_XAI_X_SEARCH=0
+    try std.testing.expectEqual(@as(?u64, 32_000), @import("native_fold.zig").g_context_tokens);
 }
 
 const PairEnv = struct {
@@ -253,6 +275,17 @@ test "GRAFF_OLD / GRAFF_RLM=0 turn default rlm off; --old is not clobbered by en
     try std.testing.expect(rlm.cli_set);
 }
 
+test "GRAFF_RLM_MCP=0 turns MCP-inside-rlm host functions off" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const saved = Saved.capture();
+    defer saved.restore();
+    const rlm_mcp = @import("rlm_mcp.zig");
+    rlm_mcp.host_enabled = true;
+    try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_RLM_MCP", .value = "0" }} });
+    try std.testing.expect(!rlm_mcp.host_enabled);
+}
+
 test "GRAFF_STABLE_CATALOG=0 / GRAFF_NO_STABLE_CATALOG turn default-on catalog off" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -266,4 +299,35 @@ test "GRAFF_STABLE_CATALOG=0 / GRAFF_NO_STABLE_CATALOG turn default-on catalog o
     mcp_schema_gate.g_stable_catalog = true;
     try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_NO_STABLE_CATALOG", .value = "1" }} });
     try std.testing.expect(!mcp_schema_gate.g_stable_catalog);
+}
+
+test "GRAFF_RLM_CONTEXT parses percent, absolute tokens, and off" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const saved = Saved.capture();
+    defer saved.restore();
+    const fold = @import("native_fold.zig");
+    fold.resetContextKnob();
+    try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_RLM_CONTEXT", .value = "32k" }} });
+    try std.testing.expectEqual(@as(?u64, 32_000), fold.g_context_tokens);
+    try std.testing.expectEqual(@as(?u64, 32_000), fold.contextThreshold(200_000));
+    fold.resetContextKnob();
+    try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_RLM_CONTEXT", .value = "50%" }} });
+    try std.testing.expectEqual(@as(?u8, 50), fold.g_context_pct);
+    try std.testing.expectEqual(@as(?u64, 40_000), fold.contextThreshold(80_000));
+    fold.resetContextKnob();
+    try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_RLM_CONTEXT", .value = "off" }} });
+    try std.testing.expect(fold.g_context_off);
+    try std.testing.expectEqual(@as(?u64, null), fold.contextThreshold(80_000));
+}
+
+test "GRAFF_XAI_X_SEARCH=0 turns hosted x_search off" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const saved = Saved.capture();
+    defer saved.restore();
+    const hosted = @import("xai_hosted.zig");
+    hosted.enabled = true;
+    try session_settings.applyEnvKnobs(arena_state.allocator(), PairEnv{ .pairs = &.{.{ .name = "GRAFF_XAI_X_SEARCH", .value = "0" }} });
+    try std.testing.expect(!hosted.enabled);
 }
