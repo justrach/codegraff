@@ -277,7 +277,8 @@ First things to try once you're at the `›` prompt:
 ### Zed (External Agents / ACP)
 
 `graff acp` speaks the Agent Client Protocol, so Zed can drive it as an
-External Agent. Register it in `~/.config/zed/settings.json`:
+External Agent. The same spawn is the hosted-agent recipe — see
+[Embedding graff](docs/embedding.md). Register it in `~/.config/zed/settings.json`:
 
 ```json
 {
@@ -902,7 +903,9 @@ Can't spawn a local process (edge runtimes, browsers, other machines)? Run
 `graff serve` and both SDKs ship matching **remote clients** that drive it over
 HTTP: `@graff-new/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers) and
 Python's `RemoteHarness` (stdlib only). Same method surface, same event stream.
-See [`sdk/README.md`](sdk/README.md).
+See [`sdk/README.md`](sdk/README.md). A host that wants ACP (thought / tool /
+text `session/update`s) instead of `--json` events should spawn `graff acp` —
+recipe and `@codegraff/sdk/acp` helper in [Embedding graff](docs/embedding.md).
 
 ---
 
@@ -910,7 +913,8 @@ See [`sdk/README.md`](sdk/README.md).
 
 If you are embedding graff in a product, the safe shape is to run the agent loop
 on your trusted backend and let it reach an isolated sandbox only through tool
-calls. `--no-local-tools` is what makes that shape enforceable:
+calls. How to spawn the binary (ACP vs `--json`) is [Embedding graff](docs/embedding.md).
+`--no-local-tools` is what makes the sandbox shape enforceable:
 
 ```bash
 graff --json --no-local-tools --model gpt-5.5
@@ -1550,7 +1554,8 @@ issues for what's in flight:
   the host. It's the natural next layer above today's cwd-confinement and
   permission gate, and the safe substrate for hands-off evolutionary runs.
   [Embedder mode](#embedder-mode-run-the-harness-outside-the-sandbox) is the
-  first half of this today: `--no-local-tools` plus a sandbox MCP server. A
+  first half of this today: `--no-local-tools` plus a sandbox MCP server
+  ([Embedding graff](docs/embedding.md)). A
   first-class sandbox backend (create/exec/read/write/destroy with provider
   adapters) would remove the proxy you have to write yourself.
 - **Scaling the evolution loop.** The local half shipped in v0.0.219:

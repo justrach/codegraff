@@ -153,9 +153,29 @@ See `orchestrate.ts`'s file header for the exact journal format and the
 concurrency/determinism guarantees (and their documented edges) for
 `parallel()`/`pipeline()`.
 
+## ACP (`graff acp`)
+
+A host that wants ACP v1 `session/update`s (thought / tool_call / text), not
+`--json` events, should spawn `graff acp` instead of `Harness`.
+`@codegraff/sdk/acp` is the spawn plus JSON-RPC write/read:
+
+```ts
+import { acp } from "@codegraff/sdk/acp";
+
+const session = await acp({ model: "gpt-5.5" });
+session.onUpdate((update) => console.log(update.sessionUpdate));
+const { stopReason, updates } = await session.prompt("hello");
+console.log(stopReason, updates.length);
+await session.close();
+```
+
+`spawnAcp()` skips the `initialize` → `session/new` handshake. Recipe, method
+names, `--no-local-tools`, and license: [Embedding graff](../../docs/embedding.md).
+
 ## Links
 
 - Repository: <https://github.com/justrach/codegraff>
+- Embedding graff: <https://github.com/justrach/codegraff/blob/main/docs/embedding.md>
 - This package (npm): <https://www.npmjs.com/package/@codegraff/sdk>
 - Python sibling (PyPI): <https://pypi.org/project/codegraff/>
 

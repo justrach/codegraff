@@ -27,7 +27,11 @@ current is part of cutting a release.
 - `bash_output` / `agent_output` `wait_ms>0` always waits for exit
   (10h). Mid-range values like 60s–240s are no longer a bounded
   deadline (#640).
-- Existing Tauri `gui/` is unchanged. No `v0.0.279` tag until asked.
+- Host embed path: [docs/embedding.md](docs/embedding.md) names the two
+  stdio APIs (`graff acp` and `@codegraff/sdk` `Harness`), with a Node
+  JSON-RPC recipe and a thin `@codegraff/sdk/acp` helper (`spawnAcp` /
+  `acp`). Not WASM / libgraff. No `v0.0.279` tag until asked.
+- Existing Tauri `gui/` is unchanged.
 
 ## v0.0.278 (2026-08-26)
 

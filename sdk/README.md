@@ -130,4 +130,6 @@ for ev in h.reconnect():
 JSONL events: `text` (assistant delta), `tool_call`, `ask_user`, `tool_result`,
 `turn` (final text + `context_tokens` + `cost_usd`), and `error`. Answer an
 `ask_user` event with `{"type":"answer","text":"...","cancelled":false,"call_id":"..."}`.
-See the `protocol` key of `graff --schema`.
+See the `protocol` key of `graff --schema`. A host that wants ACP v1
+`session/update`s instead should spawn `graff acp` — [Embedding graff](../docs/embedding.md)
+and `@codegraff/sdk/acp`.

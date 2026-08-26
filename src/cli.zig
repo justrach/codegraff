@@ -26,6 +26,7 @@ pub const changelog_text =
     \\  • graff acp emits thought / tool_call / text session/update; /never is an ACP slash command
     \\  • /never on a TTY is a searchable picker with two confirms; rm and ACP list still work (#638)
     \\  • bash_output wait_ms>0 always waits for exit — mid-range values are not a timeout (#640)
+    \\  • host recipe: docs/embedding.md; @codegraff/sdk/acp spawns graff acp
     \\
     \\0.0.278
     \\  • deleted composer screenshots are not sent: submit keeps [Image #N] / @[path] only (#634)
