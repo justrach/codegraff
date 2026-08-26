@@ -46,6 +46,7 @@ record only when you need the evidence or the edge cases.
 | [0033](0033-user-can-retire-a-standing-constraint.md) | Only the user retires a standing constraint: TTY `/never` picker (two confirms), ACP/`rm`, or an explicit override. The model cannot. |
 | [0034](0034-remote-images-stay-native.md) | JSON/serve image inputs are a typed URL/base64 union, validated atomically and preserved as native provider vision blocks; never flatten pixels into prompt text. |
 | [0035](0035-first-turn-skips-deferred-mcp-join.md) | First model call after a deferred MCP boot does not wait for the handshake; native tools run now, MCP catalogs merge on the next request. |
+| [0036](0036-computer-use-keeps-the-signed-codex-bridge.md) | Codex Computer Use keeps its authenticated node_repl process chain: Graff launches it through the signed Codex sandbox wrapper, never embeds V8 or spoofs the service. |
 
 ## When to write one
 

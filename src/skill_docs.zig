@@ -24,6 +24,7 @@ const ToolOutput = tools.ToolOutput;
 // Only the settings-file location, never the approval session (#422 ratchet).
 const policy = @import("harness_policy.zig");
 const plugins = @import("plugins.zig");
+const runtime_adapter = @import("skill_runtime_adapter.zig");
 
 pub const Source = enum {
     builtin,
@@ -319,6 +320,8 @@ fn render(gpa: Allocator, io: Io, sk: Skill) ![]u8 {
     var aw: Io.Writer.Allocating = .init(gpa);
     errdefer aw.deinit();
     try aw.writer.print("# skill: {s} ({s})\n\n", .{ sk.name, sk.source.label() });
+    const adapter = runtime_adapter.prefix(sk.name, sk.source == .plugin);
+    if (adapter.len > 0) try aw.writer.print("{s}\n\n", .{adapter});
     try aw.writer.writeAll(util.utf8Prefix(body, body_cap));
     if (body.len > body_cap)
         try aw.writer.print("\n\n[body truncated at {d} KB — read the rest from {s}]", .{ body_cap / 1024, sk.path });

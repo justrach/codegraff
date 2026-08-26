@@ -245,13 +245,14 @@ pub const Registry = struct {
     /// time: some legacy SDK servers close stdout on an unrecognized
     /// pre-`initialize` message (`server/discover`), and the only fix is a
     /// fresh process — the closed one can't be un-closed.
-    fn spawnStdio(reg: *Registry, a: Allocator, argv: []const []const u8, env_map: ?*std.process.Environ.Map) !Transport {
+    fn spawnStdio(reg: *Registry, a: Allocator, argv: []const []const u8, env_map: ?*std.process.Environ.Map, cwd: ?[]const u8) !Transport {
         var child = try std.process.spawn(reg.io, .{
             .argv = argv,
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .ignore,
             .environ_map = env_map,
+            .cwd = if (cwd) |path| .{ .path = path } else .inherit,
         });
         errdefer mcp_stdio.stopChild(reg.io, &child);
         const in_buf = try a.alloc(u8, 64 * 1024);
@@ -282,6 +283,11 @@ pub const Registry = struct {
         // stdio child -- can spawn a fresh process with the same argv/env.
         var stdio_argv: std.ArrayList([]const u8) = .empty;
         var stdio_env_map: ?*std.process.Environ.Map = null;
+        var stdio_cwd: ?[]const u8 = null;
+        // Environ.Map owns its key/value copies with reg.gpa even though the
+        // map struct itself is arena-backed. Spawn consumes the environment;
+        // keep it through the possible probe respawn below, then release it.
+        defer if (stdio_env_map) |map| map.deinit();
         if (url_v) |url| {
             if (url != .string) return error.BadMcpConfig;
             if (!validRemoteUrl(url.string)) return error.BadMcpUrl;
@@ -320,6 +326,11 @@ pub const Registry = struct {
                 }
             }
 
+            if (cfg.get("cwd")) |cwd| {
+                if (cwd != .string or cwd.string.len == 0) return error.BadMcpConfig;
+                stdio_cwd = cwd.string;
+            }
+
             // Optional per-server env overlaid on the parent environment.
             if (cfg.get("env")) |env| {
                 if (env != .object) return error.BadMcpConfig;
@@ -333,7 +344,7 @@ pub const Registry = struct {
                 stdio_env_map = m;
             }
 
-            server.* = .{ .name = name, .transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map) };
+            server.* = .{ .name = name, .transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map, stdio_cwd) };
         }
 
         var registry_owns_server = false;
@@ -375,7 +386,7 @@ pub const Registry = struct {
                         .closed => {
                             server.probe_fallback = .server_exited;
                             mcp_stdio.stopChild(reg.io, &server.transport.stdio.child);
-                            server.transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map);
+                            server.transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map, stdio_cwd);
                             break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
                         },
                     }
