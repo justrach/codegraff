@@ -870,7 +870,7 @@ structured `{"type":"answer","text":"...","cancelled":false}` line) and `graff -
 machine-readable interface, and the **TypeScript and Python SDKs in
 [`sdk/`](sdk/) are auto-generated from that schema**, so they never drift from
 the binary. On every release tag a GitHub Action rebuilds, regenerates, fails if
-the committed SDKs are stale, and publishes to npm (`@graff-new/sdk`) and PyPI
+the committed SDKs are stale, and publishes to npm (`@codegraff/sdk`) and PyPI
 (`simple-harness-sdk`).
 
 ```python
@@ -885,7 +885,7 @@ with Harness(yolo=True, model="gpt-5.5") as h:
 
 ```ts
 // TypeScript
-import { Harness, runAgent } from "@graff-new/sdk";
+import { Harness, runAgent } from "@codegraff/sdk";
 
 // one-shot, streamed
 for await (const ev of runAgent({ prompt: "summarize README.md", model: "gpt-5.5", yolo: true })) {
@@ -901,8 +901,11 @@ session.close();
 
 Can't spawn a local process (edge runtimes, browsers, other machines)? Run
 `graff serve` and both SDKs ship matching **remote clients** that drive it over
-HTTP: `@graff-new/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers) and
+HTTP: `@codegraff/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers) and
 Python's `RemoteHarness` (stdlib only). Same method surface, same event stream.
+Both remote clients accept URL/base64 `images` on a turn and preserve them as
+native provider vision parts through `graff serve`; no encoded pixels are
+flattened into prompt text.
 See [`sdk/README.md`](sdk/README.md). A host that wants ACP (thought / tool /
 text `session/update`s) instead of `--json` events should spawn `graff acp` —
 recipe and `@codegraff/sdk/acp` helper in [Embedding graff](docs/embedding.md).
@@ -1447,7 +1450,7 @@ POSTs can be sent while the original stream is waiting on `ask_user`; they ack
 immediately and the original stream continues to the `tool_result`/`turn`.
 Bearer auth via `--token`/`HARNESS_SERVE_TOKEN` (required to bind beyond
 loopback); CORS opens only when a token gates access. The SDKs ship matching
-remote clients: `@graff-new/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers)
+remote clients: `@codegraff/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers)
 and Python's `RemoteHarness` (stdlib urllib). Endpoints are documented under the
 `serve` key of `graff --schema`.
 

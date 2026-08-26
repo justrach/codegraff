@@ -1,5 +1,5 @@
 # Minimal Cloudflare Worker driving a `harness serve` bridge through
-# @graff-new/sdk/remote. Local check (no deploy, real workerd runtime):
+# @codegraff/sdk/remote. Local check (no deploy, real workerd runtime):
 #   harness serve --port 8926 --token edge-test     # terminal 1
 #   npx wrangler dev --port 8970                    # terminal 2
 #   curl http://127.0.0.1:8970
