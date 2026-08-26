@@ -86,8 +86,11 @@ fn appendString(arena: Allocator, array: *std.json.Array, value: []const u8) boo
     return true;
 }
 
+/// Build the signed-sandbox MCP server object. The macOS gate lives on
+/// `merge`: this helper stays OS-agnostic so Linux/Windows CI can still
+/// prove the argv/env shape (ADR 0036).
 fn serverFromCommand(io: Io, arena: Allocator, home: []const u8, project_dir: []const u8, node_command: []const u8) ?Value {
-    if (builtin.os.tag != .macos or home.len == 0 or project_dir.len == 0) return null;
+    if (home.len == 0 or project_dir.len == 0) return null;
     if (!std.mem.endsWith(u8, node_command, node_suffix)) return null;
     const resources = node_command[0 .. node_command.len - node_suffix.len];
     if (resources.len == 0) return null;
@@ -139,6 +142,7 @@ fn serverFromCommand(io: Io, arena: Allocator, home: []const u8, project_dir: []
 /// should not advertise the plugin's unauthenticated direct client instead.
 pub fn merge(io: Io, arena: Allocator, home: []const u8, project_dir: []const u8, servers: *std.json.ObjectMap, found: *bool) bool {
     if (servers.get(server_name) != null) return true;
+    if (builtin.os.tag != .macos) return false;
     const config_path = join(arena, home, ".codex/config.toml") orelse return false;
     const text = Io.Dir.cwd().readFileAlloc(io, config_path, arena, .limited(1 << 20)) catch return false;
     const command = configuredCommand(text) orelse return false;
@@ -167,6 +171,22 @@ test "configuredCommand reads only the node_repl MCP table (#618)" {
     try testing.expect(configuredCommand("[mcp_servers.node_repl]\ncommand = \"bad\\npath\"\n") == null);
 }
 
+fn writeBridgeTree(io: Io, arena: Allocator, base: []const u8) ![]const u8 {
+    const resources = join(arena, base, "ChatGPT.app/Contents/Resources") orelse return error.OutOfMemory;
+    try Io.Dir.cwd().createDirPath(io, join(arena, resources, "cua_node/bin") orelse return error.OutOfMemory);
+    const command = join(arena, resources, "cua_node/bin/node_repl") orelse return error.OutOfMemory;
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = command, .data = "" });
+    try Io.Dir.cwd().writeFile(io, .{
+        .sub_path = join(arena, resources, "cua_node/bin/node") orelse return error.OutOfMemory,
+        .data = "",
+    });
+    try Io.Dir.cwd().writeFile(io, .{
+        .sub_path = join(arena, resources, "codex") orelse return error.OutOfMemory,
+        .data = "",
+    });
+    return command;
+}
+
 test "serverFromCommand refuses a lookalike executable tree" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -182,17 +202,11 @@ test "serverFromCommand builds the signed Codex sandbox bridge (#618)" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const n = try tmp.dir.realPath(testing.io, &buf);
     const base = try arena.dupe(u8, buf[0..n]);
-    const resources = join(arena, base, "ChatGPT.app/Contents/Resources").?;
-    const node_dir = join(arena, resources, "cua_node/bin").?;
-    try Io.Dir.cwd().createDirPath(testing.io, node_dir);
-    const command = join(arena, resources, "cua_node/bin/node_repl").?;
-    try Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = command, .data = "" });
-    try Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = join(arena, resources, "cua_node/bin/node").?, .data = "" });
-    try Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = join(arena, resources, "codex").?, .data = "" });
+    const command = try writeBridgeTree(testing.io, arena, base);
 
     const home = join(arena, base, "home").?;
     const cfg = serverFromCommand(testing.io, arena, home, base, command).?.object;
-    try testing.expectEqualStrings(join(arena, resources, "codex").?, cfg.get("command").?.string);
+    try testing.expectEqualStrings(join(arena, base, "ChatGPT.app/Contents/Resources/codex").?, cfg.get("command").?.string);
     try testing.expectEqualStrings(base, cfg.get("cwd").?.string);
     const args = cfg.get("args").?.array.items;
     try testing.expectEqualStrings("sandbox", args[0].string);
@@ -202,4 +216,36 @@ test "serverFromCommand builds the signed Codex sandbox bridge (#618)" {
     const env = cfg.get("env").?.object;
     try testing.expectEqualStrings("{\"sky\":\"@oai/sky/service\"}", env.get("NODE_REPL_TRUSTED_SERVICES").?.string);
     try testing.expect(std.mem.endsWith(u8, env.get("SKY_CUA_SERVICE_PATH").?.string, "Codex Computer Use.app"));
+}
+
+test "merge synthesizes the signed bridge only on macOS (#618)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(testing.io, &buf);
+    const base = try arena.dupe(u8, buf[0..n]);
+    const command = try writeBridgeTree(testing.io, arena, base);
+    const home = join(arena, base, "home").?;
+    try Io.Dir.cwd().createDirPath(testing.io, join(arena, home, ".codex").?);
+    const toml = try std.fmt.allocPrint(arena, "[mcp_servers.node_repl]\ncommand = \"{s}\"\n", .{command});
+    try Io.Dir.cwd().writeFile(testing.io, .{
+        .sub_path = join(arena, home, ".codex/config.toml").?,
+        .data = toml,
+    });
+
+    var servers: std.json.ObjectMap = .empty;
+    var found = false;
+    const ok = merge(testing.io, arena, home, base, &servers, &found);
+    if (builtin.os.tag == .macos) {
+        try testing.expect(ok);
+        try testing.expect(found);
+        try testing.expect(servers.get(server_name) != null);
+    } else {
+        try testing.expect(!ok);
+        try testing.expect(!found);
+        try testing.expect(servers.get(server_name) == null);
+    }
 }
