@@ -538,7 +538,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             return true;
         }
         if (std.mem.eql(u8, path, "clear")) {
-            root.pending_image = null;
+            @import("vision_queue.zig").clear(root);
             try out.writeAll("cleared the staged image\n");
             try out.flush();
             return true;

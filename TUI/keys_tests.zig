@@ -336,3 +336,40 @@ test "Ctrl+R after an image prompt restores the attachment (#577)" {
     try std.testing.expectEqual(@as(usize, 1), m.images.items.len);
     try std.testing.expectEqualStrings(live, m.images.items[0]);
 }
+
+test "backspace on an empty composer detaches the last chip (#634)" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    m.attachImage("/tmp/a.png");
+    m.attachImage("/tmp/b.png");
+    _ = handle(&m, .backspace);
+    try std.testing.expectEqual(@as(usize, 1), m.images.items.len);
+    try std.testing.expectEqualStrings("/tmp/a.png", m.images.items[0]);
+    _ = handle(&m, .delete_to_start);
+    try std.testing.expectEqual(@as(usize, 0), m.images.items.len);
+}
+
+test "backspace with typed text does not drop chips (#634)" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.input.setValue("hi");
+    m.input.cursor = 2;
+    m.attachImage("/tmp/shot.png");
+    _ = handle(&m, .backspace);
+    try std.testing.expectEqualStrings("h", m.input.getValue());
+    try std.testing.expectEqual(@as(usize, 1), m.images.items.len);
+}
+
+test "Ctrl+U clears chips with the draft (#634)" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.input.setValue("keep");
+    m.input.cursor = m.input.getValue().len;
+    m.attachImage("/tmp/shot.png");
+    _ = handle(&m, .{ .ctrl = 'u' });
+    try std.testing.expectEqualStrings("", m.input.getValue());
+    try std.testing.expectEqual(@as(usize, 0), m.images.items.len);
+}
