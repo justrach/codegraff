@@ -450,6 +450,31 @@ pub fn addMark(g: Allocator, ms: *std.ArrayList([]const u8), s: []const u8) void
     ms.append(g, dup) catch g.free(dup);
 }
 
+/// Insert `[Image #N] ` at the cursor and mark the chip for accent redraw.
+pub fn insertImageChip(g: Allocator, b: *std.ArrayList(u8), cur: *usize, ms: *std.ArrayList([]const u8), n: u8) void {
+    var tmp: [20]u8 = undefined;
+    const marker = std.fmt.bufPrint(&tmp, "[Image #{d}] ", .{n}) catch "[Image] ";
+    b.insertSlice(g, cur.*, marker) catch {};
+    cur.* += marker.len;
+    const chip_len = if (marker.len > 0 and marker[marker.len - 1] == ' ') marker.len - 1 else marker.len;
+    addMark(g, ms, marker[0..chip_len]);
+}
+
+/// Highlight every `[Image]` / `[Image #N]` span already in the buffer.
+pub fn markImageChips(g: Allocator, ms: *std.ArrayList([]const u8), text: []const u8) void {
+    var i: usize = 0;
+    while (i < text.len) {
+        if (std.mem.startsWith(u8, text[i..], "[Image")) {
+            if (std.mem.indexOfScalarPos(u8, text, i, ']')) |close| {
+                addMark(g, ms, text[i .. close + 1]);
+                i = close + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+}
+
 test "cleanDroppedPath unescapes terminal drops" {
     const gpa = std.testing.allocator;
     const p = cleanDroppedPath(gpa, "", "/tmp/My\\ File.txt ") orelse return error.TestUnexpectedResult;
@@ -460,6 +485,22 @@ test "cleanDroppedPath unescapes terminal drops" {
     try std.testing.expectEqualStrings("/home/u/notes/a b.md", q);
     try std.testing.expect(cleanDroppedPath(gpa, "", "hello world") == null); // not absolute
     try std.testing.expect(cleanDroppedPath(gpa, "", "two\nlines") == null); // multi-line
+}
+
+test "insertImageChip writes a numbered marker" {
+    const gpa = std.testing.allocator;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    var marks: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (marks.items) |m| gpa.free(m);
+        marks.deinit(gpa);
+    }
+    var cur: usize = 0;
+    insertImageChip(gpa, &buf, &cur, &marks, 2);
+    try std.testing.expectEqualStrings("[Image #2] ", buf.items);
+    try std.testing.expectEqual(@as(usize, 1), marks.items.len);
+    try std.testing.expectEqualStrings("[Image #2]", marks.items[0]);
 }
 
 test "binaryFileExt flags binaries, passes text" {

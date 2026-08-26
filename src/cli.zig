@@ -21,6 +21,12 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.278
+    \\  • deleted composer screenshots are not sent: submit keeps [Image #N] / @[path] only (#634)
+    \\  • /image and /paste stay sticky; /image clear drops the whole queue
+    \\  • TUI backspace / Ctrl+U / overlay backspace detaches chips
+    \\  • Smolify is no longer a reserved core MCP; add it via `graff mcp add` if you want it
+    \\
     \\0.0.277
     \\  • MCP-inside-rlm + learnt slim: fat MCP results drop to id/title; comments fold to n+latest_author (ADR 0029)
     \\  • L (warm slim, --no-lean) 14.8s/31k/5 vs H 28s/112k/7 on SuperGrok grok-4.6

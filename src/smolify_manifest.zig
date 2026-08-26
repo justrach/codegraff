@@ -1,6 +1,6 @@
-//! Bundled Smolify tool metadata. Startup advertises these schemas without
-//! dialing the hosted MCP; the transport initializes only after an approved
-//! tool call. Refresh the generated JSON with update-smolify-manifest.py.
+//! Schema-gate fixture: a real 13-tool MCP manifest used by tool_schema_tests
+//! to measure #416 cost. Not a bundled server. Refresh with
+//! scripts/update-smolify-manifest.py.
 
 const std = @import("std");
 const mcp_protocol = @import("mcp_protocol.zig");
@@ -34,7 +34,7 @@ pub fn isPublicReadQualified(name: []const u8) bool {
     return std.mem.startsWith(u8, name, prefix) and isPublicReadName(name[prefix.len..]);
 }
 
-/// Append bundled Smolify tools to an MCP-compatible Tool list. Keeping this
+/// Append fixture tools to an MCP-compatible Tool list. Keeping this
 /// generic makes this leaf module independent from mcp.zig's Registry type.
 pub fn appendTools(
     comptime Tool: type,

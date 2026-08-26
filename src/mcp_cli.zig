@@ -49,9 +49,6 @@ pub fn countMcpServers(merged: mcp_config.Merged) usize {
     var n: usize = 0;
     var it = merged.servers.iterator();
     while (it.next()) |entry| {
-        // `smolify` is a reserved core server; configured entries cannot shadow
-        // its pinned endpoint and therefore need no consent.
-        if (std.mem.eql(u8, entry.key_ptr.*, "smolify")) continue;
         if (!trustedMcpEntry(entry.key_ptr.*, entry.value_ptr.*)) n += 1;
     }
     return n;
@@ -154,7 +151,6 @@ fn mcpCliUsage(w: *Io.Writer) !void {
         \\examples:
         \\  graff mcp add mobbin --url https://api.mobbin.com/mcp
         \\  graff mcp login mobbin
-        \\  graff mcp login smolify
         \\  graff mcp add context7 -- npx -y @upstash/context7-mcp
         \\  graff mcp add playwright -- npx -y @playwright/mcp
         \\  graff mcp add sentry --env SENTRY_AUTH_TOKEN=... -- npx -y @sentry/mcp-server
@@ -219,25 +215,20 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, en
             return;
         }
         const name = args[1];
-        const url = if (std.mem.eql(u8, name, "smolify"))
-            mcp.smolify_url
-        else url: {
-            // Global servers are loginable too — the merged set is the same one
-            // the session connects from.
-            const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path, home);
-            // Say which file is broken before claiming the server is missing:
-            // "not configured" for a server that IS configured, in a file that
-            // does not parse, sends the user looking in the wrong place.
-            try mcp_config.reportInvalid(merged, &out.interface, mcp_config_path, global_path, "", "");
-            try out.interface.flush();
-            if (!merged.found) std.process.fatal("mcp login: no MCP config; add the remote server first", .{});
-            const entry = merged.servers.get(name) orelse std.process.fatal("mcp login: server '{s}' is not configured", .{name});
-            if (entry != .object) std.process.fatal("mcp login: server '{s}' has invalid config", .{name});
-            const remote = entry.object.get("url") orelse std.process.fatal("mcp login: server '{s}' is not a remote URL server", .{name});
-            if (remote != .string or !mcp.validRemoteUrl(remote.string)) std.process.fatal("mcp login: server '{s}' has an invalid URL", .{name});
-            break :url remote.string;
-        };
-        try mcp_oauth.login(io, gpa, arena, home, name, url);
+        // Global servers are loginable too — the merged set is the same one
+        // the session connects from.
+        const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path, home);
+        // Say which file is broken before claiming the server is missing:
+        // "not configured" for a server that IS configured, in a file that
+        // does not parse, sends the user looking in the wrong place.
+        try mcp_config.reportInvalid(merged, &out.interface, mcp_config_path, global_path, "", "");
+        try out.interface.flush();
+        if (!merged.found) std.process.fatal("mcp login: no MCP config; add the remote server first", .{});
+        const entry = merged.servers.get(name) orelse std.process.fatal("mcp login: server '{s}' is not configured", .{name});
+        if (entry != .object) std.process.fatal("mcp login: server '{s}' has invalid config", .{name});
+        const remote = entry.object.get("url") orelse std.process.fatal("mcp login: server '{s}' is not a remote URL server", .{name});
+        if (remote != .string or !mcp.validRemoteUrl(remote.string)) std.process.fatal("mcp login: server '{s}' has an invalid URL", .{name});
+        try mcp_oauth.login(io, gpa, arena, home, name, remote.string);
         return;
     }
 
@@ -253,7 +244,6 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, en
     }
 
     const name = args[1];
-    if (std.mem.eql(u8, name, "smolify")) std.process.fatal("mcp add: 'smolify' is a reserved core server", .{});
     if (std.mem.eql(u8, args[2], "--url") or std.mem.startsWith(u8, args[2], "--url=")) {
         const url = if (std.mem.eql(u8, args[2], "--url")) blk: {
             if (args.len < 4) std.process.fatal("mcp add: --url needs an HTTP(S) URL", .{});

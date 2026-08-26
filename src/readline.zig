@@ -45,6 +45,8 @@ const delRange = input_util.delRange;
 const prevWord = input_util.prevWord;
 const nextWord = input_util.nextWord;
 const addMark = input_util.addMark;
+const insertImageChip = input_util.insertImageChip;
+const markImageChips = input_util.markImageChips;
 const util = @import("util.zig");
 
 const main_mod = @import("main.zig");
@@ -287,10 +289,8 @@ pub fn readLine(
                         const staged = stageImagePath(root, grab.path);
                         vision.tracePasteResult(root, grab.flavor, staged); // #350: every paste leaves a receipt
                         if (staged.isOk()) {
-                            const marker = "[Image] ";
-                            buf.insertSlice(gpa, cur, marker) catch {};
-                            cur += marker.len;
-                            addMark(gpa, &marks, "[Image]");
+                            @import("vision_queue.zig").markLastComposer(root);
+                            insertImageChip(gpa, buf, &cur, &marks, root.pending_image_len);
                             redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
                         } else {
                             // No `.no_vision` arm here: clipboardPasteSource
@@ -486,10 +486,8 @@ pub fn readLine(
                                     }
                                 }
                                 if (staged) {
-                                    const marker = "[Image] ";
-                                    buf.insertSlice(gpa, cur, marker) catch {};
-                                    cur += marker.len;
-                                    addMark(gpa, &marks, "[Image]");
+                                    @import("vision_queue.zig").markLastComposer(root);
+                                    insertImageChip(gpa, buf, &cur, &marks, root.pending_image_len);
                                 } else {
                                     buf.insertSlice(gpa, cur, dropped.?) catch {};
                                     cur += dropped.?.len;
@@ -595,5 +593,5 @@ fn replayStep(
     setLine(gpa, buf, step.text);
     cur.* = buf.items.len;
     root.pending_image = step.image;
-    if (step.image != null) addMark(gpa, marks, "[Image]"); // re-highlight the marker the replayed text carries
+    if (step.image != null) markImageChips(gpa, marks, buf.items);
 }

@@ -26,7 +26,6 @@ const shutdown_trace = @import("shutdown_trace.zig"); // #364: teardown phase st
 const mcp_rpc = @import("mcp_rpc.zig");
 const mcp_cache = @import("mcp_cache.zig");
 const util = @import("util.zig");
-const smolify_manifest = @import("smolify_manifest.zig");
 const vision = @import("vision.zig"); // #249: MCP image results become staged vision blocks
 const renderContent = @import("mcp_content.zig").renderContent;
 
@@ -46,7 +45,6 @@ pub const Tool = struct {
     description: []const u8,
     input_schema: Value, // arena-owned parsed JSON Schema
 };
-pub const smolify_url = "https://app.smol.ly/mcp";
 
 pub const Registry = struct {
     gpa: Allocator,
@@ -127,7 +125,6 @@ pub const Registry = struct {
     /// (no tool calls in flight).
     pub fn addServer(reg: *Registry, name: []const u8, command: []const u8, args: []const []const u8) !usize {
         for (reg.servers) |server| if (std.mem.eql(u8, server.name, name)) return error.McpServerAlreadyConnected;
-        if (std.mem.eql(u8, name, "smolify")) return error.ReservedMcpServerName;
         const a = reg.arena();
         var servers: std.ArrayList(*Server) = .empty;
         try servers.appendSlice(a, reg.servers);
@@ -151,7 +148,6 @@ pub const Registry = struct {
     /// registry storage and sent on every request (for example Authorization).
     pub fn addRemoteServer(reg: *Registry, name: []const u8, url: []const u8, headers: []const std.http.Header) !usize {
         for (reg.servers) |server| if (std.mem.eql(u8, server.name, name)) return error.McpServerAlreadyConnected;
-        if (std.mem.eql(u8, name, "smolify") and (!std.mem.eql(u8, url, smolify_url) or headers.len != 0)) return error.ReservedMcpServerName;
         const a = reg.arena();
         var servers: std.ArrayList(*Server) = .empty;
         try servers.appendSlice(a, reg.servers);
@@ -171,39 +167,6 @@ pub const Registry = struct {
         reg.servers = try a.dupe(*Server, servers.items);
         reg.tools = try a.dupe(Tool, tools.items);
         return tools.items.len - before;
-    }
-
-    /// Advertise bundled Smolify schemas without dialing the hosted endpoint.
-    /// The first approved tool call performs the MCP handshake. Default mode
-    /// is anonymous and public-read-only; full access also loads OAuth state.
-    pub fn connectSmolify(reg: *Registry, full_access: bool) !usize {
-        for (reg.servers) |server| if (std.mem.eql(u8, server.name, "smolify")) return 0;
-        const a = reg.arena();
-        var servers: std.ArrayList(*Server) = .empty;
-        try servers.appendSlice(a, reg.servers);
-        var tools: std.ArrayList(Tool) = .empty;
-        try tools.appendSlice(a, reg.tools);
-        const server = try a.create(Server);
-        server.* = .{
-            .name = "smolify",
-            .transport = .{ .http = .{
-                .url = smolify_url,
-                .client = .{ .allocator = reg.gpa, .io = reg.io },
-                .oauth_home = if (full_access and reg.home.len != 0) try a.dupe(u8, reg.home) else null,
-            } },
-            .initialized = false,
-            .protocol_version = "on-demand",
-        };
-        var registry_owns_server = false;
-        errdefer if (!registry_owns_server) deinitServer(server, reg.io, .init(reg.io, mcp_teardown.teardown_grace)); // fresh window: not the exit path (#305)
-        const added = try smolify_manifest.appendTools(Tool, a, &tools, servers.items.len, full_access);
-        try servers.append(a, server);
-        const new_servers = try a.dupe(*Server, servers.items);
-        const new_tools = try a.dupe(Tool, tools.items);
-        reg.servers = new_servers;
-        reg.tools = new_tools;
-        registry_owns_server = true;
-        return added;
     }
 
     /// Connect any configured server not already running — the in-session
@@ -229,7 +192,6 @@ pub const Registry = struct {
         var it = merged.servers.iterator();
         while (it.next()) |entry| {
             const name = entry.key_ptr.*;
-            if (std.mem.eql(u8, name, "smolify")) continue;
             if (entry.value_ptr.* != .object) continue;
             // Already connected (auto-activated muonry, or a prior /mcp trust)? skip.
             var present = false;
@@ -257,7 +219,6 @@ pub const Registry = struct {
         var n: usize = 0;
         var it = merged.servers.iterator();
         while (it.next()) |entry| {
-            if (std.mem.eql(u8, entry.key_ptr.*, "smolify")) continue;
             if (entry.value_ptr.* != .object) continue;
             var present = false;
             for (reg.servers) |s| if (std.mem.eql(u8, s.name, entry.key_ptr.*)) {

@@ -35,8 +35,6 @@ global one with the same name. Their tools reach the model as
   are literal strings - there is no `${VAR}` expansion.
 - Remote server: `url`, Streamable HTTP. HTTPS is required except for
   localhost, and `headers` is for static tokens.
-- `smolify` is a reserved core server; a workspace entry cannot shadow its
-  pinned endpoint.
 - Invalid JSON in one file means zero servers load from THAT file; the other one
   still loads. If tools vanished after an edit, check the file parses first.
 - `~/.mcpconfig.json` is not read - that path belongs to other MCP clients.

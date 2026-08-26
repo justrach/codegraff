@@ -18,7 +18,6 @@ const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp = @import("mcp.zig");
-const smolify_manifest = @import("smolify_manifest.zig");
 
 const main_mod = @import("main.zig");
 // Only the settings-file location, never the approval session (#422 ratchet).
@@ -79,10 +78,6 @@ pub const mcp_notes = [_]McpNote{
         .server = "muonry",
         .note = "The muonry MCP server is connected (mcp__muonry__* tools). SEARCH ORDER: the native codedb tool is free and indexed — always try it first (context/around/callpath/list_dir/status); use mcp__muonry__search or faster_search only when codedb can't answer (raw literal/regex content matches, non-code or non-indexed files) — muonry is metered. Prefer mcp__muonry__read (mode=outline first, then symbol) over read_file for navigating large code files, and mcp__muonry__batch to run several independent reads/searches/edits in one round-trip. Keep edits on the native edit_file/write_file tools (/rewind-tracked; the cwd and explicit-external-target rules above apply). These tools are accelerators, not requirements: if an mcp__muonry__ call fails, fall back to read_file/codedb/bash and continue.",
     },
-    .{
-        .server = "smolify",
-        .note = "The core Smolify MCP is available on demand (mcp__smolify__* tools). Its default catalog is anonymous and public-read-only; the network handshake waits for an approved call. Use it to discover/search public API documentation for unfamiliar libraries, while preferring local code and docs when they answer the question.",
-    },
 };
 
 /// The metered code-intelligence companion. It first shipped as `muonry` and
@@ -127,7 +122,6 @@ pub fn companionTrusted(tool: []const u8) bool {
 /// trust notwithstanding). Mirrors the server's readOnlyHint annotations;
 /// batch is read-only iff every op inside it is.
 pub fn companionReadOnly(tool: []const u8, input: Value) bool {
-    if (smolify_manifest.isPublicReadQualified(tool)) return true;
     const t = companionToolName(tool) orelse return false;
     if (companionToolReadOnly(t)) return true;
     if (!std.mem.eql(u8, t, "batch")) return false;
@@ -308,8 +302,7 @@ test "companionReadOnly: the plan-mode classifier mirrors readOnlyHint" {
     try std.testing.expect(!companionReadOnly("mcp__codedbpro__memo", none));
     try std.testing.expect(!companionReadOnly("mcp__other__read", none)); // only the trusted server
     try std.testing.expect(!companionReadOnly("read_file", none));
-    try std.testing.expect(companionReadOnly("mcp__smolify__search_docs", none));
-    try std.testing.expect(!companionReadOnly("mcp__smolify__publish_docs", none));
+    try std.testing.expect(!companionReadOnly("mcp__smolify__search_docs", none));
     // batch: read-only iff every op is
     try std.testing.expect(companionReadOnly("mcp__codedbpro__batch", parse(a,
         \\{"ops":[{"tool":"read","args":{}},{"tool":"search","args":{}}]}

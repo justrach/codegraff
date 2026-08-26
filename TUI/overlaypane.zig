@@ -220,7 +220,7 @@ const help_body =
     \\  Ctrl+P         command palette
     \\  Shift+Tab      Normal → Plan → Always-approve
     \\  click / ← →    collapse / expand tools
-    \\  hover [Image]  preview  ·  y copy  ·  Enter open
+    \\  hover [Image]  preview  ·  backspace detach  ·  y copy  ·  Enter open
     \\  Shift+← →      prev / next user turn
     \\  Ctrl+J / K     scroll one line
     \\  Ctrl+N N       new session
