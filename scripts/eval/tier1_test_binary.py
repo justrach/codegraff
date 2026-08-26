@@ -25,6 +25,8 @@ means none of them. mtime only breaks ties.
 
   resolve [--filter TEXT]...  print the artifact path for that build
   count   [--filter TEXT]...  run that artifact and print how many tests it holds
+  scan                        count named + anonymous tests from the unfiltered
+                              artifact without executing it (#641)
 
 Both exit non-zero with a reason on stderr rather than guess. Neither builds:
 the caller runs `zig build test` (with the same filters) first, so a compile
@@ -44,6 +46,7 @@ SRC = ROOT / "src"
 CACHE = ROOT / ".zig-cache" / "o"
 
 TEST_NAME = re.compile(r'^test "((?:[^"\\]|\\.)*)"', re.M)
+ANON_TEST = re.compile(r"(?m)^test \{")
 ALL_PASSED = re.compile(r"^All (\d+) tests passed\.$", re.M)
 MIXED = re.compile(r"^(\d+) passed; (\d+) skipped; (\d+) failed\.$", re.M)
 
@@ -175,6 +178,27 @@ def select(filters: list[str], declared: dict[str, str] | None = None) -> Select
     return best
 
 
+def anonymous_tests() -> int:
+    """`test {}` blocks in src/*.zig. Reachability already requires every
+    test-bearing file to be compiled in; adding the named-in-binary count
+    reproduces the suite total without executing the artifact (#641)."""
+    total = 0
+    for path in sorted(SRC.glob("*.zig")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        total += len(ANON_TEST.findall(text))
+    return total
+
+
+def scan_count(filters: list[str] | None = None) -> int:
+    """Suite size from the artifact's named tests + source anonymous tests."""
+    chosen = select(filters or [])
+    extra = anonymous_tests() if not filters else 0
+    return len(chosen.present) + extra
+
+
 def artifact_count(path: pathlib.Path) -> tuple[int, str]:
     """Run the artifact and read its own tally. Raises if it does not pass."""
     proc = subprocess.run(
@@ -201,7 +225,7 @@ def artifact_count(path: pathlib.Path) -> tuple[int, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ("resolve", "count"):
+    for name in ("resolve", "count", "scan"):
         cmd = sub.add_parser(name)
         cmd.add_argument(
             "--filter",
@@ -234,6 +258,11 @@ def main() -> int:
 
     if args.cmd == "resolve":
         print(chosen.path)
+        return 0
+
+    if args.cmd == "scan":
+        extra = anonymous_tests() if not args.filter else 0
+        print(len(chosen.present) + extra)
         return 0
 
     try:

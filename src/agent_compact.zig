@@ -136,14 +136,21 @@ pub fn compact(self: *Agent) anyerror!usize {
     const live_context_tokens = self.last_context_tokens;
     const live_context_local_tokens = self.context_local_tokens;
     const live_effective_context = self.effectiveContextTokens();
-    const recent_start = recentContextStart(live_messages.items, recent_context_tokens);
-    compact_cut.noteCut(self.tracer, live_messages.items, recent_start);
-    // #581: pinning the live prompt at index 0 means there is no completed
-    // prefix to summarize. Dropping it would replace current images with text.
-    if (recent_start == 0) {
-        if (!main_mod.json_mode) try self.say("[compaction skipped: the current prompt's attachments must stay verbatim]\n", .{});
-        return error.ActivePromptPinned;
+    const plan = compact_cut.pinDegrade(live_messages.items, recent_context_tokens, self.compact_pin_degraded);
+    compact_cut.noteCut(self.tracer, live_messages.items, plan.start);
+    // #581 residual: a pin that already exceeds the keep budget cannot be
+    // summarized. Announce once per unresolved turn, then stay quiet.
+    switch (plan.action) {
+        .silent => return error.ActivePromptPinned,
+        .announce => {
+            if (!main_mod.json_mode) try self.say("[compaction skipped: the current prompt's attachments must stay verbatim]\n", .{});
+            self.compact_pin_degraded = true;
+            return error.ActivePromptPinned;
+        },
+        .proceed => {},
     }
+    const recent_start = plan.start;
+    if (plan.pin_over_budget) self.compact_pin_degraded = true;
     const recent_messages = live_messages.items[recent_start..];
     var summary_messages = std.json.Array.init(compact_arena);
     try summary_messages.ensureTotalCapacity(recent_start);
@@ -510,6 +517,8 @@ pub fn repeatedEmptySummaryFailure(self: *Agent, err: anyerror) bool {
 }
 
 pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
+    if (compact_cut.lastIsResolved(self.messages.items)) self.compact_pin_degraded = false;
+    if (self.compact_pin_degraded and !trim_on_fail) return;
     if (self.compact()) |_| {
         self.compact_transport_failures = 0;
         return;

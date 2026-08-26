@@ -77,6 +77,7 @@ That points `core.hooksPath` at `.githooks/`, whose `pre-push` runs **tier 1** o
 ```bash
 scripts/eval-tier1.sh                 # run it by hand
 scripts/eval-tier1.sh --only sdk      # rerun one check
+scripts/eval-tier1.sh --only tui,tuiguard  # a comma-separated list (#641)
 scripts/eval-tier1.sh --list          # the check names
 git push --no-verify                  # emergency skip (GRAFF_SKIP_PREPUSH=1 also works)
 ```
