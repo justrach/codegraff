@@ -527,5 +527,5 @@ test "codedb JSON read is basename plus mode, not the envelope" {
         .text = "{\"ok\":true,\"file\":\"/Users/rachpradhan/codedb/docs/architecture.md\",\"mode\":\"section\",\"content\":\"a\\nb\\nc\"}",
         .is_error = false,
     });
-    try std.testing.expectEqualStrings("  ✓ read  architecture.md  section · 3 lines\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("  ✓ read  architecture.md  3 lines\n", aw.writer.buffered());
 }
