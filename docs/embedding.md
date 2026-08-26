@@ -103,8 +103,16 @@ import { Harness } from "@codegraff/sdk";
 
 const session = Harness.init({ yolo: true, model: "gpt-5.5" }).session();
 console.log(await session.ask("what files are here?"));
+console.log(await session.ask({
+  prompt: "read the code in this image",
+  images: [{ type: "image_url", url: "https://example.com/code.png" }],
+}));
 await session.close();
 ```
+
+The same `images` option works through edge-safe `RemoteHarness`: HTTP(S)
+URLs and base64 payloads stay native vision parts across `graff serve` rather
+than being flattened into prompt text.
 
 ## Embedder mode
 

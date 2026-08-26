@@ -81,9 +81,17 @@ export interface HarnessOptions {
   args?: string[];
 }
 
+/** Native image input for a user turn. URLs stay URLs on every provider;
+ *  base64 is converted to that provider's image-content shape by Graff. */
+export type ImageInput =
+  | { type: "image_url"; url: string }
+  | { type: "image_base64"; mediaType: string; data: string };
+
 export interface ChatOptions {
   /** User prompt for this turn. */
   prompt: string;
+  /** Native vision parts (max 16); never flattened into prompt text. */
+  images?: ImageInput[];
   /** Run this turn in isolated, read-only review mode. */
   review?: boolean;
   /** Abort the turn mid-flight: on abort the SDK writes {"type":"cancel"}
@@ -128,6 +136,8 @@ export interface AskResult {
 export interface RunAgentOptions extends HarnessOptions {
   /** User prompt to send to the agent. */
   prompt: string;
+  /** Native vision parts (max 16); never flattened into prompt text. */
+  images?: ImageInput[];
 }
 
 function spawnArgs(o: HarnessOptions): string[] {
@@ -382,6 +392,10 @@ export class Harness {
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {
     const prompt = typeof input === "string" ? input : input.prompt;
     const type = typeof input === "string" || !input.review ? "user" : "review";
+    const images = typeof input === "string" ? undefined : input.images?.map((image) =>
+      image.type === "image_base64"
+        ? { type: image.type, media_type: image.mediaType, data: image.data }
+        : image);
     const signal = typeof input === "string" ? undefined : input.signal;
     // Already aborted: send nothing — a cancel written before the turn's
     // first line would be cleared again when the turn starts.
@@ -390,7 +404,7 @@ export class Harness {
     let aborted = false;
     const onAbort = () => { if (aborted) return; aborted = true; this.cancel(); };
     try {
-      this.proc.stdin.write(JSON.stringify({ type, text: prompt }) + "\n");
+      this.proc.stdin.write(JSON.stringify({ type, text: prompt, ...(images?.length ? { images } : {}) }) + "\n");
       if (signal) {
         signal.addEventListener("abort", onAbort, { once: true });
         if (signal.aborted) onAbort(); // aborted between the entry check and here
@@ -654,7 +668,7 @@ export class HarnessSession {
 export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<Event> {
   const h = new Harness(opts);
   try {
-    yield* h.chat({ prompt: opts.prompt });
+    yield* h.chat({ prompt: opts.prompt, images: opts.images });
   } finally {
     await h.close();
   }

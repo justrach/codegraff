@@ -70,11 +70,21 @@ Edge / serverless runtimes can't spawn a subprocess. Run `graff serve` somewhere
 and drive it over HTTP (stdlib `urllib` only):
 
 ```python
+import base64
+from pathlib import Path
 from harness_sdk import RemoteHarness
 
 with RemoteHarness("http://127.0.0.1:8787", token="...", yolo=True) as h:
     print(h.ask("what is 2+2?"))
+    png = base64.b64encode(Path("code.png").read_bytes()).decode()
+    print(h.ask("read the code in this image", images=[
+        {"type": "image_base64", "media_type": "image/png", "data": png},
+    ]))
 ```
+
+Remote images ride native provider vision blocks. Use `image_url` with an
+HTTP(S) `url`, or `image_base64` with `media_type` and `data`; they are never
+flattened into prompt text.
 
 ## Links
 

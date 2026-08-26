@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { Harness } from "./harness.ts";
+import { Harness, runAgent } from "./harness.ts";
 
 const binary = join(import.meta.dir, "test-fixtures", "fake-graff.mjs");
 const live: Harness[] = [];
@@ -57,6 +57,36 @@ describe("Harness transport", () => {
       metadataComplete: true,
     });
     expect(await h.ask("plain")).toBe("user:plain");
+  });
+
+  test("serializes native URL and base64 image parts", async () => {
+    const h = harness();
+    const result = await h.ask({
+      prompt: "images",
+      images: [
+        { type: "image_url", url: "https://images.test/code.png" },
+        { type: "image_base64", mediaType: "image/png", data: "aGVsbG8=" },
+      ],
+    });
+    expect(JSON.parse(result)).toEqual([
+      { type: "image_url", url: "https://images.test/code.png" },
+      { type: "image_base64", media_type: "image/png", data: "aGVsbG8=" },
+    ]);
+  });
+
+  test("one-shot runAgent preserves native image parts", async () => {
+    let result = "";
+    for await (const event of runAgent({
+      binary,
+      env: { ...process.env, GRAFF_NO_TELEMETRY: "1" },
+      prompt: "images",
+      images: [{ type: "image_url", url: "https://images.test/one-shot.png" }],
+    })) {
+      if (event.type === "turn") result = event.text;
+    }
+    expect(JSON.parse(result)).toEqual([
+      { type: "image_url", url: "https://images.test/one-shot.png" },
+    ]);
   });
 
   test("answer bypasses the operation lock during ask_user", async () => {

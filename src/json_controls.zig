@@ -10,8 +10,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const Agent = @import("agent.zig").Agent;
+const json_inbox = @import("json_inbox.zig");
 const main_mod = @import("main.zig");
 const side_question = @import("side_question.zig");
+const remote_images = @import("remote_images.zig");
 
 /// `{"type":"btw","text":"…"}` — #415's side question, the GUI's half of the
 /// feature. True when the request WAS a side question and is now fully
@@ -43,6 +45,28 @@ pub fn applyToolKnobs(obj: std.json.ObjectMap) void {
     if (obj.get("dedupeToolCalls") orelse obj.get("dedupe_tool_calls")) |v| {
         if (v == .bool) main_mod.dedupe_tool_calls = v.bool;
     }
+}
+
+/// Turn-scoped JSON options: tool ceilings plus native image parts. False
+/// means image validation already emitted the request error.
+pub fn applyTurnOptions(root: *Agent, obj: std.json.ObjectMap) bool {
+    if (!remote_images.stage(root, obj)) return false;
+    applyToolKnobs(obj);
+    return true;
+}
+
+/// Claim the dequeued JSON turn, then validate and stage all of its options.
+/// A rejected request releases inbox ownership before the next request.
+pub fn beginTurn(root: *Agent, obj: std.json.ObjectMap) bool {
+    if (!json_inbox.beginTurn(root)) return false;
+    if (applyTurnOptions(root, obj)) return true;
+    json_inbox.endTurn();
+    return false;
+}
+
+pub fn rejectTurn(root: *Agent, message: []const u8) void {
+    root.emit(.{ .type = "error", .message = message });
+    json_inbox.endTurn();
 }
 
 test "applyToolKnobs reads both spellings and ignores junk" {

@@ -34,6 +34,7 @@ pub const fmtBytes = clip.fmtMb;
 pub const PendingImage = struct {
     media_type: []const u8,
     b64: []const u8,
+    url: []const u8 = "",
     label: []const u8,
     /// Ctrl-V / drop inserted a composer chip. Submit keeps the payload only
     /// while that chip (or an `@[path]`) is still in the prompt (#634).
@@ -100,20 +101,27 @@ pub fn imageMessages(arena: Allocator, kind: Provider.Kind, text: []const u8, im
             .anthropic => {
                 try ib.put(arena, "type", .{ .string = "image" });
                 var src: std.json.ObjectMap = .empty;
-                try src.put(arena, "type", .{ .string = "base64" });
-                try src.put(arena, "media_type", .{ .string = img.media_type });
-                try src.put(arena, "data", .{ .string = img.b64 });
+                if (img.url.len > 0) {
+                    try src.put(arena, "type", .{ .string = "url" });
+                    try src.put(arena, "url", .{ .string = img.url });
+                } else {
+                    try src.put(arena, "type", .{ .string = "base64" });
+                    try src.put(arena, "media_type", .{ .string = img.media_type });
+                    try src.put(arena, "data", .{ .string = img.b64 });
+                }
                 try ib.put(arena, "source", .{ .object = src });
             },
             .openai => {
                 try ib.put(arena, "type", .{ .string = "image_url" });
                 var iu: std.json.ObjectMap = .empty;
-                try iu.put(arena, "url", .{ .string = try std.fmt.allocPrint(arena, "data:{s};base64,{s}", .{ img.media_type, img.b64 }) });
+                const url = if (img.url.len > 0) img.url else try std.fmt.allocPrint(arena, "data:{s};base64,{s}", .{ img.media_type, img.b64 });
+                try iu.put(arena, "url", .{ .string = url });
                 try ib.put(arena, "image_url", .{ .object = iu });
             },
             .responses => {
                 try ib.put(arena, "type", .{ .string = "input_image" });
-                try ib.put(arena, "image_url", .{ .string = try std.fmt.allocPrint(arena, "data:{s};base64,{s}", .{ img.media_type, img.b64 }) });
+                const url = if (img.url.len > 0) img.url else try std.fmt.allocPrint(arena, "data:{s};base64,{s}", .{ img.media_type, img.b64 });
+                try ib.put(arena, "image_url", .{ .string = url });
             },
         }
         try content.append(.{ .object = ib });

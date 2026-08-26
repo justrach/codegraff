@@ -119,7 +119,7 @@ fn selectForPrompt(imgs: []const PendingImage, text: []const u8, keep: *[cap]Pen
         if (!want) continue;
         var dup = false;
         for (keep[0..n]) |k| {
-            if (std.mem.eql(u8, k.b64, img.b64)) {
+            if (std.mem.eql(u8, k.b64, img.b64) and std.mem.eql(u8, k.url, img.url)) {
                 dup = true;
                 break;
             }
@@ -228,6 +228,60 @@ test "ask_user images become follow-up vision blocks (#580)" {
     try std.testing.expectEqualStrings("input_image", content[2].object.get("type").?.string);
     try std.testing.expect(std.mem.indexOf(u8, content[1].object.get("image_url").?.string, "AAA") != null);
     try std.testing.expect(std.mem.indexOf(u8, content[2].object.get("image_url").?.string, "BBB") != null);
+}
+
+test "remote URL and base64 parts become native provider image blocks (#615)" {
+    const a = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(a);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const request = try std.json.parseFromSliceLeaky(Value, arena,
+        \\{"type":"user","text":"read it","images":[
+        \\ {"type":"image_url","url":"https://images.test/code.png"},
+        \\ {"type":"image_base64","mediaType":"image/png","data":"aGVsbG8="}]}
+    , .{});
+    const remote = @import("remote_images.zig");
+
+    for ([_]@import("provider.zig").Provider.Kind{ .responses, .openai, .anthropic }) |kind| {
+        var root = testAgent(arena);
+        root.provider.kind = kind;
+        try std.testing.expect(remote.stage(&root, request.object));
+        const msg = try consumePromptImages(arena, &root, "read it");
+        const content = msg.object.get("content").?.array.items;
+        try std.testing.expectEqual(@as(usize, 3), content.len);
+        switch (kind) {
+            .responses => {
+                try std.testing.expectEqualStrings("https://images.test/code.png", content[1].object.get("image_url").?.string);
+                try std.testing.expectEqualStrings("data:image/png;base64,aGVsbG8=", content[2].object.get("image_url").?.string);
+            },
+            .openai => {
+                try std.testing.expectEqualStrings("https://images.test/code.png", content[1].object.get("image_url").?.object.get("url").?.string);
+                try std.testing.expectEqualStrings("data:image/png;base64,aGVsbG8=", content[2].object.get("image_url").?.object.get("url").?.string);
+            },
+            .anthropic => {
+                const url_source = content[1].object.get("source").?.object;
+                const b64_source = content[2].object.get("source").?.object;
+                try std.testing.expectEqualStrings("url", url_source.get("type").?.string);
+                try std.testing.expectEqualStrings("https://images.test/code.png", url_source.get("url").?.string);
+                try std.testing.expectEqualStrings("base64", b64_source.get("type").?.string);
+                try std.testing.expectEqualStrings("aGVsbG8=", b64_source.get("data").?.string);
+            },
+        }
+    }
+}
+
+test "remote image validation rejects malformed data before staging (#615)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var root = testAgent(arena);
+    const bad = try std.json.parseFromSliceLeaky(Value, arena,
+        \\{"type":"user","text":"read it","images":[
+        \\ {"type":"image_url","url":"https://images.test/valid.png"},
+        \\ {"type":"image_base64","media_type":"image/png","data":"!!!!"}]}
+    , .{});
+    try std.testing.expect(!@import("remote_images.zig").stage(&root, bad.object));
+    try std.testing.expectEqual(@as(u8, 0), root.pending_image_len);
 }
 
 test "placeholder-only ask_user reply gets an explicit fallback" {

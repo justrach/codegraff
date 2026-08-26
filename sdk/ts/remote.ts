@@ -92,8 +92,16 @@ export interface SessionInfo {
   last_seq: number;
 }
 
+/** Native image input for a user turn. URLs stay URLs on every provider;
+ *  base64 is converted to that provider's image-content shape by Graff. */
+export type ImageInput =
+  | { type: "image_url"; url: string }
+  | { type: "image_base64"; mediaType: string; data: string };
+
 export interface ChatOptions {
   prompt: string;
+  /** Native vision parts (max 16); never flattened into prompt text. */
+  images?: ImageInput[];
   review?: boolean;
   /** Replay persisted events with seq >= from before this turn's live ones. */
   from?: number;
@@ -139,6 +147,8 @@ export interface AskResult {
 
 export interface RunAgentRemoteOptions extends RemoteOptions {
   prompt: string;
+  /** Native vision parts (max 16); never flattened into prompt text. */
+  images?: ImageInput[];
 }
 
 /** Parse a streaming NDJSON response body into events. */
@@ -299,6 +309,10 @@ export class RemoteHarness {
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {
     const prompt = typeof input === "string" ? input : input.prompt;
     const type = typeof input === "string" || !input.review ? "user" : "review";
+    const images = typeof input === "string" ? undefined : input.images?.map((image) =>
+      image.type === "image_base64"
+        ? { type: image.type, media_type: image.mediaType, data: image.data }
+        : image);
     const from = typeof input === "string" ? undefined : input.from;
     const signal = typeof input === "string" ? undefined : input.signal;
     signal?.throwIfAborted();
@@ -311,7 +325,7 @@ export class RemoteHarness {
       // cancel first, receive 409, and leave the following turn running.
       const id = await this.sessionId;
       const q = from === undefined ? "" : `?from=${from}`;
-      const res = await this.req("POST", `/v1/sessions/${id}${q}`, { type, text: prompt });
+      const res = await this.req("POST", `/v1/sessions/${id}${q}`, { type, text: prompt, ...(images?.length ? { images } : {}) });
       if (signal) {
         signal.addEventListener("abort", onAbort, { once: true });
         if (signal.aborted) onAbort();
@@ -501,7 +515,7 @@ export class RemoteHarness {
 export async function* runAgentRemote(opts: RunAgentRemoteOptions): AsyncGenerator<Event> {
   const h = new RemoteHarness(opts);
   try {
-    yield* h.chat({ prompt: opts.prompt });
+    yield* h.chat({ prompt: opts.prompt, images: opts.images });
   } finally {
     await h.close();
   }
