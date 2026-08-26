@@ -77,7 +77,7 @@ def declared_tests() -> dict[str, str]:
     return out
 
 
-def foreign_tests(declared: dict[str, str]) -> set[str]:
+def foreign_tests(declared: dict[str, str]) -> dict[str, str]:
     """Test names that belong to a DIFFERENT test root than src/.
 
     The name set alone cannot tell the src floor build (a filter matching
@@ -89,13 +89,15 @@ def foreign_tests(declared: dict[str, str]) -> set[str]:
     Any name declared outside src/ is proof the artifact is not the src root,
     whatever the filters were, so it settles that tie the other way.
     """
-    out: set[str] = set()
+    out: dict[str, str] = {}
     for path in sorted(ROOT.rglob("*.zig")):
         rel = path.relative_to(ROOT)
         if rel.parts[0] in ("src", "vendor", ".zig-cache", "zig-out"):
             continue
-        out.update(_names_in(path))
-    return out - set(declared)
+        for name in _names_in(path):
+            if name not in declared:
+                out[name] = path.name
+    return out
 
 
 class Selection:
@@ -150,6 +152,24 @@ def names_in_blob(blob: bytes, names: dict[str, str] | set[str] | list[str]) -> 
             hit = wanted.get(part[len(prefix) :])
         if hit is not None:
             present.add(hit)
+    # Zig 0.17 may pool adjacent test-name strings into one NUL-delimited blob:
+    # `module.test.firstmodule.test.second`. The exact-part pass above then
+    # sees neither. A fully-qualified fallback avoids false positives from a
+    # name merely mentioned elsewhere in the binary, while one compiled regex
+    # scans the artifact once instead of doing N names × 130 MiB (#641).
+    if isinstance(names, dict) and len(present) < len(names):
+        qualified: dict[bytes, str] = {}
+        for name, source in names.items():
+            if name in present:
+                continue
+            module = pathlib.Path(source).stem
+            qualified[f"{module}.test.{name}".encode("utf-8")] = name
+        if qualified:
+            pooled = re.compile(
+                b"(?:" + b"|".join(re.escape(p) for p in sorted(qualified, key=len, reverse=True)) + b")"
+            )
+            for match in pooled.finditer(blob):
+                present.add(qualified[match.group(0)])
     return present
 
 
