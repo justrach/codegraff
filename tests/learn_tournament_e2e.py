@@ -23,7 +23,7 @@ from learn_tournament_fixtures import MUTATOR
 
 from learn_e2e import (
     GradeCapture,
-    invoke,
+    invoke as _invoke,
     json_bytes,
     raw_sha256,
     run_id_from,
@@ -33,6 +33,13 @@ from learn_e2e import (
     write_posix_shebang,
     write_private,
 )
+
+# Four primary evaluators rendezvous for up to TOURNAMENT_BARRIER_DEADLINE
+# seconds (default 120). The parent must outlive that wait or a loaded CI
+# runner kills `graff learn run` with TimeoutExpired while peers are still
+# starting (#467).
+def invoke(*args, timeout: int = 180, **kwargs):
+    return _invoke(*args, timeout=timeout, **kwargs)
 
 
 EVALUATOR = r'''import hashlib, json, os, pathlib, sys, time

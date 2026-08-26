@@ -184,7 +184,7 @@ def write_interpreter_shim(tools: Path, name: str, python: Path, body: str) -> t
     return program, script
 
 
-def invoke(graff: Path, workspace: Path, env: dict[str, str], *args: str, succeeds: bool = True) -> subprocess.CompletedProcess[str]:
+def invoke(graff: Path, workspace: Path, env: dict[str, str], *args: str, succeeds: bool = True, timeout: int = 60) -> subprocess.CompletedProcess[str]:
     privacy_args = ["--learning-privacy", "aggregate"] if (args and (args[0] == "submit" or "--submit" in args)) else []
     result = subprocess.run(
         [str(graff), *privacy_args, "learn", *args],
@@ -193,7 +193,7 @@ def invoke(graff: Path, workspace: Path, env: dict[str, str], *args: str, succee
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        timeout=60,
+        timeout=timeout,
         check=False,
     )
     if succeeds and result.returncode != 0:
