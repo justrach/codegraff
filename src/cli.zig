@@ -271,6 +271,7 @@ pub const usage_text =
     \\  --until <0-100>                 eval-loop target score; stop when reached (default 90)
     \\  --niche <name>                  fleet niche this eval optimizes (reviewer/researcher/implementer/skeptic or a custom agent); tags submitted scores so the DGM can promote a champion for that role
     \\  -w, --worktree <name>           isolate this session in a git worktree (.graff/worktrees/<name>) so parallel agents don't collide on files
+    \\  --experiment N                  pre-mint N child worktrees (1-16) under .graff/worktrees/exp-<id>/; next spawns claim a seat
     \\  --add-dir <path>                extra file-tool root (repeatable, max 16). Not a cwd switch; no skills/sessions from it
     \\  --context-limit name=N          cap a named prefix: skill_catalog_bytes|mcp_schema_bytes|agents_md_bytes
     \\  --no-autocommit                 with -w, don't auto-commit each turn (default on; land work with `graff worktree merge`)

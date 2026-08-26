@@ -319,7 +319,9 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
 
     var wt: ?jobs.AgentWorktree = null;
     var isolation_note: []const u8 = "";
-    if (isolation == .worktree) {
+    if (@import("experiment_pool.zig").claim()) |seat| {
+        agent.agent_cwd = seat;
+    } else if (isolation == .worktree) {
         if (jobs.agentWorktreeCreate(gpa, ctx.io, arena, sub_id)) |created| {
             wt = created;
         } else |err| {
@@ -329,8 +331,10 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
             };
             isolation_note = "\n\n[note: isolation:\"worktree\" failed and fell back to the shared working tree — isolation_fallback:true allowed it]";
         }
+        agent.agent_cwd = if (wt) |w| w.path else null;
+    } else {
+        agent.agent_cwd = null;
     }
-    agent.agent_cwd = if (wt) |w| w.path else null;
 
     const wf_task = std.mem.eql(u8, kind, "workflow_task");
     if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label }, .id = sub_id });

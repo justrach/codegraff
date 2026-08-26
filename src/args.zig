@@ -64,6 +64,7 @@ pub const Flags = struct {
     goal_flag: ?[]const u8 = null, // --goal: standing objective (todos) every turn gets, incl. --json/-p
     eval_cmd_flag: ?[]const u8 = null, // --eval: scoring command for the eval-driven loop
     worktree_flag: ?[]const u8 = null, // --worktree/-w: isolate this session in a git worktree (parallel agents, no file collisions)
+    experiment_n: u8 = 0, // --experiment N: #629 pre-mint N child worktrees (279 continuation)
     add_dirs: std.ArrayList([]const u8) = .empty, // --add-dir: extra file-tool roots, max 16
     context_limits: std.ArrayList([]const u8) = .empty, // --context-limit name=N
     eval_target_flag: ?u8 = null, // --until: target score 0-100 for the eval loop
@@ -133,6 +134,10 @@ pub fn parse(init: std.process.Init) !Flags {
                     flags.lean_flag = true;
                 } else if (std.mem.eql(u8, arg, "--worktree") or std.mem.eql(u8, arg, "-w")) {
                     flags.worktree_flag = it.next() orelse std.process.fatal("--worktree needs a name (e.g. --worktree agent1)", .{});
+                } else if (std.mem.eql(u8, arg, "--experiment")) {
+                    const ev = it.next() orelse std.process.fatal("--experiment needs N (1-16)", .{});
+                    flags.experiment_n = std.fmt.parseInt(u8, ev, 10) catch std.process.fatal("--experiment needs N 1-16, got '{s}'", .{ev});
+                    if (flags.experiment_n == 0 or flags.experiment_n > 16) std.process.fatal("--experiment N must be 1-16", .{});
                 } else if (std.mem.eql(u8, arg, "--add-dir")) {
                     const dir = it.next() orelse std.process.fatal("--add-dir needs a directory (repeatable, max 16)", .{});
                     flags.add_dirs.append(arena, try arena.dupe(u8, dir)) catch std.process.fatal("--add-dir: out of memory", .{});
