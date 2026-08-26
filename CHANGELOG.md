@@ -33,7 +33,7 @@ current is part of cutting a release.
 - Host embed path: [docs/embedding.md](docs/embedding.md) names the two
   stdio APIs (`graff acp` and `@codegraff/sdk` `Harness`), with a Node
   JSON-RPC recipe and a thin `@codegraff/sdk/acp` helper (`spawnAcp` /
-  `acp`). Not WASM / libgraff. No `v0.0.279` tag until asked.
+  `acp`). Not WASM / libgraff.
 - TUI composer: a multiline paste stays one unsent draft. Embedded
   `\n` / `\r\n` from a bracketed paste (or a wrap-less burst) cannot
   steer or queue one prompt per line; Enter after the paste submits
