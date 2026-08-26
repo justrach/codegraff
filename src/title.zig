@@ -323,6 +323,52 @@ test "cleanTitle: normalizes a model reply into a tab label, else null (/title)"
     try std.testing.expect(cleanTitle("\"\"") == null);
 }
 
+/// Same model the turn is on. If the session is riding Responses on top of a
+/// chat-completions catalog (xAI, Codegraff), mint the tab title on chat so
+/// a Responses-only host (Codex / gateway `/v1/responses`) cannot reject
+/// `grok-4.6` with "use /v1/chat/completions".
+pub fn titleProvider(base: Provider) Provider {
+    if (base.kind != .responses) return base;
+    const spec = provider_mod.specFor(base.id) orelse return base;
+    if (spec.kind != .openai) return base;
+    if (std.mem.indexOf(u8, spec.url, "chat/completions") == null) return base;
+    var out = base;
+    out.kind = .openai;
+    out.url = spec.url;
+    return out;
+}
+
+test "titleProvider keeps the session model and prefers chat when the catalog has it" {
+    const xai: Provider = .{
+        .id = "xai",
+        .kind = .responses,
+        .auth = .bearer,
+        .url = provider_mod.xai_responses_url,
+        .api_key = "k",
+        .model = "grok-4.6",
+        .context = 500_000,
+    };
+    const titled = titleProvider(xai);
+    try std.testing.expectEqualStrings("xai", titled.id);
+    try std.testing.expectEqualStrings("grok-4.6", titled.model);
+    try std.testing.expectEqual(Provider.Kind.openai, titled.kind);
+    try std.testing.expect(std.mem.indexOf(u8, titled.url, "chat/completions") != null);
+
+    const codex: Provider = .{
+        .id = "codex",
+        .kind = .responses,
+        .auth = .bearer,
+        .url = "https://chatgpt.com/backend-api/codex/responses",
+        .api_key = "k",
+        .model = "gpt-5.6-sol",
+        .context = 272_000,
+    };
+    const same = titleProvider(codex);
+    try std.testing.expectEqual(Provider.Kind.responses, same.kind);
+    try std.testing.expectEqualStrings(codex.url, same.url);
+    try std.testing.expectEqualStrings("gpt-5.6-sol", same.model);
+}
+
 /// Generate a terse tab-label title for the turn's first prompt — runs on its
 /// own arena + a throwaway one-message sub-Agent, so it can be spawned via
 /// io.async and overlap the real turn instead of blocking after it. Returns a
@@ -336,7 +382,7 @@ pub fn titleTask(gpa: std.mem.Allocator, io: Io, client: *std.http.Client, provi
         .arena = arena,
         .io = io,
         .client = client,
-        .provider = provider,
+        .provider = titleProvider(provider),
         .messages = std.json.Array.init(arena),
         .sub = true, // pool thread: never touches stdout or the main agent's state
         .label = "title",

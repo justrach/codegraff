@@ -79,7 +79,7 @@ test "codexWsIdleExpired: fires only strictly past the idle limit (codex-ws)" {
 test "the codex .responses arm refreshes auth and re-anchors before resending (#402)" {
     const src = @embedFile("agent_request.zig");
     const arm_start = std.mem.indexOf(u8, src, "unparseable codex response").?;
-    const arm_end = std.mem.indexOf(u8, src, "codex api error: {s}").?;
+    const arm_end = std.mem.indexOf(u8, src, "{s} api error: {s}").?;
     const arm = src[arm_start..arm_end];
 
     const call = std.mem.indexOf(u8, arm, "retryAfterAuthRefresh(self, msg, &auth_refreshed)") orelse

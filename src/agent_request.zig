@@ -468,7 +468,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     // overload retry path as SSE and JSON error envelopes.
                     if (try retryTransientServerError(self, "", failure.code, msg, &server_retries)) continue :rebuild;
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-                    try self.sayApiError("codex api error: {s}", .{msg});
+                    try self.sayApiError("{s} api error: {s}", .{ self.provider.id, msg });
                     return error.ApiError;
                 },
             }
