@@ -60,7 +60,7 @@ pub fn handle(self: *Model, k: Key) Effect {
     }
     if (self.pasting) {
         switch (k) {
-            .enter => self.input.handle(.{ .char = '\n' }),
+            .enter, .shift_enter => self.input.handle(.{ .char = '\n' }),
             .char => |c| self.input.handle(.{ .char = c }),
             .codepoint => self.input.handle(k),
             // In-band escape hatch. A paste whose `CSI 201~` never arrived

@@ -57,6 +57,7 @@ test {
     _ = @import("prompt_history.zig");
     _ = @import("meters.zig");
     _ = @import("key.zig");
+    _ = @import("key_paste.zig");
     _ = @import("key_orphan.zig");
     _ = @import("key_tests.zig");
     _ = @import("spec_terminal_modes_conformance.zig");

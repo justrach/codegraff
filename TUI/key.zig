@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const orphan = @import("key_orphan.zig");
+const paste = @import("key_paste.zig");
 
 /// Super/alt currently held, from kitty modifier-key events (Ghostty Cmd+Delete
 /// often arrives as a bare DEL after Super-down).
@@ -130,7 +131,14 @@ pub fn next(bytes: []const u8, i: *usize) ?Key {
     const b = bytes[i.*];
     i.* += 1;
     if (b == 0x1b) return escapeSeq(bytes, i);
-    if (b == 0x0d or b == 0x0a) return .enter;
+    if (b == 0x0d or b == 0x0a) {
+        // Embedded newlines from a bracketed paste — or a wrap-less multiline
+        // dump in this same read — must not become the Enter/send key (#643).
+        if (in_paste or paste.looksLikeBurst(bytes)) {
+            if (paste.pasteNewline(bytes, i, b)) |nl| return .{ .char = nl };
+        }
+        return .enter;
+    }
     if (b == 0x09) return .tab;
     if (b == 0x7f or b == 0x08) {
         if (held & 8 != 0) return .delete_to_start;
@@ -474,7 +482,10 @@ fn mapCode(code: u32, mods: u32) Key {
     const shift = mods & 1 != 0;
     const alt = mods & 2 != 0;
     const super = mods & 8 != 0 or held & 8 != 0;
-    if (code == 13 or code == 10) return if (shift or alt) .shift_enter else .enter;
+    if (code == 13 or code == 10) {
+        if (in_paste) return .{ .char = '\n' };
+        return if (shift or alt) .shift_enter else .enter;
+    }
     if (code == 9) return if (shift) .shift_tab else .tab;
     if (code == 27) return .escape;
     if (code == 127 or code == 8) {
@@ -556,6 +567,7 @@ pub fn leadingInt(s: []const u8) u32 {
 test "#545: 10+-digit CSI params saturate instead of aborting the TUI" {
     try std.testing.expectEqual(std.math.maxInt(u32), leadingInt("99999999999999999999"));
     try std.testing.expectEqual(std.math.maxInt(u32), leadingInt("9999999999")); // 10 digits — the shortest crasher
+    _ = @import("key_paste.zig");
     try std.testing.expectEqual(@as(u32, 4294967295), leadingInt("4294967295")); // exact maxInt still parses
     try std.testing.expectEqual(@as(u32, 200), leadingInt("200~tail")); // normal params unchanged
     // End-to-end: the fleet's four crashing payloads decode without a panic.

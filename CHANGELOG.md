@@ -31,6 +31,10 @@ current is part of cutting a release.
   stdio APIs (`graff acp` and `@codegraff/sdk` `Harness`), with a Node
   JSON-RPC recipe and a thin `@codegraff/sdk/acp` helper (`spawnAcp` /
   `acp`). Not WASM / libgraff. No `v0.0.279` tag until asked.
+- TUI composer: a multiline paste stays one unsent draft. Embedded
+  `\n` / `\r\n` from a bracketed paste (or a wrap-less burst) cannot
+  steer or queue one prompt per line; Enter after the paste submits
+  exactly one (#643).
 - Existing Tauri `gui/` is unchanged.
 
 ## v0.0.278 (2026-08-26)

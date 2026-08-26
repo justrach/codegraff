@@ -373,3 +373,94 @@ test "Ctrl+U clears chips with the draft (#634)" {
     try std.testing.expectEqualStrings("", m.input.getValue());
     try std.testing.expectEqual(@as(usize, 0), m.images.items.len);
 }
+
+fn pendingTerm() !@import("sim.zig").Term {
+    const Term = @import("sim.zig").Term;
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    const job = try std.testing.allocator.create(engine.Job);
+    job.* = .{
+        .gpa = std.testing.allocator,
+        .history = &.{},
+        .params = .{},
+        .stream = .{},
+        .threaded = false,
+    };
+    try term.model.push(.pending, "");
+    term.model.pending = job;
+    return term;
+}
+
+fn dropPending(term: *@import("sim.zig").Term) void {
+    if (term.model.pending) |job| {
+        term.model.pending = null;
+        std.testing.allocator.destroy(job);
+    }
+}
+
+test "idle bracketed multiline paste stays one unsent draft (#643)" {
+    var term: @import("sim.zig").Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    _ = term.feed("\x1b[200~line1\nline2\nline3\x1b[201~");
+    try std.testing.expectEqualStrings("line1\nline2\nline3", term.model.input.getValue());
+    try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
+    var users: usize = 0;
+    for (term.model.history.items) |e| {
+        if (e.kind == .user) users += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), users);
+    _ = term.enter();
+    try std.testing.expectEqualStrings("", term.model.input.getValue());
+    users = 0;
+    for (term.model.history.items) |e| {
+        if (e.kind == .user) users += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), users);
+    try std.testing.expectEqualStrings("line1\nline2\nline3", term.model.history.items[0].text);
+}
+
+test "streaming bracketed paste does not steer, Enter queues one (#643)" {
+    var term = try pendingTerm();
+    defer {
+        dropPending(&term);
+        term.deinit();
+    }
+    _ = term.feed("\x1b[200~first\nsecond\nthird\x1b[201~");
+    try std.testing.expectEqualStrings("first\nsecond\nthird", term.model.input.getValue());
+    try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
+    try std.testing.expect(!term.model.cancel_requested);
+    _ = term.enter();
+    try std.testing.expectEqual(@as(usize, 1), term.model.steer_queue.items.len);
+    try std.testing.expectEqualStrings("first\nsecond\nthird", term.model.steer_queue.items[0]);
+    try std.testing.expectEqualStrings("", term.model.input.getValue());
+}
+
+test "bracketed CRLF paste cannot invoke Enter/send (#643)" {
+    var term = try pendingTerm();
+    defer {
+        dropPending(&term);
+        term.deinit();
+    }
+    _ = term.feed("\x1b[200~one\r\ntwo\r\nthree\x1b[201~");
+    try std.testing.expectEqualStrings("one\ntwo\nthree", term.model.input.getValue());
+    try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
+    try std.testing.expect(!term.model.cancel_requested);
+    var forced: usize = 0;
+    for (term.model.history.items) |e| {
+        if (std.mem.eql(u8, e.text, "↳ force › interrupting…")) forced += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), forced);
+}
+
+test "wrap-less CRLF dump while streaming stays one draft (#643)" {
+    var term = try pendingTerm();
+    defer {
+        dropPending(&term);
+        term.deinit();
+    }
+    _ = term.feed("alpha\r\nbeta\r\ngamma");
+    try std.testing.expectEqualStrings("alpha\nbeta\ngamma", term.model.input.getValue());
+    try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
+    try std.testing.expect(!term.model.cancel_requested);
+}
