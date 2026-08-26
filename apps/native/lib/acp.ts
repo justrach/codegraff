@@ -40,7 +40,7 @@ import {
   type ToolIcon,
   type ToolRow,
   type TodoItem,
-} from "./graff-events";
+} from "./graff-events.ts";
 
 function iconForKind(kind: string | undefined, title: string): ToolIcon {
   if (kind === "execute") return "run";
@@ -161,8 +161,11 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     path,
   };
   const tools = turn.tools.slice();
-  if (idx >= 0) tools[idx] = { ...prev!, ...row, name: kind ? row.name : prev!.name, icon: kind ? row.icon : prev!.icon };
-  else tools.push(row);
+  const merged: ToolRow = idx >= 0
+    ? { ...prev!, ...row, name: kind ? row.name : prev!.name, icon: kind ? row.icon : prev!.icon }
+    : row;
+  if (idx >= 0) tools[idx] = merged;
+  else tools.push(merged);
   const todos = parseTodos(rawInput);
   const next: AssistantTurn = {
     ...turn,
@@ -170,8 +173,8 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     todos: todos.length ? todos : turn.todos,
     status: turn.status === "ask" ? "ask" : status === "running" || turn.status === "thinking" ? "streaming" : turn.status,
   };
-  if ((row.icon === "write" || kind === "edit") && (status === "ok" || status === "error")) {
-    return { ...next, diffs: mergeDiff(next, tools[idx >= 0 ? idx : tools.length - 1], contentText) };
+  if ((merged.icon === "write" || kind === "edit") && (status === "ok" || status === "error")) {
+    return { ...next, diffs: mergeDiff(next, merged, contentText) };
   }
   return next;
 }
