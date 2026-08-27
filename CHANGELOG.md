@@ -10,6 +10,22 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.280 (2026-08-28)
+
+- Next cut after tagged v0.0.279. Carries the #645 continuation already
+  on `main` plus #646–#649 leftovers from `release/v0.0.279`. Not a retag.
+- Experiment pool: forced fan-out, `graff worktree list` tags, deliver-back.
+  Still opt-in `--experiment N` / `/experiment` (ADR 0037, #647 / #629).
+- TUI stall HUD, resize, MCP config polish (#646 / #549). Native Anthropic
+  `output_config.format` `json_schema` (#550).
+- TUI `/tell` and `/peek` use the existing peer mailbox (#648 / #563).
+- ACP `initialize` advertises terminal `graff-login` (#649 / #613 leftover).
+  Local tools are `.graff/tools/` scripts (ADR 0039). `/schedule` due-claim
+  plus TUI idle wake. Channel workers are JSONL outbox + wake only.
+- Same-process embed `libgraff` + `graff-core.wasm` + `createGraffAgent()`
+  (ADR 0038, echo turn). Live coding stays `graff acp`.
+- Test floor 1745 (slack 25).
+
 ## v0.0.279 (2026-08-26)
 
 - Native Beautiful UI app (`apps/native`) is an ACP client. Next.js
