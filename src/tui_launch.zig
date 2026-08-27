@@ -20,6 +20,7 @@ const engine_sink = @import("engine_sink.zig");
 const tui_sink = @import("tui_sink.zig");
 const tui_acp = @import("tui_acp.zig");
 const job_notify = @import("job_notify.zig");
+const util = @import("util.zig");
 const obs = @import("obs.zig");
 const vision = @import("vision.zig");
 const builtin = @import("builtin");
@@ -101,7 +102,7 @@ pub fn run(
     defer engine_sink.hosted_frontend = false;
     obs.ensureSession();
     var acp_session: tui_acp.Session = undefined;
-    acp_session.init(gpa, @as(u64, @bitCast(std.time.milliTimestamp())));
+    acp_session.init(gpa, @as(u64, @bitCast(util.unixMs(io))));
     tui_acp.attach(&acp_session);
     defer tui_acp.detach();
     acp_session.ensure();
