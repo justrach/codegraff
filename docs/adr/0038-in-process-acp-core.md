@@ -28,8 +28,7 @@ Same-process embed is an ACP **core**, not the full CLI:
   bash stay on `graff acp` until a host-imported turn exists.
 - Subprocess ACP remains the hosted coding agent (ADR 0032).
 
-This record lives on `release/v0.0.279` after the v0.0.279 tag. It is
-**not** on `main` until a later cut.
+This record shipped on `main` via #645 after the v0.0.279 tag.
 
 ## Consequences
 

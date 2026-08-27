@@ -24,6 +24,9 @@ current is part of cutting a release.
   plus TUI idle wake. Channel workers are JSONL outbox + wake only.
 - Same-process embed `libgraff` + `graff-core.wasm` + `createGraffAgent()`
   (ADR 0038, echo turn). Live coding stays `graff acp`.
+- Native `codedb` and `read_file` stay the default readers when
+  codedb-pro is licensed, including `rlm codedb`. Do not use
+  `mcp__codedbpro__read` for ordinary files (ADR 0040, #652).
 - Test floor 1745 (slack 25).
 
 ## v0.0.279 (2026-08-26)

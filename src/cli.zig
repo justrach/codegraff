@@ -21,6 +21,11 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.280
+    \\  • leftover 279 work: TUI stall/resize, experiment fan-out, /tell /peek, ACP graff-login
+    \\  • local tools (.graff/tools), /schedule due-claim, JSONL channel workers
+    \\  • native codedb / read_file stay the default readers; codedb-pro is extra search (ADR 0040)
+    \\
     \\0.0.279
     \\  • native Beautiful UI app speaks ACP: thinking and tool chips stream mid-turn (ADR 0032)
     \\  • graff acp emits thought / tool_call / text session/update; /never is an ACP slash command
