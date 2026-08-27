@@ -158,6 +158,29 @@ test "slashCommand send is a send line; inbox drains takeWake" {
     try std.testing.expect(takeWake(io, &buf) == null);
 }
 
+test "deliver injects recorded inbound as a user line" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    _ = takeAll(io, arena.allocator());
+    record(io, gpa, "from irc");
+    const drop = struct {
+        fn emit(_: *anyopaque, _: @import("engine_sink.zig").Stamped) void {}
+    };
+    const vt = @import("engine_sink.zig").VTable{ .emit = drop.emit, .durable = false };
+    var root: Agent = undefined;
+    root.sub = false;
+    root.io = io;
+    root.arena = arena.allocator();
+    root.messages = std.json.Array.init(arena.allocator());
+    root.sink = .{ .ctx = undefined, .vt = &vt };
+    deliver(&root);
+    try std.testing.expectEqual(@as(usize, 1), root.messages.items.len);
+    try std.testing.expectEqualStrings("user", root.messages.items[0].object.get("role").?.string);
+    try std.testing.expect(std.mem.indexOf(u8, root.messages.items[0].object.get("content").?.string, "from irc") != null);
+}
+
 test "record then takeAll drains once" {
     const io = std.testing.io;
     const gpa = std.testing.allocator;
