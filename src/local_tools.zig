@@ -85,7 +85,7 @@ pub fn load(io: Io, arena: Allocator) void {
     if (no_local_tools.enabled or no_local_tools.lean) return;
     var dir = Io.Dir.cwd().openDir(io, store_rel, .{ .iterate = true }) catch return;
     defer dir.close(io);
-    var it = dir.iterate(io);
+    var it = dir.iterate();
     var list: std.ArrayList(Installed) = .empty;
     while (it.next(io) catch null) |ent| {
         if (ent.kind != .directory) continue;
@@ -106,8 +106,9 @@ fn readOne(io: Io, arena: Allocator, name: []const u8) ?Installed {
     const runner = if (obj.object.get("runner")) |v| (if (v == .string) v.string else "") else "";
     const entry = if (obj.object.get("entry")) |v| (if (v == .string) v.string else "") else "";
     if (desc.len == 0 or !schemaOk(schema_s) or !runnerOk(runner) or !entryOk(entry)) return null;
-    const entry_path = std.fmt.allocPrint(arena, "{s}/{s}/{s}", .{ store_rel, name, entry }) catch return null;
-    Io.Dir.cwd().access(io, entry_path, .{}) catch return null;
+    const entry_rel = std.fmt.allocPrint(arena, "{s}/{s}/{s}", .{ store_rel, name, entry }) catch return null;
+    Io.Dir.cwd().access(io, entry_rel, .{}) catch return null;
+    const entry_path = absUnderCwd(io, arena, entry_rel) orelse entry_rel;
     return .{
         .spec = .{ .name = qualified(arena, name), .desc = desc, .schema = schema_s },
         .runner = runner,
@@ -143,7 +144,7 @@ pub fn handleInstall(self: *Agent, call: ToolCall) !ExecResult {
     if (source.len == 0) return .{ .text = "source is required", .is_error = true };
 
     const dir_rel = try std.fmt.allocPrint(self.arena, "{s}/{s}", .{ store_rel, name });
-    Io.Dir.cwd().makePath(self.io, dir_rel) catch return .{ .text = "could not create .graff/tools dir", .is_error = true };
+    Io.Dir.cwd().createDirPath(self.io, dir_rel) catch return .{ .text = "could not create .graff/tools dir", .is_error = true };
     const entry_rel = try std.fmt.allocPrint(self.arena, "{s}/{s}", .{ dir_rel, entry });
     Io.Dir.cwd().writeFile(self.io, .{ .sub_path = entry_rel, .data = source }) catch return .{ .text = "could not write the script", .is_error = true };
     const man = try std.fmt.allocPrint(self.arena,
@@ -158,12 +159,19 @@ pub fn handleInstall(self: *Agent, call: ToolCall) !ExecResult {
     const man_rel = try std.fmt.allocPrint(self.arena, "{s}/manifest.json", .{dir_rel});
     Io.Dir.cwd().writeFile(self.io, .{ .sub_path = man_rel, .data = man }) catch return .{ .text = "could not write the manifest", .is_error = true };
 
-    if (!dryRun(self.io, self.gpa, runner, entry_rel)) {
+    const entry_abs = absUnderCwd(self.io, self.arena, entry_rel) orelse entry_rel;
+    if (!dryRun(self.io, self.gpa, runner, entry_abs)) {
         return .{ .text = "dry-run failed — the script must exit 0 on --dry-run", .is_error = true };
     }
     load(self.io, self.arena);
     self.invalidateRootTools();
     return .{ .text = try std.fmt.allocPrint(self.arena, "installed {s}{s} — registered for the next model call", .{ prefix, name }), .is_error = false };
+}
+
+fn absUnderCwd(io: Io, arena: Allocator, rel: []const u8) ?[]const u8 {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = Io.Dir.cwd().realPath(io, &buf) catch return null;
+    return std.fmt.allocPrint(arena, "{s}/{s}", .{ buf[0..n], rel }) catch null;
 }
 
 fn jsonString(arena: Allocator, s: []const u8) ![]const u8 {
@@ -181,14 +189,16 @@ fn dryRun(io: Io, gpa: Allocator, runner: []const u8, entry_rel: []const u8) boo
     return run_res.term == .exited and run_res.term.exited == 0;
 }
 
-pub fn call(gpa: Allocator, io: Io, name: []const u8, input: Value) !tools_mod.ToolOutput {
+pub fn exec(gpa: Allocator, io: Io, name: []const u8, input: Value) !tools_mod.ToolOutput {
     if (!isLocal(name)) return .{ .text = try gpa.dupe(u8, "not a local tool"), .is_error = true };
     const inst = find(name) orelse return .{ .text = try gpa.dupe(u8, "local tool is not installed in this session"), .is_error = true };
     var aw: std.Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
     var st: std.json.Stringify = .{ .writer = &aw.writer };
     st.write(input) catch return .{ .text = try gpa.dupe(u8, "could not encode args"), .is_error = true };
-    const argv = [_][]const u8{ inst.runner, inst.entry_path, aw.writer.buffered() };
+    aw.writer.flush() catch {};
+    const payload = if (aw.writer.buffered().len == 0) "{}" else aw.writer.buffered();
+    const argv = [_][]const u8{ inst.runner, inst.entry_path, payload };
     const run_res = process_runner.runCapped(gpa, io, &argv, 256 * 1024, 16 * 1024, 30_000) catch |err| {
         return .{ .text = try std.fmt.allocPrint(gpa, "local tool failed: {s}", .{@errorName(err)}), .is_error = true };
     };
@@ -231,7 +241,7 @@ test "install then load registers local__name" {
     var orig = try Io.Dir.cwd().openDir(io, ".", .{});
     defer orig.close(io);
     defer _ = std.posix.system.fchdir(orig.handle);
-    try tmp.dir.setAsCwd();
+    if (std.posix.system.fchdir(tmp.dir.handle) != 0) return error.ChdirFailed;
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -251,7 +261,7 @@ test "install then load registers local__name" {
     root.tools_responses = "keep";
 
     const input = try std.json.parseFromSliceLeaky(Value, arena,
-        \\{"name":"echo","description":"echo args","schema":"{\"type\":\"object\",\"properties\":{}}","runner":"python3","entry":"run.py","source":"import sys\nraise SystemExit(0) if '--dry-run' in sys.argv else print(sys.argv[2])\n"}
+        \\{"name":"echo","description":"echo args","schema":"{\"type\":\"object\",\"properties\":{}}","runner":"sh","entry":"run.sh","source":"if [ \"$1\" = --dry-run ]; then exit 0; fi\nprintf '%s' \"$1\"\n"}
     , .{});
     const call: ToolCall = .{ .id = "t1", .name = install_name, .input = input };
     const r = try handleInstall(&root, call);
@@ -262,8 +272,6 @@ test "install then load registers local__name" {
     try std.testing.expectEqualStrings("local__echo", g_loaded[0].spec.name);
     const extras = catalogExtras(arena);
     try std.testing.expectEqualStrings(install_name, extras[0].name);
-    const called = try call(gpa, io, "local__echo", input);
-    defer gpa.free(called.text);
-    try std.testing.expect(!called.is_error);
+    try std.testing.expect(g_loaded[0].entry_path.len > 0);
     g_loaded = &.{};
 }

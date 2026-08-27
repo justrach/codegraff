@@ -130,7 +130,10 @@ pub fn takeWake(io: Io, buf: []u8) ?[]const u8 {
     if (lines.len == 0) return null;
     var used: usize = 0;
     for (lines) |text| {
-        const piece = std.fmt.bufPrint(buf[used..], if (used == 0) "[adapter] {s}" else "\n[adapter] {s}", .{text}) catch break;
+        const piece = if (used == 0)
+            std.fmt.bufPrint(buf[used..], "[adapter] {s}", .{text}) catch break
+        else
+            std.fmt.bufPrint(buf[used..], "\n[adapter] {s}", .{text}) catch break;
         used += piece.len;
     }
     return if (used == 0) null else buf[0..used];

@@ -413,7 +413,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     if (std.mem.eql(u8, call.name, "subagent")) return execSubagent(ctx, input);
     if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
     if (std.mem.eql(u8, call.name, @import("rlm.zig").tool_name)) return @import("rlm.zig").exec(ctx, input);
-    if (local_tools.isLocal(call.name)) return local_tools.call(gpa, io, call.name, input);
+    if (local_tools.isLocal(call.name)) return local_tools.exec(gpa, io, call.name, input);
     if (std.mem.eql(u8, call.name, "agent_output")) {
         const id = intField(input, "id") orelse return missingArg(gpa, "id");
         const wait_ms = intField(input, "wait_ms") orelse 0;

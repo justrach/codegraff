@@ -48,7 +48,7 @@ pub fn catalogExtras(arena: Allocator) []const ToolSpec {
 }
 
 pub fn add(io: Io, arena: Allocator, at_ms: i64, prompt: []const u8) !Record {
-    Io.Dir.cwd().makePath(io, store_rel) catch return error.StoreUnavailable;
+    Io.Dir.cwd().createDirPath(io, store_rel) catch return error.StoreUnavailable;
     const id = try std.fmt.allocPrint(arena, "{d}", .{at_ms});
     const rec = Record{ .id = id, .at_ms = at_ms, .prompt = prompt };
     const text = try encode(arena, rec);
@@ -67,7 +67,7 @@ fn encode(arena: Allocator, rec: Record) ![]const u8 {
 pub fn claimDue(io: Io, arena: Allocator, now_ms: i64) []const Record {
     var dir = Io.Dir.cwd().openDir(io, store_rel, .{ .iterate = true }) catch return &.{};
     defer dir.close(io);
-    var it = dir.iterate(io);
+    var it = dir.iterate();
     var out: std.ArrayList(Record) = .empty;
     while (it.next(io) catch null) |ent| {
         if (ent.kind != .file) continue;
@@ -163,7 +163,7 @@ test "add then claimDue only yields past-due unclaimed records" {
     var orig = try Io.Dir.cwd().openDir(io, ".", .{});
     defer orig.close(io);
     defer _ = std.posix.system.fchdir(orig.handle);
-    try tmp.dir.setAsCwd();
+    if (std.posix.system.fchdir(tmp.dir.handle) != 0) return error.ChdirFailed;
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -186,7 +186,10 @@ pub fn takeWake(io: Io, buf: []u8) ?[]const u8 {
     if (due.len == 0) return null;
     var used: usize = 0;
     for (due) |rec| {
-        const piece = std.fmt.bufPrint(buf[used..], if (used == 0) "[schedule {s}] {s}" else "\n[schedule {s}] {s}", .{ rec.id, rec.prompt }) catch break;
+        const piece = if (used == 0)
+            std.fmt.bufPrint(buf[used..], "[schedule {s}] {s}", .{ rec.id, rec.prompt }) catch break
+        else
+            std.fmt.bufPrint(buf[used..], "\n[schedule {s}] {s}", .{ rec.id, rec.prompt }) catch break;
         used += piece.len;
     }
     return if (used == 0) null else buf[0..used];
@@ -200,7 +203,7 @@ test "slashCommand and takeWake share the due-claim store" {
     var orig = try Io.Dir.cwd().openDir(io, ".", .{});
     defer orig.close(io);
     defer _ = std.posix.system.fchdir(orig.handle);
-    try tmp.dir.setAsCwd();
+    if (std.posix.system.fchdir(tmp.dir.handle) != 0) return error.ChdirFailed;
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();

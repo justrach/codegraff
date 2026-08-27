@@ -20,7 +20,7 @@ pub fn inject(root: *Agent, text: []const u8) void {
 test "inject is a no-op on subagents" {
     var root: Agent = undefined;
     root.sub = true;
-    root.messages = .empty;
+    root.messages = std.json.Array.init(std.testing.allocator);
     inject(&root, "hi");
     try std.testing.expectEqual(@as(usize, 0), root.messages.items.len);
 }
