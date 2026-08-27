@@ -1,4 +1,4 @@
-"""Executable port of lean-proofs/Graff/StructuredOutput.lean (#543)."""
+"""Executable port of lean-proofs/Graff/StructuredOutput.lean (#543 / #550)."""
 
 from __future__ import annotations
 
@@ -15,16 +15,18 @@ def carrier(wire: str, schema: bool, sox: bool, tools: bool) -> str:
         if not sox:
             return "jsonSchema"
         return "jsonObject" if tools else "toolOpenai"
-    # anthropic: no response_format exists on this wire at all
-    return "none" if tools else "toolAnthropic"
+    # anthropic: native output_config.format on the formatting turn (#550);
+    # sox (rejected) falls back to the structured_output tool. Tools turns
+    # never carry a grammar (ADR 0001).
+    if tools:
+        return "none"
+    return "toolAnthropic" if sox else "outputConfig"
 
 
 def prompt_schema(wire: str, schema: bool, sox: bool) -> bool:
     if not schema:
         return False
-    if wire == "anthropic":
-        return True
-    if wire == "openai":
+    if wire in ("anthropic", "openai"):
         return sox
     return False
 
@@ -51,18 +53,28 @@ def check_properties() -> int:
     for row in cells():
         n += 1
         w, s, x, t = row["wire"], row["schema"], row["sox"], row["tools"]
-        # never_silent: a set schema always reaches the provider somewhere.
+        # never_silent: a set schema always reaches the provider, except an
+        # anthropic tools turn (ADR 0001; the two-phase split holds it).
         if s and row["carrier"] == "none" and not row["prompt_schema"]:
-            raise ValueError(f"never_silent violated: {row}")
-        # sox_only_on_chat: the learned degrade changes nothing off the chat wire.
-        if w != "openai" and carrier(w, s, True, t) != carrier(w, s, False, t):
-            raise ValueError(f"sox_only_on_chat violated: {row}")
-        # no_json_schema_after_rejection.
-        if x and row["carrier"] == "jsonSchema":
+            if not (w == "anthropic" and t):
+                raise ValueError(f"never_silent violated: {row}")
+        # sox_leaves_responses_alone
+        if w == "responses" and carrier(w, s, True, t) != carrier(w, s, False, t):
+            raise ValueError(f"sox_leaves_responses_alone violated: {row}")
+        # sox_degrades_anthropic_native
+        if w == "anthropic" and s and not t:
+            want = "toolAnthropic" if x else "outputConfig"
+            if row["carrier"] != want:
+                raise ValueError(f"sox_degrades_anthropic_native violated: {row}")
+        # no_json_schema_after_rejection / no leftover output_config
+        if x and row["carrier"] in ("jsonSchema", "outputConfig"):
             raise ValueError(f"no_json_schema_after_rejection violated: {row}")
-        # absent_schema_is_silent.
+        # absent_schema_is_silent
         if not s and (row["carrier"] != "none" or row["prompt_schema"]):
             raise ValueError(f"absent_schema_is_silent violated: {row}")
+        # no_grammar_on_anthropic_tools
+        if w == "anthropic" and s and t and row["carrier"] != "none":
+            raise ValueError(f"no_grammar_on_anthropic_tools violated: {row}")
     return n
 
 

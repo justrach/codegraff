@@ -53,6 +53,8 @@ fn toolsFor(wire: []const u8) []const u8 {
 
 fn classify(body: []const u8, wire: []const u8) []const u8 {
     if (std.mem.indexOf(u8, body, "\"text\":{\"format\":{\"type\":\"json_schema\"") != null) return "textFormat";
+    if (std.mem.indexOf(u8, body, "\"format\":{\"type\":\"json_schema\"") != null and
+        std.mem.indexOf(u8, body, "\"output_config\"") != null) return "outputConfig";
     if (std.mem.indexOf(u8, body, "\"response_format\":{\"type\":\"json_schema\"") != null) return "jsonSchema";
     if (std.mem.indexOf(u8, body, "\"response_format\":{\"type\":\"json_object\"}") != null) return "jsonObject";
     if (std.mem.indexOf(u8, body, "\"name\":\"structured_output\"") != null)
@@ -90,7 +92,10 @@ test "spec/structured_output: buildBody's carrier matches the model on every cel
             );
             return error.CatalogMismatch;
         }
-        // never_silent, on the live bytes: a set schema always reaches the wire.
-        if (schema and std.mem.eql(u8, got, "none") and !prompt_got) return error.SchemaSilentlyDropped;
+        // never_silent: a set schema reaches the wire, except an anthropic
+        // tools turn (ADR 0001 — the two-phase split holds it for formatting).
+        if (schema and std.mem.eql(u8, got, "none") and !prompt_got) {
+            if (!(std.mem.eql(u8, wire, "anthropic") and tools)) return error.SchemaSilentlyDropped;
+        }
     }
 }

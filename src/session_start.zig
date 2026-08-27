@@ -422,7 +422,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     // can carry chatter. With a global config `mcp_count > 0` in every project,
     // so an unguarded line here would corrupt the head of every --json run.
     const quiet = json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") == null;
-    const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path, home);
+    const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path, home, mcp_config.isEnvOverride(environ_map));
     // Interactive only: json/one-shot stdout cannot carry chatter. A slow
     // Cursor/Claude tree used to look like a hung boot; this line is the clock.
     if (!json_mode and flags.oneshot_prompt == null) {
@@ -472,6 +472,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     // file precisely when consent was declined and no `init` ever ran. `arena`
     // is the session arena, so the path outlives the registry.
     registry.global_config_path = global_path;
+    registry.global_is_override = mcp_config.isEnvOverride(environ_map);
     registry.show_diagnostics = json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") != null;
     return registry;
 }

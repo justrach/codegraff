@@ -83,13 +83,14 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
         .stdio_probe = if (environ_map.get("GRAFF_MCP_PROBE")) |v| !std.mem.eql(u8, v, "0") else true,
         .show_diagnostics = show_diagnostics,
         .global_config_path = global_path,
+        .global_is_override = mcp_config.isEnvOverride(environ_map),
     };
     mcp_rpc.applyHandshakeTimeoutEnv(environ_map); // #275 GRAFF_MCP_HANDSHAKE_SECS + #327 GRAFF_MCP_PROBE_MS, on the same pass as the probe flag
 
     errdefer reg.deinit();
     const a = reg.arena();
 
-    const merged = mcp_config.load(io, a, Io.Dir.cwd(), config_path, global_path, home);
+    const merged = mcp_config.load(io, a, Io.Dir.cwd(), config_path, global_path, home, reg.global_is_override);
     if (!merged.found) {
         reg.arena_state.deinit(); // nothing was started; no transports to tear down
         return null;

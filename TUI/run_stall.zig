@@ -86,6 +86,12 @@ pub fn armExpired(now_ms: u64, arm_ms: u64) bool {
     return now_ms -| arm_ms > arm_window_ms;
 }
 
+/// A stuck CSI/OSC head that filled the read buffer is a parser wedge, not a
+/// hangup. Drop it so the next `read` is not a zero-length "TTY gone" (#517).
+pub fn clearFullWedge(pending_len: usize, buf_len: usize) usize {
+    return if (pending_len == buf_len) 0 else pending_len;
+}
+
 /// Is this read nothing but complete SGR mouse reports?
 ///
 /// ?1003h is on by default for image-chip hover, and a pointer merely RESTING
@@ -201,4 +207,11 @@ test "a lone ESC inside a latched paste is the escape hatch, not a 2s wait" {
     try std.testing.expectEqual(StallVerdict.wait, stallVerdict("\x1b[201", 79, p));
     // Outside a paste nothing moved: #94's 2-stall Escape still fires.
     try std.testing.expectEqual(StallVerdict.escape_key, stallVerdict("\x1b", 2, .{}));
+}
+
+test "a buffer-filling parser wedge is dropped, not treated as hangup (#517)" {
+    try std.testing.expectEqual(@as(usize, 0), clearFullWedge(4096, 4096));
+    try std.testing.expectEqual(@as(usize, 12), clearFullWedge(12, 4096));
+    try std.testing.expectEqual(@as(usize, 0), clearFullWedge(0, 4096));
+    try std.testing.expectEqual(@as(usize, 1), clearFullWedge(1, 2));
 }

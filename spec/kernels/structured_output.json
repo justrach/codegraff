@@ -38,8 +38,8 @@
       "schema": true,
       "sox": false,
       "tools": false,
-      "carrier": "toolAnthropic",
-      "prompt_schema": true
+      "carrier": "outputConfig",
+      "prompt_schema": false
     },
     {
       "wire": "anthropic",
@@ -47,7 +47,7 @@
       "sox": false,
       "tools": true,
       "carrier": "none",
-      "prompt_schema": true
+      "prompt_schema": false
     },
     {
       "wire": "anthropic",
