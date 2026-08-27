@@ -2,10 +2,11 @@
 //! this is the executable half: `.graff/tools/<name>/` with a manifest +
 //! script, validated at install, registered on every later session.
 //!
-//! Runner is a subprocess speaking a one-shot JSON contract (stdin args,
-//! stdout text or `{"text","is_error"}`). Not MCP, not a skill.
+//! Runner is a subprocess speaking a one-shot JSON contract (JSON args as
+//! argv, stdout text or `{"text","is_error"}`). Not MCP, not a skill.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
@@ -234,6 +235,7 @@ test "nameOk / runnerOk / entryOk / schemaOk" {
 }
 
 test "install then load registers local__name" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const io = std.testing.io;
     const gpa = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -274,4 +276,35 @@ test "install then load registers local__name" {
     try std.testing.expectEqualStrings(install_name, extras[0].name);
     try std.testing.expect(g_loaded[0].entry_path.len > 0);
     g_loaded = &.{};
+}
+
+test "exec runs the script and returns stdout" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "run.sh", .data = "printf '%s' \"$1\"\n" });
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &path_buf);
+    const script = try std.fmt.allocPrint(gpa, "{s}/run.sh", .{path_buf[0..n]});
+    defer gpa.free(script);
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const one = try arena.alloc(Installed, 1);
+    one[0] = .{
+        .spec = .{ .name = "local__ping", .desc = "ping", .schema = "{\"type\":\"object\"}" },
+        .runner = "sh",
+        .entry_path = script,
+    };
+    g_loaded = one;
+    defer {
+        g_loaded = &.{};
+    }
+    const input = try std.json.parseFromSliceLeaky(Value, arena, "{\"k\":1}", .{});
+    const out = try exec(gpa, io, "local__ping", input);
+    defer gpa.free(out.text);
+    try std.testing.expect(!out.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "k") != null);
 }

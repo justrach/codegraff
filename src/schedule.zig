@@ -3,6 +3,7 @@
 //! job_notify. `/loop` stays the standing-goal controller; this is cron.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
@@ -156,6 +157,7 @@ pub fn slashCommand(root: *Agent, arena: Allocator, line: []const u8, out: *Io.W
 }
 
 test "add then claimDue only yields past-due unclaimed records" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const io = std.testing.io;
     const gpa = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -196,6 +198,7 @@ pub fn takeWake(io: Io, buf: []u8) ?[]const u8 {
 }
 
 test "slashCommand and takeWake share the due-claim store" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const io = std.testing.io;
     const gpa = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
