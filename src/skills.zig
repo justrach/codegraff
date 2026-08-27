@@ -60,22 +60,21 @@ pub const skills_registry = [_]SkillDef{
 /// model knows when to reach for its tools. The native tools stay registered
 /// regardless — they are the fallback whenever an MCP call fails, is denied,
 /// or the server is disconnected/skipped.
-/// Licensed-aware variant of the codedbpro note. When `codedb-pro probe`
-/// succeeds (paid + usable) we inject THIS instead of the conservative
-/// "prefer free codedb" note below — leaning into the tools the user pays for.
-/// Native `codedb` is never hidden or refused (ADR 0040). Edits stay native:
-/// edit_file/write_file are /rewind-snapshotted; codedb-pro writes bypass it.
-const codedbpro_note_licensed = "The codedb-pro MCP server is connected and LICENSED — mcp__codedbpro__* tools (load once per session via load_tool_schemas, e.g. by query) sit alongside native codedb, which always works (context/around/callpath/list_dir/status). Prefer codedb first; reach for faster_search/meta_search when codedb cannot answer. read_file is hidden — use mcp__codedbpro__read (mode=outline first, then symbol/lines) or codedb. Shell cat/grep/sed/head of source is redirected or refused. KEEP EDITS on native edit_file/write_file — codedb-pro write tools are hidden because they bypass /rewind. Any codedb-pro failure unblocks read_file for the rest of the session.";
+/// Licensed-aware variant of the codedbpro note. Native `codedb` and
+/// `read_file` are the default readers (ADR 0040) — do not send ordinary
+/// file reads through mcp__codedbpro__read. Pro is extra search/batch.
+/// Edits stay native: edit_file/write_file are /rewind-snapshotted.
+const codedbpro_note_licensed = "The codedb-pro MCP server is connected and LICENSED — mcp__codedbpro__* tools (load once per session via load_tool_schemas, e.g. by query) are extra, not the default reader. READ with native codedb (context/around/callpath/list_dir/status) or read_file. Do not use mcp__codedbpro__read for ordinary files. SEARCH: codedb first; faster_search/meta_search only when codedb cannot answer (raw regex, fuzzy, non-indexed). KEEP EDITS on native edit_file/write_file — codedb-pro write tools are hidden because they bypass /rewind.";
 
 const McpNote = struct { server: []const u8, note: []const u8 };
 pub const mcp_notes = [_]McpNote{
     .{
         .server = "codedbpro",
-        .note = "The codedb-pro MCP server is connected (mcp__codedbpro__* tools). SEARCH ORDER: the native codedb tool is free and indexed — always try it first (context/around/callpath/list_dir/status); reach for mcp__codedbpro__faster_search or meta_search only when codedb can't answer (raw literal/regex content matches, fuzzy queries, non-indexed files) — codedb-pro is metered. Prefer mcp__codedbpro__read (mode=outline first, then symbol) over read_file for navigating large code files, and mcp__codedbpro__batch to run several independent reads/searches/edits in one round-trip. Keep edits on the native edit_file/write_file tools (/rewind-tracked; the cwd and explicit-external-target rules above apply). These tools are accelerators, not requirements: if an mcp__codedbpro__ call fails, fall back to read_file/codedb/bash and continue.",
+        .note = "The codedb-pro MCP server is connected (mcp__codedbpro__* tools). READ with native codedb (context/around/callpath/list_dir/status) or read_file — do not use mcp__codedbpro__read for ordinary files. SEARCH ORDER: codedb first; reach for mcp__codedbpro__faster_search or meta_search only when codedb can't answer (raw literal/regex, fuzzy, non-indexed) — codedb-pro is metered. Keep edits on native edit_file/write_file (/rewind-tracked). These tools are accelerators, not requirements: if an mcp__codedbpro__ call fails, fall back to read_file/codedb/bash and continue.",
     },
     .{
         .server = "muonry",
-        .note = "The muonry MCP server is connected (mcp__muonry__* tools). SEARCH ORDER: the native codedb tool is free and indexed — always try it first (context/around/callpath/list_dir/status); use mcp__muonry__search or faster_search only when codedb can't answer (raw literal/regex content matches, non-code or non-indexed files) — muonry is metered. Prefer mcp__muonry__read (mode=outline first, then symbol) over read_file for navigating large code files, and mcp__muonry__batch to run several independent reads/searches/edits in one round-trip. Keep edits on the native edit_file/write_file tools (/rewind-tracked; the cwd and explicit-external-target rules above apply). These tools are accelerators, not requirements: if an mcp__muonry__ call fails, fall back to read_file/codedb/bash and continue.",
+        .note = "The muonry MCP server is connected (mcp__muonry__* tools). READ with native codedb or read_file — do not use mcp__muonry__read for ordinary files. SEARCH ORDER: codedb first; muonry search/faster_search only when codedb can't answer. Keep edits on native edit_file/write_file (/rewind-tracked). Accelerators, not requirements: if a muonry call fails, fall back to read_file/codedb/bash and continue.",
     },
 };
 
@@ -392,8 +391,8 @@ test "codedbproNote: licensed flips codedbpro to the lean-in note" {
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "mcp__codedbpro__*") != null);
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "load_tool_schemas") != null);
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "/rewind") != null);
-    try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "codedb, which always works") != null);
-    try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "hidden") != null); // read_file / writes, never codedb
+    try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "Do not use mcp__codedbpro__read") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "READ with native codedb") != null);
 }
 
 test "skillIndex: registry lookup" {

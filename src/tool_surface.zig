@@ -1,10 +1,9 @@
-//! Licensed catalog/exec policy: one edit surface; codedb stays native.
+//! Licensed catalog/exec policy: one edit surface; reads stay native.
 //!
-//! When codedb-pro is licensed, hide native `read_file` only. Native `codedb`
-//! stays advertised and callable (ADR 0040). Companion write tools
-//! (edit/patch/create/replace) are omitted always — they bypass /rewind.
-//! Native `edit_file`/`write_file` stay. `subagent` stays. webfetch is not
-//! hidden here (optional extra, not this change).
+//! Native `codedb` and `read_file` stay advertised (ADR 0040). Companion
+//! write tools (edit/patch/create/replace) are omitted always — they bypass
+//! /rewind. Native `edit_file`/`write_file` stay. `subagent` stays. webfetch
+//! is not hidden here (optional extra, not this change).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -21,8 +20,18 @@ const search_bash = [_][]const u8{
     "grep", "rg", "find", "cat", "head", "tail", "sed", "awk", "egrep", "ripgrep",
 };
 
+/// Content-search CLIs only — not `cat`/`head` (those are reads; codedb/read_file).
+const content_search_bash = [_][]const u8{
+    "grep", "rg", "egrep", "ripgrep",
+};
+
 pub fn isSearchBash(first: []const u8) bool {
     for (search_bash) |w| if (std.mem.eql(u8, first, w)) return true;
+    return false;
+}
+
+pub fn isContentSearchBash(first: []const u8) bool {
+    for (content_search_bash) |w| if (std.mem.eql(u8, first, w)) return true;
     return false;
 }
 
@@ -42,10 +51,11 @@ pub fn omitMcp(qualified: []const u8) bool {
     return isCompanionWrite(qualified);
 }
 
-/// Built-ins hidden from the advertised catalog. Never hides `subagent`.
+/// Built-ins hidden from the advertised catalog. Never hides `subagent`,
+/// `codedb`, or `read_file` (ADR 0040 — pro is not the default reader).
 pub fn hideBuiltin(name: []const u8) bool {
-    if (!main_mod.g_codedbpro_licensed) return false;
-    return std.mem.eql(u8, name, "read_file");
+    _ = name;
+    return false;
 }
 
 pub fn filterSpecs(comptime Spec: type, arena: Allocator, specs: []const Spec) ![]const Spec {
@@ -127,21 +137,18 @@ test "companion writes are omitted; reads are not" {
     try std.testing.expect(!keepWorkerMcp("mcp__codedbpro__edit"));
 }
 
-test "hideBuiltin drops read_file only when licensed; codedb and subagent stay" {
+test "hideBuiltin never drops codedb, read_file, or subagent" {
     const saved = main_mod.g_codedbpro_licensed;
     defer main_mod.g_codedbpro_licensed = saved;
-    main_mod.g_codedbpro_licensed = false;
-    try std.testing.expect(!hideBuiltin("read_file"));
-    try std.testing.expect(!hideBuiltin("codedb"));
-    try std.testing.expect(!hideBuiltin("subagent"));
-    try std.testing.expect(!hideBuiltin("edit_file"));
-    main_mod.g_codedbpro_licensed = true;
-    try std.testing.expect(hideBuiltin("read_file"));
-    try std.testing.expect(!hideBuiltin("codedb"));
-    try std.testing.expect(!hideBuiltin("subagent"));
-    try std.testing.expect(!hideBuiltin("edit_file"));
-    try std.testing.expect(!hideBuiltin("write_file"));
-    try std.testing.expect(!hideBuiltin("webfetch"));
+    for ([_]bool{ false, true }) |lic| {
+        main_mod.g_codedbpro_licensed = lic;
+        try std.testing.expect(!hideBuiltin("read_file"));
+        try std.testing.expect(!hideBuiltin("codedb"));
+        try std.testing.expect(!hideBuiltin("subagent"));
+        try std.testing.expect(!hideBuiltin("edit_file"));
+        try std.testing.expect(!hideBuiltin("write_file"));
+        try std.testing.expect(!hideBuiltin("webfetch"));
+    }
 }
 
 test "isSearchBash covers the licensed first-token list" {
@@ -157,6 +164,11 @@ test "isSearchBash covers the licensed first-token list" {
     try std.testing.expect(isSearchBash("ripgrep"));
     try std.testing.expect(!isSearchBash("git"));
     try std.testing.expect(!isSearchBash("zig"));
+    try std.testing.expect(isContentSearchBash("rg"));
+    try std.testing.expect(isContentSearchBash("grep"));
+    try std.testing.expect(!isContentSearchBash("cat"));
+    try std.testing.expect(!isContentSearchBash("head"));
+    try std.testing.expect(!isContentSearchBash("find"));
 }
 
 const FakeSpec = struct { name: []const u8 };
@@ -177,14 +189,12 @@ test "filterSpecs drops hidden builtins and leaves the rest" {
     try std.testing.expectEqual(@as(usize, 5), all.len);
     main_mod.g_codedbpro_licensed = true;
     const filtered = try filterSpecs(FakeSpec, arena_state.allocator(), &specs);
-    try std.testing.expectEqual(@as(usize, 4), filtered.len);
-    try std.testing.expectEqualStrings("bash", filtered[0].name);
-    try std.testing.expectEqualStrings("edit_file", filtered[1].name);
-    try std.testing.expectEqualStrings("codedb", filtered[2].name);
-    try std.testing.expectEqualStrings("subagent", filtered[3].name);
+    try std.testing.expectEqual(@as(usize, 5), filtered.len);
+    try std.testing.expectEqualStrings("read_file", filtered[1].name);
+    try std.testing.expectEqualStrings("codedb", filtered[3].name);
 }
 
-test "licensed root catalog drops read_file, keeps codedb and subagent and edit_file" {
+test "licensed root catalog keeps read_file, codedb, subagent, and edit_file" {
     const schema = @import("schema.zig");
     const saved = main_mod.g_codedbpro_licensed;
     defer main_mod.g_codedbpro_licensed = saved;
@@ -208,16 +218,17 @@ test "licensed root catalog drops read_file, keeps codedb and subagent and edit_
     var saw_edit = false;
     var saw_sub2 = false;
     var saw_codedb = false;
+    var saw_read2 = false;
     for (on) |t| {
-        try std.testing.expect(!std.mem.eql(u8, t.name, "read_file"));
+        if (std.mem.eql(u8, t.name, "read_file")) saw_read2 = true;
         if (std.mem.eql(u8, t.name, "codedb")) saw_codedb = true;
         if (std.mem.eql(u8, t.name, "edit_file")) saw_edit = true;
         if (std.mem.eql(u8, t.name, "subagent")) saw_sub2 = true;
-        if (std.mem.eql(u8, t.name, "write_file")) {}
     }
     try std.testing.expect(saw_edit);
     try std.testing.expect(saw_sub2);
     try std.testing.expect(saw_codedb);
+    try std.testing.expect(saw_read2);
 }
 
 test "skipOptionalServer keeps deepwiki/mobbin opt-in" {
@@ -231,7 +242,7 @@ test "skipOptionalServer keeps deepwiki/mobbin opt-in" {
     try std.testing.expect(!skipOptionalServer("mobbin", env));
 }
 
-test "worker specs drop read_file, keep codedb; worker MCP keeps reads not writes" {
+test "worker specs keep read_file and codedb; worker MCP keeps pro reads not writes" {
     const schema = @import("schema.zig");
     const saved = main_mod.g_codedbpro_licensed;
     defer main_mod.g_codedbpro_licensed = saved;
@@ -242,14 +253,16 @@ test "worker specs drop read_file, keep codedb; worker MCP keeps reads not write
     const specs = try filterSpecs(@TypeOf(schema.base_specs[0]), a, schema.base_specs[0..]);
     var saw_edit = false;
     var saw_codedb = false;
+    var saw_read = false;
     for (specs) |t| {
-        try std.testing.expect(!std.mem.eql(u8, t.name, "read_file"));
         try std.testing.expect(!std.mem.eql(u8, t.name, "subagent"));
+        if (std.mem.eql(u8, t.name, "read_file")) saw_read = true;
         if (std.mem.eql(u8, t.name, "codedb")) saw_codedb = true;
         if (std.mem.eql(u8, t.name, "edit_file")) saw_edit = true;
     }
     try std.testing.expect(saw_edit);
     try std.testing.expect(saw_codedb);
+    try std.testing.expect(saw_read);
     const fake = [_]mcp.Tool{
         .{ .server_index = 0, .original_name = "read", .qualified_name = "mcp__codedbpro__read", .description = "d", .input_schema = .null },
         .{ .server_index = 0, .original_name = "edit", .qualified_name = "mcp__codedbpro__edit", .description = "d", .input_schema = .null },
@@ -263,6 +276,6 @@ test "worker specs drop read_file, keep codedb; worker MCP keeps reads not write
     mcp_gate.g_policy = .{ .eager = &.{"codedbpro"} };
     const json = try schema.renderRootTools(a, .openai, specs, kept);
     try std.testing.expect(std.mem.indexOf(u8, json, "mcp__codedbpro__read") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "read_file") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "read_file") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "mcp__codedbpro__edit") == null);
 }

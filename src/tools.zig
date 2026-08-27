@@ -195,7 +195,8 @@ pub fn runPostToolHooks(ctx: ToolCtx, call: ToolCall, out: ToolOutput) void {
 /// model adapts — same contract as a pre_tool hook's exit 2.
 pub fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
     if (!main_mod.g_codedb_guard) return null;
-    if (main_mod.g_codedbpro_licensed) return null; // licensedGate owns read/search
+    // Licensed or not: shell reads of a concrete source file go to codedb,
+    // not mcp__codedbpro__read (ADR 0040).
     if (!std.mem.eql(u8, call.name, "bash")) return null;
     const cmd = strField(call.input, "command") orelse return null;
 
