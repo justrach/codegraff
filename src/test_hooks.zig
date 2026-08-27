@@ -334,10 +334,14 @@ test {
     _ = @import("commands_experiment.zig");
     _ = @import("acp_engine.zig");
     _ = @import("libgraff.zig");
+<<<<<<< HEAD
     _ = @import("tui_peer.zig");
     _ = @import("acp_auth.zig");
     _ = @import("local_tools.zig");
     _ = @import("schedule.zig");
     _ = @import("channel_worker.zig");
     _ = @import("session_wake.zig");
+=======
+    _ = @import("tui_acp.zig");
+>>>>>>> f732af4 (feat: TUI is an in-process ACP client)
 }
