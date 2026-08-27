@@ -298,13 +298,7 @@ pub fn run(
             continue;
         }
         esc_stall = 0;
-        if (pending_len == inbuf.len) {
-            // A stuck head has filled the whole buffer: that is a parser
-            // wedge, not a dead tty. Drop it rather than letting the
-            // zero-length read below masquerade as a hangup and kill the
-            // TUI mid-session (#517).
-            pending_len = 0;
-        }
+        pending_len = stall.clearFullWedge(pending_len, inbuf.len);
         var filled = pending_len;
         const got = tty.readStdin(inbuf[filled..]);
         pacing.reads += 1;
@@ -505,9 +499,6 @@ test "run loop enables click+hover tracking and bracketed paste" {
     try std.testing.expect(std.mem.indexOf(u8, src, &kitty_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &wrap_off) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "a=d,d=A") != null);
-    // #517: a buffer-filling parser wedge must be cleared before the read,
-    // or the zero-length read reads as a hangup and kills the TUI.
-    try std.testing.expect(std.mem.indexOf(u8, src, "pending_len == inbuf.len") != null);
     // The idle paste sweep must DISCARD whatever was stuck mid-sequence before
     // the stall path below can see it. Leaving it there let a lone pending ESC
     // become the Escape KEY the instant `in_paste` cleared, cancelling a live

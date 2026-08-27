@@ -537,7 +537,10 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             // "This response_format type is unavailable now") must not lose the
             // --output-schema contract — retry in json_object mode with the
             // schema moved into the prompt, on the same ladder as cap_new.
-            if (self.output_schema != null and !self.sox_json_object and std.mem.indexOf(u8, msg, "response_format") != null) {
+            if (self.output_schema != null and !self.sox_json_object and
+                (std.mem.indexOf(u8, msg, "response_format") != null or
+                    std.mem.indexOf(u8, msg, "output_config") != null))
+            {
                 self.sox_json_object = true;
                 continue;
             }

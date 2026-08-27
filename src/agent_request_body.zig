@@ -96,10 +96,8 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                     try s.objectField("tool_choice");
                     try s.print("{s}", .{"{\"type\":\"any\"}"});
                 }
-            } else if (self.output_schema != null) {
-                // #543: this wire has no response_format at all — the schema is
-                // ALWAYS delivered as the structured_output tool (dsh pattern).
-                try @import("agent_request_body_responses.zig").writeAnthropicStructuredTool(&s, self.output_schema.?);
+            } else if (self.output_schema) |schema_json| {
+                try @import("agent_request_body_responses.zig").writeAnthropicSchema(&s, self, schema_json);
             }
             try s.objectField("messages");
             // Cache the conversation prefix too (not just system) on the real

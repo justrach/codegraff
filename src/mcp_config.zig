@@ -67,6 +67,14 @@ pub fn globalPath(arena: Allocator, home: []const u8, environ_map: anytype) ?[]c
     return std.fmt.allocPrint(arena, "{s}/" ++ global_rel_path, .{home}) catch null;
 }
 
+/// Whether `GRAFF_MCP_CONFIG` points at a real path. An existing, valid, empty
+/// override is a wholesale MCP off-switch (#549); the default global file is
+/// never that — relocating `~/.codegraff/mcp.json` still merges the project.
+pub fn isEnvOverride(environ_map: anytype) bool {
+    if (environ_map.get(path_env)) |override| return override.len > 0;
+    return false;
+}
+
 /// Read `path` and return its `mcpServers` object. Best-effort throughout:
 /// only "no such file" reads as absent, everything else reads as invalid (and
 /// empty) so a caller can say which file it could not use.
@@ -105,12 +113,24 @@ fn readServers(io: Io, arena: Allocator, dir: Io.Dir, path: []const u8, found: *
 /// handle it is opened through. Never fails: a missing or malformed file simply
 /// contributes nothing. Values stay arena-allocated, like the rest of the MCP
 /// config handling.
-pub fn load(io: Io, arena: Allocator, dir: Io.Dir, project_path: []const u8, global_path: ?[]const u8, home: []const u8) Merged {
+///
+/// `global_is_override` is true only when `GRAFF_MCP_CONFIG` selected the
+/// path. A file that exists, parses, and lists no servers is then a wholesale
+/// off-switch (pty/harness): the project `.mcp.json` and plugin trees do not
+/// merge in. A *populated* override still merges, so relocating the global
+/// file is unchanged. A missing or invalid override is not an off-switch.
+pub fn load(io: Io, arena: Allocator, dir: Io.Dir, project_path: []const u8, global_path: ?[]const u8, home: []const u8, global_is_override: bool) Merged {
     var merged: Merged = .{};
     const global = if (global_path) |p|
         readServers(io, arena, dir, p, &merged.found, &merged.invalid_global)
     else
         std.json.ObjectMap.empty;
+    // #549: existing + valid + empty override → MCP stays off. `found` is
+    // already true (the file existed), so Registry.init does not treat this
+    // as "no config" and then pick up a project file on a later read.
+    if (global_is_override and merged.found and !merged.invalid_global and global.count() == 0)
+        return merged;
+
     merged.project = readServers(io, arena, dir, project_path, &merged.found, &merged.invalid_project);
 
     // Global first, project second: the later `put` for a name overwrites, so
@@ -163,7 +183,11 @@ const TestEnv = struct {
 /// Both halves are read through the tmp dir handle, so no test touches `$HOME`
 /// or the real workspace.
 fn loadTmp(arena: Allocator, dir: Io.Dir) Merged {
-    return load(testing.io, arena, dir, ".mcp.json", "global.json", "");
+    return load(testing.io, arena, dir, ".mcp.json", "global.json", "", false);
+}
+
+fn loadTmpOverride(arena: Allocator, dir: Io.Dir) Merged {
+    return load(testing.io, arena, dir, ".mcp.json", "global.json", "", true);
 }
 
 test "global MCP path prefers the env override and otherwise lives under ~/.codegraff" {
@@ -174,6 +198,9 @@ test "global MCP path prefers the env override and otherwise lives under ~/.code
     try testing.expectEqualStrings("/tmp/mcp.json", globalPath(arena, "/home/alice", TestEnv{ .override = "/tmp/mcp.json" }).?);
     // An empty override falls back rather than resolving to the file "".
     try testing.expectEqualStrings("/home/alice/.codegraff/mcp.json", globalPath(arena, "/home/alice", TestEnv{ .override = "" }).?);
+    try testing.expect(isEnvOverride(TestEnv{ .override = "/tmp/mcp.json" }));
+    try testing.expect(!isEnvOverride(TestEnv{ .override = "" }));
+    try testing.expect(!isEnvOverride(TestEnv{}));
     // No HOME and no override is "no global config", not a crash.
     try testing.expect(globalPath(arena, "", TestEnv{}) == null);
 }
@@ -261,4 +288,59 @@ test "an unreadable MCP config is invalid, not absent" {
     try testing.expect(merged.found and merged.invalid_global);
     try testing.expect(!merged.invalid_project);
     try testing.expectEqual(@as(usize, 0), merged.servers.count());
+}
+
+test "a valid empty GRAFF_MCP_CONFIG override is a wholesale MCP off-switch (#549)" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "global.json", .data = "{\"mcpServers\":{}}" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = ".mcp.json", .data = "{\"mcpServers\":{\"local\":{\"command\":\"./srv\"}}}" });
+
+    const off = loadTmpOverride(arena_state.allocator(), tmp.dir);
+    try testing.expect(off.found);
+    try testing.expect(!off.invalid_global and !off.invalid_project);
+    try testing.expectEqual(@as(usize, 0), off.servers.count());
+    try testing.expectEqual(@as(usize, 0), off.project.count());
+
+    // The default global file is never that switch: an empty ~/.codegraff/mcp.json
+    // still merges the project (relocating the global file stays a merge).
+    const merged = loadTmp(arena_state.allocator(), tmp.dir);
+    try testing.expectEqual(@as(usize, 1), merged.servers.count());
+    try testing.expect(merged.servers.get("local") != null);
+}
+
+test "a populated GRAFF_MCP_CONFIG override still merges the project file (#549)" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "global.json", .data = "{\"mcpServers\":{\"deepwiki\":{\"url\":\"https://mcp.deepwiki.com/mcp\"}}}" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = ".mcp.json", .data = "{\"mcpServers\":{\"local\":{\"command\":\"./srv\"}}}" });
+
+    const merged = loadTmpOverride(arena_state.allocator(), tmp.dir);
+    try testing.expectEqual(@as(usize, 2), merged.servers.count());
+    try testing.expect(merged.isGlobalOnly("deepwiki"));
+    try testing.expect(!merged.isGlobalOnly("local"));
+}
+
+test "a missing or invalid GRAFF_MCP_CONFIG override is not an off-switch (#549)" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var missing = testing.tmpDir(.{});
+    defer missing.cleanup();
+    try missing.dir.writeFile(testing.io, .{ .sub_path = ".mcp.json", .data = "{\"mcpServers\":{\"local\":{\"command\":\"./srv\"}}}" });
+    const no_file = loadTmpOverride(arena, missing.dir);
+    try testing.expect(no_file.servers.get("local") != null);
+
+    var broken = testing.tmpDir(.{});
+    defer broken.cleanup();
+    try broken.dir.writeFile(testing.io, .{ .sub_path = "global.json", .data = "{ not json" });
+    try broken.dir.writeFile(testing.io, .{ .sub_path = ".mcp.json", .data = "{\"mcpServers\":{\"local\":{\"command\":\"./srv\"}}}" });
+    const bad = loadTmpOverride(arena, broken.dir);
+    try testing.expect(bad.invalid_global);
+    try testing.expect(bad.servers.get("local") != null);
 }

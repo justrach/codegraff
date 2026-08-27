@@ -134,13 +134,19 @@ pub fn schemaAwarePrompt(self: *Agent) ![]const u8 {
     const base = self.systemPrompt();
     if (self.output_schema == null) return base;
     // #543 degrade: this provider cannot enforce json_schema server-side —
-    // learned on the chat wire (sox), structural on the anthropic wire (no
-    // response_format exists) — so the schema itself must reach the model:
-    // through the structured_output tool when offered (the tools-off
-    // formatting turn), else as the entire final message.
+    // learned on the chat wire (sox), or structural on minimax / kimi-anthropic
+    // (tool mode) — so the schema itself must reach the model through the
+    // structured_output tool when offered (the tools-off formatting turn),
+    // else as the entire final message.
     // Chat-wire only for sox: a stale learned flag must not perturb the
     // responses wire's bytes (native text.format needs no prompt embed).
-    if ((self.provider.kind == .openai and self.sox_json_object) or self.provider.kind == .anthropic) return std.mem.concat(self.scratchAlloc(), u8, &.{
+    // Full-schema embed is the tool-mode / learned-fallback path. Native
+    // Anthropic `output_config.format` (provider id `anthropic`, no sox)
+    // enforces server-side on the formatting turn — same light prompt as
+    // Responses. minimax / kimi-anthropic stay on the tool.
+    const anthropic_tool_mode = self.provider.kind == .anthropic and
+        (self.sox_json_object or !std.mem.eql(u8, self.provider.id, "anthropic"));
+    if ((self.provider.kind == .openai and self.sox_json_object) or anthropic_tool_mode) return std.mem.concat(self.scratchAlloc(), u8, &.{
         base,
         "\n\nA JSON output schema is enforced on your final answer. Use tools first to gather every fact you need — never guess values. This provider cannot enforce the schema server-side, so satisfy it yourself: call the structured_output tool when it is offered, otherwise reply with a single JSON object, matching exactly this schema: ",
         self.output_schema.?,
@@ -206,11 +212,35 @@ pub fn writeStructuredOutputTool(s: *std.json.Stringify, schema_json: []const u8
     try s.endArray();
 }
 
-/// #543, anthropic wire: same tool, Anthropic tool shape (input_schema). This
-/// wire has no response_format at all, so the tool is not a degrade — it is
-/// the only server-visible carrier the schema has (Anthropic's own canonical
-/// structured-output pattern). Unforced, as everywhere: forced tool_choice
-/// conflicts with thinking on this wire too.
+/// #550: native Anthropic structured outputs on the tools-off formatting
+/// turn. Provider id `anthropic` only — minimax / kimi-anthropic keep the
+/// structured_output tool, and a learned sox flag falls back to it too.
+pub fn writeAnthropicSchema(s: *std.json.Stringify, self: *const Agent, schema_json: []const u8) !void {
+    if (std.mem.eql(u8, self.provider.id, "anthropic") and !self.sox_json_object) {
+        try writeAnthropicOutputConfig(s, schema_json);
+        return;
+    }
+    try writeAnthropicStructuredTool(s, schema_json);
+}
+
+/// kimi-code's anthropic adapter: `output_config.format = {type, schema}`.
+/// Formatting turn only (ADR 0001): never attach this to a tools turn.
+pub fn writeAnthropicOutputConfig(s: *std.json.Stringify, schema_json: []const u8) !void {
+    try s.objectField("output_config");
+    try s.beginObject();
+    try s.objectField("format");
+    try s.beginObject();
+    try s.objectField("type");
+    try s.write("json_schema");
+    try s.objectField("schema");
+    try s.print("{s}", .{schema_json});
+    try s.endObject();
+    try s.endObject();
+}
+
+/// #543, anthropic wire: same tool, Anthropic tool shape (input_schema).
+/// Fallback for minimax / kimi-anthropic and for a rejected output_config.
+/// Unforced: forced tool_choice conflicts with thinking on this wire too.
 pub fn writeAnthropicStructuredTool(s: *std.json.Stringify, schema_json: []const u8) !void {
     try s.objectField("tools");
     try s.beginArray();
@@ -424,35 +454,54 @@ test "#543: json_schema rejection degrades dsh-style — forced structured_outpu
     try std.testing.expect(std.mem.indexOf(u8, body2, "json_schema") == null);
 }
 
-test "#543: the anthropic wire always carries the schema as a structured_output tool (no response_format exists there)" {
+test "#550: anthropic id uses output_config.format on the formatting turn; tool-mode is the fallback" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const schema = "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},\"required\":[\"answer\"],\"additionalProperties\":false}";
     var agent = try testAgentFor(arena_state.allocator(), "anthropic", .anthropic, "claude-sonnet-5");
-    agent.output_schema = schema; // no sox learning needed — structural on this wire
+    agent.output_schema = schema;
 
-    // Tools-off formatting turn: anthropic tool shape, schema as input_schema, unforced.
+    // Tools-off formatting turn: native json_schema (ADR 0001 — not on tools turns).
     const body = try agent.buildBody(null, false, true, true);
     defer std.testing.allocator.free(body);
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"tools\":[{\"name\":\"structured_output\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"input_schema\":{\"type\":\"object\",\"properties\":{\"answer\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "tool_choice") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "structured_output") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "response_format") == null);
-    // The cached system block carries the schema-aware suffix (was self.systemPrompt() before — the schema never reached this wire at all).
-    try std.testing.expect(std.mem.indexOf(u8, body, "cannot enforce the schema server-side") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "cannot enforce the schema server-side") == null);
 
-    // Agentic turn with real tools: no synthetic tool, but the suffix still teaches the contract.
+    // Agentic turn: no grammar (ADR 0001), light prompt, no synthetic tool.
     const tools = "[{\"name\":\"bash\",\"description\":\"\",\"input_schema\":{\"type\":\"object\"}}]";
     const body2 = try agent.buildBody(tools, false, true, true);
     defer std.testing.allocator.free(body2);
     try std.testing.expect(std.mem.indexOf(u8, body2, "\"name\":\"structured_output\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, body2, "cannot enforce the schema server-side") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body2, "output_config") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body2, "cannot enforce the schema server-side") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body2, "only the final message must match the schema") != null);
 
-    // No schema → byte-identical prompt path (base), no tools field at all when tools==null.
+    // Learned rejection: same quirk flag as sox_json_object → tool mode.
+    agent.sox_json_object = true;
+    const body3 = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(body3);
+    try std.testing.expect(std.mem.indexOf(u8, body3, "\"tools\":[{\"name\":\"structured_output\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body3, "\"input_schema\":{\"type\":\"object\",\"properties\":{\"answer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body3, "output_config") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body3, "cannot enforce the schema server-side") != null);
+
+    // minimax keeps the tool even without sox (no native output_config).
+    var mm = try testAgentFor(arena_state.allocator(), "minimax", .anthropic, "MiniMax-M2.5");
+    mm.output_schema = schema;
+    const mm_body = try mm.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(mm_body);
+    try std.testing.expect(std.mem.indexOf(u8, mm_body, "\"tools\":[{\"name\":\"structured_output\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mm_body, "output_config") == null);
+
+    // No schema → byte-identical prompt path (base), no tools / output_config.
+    agent.sox_json_object = false;
     agent.output_schema = null;
     const plain = try agent.buildBody(null, false, true, true);
     defer std.testing.allocator.free(plain);
     try std.testing.expect(std.mem.indexOf(u8, plain, "structured_output") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "output_config") == null);
     try std.testing.expect(std.mem.indexOf(u8, plain, "\"tools\"") == null);
 }
 
