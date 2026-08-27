@@ -35,6 +35,7 @@ pub const CompactOut = engine.CompactOut;
 pub const CompactFn = engine.CompactFn;
 pub const HistoryOp = engine.HistoryOp;
 pub const HistoryFn = engine.HistoryFn;
+pub const PeerFn = engine.PeerFn;
 pub const RunOpts = run_mod.RunOpts;
 pub const run = run_mod.run;
 pub const restore = @import("restore.zig");
@@ -54,6 +55,8 @@ test {
     _ = app;
     _ = @import("app_tests.zig");
     _ = @import("dispatch.zig");
+    _ = @import("peer_cmd.zig");
+    _ = @import("peer_tests.zig");
     _ = @import("prompt_history.zig");
     _ = @import("meters.zig");
     _ = @import("key.zig");

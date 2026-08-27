@@ -170,7 +170,7 @@ pub const changelog_text =
     \\
     \\0.0.244
     \\  • Co-resident graff sessions now see each other: a startup warning names any live session already in your worktree, and the first git mutation, file write, or shell move against a peer's tree pauses once for a deliberate re-issue — two agents can no longer silently tear one tree
-    \\  • Sessions can message each other: the peer_message tool and /tell post to a shared channel every co-resident session hears (address one by name, "all" reaches every session on the device), delivered mid-task at step boundaries with the sender's current goal attached
+    \\  • Sessions can message each other: peer_message posts to this folder's room, or names one session as a DM (not "all" — retired for the model). /tell <session> is a human DM; /tell all is the user's device-wide broadcast. Delivery is at the receiver's next step boundary, with the sender's current goal attached
     \\  • The model is told up front who else is live and what they're working on, so it coordinates — or picks disjoint work — before any collision
     \\  • /peek <session> shows what a live co-resident session is doing right now — its last prompt, last action, last tool
     \\  • Session recaps ride the event stream: settled turns carry a Completed or Needs-input status with a one-line recap for the GUI agent overview

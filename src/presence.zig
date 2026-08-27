@@ -428,6 +428,24 @@ pub fn resetRoomCursorForTest() void {
     g_tail_seeked = false;
 }
 
+/// Tests only. `announce` is a no-op under `is_test`; this wires the same
+/// process-local handle so `postTo` / `postToDevice` can write a tmp registry.
+/// Caller owns the slices — do not `deinit` after this; call `unbindForTest`.
+pub fn bindForTest(dir_path: []const u8, identity: []const u8, session: []const u8, self: proc_identity.Record) void {
+    g_dir = dir_path;
+    g_identity = identity;
+    g_session = session;
+    g_self = self;
+}
+
+pub fn unbindForTest() void {
+    g_dir = null;
+    g_identity = "";
+    g_session = "";
+    g_self = .{};
+    resetRoomCursorForTest();
+}
+
 /// Every live session on this device, any worktree (self excluded) — the
 /// /tell target list. Like liveTreePeers but identity-blind.
 pub fn liveAllPeers(io: Io, arena: Allocator) []const Owner {

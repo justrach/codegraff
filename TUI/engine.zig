@@ -176,6 +176,12 @@ pub var g_raw: ?*StreamBuf = null;
 pub const IdleWakeFn = *const fn (turn_ctx: ?*anyopaque, buf: []u8) ?[]const u8;
 pub var g_idle_wake_fn: ?IdleWakeFn = null;
 
+/// Run a peer-talk slash (`/tell`, `/peek`) on the live agent. The TUI does
+/// not post to the room itself — the host implements this with the existing
+/// mailbox (`tellCommand` / `peekCommand`). Caller frees the returned text.
+pub const PeerFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, line: []const u8) ?[]const u8;
+pub var g_peer_fn: ?PeerFn = null;
+
 /// A background engine op: `/compact`, `!cmd`, or the @-file list. Same
 /// thread + done-flag contract as Job, so the render+input loop keeps painting
 /// and Esc keeps reaching keys.handle while the engine works (#533). Every
@@ -244,6 +250,7 @@ pub const RunOpts = struct {
     compact_fn: ?CompactFn = null,
     history_fn: ?HistoryFn = null,
     idle_wake_fn: ?IdleWakeFn = null,
+    peer_fn: ?PeerFn = null,
 };
 
 pub var g_turn_fn: ?TurnFn = null;

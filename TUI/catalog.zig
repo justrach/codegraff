@@ -41,6 +41,8 @@ pub const items = [_]Item{
     .{ .name = "/jump", .desc = "Jump to a previous turn" },
     .{ .name = "/copy", .desc = "Copy the last reply to the clipboard" },
     .{ .name = "/btw", .desc = "Queue an aside without interrupting" },
+    .{ .name = "/tell", .desc = "Message a running graff (/tell all broadcasts)" },
+    .{ .name = "/peek", .desc = "See what a live session is doing" },
     .{ .name = "/vim-mode", .desc = "Vim keys in the scrollback", .aliases = &.{"/vim"} },
     .{ .name = "/help", .desc = "List commands" },
     .{ .name = "/doctor", .desc = "Health check" },
@@ -99,6 +101,8 @@ test "filter: slash prefix and alias" {
     try std.testing.expect(lookup("/debug") != null);
     try std.testing.expect(lookup("/cache") != null);
     try std.testing.expect(lookup("/cost") != null);
+    try std.testing.expect(lookup("/tell") != null);
+    try std.testing.expect(lookup("/peek") != null);
     try std.testing.expect(lookup("/not-a-cmd") == null);
 }
 

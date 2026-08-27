@@ -16,6 +16,7 @@ const repl = @import("repl.zig");
 const repl_bash = @import("repl_bash.zig");
 const repl_glue = @import("repl_glue.zig");
 const tui = @import("tui");
+const tui_peer = @import("tui_peer.zig");
 const engine_sink = @import("engine_sink.zig");
 const tui_sink = @import("tui_sink.zig");
 const job_notify = @import("job_notify.zig");
@@ -88,6 +89,7 @@ pub fn run(
         .tools_anthropic = root.tools_anthropic,
         .tools_openai = root.tools_openai,
         .tools_responses = root.tools_responses,
+        .root = root,
     };
     // #551: the session's conversation belongs to the engine and outlives every
     // turn, so tool_use/tool_result blocks accumulate the way mainloop's root
@@ -118,6 +120,7 @@ pub fn run(
         .compact_fn = compactCb,
         .history_fn = historyCb,
         .idle_wake_fn = idleWakeCb,
+        .peer_fn = tui_peer.peerCb,
     });
 }
 
@@ -382,6 +385,7 @@ test {
     _ = tui;
     _ = tui_sink;
     _ = repl_bash;
+    _ = tui_peer;
 }
 
 test "hudCb usage/debug use the cost-tally renderer, not chars" {
