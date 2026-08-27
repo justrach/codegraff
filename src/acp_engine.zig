@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 
 const proto = @import("acp_protocol.zig");
 const util = @import("util.zig");
+const acp_auth = @import("acp_auth.zig");
 
 pub const parseRequest = proto.parseRequest;
 pub const negotiateVersion = proto.negotiateVersion;
@@ -103,7 +104,10 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
             .promptCapabilities = proto.PromptCapabilities{},
         },
         .agentImplementation = proto.AgentImplementation{ .version = implementation_version },
+        .authMethods = acp_auth.advertised,
     });
+    if (std.mem.eql(u8, req.method, "authenticate"))
+        return respondError(w, req, err_method_not_found, "terminal auth is out of band: re-spawn graff login");
     if (std.mem.eql(u8, req.method, "session/new")) {
         d.created += 1;
         d.session_id = try std.fmt.allocPrint(arena, "acp-{x}-{d}", .{ d.seed, d.created });
@@ -140,6 +144,9 @@ test "in-process handleLine speaks the same initialize / new / prompt envelopes"
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"protocolVersion\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"name\":\"graff\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "embed-test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"authMethods\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "graff-login") != null);
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"type\":\"terminal\"") != null);
 
     w = .fixed(&buf);
     try handleLine(&d, a, &w, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\"}");
@@ -150,6 +157,17 @@ test "in-process handleLine speaks the same initialize / new / prompt envelopes"
     try handleLine(&d, a, &w, "{\"id\":3,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"ping\"}]}}");
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"text\":\"echo:ping\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"stopReason\":\"end_turn\"") != null);
+}
+
+test "authenticate names the out-of-band terminal login" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    var buf: [512]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined };
+    try handleLine(&d, state.allocator(), &w, "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"authenticate\",\"params\":{\"methodId\":\"graff-login\"}}");
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"code\":-32601") != null);
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "graff login") != null);
 }
 
 test "stripSgr drops CSI sequences" {

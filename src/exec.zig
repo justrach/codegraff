@@ -67,6 +67,7 @@ const native_fold = @import("native_fold.zig"); // folded native power tools: la
 const vision = @import("vision.zig"); // read_file stages images like MCP image results (#249)
 const input_util = @import("input_util.zig");
 const imagegen = @import("imagegen.zig"); // #352: the codex-gated image tool (advertising lives in schema.zig/tool_gates.zig)
+const local_tools = @import("local_tools.zig");
 
 fn learningArgv(argv: *[10][]const u8, exe_path: []const u8, contribute: bool) usize {
     var argc: usize = 0;
@@ -163,6 +164,10 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
 /// one that was never advertised (layer 1 is schema.zig). FIRST in the guard
 /// chain; an `mcp__*` name never matches, so the sandbox proxy keeps working.
 fn noLocalToolsGate(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
+    if (no_local_tools.enabled and local_tools.isLocal(call.name)) {
+        const text = ctx.gpa.dupe(u8, no_local_tools.refusal_text) catch return .{ .text = &.{}, .is_error = true };
+        return .{ .text = text, .is_error = true };
+    }
     if (!no_local_tools.blocks(call.name)) return null;
     const text = ctx.gpa.dupe(u8, no_local_tools.refusal_text) catch return .{ .text = &.{}, .is_error = true };
     return .{ .text = text, .is_error = true };
@@ -175,7 +180,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     // Plan mode backstop: the root gate already denies these with a nicer
     // message; this catches subagents (which skip the gate entirely).
     if (main_mod.plan_mode) {
-        if (std.mem.eql(u8, call.name, "learn_candidate") or std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or std.mem.eql(u8, call.name, imagegen.tool_name) or mcp.Registry.isMcp(call.name)) return .{
+        if (local_tools.isLocal(call.name) or std.mem.eql(u8, call.name, "learn_candidate") or std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or std.mem.eql(u8, call.name, imagegen.tool_name) or mcp.Registry.isMcp(call.name)) return .{
             .text = try gpa.dupe(u8, "plan mode is on — read-only; describe the change instead of making it"),
             .is_error = true,
         };
@@ -408,6 +413,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     if (std.mem.eql(u8, call.name, "subagent")) return execSubagent(ctx, input);
     if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
     if (std.mem.eql(u8, call.name, @import("rlm.zig").tool_name)) return @import("rlm.zig").exec(ctx, input);
+    if (local_tools.isLocal(call.name)) return local_tools.exec(gpa, io, call.name, input);
     if (std.mem.eql(u8, call.name, "agent_output")) {
         const id = intField(input, "id") orelse return missingArg(gpa, "id");
         const wait_ms = intField(input, "wait_ms") orelse 0;

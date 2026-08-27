@@ -163,6 +163,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (try @import("adopt.zig").trySlash(root.io, arena, root.home, line, out)) return true;
     if (try commands_privacy.tryHandle(root, line, out)) return true;
     if (try playbook_glue.command(root, arena, line, out)) return true; // #381 /never | /constraint
+    if (std.mem.startsWith(u8, line, "/schedule") and (line.len == 9 or line[9] == ' ' or line[9] == '\t')) return @import("schedule.zig").slashCommand(root, arena, line, out);
+    if (std.mem.startsWith(u8, line, "/adapter") and (line.len == 8 or line[8] == ' ' or line[8] == '\t')) return @import("channel_worker.zig").slashCommand(root, arena, line, out);
     if (try side_question.command(root, arena, line, out)) return true; // #415 /btw
     // #321: doctor.zig shipped with a catalog entry but no dispatch, so /doctor
     // was advertised in /help and the `/` menu while answering "unknown command".

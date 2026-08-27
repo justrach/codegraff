@@ -20,6 +20,8 @@ const tui_peer = @import("tui_peer.zig");
 const engine_sink = @import("engine_sink.zig");
 const tui_sink = @import("tui_sink.zig");
 const job_notify = @import("job_notify.zig");
+const schedule = @import("schedule.zig");
+const channel_worker = @import("channel_worker.zig");
 const obs = @import("obs.zig");
 const telemetry = @import("telemetry.zig");
 const vision = @import("vision.zig");
@@ -142,7 +144,9 @@ fn historyCb(ctx: ?*anyopaque, op: tui.HistoryOp) void {
 
 fn idleWakeCb(ctx: ?*anyopaque, buf: []u8) ?[]const u8 {
     const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
-    return job_notify.takeWake(c.io, buf);
+    if (job_notify.takeWake(c.io, buf)) |t| return t;
+    if (schedule.takeWake(c.io, buf)) |t| return t;
+    return channel_worker.takeWake(c.io, buf);
 }
 
 /// Overlay the TUI preview buffer as a repl.StreamBuf so replTurnCb's

@@ -28,6 +28,8 @@ pub const commands = [_]Item{
     .{ .name = "/rename", .usage = "/rename <title>", .desc = "set the current session title" },
     .{ .name = "/goal", .usage = "/goal [30m] [text|pause|resume|status|clear]", .desc = "set a standing objective and work it autonomously; an optional 30s/30m/2h budget paces the run; pause/resume steering, status shows state, clear removes it" },
     .{ .name = "/loop", .usage = "/loop [30m] <prompt>", .desc = "the same autonomous run as /goal, without adopting a standing objective" },
+    .{ .name = "/schedule", .usage = "/schedule <30s|5m|2h> <prompt>", .desc = "fire a prompt later; delay tokens match /loop (not a standing goal)" },
+    .{ .name = "/adapter", .usage = "/adapter send <text>|inbox", .desc = "channel-worker outbox / inbox (JSONL protocol; Discord/Slack fronts later)" },
     .{ .name = "/review", .usage = "/review <target or instructions>", .desc = "run one isolated read-only review pass; no edits, delegation, or workflows" },
     .{ .name = "/never", .usage = "/never [<text>|rm <id-or-text>]", .desc = "standing constraints that ride every brief; bare opens a searchable picker (TTY) or lists them, rm <id-or-text> retires one (alias /constraint)" },
     .{ .name = "/tell", .usage = "/tell <session|all> <text>", .desc = "message a running graff: <session> is a DM (only it hears, any folder); all broadcasts to every graff on this device; /sessions lists who's around" },

@@ -335,4 +335,9 @@ test {
     _ = @import("acp_engine.zig");
     _ = @import("libgraff.zig");
     _ = @import("tui_peer.zig");
+    _ = @import("acp_auth.zig");
+    _ = @import("local_tools.zig");
+    _ = @import("schedule.zig");
+    _ = @import("channel_worker.zig");
+    _ = @import("session_wake.zig");
 }

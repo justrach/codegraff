@@ -18,7 +18,7 @@ and the host recipe stays [embedding.md](embedding.md). Replace those with
 | `graff acp` stdio agent | Shipped. Protocol version 1. |
 | Mid-turn `session/update` (thought / tool / text) | Shipped (ADR [0032](adr/0032-acp-streams-mid-turn.md), #612). |
 | Provider login | `graff login` / keychain / env keys. Not ACP `authenticate`. |
-| `initialize.authMethods` | **Missing.** Registry CI requires at least one method with `type: "agent"` or `type: "terminal"`. |
+| `initialize.authMethods` | **Shipped.** `graff-login` / `type: "terminal"` / `args: ["login"]`. `authenticate` stays unused — the client re-spawns `graff login`. |
 | `session/load`, `session/request_permission` | Not implemented. Unattended + `--yolo` is the host path. |
 
 A stale comment on #613 said #612 was still open. It is not: streaming is on
@@ -33,8 +33,8 @@ accepts only:
 - **Terminal Auth** — the client re-spawns the binary with setup args (a TUI
   login), then runs the normal ACP command.
 
-`graff login` is already Terminal Auth in product terms. Listing still fails
-until `initialize` advertises it, for example:
+`graff login` is already Terminal Auth in product terms. `initialize` now
+advertises it:
 
 ```json
 {
@@ -121,11 +121,11 @@ Pin `sha256` from that release's `SHA256SUMS` before the PR. Archive layout
 is sometimes flat (`graff` at the tarball root) and sometimes nested
 (`graff-<target>/graff`); `cmd` must match what the installer extracts.
 
-Until `authMethods` is on the wire, this draft is documentation, not a
-submission.
+`authMethods` is on the wire. Pin `sha256` from a real release, then open the
+registry PR in the other repo. This repo still does not fetch the catalog.
 
 ## Not this repo
 
 - No `graff registry` command.
 - No fetch of `cdn.agentclientprotocol.com`.
-- No change to `src/acp.zig` on this continuation cut for listing.
+- No `authenticate` implementation (Terminal Auth is out of band).

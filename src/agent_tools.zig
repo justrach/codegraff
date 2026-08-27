@@ -49,6 +49,8 @@ const brief_diversity = @import("brief_diversity.zig"); // #382: N sibling spawn
 const playbook_glue = @import("playbook_glue.zig"); // #381: the note_constraint meta arm
 const mcp_schema_gate = @import("mcp_schema_gate.zig"); // #416: the load_tool_schemas meta arm
 const native_fold = @import("native_fold.zig"); // folded native power tools: load_tool_schemas's native half
+const local_tools = @import("local_tools.zig");
+const schedule = @import("schedule.zig");
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
 
 // #440: the ONE size contract for a tool result — preview + durable handle +
@@ -102,7 +104,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
         try self.sayToolUse(call);
         if (self.output_schema != null and std.mem.eql(u8, call.name, "structured_output")) {
             results[i] = @import("agent_request_body_responses.zig").handleStructuredOutput(self, call.input); // #543 tool-mode capture
-        } else if (isMetaName(call.name)) {
+        } else if (isMetaName(call.name) or local_tools.isInstall(call.name) or schedule.isName(call.name)) {
             results[i] = try self.handleMeta(call);
         } else if (try self.gateTool(call)) |denied| {
             results[i] = denied;
@@ -312,6 +314,14 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     // #469: sideways coordination between co-resident root sessions.
     if (std.mem.eql(u8, call.name, peer_channel.tool_name)) return peer_channel.handleMessage(self, call);
     if (std.mem.eql(u8, call.name, workspace_switch.tool_name)) return workspace_switch.handle(self, call);
+    if (local_tools.isInstall(call.name)) {
+        if (main_mod.plan_mode) return .{ .text = "plan mode is on — install_agent_tool writes .graff/tools; switch to act first.", .is_error = true };
+        return local_tools.handleInstall(self, call);
+    }
+    if (schedule.isName(call.name)) {
+        if (main_mod.plan_mode) return .{ .text = "plan mode is on — schedule_task writes .graff/schedule; switch to act first.", .is_error = true };
+        return schedule.handleTool(self, call);
+    }
     if (std.mem.eql(u8, call.name, "attempt_completion")) {
         if (!self.review_mode and self.eval_cmd != null and (!self.eval_verified or self.eval_repair_pending)) {
             const message = if (self.eval_repair_pending)

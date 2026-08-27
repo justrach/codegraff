@@ -99,6 +99,8 @@ test "C ABI create / feed speaks ACP without a child process" {
     const init_out = graff_acp_out_ptr()[0..graff_acp_out_len()];
     try std.testing.expect(std.mem.indexOf(u8, init_out, "\"protocolVersion\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, init_out, "\"name\":\"graff\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, init_out, "graff-login") != null);
+    try std.testing.expect(std.mem.indexOf(u8, init_out, "\"type\":\"terminal\"") != null);
     graff_acp_out_consume();
 
     const new_line = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\"}";

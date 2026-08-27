@@ -279,6 +279,8 @@ test "handleLine: initialize, session/new, then a prompt turn" {
     try testing.expect(std.mem.indexOf(u8, init_line, "\"embeddedContext\":true") != null);
     try testing.expect(std.mem.indexOf(u8, init_line, "\"name\":\"graff\"") != null);
     try testing.expect(std.mem.indexOf(u8, init_line, "\"loadSession\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, init_line, "graff-login") != null);
+    try testing.expect(std.mem.indexOf(u8, init_line, "\"type\":\"terminal\"") != null);
 
     w = .fixed(&buf);
     try handleLine(&d, a, &w, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\",\"params\":{\"cwd\":\"/tmp\"}}");
