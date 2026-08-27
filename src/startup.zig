@@ -173,6 +173,10 @@ pub fn buildSystemPrompt(
     // sys_normal/sys_strict/sys_ultra/sys_ultra_strict from it — the single
     // funnel every later mutation (repl, set_agent, set_system_prompt) must
     // also go through, so none of the four ever go stale independently.
+    // #629: --experiment is armed before this runs; the spawn mandate rides
+    // sys_base so a later playbook refresh cannot drop it.
+    if (@import("experiment_pool.zig").directive()) |d|
+        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, d });
     return sys_normal;
 }
 
