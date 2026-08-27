@@ -12,6 +12,7 @@ const Value = std.json.Value;
 const acp = @import("acp.zig");
 const acp_engine = @import("acp_engine.zig");
 const acp_stream = @import("acp_stream.zig");
+const proto = @import("acp_protocol.zig");
 const agent_mod = @import("agent.zig");
 const engine_events = @import("engine_events.zig");
 const engine_sink = @import("engine_sink.zig");
@@ -96,9 +97,10 @@ pub fn applyLine(a: *Apply, gpa: Allocator, line: []const u8) void {
     }
     if (std.mem.eql(u8, kind, "tool_call")) {
         const title = util.strFieldObj(update.object, "title") orelse "tool";
-        rememberTitle(a, title);
-        if (label.skipTranscript(title)) return;
-        a.queue.push(.{ .tool_started = .{ .name = title, .detail = cap(title, 160) } });
+        const name = util.strFieldObj(update.object, "name") orelse title;
+        rememberTitle(a, name);
+        if (label.skipTranscript(name)) return;
+        a.queue.push(.{ .tool_started = .{ .name = name, .detail = cap(title, 160) } });
         return;
     }
     if (std.mem.eql(u8, kind, "tool_call_update")) {
@@ -143,6 +145,15 @@ fn cap(s: []const u8, n: usize) []const u8 {
     return line[0..@min(line.len, n)];
 }
 
+fn toolTitle(name: []const u8, input: Value) []const u8 {
+    if (input == .object) {
+        if (util.strFieldObj(input.object, "path")) |p| return p;
+        if (util.strFieldObj(input.object, "command")) |c| return c;
+        if (util.strFieldObj(input.object, "url")) |u| return u;
+    }
+    return name;
+}
+
 const Transcript = struct {
     gpa: Allocator,
     session_id: []const u8,
@@ -166,7 +177,18 @@ fn writeUpdate(w: *Io.Writer, session_id: []const u8, ev: engine_events.EngineEv
         .text_delta, .tool_arg_delta => |d| try acp_stream.writeMessage(w, session_id, d.text),
         .tool_call_announced => |c| {
             if (label.skipTranscript(c.name)) return;
-            try acp_stream.writeToolCall(w, session_id, "call-1", c.name, c.input);
+            try proto.writeNotification(w, "session/update", .{
+                .sessionId = session_id,
+                .update = .{
+                    .sessionUpdate = "tool_call",
+                    .toolCallId = "call-1",
+                    .title = toolTitle(c.name, c.input),
+                    .kind = acp_stream.kindFor(c.name),
+                    .status = "in_progress",
+                    .rawInput = c.input,
+                    .name = c.name,
+                },
+            });
         },
         .tool_result => |r| {
             if (label.skipTranscript(r.name)) return;
@@ -404,14 +426,35 @@ test "applyLine: tool_call then tool_call_update become typed rows" {
     var buf: [32]u8 = undefined;
     var stream: repl.StreamBuf = .{ .buf = &buf };
     var a: Apply = .{ .queue = &q, .stream = &stream };
-    applyLine(&a, std.testing.allocator, "{\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"tool_call\",\"title\":\"bash\",\"kind\":\"execute\",\"status\":\"in_progress\"}}}");
+    applyLine(&a, std.testing.allocator, "{\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"tool_call\",\"name\":\"read_file\",\"title\":\"note.txt\",\"kind\":\"read\",\"status\":\"in_progress\"}}}");
     applyLine(&a, std.testing.allocator, "{\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"tool_call_update\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"ok\\nmore\"}}]}}}");
     const evs = q.drain();
     defer q.free(evs);
     try std.testing.expectEqual(@as(usize, 2), evs.len);
-    try std.testing.expectEqualStrings("bash", evs[0].tool_started.name);
+    try std.testing.expectEqualStrings("read_file", evs[0].tool_started.name);
+    try std.testing.expectEqualStrings("note.txt", evs[0].tool_started.detail);
     try std.testing.expectEqualStrings("ok", evs[1].tool_finished.detail);
     try std.testing.expect(!evs[1].tool_finished.is_error);
+}
+
+test "transcript sink: tool_call keeps the catalog name, title is the path" {
+    var q: tui.EventQueue = .{};
+    q.attach(std.testing.allocator);
+    defer q.deinit();
+    var buf: [32]u8 = undefined;
+    var stream: repl.StreamBuf = .{ .buf = &buf };
+    var a: Apply = .{ .queue = &q, .stream = &stream };
+    var t: Transcript = .{ .gpa = std.testing.allocator, .session_id = "s1", .apply = &a };
+    const sink: engine_sink.EngineSink = .{ .ctx = @ptrCast(&t), .vt = &transcript_vt };
+    var input_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer input_state.deinit();
+    const input = try std.json.parseFromSliceLeaky(Value, input_state.allocator(), "{\"path\":\"note.txt\"}", .{});
+    sink.emit(undefined, .{ .tool_call_announced = .{ .name = "read_file", .input = input } });
+    const evs = q.drain();
+    defer q.free(evs);
+    try std.testing.expectEqual(@as(usize, 1), evs.len);
+    try std.testing.expectEqualStrings("read_file", evs[0].tool_started.name);
+    try std.testing.expectEqualStrings("note.txt", evs[0].tool_started.detail);
 }
 
 test "transcript sink: EngineEvent text becomes a session/update on the stream" {
