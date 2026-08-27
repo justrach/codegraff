@@ -47,7 +47,7 @@ record only when you need the evidence or the edge cases.
 | [0034](0034-remote-images-stay-native.md) | JSON/serve image inputs are a typed URL/base64 union, validated atomically and preserved as native provider vision blocks; never flatten pixels into prompt text. |
 | [0035](0035-first-turn-skips-deferred-mcp-join.md) | First model call after a deferred MCP boot does not wait for the handshake; native tools run now, MCP catalogs merge on the next request. |
 | [0036](0036-computer-use-keeps-the-signed-codex-bridge.md) | Codex Computer Use keeps its authenticated node_repl process chain: Graff launches it through the signed Codex sandbox wrapper, never embeds V8 or spoofs the service. |
-| [0037](0037-experiment-pool-is-opt-in.md) | `--experiment N` / `/experiment N` pre-mints a child worktree pool; default isolation stays `shared_cwd`. 279 continuation — not on main until a later cut. |
+| [0037](0037-experiment-pool-is-opt-in.md) | `--experiment N` / `/experiment N` pre-mints a child worktree pool; the root must spawn; pool trees are listed and delivered back, never auto-deleted. |
 | [0038](0038-in-process-acp-core.md) | Same-process embed is `libgraff` + `graff-core.wasm` + `createGraffAgent()` (ACP core, echo turn). Live coding stays `graff acp`. 279 continuation — not on main until a later cut. |
 
 ## When to write one

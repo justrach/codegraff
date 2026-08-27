@@ -38,6 +38,12 @@ pub fn tryHandle(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writ
         try out.flush();
         return true;
     };
+    if (pool.directive()) |d| {
+        if (root.sys_base.len > 0 and std.mem.indexOf(u8, root.sys_base, pool.directive_marker) == null) {
+            const next = std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ root.sys_base, d }) catch root.sys_base;
+            @import("prompts.zig").setSystemPrompts(root, next, arena) catch {};
+        }
+    }
     try out.print("  {s}experiment {s}: {d} trees under .graff/worktrees/exp-{s}/ — spawn, do not edit here{s}\n", .{
         style.dim, id, minted, id, style.reset,
     });

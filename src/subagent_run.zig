@@ -319,8 +319,11 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
 
     var wt: ?jobs.AgentWorktree = null;
     var isolation_note: []const u8 = "";
-    if (@import("experiment_pool.zig").claim()) |seat| {
-        agent.agent_cwd = seat;
+    var pool_seat = false;
+    if (@import("experiment_pool.zig").claimSeat()) |seat| {
+        agent.agent_cwd = seat.path;
+        wt = .{ .path = seat.path, .branch = seat.branch, .base = seat.base };
+        pool_seat = true;
     } else if (isolation == .worktree) {
         if (jobs.agentWorktreeCreate(gpa, ctx.io, arena, sub_id)) |created| {
             wt = created;
@@ -419,9 +422,16 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     const text = report catch |err| {
         var out = subagentFailure(gpa, sub_id, err, agent.last_api_error, attempts);
         if (wt) |w| {
-            const combined = std.fmt.allocPrint(gpa, "{s}\n\n[worktree left in place after failure — path: {s}, branch: {s}]", .{ out.text, w.path, w.branch }) catch return .{ .output = out, .usage = usage };
-            gpa.free(out.text);
-            out.text = combined;
+            const tail = if (pool_seat)
+                @import("experiment_pool.zig").deliverNote(gpa, ctx.io, .{ .path = w.path, .branch = w.branch, .base = w.base })
+            else
+                (std.fmt.allocPrint(gpa, "\n\n[worktree left in place after failure — path: {s}, branch: {s}]", .{ w.path, w.branch }) catch "");
+            if (tail.len > 0) {
+                const combined = std.fmt.allocPrint(gpa, "{s}{s}", .{ out.text, tail }) catch return .{ .output = out, .usage = usage };
+                gpa.free(out.text);
+                gpa.free(tail);
+                out.text = combined;
+            }
         }
         return .{ .output = out, .usage = usage };
     };
@@ -437,10 +447,15 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     var extra: []const u8 = isolation_note;
     var extra_owned = false;
     if (wt) |w| {
-        const outcome = jobs.agentWorktreeFinish(gpa, ctx.io, w);
-        if (outcome.kept) {
-            extra = std.fmt.allocPrint(gpa, "\n\n[worktree kept ({s}) — path: {s}, branch: {s}]", .{ jobs.keepReasonText(outcome.reason), w.path, w.branch }) catch "";
+        if (pool_seat) {
+            extra = @import("experiment_pool.zig").deliverNote(gpa, ctx.io, .{ .path = w.path, .branch = w.branch, .base = w.base });
             extra_owned = extra.len > 0;
+        } else {
+            const outcome = jobs.agentWorktreeFinish(gpa, ctx.io, w);
+            if (outcome.kept) {
+                extra = std.fmt.allocPrint(gpa, "\n\n[worktree kept ({s}) — path: {s}, branch: {s}]", .{ jobs.keepReasonText(outcome.reason), w.path, w.branch }) catch "";
+                extra_owned = extra.len > 0;
+            }
         }
     }
     defer if (extra_owned) gpa.free(extra);

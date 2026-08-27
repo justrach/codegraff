@@ -240,7 +240,7 @@ pub const usage_text =
     \\  graff mcp                         list configured MCP servers
     \\  graff plugins [load <name>]       list Claude/Cursor/Grok/Codex plugin trees (in place)
     \\  graff learn [help]                local mutate/evaluate/promote/rollback engine
-    \\  graff worktree list              list the per-tab worktrees created by -w
+    \\  graff worktree list              list -w tabs and experiment-pool trees (tagged)
     \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
     \\  graff worktree remove <name>     discard worktree-<name> (drops its scratch work) + delete the branch
     \\  graff worktree prune             drop git registrations for worktrees whose dirs were deleted
