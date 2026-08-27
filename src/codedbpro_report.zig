@@ -142,11 +142,11 @@ pub fn fallbackOpen() bool {
     return g_fallback_open.load(.acquire);
 }
 
-/// The native tools the licensed pro tools replace. edit_file/write_file are
-/// deliberately NOT here: edits stay native regardless (they are
-/// /rewind-snapshotted; codedb-pro edits bypass /rewind).
+/// The native tools the licensed pro tools replace. `codedb` is never here
+/// (ADR 0040 — it stays callable). edit_file/write_file stay native too
+/// (/rewind-snapshotted; codedb-pro edits bypass /rewind).
 fn replacedNative(name: []const u8) bool {
-    return std.mem.eql(u8, name, "read_file") or std.mem.eql(u8, name, "codedb");
+    return std.mem.eql(u8, name, "read_file");
 }
 
 /// A bash call is only intercepted when the search command LEADS the line —
@@ -172,7 +172,7 @@ fn enforcementActive(ctx: tools.ToolCtx) bool {
 
 /// What a blocked call is pointed at. Shell searches go to zigrep — the
 /// suite's own CLI, run directly via bash, no MCP round trip — when the
-/// binary is on PATH; reads and the codedb tool point at the pro MCP tools.
+/// binary is on PATH; `read_file` points at the pro MCP read tool.
 fn replacementFor(call_name: []const u8, is_bash_search: bool, zigrep_installed: bool) []const u8 {
     if (is_bash_search) return if (zigrep_installed)
         "zigrep — run it directly via bash (e.g. `zigrep PATTERN src/`); it is the suite's search CLI. Caveat: zigrep always skips vendor dirs (node_modules & co) even with --no-ignore — use `rg -uu` for vendor dives"
@@ -255,16 +255,6 @@ pub fn redirect(ctx: tools.ToolCtx, call: tools.ToolCall) ?Redirect {
             return .{ .name = "mcp__codedbpro__read", .input = .{ .object = obj } };
         }
         return readRedirect(gpa, path, "full");
-    }
-    if (std.mem.eql(u8, call.name, "codedb")) {
-        const cmd = tools.strField(call.input, "command") orelse return null;
-        const sub_end = std.mem.indexOfAny(u8, cmd, " \t") orelse cmd.len;
-        const sub = cmd[0..sub_end];
-        const rest = std.mem.trim(u8, cmd[sub_end..], " \t");
-        if (std.mem.eql(u8, sub, "outline")) return readRedirect(gpa, rest, "outline");
-        if (std.mem.eql(u8, sub, "read")) return readRedirect(gpa, rest, "full");
-        if (std.mem.eql(u8, sub, "search")) return searchRedirect(gpa, rest);
-        return null; // symbol/callers/deps/tree have no lossless map — refusal stays
     }
     if (std.mem.eql(u8, call.name, "bash")) {
         const cmd = tools.strField(call.input, "command") orelse return null;
@@ -462,7 +452,7 @@ test "nativeRefusal: licensed pro tools block the natives they replaced" {
     g_fallback_open.store(false, .release);
 
     try std.testing.expect(nativeRefusal(ctx, namedCall("read_file")) != null);
-    try std.testing.expect(nativeRefusal(ctx, namedCall("codedb")) != null);
+    try std.testing.expect(nativeRefusal(ctx, namedCall("codedb")) == null); // ADR 0040: codedb always runs
     try std.testing.expect(nativeRefusal(ctx, bashCall(a, "find . -name '*.zig'")) != null);
     try std.testing.expect(nativeRefusal(ctx, bashCall(a, "rg TODO src")) != null);
     try std.testing.expect(nativeRefusal(ctx, bashCall(a, "cat src/main.zig")) != null);
@@ -501,12 +491,8 @@ test "redirect: blocked natives translate to their codedb-pro equivalents" {
     const r2 = redirect(ctx, jsonCall(a, "read_file", "{\"path\":\"a.zig\",\"start_line\":10,\"end_line\":40}")).?;
     try std.testing.expectEqualStrings("lines", r2.input.object.get("mode").?.string);
     try std.testing.expectEqualStrings("10-40", r2.input.object.get("range").?.string);
-    const r3 = redirect(ctx, jsonCall(a, "codedb", "{\"command\":\"outline src/main.zig\"}")).?;
-    try std.testing.expectEqualStrings("outline", r3.input.object.get("mode").?.string);
-    const r4 = redirect(ctx, jsonCall(a, "codedb", "{\"command\":\"search parseHeader\"}")).?;
-    try std.testing.expectEqualStrings("mcp__codedbpro__faster_search", r4.name);
-    try std.testing.expectEqualStrings("parseHeader", r4.input.object.get("pattern").?.string);
-    try std.testing.expect(redirect(ctx, jsonCall(a, "codedb", "{\"command\":\"callers foo\"}")) == null);
+    try std.testing.expect(redirect(ctx, jsonCall(a, "codedb", "{\"command\":\"outline src/main.zig\"}")) == null);
+    try std.testing.expect(redirect(ctx, jsonCall(a, "codedb", "{\"command\":\"search parseHeader\"}")) == null);
     // leading grep/rg → faster_search on the first bare token; find and piped grep stay out
     const r5 = redirect(ctx, bashCall(a, "rg TODO src")).?;
     try std.testing.expectEqualStrings("TODO", r5.input.object.get("pattern").?.string);
