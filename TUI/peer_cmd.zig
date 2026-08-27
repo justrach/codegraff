@@ -17,7 +17,7 @@ pub fn run(self: *Model, canon: []const u8, arg: []const u8) void {
         const line = if (arg.len == 0) canon else (std.fmt.bufPrint(&buf, "{s} {s}", .{ canon, arg }) catch canon);
         if (f(engine.g_turn_ctx, self.alloc, line)) |text| {
             defer self.alloc.free(text);
-            const trimmed = std.mem.trimRight(u8, text, " \t\r\n");
+            const trimmed = std.mem.trimEnd(u8, text, " \t\r\n");
             if (trimmed.len > 0) self.push(.system, trimmed) catch {};
         }
         return;
