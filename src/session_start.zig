@@ -487,13 +487,10 @@ pub fn probeLicensed(gpa: Allocator, io: Io) bool {
     return skills.probeCodedbproLicensed(gpa, io);
 }
 
-/// A licensed codedb-pro is IN CHARGE of `read_file` / leading shell searches
-/// (native `codedb` stays; the guard points those at these tools), which inverts the
-/// #416 deferral premise: this is not a server "most sessions never call" —
-/// the guard makes it mandatory, and the load_tool_schemas discovery dance is
-/// a measured ~2 model round-trips (~8-12s) per task on K3. Pin it eager.
-/// (#476 kept it deferred on a "zero discovery turns" claim; the benchmark
-/// traces show every code-reading run paying the dance.)
+/// A licensed codedb-pro still pins these tools eager (search/batch extras;
+/// ADR 0040: not the default reader). Skipping that pin costs a measured
+/// ~2 load_tool_schemas discovery turns per task that does need pro search.
+/// (#476 kept it deferred; traces showed every such run paying the dance.)
 pub fn pinCompanionEager(arena: Allocator) void {
     if (mcp_schema_gate.pinnedEager("codedbpro")) return; // env/config already pinned
     const gate = &mcp_schema_gate.g_policy;
