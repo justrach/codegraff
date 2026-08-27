@@ -18,9 +18,9 @@ const repl_glue = @import("repl_glue.zig");
 const tui = @import("tui");
 const engine_sink = @import("engine_sink.zig");
 const tui_sink = @import("tui_sink.zig");
+const tui_acp = @import("tui_acp.zig");
 const job_notify = @import("job_notify.zig");
 const obs = @import("obs.zig");
-const telemetry = @import("telemetry.zig");
 const vision = @import("vision.zig");
 const builtin = @import("builtin");
 
@@ -100,6 +100,11 @@ pub fn run(
     engine_sink.hosted_frontend = true;
     defer engine_sink.hosted_frontend = false;
     obs.ensureSession();
+    var acp_session: tui_acp.Session = undefined;
+    acp_session.init(gpa, @as(u64, @bitCast(std.time.milliTimestamp())));
+    tui_acp.attach(&acp_session);
+    defer tui_acp.detach();
+    acp_session.ensure();
     try tui.run(gpa, io, environ_map, .{
         .turn_ctx = &repl_ctx,
         .turn_fn = turnCb,
@@ -163,59 +168,9 @@ fn turnCb(
     stream: *tui.StreamBuf,
     events: *tui.EventQueue,
 ) ?[]const u8 {
-    var turns = std.array_list.Managed(repl.Turn).init(gpa);
-    defer {
-        for (turns.items) |t| gpa.free(t.text);
-        turns.deinit();
-    }
-    for (history) |t| {
-        const text = gpa.dupe(u8, t.text) catch continue;
-        turns.append(.{ .role = switch (t.role) {
-            .user => .user,
-            .assistant => .assistant,
-        }, .text = text }) catch gpa.free(text);
-    }
-    var last_len: u32 = 0;
-    if (history.len > 0 and history[history.len - 1].role == .user) {
-        last_len = @intCast(@min(history[history.len - 1].text.len, std.math.maxInt(u32)));
-    }
-    const model = if (ctx) |p| @as(*repl_glue.ReplCtx, @ptrCast(@alignCast(p))).provider.model else "";
-    obs.prompt(last_len, model);
-    // Same buf AND the same atomic len — a fresh repl.StreamBuf around
-    // stream.buf left job.stream.len at 0 for the whole turn, so the live
-    // tail never showed streamed prose until finishJob copied it.
-    //
-    // #551: the TUI's own EngineSink for the duration of this turn. Prose goes
-    // to the live buffer, structure goes to the typed queue; nothing renders
-    // tool activity into text for the frontend to parse back out. The bridge
-    // lives on THIS frame, which outlives the turn it wraps.
-    var bridge: tui_sink.Bridge = .{
-        .queue = events,
-        .stream = liveStream(stream),
-        .show_thinking = params.thinking,
-    };
-    engine_sink.bindTurnSink(tui_sink.forBridge(&bridge));
-    defer engine_sink.unbindTurnSink();
-    const result = repl_glue.replTurnCb(ctx, gpa, turns.items, .{
-        .effort = @enumFromInt(@intFromEnum(params.effort)),
-        .fast = params.fast,
-        .thinking = params.thinking,
-        .ultracode = params.ultracode,
-        // #551: the footer's mode IS the turn's policy now. The two enums are
-        // mapped explicitly so a new mode on either side is a compile error
-        // rather than a badge that quietly means nothing.
-        .mode = switch (params.mode) {
-            .normal => .normal,
-            .plan => .plan,
-            .always_approve => .always_approve,
-        },
-        .strict = params.strict,
-        .goal = params.goal,
-    }, liveStream(stream));
-    if (result != null) {
-        if (telemetry.g_telem) |t| t.countTurn() else obs.turn(.completed);
-    } else obs.turn(.failed);
-    return result;
+    // ADR 0041: the pager is an in-process ACP client. Thought / tool / text
+    // arrive as session/update; meters and notices stay on tui_sink.
+    return tui_acp.turn(ctx, gpa, history, params, stream, events);
 }
 
 /// The catalog the picker draws, with the provider column the TUI used to be
@@ -290,6 +245,7 @@ fn compactCb(ctx: ?*anyopaque, gpa: Allocator, history: []const tui.Turn, out: *
 }
 
 fn cancelCb(ctx: ?*anyopaque) void {
+    tui_acp.cancel();
     repl_glue.replCancelCb(ctx);
 }
 
@@ -375,13 +331,28 @@ fn hudCb(kind: tui.HudKind, buf: []u8) usize {
         .debug => obs.renderHud(&w) catch {},
         .usage => obs.renderUsage(&w) catch {},
     }
+    if (kind == .debug) {
+        if (tui_acp.sessionId()) |sid| w.print("  acp        {s}\n", .{sid}) catch {};
+    }
     return w.buffered().len;
 }
 
 test {
     _ = tui;
     _ = tui_sink;
+    _ = tui_acp;
     _ = repl_bash;
+}
+
+test "debug HUD names the in-process ACP session" {
+    var s: tui_acp.Session = undefined;
+    s.init(std.testing.allocator, 1);
+    tui_acp.attach(&s);
+    defer tui_acp.detach();
+    s.ensure();
+    var buf: [2048]u8 = undefined;
+    const n = hudCb(.debug, &buf);
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..n], s.session_id) != null);
 }
 
 test "hudCb usage/debug use the cost-tally renderer, not chars" {

@@ -334,4 +334,5 @@ test {
     _ = @import("commands_experiment.zig");
     _ = @import("acp_engine.zig");
     _ = @import("libgraff.zig");
+    _ = @import("tui_acp.zig");
 }
