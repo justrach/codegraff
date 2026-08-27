@@ -31,6 +31,8 @@ pub const items = [_]Item{
     .{ .name = "/plan", .desc = "Toggle plan mode" },
     .{ .name = "/theme", .desc = "Switch color theme", .aliases = &.{"/t"} },
     .{ .name = "/goal", .desc = "Set a standing objective" },
+    .{ .name = "/schedule", .desc = "Fire a prompt later (30s/5m/2h)" },
+    .{ .name = "/adapter", .desc = "Channel-worker send / inbox" },
     .{ .name = "/thinking", .desc = "Show live reasoning" },
     .{ .name = "/fast", .desc = "Priority service tier" },
     .{ .name = "/ultracode", .desc = "Persistent workflow mode", .aliases = &.{"/ult"} },

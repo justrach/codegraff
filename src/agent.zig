@@ -36,6 +36,8 @@ const empty_completion = @import("agent_empty_completion.zig");
 const goal_state = @import("goal_state.zig");
 const peer_channel = @import("peer_channel.zig"); // #469: turn-boundary peer message delivery
 const job_notify = @import("job_notify.zig");
+const schedule = @import("schedule.zig");
+const channel_worker = @import("channel_worker.zig");
 
 pub const TodoItem = struct {
     content: []const u8,
@@ -339,6 +341,8 @@ pub const Agent = struct {
             // an empty channel costs one small stat per step.
             peer_channel.deliverInbound(self);
             job_notify.deliver(self);
+            schedule.deliver(self);
+            channel_worker.deliver(self);
             // #193: pre-send overflow gate. A single turn's tool-output burst can
             // push the input past the model's wall before the between-turns 80%
             // meter (last_context_tokens, server-reported) catches up. Estimate the
