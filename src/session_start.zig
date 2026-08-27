@@ -487,8 +487,8 @@ pub fn probeLicensed(gpa: Allocator, io: Io) bool {
     return skills.probeCodedbproLicensed(gpa, io);
 }
 
-/// A licensed codedb-pro is IN CHARGE of reads/searches (its guard refuses
-/// the native codedb/read_file and points at these tools), which inverts the
+/// A licensed codedb-pro is IN CHARGE of `read_file` / leading shell searches
+/// (native `codedb` stays; the guard points those at these tools), which inverts the
 /// #416 deferral premise: this is not a server "most sessions never call" —
 /// the guard makes it mandatory, and the load_tool_schemas discovery dance is
 /// a measured ~2 model round-trips (~8-12s) per task on K3. Pin it eager.

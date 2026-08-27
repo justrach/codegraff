@@ -49,6 +49,7 @@ record only when you need the evidence or the edge cases.
 | [0036](0036-computer-use-keeps-the-signed-codex-bridge.md) | Codex Computer Use keeps its authenticated node_repl process chain: Graff launches it through the signed Codex sandbox wrapper, never embeds V8 or spoofs the service. |
 | [0037](0037-experiment-pool-is-opt-in.md) | `--experiment N` / `/experiment N` pre-mints a child worktree pool; default isolation stays `shared_cwd`. 279 continuation — not on main until a later cut. |
 | [0038](0038-in-process-acp-core.md) | Same-process embed is `libgraff` + `graff-core.wasm` + `createGraffAgent()` (ACP core, echo turn). Live coding stays `graff acp`. 279 continuation — not on main until a later cut. |
+| [0040](0040-codedb-stays-when-licensed.md) | Native `codedb` stays advertised and callable when codedb-pro is licensed; pro is extra, not a replacement. |
 
 ## When to write one
 

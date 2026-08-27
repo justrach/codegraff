@@ -63,10 +63,9 @@ pub const skills_registry = [_]SkillDef{
 /// Licensed-aware variant of the codedbpro note. When `codedb-pro probe`
 /// succeeds (paid + usable) we inject THIS instead of the conservative
 /// "prefer free codedb" note below — leaning into the tools the user pays for.
-/// Edits inside the cwd stay native: edit_file/write_file are
-/// /rewind-snapshotted and already splice via zigpatch, whereas codedb-pro
-/// edit/patch/replace bypass /rewind. Explicit external targets use gated bash.
-const codedbpro_note_licensed = "The codedb-pro MCP server is connected and LICENSED — its mcp__codedbpro__* tools (load once per session via load_tool_schemas, e.g. by query) REPLACE native read/search (read_file and the legacy codedb tool are hidden). Shell cat/grep/sed/head of source is redirected or refused. KEEP EDITS on native edit_file/write_file — codedb-pro write tools are hidden because they bypass /rewind. Size reads to the file: mode=full in ONE call for small files — outline/symbol/lines for files too big to read whole. Any codedb-pro failure unblocks the natives for the rest of the session.";
+/// Native `codedb` is never hidden or refused (ADR 0040). Edits stay native:
+/// edit_file/write_file are /rewind-snapshotted; codedb-pro writes bypass it.
+const codedbpro_note_licensed = "The codedb-pro MCP server is connected and LICENSED — mcp__codedbpro__* tools (load once per session via load_tool_schemas, e.g. by query) sit alongside native codedb, which always works (context/around/callpath/list_dir/status). Prefer codedb first; reach for faster_search/meta_search when codedb cannot answer. read_file is hidden — use mcp__codedbpro__read (mode=outline first, then symbol/lines) or codedb. Shell cat/grep/sed/head of source is redirected or refused. KEEP EDITS on native edit_file/write_file — codedb-pro write tools are hidden because they bypass /rewind. Any codedb-pro failure unblocks read_file for the rest of the session.";
 
 const McpNote = struct { server: []const u8, note: []const u8 };
 pub const mcp_notes = [_]McpNote{
@@ -393,6 +392,8 @@ test "codedbproNote: licensed flips codedbpro to the lean-in note" {
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "mcp__codedbpro__*") != null);
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "load_tool_schemas") != null);
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "/rewind") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "codedb, which always works") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "hidden") != null); // read_file / writes, never codedb
 }
 
 test "skillIndex: registry lookup" {
