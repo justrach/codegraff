@@ -36,6 +36,15 @@ test "welcome frame has chrome, prompt, and no offline stub" {
     try std.testing.expect(std.mem.indexOf(u8, frame, "offline") == null);
     try std.testing.expect(std.mem.indexOf(u8, frame, "Fullscreen") == null);
     try std.testing.expect(std.mem.indexOf(u8, frame, "click") == null);
+    // Boot receipts (plugins:/mcp:/companion:) print before alt-screen.
+    try std.testing.expect(std.mem.indexOf(u8, frame, "plugins:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "companion:") == null);
+    if (std.c.getenv("GRAFF_DUMP_WELCOME")) |path_z| {
+        const vis = try dump_mod.visible(std.testing.allocator, frame);
+        defer std.testing.allocator.free(vis);
+        const io = std.Io.Threaded.global_single_threaded.io();
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = std.mem.span(path_z), .data = vis }) catch {};
+    }
 }
 
 test "click on a painted fold header expands the tools" {
