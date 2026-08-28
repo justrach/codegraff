@@ -108,8 +108,10 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
     }
 
     const futures = try gpa.alloc(Io.Future(StartOutcome), entries.items.len);
+    const started_names = try a.alloc([]const u8, entries.items.len);
     // concurrent, not async: io.async may run the handshake inline, so two
     // remote servers paid SUM(latency) instead of max(latency) at REPL start.
+    // defer_join must not take that fallback — inline handshake is the TUI hang.
     const ctx = StartCtx{
         .gpa = gpa,
         .io = io,
@@ -117,17 +119,86 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
         .show_diagnostics = show_diagnostics,
         .stdio_probe = reg.stdio_probe,
     };
-    for (entries.items, futures) |e, *fut| {
+    var started: usize = 0;
+    for (entries.items) |e| {
         const args = .{ ctx, e.name, e.cfg };
-        fut.* = io.concurrent(startServerTask, args) catch io.async(startServerTask, args);
+        if (io.concurrent(startServerTask, args)) |fut| {
+            futures[started] = fut;
+            started_names[started] = e.name;
+            started += 1;
+        } else |_| {
+            if (defer_join) continue;
+            futures[started] = io.async(startServerTask, args);
+            started_names[started] = e.name;
+            started += 1;
+        }
     }
     if (defer_join) {
-        reg.pending_starts = futures;
+        if (started == 0) {
+            gpa.free(futures);
+            return reg;
+        }
+        if (started < futures.len) {
+            const slim = try gpa.alloc(Io.Future(StartOutcome), started);
+            @memcpy(slim, futures[0..started]);
+            gpa.free(futures);
+            reg.pending_starts = slim;
+        } else {
+            reg.pending_starts = futures;
+        }
+        reg.pending_names = started_names[0..started];
         return reg;
     }
     defer gpa.free(futures);
-    mergeOutcomes(&reg, futures);
+    mergeOutcomes(&reg, futures[0..started]);
     return reg;
+}
+
+/// True when `name` is already live or queued on a deferred boot.
+pub fn alreadyStarting(reg: *const Registry, name: []const u8) bool {
+    for (reg.servers) |s| if (std.mem.eql(u8, s.name, name)) return true;
+    for (reg.pending_names) |n| if (std.mem.eql(u8, n, name)) return true;
+    return false;
+}
+
+fn startCtx(reg: *const Registry) StartCtx {
+    return .{
+        .gpa = reg.gpa,
+        .io = reg.io,
+        .home = reg.home,
+        .show_diagnostics = reg.show_diagnostics,
+        .stdio_probe = reg.stdio_probe,
+    };
+}
+
+/// Queue a stdio server onto `pending_starts` without waiting. Used by
+/// companion auto-connect so first paint is not the handshake. If the
+/// thread pool cannot take the task, skip — do not run `io.async` inline.
+pub fn queueStdio(reg: *Registry, name: []const u8, command: []const u8, args: []const []const u8) void {
+    if (alreadyStarting(reg, name)) return;
+    const a = reg.arena();
+    const n = a.dupe(u8, name) catch return;
+    var cfg: std.json.ObjectMap = .empty;
+    cfg.put(a, "command", .{ .string = a.dupe(u8, command) catch return }) catch return;
+    var argv = std.json.Array.init(a);
+    for (args) |arg| argv.append(.{ .string = a.dupe(u8, arg) catch return }) catch return;
+    cfg.put(a, "args", .{ .array = argv }) catch return;
+    const fut = reg.io.concurrent(startServerTask, .{ startCtx(reg), n, cfg }) catch return;
+    appendPending(reg, fut, n);
+}
+
+fn appendPending(reg: *Registry, fut: Io.Future(StartOutcome), name: []const u8) void {
+    const old = reg.pending_starts;
+    const next = reg.gpa.alloc(Io.Future(StartOutcome), old.len + 1) catch return;
+    @memcpy(next[0..old.len], old);
+    next[old.len] = fut;
+    if (old.len > 0) reg.gpa.free(old);
+    reg.pending_starts = next;
+    const a = reg.arena();
+    const names = a.alloc([]const u8, reg.pending_names.len + 1) catch return;
+    @memcpy(names[0..reg.pending_names.len], reg.pending_names);
+    names[reg.pending_names.len] = name;
+    reg.pending_names = names;
 }
 
 fn mergeOutcomes(reg: *Registry, futures: []Io.Future(StartOutcome)) void {
@@ -211,6 +282,7 @@ pub fn joinPending(reg: *Registry) bool {
     const t0 = Io.Timestamp.now(reg.io, .awake);
     const futures = reg.pending_starts;
     reg.pending_starts = &.{};
+    reg.pending_names = &.{};
     mergeOutcomes(reg, futures);
     reg.gpa.free(futures);
     const waited = @max(0, t0.untilNow(reg.io, .awake).toMilliseconds());
@@ -229,6 +301,23 @@ test "MCP boot fans server handshakes out with io.concurrent" {
     try std.testing.expect(std.mem.indexOf(u8, src, "io.concurrent(startServerTask") != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "io.async(startServerTask") != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "defer_join") != null);
+}
+
+test "defer_join does not fall back to inline io.async" {
+    const src = @embedFile("mcp_boot.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "if (defer_join) continue") != null);
+}
+
+test "alreadyStarting sees pending names before the handshake finishes" {
+    const io = std.testing.io;
+    var reg = Registry.empty(std.testing.allocator, io);
+    defer reg.deinit();
+    try std.testing.expect(!alreadyStarting(&reg, "codedbpro"));
+    const pending = [_][]const u8{"codedbpro"};
+    reg.pending_names = &pending;
+    try std.testing.expect(alreadyStarting(&reg, "codedbpro"));
+    try std.testing.expect(!alreadyStarting(&reg, "other"));
+    reg.pending_names = &.{};
 }
 
 test "joinPending is a no-op on an empty registry" {

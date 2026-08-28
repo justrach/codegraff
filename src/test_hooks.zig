@@ -330,6 +330,7 @@ test {
     _ = tool_surface;
     _ = agent_catalog;
     _ = session_connect_tests;
+    _ = @import("companion_boot.zig");
     _ = @import("experiment_pool.zig");
     _ = @import("commands_experiment.zig");
     _ = @import("acp_engine.zig");

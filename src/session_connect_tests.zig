@@ -5,6 +5,7 @@ const Io = std.Io;
 
 const args = @import("args.zig");
 const mcp = @import("mcp.zig");
+const companion_boot = @import("companion_boot.zig");
 const session_start = @import("session_start.zig");
 const tool_surface = @import("tool_surface.zig");
 
@@ -33,6 +34,14 @@ test "connectCompanion never injects a bundled Smolify server" {
     try session_start.connectCompanion(std.testing.io, arena, &with_opt, flags, &aw.writer, true, env);
     try std.testing.expectEqual(@as(usize, 0), with_opt.tools.len);
     try std.testing.expectEqual(@as(usize, 0), with_opt.servers.len);
+}
+
+test "connectCompanion on interactive yolo queues instead of addServer" {
+    try std.testing.expect(companion_boot.deferCompanion(.{ .yolo_flag = true }, false));
+    const src = @embedFile("companion_boot.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "queueStdio") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "addServer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "companion: {s} (background)") != null);
 }
 
 test "skipOptionalServer keeps deepwiki/mobbin out of the default catalog" {
