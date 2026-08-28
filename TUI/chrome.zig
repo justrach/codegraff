@@ -233,7 +233,7 @@ pub fn slashWindow(self: *const Model) ?SlashGeom {
     const sel = @min(self.slash_sel, n - 1);
     // A panel too narrow to frame is returned as bare rows (panel.min_width),
     // and then the first item IS the first line.
-    const framed = self.last_term_width >= panel.min_width;
+    const framed = @import("inset.zig").wrapWidth(self) >= panel.min_width;
     const edges: usize = if (framed) 2 else 0;
     return .{
         .first = if (sel >= show) sel + 1 - show else 0,

@@ -209,7 +209,7 @@ pub fn mouse(self: *Model, ev: key_mod.Mouse) bool {
         }
         return false;
     };
-    const hist = if (y >= self.prompt_origin or y < self.mid_origin + self.sticky_rows) null else @import("layout_cache.zig").indexAtVisual(self, y -| self.mid_origin + self.mid_skip, self.last_term_width);
+    const hist = if (y >= self.prompt_origin or y < self.mid_origin + self.sticky_rows) null else @import("layout_cache.zig").indexAtVisual(self, y -| self.mid_origin + self.mid_skip, @import("inset.zig").wrapWidth(self));
     const path = pathForChip(self, n, hist);
     show(self, path, n, click);
     return true;
@@ -217,7 +217,7 @@ pub fn mouse(self: *Model, ev: key_mod.Mouse) bool {
 
 fn chipAt(self: *Model, x: usize, y: usize) ?u32 {
     if (self.images.items.len > 0 and y == self.prompt_origin + 1) {
-        const box_pad: usize = 4;
+        const box_pad: usize = 4 + @import("inset.zig").of(self).left;
         if (x < box_pad) return null;
         var buf: [128]u8 = undefined;
         var n: usize = 0;
@@ -232,10 +232,10 @@ fn chipAt(self: *Model, x: usize, y: usize) ?u32 {
     if (y < self.mid_origin) return null;
     if (y < self.mid_origin + self.sticky_rows) return null; // sticky chrome is inert
     const vis = y - self.mid_origin + self.mid_skip;
-    const idx = @import("layout_cache.zig").indexAtVisual(self, vis, self.last_term_width) orelse return null;
+    const idx = @import("layout_cache.zig").indexAtVisual(self, vis, @import("inset.zig").wrapWidth(self)) orelse return null;
     if (self.history.items[idx].kind != .user) return null;
     if (pathInUserText(self.history.items[idx].text, 1) == null) return null;
-    return parseChipOnUser(self, idx, x);
+    return parseChipOnUser(self, idx, @import("inset.zig").screenToInner(self, x));
 }
 
 fn parseChipOnUser(self: *const Model, idx: usize, x: usize) ?u32 {

@@ -10,6 +10,7 @@ const chrome = @import("chrome.zig");
 const engine = @import("engine.zig");
 const glyphs = @import("glyphs.zig");
 const hover = @import("hover.zig");
+const inset = @import("inset.zig");
 const layout_cache = @import("layout_cache.zig");
 const scrollbar = @import("scrollbar.zig");
 const scrollback = @import("scrollback.zig");
@@ -28,7 +29,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     // rows are not history entries.
     const rewrap: ?anchor.Anchor = if (width != self.last_term_width and
         (self.overlay == .none or self.overlay == .image))
-        anchor.capture(self, self.last_term_width)
+        anchor.capture(self, inset.forTerm(self.last_term_width, self.compact_mode).inner)
     else
         null;
     self.last_term_width = width;
@@ -45,6 +46,13 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
+    // grok-build's outer pads (inset.zig): wrap the chrome and transcript to
+    // `inner`, then prefix `left` spaces so nothing kisses the terminal edge.
+    const pads = inset.forTerm(width, self.compact_mode);
+    const inner = pads.inner;
+    const left = pads.left;
+    const gap = pads.vpad;
+
     // Nothing composed here may be wider than the screen. A row that is
     // becomes a lie the painter has to clean up after: with autowrap off the
     // terminal chops it, and on any terminal that does not honour ?7l it wraps
@@ -52,9 +60,9 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     // map the composer's click math, the sticky header and the selection band
     // all ride on. The chrome builders that take `width` clamp themselves; the
     // overlay bodies and the image card historically did not.
-    const top = theme_mod.takeCols(try chrome.topBar(self, a, width), width);
+    const top = theme_mod.takeCols(try chrome.topBar(self, a, inner), inner);
     const image_card = if (self.overlay == .image)
-        try theme_mod.wrapToWidth(a, try chrome.overlay(self, a, width), width)
+        try theme_mod.wrapToWidth(a, try chrome.overlay(self, a, inner), inner)
     else
         "";
     // The image overlay is a card ABOVE the composer, so `mid` stays the
@@ -66,17 +74,17 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     // so the hash-diff suppressed every paint).
     const welcome_pane = self.screen == .welcome and self.history.items.len == 0 and self.pending == null;
     const mid = if (overlay_body)
-        try theme_mod.wrapToWidth(a, try chrome.overlay(self, a, width), width)
+        try theme_mod.wrapToWidth(a, try chrome.overlay(self, a, inner), inner)
     else if (welcome_pane)
-        try welcome.render(self, a, width)
+        try welcome.render(self, a, inner)
     else
         "";
     // The transcript is never composed whole: the layout cache holds its
     // wrapped lines and the frame takes a SLICE of them (layout_cache.zig).
-    const cache: ?*layout_cache.Cache = if (overlay_body or welcome_pane) null else layout_cache.ensure(self, width);
-    const slash = try chrome.slashMenu(self, a, width);
-    const prompt = try chrome.promptBox(self, a, width);
-    const status = try chrome.statusBar(self, a, width);
+    const cache: ?*layout_cache.Cache = if (overlay_body or welcome_pane) null else layout_cache.ensure(self, inner);
+    const slash = try chrome.slashMenu(self, a, inner);
+    const prompt = try chrome.promptBox(self, a, inner);
+    const status = try chrome.statusBar(self, a, inner);
 
     var bottom = std.array_list.Managed(u8).init(a);
     if (slash.len > 0) {
@@ -86,6 +94,9 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     try bottom.appendSlice(prompt);
     if (prompt.len == 0 or prompt[prompt.len - 1] != '\n') try bottom.append('\n');
     try bottom.appendSlice(status);
+    // grok-build outer_vpad: one blank row under the hints so the footer is
+    // not glued to the last cell of the screen. Compact drops it.
+    if (gap > 0) try bottom.append('\n');
 
     const top_lines = countLines(top);
     // countLines counts a trailing '\n' as an extra line but the append below
@@ -99,7 +110,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     // painter clipped it at the last row, so the composer and the status bar
     // were simply never drawn, while prompt_origin went on claiming a row for
     // a composer that was not on screen.
-    const room = if (height > top_lines + card_lines + 1) height - top_lines - card_lines - 1 else 1;
+    const room = if (height > top_lines + card_lines + gap + gap + 1) height - top_lines - card_lines - gap - gap - 1 else 1;
     const bottom_block = lastLines(bottom.items, room);
     const bottom_lines = countLines(bottom_block);
     // The completion menu rides at the TOP of the bottom block, and a short
@@ -111,9 +122,11 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     else
         (countLines(slash) - @intFromBool(slash[slash.len - 1] == '\n')) -| (countLines(bottom.items) - bottom_lines);
     self.preview_rows = card_lines;
-    self.mid_origin = top_lines;
+    self.mid_origin = top_lines + gap;
     self.prompt_origin = if (height > bottom_lines) height - bottom_lines else 0;
-    const used = bottom_lines + top_lines + card_lines;
+    // One blank row above the mid (top gutter) and one between the transcript
+    // and the composer — grok-build's outer_vpad on both ends of the viewport.
+    const used = bottom_lines + top_lines + card_lines + gap + gap;
     const view_h: usize = if (height > used) height - used else 1;
 
     var mid_lines = std.array_list.Managed([]const u8).init(a);
@@ -124,8 +137,10 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
     }
 
     var out = std.array_list.Managed(u8).init(a);
-    try out.appendSlice(top);
+    try inset.appendPadded(&out, top, left);
     if (top.len > 0 and top[top.len - 1] != '\n') try out.append('\n');
+    var lead_gap = gap;
+    while (lead_gap > 0) : (lead_gap -= 1) try out.append('\n');
 
     const n = if (cache) |c| c.total else mid_lines.items.len;
     // Mid lines this frame, transcript or overlay body alike. A press below
@@ -144,6 +159,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
         var lead = above;
         while (lead > 0) : (lead -= 1) try out.append('\n');
         for (try midSlice(a, cache, mid_lines.items, 0, n)) |ln| {
+            try out.appendNTimes(' ', left);
             try out.appendSlice(ln);
             try out.append('\n');
         }
@@ -192,7 +208,8 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
                 var one = utext;
                 if (std.mem.indexOfScalar(u8, utext, '\n')) |nl| one = utext[0..nl];
                 try head.appendSlice(one);
-                const cols = if (width > 2) width - 2 else 1;
+                const cols = if (inner > 2) inner - 2 else 1;
+                try out.appendNTimes(' ', left);
                 try out.appendSlice(theme_mod.takeCols(head.items, cols));
                 try out.appendSlice(theme_mod.reset);
                 try out.append('\n');
@@ -202,6 +219,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
             }
         }
         for (try midSlice(a, cache, mid_lines.items, start + chrome_rows, view_h - chrome_rows)) |ln| {
+            try out.appendNTimes(' ', left);
             try out.appendSlice(ln);
             try out.append('\n');
         }
@@ -217,11 +235,13 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, width: usize, height: usize,
             .total = n,
         };
     }
+    var mid_gap = gap;
+    while (mid_gap > 0) : (mid_gap -= 1) try out.append('\n');
     if (image_card.len > 0) {
-        try out.appendSlice(image_card);
+        try inset.appendPadded(&out, image_card, left);
         if (image_card[image_card.len - 1] != '\n') try out.append('\n');
     }
-    try out.appendSlice(bottom_block);
+    try inset.appendPadded(&out, bottom_block, left);
     // Hover, selection and the scroll gutter are all post-passes over the
     // finished frame: the row builders stay unaware of all three, and each
     // lands on screen rows exactly as the mouse reported them (#529). Hover

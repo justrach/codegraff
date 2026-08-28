@@ -313,7 +313,7 @@ fn mouseKey(self: *Model, ev: key_mod.Mouse) Effect {
     self.focus = .scrollback;
     // A click on blank padding maps to no entry — it must not select or
     // toggle anything (#519).
-    const i = layout_cache.indexAtVisual(self, vis, self.last_term_width) orelse return .stay;
+    const i = layout_cache.indexAtVisual(self, vis, @import("inset.zig").wrapWidth(self)) orelse return .stay;
     self.selected = i;
     if (self.history.items[i].kind == .tool and !dbl) {
         // A double click is ONE net toggle of the whole group: the first press
