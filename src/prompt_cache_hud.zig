@@ -220,6 +220,7 @@ pub fn render(w: *Io.Writer) !void {
         \\    Vercel                  gateway implicit cache (cached_tokens); coding-agent /v1
         \\    /btw                    parent tools + system + cache key; note is the user message
         \\    subagents               role-lane x-grok-conv-id / prompt_cache_key (not the root id)
+        \\    affinity                git-root or graff-scratch, not cwd (sibling sandboxes share)
         \\
     );
 }
@@ -309,6 +310,8 @@ test "render stays content-free and names remaining levers" {
     try std.testing.expect(contains(text, "x-grok-conv-id"));
     try std.testing.expect(contains(text, "append-only"));
     try std.testing.expect(contains(text, "subagents"));
+    try std.testing.expect(contains(text, "git-root"));
+    try std.testing.expect(contains(text, "graff-scratch"));
     try std.testing.expect(!contains(text, "SECRET-PROMPT"));
     try std.testing.expect(!contains(text, "/Users/me"));
     try std.testing.expect(!contains(text, "bash"));

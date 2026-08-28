@@ -327,6 +327,7 @@ test {
     _ = sandbox_tests;
     _ = provider_tests;
     _ = turn_chrome;
+    _ = @import("cache_affinity.zig"); // ADR 0011: git-root / scratch partition, not cwd
     _ = tool_surface;
     _ = agent_catalog;
     _ = session_connect_tests;

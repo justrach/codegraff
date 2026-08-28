@@ -21,7 +21,7 @@ record only when you need the evidence or the edge cases.
 | [0008](0008-synthetic-evals-use-external-verifiers.md) | Synthetic coding evals promote only external-verifier passes; model judges may tiebreak correctness, never decide it. |
 | [0009](0009-gpt-5-6-explicit-prompt-cache-boundary.md) | GPT-5.6 OpenAI Platform marks the stable prefix explicitly; Codex and xAI stay on their supported keyed automatic-cache paths. |
 | [0010](0010-background-jobs-wait-for-exit.md) | `bash_output`/`agent_output` `wait_ms>0` blocks until exit (10h cap); do not poll every 30s. |
-| [0011](0011-prompt-cache-max-is-visible.md) | Prompt-cache max is on: stable catalog by default; `/cache` is the HUD; `/btw` rides the parent prefix; children share role-lane `x-grok-conv-id` / `prompt_cache_key` (not the root id). |
+| [0011](0011-prompt-cache-max-is-visible.md) | Prompt-cache max is on: stable catalog by default; `/cache` is the HUD; `/btw` rides the parent prefix; children share role-lane keys; root affinity is git-root (or `graff-scratch`), not cwd. |
 | [0012](0012-overflow-handles-named-limits-extra-roots.md) | Fat tool results become `tr_N` handles; named `--context-limit` caps prefix bytes; `--add-dir` extra roots are PathConfine allow-lists, not cwd/skill/session sources. |
 | [0013](0013-list-dir-lives-in-codedb.md) | Directory listing is `codedb list_dir` (in-process BFS, gitignore, 10k cap), not a new always-on catalog tool. |
 | [0014](0014-session-resume-carries-the-room-cursor.md) | `/resume` restores the peer-channel byte cursor and inbox; it does not replay the room into history. |
