@@ -5,6 +5,7 @@ const Io = std.Io;
 const Provider = @import("provider.zig").Provider;
 const root = @import("main.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
+const cache_affinity = @import("cache_affinity.zig");
 
 var session_id_buf: [36]u8 = undefined;
 var session_id_len: usize = 0;
@@ -70,51 +71,13 @@ pub fn requestCacheKey(io: Io, label: []const u8, agent: *const anyopaque, provi
     return promptCacheKey(io, label, agent, buf);
 }
 
-var project_id_buf: [36]u8 = undefined;
-var project_id_len: usize = 0;
-var project_id_lock: std.atomic.Value(bool) = .init(false);
-
-/// Durable per-project id (cwd-derived UUIDv5, no state to persist). A new
-/// session in the same repo reuses the bucket the last session wrote, so
-/// turn 1 can hit the warm system+tools prefix if the provider still has
-/// it. Different models do not share a cache (the server keys by model);
-/// they each get this same routing id so *their* later sessions can find
-/// *their* prefix. Same-project conversation tails may evict each other;
-/// the expensive prefix still hits.
+/// Durable project partition (UUIDv5, no state to persist). Seed is the git
+/// root when cwd is inside a repo, else `graff-scratch` — not the leaf cwd
+/// (ADR 0011 / rematch 2026-08-28). Worktrees and sibling eval sandboxes
+/// under one repo share the bucket so turn 1 can hit a warm system+tools
+/// prefix. Different models do not share a cache (the server keys by model).
 pub fn projectRootId(io: Io) []const u8 {
-    while (project_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
-    defer project_id_lock.store(false, .release);
-    if (project_id_len == 0) {
-        var raw: [16]u8 = undefined;
-        {
-            var cwd_buf: [4096]u8 = undefined;
-            const n = Io.Dir.cwd().realPathFile(io, ".", &cwd_buf) catch blk: {
-                @memcpy(cwd_buf[0..1], ".");
-                break :blk 1;
-            };
-            const cwd = cwd_buf[0..n];
-            var digest: [32]u8 = undefined;
-            var h = std.crypto.hash.sha2.Sha256.init(.{});
-            h.update("graff-kimi-project-cache-v1");
-            h.update(cwd);
-            h.final(&digest);
-            @memcpy(&raw, digest[0..16]);
-            raw[6] = (raw[6] & 0x0f) | 0x50; // version 5: name-derived
-            raw[8] = (raw[8] & 0x3f) | 0x80; // variant 1
-        }
-        const hex = std.fmt.bytesToHex(raw, .lower);
-        @memcpy(project_id_buf[0..8], hex[0..8]);
-        project_id_buf[8] = '-';
-        @memcpy(project_id_buf[9..13], hex[8..12]);
-        project_id_buf[13] = '-';
-        @memcpy(project_id_buf[14..18], hex[12..16]);
-        project_id_buf[18] = '-';
-        @memcpy(project_id_buf[19..23], hex[16..20]);
-        project_id_buf[23] = '-';
-        @memcpy(project_id_buf[24..36], hex[20..32]);
-        project_id_len = 36;
-    }
-    return project_id_buf[0..project_id_len];
+    return cache_affinity.rootId(io);
 }
 
 /// Side-calls that replay the parent history (`/btw`) share the root

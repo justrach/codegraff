@@ -37,6 +37,9 @@ intentional. `/debug` counted tokens; it did not say why a miss happened.
 - `/btw` is a grok-build side-call: same system prompt, same tools JSON, same
   `prompt_cache_key` as the parent. The side-question note is appended as a
   user message. Tools are advertised for the prefix and not executed.
+- Root affinity (`x-grok-conv-id` / `prompt_cache_key`) is the **git root**,
+  not the leaf cwd. No repo → the constant `graff-scratch`. Do not hash cwd:
+  sibling sandboxes and worktrees share one prefix and must share one key.
 
 ## Consequences
 
@@ -54,3 +57,12 @@ Live Grok 4.6 (Responses, SuperGrok OAuth, 2026-08-19): same-process
 append-only turn 2 cached 3,712 of turn 1's 3,721 input tokens. `/btw` after
 that turn reused **3,712** tokens (99.8% of the prior prompt). A new process
 in the same folder started cold at 128 — the official first-request write.
+
+Affinity seed (2026-08-28 rematch): the root key is the **git root**, not
+the leaf cwd (`graff-scratch` when there is no repo). xAI partitions cache
+by `prompt_cache_key`; a cwd-derived id made every graff-evals sandbox a
+cold ~8k write (first-call cache 0–512) while grok-build's first calls
+arrived already warm (11k–43k). Prefix bytes still have to match — this
+only stops an identical system+tools prefix missing because the sandbox
+path changed. Worktrees of one repo share; a repo CLAUDE.md still misses
+another repo.
