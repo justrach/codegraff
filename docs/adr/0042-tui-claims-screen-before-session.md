@@ -17,9 +17,12 @@ the steal — leaving the shell is.
 ## Decision
 
 When the command is `tui` or `repl` (and not `--json` / `-p`),
-`startup.runSubcommand` claims the alt-screen (`tty.enterRaw` + enable
-seq + `restore.arm` + stderr mute) before credentials. `tui.run` takes
-that claim and does not re-arm over already-raw termios. If we never
+`startup.runSubcommand` claims the alt-screen (`tty.enterRaw` +
+`?1049h`/`?25l` wipe + `restore.arm` + stderr mute) before credentials.
+Kitty/mouse/paste stay on `run`'s single `enable_seq` write — they are
+a stack, and a second push fails PTY mode-balance. `tui.run` takes the
+claim, re-asserts raw after boot, and does not re-arm over already-raw
+termios. If we never
 reach `run`, `restore.releaseIfOwned` on the shutdown stamps plus the
 panic hook / fatal signals restore the shell. No libc `atexit` — Zig
 exits via syscall and would skip it.

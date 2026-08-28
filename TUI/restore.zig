@@ -97,9 +97,10 @@ pub fn claimScreen(enable_seq: []const u8) bool {
     claim_raw = raw;
     arm(raw, enable_seq);
     if (builtin.os.tag != .windows) {
-        _ = std.posix.system.write(std.posix.STDOUT_FILENO, enable_seq.ptr, enable_seq.len);
-        const wipe = "\x1b[H\x1b[2J";
-        _ = std.posix.system.write(std.posix.STDOUT_FILENO, wipe.ptr, wipe.len);
+        // Alt-screen only. Kitty/mouse/paste are a stack — run() writes
+        // the full enable_seq once when the loop actually starts.
+        const first = "\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J";
+        _ = std.posix.system.write(std.posix.STDOUT_FILENO, first.ptr, first.len);
     }
     muteStderr();
     claim_owned.store(true, .release);
