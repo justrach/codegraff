@@ -1,8 +1,8 @@
 //! Dim chrome for long inner-loop turns and API transport retries (retry n/N).
 //!
 //! Production default: unlimited inner-loop model calls (`max_turn_model_calls = 0`).
-//! `GRAFF_MAX_TURN_MODEL_CALLS` is the opt-in cap. JSON mode is dropped inside
-//! `tool_pulse.emitNotice` (ADR 0020: chrome, not output).
+//! `GRAFF_MAX_TURN_MODEL_CALLS` is the opt-in cap. `--json` and `-p` drop the
+//! pulse inside `tool_pulse.emitNotice` (ADR 0020: chrome, not output).
 
 const std = @import("std");
 const Io = std.Io;

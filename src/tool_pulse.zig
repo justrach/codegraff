@@ -56,7 +56,10 @@ pub fn formatElapsed(buf: []u8, ms: u64) []const u8 {
 /// the line REPL/headless keep the process-default sink on the turn thread,
 /// which a pool-thread tool cannot reach — so chrome lands straight on stdout,
 /// the same privilege exec_bash_stream's live chunks (and tick_gate's cards)
-/// already hold. Presentation pulse: --json drops it.
+/// already hold. Presentation pulse: --json and -p drop it (ADR 0020: chrome,
+/// not output). `-p` sets `unattended` and promises stdout is only the answer;
+/// rematch 2026-08-28 `schema-output` failed `json.load` because
+/// `· turn still going ·` rode `g_out` ahead of the object.
 pub fn emitNotice(io: Io, comptime fmt: []const u8, args: anytype) void {
     var buf: [160]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, fmt, args) catch return;
@@ -64,10 +67,15 @@ pub fn emitNotice(io: Io, comptime fmt: []const u8, args: anytype) void {
         sink.emit(io, .{ .session_notice = .{ .text = text, .tone = .dim } });
         return;
     }
-    if (main_mod.json_mode) return;
+    if (!chromeGoesToStdout()) return;
     const w = main_mod.g_out orelse return;
     w.print("{s}{s}{s}\n", .{ style.dim, text, style.reset }) catch return;
     w.flush() catch {};
+}
+
+/// Line-REPL only. Hosted TUI/ACP still get the pulse via `hostedSink`.
+pub fn chromeGoesToStdout() bool {
+    return !main_mod.json_mode and !main_mod.unattended;
 }
 
 test "Pulse fires once per silence threshold, then on the interval" {
@@ -98,4 +106,21 @@ test "formatElapsed renders seconds, minutes, and hours" {
     try std.testing.expectEqualStrings("1m00s", formatElapsed(&buf, 60_000));
     try std.testing.expectEqualStrings("2m10s", formatElapsed(&buf, 130_000));
     try std.testing.expectEqualStrings("1h00m", formatElapsed(&buf, 3_600_000));
+}
+
+test "chrome does not ride --json or -p stdout" {
+    const prev_u = main_mod.unattended;
+    const prev_j = main_mod.json_mode;
+    defer {
+        main_mod.unattended = prev_u;
+        main_mod.json_mode = prev_j;
+    }
+    main_mod.unattended = false;
+    main_mod.json_mode = false;
+    try std.testing.expect(chromeGoesToStdout());
+    main_mod.unattended = true;
+    try std.testing.expect(!chromeGoesToStdout());
+    main_mod.unattended = false;
+    main_mod.json_mode = true;
+    try std.testing.expect(!chromeGoesToStdout());
 }
