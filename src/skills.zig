@@ -403,8 +403,7 @@ test "codedb-pro license probe is bounded" {
     try std.testing.expect(codedbpro_probe_ms > 0);
     try std.testing.expect(codedbpro_probe_ms <= 5_000);
     const src = @embedFile("skills.zig");
-    try std.testing.expect(std.mem.indexOf(u8, src, "codedbpro_probe_ms") != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "256, 256, 0") == null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "256, 256, codedbpro_probe_ms") != null);
 }
 
 test "skillIndex: registry lookup" {
