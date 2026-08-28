@@ -142,6 +142,11 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     );
     var oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
     if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
+    // ADR 0001: the schema grammar stays off the agentic turn. This line only
+    // stops "Fill the schema" from being read as "find a schema file" — rematch
+    // 2026-08-28 `schema-output` spent two bash/API rounds inside `.graff/`.
+    if (root.output_schema != null)
+        oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, output_schema_agentic_note });
     try root.messages.append(try messages_mod.textMessage(arena, "user", oneshot_user));
     if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(prompt_text.len, std.math.maxInt(u32))), root.provider.model);
     // #502: --output-schema runs TWO-PHASE. A strict grammar on every message
@@ -531,6 +536,12 @@ pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ
     }
 }
 
+/// Rides the agentic user message when `--output-schema` is set. Not the
+/// schema itself (ADR 0001) — only "do not go looking for a file".
+const output_schema_agentic_note =
+    \\A later formatting step will apply --output-schema to your final answer. Do not search the workspace for a schema file, and do not open .graff/.
+;
+
 /// `--output-schema` checks `json.load` the printed answer. Models that ignore
 /// json_schema often wrap the object in a markdown fence; strip that only.
 fn unwrapFencedJson(text: []const u8) []const u8 {
@@ -546,4 +557,10 @@ fn unwrapFencedJson(text: []const u8) []const u8 {
 test "unwrapFencedJson strips a markdown fence and leaves bare JSON alone" {
     try std.testing.expectEqualStrings("{\"a\":1}", unwrapFencedJson("```json\n{\"a\":1}\n```\n"));
     try std.testing.expectEqualStrings("{\"a\":1}", unwrapFencedJson("{\"a\":1}"));
+}
+
+test "output-schema agentic note names the later step and forbids .graff/" {
+    try std.testing.expect(std.mem.indexOf(u8, output_schema_agentic_note, "--output-schema") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_schema_agentic_note, ".graff/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_schema_agentic_note, "{") == null); // no schema grammar
 }
