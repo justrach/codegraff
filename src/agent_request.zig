@@ -282,8 +282,6 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             // the session — codex's WS→SSE fallback, and consistent
                             // with how a WS transport error is already handled (ws_off).
                             if (stall_retries > 1) self.ws_off = true;
-                            // Reconnect is bookkeeping (ADR 0021). Tracer and
-                            // telemetry keep the attempt; the transcript does not.
                             if (self.tracer) |tr| tr.note("stream_retry", what);
                             if (telemetry.g_telem) |t| t.errorEvent("stream_retry", what);
                             self.partial_text.clearRetainingCapacity(); // fresh stream re-streams cleanly, no concat
@@ -291,6 +289,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             self.sleepInterruptible(stall_reconnect_backoff_ms) catch return error.Interrupted;
                             continue :rebuild;
                         }
+                        // Budget gone: the turn is ending. Mid-turn cuts stayed silent.
+                        @import("engine_sink.zig").forAgent(self).emit(self.io, .{ .transport_aborted = .{ .reason = if (stalled) .stalled else .dropped, .turn_ending = true } });
                         if (stalled) {
                             self.last_api_error = std.fmt.allocPrint(self.arena, "stream stalled: no data from the model for {d}s — ended the turn after {d} reconnect attempts (raise GRAFF_STREAM_STALL_SECS if your model needs longer)", .{ http.stream_stall_ms / 1000, max_stall_retries }) catch null;
                             if (telemetry.g_telem) |t| t.errorEvent("stream_stall", self.last_api_error orelse "stream stalled");

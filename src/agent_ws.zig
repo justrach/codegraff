@@ -163,8 +163,7 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
 }
 
 /// (#422 slice 1b) A transport cut becomes a typed event; the sink decides
-/// what shows. TuiSink: the old inline ⚠ lines, byte for byte. JsonSink:
-/// nothing — the wire never carried these moments and must not start to.
+/// what shows. Ending-turn only (ADR 0021); mid-turn reconnect is silent.
 fn emitAbort(self: *Agent, reason: engine_events.StreamAbort, turn_ending: bool) void {
     const cut: engine_events.TransportAbort = .{ .reason = reason, .turn_ending = turn_ending };
     engine_sink.forAgent(self).emit(self.io, .{ .transport_aborted = cut });
