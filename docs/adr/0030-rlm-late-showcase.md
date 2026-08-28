@@ -67,3 +67,10 @@ sticks for the process. `--old` resets discovery.
 - Revisit if a measured coding one-shot regresses to N serial reads
   because the model never emits a 4-wide batch, never crosses 50% of
   compactAt, and never sees `rlm`.
+- **Showcase must rebuild the cached catalog.** `noticeWideNative` /
+  `noticeContext` only flip `g_loaded`. `invalidateRootTools` without
+  `ensureRootTools` leaves `toolsJson()` as `""`, and the next Responses
+  body is `"tools":,` — xAI 400. The 2026-08-28 grok-build rematch
+  dropped the rlm suite to 3/5 (`scatter-sum`, `multi-read`) while SWE
+  stayed 5/6 (no 4-wide native batch). Call
+  `noticeWideNativeAndRefresh`. Do not revert that to invalidate-only.

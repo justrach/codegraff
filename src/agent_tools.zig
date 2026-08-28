@@ -71,6 +71,9 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
         var names: [32][]const u8 = undefined;
         const n = @min(calls.len, names.len);
         for (calls[0..n], 0..) |c, i| names[i] = c.name;
+        // ADR 0030: ≥4 native reads/bash showcases rlm. Must rebuild the
+        // cached catalog here — invalidate-only shipped `"tools":,` on the
+        // next request (rlm rematch 2026-08-28). See noticeWideNativeAndRefresh.
         _ = native_fold.noticeWideNativeAndRefresh(self, names[0..n]);
     }
     const results = try self.arena.alloc(ExecResult, calls.len);
