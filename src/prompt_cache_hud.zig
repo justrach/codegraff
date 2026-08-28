@@ -44,8 +44,19 @@ var pending: Bust = .none;
 var g_io: ?Io = null;
 var g_aff: [64]u8 = undefined;
 var g_aff_len: usize = 0;
-var g_xai: bool = false;
+var g_kind: AffinityKind = .unknown;
 var g_responses: bool = false;
+
+/// Which wire last recorded an affinity key. `/cache` names Codex the same
+/// way it names xAI — both use `cache_affinity.rootId` (ADR 0011 / 0028).
+pub const AffinityKind = enum { unknown, xai, codex, openai };
+
+pub fn affinityKind(provider_id: []const u8) AffinityKind {
+    if (std.mem.eql(u8, provider_id, "xai")) return .xai;
+    if (std.mem.eql(u8, provider_id, "codex")) return .codex;
+    if (std.mem.eql(u8, provider_id, "openai")) return .openai;
+    return .unknown;
+}
 
 fn acquire() void {
     while (lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
@@ -61,7 +72,7 @@ pub fn reset() void {
     pending = .none;
     g_io = null;
     g_aff_len = 0;
-    g_xai = false;
+    g_kind = .unknown;
     g_responses = false;
 }
 
@@ -122,12 +133,12 @@ pub fn noteRequest(io: Io, system: []const u8, tools: []const u8) void {
     snap.requests += 1;
 }
 
-/// Content-free xAI routing id (`x-grok-conv-id` / `prompt_cache_key`).
-/// Official docs: same value on Chat header and Responses body.
-pub fn noteAffinity(key: []const u8, xai: bool, responses: bool) void {
+/// Content-free routing id. xAI: `x-grok-conv-id` / `prompt_cache_key`.
+/// Codex: HTTP+WS `session_id` / `prompt_cache_key` (ADR 0028, same bytes).
+pub fn noteAffinity(key: []const u8, kind: AffinityKind, responses: bool) void {
     acquire();
     defer release();
-    g_xai = xai;
+    g_kind = kind;
     g_responses = responses;
     const n = @min(key.len, g_aff.len);
     @memcpy(g_aff[0..n], key[0..n]);
@@ -202,12 +213,26 @@ pub fn render(w: *Io.Writer) !void {
         try w.print("  busts      {d}  last: {s}\n", .{ s.busts, bustLabel(s.last_bust) });
     }
     try w.print("  catalog    {s}\n", .{if (mcp_schema_gate.g_stable_catalog) "stable (loads append tail only)" else "mutating (a load rewrites tools JSON)"});
-    if (g_xai and g_aff_len > 0) {
-        try w.print("  xAI        {s}  (automatic prefix cache)\n", .{if (g_responses) "responses" else "chat"});
-        try w.print("  affinity   {s}\n", .{g_aff[0..g_aff_len]});
-        try w.writeAll("             x-grok-conv-id + x-grok-session-id + prompt_cache_key\n");
+    if (g_aff_len > 0) {
+        switch (g_kind) {
+            .xai => {
+                try w.print("  xAI        {s}  (automatic prefix cache)\n", .{if (g_responses) "responses" else "chat"});
+                try w.print("  affinity   {s}\n", .{g_aff[0..g_aff_len]});
+                try w.writeAll("             x-grok-conv-id + x-grok-session-id + prompt_cache_key\n");
+            },
+            .codex => {
+                try w.print("  Codex      {s}  (session_id = prompt_cache_key)\n", .{g_aff[0..g_aff_len]});
+                try w.writeAll("             HTTP + WS session_id; no prompt_cache_breakpoint\n");
+            },
+            .openai => {
+                try w.print("  OpenAI     {s}  (prompt_cache_key)\n", .{g_aff[0..g_aff_len]});
+                try w.writeAll("             gpt-5.6* also send prompt_cache_options + breakpoint\n");
+            },
+            .unknown => try w.print("  affinity   {s}\n", .{g_aff[0..g_aff_len]}),
+        }
     } else {
         try w.writeAll("  xAI        x-grok-conv-id + x-grok-session-id + prompt_cache_key\n");
+        try w.writeAll("  Codex      session_id + prompt_cache_key (same value)\n");
     }
     try w.writeAll(
         \\  remaining max
@@ -220,7 +245,8 @@ pub fn render(w: *Io.Writer) !void {
         \\    Vercel                  gateway implicit cache (cached_tokens); coding-agent /v1
         \\    /btw                    parent tools + system + cache key; note is the user message
         \\    subagents               role-lane x-grok-conv-id / prompt_cache_key (not the root id)
-        \\    affinity                git-root or graff-scratch, not cwd (sibling sandboxes share)
+        \\    affinity                git-root or graff-scratch, not cwd (xAI and Codex share)
+        \\    Codex                   session_id == prompt_cache_key (ADR 0028); no breakpoint
         \\
     );
 }
@@ -312,6 +338,8 @@ test "render stays content-free and names remaining levers" {
     try std.testing.expect(contains(text, "subagents"));
     try std.testing.expect(contains(text, "git-root"));
     try std.testing.expect(contains(text, "graff-scratch"));
+    try std.testing.expect(contains(text, "Codex"));
+    try std.testing.expect(contains(text, "ADR 0028"));
     try std.testing.expect(!contains(text, "SECRET-PROMPT"));
     try std.testing.expect(!contains(text, "/Users/me"));
     try std.testing.expect(!contains(text, "bash"));
@@ -321,7 +349,7 @@ test "render shows xAI affinity without prompt text" {
     reset();
     defer reset();
     noteRequest(std.testing.io, "SECRET-PROMPT", "[]");
-    noteAffinity("b79ad29b-b3f9-463c-bca6-041d5058d366", true, true);
+    noteAffinity("b79ad29b-b3f9-463c-bca6-041d5058d366", .xai, true);
     var buf: [2048]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
     try render(&w);
@@ -330,6 +358,29 @@ test "render shows xAI affinity without prompt text" {
     try std.testing.expect(contains(text, "b79ad29b-b3f9-463c-bca6-041d5058d366"));
     try std.testing.expect(contains(text, "prompt_cache_key"));
     try std.testing.expect(!contains(text, "SECRET-PROMPT"));
+}
+
+test "render shows Codex session_id affinity without prompt text" {
+    reset();
+    defer reset();
+    noteRequest(std.testing.io, "SECRET-PROMPT", "[]");
+    noteAffinity("c0de0000-0000-5000-8000-000000000001", .codex, true);
+    var buf: [2048]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try render(&w);
+    const text = w.buffered();
+    try std.testing.expect(contains(text, "Codex"));
+    try std.testing.expect(contains(text, "session_id = prompt_cache_key"));
+    try std.testing.expect(contains(text, "c0de0000-0000-5000-8000-000000000001"));
+    try std.testing.expect(contains(text, "no prompt_cache_breakpoint"));
+    try std.testing.expect(!contains(text, "SECRET-PROMPT"));
+}
+
+test "affinityKind maps xai / codex / openai" {
+    try std.testing.expectEqual(AffinityKind.xai, affinityKind("xai"));
+    try std.testing.expectEqual(AffinityKind.codex, affinityKind("codex"));
+    try std.testing.expectEqual(AffinityKind.openai, affinityKind("openai"));
+    try std.testing.expectEqual(AffinityKind.unknown, affinityKind("kimi"));
 }
 
 test "renderLine is one content-free row" {
