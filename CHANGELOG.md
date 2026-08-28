@@ -27,6 +27,9 @@ current is part of cutting a release.
 - Native `codedb` and `read_file` stay the default readers when
   codedb-pro is licensed, including `rlm codedb`. Do not use
   `mcp__codedbpro__read` for ordinary files (ADR 0040, #652).
+- TUI is an in-process ACP client (ADR 0041): thought/tools/text from
+  `session/update`, no child `graff acp`.
+- Pager inset like grok-build; overlay panels stay full-width and docked.
 - Test floor 1745 (slack 25).
 
 ## v0.0.279 (2026-08-26)
