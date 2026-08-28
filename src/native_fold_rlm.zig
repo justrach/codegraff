@@ -161,6 +161,7 @@ test "wide native batch showcases rlm; MCP fan-out does not" {
     try std.testing.expect(fold.listed());
 }
 
+// Guards the 2026-08-28 rematch 400: showcase without rebuild emptied toolsJson.
 test "wide-native showcase rebuilds the cached catalog (not invalidate-only)" {
     const provider_mod = @import("provider.zig");
     const FakeAgent = struct {

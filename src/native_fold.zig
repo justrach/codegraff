@@ -193,7 +193,9 @@ fn unmark(name: []const u8) void {
 /// showcase — that re-invites the each() footgun (ADR 0029).
 const wide_native = [_][]const u8{ "read_file", "codedb", "bash", "webfetch" };
 
-/// True when this batch newly showcased rlm (caller rebuilds the catalog).
+/// True when this batch newly showcased rlm. Does NOT rebuild the Agent
+/// catalog — `g_loaded` alone leaves `toolsJson()` empty after invalidate.
+/// Production call sites must use `noticeWideNativeAndRefresh`.
 pub fn noticeWideNative(names: []const []const u8) bool {
     if (listed() or !@import("rlm_spec.zig").available) return false;
     var n: usize = 0;
@@ -359,9 +361,12 @@ fn refreshAgentCatalog(agent: anytype) void {
     agent.ensureRootTools(agent.provider.kind) catch {};
 }
 
-/// ADR 0030 wide-native showcase: mark rlm loaded and rebuild the cached
-/// catalog. Invalidate-only left `toolsJson()` empty, so the next Responses
-/// body was `"tools":,` and xAI 400'd the rlm-suite scatter tasks.
+/// ADR 0030 wide-native showcase + catalog rebuild. The 2026-08-28 rematch
+/// (`scatter-sum` / `multi-read`) 400'd because `runTools` called
+/// `noticeWideNative` then `invalidateRootTools` and never `ensureRootTools`.
+/// Next xAI Responses body was `"tools":,` (`toolsJson()` is `""` after
+/// invalidate). Do not "fix" this back to invalidate-only — SWE hid it
+/// (no 4-wide native batch) while the rlm suite dropped to 3/5.
 pub fn noticeWideNativeAndRefresh(agent: anytype, names: []const []const u8) bool {
     if (!noticeWideNative(names)) return false;
     refreshAgentCatalog(agent);

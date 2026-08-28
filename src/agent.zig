@@ -377,9 +377,8 @@ pub const Agent = struct {
                     self.invalidateRootTools();
                 }
             }
-            // Any mid-turn invalidate (wide-native showcase, MCP join, load)
-            // must rebuild before toolsJson() is read. ensure is a no-op when
-            // the active encoding is already populated.
+            // Safety net: empty toolsJson after invalidate is `"tools":,`
+            // on Responses (xAI 400). ensure is a no-op if already filled.
             try self.ensureRootTools(self.provider.kind);
             const hist_len = self.messages.items.len;
             const root = try self.request(if (self.text_only) null else self.toolsJson());
