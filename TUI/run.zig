@@ -69,6 +69,7 @@ pub fn run(
 
     const claimed = restore_mod.takeClaim();
     var raw = claimed orelse (tty.enterRaw() orelse return error.NotATty);
+    if (claimed != null) _ = tty.enterRaw(); // boot may have put the line discipline back
     if (claimed == null) restore_mod.arm(raw, enable_seq);
     defer restore_mod.disarm();
     defer tty.restore(raw);
@@ -76,9 +77,7 @@ pub fn run(
     var out_buf: [64 * 1024]u8 = undefined;
     var stdout = Io.File.stdout().writer(io, &out_buf);
     const w = &stdout.interface;
-    // Claim already wrote enable_seq (kitty is a stack). Writing it again
-    // left a leftover push and failed mode-balance on the PTY probes.
-    if (claimed == null) w.writeAll(enable_seq) catch {};
+    w.writeAll(enable_seq) catch {};
     w.writeAll("\x1b]11;?\x07") catch {}; // background query -> auto light/dark (key.zig bg_report)
     w.flush() catch {};
     // Registered BEFORE the restore below, so LIFO puts the line on the normal
