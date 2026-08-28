@@ -161,6 +161,45 @@ test "wide native batch showcases rlm; MCP fan-out does not" {
     try std.testing.expect(fold.listed());
 }
 
+test "wide-native showcase rebuilds the cached catalog (not invalidate-only)" {
+    const provider_mod = @import("provider.zig");
+    const FakeAgent = struct {
+        provider: struct { kind: provider_mod.Provider.Kind } = .{ .kind = .responses },
+        invalidations: usize = 0,
+        rebuilds: usize = 0,
+        pub fn invalidateRootTools(self: *@This()) void {
+            self.invalidations += 1;
+        }
+        pub fn ensureRootTools(self: *@This(), kind: provider_mod.Provider.Kind) !void {
+            try std.testing.expectEqual(provider_mod.Provider.Kind.responses, kind);
+            self.rebuilds += 1;
+        }
+    };
+
+    const saved_spec = rlm_spec.available;
+    defer {
+        rlm_spec.available = saved_spec;
+        fold.resetRlmDiscovery();
+    }
+    isolate();
+    rlm_spec.available = true;
+
+    var agent: FakeAgent = .{};
+    try std.testing.expect(!fold.noticeWideNativeAndRefresh(&agent, &.{ "read_file", "codedb", "bash" }));
+    try std.testing.expectEqual(@as(usize, 0), agent.invalidations);
+    try std.testing.expectEqual(@as(usize, 0), agent.rebuilds);
+
+    try std.testing.expect(fold.noticeWideNativeAndRefresh(&agent, &.{ "read_file", "codedb", "bash", "webfetch" }));
+    try std.testing.expect(fold.listed());
+    try std.testing.expect(fold.isLoaded("rlm"));
+    try std.testing.expectEqual(@as(usize, 1), agent.invalidations);
+    try std.testing.expectEqual(@as(usize, 1), agent.rebuilds);
+
+    try std.testing.expect(!fold.noticeWideNativeAndRefresh(&agent, &.{ "read_file", "codedb", "bash", "webfetch" }));
+    try std.testing.expectEqual(@as(usize, 1), agent.invalidations);
+    try std.testing.expectEqual(@as(usize, 1), agent.rebuilds);
+}
+
 test "context below 50% of compactAt does not showcase; crossing it does" {
     const saved_spec = rlm_spec.available;
     defer {
