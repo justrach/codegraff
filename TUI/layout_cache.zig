@@ -199,9 +199,10 @@ const Walk = struct {
 fn liveText(m: *Model, a: std.mem.Allocator, start: usize, end: usize, width: usize) ![]const u8 {
     if (end != start) return steerText(m, a);
     const job = m.pending orelse return "";
-    const src = if (job.raw.len.load(.acquire) > 0) &job.raw else &job.stream;
+    const raw_bash = job.raw.len.load(.acquire) > 0;
+    const src = if (raw_bash) &job.raw else &job.stream;
     const live = src.snapshot(a) orelse return "";
-    return theme_mod.paint(a, m.theme().muted, try scrollback.tail(a, scrollback.strip(a, live), width, 4));
+    return theme_mod.paint(a, m.theme().muted, try scrollback.liveTail(m, a, live, raw_bash, width));
 }
 
 fn steerText(m: *Model, a: std.mem.Allocator) ![]const u8 {

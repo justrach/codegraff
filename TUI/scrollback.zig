@@ -341,7 +341,7 @@ pub fn strip(a: std.mem.Allocator, s: []const u8) []const u8 {
 
 /// Live prose uses the same renderer as a settled assistant row. Raw bash
 /// stays sanitized-only — those bytes are a terminal, not markdown.
-fn liveTail(self: *const Model, a: std.mem.Allocator, live: []const u8, raw_bash: bool, width: usize) ![]const u8 {
+pub fn liveTail(self: *const Model, a: std.mem.Allocator, live: []const u8, raw_bash: bool, width: usize) ![]const u8 {
     const clean = strip(a, live);
     if (raw_bash) return tail(a, clean, width, 4);
     const painted = @import("markdown.zig").renderThemed(a, clean, self.theme(), width -| 4) catch clean;
