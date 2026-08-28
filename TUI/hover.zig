@@ -112,7 +112,7 @@ pub fn hitTest(m: *Model, y: usize) Hit {
         return if (m.sticky_rows > 0 and y == m.mid_origin) .{ .target = .sticky } else .{};
     }
     const vis = y - m.mid_origin + m.mid_skip;
-    const i = layout_cache.indexAtVisual(m, vis, m.last_term_width) orelse return .{};
+    const i = layout_cache.indexAtVisual(m, vis, @import("inset.zig").wrapWidth(m)) orelse return .{};
     if (m.history.items[i].kind != .tool) return .{};
     const run = m.toolRun(i);
     return .{ .target = .tool, .idx = i, .collapsed = m.history.items[run.start].folded };
@@ -184,7 +184,7 @@ pub fn dragged(m: *Model) void {
 /// top row of the viewport. No-op when there is nothing pinned or nothing to
 /// scroll — the same numbers render.zig used to lay the frame out.
 pub fn jumpToSticky(m: *Model) void {
-    const c = layout_cache.ensure(m, m.last_term_width);
+    const c = layout_cache.ensure(m, @import("inset.zig").wrapWidth(m));
     if (layout_cache.stickyUserAbove(c, m.mid_skip) == null) return;
     var i = layout_cache.indexAt(c, m.mid_skip) orelse m.history.items.len;
     const line = while (i > 0) {

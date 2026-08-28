@@ -65,9 +65,14 @@ fn nextBlock(self: *const Model, idx: usize) usize {
 
 // ---------------------------------------------------------------------------
 
+const inset = @import("inset.zig");
 const render_mod = @import("render.zig");
 const scrollback = @import("scrollback.zig");
 const testing = std.testing;
+
+fn wrap(m: *const Model) usize {
+    return inset.wrapWidth(m);
+}
 
 /// Park the viewport so entry `idx`'s first row is the top visible line, using
 /// only what a real frame leaves on the Model: after a render with scroll = 0
@@ -84,7 +89,7 @@ fn park(m: *Model, width: usize, height: usize, idx: usize) !usize {
     const probe = try render_mod.render(m, testing.allocator, width, height, 0);
     testing.allocator.free(probe);
     const max_scroll = m.mid_skip;
-    const want = scrollback.visualOfIndex(m, idx, width) orelse return error.NoSuchEntry;
+    const want = scrollback.visualOfIndex(m, idx, wrap(m)) orelse return error.NoSuchEntry;
     if (want > max_scroll) return error.EntryCannotBeTopLine;
     m.scroll = max_scroll - want;
     const frame = try render_mod.render(m, testing.allocator, width, height, 0);
@@ -119,7 +124,7 @@ test "a width rewrap keeps the anchored entry on the top row" {
 
     const idx: usize = 30;
     _ = try park(&m, 100, 24, idx);
-    try testing.expectEqual(idx, scrollback.indexAtVisual(&m, m.mid_skip, 100).?);
+    try testing.expectEqual(idx, scrollback.indexAtVisual(&m, m.mid_skip, wrap(&m)).?);
 
     // Every one of these widths rewraps the filler above the marker into a
     // different number of rows. Row-count scrolling drifts further on each
@@ -128,7 +133,7 @@ test "a width rewrap keeps the anchored entry on the top row" {
     for ([_]usize{ 72, 55, 41, 120, 64, 100 }) |w| {
         const frame = try rewrap(&m, w, 24);
         defer testing.allocator.free(frame);
-        try testing.expectEqual(idx, scrollback.indexAtVisual(&m, m.mid_skip, w).?);
+        try testing.expectEqual(idx, scrollback.indexAtVisual(&m, m.mid_skip, wrap(&m)).?);
         try testing.expect(std.mem.indexOf(u8, frame, "MARKERONE") != null);
     }
 }
@@ -154,7 +159,7 @@ test "an anchor inside a wrapped entry stays inside that entry" {
         defer testing.allocator.free(frame);
         // The row on top still belongs to the same logical entry — the ordinal
         // clamps into the rewrapped block rather than spilling past its end.
-        try testing.expectEqual(idx, scrollback.indexAtVisual(&m, m.mid_skip, w).?);
+        try testing.expectEqual(idx, scrollback.indexAtVisual(&m, m.mid_skip, wrap(&m)).?);
         // Its head word is three rows above the viewport by construction; what
         // must be on screen is the block's own body.
         try testing.expect(std.mem.indexOf(u8, frame, "wrapme") != null);
@@ -198,7 +203,7 @@ test "the bottom edge clamps: a widened rewrap still shows the anchor" {
     defer testing.allocator.free(frame);
     try testing.expectEqual(@as(usize, 0), m.scroll);
     try testing.expect(std.mem.indexOf(u8, frame, "TAILMARK") != null);
-    try testing.expect(scrollback.indexAtVisual(&m, m.mid_skip, 120).? <= idx);
+    try testing.expect(scrollback.indexAtVisual(&m, m.mid_skip, wrap(&m)).? <= idx);
 }
 
 test "a vertical-only resize keeps bottom-follow and never anchors" {
@@ -247,13 +252,13 @@ test "a collapsed tool run anchors as one block" {
 
     const idx: usize = 25;
     _ = try park(&m, 100, 24, idx);
-    try testing.expectEqual(idx, scrollback.indexAtVisual(&m, m.mid_skip, 100).?);
+    try testing.expectEqual(idx, scrollback.indexAtVisual(&m, m.mid_skip, wrap(&m)).?);
     for ([_]usize{ 62, 48, 96 }) |w| {
         const frame = try rewrap(&m, w, 24);
         defer testing.allocator.free(frame);
         // indexAtVisual maps anywhere in the run to its start — the anchored
         // block is the run, and the run is still what the top row shows.
-        try testing.expectEqual(idx, scrollback.indexAtVisual(&m, m.mid_skip, w).?);
+        try testing.expectEqual(idx, scrollback.indexAtVisual(&m, m.mid_skip, wrap(&m)).?);
         try testing.expect(std.mem.indexOf(u8, frame, "Ran bash") != null);
     }
 }
@@ -280,5 +285,5 @@ test "without the anchor a width rewrap moves the top line" {
     m.scroll = kept;
     const naive = try rewrap(&m, 44, 24);
     defer testing.allocator.free(naive);
-    try testing.expect(scrollback.indexAtVisual(&m, m.mid_skip, 44).? != idx);
+    try testing.expect(scrollback.indexAtVisual(&m, m.mid_skip, wrap(&m)).? != idx);
 }

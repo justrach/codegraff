@@ -97,6 +97,7 @@ test {
     _ = @import("syntax.zig");
     _ = @import("diff.zig");
     _ = @import("dump.zig");
+    _ = @import("inset.zig");
     _ = @import("effort.zig");
     _ = @import("sim.zig");
     _ = @import("render.zig");
