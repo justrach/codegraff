@@ -76,7 +76,9 @@ pub fn run(
     var out_buf: [64 * 1024]u8 = undefined;
     var stdout = Io.File.stdout().writer(io, &out_buf);
     const w = &stdout.interface;
-    w.writeAll(enable_seq) catch {};
+    // Claim already wrote enable_seq (kitty is a stack). Writing it again
+    // left a leftover push and failed mode-balance on the PTY probes.
+    if (claimed == null) w.writeAll(enable_seq) catch {};
     w.writeAll("\x1b]11;?\x07") catch {}; // background query -> auto light/dark (key.zig bg_report)
     w.flush() catch {};
     // Registered BEFORE the restore below, so LIFO puts the line on the normal
