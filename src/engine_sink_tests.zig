@@ -125,15 +125,15 @@ test "TuiSink streams tool-arg prose raw and never ends the answer line (slice 1
     try std.testing.expectEqualStrings("answer prose", aw.writer.buffered());
 }
 
-test "TuiSink transport-abort notices reproduce the old inline lines (slice 1b)" {
+test "TuiSink transport-abort notices only when the turn is ending (ADR 0021)" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
     var a = testAgent(&aw.writer);
     const s = tuiSink(&a);
     const cases = [_]struct { ev: engine_events.TransportAbort, want: []const u8 }{
-        .{ .ev = .{ .reason = .stalled, .turn_ending = false }, .want = "\n⚠ stream stalled\n" },
+        .{ .ev = .{ .reason = .stalled, .turn_ending = false }, .want = "" },
         .{ .ev = .{ .reason = .stalled, .turn_ending = true }, .want = "\n⚠ stream stalled — ending turn\n" },
-        .{ .ev = .{ .reason = .dropped, .turn_ending = false }, .want = "\n⚠ connection dropped\n" },
+        .{ .ev = .{ .reason = .dropped, .turn_ending = false }, .want = "" },
         .{ .ev = .{ .reason = .dropped, .turn_ending = true }, .want = "\n⚠ connection dropped — response ended early\n" },
         // A deliberate interrupt was never announced at the transport layer.
         .{ .ev = .{ .reason = .interrupted, .turn_ending = true }, .want = "" },
@@ -143,6 +143,13 @@ test "TuiSink transport-abort notices reproduce the old inline lines (slice 1b)"
         s.emit(undefined, .{ .transport_aborted = c.ev });
         try std.testing.expectEqualStrings(c.want, aw.writer.buffered());
     }
+}
+
+test "stall reconnect is not announced on the transcript (ADR 0021)" {
+    const src = @embedFile("agent_request.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "[{s} — reconnecting") == null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "reconnecting{s}") == null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "tr.note(\"stream_retry\"") != null);
 }
 
 test "JsonSink stays silent for moments the wire never carried (slice 1b)" {

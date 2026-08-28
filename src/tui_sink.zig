@@ -167,12 +167,16 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
                 std.fmt.bufPrint(&buf, "{s}{s}", .{ n.lead, n.text }) catch n.lead;
             b.queue.push(.{ .notice = line });
         },
-        .transport_aborted => |t| switch (t.reason) {
-            // A deliberate Esc is silent here as everywhere: finishJob already
-            // writes the one "■ interrupted" row.
-            .interrupted => {},
-            .stalled => b.queue.push(.{ .notice = "⚠ stream stalled" }),
-            .dropped => b.queue.push(.{ .notice = "⚠ connection dropped" }),
+        .transport_aborted => |t| {
+            // Mid-turn cuts are the reconnect ladder (ADR 0021). The pager
+            // already shows Thinking / tool rows; a ⚠ here is what made
+            // people hit Esc on a turn that was still recovering.
+            if (!t.turn_ending) return;
+            switch (t.reason) {
+                .interrupted => {},
+                .stalled => b.queue.push(.{ .notice = "⚠ stream stalled — ending turn" }),
+                .dropped => b.queue.push(.{ .notice = "⚠ connection dropped — response ended early" }),
+            }
         },
         .stream_aborted => |reason| switch (reason) {
             .interrupted => {},
@@ -429,6 +433,31 @@ test "the turn-sink binding is thread-local and released after the turn" {
 
     engine_sink.unbindTurnSink();
     try std.testing.expect(engine_sink.turnSink() == null);
+}
+
+test "mid-turn transport cuts stay off the pager (ADR 0021)" {
+    var qbuf: tui.EventQueue = .{};
+    qbuf.attach(std.testing.allocator);
+    defer qbuf.deinit();
+    var sbuf: [64]u8 = undefined;
+    var stream: repl.StreamBuf = .{ .buf = &sbuf };
+    var bridge: Bridge = .{ .queue = &qbuf, .stream = &stream };
+    const sink = forBridge(&bridge);
+    sink.emit(undefined, .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = false } });
+    sink.emit(undefined, .{ .transport_aborted = .{ .reason = .dropped, .turn_ending = false } });
+    sink.emit(undefined, .{ .transport_aborted = .{ .reason = .interrupted, .turn_ending = true } });
+    {
+        const silent = qbuf.drain();
+        defer qbuf.free(silent);
+        try std.testing.expectEqual(@as(usize, 0), silent.len);
+    }
+    sink.emit(undefined, .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = true } });
+    sink.emit(undefined, .{ .transport_aborted = .{ .reason = .dropped, .turn_ending = true } });
+    const evs = qbuf.drain();
+    defer qbuf.free(evs);
+    try std.testing.expectEqual(@as(usize, 2), evs.len);
+    try std.testing.expectEqualStrings("⚠ stream stalled — ending turn", evs[0].notice);
+    try std.testing.expectEqualStrings("⚠ connection dropped — response ended early", evs[1].notice);
 }
 
 test "acp_owns_transcript leaves thought/tool/text to session/update" {

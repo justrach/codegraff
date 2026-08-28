@@ -282,8 +282,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             // the session — codex's WS→SSE fallback, and consistent
                             // with how a WS transport error is already handled (ws_off).
                             if (stall_retries > 1) self.ws_off = true;
-                            const via: []const u8 = if (self.ws_off) " (SSE)" else "";
-                            try self.say("[{s} — reconnecting{s} ({d}/{d})]\n", .{ what, via, stall_retries, max_stall_retries });
+                            // Reconnect is bookkeeping (ADR 0021). Tracer and
+                            // telemetry keep the attempt; the transcript does not.
                             if (self.tracer) |tr| tr.note("stream_retry", what);
                             if (telemetry.g_telem) |t| t.errorEvent("stream_retry", what);
                             self.partial_text.clearRetainingCapacity(); // fresh stream re-streams cleanly, no concat
