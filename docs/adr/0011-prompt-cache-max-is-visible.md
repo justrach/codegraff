@@ -19,9 +19,11 @@ intentional. `/debug` counted tokens; it did not say why a miss happened.
 ## Decision
 
 - `/cache` is the content-free cache HUD: prefix hash, last read/write,
-  session hit rate, catalog mode, last bust reason, xAI affinity
-  (`x-grok-conv-id` + `x-grok-session-id` + `prompt_cache_key`), and the
-  remaining max levers. No prompt text, paths, or tool bodies.
+  session hit rate, catalog mode, last bust reason, and the live wire's
+  affinity (xAI keyed headers, Codex `session_id` = `prompt_cache_key`,
+  OpenAI Platform breakpoint, Claude explicit `cache_control` on tools +
+  system + last message, Kimi automatic prefix + chat `prompt_cache_key`).
+  Remaining max levers stay listed. No prompt text, paths, or tool bodies.
 - `/debug` gets one cache row from the same snapshot.
 - Named busts (`goal`, `playbook`, `compact`, `persona`, `tools`, `mcp`) are
   recorded at the mutation site and counted only when the next request's
@@ -66,3 +68,14 @@ arrived already warm (11k–43k). Prefix bytes still have to match — this
 only stops an identical system+tools prefix missing because the sandbox
 path changed. Worktrees of one repo share; a repo CLAUDE.md still misses
 another repo.
+
+Claude (2026-08-28): mark `cache_control` on the last tool, the system
+block, and the last cacheable message. A system-only mark still hashes
+tools (they precede system), but a long tool loop walks the 20-block
+lookback off that write; the tools breakpoint is the earlier slot. Do
+not send top-level automatic `cache_control` next to those three marks
+(fourth slot / no-op). MiniMax stays unmarked.
+
+Kimi (2026-08-28): chat sends `prompt_cache_key` (coding-agent / Code
+Plan). Anthropic-transport Kimi still gets the three explicit marks;
+the server hashes the prefix either way.

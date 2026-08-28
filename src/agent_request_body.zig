@@ -69,13 +69,14 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                     try s.print("{s}", .{thinking_obj});
                 }
             }
-            // Prompt caching (Anthropic): a block-level cache_control breakpoint
-            // on the system block caches the whole stable prefix (system+tools);
-            // other anthropic-format providers (minimax) get a plain string.
+            // Prompt caching (Anthropic + Kimi-anthropic): tools → system →
+            // last message, the documented agentic breakpoints. MiniMax stays
+            // a plain string — it is not the Claude cache contract.
             try s.objectField("system");
             const sys = try @import("agent_request_body_responses.zig").schemaAwarePrompt(self);
             const cc = "{\"type\":\"ephemeral\"}";
-            if (std.mem.eql(u8, self.provider.id, "anthropic") or is_kimi) {
+            const cache_prefix = std.mem.eql(u8, self.provider.id, "anthropic") or is_kimi;
+            if (cache_prefix) {
                 try s.beginArray();
                 try s.beginObject();
                 try s.objectField("type");
@@ -91,7 +92,7 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             }
             if (tools) |t| {
                 try s.objectField("tools");
-                try writeAnthropicTools(&s, self.scratchAlloc(), t, is_kimi);
+                try writeAnthropicTools(&s, self.scratchAlloc(), t, cache_prefix);
                 if (force_tool) {
                     try s.objectField("tool_choice");
                     try s.print("{s}", .{"{\"type\":\"any\"}"});
@@ -102,11 +103,9 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 try @import("agent_request_body_responses.zig").writeAnthropicStructuredTool(&s, self.output_schema.?);
             }
             try s.objectField("messages");
-            // Cache the conversation prefix too (not just system) on the real
-            // Anthropic API and Kimi's declared Anthropic transport. Kimi also
-            // normalizes all string content into Anthropic text blocks.
-            const cache_msgs = std.mem.eql(u8, self.provider.id, "anthropic") or is_kimi;
-            try writeAnthropicMessages(&s, self.messages, cache_msgs, is_kimi);
+            // Last cacheable block (including tool_result). Kimi also
+            // normalizes every string into an Anthropic text block.
+            try writeAnthropicMessages(&s, self.messages, cache_prefix, is_kimi);
         },
         .openai => {
             // graff's MakeOpenAiCompat: OpenAI deprecated max_tokens in
