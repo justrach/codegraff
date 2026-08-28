@@ -31,4 +31,5 @@ not foreground UI. `batch` is `inspect`. Observe, then conclude, then act.
 
 JSON events and tool results the model reads are unchanged. `/debug` and
 `.graff/subagents/<id>.md` remain the escape hatch. A later TUI chrome pass
-can bind WORKING to the pager footer the same way.
+can bind WORKING to the pager footer the same way. The pager claims the
+alt-screen before session construction (ADR 0042); the welcome stays empty.

@@ -80,11 +80,12 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, term_width: usize, term_heig
                 const g = try (zz.Style{}).fg(repl.accent).bold(true).render(a, self.spinnerFrame(now_ms));
                 const live = if (self.pending) |job| job.stream.snapshot(a) else null;
                 if (live) |s| {
-                    // Compact live activity: the last few lines of the
-                    // agent's output, control-stripped + width-truncated,
-                    // so tool chatter can't flood the pane.
+                    // Same renderer the settled reply uses (repl_markdown),
+                    // then a short tail so tool chatter cannot flood the pane.
+                    const clean = stripControl(a, s);
+                    const painted = repl.renderMarkdown(a, clean, term_width) catch clean;
                     try top.appendSlice(try std.fmt.allocPrint(a, "{s} working…\n", .{g}));
-                    try top.appendSlice(try tailPreview(a, stripControl(a, s), term_width, 3));
+                    try top.appendSlice(try tailPreview(a, stripControl(a, painted), term_width, 8));
                 } else {
                     const t = try (zz.Style{}).dim(true).render(a, "thinking…");
                     try top.appendSlice(try std.fmt.allocPrint(a, "{s} {s}\n", .{ g, t }));
@@ -203,4 +204,28 @@ pub fn copySelection(self: *Model, ctx: *zz.Context, r0: usize, r1: usize) void 
     if (ctx._terminal) |term| term.flush() catch {};
     self.toast = if (ok) .copied else .failed;
     self.toast_until_ms = (ctx.elapsed / std.time.ns_per_ms) + repl.TOAST_MS;
+}
+
+test "live pending tail paints markdown before the turn settles" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    var sbuf: [256]u8 = undefined;
+    var none: [0]repl.Turn = .{};
+    var job: repl.Job = .{
+        .gpa = std.testing.allocator,
+        .history = &none,
+        .params = .{},
+        .stream = .{ .buf = &sbuf },
+        .threaded = false,
+    };
+    job.stream.appendBytes("- first\nthis is **bold** text\n");
+    try m.push(.pending, "");
+    m.pending = &job;
+    defer m.pending = null;
+    const out = try render(&m, std.testing.allocator, 80, 24, 0);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "•") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "**bold**") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "bold") != null);
 }
