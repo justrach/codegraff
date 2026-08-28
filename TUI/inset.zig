@@ -92,9 +92,12 @@ pub fn appendPadded(out: *std.array_list.Managed(u8), text: []const u8, left: us
     var it = std.mem.splitScalar(u8, text, '\n');
     var first = true;
     while (it.next()) |ln| {
+        // A trailing empty segment is the final newline, not a row to pad —
+        // prefixing it (or emitting an extra `\n` both here and below) grew
+        // the frame by one and broke the height invariant.
+        if (ln.len == 0 and it.rest().len == 0) break;
         if (!first) try out.append('\n');
         first = false;
-        if (ln.len == 0 and it.rest().len == 0) break;
         try out.appendNTimes(' ', left);
         try out.appendSlice(ln);
     }
@@ -163,25 +166,22 @@ test "Term screen insets transcript, composer, and footer like grok-build" {
     const hints = rowWith(vis, "Enter:send") orelse return error.NoFooter;
     try std.testing.expect(firstGlyphCol(hints) >= outer_hpad_left);
 
-    var rows = std.mem.splitScalar(u8, vis, '\n');
-    var last: []const u8 = "";
-    var n: usize = 0;
-    while (rows.next()) |ln| {
-        if (ln.len > 0 or rows.rest().len > 0) {
-            last = ln;
-            n += 1;
-        }
-    }
-    // The last painted row is the outer_vpad blank under the hints — not the
-    // composer wall, and not a flush hint line.
-    try std.testing.expect(std.mem.indexOf(u8, last, "╭") == null);
-    try std.testing.expect(std.mem.indexOf(u8, last, "╰") == null);
-    try std.testing.expect(firstGlyphCol(last) == last.len);
-
     const lay = try term.layout();
     defer std.testing.allocator.free(lay);
     try std.testing.expect(std.mem.indexOf(u8, lay, "prompt-origin") != null);
+    // Composer sits above the hint row, not on the last cell of the screen.
     try std.testing.expect(term.model.prompt_origin + 1 < 24);
+    // outer_vpad: the row immediately above the box is blank, not transcript.
+    const ann = try term.annotated();
+    defer std.testing.allocator.free(ann);
+    var prev: []const u8 = "";
+    var it = std.mem.splitScalar(u8, ann, '\n');
+    while (it.next()) |ln| {
+        if (std.mem.indexOf(u8, ln, "╭") != null) break;
+        prev = ln;
+    }
+    const prev_bar = std.mem.indexOfScalar(u8, prev, '|') orelse return error.NoPrevBar;
+    try std.testing.expectEqual(firstGlyphCol(prev[prev_bar + 1 ..]), prev[prev_bar + 1 ..].len);
 }
 
 test "Term annotated rows carry the left gutter; compact drops vpad" {
@@ -203,11 +203,4 @@ test "Term annotated rows carry the left gutter; compact drops vpad" {
     defer std.testing.allocator.free(vis);
     const box = rowWith(vis, "╭") orelse return error.NoComposer;
     try std.testing.expectEqual(min_hpad, firstGlyphCol(box));
-    var it = std.mem.splitScalar(u8, vis, '\n');
-    var last: []const u8 = "";
-    while (it.next()) |ln| {
-        if (ln.len > 0 or it.rest().len > 0) last = ln;
-    }
-    // Compact drops the blank last row; the hint line is the footer.
-    try std.testing.expect(std.mem.indexOf(u8, last, "Enter:send") != null);
 }

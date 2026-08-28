@@ -557,8 +557,10 @@ test "hover on a composer chip opens an unpinned preview" {
     m.setup(std.testing.allocator);
     defer m.deinit();
     m.attachImage("/tmp/shot.png");
+    m.last_term_width = 80;
     m.prompt_origin = 10;
-    try std.testing.expect(mouse(&m, .{ .btn = 35, .x = 5, .y = 12, .down = false }));
+    // 1-based: left gutter (2) + box pad (4) + into "[Image #1]"
+    try std.testing.expect(mouse(&m, .{ .btn = 35, .x = 12, .y = 12, .down = false }));
     try std.testing.expectEqual(app.Overlay.image, m.overlay);
     try std.testing.expectEqualStrings("/tmp/shot.png", m.preview_path);
     try std.testing.expect(!m.preview_pin);

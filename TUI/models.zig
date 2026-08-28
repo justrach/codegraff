@@ -173,7 +173,7 @@ pub fn render(self: *const Model, a: std.mem.Allocator) ![]const u8 {
     const sel = self.overlay_sel % n;
     const vis = @min(visible_rows, n);
     const off = if (sel >= vis) sel - vis + 1 else 0;
-    const col = nameColumn(rows[off..@min(n, off + vis)], @import("inset.zig").wrapWidth(self));
+    const col = nameColumn(rows[off..@min(n, off + vis)], self.last_term_width);
     var i = off;
     while (i < n and i < off + vis) : (i += 1) {
         const e = rows[i];

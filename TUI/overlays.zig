@@ -135,7 +135,7 @@ pub fn rowSpan(self: *const Model) ?Span {
     // Too narrow to frame is too narrow to CLIP: panel.zig hands the body back
     // untouched, the rows wrap, and one item stops being one line. Nothing is
     // clickable at that width rather than the wrong thing being.
-    if (@import("inset.zig").wrapWidth(self) < panel.min_width) return null;
+    if (self.last_term_width < panel.min_width) return null;
     switch (self.overlay) {
         .palette => {
             var idx: [catalog.items.len]usize = undefined;
