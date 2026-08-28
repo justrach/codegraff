@@ -53,6 +53,7 @@ record only when you need the evidence or the edge cases.
 | [0040](0040-codedb-stays-when-licensed.md) | Ordinary reads use native `codedb` / `read_file`; codedb-pro is extra search, not the default reader. |
 | [0041](0041-tui-is-an-acp-client.md) | The fullscreen TUI is an in-process ACP client: session/prompt in, session/update thought/tool/text out. No child `graff acp`. |
 | [0042](0042-tui-claims-screen-before-session.md) | `graff tui` / TTY `graff repl` claim the alt-screen before keys/MCP/prompt; leftover boot happens inside the pager. |
+| [0043](0043-pi-swe-same-seat.md) | Pi SWE A/B uses `pi-xai` on the SuperGrok seat; do not steal Pi's catalog or heap from the json-stream pass. |
 
 ## When to write one
 
