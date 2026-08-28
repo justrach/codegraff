@@ -151,6 +151,7 @@ test "prompt cache: xAI Responses header and body agree; OpenAI Responses has a 
     var cbuf: [12]std.http.Header = undefined;
     const ch = http_headers.providerHeadersWithConv(ca.io, ca.provider, "Bearer k", &cbuf, body_key);
     try std.testing.expectEqualStrings(body_key, headerNamed(ch, "session_id") orelse return error.SessionIdHeaderMissing);
+    try std.testing.expectEqualStrings(http_headers.projectRootId(ca.io), body_key);
 }
 
 test "prompt cache: effort is never auto-flipped (prefix stays)" {

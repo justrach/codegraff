@@ -228,7 +228,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             var aff_buf: [96]u8 = undefined;
             hud.noteAffinity(
                 http_headers.promptCacheKey(self.io, self.label, self, &aff_buf),
-                std.mem.eql(u8, self.provider.id, "xai"),
+                hud.affinityKind(self.provider.id),
                 self.provider.kind == .responses,
             );
         }
