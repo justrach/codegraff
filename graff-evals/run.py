@@ -10,6 +10,7 @@ outcome, and writes JSONL results plus a summary table.
   ./run.py --harness graff --model grok-4.6              # full suite (core + rlm + swe)
   ./run.py --suite rlm --harness graff-dev-old,graff-dev # scatter-gather A/B
   ./run.py --suite swe --harness graff-dev-old,graff-dev -j 12  # DeepSWE-shaped A/B, parallel
+  ./run.py --suite swe --harness graff-dev,pi-xai --model grok-4.6 -j 6  # same SuperGrok seat
   ./run.py --suite mcp --harness graff-dev-old-nolean,graff-dev-rlm-struct,graff-dev-nolean
   ./run.py --harness grok --task fix-fib --reps 3        # one task, 3 reps
   ./run.py --interactive                                 # pick + watch live
