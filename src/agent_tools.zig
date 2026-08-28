@@ -71,7 +71,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
         var names: [32][]const u8 = undefined;
         const n = @min(calls.len, names.len);
         for (calls[0..n], 0..) |c, i| names[i] = c.name;
-        if (native_fold.noticeWideNative(names[0..n])) self.invalidateRootTools();
+        _ = native_fold.noticeWideNativeAndRefresh(self, names[0..n]);
     }
     const results = try self.arena.alloc(ExecResult, calls.len);
     const eval_index = eval_control.evalCallIndex(calls);

@@ -371,9 +371,12 @@ pub const Agent = struct {
                 const fold = @import("native_fold.zig");
                 if (fold.noticeContext(self.effectiveContextTokens(), self.provider.compactAt())) {
                     self.invalidateRootTools();
-                    try self.ensureRootTools(self.provider.kind);
                 }
             }
+            // Any mid-turn invalidate (wide-native showcase, MCP join, load)
+            // must rebuild before toolsJson() is read. ensure is a no-op when
+            // the active encoding is already populated.
+            try self.ensureRootTools(self.provider.kind);
             const hist_len = self.messages.items.len;
             const root = try self.request(if (self.text_only) null else self.toolsJson());
             const done = switch (self.provider.kind) {

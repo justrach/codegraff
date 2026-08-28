@@ -359,6 +359,15 @@ fn refreshAgentCatalog(agent: anytype) void {
     agent.ensureRootTools(agent.provider.kind) catch {};
 }
 
+/// ADR 0030 wide-native showcase: mark rlm loaded and rebuild the cached
+/// catalog. Invalidate-only left `toolsJson()` empty, so the next Responses
+/// body was `"tools":,` and xAI 400'd the rlm-suite scatter tasks.
+pub fn noticeWideNativeAndRefresh(agent: anytype, names: []const []const u8) bool {
+    if (!noticeWideNative(names)) return false;
+    refreshAgentCatalog(agent);
+    return true;
+}
+
 /// The native half of load_tool_schemas, called from agent_tools before the
 /// MCP handler: an input naming folded native tools loads them (real schema
 /// in the result, enabled for the session). Returns null when the input

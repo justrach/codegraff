@@ -334,6 +334,9 @@ pub fn writeKimiTools(s: *std.json.Stringify, arena: Allocator, raw: []const u8)
 /// catalog that needs no repair, or that we cannot parse, goes out as its
 /// original bytes so the usual request keeps a byte-identical cached prefix.
 pub fn writeOpenAITools(s: *std.json.Stringify, arena: Allocator, raw: []const u8) !void {
+    // Empty catalog must still be a JSON array. Printing the raw empty slice
+    // after `"tools":` produced `"tools":,` (xAI 400).
+    if (raw.len == 0) return s.print("[]", .{});
     const value = std.json.parseFromSliceLeaky(Value, arena, raw, .{ .allocate = .alloc_always }) catch return s.print("{s}", .{raw});
     if (value != .array) return s.print("{s}", .{raw});
     var repaired = false;
@@ -484,4 +487,10 @@ test "openai and responses tools give a typeless MCP root schema type object (#2
     const composed = "[{\"type\":\"function\",\"function\":{\"name\":\"t\",\"description\":\"\",\"parameters\":{\"anyOf\":[{\"type\":\"object\"}]}}}]";
     try std.testing.expectEqualStrings(composed, try renderOpenAITools(arena, composed));
     try std.testing.expectEqualStrings("not json", try renderOpenAITools(arena, "not json"));
+}
+
+test "empty OpenAI tools catalog writes [] not a missing JSON value" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    try std.testing.expectEqualStrings("[]", try renderOpenAITools(arena_state.allocator(), ""));
 }
