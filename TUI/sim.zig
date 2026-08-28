@@ -462,3 +462,31 @@ test "the idle paste sweep never fires a phantom Escape at a live turn" {
     _ = term.feed("[201~");
     try std.testing.expectEqualStrings("draft text", term.model.input.getValue());
 }
+
+test "live prose tail paints markdown before the turn settles" {
+    const engine = @import("engine.zig");
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    try term.model.push(.user, "list them");
+    var sbuf: [256]u8 = undefined;
+    const job = try std.testing.allocator.create(engine.Job);
+    defer std.testing.allocator.destroy(job);
+    job.* = .{
+        .gpa = std.testing.allocator,
+        .history = &.{},
+        .params = .{},
+        .stream = .{ .buf = &sbuf },
+        .threaded = false,
+    };
+    job.stream.appendBytes("- first item\nthis is **bold** text\n");
+    try term.model.push(.pending, "");
+    term.model.pending = job;
+    defer term.model.pending = null;
+    const vis = try term.screen();
+    defer std.testing.allocator.free(vis);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "•") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "**bold**") == null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "bold") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "- first") == null);
+}

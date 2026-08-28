@@ -63,6 +63,10 @@ pub const Tracker = struct {
     }
 };
 
+test {
+    _ = shutdown_trace;
+}
+
 test "startup phases retain order and non-negative deltas before attach" {
     var tracker = Tracker.init(std.testing.io, false);
     tracker.mark(std.testing.io, "args");
