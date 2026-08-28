@@ -47,14 +47,16 @@ var g_aff_len: usize = 0;
 var g_kind: AffinityKind = .unknown;
 var g_responses: bool = false;
 
-/// Which wire last recorded an affinity key. `/cache` names Codex the same
-/// way it names xAI — both use `cache_affinity.rootId` (ADR 0011 / 0028).
-pub const AffinityKind = enum { unknown, xai, codex, openai };
+/// Which wire last recorded an affinity key. `/cache` names each live
+/// contract: xAI/Codex/OpenAI keyed, Claude explicit, Kimi automatic+key.
+pub const AffinityKind = enum { unknown, xai, codex, openai, anthropic, kimi };
 
 pub fn affinityKind(provider_id: []const u8) AffinityKind {
     if (std.mem.eql(u8, provider_id, "xai")) return .xai;
     if (std.mem.eql(u8, provider_id, "codex")) return .codex;
     if (std.mem.eql(u8, provider_id, "openai")) return .openai;
+    if (std.mem.eql(u8, provider_id, "anthropic")) return .anthropic;
+    if (std.mem.eql(u8, provider_id, "kimi")) return .kimi;
     return .unknown;
 }
 
@@ -228,11 +230,21 @@ pub fn render(w: *Io.Writer) !void {
                 try w.print("  OpenAI     {s}  (prompt_cache_key)\n", .{g_aff[0..g_aff_len]});
                 try w.writeAll("             gpt-5.6* also send prompt_cache_options + breakpoint\n");
             },
+            .anthropic => {
+                try w.writeAll("  Claude     explicit cache_control (tools + system + last message)\n");
+                try w.writeAll("             no prompt_cache_key; do not copy Codex/xAI knobs\n");
+            },
+            .kimi => {
+                try w.print("  Kimi       {s}  (prompt_cache_key on chat)\n", .{g_aff[0..g_aff_len]});
+                try w.writeAll("             automatic prefix; key is the coding-agent session id\n");
+            },
             .unknown => try w.print("  affinity   {s}\n", .{g_aff[0..g_aff_len]}),
         }
     } else {
         try w.writeAll("  xAI        x-grok-conv-id + x-grok-session-id + prompt_cache_key\n");
         try w.writeAll("  Codex      session_id + prompt_cache_key (same value)\n");
+        try w.writeAll("  Claude     cache_control on tools + system + last message\n");
+        try w.writeAll("  Kimi       automatic prefix + prompt_cache_key on chat\n");
     }
     try w.writeAll(
         \\  remaining max
@@ -247,6 +259,8 @@ pub fn render(w: *Io.Writer) !void {
         \\    subagents               role-lane x-grok-conv-id / prompt_cache_key (not the root id)
         \\    affinity                git-root or graff-scratch, not cwd (xAI and Codex share)
         \\    Codex                   session_id == prompt_cache_key (ADR 0028); no breakpoint
+        \\    Claude                  explicit cache_control; no top-level automatic (3 of 4 slots)
+        \\    Kimi                    automatic prefix; chat prompt_cache_key (Code Plan requires it)
         \\
     );
 }
@@ -340,6 +354,8 @@ test "render stays content-free and names remaining levers" {
     try std.testing.expect(contains(text, "graff-scratch"));
     try std.testing.expect(contains(text, "Codex"));
     try std.testing.expect(contains(text, "ADR 0028"));
+    try std.testing.expect(contains(text, "Claude"));
+    try std.testing.expect(contains(text, "Kimi"));
     try std.testing.expect(!contains(text, "SECRET-PROMPT"));
     try std.testing.expect(!contains(text, "/Users/me"));
     try std.testing.expect(!contains(text, "bash"));
@@ -376,11 +392,43 @@ test "render shows Codex session_id affinity without prompt text" {
     try std.testing.expect(!contains(text, "SECRET-PROMPT"));
 }
 
-test "affinityKind maps xai / codex / openai" {
+test "affinityKind maps xai / codex / openai / anthropic / kimi" {
     try std.testing.expectEqual(AffinityKind.xai, affinityKind("xai"));
     try std.testing.expectEqual(AffinityKind.codex, affinityKind("codex"));
     try std.testing.expectEqual(AffinityKind.openai, affinityKind("openai"));
-    try std.testing.expectEqual(AffinityKind.unknown, affinityKind("kimi"));
+    try std.testing.expectEqual(AffinityKind.anthropic, affinityKind("anthropic"));
+    try std.testing.expectEqual(AffinityKind.kimi, affinityKind("kimi"));
+    try std.testing.expectEqual(AffinityKind.unknown, affinityKind("minimax"));
+}
+
+test "render shows Claude explicit breakpoints without a fake key" {
+    reset();
+    defer reset();
+    noteRequest(std.testing.io, "SECRET-PROMPT", "[]");
+    noteAffinity("should-not-print-as-claude-key", .anthropic, false);
+    var buf: [2048]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try render(&w);
+    const text = w.buffered();
+    try std.testing.expect(contains(text, "explicit cache_control"));
+    try std.testing.expect(contains(text, "tools + system + last message"));
+    try std.testing.expect(!contains(text, "should-not-print-as-claude-key"));
+    try std.testing.expect(!contains(text, "SECRET-PROMPT"));
+}
+
+test "render shows Kimi automatic prefix plus the coding-agent key" {
+    reset();
+    defer reset();
+    noteRequest(std.testing.io, "SECRET-PROMPT", "[]");
+    noteAffinity("kimi-session-key", .kimi, false);
+    var buf: [2048]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try render(&w);
+    const text = w.buffered();
+    try std.testing.expect(contains(text, "Kimi"));
+    try std.testing.expect(contains(text, "kimi-session-key"));
+    try std.testing.expect(contains(text, "automatic prefix"));
+    try std.testing.expect(!contains(text, "SECRET-PROMPT"));
 }
 
 test "renderLine is one content-free row" {

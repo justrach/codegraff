@@ -154,6 +154,30 @@ test "prompt cache: xAI Responses header and body agree; OpenAI Responses has a 
     try std.testing.expectEqualStrings(http_headers.projectRootId(ca.io), body_key);
 }
 
+test "prompt cache: native Anthropic marks tools + system + last message" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const spec = provider_mod.specFor("anthropic").?;
+    var root = try agentFor(a, spec, "main", .anthropic);
+    const tools = "[{\"name\":\"bash\",\"description\":\"\",\"input_schema\":{\"type\":\"object\"}}]";
+    const body = try root.buildBody(tools, false, true, true);
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"system\":[{\"type\":\"text\",\"text\":\"system\",\"cache_control\":{\"type\":\"ephemeral\"}}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"input_schema\":{\"type\":\"object\"},\"cache_control\":{\"type\":\"ephemeral\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"hello\",\"cache_control\":{\"type\":\"ephemeral\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"prompt_cache_key\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"prompt_cache_options\"") == null);
+    // Top-level automatic would be a 4th slot next to three explicit marks.
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"max_tokens\":16000,\"cache_control\"") == null);
+
+    var mm = try agentFor(a, spec, "main", .anthropic);
+    mm.provider.id = "minimax";
+    const plain = try mm.buildBody(tools, false, true, true);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "cache_control") == null);
+}
+
 test "prompt cache: effort is never auto-flipped (prefix stays)" {
     try std.testing.expect(!effort_route.shouldRouteLookupLow(false, true, "what does runEval do?"));
     try std.testing.expect(!effort_route.shouldRouteLookupLow(true, true, "explain the permission gate?"));
