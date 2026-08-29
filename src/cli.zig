@@ -21,6 +21,11 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.281
+    \\  • -p / --json skip learn auto-init — no 132M graff-pinned copy (ADR 0044)
+    \\  • SuperGrok SWE 5/6 in 205s / 6.5s CPU (was 4/6 in 456s / 230s)
+    \\  • TUI claims alt-screen before boot; live markdown on the cached tail (ADR 0042)
+    \\
     \\0.0.280
     \\  • leftover 279 work: TUI stall/resize, experiment fan-out, /tell /peek, ACP graff-login
     \\  • local tools (.graff/tools), /schedule due-claim, JSONL channel workers

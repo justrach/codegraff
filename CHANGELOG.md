@@ -10,6 +10,21 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.281 (2026-08-29)
+
+- Next cut after tagged v0.0.280. Headline is the `-p` / `--json` learn
+  skip (ADR 0044, #668): one-shots no longer copy 132M `graff-pinned`.
+  SuperGrok grok-4.6 SWE went 4/6 in 456s / 230s CPU → **5/6 in 205s /
+  6.5s CPU**. Interactive REPL/TUI/ACP still auto-init after 5 calls.
+- `graff tui` / TTY `graff repl` claim the alt-screen before credentials
+  and paint live markdown on the cached tail (ADR 0042, #666).
+- `pi-xai` runs Pi on the SuperGrok seat the same way as graff-dev
+  (ADR 0043, #667). Do not steal Pi's 4-tool catalog or 165M heap.
+- Codegraff `glm-5.3-flash` SWE recorded (ADR 0045, #669): Pi 5/6 in
+  758s, graff 3/6 with three 300s timeouts. Next cut on that model is
+  finishing inside the cap, not a smaller catalog.
+- No tag until asked. Download / notarization ids land after the build.
+
 ## v0.0.280 (2026-08-28)
 
 - Next cut after tagged v0.0.279. Carries the #645 continuation already

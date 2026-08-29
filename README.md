@@ -114,7 +114,7 @@ Much of this implementation and benchmark work was made possible by
 [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent): parallel agents in
 isolated environments, with measured evidence merged back into the harness.
 
-### What shipped in v0.0.277–v0.0.280
+### What shipped in v0.0.277–v0.0.281
 
 - **MCP results learn to slim themselves.** On the Linear fixture, the warm
   learnt path moved from **28.0s to 14.8s**, **112k to 31k input**, and **7 to 5
@@ -134,11 +134,15 @@ isolated environments, with measured evidence merged back into the harness.
   ACP `graff-login`, local tools, `/schedule`, and JSONL channel workers.
   Native `codedb` / `read_file` stay the default readers when codedb-pro
   is licensed (ADR 0040).
+- **One-shots skip the 38s learn pin.** `-p` / `--json` no longer copy
+  132M `graff-pinned`. SuperGrok SWE went **4/6 in 456s → 5/6 in 205s**
+  (CPU 230s → 6.5s). Interactive sessions still auto-init (ADR 0044).
 
 Read the full [v0.0.277 notes](docs/releases/v0.0.277.md), the
 [v0.0.278 privacy follow-up](docs/releases/v0.0.278.md), the
-[v0.0.279 ACP native cut](docs/releases/v0.0.279.md), and the
-[v0.0.280 leftover cut](docs/releases/v0.0.280.md).
+[v0.0.279 ACP native cut](docs/releases/v0.0.279.md), the
+[v0.0.280 leftover cut](docs/releases/v0.0.280.md), and the
+[v0.0.281 skip](docs/releases/v0.0.281.md).
 
 ### Broader comparison: model choice, footprint, and startup
 
