@@ -26,7 +26,8 @@ test "MCP initialized notify reuses the persistent HTTP client" {
     const src = @embedFile("mcp_rpc.zig");
     try std.testing.expect(std.mem.indexOf(u8, src, "fn httpInitializedTask(http: *mcp_http.HttpTransport") != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "http.client.io.concurrent(httpInitializedTask, .{ http,") != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "var transport: mcp_http.HttpTransport") == null);
+    const throwaway = "var transport: " ++ "mcp_http.HttpTransport";
+    try std.testing.expect(std.mem.indexOf(u8, src, throwaway) == null);
 }
 
 test "WS→SSE fallback latches the prewarmed Agent client, not a fresh pool" {

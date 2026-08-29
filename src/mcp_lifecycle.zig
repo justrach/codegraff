@@ -220,7 +220,8 @@ test "Auto: modern probe reuses the persistent HTTP client" {
     const src = @embedFile("mcp_lifecycle.zig");
     try std.testing.expect(std.mem.indexOf(u8, src, "fn probeMethod(http: *mcp_http.HttpTransport") != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "const list = probeMethod(http,") != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "var transport: mcp_http.HttpTransport") == null);
+    const throwaway = "var transport: " ++ "mcp_http.HttpTransport";
+    try std.testing.expect(std.mem.indexOf(u8, src, throwaway) == null);
 }
 
 test {
