@@ -24,6 +24,10 @@ current is part of cutting a release.
   still thinks; default flash effort is `low`. `-p` streams so a hung
   POST dies on the 30s stall, not a 5-minute watch. SWE **5/6 in 286s**
   (Pi 5/6 in 758s). Same miss (`label-sort`). Do not steal Pi's catalog.
+- Interactive `--yolo` queues companion MCP and names the boot phase
+  (`mcp:` / `companion:` receipts) so first paint is not the handshake
+  (#664). Mid-turn stall/reconnect and `model call N` pulses stay off
+  the transcript; a ⚠ prints only when the turn ends (ADR 0021, #665).
 - No tag until asked. Download / notarization ids land after the build.
 - Test floor 1758 (slack 25).
 
