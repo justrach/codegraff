@@ -54,8 +54,8 @@ pub const Delta = struct {
 pub const TransportAbort = struct {
     reason: StreamAbort,
     /// The guard is giving the turn up (its notice says so); false = an
-    /// attempt-level cut the reconnect ladder may still retry, surfaced
-    /// more tersely.
+    /// attempt-level cut the reconnect ladder may still retry — silent on
+    /// the transcript (ADR 0021).
     turn_ending: bool,
 };
 

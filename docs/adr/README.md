@@ -30,7 +30,7 @@ record only when you need the evidence or the edge cases.
 | [0017](0017-model-election-ranks-signed-in-plans-first.md) | `/model` and `/models` on both frontends rank signed-in plan seats above credits and metered keys (`src/models_rank.zig`). |
 | [0018](0018-standing-chrome-shows-last-turn-cache-hit.md) | Last-turn cache hit % rides with `ctx` on the line-REPL meter and the TUI footer; `/cache` stays the posture HUD. |
 | [0019](0019-codedb-one-shot-over-hop-chains.md) | Advertise only `context` / `around` / `callpath` / `list_dir` / `status`; hop verbs stay callable, not on the menu. |
-| [0020](0020-transcript-shows-decisions.md) | Transcript shows decisions: one interpreted tool line, collapsed infra failures, compact WORKING; raw output is `/debug` / TUI-fold. |
+| [0020](0020-transcript-shows-decisions.md) | Transcript shows decisions: one interpreted tool line, collapsed infra failures, compact WORKING; `↵ raw`, `/debug`, and TUI-fold disclose the bytes explicitly. |
 | [0021](0021-transcript-is-the-task-not-the-bus.md) | Transcript is the task, not the event bus: bookkeeping is silent, todos are WORKING, subagents are scouts. |
 | [0022](0022-rlm-is-opt-in-speculative-ptc.md) | `rlm` (Alex Zhang spec-ptc + RLM, Zig) is the default loop. `--old` restores structured-only. Prime persist + `subagent()` only — no IPython. |
 | [0023](0023-codex-subagent-is-sidecar-not-v8.md) | Codex check: take sidecar-vs-critical-path spawn prompts; reject V8 Code Mode, extra spawn tools, and parent-history fork. |
@@ -43,6 +43,21 @@ record only when you need the evidence or the edge cases.
 | [0030](0030-rlm-late-showcase.md) | Small turns hide `rlm` (and sPTC). Showcase on `--rlm`, a ≥4 native batch, context ≥50% of compactAt, or an explicit load — never on MCP fan-out or the prefix. |
 | [0031](0031-xai-hosted-x-search.md) | xAI Responses splices hosted `x_search` onto tools turns. It is not a catalog function; `GRAFF_XAI_X_SEARCH=0` opts out. |
 | [0032](0032-acp-streams-mid-turn.md) | `graff acp` streams thought / tool / text `session/update`s mid-turn. The native app is an ACP client; it does not need `graff serve`. |
+| [0033](0033-user-can-retire-a-standing-constraint.md) | Only the user retires a standing constraint: TTY `/never` picker (two confirms), ACP/`rm`, or an explicit override. The model cannot. |
+| [0034](0034-remote-images-stay-native.md) | JSON/serve image inputs are a typed URL/base64 union, validated atomically and preserved as native provider vision blocks; never flatten pixels into prompt text. |
+| [0035](0035-first-turn-skips-deferred-mcp-join.md) | First model call after a deferred MCP boot does not wait for the handshake; companion auto-connect is the same defer; native tools run now. |
+| [0036](0036-computer-use-keeps-the-signed-codex-bridge.md) | Codex Computer Use keeps its authenticated node_repl process chain: Graff launches it through the signed Codex sandbox wrapper, never embeds V8 or spoofs the service. |
+| [0037](0037-experiment-pool-is-opt-in.md) | `--experiment N` / `/experiment N` pre-mints a child worktree pool; the root must spawn; pool trees are listed and delivered back, never auto-deleted. |
+| [0038](0038-in-process-acp-core.md) | Same-process embed is `libgraff` + `graff-core.wasm` + `createGraffAgent()` (ACP core, echo turn). Live coding stays `graff acp`. |
+| [0039](0039-local-tools-are-project-scripts.md) | Agent-authored local tools are project scripts under `.graff/tools/`; skills stay instructions. Runtime catalog extras, not `schema.effectiveRootSpecs`. |
+| [0040](0040-codedb-stays-when-licensed.md) | Ordinary reads use native `codedb` / `read_file`; codedb-pro is extra search, not the default reader. |
+| [0041](0041-tui-is-an-acp-client.md) | The fullscreen TUI is an in-process ACP client: session/prompt in, session/update thought/tool/text out. No child `graff acp`. |
+| [0042](0042-tui-claims-screen-before-session.md) | `graff tui` / TTY `graff repl` claim the alt-screen before keys/MCP/prompt; leftover boot happens inside the pager. |
+| [0043](0043-pi-swe-same-seat.md) | Pi SWE A/B uses `pi-xai` on the SuperGrok seat; do not steal Pi's catalog or heap from the json-stream pass. |
+| [0044](0044-oneshot-skips-learn-auto.md) | `-p` and `--json` skip learn auto-init; the Pi SWE wall gap was a 38s `graff-pinned` copy, not their catalog. |
+| [0045](0045-glm-flash-swe-codegraff.md) | Codegraff `glm-5.3-flash` SWE: Pi 5/6 in 758s, graff 3/6 with three 300s timeouts; do not steal Pi's heap. |
+| [0046](0046-flash-omits-default-effort.md) | Flash / Gemini send `reasoning_effort=low` (omit still thinks); lean `-p` shortens tool prose; `-p` streams. |
+| [0047](0047-codegraff-swe-not-glm-only.md) | Codegraff SWE A/B is not GLM-only: Gemini graff 5/6 in 103s; DeepSeek flash still one-shots; do not steal Pi's catalog. |
 
 ## When to write one
 

@@ -29,6 +29,8 @@ harness under test spends model calls.
 ./run.py --suite swe --harness graff-dev,pi-xai --model grok-4.6 -j 6
 # same SuperGrok-shaped A/B on the Codegraff gateway (set CODEGRAFF_API_KEY):
 CODEGRAFF_API_KEY=cg_sk_… ./run.py --suite swe --harness graff-dev,pi-codegraff --model glm-5.3-flash -j 6
+# same seat, other models (ADR 0047): deepseek-v4-flash, gemini-3.7-flash, kimi-k2.6
+CODEGRAFF_API_KEY=cg_sk_… ./run.py --suite swe --harness graff-dev,pi-codegraff --model deepseek-v4-flash -j 6
 ```
 
 ## Run it
