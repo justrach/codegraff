@@ -27,6 +27,8 @@ harness under test spends model calls.
 ./run.py --suite core,rlm,swe --harness graff-dev-old,graff-dev -j 8
 # Pi on the same SuperGrok seat (`npm i -g @earendil-works/pi-coding-agent`):
 ./run.py --suite swe --harness graff-dev,pi-xai --model grok-4.6 -j 6
+# same SuperGrok-shaped A/B on the Codegraff gateway (set CODEGRAFF_API_KEY):
+CODEGRAFF_API_KEY=cg_sk_… ./run.py --suite swe --harness graff-dev,pi-codegraff --model glm-5.3-flash -j 6
 ```
 
 ## Run it
