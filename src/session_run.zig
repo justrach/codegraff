@@ -125,6 +125,9 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     root.in = null; // gate: deny instead of prompt; ask_user: self-decide
     root.out = null; // tool progress → stderr; stdout carries only the answer
     root.stream_quiet = true;
+    // stderr only: same class of "process is live" as Pi's JSONL session line.
+    // Eval first_out used to wait for the call-2 stdout pulse (ADR 0046).
+    std.debug.print("calling {s}\n", .{root.provider.model});
     const ultracode_msg = try shapes.applyUltracodeSteering(arena, prompt_text, prompt_text, prompts.ultracodeActive(root));
     if (ultracode_msg.explicit) {
         tracer.note("ultracode", prompt_text[0..@min(prompt_text.len, 120)]);

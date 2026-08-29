@@ -40,5 +40,25 @@ interactive-length essays on every `-p` turn.
 - Flash SWE first-token wait is gateway TTFT, not a thinking tax.
 - `/effort` remains the only way effort moves (ADR / `effort_route`:
   no auto-flip).
+- `-p` writes `calling <model>` to stderr at start and drops the
+  call-2 stdout pulse. Eval `first_out` is no longer "time to model
+  call 2"; stdout stays the answer.
 - Revisit if a named flash model needs default thinking — pin it in
   the catalog, do not restore a global medium default.
+
+## Confirm (2026-08-29, after this revision)
+
+`run-20260829-041235.jsonl`, Codegraff `glm-5.3-flash`, `--suite swe
+-j 6`. No `reasoning_effort` on the wire. Local boot is 7ms; a
+`pong` one-shot is 6.1s / 10 out (gateway TTFT). Pi `first` 0.6s is
+still the JSONL `session` line.
+
+| | pass | wall | first | out |
+|---|---:|---:|---:|---:|
+| ADR 0045 | 3/6 | 1353s | 6.9s | 15k |
+| after (thinking off) | 3/6 | 1247s | 6.7s* | 21k |
+
+\*first was the call-2 stdout pulse. `validated` 164s / 46k / 10 →
+**57s / 11k / 4**. `json-stream` and `cookie-store` still SIGKILL at
+300s after that pulse. `label-sort` finished (174s) but still fails
+the hidden check. Do not steal Pi's heap.
