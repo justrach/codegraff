@@ -296,6 +296,8 @@ def one_run(hname, harness, task, model, rep, live=False):
     rec.update({f"tok_{k}": v for k, v in usage.items()})
     if check.returncode != 0 and (check.stderr.strip() or check.stdout.strip()):
         rec["check_note"] = (check.stderr.strip() or check.stdout.strip())[:200]
+    if not rec.get("outcome_ok") and stderr.strip():
+        rec["stderr_tail"] = stderr.strip()[-400:]
     return rec
 
 

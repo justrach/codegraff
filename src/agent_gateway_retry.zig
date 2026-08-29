@@ -91,13 +91,13 @@ pub const max_short_flake_retries: usize = 2;
 /// "overloaded" / "server_error" needle — isolated serial retry passed.
 /// Do not treat invalid_request / auth / quota as a flake.
 pub fn isShortGatewayFlake(etype: []const u8, code: ?[]const u8, msg: []const u8) bool {
-    const hard = [_][]const u8{ "invalid", "authentication", "unauthorized", "insufficient", "quota", "permission", "tool_choice" };
+    const hard = [_][]const u8{ "invalid", "authentication", "unauthorized", "insufficient", "quota", "permission", "tool_choice", "not found" };
     for (hard) |n| {
         if (util.indexOfIgnoreCase(etype, n) != null) return false;
         if (util.indexOfIgnoreCase(msg, n) != null) return false;
         if (code) |c| if (util.indexOfIgnoreCase(c, n) != null) return false;
     }
-    const flakes = [_][]const u8{ "internal", "try again", "temporarily", "unavailable", "bad gateway", "upstream", "capacity" };
+    const flakes = [_][]const u8{ "internal", "try again", "temporarily", "unavailable", "bad gateway", "upstream", "capacity", "unknown error", "something went wrong", "an error occurred" };
     for (flakes) |n| {
         if (util.indexOfIgnoreCase(etype, n) != null) return true;
         if (util.indexOfIgnoreCase(msg, n) != null) return true;
@@ -105,6 +105,23 @@ pub fn isShortGatewayFlake(etype: []const u8, code: ?[]const u8, msg: []const u8
     }
     const generic = etype.len == 0 or std.mem.eql(u8, etype, "error") or std.mem.eql(u8, etype, "api_error");
     return generic and std.mem.trim(u8, msg, " \t\r\n").len == 0;
+}
+
+/// Unparseable body that is keep-alive comments or a tiny truncated
+/// payload (the 110-byte follow-up). Bounded. Real JSON error envelopes
+/// do not reach this — they go through `afterServerErrorOrParseReject`.
+pub fn retryDegenerateBody(self: *Agent, body: []const u8, retries: *usize) !bool {
+    const tiny = body.len > 0 and body.len <= 256;
+    if (!policy.sseKeepAliveOnly(body) and !tiny) return false;
+    if (retries.* >= max_short_flake_retries) return false;
+    retries.* += 1;
+    self.partial_text.clearRetainingCapacity();
+    const delay_ms = RetryPlan.delayMs(true, retries.* - 1);
+    const what: []const u8 = if (policy.sseKeepAliveOnly(body)) "keep-alive only, no tokens" else "truncated gateway body";
+    try self.say("[provider queued the request ({s}) — retrying in {d}s ({d}/{d})]\n", .{ what, delay_ms / 1000, retries.*, max_short_flake_retries });
+    if (self.tracer) |tr| tr.note("retry", what);
+    self.sleepInterruptible(delay_ms) catch return error.Interrupted;
+    return true;
 }
 
 fn retryShortGatewayFlake(self: *Agent, etype: []const u8, code: ?[]const u8, msg: []const u8, retries: *usize) !bool {
@@ -161,6 +178,7 @@ test "isShortGatewayFlake: internal/empty api_error retry; invalid/auth/quota do
     try std.testing.expect(isShortGatewayFlake("api_error", null, "Internal Server Error"));
     try std.testing.expect(isShortGatewayFlake("api_error", null, ""));
     try std.testing.expect(isShortGatewayFlake("error", null, "   "));
+    try std.testing.expect(isShortGatewayFlake("", null, "unknown error"));
     try std.testing.expect(isShortGatewayFlake("", null, "upstream connect error"));
     try std.testing.expect(!isShortGatewayFlake("invalid_request_error", null, "invalid prompt"));
     try std.testing.expect(!isShortGatewayFlake("api_error", null, "invalid tool_choice"));
