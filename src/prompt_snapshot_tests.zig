@@ -572,6 +572,7 @@ test "lean drops the todo/constraint capabilities from the prompt, never the loc
     const a = a_state.allocator();
     const lean_prompt = try prompts.composeBase(a, lean);
     try std.testing.expect(lean_prompt.len < prompts.main_system_prompt.len);
+    try std.testing.expect(std.mem.indexOf(u8, lean_prompt, "described in prose is not done") != null);
 }
 
 test "unattended one-shots are told the REAL approval map up front; attended sessions hear nothing" {

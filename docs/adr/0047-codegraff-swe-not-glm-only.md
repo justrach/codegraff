@@ -105,8 +105,8 @@ finished four tasks on ~91M RSS.
 - GLM 5/6 in 286s vs Pi 758s is not a one-off on flash: Gemini graff
   is 5/6 in 103s on the same suite.
 - DeepSeek flash is the exception: Pi's catalog finishes; graff's lean
-  8-tool still one-shots. Do not steal the four-tool catalog to "fix"
-  it.
+  8-tool still one-shots. Bounce that prose-only first turn (ADR 0048).
+  Do not steal the four-tool catalog to "fix" it.
 - Pi + Gemini on this gateway is not a usable A/B until Pi's tool
   follow-up is fixed. That is not a graff TUI steal.
 - `label-sort` still fails across models. Do not chase it.
