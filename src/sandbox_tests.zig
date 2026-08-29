@@ -387,6 +387,138 @@ test "#554: /snapshot attach drives the seam by hand, and detach gives the sandb
     try std.testing.expectEqual(@as(usize, 1), (try sandbox.list(io, shim.tmp.dir, arena, "s")).len);
 }
 
+test "#554: /snapshot gc keeps the newest snapshot and drops the rest" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    sandbox.setWorkspace(tmp.dir);
+    defer sandbox.setWorkspace(null);
+
+    inline for (.{
+        .{ .id = "old", .ms = 10 },
+        .{ .id = "new", .ms = 20 },
+    }) |row| {
+        try tmp.dir.createDirPath(io, try sandbox.snapshotDir(arena, "s", row.id));
+        try tmp.dir.writeFile(io, .{ .sub_path = try sandbox.payloadPath(arena, "s", row.id), .data = canned_tar });
+        try sandbox.writeManifest(io, tmp.dir, arena, "s", .{
+            .id = row.id,
+            .backend = "docker",
+            .kind = "docker_image_tar",
+            .ref = row.id,
+            .len = canned_tar.len,
+            .created_ms = row.ms,
+        });
+    }
+
+    var root: Agent = undefined;
+    root.io = io;
+    root.gpa = gpa;
+    root.session_name = "s";
+    var aw: Io.Writer.Allocating = .init(arena);
+    try std.testing.expect(try commands_sandbox.tryHandle(&root, arena, "/snapshot gc", &aw.writer));
+    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "dropped 1") != null);
+    const left = try sandbox.list(io, tmp.dir, arena, "s");
+    try std.testing.expectEqual(@as(usize, 1), left.len);
+    try std.testing.expectEqualStrings("new", left[0].id);
+}
+
+test "#554: /teleport restores a docker_image_tar onto the container CLI" {
+    if (skipOnWindows()) return error.SkipZigTest;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var shim: Shim = undefined;
+    try shim.init();
+    defer shim.deinit();
+    try shim.tmp.dir.writeFile(io, .{
+        .sub_path = "bin/container",
+        .data = shim_script,
+        .flags = .{ .permissions = .executable_file },
+    });
+    sandbox.setWorkspace(shim.tmp.dir);
+    defer sandbox.setWorkspace(null);
+    defer releaseActive();
+    const saved_path = main_mod.g_path_env;
+    defer main_mod.g_path_env = saved_path;
+    main_mod.g_path_env = shim.bin_dir;
+
+    try shim.tmp.dir.createDirPath(io, try sandbox.snapshotDir(arena, "s", "snap1"));
+    try shim.tmp.dir.writeFile(io, .{
+        .sub_path = try sandbox.payloadPath(arena, "s", "snap1"),
+        .data = canned_tar,
+    });
+    try sandbox.writeManifest(io, shim.tmp.dir, arena, "s", .{
+        .id = "snap1",
+        .backend = "docker",
+        .kind = "docker_image_tar",
+        .ref = "graff-snap-from-manifest",
+        .len = canned_tar.len,
+        .created_ms = 1,
+    });
+    shim.clearLog();
+
+    var root: Agent = undefined;
+    root.io = io;
+    root.gpa = gpa;
+    root.session_name = "s";
+    var aw: Io.Writer.Allocating = .init(arena);
+    try std.testing.expect(try commands_sandbox.tryHandle(&root, arena, "/teleport snap1 container", &aw.writer));
+    const text = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, text, "teleported") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "onto container") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, commands_sandbox.log_note) != null);
+    try std.testing.expectEqualStrings("container", sandbox.active().?.backend.name());
+    const log = shim.log(arena);
+    try std.testing.expect(std.mem.indexOf(u8, log, "load") != null);
+    try std.testing.expect(std.mem.indexOf(u8, log, "run -d --name graff-sbx-s " ++ loaded_ref) != null);
+}
+
+test "#554: /teleport with no dest CLI explains instead of failing" {
+    const gpa = std.testing.allocator;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    sandbox.setWorkspace(tmp.dir);
+    defer sandbox.setWorkspace(null);
+    sandbox.detach();
+    const saved_path = main_mod.g_path_env;
+    defer main_mod.g_path_env = saved_path;
+    main_mod.g_path_env = "";
+
+    try tmp.dir.createDirPath(std.testing.io, try sandbox.snapshotDir(arena, "s", "snap1"));
+    try sandbox.writeManifest(std.testing.io, tmp.dir, arena, "s", .{
+        .id = "snap1",
+        .backend = "docker",
+        .kind = "docker_image_tar",
+        .ref = "x",
+        .len = 1,
+        .created_ms = 1,
+    });
+
+    var root: Agent = undefined;
+    root.io = std.testing.io;
+    root.gpa = gpa;
+    root.session_name = "s";
+    var aw: Io.Writer.Allocating = .init(arena);
+    try std.testing.expect(try commands_sandbox.tryHandle(&root, arena, "/teleport snap1 container", &aw.writer));
+    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "container backend:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "not on PATH") != null);
+    try std.testing.expect(sandbox.active() == null);
+
+    var usage: Io.Writer.Allocating = .init(arena);
+    try std.testing.expect(try commands_sandbox.tryHandle(&root, arena, "/teleport", &usage.writer));
+    try std.testing.expect(std.mem.indexOf(u8, usage.writer.buffered(), "usage: /teleport") != null);
+}
+
 test "#554: /snapshot attach with no docker installed explains instead of failing" {
     const gpa = std.testing.allocator;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);

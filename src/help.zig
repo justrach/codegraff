@@ -28,7 +28,7 @@ const peers_blurb =
 ;
 
 pub const sections = [_]Section{
-    .{ .title = "getting around", .names = &.{ "/new", "/clear", "/resume", "/save", "/sessions", "/workspace", "/experiment", "/rename", "/rewind", "/snapshot" } },
+    .{ .title = "getting around", .names = &.{ "/new", "/clear", "/resume", "/save", "/sessions", "/workspace", "/experiment", "/rename", "/rewind", "/snapshot", "/teleport" } },
     .{ .title = "the model", .names = &.{ "/model", "/models", "/effort", "/reasoning", "/fast", "/thinking", "/keepcontext", "/fallback", "/routes" } },
     .{ .title = "working autonomously", .names = &.{ "/goal", "/loop", "/schedule", "/review", "/plan", "/todo", "/jobs", "/ultracode", "/strict", "/yolo", "/never" } },
     .{ .title = "talking to other graffs", .names = &.{ "/tell", "/peek", "/adapter" }, .blurb = peers_blurb },

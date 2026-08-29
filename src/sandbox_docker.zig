@@ -52,8 +52,16 @@ pub const Docker = struct {
     /// backend; the wire below is unchanged.
     bin_name: []const u8 = "docker",
 
-    const backend_vtable: sandbox.BackendVTable = .{
+    const docker_vtable: sandbox.BackendVTable = .{
         .name = "docker",
+        .available = availableImpl,
+        .acquire = acquireImpl,
+        .acquireFromSnapshot = acquireFromSnapshotImpl,
+    };
+    /// Same CLI wire, different binary — Apple Container (`container`) is the
+    /// second snapshot-capable backend #554's teleport path restores onto.
+    const container_vtable: sandbox.BackendVTable = .{
+        .name = "container",
         .available = availableImpl,
         .acquire = acquireImpl,
         .acquireFromSnapshot = acquireFromSnapshotImpl,
@@ -66,7 +74,10 @@ pub const Docker = struct {
     };
 
     pub fn backend(self: *Docker) sandbox.Backend {
-        return .{ .ctx = @ptrCast(self), .vt = &backend_vtable };
+        return .{
+            .ctx = @ptrCast(self),
+            .vt = if (std.mem.eql(u8, self.bin_name, "container")) &container_vtable else &docker_vtable,
+        };
     }
 
     /// One live sandbox. Allocated per `acquire` and freed by `release`, so two
@@ -388,6 +399,13 @@ test "a snapshot tag is prefixed and unique" {
     defer gpa.free(b);
     try std.testing.expect(std.mem.startsWith(u8, a, snapshot_prefix));
     try std.testing.expect(!std.mem.eql(u8, a, b));
+}
+
+test "bin_name container names the Apple Container backend" {
+    var docker: Docker = .{ .io = std.testing.io, .path_env = "", .bin_name = "container" };
+    try std.testing.expectEqualStrings("container", docker.backend().name());
+    var plain: Docker = .{ .io = std.testing.io, .path_env = "" };
+    try std.testing.expectEqualStrings("docker", plain.backend().name());
 }
 
 test "a missing docker resolves to nothing rather than spawning" {
