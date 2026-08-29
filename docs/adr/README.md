@@ -52,7 +52,7 @@ record only when you need the evidence or the edge cases.
 | [0039](0039-local-tools-are-project-scripts.md) | Agent-authored local tools are project scripts under `.graff/tools/`; skills stay instructions. Runtime catalog extras, not `schema.effectiveRootSpecs`. |
 | [0040](0040-codedb-stays-when-licensed.md) | Ordinary reads use native `codedb` / `read_file`; codedb-pro is extra search, not the default reader. |
 | [0041](0041-tui-is-an-acp-client.md) | The fullscreen TUI is an in-process ACP client: session/prompt in, session/update thought/tool/text out. No child `graff acp`. |
-| [0043](0043-reuse-warmed-tls-on-known-networks.md) | Reuse warmed TLS: MCP probe/initialized stay on the persistent HTTP client; WSS CA is scanned once per process; WS→SSE keeps the prewarmed pool. |
+| [0043](0043-reuse-warmed-tls-on-known-networks.md) | Reuse warmed TLS: MCP probe/initialized stay on the persistent HTTP client; WSS CA is scanned once per process; WS→SSE keeps the prewarmed pool; MCP HTTP accepts gzip. |
 
 ## When to write one
 

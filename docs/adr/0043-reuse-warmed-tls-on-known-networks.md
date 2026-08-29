@@ -27,10 +27,15 @@ ADR 0002 (xAI WS full-resend), 0009/0011/0028 (prompt-cache keys), and 0035
 - WS→SSE fallback keeps the Agent's prewarmed HTTP pool (`postStream`). Do not
   introduce a fresh client on that latch: WS never used the HTTP pool, and a
   new TLS would be strictly more expensive.
+- MCP Streamable HTTP advertises the std client's default Accept-Encoding
+  (gzip/deflate) and decompresses Content-Encoding. Do not omit it: a tools/list
+  catalog is the fat payload on that network, and provider POST already accepts
+  compression.
 
 ## Consequences
 
 A modern MCP connect plus the next list is one TCP accept on keep-alive.
-WSS reconnects skip the CA disk walk. Revisit only if a shared `std.http.Client`
-is shown unsafe for the concurrent initialized+list pair, or if a host CA
-rotation must be picked up mid-process without restart.
+WSS reconnects skip the CA disk walk. MCP catalogs can travel gzip-compressed.
+Revisit only if a shared `std.http.Client` is shown unsafe for the concurrent
+initialized+list pair, a host CA rotation must be picked up mid-process without
+restart, or a server is broken by Accept-Encoding.
