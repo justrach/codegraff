@@ -46,3 +46,31 @@ TUI steal.
   timeout to hide the tax.
 - Revisit if a one-shot should ever seed learning (it should not: the
   sandbox is thrown away).
+
+## Confirm (2026-08-29, after this revision)
+
+`graff-evals/results/run-20260829-031139.jsonl`, SuperGrok grok-4.6,
+`--suite swe --harness graff-dev -j 6`. No `graff-pinned`. Sandbox
+100–164K.
+
+| harness | pass | wall (sum) | first | RSS | in | out | calls | CPU |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| before (0043) | 4/6 | 455.5s | 2.6s | 91.3M | 161066 | 11590 | 30 | 230s |
+| after | **5/6** | **205.2s** | 2.5s | 90.8M | 159700 | 11351 | 30 | **6.5s** |
+
+| task | after |
+|---|---|
+| map-conflict | ✓ 17s / 25k / 5 |
+| validated | ✓ 19s / 24k / 5 |
+| label-sort | ✗ 34s / 26k / 5 |
+| config-parse | ✓ 40s / 27k / 5 |
+| json-stream | **✓ 47s / 27k / 5** |
+| cookie-store | ✓ 47s / 30k / 5 |
+
+Wall **−55%**, CPU **−97%**, same tokens/calls. `json-stream` passed
+this rep: the model kept "no RS → empty" instead of inventing a
+missing-delimiter raise (the 0043 miss). That is one-rep model noise,
+not a catalog gap — Pi's earlier 5/6 was the same clause, not a
+smarter loop. `label-sort` still fails (hidden natural-order /
+leading-ws); grok-build and Pi miss it too. RSS ~91M is the process,
+not the pin. Pi could not re-run here (OAuth bearer 403 as `XAI_API_KEY`).
