@@ -1,13 +1,13 @@
 //! Dim chrome for long inner-loop turns and API transport retries (retry n/N).
 //!
 //! Production default: unlimited inner-loop model calls (`max_turn_model_calls = 0`).
-//! `GRAFF_MAX_TURN_MODEL_CALLS` is the opt-in cap. JSON mode is dropped inside
-//! `tool_pulse.emitNotice` (ADR 0020: chrome, not output).
+//! `GRAFF_MAX_TURN_MODEL_CALLS` is the opt-in cap. Inner-loop counters stay
+//! off the transcript (ADR 0021); retry notices still go through
+//! `tool_pulse.emitNotice` (ADR 0020: chrome, not output; --json drops them).
 
 const std = @import("std");
 const Io = std.Io;
 
-const main_mod = @import("main.zig");
 const Agent = @import("agent.zig").Agent;
 const tool_pulse = @import("tool_pulse.zig");
 
@@ -25,9 +25,14 @@ pub fn formatRetryNotice(buf: []u8, class: []const u8, attempt: usize, max_attem
 }
 
 pub fn formatTurnPulse(buf: []u8, call_n: u64, cap: u64, tools: u64) []const u8 {
-    if (cap == 0)
-        return std.fmt.bufPrint(buf, "· turn still going · model call {d} · {d} tools", .{ call_n, tools }) catch buf[0..0];
-    return std.fmt.bufPrint(buf, "· turn still going · model call {d}/{d} · {d} tools", .{ call_n, cap, tools }) catch buf[0..0];
+    // Inner-loop counters are bookkeeping (ADR 0021). Tool rows already
+    // show the work; "model call N · N tools" sat at the same weight as
+    // "Wrote 1 file" and made a turn unreadable.
+    _ = buf;
+    _ = call_n;
+    _ = cap;
+    _ = tools;
+    return "";
 }
 
 pub fn emitRetryNotice(io: Io, class: []const u8, attempt: usize, max_attempts: usize) void {
@@ -37,22 +42,19 @@ pub fn emitRetryNotice(io: Io, class: []const u8, attempt: usize, max_attempts: 
     tool_pulse.emitNotice(io, "{s}", .{text});
 }
 
-/// Count this inner-loop request, pulse from call 2, optionally pause if a
-/// non-zero cap is set. Returns pause text or null to proceed. Never pauses
-/// when the cap is 0. `-p` / unattended skip the pulse: it was landing on
-/// stdout and eval `first_out` was "time to model call 2", not boot (ADR 0046).
+/// Gate for a turn-pulse line if one is ever reintroduced. `#665` emptied
+/// `formatTurnPulse`; this still skips `-p` / `--json` / subagents so a
+/// future pulse cannot land on eval stdout (ADR 0046).
 pub fn shouldPulseTurn(unattended: bool, json_mode: bool, sub: bool, call_n: u64) bool {
     return call_n >= 2 and !sub and !json_mode and !unattended;
 }
 
+/// Count this inner-loop request and optionally pause if a non-zero cap is
+/// set. Returns pause text or null to proceed. Never pauses when the cap is 0.
+/// Call 2+ used to print an inner-loop counter; that line is gone (ADR 0021).
 pub fn beforeRequest(self: *Agent) !?[]const u8 {
     self.model_calls_this_turn += 1;
     const cap = max_turn_model_calls;
-    if (shouldPulseTurn(main_mod.unattended, main_mod.json_mode, self.sub, self.model_calls_this_turn)) {
-        var buf: [120]u8 = undefined;
-        const text = formatTurnPulse(&buf, self.model_calls_this_turn, cap, self.tool_calls_this_turn);
-        if (text.len > 0) tool_pulse.emitNotice(self.io, "{s}", .{text});
-    }
     if (cap != 0 and self.model_calls_this_turn > cap) {
         return try std.fmt.allocPrint(
             self.arena,
@@ -78,10 +80,20 @@ test "formatRetryNotice names HungRequest and UnknownHostName with attempt n/N" 
     try std.testing.expectEqualStrings("· retry 1/6 · UnknownHostName", formatRetryNotice(&buf, "UnknownHostName", 1, 6));
 }
 
-test "formatTurnPulse omits a denominator when the cap is unlimited" {
+test "formatTurnPulse stays off the transcript (ADR 0021)" {
     var buf: [80]u8 = undefined;
-    try std.testing.expectEqualStrings("· turn still going · model call 3 · 11 tools", formatTurnPulse(&buf, 3, 0, 11));
-    try std.testing.expectEqualStrings("· turn still going · model call 3/64 · 11 tools", formatTurnPulse(&buf, 3, 64, 11));
+    try std.testing.expectEqualStrings("", formatTurnPulse(&buf, 3, 0, 11));
+    try std.testing.expectEqualStrings("", formatTurnPulse(&buf, 3, 64, 11));
+}
+
+test "beforeRequest does not print an inner-loop pulse (ADR 0021)" {
+    const src = @embedFile("turn_chrome.zig");
+    const start = std.mem.indexOf(u8, src, "pub fn beforeRequest").?;
+    const rest = src[start + 1 ..];
+    const end = std.mem.indexOf(u8, rest, "\ntest ").?;
+    const body = rest[0..end];
+    try std.testing.expect(std.mem.indexOf(u8, body, "emitNotice") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "turn still going") == null);
 }
 
 test "one-shot and --json do not pulse turn chrome onto stdout" {

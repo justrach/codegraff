@@ -121,7 +121,7 @@ fn sinkRecord(ctx: *anyopaque, ev: engine_sink.Stamped) void {
 
 // (#422 slice 1b) postLive draws nothing itself anymore: each forced stall/
 // drop seam emits exactly ONE transport_aborted event through the sink
-// (TuiSink renders the old inline ⚠ lines, JsonSink drops it — pinned in
+// (ending-turn ⚠ only; mid-turn is silent — ADR 0021, pinned in
 // engine_sink.zig) and returns the matching transport error. An injected
 // recording sink observes the contract directly — no TTY, no globals read.
 test "postLive force seams emit one transport_aborted through the sink (#422)" {
