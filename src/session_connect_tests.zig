@@ -49,7 +49,10 @@ test "connectCompanion yolo writes the companion receipt and does not addServer"
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.symLink(io, "/bin/false", "codedb-pro", .{});
+    // A plain file satisfies binOnPath's access() probe. A symlink to
+    // /bin/false does not on every host: access() follows the link, and newer
+    // macOS ships only /usr/bin/false.
+    (try tmp.dir.createFile(io, "codedb-pro", .{})).close(io);
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const n = try tmp.dir.realPath(io, &path_buf);
     const saved_path = main_mod.g_path_env;
