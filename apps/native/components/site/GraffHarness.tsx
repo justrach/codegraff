@@ -32,14 +32,16 @@ function greeting(): string {
   return "Good evening";
 }
 
-/** Paced reveal over the ACP text: chunky `agent_message_chunk`s (and the
- * one-shot final answer) drain in smoothly instead of popping. The rate
- * scales with the backlog so it never falls far behind the wire. */
-function useSmoothStream(target: string, active: boolean): string {
+/** Typewriter reveal over the ACP text, the way every AI app streams: a
+ * readable base rate with gentle backlog catch-up (capped so a one-shot
+ * final answer still visibly types out), and the drain keeps playing after
+ * the turn's result lands — done-state chrome waits for the last word.
+ * Mounted mid-history it starts caught-up, so old messages never replay. */
+function useSmoothStream(target: string): string {
   const [shown, setShown] = useState(target);
   const shownRef = useRef(target);
   useEffect(() => {
-    if (!active || target.length < shownRef.current.length || !target.startsWith(shownRef.current)) {
+    if (!target.startsWith(shownRef.current)) {
       shownRef.current = target;
       setShown(target);
       return;
@@ -51,18 +53,17 @@ function useSmoothStream(target: string, active: boolean): string {
       const dt = Math.min(now - last, 100);
       last = now;
       const behind = target.length - shownRef.current.length;
-      if (behind > 0) {
-        const rate = 90 + behind * 6; // chars/second, backlog-proportional catch-up
-        const step = Math.max(1, Math.round((rate * dt) / 1000));
-        shownRef.current = target.slice(0, shownRef.current.length + step);
-        setShown(shownRef.current);
-        raf = requestAnimationFrame(tick);
-      }
+      if (behind <= 0) return;
+      const rate = Math.min(160 + behind * 1.2, 2400); // chars/second
+      const step = Math.max(1, Math.round((rate * dt) / 1000));
+      shownRef.current = target.slice(0, shownRef.current.length + step);
+      setShown(shownRef.current);
+      if (shownRef.current.length < target.length) raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [target, active]);
-  return active ? shown : target;
+  }, [target]);
+  return shown;
 }
 
 const HOME_REVEAL = {
@@ -107,7 +108,14 @@ function AssistantBody({
   onReview?: () => void;
 }) {
   const thinking = turn.status === "thinking";
-  const smoothText = useSmoothStream(turn.text, turn.status === "streaming" || thinking);
+  const smoothText = useSmoothStream(turn.text);
+  const draining = smoothText.length < turn.text.length;
+  // Follow the typewriter tail — the parent's scroll effect tracks the wire
+  // text, which goes quiet while the reveal is still playing out.
+  const articleRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (draining) articleRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
+  }, [smoothText, draining]);
   // "Thought for Ns" — measured here, since ACP updates carry no timestamps.
   const startRef = useRef(Date.now());
   const [thoughtSecs, setThoughtSecs] = useState<number | null>(null);
@@ -137,7 +145,7 @@ function AssistantBody({
   }));
 
   return (
-    <article className="min-w-0" style={{ animation: "fade-up 450ms cubic-bezier(0.23,1,0.32,1) both" }}>
+    <article ref={articleRef} className="min-w-0" style={{ animation: "fade-up 450ms cubic-bezier(0.23,1,0.32,1) both" }}>
       {(thinking || reasoningRows.length > 0) && (
         <ThinkingState
           variant="Reasoning"
@@ -173,7 +181,7 @@ function AssistantBody({
           <div className="mt-4 max-w-[630px]">
             <Markdown
               text={smoothText}
-              streaming={turn.status === "streaming" || turn.status === "thinking"}
+              streaming={draining || turn.status === "streaming" || turn.status === "thinking"}
               onOpenPath={onOpenPath}
             />
           </div>
@@ -182,13 +190,13 @@ function AssistantBody({
       {turn.error && (
         <p className="mt-4 max-w-[620px] text-[13.5px] leading-[1.65] text-red">{turn.error}</p>
       )}
-      {turn.recap && turn.status === "done" && (
+      {turn.recap && turn.status === "done" && !draining && (
         <p className="mt-3 text-[12px] text-ink-3">{turn.recap}</p>
       )}
-      {turn.costUsd !== undefined && turn.status === "done" && (
+      {turn.costUsd !== undefined && turn.status === "done" && !draining && (
         <p className="mt-1 font-mono text-[11px] text-ink-3">${turn.costUsd.toFixed(4)}</p>
       )}
-      {turn.status === "done" && turn.diffs.length > 0 && onReview && (
+      {turn.status === "done" && !draining && turn.diffs.length > 0 && onReview && (
         <button
           type="button"
           onClick={onReview}
