@@ -50,6 +50,15 @@ pub fn shouldRouteLookupLow(_: bool, _: bool, _: []const u8) bool {
     return false;
 }
 
+/// Default `medium` thinking on flash / Gemini is silent seconds of TTFT
+/// (ADR 0046). Gemini 3.x maps it to thinking_level; GLM flash through
+/// codegraff just thinks. `/effort` still sends. Do not treat this as a
+/// 4-tool catalog shrink.
+pub fn omitsDefaultFlashEffort(model: []const u8) bool {
+    if (std.mem.startsWith(u8, model, "gemini")) return true;
+    return std.mem.indexOf(u8, model, "flash") != null;
+}
+
 test "lookup prompts route low, mutation prompts and bare commands do not" {
     // The three benchmark tasks are the pinned shape: two route low, and the
     // one that REGRESSED at low effort (permgate) must not route.
@@ -63,4 +72,14 @@ test "lookup prompts route low, mutation prompts and bare commands do not" {
     const q = "Explain how the permission gate works here?";
     try std.testing.expect(!shouldRouteLookupLow(false, true, q));
     try std.testing.expect(!shouldRouteLookupLow(true, true, q));
+}
+
+test "flash and Gemini omit the default medium effort; grok and glm-5.3 do not" {
+    try std.testing.expect(omitsDefaultFlashEffort("glm-5.3-flash"));
+    try std.testing.expect(omitsDefaultFlashEffort("gemini-3.7-flash"));
+    try std.testing.expect(omitsDefaultFlashEffort("gemini-3.7-pro"));
+    try std.testing.expect(omitsDefaultFlashEffort("deepseek-v4-flash"));
+    try std.testing.expect(!omitsDefaultFlashEffort("grok-4.6"));
+    try std.testing.expect(!omitsDefaultFlashEffort("glm-5.3"));
+    try std.testing.expect(!omitsDefaultFlashEffort("deepseek-v4-pro"));
 }

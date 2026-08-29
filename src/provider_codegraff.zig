@@ -20,7 +20,7 @@ test "Codegraff Responses allowlist matches the public gateway contract" {
     for ([_][]const u8{ "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "grok-4.6" }) |model|
         try std.testing.expect(usesResponses("codegraff", model));
 
-    for ([_][]const u8{ "gpt-5.5", "grok-4.3", "claude-opus-4.8", "gemini-3.7-flash" }) |model|
+    for ([_][]const u8{ "gpt-5.5", "grok-4.3", "claude-opus-4.8", "gemini-3.7-flash", "glm-5.3-flash" }) |model|
         try std.testing.expect(!usesResponses("codegraff", model));
     try std.testing.expect(!usesResponses("openai", "gpt-5.6"));
 }

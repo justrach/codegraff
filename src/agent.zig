@@ -260,13 +260,12 @@ pub const Agent = struct {
         return schema.providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
     }
 
-    /// Whether this turn should put reasoning_effort on the wire. Gemini 3.x
-    /// maps that field to thinking_level; the default medium makes every
-    /// turn think for seconds (2× wall vs Pi, which omits it). /effort still
-    /// applies — we only skip the unset default.
+    /// Whether this turn should put reasoning_effort on the wire. Flash
+    /// models and Gemini map the default medium to seconds of thinking
+    /// (ADR 0046; Pi omits it). /effort still applies — only the unset default.
     pub fn sendReasoningEffort(self: *const Agent) bool {
         if (!self.effortApplies() or self.effort_rejected) return false;
-        if (std.mem.startsWith(u8, self.provider.model, "gemini") and self.reasoning == .medium) return false;
+        if (self.reasoning == .medium and @import("effort_route.zig").omitsDefaultFlashEffort(self.provider.model)) return false;
         return true;
     }
 

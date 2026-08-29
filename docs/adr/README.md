@@ -56,6 +56,7 @@ record only when you need the evidence or the edge cases.
 | [0043](0043-pi-swe-same-seat.md) | Pi SWE A/B uses `pi-xai` on the SuperGrok seat; do not steal Pi's catalog or heap from the json-stream pass. |
 | [0044](0044-oneshot-skips-learn-auto.md) | `-p` and `--json` skip learn auto-init; the Pi SWE wall gap was a 38s `graff-pinned` copy, not their catalog. |
 | [0045](0045-glm-flash-swe-codegraff.md) | Codegraff `glm-5.3-flash` SWE: Pi 5/6 in 758s, graff 3/6 with three 300s timeouts; do not steal Pi's heap. |
+| [0046](0046-flash-omits-default-effort.md) | Flash / Gemini omit default `medium` `reasoning_effort`; lean `-p` shortens tool prose, not the keep-list. |
 
 ## When to write one
 
