@@ -153,7 +153,9 @@ def run_width(cols: int) -> list[str]:
                 # DOCKED: the panel's bottom rule sits directly on the composer.
                 composer_top = None
                 for y in range(bot + 1, ROWS):
-                    if cells(pty, y).startswith(TL):
+                    # Composer is grok-build-inset (outer_hpad_left=2); the
+                    # overlay panel above it stays full-width and still docks.
+                    if cells(pty, y).lstrip().startswith(TL):
                         composer_top = y
                         break
                 if composer_top != bot + 1:

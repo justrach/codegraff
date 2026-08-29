@@ -138,9 +138,17 @@ export interface HarnessOptions {{
   args?: string[];
 }}
 
+/** Native image input for a user turn. URLs stay URLs on every provider;
+ *  base64 is converted to that provider's image-content shape by Graff. */
+export type ImageInput =
+  | {{ type: "image_url"; url: string }}
+  | {{ type: "image_base64"; mediaType: string; data: string }};
+
 export interface ChatOptions {{
   /** User prompt for this turn. */
   prompt: string;
+  /** Native vision parts (max 16); never flattened into prompt text. */
+  images?: ImageInput[];
   /** Run this turn in isolated, read-only review mode. */
   review?: boolean;
   /** Abort the turn mid-flight: on abort the SDK writes {{"type":"cancel"}}
@@ -185,6 +193,8 @@ export interface AskResult {{
 export interface RunAgentOptions extends HarnessOptions {{
   /** User prompt to send to the agent. */
   prompt: string;
+  /** Native vision parts (max 16); never flattened into prompt text. */
+  images?: ImageInput[];
 }}
 
 function spawnArgs(o: HarnessOptions): string[] {{
@@ -439,6 +449,10 @@ export class Harness {{
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {{
     const prompt = typeof input === "string" ? input : input.prompt;
     const type = typeof input === "string" || !input.review ? "user" : "review";
+    const images = typeof input === "string" ? undefined : input.images?.map((image) =>
+      image.type === "image_base64"
+        ? {{ type: image.type, media_type: image.mediaType, data: image.data }}
+        : image);
     const signal = typeof input === "string" ? undefined : input.signal;
     // Already aborted: send nothing — a cancel written before the turn's
     // first line would be cleared again when the turn starts.
@@ -447,7 +461,7 @@ export class Harness {{
     let aborted = false;
     const onAbort = () => {{ if (aborted) return; aborted = true; this.cancel(); }};
     try {{
-      this.proc.stdin.write(JSON.stringify({{ type, text: prompt }}) + "\\n");
+      this.proc.stdin.write(JSON.stringify({{ type, text: prompt, ...(images?.length ? {{ images }} : {{}}) }}) + "\\n");
       if (signal) {{
         signal.addEventListener("abort", onAbort, {{ once: true }});
         if (signal.aborted) onAbort(); // aborted between the entry check and here
@@ -711,7 +725,7 @@ export class HarnessSession {{
 export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<Event> {{
   const h = new Harness(opts);
   try {{
-    yield* h.chat({{ prompt: opts.prompt }});
+    yield* h.chat({{ prompt: opts.prompt, images: opts.images }});
   }} finally {{
     await h.close();
   }}
@@ -831,8 +845,16 @@ export interface SessionInfo {{
   last_seq: number;
 }}
 
+/** Native image input for a user turn. URLs stay URLs on every provider;
+ *  base64 is converted to that provider's image-content shape by Graff. */
+export type ImageInput =
+  | {{ type: "image_url"; url: string }}
+  | {{ type: "image_base64"; mediaType: string; data: string }};
+
 export interface ChatOptions {{
   prompt: string;
+  /** Native vision parts (max 16); never flattened into prompt text. */
+  images?: ImageInput[];
   review?: boolean;
   /** Replay persisted events with seq >= from before this turn's live ones. */
   from?: number;
@@ -878,6 +900,8 @@ export interface AskResult {{
 
 export interface RunAgentRemoteOptions extends RemoteOptions {{
   prompt: string;
+  /** Native vision parts (max 16); never flattened into prompt text. */
+  images?: ImageInput[];
 }}
 
 /** Parse a streaming NDJSON response body into events. */
@@ -1038,6 +1062,10 @@ export class RemoteHarness {{
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {{
     const prompt = typeof input === "string" ? input : input.prompt;
     const type = typeof input === "string" || !input.review ? "user" : "review";
+    const images = typeof input === "string" ? undefined : input.images?.map((image) =>
+      image.type === "image_base64"
+        ? {{ type: image.type, media_type: image.mediaType, data: image.data }}
+        : image);
     const from = typeof input === "string" ? undefined : input.from;
     const signal = typeof input === "string" ? undefined : input.signal;
     signal?.throwIfAborted();
@@ -1050,7 +1078,7 @@ export class RemoteHarness {{
       // cancel first, receive 409, and leave the following turn running.
       const id = await this.sessionId;
       const q = from === undefined ? "" : `?from=${{from}}`;
-      const res = await this.req("POST", `/v1/sessions/${{id}}${{q}}`, {{ type, text: prompt }});
+      const res = await this.req("POST", `/v1/sessions/${{id}}${{q}}`, {{ type, text: prompt, ...(images?.length ? {{ images }} : {{}}) }});
       if (signal) {{
         signal.addEventListener("abort", onAbort, {{ once: true }});
         if (signal.aborted) onAbort();
@@ -1240,7 +1268,7 @@ export class RemoteHarness {{
 export async function* runAgentRemote(opts: RunAgentRemoteOptions): AsyncGenerator<Event> {{
   const h = new RemoteHarness(opts);
   try {{
-    yield* h.chat({{ prompt: opts.prompt }});
+    yield* h.chat({{ prompt: opts.prompt, images: opts.images }});
   }} finally {{
     await h.close();
   }}
@@ -1268,11 +1296,25 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Iterator, Optional
+from typing import Iterator, List, Literal, Optional, TypedDict, Union
 
 MODELS = {json.dumps(models)}
 TOOLS = {json.dumps(tools)}
 PROVIDERS = {json.dumps(providers)}
+
+
+class ImageUrlInput(TypedDict):
+    type: Literal["image_url"]
+    url: str
+
+
+class ImageBase64Input(TypedDict):
+    type: Literal["image_base64"]
+    media_type: str
+    data: str
+
+
+ImageInput = Union[ImageUrlInput, ImageBase64Input]
 
 
 def _sdk_install_id() -> str:
@@ -1503,13 +1545,17 @@ class Harness:
             _report_error("spawn", f"{{binary}}: {{e}}")
             raise
 
-    def chat(self, text: str, review: bool = False) -> Iterator[dict]:
+    def chat(self, text: str, review: bool = False,
+             images: Optional[List[ImageInput]] = None) -> Iterator[dict]:
         """Send a user turn; yield events until (and including) the 'turn'
         event. Raises RuntimeError (after reporting to telemetry) if the
         harness process dies mid-turn instead of silently yielding nothing."""
         assert self.proc.stdin and self.proc.stdout
         try:
-            self.proc.stdin.write(json.dumps({{"type": "review" if review else "user", "text": text}}) + "\\n")
+            payload = {{"type": "review" if review else "user", "text": text}}
+            if images:
+                payload["images"] = images
+            self.proc.stdin.write(json.dumps(payload) + "\\n")
             self.proc.stdin.flush()
         except OSError as e:
             _report_error("died", f"harness pipe closed on send: {{e}}")
@@ -1530,20 +1576,20 @@ class Harness:
         _report_error("died", f"harness exited mid-turn (rc={{rc}})")
         raise RuntimeError(f"harness exited mid-turn (rc={{rc}})")
 
-    def ask(self, text: str) -> str:
+    def ask(self, text: str, images: Optional[List[ImageInput]] = None) -> str:
         """Run a turn and return just the final assistant text."""
         final = ""
-        for ev in self.chat(text):
+        for ev in self.chat(text, images=images):
             if ev.get("type") == "turn":
                 final = ev["text"]
             elif ev.get("type") == "error":
                 raise RuntimeError(ev["message"])
         return final
 
-    def review(self, text: str) -> str:
+    def review(self, text: str, images: Optional[List[ImageInput]] = None) -> str:
         """Run one isolated, read-only review turn and return its report."""
         final = ""
-        for ev in self.chat(text, review=True):
+        for ev in self.chat(text, review=True, images=images):
             if ev.get("type") == "turn":
                 final = ev["text"]
             elif ev.get("type") == "error":
@@ -1809,12 +1855,15 @@ class RemoteHarness:
         return self._stream(resp)
 
     def chat(self, text: str, review: bool = False,
-             from_seq: Optional[int] = None) -> Iterator[dict]:
+             from_seq: Optional[int] = None,
+             images: Optional[List[ImageInput]] = None) -> Iterator[dict]:
         """Send a user turn; yield events until (and including) the 'turn'
         event. Raises RuntimeError if the stream ends without one (the
         session process died server-side)."""
         terminal = False
         payload = {{"type": "review" if review else "user", "text": text}}
+        if images:
+            payload["images"] = images
         for ev in self._send(payload, from_seq):
             yield ev
             if ev.get("type") in ("turn", "error"):
@@ -1823,20 +1872,20 @@ class RemoteHarness:
         if not terminal:
             raise RuntimeError("bridge stream ended mid-turn (session process died?)")
 
-    def ask(self, text: str) -> str:
+    def ask(self, text: str, images: Optional[List[ImageInput]] = None) -> str:
         """Run a turn and return just the final assistant text."""
         final = ""
-        for ev in self.chat(text):
+        for ev in self.chat(text, images=images):
             if ev.get("type") == "turn":
                 final = ev["text"]
             elif ev.get("type") == "error":
                 raise RuntimeError(ev["message"])
         return final
 
-    def review(self, text: str) -> str:
+    def review(self, text: str, images: Optional[List[ImageInput]] = None) -> str:
         """Run one isolated, read-only review turn and return its report."""
         final = ""
-        for ev in self.chat(text, review=True):
+        for ev in self.chat(text, review=True, images=images):
             if ev.get("type") == "turn":
                 final = ev["text"]
             elif ev.get("type") == "error":
@@ -1927,6 +1976,7 @@ def main():
     write(os.path.join(HERE, "ts", "harness.ts"), gen_ts(schema))
     write(os.path.join(HERE, "ts", "remote.ts"), gen_ts_remote(schema))
     write(os.path.join(HERE, "py", "harness_sdk.py"), gen_py(schema))
+    write(os.path.join(HERE, "..", "examples", "edge-worker", "src", "remote.ts"), gen_ts_remote(schema))
     print("done.")
 
 

@@ -21,6 +21,30 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.281
+    \\  • -p / --json skip learn auto-init — no 132M graff-pinned copy (ADR 0044)
+    \\  • SuperGrok SWE 5/6 in 205s / 6.5s CPU (was 4/6 in 456s / 230s)
+    \\  • TUI claims alt-screen before boot; live markdown on the cached tail (ADR 0042)
+    \\
+    \\0.0.280
+    \\  • leftover 279 work: TUI stall/resize, experiment fan-out, /tell /peek, ACP graff-login
+    \\  • local tools (.graff/tools), /schedule due-claim, JSONL channel workers
+    \\  • native codedb / read_file stay the default readers; codedb-pro is extra search (ADR 0040)
+    \\
+    \\0.0.279
+    \\  • native Beautiful UI app speaks ACP: thinking and tool chips stream mid-turn (ADR 0032)
+    \\  • graff acp emits thought / tool_call / text session/update; /never is an ACP slash command
+    \\  • /never on a TTY is a searchable picker with two confirms; rm and ACP list still work (#638)
+    \\  • bash_output wait_ms>0 always waits for exit — mid-range values are not a timeout (#640)
+    \\  • host recipe: docs/embedding.md; @codegraff/sdk/acp spawns graff acp
+    \\  • first-turn tools: no MCP handshake wait, live chips show elapsed from start (ADR 0035)
+    \\
+    \\0.0.278
+    \\  • deleted composer screenshots are not sent: submit keeps [Image #N] / @[path] only (#634)
+    \\  • /image and /paste stay sticky; /image clear drops the whole queue
+    \\  • TUI backspace / Ctrl+U / overlay backspace detaches chips
+    \\  • Smolify is no longer a reserved core MCP; add it via `graff mcp add` if you want it
+    \\
     \\0.0.277
     \\  • MCP-inside-rlm + learnt slim: fat MCP results drop to id/title; comments fold to n+latest_author (ADR 0029)
     \\  • L (warm slim, --no-lean) 14.8s/31k/5 vs H 28s/112k/7 on SuperGrok grok-4.6
@@ -156,7 +180,7 @@ pub const changelog_text =
     \\
     \\0.0.244
     \\  • Co-resident graff sessions now see each other: a startup warning names any live session already in your worktree, and the first git mutation, file write, or shell move against a peer's tree pauses once for a deliberate re-issue — two agents can no longer silently tear one tree
-    \\  • Sessions can message each other: the peer_message tool and /tell post to a shared channel every co-resident session hears (address one by name, "all" reaches every session on the device), delivered mid-task at step boundaries with the sender's current goal attached
+    \\  • Sessions can message each other: peer_message posts to this folder's room, or names one session as a DM (not "all" — retired for the model). /tell <session> is a human DM; /tell all is the user's device-wide broadcast. Delivery is at the receiver's next step boundary, with the sender's current goal attached
     \\  • The model is told up front who else is live and what they're working on, so it coordinates — or picks disjoint work — before any collision
     \\  • /peek <session> shows what a live co-resident session is doing right now — its last prompt, last action, last tool
     \\  • Session recaps ride the event stream: settled turns carry a Completed or Needs-input status with a one-line recap for the GUI agent overview
@@ -226,7 +250,7 @@ pub const usage_text =
     \\  graff mcp                         list configured MCP servers
     \\  graff plugins [load <name>]       list Claude/Cursor/Grok/Codex plugin trees (in place)
     \\  graff learn [help]                local mutate/evaluate/promote/rollback engine
-    \\  graff worktree list              list the per-tab worktrees created by -w
+    \\  graff worktree list              list -w tabs and experiment-pool trees (tagged)
     \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
     \\  graff worktree remove <name>     discard worktree-<name> (drops its scratch work) + delete the branch
     \\  graff worktree prune             drop git registrations for worktrees whose dirs were deleted
@@ -257,6 +281,7 @@ pub const usage_text =
     \\  --until <0-100>                 eval-loop target score; stop when reached (default 90)
     \\  --niche <name>                  fleet niche this eval optimizes (reviewer/researcher/implementer/skeptic or a custom agent); tags submitted scores so the DGM can promote a champion for that role
     \\  -w, --worktree <name>           isolate this session in a git worktree (.graff/worktrees/<name>) so parallel agents don't collide on files
+    \\  --experiment N                  pre-mint N child worktrees (1-16) under .graff/worktrees/exp-<id>/; next spawns claim a seat
     \\  --add-dir <path>                extra file-tool root (repeatable, max 16). Not a cwd switch; no skills/sessions from it
     \\  --context-limit name=N          cap a named prefix: skill_catalog_bytes|mcp_schema_bytes|agents_md_bytes
     \\  --no-autocommit                 with -w, don't auto-commit each turn (default on; land work with `graff worktree merge`)

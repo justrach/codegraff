@@ -412,7 +412,7 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             errdefer aw.deinit();
             const w = &aw.writer;
             if (!job.done) {
-                try w.print("[job {d}: running]", .{id});
+                try w.print("[job {d}: running · {d}s elapsed — you are notified on exit; do not call bash_output again]", .{ id, waited / 1000 });
             } else if (job.killed) {
                 try w.print("[job {d}: killed]", .{id});
             } else if (job.exit_code) |c| {

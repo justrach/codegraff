@@ -56,6 +56,9 @@ pub fn arm(io: Io, environ_map: *const std.process.Environ.Map) Io {
 /// tests, `graff repl`, any path that never called `arm`) or when the opt-in
 /// is off, so a normal exit pays one bool load per phase.
 pub fn mark(phase: []const u8) void {
+    // ADR 0042: an early pager claim that never reached `tui.run` still
+    // owns the alt-screen. Main's first teardown `at()` lands here.
+    @import("tui").restore.releaseIfOwned();
     if (!enabled) return;
     const io = clock orelse return;
     const cumulative: i64 = @intCast(@max(0, started.untilNow(io, .awake).toMilliseconds()));
@@ -94,6 +97,11 @@ test "render names the phase and both durations" {
 test "render degrades to the bare phase name rather than dropping it" {
     var tiny: [4]u8 = undefined;
     try std.testing.expectEqualStrings("join-elites", render(&tiny, "join-elites", 1, 1));
+}
+
+test "teardown stamps release an early pager claim" {
+    const src = @embedFile("shutdown_trace.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "releaseIfOwned") != null);
 }
 
 test "an unarmed process prints nothing and `at` stays a pass-through" {

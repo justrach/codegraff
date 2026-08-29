@@ -61,6 +61,9 @@ pub const ReplCtx = struct {
     last_context_tokens: u64 = 0,
     context_local_tokens: u64 = 0,
     last_cache_read: u64 = 0,
+    /// Live root session, when the host has one. TUI `/tell` / `/peek` reach
+    /// the real mailbox through this; the line REPL already holds `root`.
+    root: ?*Agent = null,
 };
 
 /// The engine-owned conversation, in repl_convo.zig (move+alias, #123).

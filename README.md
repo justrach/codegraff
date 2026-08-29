@@ -23,6 +23,16 @@
   <img alt="Built in Zig 0.17 dev" src="https://img.shields.io/badge/built%20in-Zig%200.17%20dev-f7a41d?logo=zig&logoColor=white">
 </p>
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/84216?utm_source=repository-badge&utm_medium=badge&utm_campaign=badge-repository-84216" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/84216" alt="justrach/codegraff | Trendshift" width="250" height="55"></a>
+</p>
+
+<p align="center">
+  <strong>The most token-efficient coding harness we've built so far.</strong><br/>
+  Prompt-cache max keeps repeated prefixes hot. RLM + spec-ptc turns wide work
+  into a small streaming program. Learnt slimming keeps fat results out of history.
+</p>
+
 ```sh
 curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
 ```
@@ -45,19 +55,121 @@ It works in your real terminal, on your real files, with the real internet, and 
 
 ---
 
-## How it compares
+## Token-efficient by construction
+
+<p align="center">
+  <img src="token-efficient-loop.png" alt="Stable cache layers feed a small programmatic loop that tests parallel tool paths, keeps the useful path, and gathers one slim result" width="960">
+  <br/>
+  <sub>Stable prefix → small program → parallel tools → slim result. Faint branches are measured variants; the proven path continues.</sub>
+</p>
+
+There is no single “token trick.” graff compounds three separate cuts:
+
+- **Keep the reusable prefix stable.** Prompt-cache max holds the system prompt
+  and tool-catalog head byte-identical, keeps provider cache keys sticky, and
+  shows the last hit rate in the UI. A live same-process grok-4.6 `/btw` turn
+  reused **3,712 of 3,721 prior prompt tokens (99.8%)**.
+- **Program over context instead of pasting it back.** The default Recursive
+  Language Model (RLM) loop is a Zig port of
+  [Alex Zhang's RLM](https://github.com/alexzhang13/rlm) and
+  [spec-ptc](https://alexzhang13.github.io/blog/2026/spec-ptc/) (speculative
+  programmatic tool calling): the model writes a tiny program, finished host
+  calls start while the rest of it is still streaming, and useful binds persist
+  across turns.
+- **Return the useful shape, not the payload.** Folded schemas, structural
+  `codedb` reads, 4 KB tool-result handles, and learnt MCP slimming keep bulky
+  tool output out of the model's working set.
+
+The [Darwin Gödel Machine-style evolutionary archive](#an-evolutionary-harness)
+supplies the measuring discipline: record prompt/persona variants, score them,
+and keep what holds up. Prompt-cache max is a separate harness decision built
+with that same measure-and-keep instinct; the archive did not autonomously
+invent the cache layout.
+
+### One stable RLM reuse case
+
+Live grok-4.6, same task, one rep. The model reads a file into a bind and reuses
+it on the next RLM call:
+
+| harness | wall | input tokens | model calls |
+|---|---:|---:|---:|
+| structured-only (`--old`) | 99.6s | 135k | 11 |
+| default RLM | **39.2s** | **25.3k** | **5** |
+| reduction | **61%** | **81%** | **55%** |
+
+The broader five-task RLM suite kept the same **5/5** pass rate while cutting
+input from **203k to 105k**, output from **4,186 to 1,669**, and wall time from
+**161s to 136s**. SuperGrok OAuth is flat-rate; on a metered xAI key, the token
+cut is the bill. Full method and caveats: [v0.0.276 release notes](docs/releases/v0.0.276.md).
+
+### Same grok-4.6, same six coding tasks
+
+<p align="center">
+  <img src="social/graff-vs-grok-build-grok46.png" alt="Same-model comparison on six coding tasks: graff and grok-build both pass 5 of 6; graff uses 198 seconds summed wall time, 106k input tokens, 24 calls, and 8.5 MB RSS versus grok-build at 506 seconds, 194k input tokens, 39 calls, and 177 MB RSS" width="960">
+</p>
+
+At the same **5/6** pass rate, graff used **61% less summed wall time, 45% less
+input, 38% fewer model calls, and 95% less peak RSS**. This is one live rep of
+six DeepSWE-shaped tasks, not a universal leaderboard; `label-sort` failed both
+harnesses. The exact run and the rejected shortcuts are documented in
+[v0.0.276](docs/releases/v0.0.276.md).
+
+Much of this implementation and benchmark work was made possible by
+[Cursor Cloud Agents](https://cursor.com/docs/cloud-agent): parallel agents in
+isolated environments, with measured evidence merged back into the harness.
+
+### What shipped in v0.0.277–v0.0.281
+
+- **MCP results learn to slim themselves.** On the Linear fixture, the warm
+  learnt path moved from **28.0s to 14.8s**, **112k to 31k input**, and **7 to 5
+  calls**. Return shapes ride the load result, never the stable prefix.
+- **grok-4.6 gets xAI's hosted X search.** The same live prompt moved from a
+  seven-call scrape (**101s, 64k input**) to one hosted call (**37s, 28k**),
+  without adding another catalog tool.
+- **Small turns stay small.** RLM and spec-ptc appear when work gets wide, the
+  context crosses its measured threshold, or you explicitly ask for them; tiny
+  turns do not pay the schema tax.
+- **Removed images really leave.** The v0.0.278 privacy follow-up drops a pasted
+  screenshot if its composer chip is removed, collapses duplicate payloads, and
+  makes `/image clear` clear the whole queue before anything reaches the model.
+- **The native app speaks ACP.** Thinking and tool chips stream mid-turn from
+  `graff acp` (ADR 0032). `graff serve` is not required.
+- **v0.0.280 leftover cut.** TUI `/tell` `/peek`, experiment fan-out,
+  ACP `graff-login`, local tools, `/schedule`, and JSONL channel workers.
+  Native `codedb` / `read_file` stay the default readers when codedb-pro
+  is licensed (ADR 0040).
+- **One-shots skip the 38s learn pin.** `-p` / `--json` no longer copy
+  132M `graff-pinned`. SuperGrok SWE went **4/6 in 456s → 5/6 in 205s**
+  (CPU 230s → 6.5s). Interactive sessions still auto-init (ADR 0044).
+
+Read the full [v0.0.277 notes](docs/releases/v0.0.277.md), the
+[v0.0.278 privacy follow-up](docs/releases/v0.0.278.md), the
+[v0.0.279 ACP native cut](docs/releases/v0.0.279.md), the
+[v0.0.280 leftover cut](docs/releases/v0.0.280.md), and the
+[v0.0.281 skip](docs/releases/v0.0.281.md).
+
+### Broader comparison: model choice, footprint, and startup
 
 <p align="center">
   <img src="comparison.png" alt="graff vs Claude Code vs Codex: ~20x cheaper ($0.022 vs $0.51 vs $0.42 per task), ~25 MB vs ~410 MB vs ~206 MB peak memory, 4.4s vs 8.9s one-shot gpt-5.5 latency" width="860">
 </p>
 
-Run the same job on graff, Claude Code, and Codex (three read-only questions about this repo, plus an 8-trial latency test), and here is what it means for you:
+The older cross-provider comparison answers a different question: what do model
+choice and a tiny native harness cost on three read-only repo tasks plus an
+eight-trial startup test?
 
-**Your AI bill is a fraction.** graff runs the same task on whatever model fits your budget. On `deepseek-v4-pro` it averaged **$0.022 per task**, against Claude Code's **$0.51** (Opus 4.8) and Codex's **$0.42** (gpt-5.5). That is roughly **20× cheaper**, because Claude Code only runs Claude and Codex only runs GPT, while graff runs deepseek, kimi, glm, grok, minimax, gpt, claude, and more. On the *same* model the token usage is comparable, so the win is the freedom to pick a cheaper one, not a token trick.
+**Model choice.** On `deepseek-v4-pro`, graff averaged **$0.022 per task**,
+against Claude Code's **$0.51** (Opus 4.8) and Codex's **$0.42** (gpt-5.5).
+That roughly 20× result comes from choosing a cheaper model; it is not the
+same-model harness comparison above.
 
-**It stays out of your way.** graff is one 2.7 MB Zig binary. In these runs it used about **25 MB of memory** for focused work (more when it reads a lot of code), against Claude Code's steady **~410 MB** (Node) and Codex's **~206 MB** (Rust). Leave it running next to everything else and your laptop won't notice.
+**Footprint.** The focused runs used about **25 MB** of memory, against Claude
+Code's steady **~410 MB** and Codex's **~206 MB**.
 
-**Scripts and CI finish in half the time.** For one-shot runs (`graff -p`, the SDKs, a CI step), graff completed a gpt-5.5 turn in **4.4 s** versus Codex's **8.9 s** on the identical ChatGPT endpoint, on every single trial. That is graff's near-instant startup beating a heavier per-call launch. In a long interactive session the startup amortizes and both settle to model latency, so this is a one-shot and automation win, not a blanket "graff is faster."
+**One-shot startup.** On the identical ChatGPT endpoint, graff completed a
+gpt-5.5 turn in **4.4s** versus Codex's **8.9s** in every paired trial. Long
+interactive sessions settle to model latency; this is a CLI/CI startup result,
+not a blanket speed claim.
 
 <sub><b>Method:</b> macOS, same machine, read-only code questions on this repo. Cost is each tool's own reported usage at <a href="https://codegraff.com/docs/models">codegraff gateway prices</a>; memory is peak RSS via <code>/usr/bin/time -l</code>; latency is 8 concurrent graff/Codex pairs on a tool-free prompt with reasoning effort matched. Your numbers will vary with the task, the model, and the network. Reproduce it yourself: <a href="benchmarks/">benchmarks/</a>.</sub>
 
@@ -81,6 +193,7 @@ context when the conversation gets long.
 
 **Contents**
 
+- [Token-efficient by construction](#token-efficient-by-construction)
 - [Install](#install) · [give it a key](#give-it-a-key) · [run it](#run-it)
 - [Why](#why)
 - [Code intelligence](#code-intelligence-token-efficient-by-default)
@@ -177,7 +290,11 @@ First things to try once you're at the `›` prompt:
 ### Zed (External Agents / ACP)
 
 `graff acp` speaks the Agent Client Protocol, so Zed can drive it as an
-External Agent. Register it in `~/.config/zed/settings.json`:
+External Agent. The same spawn is the hosted-agent recipe — see
+[Embedding graff](docs/embedding.md). There is no "Install from Registry"
+row yet; the submit recipe and the auth blocker are
+[ACP Registry](docs/acp-registry.md) (#613). Until that lands, register it
+in `~/.config/zed/settings.json`:
 
 ```json
 {
@@ -524,7 +641,8 @@ gateway rollouts appear without a restart.
 /loop [30m] <prompt>      the same autonomous run as /goal, without adopting a standing objective
 /review <target or instructions>
                           run one isolated read-only review pass; no edits, delegation, or workflows
-/never [<text>|rm <id>]   standing constraints that ride every subagent brief and survive compaction; bare lists them, rm <id> retires one (alias /constraint)
+/never [<text>|rm <id-or-text>]
+                          standing constraints that ride every subagent brief and survive compaction; bare lists them, rm <id-or-text> retires one (alias /constraint)
 /tell <session|all> <text>
                           message a running graff: <session> is a DM (only it hears, any folder); all broadcasts to every graff on this device; /sessions lists who's around
 /peek <session>           see what a live co-resident session is doing right now (its transcript tail)
@@ -768,7 +886,7 @@ structured `{"type":"answer","text":"...","cancelled":false}` line) and `graff -
 machine-readable interface, and the **TypeScript and Python SDKs in
 [`sdk/`](sdk/) are auto-generated from that schema**, so they never drift from
 the binary. On every release tag a GitHub Action rebuilds, regenerates, fails if
-the committed SDKs are stale, and publishes to npm (`@graff-new/sdk`) and PyPI
+the committed SDKs are stale, and publishes to npm (`@codegraff/sdk`) and PyPI
 (`simple-harness-sdk`).
 
 ```python
@@ -783,7 +901,7 @@ with Harness(yolo=True, model="gpt-5.5") as h:
 
 ```ts
 // TypeScript
-import { Harness, runAgent } from "@graff-new/sdk";
+import { Harness, runAgent } from "@codegraff/sdk";
 
 // one-shot, streamed
 for await (const ev of runAgent({ prompt: "summarize README.md", model: "gpt-5.5", yolo: true })) {
@@ -799,9 +917,14 @@ session.close();
 
 Can't spawn a local process (edge runtimes, browsers, other machines)? Run
 `graff serve` and both SDKs ship matching **remote clients** that drive it over
-HTTP: `@graff-new/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers) and
+HTTP: `@codegraff/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers) and
 Python's `RemoteHarness` (stdlib only). Same method surface, same event stream.
-See [`sdk/README.md`](sdk/README.md).
+Both remote clients accept URL/base64 `images` on a turn and preserve them as
+native provider vision parts through `graff serve`; no encoded pixels are
+flattened into prompt text.
+See [`sdk/README.md`](sdk/README.md). A host that wants ACP (thought / tool /
+text `session/update`s) instead of `--json` events should spawn `graff acp` —
+recipe and `@codegraff/sdk/acp` helper in [Embedding graff](docs/embedding.md).
 
 ---
 
@@ -809,7 +932,8 @@ See [`sdk/README.md`](sdk/README.md).
 
 If you are embedding graff in a product, the safe shape is to run the agent loop
 on your trusted backend and let it reach an isolated sandbox only through tool
-calls. `--no-local-tools` is what makes that shape enforceable:
+calls. How to spawn the binary (ACP vs `--json`) is [Embedding graff](docs/embedding.md).
+`--no-local-tools` is what makes the sandbox shape enforceable:
 
 ```bash
 graff --json --no-local-tools --model gpt-5.5
@@ -1342,7 +1466,7 @@ POSTs can be sent while the original stream is waiting on `ask_user`; they ack
 immediately and the original stream continues to the `tool_result`/`turn`.
 Bearer auth via `--token`/`HARNESS_SERVE_TOKEN` (required to bind beyond
 loopback); CORS opens only when a token gates access. The SDKs ship matching
-remote clients: `@graff-new/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers)
+remote clients: `@codegraff/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers)
 and Python's `RemoteHarness` (stdlib urllib). Endpoints are documented under the
 `serve` key of `graff --schema`.
 
@@ -1449,7 +1573,8 @@ issues for what's in flight:
   the host. It's the natural next layer above today's cwd-confinement and
   permission gate, and the safe substrate for hands-off evolutionary runs.
   [Embedder mode](#embedder-mode-run-the-harness-outside-the-sandbox) is the
-  first half of this today: `--no-local-tools` plus a sandbox MCP server. A
+  first half of this today: `--no-local-tools` plus a sandbox MCP server
+  ([Embedding graff](docs/embedding.md)). A
   first-class sandbox backend (create/exec/read/write/destroy with provider
   adapters) would remove the proxy you have to write yourself.
 - **Scaling the evolution loop.** The local half shipped in v0.0.219:

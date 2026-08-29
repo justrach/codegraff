@@ -26,6 +26,9 @@ __pycache__/
 .simple-harness-model
 .wrangler/
 
+# local social drafts
+tweet.md
+
 # local agent/IDE config (not project source)
 .codex/
 .devin/

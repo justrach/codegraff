@@ -155,6 +155,8 @@ export default function PromptBar({
   modelKey,
   onModelChange,
   disabled,
+  busy = false,
+  onStop,
 }: {
   variant?: string;
   /** the self-running walkthrough; turn off when embedding in a real surface */
@@ -167,6 +169,9 @@ export default function PromptBar({
   modelKey?: string;
   onModelChange?: (key: string) => void;
   disabled?: boolean;
+  /** A turn is running: the send arrow morphs into a stop square. */
+  busy?: boolean;
+  onStop?: () => void;
 }) {
   const pill = variant === "Pill";
   const catalog = models && models.length > 0 ? models : MODELS;
@@ -702,21 +707,28 @@ export default function PromptBar({
             )}
           </button>
 
-          {/* send — tactile square (round in the pill variant) */}
+          {/* send — tactile square (round in the pill variant); while a turn
+              runs it morphs into the Codex-style stop control */}
           <button
             type="button"
-            aria-label="Send"
-            disabled={!canSend}
-            onClick={send}
+            aria-label={busy ? "Stop" : "Send"}
+            disabled={busy ? !onStop : !canSend}
+            onClick={busy ? onStop : send}
             className={`flex size-7 shrink-0 items-center justify-center transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${
               pill ? "rounded-full" : "rounded-[8px]"
             } ${wide ? "col-start-5 row-start-2" : "col-start-5 row-start-1"}`}
             style={{
-              background: canSend ? "var(--ink)" : "var(--line-strong)",
-              color: canSend ? "var(--surface)" : "var(--ink-2)",
+              background: busy || canSend ? "var(--ink)" : "var(--line-strong)",
+              color: busy || canSend ? "var(--surface)" : "var(--ink-2)",
             }}
           >
-            <Icon size={16} strokeWidth={2.4}><path d="M12 19V5M5 12l7-7 7 7" /></Icon>
+            {busy ? (
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                <rect x="5" y="5" width="14" height="14" rx="2.5" />
+              </svg>
+            ) : (
+              <Icon size={16} strokeWidth={2.4}><path d="M12 19V5M5 12l7-7 7 7" /></Icon>
+            )}
           </button>
         </div>
       </div>

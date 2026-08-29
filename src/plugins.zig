@@ -266,12 +266,10 @@ fn takeRel(io: Io, arena: Allocator, dir: Io.Dir, servers: *std.json.ObjectMap, 
 pub fn mergeMcp(io: Io, arena: Allocator, home: []const u8, dir: Io.Dir, servers: *std.json.ObjectMap, found: *bool) void {
     if (off()) return;
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const n = dir.realPath(io, &buf) catch 0;
+    const n = dir.realPath(io, &buf) catch Io.Dir.cwd().realPathFile(io, ".", &buf) catch 0;
     const cwd = if (n > 0) buf[0..n] else null;
     const plugs = discover(io, arena, if (home.len > 0) home else null, dir);
-    for (plugs) |p| {
-        if (p.mcp) layout.mergeMcp(io, arena, p.path, cwd orelse "", servers, found);
-    }
+    @import("plugin_mcp_variant.zig").merge(io, arena, home, cwd orelse "", plugs, servers, found);
     if (home.len > 0) {
         takeAbs(io, arena, servers, found, join(arena, home, ".claude.json"), cwd);
         takeAbs(io, arena, servers, found, join(arena, home, ".claude/settings.json"), null);

@@ -150,6 +150,15 @@ pub fn setupWorktreeAndBanner(
     // model an ABSOLUTE path. Left unwired in tests, where the cap stays the
     // pre-#409 plain truncation.
     tool_spill.enable(.{ .io = io, .dir = .cwd(), .base_abs = main_mod.g_cwd_display });
+    if (flags.experiment_n > 0) {
+        const exp_id = flags.resume_flag orelse "live";
+        const n = @import("experiment_pool.zig").arm(gpa, io, arena, exp_id, flags.experiment_n) catch |err|
+            std.process.fatal("--experiment: {t}", .{err});
+        if (!main_mod.json_mode) sink.emit(io, .{ .session_notice = .{
+            .text = try std.fmt.allocPrint(arena, "experiment {s}: {d} trees — spawn into them, do not edit the caller tree", .{ exp_id, n }),
+            .tone = .dim,
+        } });
+    }
 
     // The pager owns the screen. Dumping the line-REPL banner first makes
     // `graff tui --yolo` look like bare `graff` never left.
@@ -413,7 +422,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     // can carry chatter. With a global config `mcp_count > 0` in every project,
     // so an unguarded line here would corrupt the head of every --json run.
     const quiet = json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") == null;
-    const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path, home);
+    const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path, home, mcp_config.isEnvOverride(environ_map));
     // Interactive only: json/one-shot stdout cannot carry chatter. A slow
     // Cursor/Claude tree used to look like a hung boot; this line is the clock.
     if (!json_mode and flags.oneshot_prompt == null) {
@@ -463,6 +472,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     // file precisely when consent was declined and no `init` ever ran. `arena`
     // is the session arena, so the path outlives the registry.
     registry.global_config_path = global_path;
+    registry.global_is_override = mcp_config.isEnvOverride(environ_map);
     registry.show_diagnostics = json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") != null;
     return registry;
 }
@@ -478,13 +488,10 @@ pub fn probeLicensed(gpa: Allocator, io: Io) bool {
     return skills.probeCodedbproLicensed(gpa, io);
 }
 
-/// A licensed codedb-pro is IN CHARGE of reads/searches (its guard refuses
-/// the native codedb/read_file and points at these tools), which inverts the
-/// #416 deferral premise: this is not a server "most sessions never call" —
-/// the guard makes it mandatory, and the load_tool_schemas discovery dance is
-/// a measured ~2 model round-trips (~8-12s) per task on K3. Pin it eager.
-/// (#476 kept it deferred on a "zero discovery turns" claim; the benchmark
-/// traces show every code-reading run paying the dance.)
+/// A licensed codedb-pro still pins these tools eager (search/batch extras;
+/// ADR 0040: not the default reader). Skipping that pin costs a measured
+/// ~2 load_tool_schemas discovery turns per task that does need pro search.
+/// (#476 kept it deferred; traces showed every such run paying the dance.)
 pub fn pinCompanionEager(arena: Allocator) void {
     if (mcp_schema_gate.pinnedEager("codedbpro")) return; // env/config already pinned
     const gate = &mcp_schema_gate.g_policy;

@@ -17,6 +17,7 @@ Subcommands (all offline, all under a second):
   filters             print one -Dtest-filter value per line, for the shell
   count --observed N  the total suite count may grow, never shrink
   invariants --observed N   the filtered run must have run exactly the required set
+  invariants --scan         same check against the unfiltered test artifact (#641)
 
 `count` exits 3, not 1, when the suite has run far enough ahead of the baseline
 that the floor no longer guards anything (#439: it sat 350 behind). That is a
@@ -149,7 +150,12 @@ def main() -> None:
     count = sub.add_parser("count")
     count.add_argument("--observed", type=int, required=True)
     inv = sub.add_parser("invariants")
-    inv.add_argument("--observed", type=int, required=True)
+    inv.add_argument("--observed", type=int, default=None)
+    inv.add_argument(
+        "--scan",
+        action="store_true",
+        help="count required names in the unfiltered test artifact (no recompile)",
+    )
     skip = sub.add_parser("docs-only")
     skip.add_argument("paths", nargs="*")
     args = parser.parse_args()
@@ -221,6 +227,31 @@ def main() -> None:
 
     if args.cmd == "invariants":
         expected = len(manifest["required_invariants"])
+        if args.scan:
+            # Import sibling: same directory as this file.
+            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+            import tier1_test_binary  # noqa: E402
+
+            try:
+                chosen = tier1_test_binary.select([])
+            except tier1_test_binary.ArtifactError as exc:
+                print(f"  FAIL {exc}", file=sys.stderr)
+                sys.exit(1)
+            required = [entry["test"] for entry in manifest["required_invariants"]]
+            missing = [name for name in required if name not in chosen.present]
+            if missing:
+                print(
+                    f"  FAIL {len(required) - len(missing)} of {expected} named"
+                    " invariants present in the unfiltered test artifact.\n"
+                    f"    missing: {missing[0]!r}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print(f"  all {expected} named goal/loop/todo invariants compiled in")
+            return
+        if args.observed is None:
+            print("  FAIL invariants: pass --observed N or --scan", file=sys.stderr)
+            sys.exit(1)
         if args.observed != expected:
             print(
                 f"  FAIL {args.observed} of {expected} named invariants ran under"

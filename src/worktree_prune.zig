@@ -258,7 +258,13 @@ pub fn listWithAge(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer) !v
         const age = formatAge(&abuf, worktreeAgeMs(io, now_ms, e.path));
         const label = if (e.branch.len > 0) shortBranch(e.branch) else if (e.detached) "(detached)" else if (e.bare) "(bare)" else "";
         const is_main = i == 0 or (main_path.len > 0 and std.mem.eql(u8, e.path, main_path));
-        try out.print("{s: <5} {s}  [{s}]{s}\n", .{ age, e.path, label, if (is_main) "  (main checkout)" else "" });
+        const tag: []const u8 = if (is_main)
+            "  (main checkout)"
+        else if (@import("experiment_pool.zig").isExperimentTree(e.path, e.branch))
+            "  (experiment pool)"
+        else
+            "";
+        try out.print("{s: <5} {s}  [{s}]{s}\n", .{ age, e.path, label, tag });
     }
 }
 

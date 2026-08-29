@@ -276,6 +276,7 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "codegraff", .name = "grok-4.6", .context = 500_000 },
     .{ .provider = "codegraff", .name = "grok-build", .context = 256_000 },
     .{ .provider = "codegraff", .name = "glm-5.2", .context = 204_800 },
+    .{ .provider = "codegraff", .name = "glm-5.3-flash", .context = 202_752 },
     .{ .provider = "codegraff", .name = "mimo-v2.5", .context = 128_000 },
     .{ .provider = "codegraff", .name = "mimo-v2.5-pro", .context = 128_000 },
     // Kimi Code offline fallback. Authenticated startup replaces this slice

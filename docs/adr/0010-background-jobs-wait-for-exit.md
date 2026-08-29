@@ -24,7 +24,9 @@ ceiling) and wakes once on exit. It does not put the model in the wait.
   until the next byte of output.
 - The old 1–30000 poll values are promoted to the 10-hour cap so a
   model that still writes `wait_ms=30000` waits for done.
-- An explicit `wait_ms > 30000` is honored, clamped to 10 hours.
+- Any other positive `wait_ms` (including mid-range "safety timeouts"
+  of 60s–240s) is also the 10-hour cap. The number is not a deadline
+  (#640). Esc still returns a snapshot.
 - Do not poll in a loop. One wait covers exit.
 
 ## Consequences

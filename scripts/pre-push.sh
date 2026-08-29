@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The pre-push gate. Runs tier 1 of the internal eval set (scripts/eval-tier1.sh):
-# deterministic, offline, no model calls, ~20-30s warm.
+# deterministic, offline, no model calls. Warm fmt/reach/sdk is seconds;
+# a post-src run rebuilds zig and the tuiguard pool (minutes, see #641).
 #
 # Install it once:   scripts/install-hooks.sh
 # Skip it once:      git push --no-verify

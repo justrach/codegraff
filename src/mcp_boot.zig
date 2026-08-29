@@ -8,8 +8,9 @@
 //! shorter: max(latency) instead of sum(latency).
 //!
 //! Interactive `--yolo` sets `defer_join`: tasks start immediately but the
-//! REPL prompt is not blocked. `joinPending` merges them before the first
-//! model call, `/mcp`, or teardown.
+//! REPL prompt is not blocked. `joinBeforeRequest` merges them on the *second*
+//! model call (ADR 0035) so the first turn is not charged the handshake.
+//! `joinPending` still blocks for `/mcp` and teardown.
 
 const std = @import("std");
 
@@ -82,13 +83,14 @@ pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]con
         .stdio_probe = if (environ_map.get("GRAFF_MCP_PROBE")) |v| !std.mem.eql(u8, v, "0") else true,
         .show_diagnostics = show_diagnostics,
         .global_config_path = global_path,
+        .global_is_override = mcp_config.isEnvOverride(environ_map),
     };
     mcp_rpc.applyHandshakeTimeoutEnv(environ_map); // #275 GRAFF_MCP_HANDSHAKE_SECS + #327 GRAFF_MCP_PROBE_MS, on the same pass as the probe flag
 
     errdefer reg.deinit();
     const a = reg.arena();
 
-    const merged = mcp_config.load(io, a, Io.Dir.cwd(), config_path, global_path, home);
+    const merged = mcp_config.load(io, a, Io.Dir.cwd(), config_path, global_path, home, reg.global_is_override);
     if (!merged.found) {
         reg.arena_state.deinit(); // nothing was started; no transports to tear down
         return null;
@@ -168,15 +170,57 @@ fn mergeOutcomes(reg: *Registry, futures: []Io.Future(StartOutcome)) void {
     reg.task_arenas = a.dupe(std.heap.ArenaAllocator, task_arenas.items) catch reg.task_arenas;
 }
 
+/// Pure policy for the first model call after a deferred MCP boot. The
+/// handshake tasks are already running; waiting here is the delay before
+/// any native tool can start. Skip once, then join.
+pub fn firstRequestJoin(pending_len: usize, already_skipped: *bool) enum { none, skip, join } {
+    if (pending_len == 0) return .none;
+    if (!already_skipped.*) {
+        already_skipped.* = true;
+        return .skip;
+    }
+    return .join;
+}
+
+fn noteMcpDeferred(io: Io) void {
+    const sink = @import("engine_sink.zig").hostedSink() orelse return;
+    sink.emit(io, .{ .session_notice = .{
+        .text = "MCP still connecting — native tools this turn",
+        .tone = .dim,
+    } });
+}
+
+/// First model call: do not wait for deferred MCP handshakes (ADR 0035).
+/// Later requests, `/mcp`, and teardown still `joinPending`.
+pub fn joinBeforeRequest(reg: *Registry) bool {
+    switch (firstRequestJoin(reg.pending_starts.len, &reg.first_request_join_skipped)) {
+        .none => return false,
+        .skip => {
+            noteMcpDeferred(reg.io);
+            return false;
+        },
+        .join => return joinPending(reg),
+    }
+}
+
 /// Await deferred startServer tasks and append them to the live registry
 /// (companion servers may already be present). Idempotent. Returns true
 /// when this call actually merged something, so the agent can rebuild catalogs.
 pub fn joinPending(reg: *Registry) bool {
     if (reg.pending_starts.len == 0) return false;
+    const t0 = Io.Timestamp.now(reg.io, .awake);
     const futures = reg.pending_starts;
     reg.pending_starts = &.{};
     mergeOutcomes(reg, futures);
     reg.gpa.free(futures);
+    const waited = @max(0, t0.untilNow(reg.io, .awake).toMilliseconds());
+    if (waited >= 80) {
+        if (@import("engine_sink.zig").hostedSink()) |sink| {
+            var buf: [80]u8 = undefined;
+            const text = std.fmt.bufPrint(&buf, "MCP connect waited {d}ms", .{waited}) catch "";
+            if (text.len > 0) sink.emit(reg.io, .{ .session_notice = .{ .text = text, .tone = .dim } });
+        }
+    }
     return true;
 }
 
@@ -192,4 +236,15 @@ test "joinPending is a no-op on an empty registry" {
     var reg = Registry.empty(std.testing.allocator, io);
     defer reg.deinit();
     try std.testing.expect(!joinPending(&reg));
+    try std.testing.expect(!joinBeforeRequest(&reg));
+}
+
+test "firstRequestJoin skips once, then joins" {
+    var skipped = false;
+    try std.testing.expectEqual(.none, firstRequestJoin(0, &skipped));
+    try std.testing.expect(!skipped);
+    try std.testing.expectEqual(.skip, firstRequestJoin(2, &skipped));
+    try std.testing.expect(skipped);
+    try std.testing.expectEqual(.join, firstRequestJoin(2, &skipped));
+    try std.testing.expectEqual(.none, firstRequestJoin(0, &skipped));
 }

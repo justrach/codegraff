@@ -1,7 +1,7 @@
 // Proof the remote SDK runs inside the Workers runtime (workerd): no node:
 // imports, fetch + Web Streams only. src/remote.ts is a copy of
-// sdk/ts/remote.ts — in a real project, `npm install @graff-new/sdk` and
-// `import { ... } from "@graff-new/sdk/remote"` instead.
+// sdk/ts/remote.ts — in a real project, `npm install @codegraff/sdk` and
+// `import { ... } from "@codegraff/sdk/remote"` instead.
 import { RemoteHarness, runAgentRemote, HARNESS_VERSION } from "./remote";
 
 interface Env {

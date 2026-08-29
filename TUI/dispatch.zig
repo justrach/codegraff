@@ -7,6 +7,7 @@ const app = @import("app.zig");
 const bgop = @import("bgop.zig");
 const catalog = @import("catalog.zig");
 const engine = @import("engine.zig");
+const peer_cmd = @import("peer_cmd.zig");
 const meters = @import("meters.zig");
 const theme_mod = @import("theme.zig");
 const turn = @import("turn.zig");
@@ -188,6 +189,8 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.pushFmt(.system, "vim scrollback: {s}", .{onOff(self.vim_mode)}) catch {};
     } else if (std.mem.eql(u8, canon, "/copy")) {
         copyLastReply(self);
+    } else if (std.mem.eql(u8, canon, "/tell") or std.mem.eql(u8, canon, "/peek")) {
+        peer_cmd.run(self, canon, arg);
     } else if (std.mem.eql(u8, canon, "/btw")) {
         if (arg.len == 0) {
             self.push(.system, "usage: /btw <aside> — queue a note without interrupting") catch {};

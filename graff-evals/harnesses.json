@@ -22,6 +22,7 @@
     "usage": "graff-stderr",
     "capabilities": ["output-schema"],
     "schema_args": ["--output-schema", "{schema}"],
+    "env": {"GRAFF_POST_DEADLINE_SECS": "90"},
     "default_model": "grok-4.6"
   },
   "graff-dev-rlm": {
@@ -127,5 +128,13 @@
     "capabilities": [],
     "default_model": "gemini-3.7-flash",
     "note": "uses ~/.pi/agent/models.json provider codegraff → gateway.codegraff.com; Gemini tool loops need the codegraff-gemini-echo extension"
+  },
+  "pi-xai": {
+    "cmd": ["{repo}/graff-evals/pi-xai.sh", "-p", "--mode", "json", "--provider", "xai", "--model", "{model}", "--no-session", "{prompt}"],
+    "answer": "pi-json",
+    "usage": "pi-json",
+    "capabilities": [],
+    "default_model": "grok-4.6",
+    "note": "same SuperGrok seat as graff-dev. Wrapper reads graff-oauth.json into XAI_API_KEY. `pi` must be on PATH."
   }
 }

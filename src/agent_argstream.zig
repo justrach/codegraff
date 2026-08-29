@@ -352,6 +352,7 @@ fn openLive(self: *Agent, name: []const u8, ix: i64) void {
 }
 
 pub fn emitArgText(self: *Agent, tool: ArgTool, text: []const u8) void {
+    if (text.len > 0) self.traceFirstToken();
     if (tool == .rlm) {
         if (rlm_spec.available and text.len > 0) rlm_spec.feedLive(toolCtx(self), text);
         return;

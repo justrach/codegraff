@@ -9,6 +9,7 @@ const diff_mod = @import("diff.zig");
 const foldhdr = @import("foldhdr.zig");
 const glyphs = @import("glyphs.zig");
 const theme_mod = @import("theme.zig");
+const tool_card = @import("tool_card.zig");
 const Model = app.Model;
 
 /// Soft pulse so a live turn reads as motion, not a lone spinner glyph.
@@ -34,11 +35,12 @@ pub fn render(self: *const Model, a: std.mem.Allocator, width: usize, now_ms: u6
     }
     if (self.pending) |job| {
         if (!self.cancel_requested) {
-            const src = if (job.raw.len.load(.acquire) > 0) &job.raw else &job.stream;
+            const raw_bash = job.raw.len.load(.acquire) > 0;
+            const src = if (raw_bash) &job.raw else &job.stream;
             if (src.snapshot(a)) |live| {
                 if (!first) try out.append('\n');
                 first = false;
-                try out.appendSlice(try theme_mod.paint(a, self.theme().muted, try tail(a, strip(a, live), width, 4)));
+                try out.appendSlice(try theme_mod.paint(a, self.theme().muted, try liveTail(self, a, live, raw_bash, width)));
             }
             if (self.steer_queue.items.len > 0) {
                 if (!first) try out.append('\n');
@@ -231,7 +233,7 @@ pub fn row(self: *const Model, a: std.mem.Allocator, user_no: u32, e: app.Entry,
         // pushes an empty row and gets the generic label.
         (if (e.text.len > 0) e.text else thinkingLabel(now_ms))
     else if (e.kind == .tool)
-        try toolTitle(a, e, e)
+        try tool_card.toolTitle(a, e, e, now_ms)
     else if (e.folded)
         firstLine(e.text)
     else
@@ -275,23 +277,7 @@ const isDoneTool = foldhdr.isDoneTool;
 pub const nextTool = foldhdr.nextTool;
 const displayName = foldhdr.displayName;
 
-/// The head of a tool row: `[status mark] name  [argument preview]`, composed
-/// from FIELDS. On a paired card the name and its arguments come from the call
-/// (`named`) while the status mark comes from the outcome (`status`); on a lone
-/// row both are the same entry. A legacy row has only its stored line and is
-/// shown verbatim rather than taken apart — the old code split that line on
-/// " | ", which silently truncated any command containing one.
-fn toolTitle(a: std.mem.Allocator, named: app.Entry, status: app.Entry) ![]const u8 {
-    const t = named.tool orelse return named.text;
-    const mark: []const u8 = if (status.tool) |s|
-        (if (s.denied) glyphs.denied ++ " " else if (s.is_error) glyphs.failed ++ " " else "")
-    else
-        "";
-    const name = displayName(t.name);
-    const args = if (t.done) "" else t.detail;
-    if (args.len == 0) return if (mark.len == 0) name else std.fmt.allocPrint(a, "{s}{s}", .{ mark, name });
-    return std.fmt.allocPrint(a, "{s}{s}  {s}", .{ mark, name, args });
-}
+const toolTitle = tool_card.toolTitle;
 
 /// The one-line body under a tool card: the outcome's useful detail.
 fn toolPreview(e: app.Entry) ?[]const u8 {
@@ -312,12 +298,12 @@ pub fn toolVisual(
     const e = self.history.items[t];
     const paired = t + 1 < end and isStartTool(e) and isDoneTool(self.history.items[t + 1]);
     if (!paired) return row(self, a, 0, e, width, now_ms, selected); // a tool row is never numbered
-    return toolCard(a, self.theme(), e, self.history.items[t + 1], selected, width);
+    return toolCard(a, self.theme(), e, self.history.items[t + 1], selected, width, now_ms);
 }
 
-fn toolCard(a: std.mem.Allocator, th: theme_mod.Theme, call: app.Entry, outcome: app.Entry, selected: bool, width: usize) ![]const u8 {
+fn toolCard(a: std.mem.Allocator, th: theme_mod.Theme, call: app.Entry, outcome: app.Entry, selected: bool, width: usize, now_ms: u64) ![]const u8 {
     const sel = glyphs.frame(&glyphs.row_mark, @intFromBool(!selected));
-    const title = try toolTitle(a, call, outcome);
+    const title = try toolTitle(a, call, outcome, now_ms);
     const preview = toolPreview(outcome);
     const head = try std.fmt.allocPrint(a, "{s}{s}{s}{s}{s} {s}", .{ sel, if (selected) th.accent else th.muted, glyphs.tool, theme_mod.reset, th.text, title });
     if (preview == null) return theme_mod.wrapToWidth(a, head, width);
@@ -351,6 +337,15 @@ fn firstLine(s: []const u8) []const u8 {
 /// Drop escapes/C0 from the live tail so a CR cannot rewind the row.
 pub fn strip(a: std.mem.Allocator, s: []const u8) []const u8 {
     return @import("markdown.zig").sanitize(a, s) catch s;
+}
+
+/// Live prose uses the same renderer as a settled assistant row. Raw bash
+/// stays sanitized-only — those bytes are a terminal, not markdown.
+pub fn liveTail(self: *const Model, a: std.mem.Allocator, live: []const u8, raw_bash: bool, width: usize) ![]const u8 {
+    const clean = strip(a, live);
+    if (raw_bash) return tail(a, clean, width, 4);
+    const painted = @import("markdown.zig").renderThemed(a, clean, self.theme(), width -| 4) catch clean;
+    return tail(a, painted, width, 8);
 }
 
 pub fn tail(a: std.mem.Allocator, s: []const u8, width: usize, max_lines: usize) ![]const u8 {

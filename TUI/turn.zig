@@ -224,6 +224,7 @@ fn applyEvent(self: *Model, ev: engine.Event) void {
                 .detail = t.detail,
                 .done = true,
                 .is_error = t.is_error,
+                .ms = t.ms,
             }) catch {};
         },
         .tool_rejected => |t| {

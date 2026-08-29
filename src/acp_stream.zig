@@ -53,7 +53,7 @@ pub fn writeToolCall(w: *Io.Writer, session_id: []const u8, id: []const u8, name
             .toolCallId = id,
             .title = titleFor(name, input),
             .kind = kindFor(name),
-            .status = "pending",
+            .status = "in_progress",
             .rawInput = input,
         },
     });
@@ -250,6 +250,7 @@ test "translateEvent: tool_call then tool_result share a minted id" {
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"sessionUpdate\":\"tool_call\"") != null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "call-1") != null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"kind\":\"read\"") != null);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"status\":\"in_progress\"") != null);
 
     w = .fixed(&buf);
     const result = try std.json.parseFromSlice(Value, a, "{\"type\":\"tool_result\",\"name\":\"read_file\",\"is_error\":false,\"text\":\"fn main\"}", .{});

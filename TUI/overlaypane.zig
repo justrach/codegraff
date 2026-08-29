@@ -220,7 +220,7 @@ const help_body =
     \\  Ctrl+P         command palette
     \\  Shift+Tab      Normal → Plan → Always-approve
     \\  click / ← →    collapse / expand tools
-    \\  hover [Image]  preview  ·  y copy  ·  Enter open
+    \\  hover [Image]  preview  ·  backspace detach  ·  y copy  ·  Enter open
     \\  Shift+← →      prev / next user turn
     \\  Ctrl+J / K     scroll one line
     \\  Ctrl+N N       new session
@@ -256,6 +256,8 @@ const help_body =
     \\  /jump             jump to a previous turn
     \\  /copy             copy the last reply
     \\  /btw              queue an aside mid-turn
+    \\  /tell             message a live graff (/tell all broadcasts)
+    \\  /peek             see what a live session is doing
     \\  /vim-mode         vim keys in the scrollback
 ;
 
@@ -270,11 +272,11 @@ test "help overlay names the advertised pager commands" {
     defer arena.deinit();
     const text = try overlay(&m, arena.allocator(), 80);
     for ([_][]const u8{
-        "/quit",     "/help", "/new", "/home", "/model", "/settings", "/usage", "/debug", "/cache", "/plan", "/always-approve",
-        "Shift+Tab", "PgUp",  "PgDn",
+        "/quit", "/help", "/new",      "/home", "/model", "/settings", "/usage", "/debug", "/cache", "/plan", "/always-approve",
+        "/tell", "/peek", "Shift+Tab", "PgUp",  "PgDn",
         "←",
         "→",
-        "Tab",       "Enter", "Esc",
+        "Tab",   "Enter", "Esc",
     }) |name| {
         try testing.expect(std.mem.indexOf(u8, text, name) != null);
     }

@@ -10,6 +10,99 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.281 (2026-08-29)
+
+- Next cut after tagged v0.0.280. Headline is the `-p` / `--json` learn
+  skip (ADR 0044, #668): one-shots no longer copy 132M `graff-pinned`.
+  SuperGrok grok-4.6 SWE went 4/6 in 456s / 230s CPU → **5/6 in 205s /
+  6.5s CPU**. Interactive REPL/TUI/ACP still auto-init after 5 calls.
+- `graff tui` / TTY `graff repl` claim the alt-screen before credentials
+  and paint live markdown on the cached tail (ADR 0042, #666).
+- `pi-xai` runs Pi on the SuperGrok seat the same way as graff-dev
+  (ADR 0043, #667). Do not steal Pi's 4-tool catalog or 165M heap.
+- Codegraff `glm-5.3-flash` SWE (ADR 0045 / 0046, #669 / #671): omit
+  still thinks; default flash effort is `low`. `-p` streams so a hung
+  POST dies on the 30s stall, not a 5-minute watch. SWE **5/6 in 286s**
+  (Pi 5/6 in 758s). Same miss (`label-sort`). Do not steal Pi's catalog.
+- No tag until asked. Download / notarization ids land after the build.
+- Test floor 1758 (slack 25).
+
+## v0.0.280 (2026-08-28)
+
+- Next cut after tagged v0.0.279. Carries the #645 continuation already
+  on `main` plus #646–#649 leftovers from `release/v0.0.279`. Not a retag.
+- Experiment pool: forced fan-out, `graff worktree list` tags, deliver-back.
+  Still opt-in `--experiment N` / `/experiment` (ADR 0037, #647 / #629).
+- TUI stall HUD, resize, MCP config polish (#646 / #549). Native Anthropic
+  `output_config.format` `json_schema` (#550).
+- TUI `/tell` and `/peek` use the existing peer mailbox (#648 / #563).
+- ACP `initialize` advertises terminal `graff-login` (#649 / #613 leftover).
+  Local tools are `.graff/tools/` scripts (ADR 0039). `/schedule` due-claim
+  plus TUI idle wake. Channel workers are JSONL outbox + wake only.
+- Same-process embed `libgraff` + `graff-core.wasm` + `createGraffAgent()`
+  (ADR 0038, echo turn). Live coding stays `graff acp`.
+- Native `codedb` and `read_file` stay the default readers when
+  codedb-pro is licensed, including `rlm codedb`. Do not use
+  `mcp__codedbpro__read` for ordinary files (ADR 0040, #652).
+- TUI is an in-process ACP client (ADR 0041): thought/tools/text from
+  `session/update`, no child `graff acp`.
+- Pager inset like grok-build; overlay panels stay full-width and docked.
+- Test floor 1745 (slack 25).
+
+## v0.0.279 (2026-08-26)
+
+- Native Beautiful UI app (`apps/native`) is an ACP client. Next.js
+  `/api/acp` spawns `graff acp --yolo`; thinking and tool chips stream
+  from the first call. `graff serve` is not required (#637).
+- `graff acp` emits mid-turn `session/update`s for thought, text, and
+  `tool_call` / `tool_call_update` (ADR 0032). Protocol version stays 1.
+  After `session/new` it advertises `/never` via `available_commands_update`.
+- A user can retire a standing constraint from ACP or the REPL
+  (ADR 0033, #638). On a TTY, bare `/never` opens a searchable picker
+  (text prominent, id secondary) and requires two confirmations;
+  Esc/Keep leaves the ledger unchanged. `/never rm <id-or-text>` and
+  an explicit forget/override in the next message still work. The
+  model cannot retire a rule. `/never rm` without a needle lists
+  (or opens the TTY picker) instead of recording `rm` as a constraint;
+  a failed tombstone write says the rule is still active; traces
+  record `never_retire {id, ok}` with no text (#644).
+- `bash_output` / `agent_output` `wait_ms>0` always waits for exit
+  (10h). Mid-range values like 60s–240s are no longer a bounded
+  deadline (#640).
+- Host embed path: [docs/embedding.md](docs/embedding.md) names the two
+  stdio APIs (`graff acp` and `@codegraff/sdk` `Harness`), with a Node
+  JSON-RPC recipe and a thin `@codegraff/sdk/acp` helper (`spawnAcp` /
+  `acp`). Not WASM / libgraff.
+- TUI composer: a multiline paste stays one unsent draft. Embedded
+  `\n` / `\r\n` from a bracketed paste (or a wrap-less burst) cannot
+  steer or queue one prompt per line; Enter after the paste submits
+  exactly one (#643).
+- Existing Tauri `gui/` is unchanged.
+- First-turn tool delay: live chips paint immediately (no 300–450ms
+  fade), ACP `tool_call` is `in_progress` and flushed, and the first
+  model call no longer waits for a deferred MCP handshake (ADR 0035).
+  Running tools show elapsed from the moment they start.
+
+## v0.0.278 (2026-08-26)
+
+- Composer image pastes are marker-gated (#634). Deleting `[Image]`,
+  `[Image #N]`, or a TUI chip before submit drops that payload; a
+  text-only prompt no longer leaks native `input_image` blocks. Identical
+  `b64` collapses so two pastes cannot become four blocks.
+- `/image` and `/paste` stay sticky for the next text-only line.
+  `/image clear` clears the whole queue.
+- TUI: backspace on an empty composer drops the last chip; Ctrl+U /
+  Cmd+Delete clears chips with the draft; overlay backspace/`x` detaches
+  the previewed chip.
+- Bundled Smolify is gone: no reserved `smolify` name, no
+  `GRAFF_SMOLIFY` auto-connect, no CI boundary E2E. Add it like any
+  other remote MCP (`graff mcp add smolify --url https://app.smol.ly/mcp`).
+  A local secret-egress gate still rejects recognizable credentials on
+  `mcp__smolify__*` if you do. Schema-gate tests keep `smolify-tools.json`
+  as a fixture.
+- Test ratchet: unit suite 1683 (floor 1683; dropped the bundled-Smolify
+  registration test).
+
 ## v0.0.277 (2026-08-26)
 
 - MCP tools that `load_tool_schemas` has unfolded are `rlm` host functions

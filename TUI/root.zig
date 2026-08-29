@@ -35,9 +35,17 @@ pub const CompactOut = engine.CompactOut;
 pub const CompactFn = engine.CompactFn;
 pub const HistoryOp = engine.HistoryOp;
 pub const HistoryFn = engine.HistoryFn;
+pub const PeerFn = engine.PeerFn;
 pub const RunOpts = run_mod.RunOpts;
 pub const run = run_mod.run;
 pub const restore = @import("restore.zig");
+pub const enable_seq = run_mod.enable_seq;
+
+/// Claim the alt-screen as soon as the command is `tui`/`repl`, so leftover
+/// boot (keys, MCP, AGENTS.md) happens inside the pager. No-op off a TTY.
+pub fn claim() bool {
+    return restore.claimScreen(run_mod.enable_seq);
+}
 /// Restore the terminal BEFORE std prints a panic, or the alt-screen exit in
 /// the restore sequence erases the message and the stack trace (#535).
 pub const panic = restore.Panic;
@@ -54,9 +62,12 @@ test {
     _ = app;
     _ = @import("app_tests.zig");
     _ = @import("dispatch.zig");
+    _ = @import("peer_cmd.zig");
+    _ = @import("peer_tests.zig");
     _ = @import("prompt_history.zig");
     _ = @import("meters.zig");
     _ = @import("key.zig");
+    _ = @import("key_paste.zig");
     _ = @import("key_orphan.zig");
     _ = @import("key_tests.zig");
     _ = @import("spec_terminal_modes_conformance.zig");
@@ -71,6 +82,7 @@ test {
     _ = @import("glyphs.zig");
     _ = @import("foldhdr.zig");
     _ = @import("mdtable.zig");
+    _ = @import("tool_card.zig");
     _ = @import("scrollback.zig");
     _ = @import("layout_cache.zig");
     _ = @import("selection.zig");
@@ -92,6 +104,7 @@ test {
     _ = @import("syntax.zig");
     _ = @import("diff.zig");
     _ = @import("dump.zig");
+    _ = @import("inset.zig");
     _ = @import("effort.zig");
     _ = @import("sim.zig");
     _ = @import("render.zig");

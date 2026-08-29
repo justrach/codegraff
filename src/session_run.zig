@@ -64,6 +64,7 @@ const run_budget_mod = @import("run_budget.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const commands_privacy = @import("commands_privacy.zig");
 const prompts = @import("prompts.zig");
+const local_tools = @import("local_tools.zig");
 
 /// `graff repl`: interactive chat on the Grok-style TUI (same as `graff tui`).
 /// Piped/non-TTY stdin still drives the old scripted zigzag Model so CI
@@ -114,7 +115,7 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
 
 /// One-shot print mode (`-p`/bare positional prompt): run the single prompt
 /// to completion, print the final text to stdout, exit. Tool progress goes
-/// to stderr (say() with no out writer), streaming stays quiet, and the gate
+/// to stderr (say() with no out writer), paint stays quiet, and the gate
 /// denies anything not pre-approved instead of prompting (there's no one to
 /// ask). Moved out of main() verbatim (600-line goal); `root`/`tracer` are
 /// already stable main()-owned storage by the time this runs.
@@ -124,6 +125,9 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     root.in = null; // gate: deny instead of prompt; ask_user: self-decide
     root.out = null; // tool progress → stderr; stdout carries only the answer
     root.stream_quiet = true;
+    // stderr only: same class of "process is live" as Pi's JSONL session line.
+    // Eval first_out used to wait for the call-2 stdout pulse (ADR 0046).
+    std.debug.print("calling {s}\n", .{root.provider.model});
     const ultracode_msg = try shapes.applyUltracodeSteering(arena, prompt_text, prompt_text, prompts.ultracodeActive(root));
     if (ultracode_msg.explicit) {
         tracer.note("ultracode", prompt_text[0..@min(prompt_text.len, 120)]);
@@ -309,6 +313,7 @@ pub fn buildRootAgent(
     const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}-{d}", .{ util.unixMs(io), proc_identity.selfPid() });
     root.session_name = if (flags.resume_flag) |name| (if (!flags.new_session_flag and !flags.no_resume_flag) name else fresh_session_name) else fresh_session_name;
     try prompts.setRootSystemPrompts(&root, sys_normal, arena); // #381: same funnel + the live .graff/playbook.jsonl constraint block
+    local_tools.load(io, arena);
     // Startup pays for one provider format, not all three. Other formats are
     // rendered on first switch with the same built-in + live MCP inputs.
     try root.ensureRootTools(default_provider.kind);
@@ -504,10 +509,19 @@ fn autoInitLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *cons
     return true;
 }
 
+/// One-shots and `--json` are not a workspace opting into a spending cadence.
+/// `-p` evals land on exactly 5 model calls (the bootstrap floor) and then
+/// copy 132M `graff-pinned` + generate suites (~38s CPU). Interactive
+/// REPL/TUI/ACP still auto-init. Off with `GRAFF_LEARN_AUTO=off`.
+pub fn shouldAutoLearn(unattended: bool, json_mode: bool) bool {
+    return !unattended and !json_mode;
+}
+
 /// Closing the learning loop: a session that did real model work counts toward
 /// this workspace's next trial and, on cadence, starts one in the background.
 /// The first such session in a workspace also creates the store it counts into.
 pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *const std.process.Environ.Map, budget: *const run_budget_mod.RunBudget, telemetry_allowed: bool) void {
+    if (!shouldAutoLearn(main_mod.unattended, main_mod.json_mode)) return;
     const options: learn_auto.Options = .{
         .model_calls = budget.used(),
         // A session launched with --no-telemetry keeps its trial local, even
@@ -544,4 +558,11 @@ fn unwrapFencedJson(text: []const u8) []const u8 {
 test "unwrapFencedJson strips a markdown fence and leaves bare JSON alone" {
     try std.testing.expectEqualStrings("{\"a\":1}", unwrapFencedJson("```json\n{\"a\":1}\n```\n"));
     try std.testing.expectEqualStrings("{\"a\":1}", unwrapFencedJson("{\"a\":1}"));
+}
+
+test "one-shot and --json do not auto-init a learning store" {
+    try std.testing.expect(!shouldAutoLearn(true, false));
+    try std.testing.expect(!shouldAutoLearn(false, true));
+    try std.testing.expect(!shouldAutoLearn(true, true));
+    try std.testing.expect(shouldAutoLearn(false, false));
 }

@@ -117,6 +117,7 @@ const agent_eval_control_tests = @import("agent_eval_control_tests.zig");
 // reflector modules are only ever reached through a call, so their tests need
 // the hook.
 const playbook_glue = @import("playbook_glue.zig");
+const playbook_pick = @import("playbook_pick.zig");
 const playbook_reflect = @import("playbook_reflect.zig");
 
 // #391: the pre-compaction note store and its note turn. prompts.zig reaches
@@ -272,6 +273,7 @@ test {
     _ = acp;
     _ = agent_eval_control_tests;
     _ = playbook_glue;
+    _ = playbook_pick;
     _ = playbook_reflect;
     _ = compact_note;
     _ = compact_note_glue;
@@ -328,4 +330,15 @@ test {
     _ = tool_surface;
     _ = agent_catalog;
     _ = session_connect_tests;
+    _ = @import("experiment_pool.zig");
+    _ = @import("commands_experiment.zig");
+    _ = @import("acp_engine.zig");
+    _ = @import("libgraff.zig");
+    _ = @import("tui_peer.zig");
+    _ = @import("acp_auth.zig");
+    _ = @import("local_tools.zig");
+    _ = @import("schedule.zig");
+    _ = @import("channel_worker.zig");
+    _ = @import("session_wake.zig");
+    _ = @import("tui_acp.zig");
 }

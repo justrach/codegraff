@@ -391,53 +391,10 @@ pub fn retryTransientServerError(self: *Agent, etype: []const u8, code: ?[]const
     return true;
 }
 
-/// #gateway-artifact: a 4xx whose body rejects the REQUEST BODY as unparseable
-/// JSON ("Body must be valid JSON", "Malformed JSON in request body", ...) is a
-/// real client bug — unless the same attempt-sequence just endured consecutive
-/// transport timeouts. The body bytes do not change between attempts, so they
-/// cannot become invalid mid-turn; a gateway answering from a half-recovered
-/// state (redeploy, failover, reset pool) is the likelier story. Matched from
-/// the message so any vendor phrasing of the same rejection classifies alike.
-pub fn isBodyParseRejection(msg: []const u8) bool {
-    const pairs = [_][2][]const u8{
-        .{ "json", "body" },
-        .{ "json", "parse" },
-        .{ "json", "parsing" },
-        .{ "parse", "request" },
-    };
-    for (pairs) |pair| {
-        if (util.indexOfIgnoreCase(msg, pair[0]) != null and
-            util.indexOfIgnoreCase(msg, pair[1]) != null) return true;
-    }
-    return false;
-}
-
-pub const min_timeout_history_for_parse_retry: usize = 2; // a lone timeout is not a pattern
-pub const max_gateway_parse_retries: usize = 2; // then surface the provider's message
-
-/// Gate (pure, testable): a body-parse rejection is retried only when THIS
-/// request already hit enough transport timeouts to indict the gateway and the
-/// bounded retry budget is not spent. Without the timeout history it stays a
-/// fail-fast 400, exactly as before.
-pub fn shouldRetryBodyParseAfterTimeouts(msg: []const u8, transport_timeouts: usize, retries: usize) bool {
-    if (transport_timeouts < min_timeout_history_for_parse_retry) return false;
-    if (retries >= max_gateway_parse_retries) return false;
-    return isBodyParseRejection(msg);
-}
-
-/// The gate on the Agent: announce, trace, back off (1·2s — the gateway just
-/// answered, give it a beat), clear partial text for a fresh re-stream, and
-/// tell the caller to `continue`. Esc during the backoff still propagates.
-pub fn retryBodyParseAfterTimeouts(self: *Agent, msg: []const u8, transport_timeouts: usize, retries: *usize) !bool {
-    if (!shouldRetryBodyParseAfterTimeouts(msg, transport_timeouts, retries.*)) return false;
-    retries.* += 1;
-    self.partial_text.clearRetainingCapacity(); // fresh re-stream after the retry, no concat
-    const delay_ms = RetryPlan.delayMs(true, retries.* - 1); // 1·2s
-    try self.say("[gateway answered after {d} timeouts with a body-parse rejection — retrying in {d}s ({d}/{d})]\n", .{ transport_timeouts, delay_ms / 1000, retries.*, max_gateway_parse_retries });
-    if (self.tracer) |tr| tr.note("retry", "body-parse rejection after transport timeouts (gateway artifact?)");
-    self.sleepInterruptible(delay_ms) catch return error.Interrupted;
-    return true;
-}
+pub const GatewayRetryState = @import("agent_gateway_retry.zig").GatewayRetryState;
+pub const noteRetry = @import("agent_gateway_retry.zig").noteRetry;
+pub const noteFlake = @import("agent_gateway_retry.zig").noteFlake;
+pub const afterServerErrorOrParseReject = @import("agent_gateway_retry.zig").afterServerErrorOrParseReject;
 
 /// SSE keep-alive-only body: every non-blank line is an SSE comment (':' prefix)
 /// — OpenRouter's ": OPENROUTER PROCESSING" queue pings. No data events ever
@@ -639,28 +596,4 @@ pub fn handOffExhaustedPlan(self: *Agent) bool {
         .{ self.provider.id, promotion.source.label() },
     ) catch {};
     return true;
-}
-
-test "isBodyParseRejection (#gateway-artifact): body-parse phrasings match, unrelated 400s do not" {
-    try std.testing.expect(isBodyParseRejection("Body must be valid JSON"));
-    try std.testing.expect(isBodyParseRejection("Malformed JSON in request body"));
-    try std.testing.expect(isBodyParseRejection("We could not parse the JSON body of your request."));
-    try std.testing.expect(isBodyParseRejection("failed to parse the request"));
-    // not a body-parse rejection: model-capability / billing / content errors
-    try std.testing.expect(!isBodyParseRejection("response_format json_schema is not supported by this model"));
-    try std.testing.expect(!isBodyParseRejection("messages: text content blocks must be non-empty"));
-    try std.testing.expect(!isBodyParseRejection("Your credit balance is too low to use this model"));
-    try std.testing.expect(!isBodyParseRejection(""));
-}
-
-test "shouldRetryBodyParseAfterTimeouts (#gateway-artifact): timeout history gates it, budget bounds it" {
-    // a lone timeout (or none) before the 400 -> real client bug, fail fast
-    try std.testing.expect(!shouldRetryBodyParseAfterTimeouts("Body must be valid JSON", 0, 0));
-    try std.testing.expect(!shouldRetryBodyParseAfterTimeouts("Body must be valid JSON", 1, 0));
-    // 3 timeouts then the rejection (the 2026-08-29 glm/codegraff incident shape) -> retry
-    try std.testing.expect(shouldRetryBodyParseAfterTimeouts("Body must be valid JSON", 3, 0));
-    // budget spent -> surface the provider's message instead of looping
-    try std.testing.expect(!shouldRetryBodyParseAfterTimeouts("Body must be valid JSON", 3, max_gateway_parse_retries));
-    // an unrelated message never retries, however many timeouts preceded it
-    try std.testing.expect(!shouldRetryBodyParseAfterTimeouts("quota exceeded", 5, 0));
 }

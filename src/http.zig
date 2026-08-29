@@ -191,9 +191,10 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
 /// Hard ceiling on one non-streaming request. The legitimate worst case
 /// observed (a 160k-token subagent context) completed in ~134s; anything
 /// past this is a hung response, not a slow one. Tunable via
-/// GRAFF_POST_DEADLINE_SECS (#544): non-streaming callers (one-shots,
-/// subagents) have no inter-chunk stall signal, so this deadline is their
-/// ONLY hang detector — a harness with a tighter task timeout lowers it.
+/// GRAFF_POST_DEADLINE_SECS (#544): non-streaming callers (subagents)
+/// have no inter-chunk stall signal, so this deadline is their only hang
+/// detector — a harness with a tighter task timeout lowers it. Root `-p`
+/// streams (ADR 0046); this ceiling is not that path's hang detector.
 pub var post_deadline_ms: u64 = 5 * 60 * 1000;
 
 pub const WatchdogFired = enum { esc, deadline };

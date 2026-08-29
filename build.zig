@@ -212,4 +212,38 @@ pub fn build(b: *std.Build) void {
 
     const tui_test_step = b.step("tui-test", "Run fullscreen TUI unit tests");
     tui_test_step.dependOn(&b.addRunArtifact(tui_tests).step);
+
+    // In-process ACP (fx-shaped embed). Off the default install so the
+    // tagged CLI cut does not grow a .so / .wasm. `zig build libgraff`
+    // and `zig build -Dwasm-surface=core`.
+    const libgraff = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "graff",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/libgraff.zig"),
+            .target = target,
+            .optimize = optimize,
+            .strip = lean_release,
+        }),
+    });
+    const libgraff_step = b.step("libgraff", "Build the in-process ACP shared library");
+    libgraff_step.dependOn(&b.addInstallArtifact(libgraff, .{}).step);
+
+    _ = b.option([]const u8, "wasm-surface", "wasm surface: core (use `zig build wasm-core`)");
+    const wasm = b.addExecutable(.{
+        .name = "graff-core",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wasm_core_main.zig"),
+            .target = b.resolveTargetQuery(.{
+                .cpu_arch = .wasm32,
+                .os_tag = .freestanding,
+            }),
+            .optimize = optimize,
+            .strip = true,
+        }),
+    });
+    wasm.entry = .disabled;
+    wasm.rdynamic = true;
+    const wasm_step = b.step("wasm-core", "Build graff-core.wasm (in-process ACP)");
+    wasm_step.dependOn(&b.addInstallArtifact(wasm, .{}).step);
 }

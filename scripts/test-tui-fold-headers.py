@@ -147,7 +147,10 @@ def header_row(pty, chevron=None):
 
 
 def row_bgs(pty, y):
-    return {pty.cell(x, y).bg for x in range(pty.cols)}
+    # grok-build outer_hpad (2/2): the settle field is the inner row. The
+    # gutter cells stay on the canvas and must not count as a second bg.
+    left, right = 2, 2
+    return {pty.cell(x, y).bg for x in range(left, max(left + 1, pty.cols - right))}
 
 
 def click(pty, y):

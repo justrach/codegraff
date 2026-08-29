@@ -37,6 +37,7 @@ const messages = @import("messages.zig");
 const anim = @import("anim.zig");
 const hooks = @import("hooks.zig");
 const readline = @import("readline.zig");
+const line_repl_disclosure = @import("line_repl_disclosure.zig");
 const title_mod = @import("title.zig");
 const mainloop_title = @import("mainloop_title.zig");
 const mainloop_recap = @import("mainloop_recap.zig");
@@ -119,7 +120,7 @@ pub fn run(ctx: *Ctx) !void {
         title_jobs.poll(ctx);
         recap_jobs.poll(ctx);
         const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0) continue;
+        if (line_repl_disclosure.handleInput(ctx.root.io, ctx.out, line)) continue;
         // `/goal [30m] <objective>` and `/loop [30m] <prompt>` are ONE autonomous run: same
         // plan-act-verify machine, same controller, same optional wall clock. Only /goal also
         // adopts a standing objective (goal_pacing.autonomousFromLine).
@@ -287,7 +288,7 @@ pub fn run(ctx: *Ctx) !void {
             // #415: a side question is ANSWERED here and never becomes a turn —
             // billed, parent-prefix cached, nothing added to the session.
             if (json_controls.sideQuestion(ctx.root, ctx.arena, rtype, text)) continue;
-            json_controls.applyToolKnobs(parsed.object);
+            if (!json_controls.beginTurn(ctx.root, parsed.object)) continue;
             break :blk text;
         } else line;
         ctx.root.review_mode = review_prompt != null;
@@ -301,13 +302,12 @@ pub fn run(ctx: *Ctx) !void {
 
         if (ctx.root.fallback_blocked) {
             const message = try std.fmt.allocPrint(ctx.arena, "saved model unavailable; sending to {s} requires explicit consent — run /fallback allow {s} or choose /model", .{ ctx.root.provider.id, ctx.root.provider.id });
-            if (main_mod.json_mode) ctx.root.emit(.{ .type = "error", .message = message }) else {
+            if (main_mod.json_mode) json_controls.rejectTurn(ctx.root, message) else {
                 try ctx.out.print("{s}⚠ {s}{s}\n", .{ style.yellow, message, style.reset });
                 try ctx.out.flush();
             }
             continue;
         }
-        if (main_mod.json_mode and !json_inbox.beginTurn(ctx.root)) continue;
         if (!main_mod.json_mode) agent_mod.Agent.prepareRootTurn();
 
         // Persistent goal steering (#318): diff-gated standing-goal plus one-shot
@@ -410,6 +410,7 @@ pub fn run(ctx: *Ctx) !void {
             try ctx.out.flush();
         }
         const turn_before = mainloop_trace.begin(ctx.root, ctx.io);
+        mainloop_trace.recordLive(ctx.root, base_msg, turn_id, prev_turn_id);
         const turn_started = Io.Timestamp.now(ctx.io, .awake);
         // Turn failures are surfaced without killing the session.
         const turn_result = providers.runTurnWithFallback(ctx.root, ctx.keys, ctx.arena, ctx.out);

@@ -39,11 +39,16 @@ pub fn emitRetryNotice(io: Io, class: []const u8, attempt: usize, max_attempts: 
 
 /// Count this inner-loop request, pulse from call 2, optionally pause if a
 /// non-zero cap is set. Returns pause text or null to proceed. Never pauses
-/// when the cap is 0.
+/// when the cap is 0. `-p` / unattended skip the pulse: it was landing on
+/// stdout and eval `first_out` was "time to model call 2", not boot (ADR 0046).
+pub fn shouldPulseTurn(unattended: bool, json_mode: bool, sub: bool, call_n: u64) bool {
+    return call_n >= 2 and !sub and !json_mode and !unattended;
+}
+
 pub fn beforeRequest(self: *Agent) !?[]const u8 {
     self.model_calls_this_turn += 1;
     const cap = max_turn_model_calls;
-    if (self.model_calls_this_turn >= 2 and !self.sub and !main_mod.json_mode) {
+    if (shouldPulseTurn(main_mod.unattended, main_mod.json_mode, self.sub, self.model_calls_this_turn)) {
         var buf: [120]u8 = undefined;
         const text = formatTurnPulse(&buf, self.model_calls_this_turn, cap, self.tool_calls_this_turn);
         if (text.len > 0) tool_pulse.emitNotice(self.io, "{s}", .{text});
@@ -77,4 +82,12 @@ test "formatTurnPulse omits a denominator when the cap is unlimited" {
     var buf: [80]u8 = undefined;
     try std.testing.expectEqualStrings("· turn still going · model call 3 · 11 tools", formatTurnPulse(&buf, 3, 0, 11));
     try std.testing.expectEqualStrings("· turn still going · model call 3/64 · 11 tools", formatTurnPulse(&buf, 3, 64, 11));
+}
+
+test "one-shot and --json do not pulse turn chrome onto stdout" {
+    try std.testing.expect(shouldPulseTurn(false, false, false, 2));
+    try std.testing.expect(!shouldPulseTurn(true, false, false, 2));
+    try std.testing.expect(!shouldPulseTurn(false, true, false, 2));
+    try std.testing.expect(!shouldPulseTurn(false, false, true, 2));
+    try std.testing.expect(!shouldPulseTurn(false, false, false, 1));
 }

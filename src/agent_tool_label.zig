@@ -357,9 +357,14 @@ fn interpretJson(s: []const u8, buf: []u8) []const u8 {
     if (jsonQuoted(s, "matches")) |m|
         return std.fmt.bufPrint(buf, "{s} matches", .{m}) catch m;
     if (jsonQuoted(s, "mode")) |mode| {
+        // #601: the CodeDB mode name is not the decision. A read that carried
+        // content says how much came back (`161 lines`) — the row's detail
+        // column already names the file, so `lines · 161 lines` was a
+        // tautology. A mode that IS the fact (`outline`, `symbol`) stays.
         const lines = if (jsonQuoted(s, "content")) |c| escapedNewlineCount(c) else 0;
         if (lines > 1)
-            return std.fmt.bufPrint(buf, "{s} · {d} lines", .{ mode, lines }) catch mode;
+            return std.fmt.bufPrint(buf, "{d} lines", .{lines}) catch mode;
+        if (std.mem.eql(u8, mode, "lines") or std.mem.eql(u8, mode, "full")) return "";
         return mode;
     }
     return "";
@@ -494,10 +499,21 @@ test "interpretJson never leaks a CodeDB envelope" {
     const section =
         \\{"ok":true,"file":"/Users/rachpradhan/codedb/docs/architecture.md","mode":"section","content":"a\nb\nc"}
     ;
-    try std.testing.expectEqualStrings("section · 3 lines", interpret("mcp__codedbpro__read", section, &buf));
+    try std.testing.expectEqualStrings("3 lines", interpret("mcp__codedbpro__read", section, &buf));
     try std.testing.expectEqualStrings("5 matches", interpret("mcp__codedbpro__faster_search", "{\"ok\":true,\"matches\":5}", &buf));
     try std.testing.expectEqualStrings("outline", interpret("mcp__codedbpro__read", "{\"ok\":true,\"mode\":\"outline\"}", &buf));
     try std.testing.expectEqualStrings("", interpret("mcp__codedbpro__read", "{\"ok\":true,\"file\":\"x.md\"}", &buf));
+}
+
+test "#601: a content-bearing read says how much, never the mode name" {
+    var buf: [48]u8 = undefined;
+    // `lines · 161 lines` was a tautology; `full · 72 lines` only slightly
+    // better. The file is the detail column; the decision is the count.
+    try std.testing.expectEqualStrings("22 lines", interpret("mcp__codedbpro__read", "{\"ok\":true,\"file\":\"docs/architecture.md\",\"mode\":\"lines\",\"content\":\"a\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\ni\\nj\\nk\\nl\\nm\\nn\\no\\np\\nq\\nr\\ns\\nt\\nu\\nv\"}", &buf));
+    try std.testing.expectEqualStrings("3 lines", interpret("mcp__codedbpro__read", "{\"ok\":true,\"mode\":\"full\",\"content\":\"a\\nb\\nc\"}", &buf));
+    // A mode with no content still names itself; a bare lines/full does not.
+    try std.testing.expectEqualStrings("symbol", interpret("mcp__codedbpro__read", "{\"ok\":true,\"mode\":\"symbol\",\"name\":\"foo\"}", &buf));
+    try std.testing.expectEqualStrings("", interpret("mcp__codedbpro__read", "{\"ok\":true,\"mode\":\"lines\"}", &buf));
 }
 
 test "mcp file detail is the basename, not the absolute path" {

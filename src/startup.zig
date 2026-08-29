@@ -173,6 +173,10 @@ pub fn buildSystemPrompt(
     // sys_normal/sys_strict/sys_ultra/sys_ultra_strict from it — the single
     // funnel every later mutation (repl, set_agent, set_system_prompt) must
     // also go through, so none of the four ever go stale independently.
+    // #629: --experiment is armed before this runs; the spawn mandate rides
+    // sys_base so a later playbook refresh cannot drop it.
+    if (@import("experiment_pool.zig").directive()) |d|
+        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, d });
     return sys_normal;
 }
 
@@ -412,5 +416,17 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         try schema.emitSchema(&sw.interface);
         return true;
     }
+
+    // ADR 0042: claim the pager before keys / MCP / prompt so `graff tui`
+    // (and TTY `graff repl`) do not sit on a blank shell. No-op off a TTY.
+    if (!main_mod.json_mode and flags.oneshot_prompt == null and flags.isPager()) {
+        _ = @import("tui").claim();
+    }
     return false;
+}
+
+test "pager commands claim the alt screen before credentials" {
+    const src = @embedFile("startup.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "flags.isPager()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, ".claim()") != null);
 }

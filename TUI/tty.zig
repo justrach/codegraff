@@ -46,6 +46,16 @@ pub const RawState = if (is_windows) struct {
     input_cp: u32 = 0,
 } else std.posix.termios;
 
+/// Clear the line-discipline bits that steal keys the TUI owns (#523).
+/// Extracted so tests can mutate a termios-shaped value without a real tty.
+pub fn surrenderLineDiscipline(raw: anytype) void {
+    raw.lflag.ICANON = false;
+    raw.lflag.ECHO = false;
+    raw.lflag.ISIG = false;
+    raw.lflag.IEXTEN = false; // ^V (0x16) reaches us, not the tty's lnext
+    raw.iflag.IXON = false; // ^S/^Q are keys, not XOFF/XON flow control
+}
+
 pub fn enterRaw() ?RawState {
     if (is_windows) {
         const h = w.GetStdHandle(w.STD_OUTPUT_HANDLE);
@@ -67,11 +77,7 @@ pub fn enterRaw() ?RawState {
     const fd = std.posix.STDIN_FILENO;
     const orig = std.posix.tcgetattr(fd) catch return null;
     var raw = orig;
-    raw.lflag.ICANON = false;
-    raw.lflag.ECHO = false;
-    raw.lflag.ISIG = false;
-    raw.lflag.IEXTEN = false; // ^V (0x16) reaches us, not the tty's lnext (#523)
-    raw.iflag.IXON = false; // ^S/^Q are keys, not XOFF/XON flow control (#523)
+    surrenderLineDiscipline(&raw);
     raw.cc[@intFromEnum(std.posix.V.MIN)] = 0;
     raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
     std.posix.tcsetattr(fd, .NOW, raw) catch return null;
@@ -100,9 +106,16 @@ pub fn readStdin(buf: []u8) usize {
 }
 
 test "raw mode surrenders ^V and ^S to the app, not the line discipline (#523)" {
-    const src = @embedFile("tty.zig");
-    try std.testing.expect(std.mem.indexOf(u8, src, "IEXTEN = false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "IXON = false") != null);
+    var raw = struct {
+        lflag: struct { ICANON: bool = true, ECHO: bool = true, ISIG: bool = true, IEXTEN: bool = true } = .{},
+        iflag: struct { IXON: bool = true } = .{},
+    }{};
+    surrenderLineDiscipline(&raw);
+    try std.testing.expect(!raw.lflag.IEXTEN);
+    try std.testing.expect(!raw.iflag.IXON);
+    try std.testing.expect(!raw.lflag.ICANON);
+    try std.testing.expect(!raw.lflag.ECHO);
+    try std.testing.expect(!raw.lflag.ISIG);
 }
 
 test "Windows enterRaw switches the console to UTF-8 and restore puts the CPs back (#607)" {

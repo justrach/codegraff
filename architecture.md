@@ -121,8 +121,9 @@ as codex).
 ### Streaming
 
 Root-agent requests stream on **all three** wire formats. `request()` decides
-per call: `live = !sub && out != null && !stream_quiet` (compaction sets
-`stream_quiet`; subagents always take the buffered `post()` path). When live,
+per call: `live = !sub` (`Agent.usesLiveTransport`). `-p` and compaction set
+`out=null` / `stream_quiet` to mute paint, not to leave the stall-watched
+path; subagents always take the buffered `postWatched()` path. When live,
 `buildBody` adds `stream:true` (openai also gets
 `stream_options:{include_usage:true}` so token counts survive — dropped and
 retried once if a provider rejects it, same pattern as the soft-strict

@@ -36,6 +36,8 @@ const empty_completion = @import("agent_empty_completion.zig");
 const goal_state = @import("goal_state.zig");
 const peer_channel = @import("peer_channel.zig"); // #469: turn-boundary peer message delivery
 const job_notify = @import("job_notify.zig");
+const schedule = @import("schedule.zig");
+const channel_worker = @import("channel_worker.zig");
 
 pub const TodoItem = struct {
     content: []const u8,
@@ -195,7 +197,7 @@ pub const Agent = struct {
     /// Text streamed so far in the current request — on Esc-interrupt this is
     /// what survives into history (with an "[interrupted]" marker appended).
     partial_text: std.ArrayList(u8) = .empty,
-    stream_quiet: bool = false, // suppress live streaming (one-shot and internal requests)
+    stream_quiet: bool = false, // mute live paint (one-shot / compact); transport still streams
     compaction_request: bool = false, // the current model call is the synthetic compaction-summary request
     server_compaction_request: bool = false, // force one explicit Codex in-stream compaction pass
     responses_output_limit: ?u32 = null, // auxiliary override (title=64); compaction always uses 4096
@@ -203,11 +205,14 @@ pub const Agent = struct {
     last_request_write_failed: bool = false, // transport gave up specifically with WriteFailed this request
     compact_transport_failures: u8 = 0, // bounded escape for repeated opaque over-cap WriteFailed/network failures
     compact_summary_failures: u8 = 0, // #379: consecutive complete-but-unusable (empty/truncated) summaries
+    compact_pin_degraded: bool = false, // #581: pinned suffix over budget — skip+say once per unresolved turn
     empty_completion_retries: u8 = 0, // degenerate empty completions re-asked this turn (agent_empty_completion.zig)
     precompact_note_gen: ?u32 = null, // #391: history_rewrites at the last pre-compaction note-to-self, so one history generation buys at most one note however often compaction is retried (compact_note.decideCalls)
     ws_off: bool = false, // codex ws transport disabled for this session after a handshake/transport fallback to SSE (#codex-ws)
     ws_transport_failures: u8 = 0, // consecutive WS failures; retry once before latching persistent SSE
     streamed_text: bool = false, // the last request printed its text live
+    request_started: ?Io.Timestamp = null, // operational TTFT origin for the active model call (#602)
+    first_token_traced: bool = false,
     thinking_open: bool = false, // a live "Thinking" reasoning block is currently streaming (/thinking)
     thinking_rows: usize = 0, // on-screen rows the live Thinking block spans (#75 collapse)
     thinking_col: usize = 0, // running column within the block, for soft-wrap counting
@@ -222,7 +227,7 @@ pub const Agent = struct {
     streamed_args: ArgTool = .none, // which meta tool's prose streamed live this request
     streamed_args_len: usize = 0, // raw bytes emitted for it (gates re-print suppression)
     cap_new: bool = false, // provider rejected max_tokens → use max_completion_tokens
-    sox_json_object: bool = false, // #543: provider rejected response_format json_schema → json_object + schema-in-prompt
+    sox_json_object: bool = false, // #543/#550: rejected json_schema / output_config → tool or json_object + schema-in-prompt
     effort_rejected: bool = false, // model rejected reasoning_effort → drop it (e.g. gpt-5.5 on chat/completions wants /v1/responses)
     output_schema: ?[]const u8 = null, // --output-schema: JSON schema the final answer must satisfy (response_format / text.format, #502)
     next_ask_id: u64 = 1,
@@ -255,14 +260,17 @@ pub const Agent = struct {
         return schema.providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
     }
 
-    /// Whether this turn should put reasoning_effort on the wire. Gemini 3.x
-    /// maps that field to thinking_level; the default medium makes every
-    /// turn think for seconds (2× wall vs Pi, which omits it). /effort still
-    /// applies — we only skip the unset default.
+    /// Whether this turn should put reasoning_effort on the wire.
+    /// Flash / Gemini send `low` for the unset default (ADR 0046) — omitting
+    /// the field still bills reasoning_tokens. /effort still applies.
     pub fn sendReasoningEffort(self: *const Agent) bool {
         if (!self.effortApplies() or self.effort_rejected) return false;
-        if (std.mem.startsWith(u8, self.provider.model, "gemini") and self.reasoning == .medium) return false;
         return true;
+    }
+
+    /// Root streams even on `-p`; `out`/`stream_quiet` only mute paint.
+    pub fn usesLiveTransport(self: *const Agent) bool {
+        return !self.sub;
     }
 
     pub fn toolsJson(self: *const Agent) []const u8 {
@@ -336,6 +344,8 @@ pub const Agent = struct {
             // an empty channel costs one small stat per step.
             peer_channel.deliverInbound(self);
             job_notify.deliver(self);
+            schedule.deliver(self);
+            channel_worker.deliver(self);
             // #193: pre-send overflow gate. A single turn's tool-output burst can
             // push the input past the model's wall before the between-turns 80%
             // meter (last_context_tokens, server-reported) catches up. Estimate the
@@ -479,6 +489,7 @@ pub const Agent = struct {
     pub const postStream = @import("agent_stream.zig").postStream;
     pub const postStreamWithClient = @import("agent_stream.zig").postStreamWithClient;
     pub const printDelta = @import("agent_stream.zig").printDelta;
+    pub const traceFirstToken = @import("agent_observability.zig").firstToken;
     // Codex Responses-over-WebSocket transport (+ its fresh-client SSE fallback
     // wrapper postLive) lives in agent_ws.zig (#codex-ws). Member-aliased.
     pub const postResponsesWs = @import("agent_ws.zig").postResponsesWs;

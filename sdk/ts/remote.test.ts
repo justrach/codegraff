@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { RemoteHarness, type Event } from "./remote.ts";
+import { RemoteHarness, runAgentRemote, type Event } from "./remote.ts";
 
 const originalFetch = globalThis.fetch;
 const live: RemoteHarness[] = [];
@@ -9,6 +9,7 @@ const line = (event: Event) => enc.encode(`${JSON.stringify(event)}\n`);
 
 class FakeBridge {
   requests: string[] = [];
+  bodies: Record<string, unknown>[] = [];
   readerCancels = 0;
   active?: ReadableStreamDefaultController<Uint8Array>;
   seq = 0;
@@ -37,6 +38,7 @@ class FakeBridge {
     if (init?.method === "DELETE") return Response.json({ ok: true });
     const type = String(body.type ?? "reattach");
     this.requests.push(type);
+    this.bodies.push(body);
     if (type === "cancel") {
       this.active?.enqueue(line(this.event({ type: "error", message: "turn cancelled" })));
       this.active = undefined;
@@ -133,6 +135,35 @@ describe("RemoteHarness transport", () => {
     const h = use(bridge);
     await expect(h.setModel("codex", "bad")).rejects.toThrow("bad model");
     expect(await h.ask("after-error")).toBe("user:after-error");
+  });
+
+  test("serializes URL and base64 images as native protocol parts", async () => {
+    const bridge = new FakeBridge();
+    const h = use(bridge);
+    expect(await h.ask({
+      prompt: "read the code",
+      images: [
+        { type: "image_url", url: "https://images.test/code.png" },
+        { type: "image_base64", mediaType: "image/png", data: "aGVsbG8=" },
+      ],
+    })).toBe("user:read the code");
+    expect(bridge.bodies.find((body) => body.type === "user")?.images).toEqual([
+      { type: "image_url", url: "https://images.test/code.png" },
+      { type: "image_base64", media_type: "image/png", data: "aGVsbG8=" },
+    ]);
+  });
+
+  test("one-shot runAgentRemote preserves native image parts", async () => {
+    const bridge = new FakeBridge();
+    globalThis.fetch = bridge.fetch as typeof fetch;
+    for await (const _event of runAgentRemote({
+      url: "http://bridge.test",
+      prompt: "read the code",
+      images: [{ type: "image_url", url: "https://images.test/one-shot.png" }],
+    })) {}
+    expect(bridge.bodies.find((body) => body.type === "user")?.images).toEqual([
+      { type: "image_url", url: "https://images.test/one-shot.png" },
+    ]);
   });
 
   test("AbortSignal sends an out-of-band cancel and later turns still work", async () => {

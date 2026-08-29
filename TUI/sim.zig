@@ -240,6 +240,20 @@ test "assistant markdown shows lists, quotes, tasks, and rules" {
     try std.testing.expect(std.mem.indexOf(u8, vis, "_italic_") == null);
 }
 
+test "running tool row shows live elapsed from start" {
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    term.model.now_ms = 0;
+    try term.model.pushTool(.{ .name = "bash", .detail = "sleep 2" });
+    term.model.history.items[0].folded = false;
+    term.now_ms = 1500;
+    const vis = try term.screen();
+    defer std.testing.allocator.free(vis);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "1.5s") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "sleep 2") != null);
+}
+
 test "clickText on the verb header expands the folded tools" {
     var term: Term = undefined;
     term.init(std.testing.allocator, 80, 24);
@@ -447,4 +461,32 @@ test "the idle paste sweep never fires a phantom Escape at a live turn" {
     // typing `[201~` on the end of the draft.
     _ = term.feed("[201~");
     try std.testing.expectEqualStrings("draft text", term.model.input.getValue());
+}
+
+test "live prose tail paints markdown before the turn settles" {
+    const engine = @import("engine.zig");
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    try term.model.push(.user, "list them");
+    var sbuf: [256]u8 = undefined;
+    const job = try std.testing.allocator.create(engine.Job);
+    defer std.testing.allocator.destroy(job);
+    job.* = .{
+        .gpa = std.testing.allocator,
+        .history = &.{},
+        .params = .{},
+        .stream = .{ .buf = &sbuf },
+        .threaded = false,
+    };
+    job.stream.appendBytes("- first item\nthis is **bold** text\n");
+    try term.model.push(.pending, "");
+    term.model.pending = job;
+    defer term.model.pending = null;
+    const vis = try term.screen();
+    defer std.testing.allocator.free(vis);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "•") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "**bold**") == null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "bold") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "- first") == null);
 }

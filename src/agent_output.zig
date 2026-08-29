@@ -15,6 +15,9 @@ const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on ev
 const tick_gate = @import("tick_gate.zig"); // #tui-tick: child ticks wait for a foreground line boundary
 
 pub fn say(self: *Agent, comptime fmt: []const u8, args: anytype) !void {
+    // Tab-title jobs are cosmetic and overlap the root thinking spinner.
+    // Their `[title] …` worker line must not splice onto `thinking…`.
+    if (self.call_kind == .title) return;
     // stdout is a strict JSONL transport in --json mode. Human-facing
     // notices are represented by their structured terminal/error events;
     // never leak an unframed line that breaks SDK parsers.
@@ -58,6 +61,7 @@ fn endsLine(comptime fmt: []const u8) bool {
 /// rule — only the line-ending test moves from the format to the last byte.
 /// Errors are swallowed: an event sink's emit path has nowhere to return them.
 pub fn sayText(self: *Agent, text: []const u8) void {
+    if (self.call_kind == .title) return;
     if (main_mod.json_mode and !self.sub) return;
     if (self.out) |w| {
         w.print("{s}", .{text}) catch return;

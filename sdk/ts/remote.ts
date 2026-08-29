@@ -9,7 +9,7 @@
 
 export const HARNESS_VERSION = "0.12";
 
-export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "accounts/fireworks/models/deepseek-v4-flash" | "accounts/fireworks/models/deepseek-v4-pro" | "accounts/fireworks/models/glm-5p2" | "accounts/fireworks/models/gpt-oss-120b" | "accounts/fireworks/models/kimi-k2p6" | "accounts/fireworks/models/kimi-k2p7-code" | "accounts/fireworks/models/minimax-m3" | "accounts/fireworks/models/qwen3p7-plus" | "alibaba/qwen3.8-27b" | "anthropic/claude-sonnet-4.6" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-opus-5" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "claude-sonnet-5" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "fugu" | "fugu-ultra" | "fugu-ultra-20260615" | "gemma-4-31b" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5-turbo" | "glm-5.2" | "glm-5.3" | "glm-5v-turbo" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.3-codex-spark" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-oss-120b" | "grok-4.3" | "grok-4.6" | "grok-build" | "k3" | "kilo-auto/small" | "kimi-for-coding" | "kimi-for-coding-highspeed" | "kimi-k2.6" | "kimi-latest" | "lmstudio" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3" | "mistral-medium-latest" | "mlx-community/Qwen3.6-27B-OptiQ-4bit" | "openai/gpt-oss-120b" | (string & {});
+export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "accounts/fireworks/models/deepseek-v4-flash" | "accounts/fireworks/models/deepseek-v4-pro" | "accounts/fireworks/models/glm-5p2" | "accounts/fireworks/models/gpt-oss-120b" | "accounts/fireworks/models/kimi-k2p6" | "accounts/fireworks/models/kimi-k2p7-code" | "accounts/fireworks/models/minimax-m3" | "accounts/fireworks/models/qwen3p7-plus" | "alibaba/qwen3.8-27b" | "anthropic/claude-sonnet-4.6" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-opus-5" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "claude-sonnet-5" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "fugu" | "fugu-ultra" | "fugu-ultra-20260615" | "gemma-4-31b" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5-turbo" | "glm-5.2" | "glm-5.3" | "glm-5.3-flash" | "glm-5v-turbo" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.3-codex-spark" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-oss-120b" | "grok-4.3" | "grok-4.6" | "grok-build" | "k3" | "kilo-auto/small" | "kimi-for-coding" | "kimi-for-coding-highspeed" | "kimi-k2.6" | "kimi-latest" | "lmstudio" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3" | "mistral-medium-latest" | "mlx-community/Qwen3.6-27B-OptiQ-4bit" | "openai/gpt-oss-120b" | (string & {});
 export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "skill" | "codedb" | "read_tool_result" | "todo_write" | "todo_read" | "eval" | "note_constraint" | "ask_user" | "attempt_completion" | "load_tool_schemas" | "mcp_search_tools" | "mcp_select_tool" | "clock_sleep" | "subagent" | "workflow" | "agent_output" | "learn_candidate" | "peer_message" | "workspace" | "imagegen";
 export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kilo" | "groq" | "cerebras" | "mistral" | "kimi" | "moonshot" | "xai" | "zai" | "vercel" | "openrouter" | "fugu" | "fireworks" | "mlx" | "lmstudio" | "codex";
 
@@ -92,8 +92,16 @@ export interface SessionInfo {
   last_seq: number;
 }
 
+/** Native image input for a user turn. URLs stay URLs on every provider;
+ *  base64 is converted to that provider's image-content shape by Graff. */
+export type ImageInput =
+  | { type: "image_url"; url: string }
+  | { type: "image_base64"; mediaType: string; data: string };
+
 export interface ChatOptions {
   prompt: string;
+  /** Native vision parts (max 16); never flattened into prompt text. */
+  images?: ImageInput[];
   review?: boolean;
   /** Replay persisted events with seq >= from before this turn's live ones. */
   from?: number;
@@ -139,6 +147,8 @@ export interface AskResult {
 
 export interface RunAgentRemoteOptions extends RemoteOptions {
   prompt: string;
+  /** Native vision parts (max 16); never flattened into prompt text. */
+  images?: ImageInput[];
 }
 
 /** Parse a streaming NDJSON response body into events. */
@@ -299,6 +309,10 @@ export class RemoteHarness {
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {
     const prompt = typeof input === "string" ? input : input.prompt;
     const type = typeof input === "string" || !input.review ? "user" : "review";
+    const images = typeof input === "string" ? undefined : input.images?.map((image) =>
+      image.type === "image_base64"
+        ? { type: image.type, media_type: image.mediaType, data: image.data }
+        : image);
     const from = typeof input === "string" ? undefined : input.from;
     const signal = typeof input === "string" ? undefined : input.signal;
     signal?.throwIfAborted();
@@ -311,7 +325,7 @@ export class RemoteHarness {
       // cancel first, receive 409, and leave the following turn running.
       const id = await this.sessionId;
       const q = from === undefined ? "" : `?from=${from}`;
-      const res = await this.req("POST", `/v1/sessions/${id}${q}`, { type, text: prompt });
+      const res = await this.req("POST", `/v1/sessions/${id}${q}`, { type, text: prompt, ...(images?.length ? { images } : {}) });
       if (signal) {
         signal.addEventListener("abort", onAbort, { once: true });
         if (signal.aborted) onAbort();
@@ -501,11 +515,11 @@ export class RemoteHarness {
 export async function* runAgentRemote(opts: RunAgentRemoteOptions): AsyncGenerator<Event> {
   const h = new RemoteHarness(opts);
   try {
-    yield* h.chat({ prompt: opts.prompt });
+    yield* h.chat({ prompt: opts.prompt, images: opts.images });
   } finally {
     await h.close();
   }
 }
 
-export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "alibaba/qwen3.8-27b", "anthropic/claude-sonnet-4.6", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-opus-5", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "claude-sonnet-5", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "gemma-4-31b", "glm-4.5", "glm-4.7", "glm-5", "glm-5-turbo", "glm-5.2", "glm-5.3", "glm-5v-turbo", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-oss-120b", "grok-4.3", "grok-4.6", "grok-build", "k3", "kilo-auto/small", "kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3", "mistral-medium-latest", "mlx-community/Qwen3.6-27B-OptiQ-4bit", "openai/gpt-oss-120b"];
+export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "alibaba/qwen3.8-27b", "anthropic/claude-sonnet-4.6", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-opus-5", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "claude-sonnet-5", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "gemma-4-31b", "glm-4.5", "glm-4.7", "glm-5", "glm-5-turbo", "glm-5.2", "glm-5.3", "glm-5.3-flash", "glm-5v-turbo", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-oss-120b", "grok-4.3", "grok-4.6", "grok-build", "k3", "kilo-auto/small", "kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3", "mistral-medium-latest", "mlx-community/Qwen3.6-27B-OptiQ-4bit", "openai/gpt-oss-120b"];
 export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "skill", "codedb", "read_tool_result", "todo_write", "todo_read", "eval", "note_constraint", "ask_user", "attempt_completion", "load_tool_schemas", "mcp_search_tools", "mcp_select_tool", "clock_sleep", "subagent", "workflow", "agent_output", "learn_candidate", "peer_message", "workspace", "imagegen"];

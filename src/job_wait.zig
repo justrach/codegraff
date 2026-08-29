@@ -19,13 +19,12 @@ pub const legacy_poll_ms: u64 = 30_000;
 /// Map a model-supplied `wait_ms` onto a real deadline.
 ///
 /// * `0` — snapshot now (do not block).
-/// * `1…legacy_poll_ms` — the old poll-loop value; promote to `wait_cap_ms`
-///   so one tool call covers exit instead of bouncing every 30s.
-/// * `> legacy_poll_ms` — honor it, clamped to `wait_cap_ms`.
+/// * `> 0` — wait until exit (or Esc), always `wait_cap_ms`. Mid-range
+///   "safety timeouts" (60s–240s) used to be honored as a bounded
+///   deadline (#640) and bounced the model every few minutes.
 pub fn resolveDeadline(wait_ms: u64) u64 {
     if (wait_ms == 0) return 0;
-    if (wait_ms <= legacy_poll_ms) return wait_cap_ms;
-    return @min(wait_ms, wait_cap_ms);
+    return wait_cap_ms;
 }
 
 test "resolveDeadline: snapshot stays zero" {
@@ -37,8 +36,9 @@ test "resolveDeadline: the 30s poll signature waits for exit (10h)" {
     try std.testing.expectEqual(wait_cap_ms, resolveDeadline(legacy_poll_ms));
 }
 
-test "resolveDeadline: an explicit long wait is honored up to the 10h cap" {
-    try std.testing.expectEqual(@as(u64, 60_000), resolveDeadline(60_000));
+test "resolveDeadline: mid-range and huge values are the 10h exit cap (#640)" {
+    try std.testing.expectEqual(wait_cap_ms, resolveDeadline(60_000));
+    try std.testing.expectEqual(wait_cap_ms, resolveDeadline(240_000));
     try std.testing.expectEqual(wait_cap_ms, resolveDeadline(wait_cap_ms));
     try std.testing.expectEqual(wait_cap_ms, resolveDeadline(wait_cap_ms + 1));
 }

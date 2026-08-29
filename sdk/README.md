@@ -86,15 +86,30 @@ for await (const ev of runAgentRemote({ url: "https://my-bridge.example", token,
 
 const h = RemoteHarness.init({ url: "http://127.0.0.1:8787", yolo: true });
 console.log(await h.ask("what files are here?"));
+console.log(await h.ask({
+  prompt: "read the code in this image",
+  images: [{ type: "image_url", url: "https://example.com/code.png" }],
+}));
 await h.close(); // graceful: the bridge EOFs the child's stdin
 ```
 
 ```python
+import base64
+from pathlib import Path
 from harness_sdk import RemoteHarness  # stdlib urllib only
 
+png_base64 = base64.b64encode(Path("code.png").read_bytes()).decode()
 with RemoteHarness("http://127.0.0.1:8787", token="...", yolo=True) as h:
-    print(h.ask("what is 2+2?"))
+    print(h.ask("read this image", images=[
+        {"type": "image_base64", "media_type": "image/png", "data": png_base64},
+    ]))
 ```
+
+Both clients preserve URL/base64 inputs as native provider vision parts.
+`images` is capped at 16 entries and each decoded base64 image at 3.7 MB.
+The opt-in real-provider witness generates a random-code PNG and verifies that
+it survives the complete bridge: `python3 scripts/test-remote-vision.py
+--model <vision-model>` (one provider call).
 
 One protocol request is in flight per session at a time; pass `yolo=True` in
 most cases (the bridge has no terminal to show permission prompts on). The
@@ -130,4 +145,6 @@ for ev in h.reconnect():
 JSONL events: `text` (assistant delta), `tool_call`, `ask_user`, `tool_result`,
 `turn` (final text + `context_tokens` + `cost_usd`), and `error`. Answer an
 `ask_user` event with `{"type":"answer","text":"...","cancelled":false,"call_id":"..."}`.
-See the `protocol` key of `graff --schema`.
+See the `protocol` key of `graff --schema`. A host that wants ACP v1
+`session/update`s instead should spawn `graff acp` — [Embedding graff](../docs/embedding.md)
+and `@codegraff/sdk/acp`.

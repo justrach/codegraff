@@ -92,7 +92,7 @@ pub fn withAvailable(comptime Spec: type, arena: Allocator, base: []const Spec, 
 }
 
 /// One catalog-assembly pass: optional tools, then #330/#lean, then the
-/// licensed surface filter (hide read_file/codedb when codedb-pro is in charge).
+/// licensed surface filter (ADR 0040: do not hide codedb or read_file).
 pub fn assembleRoot(comptime Spec: type, arena: Allocator, base: []const Spec, optional: []const Spec) ![]const Spec {
     const no_local_tools = @import("no_local_tools.zig");
     const tool_surface = @import("tool_surface.zig");

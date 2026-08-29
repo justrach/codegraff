@@ -339,3 +339,27 @@ test "the event type is read from the modifier field, not the text field (#549)"
     try std.testing.expectEqual(Key.ignore, next("\x1b[1;1:3A", &i).?);
     key.held = 0;
 }
+
+test "next: embedded paste newlines are chars, not Enter (#643)" {
+    key.resetInputState();
+    defer key.resetInputState();
+    var i: usize = 0;
+    const p = "\x1b[200~a\r\nb\x1b[201~";
+    try std.testing.expectEqual(Key.paste_start, next(p, &i).?);
+    try std.testing.expectEqual(Key{ .char = 'a' }, next(p, &i).?);
+    try std.testing.expectEqual(Key{ .char = '\n' }, next(p, &i).?);
+    try std.testing.expectEqual(Key{ .char = 'b' }, next(p, &i).?);
+    try std.testing.expectEqual(Key.paste_end, next(p, &i).?);
+}
+
+test "next: wrap-less multiline burst is not Enter (#643)" {
+    key.resetInputState();
+    defer key.resetInputState();
+    var i: usize = 0;
+    const p = "a\r\nb";
+    try std.testing.expectEqual(Key{ .char = 'a' }, next(p, &i).?);
+    try std.testing.expectEqual(Key{ .char = '\n' }, next(p, &i).?);
+    try std.testing.expectEqual(Key{ .char = 'b' }, next(p, &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.enter, next("\r", &i).?);
+}

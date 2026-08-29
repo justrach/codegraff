@@ -75,6 +75,9 @@ pub const Bridge = struct {
     /// Reasoning has been written and no answer text has followed it yet, so
     /// the first visible byte should break the line first.
     reasoning_open: bool = false,
+    /// ADR 0041: thought / tool / text rows come from ACP `session/update`.
+    /// This sink still handles meters, notices, raw bash, and failover.
+    acp_owns_transcript: bool = false,
 };
 
 const vtable: engine_sink.VTable = .{ .emit = emit, .durable = false };
@@ -87,11 +90,11 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
     const b: *Bridge = @ptrCast(@alignCast(ctx));
     switch (ev.event) {
         // ── prose: into the live tail ────────────────────────────────────
-        .reasoning_delta => |d| if (b.show_thinking) {
+        .reasoning_delta => |d| if (!b.acp_owns_transcript and b.show_thinking) {
             b.reasoning_open = true;
             b.stream.appendBytes(d.text);
         },
-        .text_delta, .tool_arg_delta => |d| {
+        .text_delta, .tool_arg_delta => |d| if (!b.acp_owns_transcript) {
             if (b.reasoning_open) {
                 b.reasoning_open = false;
                 b.stream.appendBytes("\n");
@@ -115,7 +118,7 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
 
         // ── structure: typed rows ────────────────────────────────────────
         .tool_call_announced => |t| {
-            if (label.skipTranscript(t.name)) return;
+            if (b.acp_owns_transcript or label.skipTranscript(t.name)) return;
             b.queue.push(.{ .tool_started = .{
                 .name = t.name,
                 .detail = capLine(engine_sink.compactArg(t.input), arg_cap),
@@ -123,17 +126,18 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
         },
         .tool_result => |r| {
             if (tui.rawStream()) |raw| raw.len.store(0, .release);
-            if (label.skipTranscript(r.name)) return;
+            if (b.acp_owns_transcript or label.skipTranscript(r.name)) return;
             b.queue.push(.{ .tool_finished = .{
                 .name = r.name,
                 .detail = capLine(r.text, preview_cap),
                 .is_error = r.is_error,
+                .ms = @intCast(@max(0, r.ms)),
             } });
         },
         // The harness refused the call before it ran. hostedEmit dropped this
         // outright, so the row simply never closed and the user watched a tool
         // that looked stuck.
-        .tool_rejected => |r| b.queue.push(.{ .tool_rejected = .{
+        .tool_rejected => |r| if (!b.acp_owns_transcript) b.queue.push(.{ .tool_rejected = .{
             .name = r.name,
             .detail = capLine(r.message, preview_cap),
             .is_error = true,
@@ -258,6 +262,24 @@ test "prose streams into the live tail; structure never does" {
     try std.testing.expectEqualStrings("bash", evs[0].tool_started.name);
     try std.testing.expectEqualStrings("ok", evs[1].tool_finished.detail);
     try std.testing.expect(!evs[1].tool_finished.is_error);
+}
+
+test "tool_finished carries the engine's measured ms" {
+    var qbuf: tui.EventQueue = .{};
+    qbuf.attach(std.testing.allocator);
+    defer qbuf.deinit();
+    var sbuf: [64]u8 = undefined;
+    var stream: repl.StreamBuf = .{ .buf = &sbuf };
+    var bridge: Bridge = .{ .queue = &qbuf, .stream = &stream };
+    forBridge(&bridge).emit(undefined, .{ .tool_result = .{
+        .name = "read_file",
+        .text = "ok",
+        .is_error = false,
+        .ms = 240,
+    } });
+    const evs = qbuf.drain();
+    defer qbuf.free(evs);
+    try std.testing.expectEqual(@as(u64, 240), evs[0].tool_finished.ms);
 }
 
 test "reasoning reaches the tail only with /thinking on" {
@@ -407,4 +429,21 @@ test "the turn-sink binding is thread-local and released after the turn" {
 
     engine_sink.unbindTurnSink();
     try std.testing.expect(engine_sink.turnSink() == null);
+}
+
+test "acp_owns_transcript leaves thought/tool/text to session/update" {
+    var qbuf: tui.EventQueue = .{};
+    qbuf.attach(std.testing.allocator);
+    defer qbuf.deinit();
+    var sbuf: [64]u8 = undefined;
+    var stream: repl.StreamBuf = .{ .buf = &sbuf };
+    var bridge: Bridge = .{ .queue = &qbuf, .stream = &stream, .show_thinking = true, .acp_owns_transcript = true };
+    const sink = forBridge(&bridge);
+    sink.emit(undefined, .{ .reasoning_delta = .{ .text = "why" } });
+    sink.emit(undefined, .{ .text_delta = .{ .text = "hi" } });
+    sink.emit(undefined, .{ .tool_call_announced = .{ .name = "bash", .input = .null } });
+    try std.testing.expect(stream.snapshot(std.testing.allocator) == null);
+    const evs = qbuf.drain();
+    defer qbuf.free(evs);
+    try std.testing.expectEqual(@as(usize, 0), evs.len);
 }

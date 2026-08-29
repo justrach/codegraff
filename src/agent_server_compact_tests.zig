@@ -208,6 +208,67 @@ test "pruneToLatestBlob: prunes to the newest blob and resets the meters" {
     try std.testing.expectEqual(@as(u64, 0), agent.context_local_tokens);
 }
 
+fn imageUser(a: std.mem.Allocator) !Value {
+    var image: std.json.ObjectMap = .empty;
+    try image.put(a, "type", .{ .string = "image_url" });
+    var image_url: std.json.ObjectMap = .empty;
+    try image_url.put(a, "url", .{ .string = "data:image/png;base64,AAA" });
+    try image.put(a, "image_url", .{ .object = image_url });
+    var content = std.json.Array.init(a);
+    var tb: std.json.ObjectMap = .empty;
+    try tb.put(a, "type", .{ .string = "text" });
+    try tb.put(a, "text", .{ .string = "read this" });
+    try content.append(.{ .object = tb });
+    try content.append(.{ .object = image });
+    var user: std.json.ObjectMap = .empty;
+    try user.put(a, "role", .{ .string = "user" });
+    try user.put(a, "content", .{ .array = content });
+    return .{ .object = user };
+}
+
+test "pruneIf: refuses a blob that would drop an unresolved image prompt (#581)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = testAgent(a, .responses);
+    try agent.messages.append(try item(a, "message", null));
+    try agent.messages.append(try imageUser(a)); // live pin
+    try agent.messages.append(try item(a, "function_call", "c1"));
+    try agent.messages.append(try item(a, "function_call_output", "c1"));
+    try agent.messages.append(try item(a, "compaction", null)); // after the pin
+    try std.testing.expect(!pruneIf(&agent, true));
+    try std.testing.expectEqual(@as(usize, 5), agent.messages.items.len);
+    try std.testing.expectEqual(@as(u32, 0), agent.history_rewrites);
+}
+
+test "pruneIf: a blob before the live image pin still prunes the prefix (#581)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = testAgent(a, .responses);
+    try agent.messages.append(try item(a, "message", null));
+    try agent.messages.append(try item(a, "compaction", null));
+    try agent.messages.append(try imageUser(a));
+    try std.testing.expect(pruneIf(&agent, true));
+    try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
+    try std.testing.expectEqualStrings("compaction", agent.messages.items[0].object.get("type").?.string);
+}
+
+test "explicitCompact: refuses to fold an unresolved image prompt into a blob (#581)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = testAgent(a, .responses);
+    agent.arena = a;
+    agent.provider.id = "xai";
+    try agent.messages.append(try imageUser(a));
+    try agent.messages.append(try item(a, "function_call", "c1"));
+    try agent.messages.append(try item(a, "function_call_output", "c1"));
+    try std.testing.expect(!explicitCompact(&agent));
+    try std.testing.expectEqual(@as(usize, 3), agent.messages.items.len);
+    try std.testing.expectEqual(@as(u32, 0), agent.history_rewrites);
+}
+
 test "pruneToLatestBlob: an orphaned tool output refuses the prune" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

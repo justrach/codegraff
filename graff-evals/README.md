@@ -25,6 +25,10 @@ harness under test spends model calls.
 ```sh
 ./run.py --suite swe --harness graff-dev-old,graff-dev --model grok-4.6 -j 12
 ./run.py --suite core,rlm,swe --harness graff-dev-old,graff-dev -j 8
+# Pi on the same SuperGrok seat (`npm i -g @earendil-works/pi-coding-agent`):
+./run.py --suite swe --harness graff-dev,pi-xai --model grok-4.6 -j 6
+# same SuperGrok-shaped A/B on the Codegraff gateway (set CODEGRAFF_API_KEY):
+CODEGRAFF_API_KEY=cg_sk_… ./run.py --suite swe --harness graff-dev,pi-codegraff --model glm-5.3-flash -j 6
 ```
 
 ## Run it
@@ -59,10 +63,13 @@ the last run for post-mortems; both are disposable.
 
 `harnesses.json` declares each harness as a command template plus parsers:
 
-- `answer` — where the final answer text comes from (`stdout`, or
-  `grok-stream` for grok's `streaming-messages-json` result event).
+- `answer` — where the final answer text comes from (`stdout`,
+  `grok-stream` for grok's `streaming-messages-json` result event, or
+  `pi-json` for Pi's `--mode json` `message_end` text).
 - `usage` — how to extract token counts (`graff-stderr` parses graff's
-  `[usage]` line; `grok-stream` reads the result event's usage).
+  `[usage]` line; `grok-stream` / `pi-json` read the harness event).
+  Pi `first_out_s` is the first JSONL line (`session`), not TUI first paint.
+  Pi `cost.total` is list-price; SuperGrok on graff is `$0.0000` flat-rate.
 - `capabilities` — feature gates; a task listing `requires` a capability is
   skipped on harnesses that lack it (e.g. `output-schema` structured outputs).
 
