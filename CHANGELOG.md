@@ -24,6 +24,7 @@ current is part of cutting a release.
   758s, graff 3/6 with three 300s timeouts. Next cut on that model is
   finishing inside the cap, not a smaller catalog.
 - No tag until asked. Download / notarization ids land after the build.
+- Test floor 1758 (slack 25).
 
 ## v0.0.280 (2026-08-28)
 
