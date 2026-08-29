@@ -56,6 +56,20 @@ the child with `--model`. Approvals (`ask_user` / `session/request_permission`)
 are not on this path: the child runs `--yolo` so tools execute from the
 first turn.
 
+The model picker is live, not a hardcoded list: `graff/models` (a vendor
+JSON-RPC method on the same stdio agent) returns the catalog with
+per-provider credential state in the REPL's election order (signed-in
+plan, then local, credits, api). The UI shows only authenticated seats
+and re-reads `current` after every respawn, so the picker reflects what
+graff's fuzzy `--model` resolution actually chose.
+
+The workspace itself is walkable: `/api/fs` (list/read, plus macOS
+`open`/`open -R` passthroughs) is sandboxed to the agent's cwd and backs
+a files pane — the folder chip in the tab bar or the sidebar's
+Workspace item opens it. Tool-row chips and path-looking inline code in
+answers (`src/acp.zig`) jump straight to that file; markdown files
+render, code shows mono, binaries hand off to Open.
+
 ## Run
 
 ```bash

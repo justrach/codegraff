@@ -2,7 +2,7 @@ import { parseRpcLine, type AcpUpdate, type JsonRpcLine } from "./acp";
 
 const BASE = "/api/acp";
 
-export type Health = { ok: boolean; detail?: string };
+export type Health = { ok: boolean; detail?: string; cwd?: string };
 
 async function* ndjson(res: Response): AsyncGenerator<JsonRpcLine> {
   const body = res.body;
@@ -101,7 +101,56 @@ export const STARTER_PROMPTS = [
   { id: "todos", label: "What's on the checklist?", prompt: "Read the current todo list and tell me what's open." },
 ] as const;
 
-export const MODELS = [
+export type ModelChoice = {
+  key: string;
+  name: string;
+  tag?: string;
+  provider?: string;
+  context?: number;
+  cost?: string;
+  current?: boolean;
+};
+
+type GraffModelsResult = {
+  models?: {
+    name: string;
+    provider: string;
+    context: number;
+    authenticated: boolean;
+    cost: string;
+    current: boolean;
+  }[];
+  current?: { model: string; provider: string };
+};
+
+/** The models THIS install can reach: `graff/models` filtered to providers
+ * with live credentials, already in the agent's election order. The same
+ * model name can be served by several providers; the highest-ranked seat
+ * wins its row (spawn-by-name resolves through graff's own routing anyway). */
+export async function fetchModels(): Promise<{ models: ModelChoice[]; current: string | null }> {
+  const res = await rpc("graff/models");
+  const body = (await res.json()) as { result?: GraffModelsResult; error?: string };
+  if (!body.result) throw new Error(body.error ?? "graff/models failed");
+  const seen = new Set<string>();
+  const models: ModelChoice[] = [];
+  for (const m of body.result.models ?? []) {
+    if (!m.authenticated || seen.has(m.name)) continue;
+    seen.add(m.name);
+    models.push({
+      key: m.name,
+      name: m.name,
+      tag: m.cost === "plan" || m.cost === "credits" ? `${m.provider} · ${m.cost}` : m.provider,
+      provider: m.provider,
+      context: m.context,
+      cost: m.cost,
+      current: m.current,
+    });
+  }
+  return { models, current: body.result.current?.model ?? null };
+}
+
+/** Fallback until `graff/models` answers (or when nothing is authenticated). */
+export const MODELS: ModelChoice[] = [
   { key: "gpt-5.5", name: "GPT-5.5", tag: "OpenAI" },
   { key: "claude-opus-4-8", name: "Opus 4.8", tag: "Anthropic" },
   { key: "codex", name: "Codex", tag: "ChatGPT" },

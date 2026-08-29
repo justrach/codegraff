@@ -182,6 +182,15 @@ export default function PromptBar({
   const [model, setModel] = useState(
     () => catalog.find((m) => m.key === modelKey) ?? catalog[0] ?? MODELS[1],
   );
+  /* Live surfaces load their catalog async (graff/models); once it lands, or
+   * the owner re-points modelKey, the picked entry must follow — the initial
+   * useState snapshot is stale by then. */
+  useEffect(() => {
+    if (!modelKey) return;
+    const found = catalog.find((m) => m.key === modelKey);
+    if (found && found.key !== model.key) setModel(found);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelKey, models]);
   const [attachments, setAttachments] = useState<string[]>([]);
   const [connected, setConnected] = useState(false);
   const [active, setActive] = useState(0);
@@ -194,8 +203,10 @@ export default function PromptBar({
   const [engaged, setEngaged] = useState(false);
   const [modelBox, setModelBox] = useState<{ top: number; height: number } | null>(null);
   const [modelHovered, setModelHovered] = useState<number | null>(null);
+  const [modelQuery, setModelQuery] = useState("");
   const [modelMenuLeft, setModelMenuLeft] = useState(0);
   const [modelMenuBottom, setModelMenuBottom] = useState(0);
+  const [modelMenuMaxH, setModelMenuMaxH] = useState(560);
   const composerAnchorRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -239,12 +250,23 @@ export default function PromptBar({
 
   /* same gliding highlight in the model menu — floats to the hovered
    * row, falling back to the currently-selected model */
-  const modelIndex = catalog.findIndex((m) => m.key === model.key);
+  const modelFilter = modelQuery.trim().toLowerCase();
+  const shownModels = modelFilter
+    ? catalog.filter(
+        (m) => m.name.toLowerCase().includes(modelFilter) || (m.tag ?? "").toLowerCase().includes(modelFilter),
+      )
+    : catalog;
+  const modelIndex = shownModels.findIndex((m) => m.key === model.key);
   useLayoutEffect(() => {
     if (!modelOpen) return;
     const target = modelRowRefs.current[modelHovered ?? modelIndex];
-    if (target) setModelBox({ top: target.offsetTop, height: target.offsetHeight });
-  }, [modelOpen, modelHovered, modelIndex]);
+    if (target) {
+      setModelBox({ top: target.offsetTop, height: target.offsetHeight });
+      /* 40+ authenticated models: opening far from the current selection
+       * hid it off-screen — bring it into view, but never fight the mouse */
+      if (modelHovered === null) target.scrollIntoView({ block: "nearest" });
+    }
+  }, [modelOpen, modelHovered, modelIndex, modelFilter]);
 
   /* The menu is outside the clipped composer, so align it to the model
    * trigger by measurement instead of pinning it to the far-right edge. */
@@ -254,10 +276,16 @@ export default function PromptBar({
     const triggerRect = modelRef.current.getBoundingClientRect();
     setModelMenuLeft(Math.max(0, Math.min(triggerRect.left - anchorRect.left, anchorRect.width - 176)));
     setModelMenuBottom(anchorRect.bottom - triggerRect.top + 8);
+    // The menu grows upward from the trigger; without this cap a 40-model
+    // list runs past the viewport top and clips its own filter input.
+    setModelMenuMaxH(Math.max(220, Math.min(560, triggerRect.top - 20)));
   }, [modelOpen, wide, model.name]);
 
   useEffect(() => {
-    if (!modelOpen) setModelHovered(null);
+    if (!modelOpen) {
+      setModelHovered(null);
+      setModelQuery("");
+    }
   }, [modelOpen]);
 
   /* Build the shader with a pinned hue phase. createShader seeds its
@@ -505,44 +533,75 @@ export default function PromptBar({
       {/* ── model menu ─────────────────────────────────── */}
       {modelOpen && (
         <div
-          onMouseLeave={() => setModelHovered(null)}
-          className="absolute z-10 w-44 rounded-[10px] bg-surface p-1 shadow-raised"
-          style={{ left: modelMenuLeft, bottom: modelMenuBottom, animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom left" }}
+          className="absolute z-10 flex w-64 flex-col rounded-[10px] bg-surface p-1 shadow-raised"
+          style={{ left: modelMenuLeft, bottom: modelMenuBottom, maxHeight: modelMenuMaxH, animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom left" }}
         >
-          {/* single gliding highlight — floats to the hovered / selected row */}
-          <span
-            aria-hidden
-            className="pointer-events-none absolute inset-x-1 rounded-[6px] bg-hover"
-            style={{
-              top: modelBox?.top ?? 0,
-              height: modelBox?.height ?? 0,
-              opacity: modelBox && modelHovered !== null ? 1 : 0,
-              transition:
-                "top 220ms cubic-bezier(0.23,1,0.32,1), height 220ms cubic-bezier(0.23,1,0.32,1), opacity 150ms ease",
-            }}
-          />
-          {catalog.map((m, i) => (
-            <button
-              key={m.key}
-              type="button"
-              ref={(el) => {
-                modelRowRefs.current[i] = el;
+          {/* a real install lists 40+ authenticated seats — filter beats scrolling */}
+          {catalog.length > 8 && (
+            <input
+              autoFocus
+              value={modelQuery}
+              onChange={(event) => {
+                setModelQuery(event.target.value);
+                setModelHovered(null);
               }}
-              onMouseDown={(event) => event.preventDefault()}
-              onMouseEnter={() => setModelHovered(i)}
-              onClick={() => {
-                selectModel(m);
-                inputRef.current?.focus();
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  setModelOpen(false);
+                  inputRef.current?.focus();
+                }
+                if (event.key === "Enter" && shownModels.length > 0) {
+                  selectModel(shownModels[0]);
+                  inputRef.current?.focus();
+                }
               }}
-              className="relative z-10 flex h-7.5 w-full items-center gap-2 rounded-[6px] px-2 text-left"
-            >
-              <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{m.name}</span>
-              <span className="shrink-0 text-[11px] text-ink-3">{m.tag}</span>
-              <span className={`shrink-0 text-ink ${m.key === model.key ? "" : "invisible"}`}>
-                <Icon size={13} strokeWidth={2.5}><path d="M20 6L9 17l-5-5" /></Icon>
-              </span>
-            </button>
-          ))}
+              placeholder="Filter models…"
+              aria-label="Filter models"
+              className="mb-1 h-7 shrink-0 rounded-[6px] bg-field px-2 text-[12px] text-ink shadow-hairline outline-none placeholder:text-ink-3"
+            />
+          )}
+          <div
+            onMouseLeave={() => setModelHovered(null)}
+            className="relative min-h-0 flex-1 overflow-y-auto"
+          >
+            {/* single gliding highlight — floats to the hovered / selected row */}
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-x-0 rounded-[6px] bg-hover"
+              style={{
+                top: modelBox?.top ?? 0,
+                height: modelBox?.height ?? 0,
+                opacity: modelBox && modelHovered !== null ? 1 : 0,
+                transition:
+                  "top 220ms cubic-bezier(0.23,1,0.32,1), height 220ms cubic-bezier(0.23,1,0.32,1), opacity 150ms ease",
+              }}
+            />
+            {shownModels.map((m, i) => (
+              <button
+                key={m.key}
+                type="button"
+                ref={(el) => {
+                  modelRowRefs.current[i] = el;
+                }}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setModelHovered(i)}
+                onClick={() => {
+                  selectModel(m);
+                  inputRef.current?.focus();
+                }}
+                className="relative z-10 flex h-7.5 w-full items-center gap-2 rounded-[6px] px-2 text-left"
+              >
+                <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{m.name}</span>
+                <span className="shrink-0 text-[11px] text-ink-3">{m.tag}</span>
+                <span className={`shrink-0 text-ink ${m.key === model.key ? "" : "invisible"}`}>
+                  <Icon size={13} strokeWidth={2.5}><path d="M20 6L9 17l-5-5" /></Icon>
+                </span>
+              </button>
+            ))}
+            {shownModels.length === 0 && (
+              <div className="px-2 py-2 text-[12px] text-ink-3">No models match “{modelQuery.trim()}”</div>
+            )}
+          </div>
         </div>
       )}
 

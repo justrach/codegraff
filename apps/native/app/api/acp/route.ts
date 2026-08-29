@@ -1,13 +1,16 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import type { Readable, Writable } from "node:stream";
 import { NextRequest } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type Slot = {
-  child: ChildProcessWithoutNullStreams;
+  // stderr is "inherit" (null here): the agent's diagnostics land in the dev
+  // server's terminal instead of being buffered and lost.
+  child: ChildProcessByStdio<Writable, Readable, null>;
   buf: string;
   nextId: number;
   sessionId: string | null;
@@ -70,8 +73,11 @@ function writeLine(slot: Slot, obj: unknown) {
 
 function readLine(slot: Slot, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("ACP agent timed out")), timeoutMs);
-    const onData = () => {
+    // The chunk handler itself must be what gets removed — detaching a
+    // different function leaks a listener that keeps consuming stdout lines
+    // (and re-appending chunks to the shared buffer) for the slot's lifetime.
+    const onData = (chunk?: Buffer) => {
+      if (chunk) slot.buf += chunk.toString("utf8");
       const nl = slot.buf.indexOf("\n");
       if (nl < 0) return;
       const line = slot.buf.slice(0, nl);
@@ -80,10 +86,11 @@ function readLine(slot: Slot, timeoutMs: number): Promise<string> {
       slot.child.stdout.off("data", onData);
       resolve(line);
     };
-    slot.child.stdout.on("data", (chunk: Buffer) => {
-      slot.buf += chunk.toString("utf8");
-      onData();
-    });
+    const timer = setTimeout(() => {
+      slot.child.stdout.off("data", onData);
+      reject(new Error("ACP agent timed out"));
+    }, timeoutMs);
+    slot.child.stdout.on("data", onData);
     onData();
   });
 }
@@ -121,19 +128,22 @@ async function bootstrap(model?: string, reset = false): Promise<Slot> {
 }
 
 export async function GET() {
-  try {
-    const slot = await bootstrap();
-    return Response.json({ ok: true, sessionId: slot.sessionId });
-  } catch (err) {
+  // Health is a passive probe: report the binary and any live slot without
+  // spawning. Spawning here raced the UI's own bootstrap (two agents per
+  // page load) — the POST bootstrap path is the only spawner.
+  const bin = graffBin();
+  const found = path.isAbsolute(bin) ? existsSync(bin) : true;
+  if (!found) {
     return Response.json(
       {
         ok: false,
-        detail: err instanceof Error ? err.message : String(err),
+        detail: `graff binary not found at ${bin}`,
         hint: "Build graff (zig build) or set GRAFF_BIN. The native app speaks ACP via `graff acp`.",
       },
       { status: 502 },
     );
   }
+  return Response.json({ ok: true, sessionId: g.__graffAcp?.sessionId ?? null, cwd: workspace() });
 }
 
 export async function POST(req: NextRequest) {

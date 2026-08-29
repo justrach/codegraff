@@ -84,6 +84,9 @@ export type AssistantTurn = {
   model?: string;
   provider?: string;
   costUsd?: number;
+  /** A tool bracket landed after streamed text — the next text chunk starts a
+   * new paragraph instead of fusing onto the previous sentence. */
+  pendingBreak?: boolean;
   status: TurnStatus;
 };
 

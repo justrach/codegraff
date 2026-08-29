@@ -32,6 +32,7 @@ type Row = {
   add?: number;
   del?: number;
   href?: string;
+  shimmer?: boolean;
 };
 
 const VARIANTS: Record<
@@ -97,6 +98,8 @@ export type ThinkingRow = {
   add?: number;
   del?: number;
   href?: string;
+  /** A placeholder row ("Waiting on the model…") — spinner + shimmer, not static text. */
+  shimmer?: boolean;
 };
 
 export default function ThinkingState({
@@ -126,7 +129,9 @@ export default function ThinkingState({
     rows: rows ?? canned.rows,
     query: live ? undefined : canned.query,
   };
-  const autoExpanded = live ? true : stage >= 1 && stage < 4;
+  /* live traces expand while the agent works and settle closed, like the
+   * canned sequence; the reader can reopen the header any time */
+  const autoExpanded = live ? (workingProp ?? true) : stage >= 1 && stage < 4;
   const expanded = manualExpanded ?? autoExpanded;
   const working = workingProp ?? (!live && stage < 3);
   const visible = live ? v.rows.length : stage < 2 ? 0 : stage === 2 ? Math.min(2, v.rows.length) : v.rows.length;
@@ -149,7 +154,9 @@ export default function ThinkingState({
       key={variant}
       className="flex w-full max-w-95 flex-col"
       style={{
-        minHeight: working || expanded ? 176 : undefined,
+        /* the gallery reserves room for its choreography; a live thread must
+         * hug its content or every turn ships 176px of dead air */
+        minHeight: !live && (working || expanded) ? 176 : undefined,
         transition: "min-height 400ms cubic-bezier(0.23,1,0.32,1)",
       }}
     >
@@ -234,9 +241,28 @@ export default function ThinkingState({
                     <span className="size-3 shrink-0 rounded-full border-[1.5px] border-line-strong border-t-ink-2" style={{ animation: "spin 700ms linear infinite" }} />
                   )
                 )}
+                {row.shimmer ? (
+                  <>
+                    <span
+                      className="size-3 shrink-0 rounded-full border-[1.5px] border-line-strong border-t-ink-2"
+                      style={{ animation: "spin 700ms linear infinite" }}
+                    />
+                    <span
+                      className="min-w-0 truncate bg-clip-text text-[12.5px] leading-relaxed text-transparent"
+                      style={{
+                        backgroundImage: "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
+                        backgroundSize: "200% 100%",
+                        animation: "shimmer-text 1.4s linear infinite",
+                      }}
+                    >
+                      {row.primary}
+                    </span>
+                  </>
+                ) : (
                 <span className={`min-w-0 truncate text-[12.5px] ${variant === "Reasoning" ? "whitespace-normal leading-relaxed text-ink-2" : "font-medium text-ink"} ${variant === "Search" ? "animated-underline" : ""}`}>
                   {row.primary}
                 </span>
+                )}
                 {row.secondary && (
                   <span className={`shrink-0 text-[11.5px] text-ink-3 ${row.mono ? "font-mono" : ""}`}>
                     {row.secondary}
