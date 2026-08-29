@@ -34,6 +34,9 @@ interactive-length essays on every `-p` turn.
   Do not pass `glm-5.3` (that row is zai).
 - Compact lean one-shot **descriptions** only (same names and JSON
   schemas). Do not drop to four tools. Do not steal Pi's heap.
+- Root `-p` uses the streaming transport (`usesLiveTransport` = `!sub`).
+  `out=null` / `stream_quiet` mute paint only. The 5-minute
+  `postWatched` deadline is for subagents, not one-shots.
 
 ## Consequences
 
@@ -60,5 +63,8 @@ still the JSONL `session` line.
 
 \*first was the call-2 stdout pulse. `validated` 164s / 46k / 10 →
 **57s / 11k / 4**. `json-stream` and `cookie-store` still SIGKILL at
-300s after that pulse. `label-sort` finished (174s) but still fails
+300s after that pulse: the second model call took `postWatched`
+(~250s of silence, then `retry` / 5xx) because `-p` gated `live` on
+`out != null && !stream_quiet`. Root one-shots now `postLive` so the
+30s head-stall fires. `label-sort` finished (174s) but still fails
 the hidden check. Do not steal Pi's heap.

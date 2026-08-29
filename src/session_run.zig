@@ -115,7 +115,7 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
 
 /// One-shot print mode (`-p`/bare positional prompt): run the single prompt
 /// to completion, print the final text to stdout, exit. Tool progress goes
-/// to stderr (say() with no out writer), streaming stays quiet, and the gate
+/// to stderr (say() with no out writer), paint stays quiet, and the gate
 /// denies anything not pre-approved instead of prompting (there's no one to
 /// ask). Moved out of main() verbatim (600-line goal); `root`/`tracer` are
 /// already stable main()-owned storage by the time this runs.

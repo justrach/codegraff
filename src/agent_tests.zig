@@ -81,3 +81,20 @@ pub fn lazyRootTools(comptime Agent: type) !void {
     try std.testing.expect(std.mem.indexOf(u8, agent.tools_anthropic, "bench (search)") != null);
     try std.testing.expectEqual(@as(usize, 0), agent.tools_responses.len);
 }
+
+/// `-p` sets `out=null` and `stream_quiet` so stdout stays the answer, but
+/// the root still takes postLive (head/stream stall) instead of the 5-minute
+/// watched POST that burned json-stream / cookie-store to a 300s SIGKILL.
+pub fn oneshotUsesLiveTransport(comptime Agent: type) !void {
+    var root: Agent = undefined;
+    root.sub = false;
+    root.out = null;
+    root.stream_quiet = true;
+    try std.testing.expect(root.usesLiveTransport());
+
+    var child: Agent = undefined;
+    child.sub = true;
+    child.out = null;
+    child.stream_quiet = true;
+    try std.testing.expect(!child.usesLiveTransport());
+}

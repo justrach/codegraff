@@ -197,7 +197,7 @@ pub const Agent = struct {
     /// Text streamed so far in the current request — on Esc-interrupt this is
     /// what survives into history (with an "[interrupted]" marker appended).
     partial_text: std.ArrayList(u8) = .empty,
-    stream_quiet: bool = false, // suppress live streaming (one-shot and internal requests)
+    stream_quiet: bool = false, // mute live paint (one-shot / compact); transport still streams
     compaction_request: bool = false, // the current model call is the synthetic compaction-summary request
     server_compaction_request: bool = false, // force one explicit Codex in-stream compaction pass
     responses_output_limit: ?u32 = null, // auxiliary override (title=64); compaction always uses 4096
@@ -267,6 +267,11 @@ pub const Agent = struct {
         if (!self.effortApplies() or self.effort_rejected) return false;
         if (self.reasoning == .medium and @import("effort_route.zig").omitsDefaultFlashEffort(self.provider.model)) return false;
         return true;
+    }
+
+    /// Root streams even on `-p`; `out`/`stream_quiet` only mute paint.
+    pub fn usesLiveTransport(self: *const Agent) bool {
+        return !self.sub;
     }
 
     pub fn toolsJson(self: *const Agent) []const u8 {
