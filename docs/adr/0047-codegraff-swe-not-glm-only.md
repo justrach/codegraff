@@ -95,7 +95,7 @@ finished four tasks on ~91M RSS.
 | glm-5.3-flash | Codegraff | **5/6 in 286s** | 5/6 in 758s | 0046 |
 | gemini-3.7-flash | Codegraff | **5/6 in 103s** | (tool-loop dead) | this |
 | kimi-k2.6 | Codegraff | 4/6 in 583s | 2/6 (3× API zero) | this |
-| deepseek-v4-flash | Codegraff | 2/6 in 199s* | **5/6 in 492s** | this |
+| deepseek-v4-flash | Codegraff | 2/6 in 199s* / **4/6 in 250s** (0048) | **5/6 in 492s** | this |
 
 \*three 1-call no-edits; isolated retry recovered `map-conflict` and
 `json-stream`. Do not stitch that into the suite score.

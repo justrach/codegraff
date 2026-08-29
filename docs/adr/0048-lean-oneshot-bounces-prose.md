@@ -24,6 +24,31 @@ is not done. Append one user bounce naming `read_file` / `edit_file` /
 
 Lean intro also says a file change described in prose is not done.
 
+## Confirm — `deepseek-v4-flash` after bounce (`run-20260829-063114.jsonl`)
+
+Same `--suite swe -j 6` seat as ADR 0047.
+
+| harness | pass | wall (sum) | first | RSS | in | out | calls |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| graff-dev | **4/6** | 250s | 0.03s | 91.2M | 170k | 25k | 26 |
+
+| task | before (0047) | after |
+|---|---|---|
+| cookie-store | ✓ 91s / 8 | ✓ 133s / 7 |
+| config-parse | ✓ 33s / 4 | ✗ 5s / 1* |
+| label-sort | ✗ 63s / 6 | ✗ 5s / 1* |
+| map-conflict | ✗ 4s / 1 | ✓ 20s / 5 |
+| json-stream | ✗ 4s / 1 | ✓ 65s / 8 |
+| validated | ✗ 4s / 1 | ✓ 20s / 4 |
+
+\*follow-up API error under `-j 6` (resp 110 B, ~450 ms). Isolated
+serial retry (`run-20260829-063451.jsonl`): `config-parse` ✓ 48s / 5,
+`label-sort` ✗ 62s / 5 (check, exit 0). Do not stitch that into 5/6.
+
+The confirm run used tools on the first call (lean intro). Bounce is
+the backstop when the model writes "I fixed it" with zero tools. No
+`fake_done` notes on this run.
+
 ## Consequences
 
 - `graff -p "what is 2+2"` pays one extra call if the first reply has
