@@ -68,3 +68,24 @@ still the JSONL `session` line.
 `out != null && !stream_quiet`. Root one-shots now `postLive` so the
 30s head-stall fires. `label-sort` finished (174s) but still fails
 the hidden check. Do not steal Pi's heap.
+
+## Confirm (2026-08-29, after streaming `-p`)
+
+`run-20260829-043927.jsonl`, Codegraff `glm-5.3-flash`, `--suite swe
+-j 6`. Root one-shots `postLive`. Eval `first` is the stderr `calling`
+line (~0.03s), not gateway TTFT.
+
+| | pass | wall | notes |
+|---|---:|---:|---|
+| ADR 0045 | 3/6 | 1353s | thinking on; 3× 300s `postWatched` |
+| thinking off | 3/6 | 1247s | still `postWatched` |
+| **this cut** | **4/6** | **1311s** | 26 calls / 157k in / 29k out |
+
+`json-stream` **passed** in 280s (was SIGKILL at 300s after a silent
+second `postWatched`). `validated` 106s / 6 calls. `map-conflict`
+116s. `config-parse` 208s.
+
+`cookie-store` still SIGKILL at 300s: call 2 traced `first_token` at
+11.5s then never completed — a live stream, not the 5-minute watched
+POST. `label-sort` was mid-turn (call 2 was 219s / 1.9MB SSE) when
+the cap hit. Do not steal Pi's heap. Do not shrink the keep-list.
