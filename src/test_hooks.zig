@@ -341,4 +341,5 @@ test {
     _ = @import("channel_worker.zig");
     _ = @import("session_wake.zig");
     _ = @import("tui_acp.zig");
+    _ = @import("net_efficiency_test.zig");
 }
