@@ -506,10 +506,19 @@ fn autoInitLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *cons
     return true;
 }
 
+/// One-shots and `--json` are not a workspace opting into a spending cadence.
+/// `-p` evals land on exactly 5 model calls (the bootstrap floor) and then
+/// copy 132M `graff-pinned` + generate suites (~38s CPU). Interactive
+/// REPL/TUI/ACP still auto-init. Off with `GRAFF_LEARN_AUTO=off`.
+pub fn shouldAutoLearn(unattended: bool, json_mode: bool) bool {
+    return !unattended and !json_mode;
+}
+
 /// Closing the learning loop: a session that did real model work counts toward
 /// this workspace's next trial and, on cadence, starts one in the background.
 /// The first such session in a workspace also creates the store it counts into.
 pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *const std.process.Environ.Map, budget: *const run_budget_mod.RunBudget, telemetry_allowed: bool) void {
+    if (!shouldAutoLearn(main_mod.unattended, main_mod.json_mode)) return;
     const options: learn_auto.Options = .{
         .model_calls = budget.used(),
         // A session launched with --no-telemetry keeps its trial local, even
@@ -546,4 +555,11 @@ fn unwrapFencedJson(text: []const u8) []const u8 {
 test "unwrapFencedJson strips a markdown fence and leaves bare JSON alone" {
     try std.testing.expectEqualStrings("{\"a\":1}", unwrapFencedJson("```json\n{\"a\":1}\n```\n"));
     try std.testing.expectEqualStrings("{\"a\":1}", unwrapFencedJson("{\"a\":1}"));
+}
+
+test "one-shot and --json do not auto-init a learning store" {
+    try std.testing.expect(!shouldAutoLearn(true, false));
+    try std.testing.expect(!shouldAutoLearn(false, true));
+    try std.testing.expect(!shouldAutoLearn(true, true));
+    try std.testing.expect(shouldAutoLearn(false, false));
 }
