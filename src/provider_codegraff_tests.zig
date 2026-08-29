@@ -85,7 +85,7 @@ test "Codegraff Responses aliases pin a sticky prompt_cache_key" {
     }
 }
 
-test "Codegraff Gemini omits default reasoning_effort; /effort high still sends" {
+test "Codegraff Gemini sends low for default effort; /effort high still sends" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -109,10 +109,10 @@ test "Codegraff Gemini omits default reasoning_effort; /effort high still sends"
         .sys_normal = "system",
     };
     try std.testing.expect(agent.effortApplies());
-    try std.testing.expect(!agent.sendReasoningEffort());
-    const omitted = try agent.buildBody(null, false, true, true);
-    defer std.testing.allocator.free(omitted);
-    try std.testing.expect(std.mem.indexOf(u8, omitted, "reasoning_effort") == null);
+    try std.testing.expect(agent.sendReasoningEffort());
+    const low = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(low);
+    try std.testing.expect(std.mem.indexOf(u8, low, "\"reasoning_effort\":\"low\"") != null);
 
     agent.reasoning = .high;
     try std.testing.expect(agent.sendReasoningEffort());
@@ -129,7 +129,7 @@ test "Codegraff Gemini omits default reasoning_effort; /effort high still sends"
     try std.testing.expect(std.mem.indexOf(u8, ds, "\"reasoning_effort\":\"medium\"") != null);
 }
 
-test "Codegraff glm-5.3-flash omits default reasoning_effort; /effort high still sends" {
+test "Codegraff glm-5.3-flash sends low for default effort; /effort high still sends" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -153,10 +153,10 @@ test "Codegraff glm-5.3-flash omits default reasoning_effort; /effort high still
         .sys_normal = "system",
     };
     try std.testing.expect(agent.effortApplies());
-    try std.testing.expect(!agent.sendReasoningEffort());
-    const omitted = try agent.buildBody(null, false, true, true);
-    defer std.testing.allocator.free(omitted);
-    try std.testing.expect(std.mem.indexOf(u8, omitted, "reasoning_effort") == null);
+    try std.testing.expect(agent.sendReasoningEffort());
+    const low = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(low);
+    try std.testing.expect(std.mem.indexOf(u8, low, "\"reasoning_effort\":\"low\"") != null);
 
     agent.reasoning = .high;
     try std.testing.expect(agent.sendReasoningEffort());

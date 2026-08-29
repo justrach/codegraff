@@ -260,12 +260,11 @@ pub const Agent = struct {
         return schema.providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
     }
 
-    /// Whether this turn should put reasoning_effort on the wire. Flash
-    /// models and Gemini map the default medium to seconds of thinking
-    /// (ADR 0046; Pi omits it). /effort still applies — only the unset default.
+    /// Whether this turn should put reasoning_effort on the wire.
+    /// Flash / Gemini send `low` for the unset default (ADR 0046) — omitting
+    /// the field still bills reasoning_tokens. /effort still applies.
     pub fn sendReasoningEffort(self: *const Agent) bool {
         if (!self.effortApplies() or self.effort_rejected) return false;
-        if (self.reasoning == .medium and @import("effort_route.zig").omitsDefaultFlashEffort(self.provider.model)) return false;
         return true;
     }
 

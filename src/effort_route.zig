@@ -52,11 +52,20 @@ pub fn shouldRouteLookupLow(_: bool, _: bool, _: []const u8) bool {
 
 /// Default `medium` thinking on flash / Gemini is silent seconds of TTFT
 /// (ADR 0046). Gemini 3.x maps it to thinking_level; GLM flash through
-/// codegraff just thinks. `/effort` still sends. Do not treat this as a
-/// 4-tool catalog shrink.
+/// codegraff thinks when the field is omitted. `/effort` still sends.
+/// Do not treat this as a 4-tool catalog shrink.
 pub fn omitsDefaultFlashEffort(model: []const u8) bool {
     if (std.mem.startsWith(u8, model, "gemini")) return true;
     return std.mem.indexOf(u8, model, "flash") != null;
+}
+
+/// Wire `reasoning_effort` for an effort-capable provider. Flash / Gemini
+/// default `medium` becomes `low`: omit still thinks (27 reasoning_tokens
+/// on a `pong`); `low` bills 0. `none` is a 400. `/effort high` unchanged.
+pub fn wireEffort(model: []const u8, requested: []const u8) []const u8 {
+    if (std.mem.eql(u8, requested, "medium") and omitsDefaultFlashEffort(model)) return "low";
+    if (std.mem.eql(u8, requested, "ultra")) return "max";
+    return requested;
 }
 
 test "lookup prompts route low, mutation prompts and bare commands do not" {
@@ -74,7 +83,7 @@ test "lookup prompts route low, mutation prompts and bare commands do not" {
     try std.testing.expect(!shouldRouteLookupLow(true, true, q));
 }
 
-test "flash and Gemini omit the default medium effort; grok and glm-5.3 do not" {
+test "flash and Gemini map default medium to low; grok and glm-5.3 stay medium" {
     try std.testing.expect(omitsDefaultFlashEffort("glm-5.3-flash"));
     try std.testing.expect(omitsDefaultFlashEffort("gemini-3.7-flash"));
     try std.testing.expect(omitsDefaultFlashEffort("gemini-3.7-pro"));
@@ -82,4 +91,8 @@ test "flash and Gemini omit the default medium effort; grok and glm-5.3 do not" 
     try std.testing.expect(!omitsDefaultFlashEffort("grok-4.6"));
     try std.testing.expect(!omitsDefaultFlashEffort("glm-5.3"));
     try std.testing.expect(!omitsDefaultFlashEffort("deepseek-v4-pro"));
+    try std.testing.expectEqualStrings("low", wireEffort("glm-5.3-flash", "medium"));
+    try std.testing.expectEqualStrings("high", wireEffort("glm-5.3-flash", "high"));
+    try std.testing.expectEqualStrings("medium", wireEffort("grok-4.6", "medium"));
+    try std.testing.expectEqualStrings("max", wireEffort("grok-4.6", "ultra"));
 }

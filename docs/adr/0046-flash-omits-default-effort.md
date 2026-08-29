@@ -27,9 +27,10 @@ interactive-length essays on every `-p` turn.
 
 ## Decision
 
-- Omit default `.medium` `reasoning_effort` when the model name is
-  Gemini or contains `flash`. `/effort high` (and any explicit
-  non-medium) still sends.
+- Flash / Gemini default `.medium` is sent as **`low`**, not omitted.
+  Omitting the field still bills `reasoning_tokens` (27 on a `pong`;
+  SWE dumps 1.9MB `reasoning_content`). `low` bills 0. `none` is a
+  400. `/effort high` still sends high.
 - Catalog `glm-5.3-flash` on codegraff (chat completions, 202752 ctx).
   Do not pass `glm-5.3` (that row is zai).
 - Compact lean one-shot **descriptions** only (same names and JSON
@@ -40,7 +41,7 @@ interactive-length essays on every `-p` turn.
 
 ## Consequences
 
-- Flash SWE first-token wait is gateway TTFT, not a thinking tax.
+- Flash SWE wall is generation without thinking novels, not Zig vs JS.
 - `/effort` remains the only way effort moves (ADR / `effort_route`:
   no auto-flip).
 - `-p` writes `calling <model>` to stderr at start and drops the
