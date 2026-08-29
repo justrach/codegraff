@@ -26,6 +26,7 @@ pub const changelog_text =
     \\  • SuperGrok SWE 5/6 in 205s / 6.5s CPU (was 4/6 in 456s / 230s)
     \\  • TUI claims alt-screen before boot; live markdown on the cached tail (ADR 0042)
     \\  • companion MCP queues in the background; mid-turn stalls stay off the transcript
+    \\  • Codegraff SWE is not GLM-only: Gemini 5/6 in 103s; DeepSeek flash still one-shots (ADR 0047)
     \\
     \\0.0.280
     \\  • leftover 279 work: TUI stall/resize, experiment fan-out, /tell /peek, ACP graff-login

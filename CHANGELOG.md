@@ -24,6 +24,9 @@ current is part of cutting a release.
   still thinks; default flash effort is `low`. `-p` streams so a hung
   POST dies on the 30s stall, not a 5-minute watch. SWE **5/6 in 286s**
   (Pi 5/6 in 758s). Same miss (`label-sort`). Do not steal Pi's catalog.
+- Same SWE suite on other Codegraff models (ADR 0047): Gemini graff
+  **5/6 in 103s**; Kimi 4/6 in 583s; DeepSeek flash still one-shots
+  (Pi 5/6). Do not steal Pi's catalog.
 - Interactive `--yolo` queues companion MCP and names the boot phase
   (`mcp:` / `companion:` receipts) so first paint is not the handshake
   (#664). Mid-turn stall/reconnect and `model call N` pulses stay off

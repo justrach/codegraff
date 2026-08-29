@@ -49,6 +49,8 @@ interactive-length essays on every `-p` turn.
   call 2"; stdout stays the answer.
 - Revisit if a named flash model needs default thinking — pin it in
   the catalog, do not restore a global medium default.
+- Same-suite confirm on other Codegraff models is ADR 0047 (Gemini
+  graff 5/6 in 103s; DeepSeek flash still one-shots).
 
 ## Confirm (2026-08-29, after this revision)
 

@@ -57,6 +57,7 @@ record only when you need the evidence or the edge cases.
 | [0044](0044-oneshot-skips-learn-auto.md) | `-p` and `--json` skip learn auto-init; the Pi SWE wall gap was a 38s `graff-pinned` copy, not their catalog. |
 | [0045](0045-glm-flash-swe-codegraff.md) | Codegraff `glm-5.3-flash` SWE: Pi 5/6 in 758s, graff 3/6 with three 300s timeouts; do not steal Pi's heap. |
 | [0046](0046-flash-omits-default-effort.md) | Flash / Gemini send `reasoning_effort=low` (omit still thinks); lean `-p` shortens tool prose; `-p` streams. |
+| [0047](0047-codegraff-swe-not-glm-only.md) | Codegraff SWE A/B is not GLM-only: Gemini graff 5/6 in 103s; DeepSeek flash still one-shots; do not steal Pi's catalog. |
 
 ## When to write one
 
