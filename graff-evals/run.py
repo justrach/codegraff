@@ -70,8 +70,8 @@ def materialize(task, sandbox):
         subprocess.run(["/bin/sh", "-c", cmd], cwd=sandbox, capture_output=True, timeout=60)
 
 
-def build_cmd(harness, task, model):
-    subst = {"prompt": task["prompt"], "model": model, "repo": REPO}
+def build_cmd(harness, task, model, sandbox="."):
+    subst = {"prompt": task["prompt"], "model": model, "repo": REPO, "cwd": sandbox}
     cmd = [part.format(**subst) for part in harness["cmd"]]
     if "output-schema" in task.get("requires", []):
         schema = json.dumps(task["schema"], separators=(",", ":"))
@@ -120,6 +120,33 @@ def parse_answer_and_usage(harness, stdout, stderr):
                                  if c.get("type") == "text") or answer
         usage = {"calls": calls, "in": tin + tread + twrite, "cached": tread,
                  "out": tout, "cost_usd": round(cost, 6)}
+    if harness["answer"] == "opencode-json":
+        answer, calls, tin, tout, cached = "", 0, 0, 0, 0
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            typ = ev.get("type")
+            part = ev.get("part") or {}
+            if typ == "text":
+                t = part.get("text") or ev.get("text") or ""
+                if t:
+                    answer = t
+            if typ == "step_finish":
+                calls += 1
+                tok = part.get("tokens") or ev.get("tokens") or {}
+                tin += tok.get("input") or tok.get("inputTokens") or 0
+                tout += tok.get("output") or tok.get("outputTokens") or 0
+                cache = tok.get("cache")
+                if isinstance(cache, dict):
+                    cached += cache.get("read") or 0
+                else:
+                    cached += tok.get("cacheRead") or tok.get("cache_read") or 0
+        usage = {"calls": calls, "in": tin, "cached": cached, "out": tout}
     if harness.get("usage") == "graff-stderr":
         m = GRAFF_USAGE_RE.search(stderr)
         if m:
@@ -207,7 +234,7 @@ def _fmt_mib(kb):
 def one_run(hname, harness, task, model, rep, live=False):
     sandbox = os.path.join(SANDBOX_DIR, f"{hname}-{task['id']}-r{rep}")
     materialize(task, sandbox)
-    cmd = build_cmd(harness, task, model)
+    cmd = build_cmd(harness, task, model, sandbox)
     timeout = task.get("timeout_s", 240)
     t0 = time.monotonic()
     first_out = None

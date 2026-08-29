@@ -129,6 +129,14 @@
     "default_model": "gemini-3.7-flash",
     "note": "uses ~/.pi/agent/models.json provider codegraff → gateway.codegraff.com; Gemini tool loops need the codegraff-gemini-echo extension"
   },
+  "opencode-codegraff": {
+    "cmd": ["{repo}/graff-evals/opencode-codegraff.sh", "-m", "codegraff/{model}", "--dir", "{cwd}", "{prompt}"],
+    "answer": "opencode-json",
+    "usage": "opencode-json",
+    "capabilities": [],
+    "default_model": "deepseek-v4-flash",
+    "note": "OpenCode on the Codegraff gateway (same CODEGRAFF_API_KEY seat as graff-dev / pi-codegraff). Wrapper needs `opencode` on PATH (~/.opencode/bin)."
+  },
   "pi-xai": {
     "cmd": ["{repo}/graff-evals/pi-xai.sh", "-p", "--mode", "json", "--provider", "xai", "--model", "{model}", "--no-session", "{prompt}"],
     "answer": "pi-json",

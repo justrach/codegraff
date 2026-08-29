@@ -10,6 +10,9 @@
 //!    history it stays a fail-fast 400, exactly as before.
 //! 2. Retry trace notes carry the agent label, so a 5xx can be attributed to
 //!    the subagent that drew it without ms-arithmetic across api spans.
+//! 3. A short generic `api_error` / "Internal Server Error" / empty envelope
+//!    (the DeepSeek flash `-j 6` follow-up flake) is retried bounded. Real
+//!    invalid_request / auth / quota stays fail-fast.
 
 const std = @import("std");
 const Agent = @import("agent.zig").Agent;
@@ -72,12 +75,48 @@ pub fn noteFlake(self: *Agent, state: *GatewayRetryState, err: anyerror) void {
     if (err == error.Timeout) state.transport_timeouts += 1;
 }
 
-/// One gate for the envelope-fatal paths: the pre-existing transient
-/// server-overload retry first (unchanged semantics), then the bounded
-/// gateway-artifact retry when this request already endured >=2 timeouts.
+/// One gate for the envelope-fatal paths: overload first, then a short
+/// Codegraff follow-up flake (ADR 0048 DeepSeek `-j 6` 110-byte / ~450ms
+/// `api_error`), then the timeout-gated body-parse retry.
 pub fn afterServerErrorOrParseReject(self: *Agent, etype: []const u8, code: ?[]const u8, msg: []const u8, server_retries: *usize, state: *GatewayRetryState) !bool {
     if (try policy.retryTransientServerError(self, etype, code, msg, server_retries)) return true;
+    if (try retryShortGatewayFlake(self, etype, code, msg, server_retries)) return true;
     return retryBodyParseAfterTimeouts(self, msg, state);
+}
+
+pub const max_short_flake_retries: usize = 2;
+
+/// Tiny / generic envelopes that are not a real client bug. The DeepSeek
+/// SWE `-j 6` follow-up was ~110 bytes, ~450 ms, `is_error`, no
+/// "overloaded" / "server_error" needle — isolated serial retry passed.
+/// Do not treat invalid_request / auth / quota as a flake.
+pub fn isShortGatewayFlake(etype: []const u8, code: ?[]const u8, msg: []const u8) bool {
+    const hard = [_][]const u8{ "invalid", "authentication", "unauthorized", "insufficient", "quota", "permission", "tool_choice" };
+    for (hard) |n| {
+        if (util.indexOfIgnoreCase(etype, n) != null) return false;
+        if (util.indexOfIgnoreCase(msg, n) != null) return false;
+        if (code) |c| if (util.indexOfIgnoreCase(c, n) != null) return false;
+    }
+    const flakes = [_][]const u8{ "internal", "try again", "temporarily", "unavailable", "bad gateway", "upstream", "capacity" };
+    for (flakes) |n| {
+        if (util.indexOfIgnoreCase(etype, n) != null) return true;
+        if (util.indexOfIgnoreCase(msg, n) != null) return true;
+        if (code) |c| if (util.indexOfIgnoreCase(c, n) != null) return true;
+    }
+    const generic = etype.len == 0 or std.mem.eql(u8, etype, "error") or std.mem.eql(u8, etype, "api_error");
+    return generic and std.mem.trim(u8, msg, " \t\r\n").len == 0;
+}
+
+fn retryShortGatewayFlake(self: *Agent, etype: []const u8, code: ?[]const u8, msg: []const u8, retries: *usize) !bool {
+    if (!isShortGatewayFlake(etype, code, msg)) return false;
+    if (retries.* >= max_short_flake_retries) return false;
+    retries.* += 1;
+    self.partial_text.clearRetainingCapacity();
+    const delay_ms = RetryPlan.delayMs(true, retries.* - 1);
+    try self.say("[gateway flake — retrying in {d}s ({d}/{d})]\n", .{ delay_ms / 1000, retries.*, max_short_flake_retries });
+    if (self.tracer) |tr| tr.note("retry", "short gateway flake");
+    self.sleepInterruptible(delay_ms) catch return error.Interrupted;
+    return true;
 }
 
 /// The gate on the Agent: announce, trace, back off (1·2s — the gateway just
@@ -116,4 +155,16 @@ test "shouldRetryBodyParseAfterTimeouts (#gateway-artifact): timeout history gat
     try std.testing.expect(!shouldRetryBodyParseAfterTimeouts("Body must be valid JSON", 3, max_gateway_parse_retries));
     // an unrelated message never retries, however many timeouts preceded it
     try std.testing.expect(!shouldRetryBodyParseAfterTimeouts("quota exceeded", 5, 0));
+}
+
+test "isShortGatewayFlake: internal/empty api_error retry; invalid/auth/quota do not" {
+    try std.testing.expect(isShortGatewayFlake("api_error", null, "Internal Server Error"));
+    try std.testing.expect(isShortGatewayFlake("api_error", null, ""));
+    try std.testing.expect(isShortGatewayFlake("error", null, "   "));
+    try std.testing.expect(isShortGatewayFlake("", null, "upstream connect error"));
+    try std.testing.expect(!isShortGatewayFlake("invalid_request_error", null, "invalid prompt"));
+    try std.testing.expect(!isShortGatewayFlake("api_error", null, "invalid tool_choice"));
+    try std.testing.expect(!isShortGatewayFlake("authentication_error", null, "invalid api key"));
+    try std.testing.expect(!isShortGatewayFlake("insufficient_quota", null, "You exceeded your current quota"));
+    try std.testing.expect(!isShortGatewayFlake("api_error", null, "model not found"));
 }
