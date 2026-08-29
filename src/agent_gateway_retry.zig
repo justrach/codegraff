@@ -11,8 +11,11 @@
 //! 2. Retry trace notes carry the agent label, so a 5xx can be attributed to
 //!    the subagent that drew it without ms-arithmetic across api spans.
 //! 3. A short generic `api_error` / "Internal Server Error" / empty envelope
-//!    (the DeepSeek flash `-j 6` follow-up flake) is retried bounded. Real
-//!    invalid_request / auth / quota stays fail-fast.
+//!    (the DeepSeek flash `-j 6` follow-up flake) is retried bounded. The
+//!    same 110-byte / ~450ms follow-up also arrives as `invalid_request_error`
+//!    / "Body must be valid JSON" (our stringify just succeeded on call 1).
+//!    That phrase is a flake; auth / quota / a real invalid prompt stay
+//!    fail-fast.
 
 const std = @import("std");
 const Agent = @import("agent.zig").Agent;
@@ -91,6 +94,9 @@ pub const max_short_flake_retries: usize = 2;
 /// "overloaded" / "server_error" needle — isolated serial retry passed.
 /// Do not treat invalid_request / auth / quota as a flake.
 pub fn isShortGatewayFlake(etype: []const u8, code: ?[]const u8, msg: []const u8) bool {
+    // Gateway 110-byte follow-up. etype is often invalid_request_error, which
+    // would otherwise hard-fail on the "invalid" needle. Auth/quota still die.
+    if (isBodyParseRejection(msg)) return true;
     const hard = [_][]const u8{ "invalid", "authentication", "unauthorized", "insufficient", "quota", "permission", "tool_choice", "not found" };
     for (hard) |n| {
         if (util.indexOfIgnoreCase(etype, n) != null) return false;
@@ -185,4 +191,7 @@ test "isShortGatewayFlake: internal/empty api_error retry; invalid/auth/quota do
     try std.testing.expect(!isShortGatewayFlake("authentication_error", null, "invalid api key"));
     try std.testing.expect(!isShortGatewayFlake("insufficient_quota", null, "You exceeded your current quota"));
     try std.testing.expect(!isShortGatewayFlake("api_error", null, "model not found"));
+    try std.testing.expect(isShortGatewayFlake("invalid_request_error", null, "Body must be valid JSON"));
+    try std.testing.expect(isShortGatewayFlake("api_error", null, "Malformed JSON in request body"));
+    try std.testing.expect(!isShortGatewayFlake("invalid_request_error", null, "invalid prompt"));
 }
