@@ -24,6 +24,10 @@
 </p>
 
 <p align="center">
+  <a href="https://trendshift.io/repositories/84216?utm_source=repository-badge&utm_medium=badge&utm_campaign=badge-repository-84216" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/84216" alt="justrach/codegraff | Trendshift" width="250" height="55"></a>
+</p>
+
+<p align="center">
   <strong>The most token-efficient coding harness we've built so far.</strong><br/>
   Prompt-cache max keeps repeated prefixes hot. RLM + spec-ptc turns wide work
   into a small streaming program. Learnt slimming keeps fat results out of history.
