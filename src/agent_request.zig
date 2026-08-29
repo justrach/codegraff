@@ -216,6 +216,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     var server_retries: usize = 0; // #opencode-parity: bounded retries for a transient in-stream server overload
     var openai404_retries: usize = 0; // #opencode-parity: bounded retries for OpenAI's spurious model 404s
     const max_openai404_retries: usize = 2;
+    var gw_retry = policy.GatewayRetryState{}; // #gateway-artifact state (agent_gateway_retry.zig)
     rebuild: while (true) {
         const live = !self.sub and self.out != null and !self.stream_quiet;
         self.streamed_text = false;
@@ -359,7 +360,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             // OpenRouter and similar include user ids, BYOK/settings
                             // URLs, and routing docs. Classifiers still read g_5xx_body_buf.
                             try self.say("[{s}{s} — retrying in {d}s ({d}/{d})]\n", .{ what, ra_note, delay_ms / 1000, attempt + 1, max_attempts });
-                            if (self.tracer) |tr| tr.note("retry", what);
+                            policy.noteRetry(self, what);
                             self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                         } else {
                             // Transport flake (HttpConnectionClosing, a reset,
@@ -374,7 +375,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             // Same trace breadcrumb the 429/5xx branch leaves: a
                             // transport-flake retry is otherwise invisible in the
                             // session trace, hiding how flaky a provider really is.
-                            if (self.tracer) |tr| tr.note("retry", @errorName(err));
+                            policy.noteFlake(self, &gw_retry, err);
                             self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                         }
                         continue;
@@ -466,7 +467,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     // Codex Responses reports capacity failures through this
                     // response.failed arm too. Keep it on the same bounded
                     // overload retry path as SSE and JSON error envelopes.
-                    if (try retryTransientServerError(self, "", failure.code, msg, &server_retries)) continue :rebuild;
+                    if (try policy.afterServerErrorOrParseReject(self, "", failure.code, msg, &server_retries, &gw_retry)) continue :rebuild;
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("{s} api error: {s}", .{ self.provider.id, msg });
                     return error.ApiError;
@@ -486,7 +487,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
                     const ecode = if (eo) |e| (if (e.get("code")) |cv| (if (cv == .string) cv.string else null) else null) else null;
                     if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: streamed error event overflow (by code or phrasing) → trim + retry
-                    if (try retryTransientServerError(self, etype, ecode, emsg, &server_retries)) continue; // #opencode-parity: transient server overload → retry
+                    if (try policy.afterServerErrorOrParseReject(self, etype, ecode, emsg, &server_retries, &gw_retry)) continue;
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
                     return error.ApiError;
@@ -515,7 +516,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
             const ecode = if (eo) |e| (if (e.get("code")) |cv| (if (cv == .string) cv.string else null) else null) else null;
             if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: {"type":"error"} overflow (by code or phrasing) → trim + retry
-            if (try retryTransientServerError(self, etype, ecode, emsg, &server_retries)) continue; // #opencode-parity: transient server overload → retry
+            if (try policy.afterServerErrorOrParseReject(self, etype, ecode, emsg, &server_retries, &gw_retry)) continue;
             if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
             try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
             return error.ApiError;
@@ -561,7 +562,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             // so pull the structured code from root.error.code for isContextOverflow — a
             // local provider whose message text we don't match on still recovers.
             if (recoverContextOverflow(self, msg, errorCode(root), &context_retried)) continue;
-            if (try retryTransientServerError(self, "", errorCode(root), msg, &server_retries)) continue; // #opencode-parity: transient server overload → retry, not hard-fail
+            if (try policy.afterServerErrorOrParseReject(self, "", errorCode(root), msg, &server_retries, &gw_retry)) continue;
             if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
             try self.sayApiError("api error: {s}", .{msg});
             return error.ApiError;

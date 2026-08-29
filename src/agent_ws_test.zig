@@ -93,8 +93,12 @@ test "the codex .responses arm refreshes auth and re-anchors before resending (#
     try std.testing.expect(std.mem.indexOf(u8, src[arm_end..], "retryAfterAuthRefresh(self, msg, &auth_refreshed)") != null);
 
     // A response.failed overload used to skip the shared transient retry path
-    // and surface immediately (most visibly from detached recap calls).
-    try std.testing.expect(std.mem.indexOf(u8, arm, "retryTransientServerError(self, \"\", failure.code, msg, &server_retries)") != null);
+    // and surface immediately (most visibly from detached recap calls). The arm
+    // delegates to the one envelope gate, which runs the shared transient retry
+    // first and then the bounded gateway-artifact retry (#gateway-artifact).
+    try std.testing.expect(std.mem.indexOf(u8, arm, "policy.afterServerErrorOrParseReject(self, \"\", failure.code, msg, &server_retries, &gw_retry)") != null);
+    const gate = @embedFile("agent_gateway_retry.zig");
+    try std.testing.expect(std.mem.indexOf(u8, gate, "policy.retryTransientServerError(self, etype, code, msg, server_retries)") != null);
 
     // The guard bool is declared OUTSIDE `rebuild:`. Reset it inside the loop and a
     // permanently dead credential refresh-and-resends a full history forever, which
