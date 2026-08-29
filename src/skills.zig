@@ -178,10 +178,14 @@ pub fn companionDisabled(server: []const u8) bool {
     return false;
 }
 
+/// License probe cap. `runCapped(..., 0)` waited forever; a hung `codedb-pro
+/// probe` sat in front of the first TUI paint with no receipt after plugins.
+pub const codedbpro_probe_ms: u64 = 2_000;
+
 /// Run the companion's `probe` — its own harness-gating capability check, the
 /// same gate the codedb-pro CLI hooks use. Exit 0 == licensed and usable.
 pub fn probeCodedbproLicensed(gpa: Allocator, io: Io) bool {
-    const run = runCapped(gpa, io, &.{ "codedb-pro", "probe" }, 256, 256, 0) catch return false;
+    const run = runCapped(gpa, io, &.{ "codedb-pro", "probe" }, 256, 256, codedbpro_probe_ms) catch return false;
     defer {
         gpa.free(run.stdout);
         gpa.free(run.stderr);
@@ -393,6 +397,13 @@ test "codedbproNote: licensed flips codedbpro to the lean-in note" {
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "/rewind") != null);
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "Do not use mcp__codedbpro__read") != null);
     try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "READ with native codedb") != null);
+}
+
+test "codedb-pro license probe is bounded" {
+    try std.testing.expect(codedbpro_probe_ms > 0);
+    try std.testing.expect(codedbpro_probe_ms <= 5_000);
+    const src = @embedFile("skills.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "256, 256, codedbpro_probe_ms") != null);
 }
 
 test "skillIndex: registry lookup" {

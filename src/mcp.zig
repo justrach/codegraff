@@ -94,6 +94,9 @@ pub const Registry = struct {
     task_arenas: []std.heap.ArenaAllocator = &.{},
     /// Unjoined startServer futures from a deferred --yolo boot.
     pending_starts: []Io.Future(mcp_boot.StartOutcome) = &.{},
+    /// Names paired with `pending_starts` so companion auto-connect can skip
+    /// a second spawn of a server the deferred fan-out already queued.
+    pending_names: []const []const u8 = &.{},
     /// First model call already declined to wait on `pending_starts` (ADR 0035).
     first_request_join_skipped: bool = false,
 
