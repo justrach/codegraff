@@ -90,3 +90,18 @@ second `postWatched`). `validated` 106s / 6 calls. `map-conflict`
 11.5s then never completed — a live stream, not the 5-minute watched
 POST. `label-sort` was mid-turn (call 2 was 219s / 1.9MB SSE) when
 the cap hit. Do not steal Pi's heap. Do not shrink the keep-list.
+
+## Confirm (2026-08-29, `reasoning_effort=low`)
+
+`run-20260829-045547.jsonl`. Gateway A/B: omit = 27 reasoning_tokens
+on `pong`; `low` = 0; `thinking.disabled` still thinks; `none` is 400.
+
+| | pass | wall (sum) | out | calls |
+|---|---:|---:|---:|---:|
+| Pi (ADR 0045) | 5/6 | 758s | 27k | 35 |
+| graff omit | 4/6 | 1311s | 29k | 26 |
+| **graff `low`** | **5/6** | **286s** | **4.7k** | 38 |
+
+Same miss as Pi (`label-sort` hidden check). `cookie-store` 115s
+(was 300s SIGKILL; Pi 301s). `json-stream` 36s (was 280s; Pi 117s).
+Do not steal Pi's heap. Do not shrink the keep-list.
