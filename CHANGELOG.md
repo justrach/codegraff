@@ -20,9 +20,10 @@ current is part of cutting a release.
   and paint live markdown on the cached tail (ADR 0042, #666).
 - `pi-xai` runs Pi on the SuperGrok seat the same way as graff-dev
   (ADR 0043, #667). Do not steal Pi's 4-tool catalog or 165M heap.
-- Codegraff `glm-5.3-flash` SWE recorded (ADR 0045, #669): Pi 5/6 in
-  758s, graff 3/6 with three 300s timeouts. Next cut on that model is
-  finishing inside the cap, not a smaller catalog.
+- Codegraff `glm-5.3-flash` SWE (ADR 0045 / 0046, #669 / #671): omit
+  still thinks; default flash effort is `low`. `-p` streams so a hung
+  POST dies on the 30s stall, not a 5-minute watch. SWE **5/6 in 286s**
+  (Pi 5/6 in 758s). Same miss (`label-sort`). Do not steal Pi's catalog.
 - No tag until asked. Download / notarization ids land after the build.
 - Test floor 1758 (slack 25).
 
