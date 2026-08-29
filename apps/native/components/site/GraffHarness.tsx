@@ -24,6 +24,47 @@ import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/
 
 const NAME = "there";
 
+function greeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 5) return "Up late";
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
+
+/** Paced reveal over the ACP text: chunky `agent_message_chunk`s (and the
+ * one-shot final answer) drain in smoothly instead of popping. The rate
+ * scales with the backlog so it never falls far behind the wire. */
+function useSmoothStream(target: string, active: boolean): string {
+  const [shown, setShown] = useState(target);
+  const shownRef = useRef(target);
+  useEffect(() => {
+    if (!active || target.length < shownRef.current.length || !target.startsWith(shownRef.current)) {
+      shownRef.current = target;
+      setShown(target);
+      return;
+    }
+    if (target === shownRef.current) return;
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = Math.min(now - last, 100);
+      last = now;
+      const behind = target.length - shownRef.current.length;
+      if (behind > 0) {
+        const rate = 90 + behind * 6; // chars/second, backlog-proportional catch-up
+        const step = Math.max(1, Math.round((rate * dt) / 1000));
+        shownRef.current = target.slice(0, shownRef.current.length + step);
+        setShown(shownRef.current);
+        raf = requestAnimationFrame(tick);
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, active]);
+  return active ? shown : target;
+}
+
 const HOME_REVEAL = {
   offsetY: 23,
   blur: 17,
@@ -66,6 +107,7 @@ function AssistantBody({
   onReview?: () => void;
 }) {
   const thinking = turn.status === "thinking";
+  const smoothText = useSmoothStream(turn.text, turn.status === "streaming" || thinking);
   // "Thought for Ns" — measured here, since ACP updates carry no timestamps.
   const startRef = useRef(Date.now());
   const [thoughtSecs, setThoughtSecs] = useState<number | null>(null);
@@ -90,6 +132,8 @@ function AssistantBody({
     detail: tool.detail,
     path: tool.path,
     status: tool.status,
+    startedAt: tool.startedAt,
+    elapsedMs: tool.elapsedMs,
   }));
 
   return (
@@ -128,7 +172,7 @@ function AssistantBody({
         turn.text && (
           <div className="mt-4 max-w-[630px]">
             <Markdown
-              text={turn.text}
+              text={smoothText}
               streaming={turn.status === "streaming" || turn.status === "thinking"}
               onOpenPath={onOpenPath}
             />
@@ -213,7 +257,7 @@ function EmptyState({
     <div className="mx-auto flex min-h-full max-w-[720px] flex-col justify-center px-4 py-10 sm:px-8">
       <h1 className="text-[26px] font-normal tracking-[-0.02em] text-ink">
         <span className="home-reveal block text-ink-3" style={homeRevealStyle(stage >= 1)}>
-          Hello {NAME}
+          {greeting()}
         </span>
         <span className="home-reveal block" style={homeRevealStyle(stage >= 2)}>
           What should graff work on?
@@ -474,6 +518,13 @@ export default function GraffHarness() {
             c.id === activeId ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
           }`}
         >
+          {busy && c.id === activeId && (
+            <span
+              className="mr-1 size-1.5 shrink-0 animate-pulse rounded-full"
+              style={{ background: "var(--accent)" }}
+              aria-label="Working"
+            />
+          )}
           <button type="button" aria-pressed={c.id === activeId} onClick={() => setActiveId(c.id)} title={c.title ?? "New chat"} className="min-w-0 flex-1 text-left">
             <span className="block truncate">{c.title ?? "New chat"}</span>
           </button>

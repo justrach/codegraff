@@ -94,7 +94,16 @@ export type LiveToolRow = {
   path?: string;
   /** Live call state — running rows get a spinner so the turn visibly moves. */
   status?: "running" | "ok" | "error";
+  startedAt?: number;
+  elapsedMs?: number;
 };
+
+function formatDuration(ms: number): string | null {
+  if (ms < 1000) return null;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
 
 export type LiveDiff = {
   file: string;
@@ -121,6 +130,14 @@ export default function ToolChips({
     : DIFF_LINES;
   const [step, setStep] = useState(0);
   const [open, setOpen] = useState(true);
+  /* tick once a second while any live row runs, so its timer counts up */
+  const [, setClock] = useState(0);
+  const anyRunning = live && rows.some((r) => "status" in r && r.status === "running");
+  useEffect(() => {
+    if (!anyRunning) return;
+    const t = setInterval(() => setClock((c) => c + 1), 1000);
+    return () => clearInterval(t);
+  }, [anyRunning]);
   const [openRows, setOpenRows] = useState<Set<string>>(new Set());
   /* Rendered in a body portal so animated/translated reply wrappers cannot
    * redefine the fixed-position coordinate system. */
@@ -249,6 +266,17 @@ export default function ToolChips({
                 ) : (
                   <span className="min-w-0 flex-1" />
                 )}
+                {"status" in row && (() => {
+                  const label =
+                    row.status === "running" && row.startedAt
+                      ? formatDuration(Date.now() - row.startedAt)
+                      : row.elapsedMs !== undefined
+                        ? formatDuration(row.elapsedMs)
+                        : null;
+                  return label ? (
+                    <span className="shrink-0 pl-2 font-mono text-[10.5px] text-ink-3 tabular-nums">{label}</span>
+                  ) : null;
+                })()}
               </button>
 
               {/* expanded detail */}

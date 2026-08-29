@@ -188,11 +188,15 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     status,
     detail,
     path,
+    startedAt: prev?.startedAt ?? Date.now(),
   };
   const tools = turn.tools.slice();
   const merged: ToolRow = idx >= 0
     ? { ...prev!, ...row, name: kind ? row.name : prev!.name, icon: kind ? row.icon : prev!.icon }
     : row;
+  if ((status === "ok" || status === "error") && merged.elapsedMs === undefined && merged.startedAt !== undefined) {
+    merged.elapsedMs = Date.now() - merged.startedAt;
+  }
   if (idx >= 0) tools[idx] = merged;
   else tools.push(merged);
   const todos = parseTodos(rawInput);

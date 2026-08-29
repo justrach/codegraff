@@ -50,6 +50,9 @@ export type ToolRow = {
   status: "running" | "ok" | "error";
   detail: { text: string; tone?: "add" }[];
   path?: string;
+  /** Wall-clock bracket, measured client-side — rows tick while running. */
+  startedAt?: number;
+  elapsedMs?: number;
 };
 
 export type DiffChip = {
