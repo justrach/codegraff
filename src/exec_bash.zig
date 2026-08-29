@@ -27,6 +27,10 @@ const exec_bash_stream = @import("exec_bash_stream.zig");
 /// the job registry instead of being killed (xai-org/grok-build BashTool).
 pub const root_wait_ms: u64 = 120 * 1000;
 
+/// Lean `-p` has no human watching a hung test (ADR 0051). DeepSeek flash
+/// SWE sat 120s on `python3 test_json_stream.py`. Interactive stays 120s.
+pub const lean_oneshot_wait_ms: u64 = 15 * 1000;
+
 /// Wall-clock ceiling for one *subagent* bash command. Subagents run on pool
 /// threads with no TTY, so there is no Esc to kill a runaway command — without
 /// this, a codedb refusal that pushes a subagent onto an unfiltered `grep ~/`
@@ -81,9 +85,15 @@ fn startedText(gpa: Allocator, id: u32, cmd: []const u8, ssh: bool, auto_bg: boo
     return aw.toOwnedSlice();
 }
 
+fn defaultRootWaitMs() u64 {
+    const main_mod = @import("main.zig");
+    if (main_mod.unattended and @import("no_local_tools.zig").lean) return lean_oneshot_wait_ms;
+    return root_wait_ms;
+}
+
 fn rootWaitMs(input: Value) u64 {
-    const t = intField(input, "timeout") orelse return root_wait_ms;
-    if (t <= 0) return root_wait_ms;
+    const t = intField(input, "timeout") orelse return defaultRootWaitMs();
+    if (t <= 0) return defaultRootWaitMs();
     return @min(@as(u64, @intCast(t)), job_wait.wait_cap_ms);
 }
 
@@ -100,6 +110,27 @@ test "rootWaitMs: omitted/zero use 120s; positive values clamp to the 10h cap" {
     const huge = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"timeout\":999999999}", .{});
     defer huge.deinit();
     try std.testing.expectEqual(job_wait.wait_cap_ms, rootWaitMs(huge.value));
+}
+
+test "rootWaitMs: lean unattended oneshot defaults to 15s; timeout still wins" {
+    const main_mod = @import("main.zig");
+    const nlt = @import("no_local_tools.zig");
+    const saved_u = main_mod.unattended;
+    const saved_l = nlt.lean;
+    defer {
+        main_mod.unattended = saved_u;
+        nlt.lean = saved_l;
+    }
+    main_mod.unattended = true;
+    nlt.lean = true;
+    const empty = try std.json.parseFromSlice(Value, std.testing.allocator, "{}", .{});
+    defer empty.deinit();
+    try std.testing.expectEqual(lean_oneshot_wait_ms, rootWaitMs(empty.value));
+    const custom = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"timeout\":5000}", .{});
+    defer custom.deinit();
+    try std.testing.expectEqual(@as(u64, 5_000), rootWaitMs(custom.value));
+    main_mod.unattended = false;
+    try std.testing.expectEqual(root_wait_ms, rootWaitMs(empty.value));
 }
 
 fn formatJobDone(gpa: Allocator, cmd: []const u8, wait: jobs.FgDone) !ToolOutput {

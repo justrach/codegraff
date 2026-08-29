@@ -30,8 +30,9 @@ current is part of cutting a release.
   Codegraff follow-up flakes retry (ADR 0049). DeepSeek V4 flash
   default is `thinking.type=disabled` (ADR 0050): `reasoning_effort=low`
   still dumps CoT (cookie-store 75s / 1.9MB). OpenCode on the same
-  seat was 5/6 in 261s / 1.0G; graff stays ~91M. Same `label-sort`
-  miss. Do not steal Pi's catalog or OpenCode's heap.
+  seat was 5/6 in 261s / 1.0G; graff stays ~91M. Lean `-p` bash
+  auto-backgrounds at 15s (ADR 0051) so a hung test does not sit 120s.
+  Same `label-sort` miss. Do not steal Pi's catalog or OpenCode's heap.
 - Interactive `--yolo` queues companion MCP and names the boot phase
   (`mcp:` / `companion:` receipts) so first paint is not the handshake
   (#664). Mid-turn stall/reconnect and `model call N` pulses stay off
