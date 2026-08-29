@@ -26,9 +26,11 @@ current is part of cutting a release.
   (Pi 5/6 in 758s). Same miss (`label-sort`). Do not steal Pi's catalog.
 - Same SWE suite on other Codegraff models (ADR 0047): Gemini graff
   **5/6 in 103s**; Kimi 4/6 in 583s; DeepSeek flash was 2/6 one-shots.
-- Lean `-p` bounces a first-turn prose-only "done" (ADR 0048). DeepSeek
-  flash SWE **4/6 in 250s** (was 2/6 in 199s). The three 4s no-edits
-  now pass. Same `label-sort` miss. Do not steal Pi's catalog.
+- Lean `-p` bounces a first-turn prose-only "done" (ADR 0048). Short
+  Codegraff follow-up flakes retry (ADR 0049). DeepSeek flash SWE
+  **5/6 in 362s** (was 2/6 in 199s). OpenCode on the same seat is
+  5/6 in 261s / 1.0G RSS; graff stays ~91M. Same `label-sort` miss.
+  Do not steal Pi's catalog or OpenCode's heap.
 - Interactive `--yolo` queues companion MCP and names the boot phase
   (`mcp:` / `companion:` receipts) so first paint is not the handshake
   (#664). Mid-turn stall/reconnect and `model call N` pulses stay off

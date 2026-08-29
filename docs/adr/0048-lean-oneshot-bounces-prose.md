@@ -56,3 +56,5 @@ the backstop when the model writes "I fixed it" with zero tools. No
 - Interactive REPL / TUI / `--no-lean` / subagents are unchanged.
 - Revisit if a named flash model needs `tool_choice=required` on the
   first call; do not restore a global force.
+- Follow-up `-j 6` flakes and the OpenCode A/B are ADR 0049 (graff
+  5/6 in 362s after the retry).

@@ -59,6 +59,7 @@ record only when you need the evidence or the edge cases.
 | [0046](0046-flash-omits-default-effort.md) | Flash / Gemini send `reasoning_effort=low` (omit still thinks); lean `-p` shortens tool prose; `-p` streams. |
 | [0047](0047-codegraff-swe-not-glm-only.md) | Codegraff SWE A/B is not GLM-only: Gemini graff 5/6 in 103s; DeepSeek flash still one-shots; do not steal Pi's catalog. |
 | [0048](0048-lean-oneshot-bounces-prose.md) | Lean `-p` bounces a first-turn prose-only "done"; do not steal Pi's catalog. |
+| [0049](0049-codegraff-flake-retry-opencode.md) | Retry short Codegraff follow-up flakes; OpenCode A/B on the same seat is 5/6. |
 
 ## When to write one
 
