@@ -104,6 +104,17 @@ fn showRecoveredTransportRetry(kind: run_budget_mod.CallKind) bool {
     return kind != .recap;
 }
 
+/// #gateway-forensics: retry trace notes used to be anonymous — attributing a
+/// 5xx to the subagent that drew it required ms-arithmetic across api spans
+/// (one parallel-subagent session drew three 5xx retries; none said who).
+/// Tag the agent label into the note detail. REPL lines stay unchanged; the
+/// record is serialized synchronously inside note(), so arena scratch is safe.
+fn retryNote(self: *Agent, what: []const u8) void {
+    const tr = self.tracer orelse return;
+    const detail = std.fmt.allocPrint(self.arena, "{s} [{s}]", .{ what, self.label }) catch what;
+    tr.note("retry", detail);
+}
+
 /// #390 — appended once, on the run's final admitted model call, right where
 /// the tools disappear, so the model knows WHY and lands instead of retrying.
 pub const landing_note =
@@ -216,6 +227,11 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     var server_retries: usize = 0; // #opencode-parity: bounded retries for a transient in-stream server overload
     var openai404_retries: usize = 0; // #opencode-parity: bounded retries for OpenAI's spurious model 404s
     const max_openai404_retries: usize = 2;
+    // #gateway-artifact: timeout history for THIS request, so a body-parse
+    // rejection arriving right after a timeout run can be recognized as a
+    // gateway answering from a half-recovered state instead of a real 400.
+    var transport_timeouts: usize = 0;
+    var gateway_parse_retries: usize = 0;
     rebuild: while (true) {
         const live = !self.sub and self.out != null and !self.stream_quiet;
         self.streamed_text = false;
@@ -357,7 +373,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             // OpenRouter and similar include user ids, BYOK/settings
                             // URLs, and routing docs. Classifiers still read g_5xx_body_buf.
                             try self.say("[{s}{s} — retrying in {d}s ({d}/{d})]\n", .{ what, ra_note, delay_ms / 1000, attempt + 1, max_attempts });
-                            if (self.tracer) |tr| tr.note("retry", what);
+                            retryNote(self, what);
                             self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                         } else {
                             // Transport flake (HttpConnectionClosing, a reset,
@@ -372,7 +388,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             // Same trace breadcrumb the 429/5xx branch leaves: a
                             // transport-flake retry is otherwise invisible in the
                             // session trace, hiding how flaky a provider really is.
-                            if (self.tracer) |tr| tr.note("retry", @errorName(err));
+                            retryNote(self, @errorName(err));
+                            if (err == error.Timeout) transport_timeouts += 1; // #gateway-artifact
                             self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                         }
                         continue;
@@ -464,6 +481,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     // response.failed arm too. Keep it on the same bounded
                     // overload retry path as SSE and JSON error envelopes.
                     if (try retryTransientServerError(self, "", failure.code, msg, &server_retries)) continue :rebuild;
+                    if (try policy.retryBodyParseAfterTimeouts(self, msg, transport_timeouts, &gateway_parse_retries)) continue :rebuild; // #gateway-artifact
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("codex api error: {s}", .{msg});
                     return error.ApiError;
@@ -484,6 +502,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     const ecode = if (eo) |e| (if (e.get("code")) |cv| (if (cv == .string) cv.string else null) else null) else null;
                     if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: streamed error event overflow (by code or phrasing) → trim + retry
                     if (try retryTransientServerError(self, etype, ecode, emsg, &server_retries)) continue; // #opencode-parity: transient server overload → retry
+                    if (try policy.retryBodyParseAfterTimeouts(self, emsg, transport_timeouts, &gateway_parse_retries)) continue; // #gateway-artifact
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
                     return error.ApiError;
@@ -513,6 +532,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             const ecode = if (eo) |e| (if (e.get("code")) |cv| (if (cv == .string) cv.string else null) else null) else null;
             if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: {"type":"error"} overflow (by code or phrasing) → trim + retry
             if (try retryTransientServerError(self, etype, ecode, emsg, &server_retries)) continue; // #opencode-parity: transient server overload → retry
+            if (try policy.retryBodyParseAfterTimeouts(self, emsg, transport_timeouts, &gateway_parse_retries)) continue; // #gateway-artifact
             if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
             try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
             return error.ApiError;
@@ -556,6 +576,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             // local provider whose message text we don't match on still recovers.
             if (recoverContextOverflow(self, msg, errorCode(root), &context_retried)) continue;
             if (try retryTransientServerError(self, "", errorCode(root), msg, &server_retries)) continue; // #opencode-parity: transient server overload → retry, not hard-fail
+            if (try policy.retryBodyParseAfterTimeouts(self, msg, transport_timeouts, &gateway_parse_retries)) continue; // #gateway-artifact
             if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
             try self.sayApiError("api error: {s}", .{msg});
             return error.ApiError;
