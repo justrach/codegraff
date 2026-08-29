@@ -60,6 +60,7 @@ record only when you need the evidence or the edge cases.
 | [0047](0047-codegraff-swe-not-glm-only.md) | Codegraff SWE A/B is not GLM-only: Gemini graff 5/6 in 103s; DeepSeek flash still one-shots; do not steal Pi's catalog. |
 | [0048](0048-lean-oneshot-bounces-prose.md) | Lean `-p` bounces a first-turn prose-only "done"; do not steal Pi's catalog. |
 | [0049](0049-codegraff-flake-retry-opencode.md) | Retry short Codegraff follow-up flakes; OpenCode A/B on the same seat is 5/6. |
+| [0050](0050-deepseek-thinking-disabled-at-low.md) | DeepSeek flash default is `thinking.type=disabled`; `reasoning_effort=low` still thinks. |
 
 ## When to write one
 

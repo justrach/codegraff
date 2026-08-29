@@ -33,14 +33,29 @@ pub fn vercelEffort(requested: []const u8) []const u8 {
     return "medium";
 }
 
+/// DeepSeek V4 (native or via codegraff/fireworks): thinking is ON at
+/// high unless `thinking.type` is `disabled`. `reasoning_effort: low`
+/// still emits `reasoning_content` (ADR 0050).
+pub fn isDeepseekFamily(provider_id: []const u8, model: []const u8) bool {
+    if (std.mem.eql(u8, provider_id, "deepseek")) return true;
+    return std.mem.indexOf(u8, model, "deepseek") != null;
+}
+
 /// OpenAI-chat extras after `prompt_cache_key`: Z.AI thinking, Vercel
-/// `reasoning.effort`, then the shared `reasoning_effort` hint.
-pub fn writeChatExtras(s: *std.json.Stringify, provider_id: []const u8, send_effort: bool, requested: []const u8) !void {
+/// `reasoning.effort`, DeepSeek thinking on/off, then `reasoning_effort`.
+pub fn writeChatExtras(s: *std.json.Stringify, provider_id: []const u8, model: []const u8, send_effort: bool, requested: []const u8) !void {
     const is_zai = std.mem.eql(u8, provider_id, "zai");
     const is_vercel = std.mem.eql(u8, provider_id, "vercel");
     if (is_zai) {
         try s.objectField("thinking");
         try s.print("{s}", .{"{\"type\":\"enabled\",\"clear_thinking\":false}"});
+    } else if (isDeepseekFamily(provider_id, model) and send_effort) {
+        // Official off switch. GLM rejects type=disabled; do not send it there.
+        try s.objectField("thinking");
+        try s.print("{s}", .{if (std.mem.eql(u8, requested, "low"))
+            "{\"type\":\"disabled\"}"
+        else
+            "{\"type\":\"enabled\"}"});
     }
     if (is_vercel and send_effort) {
         try s.objectField("reasoning");
@@ -54,6 +69,14 @@ pub fn writeChatExtras(s: *std.json.Stringify, provider_id: []const u8, send_eff
         try s.objectField("reasoning_effort");
         try s.write(if (is_zai) reasoningEffort(requested) else if (std.mem.eql(u8, requested, "ultra")) "max" else requested);
     }
+}
+
+test "DeepSeek family is native id or a deepseek model name" {
+    try std.testing.expect(isDeepseekFamily("deepseek", "deepseek-v4-pro"));
+    try std.testing.expect(isDeepseekFamily("codegraff", "deepseek-v4-flash"));
+    try std.testing.expect(isDeepseekFamily("fireworks", "accounts/fireworks/models/deepseek-v4-flash"));
+    try std.testing.expect(!isDeepseekFamily("codegraff", "glm-5.3-flash"));
+    try std.testing.expect(!isDeepseekFamily("zai", "glm-5.3"));
 }
 
 test "Z.AI maps graff efforts onto low|high|max" {

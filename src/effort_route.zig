@@ -61,7 +61,9 @@ pub fn omitsDefaultFlashEffort(model: []const u8) bool {
 
 /// Wire `reasoning_effort` for an effort-capable provider. Flash / Gemini
 /// default `medium` becomes `low`: omit still thinks (27 reasoning_tokens
-/// on a `pong`); `low` bills 0. `none` is a 400. `/effort high` unchanged.
+/// on a `pong`); `low` bills 0 on GLM. DeepSeek V4 still thinks at `low`
+/// until `thinking.type=disabled` (ADR 0050). `none` is a 400. `/effort high`
+/// unchanged.
 pub fn wireEffort(model: []const u8, requested: []const u8) []const u8 {
     if (std.mem.eql(u8, requested, "medium") and omitsDefaultFlashEffort(model)) return "low";
     if (std.mem.eql(u8, requested, "ultra")) return "max";

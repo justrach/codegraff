@@ -174,7 +174,7 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             try s.objectField("prompt_cache_key");
             try s.write(http_headers.requestCacheKey(self.io, self.label, self, self.provider.id, &ckbuf));
             // reasoning_effort (codegraff/deepseek/zai) + Z.AI thinking + Vercel reasoning.effort.
-            try @import("zai_wire.zig").writeChatExtras(&s, self.provider.id, self.sendReasoningEffort(), @import("effort_route.zig").wireEffort(self.provider.model, @tagName(self.reasoning)));
+            try @import("zai_wire.zig").writeChatExtras(&s, self.provider.id, self.provider.model, self.sendReasoningEffort(), @import("effort_route.zig").wireEffort(self.provider.model, @tagName(self.reasoning)));
             // --output-schema: structured outputs (xAI docs' response_format).
             // A provider that rejected json_schema (#543, deepseek) degrades
             // dsh-style: the tools-off formatting turn carries the schema as a
