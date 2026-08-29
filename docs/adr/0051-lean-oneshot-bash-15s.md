@@ -22,3 +22,11 @@ Interactive / `--no-lean` stay 120s. Do not steal Pi’s catalog.
 A hung test returns a job id in 15s; the model can edit or
 `bash_kill`. A 20-minute compile on `-p` also backgrounds at 15s —
 `bash_output(wait_ms>0)` still waits for exit (ADR 0010).
+
+## Confirm (2026-08-29)
+
+`run-20260829-075402`, thinking off + 15s bash. cookie-store **30s**
+(was 114s / 71s hang). json-stream **22s** (was 155s / 120s hang).
+Suite 4/6 in **143s** / 91M — `validated` died on a concurrent
+reservation / empty balance, not the wait. Same `label-sort` miss.
+0-token follow-ups after that are burnt gateway. Do not stitch.

@@ -32,3 +32,17 @@ keep-list.
 - Flash SWE wall is generation without CoT dumps, not Zig vs JS.
 - `/effort` remains the only way thinking comes back (no auto-flip).
 - Revisit if a named DeepSeek flash pin needs default thinking.
+
+## Confirm (2026-08-29)
+
+Live `deepseek-v4-flash` pong on `gateway.codegraff.com`:
+
+| knob | reasoning_tokens | rc_len |
+|---|---:|---:|
+| omit | 21 | 79 |
+| `reasoning_effort=low` | 31 | 112 |
+| `thinking.type=disabled` | **0** | **0** |
+| disabled + low | **0** | **0** |
+| enabled + high | 29 | 117 |
+
+`--suite swe -j 6` after this cut (`074142`): 4/6 in **210s** / 91M (cookie-store 83s / 14, no 1.9MB dump). `config-parse` was the 110-byte “Body must be valid JSON” flake (retry in the same branch). After that retry (`074659`): **5/6 in 353s** — leftover wall was hung bash (ADR 0051), not CoT. Same `label-sort` miss. Later 0-token / balance-reservation runs are burnt gateway, not a model result. Do not steal Pi’s catalog.
