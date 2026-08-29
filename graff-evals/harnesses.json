@@ -22,6 +22,7 @@
     "usage": "graff-stderr",
     "capabilities": ["output-schema"],
     "schema_args": ["--output-schema", "{schema}"],
+    "env": {"GRAFF_POST_DEADLINE_SECS": "90"},
     "default_model": "grok-4.6"
   },
   "graff-dev-rlm": {

@@ -45,6 +45,6 @@ completed the same model. Do not steal Pi's heap (167M vs 23–90M).
 ## Consequences
 
 - Fair Codegraff A/B is `--model glm-5.3-flash` with `CODEGRAFF_API_KEY`.
-- Next graff cut on this model is finishing inside 300s (fewer / shorter
-  turns), not a catalog shrink to four tools.
+- The next cut is ADR 0046: omit default `reasoning_effort` on flash
+  and compact lean tool prose. Not a four-tool catalog.
 - Rotate any `cg_sk_` pasted into a chat; do not commit it.

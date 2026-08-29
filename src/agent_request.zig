@@ -218,7 +218,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     const max_openai404_retries: usize = 2;
     var gw_retry = policy.GatewayRetryState{}; // #gateway-artifact state (agent_gateway_retry.zig)
     rebuild: while (true) {
-        const live = !self.sub and self.out != null and !self.stream_quiet;
+        const live = self.usesLiveTransport();
         self.streamed_text = false;
         self.streamed_args = .none;
         const body = try self.buildBody(tools, force, live, stream_usage);
