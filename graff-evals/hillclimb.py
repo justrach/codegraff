@@ -193,6 +193,8 @@ def cmd_iterate(args) -> None:
     if args.only:
         want = {s.strip() for s in args.only.split(",") if s.strip()}
         cands = [c for c in cands if c["id"] in want]
+    else:
+        cands = [c for c in cands if not c.get("kept")]
     tasks = [t.strip() for t in (args.task or "").split(",") if t.strip()] or None
     harnesses = [args.ours]
     if args.theirs:

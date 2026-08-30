@@ -7,11 +7,32 @@ for the whole request at or above). SuperGrok's `[usage]` `$0.0000` is ignored.
 Graff `[usage] in` includes cache reads. grok-build `input_tokens` does not —
 ADR 0024's "185k in" column was uncached-only and undercounted grok-build.
 
-## Live 2026-08-30
+## Live 2026-08-30 (`run-20260830-034621.jsonl`)
 
-- **graff** SuperGrok OAuth works (`graff -p` on grok-4.6 returns `pong`).
-- **grok-build** 1.0.5 is installed but **not signed in** (`grok login --device-code`
-  needed). Live grok-build rows are blocked; do not treat `$0` as a score.
+Same SuperGrok / grok OAuth, grok-4.6, one rep, three core tasks
+(`exact-reply`, `file-ops`, `fix-fib`). grok-build 1.0.5 signed in via
+device-code.
+
+| harness | pass | wall | first | calls | tokens | uncached | cached | out | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| graff-dev (x_search on) | 3/3 | 64.0s | 2.7s | 9 | 36,374 | 14,757 | 20,352 | 1,265 | $0.0473 | 91.3M |
+| **graff-dev-noxsearch** | 3/3 | **54.5s** | **1.7s** | 9 | **22,482** | 6,183 | 15,616 | 683 | **$0.0243** | 91.3M |
+| grok-build | 3/3 | **41.6s** | 3.6s | **8** | 132,858 | 31,184 | 100,352 | 1,322 | $0.1205 | 153.8M |
+
+| task | graff wall / $ | noxsearch wall / $ | grok wall / $ |
+|---|---:|---:|---:|
+| exact-reply | 3.98s / $0.0075 | **2.09s / $0.0038** | 6.64s / $0.0149 |
+| file-ops | 7.76s / $0.0129 | **5.05s / $0.0075** | 9.32s / $0.0426 |
+| fix-fib | 52.22s / $0.0269 | 47.40s / $0.0129 | **25.68s / $0.0630** |
+
+**Iteration `x-search-off`: KEEP.** vs champion: wall −15%, first-token −38%,
+tokens −38%, list$ −49%, calls wash, pass 3/3, RSS unchanged. Promoted onto
+the `graff-dev` / `graff` eval harnesses (`GRAFF_XAI_X_SEARCH=0`). Product
+default stays on (ADR 0031). Heap and catalog untouched.
+
+grok-build still wins **summed wall** (fix-fib 26s vs 47s) and one fewer
+call. It loses list$ and tokens once cache reads are counted (132k vs 22k).
+Next chase is fix-fib wall, not their RSS.
 
 ## Historical rescore (same-day paired JSONL)
 

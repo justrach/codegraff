@@ -65,7 +65,9 @@ the last run for post-mortems; both are disposable.
 (see `hillclimb/candidates.json`), run the same tasks against the
 champion and grok-build, keep only a measured win on wall / first-token
 latency / tool calls / tokens / list-price USD. It will not keep
-grok-build's heap or a 4-tool catalog (ADR 0024).
+grok-build's heap or a 4-tool catalog (ADR 0024). First keep:
+`GRAFF_XAI_X_SEARCH=0` on `graff` / `graff-dev` (live table in
+`hillclimb/baseline.md`).
 
 ```sh
 ./hillclimb.py self-test

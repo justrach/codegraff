@@ -37,3 +37,7 @@ Hosted server-side tools add $5 / 1k for `web_search` / `x_search` /
 - A live grok-build row requires a signed-in `grok` CLI. If that login
   is missing, the scorer still prices historical JSONL and the loop
   records the blocker instead of inventing a $0 wash.
+- First live keep (2026-08-30, three core tasks): `GRAFF_XAI_X_SEARCH=0`
+  on the eval harness. Wall −15%, first-token −38%, tokens −38%,
+  list$ −49% vs x_search-on. Product splice stays on (ADR 0031).
+  grok-build still wins summed wall on `fix-fib`.

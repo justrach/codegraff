@@ -4,11 +4,15 @@
     "Do not steal grok-build heap (~165M RSS).",
     "Do not shrink the catalog to grok-build's 4 tools."
   ],
+  "champion": "graff-dev",
   "candidates": [
     {
       "id": "x-search-off",
       "harness": "graff-dev-noxsearch",
+      "kept": true,
+      "kept_on": "2026-08-30",
       "why": "ADR 0031 splices hosted x_search onto every xAI Responses tools turn. Coding evals should not pay prefix bytes or $5/1k for it. Catalog and heap stay the same.",
+      "result": "keep: wall -15%, first-token -38%, tokens -38%, list$ -49% on exact-reply/file-ops/fix-fib vs graff-dev with x_search on. Calls wash. grok-build still faster wall on fix-fib.",
       "forbidden": []
     }
   ]
