@@ -1,0 +1,10 @@
+{
+  "id": "empty-catalog",
+  "suite": "inhouse",
+  "category": "inhouse",
+  "source": "codegraff rlm-empty-tools — rebuild the tool catalog after a wide-native rlm showcase (distilled)",
+  "files_dir": "fixtures/empty-catalog",
+  "prompt": "tools_json after a showcase is empty, so the next request body is `\"tools\":,` and the provider 400s. Read SPEC.md and catalog.py, then make `python3 test_catalog.py` print OK. Do not edit the tests.",
+  "check": "python3 test_catalog.py && python3 \"$TASK_ROOT/hidden/empty-catalog.py\"",
+  "timeout_s": 240
+}

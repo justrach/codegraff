@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 490" width="880" height="490" role="img">
+<title>Fair same-session in-house · grok-4.6 · hardlink + --dir</title>
+<rect width="880" height="490" fill="#ffffff"/>
+<text x="20" y="22" font-size="16" font-weight="700" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">Fair same-session in-house · grok-4.6 · hardlink + --dir</text>
+<text x="20" y="40" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">Six PR-distilled fixtures. Lower-left is better. grok atomic-symlink-write timed out (240s, no usage footer). No dsh/zen.</text>
+<rect x="72" y="62" width="340" height="280" fill="#fafcfb" stroke="#d1d5db"/>
+<rect x="500" y="62" width="340" height="280" fill="#fafcfb" stroke="#d1d5db"/>
+<text x="72" y="56" font-size="13" font-weight="600" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">wall vs list$</text>
+<text x="500" y="56" font-size="13" font-weight="600" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">calls vs list$</text>
+<text x="242" y="376" text-anchor="middle" font-size="12" fill="#334155" font-family="ui-sans-serif, system-ui, sans-serif">wall (s) →</text>
+<text x="670" y="376" text-anchor="middle" font-size="12" fill="#334155" font-family="ui-sans-serif, system-ui, sans-serif">tool calls →</text>
+<line x1="72" y1="342.0" x2="412" y2="342.0" stroke="#e5e7eb"/>
+<line x1="500" y1="342.0" x2="840" y2="342.0" stroke="#e5e7eb"/>
+<text x="64" y="346.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.000</text>
+<text x="492" y="346.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.000</text>
+<line x1="72" y1="278.0" x2="412" y2="278.0" stroke="#e5e7eb"/>
+<line x1="500" y1="278.0" x2="840" y2="278.0" stroke="#e5e7eb"/>
+<text x="64" y="282.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.123</text>
+<text x="492" y="282.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.123</text>
+<line x1="72" y1="214.0" x2="412" y2="214.0" stroke="#e5e7eb"/>
+<line x1="500" y1="214.0" x2="840" y2="214.0" stroke="#e5e7eb"/>
+<text x="64" y="218.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.246</text>
+<text x="492" y="218.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.246</text>
+<line x1="72" y1="150.0" x2="412" y2="150.0" stroke="#e5e7eb"/>
+<line x1="500" y1="150.0" x2="840" y2="150.0" stroke="#e5e7eb"/>
+<text x="64" y="154.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.370</text>
+<text x="492" y="154.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.370</text>
+<line x1="72" y1="86.0" x2="412" y2="86.0" stroke="#e5e7eb"/>
+<line x1="500" y1="86.0" x2="840" y2="86.0" stroke="#e5e7eb"/>
+<text x="64" y="90.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.493</text>
+<text x="492" y="90.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.493</text>
+<line x1="72.0" y1="62" x2="72.0" y2="342" stroke="#e5e7eb"/>
+<text x="72.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">69s</text>
+<line x1="157.0" y1="62" x2="157.0" y2="342" stroke="#e5e7eb"/>
+<text x="157.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">162s</text>
+<line x1="242.0" y1="62" x2="242.0" y2="342" stroke="#e5e7eb"/>
+<text x="242.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">256s</text>
+<line x1="327.0" y1="62" x2="327.0" y2="342" stroke="#e5e7eb"/>
+<text x="327.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">350s</text>
+<line x1="412.0" y1="62" x2="412.0" y2="342" stroke="#e5e7eb"/>
+<text x="412.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">443s</text>
+<line x1="530.4" y1="62" x2="530.4" y2="342" stroke="#e5e7eb"/>
+<text x="530.4" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">26</text>
+<line x1="555.8" y1="62" x2="555.8" y2="342" stroke="#e5e7eb"/>
+<text x="555.8" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">27</text>
+<line x1="581.2" y1="62" x2="581.2" y2="342" stroke="#e5e7eb"/>
+<text x="581.2" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">28</text>
+<line x1="606.6" y1="62" x2="606.6" y2="342" stroke="#e5e7eb"/>
+<text x="606.6" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">29</text>
+<line x1="631.9" y1="62" x2="631.9" y2="342" stroke="#e5e7eb"/>
+<text x="631.9" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">30</text>
+<line x1="657.3" y1="62" x2="657.3" y2="342" stroke="#e5e7eb"/>
+<text x="657.3" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">31</text>
+<line x1="682.7" y1="62" x2="682.7" y2="342" stroke="#e5e7eb"/>
+<text x="682.7" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">32</text>
+<line x1="708.1" y1="62" x2="708.1" y2="342" stroke="#e5e7eb"/>
+<text x="708.1" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">33</text>
+<line x1="733.4" y1="62" x2="733.4" y2="342" stroke="#e5e7eb"/>
+<text x="733.4" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">34</text>
+<line x1="758.8" y1="62" x2="758.8" y2="342" stroke="#e5e7eb"/>
+<text x="758.8" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">35</text>
+<line x1="784.2" y1="62" x2="784.2" y2="342" stroke="#e5e7eb"/>
+<text x="784.2" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">36</text>
+<line x1="809.6" y1="62" x2="809.6" y2="342" stroke="#e5e7eb"/>
+<text x="809.6" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">37</text>
+<circle cx="83.0" cy="247.3" r="6.5" fill="#059669" stroke="#047857" stroke-width="1.4"/>
+<text x="93.0" y="239.3" font-size="11" font-weight="600" fill="#047857" font-family="ui-sans-serif, system-ui, sans-serif">graff-dev  80.8s · $0.1824</text>
+<circle cx="530.4" cy="247.3" r="6.5" fill="#059669" stroke="#047857" stroke-width="1.4"/>
+<text x="540.4" y="239.3" font-size="11" font-weight="600" fill="#047857" font-family="ui-sans-serif, system-ui, sans-serif">graff-dev  26 · $0.1824</text>
+<circle cx="28" cy="410" r="6.5" fill="#059669" stroke="#047857" stroke-width="1.4"/>
+<text x="40" y="414" font-size="12" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">graff-dev — 5/6 · on wall/$ + calls/$</text>
+<circle cx="368.9" cy="119.4" r="6.5" fill="#334155" stroke="#1e293b" stroke-width="1.4"/>
+<text x="378.9" y="111.4" font-size="11" font-weight="600" fill="#1e293b" font-family="ui-sans-serif, system-ui, sans-serif">grok  396.0s · $0.4285</text>
+<circle cx="631.9" cy="119.4" r="6.5" fill="#334155" stroke="#1e293b" stroke-width="1.4"/>
+<text x="641.9" y="111.4" font-size="11" font-weight="600" fill="#1e293b" font-family="ui-sans-serif, system-ui, sans-serif">grok  30 · $0.4285</text>
+<circle cx="28" cy="430" r="6.5" fill="#334155" stroke="#1e293b" stroke-width="1.4"/>
+<text x="40" y="434" font-size="12" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">grok — 5/6 · interior</text>
+<circle cx="174.9" cy="142.8" r="6.5" fill="#2563eb" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="184.9" y="134.8" font-size="11" font-weight="600" fill="#1d4ed8" font-family="ui-sans-serif, system-ui, sans-serif">opencode  182.1s · $0.3835</text>
+<circle cx="809.6" cy="142.8" r="6.5" fill="#2563eb" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="819.6" y="134.8" font-size="11" font-weight="600" fill="#1d4ed8" font-family="ui-sans-serif, system-ui, sans-serif">opencode  37 · $0.3835</text>
+<circle cx="28" cy="450" r="6.5" fill="#2563eb" stroke="#1d4ed8" stroke-width="1.4"/>
+<text x="40" y="454" font-size="12" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">opencode — 6/6 · interior</text>
+</svg>

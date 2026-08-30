@@ -25,6 +25,26 @@
     "env": {"GRAFF_POST_DEADLINE_SECS": "90"},
     "default_model": "grok-4.6"
   },
+  "graff-dev-repl": {
+    "cmd": ["{repo}/zig-out/bin/graff", "repl", "--model", "{model}", "--yolo"],
+    "stdin": "{prompt}\n",
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": [],
+    "env": {"GRAFF_POST_DEADLINE_SECS": "90"},
+    "default_model": "grok-4.6",
+    "note": "scripted `graff repl` (non-TTY). Same learn-auto path as -p. TTY `graff repl` is the TUI."
+  },
+  "graff-dev-noxsearch": {
+    "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": ["output-schema"],
+    "schema_args": ["--output-schema", "{schema}"],
+    "env": {"GRAFF_XAI_X_SEARCH": "0", "GRAFF_POST_DEADLINE_SECS": "90"},
+    "default_model": "grok-4.6",
+    "note": "hillclimb candidate: ADR 0031 opt-out. Hosted x_search off; catalog unchanged."
+  },
   "graff-dev-rlm": {
     "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo", "--rlm"],
     "answer": "stdout",
@@ -136,5 +156,40 @@
     "capabilities": [],
     "default_model": "grok-4.6",
     "note": "same SuperGrok seat as graff-dev. Wrapper reads graff-oauth.json into XAI_API_KEY. `pi` must be on PATH."
+  },
+  "opencode": {
+    "cmd": ["opencode", "run", "--format", "json", "--auto", "--pure", "--dir", "{sandbox}", "-m", "{model}", "{prompt}"],
+    "answer": "opencode-json",
+    "usage": "opencode-json",
+    "capabilities": [],
+    "model_prefix": "xai",
+    "default_model": "xai/grok-4.6",
+    "note": "OpenCode 1.18 headless. --dir is the eval sandbox (Popen cwd is not enough — OpenCode binds a project root). --pure skips plugins. SuperGrok via OpenCode xai auth."
+  },
+  "opencode-zen": {
+    "cmd": ["opencode", "run", "--format", "json", "--auto", "--pure", "--dir", "{sandbox}", "-m", "{model}", "{prompt}"],
+    "answer": "opencode-json",
+    "usage": "opencode-json",
+    "capabilities": [],
+    "default_model": "opencode/big-pickle",
+    "note": "OpenCode native Zen free model — NOT grok-4.6. Plot on the mixed-model chart only."
+  },
+  "dsh-grok": {
+    "cmd": ["dsh", "--profile", "headless", "--patch", "{repo}/graff-evals/dsh-grok.yml", "{prompt}"],
+    "answer": "stdout",
+    "usage": null,
+    "capabilities": [],
+    "env": {"DSH_PERMISSION_MODE": "danger-full-access"},
+    "default_model": "grok-4.6",
+    "note": "Same-model attempt. dsh 0.1.1-rc.2 pi-ai catalog has no grok-4.6 (only grok-4.5 / 4.3 / grok-build-0.1). Expect UNKNOWN_MODEL. Use dsh-xai for a live dsh point."
+  },
+  "dsh-xai": {
+    "cmd": ["dsh", "--profile", "headless", "--patch", "{repo}/graff-evals/dsh-xai.yml", "{prompt}"],
+    "answer": "stdout",
+    "usage": null,
+    "capabilities": [],
+    "env": {"DSH_PERMISSION_MODE": "danger-full-access"},
+    "default_model": "grok-4.5",
+    "note": "deepseek-harness on grok-4.5 (nearest xAI id in its catalog). NOT grok-4.6. Mixed-model chart only. Needs Node >=22.15 (zstd). SuperGrok OAuth → XAI_API_KEY via attach-dsh-xai-oauth.py (local; see dsh-local-oauth.md). No usage footer."
   }
 }

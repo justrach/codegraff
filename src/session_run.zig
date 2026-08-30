@@ -59,7 +59,6 @@ const goal_flow = @import("goal_flow.zig");
 const fleet = @import("fleet.zig");
 const hooks = @import("hooks.zig");
 const learn_auto = @import("learn_auto.zig");
-const learn_init = @import("learn_init.zig");
 const run_budget_mod = @import("run_budget.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const commands_privacy = @import("commands_privacy.zig");
@@ -110,6 +109,9 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
         models_buf.appendSlice(mi.name) catch {};
     }
     try repl.runScripted(gpa, io, environ_map, in, out, &repl_ctx, repl_glue.replTurnCb, repl_glue.replModelCb, repl_glue.replCancelCb, root.provider.model, models_buf.items);
+    // Same stderr footer as `-p`, so evals can score the scripted REPL the
+    // same way. TTY `graff repl` is the TUI and keeps the restore tail clean.
+    pricing.printUsageFooter(io);
     return true;
 }
 
@@ -485,26 +487,24 @@ fn reportTrialStarted(started: learn_auto.Started) void {
     );
 }
 
-/// Configure this workspace's learning store from the running binary, the same
-/// way `graff learn init` would. Best effort by design: a machine with no
-/// python3 or no usable credential simply does not learn, and the marker
-/// learn_auto already claimed keeps that from being retried every session.
-fn autoInitLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *const std.process.Environ.Map) bool {
+/// Start a detached `graff learn init` of this binary. Best effort: a machine
+/// that cannot spawn simply does not learn, and the marker learn_auto already
+/// claimed keeps that from being retried every session. Suite generation
+/// (~38s) must not sit on `-p` / REPL / TUI teardown.
+fn autoInitLearning(gpa: Allocator, io: Io) bool {
     std.debug.print("↺ setting this workspace up to learn from sessions like this one\n", .{});
-    // learn init narrates its own progress; the session's closing lines below
-    // are the useful summary, so its output goes to a buffer instead.
-    var buf: [16 * 1024]u8 = undefined;
-    var sink = std.Io.Writer.fixed(&buf);
-    learn_init.zeroConfig(gpa, arena, io, environ_map, .{}, &sink) catch |err| {
-        std.debug.print(
-            "↺ learning setup skipped ({s}) — `graff learn init` to retry\n",
-            .{@errorName(err)},
-        );
+    const exe_path = std.process.executablePathAlloc(io, gpa) catch {
+        std.debug.print("↺ learning setup skipped — `graff learn init` to retry\n", .{});
         return false;
     };
+    defer gpa.free(exe_path);
+    if (!learn_auto.startInit(io, exe_path)) {
+        std.debug.print("↺ learning setup skipped — `graff learn init` to retry\n", .{});
+        return false;
+    }
     std.debug.print(
-        "↺ learning on for this workspace: a trial runs in the background every {d} sessions and spends real model calls — `graff learn status`, off with GRAFF_LEARN_AUTO=off\n",
-        .{learn_auto.default_every_sessions},
+        "↺ learning setup started in the background — `graff learn status`, off with GRAFF_LEARN_AUTO=off\n",
+        .{},
     );
     return true;
 }
@@ -519,7 +519,9 @@ pub fn shouldAutoLearn(unattended: bool, json_mode: bool) bool {
 
 /// Closing the learning loop: a session that did real model work counts toward
 /// this workspace's next trial and, on cadence, starts one in the background.
-/// The first such session in a workspace also creates the store it counts into.
+/// The first such session also starts `graff learn init` detached so teardown
+/// does not wait on suite generation; the next session that finds a store
+/// starts the cadence.
 pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *const std.process.Environ.Map, budget: *const run_budget_mod.RunBudget, telemetry_allowed: bool) void {
     if (!shouldAutoLearn(main_mod.unattended, main_mod.json_mode)) return;
     const options: learn_auto.Options = .{
@@ -530,15 +532,7 @@ pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ
     };
     switch (learn_auto.maybeStart(gpa, arena, io, environ_map, options)) {
         .started => |started| reportTrialStarted(started),
-        // First real session here: build the store, then count this session
-        // against it so the cadence starts from this one rather than the next.
-        .needs_store => {
-            if (!autoInitLearning(gpa, arena, io, environ_map)) return;
-            switch (learn_auto.maybeStart(gpa, arena, io, environ_map, options)) {
-                .started => |started| reportTrialStarted(started),
-                else => {},
-            }
-        },
+        .needs_store => _ = autoInitLearning(gpa, io),
         .skipped => {},
     }
 }

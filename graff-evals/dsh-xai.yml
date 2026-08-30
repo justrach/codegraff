@@ -1,0 +1,16 @@
+# Nearest xAI model in dsh's vendored pi-ai catalog (0.1.1-rc.2).
+# That catalog has grok-4.5 / grok-4.3 / grok-build-0.1 — not grok-4.6.
+# Mixed-model point: do not read as the grok-4.6 same-model series.
+# XAI_API_KEY is attached locally from SuperGrok OAuth (see dsh-local-oauth.md).
+# X-XAI-Token-Auth is a routing flag, not a secret — graff sends it for login tokens.
+- id: agent-default-model
+  config:
+    provider: xai
+    model: grok-4.5
+- id: llm-pi-ai
+  config:
+    providers:
+      xai:
+        apiKeyEnv: XAI_API_KEY
+        headers:
+          X-XAI-Token-Auth: xai-grok-cli
