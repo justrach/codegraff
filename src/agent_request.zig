@@ -208,8 +208,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         }
     }
     var context_retried = false; // #193: at most one in-turn overflow recovery per request
-    // #56: bounded stream-stall / drop reconnect budget (codex's stream_max_retries
-    // analog). Declared outside the rebuild loop so a WS reanchor can't reset it.
+    // #56: bounded stream-stall / drop reconnect budget (codex's stream_max_retries analog), outside the rebuild loop so a WS reanchor can't reset it.
+    self.stall = .{}; // #680: a fresh widen ladder + tripped budget per request
     var stall_retries: usize = 0;
     const max_stall_retries: usize = 2;
     const stall_reconnect_backoff_ms = 750; // brief pause before reconnecting on a fresh stream
@@ -285,7 +285,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             if (stall_retries > 1) self.ws_off = true;
                             if (self.tracer) |tr| tr.note("stream_retry", what);
                             if (telemetry.g_telem) |t| t.errorEvent("stream_retry", what);
-                            self.partial_text.clearRetainingCapacity(); // fresh stream re-streams cleanly, no concat
+                            @import("agent_stream.zig").noteStallRetry(self, stall_retries); // #680: clears the partial (fresh stream, no concat) + widens the between-lines budget
                             self.closeCodexWs(); // tear down the dead WS + null codex_prev_id for a full re-send (no-op off codex WS)
                             self.sleepInterruptible(stall_reconnect_backoff_ms) catch return error.Interrupted;
                             continue :rebuild;
@@ -293,7 +293,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         // Budget gone: the turn is ending. Mid-turn cuts stayed silent.
                         @import("engine_sink.zig").forAgent(self).emit(self.io, .{ .transport_aborted = .{ .reason = if (stalled) .stalled else .dropped, .turn_ending = true } });
                         if (stalled) {
-                            self.last_api_error = std.fmt.allocPrint(self.arena, "stream stalled: no data from the model for {d}s — ended the turn after {d} reconnect attempts (raise GRAFF_STREAM_STALL_SECS if your model needs longer)", .{ http.stream_stall_ms / 1000, max_stall_retries }) catch null;
+                            self.last_api_error = @import("agent_stream.zig").stallGiveUpMessage(self, max_stall_retries); // #680: reports the wait that tripped, not the configured total
                             if (telemetry.g_telem) |t| t.errorEvent("stream_stall", self.last_api_error orelse "stream stalled");
                             if (self.tracer) |tr| tr.note("stream_stall", self.last_api_error orelse "stream stalled");
                             return error.StreamStalled;

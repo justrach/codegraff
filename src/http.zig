@@ -238,9 +238,9 @@ fn postWatchdog(io: Io) WatchdogFired {
 // resets its clock on every line, so it measures the gap between tokens/
 // keep-alives/reasoning deltas) is a dead or hung connection. This is the
 // PRE-first-token budget, generous because a silent reasoning phase legitimately
-// runs minutes; http_stall.budgetMs tightens it once tokens are flowing (#56).
-// Tunable via GRAFF_STREAM_STALL_SECS (session_run.setupSkillsAndTheme), which
-// scales both regimes. Giving up is error.StreamStalled, NEVER a user Esc (#134).
+// runs minutes; http_stall.budgetMs tightens it once tokens flow (#56); each stall
+// reconnect widens it back toward the total (#680). Tunable via GRAFF_STREAM_STALL_SECS
+// (session_run.setupSkillsAndTheme), both regimes. Giving up is error.StreamStalled, NEVER a user Esc (#134).
 pub var stream_stall_ms: u64 = 120 * 1000;
 
 /// A response head idle this long = the server accepted the connection but is

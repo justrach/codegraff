@@ -510,7 +510,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         //     here is equivalent and lets both regimes share one watchdog arm.
         read: {
             const head_wait = reused and frames_seen == 0;
-            const budget = if (head_wait) http.head_stall_ms else http_stall.interFrameBudgetMs(http.stream_stall_ms, frames_seen > 0, text_seen);
+            const budget = if (head_wait) http.head_stall_ms else http_stall.interFrameBudgetMs(http.stream_stall_ms, frames_seen > 0, text_seen, self.stall.widen);
             const ReadDone = union(enum) { msg: ws.Error!ws.Opcode, stall: WatchdogFired };
             var rd_buf: [2]ReadDone = undefined;
             var rsel: Io.Select(ReadDone) = .init(self.io, &rd_buf);
@@ -548,6 +548,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
                     return watchdogError(w, error.HungRequest);
                 } else {
                     // Only the deadline gets a notice; a user Esc stays silent.
+                    if (w == .deadline) self.stall.tripped_ms = budget; // #680: the turn-ending message reports THIS wait
                     if (w == .deadline) emitAbort(self, .stalled, false);
                     if (self.tracer) |tr| tr.note("ws", if (w == .esc) "esc" else "stall");
                     return watchdogError(w, error.StreamStalled);
