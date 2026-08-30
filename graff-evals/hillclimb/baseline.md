@@ -49,6 +49,14 @@ separately: `graff learn init` in `/tmp/graff-pin-proof` left pin and
 on repl) and won file-ops wall. We win the other named axes on this
 set. Heap still theirs (155M vs 91M) — not stolen.
 
+Interactive TUI (`graff tui --yolo --model grok-4.6`, PTY, Ctrl+Q) of
+the same fix-fib prompt: test printed OK at **5.9s**, turn loop 7.4s,
+session wall 9.3s including boot/quit. `.graff` was **52K**. No
+`graff-pinned`, no extra 127M inode. Four API-call traces (we quit
+during the fourth after the test already passed), so learn-auto did
+not fire — same threshold miss as the `-p` row. First model token
+2.6s. In the 11–15s band (under it).
+
 `x-search-off` dropped: not what grok-build does.
 
 ## Frontier graph (live 3-task, two 2D projections)
