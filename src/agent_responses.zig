@@ -128,10 +128,11 @@ fn writeDiagnosticField(w: *std.Io.Writer, raw: []const u8, max: usize) !void {
 
 test "failureDiagnostic retains only bounded single-line code and message" {
     const a = std.testing.allocator;
-    const long = "x" ** 500;
+    var long: [513]u8 = @splat('x');
+    @memcpy(long[0..13], "bad request\r\n");
     const diagnostic = try failureDiagnostic(a, "codex", .{
         .code = "invalid_request_error\nignored-envelope",
-        .message = "bad request\r\n" ++ long,
+        .message = &long,
     });
     defer a.free(diagnostic);
     try std.testing.expect(std.mem.startsWith(u8, diagnostic, "codex api error [invalid_request_error ignored-envelope]: bad request  "));
