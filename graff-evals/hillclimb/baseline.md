@@ -44,6 +44,25 @@ detached `learn init`; `-p` and REPL share one learn-auto path (no
 oneshot-only skip). `x_search` stays on (ADR 0031). Do not steal grok
 heap (~165M). Do not shrink to a 4-tool catalog (ADR 0024).
 
+## Latest climb — `run-20260830-112125` spine (usage-fixed `-p`)
+
+Same SuperGrok seat after the Responses SSE-end fix (`event: response.completed`
+no longer drops the `data:` usage payload). **Not Pareto.**
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | 3/3 | **28.5s** | 3.5s | 9 | 36822 | **$0.0612** | **101.7M** |
+| grok | 3/3 | 33.4s | 4.1s | **7** | 116043 | $0.1246 | 156.4M |
+| opencode | 3/3 | 30.4s | **2.6s** | 8 | 92176 | $0.1385 | 1057.6M |
+
+This session graff wins wall / $ / RSS / tokens vs both. First-token loses
+to OpenCode because file-ops is tool-first (6.55s ≈ wall 7.1s; exact-reply
+2.21s and fix-fib 1.71s already beat 2.6s). Calls 9 vs grok 7 / OpenCode 8
+is model extra-tool variance (file-ops 3 vs 2, fix-fib 5 vs 4), not a
+catalog change. Residual: emit one `-p` stderr progress line at first
+model SSE (including tool bytes) so first_out is TTFT, not the late
+narration. Do not put that line on stdout.
+
 Also compared: OpenCode (`opencode run`) and DeepSeek Harness (`dsh`).
 Same-model series is grok-4.6. Native-default series (`opencode-zen`,
 `dsh-deepseek`) is a **different chart** — do not read those points as

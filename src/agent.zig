@@ -33,6 +33,7 @@ const run_budget_mod = @import("run_budget.zig");
 const prompt_ui = @import("agent_prompt.zig");
 const agent_tests = @import("agent_tests.zig");
 const empty_completion = @import("agent_empty_completion.zig");
+const named_work = @import("named_work.zig");
 const goal_state = @import("goal_state.zig");
 const peer_channel = @import("peer_channel.zig"); // #469: turn-boundary peer message delivery
 const job_notify = @import("job_notify.zig");
@@ -207,6 +208,7 @@ pub const Agent = struct {
     compact_summary_failures: u8 = 0, // #379: consecutive complete-but-unusable (empty/truncated) summaries
     compact_pin_degraded: bool = false, // #581: pinned suffix over budget — skip+say once per unresolved turn
     empty_completion_retries: u8 = 0, // degenerate empty completions re-asked this turn (agent_empty_completion.zig)
+    named_work_nudges: u8 = 0, // named-file / zero-tool nudge this turn (named_work.zig)
     precompact_note_gen: ?u32 = null, // #391: history_rewrites at the last pre-compaction note-to-self, so one history generation buys at most one note however often compaction is retried (compact_note.decideCalls)
     ws_off: bool = false, // codex ws transport disabled for this session after a handshake/transport fallback to SSE (#codex-ws)
     ws_transport_failures: u8 = 0, // consecutive WS failures; retry once before latching persistent SSE
@@ -326,6 +328,7 @@ pub const Agent = struct {
         try self.ensureRootTools(self.provider.kind);
         // No per-turn teardown: the socket and the chain span user turns, guarded by codex_chain.usable instead.
         self.completed = null;
+        self.named_work_nudges = 0;
         if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) esc_cancel.store(false, .release);
         while (true) {
             if (try @import("turn_chrome.zig").beforeRequest(self)) |paused| return paused;
@@ -389,6 +392,7 @@ pub const Agent = struct {
                 // A completion with no text and no tool calls used to end the turn
                 // silently — mid-task that just looks like a dead session.
                 if (try empty_completion.handle(self, final_text, hist_len)) continue;
+                if (try named_work.handle(self, final_text)) continue;
                 return final_text;
             }
             self.empty_completion_retries = 0;
