@@ -173,6 +173,15 @@
     "capabilities": [],
     "env": {"DSH_PERMISSION_MODE": "danger-full-access"},
     "default_model": "grok-4.6",
-    "note": "deepseek-ai/deepseek-harness same-model attempt: patch layer pins xai/grok-4.6. Needs `dsh` on PATH and an xAI credential dsh will accept. Native default is dsh-deepseek (different model)."
+    "note": "Same-model attempt. dsh 0.1.1-rc.2 pi-ai catalog has no grok-4.6 (only grok-4.5 / 4.3 / grok-build-0.1). Expect UNKNOWN_MODEL. Use dsh-xai for a live dsh point."
+  },
+  "dsh-xai": {
+    "cmd": ["dsh", "--profile", "headless", "--patch", "{repo}/graff-evals/dsh-xai.yml", "{prompt}"],
+    "answer": "stdout",
+    "usage": null,
+    "capabilities": [],
+    "env": {"DSH_PERMISSION_MODE": "danger-full-access"},
+    "default_model": "grok-4.5",
+    "note": "deepseek-harness on grok-4.5 (nearest xAI id in its catalog). NOT grok-4.6. Mixed-model chart only. Needs Node >=22.15 (zstd). SuperGrok OAuth → XAI_API_KEY via attach-dsh-xai-oauth.py (local; see dsh-local-oauth.md). No usage footer."
   }
 }

@@ -9,3 +9,6 @@
     providers:
       xai:
         apiKeyEnv: XAI_API_KEY
+        headers:
+          # routing flag (not a secret); SuperGrok OAuth tokens need it
+          X-XAI-Token-Auth: xai-grok-cli
