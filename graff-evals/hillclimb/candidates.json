@@ -29,6 +29,14 @@
       "kept_on": "2026-08-30",
       "why": "Pin graff-pinned as a hardlink (same inode, O(1)). -p, piped graff repl, and TUI share one learn-auto path. Copy only when the filesystem cannot hardlink.",
       "forbidden": []
+    },
+    {
+      "id": "background-learn-init",
+      "harness": "graff-dev",
+      "kept": true,
+      "kept_on": "2026-08-30",
+      "why": "autoInitLearning detaches graff learn init (same process-group spawn as a trial). Session-end no longer waits ~38s on suite generation. Pin stays a hardlink. -p / REPL / TUI share the path.",
+      "forbidden": []
     }
   ]
 }

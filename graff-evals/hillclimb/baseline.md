@@ -7,7 +7,48 @@ for the whole request at or above). SuperGrok's `[usage]` `$0.0000` is ignored.
 Graff `[usage] in` includes cache reads. grok-build `input_tokens` does not —
 ADR 0024's "185k in" column was uncached-only and undercounted grok-build.
 
-## Live 2026-08-30 after copying grok-build (`run-20260830-035954.jsonl`)
+## We are not strict Pareto vs grok-build
+
+On the live 3-task set they still win **calls**. We win wall, tokens,
+list$, and RSS. Pass is a tie. Do not claim the frontier.
+
+## Live 2026-08-30 hardlink pin, `-p` + scripted REPL (`run-20260830-042417.jsonl`)
+
+Same SuperGrok / grok OAuth, grok-4.6, one rep, three core tasks.
+**x_search stays on.** `-p` (`graff-dev`) and piped `graff repl`
+(`graff-dev-repl`) share one learn-auto path. Pin is a hardlink
+(same inode; copy only if hardlink fails). Session-end `learn init`
+is detached (ADR 0045) so teardown does not wait ~38s on suite gen.
+
+REPL is fatter than `-p` because it is not lean-oneshot (more tokens,
+one extra call on this set). REPL `first_out_s` is echo (0.03s) —
+ignore it; it is not time-to-first-model-token.
+
+This run's fix-fib used 4 API calls, so learn-auto did **not** fire
+(threshold is 5). No pin in those sandboxes. The hardlink was proven
+separately: `graff learn init` in `/tmp/graff-pin-proof` left pin and
+`zig-out/bin/graff` on **inode 1478920, nlink=2**; init wall was
+**37.7s**, almost all CPU on suite generation.
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **graff-dev (`-p`)** | 3/3 | **22.2s** | **2.8s** | 8 | **~32k** | **$0.0374** | **90.7M** |
+| grok-build | 3/3 | 37.0s | 3.9s | **7** | ~116k | $0.1474 | 155.4M |
+| graff-dev-repl | 3/3 | 25.2s | 0.03s (echo) | 9 | ~64k | $0.1185 | 91.8M |
+
+| task | graff `-p` wall / $ / calls | grok wall / $ / calls |
+|---|---:|---:|
+| exact-reply | **2.55s / $0.0067 / 1** | 2.68s / $0.0322 / 1 |
+| fix-fib | **10.63s / $0.0170 / 4** | 26.90s / $0.0708 / 4 |
+| file-ops | 8.99s / $0.0137 / 3 | **7.39s** / $0.0444 / **2** |
+
+**Not Pareto:** grok-build still has fewer calls (7 vs 8 on `-p`, 7 vs 9
+on repl) and won file-ops wall. We win the other named axes on this
+set. Heap still theirs (155M vs 91M) — not stolen.
+
+`x-search-off` dropped: not what grok-build does.
+
+## Earlier same-day after oneshot-skip (`run-20260830-035954.jsonl`) — superseded
 
 Same SuperGrok / grok OAuth, grok-4.6, one rep, three core tasks.
 **x_search stays on** (grok-build 1.0.5 still lists `web_search` / `web_fetch`).
@@ -79,7 +120,9 @@ Shared tasks only. `cookie-store` on graff-dev that day has no `[usage]` line
 ## What the hillclimb is allowed to chase
 
 On 2026-08-25 SWE, grok-build still wins pass / wall / latency / calls / USD.
-On 2026-08-28, graff wins cost and tokens once cache is counted, and still
-loses a SWE pass (`cookie-store` / historically `json-stream` / `label-sort`).
+On the live 2026-08-30 3-task set we win wall / tokens / list$ / RSS and
+lose calls — **not Pareto**. On 2026-08-28 we still lose a SWE pass
+(`cookie-store` / historically `json-stream` / `label-sort`).
 Do not steal the 165M heap or a 4-tool catalog to close the remaining gap
-(ADR 0024). First candidate: `GRAFF_XAI_X_SEARCH=0` (`graff-dev-noxsearch`).
+(ADR 0024). `x-search-off` was dropped (not what grok-build does).
+Kept: hardlink pin + detached session-end `learn init` (ADR 0044 / 0045).

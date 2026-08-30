@@ -53,6 +53,7 @@ record only when you need the evidence or the edge cases.
 | [0040](0040-codedb-stays-when-licensed.md) | Ordinary reads use native `codedb` / `read_file`; codedb-pro is extra search, not the default reader. |
 | [0041](0041-tui-is-an-acp-client.md) | The fullscreen TUI is an in-process ACP client: session/prompt in, session/update thought/tool/text out. No child `graff acp`. |
 | [0044](0044-eval-list-price-hillclimb.md) | Eval USD is xAI list price (not SuperGrok $0); hillclimb keeps only measured wins on wall / latency / calls / tokens / USD. |
+| [0045](0045-learn-init-is-detached.md) | Session-end `learn init` is detached (same process-group spawn as a trial); do not block `-p` / REPL teardown on suite generation. |
 
 ## When to write one
 

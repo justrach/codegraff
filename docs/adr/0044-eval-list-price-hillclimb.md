@@ -45,3 +45,5 @@ Hosted server-side tools add $5 / 1k for `web_search` / `x_search` /
   path: pin `graff-pinned` with a hardlink (copy only when the
   filesystem cannot). Do not skip bootstrap on oneshot — that split
   the surfaces. Do not chmod the pin (same inode as the live exe).
+- Suite generation is the remaining ~38s tax. Session-end init is
+  detached (ADR 0045); do not wait on it in `-p` / REPL / TUI.
