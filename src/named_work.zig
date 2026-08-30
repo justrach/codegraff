@@ -6,6 +6,7 @@
 //! model call, and only when tools_used is still empty.
 
 const std = @import("std");
+const Value = std.json.Value;
 
 const Agent = @import("agent.zig").Agent;
 const messages_mod = @import("messages.zig");
@@ -32,24 +33,41 @@ pub fn shouldNudge(tools_used: u64, nudges: u8, prompt: []const u8) bool {
     return hasNamedSource(prompt);
 }
 
-fn lastUserText(self: *Agent) []const u8 {
-    var i = self.messages.items.len;
-    while (i > 0) {
-        i -= 1;
-        const msg = self.messages.items[i];
-        if (msg != .object) continue;
-        const role = msg.object.get("role") orelse continue;
-        if (role != .string or !std.mem.eql(u8, role.string, "user")) continue;
-        const content = msg.object.get("content") orelse continue;
-        if (content == .string) return content.string;
+fn valueNamesSource(v: Value) bool {
+    switch (v) {
+        .string => |s| return hasNamedSource(s),
+        .object => |o| {
+            var it = o.iterator();
+            while (it.next()) |e| {
+                if (valueNamesSource(e.value_ptr.*)) return true;
+            }
+            return false;
+        },
+        .array => |a| {
+            for (a.items) |item| {
+                if (valueNamesSource(item)) return true;
+            }
+            return false;
+        },
+        else => return false,
     }
-    return "";
+}
+
+/// Walk every string in history. Responses items often have no `role=user`
+/// / `content` string, so looking at only the last user message misses the
+/// named path and the nudge never fires.
+pub fn conversationNamesSource(messages: []const Value) bool {
+    for (messages) |m| {
+        if (valueNamesSource(m)) return true;
+    }
+    return false;
 }
 
 /// Append the nudge and ask the caller to `continue` the turn loop.
 pub fn handle(self: *Agent, _: []const u8) !bool {
-    if (!shouldNudge(self.tools_used.count(), self.named_work_nudges, lastUserText(self)))
-        return false;
+    if (self.named_work_nudges >= max_nudges) return false;
+    if (self.tools_used.count() != 0) return false;
+    if (!conversationNamesSource(self.messages.items)) return false;
     self.named_work_nudges += 1;
     try self.messages.append(try messages_mod.textMessage(self.arena, "user", nudge_text));
     return true;
@@ -68,4 +86,18 @@ test "shouldNudge is once, and only when no tools have run" {
     try std.testing.expect(!shouldNudge(1, 0, "Fix fib.py"));
     try std.testing.expect(!shouldNudge(0, 1, "Fix fib.py"));
     try std.testing.expect(!shouldNudge(0, 0, "Reply with exactly: pong"));
+}
+
+test "conversationNamesSource sees Responses input_text, not role=user" {
+    const raw =
+        \\{"type":"message","content":[{"type":"input_text","text":"Fix atomic_write.py"}]}
+    ;
+    const parsed = try std.json.parseFromSlice(Value, std.testing.allocator, raw, .{});
+    defer parsed.deinit();
+    const msgs = [_]Value{parsed.value};
+    try std.testing.expect(conversationNamesSource(&msgs));
+    const pong = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"role\":\"user\",\"content\":\"pong\"}", .{});
+    defer pong.deinit();
+    const pongs = [_]Value{pong.value};
+    try std.testing.expect(!conversationNamesSource(&pongs));
 }
