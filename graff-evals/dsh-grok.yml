@@ -1,0 +1,11 @@
+# graff-evals overlay: retarget dsh at xAI grok-4.6 for a same-model harness compare.
+# dsh has no --model flag; this layer is the knob. Native default stays dsh-deepseek.
+- id: agent-default-model
+  config:
+    provider: xai
+    model: grok-4.6
+- id: llm-pi-ai
+  config:
+    providers:
+      xai:
+        apiKeyEnv: XAI_API_KEY

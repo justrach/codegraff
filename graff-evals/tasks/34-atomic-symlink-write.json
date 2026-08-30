@@ -1,0 +1,10 @@
+{
+  "id": "atomic-symlink-write",
+  "suite": "inhouse",
+  "category": "inhouse",
+  "source": "codegraff #685 / #405 — write atomically through a symlink (distilled, not the live repo)",
+  "files_dir": "fixtures/atomic-symlink-write",
+  "prompt": "replace_file is wrong. Read SPEC.md and atomic_write.py, then make `python3 test_atomic_write.py` print OK. Do not edit the tests. A path that is a symlink must stay a symlink; the write replaces the referent.",
+  "check": "python3 test_atomic_write.py && python3 \"$TASK_ROOT/hidden/atomic-symlink-write.py\"",
+  "timeout_s": 240
+}

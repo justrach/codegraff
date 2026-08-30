@@ -1,0 +1,10 @@
+{
+  "id": "oneshot-chrome",
+  "suite": "inhouse",
+  "category": "inhouse",
+  "source": "codegraff oneshot-answer-stdout — keep -p stdout as the answer, not turn-pulse chrome (distilled)",
+  "files_dir": "fixtures/oneshot-chrome",
+  "prompt": "oneshot.py leaks turn chrome onto stdout. Read SPEC.md and oneshot.py, then make `python3 test_oneshot.py` print OK. Do not edit the tests. Unattended / json / print-mode stdout is the answer only.",
+  "check": "python3 test_oneshot.py && python3 \"$TASK_ROOT/hidden/oneshot-chrome.py\"",
+  "timeout_s": 240
+}

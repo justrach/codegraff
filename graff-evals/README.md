@@ -21,10 +21,12 @@ harness under test spends model calls.
 | `rlm` | scatter-gather / multi-file reads (where default rlm can overlap) |
 | `swe` | DeepSWE-shaped multi-file bugfixes, distilled from [deepswe.datacurve.ai/run](https://deepswe.datacurve.ai/run) (no Harbor/Docker) |
 | `mcp` | Linear-shaped fixture MCP (Blacksmith code-mode + muscle memory). Always `--no-lean` (`graff-dev-nolean`): lean is a different catalog and is not on the front. |
+| `inhouse` | Bug shapes distilled from shipped CodeGraff PRs (symlink write, oneshot chrome, cache git-root, stall widen/warn, empty catalog). Self-contained fixtures — not the live repo. Opt-in like `mcp`. |
 
 ```sh
 ./run.py --suite swe --harness graff-dev-old,graff-dev --model grok-4.6 -j 12
 ./run.py --suite core,rlm,swe --harness graff-dev-old,graff-dev -j 8
+./run.py --suite inhouse --harness graff-dev,grok,opencode --model grok-4.6 -j 1
 ```
 
 ## Run it
@@ -52,8 +54,29 @@ zig build && ./run.py --harness graff-dev
 ```
 
 Results land in `results/run-<stamp>.jsonl` (one record per run) plus a
-summary table on stdout. `.sandboxes/` holds the materialized working dirs of
+summary table on stdout. The `usd` / `list$` column is **xAI list price**
+from tokens (and hosted-tool invocations when reported), not SuperGrok's
+`$0.0000` subscription footer. grok-4.6 uses the dual band
+`$2/$0.50/$6` under 200k prompt tokens and `$4/$1/$12` for the whole
+request at or above. `.sandboxes/` holds the materialized working dirs of
 the last run for post-mortems; both are disposable.
+
+## Hillclimb
+
+`hillclimb.py` is the autoresearch-style loop: propose a harness change
+(see `hillclimb/candidates.json`), run the same tasks against the
+champion and grok-build, keep only a measured win on wall / first-token
+latency / tool calls / tokens / list-price USD. It will not keep
+grok-build's heap or a 4-tool catalog (ADR 0024). First keep:
+`GRAFF_XAI_X_SEARCH=0` on `graff` / `graff-dev` (live table in
+`hillclimb/baseline.md`).
+
+```sh
+./hillclimb.py self-test
+./hillclimb.py score results/run-20260828-021606.jsonl
+./hillclimb.py iterate --suite core --task exact-reply,fix-fib,file-ops
+./hillclimb/plot_frontier.py results/run-….jsonl -o hillclimb/frontier.svg
+```
 
 ## Harnesses
 
@@ -67,6 +90,11 @@ the last run for post-mortems; both are disposable.
   skipped on harnesses that lack it (e.g. `output-schema` structured outputs).
 
 Add a harness by adding an entry; add a model by passing `--model`.
+
+Same-model grok-4.6 series: `graff-dev`, `grok`, `opencode` (needs xAI
+auth), `dsh-grok` (needs `dsh` + an xAI key dsh will accept). Mixed-model
+native defaults — `opencode-zen`, `dsh-deepseek` — are a **different
+comparison**; do not read them as grok-4.6 list-price points.
 
 ## Tasks
 

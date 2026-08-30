@@ -1,0 +1,42 @@
+{
+  "axes": ["wall_s", "first_out_s", "tok_calls", "list_tokens", "list_usd"],
+  "refuse": [
+    "Do not steal grok-build heap (~165M RSS).",
+    "Do not shrink the catalog to a 4-tool set. grok-build 1.0.5 ships a fat catalog plus web_search."
+  ],
+  "champion": "graff-dev",
+  "candidates": [
+    {
+      "id": "x-search-off",
+      "harness": "graff-dev-noxsearch",
+      "kept": false,
+      "dropped_on": "2026-08-30",
+      "why": "Not what grok-build does. Their headless session still lists web_search/web_fetch. Turning our hosted x_search off is a side bet, not a copy.",
+      "forbidden": []
+    },
+    {
+      "id": "oneshot-no-learn-pin",
+      "harness": "graff-dev",
+      "kept": false,
+      "dropped_on": "2026-08-30",
+      "why": "Path split. -p skipped learn-auto; TUI/REPL still copied 127M after five calls. Retracted for a shared hardlink pin.",
+      "forbidden": []
+    },
+    {
+      "id": "hardlink-learn-pin",
+      "harness": "graff-dev",
+      "kept": true,
+      "kept_on": "2026-08-30",
+      "why": "Pin graff-pinned as a hardlink (same inode, O(1)). -p, piped graff repl, and TUI share one learn-auto path. Copy only when the filesystem cannot hardlink.",
+      "forbidden": []
+    },
+    {
+      "id": "background-learn-init",
+      "harness": "graff-dev",
+      "kept": true,
+      "kept_on": "2026-08-30",
+      "why": "autoInitLearning detaches graff learn init (same process-group spawn as a trial). Session-end no longer waits ~38s on suite generation. Pin stays a hardlink. -p / REPL / TUI share the path.",
+      "forbidden": []
+    }
+  ]
+}
