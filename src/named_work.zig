@@ -92,14 +92,54 @@ pub fn conversationNamesSource(messages: []const Value) bool {
     return false;
 }
 
+/// Responses `input` item. A Chat `{role, content: string}` after a
+/// `function_call` / `output_text` item is dropped or 400s on the
+/// `previous_response_id` delta (and on a full resend mixed with those items).
+pub fn responsesUserMessage(arena: std.mem.Allocator, text: []const u8) !Value {
+    var block: std.json.ObjectMap = .empty;
+    try block.put(arena, "type", .{ .string = "input_text" });
+    try block.put(arena, "text", .{ .string = try arena.dupe(u8, text) });
+    var content: std.json.Array = .init(arena);
+    try content.append(.{ .object = block });
+    var msg: std.json.ObjectMap = .empty;
+    try msg.put(arena, "type", .{ .string = "message" });
+    try msg.put(arena, "role", .{ .string = "user" });
+    try msg.put(arena, "content", .{ .array = content });
+    return .{ .object = msg };
+}
+
+pub fn userNudge(arena: std.mem.Allocator, kind: @import("provider.zig").Provider.Kind, text: []const u8) !Value {
+    return switch (kind) {
+        .responses => responsesUserMessage(arena, text),
+        .openai, .anthropic => messages_mod.textMessage(arena, "user", text),
+    };
+}
+
+fn isResponsesInputText(msg: Value, want: []const u8) bool {
+    if (msg != .object) return false;
+    const typ = msg.object.get("type") orelse return false;
+    const role = msg.object.get("role") orelse return false;
+    const content = msg.object.get("content") orelse return false;
+    if (typ != .string or role != .string or content != .array) return false;
+    if (!std.mem.eql(u8, typ.string, "message") or !std.mem.eql(u8, role.string, "user")) return false;
+    if (content.array.items.len == 0 or content.array.items[0] != .object) return false;
+    const block = content.array.items[0].object;
+    const bt = block.get("type") orelse return false;
+    const tx = block.get("text") orelse return false;
+    return bt == .string and tx == .string and
+        std.mem.eql(u8, bt.string, "input_text") and std.mem.eql(u8, tx.string, want);
+}
+
 /// Append the nudge and ask the caller to `continue` the turn loop.
+/// Re-anchor the Responses chain so the new item is not a dropped delta.
 pub fn handle(self: *Agent, _: []const u8) !bool {
     if (self.named_work_nudges >= max_nudges) return false;
     if (self.tools_used.count() != 0) return false;
     const named = hasNamedSource(remembered_task) or conversationNamesSource(self.messages.items);
     if (!named) return false;
     self.named_work_nudges += 1;
-    try self.messages.append(try messages_mod.textMessage(self.arena, "user", nudge_text));
+    self.closeCodexWs();
+    try self.messages.append(try userNudge(self.arena, self.provider.kind, nudge_text));
     return true;
 }
 
@@ -138,4 +178,53 @@ test "conversationNamesSource sees Responses input_text, not role=user" {
     defer pong.deinit();
     const pongs = [_]Value{pong.value};
     try std.testing.expect(!conversationNamesSource(&pongs));
+}
+
+test "userNudge is input_text on Responses and a content string on chat" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const responses = try userNudge(a, .responses, nudge_text);
+    try std.testing.expect(isResponsesInputText(responses, nudge_text));
+    const chat = try userNudge(a, .openai, nudge_text);
+    try std.testing.expectEqualStrings("user", chat.object.get("role").?.string);
+    try std.testing.expectEqualStrings(nudge_text, chat.object.get("content").?.string);
+    try std.testing.expect(chat.object.get("type") == null);
+}
+
+test "handle appends Responses input_text once and re-anchors the chain" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try messages_mod.textMessage(a, "user", "Fix atomic_write.py"));
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = a,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{
+            .id = "xai",
+            .kind = .responses,
+            .auth = .bearer,
+            .url = "",
+            .api_key = "k",
+            .model = "grok-4.6",
+            .context = 100_000,
+        },
+        .messages = msgs,
+        .sub = false,
+        .label = "test",
+        .out = null,
+        .codex_prev_id = try std.testing.allocator.dupe(u8, "resp_drop_me"),
+        .codex_sent_upto = 1,
+    };
+    defer if (agent.codex_prev_id) |p| std.testing.allocator.free(p);
+    remember("Fix atomic_write.py");
+    defer remember("");
+    try std.testing.expect(try handle(&agent, "I'll read SPEC.md"));
+    try std.testing.expect(agent.codex_prev_id == null);
+    try std.testing.expectEqual(@as(usize, 0), agent.codex_sent_upto);
+    try std.testing.expect(isResponsesInputText(agent.messages.items[agent.messages.items.len - 1], nudge_text));
+    try std.testing.expect(!try handle(&agent, "I'll read SPEC.md"));
 }
