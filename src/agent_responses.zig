@@ -100,6 +100,47 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
     return error.Unparseable;
 }
 
+/// Safe diagnostic for a parsed Responses failure. This is the redaction
+/// boundary for WS error frames: only the provider, structured code and message
+/// survive — never the raw envelope, echoed request, headers or auth fields.
+/// Each field is single-lined and bounded before it reaches last_api_error or
+/// the default-on trace.
+pub fn failureDiagnostic(allocator: std.mem.Allocator, provider: []const u8, failure: ResponsesFailure) ![]u8 {
+    var buf: [560]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeDiagnosticField(&w, provider, 40);
+    try w.writeAll(" api error");
+    if (failure.code) |code| {
+        try w.writeAll(" [");
+        try writeDiagnosticField(&w, code, 96);
+        try w.writeByte(']');
+    }
+    try w.writeAll(": ");
+    try writeDiagnosticField(&w, failure.message, 384);
+    return allocator.dupe(u8, w.buffered());
+}
+
+fn writeDiagnosticField(w: *std.Io.Writer, raw: []const u8, max: usize) !void {
+    const prefix = util.utf8Prefix(raw, max);
+    for (prefix) |b| try w.writeByte(if (b < 0x20 or b == 0x7f) ' ' else b);
+    if (prefix.len < raw.len) try w.writeAll("…");
+}
+
+test "failureDiagnostic retains only bounded single-line code and message" {
+    const a = std.testing.allocator;
+    const long = "x" ** 500;
+    const diagnostic = try failureDiagnostic(a, "codex", .{
+        .code = "invalid_request_error\nignored-envelope",
+        .message = "bad request\r\n" ++ long,
+    });
+    defer a.free(diagnostic);
+    try std.testing.expect(std.mem.startsWith(u8, diagnostic, "codex api error [invalid_request_error ignored-envelope]: bad request  "));
+    try std.testing.expect(std.mem.endsWith(u8, diagnostic, "…"));
+    try std.testing.expect(diagnostic.len < 560);
+    try std.testing.expect(std.mem.indexOfScalar(u8, diagnostic, '\n') == null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, diagnostic, '\r') == null);
+}
+
 test "parseResponses: terminal failure beats partial items; incomplete stays marked" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

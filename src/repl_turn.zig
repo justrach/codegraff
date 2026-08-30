@@ -210,6 +210,10 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
         error.StreamStalled => return earlyEnd(gpa, &agent, "stream stalled"),
         // A mid-stream provider drop (#133), same handling as a stall.
         error.StreamDropped => return earlyEnd(gpa, &agent, "connection dropped"),
+        // The Responses WS path now preserves a bounded provider diagnostic.
+        // Return it as the turn result so the fullscreen TUI does not discard
+        // the live error and replace it with the misleading API-key fallback.
+        error.ApiError => return gpa.dupe(u8, agent.last_api_error orelse "provider API error") catch null,
         error.FallbackConsentRequired => return gpa.dupe(u8, "Saved model unavailable. Allow this provider with /fallback in the standard REPL, or choose another model.") catch null,
         else => return null,
     };

@@ -425,13 +425,14 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 },
                 .err => |failure| {
                     const msg = failure.message;
-                    // (#codex-ws) Belt-and-braces mirror of openai/codex: server
-                    // rejected previous_response_id (stale WS session it no
-                    // longer recognizes) — close it and retry once with full
-                    // input. Gated on codex_prev_id != null (a delta was
-                    // actually sent); it's null after the retry, so this can't
-                    // loop for this request.
-                    if (self.codex_prev_id != null and codex_chain.shouldDropChain(msg, failure.code)) {
+                    const had_chain = self.codex_prev_id != null;
+                    const ws_error_frame = if (self.codex_ws) |c| c.dead else false;
+                    const diagnostic = try responses.failureDiagnostic(self.arena, self.provider.id, failure);
+                    if (ws_error_frame) {
+                        self.closeCodexWs();
+                        if (self.tracer) |tr| tr.note("ws_api_error", diagnostic);
+                    }
+                    if (had_chain and codex_chain.shouldDropChain(msg, failure.code)) {
                         self.closeCodexWs();
                         if (self.tracer) |tr| tr.note("ws", "server dropped previous_response_id — re-anchoring with full input");
                         continue :rebuild;
@@ -468,7 +469,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     // overload retry path as SSE and JSON error envelopes.
                     if (try retryTransientServerError(self, "", failure.code, msg, &server_retries)) continue :rebuild;
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-                    try self.sayApiError("{s} api error: {s}", .{ self.provider.id, msg });
+                    try self.sayApiError("{s}", .{diagnostic});
                     return error.ApiError;
                 },
             }

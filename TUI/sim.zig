@@ -20,10 +20,12 @@
 const std = @import("std");
 const app = @import("app.zig");
 const dump = @import("dump.zig");
+const engine_mod = @import("engine.zig");
 const key_mod = @import("key.zig");
 const keys = @import("keys.zig");
 const render_mod = @import("render.zig");
 const theme_mod = @import("theme.zig");
+const turn = @import("turn.zig");
 
 const Model = app.Model;
 const Effect = app.Effect;
@@ -219,6 +221,41 @@ test "typeText lands in the composer dump" {
     defer std.testing.allocator.free(vis);
     try std.testing.expect(std.mem.indexOf(u8, vis, "hello") != null);
     try std.testing.expect(std.mem.indexOf(u8, vis, "›") != null);
+}
+
+test "#692: terminal API diagnostics survive job finish and the composer recovers" {
+    const a = std.testing.allocator;
+    var term: Term = undefined;
+    term.init(a, 80, 24);
+    defer term.deinit();
+
+    try term.model.push(.user, "trigger a provider rejection");
+    try term.model.push(.pending, "");
+    const job = try a.create(engine_mod.Job);
+    job.* = .{
+        .gpa = a,
+        .history = &.{},
+        .params = .{},
+        .stream = .{},
+        .raw = .{},
+        .threaded = false,
+        .result = try a.dupe(u8, "codex api error [invalid_request_error]: mock bad request"),
+    };
+    job.events.attach(a);
+    job.done.store(true, .release);
+    term.model.pending = job;
+    turn.finishJob(&term.model);
+
+    const failed = try term.screen();
+    defer a.free(failed);
+    try std.testing.expect(std.mem.indexOf(u8, failed, "invalid_request_error") != null);
+    try std.testing.expect(std.mem.indexOf(u8, failed, "check /model and your API key") == null);
+
+    _ = term.typeText("continue");
+    const recovered = try term.screen();
+    defer a.free(recovered);
+    try std.testing.expect(std.mem.indexOf(u8, recovered, "continue") != null);
+    try std.testing.expect(std.mem.indexOf(u8, recovered, "›") != null);
 }
 
 test "assistant markdown shows lists, quotes, tasks, and rules" {

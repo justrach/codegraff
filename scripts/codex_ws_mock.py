@@ -385,13 +385,20 @@ class CodexMock:
             self._log(f"ws <- {etype} ({len(message.payload)}b)")
             if etype != "response.create":
                 continue
-            for ev in self._events("ws", connection_id, event, headers):
+            events = self._events("ws", connection_id, event, headers)
+            for ev in events:
                 _send_frame(
                     conn, OP_TEXT, json.dumps(ev, separators=(",", ":")).encode("utf-8")
                 )
                 self._log(f"ws -> {ev['type']}")
             with self._lock:
                 self.ws_turns += 1
+            # Real Codex closes immediately after a terminal type:error frame.
+            # Keeping the mock open would miss #692's exact classification bug:
+            # the client waited for another frame, saw EOF, and discarded the
+            # useful API body as a transport reset.
+            if any(ev.get("type") == "error" for ev in events):
+                return
 
     def _serve_sse(
         self, conn: socket.socket, reader: _SockReader, headers: dict[str, str]
