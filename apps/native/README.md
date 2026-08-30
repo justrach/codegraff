@@ -40,9 +40,12 @@ browser  →  Next.js /api/acp  →  graff acp --yolo   (stdio JSON-RPC)
                 (this app)         session/update → thought / tools / text
 ```
 
-The Next.js route owns one `graff acp` child. The browser never speaks
-stdio; it POSTs ACP methods and reads an NDJSON stream of the same
-JSON-RPC lines the agent wrote.
+The Next.js route owns one `graff acp` child **per chat tab** (the agent
+holds a single live session per process and has no `session/load`, so a
+tab's conversation memory is its child). The browser never speaks stdio; it
+POSTs ACP methods with its `<page>:<chat>` handle and reads an NDJSON
+stream of the same JSON-RPC lines the agent wrote. Closing a tab or leaving
+the page reaps its agents; tabs run turns concurrently.
 
 | ACP `sessionUpdate` | primitive |
 | --- | --- |
@@ -62,6 +65,14 @@ per-provider credential state in the REPL's election order (signed-in
 plan, then local, credits, api). The UI shows only authenticated seats
 and re-reads `current` after every respawn, so the picker reflects what
 graff's fuzzy `--model` resolution actually chose.
+
+History is graff's own: every tab's agent autosaves to
+`.graff/sessions/<name>.session.json` in the workspace (`--resume <name>`),
+and the sidebar lists that directory — grouped by day, searchable — via
+`/api/sessions`, which peeks each file's header rather than parsing it.
+Opening a past session renders its saved transcript at once and spawns the
+tab's agent with `--resume`, so a follow-up continues the conversation with
+the model's memory intact.
 
 The workspace itself is walkable: `/api/fs` (list/read, plus macOS
 `open`/`open -R` passthroughs) is sandboxed to the agent's cwd and backs

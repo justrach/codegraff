@@ -4,6 +4,15 @@ const BASE = "/api/acp";
 
 export type Health = { ok: boolean; detail?: string; cwd?: string };
 
+/** Server-side key for a chat tab's own `graff acp` child: `<page>:<chat>`.
+ * The page half is minted per load so a reload never inherits the previous
+ * page's still-running agents (and their conversation history). */
+export type ChatHandle = string;
+
+export function chatHandle(page: string, chatId: number): ChatHandle {
+  return `${page}:${chatId}`;
+}
+
 async function* ndjson(res: Response): AsyncGenerator<JsonRpcLine> {
   const body = res.body;
   if (!body) throw new Error("ACP bridge had no body");
@@ -30,11 +39,11 @@ async function* ndjson(res: Response): AsyncGenerator<JsonRpcLine> {
   }
 }
 
-async function rpc(method: string, params?: unknown, stream = false): Promise<Response> {
+async function rpc(chat: ChatHandle, method: string, params?: unknown, stream = false): Promise<Response> {
   const res = await fetch(BASE, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ method, params, stream }),
+    body: JSON.stringify({ chat, method, params, stream }),
     cache: "no-store",
   });
   if (!res.ok) {
@@ -54,18 +63,21 @@ export async function checkHealth(): Promise<Health> {
   }
 }
 
-export async function ensureSession(model?: string, reset = false): Promise<string> {
-  const res = await rpc("bootstrap", { model, reset });
+/** `resume` names the graff session file the tab's agent autosaves to (and
+ * restores from, when it already exists) — `graff acp --resume <name>`. */
+export async function ensureSession(chat: ChatHandle, model?: string, reset = false, resume?: string): Promise<string> {
+  const res = await rpc(chat, "bootstrap", { model, reset, resume });
   const body = (await res.json()) as { sessionId?: string; error?: string };
   if (!body.sessionId) throw new Error(body.error ?? "ACP session/new failed");
   return body.sessionId;
 }
 
 export async function* prompt(
+  chat: ChatHandle,
   sessionId: string,
   text: string,
 ): AsyncGenerator<AcpUpdate> {
-  const res = await rpc("session/prompt", {
+  const res = await rpc(chat, "session/prompt", {
     sessionId,
     prompt: [{ type: "text", text }],
   }, true);
@@ -86,11 +98,36 @@ export async function* prompt(
   if (!terminal) throw new Error("ACP stream ended before session/prompt returned");
 }
 
-export async function cancel(sessionId: string): Promise<void> {
+export async function cancel(chat: ChatHandle, sessionId: string): Promise<void> {
   await fetch(BASE, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ method: "session/cancel", params: { sessionId } }),
+    body: JSON.stringify({ chat, method: "session/cancel", params: { sessionId } }),
+  }).catch(() => {});
+}
+
+/** Kill a closed tab's agent. `keepalive` so a close-then-navigate still lands. */
+export async function disposeSession(chat: ChatHandle): Promise<void> {
+  await fetch(BASE, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chat, method: "dispose" }),
+    keepalive: true,
+  }).catch(() => {});
+}
+
+/** Reap every agent this page spawned. Fired from `pagehide`, where only a
+ * beacon is guaranteed to leave the tab; falls back to a keepalive fetch. */
+export function disposePage(page: string): void {
+  const payload = JSON.stringify({ method: "dispose-page", params: { page } });
+  if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+    if (navigator.sendBeacon(BASE, new Blob([payload], { type: "application/json" }))) return;
+  }
+  void fetch(BASE, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: payload,
+    keepalive: true,
   }).catch(() => {});
 }
 
@@ -127,8 +164,8 @@ type GraffModelsResult = {
  * with live credentials, already in the agent's election order. The same
  * model name can be served by several providers; the highest-ranked seat
  * wins its row (spawn-by-name resolves through graff's own routing anyway). */
-export async function fetchModels(): Promise<{ models: ModelChoice[]; current: string | null }> {
-  const res = await rpc("graff/models");
+export async function fetchModels(chat: ChatHandle): Promise<{ models: ModelChoice[]; current: string | null }> {
+  const res = await rpc(chat, "graff/models");
   const body = (await res.json()) as { result?: GraffModelsResult; error?: string };
   if (!body.result) throw new Error(body.error ?? "graff/models failed");
   const seen = new Set<string>();

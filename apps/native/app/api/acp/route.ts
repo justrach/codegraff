@@ -15,9 +15,23 @@ type Slot = {
   nextId: number;
   sessionId: string | null;
   model: string | null;
+  /** graff session name (`--resume`): the file this agent autosaves to. */
+  resume: string | null;
 };
 
-const g = globalThis as typeof globalThis & { __graffAcp?: Slot };
+// One `graff acp` child per chat tab. The agent holds exactly one live
+// session per process (`session/load` is not implemented), so a tab's
+// conversation memory *is* its child: when every tab shared one child, each
+// new tab respawned it and silently erased the others' context. Keys are the
+// browser's `<page>:<chat>` handles, so a reloaded page never adopts a stale
+// child's history; `dispose`/`dispose-page` reap children on tab close and
+// page unload. Kept on globalThis so dev-server module reloads don't orphan
+// running agents.
+const g = globalThis as typeof globalThis & { __graffAcpSlots?: Map<string, Slot> };
+const slots = (g.__graffAcpSlots ??= new Map<string, Slot>());
+const DEFAULT_CHAT = "default";
+// Session names become a CLI argument and a filename under .graff/sessions.
+const SESSION_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function graffBin(): string {
   if (process.env.GRAFF_BIN) return process.env.GRAFF_BIN;
@@ -42,28 +56,54 @@ function yolo(): boolean {
   return true;
 }
 
-function killSlot() {
-  const slot = g.__graffAcp;
+// A closed tab's agent gets stdin EOF first: `graff acp` leaves its read loop
+// on EOF and writes the session's exit save on the way out, which a SIGTERM
+// would skip. The signal is the fallback for an agent that does not wind down.
+const EXIT_GRACE_MS = 5_000;
+
+function killSlot(chat: string) {
+  const slot = slots.get(chat);
   if (!slot) return;
-  slot.child.kill("SIGTERM");
-  g.__graffAcp = undefined;
+  slots.delete(chat);
+  try {
+    slot.child.stdin.end();
+  } catch {
+    // already closed
+  }
+  const timer = setTimeout(() => {
+    try {
+      slot.child.kill("SIGTERM");
+    } catch {
+      // already gone
+    }
+  }, EXIT_GRACE_MS);
+  timer.unref();
+  slot.child.once("exit", () => clearTimeout(timer));
 }
 
-function spawnAgent(model?: string): Slot {
-  killSlot();
+function killPage(page: string) {
+  const prefix = `${page}:`;
+  for (const chat of [...slots.keys()]) {
+    if (chat.startsWith(prefix)) killSlot(chat);
+  }
+}
+
+function spawnAgent(chat: string, model?: string, resume?: string): Slot {
+  killSlot(chat);
   const args = ["acp"];
   if (yolo()) args.push("--yolo");
   if (model) args.push("--model", model);
+  if (resume) args.push("--resume", resume);
   const child = spawn(graffBin(), args, {
     stdio: ["pipe", "pipe", "inherit"],
     cwd: workspace(),
     env: process.env,
   });
-  const slot: Slot = { child, buf: "", nextId: 1, sessionId: null, model: model ?? null };
+  const slot: Slot = { child, buf: "", nextId: 1, sessionId: null, model: model ?? null, resume: resume ?? null };
   child.on("exit", () => {
-    if (g.__graffAcp === slot) g.__graffAcp = undefined;
+    if (slots.get(chat) === slot) slots.delete(chat);
   });
-  g.__graffAcp = slot;
+  slots.set(chat, slot);
   return slot;
 }
 
@@ -113,11 +153,12 @@ async function rpc(slot: Slot, method: string, params?: unknown): Promise<unknow
   }
 }
 
-async function bootstrap(model?: string, reset = false): Promise<Slot> {
-  if (!reset && g.__graffAcp && (!model || g.__graffAcp.model === model) && g.__graffAcp.sessionId) {
-    return g.__graffAcp;
+async function bootstrap(chat: string, model?: string, reset = false, resume?: string): Promise<Slot> {
+  const live = slots.get(chat);
+  if (!reset && live && (!model || live.model === model) && (!resume || live.resume === resume) && live.sessionId) {
+    return live;
   }
-  const slot = spawnAgent(model);
+  const slot = spawnAgent(chat, model, resume);
   await rpc(slot, "initialize", { protocolVersion: 1, clientCapabilities: { fs: {} } });
   const created = (await rpc(slot, "session/new", { cwd: workspace() })) as {
     sessionId?: string;
@@ -128,9 +169,9 @@ async function bootstrap(model?: string, reset = false): Promise<Slot> {
 }
 
 export async function GET() {
-  // Health is a passive probe: report the binary and any live slot without
-  // spawning. Spawning here raced the UI's own bootstrap (two agents per
-  // page load) — the POST bootstrap path is the only spawner.
+  // Health is a passive probe: report the binary and the live agent count
+  // without spawning. Spawning here raced the UI's own bootstrap (two agents
+  // per page load) — the POST bootstrap path is the only spawner.
   const bin = graffBin();
   const found = path.isAbsolute(bin) ? existsSync(bin) : true;
   if (!found) {
@@ -143,21 +184,35 @@ export async function GET() {
       { status: 502 },
     );
   }
-  return Response.json({ ok: true, sessionId: g.__graffAcp?.sessionId ?? null, cwd: workspace() });
+  return Response.json({ ok: true, sessions: slots.size, cwd: workspace() });
 }
 
 export async function POST(req: NextRequest) {
-  const body = (await req.json()) as { method?: string; params?: Record<string, unknown>; stream?: boolean };
+  const body = (await req.json()) as {
+    chat?: string;
+    method?: string;
+    params?: Record<string, unknown>;
+    stream?: boolean;
+  };
   const method = body.method ?? "";
+  const chat = typeof body.chat === "string" && body.chat ? body.chat : DEFAULT_CHAT;
+  const model = typeof body.params?.model === "string" ? body.params.model : undefined;
   try {
+    if (method === "dispose") {
+      killSlot(chat);
+      return Response.json({ ok: true });
+    }
+    if (method === "dispose-page") {
+      if (typeof body.params?.page === "string" && body.params.page) killPage(body.params.page);
+      return Response.json({ ok: true });
+    }
     if (method === "bootstrap") {
-      const slot = await bootstrap(
-        typeof body.params?.model === "string" ? body.params.model : undefined,
-        body.params?.reset === true,
-      );
+      const resume =
+        typeof body.params?.resume === "string" && SESSION_NAME_RE.test(body.params.resume) ? body.params.resume : undefined;
+      const slot = await bootstrap(chat, model, body.params?.reset === true, resume);
       return Response.json({ sessionId: slot.sessionId });
     }
-    const slot = await bootstrap(typeof body.params?.model === "string" ? body.params.model : undefined);
+    const slot = await bootstrap(chat, model);
     if (method === "session/cancel") {
       writeLine(slot, { jsonrpc: "2.0", method: "session/cancel", params: body.params });
       return Response.json({ ok: true });

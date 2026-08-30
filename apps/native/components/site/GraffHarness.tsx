@@ -14,13 +14,17 @@ import {
   MODELS,
   STARTER_PROMPTS,
   cancel,
+  chatHandle,
   checkHealth,
+  disposePage,
+  disposeSession,
   ensureSession,
   fetchModels,
   prompt,
   type Health,
 } from "@/lib/acp-client";
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
+import { dateGroup, listSessions, loadSession, relativeTime, type StoredSession } from "@/lib/sessions";
 
 const NAME = "there";
 
@@ -116,13 +120,20 @@ function AssistantBody({
   useEffect(() => {
     if (draining) articleRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
   }, [smoothText, draining]);
-  // "Thought for Ns" — measured here, since ACP updates carry no timestamps.
+  // "Thought for Ns": the harness stamps `thoughtMs` on the turn as it streams
+  // (ACP updates carry no timestamps); a live turn without one yet is timed here.
   const startRef = useRef(Date.now());
-  const [thoughtSecs, setThoughtSecs] = useState<number | null>(null);
+  const [thoughtSecs, setThoughtSecs] = useState<number | null>(
+    turn.thoughtMs !== undefined ? Math.max(1, Math.round(turn.thoughtMs / 1000)) : null,
+  );
   useEffect(() => {
     if (thinking) return;
-    setThoughtSecs((current) => current ?? Math.max(1, Math.round((Date.now() - startRef.current) / 1000)));
-  }, [thinking]);
+    setThoughtSecs((current) => {
+      if (current !== null) return current;
+      const ms = turn.thoughtMs ?? Date.now() - startRef.current;
+      return Math.max(1, Math.round(ms / 1000));
+    });
+  }, [thinking, turn.thoughtMs]);
   const reasoningRows = turn.reasoning
     ? turn.reasoning
         .split(/\n+/)
@@ -230,7 +241,20 @@ type Msg =
   | { id: number; role: "user"; text: string }
   | { id: number; role: "assistant"; turn: AssistantTurn };
 
-type Chat = { id: number; title: string | null; messages: Msg[] };
+/** `model` is what this tab's own agent was spawned with; the harness-level
+ * model is only the default a new tab inherits. */
+type Chat = { id: number; title: string | null; messages: Msg[]; model?: string; session?: string };
+
+function newPageToken(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+/** A fresh tab's graff session name. Not `session-…`: that prefix is what the
+ * REPL's auto-title renames, and a tab needs a name that stays put so the
+ * sidebar row and the running agent keep pointing at the same file. */
+function newSessionName(): string {
+  return `native-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
 
 function EmptyState({
   onSend,
@@ -329,34 +353,68 @@ export default function GraffHarness() {
   const [activeId, setActiveId] = useState(1);
   const [offset, setOffset] = useState(0);
   const [health, setHealth] = useState<Health | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  // Every tab owns a `graff acp` child (the agent keeps one session per
+  // process), so sessions, busy state and the spawned model are all per chat.
+  const pageRef = useRef<string>(newPageToken());
+  const sessionsRef = useRef(new Map<number, string>());
+  // chat id → graff session name (the `--resume` target / sidebar identity).
+  const sessionNamesRef = useRef(new Map<number, string>());
+  const [sessionIds, setSessionIds] = useState<Record<number, string>>({});
+  const [stored, setStored] = useState<StoredSession[]>([]);
+  const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set());
   // No hardcoded default: until graff/models answers, the agent's own model
   // resolution decides, and `current` from that call re-points the picker.
   const [models, setModels] = useState<PromptModel[]>(MODELS);
   const [model, setModelKey] = useState<string | null>(process.env.NEXT_PUBLIC_GRAFF_MODEL || null);
-  const [busy, setBusy] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [fileRequest, setFileRequest] = useState<{ path: string; n: number; changes?: boolean } | null>(null);
   const fileReqRef = useRef(0);
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
-  const sessionRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const chatThread = chats.find((c) => c.id === activeId) ?? chats[0];
   const active = chatThread.messages.length > 0;
+  const busy = busyIds.has(chatThread.id);
+  const chatModel = chatThread.model ?? model ?? undefined;
+  const sessionId = sessionIds[chatThread.id] ?? null;
+  const handleOf = (chatId: number) => chatHandle(pageRef.current, chatId);
+  const setBusyFor = (chatId: number, on: boolean) =>
+    setBusyIds((current) => {
+      if (current.has(chatId) === on) return current;
+      const next = new Set(current);
+      if (on) next.add(chatId);
+      else next.delete(chatId);
+      return next;
+    });
+  const setChatModel = (chatId: number, key: string) =>
+    setChats((current) => current.map((c) => (c.id === chatId ? { ...c, model: key } : c)));
   const lastAssistant = [...chatThread.messages].reverse().find((m): m is Extract<Msg, { role: "assistant" }> => m.role === "assistant");
 
-  const adoptCatalog = async () => {
+  const adoptCatalog = async (chatId: number) => {
     // What did the agent actually resolve? The picker should show graff's
     // answer (fuzzy --model resolution, election-ranked seats), not our guess.
     try {
-      const { models: live, current } = await fetchModels();
+      const { models: live, current } = await fetchModels(handleOf(chatId));
       if (live.length > 0) setModels(live);
-      if (current) setModelKey(current);
+      if (current) {
+        setChatModel(chatId, current);
+        setModelKey((fallback) => fallback ?? current);
+      }
     } catch {
       // keep the static fallback; the picker still works
     }
+  };
+
+  const requireSession = async (chatId: number, reset = false, key?: string): Promise<string> => {
+    const live = sessionsRef.current.get(chatId);
+    if (!reset && live) return live;
+    const spawnModel = key ?? chats.find((c) => c.id === chatId)?.model ?? model ?? undefined;
+    const id = await ensureSession(handleOf(chatId), spawnModel, reset, sessionNamesRef.current.get(chatId));
+    sessionsRef.current.set(chatId, id);
+    setSessionIds((current) => ({ ...current, [chatId]: id }));
+    setHealth({ ok: true });
+    return id;
   };
 
   useEffect(() => {
@@ -367,23 +425,48 @@ export default function GraffHarness() {
       setHealth(h);
       if (!h.ok) return;
       try {
-        const id = await ensureSession(model ?? undefined);
+        const session = newSessionName();
+        sessionNamesRef.current.set(1, session);
+        setChats((current) => current.map((c) => (c.id === 1 ? { ...c, session } : c)));
+        await requireSession(1);
         if (cancelled) return;
-        sessionRef.current = id;
-        setSessionId(id);
-        await adoptCatalog();
+        await adoptCatalog(1);
       } catch (err) {
         if (!cancelled) {
           setHealth({ ok: false, detail: err instanceof Error ? err.message : String(err) });
         }
       }
     })();
+    void refreshStored();
+    // Reap this page's agents when it goes away — without this every reload
+    // leaves a `graff acp` (and its MCP children) running under the dev server.
+    const page = pageRef.current;
+    const reap = () => disposePage(page);
+    window.addEventListener("pagehide", reap);
     return () => {
       cancelled = true;
+      window.removeEventListener("pagehide", reap);
     };
-    // ACP session is created once per mount; model changes respawn the agent.
+    // The first tab's agent is spawned once per mount; later tabs spawn their
+    // own on creation, and a model change respawns only the active tab's.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** Re-read graff's session directory; tabs adopt the titles graff saved. */
+  const refreshStored = async () => {
+    try {
+      const list = await listSessions();
+      setStored(list);
+      setChats((current) =>
+        current.map((c) => {
+          const saved = c.session ? list.find((s) => s.name === c.session) : undefined;
+          return saved?.title && saved.title !== c.title ? { ...c, title: saved.title } : c;
+        }),
+      );
+    } catch {
+      // the sidebar keeps its last list
+    }
+  };
 
   const openPath = (path: string) => {
     setFilesOpen(true);
@@ -396,14 +479,13 @@ export default function GraffHarness() {
   };
 
   const changeModel = (key: string) => {
+    // New tabs inherit the pick; the active tab respawns its agent with it
+    // (a fresh context — the agent cannot swap models mid-session).
+    const chatId = chatThread.id;
     setModelKey(key);
-    sessionRef.current = null;
-    void ensureSession(key, true)
-      .then((id) => {
-        sessionRef.current = id;
-        setSessionId(id);
-        return adoptCatalog();
-      })
+    setChatModel(chatId, key);
+    void requireSession(chatId, true, key)
+      .then(() => adoptCatalog(chatId))
       .catch(() => undefined);
   };
 
@@ -420,24 +502,16 @@ export default function GraffHarness() {
     );
   };
 
-  const requireSession = async (reset = false): Promise<string> => {
-    if (!reset && sessionRef.current) return sessionRef.current;
-    const id = await ensureSession(model ?? undefined, reset);
-    sessionRef.current = id;
-    setSessionId(id);
-    setHealth({ ok: true });
-    return id;
-  };
-
   const send = async (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed || busy) return;
+    const chatId = chatThread.id;
+    if (!trimmed || busyIds.has(chatId)) return;
     const userId = (msgIdRef.current += 1);
     const asstId = (msgIdRef.current += 1);
     const title = chatThread.title ?? (trimmed.length > 30 ? `${trimmed.slice(0, 30).trimEnd()}…` : trimmed);
     setChats((current) =>
       current.map((c) =>
-        c.id !== chatThread.id
+        c.id !== chatId
           ? c
           : {
               ...c,
@@ -445,63 +519,100 @@ export default function GraffHarness() {
               messages: [
                 ...c.messages,
                 { id: userId, role: "user", text: trimmed },
-                { id: asstId, role: "assistant", turn: { ...emptyTurn(), model: model ?? undefined } },
+                { id: asstId, role: "assistant", turn: { ...emptyTurn(), model: chatModel } },
               ],
             },
       ),
     );
-    setBusy(true);
-    let turn: AssistantTurn = { ...emptyTurn(), model: model ?? undefined };
+    setBusyFor(chatId, true);
+    let turn: AssistantTurn = { ...emptyTurn(), model: chatModel };
+    const startedAt = Date.now();
     try {
-      const id = await requireSession();
-      for await (const update of prompt(id, trimmed)) {
+      const id = await requireSession(chatId);
+      for await (const update of prompt(handleOf(chatId), id, trimmed)) {
         turn = applyAcpUpdate(turn, update);
-        patchAssistant(chatThread.id, asstId, turn);
+        if (turn.thoughtMs === undefined && turn.status !== "thinking") turn = { ...turn, thoughtMs: Date.now() - startedAt };
+        patchAssistant(chatId, asstId, turn);
       }
       turn = finishAcpTurn(turn);
-      patchAssistant(chatThread.id, asstId, turn);
+      patchAssistant(chatId, asstId, turn);
     } catch (err) {
       turn = { ...turn, error: err instanceof Error ? err.message : String(err), status: "error" };
-      patchAssistant(chatThread.id, asstId, turn);
+      patchAssistant(chatId, asstId, turn);
     } finally {
-      setBusy(false);
+      setBusyFor(chatId, false);
+      // graff autosaves the turn in the background; look once now for the
+      // title, and again after the write has had time to land.
+      void refreshStored();
+      setTimeout(() => void refreshStored(), 2500);
     }
   };
 
-  const newChat = () => {
-    const id = (chatIdRef.current += 1);
-    setChats((current) => [...current, { id, title: null, messages: [] }]);
+  const openChat = (id: number) => {
+    const session = newSessionName();
+    sessionNamesRef.current.set(id, session);
+    setChats((current) => [...current, { id, title: null, messages: [], model: model ?? undefined, session }]);
     setActiveId(id);
-    sessionRef.current = null;
-    void requireSession(true).catch(() => undefined);
+    setFilesOpen(false);
+    // Spawn eagerly so the first send is not stuck behind agent + MCP boot.
+    void requireSession(id).catch(() => undefined);
+  };
+
+  /** Open a saved graff session: its transcript renders from the file at once,
+   * and the tab's agent starts with `--resume` so a follow-up remembers it. */
+  const openStored = async (name: string) => {
+    const existing = chats.find((c) => c.session === name);
+    if (existing) {
+      setActiveId(existing.id);
+      setFilesOpen(false);
+      return;
+    }
+    let loaded: Awaited<ReturnType<typeof loadSession>>;
+    try {
+      loaded = await loadSession(name);
+    } catch (err) {
+      setHealth({ ok: true, detail: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    const id = (chatIdRef.current += 1);
+    const messages: Msg[] = loaded.messages.map((m) => ({ id: (msgIdRef.current += 1), ...m }));
+    sessionNamesRef.current.set(id, name);
+    setChats((current) => [
+      ...current,
+      { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name },
+    ]);
+    setActiveId(id);
+    setFilesOpen(false);
+    void requireSession(id, false, loaded.meta.model ?? undefined).catch(() => undefined);
+  };
+
+  const newChat = () => openChat((chatIdRef.current += 1));
+
+  const dropChat = (id: number) => {
+    sessionsRef.current.delete(id);
+    sessionNamesRef.current.delete(id);
+    setSessionIds((current) => {
+      const { [id]: _gone, ...rest } = current;
+      return rest;
+    });
+    setBusyFor(id, false);
+    void disposeSession(handleOf(id));
   };
 
   const closeChat = (id: number) => {
+    dropChat(id);
     const remaining = chats.filter((c) => c.id !== id);
     if (remaining.length === 0) {
-      const nid = (chatIdRef.current += 1);
-      setChats([{ id: nid, title: null, messages: [] }]);
-      setActiveId(nid);
+      setChats([]);
+      openChat((chatIdRef.current += 1));
       return;
     }
     setChats(remaining);
     if (id === activeId) setActiveId(remaining[remaining.length - 1].id);
   };
 
-  const pickRecent = (_id: string, label: string, prompt?: string) => {
-    const existing = chats.find((c) => c.title === label);
-    if (existing) {
-      setActiveId(existing.id);
-      return;
-    }
-    if (chatThread.messages.length === 0) {
-      void send(prompt ?? label);
-      return;
-    }
-    const id = (chatIdRef.current += 1);
-    setChats((current) => [...current, { id, title: null, messages: [] }]);
-    setActiveId(id);
-    queueMicrotask(() => void send(prompt ?? label));
+  const pickRecent = (id: string) => {
+    void openStored(id);
   };
 
   useEffect(() => {
@@ -510,10 +621,14 @@ export default function GraffHarness() {
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [chatThread.messages, active, lastAssistant?.turn.text, lastAssistant?.turn.tools.length]);
 
-  const recents = [
-    ...STARTER_PROMPTS.map((p) => ({ id: p.id, label: p.label, prompt: p.prompt })),
-    ...chats.filter((c) => c.title).map((c) => ({ id: `chat-${c.id}`, label: c.title as string, prompt: undefined })),
-  ];
+  // The sidebar is graff's session directory, newest first, bucketed by day.
+  const now = Date.now();
+  const recents = stored.map((s) => ({
+    id: s.name,
+    label: s.title ?? s.name,
+    group: dateGroup(s.updatedMs, now),
+    hint: [s.model, relativeTime(s.updatedMs, now)].filter(Boolean).join(" · "),
+  }));
 
   const workspaceName = health?.cwd ? (health.cwd.split("/").pop() || health.cwd) : "workspace";
 
@@ -526,7 +641,7 @@ export default function GraffHarness() {
             c.id === activeId ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
           }`}
         >
-          {busy && c.id === activeId && (
+          {busyIds.has(c.id) && (
             <span
               className="mr-1 size-1.5 shrink-0 animate-pulse rounded-full"
               style={{ background: "var(--accent)" }}
@@ -585,6 +700,7 @@ export default function GraffHarness() {
         className="hidden lg:flex"
         recents={recents}
         activeTitle={chatThread.title}
+        activeId={chatThread.session ?? null}
         onPick={pickRecent}
         onNewChat={newChat}
         activeNav={filesOpen ? "workspace" : "chats"}
@@ -617,12 +733,15 @@ export default function GraffHarness() {
                       tall
                       placeholder={busy ? "Agent is working…" : "Follow up"}
                       models={models}
-                      modelKey={model ?? undefined}
+                      modelKey={chatModel}
                       onModelChange={changeModel}
                       onSend={send}
                       disabled={busy}
                       busy={busy}
-                      onStop={() => sessionRef.current && void cancel(sessionRef.current)}
+                      onStop={() => {
+                        const live = sessionsRef.current.get(chatThread.id);
+                        if (live) void cancel(handleOf(chatThread.id), live);
+                      }}
                     />
                   </div>
                 </div>
@@ -635,7 +754,7 @@ export default function GraffHarness() {
                   offset={offset}
                   shuffle={() => setOffset((current) => (current + 3) % STARTER_PROMPTS.length)}
                   models={models}
-                  modelKey={model ?? undefined}
+                  modelKey={chatModel}
                   onModelChange={changeModel}
                 />
               </div>

@@ -87,6 +87,10 @@ export type AssistantTurn = {
   model?: string;
   provider?: string;
   costUsd?: number;
+  /** How long the model thought before its first tool/text, measured by the
+   * harness while the turn streamed — kept on the turn so a remount (tab
+   * switch) shows the real figure instead of re-timing from mount. */
+  thoughtMs?: number;
   /** A tool bracket landed after streamed text — the next text chunk starts a
    * new paragraph instead of fusing onto the previous sentence. */
   pendingBreak?: boolean;
@@ -104,7 +108,7 @@ export function emptyTurn(): AssistantTurn {
   };
 }
 
-function iconFor(name: string): ToolIcon {
+export function iconFor(name: string): ToolIcon {
   if (name === "bash" || name === "bash_output" || name === "bash_kill") return "run";
   if (name === "write_file" || name === "edit_file") return "write";
   if (name === "read_file" || name === "codedb" || name === "webfetch" || name === "skill") return "read";
@@ -112,7 +116,7 @@ function iconFor(name: string): ToolIcon {
   return "think";
 }
 
-function chipFor(name: string, input: Record<string, unknown>): string {
+export function chipFor(name: string, input: Record<string, unknown>): string {
   const path = typeof input.path === "string" ? input.path : undefined;
   const command = typeof input.command === "string" ? input.command : undefined;
   if (path) return path;
@@ -145,7 +149,7 @@ function upsertTool(turn: AssistantTurn, name: string, input: Record<string, unk
   return { ...turn, tools: [...turn.tools, row], status: turn.status === "ask" ? "ask" : "streaming" };
 }
 
-function summarizeInput(name: string, input: Record<string, unknown>): { text: string; tone?: "add" }[] {
+export function summarizeInput(name: string, input: Record<string, unknown>): { text: string; tone?: "add" }[] {
   if (name === "edit_file") {
     const oldS = typeof input.old_string === "string" ? input.old_string : "";
     const newS = typeof input.new_string === "string" ? input.new_string : "";
@@ -169,7 +173,7 @@ function summarizeInput(name: string, input: Record<string, unknown>): { text: s
   }
 }
 
-function firstLine(s: string): string {
+export function firstLine(s: string): string {
   const line = s.split("\n")[0] ?? s;
   return line.length > 80 ? `${line.slice(0, 79)}…` : line;
 }
