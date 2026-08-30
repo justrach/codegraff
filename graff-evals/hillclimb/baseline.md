@@ -26,18 +26,44 @@ In-house 6 PR fixtures:
 | grok | 5/6 | 396s | 2.4s | 30 | 535344 | $0.4285 | 157.7M |
 | opencode | **6/6** | 182.1s | 2.8s | 37 | 340074 | $0.3835 | 1103.9M |
 
-Gaps to close:
+## Latest climb — PARETO (`run-20260830-122731` in-house, `run-20260830-124315` spine)
 
-1. Spine wall: 28.7s → **≤26.0s** (OpenCode). Almost all of it is
-   exact-reply (6.14s vs 3.22s). Suspect: lean `-p` still handshakes
-   imported/global MCP before the first token; oneshot `stream_quiet`
-   plus chrome on `g_out` also shift first-stdout.
-2. Spine first-token: 2.9s → **≤2.6s** (OpenCode). Grok 2.8s also beats
-   us. Do not plot REPL 0.03s echo. Measure with `TUI/sim.zig` `Term`
-   for pager work; eval first_out is first stdout **or** stderr line.
-3. In-house pass: 5/6 → **6/6**. Miss was `atomic-symlink-write`: 3.53s
-   / 1 call; captured answer was turn-pulse chrome `· turn still going ·`;
-   tests still fail. Not auth. The model never edited `atomic_write.py`.
+Same SuperGrok seat, jobs=1, `x_search` on, ReleaseSafe `-p`. Graff is
+≤ both rivals on every named axis and strictly better on at least one
+in **both** tables. Do not claim the 7–10M sampler RSS as a steal of
+grok heap (~156M); child HWM is ~19.5M.
+
+In-house 6 PR fixtures (`bed8e4f` catalog rebuild after 4-wide showcase):
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | **6/6** | **164.7s** | **0.7s** | **26** | **139001** | **$0.2514** | **9.9M** (HWM 19.4M) |
+| grok | 6/6 | 530.9s | 6.7s | 32 | 596614 | $0.6407 | 156.8M |
+| opencode | 6/6 | 168.4s | 2.9s | 40 | 340170 | $0.3999 | 1086.8M |
+
+Spine (exact-reply + file-ops + fix-fib), all 3/3:
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | 3/3 | **19.9s** | **0.6s** | 8 | **32074** | **$0.0484** | **7.1M** (HWM 19.5M) |
+| grok | 3/3 | 32.3s | 3.0s | 8 | 132874 | $0.1471 | 156.1M |
+| opencode | 3/3 | 31.2s | 3.1s | 8 | 82205 | $0.1013 | 581.2M |
+
+What closed the last in-house miss: a 4-wide native batch showcased
+`rlm`, `invalidateRootTools` wiped `tools_responses`, and the next
+body was `"tools":,` (graff exit 1, one counted call). Rebuild after
+`noticeWideNative`, same as `load_tool_schemas` / `noticeContext`.
+The Responses `input_text` nudge + Chat→typed coerce remain for the
+zero-tool one-shot shape.
+
+Spine calls are tied at 8 (was 8 vs grok 7). Do not cut the catalog.
+
+Gaps to close: **none on these two same-session tables.** Historical
+gaps below are how we got here.
+
+1. Spine wall: 28.7s → **≤26.0s** (OpenCode). Closed (19.9s).
+2. Spine first-token: 2.9s → **≤2.6s** (OpenCode). Closed (0.6s `›`).
+3. In-house pass: 5/6 → **6/6**. Closed (`stall-warn` 4 calls / 8.06s).
 
 Already landed, do not undo: hardlink pin (inode shared, nlink≥2);
 detached `learn init`; `-p` and REPL share one learn-auto path (no
