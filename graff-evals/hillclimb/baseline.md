@@ -41,11 +41,12 @@ exact-reply + file-ops + fix-fib. x_search on. One rep, jobs=1.
 |---|---:|---:|---:|---:|---:|---:|---:|
 | graff-dev (`-p`) | **3/3** | 62.4s | 3.1s | **8** | ~32k | **$0.0481** | **91.2M** |
 | grok-build | **3/3** | **31.6s** | 3.2s | 9 | ~149k | $0.1041 | 167.9M |
-| opencode | 2/3 | 59.5s | **2.9s** | 15 | ~267k | $0.4342 | 584.6M |
+| opencode (first wiring) | 2/3 | 59.5s | **2.9s** | 15 | ~267k | $0.4342 | 584.6M |
+| **opencode (`--dir` rerun, `run-20260830-095006`)** | **3/3** | **29.3s** | **2.8s** | 10 | ~62k | $0.1397 | 1025.7M |
 
-OpenCode file-ops: claimed `greeting.txt` but the sandbox check saw no file (cwd / teardown). graff-dev fix-fib was 52s with a 132MB pin copy after the 5th API call — that tax is what #684 removes (same-day post-fix spine was 22.2s / $0.0374).
+The first OpenCode row is **our harness**, not OpenCode. `opencode run` binds a project root; Popen cwd was not enough, so file-ops wrote nowhere the check could see, and we SIGKILL'd a leftover JSON server (false `timed_out`). After `--dir {sandbox}` + a 1.5s flush then process-group reap: **3/3**. graff-dev fix-fib on this tree still pays the 132MB pin copy (#684 removes that; post-fix spine was 22.2s / $0.0374).
 
-**Not Pareto vs grok-build on this main tree:** they win wall; we win calls, tokens, list$, RSS. Pass is a tie. OpenCode is interior on both 2D projections and loses a pass.
+**Not Pareto.** OpenCode now wins spine wall. Graff wins calls / tokens / list$ / RSS. Grok is in the middle on wall and $. Pass is a tie.
 
 ![Same-model spine frontier](frontier-spine-20260830.svg)
 
@@ -55,7 +56,7 @@ flowchart LR
     P["graff-dev −p · 62.4s · $0.0481 · 8 calls · on via cheaper / fewer calls"]
     G["grok-build · 31.6s · $0.1041 · 9 calls · on via wall"]
   end
-  O["opencode xai/grok-4.6 · 2/3 · 59.5s · $0.4342 · 15 calls · interior"]
+  O["opencode --dir · 3/3 · 29.3s · $0.1397 · 10 calls · on wall"]
 ```
 
 ## Live in-house PR suite — same-model grok-4.6 (`run-20260830-054427.jsonl`)
@@ -66,11 +67,12 @@ Six fixtures distilled from shipped PRs. Same SuperGrok seat. graff-dev 5-call t
 |---|---:|---:|---:|---:|---:|---:|
 | **graff-dev** | **6/6** | 361.1s | **2.2s** | **30** | **$0.1818** | **91.3M** |
 | grok-build | 5/6 | 453.9s | 3.2s | 30 | $0.4332 | 157.5M |
-| opencode | 0/6 | **182.0s** | 3.5s | 49 | $0.5366 | 1086.7M |
+| opencode (first wiring) | 0/6 | 182.0s | 3.5s | 49 | $0.5366 | 1086.7M |
+| **opencode (`--dir` rerun, `run-20260830-095035`)** | **6/6** | **151.9s** | 2.7s | 38 | $0.3961 | 1077.9M |
 
-grok-build timed out on `atomic-symlink-write` (240s, still a symlink-replacing write). OpenCode printed `OK` on every task without making the tests pass.
+grok-build timed out on `atomic-symlink-write` (240s). The first OpenCode 0/6 was the same cwd miss: it printed `OK` while edits landed outside the sandbox. After `--dir`: **6/6**.
 
-On this suite graff-dev wins pass / wall / $ / tokens / RSS; calls are a tie with grok. OpenCode's wall is lower because it stopped early at 0/6 — not a win.
+On this suite OpenCode wins wall; graff-dev wins $ / calls / RSS and matches pass. Grok is 5/6.
 
 ![In-house PR-suite frontier](frontier-inhouse-20260830.svg)
 
