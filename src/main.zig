@@ -4,9 +4,7 @@
 const std = @import("std");
 pub const panic = @import("tui").restore.Panic; // leave the alt screen BEFORE std prints a panic, or the restore sequence erases the trace (#535)
 const Io = std.Io;
-const http_warm = @import("http_warm.zig");
-pub const prewarmCaBundle = http_warm.prewarmCaBundle;
-const prewarmCaBundleTask = http_warm.prewarmCaBundleTask;
+const http_client = @import("http_client.zig");
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp = @import("mcp.zig");
@@ -292,16 +290,11 @@ pub fn main(init: std.process.Init) !void {
     const stale_saved_model = resolved_keys.stale_saved_model;
     const preferred_provider = resolved_keys.preferred_provider;
     const codex_account = resolved_keys.codex_account;
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    var client_ready: Io.Event = .unset;
-    http.g_client_ready = &client_ready;
-    var client_warm_fut = io.async(prewarmCaBundleTask, .{ &client, gpa, io, &client_ready });
+    var client_runtime: http_client.Runtime = undefined;
+    client_runtime.init(gpa, io);
+    defer client_runtime.deinit(startup_timing.shutdown_trace.at(io, "ca-warm-await"));
+    const client = &client_runtime.client;
     boot.mark(io, "CA warm scheduled");
-    defer {
-        _ = client_warm_fut.await(startup_timing.shutdown_trace.at(io, "ca-warm-await"));
-        http.g_client_ready = null;
-    }
     var stdin_buf: [64 * 1024]u8 = undefined;
     var stdin_reader = Io.File.stdin().reader(io, &stdin_buf);
     const in = &stdin_reader.interface;
@@ -309,7 +302,7 @@ pub fn main(init: std.process.Init) !void {
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
     const out = &stdout_writer.interface;
     g_out = out;
-    if (try session_start.runTitleCommand(io, gpa, arena, &client, default_provider, out, flags, &invocation_budget)) return;
+    if (try session_start.runTitleCommand(io, gpa, arena, client, default_provider, out, flags, &invocation_budget)) return;
     // Generate identity before opening either JSONL. The score channel and both
     // files share this run id; session_id is a separate runtime correlation id.
     session_start.initScoreRunId(io);
@@ -359,7 +352,7 @@ pub fn main(init: std.process.Init) !void {
     }
     traj.node(.{ .kind = "session", .version = harness_version, .unix_ms = unixMs(io) });
 
-    var telem = session_start.initTelemetry(io, gpa, &client, init.environ_map, flags, default_telemetry_endpoint);
+    var telem = session_start.initTelemetry(io, gpa, client, init.environ_map, flags, default_telemetry_endpoint);
     telemetry.g_telem = &telem;
     if (init.environ_map.get("GRAFF_FLEET")) |fv| {
         g_fleet = !(std.ascii.eqlIgnoreCase(fv, "off") or std.mem.eql(u8, fv, "0") or std.ascii.eqlIgnoreCase(fv, "false") or std.ascii.eqlIgnoreCase(fv, "no"));
@@ -425,7 +418,7 @@ pub fn main(init: std.process.Init) !void {
     // Root Agent construction + post-construction config (session name, persisted thinking/goal/eval settings, session-start trace note) + the
     // backgrounded fleet-champion pull live in session_start.zig. `root`'s pointer fields (snapshots/client/tracer/approvals/registry) all reference
     // already-stable main()-owned storage passed in by address, so returning the constructed Agent by value here is safe.
-    var root = try session_run.buildRootAgent(gpa, arena, io, &client, default_provider, subagent_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, &snaps, flags, telem.endpoint);
+    var root = try session_run.buildRootAgent(gpa, arena, io, client, default_provider, subagent_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, &snaps, flags, telem.endpoint);
     root.run_budget = &invocation_budget;
     root.model_catalog = resolved_keys.model_catalog;
     root.stored_keys_loaded = resolved_keys.stored_keys_loaded;
@@ -439,7 +432,7 @@ pub fn main(init: std.process.Init) !void {
     // JSONL and the privacy-projected upload are independent sinks; the Boot
     // owns both, wired and torn down in LIFO order (behavior_trace.zig).
     var behavior_buf: [8 * 1024]u8 = undefined;
-    var behavior_boot = behavior_trace.boot(io, gpa, &client, init.environ_map, telem.endpoint, telem.auth_key, telem.install_id, telem.client_name, harness_version, &behavior_buf);
+    var behavior_boot = behavior_trace.boot(io, gpa, client, init.environ_map, telem.endpoint, telem.auth_key, telem.install_id, telem.client_name, harness_version, &behavior_buf);
     behavior_boot.link(&tracer);
     // A dead local sink must not be silent: the collision that disabled local
     // capture in every session shipped invisibly because every failure path
@@ -484,7 +477,7 @@ pub fn main(init: std.process.Init) !void {
 
     // `graff` is the default session. TTY `graff repl` / `graff tui` open the Grok-style pager.
     // `graff acp` (acp.zig) is the same idea over Zed's stdio Agent Client Protocol. Both self-contained — each exits after.
-    if (try session_run.runReplCommand(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), &client, in, out, arena, flags) or try @import("acp.zig").runAcpCommand(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), &client, in, out, arena, flags) or try @import("tui_launch.zig").maybeRun(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), &client, arena, flags, json_mode, g_cwd_display)) return;
+    if (try session_run.runReplCommand(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), client, in, out, arena, flags) or try @import("acp.zig").runAcpCommand(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), client, in, out, arena, flags) or try @import("tui_launch.zig").maybeRun(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), client, arena, flags, json_mode, g_cwd_display)) return;
     // One-shot print mode: run the single prompt to completion, print the final text to stdout, exit.
     if (flags.oneshot_prompt) |prompt_text| {
         try session_run.runOneshotPrompt(gpa, io, arena, &root, @import("bench_priors.zig").noteKeys(&keys), &tracer, out, prompt_text); // one-shot exits before loop_ctx below — capture keys for sub-first routing here too
@@ -584,6 +577,8 @@ test { // pull in tests from imported modules (mcp.zig)
     _ = @import("mcp.zig");
     _ = @import("mcp_rpc.zig");
     _ = @import("main_test.zig");
+    _ = @import("http_client.zig");
+    _ = @import("http_client_integration_tests.zig");
     // A module whose tests must run needs an explicit reference here (a plain @import elsewhere compiles to nothing); scripts/eval-tier1.sh --only reach catches one.
     _ = @import("test_hooks.zig"); // unreached modules; their tests were silently skipped
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests

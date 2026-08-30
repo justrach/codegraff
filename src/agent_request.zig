@@ -113,9 +113,9 @@ pub const landing_note =
     "results beat dying mid-tool-call.";
 
 pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
-    // Startup paints the prompt while CA loading continues. The root turn and
-    // title task rendezvous here, then issue their requests concurrently.
+    // Root and title requests rendezvous after launch-time CA loading.
     http.waitForClientReady(self.io);
+    if (http.takeCaWarmFailure()) if (self.tracer) |tr| tr.note("ca_prewarm_failed", "CA bundle rescan failed; request will use lazy TLS initialization");
     if (self.registry) |reg| {
         if (@import("mcp_boot.zig").joinBeforeRequest(reg)) {
             self.invalidateRootTools();
@@ -346,6 +346,10 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, 0, body.len, 0, 0, 0, true);
                         return error.ApiError;
                     }
+                    if (err == error.TlsRequestConstructionFailed or err == error.TlsRequestConstructionCaWarmFailed) if (self.tracer) |tr| tr.note(
+                        "tls_request_construction",
+                        if (err == error.TlsRequestConstructionCaWarmFailed) "rotated shared HTTP client generation; replacement CA prewarm failed" else "rotated shared HTTP client generation",
+                    );
                     if (attempt < max_attempts) {
                         if (throttled) {
                             // #retry-after: prefer the provider's Retry-After
@@ -362,11 +366,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             if (self.tracer) |tr| tr.note("retry", what);
                             self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                         } else {
-                            // Transport flake (HttpConnectionClosing, a reset,
-                            // a truncated TLS read): back off before a fresh
-                            // connection. Rapid-fire retries against a
-                            // just-closed keep-alive almost always re-fail
-                            // (#86). 250ms·2ⁿ, capped at 4s over 6 tries; Esc cancels.
+                            // Transport flakes back off; rapid retries against a
+                            // just-closed keep-alive re-fail (#86). Cap: 4s/6 tries.
                             const delay_ms = RetryPlan.delayMs(throttled, attempt);
                             @import("turn_chrome.zig").emitRetryNotice(self.io, @errorName(err), attempt + 1, max_attempts);
                             if (showRecoveredTransportRetry(self.call_kind))
