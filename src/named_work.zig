@@ -115,20 +115,7 @@ pub fn userNudge(arena: std.mem.Allocator, kind: @import("provider.zig").Provide
     };
 }
 
-fn isResponsesInputText(msg: Value, want: []const u8) bool {
-    if (msg != .object) return false;
-    const typ = msg.object.get("type") orelse return false;
-    const role = msg.object.get("role") orelse return false;
-    const content = msg.object.get("content") orelse return false;
-    if (typ != .string or role != .string or content != .array) return false;
-    if (!std.mem.eql(u8, typ.string, "message") or !std.mem.eql(u8, role.string, "user")) return false;
-    if (content.array.items.len == 0 or content.array.items[0] != .object) return false;
-    const block = content.array.items[0].object;
-    const bt = block.get("type") orelse return false;
-    const tx = block.get("text") orelse return false;
-    return bt == .string and tx == .string and
-        std.mem.eql(u8, bt.string, "input_text") and std.mem.eql(u8, tx.string, want);
-}
+const isResponsesInputText = messages_mod.isResponsesInputText;
 
 /// Append the nudge and ask the caller to `continue` the turn loop.
 /// Re-anchor the Responses chain so the new item is not a dropped delta.
@@ -225,6 +212,9 @@ test "handle appends Responses input_text once and re-anchors the chain" {
     try std.testing.expect(try handle(&agent, "I'll read SPEC.md"));
     try std.testing.expect(agent.codex_prev_id == null);
     try std.testing.expectEqual(@as(usize, 0), agent.codex_sent_upto);
+    try std.testing.expect(isResponsesInputText(agent.messages.items[agent.messages.items.len - 1], nudge_text));
+    messages_mod.normalizeResponsesHistory(a, &agent.messages);
+    try std.testing.expect(isResponsesInputText(agent.messages.items[0], "Fix atomic_write.py"));
     try std.testing.expect(isResponsesInputText(agent.messages.items[agent.messages.items.len - 1], nudge_text));
     try std.testing.expect(!try handle(&agent, "I'll read SPEC.md"));
 }

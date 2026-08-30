@@ -145,7 +145,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     );
     var oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
     if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
-    try root.messages.append(try messages_mod.textMessage(arena, "user", oneshot_user));
+    try root.messages.append(try @import("named_work.zig").userNudge(arena, root.provider.kind, oneshot_user));
     if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(prompt_text.len, std.math.maxInt(u32))), root.provider.model);
     // #502: --output-schema runs TWO-PHASE. A strict grammar on every message
     // pulls the model into answering immediately instead of touching tools
