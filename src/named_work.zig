@@ -17,7 +17,36 @@ pub const nudge_text =
     "You named a source file and have not used a tool. Read the named path " ++
     "and edit it before answering — do not describe a fix you have not applied.";
 
+/// The current turn's user text. Responses history often drops `role=user`
+/// after the first step, so `handle` must not depend on walking messages.
+var remembered_task: []const u8 = "";
+
 const source_needles = [_][]const u8{ ".py", ".zig", ".js", ".ts", "SPEC.md" };
+
+pub fn remember(text: []const u8) void {
+    remembered_task = text;
+}
+
+fn lastUserText(self: *Agent) []const u8 {
+    var i = self.messages.items.len;
+    while (i > 0) {
+        i -= 1;
+        const msg = self.messages.items[i];
+        if (msg != .object) continue;
+        const role = msg.object.get("role") orelse continue;
+        if (role != .string or !std.mem.eql(u8, role.string, "user")) continue;
+        const content = msg.object.get("content") orelse continue;
+        if (content == .string) return content.string;
+    }
+    return "";
+}
+
+/// Snapshot the user prompt at turn start, while `role=user` still exists.
+/// Does not clear a `-p` remember() if history has no user string yet.
+pub fn rememberFrom(self: *Agent) void {
+    const t = lastUserText(self);
+    if (t.len > 0) remember(t);
+}
 
 /// True when `text` names a source path (not a greeting.txt-style data file).
 pub fn hasNamedSource(text: []const u8) bool {
@@ -67,7 +96,8 @@ pub fn conversationNamesSource(messages: []const Value) bool {
 pub fn handle(self: *Agent, _: []const u8) !bool {
     if (self.named_work_nudges >= max_nudges) return false;
     if (self.tools_used.count() != 0) return false;
-    if (!conversationNamesSource(self.messages.items)) return false;
+    const named = hasNamedSource(remembered_task) or conversationNamesSource(self.messages.items);
+    if (!named) return false;
     self.named_work_nudges += 1;
     try self.messages.append(try messages_mod.textMessage(self.arena, "user", nudge_text));
     return true;
@@ -86,6 +116,14 @@ test "shouldNudge is once, and only when no tools have run" {
     try std.testing.expect(!shouldNudge(1, 0, "Fix fib.py"));
     try std.testing.expect(!shouldNudge(0, 1, "Fix fib.py"));
     try std.testing.expect(!shouldNudge(0, 0, "Reply with exactly: pong"));
+}
+
+test "remembered task is enough to shouldNudge even without history walk" {
+    remember("Fix stall_notice.py");
+    defer remember("");
+    try std.testing.expect(hasNamedSource(remembered_task));
+    remember("Reply with exactly: pong");
+    try std.testing.expect(!hasNamedSource(remembered_task));
 }
 
 test "conversationNamesSource sees Responses input_text, not role=user" {

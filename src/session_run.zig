@@ -124,6 +124,7 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
 pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_mod.Agent, keys: *provider_mod.Keys, tracer: *trace.Tracer, out: *Io.Writer, prompt_text: []const u8) !void {
     if (@import("goal_pacing.zig").oneshotSlashRefusal(prompt_text)) |why| std.process.fatal("{s}", .{why}); // usage error, not a prompt
     main_mod.unattended = true;
+    @import("named_work.zig").remember(prompt_text);
     root.in = null; // gate: deny instead of prompt; ask_user: self-decide
     root.out = null; // tool progress → stderr; stdout carries only the answer
     root.stream_quiet = true;

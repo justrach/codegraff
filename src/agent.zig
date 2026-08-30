@@ -329,6 +329,7 @@ pub const Agent = struct {
         // No per-turn teardown: the socket and the chain span user turns, guarded by codex_chain.usable instead.
         self.completed = null;
         self.named_work_nudges = 0;
+        named_work.rememberFrom(self);
         if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) esc_cancel.store(false, .release);
         while (true) {
             if (try @import("turn_chrome.zig").beforeRequest(self)) |paused| return paused;
