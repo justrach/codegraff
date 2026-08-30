@@ -79,6 +79,23 @@ Misses: `cache-gitroot` and `stall-warn` — 1 call each, answer was
 symlink miss. Product fix on the branch: one bounded named-file /
 zero-tool nudge (`named_work.zig`), shared by `-p` and the REPL.
 
+## Latest climb — `run-20260830-113706` spine (TTFT `›` mark)
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | 3/3 | **17.9s** | **0.7s** | 8 | 31605 | **$0.0325** | 7.0M (child HWM 19.8M) |
+| grok | 3/3 | 32.2s | 2.6s | **7** | ~116k | $0.1184 | 155.2M |
+| opencode | 3/3 | 27.3s | 2.7s | 10 | ~82k | $0.1093 | 1114.7M |
+
+**Not Pareto:** calls 8 > grok 7 (file-ops 3 vs 2). First-token is the
+stderr `›` at first model SSE (cold local run: `›` at 3.71s, then
+`pong`). Not a boot banner. ReleaseSafe RSS without a learn pin is
+~20M child HWM; debug+pin stays ~101M. Do not claim 7M as a steal of
+grok heap — the sampler under-reads peak vs rusage.
+
+In-house `115321` (nudge missed Responses history): graff **1/6**.
+`350b03c` snapshots the `-p` prompt at turn start. Remeasuring.
+
 Also compared: OpenCode (`opencode run`) and DeepSeek Harness (`dsh`).
 Same-model series is grok-4.6. Native-default series (`opencode-zen`,
 `dsh-deepseek`) is a **different chart** — do not read those points as
