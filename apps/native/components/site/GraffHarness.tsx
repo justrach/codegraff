@@ -157,7 +157,10 @@ function AssistantBody({
 
   return (
     <article ref={articleRef} className="min-w-0" style={{ animation: "fade-up 450ms cubic-bezier(0.23,1,0.32,1) both" }}>
-      {(thinking || reasoningRows.length > 0) && (
+      {/* Keep the header once the model has actually thought (streamed
+        * reasoning, or a think long enough to notice): unmounting it when the
+        * think ends made the answer jump up into the space it left. */}
+      {(thinking || reasoningRows.length > 0 || (turn.thoughtMs ?? 0) >= 1500) && (
         <ThinkingState
           variant="Reasoning"
           rows={reasoningRows.length ? reasoningRows : [{ primary: "Waiting on the model…", shimmer: true }]}
@@ -615,11 +618,23 @@ export default function GraffHarness() {
     void openStored(id);
   };
 
+  // A new message glides the thread to the bottom; streaming growth (reasoning,
+  // text, tool rows) follows instantly and only while the reader is already at
+  // the tail. Re-issuing a *smooth* scroll on every chunk restarted the scroll
+  // animation each token — the whole thread juddered while the model thought.
+  const messageCount = chatThread.messages.length;
   useEffect(() => {
     if (!active) return;
     const el = scrollRef.current;
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [chatThread.messages, active, lastAssistant?.turn.text, lastAssistant?.turn.tools.length]);
+  }, [messageCount, activeId, active]);
+  useEffect(() => {
+    if (!active) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (fromBottom < 160) el.scrollTop = el.scrollHeight;
+  }, [active, lastAssistant?.turn.text, lastAssistant?.turn.reasoning, lastAssistant?.turn.tools.length]);
 
   // The sidebar is graff's session directory, newest first, bucketed by day.
   const now = Date.now();

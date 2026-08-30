@@ -138,8 +138,27 @@ export default function ThinkingState({
   const traceRef = useRef<HTMLDivElement>(null);
   const [lineHeight, setLineHeight] = useState(0);
   useLayoutEffect(() => {
-    if (traceRef.current) setLineHeight(traceRef.current.offsetHeight);
+    const el = traceRef.current;
+    if (!el) return;
+    setLineHeight(el.offsetHeight);
+    // A live reasoning row grows as it streams (wrapping to new lines without
+    // adding a row), so the guide line has to track the trace's real height,
+    // not just the row count.
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setLineHeight(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
   }, [visible, expanded, variant, stage]);
+
+  /* Live rows are keyed by position and only the rows that were not there on
+   * the previous render get the entrance animation. Keying by text replayed
+   * fade-up on the last row every time a token extended it — the trace
+   * twitched for the whole think. */
+  const animatedRef = useRef(0);
+  const firstNewRow = live ? animatedRef.current : 0;
+  useEffect(() => {
+    animatedRef.current = visible;
+  }, [visible]);
 
   /* let embedders sequence content after the trace settles */
   const settledRef = useRef(false);
@@ -277,12 +296,16 @@ export default function ThinkingState({
                 </>
               );
               const rowClass = "flex min-h-7 w-full items-center gap-2 rounded-[6px] px-1.5 py-0.5 text-left";
-              const animation = { animation: `fade-up 320ms cubic-bezier(0.23,1,0.32,1) ${i * 120}ms both` };
+              const key = live ? i : row.primary;
+              const animation =
+                i >= firstNewRow
+                  ? { animation: `fade-up 320ms cubic-bezier(0.23,1,0.32,1) ${live ? 0 : i * 120}ms both` }
+                  : undefined;
 
               if (variant === "Search") {
                 return (
                   <a
-                    key={row.primary}
+                    key={key}
                     href={row.href}
                     target="_blank"
                     rel="noreferrer"
@@ -298,7 +321,7 @@ export default function ThinkingState({
                 const selected = selectedTool === row.primary;
                 return (
                   <button
-                    key={row.primary}
+                    key={key}
                     type="button"
                     aria-pressed={selected}
                     onClick={() => setSelectedTool(selected ? null : row.primary)}
@@ -311,7 +334,7 @@ export default function ThinkingState({
               }
 
               return (
-                <div key={row.primary} className={rowClass} style={animation}>
+                <div key={key} className={rowClass} style={animation}>
                   {content}
                 </div>
               );
