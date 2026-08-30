@@ -28,7 +28,24 @@ def test_relative_symlink_keeps_link():
         assert open(link).read() == '{"new":2}'
 
 
+def test_credential_store_symlink():
+    """settings.json → credentials/graff-oauth.json must stay a link."""
+    with tempfile.TemporaryDirectory() as td:
+        cred_dir = os.path.join(td, "credentials")
+        os.mkdir(cred_dir)
+        real = os.path.join(cred_dir, "graff-oauth.json")
+        link = os.path.join(td, "settings.json")
+        with open(real, "w") as f:
+            f.write('{"old":1}')
+        os.symlink("credentials/graff-oauth.json", link)
+        replace_file(link, '{"new":2}')
+        assert os.path.islink(link), "settings.json must remain a symlink"
+        assert os.readlink(link) == "credentials/graff-oauth.json"
+        assert open(real).read() == '{"new":2}'
+
+
 if __name__ == "__main__":
     test_plain_file()
     test_relative_symlink_keeps_link()
+    test_credential_store_symlink()
     print("OK")

@@ -39,6 +39,7 @@ const keys_cli = @import("keys_cli.zig");
 const pricing = @import("pricing.zig");
 const skills = @import("skills.zig");
 const mcp = @import("mcp.zig");
+const mcp_boot = @import("mcp_boot.zig");
 const mcp_cli = @import("mcp_cli.zig");
 const mcp_config = @import("mcp_config.zig");
 const plugin_scan = @import("plugin_scan.zig");
@@ -447,7 +448,12 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
             sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "ignoring ~/" ++ mcp_config.unsupported_rel_path ++ ": unsupported path — use ~/" ++ mcp_config.global_rel_path ++ " (global) or {s} (project)", .{mcp_config_path})));
     }
     const mcp_count = mcp_cli.countMcpServers(merged);
-    const defer_join = flags.effectiveYolo() and flags.oneshot_prompt == null and !json_mode;
+    const defer_join = mcp_boot.deferMcpJoin(flags.effectiveYolo(), json_mode);
+    const skip_imported = mcp_boot.oneshotSkipsImportedMcp(
+        flags.oneshot_prompt != null,
+        leanMode(flags.effectiveLean(), environ_map),
+        merged.project.count(),
+    );
     // Lean folds schemas (deferAllRuntime); it does not skip connect.
     // --yolo / -p still connect so `.mcp.json` works on the default one-shot
     // (ADR 0029). Interactive without --yolo still asks.
@@ -459,7 +465,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
         const ans = in.takeDelimiter('\n') catch null;
         connect_mcp = ans != null and ans.?.len > 0 and (ans.?[0] == 'y' or ans.?[0] == 'Y');
     }
-    var registry: mcp.Registry = if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") != null, environ_map, defer_join) catch |err| inner: {
+    var registry: mcp.Registry = if (connect_mcp and !skip_imported) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") != null, environ_map, defer_join) catch |err| inner: {
         sink.emit(io, .{ .session_notice = .{ .text = try std.fmt.allocPrint(arena, "[mcp] init failed: {t} — continuing without MCP", .{err}) } });
         if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;

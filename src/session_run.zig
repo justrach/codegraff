@@ -190,7 +190,10 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
             break :blk final_text;
         };
     }
-    try out.print("{s}\n", .{if (had_schema) unwrapFencedJson(final_text) else final_text});
+    const answer = if (had_schema) unwrapFencedJson(final_text) else final_text;
+    // Live -p deltas already rode stdout (`printDelta`); reprinting would
+    // duplicate the answer and push first_out to the footer.
+    if (!root.streamed_text) try out.print("{s}\n", .{answer}) else try out.writeAll("\n");
     try out.flush();
     // Usage summary → stderr, so stdout stays exactly the answer.
     pricing.printUsageFooter(io);

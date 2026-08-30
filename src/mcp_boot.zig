@@ -7,9 +7,10 @@
 //! resulting tool list is identical to the serial build — only the wait is
 //! shorter: max(latency) instead of sum(latency).
 //!
-//! Interactive `--yolo` sets `defer_join`: tasks start immediately but the
-//! REPL prompt is not blocked. `joinBeforeRequest` merges them on the *second*
-//! model call (ADR 0035) so the first turn is not charged the handshake.
+//! `--yolo` (including `-p`) sets `defer_join`: tasks start immediately but
+//! the first model call is not blocked. `joinBeforeRequest` merges them on
+//! the *second* model call (ADR 0035). Lean `-p` with no project `.mcp.json`
+//! skips imported global/plugin handshakes (ADR 0029 is the project file).
 //! `joinPending` still blocks for `/mcp` and teardown.
 
 const std = @import("std");
@@ -182,6 +183,20 @@ pub fn firstRequestJoin(pending_len: usize, already_skipped: *bool) enum { none,
     return .join;
 }
 
+/// ADR 0035: `--yolo` (including `-p`, which implies yolo) starts MCP in the
+/// background. `--json` keeps a blocking connect so the protocol stream does
+/// not race a late catalog merge.
+pub fn deferMcpJoin(yolo: bool, json_mode: bool) bool {
+    return yolo and !json_mode;
+}
+
+/// Lean `-p` connects workspace `.mcp.json` (ADR 0029). It does not handshake
+/// imported global/plugin servers when the project file is empty — that was
+/// the exact-reply wall tax vs OpenCode `--pure`.
+pub fn oneshotSkipsImportedMcp(oneshot: bool, lean: bool, project_servers: usize) bool {
+    return oneshot and lean and project_servers == 0;
+}
+
 fn noteMcpDeferred(io: Io) void {
     const sink = @import("engine_sink.zig").hostedSink() orelse return;
     sink.emit(io, .{ .session_notice = .{
@@ -247,4 +262,17 @@ test "firstRequestJoin skips once, then joins" {
     try std.testing.expect(skipped);
     try std.testing.expectEqual(.join, firstRequestJoin(2, &skipped));
     try std.testing.expectEqual(.none, firstRequestJoin(0, &skipped));
+}
+
+test "deferMcpJoin covers -p yolo and leaves --json blocking" {
+    try std.testing.expect(deferMcpJoin(true, false));
+    try std.testing.expect(!deferMcpJoin(true, true));
+    try std.testing.expect(!deferMcpJoin(false, false));
+}
+
+test "oneshotSkipsImportedMcp is lean -p with no project .mcp.json" {
+    try std.testing.expect(oneshotSkipsImportedMcp(true, true, 0));
+    try std.testing.expect(!oneshotSkipsImportedMcp(true, true, 1)); // ADR 0029
+    try std.testing.expect(!oneshotSkipsImportedMcp(true, false, 0)); // --no-lean
+    try std.testing.expect(!oneshotSkipsImportedMcp(false, true, 0)); // REPL
 }

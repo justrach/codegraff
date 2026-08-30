@@ -17,3 +17,7 @@ When `path` is a symlink (or a chain of symlinks):
 - A cycle (A→B→A) raises `OSError` / `ValueError` and changes neither link.
 
 A non-symlink path is a normal atomic replace of that file.
+
+The motivating case is a credential-store path: `settings.json` →
+`credentials/graff-oauth.json`. Writing the named path must not replace the
+symlink with a regular file (that silently orphans the real store).

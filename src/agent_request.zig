@@ -217,7 +217,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     var openai404_retries: usize = 0; // #opencode-parity: bounded retries for OpenAI's spurious model 404s
     const max_openai404_retries: usize = 2;
     rebuild: while (true) {
-        const live = !self.sub and self.out != null and !self.stream_quiet;
+        const live = !self.sub and (self.out != null and !self.stream_quiet or main_mod.unattended);
         self.streamed_text = false;
         self.streamed_args = .none;
         const body = try self.buildBody(tools, force, live, stream_usage);

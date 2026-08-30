@@ -1,5 +1,49 @@
 # grok-4.6 list-price baseline: graff vs grok-build
 
+## Standing target — unique Pareto vs grok-build and OpenCode
+
+Named axes: **pass, wall, first-token, calls, tokens, list$, RSS**.
+Graff must be ≤ every named axis vs both rivals and strictly better on
+at least one. Do not claim Pareto until a new same-session table says so.
+Do not regress $, RSS, calls, or tokens to close wall / first-token / pass.
+
+Pinned fair same-session A/B (`run-20260830-101150` spine,
+`run-20260830-101332` in-house). SuperGrok grok-4.6, jobs=1, `x_search` on.
+
+Spine (exact-reply + file-ops + fix-fib), all 3/3:
+
+| harness | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | 28.7s | 2.9s | 8 | 32035 | $0.0498 | 101.2M |
+| grok | 46.9s | 2.8s | 9 | 149144 | $0.1415 | 167.4M |
+| opencode | **26.0s** | **2.6s** | 9 | 91258 | $0.0861 | 1055.2M |
+
+In-house 6 PR fixtures:
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | 5/6 | 80.8s | 2.4s | 26 | 118819 | $0.1824 | 101.2M |
+| grok | 5/6 | 396s | 2.4s | 30 | 535344 | $0.4285 | 157.7M |
+| opencode | **6/6** | 182.1s | 2.8s | 37 | 340074 | $0.3835 | 1103.9M |
+
+Gaps to close:
+
+1. Spine wall: 28.7s → **≤26.0s** (OpenCode). Almost all of it is
+   exact-reply (6.14s vs 3.22s). Suspect: lean `-p` still handshakes
+   imported/global MCP before the first token; oneshot `stream_quiet`
+   plus chrome on `g_out` also shift first-stdout.
+2. Spine first-token: 2.9s → **≤2.6s** (OpenCode). Grok 2.8s also beats
+   us. Do not plot REPL 0.03s echo. Measure with `TUI/sim.zig` `Term`
+   for pager work; eval first_out is first stdout **or** stderr line.
+3. In-house pass: 5/6 → **6/6**. Miss was `atomic-symlink-write`: 3.53s
+   / 1 call; captured answer was turn-pulse chrome `· turn still going ·`;
+   tests still fail. Not auth. The model never edited `atomic_write.py`.
+
+Already landed, do not undo: hardlink pin (inode shared, nlink≥2);
+detached `learn init`; `-p` and REPL share one learn-auto path (no
+oneshot-only skip). `x_search` stays on (ADR 0031). Do not steal grok
+heap (~165M). Do not shrink to a 4-tool catalog (ADR 0024).
+
 Also compared: OpenCode (`opencode run`) and DeepSeek Harness (`dsh`).
 Same-model series is grok-4.6. Native-default series (`opencode-zen`,
 `dsh-deepseek`) is a **different chart** — do not read those points as

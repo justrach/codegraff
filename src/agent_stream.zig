@@ -391,7 +391,7 @@ test "openaiComplete (#133): finish_reason marks completion, deltas do not" {
 /// (the buffered body is parsed afterwards).
 pub fn printDelta(self: *Agent, raw_line: []const u8) void {
     const no_ui = self.out == null;
-    if (no_ui and !rlm_spec.available) return; // -p still feeds rlm so sPTC can launch mid-stream
+    if (no_ui and !rlm_spec.available and !(main_mod.unattended and !main_mod.json_mode)) return;
     const payload = ssePayload(raw_line) orelse return;
     const parsed = std.json.parseFromSlice(Value, self.gpa, payload, .{}) catch return;
     defer parsed.deinit();
@@ -399,7 +399,6 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
     const obj = parsed.value.object;
     if (modelOutputStarted(self.provider.kind, obj)) self.traceFirstToken();
     self.argLiveDelta(obj);
-    if (no_ui) return;
     const text: []const u8 = switch (self.provider.kind) {
         .anthropic => blk: {
             const t = obj.get("type") orelse break :blk "";
@@ -428,6 +427,17 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
             break :blk if (x == .string) x.string else "";
         },
     };
+    if (no_ui) {
+        if (oneshotShouldPaint(main_mod.unattended, main_mod.json_mode, text.len)) {
+            if (main_mod.g_out) |w| {
+                w.writeAll(text) catch {};
+                w.flush() catch {};
+            }
+            self.streamed_text = true;
+            self.traceFirstToken();
+        }
+        return;
+    }
     // Reasoning/thinking deltas: deepseek streams reasoning_content, anthropic
     // a thinking_delta, codex a summary delta. Presentation is the sink's call:
     // the wire's `reasoning` event, or the live "Thinking" block / spinner.
@@ -483,4 +493,17 @@ test "first-token signal ignores envelopes and sees prose, reasoning, and tool b
     try std.testing.expect(try testModelOutputStarted(.openai, "{\"choices\":[{\"delta\":{\"tool_calls\":[{}]}}]}"));
     try std.testing.expect(!try testModelOutputStarted(.anthropic, "{\"type\":\"message_start\"}"));
     try std.testing.expect(try testModelOutputStarted(.anthropic, "{\"type\":\"content_block_delta\"}"));
+}
+
+/// `-p` streams the answer onto stdout as tokens arrive so eval first_out is
+/// TTFT, not the end-of-turn print. Reasoning stays off stdout.
+pub fn oneshotShouldPaint(unattended: bool, json_mode: bool, text_len: usize) bool {
+    return unattended and !json_mode and text_len != 0;
+}
+
+test "oneshot paints answer tokens, never --json or empty deltas" {
+    try std.testing.expect(oneshotShouldPaint(true, false, 4));
+    try std.testing.expect(!oneshotShouldPaint(false, false, 4)); // line REPL uses out
+    try std.testing.expect(!oneshotShouldPaint(true, true, 4));
+    try std.testing.expect(!oneshotShouldPaint(true, false, 0));
 }
