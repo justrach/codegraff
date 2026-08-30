@@ -351,10 +351,10 @@ pub fn isStreamEnd(arena: std.mem.Allocator, kind: anytype, raw_line: []const u8
     if (std.mem.eql(u8, line, "data: [DONE]") or std.mem.eql(u8, line, "data:[DONE]")) return true;
     if (std.mem.startsWith(u8, line, "event:")) return switch (kind) {
         .anthropic => std.mem.indexOf(u8, line, "message_stop") != null,
-        .responses => std.mem.indexOf(u8, line, "response.completed") != null or
-            std.mem.indexOf(u8, line, "response.incomplete") != null or
-            std.mem.indexOf(u8, line, "response.failed") != null,
-        .openai => false,
+        // xAI/OpenAI Responses: `event: response.completed` is the SSE name;
+        // usage rides the following `data:` line. Ending here made -p
+        // `[usage]` print 0 calls (live stream never saw the payload).
+        .responses, .openai => false,
     };
     const payload = ssePayload(raw_line) orelse return false;
     const candidate = switch (kind) {
