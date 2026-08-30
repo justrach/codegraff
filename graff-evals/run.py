@@ -80,8 +80,8 @@ def _resolve_model(harness, model):
     return mapped
 
 
-def build_cmd(harness, task, model):
-    subst = {"prompt": task["prompt"], "model": _resolve_model(harness, model), "repo": REPO}
+def build_cmd(harness, task, model, sandbox=""):
+    subst = {"prompt": task["prompt"], "model": _resolve_model(harness, model), "repo": REPO, "sandbox": sandbox}
     cmd = [part.format(**subst) for part in harness["cmd"]]
     if "output-schema" in task.get("requires", []):
         schema = json.dumps(task["schema"], separators=(",", ":"))
@@ -281,7 +281,7 @@ def _fmt_mib(kb):
 def one_run(hname, harness, task, model, rep, live=False):
     sandbox = os.path.join(SANDBOX_DIR, f"{hname}-{task['id']}-r{rep}")
     materialize(task, sandbox)
-    cmd, stdin_body = build_cmd(harness, task, model)
+    cmd, stdin_body = build_cmd(harness, task, model, sandbox)
     timeout = task.get("timeout_s", 240)
     t0 = time.monotonic()
     first_out = None
@@ -292,7 +292,7 @@ def one_run(hname, harness, task, model, rep, live=False):
     try:
         p = subprocess.Popen(cmd, cwd=sandbox, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, stdin=subprocess.PIPE if stdin_body is not None else None,
-                             text=True,
+                             text=True, start_new_session=True,
                              env=dict(os.environ, **harness.get("env", {})))
         if stdin_body is not None and p.stdin is not None:
             try:
@@ -320,10 +320,36 @@ def one_run(hname, harness, task, model, rep, live=False):
                 if live:
                     sys.stdout.write(chunk if key.data == "out" else f"\x1b[2m{chunk}\x1b[0m")
                     sys.stdout.flush()
-        timed_out = p.poll() is None
-        if timed_out:
-            p.kill()
-        p.wait(timeout=10)
+        # OpenCode's `run --format json` often closes the pipes while a local
+        # server is still up. That is not a task timeout. Give writes a moment
+        # to land, then reap the leftover group. A real timeout is pipes still
+        # open when the budget ends.
+        hit_budget = time.monotonic() - t0 >= timeout
+        if p.poll() is None and not hit_budget:
+            time.sleep(1.5)
+            rss_peak = max(rss_peak, tree_rss_kb(p.pid))
+            try:
+                os.killpg(p.pid, 15)
+            except OSError:
+                p.terminate()
+            try:
+                p.wait(timeout=4)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(p.pid, 9)
+                except OSError:
+                    p.kill()
+                p.wait(timeout=5)
+            timed_out = False
+        elif p.poll() is None:
+            timed_out = True
+            try:
+                os.killpg(p.pid, 9)
+            except OSError:
+                p.kill()
+            p.wait(timeout=10)
+        else:
+            timed_out = False
         rc = p.returncode
         rss_peak = max(rss_peak, tree_rss_kb(p.pid))
     except FileNotFoundError:
