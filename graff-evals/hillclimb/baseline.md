@@ -10,7 +10,10 @@ ADR 0024's "185k in" column was uncached-only and undercounted grok-build.
 ## We are not strict Pareto vs grok-build
 
 On the live 3-task set they still win **calls**. We win wall, tokens,
-list$, and RSS. Pass is a tie. Do not claim the frontier.
+list$, and RSS. Pass is a tie. Do not claim a strict 5-axis win. The
+[frontier graph](#frontier-graph-live-3-task-two-2d-projections) is the
+honest picture: grok sits on it via fewer calls; graff-dev (`-p`) sits
+on it via cheaper / faster.
 
 ## Live 2026-08-30 hardlink pin, `-p` + scripted REPL (`run-20260830-042417.jsonl`)
 
@@ -47,6 +50,42 @@ on repl) and won file-ops wall. We win the other named axes on this
 set. Heap still theirs (155M vs 91M) — not stolen.
 
 `x-search-off` dropped: not what grok-build does.
+
+## Frontier graph (live 3-task, two 2D projections)
+
+The 5-axis score is wall / first-token / calls / tokens / list$ (ADR 0044).
+Pass is a tie. RSS is extra. REPL `first_out_s` is composer echo — it is
+not an axis and is not plotted.
+
+Neither harness dominates the other on all five: **grok-build is on the
+frontier via fewer calls**; **graff-dev (`-p`) is on it via cheaper /
+faster / fewer tokens / smaller RSS**. `graff-dev-repl` is interior —
+`-p` beats it on wall, calls, tokens, list$, and RSS.
+
+![Pareto projections: wall vs list$ and calls vs list$ from run-20260830-042417](frontier-20260830.svg)
+
+Numbers on the figure are the live JSONL sums (`run-20260830-042417.jsonl`).
+Lower-left is better on both panels.
+
+| point | 5-axis | wall vs $ | calls vs $ |
+|---|---|---|---|
+| **graff-dev (`-p`)** | on (cheaper / faster) | **on** (best both) | **on** (cheaper) |
+| grok-build | on (fewer calls) | interior | **on** (fewer calls) |
+| graff-dev-repl | interior | interior | interior |
+
+```mermaid
+flowchart LR
+  subgraph front["5-axis frontier — neither dominates"]
+    P["graff-dev (−p)<br/>22.2s · $0.0374 · 8 calls · ~32k · 90.7M<br/>on via cheaper / faster / smaller RSS"]
+    G["grok-build<br/>37.0s · $0.1474 · 7 calls · ~116k · 155.4M<br/>on via fewer calls"]
+  end
+  R["graff-dev-repl<br/>25.2s · $0.1185 · 9 calls · ~64k · 91.8M<br/>interior: dominated by −p<br/>first-token is echo — not plotted"]
+  P -->|wins wall, calls, tokens, list$, RSS| R
+```
+
+Left panel (wall vs $): only `-p` is non-dominated. Right panel (calls vs
+$): the dashed segment is the 2D front between grok (7 calls) and `-p`
+($0.0374). REPL sits above and to the right of `-p` on both projections.
 
 ## Earlier same-day after oneshot-skip (`run-20260830-035954.jsonl`) — superseded
 
