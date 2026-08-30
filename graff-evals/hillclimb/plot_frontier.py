@@ -50,6 +50,8 @@ def render(by: dict, title: str, subtitle: str) -> str:
     for h, b in by.items():
         if b["n"] == 0:
             continue
+        if b.get("usd_n", 0) == 0:
+            continue  # no measured $ — do not plot as a $0 winner
         rows.append((h, {
             "wall_s": b["wall_s"],
             "tok_calls": b["tok_calls"],
@@ -150,8 +152,12 @@ def main():
     ap.add_argument("-o", "--out", required=True)
     ap.add_argument("--title", default="Eval frontier · lower-left is better")
     ap.add_argument("--subtitle", default="Pass is a tie-break, not an axis. Hollow = mixed-model / REPL. REPL first-token is echo — not plotted.")
+    ap.add_argument("--harness", help="comma-separated harness names to keep")
     args = ap.parse_args()
     rows = load_jsonl(args.jsonl)
+    if args.harness:
+        keep = {h.strip() for h in args.harness.split(",") if h.strip()}
+        rows = [r for r in rows if r.get("harness") in keep]
     svg = render(bucket(rows), args.title, args.subtitle)
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     with open(args.out, "w") as f:

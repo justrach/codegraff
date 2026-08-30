@@ -76,6 +76,9 @@ grok-build's heap or a 4-tool catalog (ADR 0024). First keep:
 ./hillclimb.py score results/run-20260828-021606.jsonl
 ./hillclimb.py iterate --suite core --task exact-reply,fix-fib,file-ops
 ./hillclimb/plot_frontier.py results/run-….jsonl -o hillclimb/frontier.svg
+# same-model charts from the 2026-08-30 live set:
+#   hillclimb/frontier-spine-20260830.svg
+#   hillclimb/frontier-inhouse-20260830.svg
 ```
 
 ## Harnesses

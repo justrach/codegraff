@@ -18,13 +18,77 @@ for the whole request at or above). SuperGrok's `[usage]` `$0.0000` is ignored.
 Graff `[usage] in` includes cache reads. grok-build `input_tokens` does not —
 ADR 0024's "185k in" column was uncached-only and undercounted grok-build.
 
+## Who actually ran (2026-08-30 eval-frontier)
+
+| harness | model | ran? | blocker |
+|---|---|---|---|
+| graff-dev (`-p`) | grok-4.6 | yes | this tree is `main` — learn-auto still **byte-copies** `graff-pinned` (132MB, nlink=1). PR #684 detaches that. |
+| grok-build 1.0.5 | grok-4.6 | yes | — |
+| opencode 1.18.25 | xai/grok-4.6 | yes | SuperGrok access token as OpenCode `xai` api auth |
+| graff-dev-repl | grok-4.6 | yes | **no `[usage]` footer** this run — do not plot $0 / first-token echo |
+| dsh-xai | **grok-4.5** | yes | mixed-model. Catalog has no grok-4.6. No usage footer. Node must be ≥22.15 (zstd). |
+| dsh-grok | grok-4.6 | **no** | `UNKNOWN_MODEL: pi-ai provider "xai" has no configured model "grok-4.6"` |
+| dsh-deepseek | deepseek-v4-flash | **no** | no `DEEPSEEK_API_KEY` in this environment |
+| opencode-zen | opencode/big-pickle | yes | mixed-model / 1/3 spine. list$ is not xAI list price |
+
+Do not read dsh-xai or opencode-zen as grok-4.6 list-price points.
+
+## Live spine — same-model grok-4.6 (`run-20260830-053939.jsonl`)
+
+exact-reply + file-ops + fix-fib. x_search on. One rep, jobs=1.
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| graff-dev (`-p`) | **3/3** | 62.4s | 3.1s | **8** | ~32k | **$0.0481** | **91.2M** |
+| grok-build | **3/3** | **31.6s** | 3.2s | 9 | ~149k | $0.1041 | 167.9M |
+| opencode | 2/3 | 59.5s | **2.9s** | 15 | ~267k | $0.4342 | 584.6M |
+
+OpenCode file-ops: claimed `greeting.txt` but the sandbox check saw no file (cwd / teardown). graff-dev fix-fib was 52s with a 132MB pin copy after the 5th API call — that tax is what #684 removes (same-day post-fix spine was 22.2s / $0.0374).
+
+**Not Pareto vs grok-build on this main tree:** they win wall; we win calls, tokens, list$, RSS. Pass is a tie. OpenCode is interior on both 2D projections and loses a pass.
+
+![Same-model spine frontier](frontier-spine-20260830.svg)
+
+```mermaid
+flowchart LR
+  subgraph front["spine 2D front — neither graff nor grok dominates"]
+    P["graff-dev −p · 62.4s · $0.0481 · 8 calls · on via cheaper / fewer calls"]
+    G["grok-build · 31.6s · $0.1041 · 9 calls · on via wall"]
+  end
+  O["opencode xai/grok-4.6 · 2/3 · 59.5s · $0.4342 · 15 calls · interior"]
+```
+
+## Live in-house PR suite — same-model grok-4.6 (`run-20260830-054427.jsonl`)
+
+Six fixtures distilled from shipped PRs. Same SuperGrok seat. graff-dev 5-call tasks each paid the 132MB pin (~38s CPU).
+
+| harness | pass | wall | first | calls | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| **graff-dev** | **6/6** | 361.1s | **2.2s** | **30** | **$0.1818** | **91.3M** |
+| grok-build | 5/6 | 453.9s | 3.2s | 30 | $0.4332 | 157.5M |
+| opencode | 0/6 | **182.0s** | 3.5s | 49 | $0.5366 | 1086.7M |
+
+grok-build timed out on `atomic-symlink-write` (240s, still a symlink-replacing write). OpenCode printed `OK` on every task without making the tests pass.
+
+On this suite graff-dev wins pass / wall / $ / tokens / RSS; calls are a tie with grok. OpenCode's wall is lower because it stopped early at 0/6 — not a win.
+
+![In-house PR-suite frontier](frontier-inhouse-20260830.svg)
+
+## Mixed-model spine (`run-20260830-054332.jsonl`) — not the grok-4.6 chart
+
+| harness | model | pass | wall | note |
+|---|---|---:|---:|---|
+| dsh-xai | grok-4.5 | 3/3 | 20.3s | no usage footer; $ unknown; **not grok-4.6** |
+| opencode-zen | big-pickle | 1/3 | 34.5s | harness-reported tokens; not xAI list$ |
+
 ## We are not strict Pareto vs grok-build
 
-On the live 3-task set they still win **calls**. We win wall, tokens,
+On the #684 post-fix 3-task set they still win **calls**. We win wall, tokens,
 list$, and RSS. Pass is a tie. Do not claim a strict 5-axis win. The
 [frontier graph](#frontier-graph-live-3-task-two-2d-projections) is the
-honest picture: grok sits on it via fewer calls; graff-dev (`-p`) sits
-on it via cheaper / faster.
+honest picture from that run: grok sits on it via fewer calls; graff-dev (`-p`) sits
+on it via cheaper / faster. On **this** branch (`main` + evals, pin still a copy)
+grok-build also wins spine wall.
 
 ## Live 2026-08-30 hardlink pin, `-p` + scripted REPL (`run-20260830-042417.jsonl`)
 
