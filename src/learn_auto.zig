@@ -145,6 +145,38 @@ fn hasPendingTrial(store: *store_mod.Store) bool {
     return true;
 }
 
+/// Build the automatic `learn init` command. Kept next to the trial argv so
+/// both background children are testable without spawning.
+pub fn initArgv(argv: *[3][]const u8, exe_path: []const u8) []const []const u8 {
+    argv.* = .{ exe_path, "learn", "init" };
+    return argv;
+}
+
+/// Own process group (when the OS has them): the child outlives this session,
+/// and a Ctrl-C aimed at the shell's foreground group afterwards must not
+/// kill suite generation or a tournament mid-holdout.
+fn spawnDetached(io: Io, argv: []const []const u8, log: ?Io.File) bool {
+    _ = std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = if (log) |file| .{ .file = file } else .ignore,
+        .stderr = if (log) |file| .{ .file = file } else .ignore,
+        .pgid = if (posix_process_groups) 0 else null,
+    }) catch return false;
+    return true;
+}
+
+/// Detached `graff learn init` of this executable. Session end must not wait
+/// on suite generation (~38s of CPU); the next session that finds a store
+/// starts counting toward a trial.
+pub fn startInit(io: Io, exe_path: []const u8) bool {
+    var argv_buf: [3][]const u8 = undefined;
+    const argv = initArgv(&argv_buf, exe_path);
+    const log = Io.Dir.cwd().createFile(io, ".graff/learn-auto-init.log", .{ .truncate = true }) catch null;
+    defer if (log) |file| file.close(io);
+    return spawnDetached(io, argv, log);
+}
+
 /// Build the trial command. Kept separate from spawning so the shape of an
 /// automatic trial is testable without starting one.
 pub fn trialArgv(argv: *[8][]const u8, exe_path: []const u8, resumed: bool, contribute: bool) []const []const u8 {
@@ -214,16 +246,7 @@ pub fn maybeStart(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.
     lock.deinit();
     lock_held = false;
 
-    _ = std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = .ignore,
-        .stdout = if (log) |file| .{ .file = file } else .ignore,
-        .stderr = if (log) |file| .{ .file = file } else .ignore,
-        // Its own process group: the trial outlives this session, and a
-        // Ctrl-C aimed at the shell's foreground group afterwards must not
-        // kill a tournament mid-holdout.
-        .pgid = if (posix_process_groups) 0 else null,
-    }) catch return .{ .skipped = .busy };
+    if (!spawnDetached(io, argv, log)) return .{ .skipped = .busy };
     // Deliberately not waited on. The trial reports through
     // `graff learn status` and .graff/learn/auto.log.
     return .{ .started = .{ .resumed = resumed, .contribute = contribute } };
@@ -280,4 +303,10 @@ test "an automatic trial always carries the two-key auto flag and never restarts
     try std.testing.expectEqualSlices([]const u8, &.{ "graff", "--learning-privacy", "local", "learn", "run", "--auto" }, local);
     const resumed = trialArgv(&argv, "graff", true, true);
     try std.testing.expectEqualSlices([]const u8, &.{ "graff", "--learning-privacy", "aggregate", "learn", "run", "--auto", "--resume", "--submit" }, resumed);
+}
+
+test "an automatic init is a bare learn init of this executable" {
+    var argv: [3][]const u8 = undefined;
+    const got = initArgv(&argv, "graff");
+    try std.testing.expectEqualSlices([]const u8, &.{ "graff", "learn", "init" }, got);
 }
