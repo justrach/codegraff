@@ -55,3 +55,12 @@ dsh --help
 dsh --profile headless --patch graff-evals/dsh-xai.yml "Reply with exactly: pong"
 ./run.py --harness dsh-xai --task exact-reply
 ```
+
+Smoke on this box (2026-08-30), SuperGrok OAuth, no secrets:
+
+| harness | result |
+|---|---|
+| `dsh --help` | 0.1.1-rc.2 usage |
+| `dsh-xai` exact-reply | stdout `pong` (~2.4s) |
+| `dsh-grok` | `UNKNOWN_MODEL` — catalog has no grok-4.6 |
+| `dsh-deepseek` | `MISSING_CREDENTIAL` — no `DEEPSEEK_API_KEY` |
