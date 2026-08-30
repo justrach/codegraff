@@ -35,19 +35,46 @@ pub var idle_floor_ms: u64 = 15 * 1000;
 /// idle_floor_ms; production writes it only from session_settings.
 pub var head_ceiling_ms: u64 = 45 * 1000;
 
+/// Per-request reconnect state the SSE and WS readers consult (#680). Owned by
+/// the Agent, reset at the top of every request(), advanced by each stall
+/// reconnect.
+pub const State = struct {
+    /// Stall reconnects this request has already made. Each one widens the
+    /// between-lines budget (budgetMsWidened): a stream that stalled at the
+    /// same point twice is a model pausing mid-response — composing a large
+    /// tool call, say — not a dead socket, and re-sending the identical
+    /// request into the identical budget only re-pays the generation.
+    widen: u8 = 0,
+    /// The budget (ms) of the read that last tripped, so the turn-ending
+    /// message reports what was actually waited rather than the configured
+    /// total. 0 until a watchdog fires.
+    tripped_ms: u64 = 0,
+};
+
 pub fn budgetMs(base_ms: u64, tokens_flowing: bool) u64 {
+    return budgetMsWidened(base_ms, tokens_flowing, 0);
+}
+
+/// budgetMs with the reconnect ladder applied (#680): `widen` is how many
+/// stall reconnects this request has made. The between-lines divisor halves
+/// each time — a quarter, a half, then the full configured budget — and the
+/// floor and the configured total still bound it. The pre-first-token
+/// ceiling is NOT widened: a socket that never answered is dead on arrival
+/// (#401), and that regime has its own retry ladder (HungRequest).
+pub fn budgetMsWidened(base_ms: u64, tokens_flowing: bool, widen: u8) u64 {
     if (!tokens_flowing) return @min(base_ms, head_ceiling_ms);
-    return @min(base_ms, @max(idle_floor_ms, base_ms / idle_divisor));
+    const divisor = idle_divisor >> @intCast(@min(widen, 2));
+    return @min(base_ms, @max(idle_floor_ms, base_ms / divisor));
 }
 
 /// Inter-frame wait. No bytes yet is a dead socket (head ceiling). Protocol
 /// frames without prose is a reasoning model (full `base_ms` — gpt-5.6-sol
 /// high/max often encrypts thinking and emits nothing for well over 45s).
-/// Visible prose tightens to the between-lines budget.
-pub fn interFrameBudgetMs(base_ms: u64, saw_protocol: bool, tokens_flowing: bool) u64 {
-    if (tokens_flowing) return budgetMs(base_ms, true);
+/// Visible prose tightens to the between-lines budget, widened per reconnect.
+pub fn interFrameBudgetMs(base_ms: u64, saw_protocol: bool, tokens_flowing: bool, widen: u8) u64 {
+    if (tokens_flowing) return budgetMsWidened(base_ms, true, widen);
     if (saw_protocol) return base_ms;
-    return budgetMs(base_ms, false);
+    return budgetMsWidened(base_ms, false, widen);
 }
 
 /// True once a silent read has outlasted its budget — the watchdog loop's only
@@ -92,7 +119,27 @@ test "stall budget (#56): between-lines silence trips sooner than a pre-first-to
 
 test "stall budget: protocol-seen thinking keeps the full wait, not the 45s ceiling" {
     const base: u64 = 120 * 1000;
-    try std.testing.expectEqual(head_ceiling_ms, interFrameBudgetMs(base, false, false));
-    try std.testing.expectEqual(base, interFrameBudgetMs(base, true, false));
-    try std.testing.expectEqual(@as(u64, 30 * 1000), interFrameBudgetMs(base, true, true));
+    try std.testing.expectEqual(head_ceiling_ms, interFrameBudgetMs(base, false, false, 0));
+    try std.testing.expectEqual(base, interFrameBudgetMs(base, true, false, 0));
+    try std.testing.expectEqual(@as(u64, 30 * 1000), interFrameBudgetMs(base, true, true, 0));
+}
+
+// The #680 signature: reasoning streamed, one line of prose, then >30s of
+// silence while the model composed a large tool call. The old ladder armed the
+// same 30s on every reconnect, so all three attempts died at the same point
+// and the turn ended claiming "no data for 120s".
+test "stall budget (#680): each reconnect widens the between-lines wait — a quarter, a half, then all of it" {
+    const base: u64 = 120 * 1000;
+    try std.testing.expectEqual(@as(u64, 30 * 1000), budgetMsWidened(base, true, 0));
+    try std.testing.expectEqual(@as(u64, 60 * 1000), budgetMsWidened(base, true, 1));
+    try std.testing.expectEqual(base, budgetMsWidened(base, true, 2));
+    try std.testing.expectEqual(base, budgetMsWidened(base, true, 7)); // past the ladder: still the configured total
+    // Through the reader's entry point, and only for the prose regime.
+    try std.testing.expectEqual(@as(u64, 60 * 1000), interFrameBudgetMs(base, true, true, 1));
+    try std.testing.expectEqual(base, interFrameBudgetMs(base, true, false, 1)); // protocol-only: already the full wait
+    try std.testing.expectEqual(head_ceiling_ms, interFrameBudgetMs(base, false, false, 2)); // dead on arrival is not widened
+    // The floor and the total still bound a short GRAFF_STREAM_STALL_SECS.
+    try std.testing.expectEqual(idle_floor_ms, budgetMsWidened(20 * 1000, true, 1)); // 10s < floor
+    try std.testing.expectEqual(@as(u64, 20 * 1000), budgetMsWidened(20 * 1000, true, 2));
+    try std.testing.expectEqual(@as(u64, 5 * 1000), budgetMsWidened(5 * 1000, true, 1));
 }

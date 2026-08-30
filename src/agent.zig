@@ -211,6 +211,7 @@ pub const Agent = struct {
     ws_off: bool = false, // codex ws transport disabled for this session after a handshake/transport fallback to SSE (#codex-ws)
     ws_transport_failures: u8 = 0, // consecutive WS failures; retry once before latching persistent SSE
     streamed_text: bool = false, // the last request printed its text live
+    stall: @import("http_stall.zig").State = .{}, // #680: reconnects made this request (each widens the between-lines budget) + the budget that last tripped
     request_started: ?Io.Timestamp = null, // operational TTFT origin for the active model call (#602)
     first_token_traced: bool = false,
     thinking_open: bool = false, // a live "Thinking" reasoning block is currently streaming (/thinking)
