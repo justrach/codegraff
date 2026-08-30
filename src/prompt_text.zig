@@ -288,7 +288,9 @@ pub const lean_work_note =
     \\Assume the user wants the work done. Verify with the project's own
     \\tests in its OWN environment. Use named files and tests directly.
     \\Do not add unrequested tests. Never repeat a tool call with identical
-    \\parameters. When a named SPEC.md is in the task, satisfy every clause
+    \\parameters. When the task names a file, read it and edit that path
+    \\before answering — do not describe a fix you have not applied.
+    \\When a named SPEC.md is in the task, satisfy every clause
     \\— a green public test is not the whole spec. Empty input includes
     \\whitespace-only: yield nothing, do not raise. A required record
     \\delimiter applies to records that exist; a payload with no records

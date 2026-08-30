@@ -248,6 +248,7 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
     try std.testing.expectEqualStrings("subagent", kept[2].name);
     try std.testing.expectEqualStrings("attempt_completion", kept[3].name);
     try std.testing.expectEqual(@as(usize, 8), lean_tools.len);
+    try std.testing.expect(leanKeeps("read_file") and leanKeeps("edit_file") and leanKeeps("write_file"));
     try std.testing.expect(!leanKeeps("read_tool_result"));
     for (lean_tools) |tool| try std.testing.expect(leanKeeps(tool));
     try std.testing.expect(!leanKeeps("workflow"));
@@ -404,6 +405,7 @@ test "lean prompt diet: no fan-out / trace / issue-filing; short local-tools not
     try std.testing.expect(std.mem.indexOf(u8, out, "not covered by /rewind") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "rlm") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "SPEC.md") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "edit that path") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "discard work") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Fix root causes") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Co-Authored-By") == null);
@@ -419,6 +421,9 @@ test "lean catalog drops overflow pager and empty load_tool_schemas" {
     const arena = arena_state.allocator();
     const specs = try schema.effectiveRootSpecs(arena);
     const json = try schema.renderRootTools(arena, .openai, specs, &.{});
+    try std.testing.expect(std.mem.indexOf(u8, json, "read_file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "edit_file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "write_file") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "read_tool_result") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"load_tool_schemas\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") == null);

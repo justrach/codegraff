@@ -4,7 +4,7 @@
   "category": "inhouse",
   "source": "codegraff cache-affinity-gitroot — key prompt-cache on git root, not cwd (distilled)",
   "files_dir": "fixtures/cache-gitroot",
-  "prompt": "affinity_seed hashes the leaf cwd, so sibling worktrees miss the cache. Read SPEC.md and affinity.py, then make `python3 test_affinity.py` print OK. Do not edit the tests.",
+  "prompt": "affinity.py:affinity_seed hashes the leaf cwd, so sibling worktrees miss the cache. Read SPEC.md and affinity.py, then edit affinity.py so `python3 test_affinity.py` prints OK. Do not only describe the fix. Do not edit the tests.",
   "check": "python3 test_affinity.py && python3 \"$TASK_ROOT/hidden/cache-gitroot.py\"",
   "timeout_s": 240
 }

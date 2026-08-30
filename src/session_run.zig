@@ -124,6 +124,7 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
 pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_mod.Agent, keys: *provider_mod.Keys, tracer: *trace.Tracer, out: *Io.Writer, prompt_text: []const u8) !void {
     if (@import("goal_pacing.zig").oneshotSlashRefusal(prompt_text)) |why| std.process.fatal("{s}", .{why}); // usage error, not a prompt
     main_mod.unattended = true;
+    @import("named_work.zig").remember(prompt_text);
     root.in = null; // gate: deny instead of prompt; ask_user: self-decide
     root.out = null; // tool progress → stderr; stdout carries only the answer
     root.stream_quiet = true;
@@ -147,7 +148,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     );
     var oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
     if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
-    try root.messages.append(try messages_mod.textMessage(arena, "user", oneshot_user));
+    try root.messages.append(try @import("named_work.zig").userNudge(arena, root.provider.kind, oneshot_user));
     if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(prompt_text.len, std.math.maxInt(u32))), root.provider.model);
     // #502: --output-schema runs TWO-PHASE. A strict grammar on every message
     // pulls the model into answering immediately instead of touching tools
@@ -193,7 +194,10 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
             break :blk final_text;
         };
     }
-    try out.print("{s}\n", .{if (had_schema) unwrapFencedJson(final_text) else final_text});
+    const answer = if (had_schema) unwrapFencedJson(final_text) else final_text;
+    // Live -p deltas already rode stdout (`printDelta`); reprinting would
+    // duplicate the answer and push first_out to the footer.
+    if (!root.streamed_text) try out.print("{s}\n", .{answer}) else try out.writeAll("\n");
     try out.flush();
     // Usage summary → stderr, so stdout stays exactly the answer.
     pricing.printUsageFooter(io);

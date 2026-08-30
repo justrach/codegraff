@@ -14,8 +14,8 @@ pub fn streamEnd(is_stream_end: anytype) !void {
     try std.testing.expect(is_stream_end(arena, Kind.anthropic, "event: message_stop"));
     try std.testing.expect(is_stream_end(arena, Kind.anthropic, "data: {\"type\":\"message_stop\"}"));
     try std.testing.expect(!is_stream_end(arena, Kind.anthropic, "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"message_stop\"}}"));
-    // Responses completion/incompletion terminate; output deltas do not.
-    try std.testing.expect(is_stream_end(arena, Kind.responses, "event: response.completed"));
+    // Responses: the event: name is not the end — usage is on the data line.
+    try std.testing.expect(!is_stream_end(arena, Kind.responses, "event: response.completed"));
     try std.testing.expect(is_stream_end(arena, Kind.responses, "data: {\"type\":\"response.completed\"}"));
     try std.testing.expect(is_stream_end(arena, Kind.responses, "data: {\"type\":\"response.incomplete\"}"));
     try std.testing.expect(!is_stream_end(arena, Kind.responses, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}"));

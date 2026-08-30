@@ -1,5 +1,127 @@
 # grok-4.6 list-price baseline: graff vs grok-build
 
+## Standing target — unique Pareto vs grok-build and OpenCode
+
+Named axes: **pass, wall, first-token, calls, tokens, list$, RSS**.
+Graff must be ≤ every named axis vs both rivals and strictly better on
+at least one. Do not claim Pareto until a new same-session table says so.
+Do not regress $, RSS, calls, or tokens to close wall / first-token / pass.
+
+Pinned fair same-session A/B (`run-20260830-101150` spine,
+`run-20260830-101332` in-house). SuperGrok grok-4.6, jobs=1, `x_search` on.
+
+Spine (exact-reply + file-ops + fix-fib), all 3/3:
+
+| harness | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | 28.7s | 2.9s | 8 | 32035 | $0.0498 | 101.2M |
+| grok | 46.9s | 2.8s | 9 | 149144 | $0.1415 | 167.4M |
+| opencode | **26.0s** | **2.6s** | 9 | 91258 | $0.0861 | 1055.2M |
+
+In-house 6 PR fixtures:
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | 5/6 | 80.8s | 2.4s | 26 | 118819 | $0.1824 | 101.2M |
+| grok | 5/6 | 396s | 2.4s | 30 | 535344 | $0.4285 | 157.7M |
+| opencode | **6/6** | 182.1s | 2.8s | 37 | 340074 | $0.3835 | 1103.9M |
+
+## Latest climb — PARETO (`run-20260830-122731` in-house, `run-20260830-124315` spine)
+
+Same SuperGrok seat, jobs=1, `x_search` on, ReleaseSafe `-p`. Graff is
+≤ both rivals on every named axis and strictly better on at least one
+in **both** tables. Do not claim the 7–10M sampler RSS as a steal of
+grok heap (~156M); child HWM is ~19.5M.
+
+In-house 6 PR fixtures (`bed8e4f` catalog rebuild after 4-wide showcase):
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | **6/6** | **164.7s** | **0.7s** | **26** | **139001** | **$0.2514** | **9.9M** (HWM 19.4M) |
+| grok | 6/6 | 530.9s | 6.7s | 32 | 596614 | $0.6407 | 156.8M |
+| opencode | 6/6 | 168.4s | 2.9s | 40 | 340170 | $0.3999 | 1086.8M |
+
+Spine (exact-reply + file-ops + fix-fib), all 3/3:
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | 3/3 | **19.9s** | **0.6s** | 8 | **32074** | **$0.0484** | **7.1M** (HWM 19.5M) |
+| grok | 3/3 | 32.3s | 3.0s | 8 | 132874 | $0.1471 | 156.1M |
+| opencode | 3/3 | 31.2s | 3.1s | 8 | 82205 | $0.1013 | 581.2M |
+
+What closed the last in-house miss: a 4-wide native batch showcased
+`rlm`, `invalidateRootTools` wiped `tools_responses`, and the next
+body was `"tools":,` (graff exit 1, one counted call). Rebuild after
+`noticeWideNative`, same as `load_tool_schemas` / `noticeContext`.
+The Responses `input_text` nudge + Chat→typed coerce remain for the
+zero-tool one-shot shape.
+
+Spine calls are tied at 8 (was 8 vs grok 7). Do not cut the catalog.
+
+Gaps to close: **none on these two same-session tables.** Historical
+gaps below are how we got here.
+
+1. Spine wall: 28.7s → **≤26.0s** (OpenCode). Closed (19.9s).
+2. Spine first-token: 2.9s → **≤2.6s** (OpenCode). Closed (0.6s `›`).
+3. In-house pass: 5/6 → **6/6**. Closed (`stall-warn` 4 calls / 8.06s).
+
+Already landed, do not undo: hardlink pin (inode shared, nlink≥2);
+detached `learn init`; `-p` and REPL share one learn-auto path (no
+oneshot-only skip). `x_search` stays on (ADR 0031). Do not steal grok
+heap (~165M). Do not shrink to a 4-tool catalog (ADR 0024).
+
+## Latest climb — `run-20260830-112125` spine (usage-fixed `-p`)
+
+Same SuperGrok seat after the Responses SSE-end fix (`event: response.completed`
+no longer drops the `data:` usage payload). **Not Pareto.**
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | 3/3 | **28.5s** | 3.5s | 9 | 36822 | **$0.0612** | **101.7M** |
+| grok | 3/3 | 33.4s | 4.1s | **7** | 116043 | $0.1246 | 156.4M |
+| opencode | 3/3 | 30.4s | **2.6s** | 8 | 92176 | $0.1385 | 1057.6M |
+
+This session graff wins wall / $ / RSS / tokens vs both. First-token loses
+to OpenCode because file-ops is tool-first (6.55s ≈ wall 7.1s; exact-reply
+2.21s and fix-fib 1.71s already beat 2.6s). Calls 9 vs grok 7 / OpenCode 8
+is model extra-tool variance (file-ops 3 vs 2, fix-fib 5 vs 4), not a
+catalog change. Residual (now on the branch, not in this JSONL): emit one `-p` stderr
+progress line at first model SSE (including tool bytes) so first_out is
+TTFT, not the late narration. Do not put that line on stdout.
+
+## Latest climb — `run-20260830-112434` in-house (pre-nudge)
+
+Same session as the spine table above. **Not Pareto.** `atomic-symlink-write`
+is now a pass (65.7s / 5 calls / real edit). Two new one-shot misses:
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | 4/6 | **125.9s** | 20.6s | **22** | 109524 | **$0.1704** | **101.6M** |
+| grok | **6/6** | 279.4s | 3.2s | 34 | 619382 | $0.6000 | 157.8M |
+| opencode | **6/6** | 180.3s | **2.6s** | 52 | 525073 | $0.8313 | 1147.6M |
+
+Misses: `cache-gitroot` and `stall-warn` — 1 call each, answer was
+"I'll read SPEC.md…", tests still fail. Same shape as the original
+symlink miss. Product fix on the branch: one bounded named-file /
+zero-tool nudge (`named_work.zig`), shared by `-p` and the REPL.
+
+## Latest climb — `run-20260830-113706` spine (TTFT `›` mark)
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | 3/3 | **17.9s** | **0.7s** | 8 | 31605 | **$0.0325** | 7.0M (child HWM 19.8M) |
+| grok | 3/3 | 32.2s | 2.6s | **7** | ~116k | $0.1184 | 155.2M |
+| opencode | 3/3 | 27.3s | 2.7s | 10 | ~82k | $0.1093 | 1114.7M |
+
+**Not Pareto:** calls 8 > grok 7 (file-ops 3 vs 2). First-token is the
+stderr `›` at first model SSE (cold local run: `›` at 3.71s, then
+`pong`). Not a boot banner. ReleaseSafe RSS without a learn pin is
+~20M child HWM; debug+pin stays ~101M. Do not claim 7M as a steal of
+grok heap — the sampler under-reads peak vs rusage.
+
+In-house `115321` (nudge missed Responses history): graff **1/6**.
+`350b03c` snapshots the `-p` prompt at turn start. Remeasuring.
+
 Also compared: OpenCode (`opencode run`) and DeepSeek Harness (`dsh`).
 Same-model series is grok-4.6. Native-default series (`opencode-zen`,
 `dsh-deepseek`) is a **different chart** — do not read those points as

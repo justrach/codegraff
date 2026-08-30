@@ -122,7 +122,7 @@ test { // unit_tests' root is main.zig only, so reference every split-out module
     _ = @import("obs_cost_test.zig");
     _ = @import("tui_launch.zig");
     _ = provider_mod;
-    _ = agent_mod;
+    _ = @import("named_work.zig");
 }
 const prompts = @import("prompts.zig");
 const schema = @import("schema.zig");

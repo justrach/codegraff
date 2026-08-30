@@ -127,9 +127,47 @@ pub fn sanitizeMessagesUtf8(arena: Allocator, messages: *std.json.Array) void {
 /// replayed every turn. toolResultMessage already emits strings; this is the
 /// send-time safety net for any item that reached history malformed or
 /// oversized. No-op for valid strings within the cap.
+/// Chat `{role, content: string}` is accepted as the only Responses `input`
+/// item. Mixed with `output_text` / `function_call` items (the nudge resend
+/// after `closeCodexWs`) it 400s. Promote those strings to typed items.
+fn coerceChatStringToResponses(arena: Allocator, m: *Value) void {
+    if (m.* != .object) return;
+    if (m.object.get("type")) |t| if (t == .string) return;
+    const role_v = m.object.get("role") orelse return;
+    if (role_v != .string) return;
+    const role = role_v.string;
+    if (!std.mem.eql(u8, role, "user") and !std.mem.eql(u8, role, "assistant")) return;
+    const content = m.object.get("content") orelse return;
+    if (content != .string) return;
+    const block_type: []const u8 = if (std.mem.eql(u8, role, "user")) "input_text" else "output_text";
+    var block: std.json.ObjectMap = .empty;
+    block.put(arena, "type", .{ .string = block_type }) catch return;
+    block.put(arena, "text", .{ .string = content.string }) catch return;
+    var blocks: std.json.Array = .init(arena);
+    blocks.append(.{ .object = block }) catch return;
+    m.object.put(arena, "type", .{ .string = "message" }) catch return;
+    m.object.put(arena, "content", .{ .array = blocks }) catch return;
+}
+
+pub fn isResponsesInputText(msg: Value, want: []const u8) bool {
+    if (msg != .object) return false;
+    const typ = msg.object.get("type") orelse return false;
+    const role = msg.object.get("role") orelse return false;
+    const content = msg.object.get("content") orelse return false;
+    if (typ != .string or role != .string or content != .array) return false;
+    if (!std.mem.eql(u8, typ.string, "message") or !std.mem.eql(u8, role.string, "user")) return false;
+    if (content.array.items.len == 0 or content.array.items[0] != .object) return false;
+    const block = content.array.items[0].object;
+    const bt = block.get("type") orelse return false;
+    const tx = block.get("text") orelse return false;
+    return bt == .string and tx == .string and
+        std.mem.eql(u8, bt.string, "input_text") and std.mem.eql(u8, tx.string, want);
+}
+
 pub fn normalizeResponsesHistory(arena: Allocator, messages: *std.json.Array) void {
     for (messages.items) |*m| {
         if (m.* != .object) continue;
+        coerceChatStringToResponses(arena, m);
         const t = m.object.get("type") orelse continue;
         if (t != .string or !std.mem.eql(u8, t.string, "function_call_output")) continue;
         const out = m.object.get("output") orelse continue;
@@ -293,6 +331,36 @@ test "normalizeResponsesHistory: oversized output is capped to the Responses lim
     try std.testing.expect(out == .string);
     try std.testing.expect(out.string.len <= responses_output_cap);
     try std.testing.expect(std.mem.indexOf(u8, out.string, "truncated") != null);
+}
+
+test "normalizeResponsesHistory: Chat user/assistant strings become typed items" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var msgs = std.json.Array.init(arena);
+    try msgs.append(try textMessage(arena, "user", "Fix stall_notice.py"));
+    var typed: std.json.ObjectMap = .empty;
+    try typed.put(arena, "type", .{ .string = "message" });
+    try typed.put(arena, "role", .{ .string = "assistant" });
+    var blocks: std.json.Array = .init(arena);
+    var out_block: std.json.ObjectMap = .empty;
+    try out_block.put(arena, "type", .{ .string = "output_text" });
+    try out_block.put(arena, "text", .{ .string = "I'll read the spec" });
+    try blocks.append(.{ .object = out_block });
+    try typed.put(arena, "content", .{ .array = blocks });
+    try msgs.append(.{ .object = typed });
+    try msgs.append(try textMessage(arena, "assistant", "done"));
+
+    normalizeResponsesHistory(arena, &msgs);
+
+    try std.testing.expect(isResponsesInputText(msgs.items[0], "Fix stall_notice.py"));
+    try std.testing.expectEqualStrings("message", msgs.items[1].object.get("type").?.string);
+    try std.testing.expectEqualStrings("output_text", msgs.items[1].object.get("content").?.array.items[0].object.get("type").?.string);
+    try std.testing.expectEqualStrings("message", msgs.items[2].object.get("type").?.string);
+    try std.testing.expectEqualStrings("assistant", msgs.items[2].object.get("role").?.string);
+    try std.testing.expectEqualStrings("output_text", msgs.items[2].object.get("content").?.array.items[0].object.get("type").?.string);
+    try std.testing.expectEqualStrings("done", msgs.items[2].object.get("content").?.array.items[0].object.get("text").?.string);
 }
 test "sanitizeUtf8 scrubs invalid bytes so content never serializes as a byte-int array" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

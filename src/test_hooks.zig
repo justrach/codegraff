@@ -327,6 +327,7 @@ test {
     _ = sandbox_tests;
     _ = provider_tests;
     _ = turn_chrome;
+    _ = @import("tool_pulse.zig"); // -p / --json must not print turn chrome
     _ = tool_surface;
     _ = agent_catalog;
     _ = session_connect_tests;
