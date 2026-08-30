@@ -39,3 +39,14 @@ WSS reconnects skip the CA disk walk. MCP catalogs can travel gzip-compressed.
 Revisit only if a shared `std.http.Client` is shown unsafe for the concurrent
 initialized+list pair, a host CA rotation must be picked up mid-process without
 restart, or a server is broken by Accept-Encoding.
+
+## Measured (2026-08-30, this host)
+
+| Path | Before | After | Left on the table |
+|---|---|---|---|
+| MCP modern connect + next `tools/list` | 2 TCP accepts (throwaway probe client, then the persistent one) | 1 accept, 2 POSTs | nothing — keep-alive is the rest |
+| WSS CA disk walk | 1 `rescan` per connect, including every reconnect | 1 per process | launch still walks once for the HTTP client (~5–7 ms, 144 certs / 154 KB here). Cloning that bundle into the process one saves one launch scan and risks a double-free; not worth it |
+| MCP `tools/list` catalog (40-tool fixture) | 6110 B raw (`Accept-Encoding` omitted) | 320 B gzip (5% of plaintext) | only if the server ignores gzip — then we still send the header and read identity |
+| WS→SSE latch | prewarmed Agent HTTP pool | unchanged | a fresh client would add a TLS handshake |
+| xAI / Codex WS turn body | full history | unchanged | ADR 0002: no `previous_response_id` chain |
+| MCP OAuth token / login 401 probe | throwaway `std.http.Client`; login probe omits encoding | unchanged | not on the turn path |
