@@ -7,32 +7,36 @@ for the whole request at or above). SuperGrok's `[usage]` `$0.0000` is ignored.
 Graff `[usage] in` includes cache reads. grok-build `input_tokens` does not —
 ADR 0024's "185k in" column was uncached-only and undercounted grok-build.
 
-## Live 2026-08-30 (`run-20260830-034621.jsonl`)
+## Live 2026-08-30 after copying grok-build (`run-20260830-035954.jsonl`)
 
-Same SuperGrok / grok OAuth, grok-4.6, one rep, three core tasks
-(`exact-reply`, `file-ops`, `fix-fib`). grok-build 1.0.5 signed in via
-device-code.
+Same SuperGrok / grok OAuth, grok-4.6, one rep, three core tasks.
+**x_search stays on** (grok-build 1.0.5 still lists `web_search` / `web_fetch`).
+The steal was: `-p` no longer pins `zig-out/bin/graff` into
+`.graff/learn-kit/graff-pinned` (that was 127M + 38s CPU on fix-fib).
 
-| harness | pass | wall | first | calls | tokens | uncached | cached | out | list$ | RSS |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| graff-dev (x_search on) | 3/3 | 64.0s | 2.7s | 9 | 36,374 | 14,757 | 20,352 | 1,265 | $0.0473 | 91.3M |
-| **graff-dev-noxsearch** | 3/3 | **54.5s** | **1.7s** | 9 | **22,482** | 6,183 | 15,616 | 683 | **$0.0243** | 91.3M |
-| grok-build | 3/3 | **41.6s** | 3.6s | **8** | 132,858 | 31,184 | 100,352 | 1,322 | $0.1205 | 153.8M |
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **graff-dev** | 3/3 | **21.8s** | 1.9s | 8 | **32,583** | **$0.0479** | **90.8M** |
+| grok-build | 3/3 | 27.3s | 1.9s | **7** | 116,283 | $0.1424 | 154.3M |
 
-| task | graff wall / $ | noxsearch wall / $ | grok wall / $ |
-|---|---:|---:|---:|
-| exact-reply | 3.98s / $0.0075 | **2.09s / $0.0038** | 6.64s / $0.0149 |
-| file-ops | 7.76s / $0.0129 | **5.05s / $0.0075** | 9.32s / $0.0426 |
-| fix-fib | 52.22s / $0.0269 | 47.40s / $0.0129 | **25.68s / $0.0630** |
+| task | graff wall / $ / calls | grok wall / $ / calls |
+|---|---:|---:|
+| exact-reply | **2.18s / $0.0074 / 1** | 2.30s / $0.0149 / 1 |
+| file-ops | **4.75s / $0.0143 / 2** | 7.94s / $0.0492 / 2 |
+| fix-fib | **14.82s / $0.0263 / 5** | 17.09s / $0.0783 / 4 |
 
-**Iteration `x-search-off`: KEEP.** vs champion: wall −15%, first-token −38%,
-tokens −38%, list$ −49%, calls wash, pass 3/3, RSS unchanged. Promoted onto
-the `graff-dev` / `graff` eval harnesses (`GRAFF_XAI_X_SEARCH=0`). Product
-default stays on (ADR 0031). Heap and catalog untouched.
+fix-fib sandbox is 76K (no learn-kit). Earlier the same task was 127M / 47s
+because learn-auto copied the debug binary after the 5th API call.
 
-grok-build still wins **summed wall** (fix-fib 26s vs 47s) and one fewer
-call. It loses list$ and tokens once cache reads are counted (132k vs 22k).
-Next chase is fix-fib wall, not their RSS.
+**Yes, we are cheaper** at grok-4.6 list price: $0.048 vs $0.142 on this set
+(~3×). Tokens 33k vs 116k. Wall now ours too. grok still has one fewer call
+and a slightly faster first token on fix-fib (1.44s vs 1.86s). Heap still
+theirs (154M vs 91M) — not stolen.
+
+`x-search-off` dropped: not what grok-build does.
+
+Earlier same-day file `run-20260830-034621.jsonl` is the pre-fix A/B
+(x_search on vs off vs grok) and is superseded for wall.
 
 ## Historical rescore (same-day paired JSONL)
 
