@@ -31,8 +31,11 @@ current is part of cutting a release.
   (`mcp:` / `companion:` receipts) so first paint is not the handshake
   (#664). Mid-turn stall/reconnect and `model call N` pulses stay off
   the transcript; a ⚠ prints only when the turn ends (ADR 0021, #665).
+- Eval frontier (#687): OpenCode `--dir` / dsh harnesses, in-house PR
+  suite, hardlink `graff-pinned` + detached `learn init`, scripted-REPL
+  usage footer. Fair same-session grok-4.6 A/B stays on the PR.
 - No tag until asked. Download / notarization ids land after the build.
-- Test floor 1758 (slack 25).
+- Test floor 1791 (slack 25).
 
 ## v0.0.280 (2026-08-28)
 
