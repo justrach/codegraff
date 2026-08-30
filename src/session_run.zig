@@ -509,12 +509,13 @@ fn autoInitLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *cons
 /// Closing the learning loop: a session that did real model work counts toward
 /// this workspace's next trial and, on cadence, starts one in the background.
 /// The first such session in a workspace also creates the store it counts into.
-pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *const std.process.Environ.Map, budget: *const run_budget_mod.RunBudget, telemetry_allowed: bool) void {
+pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *const std.process.Environ.Map, budget: *const run_budget_mod.RunBudget, telemetry_allowed: bool, oneshot: bool) void {
     const options: learn_auto.Options = .{
         .model_calls = budget.used(),
         // A session launched with --no-telemetry keeps its trial local, even
         // though the child process would not inherit that flag.
         .contribute = telemetry_allowed and main_mod.g_fleet and learning_privacy.allowsAggregate(),
+        .oneshot = oneshot,
     };
     switch (learn_auto.maybeStart(gpa, arena, io, environ_map, options)) {
         .started => |started| reportTrialStarted(started),

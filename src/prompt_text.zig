@@ -279,6 +279,7 @@ pub const lean_parallel_note =
 
 pub const lean_intro_note =
     \\You are a coding agent. Use the cataloged tools; never invent one.
+    \\Prefer read_file and edit over bash cat/sed. Do clear local work this turn.
     \\Independent reads belong in ONE response, not one per turn.
     \\A passing test and attempt_completion belong in ONE response.
 ;

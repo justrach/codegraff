@@ -5,7 +5,7 @@
     "usage": "graff-stderr",
     "capabilities": ["output-schema"],
     "schema_args": ["--output-schema", "{schema}"],
-    "env": {"GRAFF_POST_DEADLINE_SECS": "90", "GRAFF_XAI_X_SEARCH": "0"},
+    "env": {"GRAFF_POST_DEADLINE_SECS": "90"},
     "default_model": "grok-4.6"
   },
   "graff-full": {
@@ -22,9 +22,8 @@
     "usage": "graff-stderr",
     "capabilities": ["output-schema"],
     "schema_args": ["--output-schema", "{schema}"],
-    "env": {"GRAFF_XAI_X_SEARCH": "0", "GRAFF_POST_DEADLINE_SECS": "90"},
-    "default_model": "grok-4.6",
-    "note": "hillclimb champion: hosted x_search off (kept 2026-08-30). Catalog unchanged."
+    "env": {"GRAFF_POST_DEADLINE_SECS": "90"},
+    "default_model": "grok-4.6"
   },
   "graff-dev-noxsearch": {
     "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo"],

@@ -2,17 +2,24 @@
   "axes": ["wall_s", "first_out_s", "tok_calls", "list_tokens", "list_usd"],
   "refuse": [
     "Do not steal grok-build heap (~165M RSS).",
-    "Do not shrink the catalog to grok-build's 4 tools."
+    "Do not shrink the catalog to a 4-tool set. grok-build 1.0.5 ships a fat catalog plus web_search."
   ],
   "champion": "graff-dev",
   "candidates": [
     {
       "id": "x-search-off",
       "harness": "graff-dev-noxsearch",
+      "kept": false,
+      "dropped_on": "2026-08-30",
+      "why": "Not what grok-build does. Their headless session still lists web_search/web_fetch. Turning our hosted x_search off is a side bet, not a copy.",
+      "forbidden": []
+    },
+    {
+      "id": "oneshot-no-learn-pin",
+      "harness": "graff-dev",
       "kept": true,
       "kept_on": "2026-08-30",
-      "why": "ADR 0031 splices hosted x_search onto every xAI Responses tools turn. Coding evals should not pay prefix bytes or $5/1k for it. Catalog and heap stay the same.",
-      "result": "keep: wall -15%, first-token -38%, tokens -38%, list$ -49% on exact-reply/file-ops/fix-fib vs graff-dev with x_search on. Calls wash. grok-build still faster wall on fix-fib.",
+      "why": "grok -p does not copy a 127M binary into cwd. graff -p with ≥5 API calls was pinning zig-out/bin/graff into .graff/learn-kit/graff-pinned (38s CPU on fix-fib). Skip learn-auto on oneshot/json.",
       "forbidden": []
     }
   ]
