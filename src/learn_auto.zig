@@ -60,10 +60,6 @@ pub const Skip = enum {
     busy,
     /// Cadence not reached yet.
     not_due,
-    /// `-p` / `--json` one-shots are disposable sandboxes, not a workspace
-    /// that earned a learn store. grok-build does not pin a 127M binary into
-    /// cwd at the end of `grok -p` — neither do we (hillclimb 2026-08-30).
-    oneshot,
 };
 
 pub const Started = struct { resumed: bool, contribute: bool };
@@ -110,8 +106,6 @@ pub const Options = struct {
     contribute: bool,
     every_sessions: u64 = default_every_sessions,
     minimum_interval_ms: i64 = default_minimum_interval_ms,
-    /// Set on `-p` / `--json`. Skips bootstrap and trial spawn.
-    oneshot: bool = false,
 };
 
 /// Off only when explicitly turned off: the loop is on by default in a
@@ -179,7 +173,6 @@ fn openLog(store: *store_mod.Store) ?Io.File {
 /// Count this session and, when due, start one detached trial. Never fails the
 /// session: every error path is a skip.
 pub fn maybeStart(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.process.Environ.Map, options: Options) Outcome {
-    if (options.oneshot) return .{ .skipped = .oneshot };
     if (!enabled(environ.get("GRAFF_LEARN_AUTO"))) return .{ .skipped = .disabled };
     if (options.model_calls == 0) return .{ .skipped = .idle_session };
     var store = store_mod.Store.openAt(io, Io.Dir.cwd()) catch
@@ -278,16 +271,6 @@ test "a workspace bootstraps itself once, and only after real model work" {
     try std.testing.expectEqual(
         Outcome{ .skipped = .unconfigured },
         claimBootstrap(io, tmp.dir, 1000),
-    );
-}
-
-test "a -p oneshot never bootstraps a learn store even after many model calls" {
-    const options: Options = .{ .model_calls = 100, .contribute = false, .oneshot = true };
-    var environ = std.process.Environ.Map.init(std.testing.allocator);
-    defer environ.deinit();
-    try std.testing.expectEqual(
-        Outcome{ .skipped = .oneshot },
-        maybeStart(std.testing.allocator, std.testing.allocator, std.testing.io, &environ, options),
     );
 }
 

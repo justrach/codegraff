@@ -17,9 +17,17 @@
     {
       "id": "oneshot-no-learn-pin",
       "harness": "graff-dev",
+      "kept": false,
+      "dropped_on": "2026-08-30",
+      "why": "Path split. -p skipped learn-auto; TUI/REPL still copied 127M after five calls. Retracted for a shared hardlink pin.",
+      "forbidden": []
+    },
+    {
+      "id": "hardlink-learn-pin",
+      "harness": "graff-dev",
       "kept": true,
       "kept_on": "2026-08-30",
-      "why": "grok -p does not copy a 127M binary into cwd. graff -p with ≥5 API calls was pinning zig-out/bin/graff into .graff/learn-kit/graff-pinned (38s CPU on fix-fib). Skip learn-auto on oneshot/json.",
+      "why": "Pin graff-pinned as a hardlink (same inode, O(1)). -p, piped graff repl, and TUI share one learn-auto path. Copy only when the filesystem cannot hardlink.",
       "forbidden": []
     }
   ]

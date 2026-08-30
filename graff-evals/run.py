@@ -77,7 +77,23 @@ def build_cmd(harness, task, model):
     if "output-schema" in task.get("requires", []):
         schema = json.dumps(task["schema"], separators=(",", ":"))
         cmd += [part.format(schema=schema, **subst) for part in harness.get("schema_args", [])]
-    return cmd
+    stdin = harness.get("stdin")
+    if stdin is not None:
+        stdin = stdin.format(**subst)
+    return cmd, stdin
+
+
+def learn_pin_info(sandbox):
+    """Hardlink vs 127M copy: nlink>=2 and same inode as the live exe."""
+    pin = os.path.join(sandbox, ".graff", "learn-kit", "graff-pinned")
+    if not os.path.exists(pin):
+        return None
+    st = os.stat(pin)
+    info = {"bytes": st.st_size, "nlink": st.st_nlink, "ino": st.st_ino}
+    exe = os.path.join(REPO, "zig-out", "bin", "graff")
+    if os.path.exists(exe):
+        info["same_inode"] = os.stat(exe).st_ino == st.st_ino
+    return info
 
 
 def parse_answer_and_usage(harness, stdout, stderr):
@@ -220,7 +236,7 @@ def _fmt_mib(kb):
 def one_run(hname, harness, task, model, rep, live=False):
     sandbox = os.path.join(SANDBOX_DIR, f"{hname}-{task['id']}-r{rep}")
     materialize(task, sandbox)
-    cmd = build_cmd(harness, task, model)
+    cmd, stdin_body = build_cmd(harness, task, model)
     timeout = task.get("timeout_s", 240)
     t0 = time.monotonic()
     first_out = None
@@ -230,8 +246,15 @@ def one_run(hname, harness, task, model, rep, live=False):
     ru0 = _rusage_children()
     try:
         p = subprocess.Popen(cmd, cwd=sandbox, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, text=True,
+                             stderr=subprocess.PIPE, stdin=subprocess.PIPE if stdin_body is not None else None,
+                             text=True,
                              env=dict(os.environ, **harness.get("env", {})))
+        if stdin_body is not None and p.stdin is not None:
+            try:
+                p.stdin.write(stdin_body)
+            except BrokenPipeError:
+                pass
+            p.stdin.close()
         import selectors
         sel = selectors.DefaultSelector()
         sel.register(p.stdout, selectors.EVENT_READ, "out")
@@ -280,6 +303,9 @@ def one_run(hname, harness, task, model, rep, live=False):
            "cpu_sample_s": round(cpu_sample, 3),
            "sandbox_bytes": dir_bytes(sandbox)}
     rec.update({f"tok_{k}": v for k, v in usage.items()})
+    pin = learn_pin_info(sandbox)
+    if pin is not None:
+        rec["learn_pin"] = pin
     attach_list_price(rec, inclusive=harness.get("usage") != "grok-stream")
     if check.returncode != 0 and (check.stderr.strip() or check.stdout.strip()):
         rec["check_note"] = (check.stderr.strip() or check.stdout.strip())[:200]

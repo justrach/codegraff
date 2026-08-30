@@ -40,6 +40,8 @@ Hosted server-side tools add $5 / 1k for `web_search` / `x_search` /
 - `x-search-off` is **not** a grok-build copy. Their 1.0.5 headless
   session still lists `web_search` / `web_fetch`. Hosted `x_search`
   stays on (ADR 0031).
-- The real copy (2026-08-30): `-p` / `--json` skip learn-auto
-  bootstrap. grok-build does not pin a 127M `graff-pinned` into cwd
-  after five tool turns; that copy was the fix-fib wall/CPU tax.
+- The 127M tax was `learn_bootstrap.copyExecutable` after five API
+  calls, not hosted search. `-p` and the REPL share one learn-auto
+  path: pin `graff-pinned` with a hardlink (copy only when the
+  filesystem cannot). Do not skip bootstrap on oneshot — that split
+  the surfaces. Do not chmod the pin (same inode as the live exe).

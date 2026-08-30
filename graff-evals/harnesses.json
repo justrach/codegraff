@@ -25,6 +25,16 @@
     "env": {"GRAFF_POST_DEADLINE_SECS": "90"},
     "default_model": "grok-4.6"
   },
+  "graff-dev-repl": {
+    "cmd": ["{repo}/zig-out/bin/graff", "repl", "--model", "{model}", "--yolo"],
+    "stdin": "{prompt}\n",
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": [],
+    "env": {"GRAFF_POST_DEADLINE_SECS": "90"},
+    "default_model": "grok-4.6",
+    "note": "scripted `graff repl` (non-TTY). Same learn-auto path as -p. TTY `graff repl` is the TUI."
+  },
   "graff-dev-noxsearch": {
     "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo"],
     "answer": "stdout",

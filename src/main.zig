@@ -480,7 +480,7 @@ pub fn main(init: std.process.Init) !void {
     session_run.compactResumedSession(&root);
 
     // Closing the learning loop: this session counts toward the next trial.
-    defer session_run.startBackgroundLearning(gpa, arena, startup_timing.shutdown_trace.at(io, "background-learning"), init.environ_map, &invocation_budget, !flags.no_telemetry_flag, flags.oneshot_prompt != null or json_mode);
+    defer session_run.startBackgroundLearning(gpa, arena, startup_timing.shutdown_trace.at(io, "background-learning"), init.environ_map, &invocation_budget, !flags.no_telemetry_flag);
 
     // `graff` is the default session. TTY `graff repl` / `graff tui` open the Grok-style pager.
     // `graff acp` (acp.zig) is the same idea over Zed's stdio Agent Client Protocol. Both self-contained — each exits after.
