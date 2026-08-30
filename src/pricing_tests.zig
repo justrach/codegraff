@@ -241,3 +241,14 @@ test "OpenRouter defaults to Claude Sonnet 4.6 on the chat completions surface" 
     try std.testing.expect(pricing.providerModelInTable("openrouter", "anthropic/claude-sonnet-4.6"));
     try std.testing.expectEqual(@as(u64, 1_000_000), pricing.contextFor("openrouter", "anthropic/claude-sonnet-4.6"));
 }
+
+test "eval list-price: graff [usage] in includes cache reads" {
+    const p = pricing.priceFor("grok-4.6") orelse return error.MissingGrok46Price;
+    // 5407 in (512 cached) + 80 out — SuperGrok footer prints $0; list price does not.
+    try std.testing.expectApproxEqAbs(@as(f64, 0.010526), pricing.usdFor(p, 4895, 512, 80), 1e-12);
+}
+
+test "eval list-price: grok-build stream input_tokens excludes cache reads" {
+    const p = pricing.priceFor("grok-4.6") orelse return error.MissingGrok46Price;
+    try std.testing.expectApproxEqAbs(@as(f64, 0.014904), pricing.usdFor(p, 4461, 11520, 37), 1e-12);
+}

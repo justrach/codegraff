@@ -17,6 +17,8 @@ outcome, and writes JSONL results plus a summary table.
 import argparse, json, os, re, resource, shutil, subprocess, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from list_price import attach as attach_list_price
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(ROOT)
 TASKS_DIR = os.path.join(ROOT, "tasks")
@@ -24,7 +26,7 @@ RESULTS_DIR = os.path.join(ROOT, "results")
 SANDBOX_DIR = os.path.join(ROOT, ".sandboxes")
 
 GRAFF_USAGE_RE = re.compile(
-    r"\[usage\] (\d+) api call\(s\) · (\d+) in \((\d+) cached(?:, \d+ cache writes)?\) \+ (\d+) out tokens")
+    r"\[usage\] (\d+) api call\(s\) · (\d+) in \((\d+) cached(?:, (\d+) cache writes)?\) \+ (\d+) out tokens")
 
 
 def load_tasks():
@@ -93,9 +95,20 @@ def parse_answer_and_usage(harness, stdout, stderr):
             if ev.get("type") == "result":
                 answer = ev.get("result") or ""
                 u = ev.get("usage", {})
+                stu = u.get("server_tool_use") or {}
+                tools = {}
+                if stu.get("web_search_requests"):
+                    tools["web_search"] = stu["web_search_requests"]
+                if stu.get("x_search_requests"):
+                    tools["x_search"] = stu["x_search_requests"]
+                if stu.get("code_execution_requests"):
+                    tools["code_execution"] = stu["code_execution_requests"]
                 usage = {"calls": ev.get("num_turns"), "in": u.get("input_tokens"),
                          "cached": u.get("cache_read_input_tokens"),
-                         "out": u.get("output_tokens"), "api_ms": ev.get("duration_api_ms")}
+                         "out": u.get("output_tokens"), "api_ms": ev.get("duration_api_ms"),
+                         "writes": u.get("cache_creation_input_tokens") or 0}
+                if tools:
+                    usage["tools"] = tools
     if harness["answer"] == "pi-json":
         answer, calls, tin, tread, twrite, tout, cost = "", 0, 0, 0, 0, 0, 0.0
         for line in stdout.splitlines():
@@ -123,7 +136,8 @@ def parse_answer_and_usage(harness, stdout, stderr):
         m = GRAFF_USAGE_RE.search(stderr)
         if m:
             usage = {"calls": int(m.group(1)), "in": int(m.group(2)),
-                     "cached": int(m.group(3)), "out": int(m.group(4))}
+                     "cached": int(m.group(3)), "writes": int(m.group(4) or 0),
+                     "out": int(m.group(5))}
         cost_m = re.search(r"\$([0-9.]+)", stderr)
         if cost_m:
             usage["cost_usd"] = float(cost_m.group(1))
@@ -266,6 +280,7 @@ def one_run(hname, harness, task, model, rep, live=False):
            "cpu_sample_s": round(cpu_sample, 3),
            "sandbox_bytes": dir_bytes(sandbox)}
     rec.update({f"tok_{k}": v for k, v in usage.items()})
+    attach_list_price(rec, inclusive=harness.get("usage") != "grok-stream")
     if check.returncode != 0 and (check.stderr.strip() or check.stdout.strip()):
         rec["check_note"] = (check.stderr.strip() or check.stdout.strip())[:200]
     return rec
@@ -276,7 +291,7 @@ def _bucket(records):
     for r in records:
         b = by.setdefault(r["harness"], {
             "n": 0, "ok": 0, "wall": 0.0, "first": 0.0, "first_n": 0,
-            "tin": 0, "tout": 0, "calls": 0, "rss": 0, "cpu": 0.0,
+            "tin": 0, "tcached": 0, "tout": 0, "calls": 0, "rss": 0, "cpu": 0.0,
             "usd": 0.0, "usd_n": 0,
         })
         b["n"] += 1
@@ -285,10 +300,14 @@ def _bucket(records):
         if r.get("first_out_s") is not None:
             b["first"] += r["first_out_s"]
             b["first_n"] += 1
-        b["tin"] += r.get("tok_in") or 0
+        b["tin"] += r.get("list_ordinary") if r.get("list_ordinary") is not None else (r.get("tok_in") or 0)
+        b["tcached"] += r.get("list_cached") if r.get("list_cached") is not None else (r.get("tok_cached") or 0)
         b["tout"] += r.get("tok_out") or 0
         b["calls"] += r.get("tok_calls") or 0
-        if r.get("tok_cost_usd") is not None:
+        if r.get("list_usd") is not None:
+            b["usd"] += r["list_usd"]
+            b["usd_n"] += 1
+        elif r.get("tok_cost_usd") is not None:
             b["usd"] += r["tok_cost_usd"]
             b["usd_n"] += 1
         b["rss"] = max(b["rss"], r.get("rss_peak_kb") or 0)
@@ -301,12 +320,12 @@ def _bucket(records):
 
 def _print_table(title, by):
     print(f"\n{title}")
-    print(f"{'harness':<16} {'pass':>7} {'wall':>8} {'first':>7} {'rss':>8} {'cpu':>7} {'in_tok':>9} {'out_tok':>8} {'calls':>6} {'usd':>8}")
+    print(f"{'harness':<16} {'pass':>7} {'wall':>8} {'first':>7} {'rss':>8} {'cpu':>7} {'in':>8} {'cached':>8} {'out':>8} {'calls':>6} {'list$':>8}")
     for h, b in by.items():
         first = (b["first"] / b["first_n"]) if b["first_n"] else 0.0
         usd = f"${b['usd']:.4f}" if b["usd_n"] else "—"
         print(f"{h:<16} {b['ok']}/{b['n']:<5} {b['wall']:>7.1f}s {first:>6.1f}s "
-              f"{_fmt_mib(b['rss']):>8} {b['cpu']:>6.1f}s {b['tin']:>9} {b['tout']:>8} {b['calls']:>6} {usd:>8}")
+              f"{_fmt_mib(b['rss']):>8} {b['cpu']:>6.1f}s {b['tin']:>8} {b.get('tcached', 0):>8} {b['tout']:>8} {b['calls']:>6} {usd:>8}")
 
 
 def summarize(records):
@@ -323,7 +342,9 @@ def _line(rec):
     return (f"{ok} {rec.get('harness', '?'):<16} {rec.get('task', '?'):<18} "
             f"r{rec.get('rep', '?')} {rec.get('wall_s', '?')}s "
             f"first={rec.get('first_out_s', '—')}s rss={_fmt_mib(rec.get('rss_peak_kb'))} "
-            f"cpu={cpu:.1f}s in={rec.get('tok_in', '?')} out={rec.get('tok_out', '?')}")
+            f"cpu={cpu:.1f}s in={rec.get('list_ordinary', rec.get('tok_in', '?'))} "
+            f"cached={rec.get('list_cached', rec.get('tok_cached', '—'))} "
+            f"out={rec.get('tok_out', '?')} list=${rec.get('list_usd', '—')}")
 
 
 def interactive(tasks, harnesses):

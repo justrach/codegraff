@@ -52,8 +52,26 @@ zig build && ./run.py --harness graff-dev
 ```
 
 Results land in `results/run-<stamp>.jsonl` (one record per run) plus a
-summary table on stdout. `.sandboxes/` holds the materialized working dirs of
+summary table on stdout. The `usd` / `list$` column is **xAI list price**
+from tokens (and hosted-tool invocations when reported), not SuperGrok's
+`$0.0000` subscription footer. grok-4.6 uses the dual band
+`$2/$0.50/$6` under 200k prompt tokens and `$4/$1/$12` for the whole
+request at or above. `.sandboxes/` holds the materialized working dirs of
 the last run for post-mortems; both are disposable.
+
+## Hillclimb
+
+`hillclimb.py` is the autoresearch-style loop: propose a harness change
+(see `hillclimb/candidates.json`), run the same tasks against the
+champion and grok-build, keep only a measured win on wall / first-token
+latency / tool calls / tokens / list-price USD. It will not keep
+grok-build's heap or a 4-tool catalog (ADR 0024).
+
+```sh
+./hillclimb.py self-test
+./hillclimb.py score results/run-20260828-021606.jsonl
+./hillclimb.py iterate --suite core --task exact-reply,fix-fib,file-ops
+```
 
 ## Harnesses
 

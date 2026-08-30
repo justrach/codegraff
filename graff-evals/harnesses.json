@@ -24,6 +24,16 @@
     "schema_args": ["--output-schema", "{schema}"],
     "default_model": "grok-4.6"
   },
+  "graff-dev-noxsearch": {
+    "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo"],
+    "answer": "stdout",
+    "usage": "graff-stderr",
+    "capabilities": ["output-schema"],
+    "schema_args": ["--output-schema", "{schema}"],
+    "env": {"GRAFF_XAI_X_SEARCH": "0", "GRAFF_POST_DEADLINE_SECS": "90"},
+    "default_model": "grok-4.6",
+    "note": "hillclimb candidate: ADR 0031 opt-out. Hosted x_search off; catalog unchanged."
+  },
   "graff-dev-rlm": {
     "cmd": ["{repo}/zig-out/bin/graff", "-p", "{prompt}", "--model", "{model}", "--yolo", "--rlm"],
     "answer": "stdout",
