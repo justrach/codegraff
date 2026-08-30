@@ -18,63 +18,111 @@ for the whole request at or above). SuperGrok's `[usage]` `$0.0000` is ignored.
 Graff `[usage] in` includes cache reads. grok-build `input_tokens` does not —
 ADR 0024's "185k in" column was uncached-only and undercounted grok-build.
 
-## Who actually ran (2026-08-30 eval-frontier)
+## Fair same-session A/B (2026-08-30, hardlink + `--dir`)
 
-| harness | model | ran? | blocker |
+Same SuperGrok seat, one session, grok-4.6, jobs=1, one rep, hosted
+`x_search` on. SuperGrok OAuth was force-refreshed before the 27 runs
+(`expires_at` can look fresh while xAI rejects). JSONL:
+`run-20260830-101150.jsonl` (spine) and `run-20260830-101332.jsonl`
+(in-house). Do not plot dsh/zen here.
+
+| harness | model | ran? | note |
 |---|---|---|---|
-| graff-dev (`-p`) | grok-4.6 | yes | this tree is `main` — learn-auto still **byte-copies** `graff-pinned` (132MB, nlink=1). PR #684 detaches that. |
+| graff-dev (`-p`, this tree) | grok-4.6 | yes | debug binary ~127M. Pin is a **hardlink** (inode 1480190, nlink=7, `same_inode=true`). No pin when calls < 5. |
 | grok-build 1.0.5 | grok-4.6 | yes | — |
-| opencode 1.18.25 | xai/grok-4.6 | yes | SuperGrok access token as OpenCode `xai` api auth |
-| graff-dev-repl | grok-4.6 | yes | **no `[usage]` footer** this run — do not plot $0 / first-token echo |
-| dsh-xai | **grok-4.5** | yes | mixed-model. Catalog has no grok-4.6. No usage footer. Node must be ≥22.15 (zstd). |
-| dsh-grok | grok-4.6 | **no** | `UNKNOWN_MODEL: pi-ai provider "xai" has no configured model "grok-4.6"` |
-| dsh-deepseek | deepseek-v4-flash | **no** | no `DEEPSEEK_API_KEY` in this environment |
-| opencode-zen | opencode/big-pickle | yes | mixed-model / 1/3 spine. list$ is not xAI list price |
+| opencode 1.18.25 | xai/grok-4.6 | yes | `opencode run --dir {sandbox}` |
+| graff-dev-repl / dsh / zen | — | not this set | REPL first-token is echo; dsh/zen are mixed-model |
 
-Do not read dsh-xai or opencode-zen as grok-4.6 list-price points.
+### Hardlink proof (this session only)
 
-## Live spine — same-model grok-4.6 (`run-20260830-053939.jsonl`)
+Six graff-dev sandboxes crossed the 5-call learn-auto threshold
+(fix-fib, oneshot-chrome, cache-gitroot, stall-widen, empty-catalog,
+stall-warn). Each left `.graff/learn-kit/graff-pinned` on **inode
+1480190, nlink=7, same inode as `zig-out/bin/graff`**. No extra 127M
+copy. exact-reply (1), file-ops (2), and atomic-symlink-write (1) have
+no pin — under the threshold. Older leftover sandboxes from earlier
+days still show nlink=1 copies; they are not this run.
 
-exact-reply + file-ops + fix-fib. x_search on. One rep, jobs=1.
+### Spine — exact-reply + file-ops + fix-fib
 
 | harness | pass | wall | first | calls | tokens | list$ | RSS |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| graff-dev (`-p`) | **3/3** | 62.4s | 3.1s | **8** | ~32k | **$0.0481** | **91.2M** |
-| grok-build | **3/3** | **31.6s** | 3.2s | 9 | ~149k | $0.1041 | 167.9M |
-| opencode (first wiring) | 2/3 | 59.5s | **2.9s** | 15 | ~267k | $0.4342 | 584.6M |
-| **opencode (`--dir` rerun, `run-20260830-095006`)** | **3/3** | **29.3s** | **2.8s** | 10 | ~62k | $0.1397 | 1025.7M |
+| graff-dev (`-p`) | **3/3** | 28.7s | 2.9s | **8** | **32,035** | **$0.0498** | **101.2M** |
+| grok-build | **3/3** | 46.9s | 2.8s | 9 | 149,144 | $0.1415 | 167.4M |
+| **opencode (`--dir`)** | **3/3** | **26.0s** | **2.6s** | 9 | 91,258 | $0.0861 | 1055.2M |
 
-The first OpenCode row is **our harness**, not OpenCode. `opencode run` binds a project root; Popen cwd was not enough, so file-ops wrote nowhere the check could see, and we SIGKILL'd a leftover JSON server (false `timed_out`). After `--dir {sandbox}` + a 1.5s flush then process-group reap: **3/3**. graff-dev fix-fib on this tree still pays the 132MB pin copy (#684 removes that; post-fix spine was 22.2s / $0.0374).
+| task | graff wall / $ / calls | grok wall / $ / calls | opencode wall / $ / calls |
+|---|---:|---:|---:|
+| exact-reply | 6.14s / $0.0074 / 1 | **3.34s** / $0.0320 / 1 | **3.22s** / $0.0158 / 1 |
+| file-ops | 7.94s / **$0.0106** / **2** | 9.79s / $0.0533 / 3 | **7.93s** / $0.0280 / **2** |
+| fix-fib | **14.58s** / **$0.0317** / **5** | 33.74s / $0.0563 / 5 | 14.86s / $0.0424 / 6 |
 
-**Not Pareto.** OpenCode now wins spine wall. Graff wins calls / tokens / list$ / RSS. Grok is in the middle on wall and $. Pass is a tie.
+**Not Pareto.** OpenCode wins wall and first-token. Graff wins calls /
+tokens / list$ / RSS. Pass is a tie. Grok wins no named axis on this
+spine.
 
-![Same-model spine frontier](frontier-spine-20260830.svg)
+![Fair same-session spine](frontier-spine-fair-20260830.svg)
 
 ```mermaid
 flowchart LR
-  subgraph front["spine 2D front — neither graff nor grok dominates"]
-    P["graff-dev −p · 62.4s · $0.0481 · 8 calls · on via cheaper / fewer calls"]
-    G["grok-build · 31.6s · $0.1041 · 9 calls · on via wall"]
+  subgraph front["spine 2D front — nobody wins every axis"]
+    P["graff-dev −p · 28.7s · $0.0498 · 8 calls · on via cheaper / fewer calls"]
+    O["opencode --dir · 26.0s · $0.0861 · 9 calls · on via wall"]
   end
-  O["opencode --dir · 3/3 · 29.3s · $0.1397 · 10 calls · on wall"]
+  G["grok-build · 46.9s · $0.1415 · 9 calls · interior"]
 ```
 
-## Live in-house PR suite — same-model grok-4.6 (`run-20260830-054427.jsonl`)
+### In-house PR suite — six fixtures
 
-Six fixtures distilled from shipped PRs. Same SuperGrok seat. graff-dev 5-call tasks each paid the 132MB pin (~38s CPU).
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| graff-dev | 5/6 | **80.8s** | **2.4s** | **26** | **118,819** | **$0.1824** | **101.2M** |
+| grok-build | 5/6 | 396.0s | **2.4s** | 30 | 535,344 | $0.4285 | 157.7M |
+| **opencode (`--dir`)** | **6/6** | 182.1s | 2.8s | 37 | 340,074 | $0.3835 | 1103.9M |
+
+graff-dev missed `atomic-symlink-write` (1 call, 3.53s; captured answer
+was turn-pulse chrome `· turn still going ·`, tests still fail). grok
+hit the 240s budget on the same task with pipes still open — a real
+timeout, no usage footer, so that row's list$ is $0 and **undercounts**
+grok spend. OpenCode solved it in 107.6s / 6 calls.
+
+**Not Pareto.** OpenCode wins pass. Graff wins wall / calls / tokens /
+list$ / RSS. First-token is a graff/grok tie (2.4s).
+
+![Fair same-session in-house](frontier-inhouse-fair-20260830.svg)
+
+## Prior spine — copy-tax graff + first OpenCode wiring (`run-20260830-053939.jsonl`)
+
+Not a fair same-session A/B. graff-dev still **byte-copied** 132MB
+`graff-pinned` (nlink=1). OpenCode first wiring lacked `--dir`; the
+`--dir` row is a later rerun only.
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| graff-dev (`-p`, copy-tax) | **3/3** | 62.4s | 3.1s | **8** | ~32k | **$0.0481** | **91.2M** |
+| grok-build | **3/3** | **31.6s** | 3.2s | 9 | ~149k | $0.1041 | 167.9M |
+| opencode (bad `--dir`) | 2/3 | 59.5s | **2.9s** | 15 | ~267k | $0.4342 | 584.6M |
+| opencode (`--dir` only, `run-20260830-095006`) | **3/3** | **29.3s** | **2.8s** | 10 | ~62k | $0.1397 | 1025.7M |
+
+The first OpenCode row is **our harness**, not OpenCode. `opencode run`
+binds a project root; Popen cwd was not enough. After `--dir {sandbox}`
++ a 1.5s flush then process-group reap: **3/3**.
+
+![Prior same-model spine frontier](frontier-spine-20260830.svg)
+
+## Prior in-house — copy-tax graff + first OpenCode wiring (`run-20260830-054427.jsonl`)
+
+graff-dev 5-call tasks each paid the 132MB pin (~38s CPU). OpenCode
+`--dir` is a later rerun.
 
 | harness | pass | wall | first | calls | list$ | RSS |
 |---|---:|---:|---:|---:|---:|---:|
-| **graff-dev** | **6/6** | 361.1s | **2.2s** | **30** | **$0.1818** | **91.3M** |
+| graff-dev (copy-tax) | **6/6** | 361.1s | **2.2s** | **30** | **$0.1818** | **91.3M** |
 | grok-build | 5/6 | 453.9s | 3.2s | 30 | $0.4332 | 157.5M |
-| opencode (first wiring) | 0/6 | 182.0s | 3.5s | 49 | $0.5366 | 1086.7M |
-| **opencode (`--dir` rerun, `run-20260830-095035`)** | **6/6** | **151.9s** | 2.7s | 38 | $0.3961 | 1077.9M |
+| opencode (bad `--dir`) | 0/6 | 182.0s | 3.5s | 49 | $0.5366 | 1086.7M |
+| opencode (`--dir` only, `run-20260830-095035`) | **6/6** | **151.9s** | 2.7s | 38 | $0.3961 | 1077.9M |
 
-grok-build timed out on `atomic-symlink-write` (240s). The first OpenCode 0/6 was the same cwd miss: it printed `OK` while edits landed outside the sandbox. After `--dir`: **6/6**.
-
-On this suite OpenCode wins wall; graff-dev wins $ / calls / RSS and matches pass. Grok is 5/6.
-
-![In-house PR-suite frontier](frontier-inhouse-20260830.svg)
+![Prior in-house PR-suite frontier](frontier-inhouse-20260830.svg)
 
 ## Mixed-model spine (`run-20260830-054332.jsonl`) — not the grok-4.6 chart
 
@@ -83,14 +131,17 @@ On this suite OpenCode wins wall; graff-dev wins $ / calls / RSS and matches pas
 | dsh-xai | grok-4.5 | 3/3 | 20.3s | no usage footer; $ unknown; **not grok-4.6** |
 | opencode-zen | big-pickle | 1/3 | 34.5s | harness-reported tokens; not xAI list$ |
 
-## We are not strict Pareto vs grok-build
+## We are not strict Pareto vs grok-build or OpenCode
 
-On the #684 post-fix 3-task set they still win **calls**. We win wall, tokens,
-list$, and RSS. Pass is a tie. Do not claim a strict 5-axis win. The
-[frontier graph](#frontier-graph-live-3-task-two-2d-projections) is the
-honest picture from that run: grok sits on it via fewer calls; graff-dev (`-p`) sits
-on it via cheaper / faster. On **this** branch (`main` + evals, pin still a copy)
-grok-build also wins spine wall.
+On the fair same-session spine, OpenCode wins wall and first-token;
+graff-dev wins calls / tokens / list$ / RSS. On the fair in-house set,
+OpenCode wins pass; graff-dev wins wall / calls / tokens / list$ / RSS.
+Do not claim a strict axis win. The
+[fair spine graph](#spine--exact-reply--file-ops--fix-fib) is the
+honest picture from this run.
+
+On the earlier #684 post-fix 3-task set grok still won **calls**. We
+won wall, tokens, list$, and RSS. Pass was a tie.
 
 ## Live 2026-08-30 hardlink pin, `-p` + scripted REPL (`run-20260830-042417.jsonl`)
 
@@ -244,8 +295,9 @@ Shared tasks only. `cookie-store` on graff-dev that day has no `[usage]` line
 ## What the hillclimb is allowed to chase
 
 On 2026-08-25 SWE, grok-build still wins pass / wall / latency / calls / USD.
-On the live 2026-08-30 3-task set we win wall / tokens / list$ / RSS and
-lose calls — **not Pareto**. On 2026-08-28 we still lose a SWE pass
+On the fair 2026-08-30 3-harness spine, OpenCode wins wall / first-token
+and graff-dev wins calls / tokens / list$ / RSS — **not Pareto**.
+On 2026-08-28 we still lose a SWE pass
 (`cookie-store` / historically `json-stream` / `label-sort`).
 Do not steal the 165M heap or a 4-tool catalog to close the remaining gap
 (ADR 0024). `x-search-off` was dropped (not what grok-build does).
