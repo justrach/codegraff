@@ -85,6 +85,9 @@ pub fn lazyRootTools(comptime Agent: type) !void {
 /// `-p` sets `out=null` and `stream_quiet` so stdout stays the answer, but
 /// the root still takes postLive (head/stream stall) instead of the 5-minute
 /// watched POST that burned json-stream / cookie-store to a 300s SIGKILL.
+/// #682: a subagent is the same shape (no paint, same silent POST) and takes
+/// the same path — two of its calls once sat 4-8 minutes in postWatched
+/// waiting for a 5xx the stream watchdog would have caught inside a minute.
 pub fn oneshotUsesLiveTransport(comptime Agent: type) !void {
     var root: Agent = undefined;
     root.sub = false;
@@ -96,5 +99,5 @@ pub fn oneshotUsesLiveTransport(comptime Agent: type) !void {
     child.sub = true;
     child.out = null;
     child.stream_quiet = true;
-    try std.testing.expect(!child.usesLiveTransport());
+    try std.testing.expect(child.usesLiveTransport());
 }

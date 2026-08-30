@@ -269,9 +269,9 @@ pub const Agent = struct {
         return true;
     }
 
-    /// Root streams even on `-p`; `out`/`stream_quiet` only mute paint.
-    pub fn usesLiveTransport(self: *const Agent) bool {
-        return !self.sub;
+    /// Every agent streams — root even on `-p`, subagents too (#682): the stall-watched path, never the 5-minute POST. `out`/`stream_quiet` only mute paint.
+    pub fn usesLiveTransport(_: *const Agent) bool {
+        return true;
     }
 
     pub fn toolsJson(self: *const Agent) []const u8 {
