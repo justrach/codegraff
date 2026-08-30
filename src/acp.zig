@@ -157,6 +157,12 @@ const LiveTurn = struct {
             main_mod.g_out = null;
         }
         const final = try providers.runTurnWithFallback(self.root, self.keys, arena, null);
+        // The REPL checkpoints after every turn (mainloop); an ACP host's
+        // conversation deserves the same durability. Without this a text-only
+        // turn reached .graff/sessions only at stdin EOF, and a tab the host
+        // killed never did. The root arena, not this turn's: the queued write
+        // outlives the turn.
+        session.saveSessionAsync(self.root, self.root.arena, self.root.session_name) catch {};
         // saw_text is "the LAST streamed event was answer text" (tool events
         // reset it in the sink): a turn that ended mid-text already delivered
         // the answer; one that ended on tools (attempt_completion flows) has
