@@ -59,9 +59,25 @@ This session graff wins wall / $ / RSS / tokens vs both. First-token loses
 to OpenCode because file-ops is tool-first (6.55s ≈ wall 7.1s; exact-reply
 2.21s and fix-fib 1.71s already beat 2.6s). Calls 9 vs grok 7 / OpenCode 8
 is model extra-tool variance (file-ops 3 vs 2, fix-fib 5 vs 4), not a
-catalog change. Residual: emit one `-p` stderr progress line at first
-model SSE (including tool bytes) so first_out is TTFT, not the late
-narration. Do not put that line on stdout.
+catalog change. Residual (now on the branch, not in this JSONL): emit one `-p` stderr
+progress line at first model SSE (including tool bytes) so first_out is
+TTFT, not the late narration. Do not put that line on stdout.
+
+## Latest climb — `run-20260830-112434` in-house (pre-nudge)
+
+Same session as the spine table above. **Not Pareto.** `atomic-symlink-write`
+is now a pass (65.7s / 5 calls / real edit). Two new one-shot misses:
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | 4/6 | **125.9s** | 20.6s | **22** | 109524 | **$0.1704** | **101.6M** |
+| grok | **6/6** | 279.4s | 3.2s | 34 | 619382 | $0.6000 | 157.8M |
+| opencode | **6/6** | 180.3s | **2.6s** | 52 | 525073 | $0.8313 | 1147.6M |
+
+Misses: `cache-gitroot` and `stall-warn` — 1 call each, answer was
+"I'll read SPEC.md…", tests still fail. Same shape as the original
+symlink miss. Product fix on the branch: one bounded named-file /
+zero-tool nudge (`named_work.zig`), shared by `-p` and the REPL.
 
 Also compared: OpenCode (`opencode run`) and DeepSeek Harness (`dsh`).
 Same-model series is grok-4.6. Native-default series (`opencode-zen`,
