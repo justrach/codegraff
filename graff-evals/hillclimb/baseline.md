@@ -127,11 +127,13 @@ Same-model series is grok-4.6. Native-default series (`opencode-zen`,
 `dsh-deepseek`) is a **different chart** — do not read those points as
 grok-4.6 list price.
 
-In-house suite (`--suite inhouse`): six bug shapes distilled from shipped
-CodeGraff PRs (#685/#405 symlink write, oneshot stdout chrome,
+In-house suite (`--suite inhouse`): twelve bug shapes distilled from shipped
+CodeGraff PRs. First six: #685/#405 symlink write, oneshot stdout chrome,
 cache-affinity git root, #681 stall widen, rlm-empty-tools catalog,
-stall-bus-silent warn). Fixtures live under `graff-evals/tasks/` +
-`fixtures/`; they are not the live repo.
+stall-bus-silent warn. Next six (verifiers in, not yet remeasured):
+#687 hardlink pin, #632 x_search splice, ADR 0035 MCP first-turn,
+#633 rlm showcase gate, #597 codedb menu, #584 peer resume. Fixtures live
+under `graff-evals/tasks/` + `fixtures/`; they are not the live repo.
 
 Axes: wall, first-token latency, tool calls, tokens (uncached + cached + out),
 xAI list-price USD (`$2/$0.50/$6` per 1M under 200k prompt tokens; `$4/$1/$12`

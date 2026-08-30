@@ -1,0 +1,10 @@
+{
+  "id": "hardlink-pin",
+  "suite": "inhouse",
+  "category": "inhouse",
+  "source": "codegraff #687 — hardlink graff-pinned instead of a 127M copy (distilled, not the live repo)",
+  "files_dir": "fixtures/hardlink-pin",
+  "prompt": "pin.py:pin_executable byte-copies the exe and chmods the dest. Read SPEC.md and pin.py, then edit pin.py so `python3 test_pin.py` prints OK. Do not only describe the fix. Do not edit the tests. Prefer os.link so the pin and the live path share an inode; never chmod the dest.",
+  "check": "python3 test_pin.py && python3 \"$TASK_ROOT/hidden/hardlink-pin.py\"",
+  "timeout_s": 240
+}

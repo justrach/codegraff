@@ -21,7 +21,7 @@ harness under test spends model calls.
 | `rlm` | scatter-gather / multi-file reads (where default rlm can overlap) |
 | `swe` | DeepSWE-shaped multi-file bugfixes, distilled from [deepswe.datacurve.ai/run](https://deepswe.datacurve.ai/run) (no Harbor/Docker) |
 | `mcp` | Linear-shaped fixture MCP (Blacksmith code-mode + muscle memory). Always `--no-lean` (`graff-dev-nolean`): lean is a different catalog and is not on the front. |
-| `inhouse` | Bug shapes distilled from shipped CodeGraff PRs (symlink write, oneshot chrome, cache git-root, stall widen/warn, empty catalog). Self-contained fixtures — not the live repo. Opt-in like `mcp`. |
+| `inhouse` | Bug shapes distilled from shipped CodeGraff PRs (first six: symlink write, oneshot chrome, cache git-root, stall widen/warn, empty catalog; plus hardlink pin, x_search splice, MCP first-turn, rlm showcase gate, codedb menu, peer resume). Self-contained fixtures — not the live repo. Opt-in like `mcp`. |
 
 ```sh
 ./run.py --suite swe --harness graff-dev-old,graff-dev --model grok-4.6 -j 12

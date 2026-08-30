@@ -1,0 +1,10 @@
+{
+  "id": "codedb-menu",
+  "suite": "inhouse",
+  "category": "inhouse",
+  "source": "codegraff #597 / ADR 0019 — advertise five codedb one-shots; hop verbs stay callable (distilled)",
+  "files_dir": "fixtures/codedb-menu",
+  "prompt": "menu.py puts hop verbs on the catalog listing and rejects them as calls. Read SPEC.md and menu.py, then edit menu.py so `python3 test_menu.py` prints OK. Do not only describe the fix. Do not edit the tests. menu() is context/around/callpath/list_dir/status; search/symbol stay allowed.",
+  "check": "python3 test_menu.py && python3 \"$TASK_ROOT/hidden/codedb-menu.py\"",
+  "timeout_s": 240
+}
