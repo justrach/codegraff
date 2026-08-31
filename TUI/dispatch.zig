@@ -19,6 +19,16 @@ const Effect = app.Effect;
 /// a model turn all use the one engine, so they queue behind each other.
 pub const busy_note = "an engine call is still running — press Esc to cancel it";
 
+/// A production model switch replaces ReplCtx.provider and clears its fallback
+/// flags. Turns and background ops borrow that same context, so the mutation
+/// waits for the existing one-engine policy even within one input batch.
+/// Browsing the picker remains UI-only; callers use this at confirmation.
+pub fn refuseProviderMutation(self: *Model) bool {
+    if (self.pending == null and self.bg == null) return false;
+    self.push(.system, busy_note) catch {};
+    return true;
+}
+
 pub fn applyLine(self: *Model, raw: []const u8) Effect {
     const line = std.mem.trim(u8, raw, " \t\r\n");
     if (line.len == 0 and self.images.items.len == 0) return .stay;
@@ -105,6 +115,8 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
     } else if (std.mem.eql(u8, canon, "/model")) {
         if (arg.len == 0) {
             self.openOverlay(.model);
+        } else if (refuseProviderMutation(self)) {
+            return .stay;
         } else if (engine.g_model_fn) |f| {
             // A hand-typed name names no provider, so the engine routes it —
             // the picker is the surface that knows which seat was meant.

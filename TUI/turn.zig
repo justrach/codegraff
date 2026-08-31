@@ -7,7 +7,6 @@ const app = @import("app.zig");
 const engine = @import("engine.zig");
 const Model = app.Model;
 const Effect = app.Effect;
-
 /// What the session is currently asking the engine to do. Shared by a model
 /// turn and by `!cmd` (bgop), because both run under the SAME policy — a /plan
 /// that only reached one of them is the #551 bug in miniature.
@@ -22,7 +21,6 @@ pub fn paramsOf(self: *const Model) engine.Params {
         .goal = self.goal orelse "",
     };
 }
-
 pub fn startJob(self: *Model) void {
     var turns = std.array_list.Managed(engine.Turn).init(self.alloc);
     for (self.history.items) |e| {
@@ -61,14 +59,16 @@ pub fn startJob(self: *Model) void {
     job.events.attach(self.alloc);
     self.push(.pending, "") catch {};
     self.pending = job;
-    if (std.Thread.spawn(.{}, engine.jobRun, .{job})) |th| {
+    if (engine.spawnJob(job)) |th| {
         job.thread = th;
     } else |_| {
+        // Never move provider, tool, or automatic-compaction work onto the
+        // render/input thread. The normal finish path reports and reaps it.
         job.threaded = false;
-        engine.jobRun(job);
+        job.start_failed = true;
+        job.done.store(true, .release);
     }
 }
-
 /// grok-build notify: a finished background job starts a turn while idle.
 pub fn maybeJobWake(self: *Model) void {
     if (self.pending != null or self.bg != null) return;
@@ -78,18 +78,19 @@ pub fn maybeJobWake(self: *Model) void {
     self.push(.user, text) catch return;
     startJob(self);
 }
-
 pub fn finishJob(self: *Model) void {
     const job = self.pending orelse return;
     if (!job.done.load(.acquire)) return;
-    if (job.threaded) job.thread.join();
+    engine.joinJob(job);
 
     // Whatever the engine emitted after the last frame — the tail of the tool
     // run, a closing notice — before the answer row goes in, so the transcript
     // keeps its order.
     drainEvents(self);
     _ = removePendingRows(self);
-    if (job.result) |r| {
+    if (job.start_failed) {
+        self.push(.err, "model turn failed to start — retry your prompt") catch {};
+    } else if (job.result) |r| {
         self.push(.assistant, r) catch {};
         self.alloc.free(r);
     } else if (self.cancel_requested) {

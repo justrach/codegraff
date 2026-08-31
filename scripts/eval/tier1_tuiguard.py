@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the 17 tuiguard PTY probes as a process pool (#641 / #704).
+"""Run the 18 tuiguard PTY probes as a process pool (#641 / #704 / #537).
 
 Each probe owns its own pty/tmp/mock and is independent of the others. The
 serial loop in eval-tier1.sh was the dominant post-src wall (2–4 min). A 4–8
@@ -32,6 +32,7 @@ SCRIPTS = ROOT / "scripts"
 
 PROBES = (
     "tui-pty-guard.py",
+    "test-tui-escape-split.py",
     "test-tui-selection.py",
     "test-tui-typed-events.py",
     "test-tui-painter.py",

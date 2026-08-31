@@ -193,14 +193,15 @@ test "OSC and APC replies on stdin are consumed, never typed" {
     try std.testing.expectEqual(@as(usize, 0), i);
 }
 
-test "orphan SGR mouse is never inserted as letters" {
+test "orphan SGR needs field-zero framing before it can become a mouse" {
     var i: usize = 0;
+    // A digit-led tail may begin at button, x, or y. Consume it as debris, but
+    // never fabricate a click or wheel direction from guessed alignment.
     const k = next("39;33;23M", &i).?;
-    try std.testing.expect(k == .mouse);
-    try std.testing.expectEqual(@as(u8, 39), k.mouse.btn);
-    try std.testing.expectEqual(@as(u16, 33), k.mouse.x);
+    try std.testing.expectEqual(Key.ignore, k);
     try std.testing.expectEqual(@as(usize, 9), i);
     i = 0;
+    // `<` proves this is field zero, so all three exact fields are actionable.
     const k2 = next("<64;4;8Mhi", &i).?;
     try std.testing.expect(k2 == .mouse);
     try std.testing.expectEqual(@as(u8, 64), k2.mouse.btn);
@@ -362,4 +363,27 @@ test "next: wrap-less multiline burst is not Enter (#643)" {
     try std.testing.expectEqual(Key{ .char = 'b' }, next(p, &i).?);
     i = 0;
     try std.testing.expectEqual(Key.enter, next("\r", &i).?);
+}
+
+test "#545: 10+-digit CSI params saturate instead of aborting the TUI" {
+    try std.testing.expectEqual(std.math.maxInt(u32), key.leadingInt("99999999999999999999"));
+    try std.testing.expectEqual(std.math.maxInt(u32), key.leadingInt("9999999999"));
+    try std.testing.expectEqual(@as(u32, 4294967295), key.leadingInt("4294967295"));
+    try std.testing.expectEqual(@as(u32, 200), key.leadingInt("200~tail"));
+    key.resetInputState();
+    defer key.resetInputState();
+    const payloads = [_][]const u8{
+        "\x1b[99999999999999999999;1u",
+        "\x1b[9999999999;1u",
+        "\x1b[<0;9999999999;5M",
+        "\x1b[200~hello \x1b[99999999999999999999;1u world\x1b[201~",
+    };
+    for (payloads) |p| {
+        var i: usize = 0;
+        while (i < p.len) {
+            const before = i;
+            _ = next(p, &i);
+            if (i <= before) break;
+        }
+    }
 }

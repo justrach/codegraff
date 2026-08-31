@@ -81,11 +81,13 @@ test {
     _ = @import("key_tests.zig");
     _ = @import("spec_terminal_modes_conformance.zig");
     _ = @import("key_loop_tests.zig");
+    _ = @import("issue_537_reviewer_tests.zig");
     _ = @import("input.zig");
     _ = @import("keys.zig");
     _ = @import("nav.zig");
     _ = @import("image.zig");
     _ = @import("turn.zig");
+    _ = @import("turn_spawn_tests.zig");
     _ = @import("bgop.zig");
     _ = @import("welcome.zig");
     _ = @import("glyphs.zig");

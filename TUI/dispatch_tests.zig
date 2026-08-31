@@ -6,6 +6,7 @@ const app = @import("app.zig");
 const bgop = @import("bgop.zig");
 const dispatch = @import("dispatch.zig");
 const engine = @import("engine.zig");
+const overlays = @import("overlays.zig");
 const Model = app.Model;
 
 /// Spin until the background op finishes, then apply it — what run.zig's loop
@@ -61,6 +62,62 @@ test "a model turn cannot start while /compact is rewriting the history (#533)" 
     try std.testing.expect(std.mem.indexOf(u8, last, "still running") != null);
     try settle(&m);
     try std.testing.expect(m.bg == null);
+}
+
+test "rapid same-batch /compact then /model cannot mutate the shared engine context" {
+    const Fake = struct {
+        var model_calls: usize = 0;
+        var release = std.atomic.Value(bool).init(false);
+        fn compact(_: ?*anyopaque, _: std.mem.Allocator, _: []const engine.Turn, _: *engine.CompactOut) bool {
+            while (!release.load(.acquire)) std.Thread.yield() catch {};
+            return false;
+        }
+        fn model(_: ?*anyopaque, gpa: std.mem.Allocator, _: []const u8, name: []const u8) ?engine.Picked {
+            model_calls += 1;
+            return .{ .model = gpa.dupe(u8, name) catch return null, .provider = "next-provider" };
+        }
+    };
+    Fake.model_calls = 0;
+    Fake.release.store(false, .release);
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    engine.g_compact_fn = Fake.compact;
+    engine.g_model_fn = Fake.model;
+    engine.g_model_name = "old-model";
+    engine.g_model_provider = "old-provider";
+    const entries = [_]engine.ModelEntry{.{ .name = "next", .provider = "next-provider", .has_key = true }};
+    engine.g_model_entries = &entries;
+    defer {
+        Fake.release.store(true, .release);
+        engine.g_compact_fn = null;
+        engine.g_model_fn = null;
+        engine.g_model_name = "";
+        engine.g_model_provider = "";
+        engine.g_model_entries = &.{};
+    }
+
+    var batch: pacing.Batch = .{};
+    for ("/compact") |c| try std.testing.expectEqual(pacing.Push.ok, batch.push(.{ .char = c }));
+    try std.testing.expectEqual(pacing.Push.ok, batch.push(.enter));
+    for ("/model next") |c| try std.testing.expectEqual(pacing.Push.ok, batch.push(.{ .char = c }));
+    try std.testing.expectEqual(pacing.Push.ok, batch.push(.enter));
+    for (batch.items()) |item| try std.testing.expectEqual(app.Effect.stay, keys.handleBatchItem(&m, item));
+
+    try std.testing.expect(m.bg != null);
+    try std.testing.expect(!m.bg.?.done.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), Fake.model_calls);
+    try std.testing.expectEqualStrings("old-model", engine.g_model_name);
+    _ = dispatch.runCommand(&m, "/model"); // browsing is UI-only and remains available
+    try std.testing.expectEqual(app.Overlay.model, m.overlay);
+    try std.testing.expectEqual(app.Effect.stay, overlays.activate(&m));
+    try std.testing.expectEqual(@as(usize, 0), Fake.model_calls);
+
+    Fake.release.store(true, .release);
+    try settle(&m);
+    _ = dispatch.runCommand(&m, "/model next");
+    try std.testing.expectEqual(@as(usize, 1), Fake.model_calls);
+    try std.testing.expectEqualStrings("next", engine.g_model_name);
 }
 
 test "/new /compact /rewind are blocked while a job is pending (#521)" {
@@ -231,10 +288,7 @@ fn tick(m: *Model, evs: []const key_mod.Key) void {
     var b: pacing.Batch = .{};
     for (evs) |k| std.debug.assert(b.push(k) == .ok);
     for (b.items()) |item| {
-        _ = switch (item) {
-            .key => |k| keys.handle(m, k),
-            .wheel => |d| keys.wheelScroll(m, d),
-        };
+        _ = keys.handleBatchItem(m, item);
     }
 }
 
@@ -283,10 +337,7 @@ test "typing is never starved behind a wheel flood" {
     // 400 wheel reports collapse into 3 units of scroll work.
     try std.testing.expectEqual(@as(usize, 6), b.len);
     for (b.items()) |item| {
-        _ = switch (item) {
-            .key => |k| keys.handle(&m, k),
-            .wheel => |d| keys.wheelScroll(&m, d),
-        };
+        _ = keys.handleBatchItem(&m, item);
     }
     try std.testing.expectEqualStrings("hi!", m.input.getValue());
     try std.testing.expectEqual(@as(usize, 600), m.scroll); // (200+100-100)*3

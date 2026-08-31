@@ -11,6 +11,7 @@ const layout_cache = @import("layout_cache.zig");
 const selection = @import("selection.zig");
 const engine = @import("engine.zig");
 const key_mod = @import("key.zig");
+const pacing = @import("pacing.zig");
 const theme_mod = @import("theme.zig");
 const turn = @import("turn.zig");
 const Key = key_mod.Key;
@@ -19,31 +20,6 @@ const Effect = app.Effect;
 
 pub fn handle(self: *Model, k: Key) Effect {
     if (k == .ignore) return .stay;
-    // Anything that is not part of the drag gesture drops the selection band
-    // (#529). The OSC-11 polarity reply is the terminal talking, not the user.
-    if (k != .mouse and k != .bg_report) {
-        selection.clear(self);
-        // A key can only arrive with the button up: a gutter drag whose
-        // release went missing must not keep the pointer captured (click.zig).
-        self.click.gutter = false;
-    }
-    if (@import("nav.zig").handle(self, k)) |e| return e;
-    // Job-control wins overlays so Ctrl+C always does something.
-    if (isCtrl(k, 'c')) return ctrlC(self);
-    if (k == .undo or isCtrl(k, 'z')) {
-        if (self.input.undo()) self.setToast("undone");
-        return .stay;
-    }
-    if (k == .bg_report) {
-        // Startup OSC 11 reply: adopt the terminal's polarity unless the user
-        // explicitly picked a theme. Fixed palettes, 1-bit decision (grok).
-        if (!self.theme_explicit) {
-            const want: @import("theme.zig").Id = if (@import("theme.zig").classifyLight(k.bg_report[0], k.bg_report[1], k.bg_report[2])) .day else .night;
-            self.theme_id = want;
-        }
-        return .stay;
-    }
-    if (k == .mouse) return mouseKey(self, k.mouse);
     if (k == .paste_start) {
         self.pasting = true;
         self.focus = .prompt;
@@ -72,11 +48,39 @@ pub fn handle(self: *Model, k: Key) Effect {
                 key_mod.endPaste();
                 self.setToast("paste ended");
             },
+            // Editor actions and non-newline controls are not paste text.
+            .tab, .backspace, .ctrl => {},
             else => {},
         }
         return .stay;
     }
 
+    // Anything that is not part of the drag gesture drops the selection band
+    // (#529). The OSC-11 polarity reply is the terminal talking, not the user.
+    if (k != .mouse and k != .bg_report) {
+        selection.clear(self);
+        // A key can only arrive with the button up: a gutter drag whose
+        // release went missing must not keep the pointer captured (click.zig).
+        self.click.gutter = false;
+    }
+    if (k == .bg_report) {
+        // Startup OSC 11 reply: adopt the terminal's polarity unless the user
+        // explicitly picked a theme. Fixed palettes, 1-bit decision (grok).
+        if (!self.theme_explicit) {
+            const want: @import("theme.zig").Id = if (@import("theme.zig").classifyLight(k.bg_report[0], k.bg_report[1], k.bg_report[2])) .day else .night;
+            self.theme_id = want;
+        }
+        return .stay;
+    }
+    if (k == .mouse) return mouseKey(self, k.mouse);
+
+    if (@import("nav.zig").handle(self, k)) |e| return e;
+    // Job-control wins overlays so Ctrl+C always does something.
+    if (isCtrl(k, 'c')) return ctrlC(self);
+    if (k == .undo or isCtrl(k, 'z')) {
+        if (self.input.undo()) self.setToast("undone");
+        return .stay;
+    }
     if (self.overlay != .none) return @import("overlays.zig").key(self, k);
     if (slashOpen(self) and slashKey(self, k)) return .stay;
     if (isChar(k, '@') and self.focus == .prompt and !slashOpen(self)) {
@@ -240,11 +244,20 @@ fn scrollbackKey(self: *Model, k: Key) Effect {
     return .stay;
 }
 
+/// Production batch dispatch shared with run.zig. Keeping the folded wheel on
+/// this door prevents coalescing from bypassing paste-mode key handling.
+pub fn handleBatchItem(self: *Model, item: pacing.Item) Effect {
+    return switch (item) {
+        .key => |k| handle(self, k),
+        .wheel => |notches| wheelScroll(self, notches),
+    };
+}
+
 /// Apply `notches` of wheel scroll. One report and a whole coalesced momentum
 /// run go through the SAME door (pacing.zig folds consecutive reports into one
 /// delta), so a storm can never mean something a single report does not.
 pub fn wheelScroll(self: *Model, notches: i32) Effect {
-    if (notches == 0) return .stay;
+    if (self.pasting or notches == 0) return .stay;
     // An open picker or the completion menu owns the wheel: one notch is one
     // ITEM there, never a scroll of the transcript underneath. A folded batch
     // carries N notches, so replay it one item at a time.
@@ -450,4 +463,5 @@ test {
     // The tests live next door (this file is at the line ceiling). Without this
     // reference they compile for nobody and silently never run.
     _ = @import("keys_tests.zig");
+    _ = @import("issue_537_tests.zig");
 }

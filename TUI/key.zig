@@ -17,39 +17,44 @@ pub fn inPaste() bool {
     return in_paste;
 }
 
-/// Close a bracketed paste the terminal never closed for us. The read loop
-/// calls this when it gives up on a `CSI 201~` that split across reads and
-/// never arrived — without it the latch is permanent and every Enter, Escape
-/// and slash command becomes literal text for the rest of the session
-/// (#532/#536/#548).
+/// Close a bracketed paste and clear modifiers whose events were ignored
+/// inside it. The read loop also calls this when `CSI 201~` never arrived —
+/// without it the latch is permanent and every Enter, Escape and slash command
+/// becomes literal text for the rest of the session (#532/#536/#548).
 pub fn endPaste() void {
     in_paste = false;
+    abandonSequence("", .none);
 }
 
-/// Arm/disarm the orphan-debris sweeper. The read loop arms it when it throws
-/// away a partial escape sequence that never finished, because the NEXT read
-/// can then legitimately open with that sequence's orphaned tail.
+/// Arm/disarm broad orphan recovery after the read loop drops a sequence.
 pub fn armOrphan(on: bool) void {
-    orphan.armed = on;
+    if (on) orphan.armDropped() else orphan.disarm();
 }
 
-/// Keep the truncated escape head the read loop just abandoned, so the next
-/// read can rejoin it (see key_orphan.zig).
-pub fn stashOrphanHead(bytes: []const u8) void {
-    orphan.stashHead(bytes);
+/// Expire the short genuine-Escape carry without discarding a dropped head.
+pub fn expireOrphanHead() void {
+    orphan.expireHead();
 }
 
-/// Prepend a stashed head to a freshly read buffer when it completes it.
-/// Every read must call this — the head is one-shot and expires here.
+/// Prepend a completing stashed head; every read spends this one-shot.
 pub fn joinOrphanHead(buf: []u8, n: usize) usize {
     return orphan.joinHead(buf, n);
 }
 
-/// Drop every latched parser bit. The globals live for one input loop, so a
-/// fresh session (or a headless sim.Term) must not inherit a held modifier, an
-/// unclosed bracketed paste, or an arm from whatever ran before it.
-pub fn resetInputState() void {
+pub const SequenceRecovery = enum { none, escape, dropped };
+/// Clear stale modifiers, changing orphan state only as requested by recovery.
+pub fn abandonSequence(bytes: []const u8, recovery: SequenceRecovery) void {
     held = 0;
+    if (recovery != .none) orphan.stashHead(bytes);
+    switch (recovery) {
+        .none => {},
+        .escape => orphan.armEscape(),
+        .dropped => orphan.armDropped(),
+    }
+}
+/// A fresh input loop must not inherit any parser latch from the previous one.
+pub fn resetInputState() void {
+    abandonSequence("", .none);
     in_paste = false;
     orphan.reset();
 }
@@ -100,6 +105,13 @@ pub const Mouse = struct {
 };
 
 pub fn next(bytes: []const u8, i: *usize) ?Key {
+    // A full input read cannot grow to fit a carried head. key_orphan consumes
+    // exactly the completing tail and queues its decoded event ahead of every
+    // byte that was already behind it in the buffer.
+    if (i.* == 0) if (orphan.takeRecoveredEvent()) |event| {
+        orphan.end = std.math.maxInt(usize);
+        return event;
+    };
     if (i.* >= bytes.len) return null;
     // Orphan CSI debris can only ever be the HEAD of a read: the ESC that
     // opened the sequence was lost BETWEEN reads (the loop dropped a truncated
@@ -114,7 +126,7 @@ pub fn next(bytes: []const u8, i: *usize) ?Key {
                 // the sweeper keep eating whatever the user typed next — `3u
                 // apples` reached the composer as ` apples`, and a lone `3`
                 // was held pending until the stall path dropped it (#531).
-                orphan.armed = false;
+                orphan.disarm();
                 return k;
             },
             // Debris cut short at the read boundary: hold the bytes so the loop
@@ -127,7 +139,7 @@ pub fn next(bytes: []const u8, i: *usize) ?Key {
         }
     }
     orphan.end = std.math.maxInt(usize);
-    orphan.armed = false;
+    orphan.disarm();
     const b = bytes[i.*];
     i.* += 1;
     if (b == 0x1b) return escapeSeq(bytes, i);
@@ -185,29 +197,13 @@ fn escapeSeq(bytes: []const u8, i: *usize) ?Key {
         return .ignore;
     }
     i.* += 1;
-    // X10 mouse (1000h without 1006): CSI M + 3 raw bytes.
-    if (i.* < bytes.len and bytes[i.*] == 'M' and (i.* + 1 >= bytes.len or bytes[i.* + 1] != ';')) {
-        if (i.* + 3 >= bytes.len) {
-            i.* -= 2;
-            return null;
-        }
-        i.* += 1;
-        const btn = bytes[i.*];
-        i.* += 1;
-        const x = bytes[i.*];
-        i.* += 1;
-        const y = bytes[i.*];
-        i.* += 1;
-        return .{ .mouse = .{
-            .btn = if (btn >= 32) btn - 32 else btn,
-            .x = if (x >= 32) @as(u16, x) - 32 else x,
-            .y = if (y >= 32) @as(u16, y) - 32 else y,
-            .down = true,
-        } };
-    }
     const start = i.*;
     while (i.* < bytes.len) : (i.* += 1) {
         const c = bytes[i.*];
+        if (c == 0x1b) {
+            abandonSequence("", .none);
+            return .ignore; // reparse this event head
+        }
         if (c >= 0x40 and c <= 0x7e) {
             const final = c;
             const params = bytes[start..i.*];
@@ -246,6 +242,7 @@ fn stringSeq(bytes: []const u8, i: *usize) ?Key {
                     i.* = j + 2;
                     return oscReply(bytes[start], body);
                 }
+                abandonSequence("", .none);
                 i.* = j;
                 return .ignore;
             }
@@ -256,11 +253,13 @@ fn stringSeq(bytes: []const u8, i: *usize) ?Key {
             // Alt+]/P/X/^/_ chord. Swallow only the introducer — like any
             // unbound alt-chord — so the text reparses instead of the
             // keyboard wedging until it is destroyed (#516).
+            abandonSequence("", .none);
             i.* += 1;
             return .ignore;
         }
     }
     if (bytes.len - i.* > max_reply_pending) {
+        abandonSequence("", .none);
         i.* += 1; // over any real reply's size — same chord recovery (#516)
         return .ignore;
     }
@@ -270,7 +269,7 @@ fn stringSeq(bytes: []const u8, i: *usize) ?Key {
 
 /// A terminated OSC body. The only reply we act on is OSC 11 (background
 /// color, answering run.zig's startup query) — everything else stays inert.
-fn oscReply(kind: u8, body: []const u8) Key {
+pub fn oscReply(kind: u8, body: []const u8) Key {
     if (kind != ']') return .ignore;
     if (!std.mem.startsWith(u8, body, "11;")) return .ignore;
     const rgb = parseXColor(body[3..]) orelse return .ignore;
@@ -299,7 +298,15 @@ fn ss3(bytes: []const u8, i: *usize) ?Key {
         return null;
     }
     const final = bytes[i.* + 1];
-    i.* += 2;
+    i.* += if (final == 0x1b) 1 else 2;
+    if (final == 0x1b) {
+        abandonSequence("", .none);
+        return .ignore;
+    }
+    return decodeSs3(final);
+}
+
+pub fn decodeSs3(final: u8) Key {
     return switch (final) {
         'A' => .up,
         'B' => .down,
@@ -314,22 +321,35 @@ fn ss3(bytes: []const u8, i: *usize) ?Key {
     };
 }
 
-/// CSI M b x y — X10 mouse fallback when the terminal ignores SGR 1006.
-/// Without this the three payload bytes are typed into the prompt as garbage
-/// on every click and pointer move.
+/// CSI M b x y — X10 fallback when the terminal ignores SGR 1006.
 fn x10Mouse(bytes: []const u8, i: *usize, start: usize) ?Key {
+    const available_end = @min(i.* + 3, bytes.len);
+    if (std.mem.indexOfScalar(u8, bytes[i.*..available_end], 0x1b)) |at| {
+        i.* += at;
+        abandonSequence("", .none);
+        return .ignore;
+    }
     if (i.* + 3 > bytes.len) {
         i.* = start - 2;
         return null;
     }
-    const b = bytes[i.*] -| 32;
-    const x = bytes[i.* + 1] -| 32;
-    const y = bytes[i.* + 2] -| 32;
+    const event = decodeX10(bytes[i.* .. i.* + 3]);
     i.* += 3;
-    return .{ .mouse = .{ .btn = b, .x = x, .y = y, .down = (b & 3) != 3 } };
+    return event;
 }
 
-fn decodeCsi(params: []const u8, final: u8) Key {
+pub fn decodeX10(payload: []const u8) Key {
+    std.debug.assert(payload.len == 3);
+    const b = payload[0] -| 32;
+    return .{ .mouse = .{
+        .btn = b,
+        .x = payload[1] -| 32,
+        .y = payload[2] -| 32,
+        .down = (b & 3) != 3,
+    } };
+}
+
+pub fn decodeCsi(params: []const u8, final: u8) Key {
     const mods = csiMods(params);
     const alt = mods & 2 != 0;
     const ctrl = mods & 4 != 0;
@@ -355,10 +375,11 @@ fn decodeCsi(params: []const u8, final: u8) Key {
             12 => .f2,
             200 => blk: {
                 in_paste = true;
+                abandonSequence("", .none);
                 break :blk .paste_start;
             },
             201 => blk: {
-                in_paste = false;
+                endPaste();
                 break :blk .paste_end;
             },
             27 => fixterms(params),
@@ -368,7 +389,7 @@ fn decodeCsi(params: []const u8, final: u8) Key {
         'u' => kitty(params),
         'P' => .f1,
         'Q' => .f2,
-        'M', 'm' => sgrMouse(params, final == 'M'),
+        'M', 'm' => if (std.mem.count(u8, params, ";") == 2) sgrMouse(params, final == 'M') else .ignore,
         // Unknown final — a stray reply or unsupported key, not the Esc key.
         else => .ignore,
     };
@@ -412,14 +433,14 @@ fn kitty(params: []const u8) Key {
     const ev = eventOf(params);
     if (code >= 57344 and code <= 57454) return functional(code, mods, ev);
     if (ev == 3) return .ignore;
-    // A live key is ground truth for held modifiers — resync so a missed
+    // Outside paste, a live key is ground truth — resync so a missed
     // release can't latch alt/super forever. The ABSENT mods field is ground
     // truth too: kitty omits it exactly when no modifiers are down, so a
     // plain keypress must clear the latch. Before this, Cmd+Tab-ing away
     // mid-composition latched super (the release went to the other app) and
     // the next plain Backspace became Cmd+Backspace = delete-to-start,
     // silently wiping the composer.
-    held = if (has_mods) mods & 10 else 0;
+    if (!in_paste) held = if (has_mods) mods & 10 else 0;
     return mapCode(code, mods);
 }
 
@@ -433,7 +454,7 @@ fn functional(code: u32, mods: u32, ev: u32) Key {
         else => 0,
     };
     if (bit != 0) {
-        if (ev == 3) held &= ~bit else held |= bit;
+        if (!in_paste) held = if (ev == 3) held & ~bit else held | bit;
         return .ignore;
     }
     if (ev == 3) return .ignore;
@@ -538,7 +559,9 @@ fn shiftedAscii(ch: u8) u8 {
 }
 
 fn sgrMouse(params: []const u8, down: bool) Key {
-    if (params.len == 0 or params[0] != '<') return .ignore;
+    if (params.len < 6 or params[0] != '<' or params[1] == ';' or params[params.len - 1] == ';' or
+        std.mem.indexOf(u8, params, ";;") != null or std.mem.indexOfScalar(u8, params, ':') != null) return .ignore;
+    for (params[1..]) |c| if ((c < '0' or c > '9') and c != ';') return .ignore;
     var it = std.mem.splitScalar(u8, params[1..], ';');
     const btn = leadingInt(it.next() orelse "0");
     const x = leadingInt(it.next() orelse "1");
@@ -552,39 +575,12 @@ fn sgrMouse(params: []const u8, down: bool) Key {
 }
 
 pub fn leadingInt(s: []const u8) u32 {
-    // Saturating (#545): params come raw off stdin, and a 10+-digit run —
-    // hostile or corrupt input, never a real key — overflowed u32 and aborted
-    // the whole TUI. maxInt decodes as .ignore / clamped coords everywhere.
-    // pub: key_orphan.zig (the extracted debris sweeper) parses with it too.
+    // Saturating (#545): hostile 10+-digit params used to abort the TUI;
+    // maxInt safely decodes as ignore/clamped coords. Used by key_orphan too.
     var n: u32 = 0;
     for (s) |c| {
         if (c < '0' or c > '9') break;
         n = n *| 10 +| (c - '0');
     }
     return n;
-}
-
-test "#545: 10+-digit CSI params saturate instead of aborting the TUI" {
-    try std.testing.expectEqual(std.math.maxInt(u32), leadingInt("99999999999999999999"));
-    try std.testing.expectEqual(std.math.maxInt(u32), leadingInt("9999999999")); // 10 digits — the shortest crasher
-    _ = @import("key_paste.zig");
-    try std.testing.expectEqual(@as(u32, 4294967295), leadingInt("4294967295")); // exact maxInt still parses
-    try std.testing.expectEqual(@as(u32, 200), leadingInt("200~tail")); // normal params unchanged
-    // End-to-end: the fleet's four crashing payloads decode without a panic.
-    resetInputState();
-    defer resetInputState();
-    const payloads = [_][]const u8{
-        "\x1b[99999999999999999999;1u",
-        "\x1b[9999999999;1u",
-        "\x1b[<0;9999999999;5M",
-        "\x1b[200~hello \x1b[99999999999999999999;1u world\x1b[201~",
-    };
-    for (payloads) |p| {
-        var i: usize = 0;
-        while (i < p.len) {
-            const before = i;
-            _ = next(p, &i);
-            if (i <= before) break; // trailing partial rewound — this payload is done
-        }
-    }
 }

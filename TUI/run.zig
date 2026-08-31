@@ -118,6 +118,7 @@ pub fn run(
     // When the last byte of input arrived — the rate side of the storm test.
     var last_input_ms: u64 = 0;
     var esc_stall: u8 = 0;
+    var esc_live = false; // operation state latched when a lone ESC arrives
     var zero_reads: u8 = 0;
     // Clock for the bracketed-paste latch only: refreshed by bytes that could
     // plausibly BE paste content, never by mouse-motion noise (see below).
@@ -271,9 +272,8 @@ pub fn run(
                     // turn and wiping the composer with no user keypress at
                     // all. Carry it for a late tail, arm the sweeper for a
                     // headless one, and never let it become a keystroke.
-                    key_mod.stashOrphanHead(inbuf[0..pending_len]);
+                    key_mod.abandonSequence(inbuf[0..pending_len], .dropped);
                     stash_ms = m.now_ms;
-                    key_mod.armOrphan(true);
                     arm_ms = m.now_ms;
                     pending_len = 0;
                     esc_stall = 0;
@@ -282,7 +282,7 @@ pub fn run(
             if (pending_len > 0) {
                 esc_stall +|= 1;
                 switch (stall.stallVerdict(inbuf[0..pending_len], esc_stall, .{
-                    .turn_live = m.pending != null,
+                    .operation_live = esc_live or m.pending != null or m.bg != null,
                     .in_paste = key_mod.inPaste(),
                 })) {
                     .wait => {},
@@ -292,8 +292,9 @@ pub fn run(
                         // arrow / mouse report / OSC reply it always was
                         // instead of spraying `[<35;80;24M` into the composer
                         // (#530).
-                        key_mod.stashOrphanHead(inbuf[0..pending_len]);
+                        key_mod.abandonSequence(inbuf[0..pending_len], .escape);
                         stash_ms = m.now_ms;
+                        arm_ms = m.now_ms;
                         pending_len = 0;
                         esc_stall = 0;
                         if (keys.handle(&m, .escape) == .quit) m.running = false;
@@ -302,9 +303,8 @@ pub fn run(
                         // A sequence the terminal never finished, waited out.
                         // Carry the head so a late tail can still rejoin it,
                         // and tell key.zig to expect orphan debris otherwise.
-                        key_mod.stashOrphanHead(inbuf[0..pending_len]);
+                        key_mod.abandonSequence(inbuf[0..pending_len], .dropped);
                         stash_ms = m.now_ms;
-                        key_mod.armOrphan(true);
                         arm_ms = m.now_ms;
                         pending_len = 0;
                         esc_stall = 0;
@@ -315,6 +315,12 @@ pub fn run(
             continue;
         }
         esc_stall = 0;
+        if (pending_len == inbuf.len) {
+            key_mod.abandonSequence(inbuf[0..pending_len], .dropped);
+            stash_ms = m.now_ms;
+            arm_ms = m.now_ms;
+            esc_live = false;
+        }
         pending_len = stall.clearFullWedge(pending_len, inbuf.len);
         var filled = pending_len;
         const got = tty.readStdin(inbuf[filled..]);
@@ -351,13 +357,10 @@ pub fn run(
         // and a wheel storm is likewise all mouse reports, so it cannot hold a
         // broken paste open either.
         if (!stall.onlyMouseReports(inbuf[pending_len..filled])) last_paste_ms = m.now_ms;
-        // Spends any head the stall path carried: it is glued back on only
-        // when these bytes really complete it (key_orphan.zig), and only while
-        // the join can still plausibly be link jitter rather than a human
-        // resuming typing. The debris ARM is bounded on the same principle —
-        // left latched it ate the first token of whatever was typed next, at
-        // any later time.
-        if (stall.carryExpired(m.now_ms, stash_ms)) key_mod.stashOrphanHead("");
+        // A genuine Escape's exact carry is short; a non-lone head actually
+        // dropped after its stall budget keeps its framing for the full arm
+        // interval. Either kind is still one-shot on the first new read.
+        if (stall.escapeCarryExpired(m.now_ms, stash_ms)) key_mod.expireOrphanHead();
         if (stall.armExpired(m.now_ms, arm_ms)) key_mod.armOrphan(false);
         const n = key_mod.joinOrphanHead(&inbuf, filled);
         // Everything this tick drained is applied as ONE batch, with runs of
@@ -377,13 +380,8 @@ pub fn run(
                 if (batch.push(k) == .ok) continue;
             } else drained = true;
             for (batch.items()) |item| {
-                const effect = switch (item) {
-                    .key => |k| keys.handle(&m, k),
-                    .wheel => |d| blk: {
-                        pacing.wheel_batches += 1;
-                        break :blk keys.wheelScroll(&m, d);
-                    },
-                };
+                if (item == .wheel) pacing.wheel_batches += 1;
+                const effect = keys.handleBatchItem(&m, item);
                 switch (effect) {
                     .stay => {},
                     .quit => {
@@ -412,6 +410,8 @@ pub fn run(
             std.mem.copyForwards(u8, inbuf[0..rest], inbuf[i..n]);
             pending_len = rest;
         } else pending_len = 0;
+        // Capture before bgop/turn completion at the top of the next tick.
+        esc_live = stall.isLoneEscape(inbuf[0..pending_len]) and (m.pending != null or m.bg != null);
     }
     // Quitting with a turn still live: cancel FIRST — Ctrl+Q (nav.zig) and the
     // palette's /quit never did — then wait for the thread here, with the alt
@@ -525,11 +525,13 @@ test "run loop enables click+hover tracking and bracketed paste" {
     const stall_at = std.mem.indexOfPos(u8, src, sweep_at, "esc_stall +|= 1").?;
     const sweep_block = src[sweep_at..stall_at];
     try std.testing.expect(std.mem.indexOf(u8, sweep_block, "pending_len = 0;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, sweep_block, "armOrphan(true)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sweep_block, ".dropped") != null);
     // Both unbounded holds are bounded: a resting mouse must not keep the paste
     // latch alive, and the debris arm must go stale on its own clock.
     try std.testing.expect(std.mem.indexOf(u8, src, "if (!stall.onlyMouseReports(") != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "if (stall.armExpired(") != null);
+    const drop_at = std.mem.indexOf(u8, src, ".drop => {").?;
+    try std.testing.expect(std.mem.indexOfPos(u8, src, drop_at, "key_mod.abandonSequence(") != null);
 }
 
 // The stall-verdict / carry-window / arm-window battery lives beside the
@@ -549,7 +551,7 @@ test "one tick drains the whole tty, coalesces the wheel, and paints once" {
     // (b) The batch is applied as one unit and the wheel run goes through the
     // same door a single report does.
     try std.testing.expect(std.mem.indexOf(u8, src, "var batch: pacing.Batch") != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "keys.wheelScroll(&m, d)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "keys.handleBatchItem(&m, item)") != null);
     // (c) The frame is gated on the budget, and the gate sits BEFORE the render
     // — gating only the paint would still pay for composing every frame.
     const gate_at = std.mem.indexOf(u8, src, "pacing.shouldPaint(").?;
