@@ -64,6 +64,8 @@ PROBE_TIMEOUTS = {
     "test-tui-layout-cache.py": LONG_TIMEOUT,
     "test-tui-resize-anchor.py": LONG_TIMEOUT,
     "test-tui-overlay-panels.py": LONG_TIMEOUT,
+    # Sequential ESC/paste gaps plus a live `!sleep 2` bash op (#537).
+    "test-tui-escape-split.py": LONG_TIMEOUT,
 }
 
 
