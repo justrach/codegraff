@@ -32,7 +32,7 @@ PASSTHROUGH = {
 }
 
 
-def fail(message: str, proc: subprocess.CompletedProcess[str]) -> None:
+def fail(message: str, proc: subprocess.CompletedProcess[bytes]) -> None:
     raise AssertionError(
         f"{message}\nexit={proc.returncode}\nstdout={proc.stdout!r}\nstderr={proc.stderr!r}"
     )
@@ -87,10 +87,10 @@ def main() -> None:
             shim.chmod(0o755)
             env["PATH"] = str(shim_dir) + os.pathsep + env.get("PATH", "")
 
+        payload = ("".join((request if isinstance(request, str) else json.dumps(request, separators=(",", ":"))) + "\n" for request in requests) + eof_oversize).encode()
         proc = subprocess.run(
             [str(binary), "acp"],
-            input="".join((request if isinstance(request, str) else json.dumps(request, separators=(",", ":"))) + "\n" for request in requests) + eof_oversize,
-            text=True,
+            input=payload,
             capture_output=True,
             env=env,
             timeout=15,
