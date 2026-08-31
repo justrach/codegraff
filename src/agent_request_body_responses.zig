@@ -318,6 +318,43 @@ fn testAgentFor(arena: std.mem.Allocator, id: []const u8, kind: @import("provide
     };
 }
 
+// #695: the wide-native RLM showcase invalidated `tools_responses` and never
+// rebuilt it, and the next body serialized `"tools":,` — an HTTP 400 on
+// every provider. The serialization guard in buildBody turns an empty
+// catalog string into "omit the field" on all three wires; this pins that
+// so no future invalidate-without-rebuild can reach the wire malformed.
+test "#695: an empty catalog string is omitted from the body, never serialized as tools:, (#695)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var responses = try testAgentFor(a, "codex", .responses, "gpt-5.6-sol");
+    const rb = try responses.buildBody("", false, true, true);
+    defer std.testing.allocator.free(rb);
+    try std.testing.expect(std.mem.indexOf(u8, rb, "\"tools\":,") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rb, "\"tool_choice\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rb, "\"parallel_tool_calls\"") == null);
+
+    var chat = try testAgentFor(a, "xai", .openai, "grok-4.6");
+    const cb = try chat.buildBody("", false, true, true);
+    defer std.testing.allocator.free(cb);
+    try std.testing.expect(std.mem.indexOf(u8, cb, "\"tools\":,") == null);
+    try std.testing.expect(std.mem.indexOf(u8, cb, "\"tool_choice\"") == null);
+
+    var anthropic = try testAgentFor(a, "anthropic", .anthropic, "claude-sonnet-5");
+    const ab = try anthropic.buildBody("", false, true, true);
+    defer std.testing.allocator.free(ab);
+    try std.testing.expect(std.mem.indexOf(u8, ab, "\"tools\":,") == null);
+    try std.testing.expect(std.mem.indexOf(u8, ab, "\"tool_choice\"") == null);
+
+    // A real catalog still rides every wire untouched.
+    var live = try testAgentFor(a, "codex", .responses, "gpt-5.6-sol");
+    const catalog = "[{\"type\":\"function\",\"name\":\"bash\",\"description\":\"\"}]";
+    const lb = try live.buildBody(catalog, false, true, true);
+    defer std.testing.allocator.free(lb);
+    try std.testing.expect(std.mem.indexOf(u8, lb, "\"name\":\"bash\"") != null);
+}
+
 test "GPT-5.6 Platform marks the stable prefix; Codex and older routes do not" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

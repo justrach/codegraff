@@ -106,6 +106,9 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // budget can never pay for — which is how the audit smoke died narrating.
     // compaction/title requests pass tools=null already and skip this whole.
     var tools = tools_in;
+    if (self.tracer) |tr| {
+        if (tools) |t| if (t.len == 0) tr.note("tools", "empty catalog at request time (#695)");
+    }
     if (self.run_budget) |b| if (budget_permit) |p| {
         if (b.max_model_calls != 0 and p.call_number == b.max_model_calls and tools != null) {
             tools = null;
