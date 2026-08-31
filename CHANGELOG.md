@@ -20,6 +20,8 @@ current is part of cutting a release.
   so two processes cannot clobber one `.session.json`.
 - `#679` / ADR 0050: MCP HTTP/WSS reuse the warmed TLS client;
   MCP HTTP accepts gzip catalogs.
+- `#695`: an empty tool catalog omits the `tools` field instead of
+  serializing `"tools":,` (0.0.280 HTTP 400).
 - `#694`/`#697`/`#679` numbered records 0042/0043; those slots are
   TUI claims and Pi SWE. Remapped to **0048–0050**.
 - `#277` (Smolify OAuth) and `#200` (idle localhost) stay parked.
