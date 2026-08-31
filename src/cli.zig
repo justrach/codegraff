@@ -251,7 +251,7 @@ pub const usage_text =
     \\  graff login codex [--refresh]    ChatGPT/Codex OAuth login (PKCE)
     \\  graff login kimi                 Kimi Code OAuth login (device-code)
     \\  graff login xai                  Grok/SuperGrok OAuth login (device-code)
-    \\  graff key set <provider> <key>   store a key (macOS Keychain, else 0600 file)
+    \\  graff key set <provider> <key>   store a key (Keychain; POSIX 0600 file; Windows home ACL)
     \\  graff key list                   show which providers have keys
     \\  graff models [refresh]           list the live catalog; refresh Codex + models.dev metadata
     \\  graff route <model>…             dry-run which provider/billing a model lands on (no API call)

@@ -7,11 +7,10 @@
 //! silent logout with nothing left to recover from. Write a per-writer-unique
 //! temp file in the target's own directory, fsync it, then rename over the
 //! target, so a reader sees either the whole old file or the whole new one.
-//!
-//! The guarantee is against a crashed process, not against power loss: the temp
-//! file is fsynced but the containing directory is not, so some filesystems can
-//! still lose the rename across a hard power cut. Same shape — and same limit —
-//! as learn_store.writeAtomicReplace / eval_memory.writeNotes.
+//! On POSIX, fsync the containing directory after the rename so that directory
+//! entry is also durable across power loss. Zig 0.17 cannot portably flush
+//! Windows directory handles, so Windows keeps the atomic replacement and
+//! synced file contents but has a weaker power-loss guarantee.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -83,6 +82,19 @@ fn writeDestination(io: Io, dir: Io.Dir, sub_path: []const u8, allocator: Alloca
     }
 }
 
+fn syncDirectory(io: Io, dir: Io.Dir) !void {
+    if (builtin.os.tag == .windows) return;
+    // Linux openDir handles may use O_PATH, which fsync rejects. Reopen the
+    // exact createFileAtomic destination directory read-only as a File.
+    const file = try dir.openFile(io, ".", .{
+        .allow_directory = true,
+        .follow_symlinks = false,
+        .resolve_beneath = true,
+    });
+    defer file.close(io);
+    try file.sync(io);
+}
+
 /// Replace `dir`/`sub_path` with `bytes` atomically. `sub_path` may carry
 /// directory components; createFileAtomic keeps the temp file in the target's
 /// own directory, so the rename never crosses a filesystem. If `sub_path` is a
@@ -116,6 +128,7 @@ pub fn replaceFile(io: Io, dir: Io.Dir, sub_path: []const u8, bytes: []const u8,
     try atomic.file.writeStreamingAll(io, bytes);
     try atomic.file.sync(io);
     try atomic.replace(io);
+    try syncDirectory(io, atomic.dir);
 }
 
 /// #477: the process $HOME, pinned once at startup (startup.zig, beside
@@ -201,6 +214,47 @@ test "replaceFile: renames a whole new file into place, never truncating the tar
 
     // The temp file was consumed by the rename, not left in the directory.
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, tmp.dir));
+}
+
+test "replaceFile: nested target directories keep the replacement atomic" {
+    if (builtin.os.tag == .windows) return;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "nested", private_dir);
+    try tmp.dir.createDir(io, "nested/credentials", private_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "nested/credentials/key.json", .data = "old" });
+
+    const original = try tmp.dir.openFile(io, "nested/credentials/key.json", .{});
+    defer original.close(io);
+    try replaceFile(io, tmp.dir, "nested/credentials/key.json", "new", private_file);
+
+    var read_buffer: [16]u8 = undefined;
+    var reader = original.reader(io, &read_buffer);
+    const before = try reader.interface.allocRemaining(std.testing.allocator, .limited(64));
+    defer std.testing.allocator.free(before);
+    try std.testing.expectEqualStrings("old", before);
+    const after = try tmp.dir.readFileAlloc(io, "nested/credentials/key.json", std.testing.allocator, .limited(64));
+    defer std.testing.allocator.free(after);
+    try std.testing.expectEqualStrings("new", after);
+
+    // createFileAtomic must consume its sibling temporary file in the actual
+    // containing directory, not leave it beside the nested target.
+    var parent = try tmp.dir.openDir(io, "nested/credentials", .{ .iterate = true });
+    defer parent.close(io);
+    try std.testing.expectEqual(@as(usize, 1), try entryCount(io, parent));
+}
+
+test "syncDirectory: an opened nested destination directory is syncable" {
+    if (builtin.os.tag == .windows) return;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "nested", private_dir);
+    try tmp.dir.createDir(io, "nested/credentials", private_dir);
+    const parent = try tmp.dir.openDir(io, "nested/credentials", .{});
+    defer parent.close(io);
+    try syncDirectory(io, parent);
 }
 
 // The #477 g_home fallback test lives in startup_tests.zig (with the other
@@ -355,6 +409,18 @@ test "#405: replaceFile rejects a symlink cycle without replacing either link" {
     try expectLinkTarget(io, tmp.dir, "first", "second");
     try expectLinkTarget(io, tmp.dir, "second", "first");
     try std.testing.expectEqual(@as(usize, 2), try entryCount(io, tmp.dir));
+}
+
+test "replaceFile: private mode stays 0600 through repeated replacements" {
+    if (!Io.File.Permissions.has_executable_bit) return;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try replaceFile(io, tmp.dir, "secret.json", "first", private_file);
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), (try tmp.dir.statFile(io, "secret.json", .{})).permissions.toMode() & 0o777);
+    try replaceFile(io, tmp.dir, "secret.json", "second", private_file);
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), (try tmp.dir.statFile(io, "secret.json", .{})).permissions.toMode() & 0o777);
 }
 
 test "writeOAuth: the credential file is 0600 inside 0700 directories" {

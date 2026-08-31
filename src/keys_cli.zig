@@ -3,8 +3,10 @@
 //!
 //! Safe API-key store: on macOS, keys live in the login Keychain (service
 //! "simple-harness", account=provider id) via the `security` CLI — never on
-//! disk in plaintext. Elsewhere they fall back to a 0600 file
-//! (~/.simple-harness-keys.json). `harness key set <provider> <key>` writes;
+//! disk in plaintext. Other platforms use ~/.simple-harness-keys.json: mode
+//! 0600 on POSIX, while Windows inherits the home directory's ACL because Zig
+//! 0.17 exposes no portable API for installing an owner-only DACL.
+//! `harness key set <provider> <key>` writes;
 //! startup reads the selected provider first (env always wins), then fills the
 //! remaining providers when a picker, switch, resume, or fallback needs them.
 //!
@@ -109,7 +111,8 @@ pub fn storeKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, prov
         const term = child.wait(io) catch return false;
         return term == .exited and term.exited == 0;
     }
-    // Linux/other: merge into a 0600 JSON file.
+    // Non-macOS: merge into one JSON file. POSIX uses 0600; Windows inherits
+    // the home directory ACL because Io.File.Permissions has no ACL semantics.
     _ = gpa;
     const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ home, keys_file }) catch return false;
     var obj: std.json.ObjectMap = .empty;
@@ -122,10 +125,10 @@ pub fn storeKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, prov
     var aw: Io.Writer.Allocating = .init(arena);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     s.write(Value{ .object = obj }) catch return false;
-    // Atomic + 0600: this is a read-modify-write of EVERY provider's key, so a
-    // truncate-in-place that dies mid-write does not lose one key, it loses all
-    // of them at once. 0600 also makes the "0600 JSON file" above true: the old
-    // createFile took the umask default, i.e. world-readable API keys.
+    // Atomic + private on POSIX: this is a read-modify-write of EVERY
+    // provider's key, so a truncate-in-place that dies mid-write does not lose
+    // one key, it loses all of them at once. The old POSIX createFile took the
+    // umask default, which could leave API keys world-readable.
     credential_store.replaceFile(io, Io.Dir.cwd(), path, aw.writer.buffered(), credential_store.private_file) catch return false;
     return true;
 }
@@ -152,6 +155,64 @@ pub fn loadStoredKey(io: Io, arena: Allocator, home: []const u8, provider: []con
     if (v != .object) return null;
     if (v.object.get(provider)) |k| if (k == .string and k.string.len > 0) return k.string;
     return null;
+}
+
+test "file-backed key store merges and loads keys on its live platforms" {
+    if (builtin.os.tag == .macos) return;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = home_buf[0..try tmp.dir.realPath(io, &home_buf)];
+
+    try std.testing.expect(storeKey(io, std.testing.allocator, arena, home, "openai", "sk-first"));
+    try std.testing.expect(storeKey(io, std.testing.allocator, arena, home, "anthropic", "sk-second"));
+    try std.testing.expectEqualStrings("sk-first", loadStoredKey(io, arena, home, "openai").?);
+    try std.testing.expectEqualStrings("sk-second", loadStoredKey(io, arena, home, "anthropic").?);
+
+    if (Io.File.Permissions.has_executable_bit) {
+        const path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ home, keys_file });
+        const mode = (try Io.Dir.cwd().statFile(io, path, .{})).permissions.toMode() & 0o777;
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), mode);
+    }
+}
+
+test "file-backed key store preserves keys across repeated read-modify-writes" {
+    if (builtin.os.tag == .macos) return;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = home_buf[0..try tmp.dir.realPath(io, &home_buf)];
+
+    try std.testing.expect(storeKey(io, std.testing.allocator, arena, home, "openai", "sk-openai-initial"));
+    try std.testing.expect(storeKey(io, std.testing.allocator, arena, home, "anthropic", "sk-anthropic-initial"));
+    try std.testing.expect(storeKey(io, std.testing.allocator, arena, home, "deepseek", "sk-deepseek-initial"));
+
+    // Each update rereads the file produced by the preceding update. Checking
+    // after every pass catches a lost unrelated provider at the exact write
+    // that drops it, rather than only observing the final state.
+    for (0..8) |round| {
+        const openai_key = try std.fmt.allocPrint(arena, "sk-openai-{d}", .{round});
+        const anthropic_key = try std.fmt.allocPrint(arena, "sk-anthropic-{d}", .{round});
+        try std.testing.expect(storeKey(io, std.testing.allocator, arena, home, "openai", openai_key));
+        try std.testing.expect(storeKey(io, std.testing.allocator, arena, home, "anthropic", anthropic_key));
+        try std.testing.expectEqualStrings(openai_key, loadStoredKey(io, arena, home, "openai").?);
+        try std.testing.expectEqualStrings(anthropic_key, loadStoredKey(io, arena, home, "anthropic").?);
+        try std.testing.expectEqualStrings("sk-deepseek-initial", loadStoredKey(io, arena, home, "deepseek").?);
+    }
+
+    if (Io.File.Permissions.has_executable_bit) {
+        const path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ home, keys_file });
+        const mode = (try Io.Dir.cwd().statFile(io, path, .{})).permissions.toMode() & 0o777;
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), mode);
+    }
 }
 
 pub const StoredKeyScope = union(enum) {
