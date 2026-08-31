@@ -76,7 +76,7 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
 fn finishAnswer(self: *Agent, raw: []const u8) !ExecResult {
     const answer = try self.arena.dupe(u8, raw);
     vision.stageGuiImageAttachment(self, answer);
-    vision_queue.retainReferenced(self, answer);
+    _ = vision_queue.retainReferenced(self, answer);
     // Pixels stay queued for flushPending after the text tool result. If the
     // reply only has `[Image]` markers and nothing staged, say so instead of
     // letting the model treat placeholders as screenshots.
