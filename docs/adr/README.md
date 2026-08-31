@@ -61,6 +61,11 @@ record only when you need the evidence or the edge cases.
 | [0048](0048-model-http-client-recovery-uses-generations.md) | Model HTTP calls lease a recoverable client generation; request-construction TLS failure rotates safely without deinitializing in-flight users. |
 | [0049](0049-resume-branches-have-independent-durable-identity.md) | `--resume SOURCE --branch DEST` clones provider history and peer cursor state once; every later save belongs only to DEST. |
 | [0050](0050-reuse-warmed-tls-on-known-networks.md) | Reuse warmed TLS: MCP probe/initialized stay on the persistent HTTP client; WSS CA is scanned once per process; WS→SSE keeps the prewarmed pool; MCP HTTP accepts gzip. |
+| [0051](0051-sandbox-teleport-and-gc.md) | `/teleport` restores a snapshot tar onto another CLI backend; `/snapshot gc` keeps the newest n trees. |
+| [0052](0052-lean-oneshot-bounces-prose.md) | Lean `-p` bounces a first-turn prose-only "done"; one user note naming file tools, then re-open. |
+| [0053](0053-codegraff-flake-retry-opencode.md) | Retry short Codegraff follow-up flakes (2); `opencode-codegraff` A/B on the same seat. Auth/quota stay fail-fast. |
+| [0054](0054-deepseek-thinking-disabled-at-low.md) | DeepSeek family default low sends `thinking.type=disabled`; `/effort high` still thinks. GLM stays low-only. |
+| [0055](0055-lean-oneshot-bash-15s.md) | Lean `-p` bash auto-backgrounds at 15s; interactive / `--no-lean` stay 120s (ADR 0026). |
 
 ## When to write one
 

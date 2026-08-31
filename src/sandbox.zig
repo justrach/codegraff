@@ -288,6 +288,38 @@ pub fn find(io: Io, dir: Io.Dir, arena: Allocator, session: []const u8, id: []co
     return parseManifest(arena, bytes);
 }
 
+/// Delete one snapshot tree (manifest + payload). Missing is success: GC is
+/// idempotent and must not fail a command because a half-written dir vanished.
+pub fn remove(io: Io, dir: Io.Dir, arena: Allocator, session: []const u8, id: []const u8) bool {
+    if (!safeName(session) or !safeName(id)) return false;
+    const path = snapshotDir(arena, session, id) catch return false;
+    dir.access(io, path, .{}) catch return true;
+    dir.deleteTree(io, path) catch return false;
+    return true;
+}
+
+pub const GcResult = struct {
+    kept: usize = 0,
+    removed: usize = 0,
+    bytes: u64 = 0,
+};
+
+/// Keep the newest `keep` snapshots (list is oldest-first); delete the rest.
+/// `keep == 0` deletes every snapshot this session has on disk.
+pub fn gc(io: Io, dir: Io.Dir, arena: Allocator, session: []const u8, keep: usize) Allocator.Error!GcResult {
+    const items = try list(io, dir, arena, session);
+    var result: GcResult = .{ .kept = items.len };
+    if (items.len <= keep) return result;
+    for (items[0 .. items.len - keep]) |m| {
+        if (remove(io, dir, arena, session, m.id)) {
+            result.removed += 1;
+            result.bytes += m.len;
+            result.kept -= 1;
+        }
+    }
+    return result;
+}
+
 // ── The active sandbox ─────────────────────────────────────────────────────
 // A process-wide pair rather than an Agent field: nothing in the MVP attaches
 // a sandbox automatically, so the REPL commands need a seam they can read that
@@ -433,6 +465,45 @@ test "LocalProcess acquires but refuses to snapshot" {
     try std.testing.expectError(error.SnapshotUnsupported, handle.snapshot(std.testing.allocator, blob));
     try std.testing.expectError(error.SnapshotUnsupported, backend.acquireFromSnapshot(std.testing.allocator, "k", .{}, blob));
     handle.release();
+}
+
+test "snapshot GC keeps the newest N and deletes the rest" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    inline for (.{
+        .{ .id = "old", .ms = 10, .len = 100 },
+        .{ .id = "mid", .ms = 20, .len = 200 },
+        .{ .id = "new", .ms = 30, .len = 300 },
+    }) |row| {
+        try tmp.dir.createDirPath(io, try snapshotDir(arena, "s", row.id));
+        try tmp.dir.writeFile(io, .{ .sub_path = try payloadPath(arena, "s", row.id), .data = "x" });
+        try writeManifest(io, tmp.dir, arena, "s", .{
+            .id = row.id,
+            .backend = "docker",
+            .kind = "docker_image_tar",
+            .ref = row.id,
+            .len = row.len,
+            .created_ms = row.ms,
+        });
+    }
+    try std.testing.expectEqual(@as(usize, 3), (try list(io, tmp.dir, arena, "s")).len);
+
+    const trimmed = try gc(io, tmp.dir, arena, "s", 1);
+    try std.testing.expectEqual(@as(usize, 2), trimmed.removed);
+    try std.testing.expectEqual(@as(usize, 1), trimmed.kept);
+    try std.testing.expectEqual(@as(u64, 300), trimmed.bytes);
+    const left = try list(io, tmp.dir, arena, "s");
+    try std.testing.expectEqual(@as(usize, 1), left.len);
+    try std.testing.expectEqualStrings("new", left[0].id);
+    try std.testing.expect(find(io, tmp.dir, arena, "s", "old") == null);
+    try std.testing.expect(remove(io, tmp.dir, arena, "s", "missing"));
+    try std.testing.expect(!remove(io, tmp.dir, arena, "s", ".."));
 }
 
 test "the active sandbox is empty until something attaches one" {

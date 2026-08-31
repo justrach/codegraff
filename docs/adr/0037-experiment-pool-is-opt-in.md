@@ -22,4 +22,5 @@ path, branch, keep-reason, and diffstat. `graff worktree list` tags them
 ## Consequences
 
 Seats are FIFO. A fourth child after `--experiment 3` uses normal isolation.
-Dependent pipeline stages still need #295. Docker snapshots stay #554.
+Dependent pipeline stages still need #295. Docker snapshots stay #554;
+teleport and snapshot GC are ADR 0051.

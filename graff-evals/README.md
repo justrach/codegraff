@@ -32,6 +32,8 @@ harness under test spends model calls.
 CODEGRAFF_API_KEY=cg_sk_… ./run.py --suite swe --harness graff-dev,pi-codegraff --model glm-5.3-flash -j 6
 # same seat, other models (ADR 0047): deepseek-v4-flash, gemini-3.7-flash, kimi-k2.6
 CODEGRAFF_API_KEY=cg_sk_… ./run.py --suite swe --harness graff-dev,pi-codegraff --model deepseek-v4-flash -j 6
+# same seat, OpenCode vs graff (ADR 0053; needs `opencode` on PATH):
+CODEGRAFF_API_KEY=cg_sk_… ./run.py --suite swe --harness graff-dev,opencode-codegraff --model deepseek-v4-flash -j 6
 # multi-harness in-house PR suite (OpenCode needs --dir; see harnesses.json):
 ./run.py --suite inhouse --harness graff-dev,grok,opencode --model grok-4.6 -j 1
 ```

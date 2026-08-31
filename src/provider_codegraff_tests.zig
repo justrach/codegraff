@@ -127,6 +127,7 @@ test "Codegraff Gemini sends low for default effort; /effort high still sends" {
     const ds = try deepseek.buildBody(null, false, true, true);
     defer std.testing.allocator.free(ds);
     try std.testing.expect(std.mem.indexOf(u8, ds, "\"reasoning_effort\":\"medium\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ds, "\"thinking\":{\"type\":\"enabled\"}") != null);
 }
 
 test "Codegraff glm-5.3-flash sends low for default effort; /effort high still sends" {
@@ -163,4 +164,49 @@ test "Codegraff glm-5.3-flash sends low for default effort; /effort high still s
     const high = try agent.buildBody(null, false, true, true);
     defer std.testing.allocator.free(high);
     try std.testing.expect(std.mem.indexOf(u8, high, "\"reasoning_effort\":\"high\"") != null);
+}
+
+test "Codegraff DeepSeek flash disables thinking at default low; /effort high still thinks" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var messages = std.json.Array.init(arena);
+    try messages.append(.{ .object = blk: {
+        var obj: std.json.ObjectMap = .empty;
+        try obj.put(arena, "role", .{ .string = "user" });
+        try obj.put(arena, "content", .{ .string = "hello" });
+        break :blk obj;
+    } });
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = build("deepseek-v4-flash"),
+        .messages = messages,
+        .sub = false,
+        .label = "main",
+        .out = null,
+        .sys_normal = "system",
+    };
+    const low = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(low);
+    try std.testing.expect(std.mem.indexOf(u8, low, "\"thinking\":{\"type\":\"disabled\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, low, "\"reasoning_effort\":\"low\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, low, "\"thinking\":{\"type\":\"enabled\"}") == null);
+
+    agent.reasoning = .high;
+    const high = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(high);
+    try std.testing.expect(std.mem.indexOf(u8, high, "\"thinking\":{\"type\":\"enabled\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, high, "\"reasoning_effort\":\"high\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, high, "\"thinking\":{\"type\":\"disabled\"}") == null);
+
+    var glm: Agent = agent;
+    glm.provider = build("glm-5.3-flash");
+    glm.reasoning = .medium;
+    const glm_body = try glm.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(glm_body);
+    try std.testing.expect(std.mem.indexOf(u8, glm_body, "\"thinking\":{\"type\":\"disabled\"}") == null);
+    try std.testing.expect(std.mem.indexOf(u8, glm_body, "\"reasoning_effort\":\"low\"") != null);
 }

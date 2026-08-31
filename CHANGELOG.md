@@ -27,9 +27,16 @@ current is part of cutting a release.
   serializing `"tools":,` (0.0.280 HTTP 400).
 - `#694`/`#697`/`#679` numbered records 0042/0043; those slots are
   TUI claims and Pi SWE. Remapped to **0048–0050**.
+- `#677` / ADR 0051: `/teleport` restores a snapshot tar onto another
+  CLI backend; `/snapshot gc` keeps the newest n trees. Leftover of
+  `#554`. `#677` numbered this 0042; remapped (0042 is TUI claims).
+- `#675` / ADR 0052–0055: lean `-p` bounces a prose-only first "done";
+  short Codegraff flakes retry twice; DeepSeek family default low
+  sends `thinking.type=disabled`; lean bash auto-backgrounds at 15s.
+  `#675` numbered those 0048–0051; remapped off 282's 0048–0051.
 - `#277` (Smolify OAuth) and `#200` (idle localhost) closed as
-  abandoned vs tip; issues stay parked. Live leftovers: `#675`, `#677`.
-- Suite floor **1849** (was 1804). Scratch helpers live in
+  abandoned vs tip; issues stay parked.
+- Suite floor **1861** (was 1849). Scratch helpers live in
   `agent_request_scratch.zig` so the request loop stays under 600.
 - 12-task in-house remasure after #697 still unique vs grok / OpenCode:
   **12/12 · 201s · 52 calls · $0.34** (`run-20260831-021035-composite`).

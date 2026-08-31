@@ -27,6 +27,8 @@ pub const changelog_text =
     \\  • request-construction TLS failure rotates a leased HTTP client generation (ADR 0048)
     \\  • --resume SOURCE --branch DEST is clone-on-write (ADR 0049)
     \\  • MCP HTTP/WSS reuse warmed TLS; catalogs can arrive gzip (ADR 0050)
+    \\  • /teleport + /snapshot gc (ADR 0051); DeepSeek thinking off at low (ADR 0054)
+    \\  • lean -p bounces prose-only done (ADR 0052) and backgrounds bash at 15s (ADR 0055)
     \\
     \\0.0.281
     \\  • -p / --json skip learn auto-init — no 132M graff-pinned copy (ADR 0044)

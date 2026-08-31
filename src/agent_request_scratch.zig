@@ -6,12 +6,7 @@
 const std = @import("std");
 
 const Agent = @import("agent.zig").Agent;
-const policy = @import("agent_request_policy.zig");
-const http = @import("http.zig");
-const RetryPlan = http.RetryPlan;
 const run_budget_mod = @import("run_budget.zig");
-
-const max_server_retries: usize = 3;
 
 /// Keep the normal request hot path allocation-free while avoiding a permanent
 /// RSS high-water mark after one anomalously large stream. Small scratch arenas
@@ -38,14 +33,7 @@ pub fn showRecoveredTransportRetry(kind: run_budget_mod.CallKind) bool {
 /// means the gateway queued us and never produced tokens — back off and re-ask
 /// like a 5xx instead of dying on an "unparseable" JSON parse.
 pub fn retryKeepAliveOnly(self: *Agent, body: []const u8, retries: *usize) !bool {
-    if (!policy.sseKeepAliveOnly(body)) return false;
-    if (retries.* >= max_server_retries) return false;
-    retries.* += 1;
-    self.partial_text.clearRetainingCapacity();
-    const delay_ms = RetryPlan.delayMs(true, retries.* - 1); // 1·2·4s
-    try self.say("[provider queued the request (keep-alive only, no tokens) — retrying in {d}s ({d}/{d})]\n", .{ delay_ms / 1000, retries.*, max_server_retries });
-    self.sleepInterruptible(delay_ms) catch return error.Interrupted;
-    return true;
+    return @import("agent_gateway_retry.zig").retryDegenerateBody(self, body, retries);
 }
 
 test "recovered recap transport retries stay out of normal REPL output" {

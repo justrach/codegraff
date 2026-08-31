@@ -1,6 +1,7 @@
 //! #554's REPL surface: `/snapshot` captures the active sandbox's filesystem
 //! into `.graff/sessions/<session>/snapshots/<id>/`, `/rewind <id>` brings one
-//! back up.
+//! back up, `/teleport <id>` restores the same tar on a different CLI backend,
+//! and `/snapshot gc` drops old snapshot trees.
 //!
 //! `/rewind` was already taken by the CONVERSATION rewind (commands_model.zig,
 //! `/rewind <n>`), and the two are deliberately the same word: they are the
@@ -32,10 +33,11 @@ const sandbox = @import("sandbox.zig");
 const sandbox_docker = @import("sandbox_docker.zig");
 const util = @import("util.zig");
 
-/// The process's Docker backend, once `/snapshot attach` has built one. A
-/// live `Handle` points into a Sandbox that points back here, so this outlives
-/// any one command — the same process-wide shape as sandbox.active().
+/// Process-wide CLI backends. A live `Handle` points into a Sandbox that
+/// points back here, so these outlive any one command — the same shape as
+/// sandbox.active(). `g_container` is the Apple Container slot teleport uses.
 var g_docker: sandbox_docker.Docker = undefined;
+var g_container: sandbox_docker.Docker = undefined;
 
 /// The sentence every rewind output carries. A user who believed the
 /// transcript had moved too would read it as the record of a run that never
@@ -56,15 +58,16 @@ pub fn explain(err: anyerror) []const u8 {
         error.SandboxUnavailable => "the sandbox backend is not usable here — `docker` is not on PATH, or the daemon refused the command",
         error.SnapshotUnsupported => "this backend cannot capture state (the local backend runs without isolation, so there is nothing to snapshot) — attach a Docker sandbox instead",
         error.SnapshotFailed => "the capture failed — `docker commit`/`docker save` did not succeed",
-        error.RestoreFailed => "the restore failed — `docker load`/`docker run` did not succeed, and the previous sandbox was already released; nothing is attached now, so `/snapshot attach` starts a fresh one",
+        error.RestoreFailed => "the restore failed — `load`/`run` did not succeed, and the previous sandbox was already released; nothing is attached now, so `/snapshot attach` starts a fresh one",
         error.ExecFailed => "the sandbox command could not be run",
         else => "the sandbox operation failed",
     };
 }
 
 /// `/snapshot` (capture), `/snapshot attach [image]`, `/snapshot detach`,
-/// `/snapshot list`, and `/rewind <id>`. Returns false for anything else,
-/// including `/rewind` with a numeric or absent argument.
+/// `/snapshot list`, `/snapshot gc [n]`, `/teleport <id> [backend]`, and
+/// `/rewind <id>`. Returns false for anything else, including `/rewind` with
+/// a numeric or absent argument.
 pub fn tryHandle(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     if (argOf(line, "/snapshot")) |arg| {
         if (std.mem.eql(u8, arg, "list") or std.mem.eql(u8, arg, "ls")) {
@@ -73,9 +76,16 @@ pub fn tryHandle(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writ
             try attach(root, image, out);
         } else if (std.mem.eql(u8, arg, "detach")) {
             try detach(out);
+        } else if (argOf(arg, "gc") != null or std.mem.eql(u8, arg, "gc")) {
+            try collect(root, arena, if (argOf(arg, "gc")) |n| n else "", out);
         } else {
             try capture(root, arena, out);
         }
+        try out.flush();
+        return true;
+    }
+    if (argOf(line, "/teleport")) |arg| {
+        try teleport(root, arena, arg, out);
         try out.flush();
         return true;
     }
@@ -86,6 +96,14 @@ pub fn tryHandle(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writ
         return true;
     }
     return false;
+}
+
+/// Named CLI backend. `docker` is the default attach; `container` is Apple
+/// Container — same wire, different binary. Unknown names stay null so the
+/// command can explain instead of guessing.
+pub fn backendNamed(name: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, name, "docker") or std.mem.eql(u8, name, "container")) return name;
+    return null;
 }
 
 /// The argument after `cmd`, or null when `line` is a different command.
@@ -109,11 +127,7 @@ fn attach(root: *Agent, image: []const u8, out: *Io.Writer) !void {
         try out.print("a sandbox is already attached ({s}) — /snapshot detach first\n", .{prev.handle.id});
         return;
     }
-    g_docker = .{
-        .io = root.io,
-        .path_env = main_mod.g_path_env,
-        .image = if (image.len > 0) image else sandbox_docker.default_image,
-    };
+    g_docker = fillCli(root, "docker", image);
     const backend = g_docker.backend();
     if (!backend.available()) {
         try out.print("docker backend: {s}\n", .{explain(error.SandboxUnavailable)});
@@ -211,6 +225,97 @@ fn restore(root: *Agent, arena: Allocator, id: []const u8, out: *Io.Writer) !voi
     try out.print("{s}   {s}; processes inside the sandbox were relaunched, not resumed{s}\n", .{ style.dim, log_note, style.reset });
 }
 
+fn fillCli(root: *Agent, bin_name: []const u8, image: []const u8) sandbox_docker.Docker {
+    return .{
+        .io = root.io,
+        .path_env = main_mod.g_path_env,
+        .image = if (image.len > 0) image else sandbox_docker.default_image,
+        .bin_name = bin_name,
+    };
+}
+
+fn slot(bin_name: []const u8) *sandbox_docker.Docker {
+    return if (std.mem.eql(u8, bin_name, "container")) &g_container else &g_docker;
+}
+
+/// `/snapshot gc [n]` — keep the newest n snapshots (default 1). The exo miss
+/// #554 named: leftover tars pile up unless something deletes them.
+fn collect(root: *Agent, arena: Allocator, keep_arg: []const u8, out: *Io.Writer) !void {
+    if (!sandbox.safeName(root.session_name)) {
+        try out.writeAll("this session has no name a snapshot directory could be built from\n");
+        return;
+    }
+    const keep: usize = if (keep_arg.len == 0) 1 else std.fmt.parseInt(usize, keep_arg, 10) catch {
+        try out.print("usage: /snapshot gc [n] — n is how many newest snapshots to keep (default 1)\n", .{});
+        return;
+    };
+    const result = try sandbox.gc(root.io, sandbox.workspace(), arena, root.session_name, keep);
+    if (result.removed == 0) {
+        try out.print("snapshot gc: nothing to drop — {d} kept\n", .{result.kept});
+        return;
+    }
+    try out.print("snapshot gc: dropped {d} ({d} bytes), kept {d}\n", .{ result.removed, result.bytes, result.kept });
+}
+
+/// Restore `id` onto a backend other than the one that captured it. Dest
+/// defaults to `container` when the live backend is docker (or nothing is
+/// attached), and `docker` when the live backend is already container.
+fn teleport(root: *Agent, arena: Allocator, arg: []const u8, out: *Io.Writer) !void {
+    var it = std.mem.tokenizeAny(u8, arg, " \t");
+    const id = it.next() orelse {
+        try out.writeAll("usage: /teleport <id> [docker|container]\n");
+        return;
+    };
+    const dest_arg = it.next() orelse "";
+    const dest = if (dest_arg.len == 0)
+        defaultDest()
+    else
+        backendNamed(dest_arg) orelse {
+            try out.print("unknown backend {s} — teleport dest is docker or container\n", .{dest_arg});
+            return;
+        };
+    try restoreOnto(root, arena, id, dest, out);
+}
+
+fn defaultDest() []const u8 {
+    const act = sandbox.active() orelse return "container";
+    return if (std.mem.eql(u8, act.backend.name(), "container")) "docker" else "container";
+}
+
+fn restoreOnto(root: *Agent, arena: Allocator, id: []const u8, dest_name: []const u8, out: *Io.Writer) !void {
+    const found = sandbox.find(root.io, sandbox.workspace(), arena, root.session_name, id) orelse {
+        try out.print("no snapshot {s} in this session — {s}/snapshot list{s} shows what there is\n", .{ id, style.accent, style.reset });
+        return;
+    };
+    const dest_slot = slot(dest_name);
+    dest_slot.* = fillCli(root, dest_name, "");
+    const dest = dest_slot.backend();
+    if (!dest.available()) {
+        try out.print("{s} backend: {s}\n", .{ dest.name(), explain(error.SandboxUnavailable) });
+        return;
+    }
+    const blob: sandbox.Blob = .{
+        .io = root.io,
+        .dir = sandbox.workspace(),
+        .rel = try sandbox.payloadPath(arena, root.session_name, found.id),
+    };
+    const key = if (sandbox.active()) |act|
+        try arena.dupe(u8, act.handle.key)
+    else
+        try arena.dupe(u8, root.session_name);
+    if (sandbox.active()) |act| {
+        act.handle.release();
+        sandbox.detach();
+    }
+    const fresh = dest.acquireFromSnapshot(root.gpa, key, found.payload(), blob) catch |err| {
+        try out.print("teleport failed — {s}\n", .{explain(err)});
+        return;
+    };
+    sandbox.attach(.{ .backend = dest, .handle = fresh });
+    try out.print("teleported {s}{s}{s} onto {s} ({d} bytes)\n", .{ style.accent, found.id, style.reset, dest.name(), found.len });
+    try out.print("{s}   {s}; processes inside the sandbox were relaunched, not resumed{s}\n", .{ style.dim, log_note, style.reset });
+}
+
 fn renderList(root: *Agent, arena: Allocator, out: *Io.Writer) !void {
     const items = try sandbox.list(root.io, sandbox.workspace(), arena, root.session_name);
     if (items.len == 0) {
@@ -221,7 +326,7 @@ fn renderList(root: *Agent, arena: Allocator, out: *Io.Writer) !void {
     for (items) |m| {
         try out.print("  {s}{s}{s}  {s:<8} {d:>10} B  {s}\n", .{ style.accent, m.id, style.reset, m.backend, m.len, m.ref });
     }
-    try out.print("{s}usage: /rewind <id> — restores that filesystem; {s}{s}\n", .{ style.dim, log_note, style.reset });
+    try out.print("{s}usage: /rewind <id> restores here; /teleport <id> [docker|container] restores onto another backend; /snapshot gc drops old tars; {s}{s}\n", .{ style.dim, log_note, style.reset });
 }
 
 test "a numeric /rewind argument stays with the conversation rewind" {
@@ -238,6 +343,14 @@ test "argOf claims only the exact command" {
     try std.testing.expect(argOf("/snapshots", "/snapshot") == null);
     try std.testing.expect(argOf("/rewinds 3", "/rewind") == null);
     try std.testing.expectEqualStrings("3", argOf("/rewind 3", "/rewind").?);
+    try std.testing.expectEqualStrings("id container", argOf("/teleport id container", "/teleport").?);
+}
+
+test "teleport dest names are docker or container" {
+    try std.testing.expectEqualStrings("docker", backendNamed("docker").?);
+    try std.testing.expectEqualStrings("container", backendNamed("container").?);
+    try std.testing.expect(backendNamed("daytona") == null);
+    try std.testing.expect(backendNamed("") == null);
 }
 
 test "every sandbox failure has an explanation, and rewind never claims the log moved" {

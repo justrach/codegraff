@@ -6,7 +6,9 @@ Landed on [v0.0.282](releases/v0.0.282.md): `#674` atomic paste spans,
 `#693` Codex WS `type:error`, `#694` HTTP client generations (ADR 0048),
 `#697` clone-on-write session branches (ADR 0049; `#698` was a yxlyx reopen
 of the same head and is closed as duplicate), `#679` MCP TLS reuse
-(ADR 0050), `#695` omit an empty tool catalog. Still parked below.
+(ADR 0050), `#695` omit an empty tool catalog, `#677` `/teleport` +
+`/snapshot gc` (ADR 0051), `#675` DeepSeek thinking-off / lean 15s bash
+(ADR 0052–0055). Still parked below.
 
 | Issue | In this repo today | This cut |
 | --- | --- | --- |
