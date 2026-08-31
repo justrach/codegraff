@@ -118,6 +118,26 @@ test "Kimi catalog loads at startup only when selection can observe it" {
 /// std.process.fatal exactly as that block did (no key found, or a bad
 /// --model value).
 pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, model_flag: ?[]const u8, worker_provider_hint: ?[]const u8) !ResolvedKeys {
+    return (try resolveKeysOptional(io, gpa, arena, environ_map, model_flag, worker_provider_hint)) orelse missingCredentials();
+}
+
+fn missingCredentials() noreturn {
+    // `tui`/TTY `repl` claim the pager before credential resolution. Fatal
+    // exits do not unwind defers, so release that claim before stderr prints.
+    @import("tui").restore.releaseIfOwned();
+    std.process.fatal(
+        \\no API key found. quickest fixes:
+        \\  graff login                         free codegraff key (device-code OAuth)
+        \\  graff key set <provider> <key>      store a key (macOS Keychain, else 0600 file)
+        \\  export ANTHROPIC_API_KEY=sk-ant-…   or CODEGRAFF/DEEPSEEK/OPENAI/MINIMAX/XIAOMI/KIMI/MOONSHOT/XAI/ZAI _API_KEY
+        \\a Codex CLI login (~/.codex/auth.json) is also picked up automatically.
+    , .{});
+}
+
+/// The ACP bootstrap needs to distinguish "no credential yet" from startup
+/// failures without manufacturing a provider. All successful resolution and
+/// model-selection behavior is shared with resolveKeys above.
+pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, model_flag: ?[]const u8, worker_provider_hint: ?[]const u8) !?ResolvedKeys {
     var keys: provider_mod.Keys = .{ .values = undefined };
     for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
         value.* = environ_map.get(spec.env_key);
@@ -201,15 +221,7 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
         // discovery. Provider-specific Codex windows remain authoritative.
         models_cache.loadOverlay(io, arena, home);
     }
-    var default_provider = keys.defaultProvider() catch {
-        std.process.fatal(
-            \\no API key found. quickest fixes:
-            \\  graff login                         free codegraff key (device-code OAuth)
-            \\  graff key set <provider> <key>      store a key (macOS Keychain, else 0600 file)
-            \\  export ANTHROPIC_API_KEY=sk-ant-…   or CODEGRAFF/DEEPSEEK/OPENAI/MINIMAX/XIAOMI/KIMI/MOONSHOT/XAI/ZAI _API_KEY
-            \\a Codex CLI login (~/.codex/auth.json) is also picked up automatically.
-        , .{});
-    };
+    var default_provider = keys.defaultProvider() catch return null;
     var stale_saved_model: ?[]const u8 = null;
     var preferred_provider: ?[]const u8 = null;
     // `--model <name|provider>` pins the startup model (same resolution as /model).

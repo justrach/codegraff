@@ -116,8 +116,11 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addAnonymousImport("spec_prompt_prefix", .{ .root_source_file = b.path("spec/kernels/prompt_prefix.json") });
     unit_tests.root_module.addAnonymousImport("spec_prompt_stable", .{ .root_source_file = b.path("spec/kernels/prompt_stable.json") });
     const run_tests = b.addRunArtifact(unit_tests);
-    const test_step = b.step("test", "Run unit tests");
+    const test_step = b.step("test", "Run unit and subprocess integration tests");
     test_step.dependOn(&run_tests.step);
+    const acp_preauth_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-preauth.py" });
+    acp_preauth_test.addArtifactArg(exe);
+    test_step.dependOn(&acp_preauth_test.step);
 
     // Learning kit: the adapter/suite files `graff learn init` materializes
     // into a workspace so zero-configuration learning needs no repo checkout.

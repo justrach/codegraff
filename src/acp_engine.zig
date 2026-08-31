@@ -18,6 +18,7 @@ pub const writeError = proto.writeError;
 pub const writeSessionUpdate = proto.writeSessionUpdate;
 pub const err_method_not_found = proto.err_method_not_found;
 pub const err_internal = proto.err_internal;
+pub const err_auth_required = proto.err_auth_required;
 
 /// Stamped by the CLI (`harness_version`) or the embed create() call.
 pub var implementation_version: []const u8 = "0.0.0-embed";
@@ -99,9 +100,8 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
     try respond(w, req, .{ .stopReason = stop });
 }
 
-pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u8) !void {
-    const req = parseRequest(arena, line) orelse return;
-    if (std.mem.eql(u8, req.method, "initialize")) return respond(w, req, .{
+fn respondInitialize(w: *Io.Writer, req: proto.Request) !void {
+    return respond(w, req, .{
         .protocolVersion = negotiateVersion(req.params),
         .agentCapabilities = .{
             .loadSession = false,
@@ -110,6 +110,19 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
         .agentImplementation = proto.AgentImplementation{ .version = implementation_version },
         .authMethods = acp_auth.advertised,
     });
+}
+
+/// Credential-free ACP bootstrap. Initialize is byte-for-byte the full
+/// engine response; every request that needs a live Agent is auth-gated.
+pub fn handlePreAuthLine(arena: Allocator, w: *Io.Writer, line: []const u8) !void {
+    const req = parseRequest(arena, line) orelse return;
+    if (std.mem.eql(u8, req.method, "initialize")) return respondInitialize(w, req);
+    return respondError(w, req, err_auth_required, acp_auth.required_message);
+}
+
+pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u8) !void {
+    const req = parseRequest(arena, line) orelse return;
+    if (std.mem.eql(u8, req.method, "initialize")) return respondInitialize(w, req);
     if (std.mem.eql(u8, req.method, "authenticate"))
         return respondError(w, req, err_method_not_found, "terminal auth is out of band: re-spawn graff login");
     if (std.mem.eql(u8, req.method, "session/new")) {
