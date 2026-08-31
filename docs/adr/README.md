@@ -59,6 +59,7 @@ record only when you need the evidence or the edge cases.
 | [0046](0046-flash-omits-default-effort.md) | Flash / Gemini send `reasoning_effort=low` (omit still thinks); lean `-p` shortens tool prose; `-p` streams. |
 | [0047](0047-codegraff-swe-not-glm-only.md) | Codegraff SWE A/B is not GLM-only: Gemini graff 5/6 in 103s; DeepSeek flash still one-shots; do not steal Pi's catalog. |
 | [0048](0048-model-http-client-recovery-uses-generations.md) | Model HTTP calls lease a recoverable client generation; request-construction TLS failure rotates safely without deinitializing in-flight users. |
+| [0049](0049-resume-branches-have-independent-durable-identity.md) | `--resume SOURCE --branch DEST` clones provider history and peer cursor state once; every later save belongs only to DEST. |
 
 ## When to write one
 

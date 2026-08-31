@@ -38,6 +38,15 @@ pub fn sessionId(io: Io) []const u8 {
     return session_id_buf[0..session_id_len];
 }
 
+/// A clone-on-write session is a new durable conversation, not another name
+/// for the parent's cache identity. Mint its UUID before the first child save.
+pub fn renewSessionId(io: Io) []const u8 {
+    while (session_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
+    session_id_len = 0;
+    session_id_lock.store(false, .release);
+    return sessionId(io);
+}
+
 /// Conversation affinity for one request. xAI routes `x-grok-conv-id` (Chat
 /// Completions) and `prompt_cache_key` (Responses) to the same server — cache
 /// entries are per-server, so a sticky id is how prefix hits stay reliable

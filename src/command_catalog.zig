@@ -65,7 +65,7 @@ pub const commands = [_]Item{
     .{ .name = "/paste", .desc = "attach the clipboard image — macOS; also Ctrl-V (⌘V can't be captured)" },
     .{ .name = "/bash", .usage = "/bash <command>", .desc = "run a shell command directly" },
     .{ .name = "/save", .usage = "/save [name]", .desc = "write the conversation to <name>.session.json (default: current)" },
-    .{ .name = "/resume", .usage = "/resume [name]", .desc = "restore a saved conversation (no arg → interactive picker)" },
+    .{ .name = "/resume", .usage = "/resume [source] [--branch destination]", .desc = "restore a saved conversation, optionally cloning it into an independent branch" },
     .{ .name = "/sessions", .desc = "list saved sessions in the cwd" },
     .{ .name = "/workspace", .usage = "/workspace [list|use <name>]", .desc = "list git worktrees or switch this session into one (file tools follow)" },
     .{ .name = "/experiment", .usage = "/experiment [N|off|status]", .desc = "pre-mint N child worktrees (1-16) and seat the next spawns in them; off clears the pool" },

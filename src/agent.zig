@@ -167,6 +167,7 @@ pub const Agent = struct {
     loop_deadline_ms: ?i64 = null, // the running /loop's wall-clock deadline (goal_pacing.LoopClock); read by the subagent spawn path so a child inherits it. Run-local: never saved, cleared on stop/steer
     history_rewrites: u32 = 0, // bumped by compact()/emergencyTrim; state pasted into the dead history (e.g. the /loop checklist copy) must be re-carried (#318)
     session_name: []const u8 = "last", // autosave/resume target (<name>.session.json)
+    session_parent: ?[]const u8 = null, // clone-on-write ancestry: this session branched from <parent>
     session_title: ?[]const u8 = null, // human-readable title/rename metadata
     sys_base: []const u8 = "", // #381: the last BASE handed to prompts.setSystemPrompts, WITHOUT the playbook block — what a mid-session constraint re-composes from (playbook_glue.refreshRoot)
     sys_strict: []const u8 = prompts.main_system_prompt_strict,

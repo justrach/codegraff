@@ -55,6 +55,8 @@ pub fn run(
     engine.g_copy_fn = opts.copy_fn;
     engine.g_compact_fn = opts.compact_fn;
     engine.g_history_fn = opts.history_fn;
+    engine.g_resume_fn = opts.resume_fn;
+    engine.g_state_fn = opts.state_fn;
     engine.g_idle_wake_fn = opts.idle_wake_fn;
     engine.g_peer_fn = opts.peer_fn;
     engine.g_model_name = opts.model_name;
@@ -65,6 +67,18 @@ pub fn run(
     var m: Model = undefined;
     m.setup(gpa);
     defer m.deinit();
+    defer if (opts.state_fn) |f| f(opts.turn_ctx, .{
+        .session_name = m.session_name orelse "",
+        .goal = m.goal orelse "",
+        .strict = m.strict,
+        .ultracode = m.ultracode,
+    });
+    for (opts.initial_history) |item| m.push(if (item.role == .user) .user else .assistant, item.text) catch {};
+    m.turns = m.userTurnCount();
+    if (opts.session_name.len > 0) m.session_name = gpa.dupe(u8, opts.session_name) catch null;
+    if (opts.initial_goal.len > 0) m.goal = gpa.dupe(u8, opts.initial_goal) catch null;
+    m.strict = opts.initial_strict;
+    m.ultracode = opts.initial_ultracode;
     if (opts.yolo) m.mode = .always_approve;
 
     const claimed = restore_mod.takeClaim();
@@ -439,6 +453,7 @@ pub fn run(
             // The threads are still writing into the job and the op, so the
             // process must not outlive the restore: put the terminal back with
             // the same bytes the defers would have written, then leave.
+            if (opts.emergency_fn) |f| f(opts.turn_ctx);
             w.flush() catch {};
             restore_mod.emergency();
             std.process.exit(0);

@@ -57,6 +57,16 @@ pub const Conversation = struct {
         return if (self.live) self.messages.items.len else 0;
     }
 
+    pub fn seed(self: *Conversation, source: std.json.Array) !void {
+        self.reset();
+        self.messages = try cloneArray(self.alloc(), source);
+        self.live = true;
+    }
+
+    pub fn cloneInto(self: *Conversation, dest: Allocator) !std.json.Array {
+        return cloneArray(dest, self.list().*);
+    }
+
     /// `/new` and `/clear`: the session starts over, and the memory goes with
     /// it. Everything the old messages pointed at lived in this arena.
     pub fn reset(self: *Conversation) void {
@@ -114,6 +124,15 @@ pub const Conversation = struct {
         try msgs.appendSlice(rewritten);
     }
 };
+
+fn cloneArray(a: Allocator, source: std.json.Array) !std.json.Array {
+    var aw: std.Io.Writer.Allocating = .init(a);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try s.write(Value{ .array = source });
+    const cloned = try std.json.parseFromSliceLeaky(Value, a, aw.writer.buffered(), .{ .allocate = .alloc_always });
+    if (cloned != .array) return error.InvalidConversation;
+    return cloned.array;
+}
 
 fn textOf(a: Allocator, t: repl.Turn) !Value {
     return messages_mod.textMessage(a, switch (t.role) {

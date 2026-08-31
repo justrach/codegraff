@@ -39,7 +39,10 @@ const utf8Prefix = util.utf8Prefix;
 // `session.sessionPath`, `session.listSavedSessions`, and friends.
 const session_index = @import("session_index.zig");
 pub const session_ext = session_index.session_ext;
+pub const sessions_dir = session_index.sessions_dir;
 pub const sessionPath = session_index.sessionPath;
+pub const validSessionName = session_index.validSessionName;
+pub const sessionExists = session_index.sessionExists;
 pub const SessionMeta = session_index.SessionMeta;
 pub const sessionMetaFromBytes = session_index.sessionMetaFromBytes;
 pub const sessionMeta = session_index.sessionMeta;
@@ -159,6 +162,7 @@ fn fingerprint(root: *Agent, name: []const u8) u64 {
         f.num(t.epoch);
         f.flag(t.retired); // #394: retiring a finished checklist is a real state change, so it must reach disk
     }
+    if (root.session_parent) |parent| f.text(parent) else f.flag(false);
     f.text(root.session_title orelse sessionTitle(root));
     // The persisted meter's two inputs. Its third (system prompt + tool schema
     // size) shifts `context_tokens` and `context_local_tokens` together, and
@@ -294,6 +298,8 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
         try s.endObject();
     }
     try s.endArray();
+    try s.objectField("parent");
+    if (root.session_parent) |parent| try s.write(parent) else try s.write(null);
     try s.objectField("title");
     if (root.session_title) |title| try s.write(title) else try s.write(sessionTitle(root));
     try s.objectField("updated_ms");
@@ -439,6 +445,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     const strict = if (obj.get("strict")) |v| (v == .bool and v.bool) else false;
     const ultracode_mode = if (obj.get("ultracode_mode")) |v| (v == .bool and v.bool) else false;
     const goal: ?agent_mod.Goal = if (obj.get("goal")) |v| goalFromValue(v, unixMs(root.io)) else null;
+    const parent = if (obj.get("parent")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
     const title = if (obj.get("title")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
     // Optional for backward compatibility with sessions written before context
     // metering was persisted. JSON integers are signed; ignore negative/wrong-type
@@ -497,6 +504,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     root.pending_goal_note = null;
     root.goal_note_fp = 0;
     root.goal_note_age = 0;
+    root.session_parent = parent;
     root.session_title = title;
     // Rebase the saved server-only delta onto today's prompt/tool-schema input.
     restoreContextMeter(root, saved_context_tokens, saved_local_tokens);

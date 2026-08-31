@@ -152,6 +152,24 @@ pub const CompactFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, 
 pub const HistoryOp = enum { reset, rewind };
 pub const HistoryFn = *const fn (turn_ctx: ?*anyopaque, op: HistoryOp) void;
 
+pub const SessionState = struct {
+    session_name: []const u8 = "",
+    goal: []const u8 = "",
+    strict: bool = false,
+    ultracode: bool = false,
+};
+pub const StateFn = *const fn (turn_ctx: ?*anyopaque, state: SessionState) void;
+
+pub const ResumeOut = struct {
+    turns: []Turn = &.{},
+    session_name: []const u8 = "",
+    goal: []const u8 = "",
+    strict: bool = false,
+    ultracode: bool = false,
+    note: []const u8 = "",
+};
+pub const ResumeFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, spec: []const u8, out: *ResumeOut) bool;
+
 pub const Job = struct {
     thread: std.Thread = undefined,
     threaded: bool = true,
@@ -238,6 +256,11 @@ pub const RunOpts = struct {
     cancel_fn: ?CancelFn = null,
     model_name: []const u8 = "",
     model_provider: []const u8 = "",
+    initial_history: []const Turn = &.{},
+    session_name: []const u8 = "",
+    initial_goal: []const u8 = "",
+    initial_strict: bool = false,
+    initial_ultracode: bool = false,
     /// The model catalog with its provider column (see ModelEntry).
     model_entries: []const ModelEntry = &.{},
     cwd: []const u8 = ".",
@@ -249,6 +272,9 @@ pub const RunOpts = struct {
     copy_fn: ?CopyFn = null,
     compact_fn: ?CompactFn = null,
     history_fn: ?HistoryFn = null,
+    resume_fn: ?ResumeFn = null,
+    state_fn: ?StateFn = null,
+    emergency_fn: ?*const fn (turn_ctx: ?*anyopaque) void = null,
     idle_wake_fn: ?IdleWakeFn = null,
     peer_fn: ?PeerFn = null,
 };
@@ -264,6 +290,8 @@ pub var g_files_fn: ?FilesFn = null;
 pub var g_copy_fn: ?CopyFn = null;
 pub var g_compact_fn: ?CompactFn = null;
 pub var g_history_fn: ?HistoryFn = null;
+pub var g_resume_fn: ?ResumeFn = null;
+pub var g_state_fn: ?StateFn = null;
 
 /// Tell the engine the transcript was cut. Silent when nothing is wired
 /// (offline TUI, unit tests).

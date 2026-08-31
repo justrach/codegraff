@@ -11,6 +11,7 @@ pub const Item = struct {
 
 pub const items = [_]Item{
     .{ .name = "/new", .desc = "Start a fresh session", .aliases = &.{"/clear"} },
+    .{ .name = "/resume", .desc = "Resume or branch a saved session" },
     .{ .name = "/home", .desc = "Return to the welcome screen", .aliases = &.{"/welcome"} },
     .{ .name = "/compact", .desc = "Engine-compact model-visible history" },
     .{ .name = "/context", .desc = "Show context-window use" },

@@ -21,6 +21,8 @@ const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
 const prompts = @import("prompts.zig");
 const providers = @import("providers.zig");
+const session = @import("session.zig");
+const util = @import("util.zig");
 const repl = @import("repl.zig");
 const repl_glue = @import("repl_glue.zig");
 const ReplCtx = repl_glue.ReplCtx;
@@ -74,6 +76,8 @@ pub fn turnAgent(
         .messages = std.json.Array.init(arena),
         .sub = false, // root: enables the full tool set + agentic loop
         .label = "repl",
+        .session_name = if (c.root) |root| root.session_name else "last",
+        .session_parent = if (c.root) |root| root.session_parent else null,
         .out = out,
         .in = null, // never prompt for tool approval / ask_user
         .stream_quiet = false, // stream tokens live into the repl pane
@@ -109,8 +113,31 @@ pub fn turnAgent(
         .context_local_tokens = c.context_local_tokens,
         .last_cache_read = c.last_cache_read,
     };
+    try seedSessionState(c, &agent, arena, params.goal);
     try prompts.setSystemPrompts(&agent, sys, arena);
     return agent;
+}
+
+fn seedSessionState(c: *ReplCtx, agent: *Agent, arena: Allocator, goal_text: []const u8) !void {
+    const root = c.root orelse return;
+    if (goal_text.len > 0) {
+        if (root.goal) |goal| {
+            if (std.mem.eql(u8, goal.objective, goal_text)) {
+                var copy = goal;
+                copy.objective = try arena.dupe(u8, goal.objective);
+                agent.goal = copy;
+                for (root.todos.items) |todo| try agent.todos.append(arena, .{
+                    .content = try arena.dupe(u8, todo.content),
+                    .status = try arena.dupe(u8, todo.status),
+                    .epoch = todo.epoch,
+                    .retired = todo.retired,
+                });
+                return;
+            }
+        }
+        const now = util.unixMs(agent.io);
+        agent.goal = .{ .objective = try arena.dupe(u8, goal_text), .epoch = if (root.goal) |g| g.epoch + 1 else 1, .standing = true, .created_ms = now, .updated_ms = now };
+    }
 }
 
 /// Give the turn's agent the session's history. With a conversation the agent
@@ -154,8 +181,25 @@ fn promoteTailImages(agent: *Agent, cv: anytype, history: []const repl.Turn) !vo
 /// and every tool_use/tool_result pair to the borrowed list, and a managed
 /// ArrayList is a VALUE — not copying it back would drop the whole turn.
 fn returnHistory(c: *ReplCtx, agent: *Agent) void {
-    const cv = c.convo orelse return;
-    cv.list().* = agent.messages;
+    if (c.convo) |cv| cv.list().* = agent.messages;
+    const root = c.root orelse return;
+    root.strict = agent.strict;
+    root.ultracode_mode = agent.ultracode_mode;
+    root.last_context_tokens = agent.last_context_tokens;
+    root.context_local_tokens = agent.context_local_tokens;
+    root.last_cache_read = agent.last_cache_read;
+    root.goal = if (agent.goal) |goal| blk: {
+        var copy = goal;
+        copy.objective = root.arena.dupe(u8, goal.objective) catch break :blk root.goal;
+        break :blk copy;
+    } else null;
+    root.todos.clearRetainingCapacity();
+    for (agent.todos.items) |todo| root.todos.append(root.arena, .{
+        .content = root.arena.dupe(u8, todo.content) catch continue,
+        .status = root.arena.dupe(u8, todo.status) catch continue,
+        .epoch = todo.epoch,
+        .retired = todo.retired,
+    }) catch break;
 }
 
 /// repl.TurnFn — run a full ROOT agent turn (tools + MCP) for the chat
@@ -219,6 +263,7 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
     };
     const trimmed = std.mem.trim(u8, final, " \t\r\n");
     if (trimmed.len == 0) return null;
+    session.saveSessionAsync(&agent, arena, agent.session_name) catch {};
     return gpa.dupe(u8, trimmed) catch null;
 }
 
