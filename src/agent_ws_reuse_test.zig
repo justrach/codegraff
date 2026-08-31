@@ -233,3 +233,42 @@ test "#401: a fresh connect keeps the full pre-first-token budget for a slow fir
     try std.testing.expect(!traced(&tw, "\"detail\":\"stall\""));
     try std.testing.expect(agent.codex_ws != null); // held for the next delta
 }
+
+test "#692: a generic error frame is returned as the terminal API body before peer close" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var addr = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
+    var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
+    defer server.deinit(io);
+    var done: std.atomic.Value(bool) = .init(false);
+    var fut = io.async(Mock.run, .{ io, &server, Mock.Mode.generic_error_then_close, &done });
+    defer fut.await(io);
+    defer done.store(true, .release);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tw: Io.Writer.Allocating = .init(gpa);
+    defer tw.deinit();
+    var tracer: trace.Tracer = .{ .io = io, .gpa = gpa, .out = &tw.writer, .start = Io.Timestamp.now(io, .awake) };
+
+    var url_buf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/x", .{server.socket.address.getPort()});
+    var agent = mockAgent(gpa, arena, io, url);
+    agent.tracer = &tracer;
+    defer if (agent.codex_ws) |c| {
+        c.dead = true;
+        c.deinit(gpa);
+        agent.codex_ws = null;
+    };
+
+    const out = try agent_ws.postResponsesWs(&agent, "{\"model\":\"gpt-5\",\"input\":[]}");
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, mock.generic_error_event) != null);
+    try std.testing.expect(traced(&tw, "\"detail\":\"terminal API error frame\""));
+    try std.testing.expect(!traced(&tw, "transport error"));
+    try std.testing.expect(agent.codex_ws != null);
+    try std.testing.expect(agent.codex_ws.?.dead);
+}

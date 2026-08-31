@@ -127,18 +127,31 @@ pub const TokenSignal = struct {
     }
 };
 
-/// xAI WS error frames ({"type":"error"}) are terminal for the turn but not in
-/// isStreamEnd's completed/failed set, so without classification they burn the
-/// whole stall budget on a doomed socket.
-pub const ErrorFrameAction = enum { none, retire, chain_lost };
+/// Responses WS `type:error` frames are terminal API responses, not transport
+/// failures. The two known chain errors retain distinct labels for trace
+/// diagnostics, but all three actions return the accumulated response body to
+/// parseResponses instead of waiting for the peer's expected close frame.
+pub const ErrorFrameAction = enum { none, api_error, retire, chain_lost };
 
-pub fn errorFrameAction(frame: []const u8) ErrorFrameAction {
-    if (std.mem.indexOf(u8, frame, "\"type\":\"error\"") == null) return .none;
-    // The server sends this right before closing a 25-minute-old socket.
-    if (std.mem.indexOf(u8, frame, "websocket_connection_limit_reached") != null) return .retire;
-    // Our chain anchor is gone (evicted / never cached under store:false).
-    if (std.mem.indexOf(u8, frame, "previous_response_not_found") != null) return .chain_lost;
-    return .none;
+pub fn errorFrameAction(gpa: std.mem.Allocator, frame: []const u8) ErrorFrameAction {
+    // Error frames are rare. Parse only a cheap candidate so whitespace around
+    // `type` is accepted and prose that merely quotes `"type":"error"` is not.
+    if (std.mem.indexOf(u8, frame, "error") == null) return .none;
+    var scratch = std.heap.ArenaAllocator.init(gpa);
+    defer scratch.deinit();
+    const v = std.json.parseFromSliceLeaky(std.json.Value, scratch.allocator(), frame, .{ .allocate = .alloc_always }) catch return .none;
+    if (v != .object) return .none;
+    const ty = v.object.get("type") orelse return .none;
+    if (ty != .string or !std.mem.eql(u8, ty.string, "error")) return .none;
+    const err = v.object.get("error");
+    const code = if (err) |e| (if (e == .object) e.object.get("code") else null) else null;
+    if (code) |c| if (c == .string) {
+        // The server sends this right before closing a 25-minute-old socket.
+        if (std.mem.eql(u8, c.string, "websocket_connection_limit_reached")) return .retire;
+        // Our chain anchor is gone (evicted / never cached under store:false).
+        if (std.mem.eql(u8, c.string, "previous_response_not_found")) return .chain_lost;
+    };
+    return .api_error;
 }
 
 /// The deadline for writing a frame of `frame_len` bytes.
@@ -156,9 +169,11 @@ pub fn sendDeadlineMs(frame_len: usize, head_ms: u64, stream_ms: u64) u64 {
     return @min(head_ms +| grow, @max(head_ms, stream_ms));
 }
 
-test "errorFrameAction classifies the two xAI ws error codes, ignores prose" {
-    try std.testing.expectEqual(ErrorFrameAction.retire, errorFrameAction("{\"type\":\"error\",\"error\":{\"code\":\"websocket_connection_limit_reached\"}}"));
-    try std.testing.expectEqual(ErrorFrameAction.chain_lost, errorFrameAction("{\"type\":\"error\",\"error\":{\"code\":\"previous_response_not_found\"}}"));
-    try std.testing.expectEqual(ErrorFrameAction.none, errorFrameAction("{\"type\":\"response.output_text.delta\",\"delta\":\"websocket_connection_limit_reached\"}"));
-    try std.testing.expectEqual(ErrorFrameAction.none, errorFrameAction("{\"type\":\"error\",\"error\":{\"code\":\"other\"}}"));
+test "errorFrameAction classifies every actual error frame and ignores quoted prose" {
+    const a = std.testing.allocator;
+    try std.testing.expectEqual(ErrorFrameAction.retire, errorFrameAction(a, "{\"type\":\"error\",\"error\":{\"code\":\"websocket_connection_limit_reached\"}}"));
+    try std.testing.expectEqual(ErrorFrameAction.chain_lost, errorFrameAction(a, "{\"type\":\"error\",\"error\":{\"code\":\"previous_response_not_found\"}}"));
+    try std.testing.expectEqual(ErrorFrameAction.api_error, errorFrameAction(a, "{ \"type\" : \"error\", \"error\" : {\"code\":\"invalid_request_error\"} }"));
+    try std.testing.expectEqual(ErrorFrameAction.none, errorFrameAction(a, "{\"type\":\"response.output_text.delta\",\"delta\":\"quoted \\\"type\\\":\\\"error\\\"\"}"));
+    try std.testing.expectEqual(ErrorFrameAction.none, errorFrameAction(a, "not json: error"));
 }

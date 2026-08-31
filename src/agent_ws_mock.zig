@@ -20,6 +20,7 @@ pub fn nowMs(io: Io) i64 {
 
 pub const delta_event = "{\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}";
 pub const completed_event = "{\"type\":\"response.completed\"}";
+pub const generic_error_event = "{\"type\":\"error\",\"error\":{\"code\":\"invalid_request_error\",\"message\":\"mock bad request\"}}";
 
 /// What the backend actually puts on the socket in the first milliseconds after
 /// a send, before the model has produced anything: the two protocol events, then
@@ -76,6 +77,9 @@ pub const Mock = struct {
         /// Upgrade, take the client's frame, stream a whitelisted meta call's
         /// arguments (`arg_prose_events`) and then go silent.
         arg_prose_then_silence,
+        /// Send a generic terminal API error and close immediately, matching
+        /// Codex's failure sequence from issue #692.
+        generic_error_then_close,
     };
 
     pub fn run(io: Io, server: *std.Io.net.Server, mode: Mode, done: *std.atomic.Value(bool)) void {
@@ -118,6 +122,11 @@ pub const Mock = struct {
                 readClientFrame(&sr.interface) catch return idle(io, done);
                 for (arg_prose_events) |ev|
                     writeTextFrame(&sw.interface, ev) catch return idle(io, done);
+            },
+            .generic_error_then_close => {
+                readClientFrame(&sr.interface) catch return;
+                writeTextFrame(&sw.interface, generic_error_event) catch return;
+                return;
             },
         }
         idle(io, done);

@@ -579,14 +579,12 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         try full.writer.writeAll(fbuf.items);
         try full.writer.writeByte('\n');
         const line = try std.fmt.allocPrint(arena, "data: {s}", .{fbuf.items});
-        // xAI error frames are terminal but not in isStreamEnd's set. Both
-        // arms route through postLive's close + redial (resets chain state).
-        switch (signal.errorFrameAction(fbuf.items)) {
-            .none => {},
-            .retire, .chain_lost => |act| {
-                if (self.tracer) |tr| tr.note("ws", if (act == .retire) "server connection limit — retiring socket" else "chain anchor gone — re-anchoring full");
-                return error.ConnectionResetByPeer;
-            },
+        // Codex closes after `type:error`; return the accumulated API body
+        // instead of waiting for EOF and misclassifying it as transport loss.
+        if (signal.errorFrameAction(gpa, fbuf.items) != .none) {
+            client.dead = true; // no courtesy close write to a closing peer
+            if (self.tracer) |tr| tr.note("ws", "terminal API error frame");
+            break :stream;
         }
         if (isStreamEnd(arena, self.provider.kind, line)) {
             if (self.tracer) |tr| tr.note("ws", "completed");

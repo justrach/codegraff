@@ -6,6 +6,7 @@ import os
 import tempfile
 
 from codex_ws_mock import CodexMock
+import codex_ws_error_test as error_scenario
 import codex_ws_test as scenario
 
 
@@ -99,6 +100,26 @@ def main() -> None:
             raise AssertionError("no smoke scenario reported a runtime context")
         scenario.MIDTURN_CONTEXT_TOKENS = runtime_context
         scenario.MIDTURN_TOTAL_TOKENS = runtime_context * 9 // 10
+
+        mock = CodexMock(events_for_request=error_scenario.generic_error_events)
+        port = mock.start()
+        try:
+            error_scenario.run_generic_error_scenario(tmp, codex_home, port, mock)
+        finally:
+            mock.stop()
+        print(
+            "ok    generic WS API error: one bounded diagnostic, no transport retry/fallback"
+        )
+
+        mock = CodexMock(events_for_request=error_scenario.chain_error_events)
+        port = mock.start()
+        try:
+            error_scenario.run_chain_reanchor_scenario(tmp, codex_home, port, mock)
+        finally:
+            mock.stop()
+        print(
+            "ok    stale WS chain error: automatic full-input re-anchor on one fresh socket"
+        )
 
         mock = CodexMock(events_for_request=scenario.midturn_events)
         port = mock.start()
