@@ -16,7 +16,9 @@ current is part of cutting a release.
   ADR 0056 — deleting a composer image chip drops that queue slot and
   reuses `#N`. `clipboard_paste` no longer stores MIME or byte count
   for drafts abandoned before submit.
-- Suite floor **1868** (was 1861). No tag until asked.
+- Suite floor **1868** (was 1861). Tournament E2E parent timeout
+  300s and 45s default barrier so CI cannot flake on #467 rendezvous.
+  No tag until asked.
 
 ## v0.0.282 (2026-08-31)
 

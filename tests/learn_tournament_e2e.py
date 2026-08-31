@@ -35,10 +35,15 @@ from learn_e2e import (
 )
 
 # Four primary evaluators rendezvous for up to TOURNAMENT_BARRIER_DEADLINE
-# seconds (default 120). The parent must outlive that wait or a loaded CI
-# runner kills `graff learn run` with TimeoutExpired while peers are still
-# starting (#467).
-def invoke(*args, timeout: int = 180, **kwargs):
+# seconds (fixture default 120). The parent must outlive that wait plus
+# scoring: a loaded CI runner can spend most of the 120s just spawning
+# the four children, after which 60s of leftover budget is not enough
+# and the parent raises TimeoutExpired while the same SHA is green on a
+# quieter runner (#467 / #703). 300s is the barrier plus scoring slack.
+# The E2E also defaults an unset barrier to 45s so rendezvous cannot eat
+# the whole parent budget; fixture unit tests still set their own
+# (including 0.05s for the timeout-accounting case).
+def invoke(*args, timeout: int = 300, **kwargs):
     return _invoke(*args, timeout=timeout, **kwargs)
 
 
@@ -219,6 +224,10 @@ def exercise(graff: Path, root: Path) -> None:
         "GRAFF_BEHAVIOR_TRACE": "0",
         "TOURNAMENT_BARRIER": str(barrier),
     })
+    # Prefer an explicit caller value (unit tests, local debug). Otherwise
+    # cap the barrier well under the parent timeout so four slow-to-start
+    # children cannot consume the whole budget before scoring.
+    env.setdefault("TOURNAMENT_BARRIER_DEADLINE", "45")
     env.pop("GRAFF_NO_TELEMETRY", None)
 
     GradeCapture.payloads = []
