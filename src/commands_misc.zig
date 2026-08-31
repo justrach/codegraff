@@ -169,7 +169,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     // #321: doctor.zig shipped with a catalog entry but no dispatch, so /doctor
     // was advertised in /help and the `/` menu while answering "unknown command".
     if (std.mem.eql(u8, line, "/doctor")) {
-        const checks = try doctor.run(arena, doctor.snapshot(root, util.unixMs(root.io)));
+        const checks = try doctor.run(arena, try doctor.snapshotWithLive(arena, root, util.unixMs(root.io)));
         try out.writeAll(try doctor.render(arena, checks));
         try out.flush();
         return true;

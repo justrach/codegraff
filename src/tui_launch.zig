@@ -28,7 +28,11 @@ const channel_worker = @import("channel_worker.zig");
 const util = @import("util.zig");
 const obs = @import("obs.zig");
 const vision = @import("vision.zig");
+const doctor = @import("doctor.zig");
 const builtin = @import("builtin");
+
+/// Live root for `/doctor`. The HUD callback has no ctx argument.
+var g_doctor_root: ?*agent_mod.Agent = null;
 
 /// `graff tui` (and TTY `graff repl`). Bare `graff` stays the default session.
 pub fn wantsTui(flags: args.Flags, json_mode: bool) bool {
@@ -109,6 +113,8 @@ pub fn run(
     engine_sink.hosted_frontend = true;
     defer engine_sink.hosted_frontend = false;
     obs.ensureSession();
+    g_doctor_root = root;
+    defer g_doctor_root = null;
     var acp_session: tui_acp.Session = undefined;
     acp_session.init(gpa, @as(u64, @bitCast(util.unixMs(io))));
     tui_acp.attach(&acp_session);
@@ -373,11 +379,35 @@ fn copyCb(ctx: ?*anyopaque, text: []const u8) bool {
     return term == .exited and term.exited == 0;
 }
 
+fn writeDoctor(w: *Io.Writer) void {
+    const root = g_doctor_root orelse {
+        w.writeAll("doctor unavailable (no live session)\n") catch {};
+        return;
+    };
+    var scratch: [8192]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const arena = fba.allocator();
+    const st = doctor.snapshotWithLive(arena, root, util.unixMs(root.io)) catch {
+        w.writeAll("doctor snapshot failed\n") catch {};
+        return;
+    };
+    const checks = doctor.run(arena, st) catch {
+        w.writeAll("doctor run failed\n") catch {};
+        return;
+    };
+    const text = doctor.render(arena, checks) catch {
+        w.writeAll("doctor render failed\n") catch {};
+        return;
+    };
+    w.writeAll(text) catch {};
+}
+
 fn hudCb(kind: tui.HudKind, buf: []u8) usize {
     var w: Io.Writer = .fixed(buf);
     switch (kind) {
         .debug => obs.renderHud(&w) catch {},
         .usage => obs.renderUsage(&w) catch {},
+        .doctor => writeDoctor(&w),
     }
     if (kind == .debug) {
         if (tui_acp.sessionId()) |sid| w.print("  acp        {s}\n", .{sid}) catch {};
@@ -402,6 +432,13 @@ test "debug HUD names the in-process ACP session" {
     var buf: [2048]u8 = undefined;
     const n = hudCb(.debug, &buf);
     try std.testing.expect(std.mem.indexOf(u8, buf[0..n], s.session_id) != null);
+}
+
+test "hudCb doctor without a live root says so" {
+    g_doctor_root = null;
+    var buf: [256]u8 = undefined;
+    const n = hudCb(.doctor, &buf);
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..n], "no live session") != null);
 }
 
 test "hudCb usage/debug use the cost-tally renderer, not chars" {

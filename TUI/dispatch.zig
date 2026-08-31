@@ -196,7 +196,13 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
     } else if (std.mem.eql(u8, canon, "/paste")) {
         pasteClipboard(self);
     } else if (std.mem.eql(u8, canon, "/doctor")) {
-        self.pushFmt(.system, "ok · model={s} via {s} · cwd={s} · theme={s} · vim={s}", .{ engine.g_model_name, engine.g_model_provider, engine.g_cwd, @tagName(self.theme_id), onOff(self.vim_mode) }) catch {};
+        var buf: [4096]u8 = undefined;
+        if (engine.g_hud_fn) |f| {
+            const n = f(.doctor, &buf);
+            if (n > 0) self.push(.system, buf[0..n]) catch {};
+        } else {
+            self.push(.system, "doctor unavailable (no session sink)") catch {};
+        }
     } else if (std.mem.eql(u8, canon, "/import-claude")) {
         self.push(.system, "adopting Claude/Cursor MCP writes ~/.codegraff — run `graff mcp import` from this repo") catch {};
     } else if (std.mem.eql(u8, canon, "/jump")) {

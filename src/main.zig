@@ -99,6 +99,8 @@ test { // unit_tests' root is main.zig only, so reference every split-out module
     _ = commands_session;
     _ = commands_model;
     _ = commands_misc;
+    _ = @import("doctor.zig");
+    _ = @import("doctor_live.zig");
     _ = agent_table;
     _ = agent_argstream;
     _ = agent_render;

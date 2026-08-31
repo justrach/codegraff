@@ -12,12 +12,11 @@
 //! tested against a literal `State` with an injected clock. `snapshot` is the
 //! only place an Agent is touched, and it is a field copy.
 //!
-//! This is the goal/todo SLICE of #321. Its session-lease, owned-job, listener
-//! and aggregate-budget checks (DUPLICATE_WORKTREE_OWNER, STALE_SESSION_LEASE,
-//! ORPHANED_OWNED_JOB, JOB_SHARES_ROOT_PGID, LISTENER_AFTER_CLEANUP,
-//! BUDGET_EXCEEDED, ...) need a durable job/session registry that does not
-//! exist yet; they are deliberately absent rather than faked, because a doctor
-//! that reports "healthy" from state it cannot see is worse than no doctor.
+//! Goal/todo plus the live job table and RunBudget (#321). Session-lease,
+//! listener, and orphan-descendant checks (DUPLICATE_WORKTREE_OWNER,
+//! STALE_SESSION_LEASE, ORPHANED_OWNED_JOB, LISTENER_AFTER_CLEANUP) still
+//! need a durable registry that does not exist; they stay absent rather than
+//! reporting "healthy" from state the doctor cannot see.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -27,6 +26,7 @@ const Agent = agent_mod.Agent;
 const Goal = agent_mod.Goal;
 const TodoItem = agent_mod.TodoItem;
 const goal_state = @import("goal_state.zig");
+const live = @import("doctor_live.zig");
 
 /// Ordered least-to-most severe: `worst` compares them by tag value, so the
 /// declaration order IS the ladder. `error` is spelled as a quoted identifier
@@ -66,6 +66,10 @@ pub const State = struct {
     /// age-dependent rules then report rather than suppress, since an unknown
     /// age is not evidence of freshness.
     now_ms: i64 = 0,
+    /// Live job/budget snapshot (#321). Empty/unlimited is a valid reading.
+    jobs: []const live.JobView = &.{},
+    budget_max: u64 = 0,
+    budget_used: u64 = 0,
 };
 
 /// A goal that replaced live work legitimately starts with no checklist of its
@@ -86,6 +90,18 @@ pub fn snapshot(root: *const Agent, now_ms: i64) State {
     };
 }
 
+/// Goal/todo plus the in-process job table and RunBudget. Still no lease or
+/// listener registry — those files do not exist, so they stay unreported.
+pub fn snapshotWithLive(arena: Allocator, root: *const Agent, now_ms: i64) Allocator.Error!State {
+    var st = snapshot(root, now_ms);
+    st.jobs = try live.captureJobs(arena, root.io);
+    if (root.run_budget) |b| {
+        st.budget_max = b.max_model_calls;
+        st.budget_used = b.used();
+    }
+    return st;
+}
+
 /// Every check, in report order: the always-present evidence line first, then
 /// findings. Read-only by construction - it returns text and mutates nothing.
 pub fn run(arena: Allocator, st: State) Allocator.Error![]const Check {
@@ -95,6 +111,11 @@ pub fn run(arena: Allocator, st: State) Allocator.Error![]const Check {
     if (try staleGoal(arena, st)) |c| try out.append(arena, c);
     if (try todoEpochAboveGoal(arena, st)) |c| try out.append(arena, c);
     if (try armedCompletionGate(arena, st)) |c| try out.append(arena, c);
+    try live.append(arena, &out, .{
+        .jobs = st.jobs,
+        .budget_max = st.budget_max,
+        .budget_used = st.budget_used,
+    });
     return out.toOwnedSlice(arena);
 }
 
@@ -312,10 +333,12 @@ test "doctor: a healthy session reports the evidence line and nothing else (#321
     defer arena_state.deinit();
     const ar = arena_state.allocator();
 
-    // No goal at all.
+    // No goal at all. Live job/budget evidence is always present and info.
     const none = try run(ar, .{});
-    try std.testing.expectEqual(@as(usize, 1), none.len);
+    try std.testing.expectEqual(@as(usize, 3), none.len);
     try std.testing.expectEqualStrings("GOAL_STATE", none[0].id);
+    try std.testing.expectEqualStrings("JOB_STATE", none[1].id);
+    try std.testing.expectEqualStrings("BUDGET_STATE", none[2].id);
     try std.testing.expectEqual(Severity.info, worst(none));
 
     // An active goal working its own checklist: still no warnings (#321
@@ -329,7 +352,7 @@ test "doctor: a healthy session reports the evidence line and nothing else (#321
         .todos = &todos,
         .now_ms = 5_000_000,
     });
-    try std.testing.expectEqual(@as(usize, 1), healthy.len);
+    try std.testing.expectEqual(@as(usize, 3), healthy.len);
     try std.testing.expectEqual(Severity.info, worst(healthy));
     try std.testing.expect(std.mem.indexOf(u8, healthy[0].detail, "1 open of 2 item(s)") != null);
     try std.testing.expect(std.mem.indexOf(u8, healthy[0].detail, "steering IS appended") != null);
@@ -466,7 +489,7 @@ test "doctor: render and toJson carry the stable id and severity (#321)" {
     // if it is escaped: parse it back rather than trusting the substring above.
     const parsed = try std.json.parseFromSlice(std.json.Value, ar, json, .{});
     defer parsed.deinit();
-    try std.testing.expectEqual(@as(usize, 2), parsed.value.array.items.len);
+    try std.testing.expectEqual(@as(usize, 4), parsed.value.array.items.len);
     try std.testing.expectEqualStrings("STALE_GOAL", parsed.value.array.items[1].object.get("id").?.string);
     try std.testing.expectEqual(Severity.warn, worst(checks));
 }

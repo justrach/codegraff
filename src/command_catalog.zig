@@ -55,7 +55,7 @@ pub const commands = [_]Item{
     .{ .name = "/skills", .usage = "/skills [add|remove <name>]", .desc = "list SKILL.md playbooks + companion tools; add/remove enables or disables one" },
     .{ .name = "/plugins", .usage = "/plugins [list|load <name>]", .desc = "list Claude/Cursor/Grok/Codex plugin trees graff is reading in place; load names one" },
     .{ .name = "/hooks", .desc = "list lifecycle hooks and the built-in codedb guard" },
-    .{ .name = "/doctor", .desc = "read-only health check: goal/todo invariants, and why steering will or will not be appended" },
+    .{ .name = "/doctor", .desc = "read-only health check: goal/todo, live jobs, model-call budget" },
     .{ .name = "/btw", .usage = "/btw <question>", .desc = "ask one side question about this conversation — billed, never added, rides the parent cache prefix" },
     .{ .name = "/compact", .desc = "compact history into a fresh context (OpenAI server-side when available)" },
     .{ .name = "/rewind", .usage = "/rewind [n|<snapshot>]", .desc = "list past prompts; /rewind <n> drops prompt n+after & reverts its file edits; /rewind <snapshot id> restores a sandbox filesystem instead, never the conversation" },

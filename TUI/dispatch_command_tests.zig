@@ -122,6 +122,48 @@ test "/usage with a session HUD is the cost line, not chars" {
     try std.testing.expect(std.mem.indexOf(u8, text, "offline") == null);
 }
 
+test "/doctor uses the session HUD, not a chrome-only status line (#321)" {
+    engine.g_hud_fn = struct {
+        fn f(kind: engine.HudKind, buf: []u8) usize {
+            if (kind != .doctor) return 0;
+            const s = "info   GOAL_STATE  no standing goal\n        no goal is set.\ninfo   JOB_STATE  no background jobs\n";
+            const n = @min(s.len, buf.len);
+            @memcpy(buf[0..n], s[0..n]);
+            return n;
+        }
+    }.f;
+    defer engine.g_hud_fn = null;
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    _ = applyLine(&m, "/doctor");
+    const text = m.history.items[m.history.items.len - 1].text;
+    try std.testing.expect(std.mem.indexOf(u8, text, "GOAL_STATE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "ok · model=") == null);
+}
+
+test "/doctor via Term paints GOAL_STATE, not a chrome ok line (#321)" {
+    engine.g_hud_fn = struct {
+        fn f(kind: engine.HudKind, buf: []u8) usize {
+            if (kind != .doctor) return 0;
+            const s = "info   GOAL_STATE  no standing goal\n        no goal is set.\n";
+            const n = @min(s.len, buf.len);
+            @memcpy(buf[0..n], s[0..n]);
+            return n;
+        }
+    }.f;
+    defer engine.g_hud_fn = null;
+    var term: @import("sim.zig").Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    _ = term.typeText("/doctor");
+    _ = term.enter();
+    const vis = try term.screen();
+    defer std.testing.allocator.free(vis);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "GOAL_STATE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vis, "ok · model=") == null);
+}
+
 test "every slash name printed in /help dispatches" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);

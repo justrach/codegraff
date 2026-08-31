@@ -248,7 +248,7 @@ pub fn bgRun(op: *BgOp) void {
     op.done.store(true, .release);
 }
 
-pub const HudKind = enum { debug, usage };
+pub const HudKind = enum { debug, usage, doctor };
 pub const HudFn = *const fn (kind: HudKind, buf: []u8) usize;
 
 /// Everything the host frontend hands the loop at startup: the callbacks that

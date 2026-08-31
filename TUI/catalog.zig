@@ -48,7 +48,7 @@ pub const items = [_]Item{
     .{ .name = "/peek", .desc = "See what a live session is doing" },
     .{ .name = "/vim-mode", .desc = "Vim keys in the scrollback", .aliases = &.{"/vim"} },
     .{ .name = "/help", .desc = "List commands" },
-    .{ .name = "/doctor", .desc = "Health check" },
+    .{ .name = "/doctor", .desc = "Health check: goal, jobs, budget" },
     .{ .name = "/shortcuts", .desc = "Keyboard shortcuts", .aliases = &.{"/keys"} },
 };
 
