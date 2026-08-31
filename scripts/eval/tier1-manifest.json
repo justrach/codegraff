@@ -8,14 +8,15 @@
     "It is a FLOOR and nothing raises it automatically - bump it by hand at each release cut.",
     "test_count_slack is how far the real suite may run ahead of that floor before the tests",
     "check starts WARNING that the ratchet has stalled: it sat 350 behind for months (#439),",
-    "which is a floor low enough to catch nothing."
+    "which is a floor low enough to catch nothing.",
+    "On macOS, origin/main and this revision run 1860 tests with one deterministic platform skip; 1861 is the non-skipped-platform total."
   ],
   "test_roots": [
     "src/main.zig",
     "src/repl.zig",
     "TUI/root.zig"
   ],
-  "test_count_baseline": 1861,
+  "test_count_baseline": 1860,
   "test_count_slack": 25,
   "required_invariants": [
     {

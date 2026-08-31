@@ -125,6 +125,7 @@ test {
     _ = @import("files.zig");
     _ = @import("overlays.zig");
     _ = run_mod;
+    _ = @import("run_tests.zig");
     _ = @import("paint.zig");
     _ = @import("paint_tests.zig");
     _ = @import("scrollpaint.zig");
