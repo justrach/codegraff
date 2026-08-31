@@ -815,15 +815,17 @@ pub fn Program(comptime Model: type) type {
                 // Move cursor home (don't clear entire screen to reduce flicker)
                 try writer.writeAll(ansi.cursor_home);
 
-                // Write each line, clearing to end of line
+                // Clear each row before drawing it. Clearing afterward erases
+                // the final cell of an exact-width row in xterm-compatible
+                // terminals because the cursor remains on the right margin.
                 var lines = std.mem.splitScalar(u8, view_output, '\n');
                 var first = true;
                 var line_count: usize = 0;
                 while (lines.next()) |line| {
                     if (!first) try writer.writeAll("\r\n");
                     first = false;
+                    try writer.writeAll(ansi.line_clear);
                     try writer.writeAll(line);
-                    try writer.writeAll(ansi.line_clear_right);
                     line_count += 1;
                 }
 
