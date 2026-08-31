@@ -25,7 +25,7 @@ current is part of cutting a release.
 - `#694`/`#697`/`#679` numbered records 0042/0043; those slots are
   TUI claims and Pi SWE. Remapped to **0048–0050**.
 - `#277` (Smolify OAuth) and `#200` (idle localhost) stay parked.
-- Suite floor **1848** (was 1804). Scratch helpers live in
+- Suite floor **1849** (was 1804). Scratch helpers live in
   `agent_request_scratch.zig` so the request loop stays under 600.
 
 ## v0.0.281 (2026-08-29)
