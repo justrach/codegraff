@@ -21,6 +21,9 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.283
+    \\  • deleted composer image chips reuse #N; paste traces omit MIME/bytes until send (#702)
+    \\
     \\0.0.282
     \\  • pasted-text chips are atomic spans — a typed lookalike stays literal (#674)
     \\  • Codex WS type:error is a terminal API response; last_api_error stays (#693)

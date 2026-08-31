@@ -66,6 +66,7 @@ record only when you need the evidence or the edge cases.
 | [0053](0053-codegraff-flake-retry-opencode.md) | Retry short Codegraff follow-up flakes (2); `opencode-codegraff` A/B on the same seat. Auth/quota stay fail-fast. |
 | [0054](0054-deepseek-thinking-disabled-at-low.md) | DeepSeek family default low sends `thinking.type=disabled`; `/effort high` still thinks. GLM stays low-only. |
 | [0055](0055-lean-oneshot-bash-15s.md) | Lean `-p` bash auto-backgrounds at 15s; interactive / `--no-lean` stay 120s (ADR 0026). |
+| [0056](0056-composer-image-chips-sync-on-delete.md) | Composer image chips sync on delete and reuse `#N`; `clipboard_paste` MIME/bytes wait until send. |
 
 ## When to write one
 

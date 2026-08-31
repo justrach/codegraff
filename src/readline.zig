@@ -40,9 +40,8 @@ const collectRepoFiles = input_util.collectRepoFiles;
 const isImagePath = input_util.isImagePath;
 const redraw = input_util.redraw;
 const editByte = input_util.editByte; // #396: job-control-aware continuation reads
-const delRange = input_util.delRange;
 const addMark = input_util.addMark;
-const insertImageChip = input_util.insertImageChip;
+const rl_image = @import("readline_image.zig");
 const util = @import("util.zig");
 
 const main_mod = @import("main.zig");
@@ -240,31 +239,28 @@ pub fn readLine(
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
             },
             0x02 => if (cur > 0) { // Ctrl-B → left
-                cur = pastes.left(cur);
+                cur = rl_image.left(buf.items, cur) orelse pastes.left(cur);
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
             },
             0x06 => if (cur < buf.items.len) { // Ctrl-F → right
-                cur = pastes.right(cur, buf.items.len);
+                cur = rl_image.right(buf.items, cur) orelse pastes.right(cur, buf.items.len);
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
             },
             0x17, 0x1f => { // Ctrl-W / Ctrl-_ → delete previous word
                 const s = pastes.prevWord(buf.items, cur);
                 if (s < cur) {
-                    pastes.edited(gpa, s, cur, 0);
-                    delRange(buf, s, cur);
+                    rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, s, cur);
                     cur = s;
                     redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                 }
             },
             0x15 => if (cur > 0) { // Ctrl-U → delete to start of line
-                pastes.edited(gpa, 0, cur, 0);
-                delRange(buf, 0, cur);
+                rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, 0, cur);
                 cur = 0;
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
             },
             0x0b => if (cur < buf.items.len) { // Ctrl-K → delete to end of line
-                pastes.edited(gpa, cur, buf.items.len, 0);
-                buf.shrinkRetainingCapacity(cur);
+                rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, cur, buf.items.len);
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
             },
             0x16 => { // Ctrl-V: attach a clipboard image (macOS) at the cursor
@@ -273,13 +269,11 @@ pub fn readLine(
                 switch (vision.clipboardPasteSource(root.io, gpa, vision.visionCapable(root.provider), builtin.os.tag == .macos, grabClipboardImage)) {
                     .image => |grab| {
                         defer grab.release(root.io, gpa); // temp export never outlives the paste
+                        rl_image.afterEdit(root, gpa, buf, &cur);
                         const staged = stageImagePath(root, grab.path);
                         vision.tracePasteResult(root, grab.flavor, staged); // #350: every paste leaves a receipt
                         if (staged.isOk()) {
-                            @import("vision_queue.zig").markLastComposer(root);
-                            const at = cur;
-                            insertImageChip(gpa, buf, &cur, &marks, root.pending_image_len);
-                            if (cur > at) pastes.edited(gpa, at, at, cur - at);
+                            rl_image.insertComposerChip(root, gpa, buf, &cur, &marks, &pastes);
                             redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                         } else {
                             // No `.no_vision` arm here: clipboardPasteSource
@@ -303,9 +297,8 @@ pub fn readLine(
                 }
             },
             0x7f, 0x08 => if (cur > 0) { // backspace → delete previous atom
-                const start = pastes.left(cur);
-                pastes.edited(gpa, start, cur, 0);
-                delRange(buf, start, cur);
+                const start = rl_image.left(buf.items, cur) orelse pastes.left(cur);
+                rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, start, cur);
                 cur = start;
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
             },
@@ -315,9 +308,7 @@ pub fn readLine(
                     out.flush() catch {};
                     return null;
                 }
-                buf.clearRetainingCapacity();
-                pastes.clear(gpa);
-                cur = 0;
+                rl_image.clearLine(root, gpa, buf, &cur, &pastes);
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
             },
             0x1a => { // Ctrl-Z: save the session and quit (like a safe Ctrl-D)
@@ -333,9 +324,8 @@ pub fn readLine(
                     return null;
                 }
                 if (cur < buf.items.len) {
-                    const end = pastes.right(cur, buf.items.len);
-                    pastes.edited(gpa, cur, end, 0);
-                    delRange(buf, cur, end);
+                    const end = rl_image.right(buf.items, cur) orelse pastes.right(cur, buf.items.len);
+                    rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, cur, end);
                     redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                 }
             },
@@ -344,9 +334,7 @@ pub fn readLine(
                 // this the chord read below would block and silently eat
                 // the next keypress.
                 if (tty.pendingBytes() == 0 and in.buffered().len == 0 and !inputPending()) {
-                    buf.clearRetainingCapacity();
-                    pastes.clear(gpa);
-                    cur = 0;
+                    rl_image.clearLine(root, gpa, buf, &cur, &pastes);
                     redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                     continue;
                 }
@@ -354,8 +342,7 @@ pub fn readLine(
                 if (b1 == 0x7f or b1 == 0x08) { // Option/Alt+Delete → delete previous word
                     const s = pastes.prevWord(buf.items, cur);
                     if (s < cur) {
-                        pastes.edited(gpa, s, cur, 0);
-                        delRange(buf, s, cur);
+                        rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, s, cur);
                         cur = s;
                         redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                     }
@@ -374,8 +361,7 @@ pub fn readLine(
                 if (b1 == 'd') { // Alt-d → delete next word
                     const e = pastes.nextWord(buf.items, cur);
                     if (e > cur) {
-                        pastes.edited(gpa, cur, e, 0);
-                        delRange(buf, cur, e);
+                        rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, cur, e);
                         redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                     }
                     continue;
@@ -408,11 +394,11 @@ pub fn readLine(
                         redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                     },
                     'C' => { // right (word-right with a modifier)
-                        cur = if (word_mod) pastes.nextWord(buf.items, cur) else pastes.right(cur, buf.items.len);
+                        cur = if (word_mod) pastes.nextWord(buf.items, cur) else (rl_image.right(buf.items, cur) orelse pastes.right(cur, buf.items.len));
                         redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                     },
                     'D' => { // left (word-left with a modifier)
-                        cur = if (word_mod) pastes.prevWord(buf.items, cur) else pastes.left(cur);
+                        cur = if (word_mod) pastes.prevWord(buf.items, cur) else (rl_image.left(buf.items, cur) orelse pastes.left(cur));
                         redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                     },
                     'H' => {
@@ -472,6 +458,7 @@ pub fn readLine(
                                 var dmsg: ?[]const u8 = null;
                                 var dbuf: [224]u8 = undefined;
                                 if (isImagePath(dropped.?)) {
+                                    rl_image.afterEdit(root, gpa, buf, &cur);
                                     const r = stageImagePath(root, dropped.?);
                                     if (r.isOk()) {
                                         staged = true;
@@ -483,10 +470,7 @@ pub fn readLine(
                                     }
                                 }
                                 if (staged) {
-                                    @import("vision_queue.zig").markLastComposer(root);
-                                    const at = cur;
-                                    insertImageChip(gpa, buf, &cur, &marks, root.pending_image_len);
-                                    if (cur > at) pastes.edited(gpa, at, at, cur - at);
+                                    rl_image.insertComposerChip(root, gpa, buf, &cur, &marks, &pastes);
                                 } else {
                                     const at = cur;
                                     const old_len = buf.items.len;
@@ -517,9 +501,8 @@ pub fn readLine(
                             redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                         } else if (std.mem.eql(u8, ps, "3")) { // forward delete
                             if (cur < buf.items.len) {
-                                const end = pastes.right(cur, buf.items.len);
-                                pastes.edited(gpa, cur, end, 0);
-                                delRange(buf, cur, end);
+                                const end = rl_image.right(buf.items, cur) orelse pastes.right(cur, buf.items.len);
+                                rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, cur, end);
                                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
                             }
                         } else if (std.mem.eql(u8, ps, "1") or std.mem.eql(u8, ps, "7")) {

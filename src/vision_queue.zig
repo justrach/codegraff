@@ -61,20 +61,43 @@ pub fn hasLabel(root: *const Agent, path: []const u8) bool {
     return false;
 }
 
+/// old queue index → new 1-based chip number, or 0 if that slot was dropped.
+pub const Remap = [cap]u8;
+
 /// Drop composer-staged images the prompt no longer names. Command-staged
-/// `/image` / `/paste` payloads stay. Dedupes identical `b64`.
-pub fn retainReferenced(root: *Agent, text: []const u8) void {
+/// `/image` / `/paste` payloads stay. Dedupes identical `b64`. Returns the
+/// old-index → new-chip map so the composer can rewrite remaining `#N`s.
+pub fn retainReferenced(root: *Agent, text: []const u8) Remap {
     const imgs = root.pending_images[0..root.pending_image_len];
     var keep_buf: [cap]PendingImage = undefined;
     const kept = selectForPrompt(imgs, text, &keep_buf);
+    var remap: Remap = @splat(0);
+    var k: usize = 0;
+    for (imgs, 0..) |img, i| {
+        if (k >= kept.len) break;
+        if (!samePayload(img, kept[k])) continue;
+        remap[i] = @intCast(k + 1);
+        k += 1;
+    }
     for (kept, 0..) |img, i| root.pending_images[i] = img;
     root.pending_image_len = @intCast(kept.len);
     root.pending_image = if (kept.len > 0) kept[kept.len - 1] else null;
+    return remap;
+}
+
+/// Next `[Image #N]` for a new composer paste after the live queue is synced.
+pub fn nextChipNumber(root: *const Agent) u8 {
+    return root.pending_image_len + 1;
 }
 
 pub fn consumePromptImages(arena: Allocator, root: *Agent, text: []const u8) !Value {
-    retainReferenced(root, text);
+    _ = retainReferenced(root, text);
     const imgs = take(root);
+    for (imgs) |img| {
+        if (!img.from_composer or img.media_type.len == 0) continue;
+        const bytes: u64 = if (img.b64.len == 0) 0 else std.base64.standard.Decoder.calcSizeForSlice(img.b64) catch img.b64.len;
+        vision.tracePaste(root, "sent", "submit", bytes, img.media_type);
+    }
     if (imgs.len == 0) return messages.textMessage(arena, "user", text);
     return vision.imageMessages(arena, root.provider.kind, text, imgs);
 }
@@ -96,6 +119,10 @@ pub fn withUnsupportedNote(arena: Allocator, answer: []const u8) ![]const u8 {
 fn hasImageMarker(text: []const u8) bool {
     return std.mem.indexOf(u8, text, "[Image]") != null or
         std.mem.indexOf(u8, text, "[Image #") != null;
+}
+
+fn samePayload(a: PendingImage, b: PendingImage) bool {
+    return std.mem.eql(u8, a.b64, b.b64) and std.mem.eql(u8, a.url, b.url);
 }
 
 fn selectForPrompt(imgs: []const PendingImage, text: []const u8, keep: *[cap]PendingImage) []PendingImage {
@@ -359,7 +386,36 @@ test "@[path] keeps the matching composer payload" {
 test "retainReferenced drops leftover composer pastes before ask_user flush" {
     var root = testAgent(std.testing.allocator);
     stage(&root, .{ .media_type = "image/png", .b64 = "AAA", .label = "gone.png", .from_composer = true });
-    retainReferenced(&root, "I changed my mind");
+    _ = retainReferenced(&root, "I changed my mind");
     try std.testing.expectEqual(@as(u8, 0), root.pending_image_len);
     try std.testing.expect(root.pending_image == null);
+}
+
+test "deleting a composer chip reuses #1 (#702)" {
+    var root = testAgent(std.testing.allocator);
+    stage(&root, .{ .media_type = "image/png", .b64 = "AAA", .label = "one.png", .from_composer = true });
+    try std.testing.expectEqual(@as(u8, 2), nextChipNumber(&root));
+    _ = retainReferenced(&root, "changed my mind");
+    try std.testing.expectEqual(@as(u8, 0), root.pending_image_len);
+    try std.testing.expectEqual(@as(u8, 1), nextChipNumber(&root));
+}
+
+test "remaining composer chip remaps to #1 after an earlier chip is dropped (#702)" {
+    var root = testAgent(std.testing.allocator);
+    stage(&root, .{ .media_type = "image/png", .b64 = "AAA", .label = "one.png", .from_composer = true });
+    stage(&root, .{ .media_type = "image/png", .b64 = "BBB", .label = "two.png", .from_composer = true });
+    const remap = retainReferenced(&root, "[Image #2] look");
+    try std.testing.expectEqual(@as(u8, 1), root.pending_image_len);
+    try std.testing.expectEqualStrings("BBB", root.pending_images[0].b64);
+    try std.testing.expectEqual(@as(u8, 0), remap[0]);
+    try std.testing.expectEqual(@as(u8, 1), remap[1]);
+    try std.testing.expectEqual(@as(u8, 2), nextChipNumber(&root));
+}
+
+test "command-staged /image survives an empty composer sync (#702)" {
+    var root = testAgent(std.testing.allocator);
+    stage(&root, .{ .media_type = "image/png", .b64 = "CMD", .label = "/tmp/shot.png" });
+    _ = retainReferenced(&root, "no chips here");
+    try std.testing.expectEqual(@as(u8, 1), root.pending_image_len);
+    try std.testing.expectEqualStrings("CMD", root.pending_images[0].b64);
 }

@@ -10,6 +10,14 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.283 (2026-08-31)
+
+- Next cut after v0.0.282 landed on main. First fold: `#702` /
+  ADR 0056 — deleting a composer image chip drops that queue slot and
+  reuses `#N`. `clipboard_paste` no longer stores MIME or byte count
+  for drafts abandoned before submit.
+- Suite floor **1868** (was 1861). No tag until asked.
+
 ## v0.0.282 (2026-08-31)
 
 - Next cut after v0.0.281 landed on main (`#670`). First fold:

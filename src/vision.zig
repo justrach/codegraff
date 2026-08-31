@@ -204,9 +204,9 @@ pub fn stageMessage(buf: []u8, r: StageResult, what: []const u8) []const u8 {
 
 /// One `clipboard_paste` receipt per Ctrl-V / `/paste`, whatever the outcome
 /// (#350). Before this a dropped paste left ZERO evidence behind: a failing
-/// and a succeeding run produced byte-identical `.graff/traces` JSONL. Carries
-/// the decision, the cascade flavor, the byte count and the mime — never the
-/// pixels.
+/// and a succeeding run produced byte-identical `.graff/traces` JSONL.
+/// Successful stages omit MIME / bytes until the image is actually sent
+/// (#702 / ADR 0056). Failures may still carry a size. Never the pixels.
 pub fn tracePaste(root: *Agent, result: []const u8, flavor: []const u8, bytes: u64, mime: []const u8) void {
     const tracer = root.tracer orelse return;
     tracer.write(.{
@@ -222,7 +222,10 @@ pub fn tracePaste(root: *Agent, result: []const u8, flavor: []const u8, bytes: u
 /// `tracePaste` for a paste that got as far as staging.
 pub fn tracePasteResult(root: *Agent, flavor: Flavor, r: StageResult) void {
     switch (r) {
-        .ok => |o| tracePaste(root, "ok", flavor.name(), o.bytes, o.media_type),
+        // #702: a successful stage is not a sent attachment. MIME / bytes
+        // wait for consumePromptImages so an abandoned draft leaves no
+        // content-derived receipt. Failures still record why they died.
+        .ok => tracePaste(root, "ok", flavor.name(), 0, ""),
         .too_large => |t| tracePaste(root, "too_large", flavor.name(), t.bytes, ""),
         else => tracePaste(root, @tagName(r), flavor.name(), 0, ""),
     }
