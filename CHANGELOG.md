@@ -20,6 +20,8 @@ current is part of cutting a release.
   screen (`#666`). The TLS-generation decision is **ADR 0048**.
 - `#277` (Streamable HTTP OAuth / Smolify) and `#200` (idle
   localhost servers) stay parked — Smolify is not a core MCP.
+- Suite floor **1817** (was 1804). `agent_request.zig` split
+  scratch/keep-alive helpers so the WS merge stays under 600 lines.
 
 ## v0.0.281 (2026-08-29)
 

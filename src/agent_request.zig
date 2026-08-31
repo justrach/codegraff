@@ -30,22 +30,6 @@ const run_budget_mod = @import("run_budget.zig");
 const wire_messages = @import("messages.zig");
 const policy = @import("agent_request_policy.zig");
 
-const max_server_retries: usize = 3; // bounded retries for a keep-alive-only response body
-
-/// A response body of only SSE comment lines (`: OPENROUTER PROCESSING` …)
-/// means the gateway queued us and never produced tokens — back off and re-ask
-/// like a 5xx instead of dying on an "unparseable" JSON parse.
-fn retryKeepAliveOnlyResponse(self: *Agent, body: []const u8, retries: *usize) !bool {
-    if (!policy.sseKeepAliveOnly(body)) return false;
-    if (retries.* >= max_server_retries) return false;
-    retries.* += 1;
-    self.partial_text.clearRetainingCapacity();
-    const delay_ms = RetryPlan.delayMs(true, retries.* - 1); // 1·2·4s
-    try self.say("[provider queued the request (keep-alive only, no tokens) — retrying in {d}s ({d}/{d})]\n", .{ delay_ms / 1000, retries.*, max_server_retries });
-    self.sleepInterruptible(delay_ms) catch return error.Interrupted;
-    return true;
-}
-
 const overflow = @import("agent_overflow.zig");
 const errorCode = policy.errorCode;
 const isQuotaExceeded = policy.isQuotaExceeded;
@@ -82,27 +66,7 @@ pub const buildBody = @import("agent_request_body.zig").buildBody;
 const codex_chain = @import("codex_chain.zig");
 
 const req_stats = @import("req_stats.zig"); // GRAFF_REQ_STATS anatomy (session_settings arms req_stats.g_armed)
-
-/// Keep the normal request hot path allocation-free while avoiding a permanent
-/// RSS high-water mark after one anomalously large stream. Small scratch arenas
-/// retain their pages for the next request; large ones return all pages to the
-/// backing allocator. History never lives here, so either reset mode is safe at
-/// the start of the next request.
-const scratch_retain_limit = 4 * 1024 * 1024;
-
-fn resetRequestScratch(scratch: *std.heap.ArenaAllocator) void {
-    if (scratch.queryCapacity() > scratch_retain_limit) {
-        _ = scratch.reset(.free_all);
-    } else {
-        _ = scratch.reset(.retain_capacity);
-    }
-}
-
-/// Detached recaps are cosmetic: keep recovered transport details in the trace,
-/// but do not surface them as raw worker chatter in the normal REPL.
-fn showRecoveredTransportRetry(kind: run_budget_mod.CallKind) bool {
-    return kind != .recap;
-}
+const scratch = @import("agent_request_scratch.zig");
 
 /// #390 — appended once, on the run's final admitted model call, right where
 /// the tools disappear, so the model knows WHY and lands instead of retrying.
@@ -160,7 +124,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // for this request. Safe: all scratch data is
     // consumed before the next request(); messages/todos/prompts live on the
     // session arena.
-    if (self.scratch_arena) |sa| resetRequestScratch(sa);
+    if (self.scratch_arena) |sa| scratch.reset(sa);
     // #148/#402: a login-sourced OAuth token expires mid-session and is minted
     // only at startup; pick up whatever is currently on disk before the call, so
     // a long session — or a subagent that inherited the token — never 401s over
@@ -371,7 +335,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             // just-closed keep-alive re-fail (#86). Cap: 4s/6 tries.
                             const delay_ms = RetryPlan.delayMs(throttled, attempt);
                             @import("turn_chrome.zig").emitRetryNotice(self.io, @errorName(err), attempt + 1, max_attempts);
-                            if (showRecoveredTransportRetry(self.call_kind))
+                            if (scratch.showRecoveredTransportRetry(self.call_kind))
                                 try self.say("[network error: {t} — retrying in {d}ms ({d}/{d})]\n", .{ err, delay_ms, attempt + 1, max_attempts });
                             // Same trace breadcrumb the 429/5xx branch leaves: a
                             // transport-flake retry is otherwise invisible in the
@@ -399,7 +363,6 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         const ms: i64 = t0.untilNow(self.io, .awake).toMilliseconds();
         if (!live) self.traceFirstToken();
 
-        // object — pull the final `response` out of it (or an error).
         // object — pull the final `response` out of it (or an error).
         if (self.provider.kind == .responses) {
             const r = self.parseResponses(resp_body) catch {
@@ -506,7 +469,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         const resp = std.json.parseFromSliceLeaky(Value, self.messageMutationAlloc(), resp_body, .{
             .allocate = .alloc_always,
         }) catch {
-            if (try retryKeepAliveOnlyResponse(self, resp_body, &server_retries)) continue;
+            if (try scratch.retryKeepAliveOnly(self, resp_body, &server_retries)) continue;
             try self.sayApiError("unparseable response: {s}", .{resp_body[0..@min(resp_body.len, 400)]});
             return error.ApiError;
         };
@@ -577,26 +540,4 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
         return root;
     }
-}
-
-test "recovered recap transport retries stay out of normal REPL output" {
-    try std.testing.expect(!showRecoveredTransportRetry(.recap));
-    try std.testing.expect(showRecoveredTransportRetry(.root));
-    try std.testing.expect(showRecoveredTransportRetry(.child));
-}
-
-test "request scratch retains normal capacity but releases an oversized spike" {
-    var scratch = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer scratch.deinit();
-
-    _ = try scratch.allocator().alloc(u8, 1024);
-    const normal_capacity = scratch.queryCapacity();
-    try std.testing.expect(normal_capacity > 0);
-    resetRequestScratch(&scratch);
-    try std.testing.expectEqual(normal_capacity, scratch.queryCapacity());
-
-    _ = try scratch.allocator().alloc(u8, scratch_retain_limit + 1);
-    try std.testing.expect(scratch.queryCapacity() > scratch_retain_limit);
-    resetRequestScratch(&scratch);
-    try std.testing.expectEqual(@as(usize, 0), scratch.queryCapacity());
 }
