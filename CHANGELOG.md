@@ -27,7 +27,8 @@ current is part of cutting a release.
   serializing `"tools":,` (0.0.280 HTTP 400).
 - `#694`/`#697`/`#679` numbered records 0042/0043; those slots are
   TUI claims and Pi SWE. Remapped to **0048–0050**.
-- `#277` (Smolify OAuth) and `#200` (idle localhost) stay parked.
+- `#277` (Smolify OAuth) and `#200` (idle localhost) closed as
+  abandoned vs tip; issues stay parked. Live leftovers: `#675`, `#677`.
 - Suite floor **1849** (was 1804). Scratch helpers live in
   `agent_request_scratch.zig` so the request loop stays under 600.
 - 12-task in-house remasure after #697 still unique vs grok / OpenCode:
