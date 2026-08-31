@@ -26,7 +26,35 @@ In-house 6 PR fixtures:
 | grok | 5/6 | 396s | 2.4s | 30 | 535344 | $0.4285 | 157.7M |
 | opencode | **6/6** | 182.1s | 2.8s | 37 | 340074 | $0.3835 | 1103.9M |
 
-## 12-task in-house remasure (`run-20260830-141658`)
+## 12-task in-house remasure after #697 (`run-20260831-021035-composite`)
+
+Same SuperGrok seat, jobs=1, grok-4.6, `x_search` on, ReleaseSafe
+`graff-dev` from `release/v0.0.282` (`b1fcf67`, includes #697 session
+branches and #695 empty-catalog omit). Composite of `run-20260831-015222`
+(graff 11 + OpenCode 12) + `run-20260831-020406` (grok 12, after
+restoring `~/.grok/auth.json`) + `run-20260831-021035` (graff
+`atomic-symlink-write` retry — first attempt was a dangling-symlink
+model miss, not a harness fail). All three harnesses **12/12**.
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | **12/12** | **200.9s** | 0.02s† | **52** | **230028** | **$0.3410** | **8.8M** |
+| grok | 12/12 | 387.7s | 2.5s | 64 | 1170113 | $1.0543 | 160.9M |
+| opencode | 12/12 | 310.4s | 2.9s | 81 | 737178 | $0.9326 | 1149.9M |
+
+† Graff `first_out_s` is still boot/`›`, not TTFT. Unique frontier on
+pass / wall / calls / tokens / list$ / RSS. First-token is **not** a
+named win. Calls stayed **52**. list$ ticked down ($0.3504 → $0.3410).
+Wall is +8.8s vs the 141658 pin, almost all on `atomic-symlink-write`
+(75s vs 49s, still 4 calls) — model path, not a session-branch
+regression. `peer-resume` (the #697-shaped fixture) passed and got
+slightly faster (8.14s vs 9.73s). RSS is ReleaseSafe process peak
+(child HWM ~20M); the 91.7M pin was a fatter binary. Not a grok-heap
+steal (ADR 0024).
+
+![12-task in-house frontier after #697](frontier-inhouse-12-20260831-282.svg)
+
+## Prior 12-task pin (`run-20260830-141658`)
 
 Same SuperGrok seat, jobs=1, grok-4.6, `x_search` on, the six original
 fixtures plus #690 (`hardlink-pin`, `x-search-splice`, `mcp-first-turn`,

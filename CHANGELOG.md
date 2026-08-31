@@ -27,6 +27,8 @@ current is part of cutting a release.
 - `#277` (Smolify OAuth) and `#200` (idle localhost) stay parked.
 - Suite floor **1849** (was 1804). Scratch helpers live in
   `agent_request_scratch.zig` so the request loop stays under 600.
+- 12-task in-house remasure after #697 still unique vs grok / OpenCode:
+  **12/12 · 201s · 52 calls · $0.34** (`run-20260831-021035-composite`).
 
 ## v0.0.281 (2026-08-29)
 
