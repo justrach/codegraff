@@ -7,7 +7,7 @@ and is what Zed's "Install from Registry" (and other ACP clients) reads.
 This page is the submit recipe. There is no registry client in graff, and
 `graff acp` does not grow one.
 
-Hand-written Zed setup stays in the [README](../README.md#zed-external-agents--acp)
+Hand-written Zed setup is `graff acp` (see the [README](../README.md#install))
 and the host recipe stays [embedding.md](embedding.md). Replace those with
 "Install from Registry" only after a listing lands.
 
