@@ -118,6 +118,36 @@ pub fn pinDegrade(items: []const Value, token_budget: u64, already: bool) CutPla
     };
 }
 
+/// #706: same unresolved pin, suffix did not shrink — another summarization
+/// spend will not get the live turn under the line.
+pub const Stall = struct {
+    boundary: usize = std.math.maxInt(usize),
+    suffix_tokens: u64 = 0,
+    no_progress: u8 = 0,
+};
+
+pub const stall_shrink_tokens: u64 = 2_048;
+pub const stall_repeats: u8 = 2;
+
+pub fn resetStall(s: *Stall) void {
+    s.* = .{};
+}
+
+/// Record this attempted cut. True once the same boundary has failed to
+/// shrink the live suffix `stall_repeats` times in a row.
+pub fn noteStall(s: *Stall, start: usize, suffix: u64) bool {
+    const same = s.boundary == start;
+    const no_shrink = suffix + stall_shrink_tokens >= s.suffix_tokens;
+    if (same and no_shrink) {
+        s.no_progress +|= 1;
+    } else {
+        s.no_progress = 0;
+    }
+    s.boundary = start;
+    s.suffix_tokens = suffix;
+    return s.no_progress >= stall_repeats;
+}
+
 /// Pick the earliest clean user-turn boundary whose suffix fits in the recent
 /// context budget. Returning items.len means "summarize everything". We never
 /// split at a tool output, so retained call/result history stays valid.
@@ -394,4 +424,16 @@ test "pinDegrade: prefix still compactable once; already-degraded skips the spen
     const again = pinDegrade(msgs.items, 8_000, true);
     try std.testing.expectEqual(@as(usize, 2), again.start);
     try std.testing.expectEqual(DegradeAction.silent, again.action);
+}
+
+test "noteStall: same boundary with no shrink escalates; a real shrink resets" {
+    var s: Stall = .{};
+    try std.testing.expect(!noteStall(&s, 10, 50_000));
+    try std.testing.expect(!noteStall(&s, 10, 49_500));
+    try std.testing.expect(noteStall(&s, 10, 49_000));
+    resetStall(&s);
+    try std.testing.expect(!noteStall(&s, 10, 50_000));
+    try std.testing.expect(!noteStall(&s, 10, 40_000));
+    try std.testing.expect(!noteStall(&s, 10, 39_000));
+    try std.testing.expect(!noteStall(&s, 20, 80_000));
 }

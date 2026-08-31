@@ -22,6 +22,9 @@ current is part of cutting a release.
   so one wedged PTY child cannot hang pre-push (#704).
   `peer_message` resolves a live session by its visible title or
   saved-session base (#700). Presence is still device-local.
+  In-turn compaction stops after the same unresolved pin fails to
+  shrink twice (#706). Credential files fsync their directory after
+  rename (#405 / #705).
   No tag until asked.
 
 ## v0.0.282 (2026-08-31)

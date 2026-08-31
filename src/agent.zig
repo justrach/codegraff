@@ -207,6 +207,7 @@ pub const Agent = struct {
     compact_transport_failures: u8 = 0, // bounded escape for repeated opaque over-cap WriteFailed/network failures
     compact_summary_failures: u8 = 0, // #379: consecutive complete-but-unusable (empty/truncated) summaries
     compact_pin_degraded: bool = false, // #581: pinned suffix over budget — skip+say once per unresolved turn
+    compact_stall: @import("compact_cut.zig").Stall = .{}, // #706: same-boundary no-progress cuts
     empty_completion_retries: u8 = 0, // degenerate empty completions re-asked this turn (agent_empty_completion.zig)
     named_work_nudges: u8 = 0, // named-file / zero-tool nudge this turn (named_work.zig)
     precompact_note_gen: ?u32 = null, // #391: history_rewrites at the last pre-compaction note-to-self, so one history generation buys at most one note however often compaction is retried (compact_note.decideCalls)

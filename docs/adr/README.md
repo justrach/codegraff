@@ -68,6 +68,7 @@ record only when you need the evidence or the edge cases.
 | [0055](0055-lean-oneshot-bash-15s.md) | Lean `-p` bash auto-backgrounds at 15s; interactive / `--no-lean` stay 120s (ADR 0026). |
 | [0056](0056-composer-image-chips-sync-on-delete.md) | Composer image chips sync on delete and reuse `#N`; `clipboard_paste` MIME/bytes wait until send. |
 | [0057](0057-peer-title-is-an-address.md) | `peer_message` resolves exact title / saved-session base before opaque id or goal. |
+| [0058](0058-compact-cut-stalls-on-no-progress.md) | Same unresolved `compact_cut` pin that does not shrink stops after two tries. |
 
 ## When to write one
 

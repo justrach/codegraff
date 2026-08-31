@@ -137,6 +137,17 @@ pub fn compact(self: *Agent) anyerror!usize {
     const live_context_local_tokens = self.context_local_tokens;
     const live_effective_context = self.effectiveContextTokens();
     const plan = compact_cut.pinDegrade(live_messages.items, recent_context_tokens, self.compact_pin_degraded);
+    const suffix = compact_cut.suffixTokens(live_messages.items, plan.start);
+    // #706: same unresolved pin that is not shrinking — do not resend an
+    // ever-larger current turn. Escalate once, then stay quiet.
+    if (compact_cut.noteStall(&self.compact_stall, plan.start, suffix)) {
+        compact_cut.noteCut(self.tracer, live_messages.items, plan.start);
+        if (!self.compact_pin_degraded) {
+            if (!main_mod.json_mode) try self.say("[compaction stalled: the current turn is not shrinking — stopping further cuts]\n", .{});
+            self.compact_pin_degraded = true;
+        }
+        return error.ActivePromptPinned;
+    }
     compact_cut.noteCut(self.tracer, live_messages.items, plan.start);
     // #581 residual: a pin that already exceeds the keep budget cannot be
     // summarized. Announce once per unresolved turn, then stay quiet.
@@ -517,7 +528,10 @@ pub fn repeatedEmptySummaryFailure(self: *Agent, err: anyerror) bool {
 }
 
 pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
-    if (compact_cut.lastIsResolved(self.messages.items)) self.compact_pin_degraded = false;
+    if (compact_cut.lastIsResolved(self.messages.items)) {
+        self.compact_pin_degraded = false;
+        compact_cut.resetStall(&self.compact_stall);
+    }
     if (self.compact_pin_degraded and !trim_on_fail) return;
     if (self.compact()) |_| {
         self.compact_transport_failures = 0;
