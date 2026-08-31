@@ -234,6 +234,16 @@ pub fn acquire(requested: *std.http.Client) Lease {
     return .{ .client = requested };
 }
 
+/// True when a `transport.request()` construction error must traverse the
+/// TLS recovery path: the handshake failed outright — or (Windows) died
+/// mid-read, where NTSTATUS LOCAL_DISCONNECT surfaces as error.Unexpected
+/// out of the handshake read instead of TlsInitializationFailed. Gated to
+/// https so a plain-HTTP connect error is never mislabeled a TLS failure.
+pub fn constructionTlsFailure(err: anyerror, url: []const u8) bool {
+    return err == error.TlsInitializationFailed or
+        (err == error.Unexpected and std.mem.startsWith(u8, url, "https://"));
+}
+
 pub fn constructionTlsError(failed: *std.http.Client) anyerror {
     g_lifecycle_mutex.lockUncancelable(failed.io);
     defer g_lifecycle_mutex.unlock(failed.io);

@@ -137,7 +137,7 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
         },
         .extra_headers = extra,
     }) catch |err| {
-        if (err == error.TlsInitializationFailed) return http_client.constructionTlsError(transport);
+        if (http_client.constructionTlsFailure(err, provider.url)) return http_client.constructionTlsError(transport);
         return err;
     };
     defer req.deinit();
