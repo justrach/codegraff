@@ -205,7 +205,7 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
         std.process.fatal(
             \\no API key found. quickest fixes:
             \\  graff login                         free codegraff key (device-code OAuth)
-            \\  graff key set <provider> <key>      store a key (macOS Keychain, else 0600 file)
+            \\  graff key set <provider> <key>      store a key (Keychain; POSIX 0600 file; Windows home ACL)
             \\  export ANTHROPIC_API_KEY=sk-ant-…   or CODEGRAFF/DEEPSEEK/OPENAI/MINIMAX/XIAOMI/KIMI/MOONSHOT/XAI/ZAI _API_KEY
             \\a Codex CLI login (~/.codex/auth.json) is also picked up automatically.
         , .{});
