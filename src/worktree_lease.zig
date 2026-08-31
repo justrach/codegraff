@@ -71,6 +71,10 @@ pub const Owner = struct {
     /// peer reads to decide whether its work overlaps. Empty when unknown.
     goal: []const u8 = "",
     last_seen_ms: i64 = 0,
+    /// #700: the human title from `.session.json`. Empty on older records.
+    title: []const u8 = "",
+    /// #700: durable saved-session file base (slug). Empty on older records.
+    session_base: []const u8 = "",
 };
 
 pub const OwnerVerdict = enum {

@@ -185,10 +185,12 @@ pub fn formatList(arena: Allocator, peers: []const Owner, mine: []const u8) []co
     for (peers) |p| {
         const where: []const u8 = if (std.mem.eql(u8, p.identity, mine)) "this-folder" else if (p.identity.len > 0) p.identity else "?";
         const goal = peer_context.clip(if (p.goal.len > 0) p.goal else "?", 40);
-        const line = std.fmt.allocPrint(arena, "{s} pid {d} {s} · {s}\n", .{ p.session_id, p.pid, where, goal }) catch continue;
+        const shown = if (p.title.len > 0) p.title else p.session_id;
+        const base = if (p.session_base.len > 0) p.session_base else p.session_id;
+        const line = std.fmt.allocPrint(arena, "{s} [{s}] {s} pid {d} {s} · {s}\n", .{ shown, base, p.session_id, p.pid, where, goal }) catch continue;
         buf.appendSlice(arena, line) catch {};
     }
-    buf.appendSlice(arena, "DM with session=<id|pid|goal fragment>; omit session for this folder's room.") catch {};
+    buf.appendSlice(arena, "DM with session=<title|base|id|pid|goal>; omit session for this folder's room. Presence is device-local.") catch {};
     return buf.items;
 }
 
@@ -248,8 +250,25 @@ test "formatList: one short line per peer; empty is honest" {
     };
     const text = formatList(a, &peers, "here");
     try testing.expect(std.mem.startsWith(u8, text, "2 live:\n"));
-    try testing.expect(std.mem.indexOf(u8, text, "session-aaa pid 11 this-folder · rewrite the targeting") != null);
-    try testing.expect(std.mem.indexOf(u8, text, "session-bbb pid 22 /other/.git · paint chips") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "session-aaa [session-aaa] session-aaa pid 11 this-folder · rewrite the targeting") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "session-bbb [session-bbb] session-bbb pid 22 /other/.git · paint chips") != null);
+}
+
+test "formatList: title and saved-session base lead the line" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const peers = [_]Owner{.{
+        .session_id = "session--aaa",
+        .pid = 11,
+        .goal = "recover login",
+        .identity = "here",
+        .title = "Fixing login recovery",
+        .session_base = "fixing-login-recovery",
+    }};
+    const text = formatList(a, &peers, "here");
+    try testing.expect(std.mem.indexOf(u8, text, "Fixing login recovery [fixing-login-recovery] session--aaa pid 11 this-folder · recover login") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "device-local") != null);
 }
 
 test "inbox JSON round-trip: restoreJson rebuilds the ring" {

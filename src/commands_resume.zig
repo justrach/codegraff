@@ -10,6 +10,7 @@ const session = @import("session.zig");
 const session_branch = @import("session_branch.zig");
 const main_mod = @import("main.zig");
 const pickers = @import("pickers.zig");
+const presence = @import("presence.zig");
 
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
@@ -61,6 +62,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         error.BranchAlreadyExists => reject(out, "branch failed: destination already exists\n", .{}),
         else => reject(out, "resume failed: {t}\n", .{err}),
     };
+    presence.noteLabelsFrom(root.io, root.gpa, arena, root.session_title, root.session_name);
     if (resumed.branched) {
         try out.print("branched {s}{s} → {s}{s} — {d} message(s), {s} via {s}{s}\n", .{ resumed.source, session.session_ext, resumed.target, session.session_ext, root.messages.items.len, root.provider.model, root.provider.id, if (root.strict) " (strict)" else "" });
     } else {

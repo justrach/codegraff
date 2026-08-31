@@ -20,6 +20,7 @@ const mcp_config_path = main_mod.mcp_config_path;
 const session_ext = session.session_ext;
 const saveSession = session.saveSession;
 const session = @import("session.zig");
+const presence = @import("presence.zig");
 const listSavedSessions = session.listSavedSessions;
 const sessionAge = session.sessionAge;
 
@@ -493,6 +494,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             return true;
         };
         root.session_name = name;
+        presence.noteLabelsFrom(root.io, root.gpa, arena, root.session_title, root.session_name);
         try out.print("saved session → {s}{s}\n", .{ name, session_ext });
         try out.flush();
         return true;

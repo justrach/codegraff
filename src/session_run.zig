@@ -364,6 +364,7 @@ pub fn buildRootAgent(
             } });
         }
     }
+    presence.noteLabelsFrom(io, gpa, arena, root.session_title, root.session_name);
     if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
     // #502: --output-schema (inline JSON or @file) → structured outputs.
     if (flags.output_schema_flag) |schema_arg| {

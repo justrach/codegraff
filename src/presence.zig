@@ -18,8 +18,11 @@ const main_mod = @import("main.zig"); // `unattended`: one-shots join channel ro
 const unixMs = util.unixMs;
 const presence_mutate = @import("presence_mutate.zig");
 const no_local_tools = @import("no_local_tools.zig");
+const presence_record = @import("presence_record.zig");
 
 const Owner = worktree_lease.Owner;
+pub const formatRecord = presence_record.formatRecord;
+pub const parseRecord = presence_record.parseRecord;
 
 pub const isSharedTreeGit = presence_mutate.isSharedTreeGit;
 pub const isSharedTreeShell = presence_mutate.isSharedTreeShell;
@@ -29,44 +32,6 @@ pub const registry_subdir = ".graff/live";
 
 const max_peers = 16;
 const record_max = 4096;
-
-/// The on-disk shape. Older/newer graffs tolerate each other via
-/// ignore_unknown_fields both ways (a superset write parses down fine).
-const RecordJson = struct {
-    pid: i32 = 0,
-    start_id: u64 = 0,
-    session_id: []const u8 = "",
-    identity: []const u8 = "",
-    goal: []const u8 = "",
-    last_seen_ms: i64 = 0,
-};
-
-pub fn formatRecord(arena: Allocator, owner: Owner) ![]const u8 {
-    var aw: std.Io.Writer.Allocating = .init(arena);
-    var s: std.json.Stringify = .{ .writer = &aw.writer };
-    try s.write(RecordJson{
-        .pid = owner.pid,
-        .start_id = owner.start_id,
-        .session_id = owner.session_id,
-        .identity = owner.identity,
-        .goal = owner.goal,
-        .last_seen_ms = owner.last_seen_ms,
-    });
-    return aw.writer.buffered();
-}
-
-pub fn parseRecord(arena: Allocator, text: []const u8) ?Owner {
-    const rec = std.json.parseFromSliceLeaky(RecordJson, arena, text, .{ .ignore_unknown_fields = true }) catch return null;
-    if (rec.pid == 0) return null;
-    return .{
-        .pid = rec.pid,
-        .start_id = rec.start_id,
-        .session_id = rec.session_id,
-        .identity = rec.identity,
-        .goal = rec.goal,
-        .last_seen_ms = rec.last_seen_ms,
-    };
-}
 
 /// A directory listing's worth of records with each pid's OS probe aligned —
 /// the exact pair duplicateOwner/ownerVerdict consume.
@@ -143,6 +108,8 @@ var g_dir: ?[]const u8 = null; // gpa-owned registry dir path
 var g_identity: []const u8 = ""; // gpa-owned own worktree identity
 var g_own_name: ?[]const u8 = null; // gpa-owned own record's file name
 var g_session: []const u8 = ""; // gpa-owned session id, for rewrites
+var g_title: []const u8 = ""; // gpa-owned visible title (#700)
+var g_session_base: []const u8 = ""; // gpa-owned saved-session slug (#700)
 var g_goal: []const u8 = ""; // last-known goal (session-arena-owned is fine: both outlive the session)
 var g_self: proc_identity.Record = .{}; // own pid + start-id, settled by announce
 var g_chan: ?[]const u8 = null; // gpa-owned channel file name (hash of g_identity)
@@ -157,6 +124,8 @@ fn writeOwn(io: Io, arena: Allocator) void {
     const name = g_own_name orelse return;
     var owner = worktree_lease.selfOwner(io, g_identity, g_session, unixMs(io));
     owner.goal = g_goal;
+    owner.title = g_title;
+    owner.session_base = g_session_base;
     const text = formatRecord(arena, owner) catch return;
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch return;
     defer dir.close(io);
@@ -231,12 +200,16 @@ pub fn deinit(gpa: Allocator) void {
     if (g_dir) |p| gpa.free(p);
     if (g_identity.len > 0) gpa.free(g_identity);
     if (g_session.len > 0) gpa.free(g_session);
+    if (g_title.len > 0) gpa.free(g_title);
+    if (g_session_base.len > 0) gpa.free(g_session_base);
     if (g_goal.len > 0) gpa.free(g_goal);
     if (g_own_name) |n| gpa.free(n);
     if (g_chan) |c| gpa.free(c);
     g_dir = null;
     g_identity = "";
     g_session = "";
+    g_title = "";
+    g_session_base = "";
     g_goal = "";
     g_own_name = null;
     g_chan = null;
@@ -267,6 +240,35 @@ pub fn noteGoal(io: Io, gpa: Allocator, arena: Allocator, goal: []const u8) void
     if (g_goal.len > 0) gpa.free(g_goal);
     g_goal = owned;
     writeOwn(io, arena);
+}
+
+/// Refresh the visible title and saved-session base (#700). Empty title is
+/// honest (pre-title sessions). session_base is the durable file slug; when
+/// set it also becomes the live session_id so a rename is addressable.
+pub fn noteLabels(io: Io, gpa: Allocator, arena: Allocator, title: []const u8, session_base: []const u8) void {
+    if (g_own_name == null) return;
+    const owned_title = gpa.dupe(u8, title) catch return;
+    const owned_base = gpa.dupe(u8, session_base) catch {
+        gpa.free(owned_title);
+        return;
+    };
+    if (g_title.len > 0) gpa.free(g_title);
+    if (g_session_base.len > 0) gpa.free(g_session_base);
+    g_title = owned_title;
+    g_session_base = owned_base;
+    if (session_base.len > 0) {
+        const owned_session = gpa.dupe(u8, session_base) catch {
+            writeOwn(io, arena);
+            return;
+        };
+        if (g_session.len > 0) gpa.free(g_session);
+        g_session = owned_session;
+    }
+    writeOwn(io, arena);
+}
+
+pub fn noteLabelsFrom(io: Io, gpa: Allocator, arena: Allocator, title: ?[]const u8, session_base: []const u8) void {
+    noteLabels(io, gpa, arena, title orelse "", session_base);
 }
 
 /// The tool-gate half (#469): null = no unacknowledged live co-owner, else the
@@ -508,38 +510,6 @@ test "roomCursor adopt/reset: resume continues from the saved byte offset" {
     try std.testing.expectEqual(@as(u64, 128), cur.device);
     resetRoomCursorForTest();
     try std.testing.expectEqual(@as(u64, 0), roomCursor().chan);
-}
-
-test "presence record round-trips pid, identity, and goal" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const owner: Owner = .{
-        .pid = 4242,
-        .start_id = 0xdeadbeef,
-        .session_id = "session-1",
-        .identity = "/repo/.git",
-        .goal = "agent-inbox redesign",
-        .last_seen_ms = 123456,
-    };
-    const text = try formatRecord(arena, owner);
-    const back = parseRecord(arena, text) orelse return error.ExpectedRecord;
-    try std.testing.expectEqual(owner.pid, back.pid);
-    try std.testing.expectEqual(owner.start_id, back.start_id);
-    try std.testing.expectEqualStrings(owner.session_id, back.session_id);
-    try std.testing.expectEqualStrings(owner.identity, back.identity);
-    try std.testing.expectEqualStrings(owner.goal, back.goal);
-    try std.testing.expectEqual(owner.last_seen_ms, back.last_seen_ms);
-}
-
-test "parseRecord: rejects garbage and pid-less records, tolerates extra fields" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    try std.testing.expect(parseRecord(arena, "not json") == null);
-    try std.testing.expect(parseRecord(arena, "{\"goal\":\"x\"}") == null);
-    const forward = parseRecord(arena, "{\"pid\":7,\"start_id\":3,\"future\":\"field\"}") orelse return error.ExpectedRecord;
-    try std.testing.expectEqual(7, forward.pid);
 }
 
 test "listPeers: probes liveness, reaps the provably dead, keeps the alive" {

@@ -9,6 +9,7 @@ const main_mod = @import("main.zig");
 const provider_mod = @import("provider.zig");
 const session = @import("session.zig");
 const title_mod = @import("title.zig");
+const presence = @import("presence.zig");
 
 const Job = struct {
     future: ?Io.Future(void) = null,
@@ -23,6 +24,7 @@ fn apply(ctx: anytype, title: []const u8) void {
     if (ctx.root.session_title) |stored| {
         title_mod.setTerminalTitle(ctx.out, stored, main_mod.g_cwd_display);
         session.renameSession(ctx.root, ctx.arena, session.slugifyTitle(ctx.arena, stored));
+        presence.noteLabelsFrom(ctx.root.io, ctx.root.gpa, ctx.arena, stored, ctx.root.session_name);
     }
 }
 

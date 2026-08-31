@@ -34,9 +34,9 @@ const ExecResult = tools_mod.ExecResult;
 const Owner = worktree_lease.Owner;
 
 pub const tool_name = "peer_message";
-pub const tool_desc = "Ping a co-resident session, list who is live, or read parked inbound. action=list | inbox | send (default). session is a DM (id/pid/name/goal); omit for this folder's room. Not \"all\".";
+pub const tool_desc = "Ping a co-resident session, list who is live, or read parked inbound. action=list | inbox | send (default). session is a DM (visible title, saved-session base, id/pid/name/goal); omit for this folder's room. Presence is device-local. Not \"all\".";
 pub const tool_schema =
-    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["send", "list", "inbox"], "description": "send (default): ping a peer. list: who is live. inbox: read+clear parked inbound."}, "session": {"type": "string", "description": "who to ping: exact session name, pid, unique name fragment, or unique goal fragment (omit = this folder's room). Named targets are DMs. Not \"all\"."}, "text": {"type": "string", "description": "one or two sentences of coordination intent (required for send)"}}}
+    \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["send", "list", "inbox"], "description": "send (default): ping a peer. list: who is live (title, base, id, pid, worktree, goal). inbox: read+clear parked inbound."}, "session": {"type": "string", "description": "who to ping: exact visible title, exact saved-session base, unique normalized title/slug, id, pid, unique name fragment, or unique goal fragment (omit = this folder's room). Named targets are DMs. Presence is device-local. Not \"all\"."}, "text": {"type": "string", "description": "one or two sentences of coordination intent (required for send)"}}}
 ;
 
 /// Whether the named session sits in MY worktree (routes the post: worktree
@@ -97,7 +97,7 @@ pub fn handleMessage(self: *Agent, call: ToolCall) !ExecResult {
             .is_error = true,
         },
         .ambiguous => return .{
-            .text = try std.fmt.allocPrint(self.arena, "more than one live peer matches — name one with `session` (id, pid, or a unique goal fragment): {s}", .{peerListText(self.arena, presence.liveAllPeers(self.io, self.arena))}),
+            .text = try std.fmt.allocPrint(self.arena, "more than one live peer matches — name one with `session` (title, base, id, or pid): {s}", .{peerListText(self.arena, presence.liveAllPeers(self.io, self.arena))}),
             .is_error = true,
         },
     };
@@ -441,10 +441,12 @@ pub fn writeLiveSection(root: *Agent, arena: Allocator, out: *Io.Writer) !void {
             wrote_remote = true;
         }
         const goal = if (p.goal.len > 0) p.goal else "?";
+        const shown = if (p.title.len > 0) p.title else p.session_id;
+        const base = if (p.session_base.len > 0) p.session_base else p.session_id;
         if (local)
-            try out.print("  ⚡ {s} · pid {d} · goal: {s}\n", .{ p.session_id, p.pid, goal })
+            try out.print("  ⚡ {s} · {s} · {s} · pid {d} · goal: {s}\n", .{ shown, base, p.session_id, p.pid, goal })
         else
-            try out.print("  ⚡ {s} · pid {d} · {s} · goal: {s}\n", .{ p.session_id, p.pid, p.identity, goal });
+            try out.print("  ⚡ {s} · {s} · {s} · pid {d} · {s} · goal: {s}\n", .{ shown, base, p.session_id, p.pid, p.identity, goal });
     }
 }
 

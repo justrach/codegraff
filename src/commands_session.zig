@@ -23,6 +23,7 @@ const Keys = provider_mod.Keys;
 const ToolCall = tools_mod.ToolCall;
 const saveSession = session_mod.saveSession;
 const unixMs = util.unixMs;
+const presence = @import("presence.zig");
 const session_ext = session_mod.session_ext;
 
 const ansi = @import("ansi.zig");
@@ -102,6 +103,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.compact_transport_failures = 0;
         root.tui_header_shown = false;
         root.session_title = null; // re-summarize the now-empty conversation
+        presence.noteLabelsFrom(root.io, root.gpa, arena, null, root.session_name);
         root.ai_title_done = false;
         root.title_generation +%= 1;
         root.session_recap = null; // #419: nothing to recap in an empty conversation
@@ -136,6 +138,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.session_name = try std.fmt.allocPrint(arena, "session-{d}-{d}", .{ unixMs(root.io), proc_identity.selfPid() }); // same-ms uniqueness, see session_run
         prompts.resetSessionCompacted(root, arena); // #445: after the rename, so the re-arm reads the NEW session
         saveSession(root, arena, root.session_name) catch {};
+        presence.noteLabelsFrom(root.io, root.gpa, arena, null, root.session_name);
         try out.print("new session → {s}{s}\n", .{ root.session_name, session_ext });
         try out.flush();
         return true;
@@ -149,6 +152,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             root.ai_title_done = true; // a manual /rename wins over the auto-titler
             root.title_generation +%= 1; // discard any still-running AI result
             saveSession(root, arena, root.session_name) catch {};
+            presence.noteLabelsFrom(root.io, root.gpa, arena, root.session_title, root.session_name);
             try out.print("session title → {s}\n", .{title});
         }
         try out.flush();

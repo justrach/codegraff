@@ -18,6 +18,10 @@ current is part of cutting a release.
   for drafts abandoned before submit.
 - Suite floor **1868** (was 1861). Tournament E2E parent timeout
   300s and 45s default barrier so CI cannot flake on #467 rendezvous.
+  Tuiguard probes have a per-probe deadline and a parent wave budget
+  so one wedged PTY child cannot hang pre-push (#704).
+  `peer_message` resolves a live session by its visible title or
+  saved-session base (#700). Presence is still device-local.
   No tag until asked.
 
 ## v0.0.282 (2026-08-31)

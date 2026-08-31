@@ -23,6 +23,8 @@ pub const changelog_text =
     \\──────────
     \\0.0.283
     \\  • deleted composer image chips reuse #N; paste traces omit MIME/bytes until send (#702)
+    \\  • peer_message addresses a live session by its visible title or saved-session base (#700)
+    \\  • tuiguard fails a wedged PTY probe instead of hanging pre-push (#704)
     \\
     \\0.0.282
     \\  • pasted-text chips are atomic spans — a typed lookalike stays literal (#674)
