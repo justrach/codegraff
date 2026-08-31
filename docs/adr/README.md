@@ -52,7 +52,6 @@ record only when you need the evidence or the edge cases.
 | [0039](0039-local-tools-are-project-scripts.md) | Agent-authored local tools are project scripts under `.graff/tools/`; skills stay instructions. Runtime catalog extras, not `schema.effectiveRootSpecs`. |
 | [0040](0040-codedb-stays-when-licensed.md) | Ordinary reads use native `codedb` / `read_file`; codedb-pro is extra search, not the default reader. |
 | [0041](0041-tui-is-an-acp-client.md) | The fullscreen TUI is an in-process ACP client: session/prompt in, session/update thought/tool/text out. No child `graff acp`. |
-<<<<<<< HEAD
 | [0042](0042-tui-claims-screen-before-session.md) | `graff tui` / TTY `graff repl` claim the alt-screen before keys/MCP/prompt; leftover boot happens inside the pager. |
 | [0043](0043-pi-swe-same-seat.md) | Pi SWE A/B uses `pi-xai` on the SuperGrok seat; do not steal Pi's catalog or heap from the json-stream pass. |
 | [0044](0044-oneshot-skips-learn-auto.md) | `-p` and `--json` skip learn auto-init; the Pi SWE wall gap was a 38s `graff-pinned` copy, not their catalog. |
@@ -60,8 +59,6 @@ record only when you need the evidence or the edge cases.
 | [0046](0046-flash-omits-default-effort.md) | Flash / Gemini send `reasoning_effort=low` (omit still thinks); lean `-p` shortens tool prose; `-p` streams. |
 | [0047](0047-codegraff-swe-not-glm-only.md) | Codegraff SWE A/B is not GLM-only: Gemini graff 5/6 in 103s; DeepSeek flash still one-shots; do not steal Pi's catalog. |
 | [0048](0048-model-http-client-recovery-uses-generations.md) | Model HTTP calls lease a recoverable client generation; request-construction TLS failure rotates safely without deinitializing in-flight users. |
-=======
->>>>>>> origin/fix/691-tls-client-recovery
 
 ## When to write one
 

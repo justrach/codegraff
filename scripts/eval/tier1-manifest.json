@@ -15,11 +15,7 @@
     "src/repl.zig",
     "TUI/root.zig"
   ],
-<<<<<<< HEAD
   "test_count_baseline": 1817,
-=======
-  "test_count_baseline": 1783,
->>>>>>> origin/fix/691-tls-client-recovery
   "test_count_slack": 25,
   "required_invariants": [
     {
