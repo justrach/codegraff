@@ -2,6 +2,10 @@
 
 What still exists in this repo versus what is parked. No new product mode.
 
+Landed on [v0.0.282](releases/v0.0.282.md): `#674` atomic paste spans,
+`#693` Codex WS `type:error`, `#694` HTTP client generations (ADR 0048).
+Still parked below.
+
 | Issue | In this repo today | This cut |
 | --- | --- | --- |
 | [#321](https://github.com/justrach/codegraff/issues/321) `/doctor` | Goal/todo slice shipped: `/doctor` in `src/doctor.zig` + `commands_misc` dispatch. Checks: `GOAL_STATE`, `GOAL_TODO_EPOCH_MISMATCH`, `STALE_GOAL`, `TODO_EPOCH_ABOVE_GOAL`, `COMPLETION_GATE_ARMED`. Read-only; JSON via `toJson`. | Landed earlier. **Parked:** session-lease, owned-job, listener, and aggregate-budget findings (`DUPLICATE_WORKTREE_OWNER`, `STALE_SESSION_LEASE`, `ORPHANED_OWNED_JOB`, …). Those need a durable job/session registry `doctor.zig` refuses to fake. |

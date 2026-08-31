@@ -21,6 +21,11 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.282
+    \\  • pasted-text chips are atomic spans — a typed lookalike stays literal (#674)
+    \\  • Codex WS type:error is a terminal API response; last_api_error stays (#693)
+    \\  • request-construction TLS failure rotates a leased HTTP client generation (ADR 0048)
+    \\
     \\0.0.281
     \\  • -p / --json skip learn auto-init — no 132M graff-pinned copy (ADR 0044)
     \\  • SuperGrok SWE 5/6 in 205s / 6.5s CPU (was 4/6 in 456s / 230s)

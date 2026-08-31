@@ -10,6 +10,17 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.282 (2026-08-31)
+
+- Next cut after v0.0.281 landed on main (`#670`). Headline is
+  yxlyx's three open product PRs: atomic paste spans (`#674`),
+  terminal Codex WS API errors (`#693`), and recoverable HTTP
+  client generations (`#694` / ADR 0048).
+- `#694` numbered its record 0042; that slot is already TUI claims
+  screen (`#666`). The TLS-generation decision is **ADR 0048**.
+- `#277` (Streamable HTTP OAuth / Smolify) and `#200` (idle
+  localhost servers) stay parked — Smolify is not a core MCP.
+
 ## v0.0.281 (2026-08-29)
 
 - Next cut after tagged v0.0.280. Headline is the **hardlink**
