@@ -25,16 +25,15 @@ def main() -> None:
                 fh,
             )
 
-        # The AI tab-titler (titleTask, src/title.zig) fires one extra quiet SSE
-        # turn on the first prompt, which would corrupt the transport counters.
-        # Disable it the same way `/title off` does: the persisted setting in
-        # the session cwd's .harness/settings.json.
+        # The AI tab-titler and turn recap each fire an extra quiet SSE turn,
+        # which would corrupt these transport counters. Disable both through
+        # the persisted settings this test is specifically not exercising.
         harness_dir = os.path.join(tmp, ".harness")
         os.makedirs(harness_dir, exist_ok=True)
         with open(
             os.path.join(harness_dir, "settings.json"), "w", encoding="utf-8"
         ) as fh:
-            json.dump({"ai_title": False}, fh)
+            json.dump({"ai_title": False, "session_recap": False}, fh)
 
         scenarios = [
             (

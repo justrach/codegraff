@@ -21,7 +21,7 @@ pub const nudge_text =
 /// after the first step, so `handle` must not depend on walking messages.
 var remembered_task: []const u8 = "";
 
-const source_needles = [_][]const u8{ ".py", ".zig", ".js", ".ts", "SPEC.md" };
+const source_needles = [_][]const u8{ ".py", ".zig", ".jsx", ".js", ".tsx", ".ts", "SPEC.md" };
 
 pub fn remember(text: []const u8) void {
     remembered_task = text;
@@ -55,8 +55,13 @@ pub fn beginTurn(self: *Agent) void {
 
 /// True when `text` names a source path (not a greeting.txt-style data file).
 pub fn hasNamedSource(text: []const u8) bool {
-    for (source_needles) |n| {
-        if (std.mem.indexOf(u8, text, n) != null) return true;
+    for (source_needles) |needle| {
+        var from: usize = 0;
+        while (std.mem.indexOfPos(u8, text, from, needle)) |at| {
+            const end = at + needle.len;
+            if (end == text.len or (!std.ascii.isAlphanumeric(text[end]) and text[end] != '_')) return true;
+            from = end;
+        }
     }
     return false;
 }
@@ -135,10 +140,12 @@ pub fn handle(self: *Agent, _: []const u8) !bool {
     return true;
 }
 
-test "hasNamedSource sees SPEC and .py, ignores greeting.txt and pong" {
+test "hasNamedSource sees source suffixes without confusing JSON for JavaScript" {
     try std.testing.expect(hasNamedSource("Read SPEC.md and affinity.py"));
     try std.testing.expect(hasNamedSource("Fix fib.py"));
-    try std.testing.expect(hasNamedSource("edit stall_notice.py"));
+    try std.testing.expect(hasNamedSource("edit view.tsx and helper.jsx"));
+    try std.testing.expect(!hasNamedSource("resume .graff/sessions/task.session.json"));
+    try std.testing.expect(!hasNamedSource("read task.transcript.jsonl"));
     try std.testing.expect(!hasNamedSource("Reply with exactly: pong"));
     try std.testing.expect(!hasNamedSource("Create hello.txt then rename it"));
 }
