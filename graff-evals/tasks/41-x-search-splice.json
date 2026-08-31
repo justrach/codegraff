@@ -1,0 +1,10 @@
+{
+  "id": "x-search-splice",
+  "suite": "inhouse",
+  "category": "inhouse",
+  "source": "codegraff #632 / ADR 0031 — hosted x_search on xAI Responses, not a catalog function (distilled)",
+  "files_dir": "fixtures/x-search-splice",
+  "prompt": "splice.py:splice always appends a catalog function named x_search. Read SPEC.md and splice.py, then edit splice.py so `python3 test_splice.py` prints OK. Do not only describe the fix. Do not edit the tests. Hosted x_search is {\"type\":\"x_search\"} on xai+responses when enabled; chat and other providers stay unchanged.",
+  "check": "python3 test_splice.py && python3 \"$TASK_ROOT/hidden/x-search-splice.py\"",
+  "timeout_s": 240
+}

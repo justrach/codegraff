@@ -26,6 +26,30 @@ In-house 6 PR fixtures:
 | grok | 5/6 | 396s | 2.4s | 30 | 535344 | $0.4285 | 157.7M |
 | opencode | **6/6** | 182.1s | 2.8s | 37 | 340074 | $0.3835 | 1103.9M |
 
+## 12-task in-house remasure (`run-20260830-141658`)
+
+Same SuperGrok seat, jobs=1, grok-4.6, `x_search` on, the six original
+fixtures plus #690 (`hardlink-pin`, `x-search-splice`, `mcp-first-turn`,
+`rlm-showcase-gate`, `codedb-menu`, `peer-resume`). All three harnesses
+**12/12**.
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | **12/12** | **192.1s** | 0.02s† | **52** | **227856** | **$0.3504** | **91.7M** |
+| grok | 12/12 | 461.8s | 3.8s | 63 | 1177050 | $1.1152 | 169.6M |
+| opencode | 12/12 | 235.8s | 2.7s | 74 | 674794 | $0.7916 | 1099.6M |
+
+† Graff `first_out_s` is 0.02s on **every** task — the first stderr line
+(`›` / boot), not first model SSE. Do not score it as TTFT. OpenCode 2.7s
+and grok 3.8s are real first bytes. Unique frontier on pass / wall /
+calls / tokens / list$ / RSS. First-token is **not** a named win on this
+run.
+
+OpenCode was faster on one task (`mcp-first-turn` 17.1s vs graff 18.3s).
+Suite totals still graff.
+
+![12-task in-house frontier](frontier-inhouse-12-20260830-141658.svg)
+
 ## Latest climb — PARETO (`run-20260830-122731` in-house, `run-20260830-124315` spine)
 
 Same SuperGrok seat, jobs=1, `x_search` on, ReleaseSafe `-p`. Graff is
@@ -127,11 +151,13 @@ Same-model series is grok-4.6. Native-default series (`opencode-zen`,
 `dsh-deepseek`) is a **different chart** — do not read those points as
 grok-4.6 list price.
 
-In-house suite (`--suite inhouse`): six bug shapes distilled from shipped
-CodeGraff PRs (#685/#405 symlink write, oneshot stdout chrome,
+In-house suite (`--suite inhouse`): twelve bug shapes distilled from shipped
+CodeGraff PRs. First six: #685/#405 symlink write, oneshot stdout chrome,
 cache-affinity git root, #681 stall widen, rlm-empty-tools catalog,
-stall-bus-silent warn). Fixtures live under `graff-evals/tasks/` +
-`fixtures/`; they are not the live repo.
+stall-bus-silent warn. Next six (#690): #687 hardlink pin, #632 x_search splice, ADR 0035 MCP
+first-turn, #633 rlm showcase gate, #597 codedb menu, #584 peer resume.
+Remeasured `run-20260830-141658` (12/12 all harnesses). Fixtures live
+under `graff-evals/tasks/` + `fixtures/`; they are not the live repo.
 
 Axes: wall, first-token latency, tool calls, tokens (uncached + cached + out),
 xAI list-price USD (`$2/$0.50/$6` per 1M under 200k prompt tokens; `$4/$1/$12`

@@ -1,0 +1,10 @@
+{
+  "id": "peer-resume",
+  "suite": "inhouse",
+  "category": "inhouse",
+  "source": "codegraff #584 / ADR 0014 — resume restores peer cursor and inbox, does not replay the room (distilled)",
+  "files_dir": "fixtures/peer-resume",
+  "prompt": "resume.py:resume drops the cursor/inbox and replays ROOM into history. Read SPEC.md and resume.py, then edit resume.py so `python3 test_resume.py` prints OK. Do not only describe the fix. Do not edit the tests. Restore cursor and inbox; history stays empty.",
+  "check": "python3 test_resume.py && python3 \"$TASK_ROOT/hidden/peer-resume.py\"",
+  "timeout_s": 240
+}

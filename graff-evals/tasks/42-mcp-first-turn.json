@@ -1,0 +1,10 @@
+{
+  "id": "mcp-first-turn",
+  "suite": "inhouse",
+  "category": "inhouse",
+  "source": "codegraff ADR 0035 / 0029 — first -p turn skips the MCP handshake wait (distilled)",
+  "files_dir": "fixtures/mcp-first-turn",
+  "prompt": "join.py always waits on MCP before the first model call. Read SPEC.md and join.py, then edit join.py so `python3 test_join.py` prints OK. Do not only describe the fix. Do not edit the tests. First request with pending handshakes is skip; --json still blocks; lean -p still connects a project .mcp.json.",
+  "check": "python3 test_join.py && python3 \"$TASK_ROOT/hidden/mcp-first-turn.py\"",
+  "timeout_s": 240
+}
