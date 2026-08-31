@@ -48,10 +48,10 @@ pub fn postStream(self: *Agent, body: []const u8) ![]u8 {
     return postStreamWithClient(self, self.client, body);
 }
 
-/// SSE stream using an explicit HTTP client. Normal traffic uses the Agent's
-/// shared pool; a WebSocket failure supplies a fresh client so a stale pooled
-/// keep-alive cannot poison the WS→SSE handoff and every fallback retry dials
-/// from a clean pool.
+/// SSE stream using an explicit HTTP client. Normal traffic and the WS→SSE
+/// latch both use the Agent's prewarmed pool (agent_ws.postLive); a test can
+/// pass another client. A failed SEND still poisons that connection so the
+/// next retry dials fresh instead of replaying a dead keep-alive.
 pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []const u8) ![]u8 {
     http_client.waitForReady(client.io);
     var lease = http_client.acquire(client);

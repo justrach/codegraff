@@ -348,4 +348,5 @@ test {
     _ = @import("readline_paste.zig"); // #674: semantic paste spans (not reached via readline.zig's runtime import)
     _ = @import("agent_request_scratch.zig"); // #693: split out of agent_request.zig (600-line ceiling)
     _ = @import("commands_resume.zig"); // #697: --resume SOURCE --branch DEST parser
+    _ = @import("net_efficiency_test.zig");
 }

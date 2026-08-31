@@ -174,7 +174,6 @@ fn httpPostUnwatched(http: *HttpTransport, body: []const u8, meta: RequestMeta, 
         .redirect_behavior = .unhandled,
         .headers = .{
             .content_type = .{ .override = "application/json" },
-            .accept_encoding = .omit,
             .user_agent = .{ .override = "codegraff-mcp/1" },
         },
         .extra_headers = extra,
@@ -224,28 +223,7 @@ fn httpPostUnwatched(http: *HttpTransport, body: []const u8, meta: RequestMeta, 
         }
     }
 
-    if (response.head.content_length == 0) return null;
-    const is_sse = if (response.head.content_type) |content_type|
-        std.ascii.startsWithIgnoreCase(content_type, "text/event-stream")
-    else
-        false;
-    var transfer_buf: [4096]u8 = undefined;
-    const reader = response.reader(&transfer_buf);
-    if (is_sse) return readSseResponse(http.client.allocator, reader, expected_id);
-
-    const response_buf = try http.client.allocator.alloc(u8, max_http_response);
-    errdefer http.client.allocator.free(response_buf);
-    var fixed = Io.Writer.fixed(response_buf);
-    _ = reader.streamRemaining(&fixed) catch |err| switch (err) {
-        error.WriteFailed => return error.McpResponseTooLarge,
-        else => return err,
-    };
-    const len = fixed.buffered().len;
-    if (len == 0) {
-        http.client.allocator.free(response_buf);
-        return null;
-    }
-    return try http.client.allocator.realloc(response_buf, len);
+    return readResponseBody(http.client.allocator, &response, expected_id);
 }
 
 const HttpPostDone = union(enum) {
@@ -325,7 +303,6 @@ fn probeUnwatched(http: *HttpTransport, body: []const u8, meta: RequestMeta) !Pr
         .redirect_behavior = .unhandled,
         .headers = .{
             .content_type = .{ .override = "application/json" },
-            .accept_encoding = .omit,
             .user_agent = .{ .override = "codegraff-mcp/1" },
         },
         .extra_headers = extra,
@@ -355,17 +332,35 @@ fn probeUnwatched(http: *HttpTransport, body: []const u8, meta: RequestMeta) !Pr
         if (req.connection) |connection| connection.closing = true;
     }
 
-    if (response.head.content_length == 0) return .{ .status = status, .body = null };
+    return .{ .status = status, .body = try readResponseBody(http.client.allocator, &response, null) };
+}
+
+fn decompressWindow(gpa: Allocator, encoding: std.http.ContentEncoding) ![]u8 {
+    return switch (encoding) {
+        .identity => &.{},
+        .zstd => gpa.alloc(u8, std.compress.zstd.default_window_len),
+        .deflate, .gzip => gpa.alloc(u8, std.compress.flate.max_window_len),
+        .compress => error.UnsupportedCompressionMethod,
+    };
+}
+
+/// Decode the HTTP body, honoring Content-Encoding (gzip/deflate/zstd).
+/// Callers used to omit Accept-Encoding so catalogs crossed the wire raw.
+fn readResponseBody(gpa: Allocator, response: *std.http.Client.Response, expected_id: ?i64) !?[]u8 {
+    if (response.head.content_length == 0) return null;
     const is_sse = if (response.head.content_type) |content_type|
         std.ascii.startsWithIgnoreCase(content_type, "text/event-stream")
     else
         false;
+    const window = try decompressWindow(gpa, response.head.content_encoding);
+    defer if (window.len > 0) gpa.free(window);
     var transfer_buf: [4096]u8 = undefined;
-    const reader = response.reader(&transfer_buf);
-    if (is_sse) return .{ .status = status, .body = try readSseResponse(http.client.allocator, reader, null) };
+    var decompress: std.http.Decompress = undefined;
+    const reader = response.readerDecompressing(&transfer_buf, &decompress, window);
+    if (is_sse) return readSseResponse(gpa, reader, expected_id);
 
-    const response_buf = try http.client.allocator.alloc(u8, max_http_response);
-    errdefer http.client.allocator.free(response_buf);
+    const response_buf = try gpa.alloc(u8, max_http_response);
+    errdefer gpa.free(response_buf);
     var fixed = Io.Writer.fixed(response_buf);
     _ = reader.streamRemaining(&fixed) catch |err| switch (err) {
         error.WriteFailed => return error.McpResponseTooLarge,
@@ -373,10 +368,10 @@ fn probeUnwatched(http: *HttpTransport, body: []const u8, meta: RequestMeta) !Pr
     };
     const len = fixed.buffered().len;
     if (len == 0) {
-        http.client.allocator.free(response_buf);
-        return .{ .status = status, .body = null };
+        gpa.free(response_buf);
+        return null;
     }
-    return .{ .status = status, .body = try http.client.allocator.realloc(response_buf, len) };
+    return try gpa.realloc(response_buf, len);
 }
 
 const ProbeDone = union(enum) {

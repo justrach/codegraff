@@ -236,43 +236,21 @@ pub fn connectLegacy(server: *Server, a: Allocator, session_alloc: Allocator, bo
     return listed;
 }
 
-const InitializedJob = struct {
-    url: []const u8,
-    headers: []const std.http.Header,
-    oauth_home: ?[]const u8,
-    protocol_version: []const u8,
-    gpa: Allocator,
-};
-
-fn httpInitializedTask(io: Io, job: InitializedJob) void {
-    var transport: mcp_http.HttpTransport = .{
-        .url = job.url,
-        .client = .{ .allocator = job.gpa, .io = io },
-        .headers = job.headers,
-        .oauth_home = job.oauth_home,
-    };
-    defer transport.client.deinit();
+fn httpInitializedTask(http: *mcp_http.HttpTransport, protocol_version: []const u8) void {
     const body = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}";
-    if (mcp_http.post(&transport, body, .{
-        .protocol_version = job.protocol_version,
+    if (mcp_http.post(http, body, .{
+        .protocol_version = protocol_version,
         .method = "notifications/initialized",
         .modern = false,
     }, null)) |maybe| {
-        if (maybe) |b| job.gpa.free(b);
+        if (maybe) |b| http.client.allocator.free(b);
     } else |_| {}
 }
 
 fn kickHttpInitialized(server: *Server) void {
     const http = &server.transport.http;
-    const job = InitializedJob{
-        .url = http.url,
-        .headers = http.headers,
-        .oauth_home = http.oauth_home,
-        .protocol_version = server.protocol_version,
-        .gpa = http.client.allocator,
-    };
-    server.pending_initialized = http.client.io.concurrent(httpInitializedTask, .{ http.client.io, job }) catch
-        http.client.io.async(httpInitializedTask, .{ http.client.io, job });
+    server.pending_initialized = http.client.io.concurrent(httpInitializedTask, .{ http, server.protocol_version }) catch
+        http.client.io.async(httpInitializedTask, .{ http, server.protocol_version });
 }
 
 pub fn finishInitialized(server: *Server) void {

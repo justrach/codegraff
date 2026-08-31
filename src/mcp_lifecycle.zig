@@ -6,7 +6,6 @@
 //! surfaced rather than hidden behind fallback, matching rust-sdk Auto.
 
 const std = @import("std");
-const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
@@ -59,27 +58,12 @@ const ProbeOut = struct {
     id: i64,
 };
 
-fn probeMethod(
-    io: Io,
-    gpa: Allocator,
-    url: []const u8,
-    headers: []const std.http.Header,
-    oauth_home: ?[]const u8,
-    method: []const u8,
-    id: i64,
-) ProbeOut {
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
+fn probeMethod(http: *mcp_http.HttpTransport, method: []const u8, id: i64) ProbeOut {
+    var arena_state = std.heap.ArenaAllocator.init(http.client.allocator);
     defer arena_state.deinit();
-    var transport: mcp_http.HttpTransport = .{
-        .url = url,
-        .client = .{ .allocator = gpa, .io = io },
-        .headers = headers,
-        .oauth_home = oauth_home,
-    };
-    defer transport.client.deinit();
     const body = mcp_protocol.buildRequest(arena_state.allocator(), id, method, "{}", true) catch
         return .{ .reply = .{ .status = 0, .body = null }, .id = id };
-    const reply = mcp_http.probe(&transport, body, .{
+    const reply = mcp_http.probe(http, body, .{
         .protocol_version = modern_protocol,
         .method = method,
         .modern = true,
@@ -126,7 +110,7 @@ fn connectHttpAttempt(server: *mcp_rpc.Server, a: Allocator, session_alloc: Allo
 
     const id_list = server.next_id;
     server.next_id += 1;
-    const list = probeMethod(io, gpa, http.url, http.headers, http.oauth_home, "tools/list", id_list);
+    const list = probeMethod(http, "tools/list", id_list);
     defer if (list.reply.body) |b| gpa.free(b);
 
     // Any modern request may be first. A real tools/list result is the catalog
@@ -230,6 +214,14 @@ test "Auto: first launch tries modern tools/list before legacy fallback" {
     const list_pos = std.mem.indexOf(u8, src, "const list = probeMethod").?;
     const fallback_pos = std.mem.indexOfPos(u8, src, list_pos, ".legacy_handshake => |why|").?;
     try std.testing.expect(list_pos < fallback_pos);
+}
+
+test "Auto: modern probe reuses the persistent HTTP client" {
+    const src = @embedFile("mcp_lifecycle.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "fn probeMethod(http: *mcp_http.HttpTransport") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "const list = probeMethod(http,") != null);
+    const throwaway = "var transport: " ++ "mcp_http.HttpTransport";
+    try std.testing.expect(std.mem.indexOf(u8, src, throwaway) == null);
 }
 
 test {

@@ -21,6 +21,7 @@ const net = std.Io.net;
 const HostName = net.HostName;
 const Allocator = std.mem.Allocator;
 const tls = std.crypto.tls;
+const http_warm = @import("http_warm.zig");
 
 /// GRAFF_WS_DEBUG=1 → dump the handshake + frame headers to stderr.
 pub var g_debug: bool = false;
@@ -76,8 +77,6 @@ pub const WsClient = struct {
     r: *Io.Reader = undefined,
     w: *Io.Writer = undefined,
     tls_client: ?tls.Client = null,
-    ca_bundle: std.crypto.Certificate.Bundle = .empty,
-    ca_lock: Io.RwLock = .init,
     gpa: Allocator,
     /// (#401) The peer is wedged or gone — tear down with a plain FIN instead
     /// of deinit's courtesy close frame, which is another blocking write on the
@@ -123,28 +122,26 @@ pub const WsClient = struct {
         self.* = .{ .io = io, .stream = stream, .rd = undefined, .wr = undefined, .gpa = gpa };
         self.rd = net.Stream.Reader.init(stream, io, &self.sock_rbuf);
         self.wr = net.Stream.Writer.init(stream, io, &self.sock_wbuf);
-        // From here the client owns the socket (and, for wss, the CA bundle):
-        // release both if the TLS or upgrade handshake fails, or every failed
-        // dial leaks an fd — which #401's reconnect ladder now retries into.
-        errdefer {
-            self.ca_bundle.deinit(gpa);
-            self.stream.close(io);
-        }
+        // From here the client owns the socket: release it if the TLS or
+        // upgrade handshake fails, or every failed dial leaks an fd — which
+        // #401's reconnect ladder now retries into. The CA bundle is the
+        // process-warmed one (http_warm); do not deinit it here.
+        errdefer self.stream.close(io);
 
         if (u.tls) {
             var entropy: [tls.Client.Options.entropy_len]u8 = undefined;
             io.random(&entropy);
-            if (!insecure) self.ca_bundle.rescan(gpa, io, Io.Clock.real.now(io)) catch |e| {
+            if (!insecure) http_warm.ensureProcessCa(io) catch |e| {
                 dbg("ca rescan failed: {s}", .{@errorName(e)});
                 return error.HandshakeFailed;
             };
             self.tls_client = tls.Client.init(&self.rd.interface, &self.wr.interface, .{
                 .host = if (insecure) .no_verification else .{ .explicit = u.host },
                 .ca = if (insecure) .no_verification else .{ .bundle = .{
-                    .gpa = gpa,
+                    .gpa = std.heap.page_allocator,
                     .io = io,
-                    .lock = &self.ca_lock,
-                    .bundle = &self.ca_bundle,
+                    .lock = http_warm.processCaLock(),
+                    .bundle = http_warm.processCa(),
                 } },
                 .write_buffer = &self.tls_wbuf,
                 .read_buffer = &self.tls_rbuf,
@@ -167,7 +164,6 @@ pub const WsClient = struct {
 
     pub fn deinit(self: *WsClient, gpa: Allocator) void {
         if (!self.dead) self.sendFrame(.close, "") catch {}; // (#401) see `dead`
-        self.ca_bundle.deinit(gpa);
         self.stream.close(self.io);
         gpa.destroy(self);
     }
