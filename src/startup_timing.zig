@@ -36,7 +36,8 @@ pub const Tracker = struct {
             .phase_ms = @max(0, cumulative_ms - self.last_ms),
         };
         self.last_ms = cumulative_ms;
-        if (self.debug) std.debug.print("[boot +{d}ms, phase {d}ms] {s}\n", .{ phase.cumulative_ms, phase.phase_ms, label });
+        if (shouldPrint(self.debug, phase.phase_ms))
+            std.debug.print("[boot +{d}ms, phase {d}ms] {s}\n", .{ phase.cumulative_ms, phase.phase_ms, label });
         if (self.tracer) |tracer| {
             emit(tracer, phase);
         } else if (self.phases_len < self.phases.len) {
@@ -52,6 +53,12 @@ pub const Tracker = struct {
         self.phases_len = 0;
     }
 
+    /// `GRAFF_BOOT_DEBUG` prints every phase. Interactive boots also name
+    /// anything ≥80ms so a hang after `plugins:` is visible without an env var.
+    pub fn shouldPrint(debug: bool, phase_ms: i64) bool {
+        return debug or phase_ms >= 80;
+    }
+
     fn emit(tracer: *trace.Tracer, phase: Phase) void {
         tracer.write(.{
             .t = tracer.elapsedMs(),
@@ -63,6 +70,10 @@ pub const Tracker = struct {
     }
 };
 
+test {
+    _ = shutdown_trace;
+}
+
 test "startup phases retain order and non-negative deltas before attach" {
     var tracker = Tracker.init(std.testing.io, false);
     tracker.mark(std.testing.io, "args");
@@ -72,4 +83,11 @@ test "startup phases retain order and non-negative deltas before attach" {
     try std.testing.expectEqualStrings("credentials", tracker.phases[1].label);
     try std.testing.expect(tracker.phases[0].phase_ms >= 0);
     try std.testing.expect(tracker.phases[1].cumulative_ms >= tracker.phases[0].cumulative_ms);
+}
+
+test "slow boot phases print without GRAFF_BOOT_DEBUG" {
+    try std.testing.expect(!Tracker.shouldPrint(false, 0));
+    try std.testing.expect(!Tracker.shouldPrint(false, 79));
+    try std.testing.expect(Tracker.shouldPrint(false, 80));
+    try std.testing.expect(Tracker.shouldPrint(true, 0));
 }

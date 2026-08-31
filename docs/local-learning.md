@@ -11,9 +11,12 @@ active parent → deterministic mutation seeds → paired evaluation
 
 ## Nothing to run
 
-Learning is on by default. The first session in a workspace that does real
-model work (at least 5 calls, so a one-off question never triggers it) sets the
-workspace up on its way out:
+Learning is on by default for an interactive session. The first REPL/TUI/ACP
+session in a workspace that does real model work (at least 5 calls, so a
+one-off question never triggers it) sets the workspace up on its way out.
+`-p` and `--json` never do this — those exits are not a workspace opting
+into a spending cadence (evals hit the 5-call floor and then spent ~38s
+copying `graff-pinned` + generating suites).
 
 ```text
 ↺ setting this workspace up to learn from sessions like this one

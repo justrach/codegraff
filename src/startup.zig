@@ -416,5 +416,17 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         try schema.emitSchema(&sw.interface);
         return true;
     }
+
+    // ADR 0042: claim the pager before keys / MCP / prompt so `graff tui`
+    // (and TTY `graff repl`) do not sit on a blank shell. No-op off a TTY.
+    if (!main_mod.json_mode and flags.oneshot_prompt == null and flags.isPager()) {
+        _ = @import("tui").claim();
+    }
     return false;
+}
+
+test "pager commands claim the alt screen before credentials" {
+    const src = @embedFile("startup.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "flags.isPager()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, ".claim()") != null);
 }

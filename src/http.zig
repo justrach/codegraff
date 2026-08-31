@@ -191,9 +191,10 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
 /// Hard ceiling on one non-streaming request. The legitimate worst case
 /// observed (a 160k-token subagent context) completed in ~134s; anything
 /// past this is a hung response, not a slow one. Tunable via
-/// GRAFF_POST_DEADLINE_SECS (#544): non-streaming callers (one-shots,
-/// subagents) have no inter-chunk stall signal, so this deadline is their
-/// ONLY hang detector — a harness with a tighter task timeout lowers it.
+/// GRAFF_POST_DEADLINE_SECS (#544): the remaining non-streaming callers
+/// have no inter-chunk stall signal, so this deadline is their only hang
+/// detector — a harness with a tighter task timeout lowers it. Agent turns
+/// stream, root `-p` (ADR 0046) and subagents (#682) included: not this path.
 pub var post_deadline_ms: u64 = 5 * 60 * 1000;
 
 pub const WatchdogFired = enum { esc, deadline };
@@ -237,9 +238,9 @@ fn postWatchdog(io: Io) WatchdogFired {
 // resets its clock on every line, so it measures the gap between tokens/
 // keep-alives/reasoning deltas) is a dead or hung connection. This is the
 // PRE-first-token budget, generous because a silent reasoning phase legitimately
-// runs minutes; http_stall.budgetMs tightens it once tokens are flowing (#56).
-// Tunable via GRAFF_STREAM_STALL_SECS (session_run.setupSkillsAndTheme), which
-// scales both regimes. Giving up is error.StreamStalled, NEVER a user Esc (#134).
+// runs minutes; http_stall.budgetMs tightens it once tokens flow (#56); each stall
+// reconnect widens it back toward the total (#680). Tunable via GRAFF_STREAM_STALL_SECS
+// (session_run.setupSkillsAndTheme), both regimes. Giving up is error.StreamStalled, NEVER a user Esc (#134).
 pub var stream_stall_ms: u64 = 120 * 1000;
 
 /// A response head idle this long = the server accepted the connection but is

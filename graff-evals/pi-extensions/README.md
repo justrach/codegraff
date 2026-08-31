@@ -20,3 +20,11 @@ Smoke:
 ```bash
 python3 graff-evals/run.py --harness pi-codegraff --model gemini-3.7-flash --task fix-fib
 ```
+
+For a same-seat SWE A/B against graff (SuperGrok / grok-4.6), skip the
+gateway and use `pi-xai`:
+
+```bash
+# pi-xai.sh reads ~/.xai/credentials/graff-oauth.json (same as `graff login xai`)
+cd graff-evals && ./run.py --suite swe --harness graff-dev,pi-xai --model grok-4.6 -j 6
+```

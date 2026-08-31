@@ -10,6 +10,37 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.281 (2026-08-29)
+
+- Next cut after tagged v0.0.280. Headline is the **hardlink**
+  `graff-pinned` + detached `learn init` (`#687` / `#688`): `-p` and the
+  REPL share one path, no 127M copy. The earlier oneshot-only skip
+  (ADR 0044) is not the tip behavior.
+- README is ~200 lines (was ~1700) and carries the same-model 12-task
+  in-house table: graff **12/12 · 192s · 52 calls · $0.35** vs
+  OpenCode 236s / 74 / $0.79 and grok-build 462s / 63 / $1.12
+  (`run-20260830-141658`, `#690`).
+- `graff tui` / TTY `graff repl` claim the alt-screen before credentials
+  and paint live markdown on the cached tail (ADR 0042, #666).
+- `pi-xai` runs Pi on the SuperGrok seat the same way as graff-dev
+  (ADR 0043, #667). Do not steal Pi's 4-tool catalog or 165M heap.
+- Codegraff `glm-5.3-flash` SWE (ADR 0045 / 0046, #669 / #671): omit
+  still thinks; default flash effort is `low`. `-p` streams so a hung
+  POST dies on the 30s stall, not a 5-minute watch. SWE **5/6 in 286s**
+  (Pi 5/6 in 758s). Same miss (`label-sort`). Do not steal Pi's catalog.
+- Same SWE suite on other Codegraff models (ADR 0047): Gemini graff
+  **5/6 in 103s**; Kimi 4/6 in 583s; DeepSeek flash still one-shots
+  (Pi 5/6). Do not steal Pi's catalog.
+- Interactive `--yolo` queues companion MCP and names the boot phase
+  (`mcp:` / `companion:` receipts) so first paint is not the handshake
+  (#664). Mid-turn stall/reconnect and `model call N` pulses stay off
+  the transcript; a ⚠ prints only when the turn ends (ADR 0021, #665).
+- Eval frontier (#687): OpenCode `--dir` / dsh harnesses, in-house PR
+  suite, hardlink `graff-pinned` + detached `learn init`, scripted-REPL
+  usage footer. Fair same-session grok-4.6 A/B stays on the PR.
+- No tag until asked. Download / notarization ids land after the build.
+- Test floor 1791 (slack 25).
+
 ## v0.0.280 (2026-08-28)
 
 - Next cut after tagged v0.0.279. Carries the #645 continuation already

@@ -35,11 +35,12 @@ pub fn render(self: *const Model, a: std.mem.Allocator, width: usize, now_ms: u6
     }
     if (self.pending) |job| {
         if (!self.cancel_requested) {
-            const src = if (job.raw.len.load(.acquire) > 0) &job.raw else &job.stream;
+            const raw_bash = job.raw.len.load(.acquire) > 0;
+            const src = if (raw_bash) &job.raw else &job.stream;
             if (src.snapshot(a)) |live| {
                 if (!first) try out.append('\n');
                 first = false;
-                try out.appendSlice(try theme_mod.paint(a, self.theme().muted, try tail(a, strip(a, live), width, 4)));
+                try out.appendSlice(try theme_mod.paint(a, self.theme().muted, try liveTail(self, a, live, raw_bash, width)));
             }
             if (self.steer_queue.items.len > 0) {
                 if (!first) try out.append('\n');
@@ -336,6 +337,15 @@ fn firstLine(s: []const u8) []const u8 {
 /// Drop escapes/C0 from the live tail so a CR cannot rewind the row.
 pub fn strip(a: std.mem.Allocator, s: []const u8) []const u8 {
     return @import("markdown.zig").sanitize(a, s) catch s;
+}
+
+/// Live prose uses the same renderer as a settled assistant row. Raw bash
+/// stays sanitized-only — those bytes are a terminal, not markdown.
+pub fn liveTail(self: *const Model, a: std.mem.Allocator, live: []const u8, raw_bash: bool, width: usize) ![]const u8 {
+    const clean = strip(a, live);
+    if (raw_bash) return tail(a, clean, width, 4);
+    const painted = @import("markdown.zig").renderThemed(a, clean, self.theme(), width -| 4) catch clean;
+    return tail(a, painted, width, 8);
 }
 
 pub fn tail(a: std.mem.Allocator, s: []const u8, width: usize, max_lines: usize) ![]const u8 {

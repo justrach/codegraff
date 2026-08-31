@@ -1,0 +1,10 @@
+{
+  "id": "stall-widen",
+  "suite": "inhouse",
+  "category": "inhouse",
+  "source": "codegraff #681 — widen the between-lines stall budget on each reconnect (distilled)",
+  "files_dir": "fixtures/stall-widen",
+  "prompt": "inter_frame_budget_ms never widens after a stall reconnect, so a mid-response pause is killed at base/4 forever. Read SPEC.md and stall.py, then make `python3 test_stall.py` print OK. Do not edit the tests.",
+  "check": "python3 test_stall.py && python3 \"$TASK_ROOT/hidden/stall-widen.py\"",
+  "timeout_s": 240
+}

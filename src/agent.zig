@@ -14,9 +14,8 @@ const ReasoningEffort = main_mod.ReasoningEffort;
 const ws = @import("ws.zig"); // codex Responses WS transport (delta continuation held across a turn)
 const mcp = @import("mcp.zig");
 const approvals_mod = @import("approvals.zig");
-/// The shared approval state, re-exported: a module that only passes one
-/// through (session_run's startup helpers) can name the type off the Agent
-/// that owns it instead of importing approvals.zig itself (#429).
+/// Re-exported so startup helpers can name the Agent-owned approval state
+/// without importing approvals.zig themselves (#429).
 pub const Approvals = approvals_mod.Approvals;
 const trace = @import("trace.zig");
 const tools_mod = @import("tools.zig");
@@ -198,7 +197,7 @@ pub const Agent = struct {
     /// Text streamed so far in the current request — on Esc-interrupt this is
     /// what survives into history (with an "[interrupted]" marker appended).
     partial_text: std.ArrayList(u8) = .empty,
-    stream_quiet: bool = false, // suppress live streaming (one-shot and internal requests)
+    stream_quiet: bool = false, // mute live paint (one-shot / compact); transport still streams
     compaction_request: bool = false, // the current model call is the synthetic compaction-summary request
     server_compaction_request: bool = false, // force one explicit Codex in-stream compaction pass
     responses_output_limit: ?u32 = null, // auxiliary override (title=64); compaction always uses 4096
@@ -208,10 +207,12 @@ pub const Agent = struct {
     compact_summary_failures: u8 = 0, // #379: consecutive complete-but-unusable (empty/truncated) summaries
     compact_pin_degraded: bool = false, // #581: pinned suffix over budget — skip+say once per unresolved turn
     empty_completion_retries: u8 = 0, // degenerate empty completions re-asked this turn (agent_empty_completion.zig)
+    named_work_nudges: u8 = 0, // named-file / zero-tool nudge this turn (named_work.zig)
     precompact_note_gen: ?u32 = null, // #391: history_rewrites at the last pre-compaction note-to-self, so one history generation buys at most one note however often compaction is retried (compact_note.decideCalls)
     ws_off: bool = false, // codex ws transport disabled for this session after a handshake/transport fallback to SSE (#codex-ws)
     ws_transport_failures: u8 = 0, // consecutive WS failures; retry once before latching persistent SSE
     streamed_text: bool = false, // the last request printed its text live
+    stall: @import("http_stall.zig").State = .{}, // #680: reconnects made this request (each widens the between-lines budget) + the budget that last tripped
     request_started: ?Io.Timestamp = null, // operational TTFT origin for the active model call (#602)
     first_token_traced: bool = false,
     thinking_open: bool = false, // a live "Thinking" reasoning block is currently streaming (/thinking)
@@ -261,14 +262,15 @@ pub const Agent = struct {
         return schema.providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
     }
 
-    /// Whether this turn should put reasoning_effort on the wire. Gemini 3.x
-    /// maps that field to thinking_level; the default medium makes every
-    /// turn think for seconds (2× wall vs Pi, which omits it). /effort still
-    /// applies — we only skip the unset default.
+    /// Whether this turn should put reasoning_effort on the wire.
+    /// Flash / Gemini send `low` for the unset default (ADR 0046) — omitting
+    /// the field still bills reasoning_tokens. /effort still applies.
     pub fn sendReasoningEffort(self: *const Agent) bool {
-        if (!self.effortApplies() or self.effort_rejected) return false;
-        if (std.mem.startsWith(u8, self.provider.model, "gemini") and self.reasoning == .medium) return false;
-        return true;
+        return self.effortApplies() and !self.effort_rejected;
+    }
+
+    pub fn usesLiveTransport(_: *const Agent) bool {
+        return true; // #682: stall-watched path; paint mute is out/stream_quiet
     }
 
     pub fn toolsJson(self: *const Agent) []const u8 {
@@ -327,6 +329,7 @@ pub const Agent = struct {
         try self.ensureRootTools(self.provider.kind);
         // No per-turn teardown: the socket and the chain span user turns, guarded by codex_chain.usable instead.
         self.completed = null;
+        @import("named_work.zig").beginTurn(self);
         if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) esc_cancel.store(false, .release);
         while (true) {
             if (try @import("turn_chrome.zig").beforeRequest(self)) |paused| return paused;
@@ -390,6 +393,7 @@ pub const Agent = struct {
                 // A completion with no text and no tool calls used to end the turn
                 // silently — mid-task that just looks like a dead session.
                 if (try empty_completion.handle(self, final_text, hist_len)) continue;
+                if (try @import("named_work.zig").handle(self, final_text)) continue;
                 return final_text;
             }
             self.empty_completion_retries = 0;

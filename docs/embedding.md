@@ -121,8 +121,7 @@ A hosted product that must not exec on the host machine already has a gate:
 `read_file` / `edit_file` / `write_file`, and `codedb` for the process
 (advertised off, dispatch refuses a hallucination). MCP tools are untouched,
 so a trusted host maps exec/read/write onto its own sandbox. Works with both
-`graff acp` and `graff --json`. `--yolo` does not lift the gate. Full
-write-up: [README — Embedder mode](../README.md#embedder-mode-run-the-harness-outside-the-sandbox).
+`graff acp` and `graff --json`. `--yolo` does not lift the gate.
 
 ```bash
 graff acp --yolo --no-local-tools --model gpt-5.5

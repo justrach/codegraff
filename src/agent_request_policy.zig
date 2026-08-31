@@ -391,6 +391,11 @@ pub fn retryTransientServerError(self: *Agent, etype: []const u8, code: ?[]const
     return true;
 }
 
+pub const GatewayRetryState = @import("agent_gateway_retry.zig").GatewayRetryState;
+pub const noteRetry = @import("agent_gateway_retry.zig").noteRetry;
+pub const noteFlake = @import("agent_gateway_retry.zig").noteFlake;
+pub const afterServerErrorOrParseReject = @import("agent_gateway_retry.zig").afterServerErrorOrParseReject;
+
 /// SSE keep-alive-only body: every non-blank line is an SSE comment (':' prefix)
 /// — OpenRouter's ": OPENROUTER PROCESSING" queue pings. No data events ever
 /// arrived, so the stream reassembler returns null and the plain-JSON fallback

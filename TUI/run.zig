@@ -81,8 +81,10 @@ pub fn run(
     m.ultracode = opts.initial_ultracode;
     if (opts.yolo) m.mode = .always_approve;
 
-    var raw = tty.enterRaw() orelse return error.NotATty;
-    restore_mod.arm(raw, enable_seq);
+    const claimed = restore_mod.takeClaim();
+    var raw = claimed orelse (tty.enterRaw() orelse return error.NotATty);
+    if (claimed != null) _ = tty.enterRaw(); // boot may have put the line discipline back
+    if (claimed == null) restore_mod.arm(raw, enable_seq);
     defer restore_mod.disarm();
     defer tty.restore(raw);
 

@@ -94,7 +94,7 @@ fn sendWebViewInit(recv: Id, s: Sel, frame: CGRect, config: Id) Id {
 
 fn runMac(url: []const u8) !void {
     var url_buf: [256]u8 = undefined;
-    const url_z = try std.fmt.bufPrintZ(&url_buf, "{s}", .{url});
+    const url_z = try std.fmt.bufPrintSentinel(&url_buf, "{s}", .{url}, 0);
 
     const app = send(cls("NSApplication"), sel("sharedApplication"));
     sendIntv(app, sel("setActivationPolicy:"), NSApplicationActivationPolicyRegular);

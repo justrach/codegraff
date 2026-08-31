@@ -122,13 +122,32 @@ pub fn filterLeanSpecs(comptime Spec: type, arena: Allocator, specs: []const Spe
 /// (evals) can act locally; the old lie forced extra child turns.
 pub const lean_subagent_desc = "Spawn a sidecar for a self-contained task. Child has bash, read_file, edit_file, write_file, codedb; it does NOT share your context — the prompt must say everything. Returns the final report. Keep the critical-path next step local; do not hand off the blocker and wait. Do file and command work yourself this turn; spawn only for independent work.";
 
+/// One-shot tool prose (ADR 0046). Same names and JSON schemas; shorter
+/// descriptions so flash models start and finish instead of rereading
+/// essays. Do not drop to four tools (ADR 0024).
+pub const lean_bash_desc = "Run /bin/sh -c in cwd. Returns stdout, stderr, exit. Foreground still running after 120s (or timeout ms) backgrounds — bash_output(wait_ms>0) waits; do not poll.";
+pub const lean_read_file_desc = "Read a UTF-8 file. Call before editing. contains=exact-key numbered lines; start_line/end_line for a window.";
+pub const lean_edit_file_desc = "Replace exact text. Prefer one batched edits[] over many calls. Prefer over write_file for an existing file.";
+pub const lean_codedb_desc = "Indexed nav: context <task> · around <name> · callpath A B · list_dir <path> · status. Prefer over bash grep/find/ls.";
+pub const lean_attempt_completion_desc = "Task is done. Put the final answer in result.";
+
+fn leanCompactDesc(name: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, name, "subagent")) return lean_subagent_desc;
+    if (std.mem.eql(u8, name, "bash")) return lean_bash_desc;
+    if (std.mem.eql(u8, name, "read_file")) return lean_read_file_desc;
+    if (std.mem.eql(u8, name, "edit_file")) return lean_edit_file_desc;
+    if (std.mem.eql(u8, name, "codedb")) return lean_codedb_desc;
+    if (std.mem.eql(u8, name, "attempt_completion")) return lean_attempt_completion_desc;
+    return null;
+}
+
 /// schema.zig chains this after filterLeanSpecs: identical names and JSON
 /// schemas, compact prose. Returns the input untouched when lean is off.
 pub fn compactLeanSpecs(comptime Spec: type, arena: Allocator, specs: []const Spec) ![]const Spec {
     if (!lean) return specs;
     const buf = try arena.dupe(Spec, specs);
     for (buf) |*spec| {
-        if (std.mem.eql(u8, spec.name, "subagent")) spec.desc = lean_subagent_desc;
+        if (leanCompactDesc(spec.name)) |desc| spec.desc = desc;
     }
     return buf;
 }
@@ -229,21 +248,26 @@ test "lean: the filter keeps exactly the seven one-shot tools, and allocates not
     try std.testing.expectEqualStrings("subagent", kept[2].name);
     try std.testing.expectEqualStrings("attempt_completion", kept[3].name);
     try std.testing.expectEqual(@as(usize, 8), lean_tools.len);
+    try std.testing.expect(leanKeeps("read_file") and leanKeeps("edit_file") and leanKeeps("write_file"));
     try std.testing.expect(!leanKeeps("read_tool_result"));
     for (lean_tools) |tool| try std.testing.expect(leanKeeps(tool));
     try std.testing.expect(!leanKeeps("workflow"));
     try std.testing.expect(!leanKeeps("todo_write"));
     try std.testing.expect(!leanKeeps("webfetch"));
-    // …and the compact pass shrinks subagent's prose, leaves its name/schema
-    // and every other tool alone, and is a no-op when lean is off.
+    // …and the compact pass shrinks one-shot prose, leaves names/schemas,
+    // and is a no-op when lean is off.
     lean = false;
     try std.testing.expectEqual(specs.len, (try compactLeanSpecs(Spec, arena, &specs)).len);
     lean = true;
     const compact = try compactLeanSpecs(Spec, arena, &specs);
     try std.testing.expectEqual(specs.len, compact.len);
     for (compact) |s| {
-        if (std.mem.eql(u8, s.name, "subagent")) try std.testing.expectEqualStrings(lean_subagent_desc, s.desc) else try std.testing.expectEqualStrings("", s.desc);
+        if (std.mem.eql(u8, s.name, "subagent")) try std.testing.expectEqualStrings(lean_subagent_desc, s.desc);
+        if (std.mem.eql(u8, s.name, "bash")) try std.testing.expectEqualStrings(lean_bash_desc, s.desc);
+        if (leanCompactDesc(s.name) == null) try std.testing.expectEqualStrings("", s.desc);
     }
+    try std.testing.expect(lean_bash_desc.len < 200);
+    try std.testing.expect(lean_attempt_completion_desc.len < 80);
     try std.testing.expect(std.mem.indexOf(u8, lean_subagent_desc, "sidecar") != null);
     try std.testing.expect(std.mem.indexOf(u8, lean_subagent_desc, "critical-path") != null);
     try std.testing.expect(std.mem.indexOf(u8, lean_subagent_desc, "approval-denied") == null); // that fact lives on unattended_note, not here
@@ -381,6 +405,7 @@ test "lean prompt diet: no fan-out / trace / issue-filing; short local-tools not
     try std.testing.expect(std.mem.indexOf(u8, out, "not covered by /rewind") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "rlm") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "SPEC.md") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "edit that path") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "discard work") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Fix root causes") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Co-Authored-By") == null);
@@ -396,6 +421,9 @@ test "lean catalog drops overflow pager and empty load_tool_schemas" {
     const arena = arena_state.allocator();
     const specs = try schema.effectiveRootSpecs(arena);
     const json = try schema.renderRootTools(arena, .openai, specs, &.{});
+    try std.testing.expect(std.mem.indexOf(u8, json, "read_file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "edit_file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "write_file") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "read_tool_result") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"load_tool_schemas\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"rlm\"") == null);

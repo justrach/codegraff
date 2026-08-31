@@ -21,8 +21,9 @@ Every harness event is one of four classes:
 | Useful operation | a semantic one-liner |
 | New information | model narration |
 
-`note_constraint`, `skill`, `read_tool_result`, and successful compaction are
-bookkeeping (`/debug` still prints compaction). `todo_write` reprints a
+`note_constraint`, `skill`, `read_tool_result`, successful compaction, mid-turn
+stall/reconnect, and inner-loop "model call N" pulses are bookkeeping (`/debug`
+still prints compaction). `todo_write` reprints a
 `WORKING` block only when the checklist changes, and the same block sits
 above `›`. Subagents are `↯ scout` / `✓ scout` one-liners; the `sa-` id is
 not foreground UI. `batch` is `inspect`. Observe, then conclude, then act.
@@ -31,4 +32,5 @@ not foreground UI. `batch` is `inspect`. Observe, then conclude, then act.
 
 JSON events and tool results the model reads are unchanged. `/debug` and
 `.graff/subagents/<id>.md` remain the escape hatch. A later TUI chrome pass
-can bind WORKING to the pager footer the same way.
+can bind WORKING to the pager footer the same way. The pager claims the
+alt-screen before session construction (ADR 0042); the welcome stays empty.

@@ -1,0 +1,10 @@
+{
+  "id": "stall-warn",
+  "suite": "inhouse",
+  "category": "inhouse",
+  "source": "codegraff stall-bus-silent — print the stall warning only when the reconnect budget is gone (distilled)",
+  "files_dir": "fixtures/stall-warn",
+  "prompt": "stall_notice.py:stall_notice prints a warning on every reconnect. Read SPEC.md and stall_notice.py, then edit stall_notice.py so `python3 test_stall_notice.py` prints OK. Do not only describe the fix. Do not edit the tests. Mid-turn reconnects are silent; the ending-turn notice fires only when the budget is gone.",
+  "check": "python3 test_stall_notice.py && python3 \"$TASK_ROOT/hidden/stall-warn.py\"",
+  "timeout_s": 240
+}

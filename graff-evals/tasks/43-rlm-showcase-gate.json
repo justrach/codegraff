@@ -1,0 +1,10 @@
+{
+  "id": "rlm-showcase-gate",
+  "suite": "inhouse",
+  "category": "inhouse",
+  "source": "codegraff #633 / ADR 0030 — showcase rlm on --rlm, 4-wide native, or 50% compactAt; never MCP fan-out (distilled)",
+  "files_dir": "fixtures/rlm-showcase-gate",
+  "prompt": "gate.py:should_showcase treats MCP fan-out like a wide native batch and showcases on any context>0. Read SPEC.md and gate.py, then edit gate.py so `python3 test_gate.py` prints OK. Do not only describe the fix. Do not edit the tests. Showcase on --rlm, ≥4 native names, or context ≥ compactAt/2.",
+  "check": "python3 test_gate.py && python3 \"$TASK_ROOT/hidden/rlm-showcase-gate.py\"",
+  "timeout_s": 240
+}

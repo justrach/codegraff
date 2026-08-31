@@ -57,3 +57,35 @@ pub fn ensureRootTools(self: *Agent, kind: Provider.Kind) !void {
         &.{};
     dest.* = try schema.renderRootTools(self.arena, kind, specs, connected);
 }
+
+test "invalidate without ensure leaves toolsJson empty; rebuild is a JSON array" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var agent: Agent = undefined;
+    agent.arena = arena;
+    agent.sub = false;
+    agent.registry = null;
+    agent.tools_anthropic = "";
+    agent.tools_openai = "";
+    agent.tools_responses = "";
+    agent.provider = .{
+        .id = "xai",
+        .kind = .responses,
+        .auth = .bearer,
+        .url = "",
+        .api_key = "k",
+        .model = "grok-4.6",
+        .context = 100_000,
+    };
+    try agent.ensureRootTools(.responses);
+    try std.testing.expect(agent.tools_responses.len > 2);
+    agent.invalidateRootTools();
+    try std.testing.expectEqual(@as(usize, 0), agent.toolsJson().len);
+    try agent.ensureRootTools(.responses);
+    try std.testing.expect(agent.tools_responses.len > 2);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, agent.tools_responses, .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .array);
+    try std.testing.expect(parsed.value.array.items.len > 0);
+}

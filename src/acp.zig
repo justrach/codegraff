@@ -31,6 +31,9 @@ const proto = @import("acp_protocol.zig");
 const engine = @import("acp_engine.zig");
 const stream = @import("acp_stream.zig");
 const playbook_glue = @import("playbook_glue.zig");
+const pricing = @import("pricing.zig");
+const billing = @import("billing.zig");
+const models_rank = @import("models_rank");
 
 pub const protocol_version = proto.protocol_version;
 pub const err_method_not_found = proto.err_method_not_found;
@@ -77,6 +80,53 @@ fn liveBind(ctx: *anyopaque, session_id: []const u8) void {
     live.session_id = session_id;
 }
 
+/// `graff/models` (vendor extension, dispatched through `engine.Dispatch.extra`):
+/// the same catalog + credential view the REPL `/models` table prints, so an
+/// ACP client can offer only the models this install can actually reach.
+/// Rows come back in election order (plan, then local, credits, api).
+fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request) anyerror!bool {
+    if (!std.mem.eql(u8, req.method, "graff/models")) return false;
+    if (req.id == null) return true;
+    const live: *LiveTurn = @ptrCast(@alignCast(ctx));
+    const keys = live.keys;
+    const root = live.root;
+    const catalog = pricing.models();
+    const Row = struct {
+        name: []const u8,
+        provider: []const u8,
+        context: u64,
+        authenticated: bool,
+        cost: []const u8,
+        current: bool,
+    };
+    const ranked = try arena.alloc(models_rank.Scored, catalog.len);
+    for (catalog, 0..) |m, i| ranked[i] = .{
+        .idx = i,
+        .score = models_rank.electionRank(
+            keys.get(m.provider) != null,
+            billing.costFor(m.provider, keys.source(m.provider)),
+        ),
+    };
+    std.mem.sort(models_rank.Scored, ranked, {}, models_rank.scoredLess);
+    const rows = try arena.alloc(Row, catalog.len);
+    for (ranked, rows) |r, *row| {
+        const m = catalog[r.idx];
+        row.* = .{
+            .name = m.name,
+            .provider = m.provider,
+            .context = pricing.contextFor(m.provider, m.name),
+            .authenticated = keys.get(m.provider) != null,
+            .cost = billing.costFor(m.provider, keys.source(m.provider)).badge(),
+            .current = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id),
+        };
+    }
+    try proto.writeResult(w, req.id, .{
+        .models = rows,
+        .current = .{ .model = root.provider.model, .provider = root.provider.id },
+    });
+    return true;
+}
+
 pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u8) !void {
     engine.implementation_version = main_mod.harness_version;
     engine.on_cancel = syncEscCancel;
@@ -107,7 +157,21 @@ const LiveTurn = struct {
             main_mod.g_out = null;
         }
         const final = try providers.runTurnWithFallback(self.root, self.keys, arena, null);
+        // The REPL checkpoints after every turn (mainloop); an ACP host's
+        // conversation deserves the same durability. Without this a text-only
+        // turn reached .graff/sessions only at stdin EOF, and a tab the host
+        // killed never did. The root arena, not this turn's: the queued write
+        // outlives the turn.
+        session.saveSessionAsync(self.root, self.root.arena, self.root.session_name) catch {};
+        // saw_text is "the LAST streamed event was answer text" (tool events
+        // reset it in the sink): a turn that ended mid-text already delivered
+        // the answer; one that ended on tools (attempt_completion flows) has
+        // its answer only in `final`, so that must still go on the wire.
         if (self.saw_text) return "";
+        // A streamed preamble and the final answer are separate paragraphs;
+        // without the break the client renders "…answering.The three files…".
+        if (final.len > 0 and sink.streamed_any)
+            return try std.fmt.allocPrint(arena, "\n\n{s}", .{final});
         return final;
     }
 };
@@ -132,6 +196,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .slash = liveSlash,
         .after_user = liveAfter,
         .bind_session = liveBind,
+        .extra = liveModels,
     };
     while (true) {
         const line = (in.takeDelimiter('\n') catch break) orelse break;

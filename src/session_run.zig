@@ -60,7 +60,6 @@ const goal_flow = @import("goal_flow.zig");
 const fleet = @import("fleet.zig");
 const hooks = @import("hooks.zig");
 const learn_auto = @import("learn_auto.zig");
-const learn_init = @import("learn_init.zig");
 const run_budget_mod = @import("run_budget.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const commands_privacy = @import("commands_privacy.zig");
@@ -117,6 +116,9 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
     }
     try repl.runScripted(gpa, io, environ_map, in, out, &repl_ctx, repl_glue.replTurnCb, repl_glue.replModelCb, repl_glue.replCancelCb, root.provider.model, models_buf.items);
     root.messages = try convo.cloneInto(root.arena);
+    // Same stderr footer as `-p`, so evals can score the scripted REPL the
+    // same way. TTY `graff repl` is the TUI and keeps the restore tail clean.
+    pricing.printUsageFooter(io);
     return true;
 }
 
@@ -135,16 +137,20 @@ pub fn runFrontendCommands(gpa: Allocator, io: Io, environ_map: anytype, root: *
 
 /// One-shot print mode (`-p`/bare positional prompt): run the single prompt
 /// to completion, print the final text to stdout, exit. Tool progress goes
-/// to stderr (say() with no out writer), streaming stays quiet, and the gate
+/// to stderr (say() with no out writer), paint stays quiet, and the gate
 /// denies anything not pre-approved instead of prompting (there's no one to
 /// ask). Moved out of main() verbatim (600-line goal); `root`/`tracer` are
 /// already stable main()-owned storage by the time this runs.
 pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_mod.Agent, keys: *provider_mod.Keys, tracer: *trace.Tracer, out: *Io.Writer, prompt_text: []const u8) !void {
     if (@import("goal_pacing.zig").oneshotSlashRefusal(prompt_text)) |why| std.process.fatal("{s}", .{why}); // usage error, not a prompt
     main_mod.unattended = true;
+    @import("named_work.zig").remember(prompt_text);
     root.in = null; // gate: deny instead of prompt; ask_user: self-decide
     root.out = null; // tool progress → stderr; stdout carries only the answer
     root.stream_quiet = true;
+    // stderr only: same class of "process is live" as Pi's JSONL session line.
+    // Eval first_out used to wait for the call-2 stdout pulse (ADR 0046).
+    std.debug.print("calling {s}\n", .{root.provider.model});
     const ultracode_msg = try shapes.applyUltracodeSteering(arena, prompt_text, prompt_text, prompts.ultracodeActive(root));
     if (ultracode_msg.explicit) {
         tracer.note("ultracode", prompt_text[0..@min(prompt_text.len, 120)]);
@@ -162,7 +168,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     );
     var oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
     if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
-    try root.messages.append(try messages_mod.textMessage(arena, "user", oneshot_user));
+    try root.messages.append(try @import("named_work.zig").userNudge(arena, root.provider.kind, oneshot_user));
     if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(prompt_text.len, std.math.maxInt(u32))), root.provider.model);
     // #502: --output-schema runs TWO-PHASE. A strict grammar on every message
     // pulls the model into answering immediately instead of touching tools
@@ -208,7 +214,10 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
             break :blk final_text;
         };
     }
-    try out.print("{s}\n", .{if (had_schema) unwrapFencedJson(final_text) else final_text});
+    const answer = if (had_schema) unwrapFencedJson(final_text) else final_text;
+    // Live -p deltas already rode stdout (`printDelta`); reprinting would
+    // duplicate the answer and push first_out to the footer.
+    if (!root.streamed_text) try out.print("{s}\n", .{answer}) else try out.writeAll("\n");
     try out.flush();
     // Usage summary → stderr, so stdout stays exactly the answer.
     pricing.printUsageFooter(io);
@@ -500,34 +509,43 @@ fn reportTrialStarted(started: learn_auto.Started) void {
     );
 }
 
-/// Configure this workspace's learning store from the running binary, the same
-/// way `graff learn init` would. Best effort by design: a machine with no
-/// python3 or no usable credential simply does not learn, and the marker
-/// learn_auto already claimed keeps that from being retried every session.
-fn autoInitLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *const std.process.Environ.Map) bool {
+/// Start a detached `graff learn init` of this binary. Best effort: a machine
+/// that cannot spawn simply does not learn, and the marker learn_auto already
+/// claimed keeps that from being retried every session. Suite generation
+/// (~38s) must not sit on `-p` / REPL / TUI teardown.
+fn autoInitLearning(gpa: Allocator, io: Io) bool {
     std.debug.print("↺ setting this workspace up to learn from sessions like this one\n", .{});
-    // learn init narrates its own progress; the session's closing lines below
-    // are the useful summary, so its output goes to a buffer instead.
-    var buf: [16 * 1024]u8 = undefined;
-    var sink = std.Io.Writer.fixed(&buf);
-    learn_init.zeroConfig(gpa, arena, io, environ_map, .{}, &sink) catch |err| {
-        std.debug.print(
-            "↺ learning setup skipped ({s}) — `graff learn init` to retry\n",
-            .{@errorName(err)},
-        );
+    const exe_path = std.process.executablePathAlloc(io, gpa) catch {
+        std.debug.print("↺ learning setup skipped — `graff learn init` to retry\n", .{});
         return false;
     };
+    defer gpa.free(exe_path);
+    if (!learn_auto.startInit(io, exe_path)) {
+        std.debug.print("↺ learning setup skipped — `graff learn init` to retry\n", .{});
+        return false;
+    }
     std.debug.print(
-        "↺ learning on for this workspace: a trial runs in the background every {d} sessions and spends real model calls — `graff learn status`, off with GRAFF_LEARN_AUTO=off\n",
-        .{learn_auto.default_every_sessions},
+        "↺ learning setup started in the background — `graff learn status`, off with GRAFF_LEARN_AUTO=off\n",
+        .{},
     );
     return true;
 }
 
+/// One-shots and `--json` are not a workspace opting into a spending cadence.
+/// `-p` evals land on exactly 5 model calls (the bootstrap floor) and then
+/// copy 132M `graff-pinned` + generate suites (~38s CPU). Interactive
+/// REPL/TUI/ACP still auto-init. Off with `GRAFF_LEARN_AUTO=off`.
+pub fn shouldAutoLearn(unattended: bool, json_mode: bool) bool {
+    return !unattended and !json_mode;
+}
+
 /// Closing the learning loop: a session that did real model work counts toward
 /// this workspace's next trial and, on cadence, starts one in the background.
-/// The first such session in a workspace also creates the store it counts into.
+/// The first such session also starts `graff learn init` detached so teardown
+/// does not wait on suite generation; the next session that finds a store
+/// starts the cadence.
 pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *const std.process.Environ.Map, budget: *const run_budget_mod.RunBudget, telemetry_allowed: bool) void {
+    if (!shouldAutoLearn(main_mod.unattended, main_mod.json_mode)) return;
     const options: learn_auto.Options = .{
         .model_calls = budget.used(),
         // A session launched with --no-telemetry keeps its trial local, even
@@ -536,15 +554,7 @@ pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ
     };
     switch (learn_auto.maybeStart(gpa, arena, io, environ_map, options)) {
         .started => |started| reportTrialStarted(started),
-        // First real session here: build the store, then count this session
-        // against it so the cadence starts from this one rather than the next.
-        .needs_store => {
-            if (!autoInitLearning(gpa, arena, io, environ_map)) return;
-            switch (learn_auto.maybeStart(gpa, arena, io, environ_map, options)) {
-                .started => |started| reportTrialStarted(started),
-                else => {},
-            }
-        },
+        .needs_store => _ = autoInitLearning(gpa, io),
         .skipped => {},
     }
 }
@@ -564,4 +574,11 @@ fn unwrapFencedJson(text: []const u8) []const u8 {
 test "unwrapFencedJson strips a markdown fence and leaves bare JSON alone" {
     try std.testing.expectEqualStrings("{\"a\":1}", unwrapFencedJson("```json\n{\"a\":1}\n```\n"));
     try std.testing.expectEqualStrings("{\"a\":1}", unwrapFencedJson("{\"a\":1}"));
+}
+
+test "one-shot and --json do not auto-init a learning store" {
+    try std.testing.expect(!shouldAutoLearn(true, false));
+    try std.testing.expect(!shouldAutoLearn(false, true));
+    try std.testing.expect(!shouldAutoLearn(true, true));
+    try std.testing.expect(shouldAutoLearn(false, false));
 }

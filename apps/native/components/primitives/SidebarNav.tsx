@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   IconArrowBoxLeft,
@@ -37,6 +37,10 @@ export type SidebarRecent = {
   id: string;
   label: string;
   prompt?: string;
+  /** Section header shown above the first row of each run of equal groups. */
+  group?: string;
+  /** Tooltip detail (model, age) — the row itself stays a single line. */
+  hint?: string;
 };
 
 const DEFAULT_RECENTS: SidebarRecent[] = [
@@ -48,6 +52,8 @@ const DEFAULT_RECENTS: SidebarRecent[] = [
 
 type SidebarNavProps = {
   activeTitle?: string | null;
+  /** When set, rows highlight by id instead of by label (titles can repeat). */
+  activeId?: string | null;
   className?: string;
   fill?: boolean;
   onNewChat?: () => void;
@@ -200,6 +206,7 @@ function WorkspaceMenu({
 
 export default function SidebarNav({
   activeTitle,
+  activeId,
   className = "",
   fill = false,
   onNewChat,
@@ -403,14 +410,20 @@ export default function SidebarNav({
           </div>
 
           <GlideGroup>
-            {visibleRecents.map((item) => {
-              const active = item.label === selectedTitle;
+            {visibleRecents.map((item, index) => {
+              const active = activeId !== undefined ? item.id === activeId : item.label === selectedTitle;
+              const header = item.group && item.group !== visibleRecents[index - 1]?.group ? item.group : null;
               return (
+                <Fragment key={item.id}>
+                {header && (
+                  <div className={`sidebar-copy mx-2 px-2 pb-1 text-[11px] font-medium tracking-wide text-ink-3 ${index === 0 ? "" : "mt-3"}`}>
+                    {header}
+                  </div>
+                )}
                 <button
-                  key={item.id}
                   data-row
                   type="button"
-                  title={item.label}
+                  title={item.hint ? `${item.label} — ${item.hint}` : item.label}
                   onClick={() => {
                     selectNav("chats");
                     if (activeTitle === undefined) setDemoActiveTitle(item.label);
@@ -424,6 +437,7 @@ export default function SidebarNav({
                     {item.label}
                   </span>
                 </button>
+                </Fragment>
               );
             })}
             {query && visibleRecents.length === 0 && (

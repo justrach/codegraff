@@ -1,4 +1,4 @@
-# 0042. Resume branches have independent durable identity
+# 0048. Resume branches have independent durable identity
 
 Status: accepted 2026-08-30
 

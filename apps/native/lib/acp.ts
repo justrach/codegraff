@@ -50,6 +50,20 @@ function iconForKind(kind: string | undefined, title: string): ToolIcon {
   return "think";
 }
 
+/** `mcp__codedbpro__faster_search` → { server: "codedbpro", tool: "faster_search" } */
+function mcpParts(name: string): { server: string; tool: string } | null {
+  if (!name.startsWith("mcp__")) return null;
+  const rest = name.slice(5);
+  const split = rest.indexOf("__");
+  if (split < 0) return { server: "", tool: rest };
+  return { server: rest.slice(0, split), tool: rest.slice(split + 2) };
+}
+
+function humanize(id: string): string {
+  const words = id.replace(/[_-]+/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : id;
+}
+
 function labelForKind(kind: string | undefined, title: string): string {
   if (kind === "execute") return "Run";
   if (kind === "edit") return "Edit";
@@ -59,6 +73,10 @@ function labelForKind(kind: string | undefined, title: string): string {
   if (kind === "fetch") return "Fetch";
   if (kind === "search") return "Search";
   if (kind === "think") return "Plan";
+  const mcp = mcpParts(title);
+  if (mcp) return humanize(mcp.tool);
+  // Bare engine tools (attempt_completion, todo_write…) read as identifiers.
+  if (/^[a-z0-9_]+$/.test(title)) return humanize(title);
   return title;
 }
 
@@ -139,7 +157,13 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
         : "running"
     : (prev?.status ?? "running");
   const rawInput = update.rawInput && typeof update.rawInput === "object" ? update.rawInput : {};
-  const path = typeof rawInput.path === "string" ? rawInput.path : prev?.path;
+  // codedbpro-style tools say `file`, catalog tools say `path`.
+  const path =
+    typeof rawInput.path === "string"
+      ? rawInput.path
+      : typeof rawInput.file === "string"
+        ? rawInput.file
+        : prev?.path;
   const contentItems = "content" in update && Array.isArray(update.content) ? update.content : [];
   const contentText = contentItems
     .map((item) => item.content?.text)
@@ -151,26 +175,28 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     : fromInput.length
       ? fromInput
       : (prev?.detail ?? []);
-  const startedAt = prev?.startedAt ?? Date.now();
-  const elapsedMs =
-    status === "running"
-      ? prev?.elapsedMs
-      : (prev?.elapsedMs ?? Math.max(0, Date.now() - startedAt));
+  const mcp = mcpParts(title);
+  const label = labelForKind(kind, title);
+  // A raw MCP name as chip repeated the label; show the server instead, and
+  // no chip at all when it would just echo the label.
+  const chip = path ?? (mcp ? mcp.server : title);
   const row: ToolRow = {
     id,
-    name: labelForKind(kind, title),
+    name: label,
     icon: iconForKind(kind, title),
-    chip: path ?? title,
+    chip: chip === label || humanize(chip) === label ? "" : chip,
     status,
     detail,
     path,
-    startedAt,
-    elapsedMs,
+    startedAt: prev?.startedAt ?? Date.now(),
   };
   const tools = turn.tools.slice();
   const merged: ToolRow = idx >= 0
-    ? { ...prev!, ...row, name: kind ? row.name : prev!.name, icon: kind ? row.icon : prev!.icon, startedAt, elapsedMs }
+    ? { ...prev!, ...row, name: kind ? row.name : prev!.name, icon: kind ? row.icon : prev!.icon }
     : row;
+  if ((status === "ok" || status === "error") && merged.elapsedMs === undefined && merged.startedAt !== undefined) {
+    merged.elapsedMs = Date.now() - merged.startedAt;
+  }
   if (idx >= 0) tools[idx] = merged;
   else tools.push(merged);
   const todos = parseTodos(rawInput);
@@ -178,6 +204,8 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     ...turn,
     tools,
     todos: todos.length ? todos : turn.todos,
+    // Text after a tool bracket is a new message segment, not a continuation.
+    pendingBreak: turn.text.length > 0 ? true : turn.pendingBreak,
     status: turn.status === "ask" ? "ask" : status === "running" || turn.status === "thinking" ? "streaming" : turn.status,
   };
   if ((merged.icon === "write" || kind === "edit") && (status === "ok" || status === "error")) {
@@ -198,7 +226,7 @@ export function finishAcpTurn(turn: AssistantTurn): AssistantTurn {
 export function applyAcpUpdate(turn: AssistantTurn, update: AcpUpdate): AssistantTurn {
   switch (update.sessionUpdate) {
     case "agent_thought_chunk": {
-      const text = update.content?.text ?? "";
+      const text = (update as { content?: AcpContent }).content?.text ?? "";
       return {
         ...turn,
         reasoning: `${turn.reasoning}${text}`,
@@ -206,16 +234,19 @@ export function applyAcpUpdate(turn: AssistantTurn, update: AcpUpdate): Assistan
       };
     }
     case "agent_message_chunk": {
-      const text = update.content?.text ?? "";
+      const text = (update as { content?: AcpContent }).content?.text ?? "";
+      const needsBreak = turn.pendingBreak && turn.text.length > 0 && !/\s$/.test(turn.text) && !/^\s/.test(text);
       return {
         ...turn,
-        text: `${turn.text}${text}`,
+        text: `${turn.text}${needsBreak ? "\n\n" : ""}${text}`,
+        pendingBreak: false,
         status: turn.status === "ask" ? "ask" : "streaming",
       };
     }
     case "tool_call":
     case "tool_call_update":
-      return upsertTool(turn, update);
+      // The catch-all AcpUpdate member defeats literal narrowing here.
+      return upsertTool(turn, update as Extract<AcpUpdate, { toolCallId: string }>);
     default:
       return turn;
   }

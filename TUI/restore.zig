@@ -76,6 +76,52 @@ pub fn disarm() void {
     armed.store(false, .release);
 }
 
+/// True while a fatal-signal restore is hooked — `run` uses this so an
+/// early `claimScreen` (alt-screen before keys/MCP/prompt) is not armed
+/// twice, which would save already-raw termios and strand the shell.
+pub fn isArmed() bool {
+    return armed.load(.acquire);
+}
+
+/// Early alt-screen claim so leftover boot happens *inside* the pager.
+/// `run` takes ownership via `takeClaim`; `releaseIfOwned` (shutdown
+/// teardown + fatal signals already hooked by `arm`) restores if we never
+/// get there. No libc `atexit`: Zig exits via syscall and skips C exits.
+var claim_owned = std.atomic.Value(bool).init(false);
+var claim_raw: tty.RawState = undefined;
+
+pub fn claimScreen(enable_seq: []const u8) bool {
+    if (builtin.is_test) return false;
+    if (claim_owned.load(.acquire) or armed.load(.acquire)) return true;
+    const raw = tty.enterRaw() orelse return false;
+    claim_raw = raw;
+    arm(raw, enable_seq);
+    if (builtin.os.tag != .windows) {
+        // Alt-screen only. Kitty/mouse/paste are a stack — run() writes
+        // the full enable_seq once when the loop actually starts.
+        const first = "\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J";
+        _ = std.posix.system.write(std.posix.STDOUT_FILENO, first.ptr, first.len);
+    }
+    muteStderr();
+    claim_owned.store(true, .release);
+    return true;
+}
+
+/// Hand the claimed raw state to `run`. After this, `releaseIfOwned` no-ops
+/// — `run` owns restore. Null when nothing was claimed (off-TTY, or `run` first).
+pub fn takeClaim() ?tty.RawState {
+    if (!claim_owned.swap(false, .acq_rel)) return null;
+    return claim_raw;
+}
+
+/// Teardown / error-return path after an early claim that never reached `run`.
+/// First call wins; later stamps are a single atomic load.
+pub fn releaseIfOwned() void {
+    if (!claim_owned.load(.acquire)) return;
+    emergency();
+    claim_owned.store(false, .release);
+}
+
 /// True exactly once per resume from SIGTSTP — run.zig drops its diff
 /// baseline so the first frame after `fg` is a full repaint.
 pub fn takeResumed() bool {
@@ -262,8 +308,20 @@ test "arm and disarm toggle the emergency latch" {
     try std.testing.expect(!armed.load(.acquire));
     arm(if (builtin.os.tag == .windows) .{} else undefined, "");
     try std.testing.expect(armed.load(.acquire));
+    try std.testing.expect(isArmed());
     disarm();
     try std.testing.expect(!armed.load(.acquire));
+}
+
+test "takeClaim is empty until a claim is owned" {
+    try std.testing.expect(takeClaim() == null);
+}
+
+test "takeClaim hands the raw state over exactly once" {
+    claim_raw = if (builtin.os.tag == .windows) .{} else undefined;
+    claim_owned.store(true, .release);
+    try std.testing.expect(takeClaim() != null);
+    try std.testing.expect(takeClaim() == null);
 }
 
 test "crash signals are hooked, and they hand the signal back, not to SIG_DFL (#535/#547)" {
@@ -288,6 +346,8 @@ test "crash signals are hooked, and they hand the signal back, not to SIG_DFL (#
 
 test "stderr is parked for the TUI's whole lifetime and unparked on every exit path" {
     const run_src = @embedFile("run.zig");
+    // Early claim (ADR 0042) is taken here so run does not re-arm over raw termios.
+    try std.testing.expect(std.mem.indexOf(u8, run_src, "takeClaim()") != null);
     // Parked right after the fullscreen enable, before the first frame...
     const enable_at = std.mem.indexOf(u8, run_src, "w.writeAll(enable_seq) catch {};").?;
     const mute_at = std.mem.indexOfPos(u8, run_src, enable_at, "restore_mod.muteStderr();").?;

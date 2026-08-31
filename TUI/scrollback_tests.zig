@@ -243,3 +243,35 @@ test "a long system row breaks on a space, never through a token" {
         try std.testing.expect(n > 1); // it really did wrap
     }
 }
+
+test "live prose tail paints markdown; raw bash stays plain" {
+    const engine = @import("engine.zig");
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    var sbuf: [256]u8 = undefined;
+    var rbuf: [256]u8 = undefined;
+    var job: engine.Job = .{
+        .gpa = std.testing.allocator,
+        .history = &.{},
+        .params = .{},
+        .stream = .{ .buf = &sbuf },
+        .raw = .{ .buf = &rbuf },
+        .threaded = false,
+    };
+    job.stream.appendBytes("- first\n**bold** word\n");
+    try m.push(.pending, "");
+    m.pending = &job;
+    defer m.pending = null;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const prose = try scrollback.render(&m, arena.allocator(), 80, 0);
+    try std.testing.expect(std.mem.indexOf(u8, prose, "•") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prose, "**bold**") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prose, "bold") != null);
+
+    job.raw.appendBytes("**not markdown**\n- also raw\n");
+    const bash = try scrollback.render(&m, arena.allocator(), 80, 0);
+    try std.testing.expect(std.mem.indexOf(u8, bash, "**not markdown**") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bash, "- also raw") != null);
+}

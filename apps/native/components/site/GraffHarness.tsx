@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import PromptBar from "@/components/primitives/PromptBar";
+import Markdown from "@/components/primitives/Markdown";
+import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
-import StreamingText from "@/components/primitives/StreamingText";
+import FilesPane from "@/components/site/FilesPane";
+import { IconFolder } from "@/lib/icons";
 import TaskRows from "@/components/primitives/TaskRows";
 import ThinkingState from "@/components/primitives/ThinkingState";
 import ToolChips from "@/components/primitives/ToolChips";
@@ -12,14 +14,61 @@ import {
   MODELS,
   STARTER_PROMPTS,
   cancel,
+  chatHandle,
   checkHealth,
+  disposePage,
+  disposeSession,
   ensureSession,
+  fetchModels,
   prompt,
   type Health,
 } from "@/lib/acp-client";
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
+import { dateGroup, listSessions, loadSession, relativeTime, type StoredSession } from "@/lib/sessions";
 
 const NAME = "there";
+
+function greeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 5) return "Up late";
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
+
+/** Typewriter reveal over the ACP text, the way every AI app streams: a
+ * readable base rate with gentle backlog catch-up (capped so a one-shot
+ * final answer still visibly types out), and the drain keeps playing after
+ * the turn's result lands — done-state chrome waits for the last word.
+ * Mounted mid-history it starts caught-up, so old messages never replay. */
+function useSmoothStream(target: string): string {
+  const [shown, setShown] = useState(target);
+  const shownRef = useRef(target);
+  useEffect(() => {
+    if (!target.startsWith(shownRef.current)) {
+      shownRef.current = target;
+      setShown(target);
+      return;
+    }
+    if (target === shownRef.current) return;
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = Math.min(now - last, 100);
+      last = now;
+      const behind = target.length - shownRef.current.length;
+      if (behind <= 0) return;
+      const rate = Math.min(160 + behind * 1.2, 2400); // chars/second
+      const step = Math.max(1, Math.round((rate * dt) / 1000));
+      shownRef.current = target.slice(0, shownRef.current.length + step);
+      setShown(shownRef.current);
+      if (shownRef.current.length < target.length) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target]);
+  return shown;
+}
 
 const HOME_REVEAL = {
   offsetY: 23,
@@ -42,12 +91,49 @@ function homeRevealStyle(visible: boolean): CSSProperties {
 function UserBubble({ text }: { text: string }) {
   return (
     <div className="flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
-      <div className="rounded-xl bg-field px-3.5 py-2 text-[13px] leading-relaxed text-ink shadow-hairline">{text}</div>
+      <div
+        className="rounded-xl px-3.5 py-2 text-[13px] leading-relaxed text-ink shadow-hairline"
+        style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }}
+      >
+        {text}
+      </div>
     </div>
   );
 }
 
-function AssistantBody({ turn }: { turn: AssistantTurn }) {
+function AssistantBody({
+  turn,
+  onOpenPath,
+  onReview,
+}: {
+  turn: AssistantTurn;
+  onOpenPath?: (path: string) => void;
+  /** Open the workspace changes review (the Codex "Changed N files" bar). */
+  onReview?: () => void;
+}) {
+  const thinking = turn.status === "thinking";
+  const smoothText = useSmoothStream(turn.text);
+  const draining = smoothText.length < turn.text.length;
+  // Follow the typewriter tail — the parent's scroll effect tracks the wire
+  // text, which goes quiet while the reveal is still playing out.
+  const articleRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (draining) articleRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
+  }, [smoothText, draining]);
+  // "Thought for Ns": the harness stamps `thoughtMs` on the turn as it streams
+  // (ACP updates carry no timestamps); a live turn without one yet is timed here.
+  const startRef = useRef(Date.now());
+  const [thoughtSecs, setThoughtSecs] = useState<number | null>(
+    turn.thoughtMs !== undefined ? Math.max(1, Math.round(turn.thoughtMs / 1000)) : null,
+  );
+  useEffect(() => {
+    if (thinking) return;
+    setThoughtSecs((current) => {
+      if (current !== null) return current;
+      const ms = turn.thoughtMs ?? Date.now() - startRef.current;
+      return Math.max(1, Math.round(ms / 1000));
+    });
+  }, [thinking, turn.thoughtMs]);
   const reasoningRows = turn.reasoning
     ? turn.reasoning
         .split(/\n+/)
@@ -63,45 +149,92 @@ function AssistantBody({ turn }: { turn: AssistantTurn }) {
     mono: tool.icon === "run" || tool.icon === "write" || tool.icon === "read",
     detailMono: tool.icon === "run" || tool.icon === "write",
     detail: tool.detail,
+    path: tool.path,
     status: tool.status,
     startedAt: tool.startedAt,
     elapsedMs: tool.elapsedMs,
   }));
 
   return (
-    <article className="min-w-0">
-      {(turn.status === "thinking" || reasoningRows.length > 0) && (
+    <article ref={articleRef} className="min-w-0" style={{ animation: "fade-up 450ms cubic-bezier(0.23,1,0.32,1) both" }}>
+      {/* Keep the header once the model has actually thought (streamed
+        * reasoning, or a think long enough to notice): unmounting it when the
+        * think ends made the answer jump up into the space it left. */}
+      {(thinking || reasoningRows.length > 0 || (turn.thoughtMs ?? 0) >= 1500) && (
         <ThinkingState
           variant="Reasoning"
-          rows={reasoningRows.length ? reasoningRows : [{ primary: "Waiting on the model…" }]}
+          rows={reasoningRows.length ? reasoningRows : [{ primary: "Waiting on the model…", shimmer: true }]}
           activeLabel={turn.model ? `Thinking · ${turn.model}` : "Thinking"}
-          doneLabel={turn.status === "thinking" ? "Thinking" : "Thought"}
-          working={turn.status === "thinking"}
+          doneLabel={thoughtSecs ? `Thought for ${thoughtSecs}s` : "Thought"}
+          working={thinking}
         />
       )}
       {toolRows.length > 0 && (
         <div className="mt-4">
-          <ToolChips rows={toolRows} diffs={turn.diffs} />
+          <ToolChips rows={toolRows} diffs={turn.diffs} onOpenPath={onOpenPath} />
         </div>
       )}
-      {(turn.text || turn.status === "streaming") && (
-        <div className="mt-4 max-w-[630px]">
-          <StreamingText
-            fill
-            loop={false}
-            text={turn.text}
-            streaming={turn.status === "streaming" || turn.status === "thinking"}
-          />
+      {turn.status === "streaming" && !turn.text ? (
+        /* Between the last tool and the first text token nothing streams —
+         * a lone caret here read as "stuck". Shimmer like the thinking
+         * header, and say which phase the agent is actually in. */
+        <div className="mt-4">
+          <span
+            className="bg-clip-text text-[13px] font-medium whitespace-nowrap text-transparent"
+            style={{
+              backgroundImage: "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
+              backgroundSize: "200% 100%",
+              animation: "shimmer-text 1.4s linear infinite",
+            }}
+          >
+            {turn.tools.some((tool) => tool.status === "running") ? "Running tools…" : "Writing…"}
+          </span>
         </div>
+      ) : (
+        turn.text && (
+          <div className="mt-4 max-w-[630px]">
+            <Markdown
+              text={smoothText}
+              streaming={draining || turn.status === "streaming" || turn.status === "thinking"}
+              onOpenPath={onOpenPath}
+            />
+          </div>
+        )
       )}
       {turn.error && (
         <p className="mt-4 max-w-[620px] text-[13.5px] leading-[1.65] text-red">{turn.error}</p>
       )}
-      {turn.recap && turn.status === "done" && (
+      {turn.recap && turn.status === "done" && !draining && (
         <p className="mt-3 text-[12px] text-ink-3">{turn.recap}</p>
       )}
-      {turn.costUsd !== undefined && turn.status === "done" && (
+      {turn.costUsd !== undefined && turn.status === "done" && !draining && (
         <p className="mt-1 font-mono text-[11px] text-ink-3">${turn.costUsd.toFixed(4)}</p>
+      )}
+      {turn.status === "done" && !draining && turn.diffs.length > 0 && onReview && (
+        <button
+          type="button"
+          onClick={onReview}
+          className="mt-4 flex h-9 w-full max-w-[630px] items-center gap-2 rounded-[10px] bg-surface px-3 text-left shadow-btn transition-colors duration-100 hover:bg-hover"
+          style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-ink-3" aria-hidden>
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <path d="M14 2v6h6" />
+          </svg>
+          <span className="text-[12.5px] font-medium text-ink">
+            Changed {turn.diffs.length} file{turn.diffs.length === 1 ? "" : "s"}
+          </span>
+          <span className="font-mono text-[11.5px] tabular-nums">
+            <span className="text-green">+{turn.diffs.reduce((n, d) => n + d.add, 0)}</span>{" "}
+            <span className="text-red">−{turn.diffs.reduce((n, d) => n + d.del, 0)}</span>
+          </span>
+          <span className="ml-auto flex items-center gap-0.5 text-[12.5px] font-medium text-ink-2">
+            Review
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+          </span>
+        </button>
       )}
     </article>
   );
@@ -111,18 +244,37 @@ type Msg =
   | { id: number; role: "user"; text: string }
   | { id: number; role: "assistant"; turn: AssistantTurn };
 
-type Chat = { id: number; title: string | null; messages: Msg[] };
+/** `model` is what this tab's own agent was spawned with; the harness-level
+ * model is only the default a new tab inherits. */
+type Chat = { id: number; title: string | null; messages: Msg[]; model?: string; session?: string };
+
+function newPageToken(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+/** A fresh tab's graff session name. Not `session-…`: that prefix is what the
+ * REPL's auto-title renames, and a tab needs a name that stays put so the
+ * sidebar row and the running agent keep pointing at the same file. */
+function newSessionName(): string {
+  return `native-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
 
 function EmptyState({
   onSend,
   health,
   offset,
   shuffle,
+  models,
+  modelKey,
+  onModelChange,
 }: {
   onSend: (text: string) => void;
   health: Health | null;
   offset: number;
   shuffle: () => void;
+  models: PromptModel[];
+  modelKey?: string;
+  onModelChange: (key: string) => void;
 }) {
   const shown = [0, 1, 2].map((i) => STARTER_PROMPTS[(offset + i) % STARTER_PROMPTS.length]);
   const [stage, setStage] = useState(0);
@@ -140,7 +292,7 @@ function EmptyState({
     <div className="mx-auto flex min-h-full max-w-[720px] flex-col justify-center px-4 py-10 sm:px-8">
       <h1 className="text-[26px] font-normal tracking-[-0.02em] text-ink">
         <span className="home-reveal block text-ink-3" style={homeRevealStyle(stage >= 1)}>
-          Hello {NAME}
+          {greeting()}
         </span>
         <span className="home-reveal block" style={homeRevealStyle(stage >= 2)}>
           What should graff work on?
@@ -152,7 +304,9 @@ function EmptyState({
           demo={false}
           tall
           placeholder="Ask graff to read, edit, or review this workspace…"
-          models={MODELS}
+          models={models}
+          modelKey={modelKey}
+          onModelChange={onModelChange}
           onSend={onSend}
           disabled={health !== null && !health.ok}
         />
@@ -182,9 +336,11 @@ function EmptyState({
           </button>
         ))}
         <div className="mt-1 flex items-center gap-5 pl-0.5 text-[13px] text-ink-3">
-          <span className="flex items-center gap-2 py-1">
+          <span className="flex items-center gap-2 py-1" title={health?.cwd}>
             <span className={`size-1.5 rounded-full ${health?.ok ? "bg-green" : "bg-orange"}`} />
-            {health?.ok ? "Connected over ACP" : "Waiting for graff acp"}
+            {health?.ok
+              ? `Connected · ${health.cwd ? (health.cwd.split("/").pop() ?? health.cwd) : "over ACP"}`
+              : "Waiting for graff acp"}
           </span>
           <button type="button" onClick={shuffle} className="flex items-center gap-2 py-1 transition-colors duration-150 hover:text-ink">
             Shuffle suggestions
@@ -200,17 +356,69 @@ export default function GraffHarness() {
   const [activeId, setActiveId] = useState(1);
   const [offset, setOffset] = useState(0);
   const [health, setHealth] = useState<Health | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [model, setModelKey] = useState(process.env.NEXT_PUBLIC_GRAFF_MODEL || MODELS[0].key);
-  const [busy, setBusy] = useState(false);
+  // Every tab owns a `graff acp` child (the agent keeps one session per
+  // process), so sessions, busy state and the spawned model are all per chat.
+  const pageRef = useRef<string>(newPageToken());
+  const sessionsRef = useRef(new Map<number, string>());
+  // chat id → graff session name (the `--resume` target / sidebar identity).
+  const sessionNamesRef = useRef(new Map<number, string>());
+  const [sessionIds, setSessionIds] = useState<Record<number, string>>({});
+  const [stored, setStored] = useState<StoredSession[]>([]);
+  const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set());
+  // No hardcoded default: until graff/models answers, the agent's own model
+  // resolution decides, and `current` from that call re-points the picker.
+  const [models, setModels] = useState<PromptModel[]>(MODELS);
+  const [model, setModelKey] = useState<string | null>(process.env.NEXT_PUBLIC_GRAFF_MODEL || null);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [fileRequest, setFileRequest] = useState<{ path: string; n: number; changes?: boolean } | null>(null);
+  const fileReqRef = useRef(0);
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
-  const sessionRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const chatThread = chats.find((c) => c.id === activeId) ?? chats[0];
   const active = chatThread.messages.length > 0;
+  const busy = busyIds.has(chatThread.id);
+  const chatModel = chatThread.model ?? model ?? undefined;
+  const sessionId = sessionIds[chatThread.id] ?? null;
+  const handleOf = (chatId: number) => chatHandle(pageRef.current, chatId);
+  const setBusyFor = (chatId: number, on: boolean) =>
+    setBusyIds((current) => {
+      if (current.has(chatId) === on) return current;
+      const next = new Set(current);
+      if (on) next.add(chatId);
+      else next.delete(chatId);
+      return next;
+    });
+  const setChatModel = (chatId: number, key: string) =>
+    setChats((current) => current.map((c) => (c.id === chatId ? { ...c, model: key } : c)));
   const lastAssistant = [...chatThread.messages].reverse().find((m): m is Extract<Msg, { role: "assistant" }> => m.role === "assistant");
+
+  const adoptCatalog = async (chatId: number) => {
+    // What did the agent actually resolve? The picker should show graff's
+    // answer (fuzzy --model resolution, election-ranked seats), not our guess.
+    try {
+      const { models: live, current } = await fetchModels(handleOf(chatId));
+      if (live.length > 0) setModels(live);
+      if (current) {
+        setChatModel(chatId, current);
+        setModelKey((fallback) => fallback ?? current);
+      }
+    } catch {
+      // keep the static fallback; the picker still works
+    }
+  };
+
+  const requireSession = async (chatId: number, reset = false, key?: string): Promise<string> => {
+    const live = sessionsRef.current.get(chatId);
+    if (!reset && live) return live;
+    const spawnModel = key ?? chats.find((c) => c.id === chatId)?.model ?? model ?? undefined;
+    const id = await ensureSession(handleOf(chatId), spawnModel, reset, sessionNamesRef.current.get(chatId));
+    sessionsRef.current.set(chatId, id);
+    setSessionIds((current) => ({ ...current, [chatId]: id }));
+    setHealth({ ok: true });
+    return id;
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -220,22 +428,69 @@ export default function GraffHarness() {
       setHealth(h);
       if (!h.ok) return;
       try {
-        const id = await ensureSession(model);
+        const session = newSessionName();
+        sessionNamesRef.current.set(1, session);
+        setChats((current) => current.map((c) => (c.id === 1 ? { ...c, session } : c)));
+        await requireSession(1);
         if (cancelled) return;
-        sessionRef.current = id;
-        setSessionId(id);
+        await adoptCatalog(1);
       } catch (err) {
         if (!cancelled) {
           setHealth({ ok: false, detail: err instanceof Error ? err.message : String(err) });
         }
       }
     })();
+    void refreshStored();
+    // Reap this page's agents when it goes away — without this every reload
+    // leaves a `graff acp` (and its MCP children) running under the dev server.
+    const page = pageRef.current;
+    const reap = () => disposePage(page);
+    window.addEventListener("pagehide", reap);
     return () => {
       cancelled = true;
+      window.removeEventListener("pagehide", reap);
     };
-    // ACP session is created once per mount; model changes respawn the agent.
+    // The first tab's agent is spawned once per mount; later tabs spawn their
+    // own on creation, and a model change respawns only the active tab's.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** Re-read graff's session directory; tabs adopt the titles graff saved. */
+  const refreshStored = async () => {
+    try {
+      const list = await listSessions();
+      setStored(list);
+      setChats((current) =>
+        current.map((c) => {
+          const saved = c.session ? list.find((s) => s.name === c.session) : undefined;
+          return saved?.title && saved.title !== c.title ? { ...c, title: saved.title } : c;
+        }),
+      );
+    } catch {
+      // the sidebar keeps its last list
+    }
+  };
+
+  const openPath = (path: string) => {
+    setFilesOpen(true);
+    setFileRequest({ path, n: (fileReqRef.current += 1) });
+  };
+
+  const openChanges = () => {
+    setFilesOpen(true);
+    setFileRequest({ path: "", n: (fileReqRef.current += 1), changes: true });
+  };
+
+  const changeModel = (key: string) => {
+    // New tabs inherit the pick; the active tab respawns its agent with it
+    // (a fresh context — the agent cannot swap models mid-session).
+    const chatId = chatThread.id;
+    setModelKey(key);
+    setChatModel(chatId, key);
+    void requireSession(chatId, true, key)
+      .then(() => adoptCatalog(chatId))
+      .catch(() => undefined);
+  };
 
   const patchAssistant = (chatId: number, msgId: number, next: AssistantTurn) => {
     setChats((current) =>
@@ -250,24 +505,16 @@ export default function GraffHarness() {
     );
   };
 
-  const requireSession = async (reset = false): Promise<string> => {
-    if (!reset && sessionRef.current) return sessionRef.current;
-    const id = await ensureSession(model, reset);
-    sessionRef.current = id;
-    setSessionId(id);
-    setHealth({ ok: true });
-    return id;
-  };
-
   const send = async (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed || busy) return;
+    const chatId = chatThread.id;
+    if (!trimmed || busyIds.has(chatId)) return;
     const userId = (msgIdRef.current += 1);
     const asstId = (msgIdRef.current += 1);
     const title = chatThread.title ?? (trimmed.length > 30 ? `${trimmed.slice(0, 30).trimEnd()}…` : trimmed);
     setChats((current) =>
       current.map((c) =>
-        c.id !== chatThread.id
+        c.id !== chatId
           ? c
           : {
               ...c,
@@ -275,75 +522,130 @@ export default function GraffHarness() {
               messages: [
                 ...c.messages,
                 { id: userId, role: "user", text: trimmed },
-                { id: asstId, role: "assistant", turn: { ...emptyTurn(), model } },
+                { id: asstId, role: "assistant", turn: { ...emptyTurn(), model: chatModel } },
               ],
             },
       ),
     );
-    setBusy(true);
-    let turn: AssistantTurn = { ...emptyTurn(), model };
+    setBusyFor(chatId, true);
+    let turn: AssistantTurn = { ...emptyTurn(), model: chatModel };
+    const startedAt = Date.now();
     try {
-      const id = await requireSession();
-      for await (const update of prompt(id, trimmed)) {
+      const id = await requireSession(chatId);
+      for await (const update of prompt(handleOf(chatId), id, trimmed)) {
         turn = applyAcpUpdate(turn, update);
-        patchAssistant(chatThread.id, asstId, turn);
+        if (turn.thoughtMs === undefined && turn.status !== "thinking") turn = { ...turn, thoughtMs: Date.now() - startedAt };
+        patchAssistant(chatId, asstId, turn);
       }
       turn = finishAcpTurn(turn);
-      patchAssistant(chatThread.id, asstId, turn);
+      patchAssistant(chatId, asstId, turn);
     } catch (err) {
       turn = { ...turn, error: err instanceof Error ? err.message : String(err), status: "error" };
-      patchAssistant(chatThread.id, asstId, turn);
+      patchAssistant(chatId, asstId, turn);
     } finally {
-      setBusy(false);
+      setBusyFor(chatId, false);
+      // graff autosaves the turn in the background; look once now for the
+      // title, and again after the write has had time to land.
+      void refreshStored();
+      setTimeout(() => void refreshStored(), 2500);
     }
   };
 
-  const newChat = () => {
-    const id = (chatIdRef.current += 1);
-    setChats((current) => [...current, { id, title: null, messages: [] }]);
+  const openChat = (id: number) => {
+    const session = newSessionName();
+    sessionNamesRef.current.set(id, session);
+    setChats((current) => [...current, { id, title: null, messages: [], model: model ?? undefined, session }]);
     setActiveId(id);
-    sessionRef.current = null;
-    void requireSession(true).catch(() => undefined);
+    setFilesOpen(false);
+    // Spawn eagerly so the first send is not stuck behind agent + MCP boot.
+    void requireSession(id).catch(() => undefined);
+  };
+
+  /** Open a saved graff session: its transcript renders from the file at once,
+   * and the tab's agent starts with `--resume` so a follow-up remembers it. */
+  const openStored = async (name: string) => {
+    const existing = chats.find((c) => c.session === name);
+    if (existing) {
+      setActiveId(existing.id);
+      setFilesOpen(false);
+      return;
+    }
+    let loaded: Awaited<ReturnType<typeof loadSession>>;
+    try {
+      loaded = await loadSession(name);
+    } catch (err) {
+      setHealth({ ok: true, detail: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    const id = (chatIdRef.current += 1);
+    const messages: Msg[] = loaded.messages.map((m) => ({ id: (msgIdRef.current += 1), ...m }));
+    sessionNamesRef.current.set(id, name);
+    setChats((current) => [
+      ...current,
+      { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name },
+    ]);
+    setActiveId(id);
+    setFilesOpen(false);
+    void requireSession(id, false, loaded.meta.model ?? undefined).catch(() => undefined);
+  };
+
+  const newChat = () => openChat((chatIdRef.current += 1));
+
+  const dropChat = (id: number) => {
+    sessionsRef.current.delete(id);
+    sessionNamesRef.current.delete(id);
+    setSessionIds((current) => {
+      const { [id]: _gone, ...rest } = current;
+      return rest;
+    });
+    setBusyFor(id, false);
+    void disposeSession(handleOf(id));
   };
 
   const closeChat = (id: number) => {
+    dropChat(id);
     const remaining = chats.filter((c) => c.id !== id);
     if (remaining.length === 0) {
-      const nid = (chatIdRef.current += 1);
-      setChats([{ id: nid, title: null, messages: [] }]);
-      setActiveId(nid);
+      setChats([]);
+      openChat((chatIdRef.current += 1));
       return;
     }
     setChats(remaining);
     if (id === activeId) setActiveId(remaining[remaining.length - 1].id);
   };
 
-  const pickRecent = (_id: string, label: string, prompt?: string) => {
-    const existing = chats.find((c) => c.title === label);
-    if (existing) {
-      setActiveId(existing.id);
-      return;
-    }
-    if (chatThread.messages.length === 0) {
-      void send(prompt ?? label);
-      return;
-    }
-    const id = (chatIdRef.current += 1);
-    setChats((current) => [...current, { id, title: null, messages: [] }]);
-    setActiveId(id);
-    queueMicrotask(() => void send(prompt ?? label));
+  const pickRecent = (id: string) => {
+    void openStored(id);
   };
 
+  // A new message glides the thread to the bottom; streaming growth (reasoning,
+  // text, tool rows) follows instantly and only while the reader is already at
+  // the tail. Re-issuing a *smooth* scroll on every chunk restarted the scroll
+  // animation each token — the whole thread juddered while the model thought.
+  const messageCount = chatThread.messages.length;
   useEffect(() => {
     if (!active) return;
     const el = scrollRef.current;
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [chatThread.messages, active, lastAssistant?.turn.text, lastAssistant?.turn.tools.length]);
+  }, [messageCount, activeId, active]);
+  useEffect(() => {
+    if (!active) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (fromBottom < 160) el.scrollTop = el.scrollHeight;
+  }, [active, lastAssistant?.turn.text, lastAssistant?.turn.reasoning, lastAssistant?.turn.tools.length]);
 
-  const recents = [
-    ...STARTER_PROMPTS.map((p) => ({ id: p.id, label: p.label, prompt: p.prompt })),
-    ...chats.filter((c) => c.title).map((c) => ({ id: `chat-${c.id}`, label: c.title as string, prompt: undefined })),
-  ];
+  // The sidebar is graff's session directory, newest first, bucketed by day.
+  const now = Date.now();
+  const recents = stored.map((s) => ({
+    id: s.name,
+    label: s.title ?? s.name,
+    group: dateGroup(s.updatedMs, now),
+    hint: [s.model, relativeTime(s.updatedMs, now)].filter(Boolean).join(" · "),
+  }));
+
+  const workspaceName = health?.cwd ? (health.cwd.split("/").pop() || health.cwd) : "workspace";
 
   const tabBar = (
     <div className="flex h-11 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -354,6 +656,13 @@ export default function GraffHarness() {
             c.id === activeId ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
           }`}
         >
+          {busyIds.has(c.id) && (
+            <span
+              className="mr-1 size-1.5 shrink-0 animate-pulse rounded-full"
+              style={{ background: "var(--accent)" }}
+              aria-label="Working"
+            />
+          )}
           <button type="button" aria-pressed={c.id === activeId} onClick={() => setActiveId(c.id)} title={c.title ?? "New chat"} className="min-w-0 flex-1 text-left">
             <span className="block truncate">{c.title ?? "New chat"}</span>
           </button>
@@ -380,6 +689,18 @@ export default function GraffHarness() {
         </svg>
       </button>
       <div className="ml-auto flex items-center gap-2 pr-1">
+        <button
+          type="button"
+          aria-pressed={filesOpen}
+          onClick={() => setFilesOpen((open) => !open)}
+          title={health?.cwd ?? "Workspace files"}
+          className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
+            filesOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+          }`}
+        >
+          <IconFolder size={14} />
+          <span className="max-w-40 truncate font-mono text-[11.5px]">{workspaceName}</span>
+        </button>
         <ThemeToggle />
       </div>
     </div>
@@ -394,8 +715,11 @@ export default function GraffHarness() {
         className="hidden lg:flex"
         recents={recents}
         activeTitle={chatThread.title}
+        activeId={chatThread.session ?? null}
         onPick={pickRecent}
         onNewChat={newChat}
+        activeNav={filesOpen ? "workspace" : "chats"}
+        onNavigate={(key) => setFilesOpen(key === "workspace")}
         footerLabel={sessionId ? `Session ${sessionId.slice(0, 8)}` : "Connecting…"}
         onFooterClick={() => undefined}
       />
@@ -412,7 +736,7 @@ export default function GraffHarness() {
                       message.role === "user" ? (
                         <UserBubble key={message.id} text={message.text} />
                       ) : (
-                        <AssistantBody key={message.id} turn={message.turn} />
+                        <AssistantBody key={message.id} turn={message.turn} onOpenPath={openPath} onReview={openChanges} />
                       ),
                     )}
                   </div>
@@ -422,31 +746,18 @@ export default function GraffHarness() {
                     <PromptBar
                       demo={false}
                       tall
-                      placeholder={busy ? "Agent is working…" : "Reply"}
-                      models={MODELS}
-                      modelKey={model}
-                      onModelChange={(key) => {
-                        setModelKey(key);
-                        sessionRef.current = null;
-                        void ensureSession(key, true)
-                          .then((id) => {
-                            sessionRef.current = id;
-                            setSessionId(id);
-                          })
-                          .catch(() => undefined);
-                      }}
+                      placeholder={busy ? "Agent is working…" : "Follow up"}
+                      models={models}
+                      modelKey={chatModel}
+                      onModelChange={changeModel}
                       onSend={send}
                       disabled={busy}
+                      busy={busy}
+                      onStop={() => {
+                        const live = sessionsRef.current.get(chatThread.id);
+                        if (live) void cancel(handleOf(chatThread.id), live);
+                      }}
                     />
-                    {busy && (
-                      <button
-                        type="button"
-                        onClick={() => sessionRef.current && void cancel(sessionRef.current)}
-                        className="mt-2 text-[12px] text-ink-3 transition-colors hover:text-ink"
-                      >
-                        Cancel turn
-                      </button>
-                    )}
                   </div>
                 </div>
               </div>
@@ -457,12 +768,17 @@ export default function GraffHarness() {
                   health={health}
                   offset={offset}
                   shuffle={() => setOffset((current) => (current + 3) % STARTER_PROMPTS.length)}
+                  models={models}
+                  modelKey={chatModel}
+                  onModelChange={changeModel}
                 />
               </div>
             )}
           </section>
 
-          {active && paneTodos.length > 0 && (
+          {filesOpen && <FilesPane requested={fileRequest} onClose={() => setFilesOpen(false)} />}
+
+          {!filesOpen && active && paneTodos.length > 0 && (
             <aside
               className="hidden w-[360px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page lg:flex"
               style={{ animation: "fade-in 300ms ease both" }}

@@ -31,6 +31,9 @@ pub const TurnFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u
 pub const SlashFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]const u8;
 pub const AfterUserFn = *const fn (ctx: *anyopaque, arena: Allocator, text: []const u8) void;
 pub const BindSessionFn = *const fn (ctx: *anyopaque, session_id: []const u8) void;
+/// Vendor-method escape hatch: gets every request the core loop does not
+/// claim; returns true when it answered (false falls through to -32601).
+pub const ExtraFn = *const fn (ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request) anyerror!bool;
 
 pub const Dispatch = struct {
     turn: TurnFn,
@@ -41,6 +44,7 @@ pub const Dispatch = struct {
     slash: ?SlashFn = null,
     after_user: ?AfterUserFn = null,
     bind_session: ?BindSessionFn = null,
+    extra: ?ExtraFn = null,
 };
 
 fn respond(w: *Io.Writer, req: proto.Request, result: anytype) !void {
@@ -122,6 +126,7 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
         return;
     }
     if (std.mem.eql(u8, req.method, "session/prompt")) return promptTurn(d, arena, w, req);
+    if (d.extra) |extra| if (try extra(d.ctx, arena, w, req)) return;
     if (req.id == null) return;
     try writeError(w, req.id, err_method_not_found, try std.fmt.allocPrint(arena, "method not found: {s}", .{req.method}));
 }

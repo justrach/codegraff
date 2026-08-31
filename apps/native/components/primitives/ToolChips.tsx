@@ -90,26 +90,19 @@ export type LiveToolRow = {
   mono?: boolean;
   detailMono?: boolean;
   detail: { text: string; tone?: "add" }[];
+  /** Workspace file this call touched; makes the chip a jump target. */
+  path?: string;
+  /** Live call state — running rows get a spinner so the turn visibly moves. */
   status?: "running" | "ok" | "error";
   startedAt?: number;
   elapsedMs?: number;
 };
 
-function formatElapsed(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  const s = ms / 1000;
-  if (s < 60) return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
-  return `${Math.floor(s / 60)}m${String(Math.floor(s % 60)).padStart(2, "0")}s`;
-}
-
-function useNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    const id = setInterval(() => setNow(Date.now()), 250);
-    return () => clearInterval(id);
-  }, [active]);
-  return now;
+function formatDuration(ms: number): string | null {
+  if (ms < 1000) return null;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
 export type LiveDiff = {
@@ -122,9 +115,12 @@ export type LiveDiff = {
 export default function ToolChips({
   rows: liveRows,
   diffs: liveDiffs,
+  onOpenPath,
 }: {
   rows?: LiveToolRow[];
   diffs?: LiveDiff[];
+  /** Open a touched file in the harness's files pane. */
+  onOpenPath?: (path: string) => void;
 } = {}) {
   const live = liveRows !== undefined;
   const rows = live ? liveRows : ROWS;
@@ -132,10 +128,16 @@ export default function ToolChips({
   const diffLines: Record<string, { text: string; tone: "add" | "del" | "ctx" }[]> = live
     ? Object.fromEntries((liveDiffs ?? []).map((d) => [d.file, d.lines ?? []]))
     : DIFF_LINES;
-  const liveRunning = live && rows.some((row) => row.status === "running");
-  const now = useNow(Boolean(liveRunning));
   const [step, setStep] = useState(0);
   const [open, setOpen] = useState(true);
+  /* tick once a second while any live row runs, so its timer counts up */
+  const [, setClock] = useState(0);
+  const anyRunning = live && rows.some((r) => "status" in r && r.status === "running");
+  useEffect(() => {
+    if (!anyRunning) return;
+    const t = setInterval(() => setClock((c) => c + 1), 1000);
+    return () => clearInterval(t);
+  }, [anyRunning]);
   const [openRows, setOpenRows] = useState<Set<string>>(new Set());
   /* Rendered in a body portal so animated/translated reply wrappers cannot
    * redefine the fixed-position coordinate system. */
@@ -176,7 +178,7 @@ export default function ToolChips({
     });
 
   return (
-    <div className="min-h-[220px] w-full max-w-80 pb-1">
+    <div className={live ? "w-full pb-1" : "min-h-[220px] w-full max-w-80 pb-1"}>
       {/* collapsed run header */}
       <button
         type="button"
@@ -187,7 +189,22 @@ export default function ToolChips({
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="transition-transform duration-200" style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)" }}>
           <path d="M6 9l6 6 6-6" />
         </svg>
-        <span className="tabular-nums">{live ? `${rows.length} tool calls` : "4 tool calls, 2 messages"}</span>
+        <span className="tabular-nums">
+          {live
+            ? (() => {
+                // Codex-style activity summary: what happened, not how many calls.
+                const counts: Record<string, number> = {};
+                for (const row of rows) counts[row.icon] = (counts[row.icon] ?? 0) + 1;
+                const parts: string[] = [];
+                if (counts.read) parts.push(`Explored ${counts.read} file${counts.read === 1 ? "" : "s"}`);
+                if (counts.write) parts.push(`Edited ${counts.write} file${counts.write === 1 ? "" : "s"}`);
+                if (counts.run) parts.push(`Ran ${counts.run} command${counts.run === 1 ? "" : "s"}`);
+                const other = rows.length - (counts.read ?? 0) - (counts.write ?? 0) - (counts.run ?? 0);
+                if (other > 0) parts.push(`${other} other step${other === 1 ? "" : "s"}`);
+                return parts.join(" · ") || `${rows.length} tool call${rows.length === 1 ? "" : "s"}`;
+              })()
+            : "4 tool calls, 2 messages"}
+        </span>
       </button>
 
       {/* tool call rows */}
@@ -199,7 +216,7 @@ export default function ToolChips({
           {(live ? rows : rows.slice(0, step)).map((row) => {
             const rowOpen = openRows.has(row.label);
             return (
-            <div key={"id" in row && row.id ? row.id : row.label} style={live ? undefined : { animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
+            <div key={"id" in row && row.id ? row.id : row.label} style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
               <button
                 type="button"
                 aria-expanded={rowOpen}
@@ -207,12 +224,19 @@ export default function ToolChips({
                 className="group/row -mx-[3px] flex h-7 w-[calc(100%+6px)] min-w-0 items-center gap-2 rounded-control px-[3px] text-left transition-colors duration-100 hover:bg-hover-2"
               >
                 <span className="relative flex size-4 shrink-0 items-center justify-center text-ink-3">
+                  {"status" in row && row.status === "running" ? (
+                    <span
+                      className={`size-3 rounded-full border-[1.5px] border-line-strong border-t-ink-2 transition-opacity duration-100 group-hover/row:opacity-0 ${rowOpen ? "opacity-0" : ""}`}
+                      style={{ animation: "spin 700ms linear infinite" }}
+                    />
+                  ) : (
                   <svg
                     width="13" height="13" viewBox="0 0 24 24" fill={row.icon === "think" ? "currentColor" : "none"} stroke="currentColor"
-                    className={`transition-opacity duration-100 group-hover/row:opacity-0 ${rowOpen ? "opacity-0" : ""}`}
+                    className={`transition-opacity duration-100 group-hover/row:opacity-0 ${rowOpen ? "opacity-0" : ""} ${"status" in row && row.status === "error" ? "text-red" : ""}`}
                   >
                     {Icons[row.icon]}
                   </svg>
+                  )}
                   <svg
                     width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
                     className={`absolute transition-[opacity,transform] duration-150 group-hover/row:opacity-100 ${rowOpen ? "opacity-100" : "opacity-0"}`}
@@ -222,21 +246,37 @@ export default function ToolChips({
                   </svg>
                 </span>
                 <span className="shrink-0 text-[12.5px] font-medium text-ink">{row.label}</span>
-                {live && (() => {
-                  const ms = row.status === "running" && row.startedAt
-                    ? now - row.startedAt
-                    : row.elapsedMs;
-                  return ms !== undefined && ms >= 100 ? (
-                    <span className="shrink-0 font-mono text-[11px] tabular-nums text-ink-3">{formatElapsed(ms)}</span>
+                {row.chip ? (
+                  <span
+                    onClick={
+                      onOpenPath && "path" in row && row.path
+                        ? (event) => {
+                            event.stopPropagation();
+                            onOpenPath(row.path!);
+                          }
+                        : undefined
+                    }
+                    title={onOpenPath && "path" in row && row.path ? `Open ${row.path}` : undefined}
+                    className={`inline-flex h-5.5 min-w-0 max-w-fit flex-1 cursor-pointer items-center truncate rounded-chip bg-field px-1.5
+                      text-[11.5px] text-ink-2 shadow-hairline transition-colors duration-100 hover:bg-hover-2
+                      ${row.mono ? "font-mono" : ""}`}
+                  >
+                    {row.chip}
+                  </span>
+                ) : (
+                  <span className="min-w-0 flex-1" />
+                )}
+                {"status" in row && (() => {
+                  const label =
+                    row.status === "running" && row.startedAt
+                      ? formatDuration(Date.now() - row.startedAt)
+                      : row.elapsedMs !== undefined
+                        ? formatDuration(row.elapsedMs)
+                        : null;
+                  return label ? (
+                    <span className="shrink-0 pl-2 font-mono text-[10.5px] text-ink-3 tabular-nums">{label}</span>
                   ) : null;
                 })()}
-                <span
-                  className={`inline-flex h-5.5 min-w-0 flex-1 cursor-pointer items-center truncate rounded-chip bg-field px-1.5
-                    text-[11.5px] text-ink-2 shadow-hairline transition-colors duration-100 hover:bg-hover-2
-                    ${row.mono ? "font-mono" : ""}`}
-                >
-                  {row.chip}
-                </span>
               </button>
 
               {/* expanded detail */}
@@ -282,7 +322,7 @@ export default function ToolChips({
                 className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-chip
                   bg-surface px-2 font-mono text-[11.5px] text-ink shadow-btn
                   transition-colors duration-100 hover:bg-hover"
-                style={live ? undefined : { animation: `pop-in 250ms cubic-bezier(0.23,1,0.32,1) ${i * 80}ms both` }}
+                style={{ animation: `pop-in 250ms cubic-bezier(0.23,1,0.32,1) ${i * 80}ms both` }}
               >
                 <span className="min-w-0 truncate">{d.file}</span>
                 <span className="shrink-0 text-green tabular-nums">+{d.add}</span>
@@ -296,7 +336,7 @@ export default function ToolChips({
             className="inline-flex h-7 items-center rounded-chip px-1.5 font-mono text-[11.5px] text-ink-3
               underline decoration-transparent underline-offset-2 transition-colors duration-100
               hover:text-ink-2 hover:decoration-current"
-            style={live ? undefined : { animation: `fade-in 300ms ease-out ${DIFFS.length * 80}ms both` }}
+            style={{ animation: `fade-in 300ms ease-out ${DIFFS.length * 80}ms both` }}
           >
             {live ? `${diffs.length} files` : "+2 more"}
           </button>

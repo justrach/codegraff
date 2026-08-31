@@ -6,7 +6,7 @@
 //! as hung. The fix is presentation-only: after enough SILENCE, emit one dim
 //! `session_notice` pulse saying how long the call has run. ADR 0020 keeps raw
 //! bytes behind /debug; an elapsed line is chrome, not output. The event is a
-//! pulse, so --json drops it and no wire shape changes.
+//! pulse, so --json and -p drop it (ADR 0020: chrome, not output).
 
 const std = @import("std");
 const Io = std.Io;
@@ -64,10 +64,17 @@ pub fn emitNotice(io: Io, comptime fmt: []const u8, args: anytype) void {
         sink.emit(io, .{ .session_notice = .{ .text = text, .tone = .dim } });
         return;
     }
-    if (main_mod.json_mode) return;
+    if (!chromeGoesToStdout()) return;
     const w = main_mod.g_out orelse return;
     w.print("{s}{s}{s}\n", .{ style.dim, text, style.reset }) catch return;
     w.flush() catch {};
+}
+
+/// Line-REPL only. Hosted TUI/ACP still get the pulse via `hostedSink`.
+/// `-p` / `--json` keep stdout as the answer (in-house atomic-symlink-write
+/// captured `· turn still going ·` when the pulse rode `g_out`).
+pub fn chromeGoesToStdout() bool {
+    return !main_mod.json_mode and !main_mod.unattended;
 }
 
 test "Pulse fires once per silence threshold, then on the interval" {
@@ -98,4 +105,23 @@ test "formatElapsed renders seconds, minutes, and hours" {
     try std.testing.expectEqualStrings("1m00s", formatElapsed(&buf, 60_000));
     try std.testing.expectEqualStrings("2m10s", formatElapsed(&buf, 130_000));
     try std.testing.expectEqualStrings("1h00m", formatElapsed(&buf, 3_600_000));
+}
+
+test "chrome does not ride --json or -p stdout" {
+    const prev_u = main_mod.unattended;
+    const prev_j = main_mod.json_mode;
+    defer {
+        main_mod.unattended = prev_u;
+        main_mod.json_mode = prev_j;
+    }
+    main_mod.unattended = false;
+    main_mod.json_mode = false;
+    try std.testing.expect(chromeGoesToStdout());
+    main_mod.unattended = true;
+    try std.testing.expect(!chromeGoesToStdout());
+    main_mod.unattended = false;
+    main_mod.json_mode = true;
+    try std.testing.expect(!chromeGoesToStdout());
+    main_mod.unattended = true;
+    try std.testing.expect(!chromeGoesToStdout());
 }

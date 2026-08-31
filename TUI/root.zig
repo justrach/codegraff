@@ -47,6 +47,13 @@ pub fn setCurrentModel(name: []const u8, provider: []const u8) void {
     engine.g_model_provider = provider;
 }
 pub const restore = @import("restore.zig");
+pub const enable_seq = run_mod.enable_seq;
+
+/// Claim the alt-screen as soon as the command is `tui`/`repl`, so leftover
+/// boot (keys, MCP, AGENTS.md) happens inside the pager. No-op off a TTY.
+pub fn claim() bool {
+    return restore.claimScreen(run_mod.enable_seq);
+}
 /// Restore the terminal BEFORE std prints a panic, or the alt-screen exit in
 /// the restore sequence erases the message and the stack trace (#535).
 pub const panic = restore.Panic;

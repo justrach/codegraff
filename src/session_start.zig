@@ -37,8 +37,8 @@ const main_mod = @import("main.zig");
 const provider_mod = @import("provider.zig");
 const keys_cli = @import("keys_cli.zig");
 const pricing = @import("pricing.zig");
-const skills = @import("skills.zig");
 const mcp = @import("mcp.zig");
+const mcp_boot = @import("mcp_boot.zig");
 const mcp_cli = @import("mcp_cli.zig");
 const mcp_config = @import("mcp_config.zig");
 const plugin_scan = @import("plugin_scan.zig");
@@ -53,6 +53,11 @@ const obs = @import("obs.zig");
 const util = @import("util.zig");
 const engine_sink = @import("engine_sink.zig"); // #429: startup's lines are typed events, not prints
 const engine_events = @import("engine_events.zig");
+const companion_boot = @import("companion_boot.zig");
+pub const probeLicensed = companion_boot.probeLicensed;
+pub const pinCompanionEager = companion_boot.pinCompanionEager;
+pub const probeLicensedPinningEager = companion_boot.probeLicensedPinningEager;
+pub const connectCompanion = companion_boot.connectCompanion;
 const title_mod = @import("title.zig");
 const fallback_config = @import("fallback_config.zig");
 const repl = @import("repl.zig");
@@ -447,7 +452,22 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
             sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "ignoring ~/" ++ mcp_config.unsupported_rel_path ++ ": unsupported path — use ~/" ++ mcp_config.global_rel_path ++ " (global) or {s} (project)", .{mcp_config_path})));
     }
     const mcp_count = mcp_cli.countMcpServers(merged);
-    const defer_join = flags.effectiveYolo() and flags.oneshot_prompt == null and !json_mode;
+    const defer_join = mcp_boot.deferMcpJoin(flags.effectiveYolo(), json_mode);
+    const skip_imported = mcp_boot.oneshotSkipsImportedMcp(
+        flags.oneshot_prompt != null,
+        leanMode(flags.effectiveLean(), environ_map),
+        merged.project.count(),
+    );
+    // Name the next phase the way `plugins:` already does. Without this, a
+    // handshake that still runs on this thread looks like a hung boot.
+    if (!json_mode and flags.oneshot_prompt == null and mcp_count > 0) {
+        const mcp_line = if (defer_join)
+            try std.fmt.allocPrint(arena, "mcp: {d} server(s) in background", .{mcp_count})
+        else
+            try std.fmt.allocPrint(arena, "mcp: connecting {d} server(s)...", .{mcp_count});
+        sink.emit(io, dimNotice(mcp_line));
+    }
+    const mcp_t0 = Io.Timestamp.now(io, .awake);
     // Lean folds schemas (deferAllRuntime); it does not skip connect.
     // --yolo / -p still connect so `.mcp.json` works on the default one-shot
     // (ADR 0029). Interactive without --yolo still asks.
@@ -459,7 +479,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
         const ans = in.takeDelimiter('\n') catch null;
         connect_mcp = ans != null and ans.?.len > 0 and (ans.?[0] == 'y' or ans.?[0] == 'Y');
     }
-    var registry: mcp.Registry = if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") != null, environ_map, defer_join) catch |err| inner: {
+    var registry: mcp.Registry = if (connect_mcp and !skip_imported) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") != null, environ_map, defer_join) catch |err| inner: {
         sink.emit(io, .{ .session_notice = .{ .text = try std.fmt.allocPrint(arena, "[mcp] init failed: {t} — continuing without MCP", .{err}) } });
         if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;
@@ -474,65 +494,12 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
     registry.global_config_path = global_path;
     registry.global_is_override = mcp_config.isEnvOverride(environ_map);
     registry.show_diagnostics = json_mode or flags.oneshot_prompt != null or environ_map.get("GRAFF_REPL_DEBUG") != null;
-    return registry;
-}
-
-/// Licensed startup path (main.zig): probe the companion's license so the
-/// session can lean into the paid tools. Schemas stay DEFERRED like every
-/// other server: routing to the suite is enforced by the codedbpro guard
-/// (codedbpro_report.nativeRefusal blocks the native read/search tools and
-/// points at the pro replacements), so the old eager pin paid ~17 KiB of
-/// schema bytes on every request for behavior the guard already guarantees
-/// (#476). GRAFF_MCP_EAGER=codedbpro restores the eager surface opt-in.
-pub fn probeLicensed(gpa: Allocator, io: Io) bool {
-    return skills.probeCodedbproLicensed(gpa, io);
-}
-
-/// A licensed codedb-pro still pins these tools eager (search/batch extras;
-/// ADR 0040: not the default reader). Skipping that pin costs a measured
-/// ~2 load_tool_schemas discovery turns per task that does need pro search.
-/// (#476 kept it deferred; traces showed every such run paying the dance.)
-pub fn pinCompanionEager(arena: Allocator) void {
-    if (mcp_schema_gate.pinnedEager("codedbpro")) return; // env/config already pinned
-    const gate = &mcp_schema_gate.g_policy;
-    const eager = arena.alloc([]const u8, gate.eager.len + 1) catch return;
-    @memcpy(eager[0..gate.eager.len], gate.eager);
-    eager[gate.eager.len] = "codedbpro";
-    gate.eager = eager;
-}
-
-/// The startup license probe plus its one side effect: a licensed companion
-/// is pinned eager so its full schemas ride the first catalog render instead
-/// of arriving via a load_tool_schemas discovery turn.
-pub fn probeLicensedPinningEager(gpa: Allocator, io: Io, arena: Allocator) bool {
-    const licensed = probeLicensed(gpa, io);
-    if (licensed) pinCompanionEager(arena);
-    return licensed;
-}
-
-/// Companion auto-activation: if the metered code-intelligence companion
-/// (codedb-pro, formerly muonry) is installed but nothing connected it (no
-/// workspace .mcp.json entry, or consent declined), spawn it directly — a
-/// user-installed companion at the same trust level as the skills
-/// auto-detection, NOT arbitrary workspace config. Failure just falls back
-/// to native tools. Opt out like a skill: {"skills": {"codedbpro": false}}.
-/// Moved out of main() (600-line goal); mutates `registry` in place (it's
-/// already main()-owned and stable by the time this is called, so a pointer
-/// is all that's needed — no return-by-value trickery here).
-pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags: args.Flags, out: *Io.Writer, json_mode: bool, environ_map: anytype) !void {
-    const sink = engine_sink.writerSink(out);
-    const speak = !json_mode and flags.oneshot_prompt == null and environ_map.get("GRAFF_REPL_DEBUG") != null;
-    connect: {
-        for (skills.companion_servers) |c| if (skills.mcpServerConnected(registry.tools, c.server)) break :connect;
-        for (skills.companion_servers) |c| {
-            if (skills.companionDisabled(c.server) or !skills.binOnPath(io, c.bin)) continue;
-            if (registry.addServer(c.server, c.bin, &.{"--mcp"})) |_| {
-                break;
-            } else |err| {
-                if (speak) sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "[mcp:{s}] auto-connect failed ({t}) — native tools only", .{ c.server, err })));
-            }
-        }
+    if (!json_mode and flags.oneshot_prompt == null) {
+        const ms = @max(0, mcp_t0.untilNow(io, .awake).toMilliseconds());
+        if (ms >= 80)
+            sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "mcp: ready in {d}ms", .{ms})));
     }
+    return registry;
 }
 
 /// The startup cluster's most common line: dim, no badge. A helper rather than

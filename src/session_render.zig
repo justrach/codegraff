@@ -238,6 +238,30 @@ test "slice 2: a notice's tone colors the line, a badge colors only itself" {
     );
 }
 
+test "slice 2: yolo boot receipts match the plugins line (dim, then reset)" {
+    const saved = ansi.style;
+    ansi.style = ansi.Style.ansi;
+    defer ansi.style = saved;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+
+    const plugins = "plugins: 16 plugin(s) in 1ms (7 dirs)";
+    const mcp = "mcp: 3 server(s) in background";
+    const companion = "companion: codedb-pro (background)";
+    try std.testing.expectEqualStrings(
+        "\x1b[2m" ++ plugins ++ "\x1b[0m\n",
+        renderTest(&aw, .{ .session_notice = .{ .text = plugins, .tone = .dim } }),
+    );
+    try std.testing.expectEqualStrings(
+        "\x1b[2m" ++ mcp ++ "\x1b[0m\n",
+        renderTest(&aw, .{ .session_notice = .{ .text = mcp, .tone = .dim } }),
+    );
+    try std.testing.expectEqualStrings(
+        "\x1b[2m" ++ companion ++ "\x1b[0m\n",
+        renderTest(&aw, .{ .session_notice = .{ .text = companion, .tone = .dim } }),
+    );
+}
+
 test "slice 2: the failover notice, with a frontend and without one" {
     const saved = ansi.style;
     ansi.style = .{};

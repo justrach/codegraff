@@ -227,6 +227,8 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
             const ReadDone = union(enum) { line: anyerror!usize, stall: WatchdogFired };
             var rd_buf: [2]ReadDone = undefined;
             var rsel: Io.Select(ReadDone) = .init(self.io, &rd_buf);
+            // #680: widened by each stall reconnect this request has already made.
+            const stall_budget = http_stall.interFrameBudgetMs(http.stream_stall_ms, got_body, self.partial_text.items.len != 0, self.stall.widen);
             rsel.concurrent(.line, streamLineTask, .{ reader, &line.writer }) catch {
                 // #56 Fix-B: pool exhausted — no idle-stall watchdog for this read.
                 // A bare blocking streamDelimiterEnding here is the last forever-hang:
@@ -236,11 +238,11 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                 // flush the partial, poison, and end the turn as StreamStalled (never a
                 // hang, never a mislabeled StreamDropped or user Esc).
                 if (saw_done) break :stream;
+                self.stall.tripped_ms = stall_budget;
                 sink.emit(self.io, .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = false } });
                 if (req.connection) |conn| conn.closing = true;
                 return error.StreamStalled;
             };
-            const stall_budget = http_stall.interFrameBudgetMs(http.stream_stall_ms, got_body, self.partial_text.items.len != 0);
             rsel.concurrent(.stall, deadlineStallTask, .{ self.io, orig_tio != null, stall_budget }) catch {
                 const r = rsel.await() catch |e| {
                     rsel.cancelDiscard();
@@ -276,6 +278,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                     // idle stream (silent past this read's budget) — end the turn as
                     // error.StreamStalled so it is never recorded as "[response
                     // interrupted by user]" (#134). Only the deadline gets a notice.
+                    if (w == .deadline) self.stall.tripped_ms = stall_budget; // #680: the turn-ending message reports THIS wait
                     if (w == .deadline) sink.emit(self.io, .{ .transport_aborted = .{ .reason = .stalled, .turn_ending = false } }) else sink.emit(self.io, .{ .stream_aborted = .interrupted });
                     if (req.connection) |conn| conn.closing = true;
                     return watchdogError(w, error.StreamStalled);
@@ -351,10 +354,10 @@ pub fn isStreamEnd(arena: std.mem.Allocator, kind: anytype, raw_line: []const u8
     if (std.mem.eql(u8, line, "data: [DONE]") or std.mem.eql(u8, line, "data:[DONE]")) return true;
     if (std.mem.startsWith(u8, line, "event:")) return switch (kind) {
         .anthropic => std.mem.indexOf(u8, line, "message_stop") != null,
-        .responses => std.mem.indexOf(u8, line, "response.completed") != null or
-            std.mem.indexOf(u8, line, "response.incomplete") != null or
-            std.mem.indexOf(u8, line, "response.failed") != null,
-        .openai => false,
+        // xAI/OpenAI Responses: `event: response.completed` is the SSE name;
+        // usage rides the following `data:` line. Ending here made -p
+        // `[usage]` print 0 calls (live stream never saw the payload).
+        .responses, .openai => false,
     };
     const payload = ssePayload(raw_line) orelse return false;
     const candidate = switch (kind) {
@@ -386,12 +389,39 @@ test "openaiComplete (#133): finish_reason marks completion, deltas do not" {
     try stream_tests.openaiCompletion(openaiComplete);
 }
 
+test {
+    _ = @import("agent_stream_stall_test.zig"); // #680: the loopback SSE stall ladder
+}
+
+/// #680: what request() does before each stall reconnect. The partial is
+/// cleared so the fresh stream re-streams cleanly (no concat), and the
+/// between-lines budget widens (http_stall.budgetMsWidened) so the retry can
+/// outlast the pause that killed the last attempt, instead of re-paying the
+/// whole generation into the identical wait.
+pub fn noteStallRetry(self: *Agent, retries: usize) void {
+    self.partial_text.clearRetainingCapacity();
+    self.stall.widen = @intCast(@min(retries, 255));
+    if (self.tracer) |tr| {
+        const widened = http_stall.budgetMsWidened(http.stream_stall_ms, true, self.stall.widen);
+        tr.note("stall_budget", std.fmt.allocPrint(self.arena, "reconnect {d}: between-lines budget {d}s", .{ retries, widened / 1000 }) catch "widened");
+    }
+}
+
+/// #680: the turn-ending stall message, from the budget that actually tripped
+/// rather than the configured total (the between-lines wait is a fraction of
+/// it, so "120s" was never what a mid-response stall had waited).
+pub fn stallGiveUpMessage(self: *Agent, retries: usize) ?[]const u8 {
+    const base = http.stream_stall_ms;
+    const waited = if (self.stall.tripped_ms != 0) self.stall.tripped_ms else base;
+    return std.fmt.allocPrint(self.arena, "stream stalled: no data from the model for {d}s — ended the turn after {d} reconnect attempts, each waiting longer, up to GRAFF_STREAM_STALL_SECS={d}s between lines (raise it if your model pauses longer mid-response)", .{ waited / 1000, retries, base / 1000 }) catch null;
+}
+
 /// Extract the user-visible content from one SSE line and dispatch it as
 /// typed events through the sink. Best-effort: parse failures are ignored
 /// (the buffered body is parsed afterwards).
 pub fn printDelta(self: *Agent, raw_line: []const u8) void {
     const no_ui = self.out == null;
-    if (no_ui and !rlm_spec.available) return; // -p still feeds rlm so sPTC can launch mid-stream
+    if (no_ui and !rlm_spec.available and !(main_mod.unattended and !main_mod.json_mode)) return;
     const payload = ssePayload(raw_line) orelse return;
     const parsed = std.json.parseFromSlice(Value, self.gpa, payload, .{}) catch return;
     defer parsed.deinit();
@@ -399,7 +429,6 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
     const obj = parsed.value.object;
     if (modelOutputStarted(self.provider.kind, obj)) self.traceFirstToken();
     self.argLiveDelta(obj);
-    if (no_ui) return;
     const text: []const u8 = switch (self.provider.kind) {
         .anthropic => blk: {
             const t = obj.get("type") orelse break :blk "";
@@ -428,6 +457,17 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
             break :blk if (x == .string) x.string else "";
         },
     };
+    if (no_ui) {
+        if (oneshotShouldPaint(main_mod.unattended, main_mod.json_mode, text.len)) {
+            if (main_mod.g_out) |w| {
+                w.writeAll(text) catch {};
+                w.flush() catch {};
+            }
+            self.streamed_text = true;
+            self.traceFirstToken();
+        }
+        return;
+    }
     // Reasoning/thinking deltas: deepseek streams reasoning_content, anthropic
     // a thinking_delta, codex a summary delta. Presentation is the sink's call:
     // the wire's `reasoning` event, or the live "Thinking" block / spinner.
@@ -483,4 +523,17 @@ test "first-token signal ignores envelopes and sees prose, reasoning, and tool b
     try std.testing.expect(try testModelOutputStarted(.openai, "{\"choices\":[{\"delta\":{\"tool_calls\":[{}]}}]}"));
     try std.testing.expect(!try testModelOutputStarted(.anthropic, "{\"type\":\"message_start\"}"));
     try std.testing.expect(try testModelOutputStarted(.anthropic, "{\"type\":\"content_block_delta\"}"));
+}
+
+/// `-p` streams the answer onto stdout as tokens arrive so eval first_out is
+/// TTFT, not the end-of-turn print. Reasoning stays off stdout.
+pub fn oneshotShouldPaint(unattended: bool, json_mode: bool, text_len: usize) bool {
+    return unattended and !json_mode and text_len != 0;
+}
+
+test "oneshot paints answer tokens, never --json or empty deltas" {
+    try std.testing.expect(oneshotShouldPaint(true, false, 4));
+    try std.testing.expect(!oneshotShouldPaint(false, false, 4)); // line REPL uses out
+    try std.testing.expect(!oneshotShouldPaint(true, true, 4));
+    try std.testing.expect(!oneshotShouldPaint(true, false, 0));
 }

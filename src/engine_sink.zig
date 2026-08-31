@@ -263,17 +263,10 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         // Transport cuts carry no partial answer (nothing streamed on the ws
         // path), so unlike .stream_aborted there is no tail to flush — only
         // the notice, worded exactly as the old inline agent_ws lines were.
-        .transport_aborted => |t| notice(a, switch (t.reason) {
-            .interrupted => return, // deliberate stop: silent, as ever
-            .stalled => if (t.turn_ending)
-                "\n⚠ stream stalled — ending turn\n"
-            else
-                "\n⚠ stream stalled\n",
-            .dropped => if (t.turn_ending)
-                "\n⚠ connection dropped — response ended early\n"
-            else
-                "\n⚠ connection dropped\n",
-        }),
+        .transport_aborted => |t| {
+            const line = transportEndingNotice(t) orelse return;
+            notice(a, line);
+        },
         .stream_aborted => |reason| {
             a.flushStreamTail(); // render any held partial markdown line
             switch (reason) {
@@ -480,6 +473,17 @@ pub fn compactArg(input: std.json.Value) []const u8 {
         if (v == .string and v.string.len > 0) return v.string;
     }
     return "";
+}
+
+/// Mid-turn transport cuts are the reconnect ladder (ADR 0021). Only a
+/// turn that is actually ending earns a ⚠ on the transcript.
+fn transportEndingNotice(t: engine_events.TransportAbort) ?[]const u8 {
+    if (!t.turn_ending or t.reason == .interrupted) return null;
+    return switch (t.reason) {
+        .interrupted => null,
+        .stalled => "\n⚠ stream stalled — ending turn\n",
+        .dropped => "\n⚠ connection dropped — response ended early\n",
+    };
 }
 
 pub fn firstLineCap(text: []const u8, cap: usize) []const u8 {

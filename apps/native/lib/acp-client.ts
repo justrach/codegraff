@@ -2,7 +2,16 @@ import { parseRpcLine, type AcpUpdate, type JsonRpcLine } from "./acp";
 
 const BASE = "/api/acp";
 
-export type Health = { ok: boolean; detail?: string };
+export type Health = { ok: boolean; detail?: string; cwd?: string };
+
+/** Server-side key for a chat tab's own `graff acp` child: `<page>:<chat>`.
+ * The page half is minted per load so a reload never inherits the previous
+ * page's still-running agents (and their conversation history). */
+export type ChatHandle = string;
+
+export function chatHandle(page: string, chatId: number): ChatHandle {
+  return `${page}:${chatId}`;
+}
 
 async function* ndjson(res: Response): AsyncGenerator<JsonRpcLine> {
   const body = res.body;
@@ -30,11 +39,11 @@ async function* ndjson(res: Response): AsyncGenerator<JsonRpcLine> {
   }
 }
 
-async function rpc(method: string, params?: unknown, stream = false): Promise<Response> {
+async function rpc(chat: ChatHandle, method: string, params?: unknown, stream = false): Promise<Response> {
   const res = await fetch(BASE, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ method, params, stream }),
+    body: JSON.stringify({ chat, method, params, stream }),
     cache: "no-store",
   });
   if (!res.ok) {
@@ -54,18 +63,21 @@ export async function checkHealth(): Promise<Health> {
   }
 }
 
-export async function ensureSession(model?: string, reset = false): Promise<string> {
-  const res = await rpc("bootstrap", { model, reset });
+/** `resume` names the graff session file the tab's agent autosaves to (and
+ * restores from, when it already exists) — `graff acp --resume <name>`. */
+export async function ensureSession(chat: ChatHandle, model?: string, reset = false, resume?: string): Promise<string> {
+  const res = await rpc(chat, "bootstrap", { model, reset, resume });
   const body = (await res.json()) as { sessionId?: string; error?: string };
   if (!body.sessionId) throw new Error(body.error ?? "ACP session/new failed");
   return body.sessionId;
 }
 
 export async function* prompt(
+  chat: ChatHandle,
   sessionId: string,
   text: string,
 ): AsyncGenerator<AcpUpdate> {
-  const res = await rpc("session/prompt", {
+  const res = await rpc(chat, "session/prompt", {
     sessionId,
     prompt: [{ type: "text", text }],
   }, true);
@@ -86,11 +98,36 @@ export async function* prompt(
   if (!terminal) throw new Error("ACP stream ended before session/prompt returned");
 }
 
-export async function cancel(sessionId: string): Promise<void> {
+export async function cancel(chat: ChatHandle, sessionId: string): Promise<void> {
   await fetch(BASE, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ method: "session/cancel", params: { sessionId } }),
+    body: JSON.stringify({ chat, method: "session/cancel", params: { sessionId } }),
+  }).catch(() => {});
+}
+
+/** Kill a closed tab's agent. `keepalive` so a close-then-navigate still lands. */
+export async function disposeSession(chat: ChatHandle): Promise<void> {
+  await fetch(BASE, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chat, method: "dispose" }),
+    keepalive: true,
+  }).catch(() => {});
+}
+
+/** Reap every agent this page spawned. Fired from `pagehide`, where only a
+ * beacon is guaranteed to leave the tab; falls back to a keepalive fetch. */
+export function disposePage(page: string): void {
+  const payload = JSON.stringify({ method: "dispose-page", params: { page } });
+  if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+    if (navigator.sendBeacon(BASE, new Blob([payload], { type: "application/json" }))) return;
+  }
+  void fetch(BASE, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: payload,
+    keepalive: true,
   }).catch(() => {});
 }
 
@@ -99,10 +136,58 @@ export const STARTER_PROMPTS = [
   { id: "readme", label: "Summarize README.md", prompt: "Read README.md and summarize it in a short paragraph." },
   { id: "review", label: "Review the last commit", prompt: "Review HEAD against the previous commit. Stay read-only." },
   { id: "todos", label: "What's on the checklist?", prompt: "Read the current todo list and tell me what's open." },
-  { id: "never", label: "List standing constraints", prompt: "/never" },
 ] as const;
 
-export const MODELS = [
+export type ModelChoice = {
+  key: string;
+  name: string;
+  tag?: string;
+  provider?: string;
+  context?: number;
+  cost?: string;
+  current?: boolean;
+};
+
+type GraffModelsResult = {
+  models?: {
+    name: string;
+    provider: string;
+    context: number;
+    authenticated: boolean;
+    cost: string;
+    current: boolean;
+  }[];
+  current?: { model: string; provider: string };
+};
+
+/** The models THIS install can reach: `graff/models` filtered to providers
+ * with live credentials, already in the agent's election order. The same
+ * model name can be served by several providers; the highest-ranked seat
+ * wins its row (spawn-by-name resolves through graff's own routing anyway). */
+export async function fetchModels(chat: ChatHandle): Promise<{ models: ModelChoice[]; current: string | null }> {
+  const res = await rpc(chat, "graff/models");
+  const body = (await res.json()) as { result?: GraffModelsResult; error?: string };
+  if (!body.result) throw new Error(body.error ?? "graff/models failed");
+  const seen = new Set<string>();
+  const models: ModelChoice[] = [];
+  for (const m of body.result.models ?? []) {
+    if (!m.authenticated || seen.has(m.name)) continue;
+    seen.add(m.name);
+    models.push({
+      key: m.name,
+      name: m.name,
+      tag: m.cost === "plan" || m.cost === "credits" ? `${m.provider} · ${m.cost}` : m.provider,
+      provider: m.provider,
+      context: m.context,
+      cost: m.cost,
+      current: m.current,
+    });
+  }
+  return { models, current: body.result.current?.model ?? null };
+}
+
+/** Fallback until `graff/models` answers (or when nothing is authenticated). */
+export const MODELS: ModelChoice[] = [
   { key: "gpt-5.5", name: "GPT-5.5", tag: "OpenAI" },
   { key: "claude-opus-4-8", name: "Opus 4.8", tag: "Anthropic" },
   { key: "codex", name: "Codex", tag: "ChatGPT" },

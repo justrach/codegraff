@@ -1,0 +1,10 @@
+{
+  "id": "atomic-symlink-write",
+  "suite": "inhouse",
+  "category": "inhouse",
+  "source": "codegraff #685 / #405 — write atomically through a symlink (distilled, not the live repo)",
+  "files_dir": "fixtures/atomic-symlink-write",
+  "prompt": "atomic_write.py:replace_file is wrong. Read SPEC.md and atomic_write.py, then edit atomic_write.py so `python3 test_atomic_write.py` prints OK. Do not only describe the fix. Do not edit the tests. A path that is a symlink (including a credential-store path such as settings.json → credentials/graff-oauth.json) must stay a symlink; the write replaces the referent.",
+  "check": "python3 test_atomic_write.py && python3 \"$TASK_ROOT/hidden/atomic-symlink-write.py\"",
+  "timeout_s": 240
+}

@@ -1,7 +1,7 @@
 # Benchmarks
 
 Reproducible head-to-head of **graff** vs **Claude Code** vs **Codex**, behind the
-numbers in the main README's [How it compares](../README.md#how-it-compares).
+numbers in the main README's [same-model table](../README.md#same-model-fewer-tokens).
 
 These are small, honest benchmarks (a few read-only code questions on one
 machine), not a leaderboard. Run them yourself. Your numbers will vary with the

@@ -101,28 +101,42 @@ fn writePrivateFile(io: Io, dir: Io.Dir, name: []const u8, bytes: []const u8) !v
     try file.sync(io);
 }
 
-/// Copy the running executable into the kit and pin *that* copy. Pinning the
-/// installed path instead would make every `graff update` invalidate the
-/// configuration, and the configuration is immutable by design.
-fn copyExecutable(io: Io, source_path: []const u8, dir: Io.Dir, name: []const u8) !void {
-    const source = try Io.Dir.openFileAbsolute(io, source_path, .{});
-    defer source.close(io);
-    const stat = try source.stat(io);
-    if (stat.kind != .file) return error.NotRegularFile;
-    if (stat.size > store_mod.max_program_bytes) return error.FileTooBig;
-    dir.deleteFile(io, name) catch {};
+/// Write source bytes into `name`. Fallback when the filesystem cannot
+/// hardlink (cross-device, or a host that does not support links).
+fn copyExecutableBytes(io: Io, source: Io.File, size: u64, dir: Io.Dir, name: []const u8) !void {
     const dest = try dir.createFile(io, name, .{ .exclusive = true, .permissions = file_permissions });
     defer dest.close(io);
     var buffer: [64 << 10]u8 = undefined;
     var offset: u64 = 0;
-    while (offset < stat.size) {
-        const want: usize = @intCast(@min(@as(u64, buffer.len), stat.size - offset));
+    while (offset < size) {
+        const want: usize = @intCast(@min(@as(u64, buffer.len), size - offset));
         const got = try source.readPositionalAll(io, buffer[0..want], offset);
         if (got != want) return error.UnexpectedEndOfFile;
         try dest.writeStreamingAll(io, buffer[0..got]);
         offset += got;
     }
     try dest.sync(io);
+}
+
+/// Pin the running executable into the kit. Prefer a hardlink: same inode,
+/// O(1), and `graff update` replacing the live path leaves this pin (and its
+/// SHA) intact. Do not chmod the dest — that would also chmod the live exe.
+/// Copy only when the filesystem cannot hardlink.
+fn pinExecutable(io: Io, source_path: []const u8, dir: Io.Dir, name: []const u8) !void {
+    const source = try Io.Dir.openFileAbsolute(io, source_path, .{});
+    defer source.close(io);
+    const stat = try source.stat(io);
+    if (stat.kind != .file) return error.NotRegularFile;
+    if (stat.size > store_mod.max_program_bytes) return error.FileTooBig;
+    dir.deleteFile(io, name) catch {};
+    // File.hardLink goes through Io.Threaded's fileHardLink, which is only
+    // implemented for linux (`error.OperationUnsupported` elsewhere), so it
+    // degraded every macOS pin to a full copy. Dir.hardLink's dirHardLink
+    // path linkat()s by name and works on macOS; an absolute source path
+    // ignores the old_dir handle.
+    Io.Dir.cwd().hardLink(source_path, dir, name, io, .{}) catch {
+        try copyExecutableBytes(io, source, stat.size, dir, name);
+    };
 }
 
 fn joinPath(arena: Allocator, root: []const u8, name: []const u8) ![]const u8 {
@@ -347,7 +361,7 @@ pub fn prepare(gpa: Allocator, arena: Allocator, io: Io, options: Options, pass_
 
     const exe_path = try std.process.executablePathAlloc(io, gpa);
     defer gpa.free(exe_path);
-    try copyExecutable(io, exe_path, kit, binary_file);
+    try pinExecutable(io, exe_path, kit, binary_file);
 
     const parent = try std.fmt.allocPrint(arena, "{s}\n", .{prompts.main_system_prompt});
     try writePrivateFile(io, kit, parent_file, parent);
@@ -436,4 +450,42 @@ test "a suite generation command names the pinned kit generator" {
     try std.testing.expectEqualStrings(assets.generate_name, argv[2]);
     try std.testing.expectEqualStrings("primary.json", argv[3]);
     try std.testing.expectEqualStrings("holdout.json", argv[4]);
+}
+
+test "pinning the executable hardlinks on the same filesystem instead of copying" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const payload = "graff-pin-fixture";
+    {
+        const file = try tmp.dir.createFile(io, "src-bin", .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, payload);
+    }
+
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_len = try tmp.dir.realPath(io, &real_buf);
+    const root = real_buf[0..real_len];
+    const src_path = try std.fmt.allocPrint(std.testing.allocator, "{s}{c}src-bin", .{ root, std.fs.path.sep });
+    defer std.testing.allocator.free(src_path);
+
+    try pinExecutable(io, src_path, tmp.dir, binary_file);
+
+    const src = try tmp.dir.openFile(io, "src-bin", .{});
+    defer src.close(io);
+    const dst = try tmp.dir.openFile(io, binary_file, .{});
+    defer dst.close(io);
+    const src_stat = try src.stat(io);
+    const dst_stat = try dst.stat(io);
+    try std.testing.expectEqual(src_stat.size, dst_stat.size);
+    if (builtin.os.tag != .windows and src_stat.inode != 0) {
+        try std.testing.expectEqual(src_stat.inode, dst_stat.inode);
+        try std.testing.expect(dst_stat.nlink >= 2);
+    }
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const pin = try pinFor(io, arena_state.allocator(), root, binary_file);
+    try std.testing.expectEqual(@as(usize, 64), pin.sha256.len);
 }
