@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const orphan = @import("key_orphan.zig");
+const recover = @import("key_recover.zig");
 const paste = @import("key_paste.zig");
 
 /// Super/alt currently held, from kitty modifier-key events (Ghostty Cmd+Delete
@@ -187,24 +188,27 @@ fn escapeSeq(bytes: []const u8, i: *usize) ?Key {
         i.* += 1;
         return .shift_enter;
     }
-    if (c0 == 0x1b) {
-        // Meta-prefixed CSI/SS3 (Alt+Left = ESC ESC [ D). Emitting Escape
-        // here cancelled the live turn (#524). Bare ESC ESC is still Escape.
-        if (i.* + 1 < bytes.len and orphan.isSeqIntroducer(bytes[i.* + 1])) {
-            i.* += 1;
-            return escapeSeq(bytes, i);
+    const double_esc = c0 == 0x1b;
+    if (double_esc) {
+        // Legacy Alt arrows are ESC ESC CSI. Keep both ESC bytes ambiguous
+        // until the CSI is complete, otherwise the first one cancels work.
+        if (i.* + 1 >= bytes.len) {
+            i.* -= 1;
+            return null;
         }
-        return .escape;
-    }
-    if (c0 == 'O') return ss3(bytes, i);
-    if (c0 == ']' or c0 == 'P' or c0 == '_' or c0 == '^' or c0 == 'X') return stringSeq(bytes, i);
-    if (c0 != '[') {
-        // Unbound Alt+<char> chord: swallow both bytes so the char is not
-        // typed into the composer behind a phantom Escape.
+        if (bytes[i.* + 1] != '[') return .escape;
+        i.* += 2;
+    } else {
+        if (c0 == 'O') return ss3(bytes, i);
+        if (c0 == ']' or c0 == 'P' or c0 == '_' or c0 == '^' or c0 == 'X') return stringSeq(bytes, i);
+        if (c0 != '[') {
+            // Unbound Alt+<char> chord: swallow both bytes so the char is not
+            // typed into the composer behind a phantom Escape.
+            i.* += 1;
+            return .ignore;
+        }
         i.* += 1;
-        return .ignore;
     }
-    i.* += 1;
     const start = i.*;
     while (i.* < bytes.len) : (i.* += 1) {
         const c = bytes[i.*];
@@ -217,11 +221,12 @@ fn escapeSeq(bytes: []const u8, i: *usize) ?Key {
             const params = bytes[start..i.*];
             i.* += 1;
             if (final == 'M' and params.len == 0) return x10Mouse(bytes, i, start);
+            if (double_esc and !recover.legacyCsiBoundary(params, final, bytes, i.*)) return recover.legacyDoubleEscape(i, start);
             return decodeCsi(params, final);
         }
     }
     // Incomplete CSI (split paste / arrow) — rewind so the next read can finish it.
-    i.* = start - 2;
+    i.* = start - @as(usize, if (double_esc) 3 else 2);
     return null;
 }
 

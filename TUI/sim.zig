@@ -103,7 +103,7 @@ pub const Term = struct {
             break :blk rest;
         } else 0;
         // Latch before a fast operation can complete on a later quiet tick.
-        self.esc_live = stall.isLoneEscape(self.inbuf[0..self.pending]) and (self.model.pending != null or self.model.bg != null);
+        if (self.pending == 0) self.esc_live = false else if (!self.esc_live and (self.model.pending != null or self.model.bg != null)) self.esc_live = true;
         self.last_effect = last;
     }
 
@@ -119,6 +119,11 @@ pub const Term = struct {
             .escape_key => {
                 self.abandonPending(.escape);
                 self.last_effect = keys.handle(&self.model, .escape);
+            },
+            .escape_pair => {
+                self.abandonPending(.none);
+                self.last_effect = keys.handle(&self.model, .escape);
+                if (self.last_effect == .stay) self.last_effect = keys.handle(&self.model, .escape);
             },
             .drop => self.stallDropPending(),
         }
