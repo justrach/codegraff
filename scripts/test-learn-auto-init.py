@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 from codex_ws_mock import CodexMock, turn_events
 from pty_harness import PtySession
@@ -102,9 +103,14 @@ def main() -> None:
             text = run_session(tmp, port, prompts=MINIMUM_CALLS)
             workspace = os.path.join(tmp, "workspace")
             active = os.path.join(workspace, ".graff", "learn", "refs", "active.json")
+            # The bootstrap is detached (ADR 0044): the session exits without
+            # waiting on suite generation, so the store lands seconds later.
+            deadline = time.monotonic() + 120.0
+            while not os.path.exists(active) and time.monotonic() < deadline:
+                time.sleep(1.0)
             if not os.path.exists(active):
                 raise AssertionError(f"no learning store was configured\n{text[-3000:]}")
-            if "learning on for this workspace" not in text:
+            if "learning setup started in the background" not in text:
                 raise AssertionError(f"the session never said it turned learning on\n{text[-3000:]}")
             if not os.path.exists(os.path.join(workspace, ".graff", "learn-auto-init")):
                 raise AssertionError("the one-shot bootstrap marker was not claimed")
@@ -114,15 +120,21 @@ def main() -> None:
             if not config.get("auto", {}).get("enabled"):
                 raise AssertionError("a self-configured store cannot promote anything")
 
-            # The bootstrapping session counts as the first toward the cadence,
-            # and must not itself spend a trial's worth of model calls.
+            # The bootstrap is detached, so the cadence starts with the NEXT
+            # session that finds the store (ADR 0044): one short session must
+            # land exactly one on the counter, and neither session may spend a
+            # trial's worth of model calls.
+            run_session(tmp, port, prompts=1)
             auto_json = os.path.join(workspace, ".graff", "learn", "refs", "auto.json")
+            deadline = time.monotonic() + 30.0
+            while not os.path.exists(auto_json) and time.monotonic() < deadline:
+                time.sleep(1.0)
             with open(auto_json, encoding="utf-8") as fh:
                 record = json.load(fh)
             if record.get("sessions_since_trial") != 1:
-                raise AssertionError(f"bootstrapping session was not counted: {record}")
+                raise AssertionError(f"the session after the bootstrap was not counted: {record}")
             if record.get("trials_started"):
-                raise AssertionError(f"a trial ran on the bootstrapping session: {record}")
+                raise AssertionError(f"a trial ran before the cadence was due: {record}")
         print("ok    a working session configured its own store and started the cadence")
     finally:
         mock.stop()

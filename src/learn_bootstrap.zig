@@ -129,7 +129,12 @@ fn pinExecutable(io: Io, source_path: []const u8, dir: Io.Dir, name: []const u8)
     if (stat.kind != .file) return error.NotRegularFile;
     if (stat.size > store_mod.max_program_bytes) return error.FileTooBig;
     dir.deleteFile(io, name) catch {};
-    source.hardLink(io, dir, name, .{}) catch {
+    // File.hardLink goes through Io.Threaded's fileHardLink, which is only
+    // implemented for linux (`error.OperationUnsupported` elsewhere), so it
+    // degraded every macOS pin to a full copy. Dir.hardLink's dirHardLink
+    // path linkat()s by name and works on macOS; an absolute source path
+    // ignores the old_dir handle.
+    Io.Dir.cwd().hardLink(source_path, dir, name, io, .{}) catch {
         try copyExecutableBytes(io, source, stat.size, dir, name);
     };
 }
