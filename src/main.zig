@@ -578,7 +578,9 @@ test { // pull in tests from imported modules (mcp.zig)
     _ = @import("mcp_rpc.zig");
     _ = @import("main_test.zig");
     _ = @import("http_client.zig");
+    _ = @import("http_client_tests.zig");
     _ = @import("http_client_integration_tests.zig");
+    _ = @import("http_client_trajectory_tests.zig");
     // A module whose tests must run needs an explicit reference here (a plain @import elsewhere compiles to nothing); scripts/eval-tier1.sh --only reach catches one.
     _ = @import("test_hooks.zig"); // unreached modules; their tests were silently skipped
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests

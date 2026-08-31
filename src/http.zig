@@ -114,6 +114,7 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
     http_client.waitForReady(client.io);
     var lease = http_client.acquire(client);
     defer lease.release();
+    if (!lease.available) return error.Canceled;
     if (http_client.injectedConstructionTls(&lease)) |err| return err;
     const transport = lease.client;
     var aw: Io.Writer.Allocating = .init(gpa);

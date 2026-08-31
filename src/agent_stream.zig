@@ -56,6 +56,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     http_client.waitForReady(client.io);
     var lease = http_client.acquire(client);
     defer lease.release();
+    if (!lease.available) return error.Canceled;
     if (http_client.injectedConstructionTls(&lease)) |err| return err;
     const transport = lease.client;
     const sink = engine_sink.forAgent(self);
