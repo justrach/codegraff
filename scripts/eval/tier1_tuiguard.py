@@ -61,6 +61,8 @@ PROBE_TIMEOUTS = {
     "test-tui-fold-headers.py": LONG_TIMEOUT,
     "test-tui-model-picker.py": LONG_TIMEOUT,
     "test-tui-layout-cache.py": LONG_TIMEOUT,
+    "test-tui-resize-anchor.py": LONG_TIMEOUT,
+    "test-tui-overlay-panels.py": LONG_TIMEOUT,
 }
 
 
