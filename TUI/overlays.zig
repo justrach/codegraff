@@ -229,8 +229,11 @@ pub fn activate(self: *Model) Effect {
             var rows: [models.max_models]engine.ModelEntry = undefined;
             const n = models.filterModels(engine.g_model_entries, self.overlay_filter, &rows);
             const sel = if (n == 0) 0 else self.overlay_sel % n;
+            if (n == 0 or dispatch.refuseProviderMutation(self)) {
+                self.closeOverlay();
+                return .stay;
+            }
             self.closeOverlay();
-            if (n == 0) return .stay;
             // THE row the user chose, provider and all. Handing the engine the
             // name alone let it re-route by first-name-match, so picking the
             // openai row for a model codex also serves landed on codex.

@@ -16,6 +16,8 @@ const Loop = struct {
     pending: usize = 0,
     typed: std.array_list.Managed(u8),
     mice: usize = 0,
+    arrows: usize = 0,
+    paste_starts: usize = 0,
     paste_ends: usize = 0,
     bg_reports: usize = 0,
 
@@ -35,7 +37,9 @@ const Loop = struct {
             .char => |c| try self.typed.append(c),
             .codepoint => try self.typed.append('?'),
             .mouse => self.mice += 1,
+            .left, .right, .up, .down => self.arrows += 1,
             .escape => try self.typed.append('E'), // a phantom Escape cancels the turn
+            .paste_start => self.paste_starts += 1,
             .paste_end => self.paste_ends += 1,
             .bg_report => self.bg_reports += 1,
             else => {},
@@ -51,7 +55,7 @@ const Loop = struct {
     /// grace, so a real Escape is delivered — but the byte is carried, not
     /// thrown away.
     fn stallEscape(self: *Loop) !void {
-        key.stashOrphanHead(self.inbuf[0..self.pending]);
+        key.abandonSequence(self.inbuf[0..self.pending], .escape);
         self.pending = 0;
         try self.typed.append('E');
     }
@@ -59,19 +63,18 @@ const Loop = struct {
     /// run.zig's `.drop` verdict: carry the head, arm the sweeper, and close
     /// out a paste that can no longer be closed by its own marker.
     fn stallDrop(self: *Loop) void {
-        key.stashOrphanHead(self.inbuf[0..self.pending]);
+        key.abandonSequence(self.inbuf[0..self.pending], .dropped);
         self.pending = 0;
-        key.armOrphan(true);
         if (key.inPaste()) {
             key.endPaste();
             self.paste_ends += 1;
         }
     }
 
-    /// run.zig's carry window elapsing (`stall.carryExpired`): the head is
-    /// spent before the read, so it can no longer glue itself onto anything.
+    /// run.zig's short genuine-Escape carry elapsing. Dropped non-lone heads
+    /// retain their exact framing until the full recovery interval ends.
     fn expireCarry(_: *Loop) void {
-        key.stashOrphanHead("");
+        key.expireOrphanHead();
     }
 
     /// run.zig's arm window elapsing (`stall.armExpired`): the loop disarms the
@@ -82,6 +85,22 @@ const Loop = struct {
         key.armOrphan(false);
     }
 };
+
+test "dropping a sequence clears kitty modifiers without clearing recovery" {
+    var loop = Loop.init(std.testing.allocator);
+    defer loop.deinit();
+    key.held = 8; // a Super release was the sequence that got lost
+    try loop.read("\x1b[57444;1:3");
+    loop.stallDrop();
+    try std.testing.expectEqual(@as(u32, 0), key.held);
+    var tail: [32]u8 = undefined;
+    tail[0] = 'u';
+    const n = key.joinOrphanHead(&tail, 1);
+    var i: usize = 0;
+    try std.testing.expectEqual(Key.ignore, next(tail[0..n], &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.backspace, next("\x7f", &i).?);
+}
 
 test "SGR motion flood chopped at every byte offset never types a character" {
     key.armOrphan(false);
@@ -112,7 +131,7 @@ test "debris after a dropped ESC head is consumed, not typed — even split agai
         try loop.read(tail[0..cut]);
         try loop.read(tail[cut..]);
         try std.testing.expectEqualStrings("", loop.typed.items);
-        try std.testing.expectEqual(@as(usize, 2), loop.mice);
+        try std.testing.expectEqual(@as(usize, 1), loop.mice);
     }
 }
 
@@ -156,7 +175,7 @@ test "a body that arrives after the escape_key verdict rejoins its ESC (#530)" {
     // ssh/tmux cuts right after the 0x1b of a sequence and the next segment is
     // >50ms late. run.zig delivers Escape (the E below) — but throwing the ESC
     // away typed the whole body into the composer on top of that.
-    const bodies = [_][]const u8{ "[<35;80;24M", "[A", "[3~", "OA", "]11;rgb:14/14/14\x07" };
+    const bodies = [_][]const u8{ "[<35;80;24M", "[M !!", "[A", "[3~", "OA", "]11;rgb:14/14/14\x07" };
     for (bodies) |body| {
         var loop = Loop.init(std.testing.allocator);
         defer loop.deinit();
@@ -171,14 +190,91 @@ test "a body that arrives after the escape_key verdict rejoins its ESC (#530)" {
     defer mouse.deinit();
     try mouse.read("\x1b");
     try mouse.stallEscape();
-    try mouse.read("[<35;80;24M");
-    try std.testing.expectEqual(@as(usize, 1), mouse.mice);
+    try mouse.read("[<35;80;24M\x1b[M !!");
+    try std.testing.expectEqual(@as(usize, 2), mouse.mice);
     var osc = Loop.init(std.testing.allocator);
     defer osc.deinit();
     try osc.read("\x1b");
     try osc.stallEscape();
     try osc.read("]11;rgb:14/14/14\x07");
     try std.testing.expectEqual(@as(usize, 1), osc.bg_reports);
+}
+
+test "carry-expired unambiguous mouse kitty and OSC bodies recover (#537)" {
+    const cases = [_]struct {
+        body: []const u8,
+        mice: usize = 0,
+        arrows: usize = 0,
+        bg_reports: usize = 0,
+    }{
+        .{ .body = "[M !!", .mice = 1 },
+        .{ .body = "[<35;80;24M", .mice = 1 },
+        .{ .body = "[57350;1u", .arrows = 1 },
+        .{ .body = "]11;rgb:14/14/14\x07", .bg_reports = 1 },
+        .{ .body = "]11;rgb:1414/1414/1414\x1b\\", .bg_reports = 1 },
+    };
+    for (cases) |case| for (0..case.body.len + 1) |cut| {
+        var loop = Loop.init(std.testing.allocator);
+        defer loop.deinit();
+        try loop.read("\x1b");
+        try loop.stallEscape();
+        loop.expireCarry();
+        try loop.read(case.body[0..cut]);
+        try loop.read(case.body[cut..]);
+        try std.testing.expectEqualStrings("E", loop.typed.items);
+        try std.testing.expectEqual(case.mice, loop.mice);
+        try std.testing.expectEqual(case.arrows, loop.arrows);
+        try std.testing.expectEqual(case.bg_reports, loop.bg_reports);
+        try std.testing.expectEqual(@as(usize, 0), loop.pending);
+    };
+}
+
+test "carry-expired paste start is real before control-bearing same-read payload (#537)" {
+    var loop = Loop.init(std.testing.allocator);
+    defer loop.deinit();
+    try loop.read("\x1b");
+    try loop.stallEscape();
+    loop.expireCarry();
+    try loop.read("[200~left\x11\x03\nright");
+    try std.testing.expectEqual(@as(usize, 1), loop.paste_starts);
+    try std.testing.expect(key.inPaste());
+    try std.testing.expectEqualStrings("Eleft\nright", loop.typed.items);
+    try std.testing.expectEqual(@as(usize, 0), loop.pending);
+    try loop.read("\x1b[201~");
+    try std.testing.expectEqual(@as(usize, 1), loop.paste_ends);
+    try std.testing.expect(!key.inPaste());
+}
+
+test "post-Escape byte-at-a-time human and exact tails stay text (#537)" {
+    const human = [_][]const u8{
+        "[Alice]",
+        "[Home]",
+        "[Down]",
+        "[A",
+        "OA",
+        "3u apples",
+        "[3~ apples",
+        "Orange",
+    };
+    for (human) |text| for ([_]bool{ false, true }) |expire| {
+        var loop = Loop.init(std.testing.allocator);
+        defer loop.deinit();
+        try loop.read("\x1b");
+        try loop.stallEscape();
+        if (expire) loop.expireCarry();
+        for (text) |c| try loop.read(&[_]u8{c});
+        try std.testing.expectEqualStrings("E", loop.typed.items[0..1]);
+        try std.testing.expectEqualStrings(text, loop.typed.items[1..]);
+    };
+
+    // After the 1s arm window even an exact CSI token is ordinary text.
+    var expired = Loop.init(std.testing.allocator);
+    defer expired.deinit();
+    try expired.read("\x1b");
+    try expired.stallEscape();
+    expired.expireArm();
+    try expired.read("[A");
+    try std.testing.expectEqualStrings("E[A", expired.typed.items);
 }
 
 test "a dropped head rejoins its tail whatever the split (#531/#546)" {
@@ -222,7 +318,7 @@ test "the orphan arm covers exactly one lost head (#531)" {
     defer loop.deinit();
     key.armOrphan(true);
     try loop.read("39;7;32M");
-    try std.testing.expectEqual(@as(usize, 1), loop.mice);
+    try std.testing.expectEqual(@as(usize, 0), loop.mice);
     try loop.read("3u apples");
     try std.testing.expectEqualStrings("3u apples", loop.typed.items);
     try std.testing.expectEqual(@as(usize, 0), loop.pending);
@@ -336,7 +432,7 @@ test "a stale debris arm never eats the token the user types later" {
 }
 
 test "late debris tails are eaten while armed and typed when they are not" {
-    // The head is dropped, the 400ms carry window expires, and the tail lands
+    // The head is unavailable, broad recovery is armed, and the tail lands
     // late: `take` rejected every final outside `M/m/u/~`, so `2A`, `~`, `[A`
     // and a split paste START marker all typed themselves into the composer.
     const tails = [_][]const u8{ "2A", "~", "[A", "[3~", "1;2D", "[H", "[Z", "2F" };

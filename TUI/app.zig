@@ -262,7 +262,7 @@ pub const Model = struct {
     }
 
     pub fn destroyJob(self: *Model, job: *engine.Job) void {
-        if (job.threaded) job.thread.join();
+        engine.joinJob(job);
         if (job.result) |r| self.alloc.free(r);
         for (job.history) |t| self.alloc.free(t.text);
         self.alloc.free(job.history);

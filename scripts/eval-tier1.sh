@@ -241,8 +241,8 @@ if wanted tuiguard; then
   if ((!build_ok)); then
     skip_dependent tuiguard
   else
-    announce tuiguard "17 PTY probes in a 4–8 process pool (#641)"
-    # Same 17 scripts as the old serial loop (pty-guard through model-picker).
+    announce tuiguard "18 PTY probes in a 4–8 process pool (#641)"
+    # The original 17 probes plus #537's provider-free ESC-split regression.
     # Each owns its pty/tmp/mock; the pool is the wall-time win.
     if python3 scripts/eval/tier1_tuiguard.py zig-out/bin/graff; then :; else
       record_fail tuiguard

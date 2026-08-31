@@ -16,11 +16,21 @@ const turn = @import("turn.zig");
 const Model = app.Model;
 const Op = engine.BgOp;
 
+const SpawnFn = *const fn (*Op) anyerror!std.Thread;
+
+fn spawnOp(op: *Op) anyerror!std.Thread {
+    return std.Thread.spawn(.{}, engine.bgRun, .{op});
+}
+
 /// Spawn `kind` in the background, taking ownership of `turns` and `cmd`.
 /// A non-empty `label` pushes a live row so the wait is visible. Returns false
 /// when a turn or another op already holds the engine — the caller still owns
 /// its inputs then.
 pub fn start(self: *Model, kind: Op.Kind, turns: []engine.Turn, cmd: []const u8, label: []const u8) bool {
+    return startWithSpawn(self, kind, turns, cmd, label, spawnOp);
+}
+
+fn startWithSpawn(self: *Model, kind: Op.Kind, turns: []engine.Turn, cmd: []const u8, label: []const u8, spawn_fn: SpawnFn) bool {
     if (self.bg != null or self.pending != null) return false;
     const op = self.alloc.create(Op) catch return false;
     // The op carries the same policy a turn does: `!cmd` goes through the
@@ -28,12 +38,14 @@ pub fn start(self: *Model, kind: Op.Kind, turns: []engine.Turn, cmd: []const u8,
     op.* = .{ .kind = kind, .gpa = self.alloc, .turns = turns, .cmd = cmd, .params = turn.paramsOf(self) };
     if (label.len > 0) self.push(.pending, label) catch {};
     self.bg = op;
-    if (std.Thread.spawn(.{}, engine.bgRun, .{op})) |th| {
+    if (spawn_fn(op)) |th| {
         op.thread = th;
     } else |_| {
-        // No thread available: run it inline rather than dropping the command.
+        // Running inline would freeze paint, input and cancellation — report
+        // the failed start through finish() without invoking engine work.
         op.threaded = false;
-        engine.bgRun(op);
+        op.start_failed = true;
+        op.done.store(true, .release);
     }
     return true;
 }
@@ -55,7 +67,13 @@ pub fn finish(self: *Model) void {
     if (op.threaded) op.thread.join();
     op.threaded = false; // release() must not join a second time
     _ = turn.removePendingRows(self);
-    switch (op.kind) {
+    if (op.start_failed) {
+        self.push(.err, switch (op.kind) {
+            .compact => "compaction failed to start",
+            .bash => "command failed to start",
+            .files => "file list failed to start",
+        }) catch {};
+    } else switch (op.kind) {
         .compact => applyCompact(self, op),
         .bash => applyBash(self, op),
         .files => applyFiles(self, op),
@@ -246,6 +264,55 @@ test "a second op is refused while one is in flight, and Esc cancels the live on
     try testing.expect(Gate.saw_cancel.load(.acquire));
     try drain(&m);
     try testing.expect(m.bg == null);
+}
+
+test "thread spawn failure completes through finish without inline engine work (#537)" {
+    const Fake = struct {
+        var calls: usize = 0;
+        fn spawn(_: *Op) anyerror!std.Thread {
+            return error.InjectedSpawnFailure;
+        }
+        fn compact(_: ?*anyopaque, _: std.mem.Allocator, _: []const engine.Turn, _: *engine.CompactOut) bool {
+            calls += 1;
+            return false;
+        }
+        fn bash(_: ?*anyopaque, _: std.mem.Allocator, _: []const u8, _: engine.Params) ?[]const u8 {
+            calls += 1;
+            return null;
+        }
+        fn files(_: ?*anyopaque, _: std.mem.Allocator) ?[]const u8 {
+            calls += 1;
+            return null;
+        }
+    };
+    Fake.calls = 0;
+    engine.g_compact_fn = Fake.compact;
+    engine.g_bash_fn = Fake.bash;
+    engine.g_files_fn = Fake.files;
+    defer {
+        engine.g_compact_fn = null;
+        engine.g_bash_fn = null;
+        engine.g_files_fn = null;
+    }
+    const cases = [_]struct { kind: Op.Kind, message: []const u8 }{
+        .{ .kind = .compact, .message = "compaction failed to start" },
+        .{ .kind = .bash, .message = "command failed to start" },
+        .{ .kind = .files, .message = "file list failed to start" },
+    };
+    for (cases) |case| {
+        var m: Model = undefined;
+        m.setup(testing.allocator);
+        defer m.deinit();
+        try testing.expect(startWithSpawn(&m, case.kind, &.{}, "", "running", Fake.spawn));
+        const op = m.bg.?;
+        try testing.expect(op.start_failed and !op.threaded and op.done.load(.acquire));
+        try testing.expectEqual(@as(usize, 0), Fake.calls);
+        finish(&m);
+        try testing.expect(m.bg == null);
+        try testing.expectEqual(app.EntryKind.err, m.history.items[0].kind);
+        try testing.expectEqualStrings(case.message, m.history.items[0].text);
+    }
+    try testing.expectEqual(@as(usize, 0), Fake.calls);
 }
 
 test "quit gives a stuck op a bounded wait, then abandons it (#533/#534)" {

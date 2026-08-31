@@ -2,6 +2,7 @@
 //! The package never imports the harness: session glue supplies callbacks.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const events_mod = @import("events.zig");
 
@@ -174,6 +175,8 @@ pub const Job = struct {
     thread: std.Thread = undefined,
     threaded: bool = true,
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Thread creation failed; finish still owns reporting and cleanup.
+    start_failed: bool = false,
     result: ?[]const u8 = null,
     gpa: std.mem.Allocator,
     history: []Turn,
@@ -212,6 +215,8 @@ pub const BgOp = struct {
     thread: std.Thread = undefined,
     threaded: bool = true,
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Thread creation failed; finish still owns reporting and cleanup.
+    start_failed: bool = false,
     /// Esc/Ctrl+C asked the engine to stop; the callbacks observe it through
     /// the same cancel signal a turn uses.
     cancelled: bool = false,
@@ -305,6 +310,30 @@ pub var g_model_provider: []const u8 = "";
 /// every model surface in the TUI — there is no flat name-only string left.
 pub var g_model_entries: []const ModelEntry = &.{};
 pub var g_cwd: []const u8 = ".";
+
+pub const JobSpawnFn = *const fn (*Job) anyerror!std.Thread;
+pub const JobJoinObserver = *const fn () void;
+var job_spawn_override: ?JobSpawnFn = null;
+var job_join_observer: ?JobJoinObserver = null;
+
+/// Deterministic test seam for thread creation and join accounting. Production
+/// always takes the direct std.Thread paths below.
+pub fn setJobThreadHooksForTesting(spawn: ?JobSpawnFn, join_observer: ?JobJoinObserver) void {
+    std.debug.assert(builtin.is_test);
+    job_spawn_override = spawn;
+    job_join_observer = join_observer;
+}
+
+pub fn spawnJob(job: *Job) !std.Thread {
+    if (builtin.is_test) if (job_spawn_override) |spawn| return spawn(job);
+    return std.Thread.spawn(.{}, jobRun, .{job});
+}
+
+pub fn joinJob(job: *Job) void {
+    if (!job.threaded) return;
+    if (builtin.is_test) if (job_join_observer) |observe| observe();
+    job.thread.join();
+}
 
 pub fn jobRun(job: *Job) void {
     const reply = if (g_turn_fn) |f| f(g_turn_ctx, job.gpa, job.history, job.params, &job.stream, &job.events) else null;

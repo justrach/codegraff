@@ -24,6 +24,7 @@ const engine_mod = @import("engine.zig");
 const key_mod = @import("key.zig");
 const keys = @import("keys.zig");
 const render_mod = @import("render.zig");
+const stall = @import("run_stall.zig");
 const theme_mod = @import("theme.zig");
 const turn = @import("turn.zig");
 
@@ -40,8 +41,12 @@ pub const Term = struct {
     rows: usize = 24,
     now_ms: u64 = 0,
     last_effect: Effect = .stay,
-    inbuf: [4096]u8 = undefined,
+    inbuf: [16 * 1024]u8 = undefined,
     pending: usize = 0,
+    esc_stall: u8 = 0,
+    esc_live: bool = false,
+    stash_ms: u64 = 0,
+    arm_ms: u64 = 0,
 
     pub fn init(self: *Term, alloc: std.mem.Allocator, cols: usize, rows: usize) void {
         self.alloc = alloc;
@@ -50,6 +55,10 @@ pub const Term = struct {
         self.now_ms = 0;
         self.last_effect = .stay;
         self.pending = 0;
+        self.esc_stall = 0;
+        self.esc_live = false;
+        self.stash_ms = 0;
+        self.arm_ms = 0;
         key_mod.resetInputState();
         self.model.setup(alloc);
     }
@@ -58,15 +67,30 @@ pub const Term = struct {
         self.model.deinit();
     }
 
-    /// Raw Ghostty/xterm bytes. An incomplete sequence is CARRIED into the next
-    /// feed, exactly like run.zig's pending buffer — dropping it here let a
-    /// split CSI vanish, which is the one thing these harness tests exist to
-    /// catch.
+    /// Raw Ghostty/xterm bytes. Incomplete sequences carry between bounded
+    /// chunks exactly like repeated production reads. A non-stay effect stops
+    /// this synchronous call: bytes not yet supplied to the parser are
+    /// discarded because Term has no tty queue; any parser tail already copied
+    /// into `inbuf` remains pending for the next feed.
     pub fn feed(self: *Term, bytes: []const u8) Effect {
-        const room = self.inbuf.len - self.pending;
-        const take = @min(bytes.len, room);
-        @memcpy(self.inbuf[self.pending .. self.pending + take], bytes[0..take]);
-        const n = key_mod.joinOrphanHead(&self.inbuf, self.pending + take);
+        if (bytes.len == 0) return self.last_effect;
+        var offset: usize = 0;
+        while (offset < bytes.len) {
+            if (self.pending == self.inbuf.len) self.abandonPending(.dropped);
+            const take = @min(bytes.len - offset, self.inbuf.len - self.pending);
+            self.feedChunk(bytes[offset .. offset + take]);
+            if (self.last_effect != .stay) return self.last_effect;
+            offset += take;
+        }
+        return self.last_effect;
+    }
+
+    fn feedChunk(self: *Term, bytes: []const u8) void {
+        self.esc_stall = 0;
+        if (stall.escapeCarryExpired(self.now_ms, self.stash_ms)) key_mod.expireOrphanHead();
+        if (stall.armExpired(self.now_ms, self.arm_ms)) key_mod.armOrphan(false);
+        @memcpy(self.inbuf[self.pending .. self.pending + bytes.len], bytes);
+        const n = key_mod.joinOrphanHead(&self.inbuf, self.pending + bytes.len);
         var i: usize = 0;
         var last: Effect = .stay;
         while (key_mod.next(self.inbuf[0..n], &i)) |k| {
@@ -78,8 +102,27 @@ pub const Term = struct {
             std.mem.copyForwards(u8, self.inbuf[0..rest], self.inbuf[i..n]);
             break :blk rest;
         } else 0;
+        // Latch before a fast operation can complete on a later quiet tick.
+        self.esc_live = stall.isLoneEscape(self.inbuf[0..self.pending]) and (self.model.pending != null or self.model.bg != null);
         self.last_effect = last;
-        return last;
+    }
+
+    /// One deterministic ~25ms quiet-poll tick from run.zig.
+    pub fn stallTimeout(self: *Term) stall.StallVerdict {
+        self.esc_stall +|= 1;
+        const verdict = stall.stallVerdict(self.inbuf[0..self.pending], self.esc_stall, .{
+            .operation_live = self.esc_live or self.model.pending != null or self.model.bg != null,
+            .in_paste = key_mod.inPaste(),
+        });
+        switch (verdict) {
+            .wait => {},
+            .escape_key => {
+                self.abandonPending(.escape);
+                self.last_effect = keys.handle(&self.model, .escape);
+            },
+            .drop => self.stallDropPending(),
+        }
+        return verdict;
     }
 
     /// The live loop gives up on a pending sequence that never finished: it
@@ -88,9 +131,7 @@ pub const Term = struct {
     /// the terminal never sent (run.zig's stall path).
     pub fn stallDropPending(self: *Term) void {
         if (self.pending == 0) return;
-        key_mod.stashOrphanHead(self.inbuf[0..self.pending]);
-        self.pending = 0;
-        key_mod.armOrphan(true);
+        self.abandonPending(.dropped);
         if (key_mod.inPaste()) {
             key_mod.endPaste();
             _ = keys.handle(&self.model, .paste_end);
@@ -107,9 +148,16 @@ pub const Term = struct {
         key_mod.endPaste();
         _ = keys.handle(&self.model, .paste_end);
         if (self.pending == 0) return;
-        key_mod.stashOrphanHead(self.inbuf[0..self.pending]);
+        self.abandonPending(.dropped);
+    }
+
+    fn abandonPending(self: *Term, recovery: key_mod.SequenceRecovery) void {
+        key_mod.abandonSequence(self.inbuf[0..self.pending], recovery);
+        self.stash_ms = self.now_ms;
+        self.arm_ms = self.now_ms;
         self.pending = 0;
-        key_mod.armOrphan(true);
+        self.esc_stall = 0;
+        self.esc_live = false;
     }
 
     pub fn press(self: *Term, k: Key) Effect {
@@ -421,6 +469,18 @@ test "annotated dump prefixes 1-based rows" {
     try std.testing.expect(std.mem.indexOf(u8, ann, "abc") != null);
 }
 
+test "a dropped sequence does not turn bare Backspace into delete-to-start" {
+    var term: Term = undefined;
+    term.init(std.testing.allocator, 80, 24);
+    defer term.deinit();
+    _ = term.typeText("draft");
+    key_mod.held = 8; // a lost Super release leaves the old latch behind
+    _ = term.feed("\x1b[57444;1:3");
+    term.stallDropPending();
+    _ = term.feed("\x7f");
+    try std.testing.expectEqualStrings("draf", term.model.input.getValue());
+}
+
 test "a paste that never terminates does not wedge the composer (#536/#548)" {
     var term: Term = undefined;
     term.init(std.testing.allocator, 80, 24);
@@ -447,8 +507,10 @@ test "giving up on a split paste terminator closes the paste, tail and all (#532
     _ = term.feed("\x1b[200~hello");
     _ = term.feed("\x1b[201");
     try std.testing.expect(key_mod.inPaste());
+    key_mod.held = 8;
     term.stallDropPending(); // the loop waited the marker out
     try std.testing.expect(!key_mod.inPaste());
+    try std.testing.expectEqual(@as(u32, 0), key_mod.held);
     try std.testing.expect(!term.model.pasting);
     // The late `~` rejoins its carried head instead of typing itself.
     _ = term.feed("~");
@@ -487,8 +549,10 @@ test "the idle paste sweep never fires a phantom Escape at a live turn" {
     // Escape KEY the instant `in_paste` cleared, cancelling the live turn at
     // t=2.03s with no user keypress at all — and the same path wiped a
     // composer that had a draft in it.
+    key_mod.held = 8;
     term.idlePasteSweep();
     try std.testing.expect(!key_mod.inPaste());
+    try std.testing.expectEqual(@as(u32, 0), key_mod.held);
     try std.testing.expect(!term.model.pasting);
     try std.testing.expect(!term.model.cancel_requested);
     try std.testing.expectEqual(@as(usize, 0), term.pending);
