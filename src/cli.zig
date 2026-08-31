@@ -25,6 +25,8 @@ pub const changelog_text =
     \\  • pasted-text chips are atomic spans — a typed lookalike stays literal (#674)
     \\  • Codex WS type:error is a terminal API response; last_api_error stays (#693)
     \\  • request-construction TLS failure rotates a leased HTTP client generation (ADR 0048)
+    \\  • --resume SOURCE --branch DEST is clone-on-write (ADR 0049)
+    \\  • MCP HTTP/WSS reuse warmed TLS; catalogs can arrive gzip (ADR 0050)
     \\
     \\0.0.281
     \\  • -p / --json skip learn auto-init — no 132M graff-pinned copy (ADR 0044)

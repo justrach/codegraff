@@ -3,8 +3,9 @@
 What still exists in this repo versus what is parked. No new product mode.
 
 Landed on [v0.0.282](releases/v0.0.282.md): `#674` atomic paste spans,
-`#693` Codex WS `type:error`, `#694` HTTP client generations (ADR 0048).
-Still parked below.
+`#693` Codex WS `type:error`, `#694` HTTP client generations (ADR 0048),
+`#697` clone-on-write session branches (ADR 0049), `#679` MCP TLS reuse
+(ADR 0050). Still parked below.
 
 | Issue | In this repo today | This cut |
 | --- | --- | --- |

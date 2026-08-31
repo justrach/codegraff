@@ -12,16 +12,19 @@ current is part of cutting a release.
 
 ## v0.0.282 (2026-08-31)
 
-- Next cut after v0.0.281 landed on main (`#670`). Headline is
-  yxlyx's three open product PRs: atomic paste spans (`#674`),
-  terminal Codex WS API errors (`#693`), and recoverable HTTP
-  client generations (`#694` / ADR 0048).
-- `#694` numbered its record 0042; that slot is already TUI claims
-  screen (`#666`). The TLS-generation decision is **ADR 0048**.
-- `#277` (Streamable HTTP OAuth / Smolify) and `#200` (idle
-  localhost servers) stay parked — Smolify is not a core MCP.
-- Suite floor **1817** (was 1804). `agent_request.zig` split
-  scratch/keep-alive helpers so the WS merge stays under 600 lines.
+- Next cut after v0.0.281 landed on main (`#670`). First fold:
+  atomic paste spans (`#674`), terminal Codex WS API errors
+  (`#693`), and recoverable HTTP client generations (`#694` /
+  ADR 0048). `#694` follow-up hardens lease teardown.
+- `#697` / ADR 0049: `--resume SOURCE --branch DEST` clone-on-write
+  so two processes cannot clobber one `.session.json`.
+- `#679` / ADR 0050: MCP HTTP/WSS reuse the warmed TLS client;
+  MCP HTTP accepts gzip catalogs.
+- `#694`/`#697`/`#679` numbered records 0042/0043; those slots are
+  TUI claims and Pi SWE. Remapped to **0048–0050**.
+- `#277` (Smolify OAuth) and `#200` (idle localhost) stay parked.
+- Suite floor **1817** (was 1804). Scratch helpers live in
+  `agent_request_scratch.zig` so the request loop stays under 600.
 
 ## v0.0.281 (2026-08-29)
 
