@@ -23,6 +23,7 @@ const runCapped = jobs.runCapped;
 
 const pricing = @import("pricing.zig");
 const util = @import("util.zig");
+const readline_paste = @import("readline_paste.zig");
 
 const main_mod = @import("main.zig");
 const provider_mod = @import("provider.zig");
@@ -303,12 +304,12 @@ pub fn cleanDroppedPath(gpa: Allocator, home: []const u8, pasted: []const u8) ?[
 
 // Redraw the whole input below a fixed prompt prefix, wrapping it
 // across rows. Spans listed in `marks` (paths from the @ picker or a
-// file drop, plus "[Image]") render as an accent chip (reverse video +
-// Codegraff emerald) so they keep reading as attached files, not typed words; a
-// chip crossing a row break keeps its colour. `st` carries the row
-// count + cursor row of the previous draw so this one can clear it
-// with relative moves only — no DECSC anchor for a scroll to strand.
-pub fn redraw(o: *Io.Writer, items: []const u8, c: usize, marks: []const []const u8, st: *LineRender, pcol: usize) void {
+// file drop, plus "[Image]") and live semantic paste spans render as accent
+// chips (reverse video + Codegraff emerald), so attachments do not look like
+// typed words. A chip crossing a row break keeps its colour. `st` carries the
+// row count + cursor row of the previous draw so this one can clear it with
+// relative moves only — no DECSC anchor for a scroll to strand.
+pub fn redraw(o: *Io.Writer, items: []const u8, c: usize, marks: []const []const u8, pastes: ?*const readline_paste.Store, st: *LineRender, pcol: usize) void {
     const cols = termCols();
     const plen = if (pcol > 0) pcol - 1 else 0; // columns the prompt holds on row 0
 
@@ -357,18 +358,21 @@ pub fn redraw(o: *Io.Writer, items: []const u8, c: usize, marks: []const []const
             vcol = 0;
         }
         if (!mark_open) { // open a chip that starts here (longest wins)
-            var best: usize = 0;
+            var best_end: usize = i;
             for (marks) |m| {
                 if (m.len == 0 or i + m.len > items.len) continue;
-                if (std.mem.eql(u8, items[i .. i + m.len], m) and m.len > best) best = m.len;
+                if (std.mem.eql(u8, items[i .. i + m.len], m)) best_end = @max(best_end, i + m.len);
             }
-            if (best > 0) {
+            if (pastes) |store| {
+                if (store.highlightEndAt(items, i)) |end| best_end = @max(best_end, end);
+            }
+            if (best_end > i) {
                 if (shine_active) {
                     o.writeAll("\x1b[0m") catch {};
                     shine_active = false;
                 }
                 o.writeAll(if (main_mod.use_color) "\x1b[7;38;2;5;150;105m" else "\x1b[7m") catch {};
-                mark_end = i + best;
+                mark_end = best_end;
                 mark_open = true;
             }
         }
