@@ -29,14 +29,25 @@ pub const RecoveryOutcome = enum {
     already_rotated,
 };
 
+pub const Stats = struct {
+    active_id: u64,
+    active_refs: usize,
+    retired: usize,
+    total_refs: usize,
+    shutting_down: bool,
+};
+
 pub const Recovery = struct {
     gpa: Allocator,
     io: Io,
     mutex: Io.Mutex = .init,
+    idle: Io.Condition = .init,
     original: Generation,
     active: *Generation,
     retired: ?*Generation = null,
     next_id: u64 = 1,
+    total_refs: usize = 0,
+    shutting_down: bool = false,
     warm_replacements: bool,
 
     pub fn init(self: *Recovery, gpa: Allocator, io: Io, original: *std.http.Client, warm_replacements: bool) void {
@@ -50,7 +61,21 @@ pub const Recovery = struct {
         self.active = &self.original;
     }
 
+    pub fn beginShutdown(self: *Recovery) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.shutting_down = true;
+    }
+
+    pub fn shutdown(self: *Recovery) void {
+        self.beginShutdown();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        while (self.total_refs != 0) self.idle.waitUncancelable(self.io, &self.mutex);
+    }
+
     pub fn deinit(self: *Recovery) void {
+        self.shutdown();
         std.debug.assert(self.active.refs == 0);
         if (self.active.owned) self.destroyOwned(self.active);
         var cursor = self.retired;
@@ -68,8 +93,25 @@ pub const Recovery = struct {
         defer self.mutex.unlock(self.io);
         if (requested != self.original.client and requested != self.active.client)
             return .{ .client = requested };
+        if (self.shutting_down) return .{ .client = requested, .available = false };
         self.active.refs += 1;
+        self.total_refs += 1;
         return .{ .client = self.active.client, .owner = self, .generation = self.active, .generation_id = self.active.id };
+    }
+
+    pub fn stats(self: *Recovery) Stats {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        var retired: usize = 0;
+        var cursor = self.retired;
+        while (cursor) |generation| : (cursor = generation.next) retired += 1;
+        return .{
+            .active_id = self.active.id,
+            .active_refs = self.active.refs,
+            .retired = retired,
+            .total_refs = self.total_refs,
+            .shutting_down = self.shutting_down,
+        };
     }
 
     /// Retire the generation that failed while constructing a request. If a
@@ -78,15 +120,25 @@ pub const Recovery = struct {
     pub fn recoverConstructionTls(self: *Recovery, failed: *std.http.Client) RecoveryOutcome {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
+        if (self.shutting_down) return .unavailable;
         if (failed != self.active.client)
             return if (failed == self.original.client or self.isRetired(failed)) .already_rotated else .unavailable;
 
         const client = self.gpa.create(std.http.Client) catch return .unavailable;
         client.* = .{ .allocator = self.gpa, .io = self.io };
         var ca_warm_failed = false;
-        if (self.warm_replacements) warm.prewarmCaBundle(client, self.gpa, self.io) catch {
-            ca_warm_failed = true;
-        };
+        if (self.warm_replacements) {
+            if (builtin.is_test and g_test_fail_ca_warm.swap(false, .acq_rel)) {
+                ca_warm_failed = true;
+            } else warm.prewarmCaBundle(client, self.gpa, self.io) catch {
+                ca_warm_failed = true;
+            };
+        }
+        if (builtin.is_test and g_test_fail_generation_alloc.swap(false, .acq_rel)) {
+            client.deinit();
+            self.gpa.destroy(client);
+            return .unavailable;
+        }
         const generation = self.gpa.create(Generation) catch {
             client.deinit();
             self.gpa.destroy(client);
@@ -109,7 +161,9 @@ pub const Recovery = struct {
         defer self.mutex.unlock(self.io);
         std.debug.assert(generation.refs > 0);
         generation.refs -= 1;
+        self.total_refs -= 1;
         if (generation.retired and generation.refs == 0) self.reclaim(generation);
+        if (self.shutting_down and self.total_refs == 0) self.idle.broadcast(self.io);
     }
 
     fn isRetired(self: *Recovery, client: *std.http.Client) bool {
@@ -146,6 +200,7 @@ pub const Lease = struct {
     owner: ?*Recovery = null,
     generation: ?*Generation = null,
     generation_id: u64 = 0,
+    available: bool = true,
 
     pub fn release(self: *Lease) void {
         if (self.owner) |owner| owner.release(self.generation.?);
@@ -153,18 +208,35 @@ pub const Lease = struct {
     }
 };
 
+var g_lifecycle_mutex: Io.Mutex = .init;
+var g_lifecycle_idle: Io.Condition = .init;
+var g_ready_waiters: usize = 0;
+var g_closing: bool = false;
 var g_recovery: ?*Recovery = null;
 var g_client_ready: ?*Io.Event = null;
+var g_closed_client: ?*std.http.Client = null;
+var g_test_wait_entered: ?*Io.Event = null;
 var g_ca_warm_failed: std.atomic.Value(bool) = .init(false);
 const no_test_failure = std.math.maxInt(u64);
 var g_test_fail_generation: std.atomic.Value(u64) = .init(no_test_failure);
+var g_test_fail_through_generation: std.atomic.Value(u64) = .init(no_test_failure);
+var g_test_fail_ca_warm: std.atomic.Value(bool) = .init(false);
+var g_test_fail_generation_alloc: std.atomic.Value(bool) = .init(false);
+var g_test_tls_arrivals: ?*std.atomic.Value(usize) = null;
+var g_test_tls_all_arrived: ?*Io.Event = null;
+var g_test_tls_release: ?*Io.Event = null;
 
 pub fn acquire(requested: *std.http.Client) Lease {
+    g_lifecycle_mutex.lockUncancelable(requested.io);
+    defer g_lifecycle_mutex.unlock(requested.io);
     if (g_recovery) |recovery| return recovery.acquire(requested);
+    if (g_closed_client == requested) return .{ .client = requested, .available = false };
     return .{ .client = requested };
 }
 
 pub fn constructionTlsError(failed: *std.http.Client) anyerror {
+    g_lifecycle_mutex.lockUncancelable(failed.io);
+    defer g_lifecycle_mutex.unlock(failed.io);
     const outcome = if (g_recovery) |recovery| recovery.recoverConstructionTls(failed) else .unavailable;
     return switch (outcome) {
         .unavailable => error.TlsInitializationFailed,
@@ -177,15 +249,99 @@ pub fn injectConstructionTlsForTest(generation: u64) void {
     if (builtin.is_test) g_test_fail_generation.store(generation, .release);
 }
 
-pub fn injectedConstructionTls(lease: *const Lease) ?anyerror {
-    if (!builtin.is_test) return null;
-    if (g_test_fail_generation.cmpxchgStrong(lease.generation_id, no_test_failure, .acq_rel, .acquire) == null)
-        return constructionTlsError(lease.client);
-    return null;
+pub fn injectConstructionTlsThroughGenerationForTest(last_generation: u64) void {
+    if (builtin.is_test) g_test_fail_through_generation.store(last_generation, .release);
+}
+
+pub fn injectReplacementCaWarmFailureForTest() void {
+    if (builtin.is_test) g_test_fail_ca_warm.store(true, .release);
+}
+
+pub fn injectGenerationAllocationFailureForTest() void {
+    if (builtin.is_test) g_test_fail_generation_alloc.store(true, .release);
+}
+
+pub fn injectLaunchCaWarmFailureForTest() void {
+    if (builtin.is_test) g_ca_warm_failed.store(true, .release);
+}
+
+pub fn installConstructionTlsBarrierForTest(arrivals: *std.atomic.Value(usize), all_arrived: *Io.Event, release: *Io.Event) void {
+    if (!builtin.is_test) return;
+    g_test_tls_arrivals = arrivals;
+    g_test_tls_all_arrived = all_arrived;
+    g_test_tls_release = release;
+}
+
+inline fn resetTestHooks() void {
+    if (comptime !builtin.is_test) return;
+    g_test_wait_entered = null;
+    g_test_fail_generation.store(no_test_failure, .release);
+    g_test_fail_through_generation.store(no_test_failure, .release);
+    g_test_fail_ca_warm.store(false, .release);
+    g_test_fail_generation_alloc.store(false, .release);
+    g_test_tls_arrivals = null;
+    g_test_tls_all_arrived = null;
+    g_test_tls_release = null;
+}
+
+pub fn installForTest(recovery: *Recovery, ready: ?*Io.Event, wait_entered: ?*Io.Event) void {
+    if (!builtin.is_test) return;
+    g_lifecycle_mutex.lockUncancelable(recovery.io);
+    defer g_lifecycle_mutex.unlock(recovery.io);
+    g_closing = false;
+    g_closed_client = null;
+    g_recovery = recovery;
+    g_client_ready = ready;
+    resetTestHooks();
+    g_test_wait_entered = wait_entered;
+    g_ca_warm_failed.store(false, .release);
+}
+
+pub fn uninstallForTest() void {
+    if (!builtin.is_test) return;
+    const recovery = g_recovery orelse return;
+    g_lifecycle_mutex.lockUncancelable(recovery.io);
+    defer g_lifecycle_mutex.unlock(recovery.io);
+    g_closing = true;
+    while (g_ready_waiters != 0) g_lifecycle_idle.waitUncancelable(recovery.io, &g_lifecycle_mutex);
+    g_recovery = null;
+    g_client_ready = null;
+    g_closed_client = null;
+    g_closing = false;
+    resetTestHooks();
+}
+
+pub inline fn injectedConstructionTls(lease: *const Lease) ?anyerror {
+    if (comptime !builtin.is_test) return null;
+    if (lease.owner == null) return null;
+    const through = g_test_fail_through_generation.load(.acquire);
+    const should_fail = through != no_test_failure and lease.generation_id <= through or
+        g_test_fail_generation.cmpxchgStrong(lease.generation_id, no_test_failure, .acq_rel, .acquire) == null;
+    if (!should_fail) return null;
+    if (g_test_tls_arrivals) |arrivals| {
+        if (arrivals.fetchAdd(1, .acq_rel) + 1 == 2) g_test_tls_all_arrived.?.set(lease.owner.?.io);
+        g_test_tls_release.?.waitUncancelable(lease.owner.?.io);
+    }
+    return constructionTlsError(lease.client);
 }
 
 pub fn waitForReady(io: Io) void {
-    if (g_client_ready) |ready| ready.waitUncancelable(io);
+    g_lifecycle_mutex.lockUncancelable(io);
+    if (g_closing or g_client_ready == null) {
+        g_lifecycle_mutex.unlock(io);
+        return;
+    }
+    const ready = g_client_ready.?;
+    g_ready_waiters += 1;
+    g_lifecycle_mutex.unlock(io);
+
+    if (comptime builtin.is_test) if (g_test_wait_entered) |entered| entered.set(io);
+    ready.waitUncancelable(io);
+
+    g_lifecycle_mutex.lockUncancelable(io);
+    g_ready_waiters -= 1;
+    if (g_closing and g_ready_waiters == 0) g_lifecycle_idle.broadcast(io);
+    g_lifecycle_mutex.unlock(io);
 }
 
 pub fn takeCaWarmFailure() bool {
@@ -206,70 +362,35 @@ pub const Runtime = struct {
         self.client = .{ .allocator = gpa, .io = io };
         self.ready = .unset;
         self.recovery.init(gpa, io, &self.client, true);
+
+        g_lifecycle_mutex.lockUncancelable(io);
+        g_closing = false;
+        g_closed_client = null;
         g_recovery = &self.recovery;
         g_client_ready = &self.ready;
+        resetTestHooks();
         g_ca_warm_failed.store(false, .release);
+        g_lifecycle_mutex.unlock(io);
         self.warm_future = io.async(warm.prewarmCaBundleTask, .{ &self.client, gpa, io, &self.ready, &g_ca_warm_failed });
     }
 
     pub fn deinit(self: *Runtime, await_io: Io) void {
+        g_lifecycle_mutex.lockUncancelable(self.io);
+        g_closing = true;
+        self.recovery.beginShutdown();
+        while (g_ready_waiters != 0) g_lifecycle_idle.waitUncancelable(self.io, &g_lifecycle_mutex);
+        g_lifecycle_mutex.unlock(self.io);
+
+        self.recovery.shutdown();
         _ = self.warm_future.await(await_io);
+
+        g_lifecycle_mutex.lockUncancelable(self.io);
         g_client_ready = null;
         g_recovery = null;
+        g_closed_client = &self.client;
+        resetTestHooks();
         self.recovery.deinit();
         self.client.deinit();
+        g_lifecycle_mutex.unlock(self.io);
     }
 };
-
-test "request-construction TLS recovery reaches later root and child trajectories" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var original: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer original.deinit();
-    var recovery: Recovery = undefined;
-    recovery.init(gpa, io, &original, false);
-    defer recovery.deinit();
-
-    var failed_root = recovery.acquire(&original);
-    try std.testing.expectEqual(@as(u64, 0), failed_root.generation_id);
-    try std.testing.expectEqual(RecoveryOutcome.rotated, recovery.recoverConstructionTls(failed_root.client));
-
-    var later_root = recovery.acquire(&original);
-    defer later_root.release();
-    var child = recovery.acquire(&original);
-    defer child.release();
-    try std.testing.expectEqual(@as(u64, 1), later_root.generation_id);
-    try std.testing.expectEqual(later_root.generation_id, child.generation_id);
-    try std.testing.expect(later_root.client == child.client);
-    try std.testing.expect(later_root.client != failed_root.client);
-    failed_root.release();
-}
-
-fn recoverTask(recovery: *Recovery, client: *std.http.Client) RecoveryOutcome {
-    return recovery.recoverConstructionTls(client);
-}
-
-test "concurrent stale TLS reports rotate a generation only once" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var original: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer original.deinit();
-    var recovery: Recovery = undefined;
-    recovery.init(gpa, io, &original, false);
-    defer recovery.deinit();
-
-    var first = recovery.acquire(&original);
-    var concurrent = recovery.acquire(&original);
-    var first_fut = io.async(recoverTask, .{ &recovery, first.client });
-    var second_fut = io.async(recoverTask, .{ &recovery, concurrent.client });
-    const first_result = first_fut.await(io);
-    const second_result = second_fut.await(io);
-    try std.testing.expect(first_result != .unavailable);
-    try std.testing.expect(second_result != .unavailable);
-    try std.testing.expect(first_result != second_result);
-    var after = recovery.acquire(&original);
-    defer after.release();
-    try std.testing.expectEqual(@as(u64, 1), after.generation_id);
-    first.release();
-    concurrent.release();
-}

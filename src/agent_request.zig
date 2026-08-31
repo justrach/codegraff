@@ -209,6 +209,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         // error.ApiError so the REPL returns to the prompt, never crashes.
         const resp_body = blk: {
             var attempt: usize = 0;
+            var retry_limit: ?usize = null;
             while (true) : (attempt += 1) {
                 var conv_buf: [96]u8 = undefined;
                 const conv = http_headers.promptCacheKey(self.io, self.label, self, &conv_buf);
@@ -292,7 +293,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     // (1s·2ⁿ, capped at 8s; Esc cancels) and allow a few
                     // more attempts than a plain transport flake gets.
                     const throttled = err == error.RateLimited or err == error.ServerError;
-                    const max_attempts: usize = RetryPlan.maxAttempts(throttled);
+                    const max_attempts = retry_limit orelse RetryPlan.maxAttempts(throttled);
+                    retry_limit = max_attempts;
                     // #opencode-parity: a 429 that's a billing/quota cap (not
                     // transient throttling) won't clear by retrying — fail fast so
                     // cross-provider /fallback can take over, instead of burning all
@@ -315,7 +317,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         "tls_request_construction",
                         if (err == error.TlsRequestConstructionCaWarmFailed) "rotated shared HTTP client generation; replacement CA prewarm failed" else "rotated shared HTTP client generation",
                     );
-                    if (attempt < max_attempts) {
+                    if (attempt + 1 < max_attempts) {
                         if (throttled) {
                             // #retry-after: prefer the provider's Retry-After
                             // (429/503) over our computed backoff, capped — like
@@ -346,12 +348,9 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         continue;
                     }
                     try self.say("[request failed: {t} — giving up this turn]\n", .{err});
-                    // Network give-up is its own error kind: the ApiError
-                    // handler's last_api_error would otherwise be an API
-                    // envelope, stale or null on a pure transport failure —
-                    // record the real reason so the failed turn's --json error
-                    // event and trajectory node preserve it (#86).
-                    self.last_api_error = std.fmt.allocPrint(self.arena, "network error: {s} (gave up after {d} attempts)", .{ @errorName(err), max_attempts }) catch null;
+                    // Preserve whether this was provider throttling or a transport failure in the failed turn's JSON/trajectory (#86).
+                    const failure_kind = if (err == error.RateLimited) "rate limited (429)" else if (err == error.ServerError) "server error (5xx)" else "network error";
+                    self.last_api_error = std.fmt.allocPrint(self.arena, "{s}: {s} (gave up after {d} attempts)", .{ failure_kind, @errorName(err), max_attempts }) catch null;
                     self.last_request_write_failed = std.mem.eql(u8, @errorName(err), "WriteFailed");
                     if (telemetry.g_telem) |t| t.errorEvent("net", @errorName(err));
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, 0, body.len, 0, 0, 0, true);
