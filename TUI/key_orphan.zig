@@ -216,6 +216,13 @@ fn framedDroppedSuffix(h: []const u8, t: []const u8, final_at: usize, final: u8)
         (at(h, t, 4) == '0' or at(h, t, 4) == '1');
 }
 
+pub fn isSeqIntroducer(c: u8) bool {
+    return switch (c) {
+        '[', 'O', ']', 'P', '_', '^', 'X' => true,
+        else => false,
+    };
+}
+
 /// Does `t` finish the truncated escape `h`? Only a join that yields a
 /// COMPLETE sequence is worth making: after a give-up stall the next bytes are
 /// just as likely to be a human resuming typing, and gluing a stale head onto
@@ -228,7 +235,22 @@ fn completesWithEvidence(h: []const u8, t: []const u8, dropped: bool) bool {
     const n = h.len + t.len;
     if (h.len == 0 or t.len == 0 or h[0] != 0x1b or n < 2) return false;
     switch (at(h, t, 1)) {
-        0x1b => return true, // ESC ESC — a real Escape either way
+        0x1b => {
+            // Bare ESC ESC is a real Escape. ESC ESC [ / O / OSC is Alt+seq (#524).
+            if (n == 2) return true;
+            const intro = at(h, t, 2);
+            if (!isSeqIntroducer(intro)) return true;
+            var buf: [max_head]u8 = undefined;
+            if (n - 1 > buf.len) return false;
+            var o: usize = 0;
+            var k: usize = 0;
+            while (k < n) : (k += 1) {
+                if (k == 1) continue;
+                buf[o] = at(h, t, k);
+                o += 1;
+            }
+            return completesWithEvidence(buf[0..1], buf[1..o], dropped);
+        },
         'O' => return n >= 3 and isSs3Final(at(h, t, 2)) and
             (n == 3 or at(h, t, 3) < 0x20 or at(h, t, 3) == 0x7f),
         '[' => {
@@ -531,6 +553,9 @@ test "a join only happens when the tail really completes the head" {
     try std.testing.expect(completes("\x1b", "OA"));
     try std.testing.expect(completes("\x1b", "]11;rgb:14/14/14\x07"));
     try std.testing.expect(completes("\x1b", "[200~payload"));
+    try std.testing.expect(completes("\x1b\x1b", "[D"));
+    try std.testing.expect(completes("\x1b", "\x1b[D"));
+    try std.testing.expect(completes("\x1b\x1b", "OA"));
     try std.testing.expect(completes("\x1b[<35;80", ";24M"));
     try std.testing.expect(completes("\x1b[201", "~"));
     try std.testing.expect(completes("\x1b]11;rgb:1c", "1c/1c1c/1c1c\x07"));

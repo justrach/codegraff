@@ -489,3 +489,18 @@ test "an armed sweeper still never swallows a word the user typed" {
     }
     key.armOrphan(false);
 }
+
+test "Alt+Left as ESC ESC CSI does not cancel (#524)" {
+    var same = Loop.init(std.testing.allocator);
+    defer same.deinit();
+    try same.read("\x1b\x1b[D");
+    try std.testing.expectEqualStrings("", same.typed.items);
+    try std.testing.expectEqual(@as(usize, 1), same.arrows);
+
+    var split = Loop.init(std.testing.allocator);
+    defer split.deinit();
+    try split.read("\x1b");
+    try split.read("\x1b[D");
+    try std.testing.expectEqualStrings("", split.typed.items);
+    try std.testing.expectEqual(@as(usize, 1), split.arrows);
+}

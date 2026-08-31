@@ -187,7 +187,15 @@ fn escapeSeq(bytes: []const u8, i: *usize) ?Key {
         i.* += 1;
         return .shift_enter;
     }
-    if (c0 == 0x1b) return .escape; // ESC ESC — deliver one, reparse the rest
+    if (c0 == 0x1b) {
+        // Meta-prefixed CSI/SS3 (Alt+Left = ESC ESC [ D). Emitting Escape
+        // here cancelled the live turn (#524). Bare ESC ESC is still Escape.
+        if (i.* + 1 < bytes.len and orphan.isSeqIntroducer(bytes[i.* + 1])) {
+            i.* += 1;
+            return escapeSeq(bytes, i);
+        }
+        return .escape;
+    }
     if (c0 == 'O') return ss3(bytes, i);
     if (c0 == ']' or c0 == 'P' or c0 == '_' or c0 == '^' or c0 == 'X') return stringSeq(bytes, i);
     if (c0 != '[') {

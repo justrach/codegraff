@@ -78,6 +78,20 @@ test "ESC ESC delivers an Escape and leaves the second pending" {
     try std.testing.expectEqual(@as(usize, 1), i);
 }
 
+test "ESC ESC CSI is Alt+arrow, not Escape (#524)" {
+    var i: usize = 0;
+    try std.testing.expectEqual(Key.left, next("\x1b\x1b[D", &i).?);
+    try std.testing.expectEqual(@as(usize, 4), i);
+    i = 0;
+    try std.testing.expectEqual(Key.right, next("\x1b\x1b[C", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.up, next("\x1b\x1b[A", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.down, next("\x1b\x1b[B", &i).?);
+    i = 0;
+    try std.testing.expectEqual(Key.up, next("\x1b\x1bOA", &i).?);
+}
+
 test "kitty release events never fire keys" {
     var i: usize = 0;
     try std.testing.expectEqual(Key.ignore, next("\x1b[1;1:3A", &i).?);

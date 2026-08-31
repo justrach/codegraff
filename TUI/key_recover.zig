@@ -23,7 +23,22 @@ fn combinedSlice(head: []const u8, tail: []const u8, start: usize, end: usize, o
 pub fn completed(head: []const u8, tail: []const u8) ?Event {
     const n = head.len + tail.len;
     switch (at(head, tail, 1)) {
-        0x1b => return .{ .event = .escape, .tail_len = 0 },
+        0x1b => {
+            const total = head.len + tail.len;
+            if (total <= 2) return .{ .event = .escape, .tail_len = 0 };
+            if (head.len >= 2) {
+                var buf: [max_body]u8 = undefined;
+                const rest = head[2..];
+                if (1 + rest.len > buf.len) return null;
+                buf[0] = head[0];
+                @memcpy(buf[1..][0..rest.len], rest);
+                return completed(buf[0 .. 1 + rest.len], tail);
+            }
+            return if (completed(head, tail[1..])) |ev|
+                .{ .event = ev.event, .tail_len = ev.tail_len + 1 }
+            else
+                null;
+        },
         'O' => {
             if (head.len > 3) return null;
             return .{ .event = key.decodeSs3(at(head, tail, 2)), .tail_len = 3 - head.len };
