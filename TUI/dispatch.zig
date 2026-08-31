@@ -8,6 +8,7 @@ const bgop = @import("bgop.zig");
 const catalog = @import("catalog.zig");
 const engine = @import("engine.zig");
 const peer_cmd = @import("peer_cmd.zig");
+const resume_mod = @import("resume.zig");
 const meters = @import("meters.zig");
 const theme_mod = @import("theme.zig");
 const turn = @import("turn.zig");
@@ -58,7 +59,7 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
     // #521: history-destroying commands must not run under a live job — the
     // steer guard in promptKey only covers plain text, and the slash menu,
     // palette, and steer drain all land here.
-    const destroys = std.mem.eql(u8, canon, "/new") or std.mem.eql(u8, canon, "/compact") or std.mem.eql(u8, canon, "/rewind");
+    const destroys = std.mem.eql(u8, canon, "/new") or std.mem.eql(u8, canon, "/compact") or std.mem.eql(u8, canon, "/rewind") or std.mem.eql(u8, canon, "/resume");
     if (self.pending != null and destroys) {
         self.push(.system, "a turn is still running — press Esc to cancel it first") catch {};
         return .stay;
@@ -76,6 +77,8 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         _ = self.newSession(); // the `destroys` guard above already refused a live call
         self.push(.system, "started a new conversation") catch {};
         self.screen = .welcome;
+    } else if (std.mem.eql(u8, canon, "/resume")) {
+        resume_mod.run(self, arg);
     } else if (std.mem.eql(u8, canon, "/home")) {
         self.screen = .welcome;
         self.focus = .prompt;
@@ -142,17 +145,21 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.pushFmt(.system, "fast: {s}", .{onOff(self.fast)}) catch {};
     } else if (std.mem.eql(u8, canon, "/ultracode")) {
         self.ultracode = !self.ultracode;
+        publishState(self);
         self.pushFmt(.system, "ultracode: {s}", .{onOff(self.ultracode)}) catch {};
     } else if (std.mem.eql(u8, canon, "/strict")) {
         self.strict = !self.strict;
+        publishState(self);
         self.pushFmt(.system, "strict: {s}", .{onOff(self.strict)}) catch {};
     } else if (std.mem.eql(u8, canon, "/goal")) {
         if (self.goal) |g| self.alloc.free(g);
         self.goal = if (arg.len > 0) (self.alloc.dupe(u8, arg) catch null) else null;
+        publishState(self);
         if (self.goal) |g| self.pushFmt(.system, "goal set: {s}", .{g}) catch {} else self.push(.system, "goal cleared") catch {};
     } else if (std.mem.eql(u8, canon, "/rename")) {
         if (self.session_name) |s| self.alloc.free(s);
         self.session_name = if (arg.len > 0) (self.alloc.dupe(u8, arg) catch null) else null;
+        publishState(self);
         self.pushFmt(.system, "session: {s}", .{self.session_name orelse "untitled"}) catch {};
     } else if (std.mem.eql(u8, canon, "/session-info")) {
         meters.sessionInfo(self);
@@ -206,6 +213,15 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.pushFmt(.err, "unknown command: {s} — try /help", .{cmd}) catch {};
     }
     return if (self.quit_requested) .quit else .stay;
+}
+
+fn publishState(self: *Model) void {
+    if (engine.g_state_fn) |f| f(engine.g_turn_ctx, .{
+        .session_name = self.session_name orelse "",
+        .goal = self.goal orelse "",
+        .strict = self.strict,
+        .ultracode = self.ultracode,
+    });
 }
 
 /// `!cmd` — run a shell line locally (grok-style bash mode) on a background

@@ -35,9 +35,17 @@ pub const CompactOut = engine.CompactOut;
 pub const CompactFn = engine.CompactFn;
 pub const HistoryOp = engine.HistoryOp;
 pub const HistoryFn = engine.HistoryFn;
+pub const ResumeOut = engine.ResumeOut;
+pub const ResumeFn = engine.ResumeFn;
+pub const SessionState = engine.SessionState;
+pub const StateFn = engine.StateFn;
 pub const PeerFn = engine.PeerFn;
 pub const RunOpts = run_mod.RunOpts;
 pub const run = run_mod.run;
+pub fn setCurrentModel(name: []const u8, provider: []const u8) void {
+    engine.g_model_name = name;
+    engine.g_model_provider = provider;
+}
 pub const restore = @import("restore.zig");
 /// Restore the terminal BEFORE std prints a panic, or the alt-screen exit in
 /// the restore sequence erases the message and the stack trace (#535).
@@ -55,6 +63,7 @@ test {
     _ = app;
     _ = @import("app_tests.zig");
     _ = @import("dispatch.zig");
+    _ = @import("resume.zig");
     _ = @import("peer_cmd.zig");
     _ = @import("peer_tests.zig");
     _ = @import("prompt_history.zig");

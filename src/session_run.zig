@@ -52,6 +52,7 @@ const eval_memory = @import("eval_memory.zig");
 const providers = @import("providers.zig");
 const messages_mod = @import("messages.zig");
 const session = @import("session.zig");
+const session_branch = @import("session_branch.zig");
 const session_settings = @import("session_settings.zig");
 const presence = @import("presence.zig");
 const proc_identity = @import("proc_identity.zig");
@@ -86,6 +87,9 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
     try root.ensureRootTools(.anthropic);
     try root.ensureRootTools(.openai);
     try root.ensureRootTools(.responses);
+    var convo = repl_glue.Conversation.init(gpa);
+    defer convo.deinit();
+    try convo.seed(root.messages);
     var repl_ctx = repl_glue.ReplCtx{
         .io = io,
         .client = client,
@@ -102,6 +106,8 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
         .tools_anthropic = root.tools_anthropic,
         .tools_openai = root.tools_openai,
         .tools_responses = root.tools_responses,
+        .convo = &convo,
+        .root = root,
     };
     var models_buf = std.array_list.Managed(u8).init(arena);
     for (pricing.models()) |mi| {
@@ -110,7 +116,21 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
         models_buf.appendSlice(mi.name) catch {};
     }
     try repl.runScripted(gpa, io, environ_map, in, out, &repl_ctx, repl_glue.replTurnCb, repl_glue.replModelCb, repl_glue.replCancelCb, root.provider.model, models_buf.items);
+    root.messages = try convo.cloneInto(root.arena);
     return true;
+}
+
+pub fn runFrontendCommands(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, keys: *provider_mod.Keys, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags, json_mode: bool, cwd: []const u8, final_io: Io) !bool {
+    if (try runReplCommand(gpa, io, environ_map, root, keys, client, in, out, arena, flags)) {
+        try finalizeSession(gpa, final_io, arena, out, root, json_mode);
+        return true;
+    }
+    if (try @import("acp.zig").runAcpCommand(gpa, io, environ_map, root, keys, client, in, out, arena, flags)) return true;
+    if (try tui_launch.maybeRun(gpa, io, environ_map, root, keys, client, arena, flags, json_mode, cwd)) {
+        try finalizeSession(gpa, final_io, arena, out, root, json_mode);
+        return true;
+    }
+    return false;
 }
 
 /// One-shot print mode (`-p`/bare positional prompt): run the single prompt
@@ -308,7 +328,8 @@ pub fn buildRootAgent(
     // sharing a session name — which would also share one .session.json file
     // (#289 contention) and collide as presence peers (#469).
     const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}-{d}", .{ util.unixMs(io), proc_identity.selfPid() });
-    root.session_name = if (flags.resume_flag) |name| (if (!flags.new_session_flag and !flags.no_resume_flag) name else fresh_session_name) else fresh_session_name;
+    root.session_name = if (flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) (flags.branch_flag orelse flags.resume_flag.?) else fresh_session_name;
+    root.session_parent = if (flags.branch_flag != null) flags.resume_flag else null;
     try prompts.setRootSystemPrompts(&root, sys_normal, arena); // #381: same funnel + the live .graff/playbook.jsonl constraint block
     local_tools.load(io, arena);
     // Startup pays for one provider format, not all three. Other formats are
@@ -371,13 +392,9 @@ pub fn buildRootAgent(
 pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: *provider_mod.Keys, arena: Allocator, flags: args.Flags) void {
     const will_resume = flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag;
     if (!will_resume) session.saveSession(root, arena, root.session_name) catch {};
-    if (flags.oneshot_prompt != null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) {
-        session.loadSession(root, keys, arena, root.session_name) catch {};
-        // loadSession overwrote root.goal; the flag wins, idempotently (#318).
-        if (root.goal_flag) |g| {
-            root.pending_goal_note = goal_flow.reapplyFlagGoal(arena, root, g, util.unixMs(root.io)) catch null;
-            prompts.pinStandingGoal(root, arena);
-        }
+    if (flags.oneshot_prompt != null and will_resume) {
+        const source = flags.resume_flag.?;
+        _ = session_branch.restore(root, keys, arena, source, flags.branch_flag) catch |err| std.process.fatal("cannot resume/branch from '{s}': {t}", .{ source, err });
     }
 }
 
@@ -389,12 +406,8 @@ pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: *provider_mod.Keys, are
 /// main()-owned storage.
 pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, keys: *provider_mod.Keys, flags: args.Flags, json_mode: bool, cwd_display: []const u8) !void {
     if (!(flags.oneshot_prompt == null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag)) return;
-    if (session.loadSession(root, keys, arena, root.session_name)) |_| {
-        // --goal outranks the restored goal here too, idempotently (#318).
-        if (root.goal_flag) |g| {
-            root.pending_goal_note = goal_flow.reapplyFlagGoal(arena, root, g, util.unixMs(root.io)) catch null;
-            prompts.pinStandingGoal(root, arena);
-        }
+    const source = flags.resume_flag.?;
+    if (session_branch.restore(root, keys, arena, source, flags.branch_flag)) |_| {
         if (root.messages.items.len > 0) {
             if (!json_mode) {
                 // Prefer the saved AI summary; fall back to the first user
@@ -403,11 +416,16 @@ pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod
                 title_mod.setTerminalTitle(out, restored_title, cwd_display);
                 try title_mod.printSessionHeader(out, restored_title, cwd_display);
                 root.tui_header_shown = true;
-                try out.print("↩ resumed {s}{s} — {d} message(s) on {s} · /new or /clear for a fresh start\n", .{ root.session_name, session.session_ext, root.messages.items.len, root.provider.model });
+                if (flags.branch_flag) |dest|
+                    try out.print("↩ branched {s}{s} → {s}{s} — {d} message(s) on {s}\n", .{ source, session.session_ext, dest, session.session_ext, root.messages.items.len, root.provider.model })
+                else
+                    try out.print("↩ resumed {s}{s} — {d} message(s) on {s} · /new or /clear for a fresh start\n", .{ source, session.session_ext, root.messages.items.len, root.provider.model });
                 try out.flush();
             }
         }
-    } else |_| {}
+    } else |err| {
+        if (flags.branch_flag != null) std.process.fatal("cannot branch from '{s}': {t}", .{ source, err });
+    }
 }
 
 /// Summarize a large restored context only after behavioral lifecycle start.

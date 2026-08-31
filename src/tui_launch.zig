@@ -15,8 +15,10 @@ const process_runner = @import("process_runner.zig");
 const repl = @import("repl.zig");
 const repl_bash = @import("repl_bash.zig");
 const repl_glue = @import("repl_glue.zig");
+const session = @import("session.zig");
 const tui = @import("tui");
 const tui_peer = @import("tui_peer.zig");
+const tui_session = @import("tui_session.zig");
 const engine_sink = @import("engine_sink.zig");
 const tui_sink = @import("tui_sink.zig");
 const tui_acp = @import("tui_acp.zig");
@@ -100,7 +102,9 @@ pub fn run(
     // created here, on the frame that owns the whole TUI session.
     var convo = repl_glue.Conversation.init(gpa);
     defer convo.deinit();
+    try tui_session.seed(&convo, root);
     repl_ctx.convo = &convo;
+    const initial_history = try tui_session.visibleTurns(arena, root.messages);
     const entries = modelEntries(arena, keys.*);
     engine_sink.hosted_frontend = true;
     defer engine_sink.hosted_frontend = false;
@@ -117,6 +121,11 @@ pub fn run(
         .cancel_fn = cancelCb,
         .model_name = root.provider.model,
         .model_provider = root.provider.id,
+        .initial_history = initial_history,
+        .session_name = root.session_name,
+        .initial_goal = if (root.goal) |goal| goal.objective else "",
+        .initial_strict = root.strict,
+        .initial_ultracode = root.ultracode_mode,
         .model_entries = entries,
         .cwd = cwd,
         .yolo = yolo,
@@ -127,9 +136,40 @@ pub fn run(
         .copy_fn = copyCb,
         .compact_fn = compactCb,
         .history_fn = historyCb,
+        .resume_fn = tui_session.resumeCb,
+        .state_fn = stateCb,
+        .emergency_fn = emergencyCb,
         .idle_wake_fn = idleWakeCb,
         .peer_fn = tui_peer.peerCb,
     });
+    try tui_session.syncRoot(&convo, root);
+}
+
+fn stateCb(ctx: ?*anyopaque, state: tui.SessionState) void {
+    const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return));
+    const root = c.root orelse return;
+    root.strict = state.strict;
+    root.ultracode_mode = state.ultracode;
+    if (state.session_name.len > 0 and !std.mem.eql(u8, state.session_name, root.session_name))
+        root.session_name = root.arena.dupe(u8, state.session_name) catch root.session_name;
+    if (state.goal.len == 0) {
+        root.goal = null;
+        root.todos.clearRetainingCapacity();
+    } else if (root.goal == null or !std.mem.eql(u8, root.goal.?.objective, state.goal)) {
+        const now = util.unixMs(root.io);
+        root.goal = .{
+            .objective = root.arena.dupe(u8, state.goal) catch return,
+            .epoch = if (root.goal) |goal| goal.epoch + 1 else 1,
+            .standing = true,
+            .created_ms = now,
+            .updated_ms = now,
+        };
+        root.todos.clearRetainingCapacity();
+    }
+}
+
+fn emergencyCb(_: ?*anyopaque) void {
+    session.flushSaves();
 }
 
 /// The transcript was cut, so cut the conversation the same way: /new starts

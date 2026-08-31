@@ -60,7 +60,8 @@ pub const Flags = struct {
     host_flag: []const u8 = "127.0.0.1", // harness serve
     port_flag: u16 = 8787, // harness serve
     token_flag: ?[]const u8 = null, // harness serve
-    resume_flag: ?[]const u8 = null, // restore/save this named session
+    resume_flag: ?[]const u8 = null, // restore this named session
+    branch_flag: ?[]const u8 = null, // clone --resume into this independent autosave target
     goal_flag: ?[]const u8 = null, // --goal: standing objective (todos) every turn gets, incl. --json/-p
     eval_cmd_flag: ?[]const u8 = null, // --eval: scoring command for the eval-driven loop
     worktree_flag: ?[]const u8 = null, // --worktree/-w: isolate this session in a git worktree (parallel agents, no file collisions)
@@ -206,6 +207,9 @@ pub fn parse(init: std.process.Init) !Flags {
                 } else if (std.mem.eql(u8, arg, "--resume")) {
                     const rv = it.next() orelse std.process.fatal("--resume needs a session name — harness --help", .{});
                     flags.resume_flag = try arena.dupe(u8, rv);
+                } else if (std.mem.eql(u8, arg, "--branch")) {
+                    const bv = it.next() orelse std.process.fatal("--branch needs a destination session name — harness --help", .{});
+                    flags.branch_flag = try arena.dupe(u8, bv);
                 } else if (std.mem.eql(u8, arg, "--no-resume")) {
                     flags.no_resume_flag = true;
                 } else if (std.mem.eql(u8, arg, "--new")) {
@@ -261,6 +265,8 @@ pub fn parse(init: std.process.Init) !Flags {
         flags.oneshot_prompt = try std.mem.join(arena, " ", flags.positionals.items);
     }
     if (flags.print_flag and flags.oneshot_prompt == null) std.process.fatal("-p needs a prompt: harness -p \"do something\"", .{});
+    if (flags.branch_flag != null and flags.resume_flag == null) std.process.fatal("--branch needs --resume <source>", .{});
+    if (flags.branch_flag != null and (flags.new_session_flag or flags.no_resume_flag)) std.process.fatal("--branch cannot be combined with --new or --no-resume", .{});
 
     // The tool-surface half of lean, set AFTER the one-shot prompt is
     // assembled: on for --lean and for every one-shot without --no-lean (the

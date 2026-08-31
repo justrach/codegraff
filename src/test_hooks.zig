@@ -34,6 +34,7 @@ const recipe = @import("recipe.zig");
 const repl = @import("repl.zig");
 const repl_markdown = @import("repl_markdown.zig");
 const repl_parser = @import("repl_parser.zig");
+const tui_session = @import("tui_session.zig");
 
 // Routing + worker selection.
 const router_config = @import("router_config.zig");
@@ -241,6 +242,7 @@ test {
     _ = repl;
     _ = repl_markdown;
     _ = repl_parser;
+    _ = tui_session;
     _ = router_config;
     _ = subagent_selection;
     _ = subagent_pin_tests;

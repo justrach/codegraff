@@ -47,12 +47,17 @@ pub fn sessionPath(arena: Allocator, name: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ sessions_dir, name, session_ext });
 }
 
+pub fn validSessionName(name: []const u8) bool {
+    if (name.len == 0 or name.len > 128 or std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return false;
+    return std.mem.indexOfAny(u8, name, "/\\\r\n\x00") == null;
+}
+
 /// Session-list metadata peeked from a session file WITHOUT parsing the
 /// (potentially multi-MB) messages array: saveSession writes "title" and
 /// "updated_ms" before "messages", so parsing the header slice alone is
 /// enough. Zero-value fields when the file predates them or the header
 /// can't be read — callers fall back to the raw session name (#109).
-pub const SessionMeta = struct { title: ?[]const u8 = null, updated_ms: i64 = 0 };
+pub const SessionMeta = struct { title: ?[]const u8 = null, parent: ?[]const u8 = null, updated_ms: i64 = 0 };
 
 pub fn sessionMetaFromBytes(arena: Allocator, data: []const u8) SessionMeta {
     // Embedded quotes inside string values are escaped in the file, so the
@@ -65,6 +70,7 @@ pub fn sessionMetaFromBytes(arena: Allocator, data: []const u8) SessionMeta {
     if (parsed != .object) return .{};
     return .{
         .title = if (parsed.object.get("title")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null,
+        .parent = if (parsed.object.get("parent")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null,
         .updated_ms = if (parsed.object.get("updated_ms")) |v| (if (v == .integer) v.integer else 0) else 0,
     };
 }
@@ -73,6 +79,13 @@ pub fn sessionMeta(root: *Agent, arena: Allocator, base: []const u8) SessionMeta
     const path = sessionPath(arena, base) catch return .{};
     const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch return .{};
     return sessionMetaFromBytes(arena, data);
+}
+
+pub fn sessionExists(root: *Agent, arena: Allocator, base: []const u8) bool {
+    const path = sessionPath(arena, base) catch return false;
+    if ((Io.Dir.cwd().statFile(root.io, path, .{}) catch null) != null) return true;
+    const legacy = std.fmt.allocPrint(arena, "{s}{s}", .{ base, session_ext }) catch return false;
+    return (Io.Dir.cwd().statFile(root.io, legacy, .{}) catch null) != null;
 }
 
 /// "3m ago"-style age for the session lists; "" when the timestamp is missing.
@@ -87,7 +100,7 @@ pub fn sessionAge(arena: Allocator, io: Io, then_ms: i64) []const u8 {
 
 /// One row per saved session for the /resume picker and /sessions list:
 /// newest first, keyed (and resumed) by the file base name.
-pub const SessionEntry = struct { base: []const u8, title: ?[]const u8 = null, updated_ms: i64 = 0 };
+pub const SessionEntry = struct { base: []const u8, title: ?[]const u8 = null, parent: ?[]const u8 = null, updated_ms: i64 = 0 };
 
 pub fn listSavedSessions(root: *Agent, arena: Allocator) std.ArrayList(SessionEntry) {
     var entries: std.ArrayList(SessionEntry) = .empty;
@@ -99,7 +112,7 @@ pub fn listSavedSessions(root: *Agent, arena: Allocator) std.ArrayList(SessionEn
         if (!std.mem.endsWith(u8, entry.name, session_ext)) continue;
         const base = arena.dupe(u8, entry.name[0 .. entry.name.len - session_ext.len]) catch continue;
         const meta = sessionMeta(root, arena, base);
-        entries.append(arena, .{ .base = base, .title = meta.title, .updated_ms = meta.updated_ms }) catch {};
+        entries.append(arena, .{ .base = base, .title = meta.title, .parent = meta.parent, .updated_ms = meta.updated_ms }) catch {};
     }
     std.mem.sort(SessionEntry, entries.items, {}, struct {
         fn newerFirst(_: void, a: SessionEntry, b: SessionEntry) bool {
@@ -135,9 +148,10 @@ test "sessionMetaFromBytes reads title + updated_ms from the header only" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const meta = sessionMetaFromBytes(arena,
-        \\{"provider":"codegraff","model":"glm-5.2","strict":false,"ultracode_mode":false,"goal":null,"title":"Fix \"login\" bug","updated_ms":1782294417239,"messages":[{"role":"user","content":"hi"}]}
+        \\{"provider":"codegraff","model":"glm-5.2","strict":false,"ultracode_mode":false,"goal":null,"parent":"baseline","title":"Fix \"login\" bug","updated_ms":1782294417239,"messages":[{"role":"user","content":"hi"}]}
     );
     try std.testing.expectEqualStrings("Fix \"login\" bug", meta.title.?);
+    try std.testing.expectEqualStrings("baseline", meta.parent.?);
     try std.testing.expectEqual(@as(i64, 1782294417239), meta.updated_ms);
 }
 

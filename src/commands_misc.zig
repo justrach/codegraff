@@ -20,7 +20,6 @@ const mcp_config_path = main_mod.mcp_config_path;
 const session_ext = session.session_ext;
 const saveSession = session.saveSession;
 const session = @import("session.zig");
-const loadSession = session.loadSession;
 const listSavedSessions = session.listSavedSessions;
 const sessionAge = session.sessionAge;
 
@@ -498,62 +497,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (std.mem.startsWith(u8, line, "/resume")) {
-        root.ensureStoredKeys(keys);
-        const arg = std.mem.trim(u8, line["/resume".len..], " \t");
-        var name: []const u8 = ownedSessionName(arena, arg, "last") catch |err| {
-            try out.print("resume failed: {t}\n", .{err});
-            try out.flush();
-            return true;
-        };
-        // Bare /resume on a TTY: pick from the saved sessions interactively,
-        // labeled by stored title + age instead of raw file names (#109).
-        if (arg.len == 0 and main_mod.use_color and root.in != null) {
-            var entries = listSavedSessions(root, arena);
-            defer entries.deinit(arena);
-            if (entries.items.len == 0) {
-                try out.writeAll("(no saved sessions in cwd — /save creates one)\n");
-                try out.flush();
-                return true;
-            }
-            var sessions: std.ArrayList(PickItem) = .empty;
-            defer sessions.deinit(arena);
-            for (entries.items) |e| {
-                const age = sessionAge(arena, root.io, e.updated_ms);
-                const desc = if (e.title == null)
-                    age
-                else if (age.len > 0)
-                    std.fmt.allocPrint(arena, "{s} · {s}", .{ age, e.base }) catch e.base
-                else
-                    e.base;
-                try sessions.append(arena, .{ .name = e.title orelse e.base, .desc = desc });
-            }
-            const idx = listPicker(root, arena, out, "Resume session ›", sessions.items) orelse return true;
-            name = entries.items[idx].base; // arena-owned by listSavedSessions, so it outlives the turn too
-        }
-        loadSession(root, keys, arena, name) catch |err| {
-            switch (err) {
-                error.FileNotFound => try out.print("no session named '{s}' ({s}{s} not found in cwd) — /sessions lists saved ones\n", .{ name, name, session_ext }),
-                else => try out.print("resume failed: {t}\n", .{err}),
-            }
-            try out.flush();
-            return true;
-        };
-        root.session_name = name;
-        // #445: after the rename, so the re-arm reads the resumed session. The
-        // history just loaded IS that file's contents, so the #410 line would
-        // again only describe what the live window already holds.
-        prompts.resetSessionCompacted(root, arena);
-        // The third restore path (#318): --goal outranks the restored goal here
-        // too, idempotently, or /resume was the one door that silently dropped it.
-        if (root.goal_flag) |g| root.pending_goal_note = goal_flow.reapplyFlagGoal(arena, root, g, util.unixMs(root.io)) catch null;
-        try out.print("resumed {s}{s} — {d} message(s), {s} via {s}{s}\n", .{
-            name,                                 session_ext, root.messages.items.len, root.provider.model, root.provider.id,
-            if (root.strict) " (strict)" else "",
-        });
-        try out.flush();
-        return true;
-    }
+    if (try @import("commands_resume.zig").tryHandle(root, keys, arena, line, out)) return true;
     if (std.mem.startsWith(u8, line, "/tell") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.tellCommand(root, arena, line, out); // #469
     if (std.mem.startsWith(u8, line, "/peek") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.peekCommand(root, arena, line, out); // #469
     if (std.mem.startsWith(u8, line, "/routes") and (line.len == 7 or line[7] == ' ' or line[7] == '\t')) return route_set.command(root, keys, arena, line, out); // user-defined priced lanes
@@ -563,10 +507,11 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         for (entries.items) |e| {
             const age = sessionAge(arena, root.io, e.updated_ms);
             const cur = if (std.mem.eql(u8, e.base, root.session_name)) "  ← current" else "";
+            const parent = if (e.parent) |p| std.fmt.allocPrint(arena, " ← {s}", .{p}) catch "" else "";
             if (e.title) |t| {
-                try out.print("  {s}  {s}{s}{s}{s}{s}{s}\n", .{ t, style.dim, e.base, if (age.len > 0) " · " else "", age, style.reset, cur });
+                try out.print("  {s}  {s}{s}{s}{s}{s}{s}{s}\n", .{ t, style.dim, e.base, parent, if (age.len > 0) " · " else "", age, style.reset, cur });
             } else {
-                try out.print("  {s}{s}{s}{s}{s}{s}\n", .{ e.base, style.dim, if (age.len > 0) "  " else "", age, style.reset, cur });
+                try out.print("  {s}{s}{s}{s}{s}{s}{s}\n", .{ e.base, parent, style.dim, if (age.len > 0) "  " else "", age, style.reset, cur });
             }
         }
         if (entries.items.len == 0) try out.writeAll("(no saved sessions in cwd)\n");
