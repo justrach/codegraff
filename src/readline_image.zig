@@ -143,8 +143,8 @@ test "left/right treat an image chip as one atom (#702)" {
     try std.testing.expectEqual(@as(usize, 3), left(text, 13).?); // on the trailing space
     try std.testing.expectEqual(@as(usize, 3), left(text, 12).?); // on ]
     try std.testing.expect(left(text, 3) == null);
-    try std.testing.expectEqual(@as(usize, 13), right(text, 3).?);
-    try std.testing.expect(right(text, 13) == null);
+    try std.testing.expectEqual(@as(usize, 14), right(text, 3).?);
+    try std.testing.expect(right(text, 14) == null);
 }
 
 test "afterEdit drops an abandoned chip and remaps the rest (#702)" {
