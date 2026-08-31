@@ -595,7 +595,3 @@ test {
     _ = @import("effort_route.zig");
     try agent_tests.lazyRootTools(Agent);
 }
-
-test "say: an over-long worker line still ends its row (#tui-tick)" {
-    try agent_tests.workerLineAlwaysEndsRow(Agent);
-}

@@ -101,3 +101,7 @@ pub fn oneshotUsesLiveTransport(comptime Agent: type) !void {
     child.stream_quiet = true;
     try std.testing.expect(child.usesLiveTransport());
 }
+
+test "say: an over-long worker line still ends its row (#tui-tick)" {
+    try workerLineAlwaysEndsRow(@import("agent.zig").Agent);
+}

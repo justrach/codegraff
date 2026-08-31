@@ -148,9 +148,12 @@ test "grok spec: !live post wires Agent conv id; root and child differ" {
     var addr = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
     var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
     var fut = io.async(Srv.run, .{ io, &server, &srv });
-    defer fut.await(io);
-    defer server.deinit(io);
     var bound = server.socket.address;
+    defer {
+        if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
+        fut.await(io);
+        server.deinit(io);
+    }
     var url_buf: [64]u8 = undefined;
     const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/v1/chat", .{bound.getPort()});
     var p_root = root.provider;
