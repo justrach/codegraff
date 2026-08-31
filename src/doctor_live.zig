@@ -14,6 +14,7 @@ const doctor = @import("doctor.zig");
 const Check = doctor.Check;
 const Severity = doctor.Severity;
 const jobs_mod = @import("jobs.zig");
+const posix_groups = builtin.os.tag != .windows and builtin.os.tag != .wasi;
 
 pub const JobView = struct {
     id: u32 = 0,
@@ -35,11 +36,16 @@ pub fn captureJobs(arena: Allocator, io: Io) Allocator.Error![]const JobView {
     const self_pid = thisPid();
     var out: std.ArrayList(JobView) = .empty;
     for (jobs_mod.g_jobs.list.items) |job| {
-        const pid = job.child.id orelse 0;
+        // Windows `Child.id` is a HANDLE (`*anyopaque`), not a pid. Same
+        // comptime gate jobs.zig uses when it group-kills.
+        const shares = if (comptime posix_groups)
+            !job.done and sharesRootPgid(job.child.id orelse 0, self_pid)
+        else
+            false;
         try out.append(arena, .{
             .id = job.id,
             .done = job.done,
-            .shares_root_pgid = !job.done and pid != 0 and sharesRootPgid(pid, self_pid),
+            .shares_root_pgid = shares,
         });
     }
     return out.toOwnedSlice(arena);
