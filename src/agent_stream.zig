@@ -24,6 +24,7 @@ const reasoningDelta = @import("title.zig").reasoningDelta;
 const stream_tests = @import("agent_stream_tests.zig");
 
 const http = @import("http.zig");
+const http_client = @import("http_client.zig");
 const http_headers = @import("http_headers.zig");
 const providerUserAgent = http.providerUserAgent;
 const capture5xxBodyStream = http.capture5xxBodyStream;
@@ -52,6 +53,11 @@ pub fn postStream(self: *Agent, body: []const u8) ![]u8 {
 /// keep-alive cannot poison the WS→SSE handoff and every fallback retry dials
 /// from a clean pool.
 pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []const u8) ![]u8 {
+    http_client.waitForReady(client.io);
+    var lease = http_client.acquire(client);
+    defer lease.release();
+    if (http_client.injectedConstructionTls(&lease)) |err| return err;
+    const transport = lease.client;
     const sink = engine_sink.forAgent(self);
     sink.emit(self.io, .stream_begin);
     // Every exit path — success, interrupt, transport error — tears down the
@@ -109,14 +115,17 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
         _ = drainSteerStdin(true);
         restoreStdin(o);
     };
-    var req = try client.request(.POST, try std.Uri.parse(provider.url), .{
+    var req = transport.request(.POST, try std.Uri.parse(provider.url), .{
         .redirect_behavior = .unhandled,
         .headers = .{
             .content_type = .{ .override = "application/json" },
             .user_agent = providerUserAgent(provider),
         },
         .extra_headers = extra,
-    });
+    }) catch |err| {
+        if (err == error.TlsInitializationFailed) return http_client.constructionTlsError(transport);
+        return err;
+    };
     defer req.deinit();
     // A failed SEND leaves reader.state == .ready, which Request.deinit
     // reads as "connection still clean" and returns it to the keep-alive

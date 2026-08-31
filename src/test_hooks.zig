@@ -343,4 +343,5 @@ test {
     _ = @import("channel_worker.zig");
     _ = @import("session_wake.zig");
     _ = @import("tui_acp.zig");
+    _ = @import("readline_paste.zig"); // #674: semantic paste spans (not reached via readline.zig's runtime import)
 }

@@ -16,15 +16,9 @@ const Provider = provider_mod.Provider;
 const Agent = agent_mod.Agent;
 const headers = @import("http_headers.zig");
 const stall = @import("http_stall.zig"); // #56: the watchdogs' pure budget arithmetic
-
-/// Launch-scoped gate installed while the shared client's CA bundle warms in
-/// the background. Null in unit tests and standalone pre-client subcommands.
-pub var g_client_ready: ?*Io.Event = null;
-
-pub fn waitForClientReady(io: Io) void {
-    if (g_client_ready) |ready| ready.waitUncancelable(io);
-}
-
+const http_client = @import("http_client.zig");
+pub const waitForClientReady = http_client.waitForReady;
+pub const takeCaWarmFailure = http_client.takeCaWarmFailure;
 pub const providerUserAgent = headers.userAgent;
 pub const providerHeaders = headers.providerHeaders;
 /// Test/call-site seam: the !live request path's POST, with an explicit conv id.
@@ -113,15 +107,15 @@ test "retryAfterMs: seconds, ms preferred, cap, HTTP-date/none -> 0 (#retry-afte
 
 /// POST the request body; returns the raw response body (caller frees).
 /// Built on client.request, NOT client.fetch: fetch never exposes the
-/// Request, so a failed body send could not be poisoned — std re-pooled the
-/// dead connection (a failed SEND leaves reader.state == .ready, which
-/// Request.deinit reads as "still clean") and findConnection handed the same
-/// corpse to every retry and every later same-host request, so one
-/// WriteFailed became a whole-session storm across compaction, [title], and
-/// subagents (#177). Mirrors postStream's errdefer poison (agent_stream.zig).
-/// The client and its connection pool stay shared across pool threads —
-/// client.request is what fetch wraps and is equally thread-safe.
+/// Request, so a failed body send could not be poisoned and std re-pooled the
+/// dead connection across later retries, compaction, titles, and subagents
+/// (#177). Mirrors postStream's errdefer poison (agent_stream.zig).
 fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []const u8, conv_id: ?[]const u8) ![]u8 {
+    http_client.waitForReady(client.io);
+    var lease = http_client.acquire(client);
+    defer lease.release();
+    if (http_client.injectedConstructionTls(&lease)) |err| return err;
+    const transport = lease.client;
     var aw: Io.Writer.Allocating = .init(gpa);
     errdefer aw.deinit();
 
@@ -132,16 +126,19 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
     defer if (bearer.len > 0) gpa.free(bearer);
 
     var headers_buf: [12]std.http.Header = undefined;
-    const extra = headers.providerHeadersWithConv(client.io, provider, bearer, &headers_buf, conv_id);
+    const extra = headers.providerHeadersWithConv(transport.io, provider, bearer, &headers_buf, conv_id);
 
-    var req = try client.request(.POST, try std.Uri.parse(provider.url), .{
+    var req = transport.request(.POST, try std.Uri.parse(provider.url), .{
         .redirect_behavior = .unhandled,
         .headers = .{
             .content_type = .{ .override = "application/json" },
             .user_agent = providerUserAgent(provider),
         },
         .extra_headers = extra,
-    });
+    }) catch |err| {
+        if (err == error.TlsInitializationFailed) return http_client.constructionTlsError(transport);
+        return err;
+    };
     defer req.deinit();
     // The #177 poison: on ANY error make deinit discard this connection
     // instead of returning it to the keep-alive pool, so the retry (and

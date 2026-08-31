@@ -58,6 +58,7 @@ record only when you need the evidence or the edge cases.
 | [0045](0045-glm-flash-swe-codegraff.md) | Codegraff `glm-5.3-flash` SWE: Pi 5/6 in 758s, graff 3/6 with three 300s timeouts; do not steal Pi's heap. |
 | [0046](0046-flash-omits-default-effort.md) | Flash / Gemini send `reasoning_effort=low` (omit still thinks); lean `-p` shortens tool prose; `-p` streams. |
 | [0047](0047-codegraff-swe-not-glm-only.md) | Codegraff SWE A/B is not GLM-only: Gemini graff 5/6 in 103s; DeepSeek flash still one-shots; do not steal Pi's catalog. |
+| [0048](0048-model-http-client-recovery-uses-generations.md) | Model HTTP calls lease a recoverable client generation; request-construction TLS failure rotates safely without deinitializing in-flight users. |
 
 ## When to write one
 
