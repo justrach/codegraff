@@ -17,7 +17,10 @@ current is part of cutting a release.
   (`#693`), and recoverable HTTP client generations (`#694` /
   ADR 0048). `#694` follow-up hardens lease teardown.
 - `#697` / ADR 0049: `--resume SOURCE --branch DEST` clone-on-write
-  so two processes cannot clobber one `.session.json`.
+  so two processes cannot clobber one `.session.json`. `#698` follow-ups:
+  160 MiB learn-pin headroom for debug builds, source-nudge suffixes no
+  longer match `.json` / `.jsonl` as JavaScript, Codex compaction probe
+  reads Responses `input_text` blocks.
 - `#679` / ADR 0050: MCP HTTP/WSS reuse the warmed TLS client;
   MCP HTTP accepts gzip catalogs.
 - `#695`: an empty tool catalog omits the `tools` field instead of
