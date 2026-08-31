@@ -12,10 +12,14 @@ current is part of cutting a release.
 
 ## v0.0.281 (2026-08-29)
 
-- Next cut after tagged v0.0.280. Headline is the `-p` / `--json` learn
-  skip (ADR 0044, #668): one-shots no longer copy 132M `graff-pinned`.
-  SuperGrok grok-4.6 SWE went 4/6 in 456s / 230s CPU → **5/6 in 205s /
-  6.5s CPU**. Interactive REPL/TUI/ACP still auto-init after 5 calls.
+- Next cut after tagged v0.0.280. Headline is the **hardlink**
+  `graff-pinned` + detached `learn init` (`#687` / `#688`): `-p` and the
+  REPL share one path, no 127M copy. The earlier oneshot-only skip
+  (ADR 0044) is not the tip behavior.
+- README is ~200 lines (was ~1700) and carries the same-model 12-task
+  in-house table: graff **12/12 · 192s · 52 calls · $0.35** vs
+  OpenCode 236s / 74 / $0.79 and grok-build 462s / 63 / $1.12
+  (`run-20260830-141658`, `#690`).
 - `graff tui` / TTY `graff repl` claim the alt-screen before credentials
   and paint live markdown on the cached tail (ADR 0042, #666).
 - `pi-xai` runs Pi on the SuperGrok seat the same way as graff-dev
