@@ -70,7 +70,19 @@ def user_text(item: object) -> str | None:
     if not isinstance(item, dict) or item.get("role") != "user":
         return None
     content = item.get("content")
-    return content if isinstance(content, str) else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = [
+            block.get("text")
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "input_text"
+            and isinstance(block.get("text"), str)
+        ]
+        if texts:
+            return "".join(texts)
+    return None
 
 
 def last_user_text(request: RecordedRequest) -> str:
@@ -398,9 +410,15 @@ def assert_midturn_requests(mock: CodexMock) -> None:
     # The two synthetic turns are identified by CONTENT, not position, so this
     # cannot silently pass if their order ever swaps.
     if not last_user_text(note).startswith("Your context is about to be compacted"):
-        raise AssertionError(
-            f"midturn: request 2 is not the #391 note turn: {last_user_text(note)[:120]!r}"
-        )
+        shapes = [
+            (
+                request.transport,
+                last_user_text(request)[:80],
+                str(request.body.get("instructions", ""))[:80],
+            )
+            for request in requests
+        ]
+        raise AssertionError(f"midturn: request 2 is not the #391 note turn: {shapes!r}")
     if not last_user_text(compact).startswith("Summarize this entire conversation"):
         raise AssertionError(
             f"midturn: request 3 is not the compaction summary: {last_user_text(compact)[:120]!r}"
@@ -689,6 +707,9 @@ def run_midturn_compaction_scenario(
         timeout=45.0,  # compaction legs stream 128 KiB of scripted reasoning; 20s flakes on loaded runners
     ) as session:
         session.wait_for_prompt()
+        # ADR 0042 deliberately paints the prompt before the rest of boot; let
+        # persisted title/recap settings land before transport counting starts.
+        session.pump_for(0.5)
         cursor = len(session.raw)
         session.send_line(MIDTURN_PROMPT)
         session.wait_for_literal("wrote a pre-compaction note to self", start=cursor)
@@ -733,6 +754,7 @@ def run_transactional_compaction_scenario(
         timeout=45.0,  # compaction legs stream 128 KiB of scripted reasoning; 20s flakes on loaded runners
     ) as session:
         session.wait_for_prompt()
+        session.pump_for(0.5)
         cursor = len(session.raw)
         session.send_line(TRANSACTIONAL_PROMPT)
         session.wait_for_literal(
