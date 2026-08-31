@@ -56,6 +56,8 @@ pub fn visionModel(m_full: []const u8) bool {
         std.mem.startsWith(u8, m, "gpt-5") or
         std.mem.startsWith(u8, m, "gpt-4") or
         std.mem.startsWith(u8, m, "grok-4") or
+        std.mem.startsWith(u8, m, "glm-5v") or // glm-5v-turbo & co: explicit vision variants
+        std.mem.startsWith(u8, m, "glm-5.3") or // glm-5.3 / glm-5.3-flash accept images on codegraff
         std.mem.startsWith(u8, m, "kimi") or
         (m.len > 1 and m[0] == 'k' and std.ascii.isDigit(m[1])) or // Kimi Code k3+
         std.mem.startsWith(u8, m, "gemini") or
@@ -388,6 +390,8 @@ test "visionCapable allowlist" {
     try std.testing.expect(visionCapable(mk("gpt-5.5")));
     try std.testing.expect(!visionCapable(mk("deepseek-v4-pro")));
     try std.testing.expect(visionCapable(mk("k3"))); // Kimi for Coding sees images
+    try std.testing.expect(visionCapable(mk("glm-5.3-flash"))); // codegraff backend accepts images
+    try std.testing.expect(visionCapable(mk("glm-5v-turbo"))); // glm's explicit vision variant
     try std.testing.expect(!visionCapable(mk("minimax-m3")));
 }
 
@@ -396,6 +400,8 @@ test "visionModel: vision-capable model families only" {
     try std.testing.expect(visionModel("gpt-5.5"));
     try std.testing.expect(visionModel("gpt-4o"));
     try std.testing.expect(visionModel("grok-4.3"));
+    try std.testing.expect(visionModel("glm-5.3-flash"));
+    try std.testing.expect(visionModel("glm-5v-turbo"));
     try std.testing.expect(visionModel("k3"));
     try std.testing.expect(visionModel("gemini-2.0"));
     // Local / OpenAI-compat providers report org-prefixed ids — match the bare name.
