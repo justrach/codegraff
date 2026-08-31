@@ -299,6 +299,15 @@ pub fn run(
                         esc_stall = 0;
                         if (keys.handle(&m, .escape) == .quit) m.running = false;
                     },
+                    .escape_pair => {
+                        // A genuine double Escape is still two Escape keys;
+                        // only an unfinished legacy Alt CSI reaches here.
+                        key_mod.abandonSequence(inbuf[0..pending_len], .none);
+                        pending_len = 0;
+                        esc_stall = 0;
+                        if (keys.handle(&m, .escape) == .quit) m.running = false;
+                        if (m.running and keys.handle(&m, .escape) == .quit) m.running = false;
+                    },
                     .drop => {
                         // A sequence the terminal never finished, waited out.
                         // Carry the head so a late tail can still rejoin it,
@@ -410,8 +419,9 @@ pub fn run(
             std.mem.copyForwards(u8, inbuf[0..rest], inbuf[i..n]);
             pending_len = rest;
         } else pending_len = 0;
-        // Capture before bgop/turn completion at the top of the next tick.
-        esc_live = stall.isLoneEscape(inbuf[0..pending_len]) and (m.pending != null or m.bg != null);
+        // Capture operation state before it can complete between polls. Keep
+        // that bounded grace when a lone ESC grows into a legacy Alt prefix.
+        if (pending_len == 0) esc_live = false else if (!esc_live and (m.pending != null or m.bg != null)) esc_live = true;
     }
     // Quitting with a turn still live: cancel FIRST — Ctrl+Q (nav.zig) and the
     // palette's /quit never did — then wait for the thread here, with the alt

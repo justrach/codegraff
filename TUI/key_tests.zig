@@ -70,12 +70,10 @@ test "lone trailing ESC stays pending, not an instant Escape" {
     try std.testing.expectEqual(@as(usize, 0), i);
 }
 
-test "ESC ESC delivers an Escape and leaves the second pending" {
+test "ESC ESC stays pending until its Alt-CSI ambiguity is bounded" {
     var i: usize = 0;
-    try std.testing.expectEqual(Key.escape, next("\x1b\x1b", &i).?);
-    try std.testing.expectEqual(@as(usize, 1), i);
     try std.testing.expect(next("\x1b\x1b", &i) == null);
-    try std.testing.expectEqual(@as(usize, 1), i);
+    try std.testing.expectEqual(@as(usize, 0), i);
 }
 
 test "kitty release events never fire keys" {
