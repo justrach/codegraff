@@ -13,6 +13,7 @@ pub const protocol_version: i64 = 1;
 
 pub const err_method_not_found: i32 = -32601;
 pub const err_internal: i32 = -32603;
+pub const err_auth_required: i32 = -32000;
 
 /// ACP v1 `promptCapabilities` (https://agentclientprotocol.com/protocol/v1/schema).
 /// Missing keys default to false; we send the three named fields so a client

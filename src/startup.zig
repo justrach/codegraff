@@ -181,6 +181,7 @@ pub fn buildSystemPrompt(
 }
 
 const args = @import("args.zig");
+const acp_preauth = @import("acp_preauth.zig");
 const mcp_cli = @import("mcp_cli.zig");
 const learn_cli = @import("learn_cli.zig");
 const cli = @import("cli.zig");
@@ -189,6 +190,18 @@ const cube = @import("cube.zig");
 const schema = @import("schema.zig");
 const serve = @import("serve.zig");
 const main_mod = @import("main.zig");
+
+/// A credentialed ACP launch returns the exact ResolvedKeys value used before
+/// #613. Only a launch with no usable provider enters the lightweight loop;
+/// every other terminal trajectory keeps resolveKeys' existing fatal behavior.
+pub fn resolveKeysOrRunAcpPreAuth(io: Io, gpa: Allocator, arena: Allocator, init: std.process.Init, flags: args.Flags) !?ResolvedKeys {
+    const worker_hint = flags.subagent_provider_flag orelse init.environ_map.get("GRAFF_SUBAGENT_PROVIDER");
+    const is_acp = flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "acp");
+    if (!is_acp) return try resolveKeys(io, gpa, arena, init.environ_map, flags.model_flag, worker_hint);
+    if (try startup_keys.resolveKeysOptional(io, gpa, arena, init.environ_map, flags.model_flag, worker_hint)) |resolved| return resolved;
+    try acp_preauth.run(io, gpa, main_mod.harness_version);
+    return null;
+}
 
 /// The early subcommand/flag branches that exit before any credential
 /// resolution or Agent construction happens — `--help`/`--version`, `key`,

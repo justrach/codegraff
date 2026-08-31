@@ -284,7 +284,7 @@ pub fn main(init: std.process.Init) !void {
     if (try startup.runSubcommand(io, gpa, arena, init, flags)) return;
     // Credential/model resolution (env vars → on-disk logins → `harness key set` store, env always wins; then --model or the last-saved model) lives
     // in startup.zig as resolveKeys() — pure over env/disk/arena, safe to call outside main()'s own stack frame.
-    const resolved_keys = try startup.resolveKeys(io, gpa, arena, init.environ_map, flags.model_flag, flags.subagent_provider_flag orelse init.environ_map.get("GRAFF_SUBAGENT_PROVIDER"));
+    const resolved_keys = (try startup.resolveKeysOrRunAcpPreAuth(io, gpa, arena, init, flags)) orelse return;
     boot.mark(io, "credentials/model");
     var keys = resolved_keys.keys;
     const default_provider = resolved_keys.default_provider;
@@ -586,6 +586,7 @@ test { // pull in tests from imported modules (mcp.zig)
     _ = @import("test_hooks.zig"); // unreached modules; their tests were silently skipped
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
+    _ = @import("acp_preauth.zig"); // credential-free ACP loop must stay in the test root
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events
     _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here
     _ = @import("additional_tests.zig");

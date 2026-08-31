@@ -26,6 +26,8 @@ pub const terminal_login = AuthMethod{
 
 pub const advertised = [_]AuthMethod{terminal_login};
 
+pub const required_message = "Authentication required: run `graff login`, then restart the ACP agent.";
+
 /// v1 clients that can open an interactive terminal set
 /// `clientCapabilities.auth.terminal = true`. Missing keys default false;
 /// we still advertise (registry CI must see a method) because `graff login`

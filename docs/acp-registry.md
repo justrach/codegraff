@@ -19,12 +19,14 @@ and the host recipe stays [embedding.md](embedding.md). Replace those with
 | Mid-turn `session/update` (thought / tool / text) | Shipped (ADR [0032](adr/0032-acp-streams-mid-turn.md), #612). |
 | Provider login | `graff login` / keychain / env keys. Not ACP `authenticate`. |
 | `initialize.authMethods` | **Shipped.** `graff-login` / `type: "terminal"` / `args: ["login"]`. `authenticate` stays unused — the client re-spawns `graff login`. |
+| Credential-free startup | **Shipped.** A clean `graff acp` initializes, then returns ACP `auth_required` until login and respawn. |
 | `session/load`, `session/request_permission` | Not implemented. Unattended + `--yolo` is the host path. |
 
 A stale comment on #613 said #612 was still open. It is not: streaming is on
-the tagged v0.0.279 cut. The remaining blocker for a listing is protocol auth.
+the tagged v0.0.279 cut. The final in-repo registry prerequisite was startup
+ordering: key resolution used to exit before a clean process could initialize.
 
-## Registry auth (the actual blocker)
+## Registry auth
 
 The registry's [AUTHENTICATION.md](https://github.com/agentclientprotocol/registry/blob/main/AUTHENTICATION.md)
 accepts only:
@@ -52,6 +54,14 @@ advertises it:
 
 Do not invent Agent Auth that duplicates `graff login`. Do not add env-var
 auth to satisfy the registry — it is not one of the two accepted types.
+
+When startup finds no provider credential, the lightweight ACP loop uses the
+same `acp_engine` initialize response as the full runtime. Requests that need
+a live Agent are rejected without exiting the loop:
+
+```json
+{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Authentication required: run `graff login`, then restart the ACP agent."}}
+```
 
 CI on the registry repo runs
 `python3 .github/workflows/verify_agents.py --auth-check` and rejects an
@@ -121,8 +131,9 @@ Pin `sha256` from that release's `SHA256SUMS` before the PR. Archive layout
 is sometimes flat (`graff` at the tarball root) and sometimes nested
 (`graff-<target>/graff`); `cmd` must match what the installer extracts.
 
-`authMethods` is on the wire. Pin `sha256` from a real release, then open the
-registry PR in the other repo. This repo still does not fetch the catalog.
+`authMethods` and the credential-free handshake are on the wire. Pin `sha256`
+from a real release, then open the registry PR in the other repo. This repo
+still does not fetch the catalog.
 
 ## Not this repo
 
