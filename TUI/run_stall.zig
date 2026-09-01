@@ -9,7 +9,7 @@
 
 const std = @import("std");
 
-pub const StallVerdict = enum { wait, escape_key, drop };
+pub const StallVerdict = enum { wait, escape_key, escape_pair, drop };
 
 pub const StallCtx = struct {
     /// A model turn or background operation was live when this ESC head
@@ -48,13 +48,18 @@ const escape_carry_window_ms: u64 = 400;
 const arm_window_ms: u64 = 1000;
 
 /// What to do with input bytes stuck mid-sequence after quiet polls (~25ms
-/// each). Exactly one pending ESC byte is the Escape key after the #94 grace.
-/// A longer prefix is a truncated CSI/OSC split by link latency (ssh/tmux):
+/// each). A lone ESC is the Escape key after the #94 grace; a legacy Alt
+/// prefix resolves as a genuine pair. A longer prefix is a truncated CSI/OSC
+/// split by link latency (ssh/tmux):
 /// delivering Escape cancelled live turns and typing the late tail sprayed
 /// "2;39M"-style debris into the transcript — wait for the tail instead, and
 /// only silently drop once it is clearly never coming.
 pub fn stallVerdict(pending: []const u8, stalls: u8, ctx: StallCtx) StallVerdict {
     if (pending.len == 0) return .wait;
+    if (isLegacyAltPrefix(pending)) {
+        const grace = if (ctx.operation_live) live_escape_stalls else esc_grace_idle;
+        return if (stalls >= grace) .escape_pair else .wait;
+    }
     const lone_esc = isLoneEscape(pending);
     if (ctx.in_paste and isPasteMarkerPrefix(pending)) {
         // ESC is a proper prefix of `CSI 201~`, so the marker budget also
@@ -77,6 +82,15 @@ pub fn stallVerdict(pending: []const u8, stalls: u8, ctx: StallCtx) StallVerdict
 
 pub fn isLoneEscape(pending: []const u8) bool {
     return pending.len == 1 and pending[0] == 0x1b;
+}
+
+/// A legacy Alt navigation prefix: ESC ESC followed by an incomplete CSI.
+pub fn isLegacyAltPrefix(pending: []const u8) bool {
+    if (pending.len < 2 or pending[0] != 0x1b or pending[1] != 0x1b) return false;
+    if (pending.len == 2) return true;
+    if (pending[2] != '[') return false;
+    for (pending[3..]) |c| if (c < 0x20 or c > 0x3f) return false;
+    return true;
 }
 
 /// A proper prefix of either bracketed-paste marker.

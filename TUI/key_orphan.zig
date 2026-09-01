@@ -114,6 +114,7 @@ fn validPartial(h: []const u8, t: []const u8) bool {
     if (n == 0 or n > max_head or at(h, t, 0) != 0x1b) return false;
     if (n == 1) return true;
     switch (at(h, t, 1)) {
+        0x1b => return recover.legacyCsiPrefix(h, t, n),
         'O' => return n < 3,
         '[' => {
             var k: usize = 2;
@@ -157,6 +158,14 @@ pub fn joinHead(buf: []u8, n: usize) usize {
     const h = head_len;
     if (h == 0 or n == 0) return n;
     const dropped = armed;
+    if (recover.legacyCsiProse(head[0..h], buf[0..n], h + n)) |prefix_len| {
+        if (prefix_len + n <= buf.len) {
+            std.mem.copyBackwards(u8, buf[prefix_len .. prefix_len + n], buf[0..n]);
+            @memcpy(buf[0..prefix_len], head[2..h]);
+            disarm();
+            return prefix_len + n;
+        }
+    }
     const progress = if (dropped) pasteProgress(head[0..h], buf[0..n]) else null;
     if (completesWithEvidence(head[0..h], buf[0..n], dropped)) {
         if (h + n <= buf.len) {
@@ -234,23 +243,11 @@ pub fn completes(h: []const u8, t: []const u8) bool {
 fn completesWithEvidence(h: []const u8, t: []const u8, dropped: bool) bool {
     const n = h.len + t.len;
     if (h.len == 0 or t.len == 0 or h[0] != 0x1b or n < 2) return false;
+    // The first ESC was already delivered by the bounded genuine-Escape path;
+    // do not turn its late second ESC into a new double-Escape candidate.
+    if (!dropped and h.len == 1 and t[0] == 0x1b) return false;
     switch (at(h, t, 1)) {
-        0x1b => {
-            // Bare ESC ESC is a real Escape. ESC ESC [ / O / OSC is Alt+seq (#524).
-            if (n == 2) return true;
-            const intro = at(h, t, 2);
-            if (!isSeqIntroducer(intro)) return true;
-            var buf: [max_head]u8 = undefined;
-            if (n - 1 > buf.len) return false;
-            var o: usize = 0;
-            var k: usize = 0;
-            while (k < n) : (k += 1) {
-                if (k == 1) continue;
-                buf[o] = at(h, t, k);
-                o += 1;
-            }
-            return completesWithEvidence(buf[0..1], buf[1..o], dropped);
-        },
+        0x1b => return if (n > 2 and at(h, t, 2) == '[') recover.legacyCsiComplete(h, t, n, dropped) else true,
         'O' => return n >= 3 and isSs3Final(at(h, t, 2)) and
             (n == 3 or at(h, t, 3) < 0x20 or at(h, t, 3) == 0x7f),
         '[' => {
@@ -554,7 +551,9 @@ test "a join only happens when the tail really completes the head" {
     try std.testing.expect(completes("\x1b", "]11;rgb:14/14/14\x07"));
     try std.testing.expect(completes("\x1b", "[200~payload"));
     try std.testing.expect(completes("\x1b\x1b", "[D"));
-    try std.testing.expect(completes("\x1b", "\x1b[D"));
+    // A delivered lone Escape must not rejoin onto a later ESC CSI — that
+    // first ESC already cancelled or resolved as Escape (#707).
+    try std.testing.expect(!completes("\x1b", "\x1b[D"));
     try std.testing.expect(completes("\x1b\x1b", "OA"));
     try std.testing.expect(completes("\x1b[<35;80", ";24M"));
     try std.testing.expect(completes("\x1b[201", "~"));

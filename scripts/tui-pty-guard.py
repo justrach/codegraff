@@ -54,13 +54,16 @@ def boot(fd):
     return out
 
 
-def spawn(cwd, env_extra):
+def spawn(cwd, env_extra, entry="tui"):
     import pty
     pid, fd = pty.fork()
     if pid == 0:
         os.chdir(cwd)
         os.environ.update(env_extra)
-        os.execv(BIN, [BIN, "tui", "--yolo"])
+        if env_extra.get("GRAFF_TEST_NO_CREDENTIALS"):
+            for name in PROVIDER_ENV:
+                os.environ.pop(name, None)
+        os.execv(BIN, [BIN, entry, "--yolo"])
     return pid, fd
 
 
@@ -121,12 +124,39 @@ def mode_imbalance(stream):
     return sorted(wrong), max(depth, 0)
 
 
+PROVIDER_ENV = {
+    "ANTHROPIC_API_KEY", "CODEGRAFF_API_KEY", "DEEPSEEK_API_KEY",
+    "OPENAI_API_KEY", "MINIMAX_API_KEY", "XIAOMI_API_KEY", "KILO_API_KEY",
+    "GROQ_API_KEY", "CEREBRAS_API_KEY", "MISTRAL_API_KEY", "KIMI_API_KEY",
+    "MOONSHOT_API_KEY", "XAI_API_KEY", "ZAI_API_KEY", "AI_GATEWAY_API_KEY",
+    "OPENROUTER_API_KEY", "FUGU_API_KEY", "FIREWORKS_API_KEY", "MLX_API_KEY",
+    "LMSTUDIO_API_KEY", "CODEX_DISABLED", "MYROUTER_API_KEY",
+}
+
+
 def fresh_ws():
     ws = tempfile.mkdtemp(prefix="tui-guard-")
     empty = os.path.join(ws, "empty-mcp.json")
     with open(empty, "w") as f:
         json.dump({"mcpServers": {}}, f)
     return ws, {"GRAFF_MCP_CONFIG": empty, "GRAFF_LEARN_AUTO": "off"}
+
+
+def fresh_no_credentials():
+    ws, env = fresh_ws()
+    home = os.path.join(ws, "home")
+    os.makedirs(os.path.join(home, ".codex"))
+    env.update({"HOME": home, "CODEX_HOME": os.path.join(home, ".codex"),
+                "TERM": "xterm", "GRAFF_TEST_NO_CREDENTIALS": "1"})
+    if sys.platform == "darwin":
+        shim_dir = os.path.join(ws, "bin")
+        os.makedirs(shim_dir)
+        shim = os.path.join(shim_dir, "security")
+        with open(shim, "w") as f:
+            f.write("#!/bin/sh\nexit 44\n")
+        os.chmod(shim, 0o755)
+        env["PATH"] = shim_dir + os.pathsep + os.environ.get("PATH", "")
+    return ws, env
 
 
 def quit_seq(fd):
@@ -226,6 +256,27 @@ def check_c():
     return None
 
 
+def check_d():
+    """Credential failure after the early pager claim restores the shell."""
+    for entry in ("tui", "repl"):
+        ws, env = fresh_no_credentials()
+        pid, fd = spawn(ws, env, entry)
+        out = drain(fd, 5.0)
+        status = reap(pid)
+        if status is None:
+            return f"D/{entry}: fatal credential path did not exit"
+        if b"no API key found" not in out:
+            return f"D/{entry}: fatal login diagnostic was not visible on the tty"
+        latched, depth = mode_imbalance(out)
+        if latched:
+            return f"D/{entry}: terminal modes remained latched: {latched}"
+        if depth != 0:
+            return f"D/{entry}: kitty depth was {depth}"
+        if b"\x1b[?1049h" in out and b"\x1b[?1049l" not in out:
+            return f"D/{entry}: alt-screen was not released"
+    return None
+
+
 def main():
     if not os.path.exists(BIN):
         print(f"tui-pty-guard: {BIN} not built — skipping")
@@ -236,7 +287,7 @@ def main():
         print("tui-pty-guard: no pty support here — skipping")
         return 0
     failures = []
-    for name, fn in (("mode-balance", check_a), ("hostile-input", check_b), ("kill-restore", check_c)):
+    for name, fn in (("mode-balance", check_a), ("hostile-input", check_b), ("kill-restore", check_c), ("missing-credentials", check_d)):
         try:
             err = fn()
         except OSError as e:

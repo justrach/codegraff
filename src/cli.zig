@@ -35,6 +35,8 @@ pub const changelog_text =
     \\  • tuiguard fails a wedged PTY probe instead of hanging pre-push (#704)
     \\  • same-boundary compact_cut with no shrink stops after two tries (#706)
     \\  • credential replace fsyncs the POSIX directory after rename (#405)
+    \\  • graff acp answers initialize and advertises graff-login before keys (#701)
+    \\  • ESC ESC CSI Alt+arrow is one nav event — does not cancel (#524, #707)
     \\
     \\0.0.282
     \\  • pasted-text chips are atomic spans — a typed lookalike stays literal (#674)

@@ -70,12 +70,10 @@ test "lone trailing ESC stays pending, not an instant Escape" {
     try std.testing.expectEqual(@as(usize, 0), i);
 }
 
-test "ESC ESC delivers an Escape and leaves the second pending" {
+test "ESC ESC stays pending until its Alt-CSI ambiguity is bounded" {
     var i: usize = 0;
-    try std.testing.expectEqual(Key.escape, next("\x1b\x1b", &i).?);
-    try std.testing.expectEqual(@as(usize, 1), i);
     try std.testing.expect(next("\x1b\x1b", &i) == null);
-    try std.testing.expectEqual(@as(usize, 1), i);
+    try std.testing.expectEqual(@as(usize, 0), i);
 }
 
 test "ESC ESC CSI is Alt+arrow, not Escape (#524)" {
@@ -89,7 +87,9 @@ test "ESC ESC CSI is Alt+arrow, not Escape (#524)" {
     i = 0;
     try std.testing.expectEqual(Key.down, next("\x1b\x1b[B", &i).?);
     i = 0;
-    try std.testing.expectEqual(Key.up, next("\x1b\x1bOA", &i).?);
+    // SS3 is not a legacy Alt prefix — only ESC ESC CSI is. The first ESC
+    // is Escape; the OA is a later SS3 up.
+    try std.testing.expectEqual(Key.escape, next("\x1b\x1bOA", &i).?);
 }
 
 test "kitty release events never fire keys" {
