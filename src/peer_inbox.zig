@@ -98,7 +98,11 @@ fn textSlice(p: *const Parked) []const u8 {
 
 /// One-line history wake. Cheap on purpose: the bodies wait in the ring.
 pub fn formatWake(arena: Allocator) []const u8 {
-    if (g_len == 0) return "[peer] 0 unread — peer_message action=inbox";
+    // Advisory framing (#708): the wake states that messages are waiting and
+    // how to read them, but must not read as a command that displaces the
+    // user's actual request on a trivial turn. Prefix stays "[peer]" — every
+    // compact/peek path detects injects by prefix, not by this wording.
+    if (g_len == 0) return "[peer] 0 unread — nothing waiting; no inbox read needed";
     const first = fromSlice(itemAt(0));
     var extra: usize = 0;
     var i: usize = 1;
@@ -109,7 +113,7 @@ pub fn formatWake(arena: Allocator) []const u8 {
         std.fmt.allocPrint(arena, "from {s}", .{first}) catch "from a peer"
     else
         std.fmt.allocPrint(arena, "from {s} + {d} more", .{ first, extra }) catch "from peers";
-    return std.fmt.allocPrint(arena, "[peer] {d} unread {s} — peer_message action=inbox", .{ g_len, who }) catch "[peer] unread — peer_message action=inbox";
+    return std.fmt.allocPrint(arena, "[peer] {d} unread {s} — parked; peer_message action=inbox when relevant", .{ g_len, who }) catch "[peer] unread — peer_message action=inbox when relevant";
 }
 
 /// Read+clear. Tool result only — does not re-enter history.
@@ -194,6 +198,25 @@ pub fn formatList(arena: Allocator, peers: []const Owner, mine: []const u8) []co
     return buf.items;
 }
 
+test "wake framing is advisory: it never opens with the read command (#708)" {
+    resetForTest();
+    defer resetForTest();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // Empty inbox: no imperative read of an empty mailbox.
+    const idle = formatWake(a);
+    try testing.expect(std.mem.startsWith(u8, idle, "[peer] 0 unread"));
+    try testing.expect(std.mem.indexOf(u8, idle, "action=inbox") == null);
+    // Parked: the how-to-read hint stays, but the wake must not BE the
+    // command — the user's turn outranks the mailbox.
+    _ = parkHeard(&.{msg("s-a", "ping", "")}, &.{});
+    const wake = formatWake(a);
+    try testing.expect(wake.len <= peer_context.inject_byte_cap);
+    try testing.expect(std.mem.indexOf(u8, wake, "peer_message action=inbox when relevant") != null);
+    try testing.expect(!std.mem.endsWith(u8, wake, "action=inbox"));
+}
+
 const testing = std.testing;
 
 fn msg(from: []const u8, text: []const u8, to: []const u8) Message {
@@ -220,6 +243,8 @@ test "inbox ring: park, one-line wake, overflow drops oldest, takeAll clears" {
     try testing.expect(std.mem.startsWith(u8, wake, "[peer] 2 unread from session-aaa + 1 more"));
     try testing.expect(std.mem.indexOf(u8, wake, "action=inbox") != null);
     try testing.expect(std.mem.indexOfScalar(u8, wake, '\n') == null);
+    try testing.expect(std.mem.indexOf(u8, wake, "parked") != null);
+    try testing.expect(std.mem.indexOf(u8, wake, "when relevant") != null);
     const body = takeAll(a);
     try testing.expect(std.mem.indexOf(u8, body, "[peer message from session-aaa]: hold gui/src") != null);
     try testing.expect(std.mem.indexOf(u8, body, "[peer message from session-bbb · device DM]: your turn") != null);
