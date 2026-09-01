@@ -26,6 +26,7 @@ pub const changelog_text =
     \\  • peer inbox wake is advisory ("parked; read when relevant"), never a command that displaces the turn
     \\  • parallel error bash results stay valid JSON on the next Codex request (#711)
     \\  • /resume and /sessions find ~/.graff/sessions, not just cwd (#712)
+    \\  • named-source gate is per mention; identical user turns do not replay (#714)
     \\
     \\0.0.283
     \\  • deleted composer image chips reuse #N; paste traces omit MIME/bytes until send (#702)

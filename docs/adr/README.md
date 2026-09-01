@@ -70,6 +70,7 @@ record only when you need the evidence or the edge cases.
 | [0057](0057-peer-title-is-an-address.md) | `peer_message` resolves exact title / saved-session base before opaque id or goal. |
 | [0058](0058-compact-cut-stalls-on-no-progress.md) | Same unresolved `compact_cut` pin that does not shrink stops after two tries. |
 | [0059](0059-saved-session-discovery-is-device-scoped.md) | `/resume` and `/sessions` list cwd then `~/.graff/sessions`; resume keeps tools in the current cwd. |
+| [0060](0060-named-source-gate-is-per-unanswered-mention.md) | The named-source nudge is per unanswered mention; identical user turns do not replay (#714). |
 
 ## When to write one
 

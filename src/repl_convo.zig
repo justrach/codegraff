@@ -105,6 +105,10 @@ pub const Conversation = struct {
         if (history.len == 0) return;
         const last = history[history.len - 1];
         if (last.role != .user) return;
+        // #714: a host that re-submits the same trailing user row must not
+        // inject another turn. The named-source gate then re-read the file
+        // and the session looped the same Q&A.
+        if (std.mem.eql(u8, messages_mod.latestUserText(msgs.items), last.text)) return;
         try msgs.append(try textOf(self.alloc(), last));
     }
 
@@ -190,6 +194,21 @@ test "adopt takes the whole transcript once, then only the new prompt" {
     try testing.expectEqual(@as(usize, 3), convo.len());
     try testing.expectEqualStrings("TOOL_USE_BLOCK", msgs.items[1].object.get("content").?.string);
     try testing.expectEqualStrings("two", msgs.items[2].object.get("content").?.string);
+}
+
+test "#714: adopt does not replay an identical trailing user prompt" {
+    var convo = Conversation.init(testing.allocator);
+    defer convo.deinit();
+    try convo.adopt(&.{.{ .role = .user, .text = "Read SPEC.md" }});
+    const msgs = convo.list();
+    try msgs.append(try messages_mod.textMessage(convo.alloc(), "assistant", "affinity is the git root"));
+    try convo.adopt(&.{
+        .{ .role = .user, .text = "Read SPEC.md" },
+        .{ .role = .assistant, .text = "affinity is the git root" },
+        .{ .role = .user, .text = "Read SPEC.md" },
+    });
+    try testing.expectEqual(@as(usize, 2), convo.len());
+    try testing.expectEqualStrings("assistant", roleOf(msgs.items[1]));
 }
 
 test "reset clears the conversation; rewind drops back to before the last prompt" {

@@ -23,6 +23,36 @@ pub fn textMessage(arena: Allocator, role: []const u8, text: []const u8) !Value 
     return .{ .object = msg };
 }
 
+/// Newest user-role payload: a Chat `content` string or a Responses
+/// `input_text` / `text` block. Tool-result wrappers are skipped (#714).
+pub fn latestUserText(messages: []const Value) []const u8 {
+    var i = messages.len;
+    while (i > 0) {
+        i -= 1;
+        if (userPromptText(messages[i])) |t| return t;
+    }
+    return "";
+}
+
+fn userPromptText(msg: Value) ?[]const u8 {
+    if (msg != .object) return null;
+    const role = msg.object.get("role") orelse return null;
+    if (role != .string or !std.mem.eql(u8, role.string, "user")) return null;
+    const content = msg.object.get("content") orelse return null;
+    if (content == .string) return if (content.string.len > 0) content.string else null;
+    if (content != .array) return null;
+    for (content.array.items) |block| {
+        if (block != .object) continue;
+        const typ = block.object.get("type") orelse continue;
+        if (typ != .string) continue;
+        if (std.mem.eql(u8, typ.string, "tool_result")) return null;
+        if (!std.mem.eql(u8, typ.string, "input_text") and !std.mem.eql(u8, typ.string, "text")) continue;
+        const tx = block.object.get("text") orelse continue;
+        if (tx == .string and tx.string.len > 0) return tx.string;
+    }
+    return null;
+}
+
 /// Build the message appended to the conversation after a tool runs, shaped
 /// for each provider's request body. The tool's result text is ALWAYS written
 /// as a JSON string (`.{ .string = ... }`) — never a raw `[]u8` handed to the
@@ -504,4 +534,30 @@ test "#711: parallel error bash + object-shaped output still stringify as JSON" 
     const parsed = try std.json.parseFromSlice(Value, std.testing.allocator, body, .{});
     defer parsed.deinit();
     try std.testing.expect(parsed.value == .object);
+}
+
+test "#714: latestUserText sees Responses input_text and skips tool_result" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try textMessage(a, "user", "Read SPEC.md"));
+    var block: std.json.ObjectMap = .empty;
+    try block.put(a, "type", .{ .string = "input_text" });
+    try block.put(a, "text", .{ .string = "thanks" });
+    var content: std.json.Array = .init(a);
+    try content.append(.{ .object = block });
+    var msg: std.json.ObjectMap = .empty;
+    try msg.put(a, "type", .{ .string = "message" });
+    try msg.put(a, "role", .{ .string = "user" });
+    try msg.put(a, "content", .{ .array = content });
+    try msgs.append(.{ .object = msg });
+    try std.testing.expectEqualStrings("thanks", latestUserText(msgs.items));
+    var blocks = std.json.Array.init(a);
+    try blocks.append(try toolResultMessage(a, .anthropic, "id-1", "ok", false));
+    var wrapper: std.json.ObjectMap = .empty;
+    try wrapper.put(a, "role", .{ .string = "user" });
+    try wrapper.put(a, "content", .{ .array = blocks });
+    try msgs.append(.{ .object = wrapper });
+    try std.testing.expectEqualStrings("thanks", latestUserText(msgs.items));
 }

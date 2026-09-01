@@ -27,18 +27,17 @@ pub fn remember(text: []const u8) void {
     remembered_task = text;
 }
 
+pub fn resetForTest() void {
+    remembered_task = "";
+    settled_task = "";
+}
+
+/// Last mention this process already nudged or saw tools for. A later
+/// turn must name a *different* source path before the gate fires again.
+var settled_task: []const u8 = "";
+
 fn lastUserText(self: *Agent) []const u8 {
-    var i = self.messages.items.len;
-    while (i > 0) {
-        i -= 1;
-        const msg = self.messages.items[i];
-        if (msg != .object) continue;
-        const role = msg.object.get("role") orelse continue;
-        if (role != .string or !std.mem.eql(u8, role.string, "user")) continue;
-        const content = msg.object.get("content") orelse continue;
-        if (content == .string) return content.string;
-    }
-    return "";
+    return messages_mod.latestUserText(self.messages.items);
 }
 
 /// Snapshot the user prompt at turn start, while `role=user` still exists.
@@ -49,8 +48,8 @@ pub fn rememberFrom(self: *Agent) void {
 }
 
 pub fn beginTurn(self: *Agent) void {
-    self.named_work_nudges = 0;
     rememberFrom(self);
+    if (!std.mem.eql(u8, remembered_task, settled_task)) self.named_work_nudges = 0;
 }
 
 /// True when `text` names a source path (not a greeting.txt-style data file).
@@ -131,10 +130,18 @@ const isResponsesInputText = messages_mod.isResponsesInputText;
 /// Re-anchor the Responses chain so the new item is not a dropped delta.
 pub fn handle(self: *Agent, _: []const u8) !bool {
     if (self.named_work_nudges >= max_nudges) return false;
-    if (self.tools_used.count() != 0) return false;
-    const named = hasNamedSource(remembered_task) or conversationNamesSource(self.messages.items);
-    if (!named) return false;
+    if (self.tools_used.count() != 0) {
+        if (hasNamedSource(remembered_task)) settled_task = remembered_task;
+        return false;
+    }
+    // Per unanswered mention (#714): this turn's user text only. Walking
+    // all history re-fired after a successful read because SPEC.md stayed
+    // in an earlier message.
+    if (!hasNamedSource(remembered_task)) return false;
+    if (std.mem.eql(u8, remembered_task, settled_task)) return false;
+    if (std.mem.eql(u8, lastUserText(self), nudge_text)) return false;
     self.named_work_nudges += 1;
+    settled_task = remembered_task;
     self.closeCodexWs();
     try self.messages.append(try userNudge(self.arena, self.provider.kind, nudge_text));
     return true;
@@ -159,7 +166,7 @@ test "shouldNudge is once, and only when no tools have run" {
 
 test "remembered task is enough to shouldNudge even without history walk" {
     remember("Fix stall_notice.py");
-    defer remember("");
+    defer resetForTest();
     try std.testing.expect(hasNamedSource(remembered_task));
     remember("Reply with exactly: pong");
     try std.testing.expect(!hasNamedSource(remembered_task));
@@ -220,7 +227,7 @@ test "handle appends Responses input_text once and re-anchors the chain" {
     };
     defer if (agent.codex_prev_id) |p| std.testing.allocator.free(p);
     remember("Fix atomic_write.py");
-    defer remember("");
+    defer resetForTest();
     try std.testing.expect(try handle(&agent, "I'll read SPEC.md"));
     try std.testing.expect(agent.codex_prev_id == null);
     try std.testing.expectEqual(@as(usize, 0), agent.codex_sent_upto);
@@ -229,4 +236,60 @@ test "handle appends Responses input_text once and re-anchors the chain" {
     try std.testing.expect(isResponsesInputText(agent.messages.items[0], "Fix atomic_write.py"));
     try std.testing.expect(isResponsesInputText(agent.messages.items[agent.messages.items.len - 1], nudge_text));
     try std.testing.expect(!try handle(&agent, "I'll read SPEC.md"));
+}
+
+fn testAgent(arena: std.mem.Allocator, msgs: std.json.Array) Agent {
+    return .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{
+            .id = "xai",
+            .kind = .openai,
+            .auth = .bearer,
+            .url = "",
+            .api_key = "k",
+            .model = "grok-4.6",
+            .context = 100_000,
+        },
+        .messages = msgs,
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+}
+
+test "#714: a later greeting does not re-fire because history still names SPEC.md" {
+    resetForTest();
+    defer resetForTest();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try messages_mod.textMessage(a, "user", "Read SPEC.md and explain affinity"));
+    try msgs.append(try messages_mod.textMessage(a, "assistant", "affinity is keyed on the git root"));
+    try msgs.append(try messages_mod.textMessage(a, "user", "thanks"));
+    var agent = testAgent(a, msgs);
+    rememberFrom(&agent);
+    try std.testing.expectEqualStrings("thanks", remembered_task);
+    try std.testing.expect(conversationNamesSource(agent.messages.items));
+    try std.testing.expect(!try handle(&agent, "you're welcome"));
+}
+
+test "#714: tools on a named path settle the gate for that mention" {
+    resetForTest();
+    defer resetForTest();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try messages_mod.textMessage(a, "user", "Fix fib.py"));
+    var agent = testAgent(a, msgs);
+    remember("Fix fib.py");
+    agent.tools_used.add(agent.io, a, "read_file", false);
+    try std.testing.expect(!try handle(&agent, "I read fib.py"));
+    agent.tools_used.clear(agent.io);
+    agent.named_work_nudges = 0;
+    try std.testing.expect(!try handle(&agent, "still fib.py"));
 }

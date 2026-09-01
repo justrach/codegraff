@@ -153,7 +153,11 @@ const LiveTurn = struct {
 
     fn run(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
-        try self.root.messages.append(try userMessage(arena, self.root, text));
+        switch (try @import("turn_dedup.zig").enqueue(self.root, arena, self.out, text)) {
+            .started => {},
+            .skipped => return "",
+            .stuck => return @import("turn_dedup.zig").stuck_text,
+        }
         if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(text.len, std.math.maxInt(u32))), self.root.provider.model);
         self.saw_text = false;
         var sink: stream.EventSink = undefined;

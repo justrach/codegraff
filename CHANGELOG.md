@@ -23,6 +23,9 @@ current is part of cutting a release.
 - `#712` / ADR 0059: bare `/resume` and `/sessions` list cwd saves, then
   `~/.graff/sessions`. Cross-workspace rows name their origin. Resume
   restores history here; file tools stay in the current cwd.
+- `#714` / ADR 0060: the “named a source file” nudge is per unanswered
+  mention, not the whole history. Identical user turns are not
+  re-injected; three copies fail closed as stuck replay.
 - The gateway is a fallback seat, not the startup default.
 - No tag until asked.
 
