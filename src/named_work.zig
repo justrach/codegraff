@@ -17,24 +17,31 @@ pub const nudge_text =
     "You named a source file and have not used a tool. Read the named path " ++
     "and edit it before answering — do not describe a fix you have not applied.";
 
-/// The current turn's user text. Responses history often drops `role=user`
-/// after the first step, so `handle` must not depend on walking messages.
+/// Test-only fallback. Production copies onto the Agent so a scout's
+/// arena cannot leave a dangling pointer for the parent's handle (#714).
 var remembered_task: []const u8 = "";
 
 const source_needles = [_][]const u8{ ".py", ".zig", ".jsx", ".js", ".tsx", ".ts", "SPEC.md" };
+
+fn copyOnto(self: *Agent, text: []const u8) []const u8 {
+    return self.arena.dupe(u8, text) catch "";
+}
+
+fn taskOf(self: *const Agent) []const u8 {
+    return if (self.named_work_task.len > 0) self.named_work_task else remembered_task;
+}
 
 pub fn remember(text: []const u8) void {
     remembered_task = text;
 }
 
-pub fn resetForTest() void {
-    remembered_task = "";
-    settled_task = "";
+pub fn rememberOn(self: *Agent, text: []const u8) void {
+    self.named_work_task = copyOnto(self, text);
 }
 
-/// Last mention this process already nudged or saw tools for. A later
-/// turn must name a *different* source path before the gate fires again.
-var settled_task: []const u8 = "";
+pub fn resetForTest() void {
+    remembered_task = "";
+}
 
 fn lastUserText(self: *Agent) []const u8 {
     return messages_mod.latestUserText(self.messages.items);
@@ -44,16 +51,21 @@ fn lastUserText(self: *Agent) []const u8 {
 /// Does not clear a `-p` remember() if history has no user string yet.
 pub fn rememberFrom(self: *Agent) void {
     const t = lastUserText(self);
-    if (t.len > 0) remember(t);
+    if (t.len > 0) {
+        rememberOn(self, t);
+        return;
+    }
+    if (remembered_task.len > 0 and self.named_work_task.len == 0) rememberOn(self, remembered_task);
 }
 
 pub fn beginTurn(self: *Agent) void {
     rememberFrom(self);
-    if (!std.mem.eql(u8, remembered_task, settled_task)) self.named_work_nudges = 0;
+    if (!std.mem.eql(u8, taskOf(self), self.named_work_settled)) self.named_work_nudges = 0;
 }
 
 /// True when `text` names a source path (not a greeting.txt-style data file).
 pub fn hasNamedSource(text: []const u8) bool {
+    if (text.len == 0) return false;
     for (source_needles) |needle| {
         var from: usize = 0;
         while (std.mem.indexOfPos(u8, text, from, needle)) |at| {
@@ -130,18 +142,19 @@ const isResponsesInputText = messages_mod.isResponsesInputText;
 /// Re-anchor the Responses chain so the new item is not a dropped delta.
 pub fn handle(self: *Agent, _: []const u8) !bool {
     if (self.named_work_nudges >= max_nudges) return false;
+    const task = taskOf(self);
     if (self.tools_used.count() != 0) {
-        if (hasNamedSource(remembered_task)) settled_task = remembered_task;
+        if (hasNamedSource(task)) self.named_work_settled = copyOnto(self, task);
         return false;
     }
     // Per unanswered mention (#714): this turn's user text only. Walking
     // all history re-fired after a successful read because SPEC.md stayed
     // in an earlier message.
-    if (!hasNamedSource(remembered_task)) return false;
-    if (std.mem.eql(u8, remembered_task, settled_task)) return false;
+    if (!hasNamedSource(task)) return false;
+    if (std.mem.eql(u8, task, self.named_work_settled)) return false;
     if (std.mem.eql(u8, lastUserText(self), nudge_text)) return false;
     self.named_work_nudges += 1;
-    settled_task = remembered_task;
+    self.named_work_settled = copyOnto(self, task);
     self.closeCodexWs();
     try self.messages.append(try userNudge(self.arena, self.provider.kind, nudge_text));
     return true;
@@ -272,7 +285,7 @@ test "#714: a later greeting does not re-fire because history still names SPEC.m
     try msgs.append(try messages_mod.textMessage(a, "user", "thanks"));
     var agent = testAgent(a, msgs);
     rememberFrom(&agent);
-    try std.testing.expectEqualStrings("thanks", remembered_task);
+    try std.testing.expectEqualStrings("thanks", agent.named_work_task);
     try std.testing.expect(conversationNamesSource(agent.messages.items));
     try std.testing.expect(!try handle(&agent, "you're welcome"));
 }
@@ -292,4 +305,18 @@ test "#714: tools on a named path settle the gate for that mention" {
     agent.tools_used.clear(agent.io);
     agent.named_work_nudges = 0;
     try std.testing.expect(!try handle(&agent, "still fib.py"));
+}
+
+test "#714: handle reads the Agent copy, not a process-global leftover" {
+    resetForTest();
+    defer resetForTest();
+    remember("Fix scout_worker.py"); // what a finished child's arena used to leave behind
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try messages_mod.textMessage(a, "user", "thanks"));
+    var agent = testAgent(a, msgs);
+    rememberOn(&agent, "thanks");
+    try std.testing.expect(!try handle(&agent, "you're welcome"));
 }
