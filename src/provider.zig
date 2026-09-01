@@ -364,6 +364,15 @@ pub const Keys = struct {
         };
     }
 
+    /// The codegraff gateway proxies almost every model, so it is a fallback
+    /// SEAT rather than a peer of the direct providers. Both routing
+    /// (`providerFor`) and the startup default (`defaultProvider`) consider it
+    /// only after every provider the user keyed directly, so a gateway key that
+    /// merely EXISTS never outranks a credential the user actually chose.
+    fn isGatewayFallback(provider_id: []const u8) bool {
+        return std.mem.eql(u8, provider_id, "codegraff");
+    }
+
     /// Route a model to a provider: first active catalog row whose provider has
     /// a key wins (spec order breaks ties). Unknown claude* models go to
     /// Anthropic; any other unknown model goes to the codegraff gateway.
@@ -380,7 +389,7 @@ pub const Keys = struct {
             for (0..specCount()) |i| {
                 const spec = specAt(i).?;
                 const key = keys.get(spec.id) orelse continue;
-                if ((phase == 2) != std.mem.eql(u8, spec.id, "codegraff")) continue;
+                if ((phase == 2) != isGatewayFallback(spec.id)) continue;
                 for (pricing.models()) |m| {
                     if (!std.mem.eql(u8, m.provider, spec.id)) continue;
                     if (if (phase == 1) pricing.familyAliasEquals(spec.id, m.name, model) else std.mem.eql(u8, m.name, model))
@@ -406,13 +415,26 @@ pub const Keys = struct {
         return keys.build(spec, key, model);
     }
 
-    /// The startup default: the first provider (in spec order) with a key,
-    /// on its default model.
+    /// The startup default: the first provider (in spec order) with a key, on
+    /// its default model — the codegraff gateway last, mirroring the phase-2
+    /// demotion `providerFor` already applies.
+    ///
+    /// #294 fixed the model-ROUTING half of this and left the STARTUP half. The
+    /// gateway sits at spec index 1 and `startup_keys.resolveKeys` loads its key
+    /// from ~/.simple-harness-codegraff.json unconditionally, so merely HAVING
+    /// that file seated every fresh workspace (no --model, no saved model) on
+    /// gateway.codegraff.com while a valid Codex login or xAI key sat further
+    /// down the array and lost. The user never picked the gateway, so a session
+    /// they believed was Codex quietly drew on gateway credits — and a gateway
+    /// outage broke a session that had no business touching it.
     pub fn defaultProvider(keys: Keys) error{MissingKey}!Provider {
-        for (0..specCount()) |i| {
-            const spec = specAt(i).?;
-            const key = keys.get(spec.id) orelse continue;
-            return keys.build(spec, key, pricing.providerDefaultModel(spec.id, spec.default_model));
+        for ([_]bool{ false, true }) |gateway_pass| {
+            for (0..specCount()) |i| {
+                const spec = specAt(i).?;
+                if (isGatewayFallback(spec.id) != gateway_pass) continue;
+                const key = keys.get(spec.id) orelse continue;
+                return keys.build(spec, key, pricing.providerDefaultModel(spec.id, spec.default_model));
+            }
         }
         return error.MissingKey;
     }

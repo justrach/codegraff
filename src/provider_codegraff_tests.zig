@@ -210,3 +210,31 @@ test "Codegraff DeepSeek flash disables thinking at default low; /effort high st
     try std.testing.expect(std.mem.indexOf(u8, glm_body, "\"thinking\":{\"type\":\"disabled\"}") == null);
     try std.testing.expect(std.mem.indexOf(u8, glm_body, "\"reasoning_effort\":\"low\"") != null);
 }
+
+test "the gateway is never the startup default while a direct credential exists" {
+    // The #294 startup half: the gateway sits at spec index 1, so before this
+    // fix merely HAVING ~/.simple-harness-codegraff.json seated a fresh
+    // workspace on gateway.codegraff.com even though the user had logged into
+    // Codex (spec index far below) or keyed xAI. Each pair below is "gateway
+    // key + one direct credential"; the direct one must win every time.
+    for ([_][]const u8{ "codex", "xai", "anthropic", "deepseek", "openai" }) |direct| {
+        var keys: provider.Keys = .{ .values = @splat(null) };
+        try std.testing.expect(keys.set("codegraff", "gateway-key", .login));
+        try std.testing.expect(keys.set(direct, "direct-key", .login));
+        const got = try keys.defaultProvider();
+        try std.testing.expectEqualStrings(direct, got.id);
+        try std.testing.expect(std.mem.indexOf(u8, got.url, "codegraff.com") == null);
+    }
+}
+
+test "the gateway still serves the startup default when it is the only credential" {
+    // Demotion must not become exclusion: a gateway-only user is exactly who
+    // the seat is for, and still boots on it.
+    var keys: provider.Keys = .{ .values = @splat(null) };
+    try std.testing.expect(keys.set("codegraff", "gateway-key", .login));
+    const got = try keys.defaultProvider();
+    try std.testing.expectEqualStrings("codegraff", got.id);
+
+    const none: provider.Keys = .{ .values = @splat(null) };
+    try std.testing.expectError(error.MissingKey, none.defaultProvider());
+}
