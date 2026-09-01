@@ -67,7 +67,7 @@ pub const commands = [_]Item{
     .{ .name = "/bash", .usage = "/bash <command>", .desc = "run a shell command directly" },
     .{ .name = "/save", .usage = "/save [name]", .desc = "write the conversation to <name>.session.json (default: current)" },
     .{ .name = "/resume", .usage = "/resume [source] [--branch destination]", .desc = "restore a saved conversation, optionally cloning it into an independent branch" },
-    .{ .name = "/sessions", .desc = "list saved sessions in the cwd" },
+    .{ .name = "/sessions", .desc = "list saved sessions here and under ~/.graff/sessions" },
     .{ .name = "/workspace", .usage = "/workspace [list|use <name>]", .desc = "list git worktrees or switch this session into one (file tools follow)" },
     .{ .name = "/experiment", .usage = "/experiment [N|off|status]", .desc = "pre-mint N child worktrees (1-16) and seat the next spawns in them; off clears the pool" },
     .{ .name = "/todo", .desc = "show the current task list" },

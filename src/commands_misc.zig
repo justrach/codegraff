@@ -21,8 +21,7 @@ const session_ext = session.session_ext;
 const saveSession = session.saveSession;
 const session = @import("session.zig");
 const presence = @import("presence.zig");
-const listSavedSessions = session.listSavedSessions;
-const sessionAge = session.sessionAge;
+const session_list = @import("session_list.zig");
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
@@ -504,19 +503,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.startsWith(u8, line, "/peek") and (line.len == 5 or line[5] == ' ' or line[5] == '\t')) return peer_channel.peekCommand(root, arena, line, out); // #469
     if (std.mem.startsWith(u8, line, "/routes") and (line.len == 7 or line[7] == ' ' or line[7] == '\t')) return route_set.command(root, keys, arena, line, out); // user-defined priced lanes
     if (std.mem.eql(u8, line, "/sessions")) {
-        var entries = listSavedSessions(root, arena);
-        defer entries.deinit(arena);
-        for (entries.items) |e| {
-            const age = sessionAge(arena, root.io, e.updated_ms);
-            const cur = if (std.mem.eql(u8, e.base, root.session_name)) "  ← current" else "";
-            const parent = if (e.parent) |p| std.fmt.allocPrint(arena, " ← {s}", .{p}) catch "" else "";
-            if (e.title) |t| {
-                try out.print("  {s}  {s}{s}{s}{s}{s}{s}{s}\n", .{ t, style.dim, e.base, parent, if (age.len > 0) " · " else "", age, style.reset, cur });
-            } else {
-                try out.print("  {s}{s}{s}{s}{s}{s}{s}\n", .{ e.base, parent, style.dim, if (age.len > 0) "  " else "", age, style.reset, cur });
-            }
-        }
-        if (entries.items.len == 0) try out.writeAll("(no saved sessions in cwd)\n");
+        try session_list.writeSaved(root, arena, out);
         try peer_channel.writeLiveSection(root, arena, out); // #469: co-resident live sessions, with goals
         try out.flush();
         return true;

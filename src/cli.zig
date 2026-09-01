@@ -24,6 +24,8 @@ pub const changelog_text =
     \\0.0.284
     \\  • ACP turns stage GUI @[image] attachments as native vision blocks — pasted images reach the model
     \\  • peer inbox wake is advisory ("parked; read when relevant"), never a command that displaces the turn
+    \\  • parallel error bash results stay valid JSON on the next Codex request (#711)
+    \\  • /resume and /sessions find ~/.graff/sessions, not just cwd (#712)
     \\
     \\0.0.283
     \\  • deleted composer image chips reuse #N; paste traces omit MIME/bytes until send (#702)

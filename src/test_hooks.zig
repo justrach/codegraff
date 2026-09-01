@@ -349,5 +349,6 @@ test {
     _ = @import("readline_image.zig"); // #702: composer image chips sync on delete
     _ = @import("agent_request_scratch.zig"); // #693: split out of agent_request.zig (600-line ceiling)
     _ = @import("commands_resume.zig"); // #697: --resume SOURCE --branch DEST parser
+    _ = @import("session_list.zig"); // #712: device-wide saved-session listing
     _ = @import("net_efficiency_test.zig");
 }

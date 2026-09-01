@@ -97,6 +97,8 @@ fn textSlice(p: *const Parked) []const u8 {
 }
 
 /// One-line history wake. Cheap on purpose: the bodies wait in the ring.
+/// Advisory on purpose (#708): an imperative `peer_message action=inbox`
+/// made a greeting's first step look like tool work.
 pub fn formatWake(arena: Allocator) []const u8 {
     // Advisory framing (#708): the wake states that messages are waiting and
     // how to read them, but must not read as a command that displaces the
@@ -241,10 +243,10 @@ test "inbox ring: park, one-line wake, overflow drops oldest, takeAll clears" {
     try testing.expectEqual(@as(usize, 2), unread());
     const wake = formatWake(a);
     try testing.expect(std.mem.startsWith(u8, wake, "[peer] 2 unread from session-aaa + 1 more"));
-    try testing.expect(std.mem.indexOf(u8, wake, "action=inbox") != null);
-    try testing.expect(std.mem.indexOfScalar(u8, wake, '\n') == null);
+    try testing.expect(std.mem.indexOf(u8, wake, "peer_message action=inbox when relevant") != null);
     try testing.expect(std.mem.indexOf(u8, wake, "parked") != null);
     try testing.expect(std.mem.indexOf(u8, wake, "when relevant") != null);
+    try testing.expect(std.mem.indexOfScalar(u8, wake, '\n') == null);
     const body = takeAll(a);
     try testing.expect(std.mem.indexOf(u8, body, "[peer message from session-aaa]: hold gui/src") != null);
     try testing.expect(std.mem.indexOf(u8, body, "[peer message from session-bbb · device DM]: your turn") != null);

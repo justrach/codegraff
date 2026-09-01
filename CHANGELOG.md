@@ -10,6 +10,22 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.284 (2026-09-01)
+
+- ACP turns stage GUI `@[image]` attachments as native vision blocks so
+  pasted images reach the model.
+- `#708`: peer-inbox wake is advisory (`parked; peer_message action=inbox
+  when relevant`), never a command that displaces the turn.
+- `#711`: a failed parallel bash result (gh 404 JSON + exit code) cannot
+  poison the next Codex body. `function_call.arguments` and
+  `function_call_output.output` that arrived as objects are coerced to
+  strings before send.
+- `#712` / ADR 0059: bare `/resume` and `/sessions` list cwd saves, then
+  `~/.graff/sessions`. Cross-workspace rows name their origin. Resume
+  restores history here; file tools stay in the current cwd.
+- The gateway is a fallback seat, not the startup default.
+- No tag until asked.
+
 ## v0.0.283 (2026-08-31)
 
 - Next cut after v0.0.282 landed on main. First fold: `#702` /

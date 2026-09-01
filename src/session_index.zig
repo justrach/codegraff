@@ -10,6 +10,7 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const agent_mod = @import("agent.zig");
+const main_mod = @import("main.zig");
 const util = @import("util.zig");
 const Agent = agent_mod.Agent;
 const unixMs = util.unixMs;
@@ -57,7 +58,7 @@ pub fn validSessionName(name: []const u8) bool {
 /// "updated_ms" before "messages", so parsing the header slice alone is
 /// enough. Zero-value fields when the file predates them or the header
 /// can't be read — callers fall back to the raw session name (#109).
-pub const SessionMeta = struct { title: ?[]const u8 = null, parent: ?[]const u8 = null, updated_ms: i64 = 0 };
+pub const SessionMeta = struct { title: ?[]const u8 = null, parent: ?[]const u8 = null, updated_ms: i64 = 0, workspace: ?[]const u8 = null };
 
 pub fn sessionMetaFromBytes(arena: Allocator, data: []const u8) SessionMeta {
     // Embedded quotes inside string values are escaped in the file, so the
@@ -72,6 +73,7 @@ pub fn sessionMetaFromBytes(arena: Allocator, data: []const u8) SessionMeta {
         .title = if (parsed.object.get("title")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null,
         .parent = if (parsed.object.get("parent")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null,
         .updated_ms = if (parsed.object.get("updated_ms")) |v| (if (v == .integer) v.integer else 0) else 0,
+        .workspace = if (parsed.object.get("workspace")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null,
     };
 }
 
@@ -100,26 +102,90 @@ pub fn sessionAge(arena: Allocator, io: Io, then_ms: i64) []const u8 {
 
 /// One row per saved session for the /resume picker and /sessions list:
 /// newest first, keyed (and resumed) by the file base name.
-pub const SessionEntry = struct { base: []const u8, title: ?[]const u8 = null, parent: ?[]const u8 = null, updated_ms: i64 = 0 };
+pub const SessionEntry = struct {
+    base: []const u8,
+    title: ?[]const u8 = null,
+    parent: ?[]const u8 = null,
+    updated_ms: i64 = 0,
+    workspace: []const u8 = "",
+    local: bool = true,
+};
 
-pub fn listSavedSessions(root: *Agent, arena: Allocator) std.ArrayList(SessionEntry) {
+fn sameWorkspace(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, std.mem.trimEnd(u8, a, "/"), std.mem.trimEnd(u8, b, "/"));
+}
+
+fn listFromDir(io: Io, arena: Allocator, dir: Io.Dir, workspace: []const u8, local: bool) std.ArrayList(SessionEntry) {
     var entries: std.ArrayList(SessionEntry) = .empty;
-    var dir = Io.Dir.cwd().openDir(root.io, sessions_dir, .{ .iterate = true }) catch return entries;
-    defer dir.close(root.io);
     var it = dir.iterate();
-    while (it.next(root.io) catch null) |entry| {
+    while (it.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, session_ext)) continue;
         const base = arena.dupe(u8, entry.name[0 .. entry.name.len - session_ext.len]) catch continue;
-        const meta = sessionMeta(root, arena, base);
-        entries.append(arena, .{ .base = base, .title = meta.title, .parent = meta.parent, .updated_ms = meta.updated_ms }) catch {};
+        const data = dir.readFileAlloc(io, entry.name, arena, .limited(8 * 1024 * 1024)) catch continue;
+        const meta = sessionMetaFromBytes(arena, data);
+        entries.append(arena, .{
+            .base = base,
+            .title = meta.title,
+            .parent = meta.parent,
+            .updated_ms = meta.updated_ms,
+            .workspace = meta.workspace orelse workspace,
+            .local = local,
+        }) catch {};
     }
-    std.mem.sort(SessionEntry, entries.items, {}, struct {
-        fn newerFirst(_: void, a: SessionEntry, b: SessionEntry) bool {
-            return a.updated_ms > b.updated_ms;
-        }
-    }.newerFirst);
     return entries;
+}
+
+fn newerFirst(_: void, a: SessionEntry, b: SessionEntry) bool {
+    if (a.local != b.local) return a.local;
+    return a.updated_ms > b.updated_ms;
+}
+
+pub fn listSavedSessions(root: *Agent, arena: Allocator) std.ArrayList(SessionEntry) {
+    var dir = Io.Dir.cwd().openDir(root.io, sessions_dir, .{ .iterate = true }) catch return .empty;
+    defer dir.close(root.io);
+    const cwd = if (main_mod.g_cwd_display.len > 0) main_mod.g_cwd_display else ".";
+    const entries = listFromDir(root.io, arena, dir, cwd, true);
+    std.mem.sort(SessionEntry, entries.items, {}, newerFirst);
+    return entries;
+}
+
+/// Cwd saves first, then `~/.graff/sessions` when that tree is a different
+/// workspace. Cwd wins on the same base name. #712.
+pub fn listSavedSessionsAll(root: *Agent, arena: Allocator) std.ArrayList(SessionEntry) {
+    var entries = listSavedSessions(root, arena);
+    const home = root.home;
+    const cwd = if (main_mod.g_cwd_display.len > 0) main_mod.g_cwd_display else ".";
+    if (home.len == 0 or sameWorkspace(home, cwd)) return entries;
+    var home_root = Io.Dir.cwd().openDir(root.io, home, .{}) catch return entries;
+    defer home_root.close(root.io);
+    var home_sess = home_root.openDir(root.io, sessions_dir, .{ .iterate = true }) catch return entries;
+    defer home_sess.close(root.io);
+    const extra = listFromDir(root.io, arena, home_sess, home, false);
+    for (extra.items) |e| {
+        var seen = false;
+        for (entries.items) |c| {
+            if (std.mem.eql(u8, c.base, e.base) and c.local) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) entries.append(arena, e) catch {};
+    }
+    std.mem.sort(SessionEntry, entries.items, {}, newerFirst);
+    return entries;
+}
+
+pub fn homeSessionPath(arena: Allocator, home: []const u8, name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{s}/{s}/{s}{s}", .{ home, sessions_dir, name, session_ext });
+}
+
+/// `~/…` when `path` is under home; otherwise the path as-is.
+pub fn displayWorkspace(arena: Allocator, path: []const u8, home: []const u8) []const u8 {
+    if (home.len > 0 and (std.mem.eql(u8, path, home) or std.mem.startsWith(u8, path, home) and path.len > home.len and path[home.len] == '/')) {
+        return std.fmt.allocPrint(arena, "~{s}", .{path[home.len..]}) catch path;
+    }
+    return path;
 }
 
 /// Count `.session.json` files without parsing them — startup's banner hint.
@@ -177,4 +243,46 @@ test "savedSessionsHint is silent at zero and pluralizes" {
     try std.testing.expectEqualStrings("", savedSessionsHint(0, &buf));
     try std.testing.expectEqualStrings("1 saved session · /resume to continue", savedSessionsHint(1, &buf));
     try std.testing.expectEqualStrings("3 saved sessions · /resume to continue", savedSessionsHint(3, &buf));
+}
+
+test "sessionMetaFromBytes reads workspace (#712)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const meta = sessionMetaFromBytes(arena,
+        \\{"provider":"x","model":"y","title":"Home chat","updated_ms":9,"workspace":"/Users/me","messages":[]}
+    );
+    try std.testing.expectEqualStrings("Home chat", meta.title.?);
+    try std.testing.expectEqualStrings("/Users/me", meta.workspace.?);
+    const legacy = sessionMetaFromBytes(arena,
+        \\{"provider":"x","model":"y","title":"Old","updated_ms":1,"messages":[]}
+    );
+    try std.testing.expect(legacy.workspace == null);
+}
+
+test "listFromDir finds a session and infers workspace (#712)" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "home-test.session.json",
+        .data = "{\"provider\":\"x\",\"model\":\"y\",\"title\":\"Home chat\",\"updated_ms\":9,\"messages\":[]}",
+    });
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const entries = listFromDir(std.testing.io, arena, tmp.dir, "/Users/me", false);
+    try std.testing.expectEqual(@as(usize, 1), entries.items.len);
+    try std.testing.expectEqualStrings("home-test", entries.items[0].base);
+    try std.testing.expectEqualStrings("Home chat", entries.items[0].title.?);
+    try std.testing.expectEqualStrings("/Users/me", entries.items[0].workspace);
+    try std.testing.expect(!entries.items[0].local);
+}
+
+test "homeSessionPath and sameWorkspace (#712)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try std.testing.expectEqualStrings("/Users/me/.graff/sessions/home-test.session.json", try homeSessionPath(arena, "/Users/me", "home-test"));
+    try std.testing.expect(sameWorkspace("/Users/me", "/Users/me/"));
+    try std.testing.expect(!sameWorkspace("/Users/me", "/tmp/proj"));
 }

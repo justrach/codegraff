@@ -169,7 +169,15 @@ pub fn normalizeResponsesHistory(arena: Allocator, messages: *std.json.Array) vo
         if (m.* != .object) continue;
         coerceChatStringToResponses(arena, m);
         const t = m.object.get("type") orelse continue;
-        if (t != .string or !std.mem.eql(u8, t.string, "function_call_output")) continue;
+        if (t != .string) continue;
+        // Codex re-parses `arguments` as JSON. An object/array here (some
+        // providers emit it parsed) makes the next body `Invalid body:
+        // failed to parse JSON value` (#711).
+        if (std.mem.eql(u8, t.string, "function_call")) {
+            coerceFieldToString(arena, m, "arguments");
+            continue;
+        }
+        if (!std.mem.eql(u8, t.string, "function_call_output")) continue;
         const out = m.object.get("output") orelse continue;
         if (out == .string and out.string.len <= responses_output_cap) continue; // valid + within cap
         const s = if (out == .string) out.string else jsonValueString(arena, out);
@@ -179,6 +187,12 @@ pub fn normalizeResponsesHistory(arena: Allocator, messages: *std.json.Array) vo
             s;
         m.object.put(arena, "output", .{ .string = capped }) catch {};
     }
+}
+
+fn coerceFieldToString(arena: Allocator, m: *Value, field: []const u8) void {
+    const v = m.object.get(field) orelse return;
+    if (v == .string) return;
+    m.object.put(arena, field, .{ .string = jsonValueString(arena, v) }) catch {};
 }
 
 /// #99: the chat-completions sibling of normalizeResponsesHistory. A resumed
@@ -439,4 +453,55 @@ test "toolResultMessage: result text serializes as a JSON string in every wire f
         const json = try enc(arena, err);
         try std.testing.expect(std.mem.indexOf(u8, json, "\"content\":\"nope\"") != null);
     }
+}
+
+test "#711: parallel error bash + object-shaped output still stringify as JSON" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const gh404 =
+        \\gh: Not Found (HTTP 404)
+        \\{"message":"Not Found","documentation_url":"https://docs.github.com/rest/pulls/comments#list-review-comments-on-a-pull-request"}
+        \\
+        \\[exit code 1]
+    ;
+    var msgs = std.json.Array.init(arena);
+    var fc: std.json.ObjectMap = .empty;
+    try fc.put(arena, "type", .{ .string = "function_call" });
+    try fc.put(arena, "call_id", .{ .string = "5" });
+    try fc.put(arena, "name", .{ .string = "bash" });
+    var args_obj: std.json.ObjectMap = .empty;
+    try args_obj.put(arena, "command", .{ .string = "gh api repos/justrach/codegraff/pulls/1/comments" });
+    try fc.put(arena, "arguments", .{ .object = args_obj });
+    try msgs.append(.{ .object = fc });
+    try msgs.append(try toolResultMessage(arena, .responses, "5", gh404, true));
+    try msgs.append(try toolResultMessage(arena, .responses, "6", gh404, true));
+    var poison: std.json.ObjectMap = .empty;
+    try poison.put(arena, "type", .{ .string = "function_call_output" });
+    try poison.put(arena, "call_id", .{ .string = "7" });
+    var parsed_err: std.json.ObjectMap = .empty;
+    try parsed_err.put(arena, "message", .{ .string = "Not Found" });
+    try poison.put(arena, "output", .{ .object = parsed_err });
+    try msgs.append(.{ .object = poison });
+
+    sanitizeMessagesUtf8(arena, &msgs);
+    normalizeResponsesHistory(arena, &msgs);
+
+    try std.testing.expect(msgs.items[0].object.get("arguments").? == .string);
+    try std.testing.expect(std.mem.indexOf(u8, msgs.items[0].object.get("arguments").?.string, "gh api") != null);
+    try std.testing.expect(msgs.items[1].object.get("output").? == .string);
+    try std.testing.expect(msgs.items[2].object.get("output").? == .string);
+    try std.testing.expect(msgs.items[3].object.get("output").? == .string);
+    try std.testing.expect(std.mem.indexOf(u8, msgs.items[3].object.get("output").?.string, "Not Found") != null);
+
+    var aw: Io.Writer.Allocating = .init(arena);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try s.beginObject();
+    try s.objectField("input");
+    try s.write(Value{ .array = msgs });
+    try s.endObject();
+    const body = aw.writer.buffered();
+    const parsed = try std.json.parseFromSlice(Value, std.testing.allocator, body, .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .object);
 }

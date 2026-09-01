@@ -49,6 +49,9 @@ pub const sessionMeta = session_index.sessionMeta;
 pub const sessionAge = session_index.sessionAge;
 pub const SessionEntry = session_index.SessionEntry;
 pub const listSavedSessions = session_index.listSavedSessions;
+pub const listSavedSessionsAll = session_index.listSavedSessionsAll;
+pub const homeSessionPath = session_index.homeSessionPath;
+pub const displayWorkspace = session_index.displayWorkspace;
 
 /// Filesystem-safe slug of an AI title: lowercase alnum, any other run collapses
 /// to one '-', trimmed, capped at 60. "Fixing the login bug" -> "fixing-the-login-bug".
@@ -304,6 +307,8 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     if (root.session_title) |title| try s.write(title) else try s.write(sessionTitle(root));
     try s.objectField("updated_ms");
     try s.write(unixMs(root.io));
+    try s.objectField("workspace");
+    try s.write(@import("main.zig").g_cwd_display);
     try s.objectField("messages");
     const saved_msgs = try session_peer.messagesForSave(arena, root.messages.items);
     const messages_start = aw.writer.buffered().len;
@@ -434,7 +439,12 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch blk: {
         // backward-compat: older builds wrote <name>.session.json in cwd.
         const legacy = try std.fmt.allocPrint(arena, "{s}{s}", .{ name, session_ext });
-        break :blk try Io.Dir.cwd().readFileAlloc(root.io, legacy, arena, .limited(8 * 1024 * 1024));
+        break :blk Io.Dir.cwd().readFileAlloc(root.io, legacy, arena, .limited(8 * 1024 * 1024)) catch {
+            // #712: a save from `$HOME` is invisible if we only look at cwd.
+            if (root.home.len == 0) return error.FileNotFound;
+            const home_path = try homeSessionPath(arena, root.home, name);
+            break :blk try Io.Dir.cwd().readFileAlloc(root.io, home_path, arena, .limited(8 * 1024 * 1024));
+        };
     };
     const parsed = try std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always });
     if (parsed != .object) return error.BadSession;
