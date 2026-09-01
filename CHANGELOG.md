@@ -31,11 +31,12 @@ current is part of cutting a release.
   resume / clear). A typed TUI goal is not standing, so recorded
   completion retires it and `/resume` does not steer the next prompt.
 - The gateway is a fallback seat, not the startup default.
-- In-house remasure on this tip (`run-20260901-113939-composite`): all
-  three harnesses 12/12. Graff 242s / 56 calls / $0.37 / 8.7M. OpenCode
-  wins wall (235s); graff still wins calls / tokens / list$ / RSS.
-  Not unique Pareto. Last unique pin remains 282. Hosted `x_search`
-  stays on.
+- In-house remasure on this tip (`run-20260901-121759-composite`): all
+  three harnesses 12/12. Graff **220s / 53 calls / $0.32 / 8.7M** vs
+  OpenCode 235s / 77 / $0.68 and grok 490s / 60 / $1.07. Unique
+  frontier on pass / wall / calls / tokens / list$ / RSS. A 115s
+  symlink stall (same 4 calls) was remasured at 67.8s, same pattern as
+  282. Hosted `x_search` stays on.
 - No tag until asked.
 
 ## v0.0.283 (2026-08-31)

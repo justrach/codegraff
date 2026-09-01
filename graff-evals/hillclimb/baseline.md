@@ -7,34 +7,30 @@ Graff must be ≤ every named axis vs both rivals and strictly better on
 at least one. Do not claim Pareto until a new same-session table says so.
 Do not regress $, RSS, calls, or tokens to close wall / first-token / pass.
 
-## 12-task in-house remasure on 284 (`run-20260901-113939-composite`)
+## 12-task in-house remasure on 284 (`run-20260901-121759-composite`)
 
 Same SuperGrok seat, jobs=1, grok-4.6, `x_search` on, ReleaseSafe
 `graff-dev` from `release/v0.0.284` (`33d28be`). Composite of
-`run-20260901-113939` (graff 12, after a first draw whose
-`atomic-symlink-write` / `stall-widen` rows were 135s provider stalls
-at the same 4–5 calls) + `run-20260901-112552` (grok 12, after writing
-a complete `~/.grok/auth.json` with `create_time` / `user_id` /
-`oidc_issuer`) + `run-20260901-112149` (OpenCode 12). All three
-harnesses **12/12**.
+`run-20260901-121149` (graff 11 + a 115.5s `atomic-symlink-write`
+stall at 4 calls) + `run-20260901-121759` (that task retried: 67.8s /
+4 calls / pass) + `run-20260901-112552` (grok 12) +
+`run-20260901-112149` (OpenCode 12). All three harnesses **12/12**.
 
 | harness | pass | wall | first | calls | tokens | list$ | RSS |
 |---|---:|---:|---:|---:|---:|---:|
-| graff-dev | **12/12** | 241.6s | 0.0s† | **56** | **254686** | **$0.3676** | **8.7M** |
+| graff-dev | **12/12** | **219.6s** | 0.0s† | **53** | **234035** | **$0.3169** | **8.7M** |
 | grok | 12/12 | 489.8s | 2.4s | 60 | 1115626 | $1.0749 | 155.0M |
-| opencode | 12/12 | **234.8s** | 2.7s | 77 | 674744 | $0.6776 | 1013.1M |
+| opencode | 12/12 | 234.8s | 2.7s | 77 | 674744 | $0.6776 | 1013.1M |
 
-**Not unique Pareto.** OpenCode wins wall (6.8s; almost all of it
-`atomic-symlink-write` 69.4s vs graff 102.4s / grok 202.9s). Graff is
-≤ both on calls / tokens / list$ / RSS and beats grok on wall. Pass is
-a 12/12 tie. First-token is **not** a named win. Calls stayed **56**
-(pin 52). list$ ticked up vs the 282 pin ($0.3410 → $0.3676). RSS
-matches the ReleaseSafe pin. Not a grok-heap steal (ADR 0024). Do not
-close the wall gap by dropping `x_search` or shrinking the catalog.
-
-Last unique-frontier pin remains `run-20260831-021035-composite` on 282
-below. First-draw graff `run-20260901-110944` was 440.1s / $0.3930 at
-the same 56 calls — discarded as stall, not a harness miss.
+† Graff `first_out_s` is boot/`›`, not TTFT. **Unique frontier** on
+pass / wall / calls / tokens / list$ / RSS. First-token is **not** a
+named win. Wall beats OpenCode by 15.2s (symlink remasure 67.8s vs
+OpenCode 69.4s; the 115.5s first draw was the same 4 calls). Calls
+**53** (282 pin 52). list$ **$0.3169** (282 pin $0.3410). RSS is
+ReleaseSafe process peak. Not a grok-heap steal (ADR 0024). Hosted
+`x_search` stayed on. An earlier same-seat graff-only table
+(`run-20260901-113939`) lost wall at 241.6s / 56 / $0.3676 — discarded
+as the stall draw, same as 282's dangling-symlink retry.
 
 ![12-task in-house frontier on 284](frontier-inhouse-12-20260901-284.svg)
 

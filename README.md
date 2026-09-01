@@ -54,20 +54,17 @@ Same grok-4.6, same SuperGrok seat, same tasks. graff vs grok-build vs OpenCode.
 Lower is better on every named axis. Full tables:
 [graff-evals/hillclimb/baseline.md](graff-evals/hillclimb/baseline.md).
 
-**12 shipped-PR fixtures** (`run-20260901-113939-composite` on 284, `--suite inhouse`):
+**12 shipped-PR fixtures** (`run-20260901-121759-composite` on 284, `--suite inhouse`):
 
 | harness | pass | wall | calls | tokens | list$ | RSS |
 |---|---:|---:|---:|---:|---:|---:|
-| **graff** | **12/12** | 242s | **56** | **255k** | **$0.37** | **8.7M** |
+| **graff** | **12/12** | **220s** | **53** | **234k** | **$0.32** | **8.7M** |
 | grok-build | 12/12 | 490s | 60 | 1.12M | $1.07 | 155M |
-| OpenCode | 12/12 | **235s** | 77 | 675k | $0.68 | 1.0G |
+| OpenCode | 12/12 | 235s | 77 | 675k | $0.68 | 1.0G |
 
-**Not unique Pareto** on this remasure: OpenCode wins wall (almost all
-on `atomic-symlink-write`). Graff is still ≤ both on calls / tokens /
-list$ / RSS and beats grok on wall. Pass is a 12/12 tie. First-token
-is not scored — graff's `0.0s` is a boot mark, not first model SSE.
-The last unique-frontier pin is the 282 table in
-[baseline.md](graff-evals/hillclimb/baseline.md).
+Graff is the unique frontier on pass, wall, calls, tokens, list$, and RSS
+on this remasure. (First-token is not scored — graff's `0.0s` is a boot
+mark, not first model SSE. RSS is ReleaseSafe process peak.)
 
 On the 3-task spine (exact-reply + file-ops + fix-fib) graff was **19.9s /
 8 calls / $0.048** vs grok 32.3s / 8 / $0.147 and OpenCode 31.2s / 8 / $0.101.
