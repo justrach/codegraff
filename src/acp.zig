@@ -31,6 +31,8 @@ const proto = @import("acp_protocol.zig");
 const engine = @import("acp_engine.zig");
 const stream = @import("acp_stream.zig");
 const playbook_glue = @import("playbook_glue.zig");
+const vision = @import("vision.zig");
+const vision_queue = @import("vision_queue.zig");
 const pricing = @import("pricing.zig");
 const billing = @import("billing.zig");
 const models_rank = @import("models_rank");
@@ -78,6 +80,14 @@ fn liveAfter(ctx: *anyopaque, arena: Allocator, text: []const u8) void {
 fn liveBind(ctx: *anyopaque, session_id: []const u8) void {
     const live: *LiveTurn = @ptrCast(@alignCast(ctx));
     live.session_id = session_id;
+}
+
+/// The ACP user message: GUI `@[image]` attachments become native vision
+/// blocks — the same promotion mainloop and the REPL do — instead of the
+/// pixels never leaving the client and the model reading literal marker text.
+fn userMessage(arena: Allocator, root: *agent_mod.Agent, text: []const u8) !Value {
+    vision.stageGuiImageAttachment(root, text);
+    return vision_queue.consumePromptImages(arena, root, text);
 }
 
 /// `graff/models` (vendor extension, dispatched through `engine.Dispatch.extra`):
@@ -143,7 +153,7 @@ const LiveTurn = struct {
 
     fn run(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
-        try self.root.messages.append(try messages_mod.textMessage(arena, "user", text));
+        try self.root.messages.append(try userMessage(arena, self.root, text));
         if (telemetry.g_telem) |t| t.beginTurn(@intCast(@min(text.len, std.math.maxInt(u32))), self.root.provider.model);
         self.saw_text = false;
         var sink: stream.EventSink = undefined;
@@ -220,6 +230,36 @@ const testing = std.testing;
 fn echoTurn(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
     _ = ctx;
     return std.fmt.allocPrint(arena, "echo:{s}", .{text});
+}
+
+test "userMessage promotes a GUI @[image] attachment to a native vision block" {
+    var state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer state.deinit();
+    const a = state.allocator();
+
+    var root: agent_mod.Agent = .{
+        .gpa = testing.allocator,
+        .arena = a,
+        .io = testing.io,
+        .client = undefined,
+        .provider = .{ .id = "xai", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "grok-4", .context = 100_000 },
+        .messages = std.json.Array.init(a),
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+
+    // Non-image @[path] stays literal text: the agent opens it with its tools.
+    const txt = try userMessage(a, &root, "read @[build.zig] please");
+    try testing.expect(txt.object.get("content").? == .string);
+    try testing.expectEqualStrings("read @[build.zig] please", txt.object.get("content").?.string);
+
+    // An image path becomes text + input_image blocks.
+    const img = try userMessage(a, &root, "look @[gui/public/favicon.png]");
+    const content = img.object.get("content").?.array.items;
+    try testing.expectEqual(@as(usize, 2), content.len);
+    try testing.expectEqualStrings("input_image", content[1].object.get("type").?.string);
+    try testing.expect(std.mem.indexOf(u8, content[1].object.get("image_url").?.string, "data:image/") != null);
 }
 
 fn budgetTurn(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
