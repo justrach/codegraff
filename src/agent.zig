@@ -211,6 +211,7 @@ pub const Agent = struct {
     named_work_nudges: u8 = 0, // named-file / zero-tool nudge this turn (named_work.zig)
     precompact_note_gen: ?u32 = null, // #391: history_rewrites at the last pre-compaction note-to-self, so one history generation buys at most one note however often compaction is retried (compact_note.decideCalls)
     ws_off: bool = false, // codex ws transport disabled for this session after a handshake/transport fallback to SSE (#codex-ws)
+    ws_api_error_pending: bool = false, // terminal WS error awaits Responses parsing/tracing; socket is already retired
     ws_transport_failures: u8 = 0, // consecutive WS failures; retry once before latching persistent SSE
     streamed_text: bool = false, // the last request printed its text live
     stall: @import("http_stall.zig").State = .{}, // #680: reconnects made this request (each widens the between-lines budget) + the budget that last tripped
