@@ -113,7 +113,7 @@ pub fn formatWake(arena: Allocator) []const u8 {
         std.fmt.allocPrint(arena, "from {s}", .{first}) catch "from a peer"
     else
         std.fmt.allocPrint(arena, "from {s} + {d} more", .{ first, extra }) catch "from peers";
-    return std.fmt.allocPrint(arena, "[peer] {d} unread {s} — peer messages are parked; peer_message action=inbox reads them, but answer the user's actual request first", .{ g_len, who }) catch "[peer] unread — peer messages are parked; peer_message action=inbox reads them when relevant";
+    return std.fmt.allocPrint(arena, "[peer] {d} unread {s} — parked; peer_message action=inbox when relevant", .{ g_len, who }) catch "[peer] unread — peer_message action=inbox when relevant";
 }
 
 /// Read+clear. Tool result only — does not re-enter history.
@@ -213,7 +213,7 @@ test "wake framing is advisory: it never opens with the read command (#708)" {
     _ = parkHeard(&.{msg("s-a", "ping", "")}, &.{});
     const wake = formatWake(a);
     try testing.expect(wake.len <= peer_context.inject_byte_cap);
-    try testing.expect(std.mem.indexOf(u8, wake, "peer_message action=inbox reads them") != null);
+    try testing.expect(std.mem.indexOf(u8, wake, "peer_message action=inbox when relevant") != null);
     try testing.expect(!std.mem.endsWith(u8, wake, "action=inbox"));
 }
 
@@ -244,7 +244,7 @@ test "inbox ring: park, one-line wake, overflow drops oldest, takeAll clears" {
     try testing.expect(std.mem.indexOf(u8, wake, "action=inbox") != null);
     try testing.expect(std.mem.indexOfScalar(u8, wake, '\n') == null);
     try testing.expect(std.mem.indexOf(u8, wake, "parked") != null);
-    try testing.expect(std.mem.indexOf(u8, wake, "answer the user's actual request first") != null);
+    try testing.expect(std.mem.indexOf(u8, wake, "when relevant") != null);
     const body = takeAll(a);
     try testing.expect(std.mem.indexOf(u8, body, "[peer message from session-aaa]: hold gui/src") != null);
     try testing.expect(std.mem.indexOf(u8, body, "[peer message from session-bbb · device DM]: your turn") != null);
