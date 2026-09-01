@@ -73,7 +73,19 @@ fn branchShort(ref: []const u8) []const u8 {
     return ref;
 }
 
+/// Copy `s` into the arena so a row does not alias the caller's buffer. An
+/// empty result on OOM drops the row rather than smuggling a dangling slice out.
+fn own(arena: Allocator, s: []const u8) []const u8 {
+    return arena.dupe(u8, s) catch "";
+}
+
 /// Parse `git worktree list --porcelain`. Ignores bare/detached/locked extras.
+///
+/// Every row OWNS its bytes. `listEntries` frees git's stdout as soon as it
+/// returns, so borrowing out of `text` left each path and branch pointing at
+/// released memory (#715): reused pages read back as NUL, which printed blank
+/// rows for `action=list` and made `action=use` match neither the name nor the
+/// exact path of a worktree git itself listed fine.
 pub fn parsePorcelain(arena: Allocator, text: []const u8) []Entry {
     var list: std.ArrayList(Entry) = .empty;
     var cur: Entry = .{ .path = "" };
@@ -87,11 +99,11 @@ pub fn parsePorcelain(arena: Allocator, text: []const u8) []Entry {
         }
         if (std.mem.startsWith(u8, line, "worktree ")) {
             if (cur.path.len > 0) list.append(arena, cur) catch {};
-            cur = .{ .path = std.mem.trim(u8, line["worktree ".len..], " \t") };
+            cur = .{ .path = own(arena, std.mem.trim(u8, line["worktree ".len..], " \t")) };
         } else if (std.mem.startsWith(u8, line, "HEAD ")) {
-            cur.head = std.mem.trim(u8, line["HEAD ".len..], " \t");
+            cur.head = own(arena, std.mem.trim(u8, line["HEAD ".len..], " \t"));
         } else if (std.mem.startsWith(u8, line, "branch ")) {
-            cur.branch = branchShort(std.mem.trim(u8, line["branch ".len..], " \t"));
+            cur.branch = own(arena, branchShort(std.mem.trim(u8, line["branch ".len..], " \t")));
         }
     }
     if (cur.path.len > 0) list.append(arena, cur) catch {};
@@ -301,6 +313,65 @@ test "parsePorcelain: path, short branch, ignores extras" {
     try std.testing.expectEqual(@as(usize, 3), all.len);
     try std.testing.expectEqualStrings("cursor/peer-pull-554f", all[1].branch);
     try std.testing.expectEqualStrings("cursor-peer-pull-554f", basename(all[1].path));
+}
+
+test "#715: rows outlive the git output they were parsed from" {
+    // `listEntries` frees git's stdout the moment it returns. While rows
+    // borrowed their bytes out of that buffer, every path and branch pointed at
+    // released memory: reused pages read back as NUL, so `action=list` printed
+    // blank rows and `action=use` matched neither the name nor the exact path
+    // of a worktree that git itself listed fine (#715). Zeroing the source here
+    // is what that reuse looks like, without the undefined read.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const from_git = try std.testing.allocator.dupe(u8, sample_porcelain);
+    defer std.testing.allocator.free(from_git);
+    const rows = parsePorcelain(a, from_git);
+    @memset(from_git, 0);
+
+    try std.testing.expectEqual(@as(usize, 3), rows.len);
+    try std.testing.expectEqualStrings("cursor/peer-pull-554f", rows[1].branch);
+    try std.testing.expectEqualStrings(
+        "/Users/rach/codegraff/.claude/worktrees/cursor-peer-pull-554f",
+        rows[1].path,
+    );
+    // ...and a freshly added tree stays selectable by fragment and by full path.
+    switch (resolve(a, rows, "cursor-peer-pull-554f", "/Users/rach/codegraff")) {
+        .one => |e| try std.testing.expectEqualStrings(rows[1].path, e.path),
+        else => return error.TestExpectedWorktreeMatch,
+    }
+    switch (resolve(a, rows, "/Users/rach/codegraff/.graff/worktrees/agent1", "/Users/rach/codegraff")) {
+        .one => |e| try std.testing.expectEqualStrings("worktree-agent1", e.branch),
+        else => return error.TestExpectedWorktreeMatch,
+    }
+}
+
+test "#715: real git rows survive listEntries freeing git's stdout" {
+    // Every other test here parses a comptime literal, which lives in .rodata
+    // and can never be freed — which is exactly why the dangling rows in #715
+    // went unnoticed. This one walks the production path: spawn git, parse,
+    // free stdout, then read. Skips where git or a repo is absent.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const rows = listEntries(gpa, std.testing.io, a);
+    if (rows.len == 0) return error.SkipZigTest; // not a git worktree here
+
+    for (rows) |e| {
+        try std.testing.expect(e.path.len > 0);
+        try std.testing.expect(std.mem.indexOfScalar(u8, e.path, 0) == null);
+        try std.testing.expect(std.mem.indexOfScalar(u8, e.branch, 0) == null);
+        // ...and every row git listed is one `action=use` can actually select.
+        switch (resolve(a, rows, e.path, "")) {
+            .one, .already => {},
+            else => return error.TestExpectedWorktreeMatch,
+        }
+    }
 }
 
 test "resolve: unique fragment, basename, branch, already, none, ambiguous" {
