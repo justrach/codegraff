@@ -31,7 +31,7 @@ pub const items = [_]Item{
     .{ .name = "/compact-mode", .desc = "Tighter padding" },
     .{ .name = "/plan", .desc = "Toggle plan mode" },
     .{ .name = "/theme", .desc = "Switch color theme", .aliases = &.{"/t"} },
-    .{ .name = "/goal", .desc = "Set a standing objective" },
+    .{ .name = "/goal", .desc = "Set, pause, resume, or clear a goal" },
     .{ .name = "/schedule", .desc = "Fire a prompt later (30s/5m/2h)" },
     .{ .name = "/adapter", .desc = "Channel-worker send / inbox" },
     .{ .name = "/thinking", .desc = "Show live reasoning" },

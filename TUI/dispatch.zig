@@ -164,10 +164,7 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         publishState(self);
         self.pushFmt(.system, "strict: {s}", .{onOff(self.strict)}) catch {};
     } else if (std.mem.eql(u8, canon, "/goal")) {
-        if (self.goal) |g| self.alloc.free(g);
-        self.goal = if (arg.len > 0) (self.alloc.dupe(u8, arg) catch null) else null;
-        publishState(self);
-        if (self.goal) |g| self.pushFmt(.system, "goal set: {s}", .{g}) catch {} else self.push(.system, "goal cleared") catch {};
+        applyGoal(self, arg);
     } else if (std.mem.eql(u8, canon, "/rename")) {
         if (self.session_name) |s| self.alloc.free(s);
         self.session_name = if (arg.len > 0) (self.alloc.dupe(u8, arg) catch null) else null;
@@ -234,12 +231,57 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
 }
 
 fn publishState(self: *Model) void {
+    publishStateOp(self, .none);
+}
+
+fn publishStateOp(self: *Model, op: engine.GoalOp) void {
     if (engine.g_state_fn) |f| f(engine.g_turn_ctx, .{
         .session_name = self.session_name orelse "",
         .goal = self.goal orelse "",
         .strict = self.strict,
         .ultracode = self.ultracode,
+        .goal_op = op,
     });
+}
+
+/// Line-REPL `/goal` verbs (`status`/`pause`/`resume`/`clear`), not a raw
+/// objective string. `/goal pause` used to mint a standing goal named "pause".
+fn applyGoal(self: *Model, raw: []const u8) void {
+    const verb = std.mem.trim(u8, raw, " \t\r\n");
+    if (verb.len == 0 or std.ascii.eqlIgnoreCase(verb, "status")) {
+        if (self.goal) |g|
+            self.pushFmt(.system, "Goal: {s}. Commands: /goal pause | resume | clear.", .{g}) catch {}
+        else
+            self.push(.system, "No active goal. Set one with /goal <objective>.") catch {};
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(verb, "clear") or std.ascii.eqlIgnoreCase(verb, "off")) {
+        if (self.goal) |g| self.alloc.free(g);
+        self.goal = null;
+        publishStateOp(self, .clear);
+        self.push(.system, "goal cleared") catch {};
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(verb, "pause")) {
+        publishStateOp(self, .pause);
+        if (self.goal) |g|
+            self.pushFmt(.system, "goal paused: {s}", .{g}) catch {}
+        else
+            self.push(.system, "No active goal to pause. Set one with /goal <objective>.") catch {};
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(verb, "resume")) {
+        publishStateOp(self, .unpause);
+        if (self.goal) |g|
+            self.pushFmt(.system, "goal resumed: {s}", .{g}) catch {}
+        else
+            self.push(.system, "No goal to resume. Set one with /goal <objective>.") catch {};
+        return;
+    }
+    if (self.goal) |g| self.alloc.free(g);
+    self.goal = self.alloc.dupe(u8, verb) catch null;
+    publishStateOp(self, .set);
+    if (self.goal) |g| self.pushFmt(.system, "goal set: {s}", .{g}) catch {};
 }
 
 /// `!cmd` — run a shell line locally (grok-style bash mode) on a background

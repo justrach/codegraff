@@ -27,6 +27,7 @@ pub const changelog_text =
     \\  • parallel error bash results stay valid JSON on the next Codex request (#711)
     \\  • /resume and /sessions find ~/.graff/sessions, not just cwd (#712)
     \\  • named-source gate is per mention; identical user turns do not replay (#714)
+    \\  • fullscreen /goal is retirable; completion no longer resumes stale steering (#716)
     \\
     \\0.0.283
     \\  • deleted composer image chips reuse #N; paste traces omit MIME/bytes until send (#702)

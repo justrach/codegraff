@@ -29,6 +29,7 @@ const util = @import("util.zig");
 const obs = @import("obs.zig");
 const vision = @import("vision.zig");
 const doctor = @import("doctor.zig");
+const tui_goal = @import("tui_goal.zig");
 const builtin = @import("builtin");
 
 /// Live root for `/doctor`. The HUD callback has no ctx argument.
@@ -158,20 +159,18 @@ fn stateCb(ctx: ?*anyopaque, state: tui.SessionState) void {
     root.ultracode_mode = state.ultracode;
     if (state.session_name.len > 0 and !std.mem.eql(u8, state.session_name, root.session_name))
         root.session_name = root.arena.dupe(u8, state.session_name) catch root.session_name;
-    if (state.goal.len == 0) {
-        root.goal = null;
-        root.todos.clearRetainingCapacity();
-    } else if (root.goal == null or !std.mem.eql(u8, root.goal.?.objective, state.goal)) {
-        const now = util.unixMs(root.io);
-        root.goal = .{
-            .objective = root.arena.dupe(u8, state.goal) catch return,
-            .epoch = if (root.goal) |goal| goal.epoch + 1 else 1,
-            .standing = true,
-            .created_ms = now,
-            .updated_ms = now,
-        };
-        root.todos.clearRetainingCapacity();
-    }
+    // Typed `/goal` is retirable (applyGoalSet, standing=false). `/strict` and
+    // the exit snapshot publish `.none` and must not mint a standing flag (#716).
+    const op: tui_goal.Op = switch (state.goal_op) {
+        .none => .none,
+        .set => .set,
+        .clear => .clear,
+        .pause => .pause,
+        .unpause => .unpause,
+    };
+    tui_goal.apply(root, op, state.goal, util.unixMs(root.io));
+    if (state.goal_op != .none)
+        session.saveSession(root, root.arena, root.session_name) catch {};
 }
 
 fn emergencyCb(_: ?*anyopaque) void {

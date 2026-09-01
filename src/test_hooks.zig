@@ -351,5 +351,6 @@ test {
     _ = @import("commands_resume.zig"); // #697: --resume SOURCE --branch DEST parser
     _ = @import("session_list.zig"); // #712: device-wide saved-session listing
     _ = @import("turn_dedup.zig"); // #714: identical user turns do not replay
+    _ = @import("tui_goal.zig"); // #716: typed TUI /goal is retirable, not standing
     _ = @import("net_efficiency_test.zig");
 }

@@ -136,7 +136,9 @@ fn seedSessionState(c: *ReplCtx, agent: *Agent, arena: Allocator, goal_text: []c
             }
         }
         const now = util.unixMs(agent.io);
-        agent.goal = .{ .objective = try arena.dupe(u8, goal_text), .epoch = if (root.goal) |g| g.epoch + 1 else 1, .standing = true, .created_ms = now, .updated_ms = now };
+        // A TUI-typed goal that has not yet landed on root is still a task,
+        // not `--goal`. Minting standing here is how #716 resumed stale steering.
+        agent.goal = .{ .objective = try arena.dupe(u8, goal_text), .epoch = if (root.goal) |g| g.epoch + 1 else 1, .created_ms = now, .updated_ms = now };
     }
 }
 

@@ -276,6 +276,64 @@ test "/btw queues an aside while a turn is pending" {
     try std.testing.expectEqualStrings("remember the tests", m.steer_queue.items[0]);
 }
 
+var captured_op: engine.GoalOp = .none;
+var captured_goal: []const u8 = "";
+var publish_count: u32 = 0;
+
+fn captureGoal(_: ?*anyopaque, state: engine.SessionState) void {
+    captured_op = state.goal_op;
+    captured_goal = state.goal;
+    publish_count += 1;
+}
+
+test "/goal pause and clear are lifecycle verbs, not objectives (#716)" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    engine.g_state_fn = captureGoal;
+    defer engine.g_state_fn = null;
+    publish_count = 0;
+
+    _ = applyLine(&m, "/goal ship it");
+    try std.testing.expectEqualStrings("ship it", m.goal.?);
+    try std.testing.expectEqual(engine.GoalOp.set, captured_op);
+    try std.testing.expectEqualStrings("ship it", captured_goal);
+
+    _ = applyLine(&m, "/goal pause");
+    try std.testing.expectEqualStrings("ship it", m.goal.?);
+    try std.testing.expectEqual(engine.GoalOp.pause, captured_op);
+    const paused = m.history.items[m.history.items.len - 1].text;
+    try std.testing.expect(std.mem.indexOf(u8, paused, "paused") != null);
+
+    _ = applyLine(&m, "/goal clear");
+    try std.testing.expect(m.goal == null);
+    try std.testing.expectEqual(engine.GoalOp.clear, captured_op);
+    try std.testing.expectEqualStrings("", captured_goal);
+}
+
+test "/goal status and bare /goal do not publish an objective (#716)" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    engine.g_state_fn = captureGoal;
+    defer engine.g_state_fn = null;
+    publish_count = 0;
+
+    _ = applyLine(&m, "/goal");
+    try std.testing.expectEqual(@as(u32, 0), publish_count);
+    try std.testing.expect(m.goal == null);
+    const bare = m.history.items[m.history.items.len - 1].text;
+    try std.testing.expect(std.mem.indexOf(u8, bare, "No active goal") != null);
+
+    _ = applyLine(&m, "/goal ship it");
+    const after_set = publish_count;
+    _ = applyLine(&m, "/goal status");
+    try std.testing.expectEqual(after_set, publish_count);
+    try std.testing.expectEqualStrings("ship it", m.goal.?);
+    const status = m.history.items[m.history.items.len - 1].text;
+    try std.testing.expect(std.mem.indexOf(u8, status, "ship it") != null);
+}
+
 test "lastLines caps ! output to the tail" {
     try std.testing.expectEqualStrings("c\nd", lastLines("a\nb\nc\nd", 2));
     try std.testing.expectEqualStrings("a\nb", lastLines("a\nb", 5));

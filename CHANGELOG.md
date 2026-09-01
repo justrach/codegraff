@@ -27,6 +27,9 @@ current is part of cutting a release.
   mention, not the whole history. A host re-submit that ends on the
   same user row is skipped; three copies fail closed as stuck replay.
   The same words after an answer still run.
+- `#716`: fullscreen `/goal` uses the shared lifecycle (set / pause /
+  resume / clear). A typed TUI goal is not standing, so recorded
+  completion retires it and `/resume` does not steer the next prompt.
 - The gateway is a fallback seat, not the startup default.
 - No tag until asked.
 

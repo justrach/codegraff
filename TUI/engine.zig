@@ -154,11 +154,17 @@ pub const CompactFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, 
 pub const HistoryOp = enum { reset, rewind };
 pub const HistoryFn = *const fn (turn_ctx: ?*anyopaque, op: HistoryOp) void;
 
+/// Host-side `/goal` verb. `.none` is a snapshot (strict/ultracode/rename):
+/// the host must not re-apply or mint a goal. Typed TUI `/goal` is the same
+/// retirable lifecycle as the line REPL — never a standing `--goal` (#716).
+pub const GoalOp = enum { none, set, clear, pause, unpause };
+
 pub const SessionState = struct {
     session_name: []const u8 = "",
     goal: []const u8 = "",
     strict: bool = false,
     ultracode: bool = false,
+    goal_op: GoalOp = .none,
 };
 pub const StateFn = *const fn (turn_ctx: ?*anyopaque, state: SessionState) void;
 

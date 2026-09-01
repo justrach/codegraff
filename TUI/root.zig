@@ -38,6 +38,7 @@ pub const HistoryFn = engine.HistoryFn;
 pub const ResumeOut = engine.ResumeOut;
 pub const ResumeFn = engine.ResumeFn;
 pub const SessionState = engine.SessionState;
+pub const GoalOp = engine.GoalOp;
 pub const StateFn = engine.StateFn;
 pub const PeerFn = engine.PeerFn;
 pub const RunOpts = run_mod.RunOpts;
