@@ -551,7 +551,9 @@ test "a join only happens when the tail really completes the head" {
     try std.testing.expect(completes("\x1b", "]11;rgb:14/14/14\x07"));
     try std.testing.expect(completes("\x1b", "[200~payload"));
     try std.testing.expect(completes("\x1b\x1b", "[D"));
-    try std.testing.expect(completes("\x1b", "\x1b[D"));
+    // A delivered lone Escape must not rejoin onto a later ESC CSI — that
+    // first ESC already cancelled or resolved as Escape (#707).
+    try std.testing.expect(!completes("\x1b", "\x1b[D"));
     try std.testing.expect(completes("\x1b\x1b", "OA"));
     try std.testing.expect(completes("\x1b[<35;80", ";24M"));
     try std.testing.expect(completes("\x1b[201", "~"));
