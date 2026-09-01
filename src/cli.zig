@@ -21,6 +21,10 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.284
+    \\  • ACP turns stage GUI @[image] attachments as native vision blocks — pasted images reach the model
+    \\  • peer inbox wake is advisory ("parked; read when relevant"), never a command that displaces the turn
+    \\
     \\0.0.283
     \\  • deleted composer image chips reuse #N; paste traces omit MIME/bytes until send (#702)
     \\  • peer_message addresses a live session by its visible title or saved-session base (#700)
