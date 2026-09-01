@@ -192,6 +192,10 @@ pub const TextInput = struct {
                     self.moveCursorWordRight();
                     return;
                 },
+                .backspace => {
+                    self.deleteWordBackward();
+                    return;
+                },
                 else => {},
             }
         }
@@ -460,3 +464,20 @@ pub const TextInput = struct {
         }
     }
 };
+
+test "alt backspace deletes the previous word" {
+    const keyboard = @import("../input/keyboard.zig");
+    const parsed = keyboard.parse(&.{ 0x1b, 0x7f });
+    try std.testing.expectEqual(@as(usize, 2), parsed.consumed);
+    try std.testing.expect(parsed.result == .key);
+
+    var input = TextInput.init(std.testing.allocator);
+    defer input.deinit();
+    try input.setValue("alpha beta");
+    input.cursor = input.getValue().len;
+
+    input.handleKey(parsed.result.key);
+
+    try std.testing.expectEqualStrings("alpha ", input.getValue());
+    try std.testing.expectEqual(@as(usize, 6), input.cursor);
+}
