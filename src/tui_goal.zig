@@ -59,6 +59,7 @@ pub fn apply(root: *Agent, op: Op, text: []const u8, now_ms: i64) void {
 fn flowRoot(arena: Allocator) Agent {
     var root: Agent = undefined;
     root.arena = arena;
+    root.sys_base = ""; // undefined would skip the empty check in pinStandingGoal
     root.sub = false;
     root.review_mode = false;
     root.todos = .empty;
