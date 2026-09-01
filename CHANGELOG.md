@@ -31,6 +31,11 @@ current is part of cutting a release.
   resume / clear). A typed TUI goal is not standing, so recorded
   completion retires it and `/resume` does not steer the next prompt.
 - The gateway is a fallback seat, not the startup default.
+- In-house remasure on this tip (`run-20260901-113939-composite`): all
+  three harnesses 12/12. Graff 242s / 56 calls / $0.37 / 8.7M. OpenCode
+  wins wall (235s); graff still wins calls / tokens / list$ / RSS.
+  Not unique Pareto. Last unique pin remains 282. Hosted `x_search`
+  stays on.
 - No tag until asked.
 
 ## v0.0.283 (2026-08-31)
