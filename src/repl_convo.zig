@@ -108,7 +108,7 @@ pub const Conversation = struct {
         // #714: a host that re-submits the same trailing user row must not
         // inject another turn. The named-source gate then re-read the file
         // and the session looped the same Q&A.
-        if (std.mem.eql(u8, messages_mod.latestUserText(msgs.items), last.text)) return;
+        if (messages_mod.trailingUserIs(msgs.items, last.text)) return;
         try msgs.append(try textOf(self.alloc(), last));
     }
 
@@ -200,15 +200,18 @@ test "#714: adopt does not replay an identical trailing user prompt" {
     var convo = Conversation.init(testing.allocator);
     defer convo.deinit();
     try convo.adopt(&.{.{ .role = .user, .text = "Read SPEC.md" }});
+    try convo.adopt(&.{.{ .role = .user, .text = "Read SPEC.md" }});
+    try testing.expectEqual(@as(usize, 1), convo.len());
     const msgs = convo.list();
     try msgs.append(try messages_mod.textMessage(convo.alloc(), "assistant", "affinity is the git root"));
+    // The same words after an answer are a new ask (learn-auto, a re-type).
     try convo.adopt(&.{
         .{ .role = .user, .text = "Read SPEC.md" },
         .{ .role = .assistant, .text = "affinity is the git root" },
         .{ .role = .user, .text = "Read SPEC.md" },
     });
-    try testing.expectEqual(@as(usize, 2), convo.len());
-    try testing.expectEqualStrings("assistant", roleOf(msgs.items[1]));
+    try testing.expectEqual(@as(usize, 3), convo.len());
+    try testing.expectEqualStrings("Read SPEC.md", msgs.items[2].object.get("content").?.string);
 }
 
 test "reset clears the conversation; rewind drops back to before the last prompt" {

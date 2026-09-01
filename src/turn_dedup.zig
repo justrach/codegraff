@@ -25,16 +25,13 @@ pub fn resetForTest() void {
     hits = 0;
 }
 
-fn sameAsLast(text: []const u8, history_tail: []const u8) bool {
-    return text.len > 0 and std.mem.eql(u8, history_tail, text);
-}
-
 pub const Outcome = enum { started, skipped, stuck };
 
-/// Append `text` as this turn's user message, or skip a duplicate.
+/// Append `text` as this turn's user message, or skip a back-to-back
+/// duplicate. The same words after an assistant reply are a new ask
+/// (learn-auto sends one prompt per model call).
 pub fn enqueue(root: *Agent, arena: Allocator, out: ?*Io.Writer, text: []const u8) !Outcome {
-    const tail = messages.latestUserText(root.messages.items);
-    if (sameAsLast(text, tail)) {
+    if (messages.trailingUserIs(root.messages.items, text)) {
         hits +|= 1;
         if (hits >= max_replays) {
             if (out) |w| {
@@ -92,10 +89,33 @@ test "#714: the first copy of a prompt proceeds" {
     try std.testing.expectEqual(@as(usize, 1), agent.messages.items.len);
 }
 
-test "#714: a different prompt resets the replay counter" {
+test "#714: the same words after an assistant reply are a new ask" {
     resetForTest();
     defer resetForTest();
-    try std.testing.expect(sameAsLast("Read SPEC.md", "Read SPEC.md"));
-    try std.testing.expect(!sameAsLast("thanks", "Read SPEC.md"));
-    try std.testing.expect(!sameAsLast("", "Read SPEC.md"));
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = a,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{
+            .id = "xai",
+            .kind = .openai,
+            .auth = .bearer,
+            .url = "",
+            .api_key = "k",
+            .model = "grok-4.6",
+            .context = 100_000,
+        },
+        .messages = .init(a),
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+    try std.testing.expect(!try enqueueOrSkip(&agent, a, null, "do a little work"));
+    try agent.messages.append(try messages.textMessage(a, "assistant", "LEARN_AUTO_OK"));
+    try std.testing.expect(!try enqueueOrSkip(&agent, a, null, "do a little work"));
+    try std.testing.expectEqual(@as(usize, 3), agent.messages.items.len);
 }

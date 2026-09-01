@@ -24,8 +24,9 @@ current is part of cutting a release.
   `~/.graff/sessions`. Cross-workspace rows name their origin. Resume
   restores history here; file tools stay in the current cwd.
 - `#714` / ADR 0060: the “named a source file” nudge is per unanswered
-  mention, not the whole history. Identical user turns are not
-  re-injected; three copies fail closed as stuck replay.
+  mention, not the whole history. A host re-submit that ends on the
+  same user row is skipped; three copies fail closed as stuck replay.
+  The same words after an answer still run.
 - The gateway is a fallback seat, not the startup default.
 - No tag until asked.
 

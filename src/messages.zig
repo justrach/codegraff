@@ -34,6 +34,14 @@ pub fn latestUserText(messages: []const Value) []const u8 {
     return "";
 }
 
+/// True when history already ends on this user prompt — a host re-submit,
+/// not a human typing the same words after an answer (#714).
+pub fn trailingUserIs(messages: []const Value, text: []const u8) bool {
+    if (messages.len == 0 or text.len == 0) return false;
+    const t = userPromptText(messages[messages.len - 1]) orelse return false;
+    return std.mem.eql(u8, t, text);
+}
+
 fn userPromptText(msg: Value) ?[]const u8 {
     if (msg != .object) return null;
     const role = msg.object.get("role") orelse return null;
@@ -560,4 +568,15 @@ test "#714: latestUserText sees Responses input_text and skips tool_result" {
     try wrapper.put(a, "content", .{ .array = blocks });
     try msgs.append(.{ .object = wrapper });
     try std.testing.expectEqualStrings("thanks", latestUserText(msgs.items));
+}
+
+test "#714: trailingUserIs is only the last message, not an earlier ask" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try textMessage(a, "user", "do a little work"));
+    try std.testing.expect(trailingUserIs(msgs.items, "do a little work"));
+    try msgs.append(try textMessage(a, "assistant", "LEARN_AUTO_OK"));
+    try std.testing.expect(!trailingUserIs(msgs.items, "do a little work"));
 }

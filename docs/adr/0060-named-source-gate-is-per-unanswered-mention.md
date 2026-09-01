@@ -22,12 +22,14 @@ The gate keys on **this turn's** user text only (`latestUserText` /
 mention is nudged or tools run, it is settled; a later turn must name
 a different path.
 
-`adopt` and the mainloop/ACP inject path skip a user payload that
-already is the latest user text. After three identical injects, fail
-closed and print `stuck replay`.
+`adopt` and the mainloop/ACP inject path skip a user payload only when
+history already **ends** on that exact user prompt (a host re-submit
+with no assistant in between). The same words after an answer are a
+new ask. After three back-to-back identical injects, fail closed and
+print `stuck replay`.
 
 ## Consequences
 
-A greeting after a file question does not re-open the file. A
-literal identical re-ask after an answer is treated as replay (rephrase
-to run it again). The history-wide walk stays as a test helper only.
+A greeting after a file question does not re-open the file. Typing
+the same prompt again after a reply still runs (learn-auto, a re-type).
+The history-wide walk stays as a test helper only.
