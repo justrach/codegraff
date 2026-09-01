@@ -94,6 +94,37 @@ pub fn resumeCb(ctx_ptr: ?*anyopaque, gpa: Allocator, raw: []const u8, out: *tui
     return true;
 }
 
+pub fn sessionsCb(ctx_ptr: ?*anyopaque, gpa: Allocator) ?[]const u8 {
+    const ctx: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx_ptr orelse return null));
+    const root = ctx.root orelse return null;
+    var arena_inst = std.heap.ArenaAllocator.init(gpa);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+    const entries = session.listSavedSessions(root, arena);
+    if (entries.items.len == 0) return gpa.dupe(u8, "") catch null;
+    var out: std.ArrayList(u8) = .empty;
+    for (entries.items, 0..) |e, i| {
+        if (i > 0) out.append(gpa, '\n') catch {
+            out.deinit(gpa);
+            return null;
+        };
+        const age = session.sessionAge(arena, root.io, e.updated_ms);
+        const title = e.title orelse e.base;
+        const desc = if (e.title == null)
+            age
+        else if (age.len > 0)
+            std.fmt.allocPrint(arena, "{s} · {s}", .{ age, e.base }) catch e.base
+        else
+            e.base;
+        const line = std.fmt.allocPrint(arena, "{s}\t{s}\t{s}", .{ e.base, title, desc }) catch continue;
+        out.appendSlice(gpa, line) catch {
+            out.deinit(gpa);
+            return null;
+        };
+    }
+    return out.toOwnedSlice(gpa) catch null;
+}
+
 test "visible turns keep human text and omit provider tool envelopes" {
     const arena = std.testing.allocator;
     var messages = std.json.Array.init(arena);

@@ -1,5 +1,5 @@
 //! Overlay key routing + activation (palette, theme, model, effort, settings,
-//! rewind, @-file picker, /jump). Split from keys.zig for the line budget.
+//! rewind, @-file picker, /jump, /resume). Split from keys.zig for the line budget.
 
 const std = @import("std");
 
@@ -57,7 +57,7 @@ pub fn key(self: *Model, k: Key) Effect {
         return .stay;
     }
     if (k == .enter) return activate(self);
-    if (self.overlay == .model or self.overlay == .effort or self.overlay == .file) {
+    if (self.overlay == .model or self.overlay == .effort or self.overlay == .file or self.overlay == .sessions) {
         switch (k) {
             .char => |c| self.typeOverlayFilter(c),
             .backspace => self.backspaceOverlayFilter(),
@@ -168,6 +168,13 @@ pub fn rowSpan(self: *const Model) ?Span {
             const n = files_mod.filterList(self.files_cache orelse "", self.overlay_filter, &names);
             if (n == 0) return null;
             return windowed(frame_rows, n, self.overlay_sel % n, files_mod.visible_rows);
+        },
+        .sessions => {
+            const resume_mod = @import("resume.zig");
+            var rows: [resume_mod.max_sessions]resume_mod.Row = undefined;
+            const n = resume_mod.filterList(self.sessions_cache orelse "", self.overlay_filter, &rows);
+            if (n == 0) return null;
+            return windowed(frame_rows, n, self.overlay_sel % n, resume_mod.visible_rows);
         },
         else => return null,
     }
@@ -294,6 +301,12 @@ pub fn activate(self: *Model) Effect {
                 }
                 seen += 1;
             }
+        },
+        .sessions => {
+            const resume_mod = @import("resume.zig");
+            const base = resume_mod.pick(self);
+            self.closeOverlay();
+            if (base) |b| resume_mod.run(self, b);
         },
         else => self.closeOverlay(),
     }

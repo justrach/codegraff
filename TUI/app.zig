@@ -9,7 +9,7 @@ const theme_mod = @import("theme.zig");
 
 pub const Screen = enum { welcome, agent };
 pub const Focus = enum { prompt, scrollback };
-pub const Overlay = enum { none, palette, help, theme, model, effort, settings, rewind, slash, debug, image, file, jump };
+pub const Overlay = enum { none, palette, help, theme, model, effort, settings, rewind, slash, debug, image, file, jump, sessions };
 /// One vocabulary with the engine (#551): the Model does not keep a private
 /// copy of the permission policy, it holds the engine's own enum and hands it
 /// straight to the turn backend.
@@ -178,6 +178,7 @@ pub const Model = struct {
     hist_idx: ?usize = null,
     /// Newline-joined paths for the @-file picker, loaded once per session.
     files_cache: ?[]const u8 = null,
+    sessions_cache: ?[]const u8 = null,
 
     toast: []const u8 = "",
     toast_until_ms: u64 = 0,
@@ -256,6 +257,7 @@ pub const Model = struct {
         }
         if (self.overlay_filter.len > 0) self.alloc.free(self.overlay_filter);
         if (self.files_cache) |f| self.alloc.free(f);
+        if (self.sessions_cache) |s| self.alloc.free(s);
         if (self.sel_text.len > 0) self.alloc.free(self.sel_text);
         if (self.osc_pending.len > 0) self.alloc.free(self.osc_pending);
         self.input.deinit();

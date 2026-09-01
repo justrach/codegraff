@@ -177,6 +177,8 @@ pub const ResumeOut = struct {
     note: []const u8 = "",
 };
 pub const ResumeFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, spec: []const u8, out: *ResumeOut) bool;
+/// Newline-joined saved-session rows (`base\tlabel\tdesc`) for `/resume` (caller frees), or null.
+pub const SessionsFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator) ?[]const u8;
 
 pub const Job = struct {
     thread: std.Thread = undefined,
@@ -285,6 +287,7 @@ pub const RunOpts = struct {
     compact_fn: ?CompactFn = null,
     history_fn: ?HistoryFn = null,
     resume_fn: ?ResumeFn = null,
+    sessions_fn: ?SessionsFn = null,
     state_fn: ?StateFn = null,
     emergency_fn: ?*const fn (turn_ctx: ?*anyopaque) void = null,
     idle_wake_fn: ?IdleWakeFn = null,
@@ -303,6 +306,7 @@ pub var g_copy_fn: ?CopyFn = null;
 pub var g_compact_fn: ?CompactFn = null;
 pub var g_history_fn: ?HistoryFn = null;
 pub var g_resume_fn: ?ResumeFn = null;
+pub var g_sessions_fn: ?SessionsFn = null;
 pub var g_state_fn: ?StateFn = null;
 
 /// Tell the engine the transcript was cut. Silent when nothing is wired
