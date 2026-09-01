@@ -142,17 +142,17 @@ fn fakeSessions(_: ?*anyopaque, gpa: std.mem.Allocator) ?[]const u8 {
 }
 
 fn fakeResume(_: ?*anyopaque, gpa: std.mem.Allocator, spec: []const u8, out: *engine.ResumeOut) bool {
-    if (std.mem.eql(u8, spec, "alpha")) {
+    if (spec.len == 0) return false;
+    if (!std.mem.eql(u8, spec, "base --branch child")) {
         const turns = gpa.alloc(engine.Turn, 1) catch return false;
-        turns[0] = .{ .role = .user, .text = gpa.dupe(u8, "from alpha") catch return false };
+        turns[0] = .{ .role = .user, .text = std.fmt.allocPrint(gpa, "from {s}", .{spec}) catch return false };
         out.* = .{
             .turns = turns,
-            .session_name = gpa.dupe(u8, "alpha") catch return false,
-            .note = gpa.dupe(u8, "resumed alpha") catch return false,
+            .session_name = gpa.dupe(u8, spec) catch return false,
+            .note = std.fmt.allocPrint(gpa, "resumed {s}", .{spec}) catch return false,
         };
         return true;
     }
-    if (!std.mem.eql(u8, spec, "base --branch child")) return false;
     const turns = gpa.alloc(engine.Turn, 2) catch return false;
     turns[0] = .{ .role = .user, .text = gpa.dupe(u8, "baseline prompt") catch return false };
     turns[1] = .{ .role = .assistant, .text = gpa.dupe(u8, "baseline answer") catch return false };
@@ -216,11 +216,15 @@ test "clicking a /resume row selects then confirms" {
     const vis = try term.screen();
     defer std.testing.allocator.free(vis);
     try std.testing.expect(std.mem.indexOf(u8, vis, "Alpha title") != null);
-    try std.testing.expect(try term.clickText("Alpha title"));
+    try std.testing.expect(std.mem.indexOf(u8, vis, "beta") != null);
+    // Highlight starts on row 0; a click on a different row selects, a second
+    // click on that same row confirms — the same rule as the other pickers.
+    try std.testing.expect(try term.clickText("beta"));
     try std.testing.expectEqual(app.Overlay.sessions, term.model.overlay);
-    try std.testing.expect(try term.clickText("Alpha title"));
+    try std.testing.expectEqualStrings("beta", pick(&term.model).?);
+    try std.testing.expect(try term.clickText("beta"));
     try std.testing.expectEqual(app.Overlay.none, term.model.overlay);
-    try std.testing.expectEqualStrings("alpha", term.model.session_name.?);
+    try std.testing.expectEqualStrings("beta", term.model.session_name.?);
 }
 
 test "filterList matches title, base, and subsequence" {
