@@ -356,6 +356,24 @@ pub const Model = struct {
         engine.g_model_provider = picked.provider;
     }
 
+    /// A mid-turn failover changed the seat behind the frontend's back (#551).
+    /// Unlike `adoptModel` the model string dies with the drain that delivered
+    /// the event, so it is copied here; the provider id is a static spec
+    /// literal and is not owned, exactly as above.
+    ///
+    /// Both globals must move TOGETHER. The failover path used to set only the
+    /// name, which left the new model paired with the OLD provider id — a seat
+    /// that serves nothing — and `models.isCurrent` compares the provider too,
+    /// so the picker marked the wrong row, or none at all.
+    pub fn adoptFailover(self: *Model, changed: engine.ModelChanged) void {
+        const owned = self.alloc.dupe(u8, changed.model) catch return;
+        if (self.model_override) |old| self.alloc.free(old);
+        self.model_override = owned;
+        engine.g_model_name = owned;
+        engine.g_model_provider = changed.provider;
+        self.pushFmt(.system, "model \u{2192} {s}", .{owned}) catch {};
+    }
+
     pub fn setToast(self: *Model, text: []const u8) void {
         self.toast = text;
         self.toast_until_ms = self.now_ms + 1500;

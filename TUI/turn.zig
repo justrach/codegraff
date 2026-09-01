@@ -241,12 +241,7 @@ fn applyEvent(self: *Model, ev: engine.Event) void {
         },
         .notice => |s| self.push(.system, s) catch {},
         .status => |st| self.setStatus(st),
-        .model_changed => |s| if (self.alloc.dupe(u8, s)) |owned| {
-            if (self.model_override) |old| self.alloc.free(old);
-            self.model_override = owned;
-            engine.g_model_name = owned;
-            self.pushFmt(.system, "model → {s}", .{owned}) catch {};
-        } else |_| {},
+        .model_changed => |m| self.adoptFailover(m),
     }
 }
 
@@ -381,7 +376,7 @@ test "a refusal and a failover reach the transcript instead of vanishing" {
         .denied = true,
     } });
     job.events.push(.{ .notice = "loaded 2 saved approval(s)" });
-    job.events.push(.{ .model_changed = "sonnet" });
+    job.events.push(.{ .model_changed = .{ .model = "sonnet", .provider = "anthropic" } });
     job.done.store(true, .release);
     try m.push(.pending, "");
     m.pending = job;
@@ -394,6 +389,10 @@ test "a refusal and a failover reach the transcript instead of vanishing" {
     try std.testing.expectEqualStrings("loaded 2 saved approval(s)", m.history.items[1].text);
     // The failover updates what the status bar reads, not just the transcript.
     try std.testing.expectEqualStrings("sonnet", engine.g_model_name);
+    // ...and the PROVIDER moves with it. Updating only the name left the new
+    // model paired with the old provider id, so models.isCurrent marked a seat
+    // that no longer served the turn.
+    try std.testing.expectEqualStrings("anthropic", engine.g_model_provider);
     try std.testing.expect(std.mem.indexOf(u8, m.history.items[2].text, "sonnet") != null);
 }
 

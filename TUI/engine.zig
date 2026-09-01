@@ -10,6 +10,7 @@ pub const Event = events_mod.Event;
 pub const EventQueue = events_mod.Queue;
 pub const ToolEvent = events_mod.Tool;
 pub const Status = events_mod.Status;
+pub const ModelChanged = events_mod.ModelChanged;
 pub const Cost = events_mod.Cost;
 
 pub const Effort = enum { low, medium, high, xhigh, max, ultra };

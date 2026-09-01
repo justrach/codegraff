@@ -186,7 +186,7 @@ fn emit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
         // The status bar's model name is a TUI-owned global; a mid-turn
         // failover is the one thing that can change it behind the frontend's
         // back, so the event carries the substitute and the TUI adopts it.
-        .provider_fallback => |f| b.queue.push(.{ .model_changed = f.to_model }),
+        .provider_fallback => |f| b.queue.push(.{ .model_changed = .{ .model = f.to_model, .provider = f.to_provider } }),
 
         // ── consciously ignored, with the reason ─────────────────────────
         // Live-stream bookkeeping: the TUI's pending row IS the spinner, and
@@ -337,7 +337,8 @@ test "a refusal and a failover reach the frontend instead of being dropped" {
     try std.testing.expect(evs[0].tool_rejected.denied);
     try std.testing.expectEqualStrings("tool-call budget spent", evs[0].tool_rejected.detail);
     try std.testing.expectEqualStrings("loaded 2 saved approval(s)", evs[1].notice);
-    try std.testing.expectEqualStrings("sonnet", evs[2].model_changed);
+    try std.testing.expectEqualStrings("sonnet", evs[2].model_changed.model);
+    try std.testing.expectEqualStrings("anthropic", evs[2].model_changed.provider);
 }
 
 test "the engine's meters reach the frontend instead of being dropped (#551)" {

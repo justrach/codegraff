@@ -83,6 +83,11 @@ pub const Status = struct {
     }
 };
 
+/// What a mid-turn failover landed on. The provider travels with the model for
+/// the same reason it travels with `Picked`: the picker's current-row marker
+/// compares BOTH, so a name alone cannot tell two same-named seats apart.
+pub const ModelChanged = struct { model: []const u8, provider: []const u8 = "" };
+
 pub const Event = union(enum) {
     /// A tool call cleared the gates and is running (ToolInvocation).
     tool_started: Tool,
@@ -94,7 +99,7 @@ pub const Event = union(enum) {
     /// One operational line about the session (session_notice) -> system row.
     notice: []const u8,
     /// The active provider failed over mid-turn (provider_fallback).
-    model_changed: []const u8,
+    model_changed: ModelChanged,
     /// The engine's own context/cost meters (prompt_ready). The TUI renders
     /// /context, /session-info and the footer from THIS, instead of counting
     /// characters and calling the result a context meter.
@@ -192,7 +197,9 @@ fn dupeEvent(gpa: std.mem.Allocator, ev: Event) ?Event {
         .tool_finished => |t| .{ .tool_finished = dupeTool(gpa, t) orelse return null },
         .tool_rejected => |t| .{ .tool_rejected = dupeTool(gpa, t) orelse return null },
         .notice => |s| .{ .notice = gpa.dupe(u8, s) catch return null },
-        .model_changed => |s| .{ .model_changed = gpa.dupe(u8, s) catch return null },
+        // Only the model name is copied: a provider id is a static spec literal
+        // (see app.Model.adoptModel), so it outlives the drain on its own.
+        .model_changed => |m| .{ .model_changed = .{ .model = gpa.dupe(u8, m.model) catch return null, .provider = m.provider } },
         .status => |st| .{ .status = dupeStatus(gpa, st) orelse return null },
     };
 }
@@ -213,7 +220,8 @@ fn freeEvent(gpa: std.mem.Allocator, ev: Event) void {
             gpa.free(t.name);
             gpa.free(t.detail);
         },
-        .notice, .model_changed => |s| gpa.free(s),
+        .notice => |s| gpa.free(s),
+        .model_changed => |m| gpa.free(m.model),
         .status => |st| {
             gpa.free(st.model);
             gpa.free(st.provider_id);
