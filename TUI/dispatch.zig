@@ -41,9 +41,7 @@ pub fn applyLine(self: *Model, raw: []const u8) Effect {
         self.push(.system, busy_note) catch {};
         return .stay;
     }
-    const prefix = self.takeImagesPrefix(self.alloc);
-    const payload = if (prefix.len == 0) line else (std.fmt.allocPrint(self.alloc, "{s}{s}", .{ prefix, line }) catch line);
-    if (prefix.len > 0) self.alloc.free(prefix);
+    const payload = withImages(self, line);
     self.push(.user, payload) catch {};
     if (payload.ptr != line.ptr) self.alloc.free(payload);
     if (self.chat) {
@@ -57,6 +55,31 @@ pub fn applyLine(self: *Model, raw: []const u8) Effect {
 
 fn rememberPrompt(self: *Model, line: []const u8) void {
     @import("prompt_history.zig").remember(self, line);
+}
+
+/// Bake live composer chips onto `line` as `@[path]` markers (same shape
+/// applyLine sends). Clears the chips. Returns `line` when there are none.
+fn withImages(self: *Model, line: []const u8) []const u8 {
+    const prefix = self.takeImagesPrefix(self.alloc);
+    if (prefix.len == 0) return line;
+    defer self.alloc.free(prefix);
+    return std.fmt.allocPrint(self.alloc, "{s}{s}", .{ prefix, line }) catch line;
+}
+
+/// Queue a mid-turn follow-up, including any attached chips. Idle applyLine
+/// already prefixes `@[path]`; steer used to copy only the typed text, so the
+/// pixels never left the composer.
+pub fn queueSteerLine(self: *Model, text: []const u8) void {
+    const line = std.mem.trim(u8, text, " \t\r\n");
+    if (line.len == 0 and self.images.items.len == 0) return;
+    const payload = withImages(self, line);
+    const dup = if (payload.ptr == line.ptr) self.alloc.dupe(u8, line) catch return else payload;
+    self.steer_queue.append(dup) catch {
+        if (dup.ptr != line.ptr) self.alloc.free(dup);
+        return;
+    };
+    self.input.setValue("") catch {};
+    self.pushFmt(.system, "↳ queued ({d} waiting)", .{self.steer_queue.items.len}) catch {};
 }
 
 pub fn runCommand(self: *Model, line: []const u8) Effect {
@@ -217,10 +240,7 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         if (arg.len == 0) {
             self.push(.system, "usage: /btw <aside> — queue a note without interrupting") catch {};
         } else if (self.pending != null) {
-            if (self.alloc.dupe(u8, arg)) |dup| {
-                self.steer_queue.append(dup) catch self.alloc.free(dup);
-                self.pushFmt(.system, "↳ aside queued ({d} waiting)", .{self.steer_queue.items.len}) catch {};
-            } else |_| {}
+            queueSteerLine(self, arg);
         } else {
             return applyLine(self, arg);
         }

@@ -146,12 +146,8 @@ pub fn drainSteer(self: *Model) Effect {
 
 pub fn steerEnter(self: *Model) void {
     const v = std.mem.trim(u8, self.input.getValue(), " \t\r\n");
-    if (v.len > 0) {
-        if (self.alloc.dupe(u8, v)) |dup| {
-            self.steer_queue.append(dup) catch self.alloc.free(dup);
-            self.input.setValue("") catch {};
-            self.pushFmt(.system, "↳ queued ({d} waiting)", .{self.steer_queue.items.len}) catch {};
-        } else |_| {}
+    if (v.len > 0 or self.images.items.len > 0) {
+        @import("dispatch.zig").queueSteerLine(self, v);
     } else if (self.steer_queue.items.len > 0) {
         cancelTurn(self);
         self.push(.system, "↳ force › interrupting…") catch {};

@@ -19,6 +19,9 @@ current is part of cutting a release.
   only when the rejected body actually sent `previous_response_id`.
   Unparseable Responses envelopes no longer copy raw bytes into
   `last_api_error`. Follow-up hardening for `#692` / `#693`.
+- TUI mid-turn steer / `/btw` now bakes composer `[Image #N]` chips into
+  the queued payload as `@[path]`. Previously only the typed text was
+  queued, so the follow-up turn dropped the pixels.
 
 ## v0.0.284 (2026-09-01)
 
