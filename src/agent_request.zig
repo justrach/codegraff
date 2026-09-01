@@ -368,10 +368,10 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         // object — pull the final `response` out of it (or an error).
         if (self.provider.kind == .responses) {
             const r = self.parseResponses(resp_body) catch {
-                // #287/#299: sayApiError so the body snippet survives as
-                // last_api_error; with plain say a subagent's parent got only
-                // the literal "ApiError" for this failure.
-                try self.sayApiError("unparseable codex response: {s}", .{resp_body[0..@min(resp_body.len, 600)]});
+                // Preserve a useful last_api_error without copying an unparsed
+                // provider envelope: it may contain echoed request/auth data.
+                const diagnostic = try responses.failureDiagnostic(self.arena, self.provider.id, .{ .message = "unparseable codex response" });
+                try self.sayApiError("{s}", .{diagnostic});
                 if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                 return error.ApiError;
             };
@@ -392,14 +392,11 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 },
                 .err => |failure| {
                     const msg = failure.message;
-                    const had_chain = self.codex_prev_id != null;
-                    const ws_error_frame = if (self.codex_ws) |c| c.dead else false;
+                    const ws_error_frame = self.ws_api_error_pending;
+                    self.ws_api_error_pending = false;
                     const diagnostic = try responses.failureDiagnostic(self.arena, self.provider.id, failure);
-                    if (ws_error_frame) {
-                        self.closeCodexWs();
-                        if (self.tracer) |tr| tr.note("ws_api_error", diagnostic);
-                    }
-                    if (had_chain and codex_chain.shouldDropChain(msg, failure.code)) {
+                    if (ws_error_frame) if (self.tracer) |tr| tr.note("ws_api_error", diagnostic);
+                    if (codex_chain.shouldReanchorRequest(body, msg, failure.code)) {
                         self.closeCodexWs();
                         if (self.tracer) |tr| tr.note("ws", "server dropped previous_response_id — re-anchoring with full input");
                         continue :rebuild;

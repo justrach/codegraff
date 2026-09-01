@@ -78,9 +78,11 @@ test "codexWsIdleExpired: fires only strictly past the idle limit (codex-ws)" {
 // RETRIED request's Authorization header carries the newly adopted bearer.
 test "the codex .responses arm refreshes auth and re-anchors before resending (#402)" {
     const src = @embedFile("agent_request.zig");
-    const arm_start = std.mem.indexOf(u8, src, "unparseable codex response").?;
-    const arm_end = std.mem.indexOf(u8, src, "try self.sayApiError(\"{s}\", .{diagnostic})").?;
+    const arm_start = std.mem.indexOf(u8, src, "if (self.provider.kind == .responses)").?;
+    const arm_end = std.mem.indexOf(u8, src[arm_start..], "// Streamed anthropic/openai bodies").? + arm_start;
     const arm = src[arm_start..arm_end];
+
+    try std.testing.expect(std.mem.indexOf(u8, arm, "responses.failureDiagnostic") != null and std.mem.indexOf(u8, arm, "resp_body[0..@min(resp_body.len, 600)]") == null);
 
     const call = std.mem.indexOf(u8, arm, "retryAfterAuthRefresh(self, msg, &auth_refreshed)") orelse
         return error.ResponsesPathHasNoAuthRecovery;

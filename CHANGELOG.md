@@ -10,6 +10,16 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.285 (2026-09-01)
+
+- Next cut after tagged [v0.0.284](docs/releases/v0.0.284.md). No tag
+  until asked.
+- `#717` (yxlyx): Codex WS `type:error` retires the socket immediately
+  and keeps a one-request marker for the bounded diagnostic. Re-anchor
+  only when the rejected body actually sent `previous_response_id`.
+  Unparseable Responses envelopes no longer copy raw bytes into
+  `last_api_error`. Follow-up hardening for `#692` / `#693`.
+
 ## v0.0.284 (2026-09-01)
 
 - ACP turns stage GUI `@[image]` attachments as native vision blocks so

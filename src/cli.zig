@@ -21,6 +21,10 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.285
+    \\  • Codex WS type:error retires the socket immediately; last_api_error stays bounded (#717)
+    \\  • chain re-anchor only when the rejected body sent previous_response_id
+    \\
     \\0.0.284
     \\  • ACP turns stage GUI @[image] attachments as native vision blocks — pasted images reach the model
     \\  • peer inbox wake is advisory ("parked; read when relevant"), never a command that displaces the turn

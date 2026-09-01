@@ -88,15 +88,14 @@ fn nowAwakeMs(io: Io) i64 {
 }
 
 const ws_failures_before_fallback: u8 = 2;
-
 pub fn wsShouldFallback(consecutive_failures: u8) bool {
     return consecutive_failures >= ws_failures_before_fallback;
 }
 
-/// Transport selector: try ws for eligible codex turns, else persistent SSE.
-/// The first WS transport/handshake failure rebuilds full input and retries a
-/// fresh socket; the second — or any 426 — latches SSE. Esc/stall propagates.
+/// Transport selector: try WS for eligible turns; the first failure retries a
+/// fresh socket, while the second or any 426 latches SSE. Esc/stall propagates.
 pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
+    self.ws_api_error_pending = false;
     // #134/#132 test seam: force a one-shot stall/drop on a live turn so the
     // end-to-end "[response ended early: …]" path (never "[response interrupted
     // by user]") can be exercised without a real provider. Consumed after one use.
@@ -579,10 +578,11 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         try full.writer.writeAll(fbuf.items);
         try full.writer.writeByte('\n');
         const line = try std.fmt.allocPrint(arena, "data: {s}", .{fbuf.items});
-        // Codex closes after `type:error`; return the accumulated API body
-        // instead of waiting for EOF and misclassifying it as transport loss.
+        // Codex closes after `type:error`; return its API body instead of misclassifying the expected EOF as transport loss.
         if (signal.errorFrameAction(gpa, fbuf.items) != .none) {
+            self.ws_api_error_pending = true;
             client.dead = true; // no courtesy close write to a closing peer
+            self.closeCodexWs();
             if (self.tracer) |tr| tr.note("ws", "terminal API error frame");
             break :stream;
         }
