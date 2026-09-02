@@ -353,7 +353,7 @@ export default function FilesPane({
               </p>
             ) : isMarkdown ? (
               <>
-                <Markdown text={file.text} onOpenPath={(p) => void show(p)} />
+                <Markdown text={file.text} asDocument onOpenPath={(p) => void show(p)} />
                 {file.truncated && (
                   <p className="mt-2 text-[11.5px] text-ink-3">Showing the first 256 KB of {formatSize(file.size)}.</p>
                 )}

@@ -13,13 +13,15 @@
     "test": "node --experimental-strip-types --test lib/graff-events.test.ts lib/acp.test.ts lib/sessions.test.ts"
   },
   "dependencies": {
+    "@streamdown/code": "^1.1.1",
     "glimm": "^0.3.0",
     "iconoir-react": "^7.11.1",
     "liveline": "^0.0.7",
     "next": "^15.3.3",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "shadow-plugin": "^2.1.0"
+    "shadow-plugin": "^2.1.0",
+    "streamdown": "^2.6.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.8",
