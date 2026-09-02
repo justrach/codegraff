@@ -296,7 +296,7 @@ export default function ThinkingState({
                 </>
               );
               const rowClass = "flex min-h-7 w-full items-center gap-2 rounded-[6px] px-1.5 py-0.5 text-left";
-              const key = live ? i : row.primary;
+              const key = `${i}:${row.primary}`;
               const animation =
                 i >= firstNewRow
                   ? { animation: `fade-up 320ms cubic-bezier(0.23,1,0.32,1) ${live ? 0 : i * 120}ms both` }

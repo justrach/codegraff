@@ -53,6 +53,8 @@ export type ToolRow = {
   /** Wall-clock bracket, measured client-side — rows tick while running. */
   startedAt?: number;
   elapsedMs?: number;
+  /** `turn.text.length` when this call started — where it sits in the stream. */
+  atChars?: number;
 };
 
 export type DiffChip = {
@@ -145,6 +147,7 @@ function upsertTool(turn: AssistantTurn, name: string, input: Record<string, unk
     status: "running",
     detail: summarizeInput(name, input),
     path: typeof input.path === "string" ? input.path : undefined,
+    atChars: turn.text.length,
   };
   return { ...turn, tools: [...turn.tools, row], status: turn.status === "ask" ? "ask" : "streaming" };
 }
