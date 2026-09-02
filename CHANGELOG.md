@@ -22,6 +22,12 @@ current is part of cutting a release.
 - TUI mid-turn steer / `/btw` now bakes composer `[Image #N]` chips into
   the queued payload as `@[path]`. Previously only the typed text was
   queued, so the follow-up turn dropped the pixels.
+- Native + TUI: tools stream with the answer instead of landing as a
+  wall on top. Native pins the scroller (no WKWebView jitter),
+  interleaves chips at the text cursor, and collapses a settled batch
+  to “Explored N”. TUI drops the Thinking row once tokens arrive and
+  paints the live stream as the reply; codedb folds as “Looked up N
+  items”. `scrollback.zig` stays under 600 via `TUI/livetail.zig`.
 
 ## v0.0.284 (2026-09-01)
 

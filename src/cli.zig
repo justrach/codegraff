@@ -25,6 +25,7 @@ pub const changelog_text =
     \\  • Codex WS type:error retires the socket immediately; last_api_error stays bounded (#717)
     \\  • chain re-anchor only when the rejected body sent previous_response_id
     \\  • TUI steer / /btw queues composer image chips with the text, not text alone
+    \\  • tools stream with the answer (native chips + TUI live reply; codedb “Looked up N”)
     \\
     \\0.0.284
     \\  • ACP turns stage GUI @[image] attachments as native vision blocks — pasted images reach the model
