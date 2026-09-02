@@ -67,12 +67,13 @@ and re-reads `current` after every respawn, so the picker reflects what
 graff's fuzzy `--model` resolution actually chose.
 
 History is graff's own: every tab's agent autosaves to
-`.graff/sessions/<name>.session.json` in the workspace (`--resume <name>`),
-and the sidebar lists that directory — grouped by day, searchable — via
-`/api/sessions`, which peeks each file's header rather than parsing it.
-Opening a past session renders its saved transcript at once and spawns the
-tab's agent with `--resume`, so a follow-up continues the conversation with
-the model's memory intact.
+`.graff/sessions/<name>.session.json` (`--resume <name>`). `/api/sessions`
+peeks each file's header (not the messages array), lists the current
+workspace then `~/.graff/sessions` (ADR 0059), and pages 24 at a time
+(`?limit=&cursor=&q=&scope=`). The sidebar shows a dated preview; Conversations
+is the full library — grouped by day, searchable, infinite-scroll. Opening
+a past session renders its transcript at once and spawns the tab's agent
+with `--resume`, so a follow-up continues with the model's memory intact.
 
 The workspace itself is walkable: `/api/fs` (list/read, plus macOS
 `open`/`open -R` passthroughs) is sandboxed to the agent's cwd and backs

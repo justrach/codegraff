@@ -1,18 +1,19 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import Markdown from "@/components/primitives/Markdown";
 import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
+import ConversationsPane from "@/components/site/ConversationsPane";
+import EmptyState from "@/components/site/EmptyState";
 import FilesPane from "@/components/site/FilesPane";
-import { IconFolder } from "@/lib/icons";
+import { IconChat, IconFolder } from "@/lib/icons";
 import TaskRows from "@/components/primitives/TaskRows";
 import ThinkingState from "@/components/primitives/ThinkingState";
 import ToolChips from "@/components/primitives/ToolChips";
 import { ThemeToggle } from "@/components/site/ThemeToggle";
 import {
   MODELS,
-  STARTER_PROMPTS,
   cancel,
   chatHandle,
   checkHealth,
@@ -24,17 +25,7 @@ import {
   type Health,
 } from "@/lib/acp-client";
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, turnBlocks, type AssistantTurn } from "@/lib/acp";
-import { dateGroup, listSessions, loadSession, relativeTime, type StoredSession } from "@/lib/sessions";
-
-const NAME = "there";
-
-function greeting(): string {
-  const hour = new Date().getHours();
-  if (hour < 5) return "Up late";
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
-}
+import { listSessionsPage, loadSession, toSidebarRecent, type StoredSession } from "@/lib/sessions";
 
 /** Typewriter reveal over the ACP text, the way every AI app streams: a
  * readable base rate with gentle backlog catch-up (capped so a one-shot
@@ -87,24 +78,6 @@ function pinScrollerTail(el: HTMLElement | null): void {
   if (!el) return;
   const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
   if (fromBottom < 240) el.scrollTop = el.scrollHeight;
-}
-
-const HOME_REVEAL = {
-  offsetY: 23,
-  blur: 17,
-  duration: 800,
-  easing: "cubic-bezier(0.16, 1, 0.3, 1)",
-};
-
-function homeRevealStyle(visible: boolean): CSSProperties {
-  return {
-    opacity: visible ? 1 : 0,
-    transform: visible ? "translate3d(0, 0, 0)" : `translate3d(0, ${HOME_REVEAL.offsetY}px, 0)`,
-    filter: visible ? "blur(0px)" : `blur(${HOME_REVEAL.blur}px)`,
-    transition: ["opacity", "transform", "filter"]
-      .map((property) => `${property} ${HOME_REVEAL.duration}ms ${HOME_REVEAL.easing}`)
-      .join(", "),
-  };
 }
 
 function UserBubble({ text }: { text: string }) {
@@ -292,102 +265,9 @@ function newSessionName(): string {
   return `native-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function EmptyState({
-  onSend,
-  health,
-  offset,
-  shuffle,
-  models,
-  modelKey,
-  onModelChange,
-}: {
-  onSend: (text: string) => void;
-  health: Health | null;
-  offset: number;
-  shuffle: () => void;
-  models: PromptModel[];
-  modelKey?: string;
-  onModelChange: (key: string) => void;
-}) {
-  const shown = [0, 1, 2].map((i) => STARTER_PROMPTS[(offset + i) % STARTER_PROMPTS.length]);
-  const [stage, setStage] = useState(0);
-  useEffect(() => {
-    const timers = [
-      setTimeout(() => setStage(1), 170),
-      setTimeout(() => setStage(2), 330),
-      setTimeout(() => setStage(3), 400),
-      setTimeout(() => setStage(4), 550),
-    ];
-    return () => timers.forEach(clearTimeout);
-  }, []);
-
-  return (
-    <div className="mx-auto flex min-h-full max-w-[720px] flex-col justify-center px-4 py-10 sm:px-8">
-      <h1 className="text-[26px] font-normal tracking-[-0.02em] text-ink">
-        <span className="home-reveal block text-ink-3" style={homeRevealStyle(stage >= 1)}>
-          {greeting()}
-        </span>
-        <span className="home-reveal block" style={homeRevealStyle(stage >= 2)}>
-          What should graff work on?
-        </span>
-      </h1>
-
-      <div className="home-reveal relative mt-7" style={homeRevealStyle(stage >= 3)}>
-        <PromptBar
-          demo={false}
-          tall
-          placeholder="Ask graff to read, edit, or review this workspace…"
-          models={models}
-          modelKey={modelKey}
-          onModelChange={onModelChange}
-          onSend={onSend}
-          disabled={health !== null && !health.ok}
-        />
-        {health && !health.ok && (
-          <p className="mt-3 text-[12.5px] text-orange">
-            graff acp is not reachable. From the repo root run{" "}
-            <span className="font-mono text-ink">zig build</span>
-            {health.detail ? ` — ${health.detail}` : ""}.
-          </p>
-        )}
-      </div>
-
-      <div className="home-reveal mt-6 flex flex-col" style={homeRevealStyle(stage >= 4)}>
-        {shown.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => onSend(item.prompt)}
-            className="-mx-2 flex items-center gap-3 rounded-control px-2 py-2.5 text-left text-[14px] text-ink transition-colors duration-150 hover:bg-hover"
-          >
-            <span className="text-ink-3">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="M8 6l-5 6 5 6M16 6l5 6-5 6" />
-              </svg>
-            </span>
-            <span className="min-w-0 truncate">{item.label}</span>
-          </button>
-        ))}
-        <div className="mt-1 flex items-center gap-5 pl-0.5 text-[13px] text-ink-3">
-          <span className="flex items-center gap-2 py-1" title={health?.cwd}>
-            <span className={`size-1.5 rounded-full ${health?.ok ? "bg-green" : "bg-orange"}`} />
-            {health?.ok
-              ? `Connected · ${health.cwd ? (health.cwd.split("/").pop() ?? health.cwd) : "over ACP"}`
-              : "Waiting for graff acp"}
-          </span>
-          <button type="button" onClick={shuffle} className="flex items-center gap-2 py-1 transition-colors duration-150 hover:text-ink">
-            Shuffle suggestions
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function GraffHarness() {
   const [chats, setChats] = useState<Chat[]>([{ id: 1, title: null, messages: [] }]);
   const [activeId, setActiveId] = useState(1);
-  const [offset, setOffset] = useState(0);
   const [health, setHealth] = useState<Health | null>(null);
   // Every tab owns a `graff acp` child (the agent keeps one session per
   // process), so sessions, busy state and the spawned model are all per chat.
@@ -397,12 +277,14 @@ export default function GraffHarness() {
   const sessionNamesRef = useRef(new Map<number, string>());
   const [sessionIds, setSessionIds] = useState<Record<number, string>>({});
   const [stored, setStored] = useState<StoredSession[]>([]);
+  const [storedTotal, setStoredTotal] = useState(0);
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set());
   // No hardcoded default: until graff/models answers, the agent's own model
   // resolution decides, and `current` from that call re-points the picker.
   const [models, setModels] = useState<PromptModel[]>(MODELS);
   const [model, setModelKey] = useState<string | null>(process.env.NEXT_PUBLIC_GRAFF_MODEL || null);
-  const [filesOpen, setFilesOpen] = useState(false);
+  const [pane, setPane] = useState<"chat" | "workspace" | "conversations">("chat");
+  const filesOpen = pane === "workspace";
   const [fileRequest, setFileRequest] = useState<{ path: string; n: number; changes?: boolean } | null>(null);
   const fileReqRef = useRef(0);
   const chatIdRef = useRef(1);
@@ -491,11 +373,12 @@ export default function GraffHarness() {
   /** Re-read graff's session directory; tabs adopt the titles graff saved. */
   const refreshStored = async () => {
     try {
-      const list = await listSessions();
-      setStored(list);
+      const page = await listSessionsPage({ limit: 12 });
+      setStored(page.sessions);
+      setStoredTotal(page.total);
       setChats((current) =>
         current.map((c) => {
-          const saved = c.session ? list.find((s) => s.name === c.session) : undefined;
+          const saved = c.session ? page.sessions.find((s) => s.name === c.session) : undefined;
           return saved?.title && saved.title !== c.title ? { ...c, title: saved.title } : c;
         }),
       );
@@ -505,12 +388,12 @@ export default function GraffHarness() {
   };
 
   const openPath = (path: string) => {
-    setFilesOpen(true);
+    setPane("workspace");
     setFileRequest({ path, n: (fileReqRef.current += 1) });
   };
 
   const openChanges = () => {
-    setFilesOpen(true);
+    setPane("workspace");
     setFileRequest({ path: "", n: (fileReqRef.current += 1), changes: true });
   };
 
@@ -589,7 +472,7 @@ export default function GraffHarness() {
     sessionNamesRef.current.set(id, session);
     setChats((current) => [...current, { id, title: null, messages: [], model: model ?? undefined, session }]);
     setActiveId(id);
-    setFilesOpen(false);
+    setPane("chat");
     // Spawn eagerly so the first send is not stuck behind agent + MCP boot.
     void requireSession(id).catch(() => undefined);
   };
@@ -600,7 +483,7 @@ export default function GraffHarness() {
     const existing = chats.find((c) => c.session === name);
     if (existing) {
       setActiveId(existing.id);
-      setFilesOpen(false);
+      setPane("chat");
       return;
     }
     let loaded: Awaited<ReturnType<typeof loadSession>>;
@@ -618,7 +501,7 @@ export default function GraffHarness() {
       { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name },
     ]);
     setActiveId(id);
-    setFilesOpen(false);
+    setPane("chat");
     void requireSession(id, false, loaded.meta.model ?? undefined).catch(() => undefined);
   };
 
@@ -666,14 +549,8 @@ export default function GraffHarness() {
     pinScrollerTail(scrollRef.current);
   }, [active, lastAssistant?.turn.text, lastAssistant?.turn.reasoning, lastAssistant?.turn.tools.length]);
 
-  // The sidebar is graff's session directory, newest first, bucketed by day.
-  const now = Date.now();
-  const recents = stored.map((s) => ({
-    id: s.name,
-    label: s.title ?? s.name,
-    group: dateGroup(s.updatedMs, now),
-    hint: [s.model, relativeTime(s.updatedMs, now)].filter(Boolean).join(" · "),
-  }));
+  // Sidebar preview: first page of the session index, newest first.
+  const recents = stored.map((s) => toSidebarRecent(s));
 
   const workspaceName = health?.cwd ? (health.cwd.split("/").pop() || health.cwd) : "workspace";
 
@@ -693,7 +570,7 @@ export default function GraffHarness() {
               aria-label="Working"
             />
           )}
-          <button type="button" aria-pressed={c.id === activeId} onClick={() => setActiveId(c.id)} title={c.title ?? "New chat"} className="min-w-0 flex-1 text-left">
+          <button type="button" aria-pressed={c.id === activeId} onClick={() => { setActiveId(c.id); setPane("chat"); }} title={c.title ?? "New chat"} className="min-w-0 flex-1 text-left">
             <span className="block truncate">{c.title ?? "New chat"}</span>
           </button>
           <button
@@ -721,8 +598,20 @@ export default function GraffHarness() {
       <div className="ml-auto flex items-center gap-2 pr-1">
         <button
           type="button"
+          aria-pressed={pane === "conversations"}
+          onClick={() => setPane((current) => (current === "conversations" ? "chat" : "conversations"))}
+          title="All conversations"
+          className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
+            pane === "conversations" ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+          }`}
+        >
+          <IconChat size={14} />
+          <span className="hidden sm:inline">Chats</span>
+        </button>
+        <button
+          type="button"
           aria-pressed={filesOpen}
-          onClick={() => setFilesOpen((open) => !open)}
+          onClick={() => setPane((current) => (current === "workspace" ? "chat" : "workspace"))}
           title={health?.cwd ?? "Workspace files"}
           className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
             filesOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
@@ -744,12 +633,18 @@ export default function GraffHarness() {
         fill
         className="hidden lg:flex"
         recents={recents}
+        recentsTotal={storedTotal}
         activeTitle={chatThread.title}
         activeId={chatThread.session ?? null}
         onPick={pickRecent}
         onNewChat={newChat}
-        activeNav={filesOpen ? "workspace" : "chats"}
-        onNavigate={(key) => setFilesOpen(key === "workspace")}
+        onSeeAll={() => setPane("conversations")}
+        activeNav={pane === "workspace" ? "workspace" : pane === "conversations" ? "conversations" : "home"}
+        onNavigate={(key) => {
+          if (key === "workspace") setPane("workspace");
+          else if (key === "conversations") setPane("conversations");
+          else setPane("chat");
+        }}
         footerLabel={sessionId ? `Session ${sessionId.slice(0, 8)}` : "Connecting…"}
         onFooterClick={() => undefined}
       />
@@ -758,7 +653,13 @@ export default function GraffHarness() {
         <div className="flex min-h-0 flex-1 gap-2.5">
           <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page">
             {tabBar}
-            {active ? (
+            {pane === "conversations" ? (
+              <ConversationsPane
+                activeId={chatThread.session ?? null}
+                onPick={pickRecent}
+                onNewChat={newChat}
+              />
+            ) : active ? (
               <div className="flex min-h-0 flex-1 flex-col">
                 <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
                   <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
@@ -796,8 +697,6 @@ export default function GraffHarness() {
                 <EmptyState
                   onSend={send}
                   health={health}
-                  offset={offset}
-                  shuffle={() => setOffset((current) => (current + 3) % STARTER_PROMPTS.length)}
                   models={models}
                   modelKey={chatModel}
                   onModelChange={changeModel}
@@ -806,9 +705,9 @@ export default function GraffHarness() {
             )}
           </section>
 
-          {filesOpen && <FilesPane requested={fileRequest} onClose={() => setFilesOpen(false)} />}
+          {filesOpen && <FilesPane requested={fileRequest} onClose={() => setPane("chat")} />}
 
-          {!filesOpen && active && paneTodos.length > 0 && (
+          {pane === "chat" && active && paneTodos.length > 0 && (
             <aside
               className="hidden w-[360px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page lg:flex"
               style={{ animation: "fade-in 300ms ease both" }}

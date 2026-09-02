@@ -17,7 +17,20 @@ export type StoredSession = {
   model: string | null;
   provider: string | null;
   size: number;
+  workspace?: string | null;
+  /** Set when the save is not in the current cwd (ADR 0059). */
+  origin?: string | null;
+  local?: boolean;
 };
+
+export type SessionPage = {
+  cwd?: string;
+  sessions: StoredSession[];
+  nextCursor: string | null;
+  total: number;
+};
+
+export type SessionScope = "all" | "local" | "elsewhere";
 
 export type TranscriptMsg =
   | { role: "user"; text: string }
@@ -25,11 +38,32 @@ export type TranscriptMsg =
 
 const BASE = "/api/sessions";
 
-export async function listSessions(): Promise<StoredSession[]> {
-  const res = await fetch(BASE, { cache: "no-store" });
+export async function listSessionsPage(opts: {
+  limit?: number;
+  cursor?: string | null;
+  q?: string;
+  scope?: SessionScope;
+} = {}): Promise<SessionPage> {
+  const params = new URLSearchParams();
+  if (opts.limit) params.set("limit", String(opts.limit));
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  if (opts.q?.trim()) params.set("q", opts.q.trim());
+  if (opts.scope && opts.scope !== "all") params.set("scope", opts.scope);
+  const qs = params.toString();
+  const res = await fetch(qs ? `${BASE}?${qs}` : BASE, { cache: "no-store" });
   if (!res.ok) throw new Error(`sessions → ${res.status}`);
-  const body = (await res.json()) as { sessions?: StoredSession[] };
-  return body.sessions ?? [];
+  const body = (await res.json()) as Partial<SessionPage>;
+  return {
+    cwd: body.cwd,
+    sessions: body.sessions ?? [],
+    nextCursor: body.nextCursor ?? null,
+    total: typeof body.total === "number" ? body.total : (body.sessions ?? []).length,
+  };
+}
+
+export async function listSessions(): Promise<StoredSession[]> {
+  const page = await listSessionsPage();
+  return page.sessions;
 }
 
 export async function loadSession(name: string): Promise<{ meta: StoredSession; messages: TranscriptMsg[] }> {
@@ -65,6 +99,37 @@ export function relativeTime(ms: number, now = Date.now()): string {
   const days = Math.round(hours / 24);
   if (days < 30) return `${days}d ago`;
   return new Date(ms).toLocaleDateString();
+}
+
+export function sessionHint(s: StoredSession, now = Date.now()): string {
+  const where = s.local === false ? (s.origin ?? "elsewhere") : null;
+  return [where, s.model, relativeTime(s.updatedMs, now)].filter(Boolean).join(" · ");
+}
+
+export function toSidebarRecent(s: StoredSession, now = Date.now()): {
+  id: string;
+  label: string;
+  group: string;
+  hint: string;
+} {
+  return {
+    id: s.name,
+    label: s.title ?? s.name,
+    group: dateGroup(s.updatedMs, now),
+    hint: sessionHint(s, now),
+  };
+}
+
+/** Consecutive rows that share a date bucket, newest buckets first. */
+export function groupSessions(rows: StoredSession[], now = Date.now()): { group: string; items: StoredSession[] }[] {
+  const out: { group: string; items: StoredSession[] }[] = [];
+  for (const row of rows) {
+    const group = dateGroup(row.updatedMs, now);
+    const last = out[out.length - 1];
+    if (last && last.group === group) last.items.push(row);
+    else out.push({ group, items: [row] });
+  }
+  return out;
 }
 
 type RawCall = { id?: unknown; function?: { name?: unknown; arguments?: unknown } };

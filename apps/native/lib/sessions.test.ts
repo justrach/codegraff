@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { dateGroup, transcriptFromMessages } from "./sessions.ts";
+import { dateGroup, groupSessions, sessionHint, transcriptFromMessages } from "./sessions.ts";
 
 describe("transcriptFromMessages", () => {
   it("folds assistant + tool messages into one turn per user message", () => {
@@ -85,5 +85,26 @@ describe("dateGroup", () => {
     assert.equal(dateGroup(now - 3 * day, now), "Previous 7 days");
     assert.equal(dateGroup(now - 20 * day, now), "Previous 30 days");
     assert.match(dateGroup(now - 90 * day, now), /2026/);
+  });
+});
+
+describe("groupSessions / sessionHint", () => {
+  it("keeps date buckets consecutive and names an elsewhere origin", () => {
+    const now = new Date(2026, 7, 30, 15, 0, 0).getTime();
+    const rows = [
+      { name: "a", title: "Today one", updatedMs: now, model: "glm-5", provider: null, size: 1, local: true },
+      { name: "b", title: "Today two", updatedMs: now - 1_000, model: "kimi", provider: null, size: 1, local: false, origin: "~/notes" },
+      { name: "c", title: "Older", updatedMs: now - 3 * 86_400_000, model: "glm-5", provider: null, size: 1, local: true },
+    ];
+    const groups = groupSessions(rows, now);
+    assert.deepEqual(
+      groups.map((g) => [g.group, g.items.length]),
+      [
+        ["Today", 2],
+        ["Previous 7 days", 1],
+      ],
+    );
+    assert.equal(sessionHint(rows[0], now), "glm-5 · just now");
+    assert.equal(sessionHint(rows[1], now), "~/notes · kimi · just now");
   });
 });
