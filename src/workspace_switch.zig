@@ -110,10 +110,33 @@ pub fn parsePorcelain(arena: Allocator, text: []const u8) []Entry {
     return list.items;
 }
 
+fn zpath(path: []const u8, z: *[std.fs.max_path_bytes + 1]u8) ?[:0]const u8 {
+    if (path.len >= z.len) return null;
+    @memcpy(z[0..path.len], path);
+    z[path.len] = 0;
+    return z[0..path.len :0];
+}
+
+fn realpathOs(path: []const u8, out: []u8) ?[]const u8 {
+    var z: [std.fs.max_path_bytes + 1]u8 = undefined;
+    const src = zpath(path, &z) orelse return null;
+    const p = std.c.realpath(src, out.ptr) orelse return null;
+    return std.mem.sliceTo(p, 0);
+}
+
 fn samePath(a: []const u8, b: []const u8) bool {
     const left = std.mem.trimEnd(u8, a, "/");
     const right = std.mem.trimEnd(u8, b, "/");
-    return std.mem.eql(u8, left, right);
+    if (std.mem.eql(u8, left, right)) return true;
+    if (left.len == 0 or right.len == 0) return false;
+    // Porcelain paths and getcwd disagree on macOS (/tmp vs /private/tmp) and
+    // on any worktree added through a symlink. Star / already / enter must
+    // compare the resolved directories, not the strings git printed (#721).
+    var ab: [std.fs.max_path_bytes]u8 = undefined;
+    var bb: [std.fs.max_path_bytes]u8 = undefined;
+    const ar = realpathOs(left, &ab) orelse return false;
+    const br = realpathOs(right, &bb) orelse return false;
+    return std.mem.eql(u8, std.mem.trimEnd(u8, ar, "/"), std.mem.trimEnd(u8, br, "/"));
 }
 
 const Rank = enum(u8) { substring = 1, exact_branch, exact_base, exact_path };
@@ -164,9 +187,14 @@ pub fn formatList(arena: Allocator, entries: []const Entry, current: []const u8)
 }
 
 fn currentAbs(io: Io, arena: Allocator) []const u8 {
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const n = Io.Dir.cwd().realPath(io, &cwd_buf) catch return main_mod.g_cwd_display;
-    return arena.dupe(u8, cwd_buf[0..n]) catch main_mod.g_cwd_display;
+    _ = io;
+    // OS getcwd, not Io.Dir.cwd().realPath: Threaded Io can keep a stale Dir
+    // across posix.chdir, so the listing starred one tree while bash still
+    // ran in another, and `use` of the starred tree returned .already
+    // without chdir'ing (#721).
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const ptr = std.c.getcwd(&buf, buf.len) orelse return main_mod.g_cwd_display;
+    return arena.dupe(u8, std.mem.sliceTo(ptr, 0)) catch main_mod.g_cwd_display;
 }
 
 fn listEntries(gpa: Allocator, io: Io, arena: Allocator) []Entry {
@@ -184,6 +212,7 @@ fn enterPath(gpa: Allocator, io: Io, arena: Allocator, path: []const u8) ![]cons
     const z = try arena.dupeSentinel(u8, path, 0);
     if (std.posix.system.chdir(z.ptr) != 0) return error.ChdirFailed;
     const abs = currentAbs(io, arena);
+    if (!samePath(abs, path)) return error.ChdirFailed;
     adoptDisplay(gpa, abs);
     main_mod.g_worktree_branch = null;
     tool_spill.enable(.{ .io = io, .dir = .cwd(), .base_abs = main_mod.g_cwd_display });
@@ -456,6 +485,58 @@ test "enterPath: chdir then restore; display follows the new tree" {
         tool_spill.resetForTest();
     }
     const abs = try enterPath(gpa, io, a, dest);
-    try std.testing.expectEqualStrings(dest, abs);
-    try std.testing.expectEqualStrings(dest, main_mod.g_cwd_display);
+    try std.testing.expect(samePath(dest, abs));
+    try std.testing.expect(samePath(dest, main_mod.g_cwd_display));
+}
+
+test "#721: round-trip switch keeps posix cwd, display, and list star in lockstep" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var dir_a = std.testing.tmpDir(.{});
+    defer dir_a.cleanup();
+    var dir_b = std.testing.tmpDir(.{});
+    defer dir_b.cleanup();
+    var orig = try Io.Dir.cwd().openDir(io, ".", .{});
+    defer orig.close(io);
+    defer _ = std.posix.system.fchdir(orig.handle);
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (std.posix.system.fchdir(dir_a.dir.handle) != 0) return error.ChdirFailed;
+    const path_a = try a.dupe(u8, std.mem.sliceTo(std.c.getcwd(&buf, buf.len) orelse return error.SkipZigTest, 0));
+    if (std.posix.system.fchdir(dir_b.dir.handle) != 0) return error.ChdirFailed;
+    const path_b = try a.dupe(u8, std.mem.sliceTo(std.c.getcwd(&buf, buf.len) orelse return error.SkipZigTest, 0));
+    _ = std.posix.system.fchdir(orig.handle);
+    const saved = main_mod.g_cwd_display;
+    const saved_branch = main_mod.g_worktree_branch;
+    defer {
+        main_mod.g_cwd_display = saved;
+        main_mod.g_worktree_branch = saved_branch;
+        deinitDisplay(gpa);
+        tool_spill.resetForTest();
+    }
+    _ = try enterPath(gpa, io, a, path_a);
+    try std.testing.expect(samePath(std.mem.sliceTo(std.c.getcwd(&buf, buf.len) orelse "", 0), path_a));
+    try std.testing.expect(samePath(main_mod.g_cwd_display, path_a));
+    _ = try enterPath(gpa, io, a, path_b);
+    try std.testing.expect(samePath(std.mem.sliceTo(std.c.getcwd(&buf, buf.len) orelse "", 0), path_b));
+    try std.testing.expect(samePath(main_mod.g_cwd_display, path_b));
+    const rows = [_]Entry{ .{ .path = path_a, .branch = "a" }, .{ .path = path_b, .branch = "b" } };
+    const listed = formatList(a, &rows, currentAbs(io, a));
+    try std.testing.expect(std.mem.indexOf(u8, listed, "* ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed, path_b) != null);
+    // The #721 failure: report primary, posix still secondary.
+    _ = try enterPath(gpa, io, a, path_a);
+    try std.testing.expect(samePath(std.mem.sliceTo(std.c.getcwd(&buf, buf.len) orelse "", 0), path_a));
+    try std.testing.expect(samePath(main_mod.g_cwd_display, path_a));
+    switch (resolve(a, &rows, path_a, currentAbs(io, a))) {
+        .already => {},
+        else => return error.TestExpectedAlready,
+    }
+    switch (resolve(a, &rows, path_b, currentAbs(io, a))) {
+        .one => {},
+        else => return error.TestExpectedSwitch,
+    }
 }
