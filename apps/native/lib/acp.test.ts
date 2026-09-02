@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { applyAcpUpdate, emptyTurn, finishAcpTurn, parseRpcLine } from "./acp.ts";
+import { applyAcpUpdate, emptyTurn, finishAcpTurn, parseRpcLine, turnBlocks } from "./acp.ts";
 
 describe("parseRpcLine", () => {
   it("skips blanks and noise", () => {
@@ -86,6 +86,34 @@ describe("applyAcpUpdate", () => {
     });
     assert.equal(turn.todos.length, 2);
     assert.equal(turn.todos[1]?.status, "in_progress");
+  });
+
+  it("interleaves tools at the text cursor they landed on", () => {
+    let turn = emptyTurn();
+    turn = applyAcpUpdate(turn, {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "Hello" },
+    });
+    turn = applyAcpUpdate(turn, {
+      sessionUpdate: "tool_call",
+      toolCallId: "c1",
+      title: "codedb",
+      kind: "read",
+      status: "pending",
+      rawInput: { command: "context how does auth work" },
+    });
+    assert.equal(turn.tools[0]?.atChars, 5);
+    assert.equal(turn.tools[0]?.name, "Codedb");
+    assert.equal(turn.tools[0]?.chip, "context how does auth work");
+    turn = applyAcpUpdate(turn, {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: " more" },
+    });
+    const blocks = turnBlocks(turn.text, turn.tools);
+    assert.equal(blocks[0]?.kind, "text");
+    if (blocks[0]?.kind === "text") assert.equal(blocks[0].text, "Hello");
+    assert.equal(blocks[1]?.kind, "tools");
+    assert.equal(blocks[2]?.kind, "text");
   });
 
   it("finishAcpTurn settles running chips", () => {

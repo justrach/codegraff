@@ -82,7 +82,7 @@ type Block =
   | { kind: "h"; level: number; text: string }
   | { kind: "code"; lang: string; text: string; open: boolean }
   | { kind: "quote"; lines: string[] }
-  | { kind: "list"; ordered: boolean; items: { text: string; indent: number }[] }
+  | { kind: "list"; ordered: boolean; items: { text: string; indent: number; n?: number }[] }
   | { kind: "table"; header: string[]; rows: string[][] }
   | { kind: "hr" };
 
@@ -156,11 +156,16 @@ export function parseMarkdown(src: string): Block[] {
     if (item) {
       flush();
       const ordered = item[3] !== undefined;
-      const items: { text: string; indent: number }[] = [];
+      const items: { text: string; indent: number; n?: number }[] = [];
       while (i < lines.length) {
         const m = LIST_ITEM.exec(lines[i]);
         if (!m) break;
-        items.push({ text: m[4], indent: Math.min(3, Math.floor(m[1].length / 2)) });
+        if ((m[3] !== undefined) !== ordered) break;
+        items.push({
+          text: m[4],
+          indent: Math.min(3, Math.floor(m[1].length / 2)),
+          n: m[3] !== undefined ? Number(m[3]) : undefined,
+        });
         i += 1;
       }
       blocks.push({ kind: "list", ordered, items });
@@ -250,7 +255,7 @@ export default function Markdown({
         const last = i === blocks.length - 1;
         const caret =
           streaming && last && b.kind !== "code" ? (
-            <span className="stream-caret ml-0.5 inline-block h-3 w-0.5 translate-y-0.5 rounded-full bg-ink" />
+            <span className="stream-caret is-streaming ml-0.5 inline-block h-3 w-0.5 translate-y-0.5 rounded-full bg-ink" />
           ) : null;
         switch (b.kind) {
           case "h":
@@ -279,7 +284,7 @@ export default function Markdown({
                 {b.items.map((item, j) => (
                   <li key={j} className="flex gap-2" style={{ marginLeft: item.indent * 16 }}>
                     <span className="mt-[1px] shrink-0 text-ink-3 select-none">
-                      {b.ordered ? `${j + 1}.` : "•"}
+                      {b.ordered ? `${item.n ?? j + 1}.` : "•"}
                     </span>
                     <span className="min-w-0">{inl(item.text)}</span>
                   </li>
@@ -326,7 +331,7 @@ export default function Markdown({
         }
       })}
       {streaming && blocks.length === 0 && (
-        <span className="stream-caret inline-block h-3 w-0.5 translate-y-0.5 rounded-full bg-ink" />
+        <span className="stream-caret is-streaming inline-block h-3 w-0.5 translate-y-0.5 rounded-full bg-ink" />
       )}
     </div>
   );

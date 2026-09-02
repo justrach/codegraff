@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 import Markdown from "@/components/primitives/Markdown";
 import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
@@ -23,7 +23,7 @@ import {
   prompt,
   type Health,
 } from "@/lib/acp-client";
-import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
+import { applyAcpUpdate, emptyTurn, finishAcpTurn, turnBlocks, type AssistantTurn } from "@/lib/acp";
 import { dateGroup, listSessions, loadSession, relativeTime, type StoredSession } from "@/lib/sessions";
 
 const NAME = "there";
@@ -40,7 +40,9 @@ function greeting(): string {
  * readable base rate with gentle backlog catch-up (capped so a one-shot
  * final answer still visibly types out), and the drain keeps playing after
  * the turn's result lands — done-state chrome waits for the last word.
- * Mounted mid-history it starts caught-up, so old messages never replay. */
+ * Mounted mid-history it starts caught-up, so old messages never replay.
+ * Catch-up lands on whitespace so markdown chips/lists don't reflow every
+ * mid-token character — that wrap-jitter stacked with scrollIntoView. */
 function useSmoothStream(target: string): string {
   const [shown, setShown] = useState(target);
   const shownRef = useRef(target);
@@ -54,13 +56,21 @@ function useSmoothStream(target: string): string {
     let raf = 0;
     let last = performance.now();
     const tick = (now: number) => {
-      const dt = Math.min(now - last, 100);
+      const dt = Math.min(now - last, 80);
       last = now;
-      const behind = target.length - shownRef.current.length;
+      const have = shownRef.current.length;
+      const behind = target.length - have;
       if (behind <= 0) return;
-      const rate = Math.min(160 + behind * 1.2, 2400); // chars/second
-      const step = Math.max(1, Math.round((rate * dt) / 1000));
-      shownRef.current = target.slice(0, shownRef.current.length + step);
+      const rate = Math.min(180 + behind * 1.4, 2800);
+      let next = have + Math.max(1, Math.round((rate * dt) / 1000));
+      if (next < target.length) {
+        const rest = target.slice(next, next + 24);
+        const cut = rest.search(/[\s\n]/);
+        if (cut > 0) next += cut + 1;
+      } else {
+        next = target.length;
+      }
+      shownRef.current = target.slice(0, next);
       setShown(shownRef.current);
       if (shownRef.current.length < target.length) raf = requestAnimationFrame(tick);
     };
@@ -68,6 +78,15 @@ function useSmoothStream(target: string): string {
     return () => cancelAnimationFrame(raf);
   }, [target]);
   return shown;
+}
+
+/** Pin the thread scroller to its tail without scrollIntoView. WKWebView
+ * treats block:end on a tall article as a viewport realignment every frame
+ * — the whole reply judders while the typewriter runs. */
+function pinScrollerTail(el: HTMLElement | null): void {
+  if (!el) return;
+  const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+  if (fromBottom < 240) el.scrollTop = el.scrollHeight;
 }
 
 const HOME_REVEAL = {
@@ -105,21 +124,26 @@ function AssistantBody({
   turn,
   onOpenPath,
   onReview,
+  scroller,
 }: {
   turn: AssistantTurn;
   onOpenPath?: (path: string) => void;
   /** Open the workspace changes review (the Codex "Changed N files" bar). */
   onReview?: () => void;
+  scroller?: RefObject<HTMLDivElement | null>;
 }) {
   const thinking = turn.status === "thinking";
-  const smoothText = useSmoothStream(turn.text);
-  const draining = smoothText.length < turn.text.length;
-  // Follow the typewriter tail — the parent's scroll effect tracks the wire
-  // text, which goes quiet while the reveal is still playing out.
-  const articleRef = useRef<HTMLElement>(null);
+  const blocks = turnBlocks(turn.text, turn.tools);
+  const lastText = [...blocks].reverse().find((b) => b.kind === "text");
+  const lastTextBody = lastText?.kind === "text" ? lastText.text : "";
+  const smoothText = useSmoothStream(lastTextBody);
+  const draining = smoothText.length < lastTextBody.length;
+  // Follow the typewriter tail — the parent's pin tracks the wire text,
+  // which goes quiet while the reveal is still playing out. Pin the
+  // overflow scroller directly; do not scrollIntoView (WKWebView jitter).
   useEffect(() => {
-    if (draining) articleRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
-  }, [smoothText, draining]);
+    if (draining) pinScrollerTail(scroller?.current ?? null);
+  }, [smoothText, draining, scroller]);
   // "Thought for Ns": the harness stamps `thoughtMs` on the turn as it streams
   // (ACP updates carry no timestamps); a live turn without one yet is timed here.
   const startRef = useRef(Date.now());
@@ -141,22 +165,30 @@ function AssistantBody({
         .filter(Boolean)
         .map((primary) => ({ primary }))
     : [];
-  const toolRows = turn.tools.map((tool) => ({
-    id: tool.id,
-    icon: tool.icon,
-    label: tool.name,
-    chip: tool.chip,
-    mono: tool.icon === "run" || tool.icon === "write" || tool.icon === "read",
-    detailMono: tool.icon === "run" || tool.icon === "write",
-    detail: tool.detail,
-    path: tool.path,
-    status: tool.status,
-    startedAt: tool.startedAt,
-    elapsedMs: tool.elapsedMs,
-  }));
+  const toChipRows = (tools: typeof turn.tools) =>
+    tools.map((tool) => ({
+      id: tool.id,
+      icon: tool.icon,
+      label: tool.name,
+      chip: tool.chip,
+      mono: tool.icon === "run" || tool.icon === "write" || tool.icon === "read",
+      detailMono: tool.icon === "run" || tool.icon === "write",
+      detail: tool.detail,
+      path: tool.path,
+      status: tool.status,
+      startedAt: tool.startedAt,
+      elapsedMs: tool.elapsedMs,
+    }));
+
+  const lastTextIndex = blocks.reduce((acc, b, i) => (b.kind === "text" ? i : acc), -1);
+  const lastBlock = blocks[blocks.length - 1];
+  const waitingOnTools =
+    turn.status === "streaming" &&
+    !lastTextBody &&
+    (lastBlock?.kind === "tools" || blocks.length === 0);
 
   return (
-    <article ref={articleRef} className="min-w-0" style={{ animation: "fade-up 450ms cubic-bezier(0.23,1,0.32,1) both" }}>
+    <article className="min-w-0" style={{ overflowAnchor: "none", animation: "fade-in 280ms ease both" }}>
       {/* Keep the header once the model has actually thought (streamed
         * reasoning, or a think long enough to notice): unmounting it when the
         * think ends made the answer jump up into the space it left. */}
@@ -169,15 +201,26 @@ function AssistantBody({
           working={thinking}
         />
       )}
-      {toolRows.length > 0 && (
-        <div className="mt-4">
-          <ToolChips rows={toolRows} diffs={turn.diffs} onOpenPath={onOpenPath} />
-        </div>
+      {blocks.map((block, i) =>
+        block.kind === "tools" ? (
+          <div key={`tools-${block.tools[0]?.id ?? i}`} className="mt-3">
+            <ToolChips
+              rows={toChipRows(block.tools)}
+              diffs={i === blocks.length - 1 || (i === blocks.length - 2 && lastBlock?.kind === "text") ? turn.diffs : []}
+              onOpenPath={onOpenPath}
+            />
+          </div>
+        ) : (
+          <div key={`text-${i}`} className="mt-3 max-w-[630px]">
+            <Markdown
+              text={i === lastTextIndex ? smoothText : block.text}
+              streaming={i === lastTextIndex && (draining || turn.status === "streaming" || turn.status === "thinking")}
+              onOpenPath={onOpenPath}
+            />
+          </div>
+        ),
       )}
-      {turn.status === "streaming" && !turn.text ? (
-        /* Between the last tool and the first text token nothing streams —
-         * a lone caret here read as "stuck". Shimmer like the thinking
-         * header, and say which phase the agent is actually in. */
+      {waitingOnTools && (
         <div className="mt-4">
           <span
             className="bg-clip-text text-[13px] font-medium whitespace-nowrap text-transparent"
@@ -190,16 +233,6 @@ function AssistantBody({
             {turn.tools.some((tool) => tool.status === "running") ? "Running tools…" : "Writing…"}
           </span>
         </div>
-      ) : (
-        turn.text && (
-          <div className="mt-4 max-w-[630px]">
-            <Markdown
-              text={smoothText}
-              streaming={draining || turn.status === "streaming" || turn.status === "thinking"}
-              onOpenPath={onOpenPath}
-            />
-          </div>
-        )
       )}
       {turn.error && (
         <p className="mt-4 max-w-[620px] text-[13.5px] leading-[1.65] text-red">{turn.error}</p>
@@ -626,14 +659,11 @@ export default function GraffHarness() {
   useEffect(() => {
     if (!active) return;
     const el = scrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messageCount, activeId, active]);
   useEffect(() => {
     if (!active) return;
-    const el = scrollRef.current;
-    if (!el) return;
-    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (fromBottom < 160) el.scrollTop = el.scrollHeight;
+    pinScrollerTail(scrollRef.current);
   }, [active, lastAssistant?.turn.text, lastAssistant?.turn.reasoning, lastAssistant?.turn.tools.length]);
 
   // The sidebar is graff's session directory, newest first, bucketed by day.
@@ -736,7 +766,7 @@ export default function GraffHarness() {
                       message.role === "user" ? (
                         <UserBubble key={message.id} text={message.text} />
                       ) : (
-                        <AssistantBody key={message.id} turn={message.turn} onOpenPath={openPath} onReview={openChanges} />
+                        <AssistantBody key={message.id} turn={message.turn} onOpenPath={openPath} onReview={openChanges} scroller={scrollRef} />
                       ),
                     )}
                   </div>
