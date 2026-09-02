@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createShader, playSweep, accentChain, ACCENTS } from "glimm";
+import { entryAt, historyKeyIntent, stepHistory } from "@/lib/prompt-history";
 
 /* The built-in "prism" palette is only cyan→indigo→magenta, so a sweep
  * reads as blue/purple. Build a true full-spectrum rainbow instead. */
@@ -157,6 +158,7 @@ export default function PromptBar({
   disabled,
   busy = false,
   onStop,
+  history,
 }: {
   variant?: string;
   /** the self-running walkthrough; turn off when embedding in a real surface */
@@ -172,10 +174,18 @@ export default function PromptBar({
   /** A turn is running: the send arrow morphs into a stop square. */
   busy?: boolean;
   onStop?: () => void;
+  /** Earlier prompts, oldest first. ArrowUp on the first line of the draft
+   * walks back through them like a shell; ArrowDown walks forward again. */
+  history?: readonly string[];
 }) {
   const pill = variant === "Pill";
   const catalog = models && models.length > 0 ? models : MODELS;
   const [draft, setDraft] = useState("");
+  /* Recall cursor: -1 is the live draft. Whatever was being typed is kept
+   * aside so ArrowDown past the newest entry hands it back untouched. */
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const stashRef = useRef("");
+  const caretToEndRef = useRef(false);
   const [dismissed, setDismissed] = useState(false);
   const [plusOpen, setPlusOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
@@ -405,6 +415,13 @@ export default function PromptBar({
     input.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
   }, [draft, expanded]);
 
+  /* A recalled prompt lands with the caret at its end, ready to edit or send. */
+  useLayoutEffect(() => {
+    if (!caretToEndRef.current) return;
+    caretToEndRef.current = false;
+    inputRef.current?.setSelectionRange(draft.length, draft.length);
+  }, [draft]);
+
   /* clicking anywhere outside the composer closes the open menus */
   useEffect(() => {
     if (!modelOpen && !plusOpen) return;
@@ -444,7 +461,27 @@ export default function PromptBar({
     onSend?.(draft.trim());
     setDraft("");
     setAttachments([]);
+    setHistoryIndex(-1);
+    stashRef.current = "";
     closeMenus();
+  };
+
+  /* Shell-style recall. Only from the draft's first line (up) or last line
+   * (down) — in the middle of a multi-line draft the arrows keep moving the
+   * caret — and never while the @ / model menus own the arrow keys. */
+  const recall = (event: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+    if (menu || modelOpen || !history || history.length === 0) return false;
+    const caret = event.currentTarget.selectionStart ?? draft.length;
+    const intent = historyKeyIntent(draft, caret, event.key);
+    if (!intent || (intent === "down" && historyIndex < 0)) return false;
+    event.preventDefault();
+    const next = stepHistory(history.length, historyIndex, intent);
+    if (next === historyIndex) return true;
+    if (historyIndex < 0) stashRef.current = draft;
+    setHistoryIndex(next);
+    setDraft(next < 0 ? stashRef.current : (entryAt(history, next) ?? ""));
+    caretToEndRef.current = true;
+    return true;
   };
 
   return (
@@ -704,6 +741,7 @@ export default function PromptBar({
                   return;
                 }
               }
+              if (recall(event)) return;
               if (event.key === "Escape") {
                 setDismissed(true);
                 closeMenus();

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Markdown from "@/components/primitives/Markdown";
 import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
@@ -25,6 +25,7 @@ import {
 } from "@/lib/acp-client";
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
 import { dateGroup, listSessions, loadSession, relativeTime, type StoredSession } from "@/lib/sessions";
+import { loadHistory, mergeHistory, pushHistory, saveHistory } from "@/lib/prompt-history";
 
 const NAME = "there";
 
@@ -88,7 +89,10 @@ function homeRevealStyle(visible: boolean): CSSProperties {
   };
 }
 
-function UserBubble({ text }: { text: string }) {
+/* Rows are memoized: a chunk landing in the live turn replaces that one
+ * message's `turn`, and every other row keeps its props — without memo the
+ * whole thread re-rendered (and re-parsed its markdown) per ACP update. */
+const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   return (
     <div className="flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
       <div
@@ -99,9 +103,9 @@ function UserBubble({ text }: { text: string }) {
       </div>
     </div>
   );
-}
+});
 
-function AssistantBody({
+const AssistantBody = memo(function AssistantBody({
   turn,
   onOpenPath,
   onReview,
@@ -114,12 +118,6 @@ function AssistantBody({
   const thinking = turn.status === "thinking";
   const smoothText = useSmoothStream(turn.text);
   const draining = smoothText.length < turn.text.length;
-  // Follow the typewriter tail — the parent's scroll effect tracks the wire
-  // text, which goes quiet while the reveal is still playing out.
-  const articleRef = useRef<HTMLElement>(null);
-  useEffect(() => {
-    if (draining) articleRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
-  }, [smoothText, draining]);
   // "Thought for Ns": the harness stamps `thoughtMs` on the turn as it streams
   // (ACP updates carry no timestamps); a live turn without one yet is timed here.
   const startRef = useRef(Date.now());
@@ -156,7 +154,7 @@ function AssistantBody({
   }));
 
   return (
-    <article ref={articleRef} className="min-w-0" style={{ animation: "fade-up 450ms cubic-bezier(0.23,1,0.32,1) both" }}>
+    <article className="min-w-0" style={{ animation: "fade-up 450ms cubic-bezier(0.23,1,0.32,1) both" }}>
       {/* Keep the header once the model has actually thought (streamed
         * reasoning, or a think long enough to notice): unmounting it when the
         * think ends made the answer jump up into the space it left. */}
@@ -238,7 +236,7 @@ function AssistantBody({
       )}
     </article>
   );
-}
+});
 
 type Msg =
   | { id: number; role: "user"; text: string }
@@ -250,6 +248,32 @@ type Chat = { id: number; title: string | null; messages: Msg[]; model?: string;
 
 function newPageToken(): string {
   return Math.random().toString(36).slice(2, 10);
+}
+
+/** One React commit per animation frame, however many ACP chunks land in
+ * it. The stream delivers `agent_message_chunk`s a few characters at a time
+ * and a state update per chunk was a full render each — the thread jittered
+ * under its own re-renders. Only the newest turn matters; the rest is
+ * superseded before anyone could have seen it. */
+function frameCoalescer<T>(apply: (value: T) => void) {
+  let latest: T | undefined;
+  let frame = 0;
+  const flush = () => {
+    frame = 0;
+    if (latest !== undefined) apply(latest);
+  };
+  return {
+    push(value: T) {
+      latest = value;
+      if (!frame) frame = requestAnimationFrame(flush);
+    },
+    /** Drop whatever is queued; the caller commits the final value itself. */
+    cancel() {
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+      latest = undefined;
+    },
+  };
 }
 
 /** A fresh tab's graff session name. Not `session-…`: that prefix is what the
@@ -267,6 +291,7 @@ function EmptyState({
   models,
   modelKey,
   onModelChange,
+  history,
 }: {
   onSend: (text: string) => void;
   health: Health | null;
@@ -275,6 +300,7 @@ function EmptyState({
   models: PromptModel[];
   modelKey?: string;
   onModelChange: (key: string) => void;
+  history: readonly string[];
 }) {
   const shown = [0, 1, 2].map((i) => STARTER_PROMPTS[(offset + i) % STARTER_PROMPTS.length]);
   const [stage, setStage] = useState(0);
@@ -309,6 +335,7 @@ function EmptyState({
           onModelChange={onModelChange}
           onSend={onSend}
           disabled={health !== null && !health.ok}
+          history={history}
         />
         {health && !health.ok && (
           <p className="mt-3 text-[12.5px] text-orange">
@@ -372,6 +399,12 @@ export default function GraffHarness() {
   const [filesOpen, setFilesOpen] = useState(false);
   const [fileRequest, setFileRequest] = useState<{ path: string; n: number; changes?: boolean } | null>(null);
   const fileReqRef = useRef(0);
+  // Shell-style prompt recall (ArrowUp in the composer), kept per browser so
+  // a new tab or a reload still has the last prompts under the cursor.
+  const [history, setHistory] = useState<string[]>([]);
+  useEffect(() => {
+    setHistory(loadHistory(window.localStorage));
+  }, []);
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -393,6 +426,12 @@ export default function GraffHarness() {
   const setChatModel = (chatId: number, key: string) =>
     setChats((current) => current.map((c) => (c.id === chatId ? { ...c, model: key } : c)));
   const lastAssistant = [...chatThread.messages].reverse().find((m): m is Extract<Msg, { role: "assistant" }> => m.role === "assistant");
+  // A resumed session's prompts came from its file, not this browser; fold
+  // them in so ArrowUp walks the conversation on screen first.
+  const composerHistory = useMemo(
+    () => mergeHistory(history, chatThread.messages.flatMap((m) => (m.role === "user" ? [m.text] : []))),
+    [history, chatThread.messages],
+  );
 
   const adoptCatalog = async (chatId: number) => {
     // What did the agent actually resolve? The picker should show graff's
@@ -471,15 +510,16 @@ export default function GraffHarness() {
     }
   };
 
-  const openPath = (path: string) => {
+  // Stable callbacks: they are props of every memoized row.
+  const openPath = useCallback((path: string) => {
     setFilesOpen(true);
     setFileRequest({ path, n: (fileReqRef.current += 1) });
-  };
+  }, []);
 
-  const openChanges = () => {
+  const openChanges = useCallback(() => {
     setFilesOpen(true);
     setFileRequest({ path: "", n: (fileReqRef.current += 1), changes: true });
-  };
+  }, []);
 
   const changeModel = (key: string) => {
     // New tabs inherit the pick; the active tab respawns its agent with it
@@ -528,18 +568,26 @@ export default function GraffHarness() {
       ),
     );
     setBusyFor(chatId, true);
+    setHistory((current) => {
+      const next = pushHistory(current, trimmed);
+      saveHistory(window.localStorage, next);
+      return next;
+    });
     let turn: AssistantTurn = { ...emptyTurn(), model: chatModel };
     const startedAt = Date.now();
+    const frames = frameCoalescer<AssistantTurn>((next) => patchAssistant(chatId, asstId, next));
     try {
       const id = await requireSession(chatId);
       for await (const update of prompt(handleOf(chatId), id, trimmed)) {
         turn = applyAcpUpdate(turn, update);
         if (turn.thoughtMs === undefined && turn.status !== "thinking") turn = { ...turn, thoughtMs: Date.now() - startedAt };
-        patchAssistant(chatId, asstId, turn);
+        frames.push(turn);
       }
+      frames.cancel();
       turn = finishAcpTurn(turn);
       patchAssistant(chatId, asstId, turn);
     } catch (err) {
+      frames.cancel();
       turn = { ...turn, error: err instanceof Error ? err.message : String(err), status: "error" };
       patchAssistant(chatId, asstId, turn);
     } finally {
@@ -618,23 +666,49 @@ export default function GraffHarness() {
     void openStored(id);
   };
 
-  // A new message glides the thread to the bottom; streaming growth (reasoning,
-  // text, tool rows) follows instantly and only while the reader is already at
-  // the tail. Re-issuing a *smooth* scroll on every chunk restarted the scroll
-  // animation each token — the whole thread juddered while the model thought.
+  // A new message glides the thread to the bottom. After that the tail is
+  // followed by a ResizeObserver on the thread body: every growth — a token,
+  // a tool row, a typewriter frame — pins scrollTop instantly, so there is
+  // no smooth scroll to restart per chunk (that restart was the judder), and
+  // only while the reader is at the tail. Scrolling up to read earlier
+  // history releases the pin until they come back down, so a streaming turn
+  // never yanks the view away from them.
   const messageCount = chatThread.messages.length;
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const stuckRef = useRef(true);
+  const glideUntilRef = useRef(0);
   useEffect(() => {
-    if (!active) return;
     const el = scrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [messageCount, activeId, active]);
+    const body = bodyRef.current;
+    if (!active || !el || !body) return;
+    const onScroll = () => {
+      const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (fromBottom < 48) {
+        stuckRef.current = true;
+        glideUntilRef.current = 0;
+      } else if (performance.now() >= glideUntilRef.current) {
+        // Positions mid-glide are the animation's, not the reader's.
+        stuckRef.current = false;
+      }
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const observer = new ResizeObserver(() => {
+      if (stuckRef.current && performance.now() >= glideUntilRef.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(body);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      observer.disconnect();
+    };
+  }, [active, activeId]);
   useEffect(() => {
     if (!active) return;
     const el = scrollRef.current;
     if (!el) return;
-    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (fromBottom < 160) el.scrollTop = el.scrollHeight;
-  }, [active, lastAssistant?.turn.text, lastAssistant?.turn.reasoning, lastAssistant?.turn.tools.length]);
+    stuckRef.current = true;
+    glideUntilRef.current = performance.now() + 900;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, [messageCount, activeId, active]);
 
   // The sidebar is graff's session directory, newest first, bucketed by day.
   const now = Date.now();
@@ -731,7 +805,7 @@ export default function GraffHarness() {
             {active ? (
               <div className="flex min-h-0 flex-1 flex-col">
                 <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-                  <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
+                  <div ref={bodyRef} className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
                     {chatThread.messages.map((message) =>
                       message.role === "user" ? (
                         <UserBubble key={message.id} text={message.text} />
@@ -752,6 +826,7 @@ export default function GraffHarness() {
                       onModelChange={changeModel}
                       onSend={send}
                       disabled={busy}
+                      history={composerHistory}
                       busy={busy}
                       onStop={() => {
                         const live = sessionsRef.current.get(chatThread.id);
@@ -766,6 +841,7 @@ export default function GraffHarness() {
                 <EmptyState
                   onSend={send}
                   health={health}
+                  history={composerHistory}
                   offset={offset}
                   shuffle={() => setOffset((current) => (current + 3) % STARTER_PROMPTS.length)}
                   models={models}
