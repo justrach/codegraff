@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import Markdown from "@/components/primitives/Markdown";
 import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
@@ -43,10 +43,15 @@ function greeting(): string {
  * Mounted mid-history it starts caught-up, so old messages never replay.
  * Catch-up lands on whitespace so markdown chips/lists don't reflow every
  * mid-token character — that wrap-jitter stacked with scrollIntoView. */
-function useSmoothStream(target: string): string {
+function useSmoothStream(target: string, live: boolean): string {
   const [shown, setShown] = useState(target);
   const shownRef = useRef(target);
   useEffect(() => {
+    if (!live) {
+      shownRef.current = target;
+      setShown(target);
+      return;
+    }
     if (!target.startsWith(shownRef.current)) {
       shownRef.current = target;
       setShown(target);
@@ -76,8 +81,8 @@ function useSmoothStream(target: string): string {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [target]);
-  return shown;
+  }, [target, live]);
+  return live ? shown : target;
 }
 
 /** Pin the thread scroller to its tail without scrollIntoView. WKWebView
@@ -107,7 +112,7 @@ function homeRevealStyle(visible: boolean): CSSProperties {
   };
 }
 
-function UserBubble({ text }: { text: string }) {
+const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   return (
     <div className="flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
       <div
@@ -118,9 +123,9 @@ function UserBubble({ text }: { text: string }) {
       </div>
     </div>
   );
-}
+});
 
-function AssistantBody({
+const AssistantBody = memo(function AssistantBody({
   turn,
   onOpenPath,
   onReview,
@@ -133,10 +138,11 @@ function AssistantBody({
   scroller?: RefObject<HTMLDivElement | null>;
 }) {
   const thinking = turn.status === "thinking";
+  const live = thinking || turn.status === "streaming";
   const blocks = turnBlocks(turn.text, turn.tools);
   const lastText = [...blocks].reverse().find((b) => b.kind === "text");
   const lastTextBody = lastText?.kind === "text" ? lastText.text : "";
-  const smoothText = useSmoothStream(lastTextBody);
+  const smoothText = useSmoothStream(lastTextBody, live);
   const draining = smoothText.length < lastTextBody.length;
   // Follow the typewriter tail — the parent's pin tracks the wire text,
   // which goes quiet while the reveal is still playing out. Pin the
@@ -271,7 +277,7 @@ function AssistantBody({
       )}
     </article>
   );
-}
+});
 
 type Msg =
   | { id: number; role: "user"; text: string }
@@ -504,15 +510,15 @@ export default function GraffHarness() {
     }
   };
 
-  const openPath = (path: string) => {
+  const openPath = useCallback((path: string) => {
     setFilesOpen(true);
     setFileRequest({ path, n: (fileReqRef.current += 1) });
-  };
+  }, []);
 
-  const openChanges = () => {
+  const openChanges = useCallback(() => {
     setFilesOpen(true);
     setFileRequest({ path: "", n: (fileReqRef.current += 1), changes: true });
-  };
+  }, []);
 
   const changeModel = (key: string) => {
     // New tabs inherit the pick; the active tab respawns its agent with it
@@ -565,11 +571,23 @@ export default function GraffHarness() {
     const startedAt = Date.now();
     try {
       const id = await requireSession(chatId);
+      // Paint at most once per frame. ACP text/tool events can arrive dozens
+      // of times per 16ms; each setChats used to re-parse every settled
+      // markdown block in the thread.
+      let paint = 0;
+      const turnRef = { current: turn };
       for await (const update of prompt(handleOf(chatId), id, trimmed)) {
         turn = applyAcpUpdate(turn, update);
         if (turn.thoughtMs === undefined && turn.status !== "thinking") turn = { ...turn, thoughtMs: Date.now() - startedAt };
-        patchAssistant(chatId, asstId, turn);
+        turnRef.current = turn;
+        if (!paint) {
+          paint = requestAnimationFrame(() => {
+            paint = 0;
+            patchAssistant(chatId, asstId, turnRef.current);
+          });
+        }
       }
+      if (paint) cancelAnimationFrame(paint);
       turn = finishAcpTurn(turn);
       patchAssistant(chatId, asstId, turn);
     } catch (err) {
