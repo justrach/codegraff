@@ -312,6 +312,7 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
             \\- [x] Sanitize public errors.
             \\  - Preserve private incident detail.
             \\> Public errors must never expose secrets.
+            \\- Link: **https://github.com/justrach/codegraff/issues/728**
         );
         probe.flushStreamTail();
         out.writeByte('\n') catch {};

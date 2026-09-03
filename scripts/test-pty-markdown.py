@@ -17,24 +17,32 @@ ACCENT = b"\x1b[38;2;5;150;105m"
 
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="graff-md-pty-") as tmp:
-        result = run_to_exit(
+        base_env = {
+            "HOME": tmp,
+            "LMSTUDIO_API_KEY": "local-pty-test",
+            "GRAFF_FLEET": "off",
+            "GRAFF_NO_TELEMETRY": "1",
+        }
+        color_result = run_to_exit(
             GRAFF,
             ["--selftest-markdown", "--no-telemetry"],
             cwd=tmp,
-            env={
-                "HOME": tmp,
-                "LMSTUDIO_API_KEY": "local-pty-test",
-                "GRAFF_FLEET": "off",
-                "GRAFF_NO_TELEMETRY": "1",
-            },
+            env=base_env,
             unset_env=("CODEX_HOME", "NO_COLOR"),
             rows=30,
             cols=100,
             timeout=15.0,
         )
-    if result.timed_out or result.exit_code != 0:
-        raise SystemExit(
-            f"Markdown self-test failed: exit={result.exit_code} timed_out={result.timed_out}"
+        plain_result = run_to_exit(
+            GRAFF,
+            ["--selftest-markdown", "--no-telemetry"],
+            cwd=tmp,
+            env=base_env,
+            unset_env=("CODEX_HOME",),
+            color=False,
+            rows=30,
+            cols=100,
+            timeout=15.0,
         )
     expected = (
         "◆ Gaps",
@@ -47,14 +55,33 @@ def main() -> None:
         "☑ Sanitize public errors.",
         "  ◦ Preserve private incident detail.",
         "│ Public errors must never expose secrets.",
+        "• Link: https://github.com/justrach/codegraff/issues/728",
     )
-    missing = [line for line in expected if line not in result.text]
-    if missing:
-        raise SystemExit(f"Markdown render missing {missing!r}\n--- transcript ---\n{result.text}")
+    for mode, result in (("color", color_result), ("no-color", plain_result)):
+        if result.timed_out or result.exit_code != 0:
+            raise SystemExit(
+                f"Markdown {mode} self-test failed: exit={result.exit_code} "
+                f"timed_out={result.timed_out}"
+            )
+        missing = [line for line in expected if line not in result.text]
+        if missing:
+            raise SystemExit(
+                f"Markdown {mode} render missing {missing!r}\n--- transcript ---\n{result.text}"
+            )
+        link_line = next(
+            (line for line in result.text.splitlines() if "https://github.com/" in line),
+            None,
+        )
+        if link_line != expected[-1]:
+            raise SystemExit(
+                f"Markdown {mode} link line is not exact: {link_line!r}"
+            )
+    if b"\x1b[" in plain_result.raw:
+        raise SystemExit("Markdown no-color render unexpectedly contains ANSI")
     for ansi in (ACCENT, b"\x1b[33m", b"\x1b[32m"):
-        if ansi not in result.raw:
+        if ansi not in color_result.raw:
             raise SystemExit(f"Markdown render missing ANSI style {ansi!r}")
-    print("ok    PTY Markdown headings, lists, tasks, quotes, inline styles, and ANSI")
+    print("ok    PTY Markdown color/no-color links, blocks, inline styles, and ANSI")
 
 
 if __name__ == "__main__":

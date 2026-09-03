@@ -9,6 +9,7 @@ const Io = std.Io;
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
+const deinitMarkdown = @import("agent_render.zig").deinitMarkdown;
 
 const engine_events = @import("engine_events.zig");
 const EngineEvent = engine_events.EngineEvent;
@@ -304,12 +305,63 @@ test "TuiSink renders a plain text delta exactly as the no-color TTY did" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
     var a = testAgent(&aw.writer);
+    defer deinitMarkdown(&a);
     const s = tuiSink(&a);
     s.emit(undefined, .{ .text_delta = .{ .text = "plain\n" } });
     try std.testing.expectEqualStrings("plain\n", aw.writer.buffered());
     // Normal end after streamed text: the separating newline, as before.
     s.emit(undefined, .{ .stream_complete = .{ .streamed_text = true } });
     try std.testing.expectEqualStrings("plain\n\n", aw.writer.buffered());
+}
+
+test "TuiSink excludes bold delimiters from no-color URL output (#729)" {
+    const saved_color = main_mod.use_color;
+    main_mod.use_color = false;
+    defer main_mod.use_color = saved_color;
+    const ansi = @import("ansi.zig");
+    const saved_style = ansi.style;
+    ansi.style = .{};
+    defer ansi.style = saved_style;
+
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+    defer deinitMarkdown(&a);
+    const s = tuiSink(&a);
+
+    s.emit(undefined, .{ .text_delta = .{ .text = "**https://github.com/justrach/codegraff/" } });
+    s.emit(undefined, .{ .text_delta = .{ .text = "issues/728**\n" } });
+    try std.testing.expectEqualStrings(
+        "https://github.com/justrach/codegraff/issues/728\n",
+        aw.writer.buffered(),
+    );
+
+    aw.clearRetainingCapacity();
+    s.emit(undefined, .{ .text_delta = .{ .text = "Issue: **https://github.com/justrach/codegraff/issues/728**.\n" } });
+    try std.testing.expectEqualStrings(
+        "Issue: https://github.com/justrach/codegraff/issues/728.\n",
+        aw.writer.buffered(),
+    );
+}
+
+test "TuiSink preserves a no-color URL ending in a legal star pair (#729)" {
+    const saved_color = main_mod.use_color;
+    main_mod.use_color = false;
+    defer main_mod.use_color = saved_color;
+    const ansi = @import("ansi.zig");
+    const saved_style = ansi.style;
+    ansi.style = .{};
+    defer ansi.style = saved_style;
+
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+    defer deinitMarkdown(&a);
+    const s = tuiSink(&a);
+
+    const url = "https://example.com/path/**";
+    s.emit(undefined, .{ .text_delta = .{ .text = url ++ "\n" } });
+    try std.testing.expectEqualStrings(url ++ "\n", aw.writer.buffered());
 }
 
 const swap: engine_events.ProviderFallback = .{

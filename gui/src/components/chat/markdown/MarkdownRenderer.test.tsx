@@ -28,6 +28,7 @@ const SHIFTED_PAIRING = [
   "**Note:** use x**2 then open **http://localhost:3003**",
   "- **Web:** 2**10 at **http://localhost:3003**",
 ];
+const GITHUB_ISSUE_URL = "https://github.com/justrach/codegraff/issues/728";
 
 function linkTargets(html: string): string[] {
   const targets: string[] = [];
@@ -37,6 +38,16 @@ function linkTargets(html: string): string[] {
     targets.push(match[1] ?? match[2]);
   }
   return targets;
+}
+
+function renderedUrlButtons(html: string): Array<{ label: string; title: string }> {
+  const buttons: Array<{ label: string; title: string }> = [];
+  const pattern = /<button\b[^>]*\btitle="([^"]*)"[^>]*>([^<]*)<\/button>/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(html)) !== null) {
+    buttons.push({ title: match[1], label: match[2] });
+  }
+  return buttons;
 }
 
 test("a stray ** earlier in the line never lands in the link target", () => {
@@ -77,6 +88,41 @@ test("does not truncate a URL whose own tail is a delimiter pair", () => {
   const url = "https://example.com/glob/**";
   const html = renderToStaticMarkup(<MarkdownRenderer text={`See ${url} for details.`} />);
   expect(linkTargets(html)).toContain(url);
+  expect(renderedUrlButtons(html)).toEqual([{ label: url, title: url }]);
+});
+
+test("renders the exact GitHub issue repro with clean visible emphasis", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text={`**${GITHUB_ISSUE_URL}**`} />,
+  );
+
+  expect(html).toContain("font-medium");
+  expect(renderedUrlButtons(html)).toEqual([
+    { label: GITHUB_ISSUE_URL, title: GITHUB_ISSUE_URL },
+  ]);
+  expect(html).not.toContain("**");
+});
+
+test("keeps a bold URL target exact beside its label and punctuation", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text={`Open GitHub issue: **${GITHUB_ISSUE_URL}**.`} />,
+  );
+
+  expect(html).toContain("Open GitHub issue: ");
+  expect(html).toContain("</button></span>.");
+  expect(renderedUrlButtons(html)).toEqual([
+    { label: GITHUB_ISSUE_URL, title: GITHUB_ISSUE_URL },
+  ]);
+});
+
+test("keeps an explicit labeled GitHub link href exact", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text={`Read [issue 728](${GITHUB_ISSUE_URL}).`} />,
+  );
+
+  expect(html).toContain(`href="${GITHUB_ISSUE_URL}"`);
+  expect(html).toContain(">issue 728</a>.");
+  expect(html).not.toContain(`${GITHUB_ISSUE_URL}**`);
 });
 
 test("keeps a bold-wrapped URL bold and its target clean", () => {

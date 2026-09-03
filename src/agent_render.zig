@@ -47,6 +47,13 @@ pub fn streamMarkdown(self: *Agent, text: []const u8) void {
     if (!self.sub and !main_mod.json_mode) _ = tick_gate.setLineStart(atLineStart(self));
 }
 
+pub fn deinitMarkdown(self: *Agent) void {
+    self.md_buf.deinit(self.gpa);
+    self.md_word.deinit(self.gpa);
+    for (self.md_table.items) |row| self.gpa.free(row);
+    self.md_table.deinit(self.gpa);
+}
+
 /// True when the renderer has nothing painted on the current row: it committed
 /// its last line with a newline and holds no prefix. A still-held/classifying
 /// line has printed nothing yet but counts as mid-line anyway — a tick delayed
@@ -57,7 +64,7 @@ pub fn atLineStart(self: *const Agent) bool {
 
 pub const MdKind = enum { classify, hold, prose, header, fenced, pre };
 
-pub const MdSpan = enum { normal, star, bold, bold_star, code };
+pub const MdSpan = enum { normal, star, bold_empty, bold, bold_star, code };
 
 const TaskItem = struct { checked: bool, text: []const u8 };
 
@@ -250,10 +257,16 @@ pub fn mdSpanByte(self: *Agent, w: *Io.Writer, b: u8) void {
         },
         .star => if (b == '*') {
             self.mdStyle(w, style.bold);
-            self.md_span = .bold;
+            self.md_span = .bold_empty;
         } else {
             self.mdWrapByte(w, '*'); // lone star is literal
             self.md_span = .normal;
+            self.mdSpanByte(w, b);
+        },
+        .bold_empty => if (b == '*') {
+            self.md_span = .bold_star;
+        } else {
+            self.md_span = .bold;
             self.mdSpanByte(w, b);
         },
         .bold => switch (b) {
@@ -339,6 +352,10 @@ pub fn mdSpanEnd(self: *Agent, w: *Io.Writer) void {
     switch (self.md_span) {
         .normal => {},
         .star => w.writeByte('*') catch {},
+        .bold_empty => {
+            w.writeAll(style.reset) catch {};
+            w.writeAll("**") catch {};
+        },
         .bold, .code => w.writeAll(style.reset) catch {},
         .bold_star => {
             w.writeByte('*') catch {};

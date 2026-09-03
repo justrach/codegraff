@@ -6,6 +6,7 @@
 const std = @import("std");
 
 const diff = @import("diff.zig");
+const dump = @import("dump.zig");
 const syntax = @import("syntax.zig");
 const theme_mod = @import("theme.zig");
 
@@ -44,6 +45,59 @@ test "render paints headers, code, bold, and bullets" {
     try std.testing.expect(std.mem.indexOf(u8, text, "bold") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "▏ ") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, theme_mod.emerald) != null);
+}
+
+test "render keeps the issue URL exact while hiding bold delimiters" {
+    const url = "https://github.com/justrach/codegraff/issues/728";
+    const out = try render(std.testing.allocator, "**https://github.com/justrach/codegraff/issues/728**", theme_mod.emerald);
+    defer std.testing.allocator.free(out);
+    const visible = try dump.visible(std.testing.allocator, out);
+    defer std.testing.allocator.free(visible);
+    try std.testing.expectEqualStrings(url, visible);
+    try std.testing.expect(std.mem.indexOf(u8, visible, "**") == null);
+}
+
+test "renderThemed keeps the issue URL exact while hiding bold delimiters" {
+    const url = "https://github.com/justrach/codegraff/issues/728";
+    const out = try renderThemed(std.testing.allocator, "**https://github.com/justrach/codegraff/issues/728**", theme_mod.of(.night), 80);
+    defer std.testing.allocator.free(out);
+    const visible = try dump.visible(std.testing.allocator, out);
+    defer std.testing.allocator.free(visible);
+    try std.testing.expectEqualStrings(url, visible);
+    try std.testing.expect(std.mem.indexOf(u8, visible, "**") == null);
+}
+
+test "render keeps a label before a bold URL" {
+    const out = try render(std.testing.allocator, "Issue #728: **https://github.com/justrach/codegraff/issues/728**", theme_mod.emerald);
+    defer std.testing.allocator.free(out);
+    const visible = try dump.visible(std.testing.allocator, out);
+    defer std.testing.allocator.free(visible);
+    try std.testing.expectEqualStrings("Issue #728: https://github.com/justrach/codegraff/issues/728", visible);
+    try std.testing.expect(std.mem.indexOf(u8, visible, "**") == null);
+}
+
+test "renderThemed leaves punctuation outside a bold URL" {
+    const out = try renderThemed(std.testing.allocator, "See **https://github.com/justrach/codegraff/issues/728**, then continue.", theme_mod.of(.night), 80);
+    defer std.testing.allocator.free(out);
+    const visible = try dump.visible(std.testing.allocator, out);
+    defer std.testing.allocator.free(visible);
+    try std.testing.expectEqualStrings("See https://github.com/justrach/codegraff/issues/728, then continue.", visible);
+    try std.testing.expect(std.mem.indexOf(u8, visible, "**") == null);
+}
+
+test "render and renderThemed preserve an unwrapped URL ending in /**" {
+    const url = "https://github.com/justrach/codegraff/issues/728/**";
+    const plain = try render(std.testing.allocator, url, theme_mod.emerald);
+    defer std.testing.allocator.free(plain);
+    const plain_visible = try dump.visible(std.testing.allocator, plain);
+    defer std.testing.allocator.free(plain_visible);
+    try std.testing.expectEqualStrings(url, plain_visible);
+
+    const themed = try renderThemed(std.testing.allocator, url, theme_mod.of(.night), 80);
+    defer std.testing.allocator.free(themed);
+    const themed_visible = try dump.visible(std.testing.allocator, themed);
+    defer std.testing.allocator.free(themed_visible);
+    try std.testing.expectEqualStrings(url, themed_visible);
 }
 
 test "the code band stays open to the row end and is released on the next line" {
