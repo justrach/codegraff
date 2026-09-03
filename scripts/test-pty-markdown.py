@@ -55,6 +55,11 @@ def main() -> None:
         "☑ Sanitize public errors.",
         "  ◦ Preserve private incident detail.",
         "│ Public errors must never expose secrets.",
+        "• Wrapped: https://example.test/a https://example.test/b",
+        "• Wrapped: https://example.test/c https://example.test/d",
+        "• Wrapped: https://example.test/e https://example.test/f",
+        "• URL data: https://example.test/glob/** https://example.test/path/__",
+        "• URL data: https://example.test/path/~~ https://example.test/a**b",
         "• Link: https://github.com/justrach/codegraff/issues/728",
     )
     for mode, result in (("color", color_result), ("no-color", plain_result)):

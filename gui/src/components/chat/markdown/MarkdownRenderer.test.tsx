@@ -50,6 +50,41 @@ function renderedUrlButtons(html: string): Array<{ label: string; title: string 
   return buttons;
 }
 
+const WRAPPED_URL = "https://example.com/docs";
+const MARKDOWN_URL_WRAPPERS = ["*", "_", "__", "**", "~~"] as const;
+
+test("linkifies URLs inside Markdown emphasis wrappers without delimiters", () => {
+  const htmlByWrapper = MARKDOWN_URL_WRAPPERS.map((wrapper) =>
+    renderToStaticMarkup(<MarkdownRenderer text={`${wrapper}${WRAPPED_URL}${wrapper}`} />),
+  );
+
+  expect(htmlByWrapper.flatMap(renderedUrlButtons)).toEqual(
+    MARKDOWN_URL_WRAPPERS.map(() => ({ label: WRAPPED_URL, title: WRAPPED_URL })),
+  );
+  for (const [html, wrapper] of htmlByWrapper.map((html, index) => [
+    html,
+    MARKDOWN_URL_WRAPPERS[index],
+  ] as const)) {
+    expect(html).not.toContain(`${wrapper}${WRAPPED_URL}`);
+    expect(html).not.toContain(`${WRAPPED_URL}${wrapper}`);
+  }
+});
+
+test("keeps brackets and parentheses outside rendered URL targets", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text={`[${WRAPPED_URL}] (${WRAPPED_URL})`} />,
+  );
+
+  expect(renderedUrlButtons(html)).toEqual([
+    { label: WRAPPED_URL, title: WRAPPED_URL },
+    { label: WRAPPED_URL, title: WRAPPED_URL },
+  ]);
+  expect(html).toContain(`[<button`);
+  expect(html).toContain(`</button>]`);
+  expect(html).toContain(`(<button`);
+  expect(html).toContain(`</button>)`);
+});
+
 test("a stray ** earlier in the line never lands in the link target", () => {
   for (const text of SHIFTED_PAIRING) {
     const html = renderToStaticMarkup(<MarkdownRenderer text={text} />);
@@ -122,6 +157,7 @@ test("keeps an explicit labeled GitHub link href exact", () => {
 
   expect(html).toContain(`href="${GITHUB_ISSUE_URL}"`);
   expect(html).toContain(">issue 728</a>.");
+  expect(linkTargets(html)).toEqual([GITHUB_ISSUE_URL]);
   expect(html).not.toContain(`${GITHUB_ISSUE_URL}**`);
 });
 

@@ -15,6 +15,7 @@ const Agent = agent_mod.Agent;
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
+const markdown_url = @import("markdown_url.zig");
 
 const terminal = @import("term.zig");
 const termCols = terminal.termCols;
@@ -248,7 +249,12 @@ pub fn mdStartProse(self: *Agent, w: *Io.Writer) void {
 pub fn mdSpanByte(self: *Agent, w: *Io.Writer, b: u8) void {
     switch (self.md_span) {
         .normal => switch (b) {
-            '*' => self.md_span = .star,
+            '*' => {
+                if (markdown_url.containsHttp(self.md_word.items))
+                    self.mdWrapByte(w, b)
+                else
+                    self.md_span = .star;
+            },
             '`' => {
                 self.mdStyle(w, style.yellow);
                 self.md_span = .code;
@@ -321,14 +327,18 @@ pub fn mdStyle(self: *Agent, w: *Io.Writer, s: []const u8) void {
 
 pub fn mdFlushWord(self: *Agent, w: *Io.Writer) void {
     if (self.md_word.items.len == 0) return;
-    const vis = self.md_word_vis;
+    const clean = markdown_url.unwrapToken(self.md_word.items);
+    const vis = self.md_word_vis - if (clean) |match| match.removed else 0;
     const width = self.mdWidth();
     // Break before a word that would cross the edge — unless the line is
     // already fresh or the word can't fit any line (URLs: let the
     // terminal wrap it rather than shred it).
     if (self.md_col + vis > width and self.md_col > self.md_indent and self.md_indent + vis <= width)
         self.mdWrapBreak(w);
-    w.writeAll(self.md_word.items) catch {};
+    if (clean) |match| {
+        w.writeAll(match.url) catch {};
+        w.writeAll(match.suffix) catch {};
+    } else w.writeAll(self.md_word.items) catch {};
     self.md_col += vis;
     self.md_word.clearRetainingCapacity();
     self.md_word_vis = 0;
@@ -348,10 +358,14 @@ pub fn mdWidth(self: *Agent) usize {
 /// Settle the span machine at line end: pending markers print literally,
 /// open spans close their styling.
 pub fn mdSpanEnd(self: *Agent, w: *Io.Writer) void {
+    if (self.md_span == .star) {
+        self.mdWrapByte(w, '*');
+        self.md_span = .normal;
+    }
     self.mdFlushWord(w);
     switch (self.md_span) {
         .normal => {},
-        .star => w.writeByte('*') catch {},
+        .star => unreachable,
         .bold_empty => {
             w.writeAll(style.reset) catch {};
             w.writeAll("**") catch {};
@@ -411,40 +425,8 @@ pub fn countPrefix(s: []const u8, c: u8) usize {
     return i;
 }
 
-/// Columns a cell occupies once rendered: matched **bold**/`code` markers
-/// drop, and multi-byte UTF-8 sequences count as one column (wide CJK
-/// glyphs are approximated as one).
-pub fn inlineVisibleLen(s: []const u8) usize {
-    var i: usize = 0;
-    var n: usize = 0;
-    while (i < s.len) {
-        if (i + 1 < s.len and s[i] == '*' and s[i + 1] == '*') {
-            if (std.mem.indexOfPos(u8, s, i + 2, "**")) |end| {
-                n += codepointCount(s[i + 2 .. end]);
-                i = end + 2;
-                continue;
-            }
-        }
-        if (s[i] == '`') {
-            if (std.mem.indexOfScalarPos(u8, s, i + 1, '`')) |end| {
-                n += codepointCount(s[i + 1 .. end]);
-                i = end + 1;
-                continue;
-            }
-        }
-        if ((s[i] & 0xC0) != 0x80) n += 1;
-        i += 1;
-    }
-    return n;
-}
-
-pub fn codepointCount(s: []const u8) usize {
-    var n: usize = 0;
-    for (s) |b| {
-        if ((b & 0xC0) != 0x80) n += 1;
-    }
-    return n;
-}
+pub const inlineVisibleLen = markdown_url.inlineVisibleLen;
+pub const codepointCount = markdown_url.codepointCount;
 
 /// Flush the trailing partial line at stream end (no forced newline — the
 /// caller adds the separating newline), and reset fence state.
@@ -560,6 +542,21 @@ pub fn isRule(body: []const u8) bool {
 pub fn renderInline(w: *Io.Writer, s: []const u8) void {
     var i: usize = 0;
     while (i < s.len) {
+        if (s[i] == '*' or s[i] == '_' or s[i] == '~' or s[i] == '`' or s[i] == 'h') {
+            var token_end = i;
+            while (token_end < s.len and s[token_end] != ' ') token_end += 1;
+            if (markdown_url.unwrapToken(s[i..token_end])) |match| {
+                w.writeAll(match.url) catch {};
+                w.writeAll(match.suffix) catch {};
+                i = token_end;
+                continue;
+            }
+            if (std.mem.startsWith(u8, s[i..], "http://") or std.mem.startsWith(u8, s[i..], "https://")) {
+                w.writeAll(s[i..token_end]) catch {};
+                i = token_end;
+                continue;
+            }
+        }
         if (i + 1 < s.len and s[i] == '*' and s[i + 1] == '*') {
             if (std.mem.indexOfPos(u8, s, i + 2, "**")) |end| {
                 w.print("{s}{s}{s}", .{ style.bold, s[i + 2 .. end], style.reset }) catch {};

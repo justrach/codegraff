@@ -100,6 +100,58 @@ test "render and renderThemed preserve an unwrapped URL ending in /**" {
     try std.testing.expectEqualStrings(url, themed_visible);
 }
 
+fn expectVisible(out: []const u8, expected: []const u8) !void {
+    const visible = try dump.visible(std.testing.allocator, out);
+    defer std.testing.allocator.free(visible);
+    try std.testing.expectEqualStrings(expected, visible);
+}
+
+test "render URL wrappers as clean visible text" {
+    const url = "https://github.com/justrach/codegraff/issues/728";
+    const cases = [_]struct { source: []const u8, expected: []const u8 }{
+        .{ .source = "*" ++ url ++ "*", .expected = url },
+        .{ .source = "**" ++ url ++ "**", .expected = url },
+        .{ .source = "_" ++ url ++ "_", .expected = url },
+        .{ .source = "__" ++ url ++ "__", .expected = url },
+        .{ .source = "~~" ++ url ++ "~~", .expected = url },
+        .{ .source = "`" ++ url ++ "`", .expected = url },
+        // Independent spans are the mixed form supported by the TUI renderer.
+        .{ .source = "**" ++ url ++ "** and _" ++ url ++ "_ and `" ++ url ++ "`", .expected = url ++ " and " ++ url ++ " and " ++ url },
+        .{ .source = "See **" ++ url ++ "**, then continue.", .expected = "See " ++ url ++ ", then continue." },
+    };
+
+    for (cases) |case| {
+        const plain = try render(std.testing.allocator, case.source, theme_mod.emerald);
+        defer std.testing.allocator.free(plain);
+        try expectVisible(plain, case.expected);
+
+        const themed = try renderThemed(std.testing.allocator, case.source, theme_mod.of(.night), 120);
+        defer std.testing.allocator.free(themed);
+        try expectVisible(themed, case.expected);
+    }
+}
+
+test "render and renderThemed preserve marker text in unwrapped URLs" {
+    const cases = [_][]const u8{
+        "See https://example.com/path/** followed by prose.",
+        "https://example.com/path/__",
+        "https://example.com/path/~~",
+        "https://example.com/search?q=*",
+        "https://docs.python.org/3/reference/datamodel.html#object.__init__",
+        "https://example.com/path/a**b",
+    };
+
+    for (cases) |url| {
+        const plain = try render(std.testing.allocator, url, theme_mod.emerald);
+        defer std.testing.allocator.free(plain);
+        try expectVisible(plain, url);
+
+        const themed = try renderThemed(std.testing.allocator, url, theme_mod.of(.night), 120);
+        defer std.testing.allocator.free(themed);
+        try expectVisible(themed, url);
+    }
+}
+
 test "the code band stays open to the row end and is released on the next line" {
     const th = theme_mod.of(.night);
     const code_bg = syntax.codeBg(false);

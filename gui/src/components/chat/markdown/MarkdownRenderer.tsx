@@ -147,9 +147,21 @@ function renderInline(nodes: MdInline[], workspacePath?: string | null): ReactNo
           </span>
         );
       case "em":
-        return <em key={index}>{renderInline(node.children, workspacePath)}</em>;
+        return (
+          <em key={index}>
+            <ChatInlineChildren workspacePath={workspacePath}>
+              {renderInline(node.children, workspacePath)}
+            </ChatInlineChildren>
+          </em>
+        );
       case "del":
-        return <del key={index}>{renderInline(node.children, workspacePath)}</del>;
+        return (
+          <del key={index}>
+            <ChatInlineChildren workspacePath={workspacePath}>
+              {renderInline(node.children, workspacePath)}
+            </ChatInlineChildren>
+          </del>
+        );
       case "code":
         return <code key={index}>{node.value}</code>;
       case "math":

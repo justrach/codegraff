@@ -312,6 +312,11 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
             \\- [x] Sanitize public errors.
             \\  - Preserve private incident detail.
             \\> Public errors must never expose secrets.
+            \\- Wrapped: *https://example.test/a* **https://example.test/b**
+            \\- Wrapped: _https://example.test/c_ __https://example.test/d__
+            \\- Wrapped: ~~https://example.test/e~~ `https://example.test/f`
+            \\- URL data: https://example.test/glob/** https://example.test/path/__
+            \\- URL data: https://example.test/path/~~ https://example.test/a**b
             \\- Link: **https://github.com/justrach/codegraff/issues/728**
         );
         probe.flushStreamTail();

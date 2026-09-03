@@ -314,37 +314,50 @@ test "TuiSink renders a plain text delta exactly as the no-color TTY did" {
     try std.testing.expectEqualStrings("plain\n\n", aw.writer.buffered());
 }
 
-test "TuiSink excludes bold delimiters from no-color URL output (#729)" {
-    const saved_color = main_mod.use_color;
-    main_mod.use_color = false;
-    defer main_mod.use_color = saved_color;
-    const ansi = @import("ansi.zig");
-    const saved_style = ansi.style;
-    ansi.style = .{};
-    defer ansi.style = saved_style;
+const UrlSettlement = enum { newline, stream_complete };
+const UrlDeltaCase = struct {
+    chunks: []const []const u8,
+    want_line: []const u8,
+};
 
+const url_delta_cases = [_]UrlDeltaCase{
+    // Direct wrappers: their punctuation remains visible but outside the URL.
+    .{ .chunks = &.{ "*", "https://exam", "ple.com/a", "*." }, .want_line = "https://example.com/a.\n" },
+    .{ .chunks = &.{ "*", "*https://example.com", "/b*", "*," }, .want_line = "https://example.com/b,\n" },
+    .{ .chunks = &.{ "_https", "://example.com/c_", ";" }, .want_line = "https://example.com/c;\n" },
+    .{ .chunks = &.{ "_", "_https://example.com/d", "_", "_:" }, .want_line = "https://example.com/d:\n" },
+    .{ .chunks = &.{ "~", "~https://example.com/e~", "~!" }, .want_line = "https://example.com/e!\n" },
+    .{ .chunks = &.{ "`https://", "example.com/f", "`?" }, .want_line = "https://example.com/f?\n" },
+
+    // Without an opener, legal marker tails and interiors belong to the URL.
+    .{ .chunks = &.{ "https://example.com/gl", "ob/**", " next" }, .want_line = "https://example.com/glob/** next\n" },
+    .{ .chunks = &.{ "https://example.com/path/", "__" }, .want_line = "https://example.com/path/__\n" },
+    .{ .chunks = &.{ "https://example.com/path/~", "~" }, .want_line = "https://example.com/path/~~\n" },
+    .{ .chunks = &.{ "https://example.com/search?", "q=*" }, .want_line = "https://example.com/search?q=*\n" },
+    .{ .chunks = &.{ "https://docs.python.org/3/reference/", "datamodel.html#object.__init__" }, .want_line = "https://docs.python.org/3/reference/datamodel.html#object.__init__\n" },
+    .{ .chunks = &.{ "https://example.com/a*", "*b" }, .want_line = "https://example.com/a**b\n" },
+};
+
+fn expectUrlDeltaCase(settlement: UrlSettlement, c: UrlDeltaCase) !void {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
     var a = testAgent(&aw.writer);
     defer deinitMarkdown(&a);
     const s = tuiSink(&a);
 
-    s.emit(undefined, .{ .text_delta = .{ .text = "**https://github.com/justrach/codegraff/" } });
-    s.emit(undefined, .{ .text_delta = .{ .text = "issues/728**\n" } });
-    try std.testing.expectEqualStrings(
-        "https://github.com/justrach/codegraff/issues/728\n",
-        aw.writer.buffered(),
-    );
-
-    aw.clearRetainingCapacity();
-    s.emit(undefined, .{ .text_delta = .{ .text = "Issue: **https://github.com/justrach/codegraff/issues/728**.\n" } });
-    try std.testing.expectEqualStrings(
-        "Issue: https://github.com/justrach/codegraff/issues/728.\n",
-        aw.writer.buffered(),
-    );
+    for (c.chunks) |chunk| s.emit(undefined, .{ .text_delta = .{ .text = chunk } });
+    switch (settlement) {
+        .newline => s.emit(undefined, .{ .text_delta = .{ .text = "\n" } }),
+        .stream_complete => s.emit(undefined, .{ .stream_complete = .{ .streamed_text = false } }),
+    }
+    const want = switch (settlement) {
+        .newline => c.want_line,
+        .stream_complete => c.want_line[0 .. c.want_line.len - 1],
+    };
+    try std.testing.expectEqualStrings(want, aw.writer.buffered());
 }
 
-test "TuiSink preserves a no-color URL ending in a legal star pair (#729)" {
+test "TuiSink settles no-color URL markers outside visible targets (#729)" {
     const saved_color = main_mod.use_color;
     main_mod.use_color = false;
     defer main_mod.use_color = saved_color;
@@ -353,15 +366,10 @@ test "TuiSink preserves a no-color URL ending in a legal star pair (#729)" {
     ansi.style = .{};
     defer ansi.style = saved_style;
 
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var a = testAgent(&aw.writer);
-    defer deinitMarkdown(&a);
-    const s = tuiSink(&a);
-
-    const url = "https://example.com/path/**";
-    s.emit(undefined, .{ .text_delta = .{ .text = url ++ "\n" } });
-    try std.testing.expectEqualStrings(url ++ "\n", aw.writer.buffered());
+    for (url_delta_cases) |c| {
+        try expectUrlDeltaCase(.newline, c);
+        try expectUrlDeltaCase(.stream_complete, c);
+    }
 }
 
 const swap: engine_events.ProviderFallback = .{

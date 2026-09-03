@@ -118,22 +118,27 @@ function markdownClosingDelimiterBefore(text: string, start: number): string | n
   return [...opening].reverse().join("");
 }
 
-/**
- * Does the text in front of the URL contain a run that could have *opened* this
- * emphasis pair? A delimiter run only opens when a non-space follows it, so
- * `**Note: see ` opens but `2 ** 3 ` does not.
+/** Track whether this delimiter pair is still open at the URL boundary.
+ * Closed earlier spans must not authorize trimming legal marker bytes from a
+ * later URL (`**done** https://example.test/glob/**`).
  */
 function hasEmphasisOpenerBefore(before: string, pair: string): boolean {
+  let open = false;
   let index = before.indexOf(pair);
   while (index >= 0) {
+    const previous = before[index - 1];
     const next = before[index + pair.length];
-    if (next != null && !/\s/u.test(next)) {
-      return true;
+    const canOpen = next != null && !/\s/u.test(next);
+    const canClose = previous != null && !/\s/u.test(previous);
+    if (open && canClose) {
+      open = false;
+    } else if (!open && canOpen) {
+      open = true;
     }
-    index = before.indexOf(pair, index + 1);
+    index = before.indexOf(pair, index + pair.length);
   }
 
-  return false;
+  return open;
 }
 
 /**
