@@ -72,6 +72,7 @@ record only when you need the evidence or the edge cases.
 | [0059](0059-saved-session-discovery-is-device-scoped.md) | `/resume` and `/sessions` list cwd then `~/.graff/sessions`; resume keeps tools in the current cwd. |
 | [0060](0060-named-source-gate-is-per-unanswered-mention.md) | The named-source nudge is per unanswered mention; identical user turns do not replay (#714). |
 | [0061](0061-tool-only-turns-narrate-and-ask-in-band.md) | Heads-up text rides in the same response as the tool calls; a choice for the user is an `ask_user` call; a job exit the model already read never wakes it. |
+| [0063](0063-unsourced-cancel-is-the-harness.md) | Every cancel records its source; a turn cancelled with no recorded source is labelled a harness cancel, never a user interrupt, and the source lands in the trace (#728). |
 
 ## When to write one
 
