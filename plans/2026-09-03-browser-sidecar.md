@@ -52,7 +52,17 @@ and hit-tests it in the pane. Hover and pin are local and instant; the
 map refreshes 350 ms after a scroll settles, every 2.5 s, and on
 navigation. Pins are stored in page coordinates against the map's scroll
 offset, so they stay on their element when the page scrolls, and the
-wheel is forwarded in both modes. The injected overlay stays the right
+wheel is forwarded in both modes. Forwarded as a script `scrollBy` on the
+innermost scrollable box under the pointer, not as Kuri's `/mouse/wheel`:
+that CDP `mouseWheel` dispatch fails outright on some pages (Hacker News
+among them), and a wheel that does nothing reads as a broken pane.
+
+Two Kuri facts this surfaced: it segfaults in `CdpClient.send` when two
+HTTP connections drive one tab at once (the route now serializes requests
+per chat, and a dead Kuri is respawned with the tab put back on its last
+address), and its Chrome can outlive it (the supervisor reaps the private
+profile's processes on stop, on unexpected exit, and before a spawn). Both
+are worth fixing in Kuri itself. The injected overlay stays the right
 answer for a *headed* Chrome window the user clicks in directly; that is
 a later step.
 

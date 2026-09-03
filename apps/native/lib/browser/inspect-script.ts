@@ -141,6 +141,33 @@ export function mapExpression(): string {
   return compact(MAP_SOURCE);
 }
 
+/** Scroll the innermost scrollable box under a point, else the page.
+ * Kuri's `/mouse/wheel` (CDP `Input.dispatchMouseEvent` mouseWheel) fails
+ * on some pages, and a wheel that does nothing is the fastest way to make
+ * the pane feel broken; scrolling by script never fails. */
+const SCROLL_SOURCE = String.raw`(function (x, y, dx, dy) {
+  var el = document.elementFromPoint(x, y);
+  while (el && el !== document.body && el !== document.documentElement) {
+    var s = getComputedStyle(el);
+    if (/(auto|scroll)/.test(s.overflowY + s.overflowX) && (el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1)) {
+      var before = el.scrollTop + el.scrollLeft;
+      el.scrollBy(dx, dy);
+      if (el.scrollTop + el.scrollLeft !== before) return "box";
+    }
+    el = el.parentElement;
+  }
+  window.scrollBy(dx, dy);
+  return "page";
+})(__X__, __Y__, __DX__, __DY__)`;
+
+export function scrollExpression(x: number, y: number, dx: number, dy: number): string {
+  return compact(SCROLL_SOURCE)
+    .replace("__X__", String(Math.round(x)))
+    .replace("__Y__", String(Math.round(y)))
+    .replace("__DX__", String(Math.round(dx)))
+    .replace("__DY__", String(Math.round(dy)));
+}
+
 /** The same lookup, rect only: what hover needs at ten calls a second. */
 export const HOVER_SOURCE = String.raw`(function (x, y) {
   var el = document.elementFromPoint(x, y);

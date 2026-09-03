@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { matchRef, parseSnapshotRefs, type PinElement } from "@/lib/browser/annotations";
-import { hoverExpression, inspectExpression, mapExpression } from "@/lib/browser/inspect-script";
+import { hoverExpression, inspectExpression, mapExpression, scrollExpression } from "@/lib/browser/inspect-script";
 import { ensureKuri, kuriAddress, kuriJson, kuriState, q, stopKuri } from "@/lib/browser/kuri-supervisor";
 import { normalizeUrl } from "@/lib/browser/url";
 
@@ -238,9 +238,8 @@ async function handle(chat: string, method: string, params: Record<string, unkno
             await kuriJson(`/mouse/up${q({ tab_id: tab.id, x, y, button })}`);
             break;
           case "wheel":
-            await kuriJson(
-              `/mouse/wheel${q({ tab_id: tab.id, x, y, deltaX: Math.round(num(params.deltaX)), deltaY: Math.round(num(params.deltaY)) })}`,
-            );
+            // Not /mouse/wheel: see scrollExpression.
+            await evaluate<string>(tab, scrollExpression(x, y, num(params.deltaX), num(params.deltaY)));
             break;
           case "key": {
             const key = String(params.key ?? "");
