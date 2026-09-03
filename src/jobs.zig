@@ -397,9 +397,8 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
 pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
     const deadline = job_wait.resolveDeadline(wait_ms);
     var waited: u64 = 0;
-    // #607: one dim chrome line per silence threshold so a long blocking wait
-    // never reads as a hang. ADR 0010 keeps the wait itself single-hop.
-    var still = tool_pulse.Pulse{};
+    var interrupted = false; // Esc: report what was waited, not the 10h cap (ADR 0061)
+    var still = tool_pulse.Pulse{}; // #607: dim chrome per silence threshold; ADR 0010 keeps the wait single-hop
     while (true) {
         g_jobs.mutex.lockUncancelable(io);
         const job = g_jobs.find(id) orelse {
@@ -407,12 +406,12 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             return .{ .text = try std.fmt.allocPrint(gpa, "no background job {d} — it may never have started; /jobs lists them", .{id}), .is_error = true };
         };
         const fresh = job.buf.items[job.cursor..];
-        if (job.done or waited >= deadline) {
+        if (job.done or interrupted or waited >= deadline) {
             var aw: Io.Writer.Allocating = .init(gpa);
             errdefer aw.deinit();
             const w = &aw.writer;
             if (!job.done) {
-                try w.print("[job {d}: running · {d}s elapsed — you are notified on exit; do not call bash_output again]", .{ id, waited / 1000 });
+                try job_notify.printRunning(w, id, waited, interrupted);
             } else if (job.killed) {
                 try w.print("[job {d}: killed]", .{id});
             } else if (job.exit_code) |c| {
@@ -431,16 +430,17 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
                 try w.writeAll("\n(no new output)");
             }
             job.cursor = job.buf.items.len;
+            if (job.done) job_notify.dismiss(io, id); // the exit was just read here; no wake for it (ADR 0061)
             g_jobs.mutex.unlock(io);
             return .{ .text = try aw.toOwnedSlice() };
         }
         g_jobs.mutex.unlock(io);
         if (Agent.esc_cancel.load(.acquire)) {
-            waited = deadline; // render current state on the next pass
+            interrupted = true; // render current state on the next pass
             continue;
         }
         io.sleep(.fromMilliseconds(100), .awake) catch {
-            waited = deadline;
+            interrupted = true;
             continue;
         };
         waited += 100;
@@ -472,6 +472,7 @@ pub fn jobKill(gpa: Allocator, io: Io, id: u32) !ToolOutput {
             g_jobs.mutex.lockUncancelable(io);
             defer g_jobs.mutex.unlock(io);
             const unread = if (g_jobs.find(id)) |job| job.buf.items.len - job.cursor else 0;
+            job_notify.dismiss(io, id); // the model just learned the job is dead (ADR 0061)
             return .{ .text = try std.fmt.allocPrint(gpa, "job {d} killed ({d} unread byte(s) — bash_output reads them)", .{ id, unread }) };
         }
         io.sleep(.fromMilliseconds(100), .awake) catch break;
