@@ -47,6 +47,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .strip = lean_release,
+            // Linux cross-builds (x86_64-linux for in-container evals) must say
+            // libc explicitly; macOS resolves it implicitly and never notices.
+            .link_libc = true,
         }),
     });
     exe.root_module.addOptions("build_options", opts);
@@ -94,6 +97,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true, // workspace_switch reaches std.c.getcwd (#721); same as the exe
         }),
         .filters = test_filters,
     });
@@ -191,6 +195,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .strip = lean_release,
+            .link_libc = true,
         }),
     });
     tui_exe.root_module.addImport("models_rank", models_rank_mod);
