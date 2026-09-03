@@ -140,7 +140,42 @@ def _parse_opencode_json(stdout):
     return answer, usage
 
 
-def parse_answer_and_usage(harness, stdout, stderr):
+def _parse_gemini_json(stdout):
+    answer = ""
+    usage = {}
+    idx = stdout.find("{")
+    if idx != -1:
+        try:
+            data = json.loads(stdout[idx:])
+            answer = (data.get("response") or "").strip()
+            stats = data.get("stats") or {}
+            models = stats.get("models") or {}
+            tin, tread, tout, requests = 0, 0, 0, 0
+            for mdata in models.values():
+                tok = mdata.get("tokens") or {}
+                tin += int(tok.get("input") or 0)
+                tread += int(tok.get("cached") or 0)
+                tout += int(tok.get("candidates") or 0) + int(tok.get("thoughts") or 0)
+                api = mdata.get("api") or {}
+                requests += int(api.get("totalRequests") or 0)
+            tools = stats.get("tools") or {}
+            calls = int(tools.get("totalCalls") or 0)
+            if not calls and requests > 0:
+                calls = requests
+            usage = {
+                "calls": calls,
+                "in": tin + tread,
+                "cached": tread,
+                "out": tout,
+            }
+        except json.JSONDecodeError:
+            pass
+    if not answer:
+        answer = stdout.strip()
+    return answer, usage
+
+
+def parse_answer_and_usage(harness, stdout, stderr, sandbox=""):
     answer, usage = stdout.strip(), {}
     if harness["answer"] == "grok-stream":
         answer = ""
@@ -194,6 +229,44 @@ def parse_answer_and_usage(harness, stdout, stderr):
                  "out": tout, "cost_usd": round(cost, 6)}
     if harness["answer"] == "opencode-json":
         answer, usage = _parse_opencode_json(stdout)
+    if harness["answer"] == "gemini-json":
+        answer, usage = _parse_gemini_json(stdout)
+    if harness["answer"] == "muse" or harness.get("usage") == "muse":
+        answer = stdout.strip()
+        usage = {}
+        # Sidecar written by graff-evals/muse.sh: .muse-usage.json + template-hashed model task log
+        import glob, json as _json, os as _os, subprocess as _sp
+        side = _os.path.join(sandbox, ".muse-usage.json")
+        try:
+            u = _json.load(open(side))
+            usage = {"calls": 1, "in": int(u.get("input_tokens",0))
+                     + int(u.get("cached_tokens",0)),
+                     "cached": int(u.get("cached_tokens",0)),
+                     "out": int(u.get("output_tokens",0) or 0) + int(u.get("reasoning_tokens",0) or 0),
+                     "reasoning": int(u.get("reasoning_tokens",0) or 0)}
+        except Exception:
+            pass
+        # Calls = model turns, counted from the stashed exec stream.
+        # muse's tracer can't decode exec-stream payloads (schema drift), so count
+        # tool results directly: each tool result implies a preceding model turn, so
+        # turns = tool_results + 1 (final answer) is a hard LOWER bound — favorable
+        # to muse on the calls axis.
+        try:
+            raw = _os.path.join(sandbox, ".muse-raw.jsonl")
+            tools = 0
+            with open(raw) as fh:
+                for line in fh:
+                    try:
+                        if _json.loads(line).get("payload_type") == "tool.result":
+                            tools += 1
+                    except Exception:
+                        pass
+            if tools:
+                usage["calls"] = tools + 1
+        except Exception:
+            pass
+        if not usage.get("calls"):
+            usage["calls"] = 1
     if harness.get("usage") == "graff-stderr":
         m = GRAFF_USAGE_RE.search(stderr)
         if m:
@@ -359,7 +432,7 @@ def one_run(hname, harness, task, model, rep, live=False):
     ru1 = _rusage_children()
     stdout, stderr = "".join(stdout_parts), "".join(stderr_parts)
     wall = round(time.monotonic() - t0, 2)
-    answer, usage = parse_answer_and_usage(harness, stdout, stderr)
+    answer, usage = parse_answer_and_usage(harness, stdout, stderr, sandbox)
     with open(os.path.join(sandbox, ".eval-answer.txt"), "w") as f:
         f.write(answer)
     check_env = dict(os.environ, ANSWER_FILE=".eval-answer.txt", TASK_ROOT=ROOT)

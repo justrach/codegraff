@@ -30,6 +30,24 @@ RATES = {
         "high_cache": 0.60,
         "high_out": 12.0,
     },
+    "muse-spark-1.2": {
+        "high_at": 0,
+        "in": 1.25,
+        "cache": 0.125,
+        "out": 4.25,
+        "high_in": 1.25,
+        "high_cache": 0.125,
+        "high_out": 4.25,
+    },
+    "muse-spark-1.2-contributor": {
+        "high_at": 0,
+        "in": 0.10,
+        "cache": 0.01,
+        "out": 0.20,
+        "high_in": 0.10,
+        "high_cache": 0.01,
+        "high_out": 0.20,
+    },
     "grok-build-0.1": {
         "high_at": 200_000,
         "in": 1.0,
@@ -38,6 +56,15 @@ RATES = {
         "high_in": 2.0,
         "high_cache": 0.40,
         "high_out": 4.0,
+    },
+    "gemini-3.8-flash": {
+        "high_at": 0,
+        "in": 0.75,
+        "cache": 0.075,
+        "out": 3.75,
+        "high_in": 0.75,
+        "high_cache": 0.075,
+        "high_out": 3.75,
     },
 }
 
@@ -64,6 +91,12 @@ def rates_for(model: str) -> dict | None:
         return RATES["grok-4.6"]
     if model.startswith("grok-build") or leaf.startswith("grok-build"):
         return RATES["grok-build-0.1"]
+    if model.startswith("muse-spark-1.2-contributor") or leaf.startswith("muse-spark-1.2-contributor"):
+        return RATES["muse-spark-1.2-contributor"]
+    if model.startswith("muse-spark-1.2") or leaf.startswith("muse-spark-1.2"):
+        return RATES["muse-spark-1.2"]
+    if model.startswith("gemini") or leaf.startswith("gemini"):
+        return RATES["gemini-3.8-flash"]
     return None
 
 
@@ -81,6 +114,8 @@ def convention_for(rec: dict) -> bool:
     if h == "grok":
         return False
     if h.startswith("graff"):
+        return True
+    if h in ("muse",) or h.startswith("muse"):
         return True
     if (rec.get("tok_cached") or 0) > (rec.get("tok_in") or 0):
         return False

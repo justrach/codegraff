@@ -5,6 +5,7 @@ const std = @import("std");
 const app = @import("app.zig");
 const dispatch = @import("dispatch.zig");
 const engine = @import("engine.zig");
+const turn = @import("turn.zig");
 const Effect = app.Effect;
 const Model = app.Model;
 const applyLine = dispatch.applyLine;
@@ -274,6 +275,56 @@ test "/btw queues an aside while a turn is pending" {
     _ = applyLine(&m, "/btw remember the tests");
     try std.testing.expectEqual(@as(usize, 1), m.steer_queue.items.len);
     try std.testing.expectEqualStrings("remember the tests", m.steer_queue.items[0]);
+}
+
+test "steer queues @[path] with the text so drain sends pixels" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    const job = try std.testing.allocator.create(engine.Job);
+    job.* = .{ .gpa = std.testing.allocator, .history = &.{}, .params = .{}, .stream = .{}, .threaded = false };
+    m.pending = job;
+    defer {
+        m.pending = null;
+        std.testing.allocator.destroy(job);
+    }
+    m.attachImage("/tmp/shot.png");
+    try m.input.setValue("look at this");
+    turn.steerEnter(&m);
+    try std.testing.expectEqual(@as(usize, 1), m.steer_queue.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, m.steer_queue.items[0], "@[/tmp/shot.png]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, m.steer_queue.items[0], "look at this") != null);
+    try std.testing.expectEqual(@as(usize, 0), m.images.items.len);
+    try std.testing.expectEqualStrings("", m.input.getValue());
+
+    m.pending = null;
+    _ = turn.drainSteer(&m);
+    var user_text: []const u8 = "";
+    for (m.history.items) |e| {
+        if (e.kind == .user) user_text = e.text;
+    }
+    try std.testing.expect(std.mem.indexOf(u8, user_text, "@[/tmp/shot.png]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, user_text, "look at this") != null);
+    try std.testing.expectEqual(@as(usize, 0), m.steer_queue.items.len);
+}
+
+test "image-only steer queues the chip, empty Enter does not cancel" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    const job = try std.testing.allocator.create(engine.Job);
+    job.* = .{ .gpa = std.testing.allocator, .history = &.{}, .params = .{}, .stream = .{}, .threaded = false };
+    m.pending = job;
+    defer {
+        m.pending = null;
+        std.testing.allocator.destroy(job);
+    }
+    m.attachImage("/tmp/only.png");
+    turn.steerEnter(&m);
+    try std.testing.expectEqual(@as(usize, 1), m.steer_queue.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, m.steer_queue.items[0], "@[/tmp/only.png]") != null);
+    try std.testing.expect(!m.cancel_requested);
+    try std.testing.expectEqual(@as(usize, 0), m.images.items.len);
 }
 
 var captured_op: engine.GoalOp = .none;

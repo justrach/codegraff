@@ -199,5 +199,21 @@
     "env": {"DSH_PERMISSION_MODE": "danger-full-access"},
     "default_model": "grok-4.5",
     "note": "deepseek-harness on grok-4.5 (nearest xAI id in its catalog). NOT grok-4.6. Mixed-model chart only. Needs Node >=22.15 (zstd). SuperGrok OAuth → XAI_API_KEY via attach-dsh-xai-oauth.py (local; see dsh-local-oauth.md). No usage footer."
+  },
+  "gemini-cli": {
+    "cmd": ["{repo}/graff-evals/gemini-cli.sh", "-p", "{prompt}", "-m", "{model}", "-y", "--skip-trust", "-o", "json", "--allowed-mcp-server-names", "none"],
+    "answer": "gemini-json",
+    "usage": "gemini-json",
+    "capabilities": [],
+    "default_model": "gemini-3.5-flash",
+    "note": "Official Google Gemini CLI (@google/gemini-cli) driven with GEMINI_API_KEY"
+  },
+  "pi-dev": {
+    "cmd": ["pi", "-p", "--mode", "json", "--provider", "codegraff", "--model", "{model}", "--no-session", "{prompt}"],
+    "answer": "pi-json",
+    "usage": "pi-json",
+    "capabilities": [],
+    "default_model": "gemini-3.8-flash",
+    "note": "Pi coding agent (pi.dev) on Codegraff gateway"
   }
 }

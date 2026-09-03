@@ -26,7 +26,8 @@ pub const changelog_text =
     \\  • follow-ups typed while a turn is running queue and send when it ends
     \\  • native tools land in the answer, not as a wall on top; settled batches fold
     \\  • workspace switch stars and reports the process cwd (#721)
-    \\  • TUI streams the live answer instead of a Thinking placeholder
+    \\  • Codex WS type:error retires the socket immediately; last_api_error stays bounded (#717)
+    \\  • TUI steer / /btw queues composer image chips with the text, not text alone
     \\
     \\0.0.284
     \\  • ACP turns stage GUI @[image] attachments as native vision blocks — pasted images reach the model

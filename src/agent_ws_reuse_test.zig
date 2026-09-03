@@ -269,6 +269,8 @@ test "#692: a generic error frame is returned as the terminal API body before pe
     try std.testing.expect(std.mem.indexOf(u8, out, mock.generic_error_event) != null);
     try std.testing.expect(traced(&tw, "\"detail\":\"terminal API error frame\""));
     try std.testing.expect(!traced(&tw, "transport error"));
-    try std.testing.expect(agent.codex_ws != null);
-    try std.testing.expect(agent.codex_ws.?.dead);
+    try std.testing.expect(agent.codex_ws == null); // closing peer is retired before returning
+    try std.testing.expect(agent.ws_api_error_pending); // request parser still traces the bounded diagnostic
+    try std.testing.expectEqual(@as(u8, 0), agent.ws_transport_failures);
+    try std.testing.expect(!agent.ws_off);
 }

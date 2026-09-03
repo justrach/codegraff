@@ -68,6 +68,13 @@ pub fn shouldDropChain(message: []const u8, code: ?[]const u8) bool {
     return false;
 }
 
+/// Re-anchor only when the rejected request actually used the server-side
+/// chain. A retained codex_prev_id is not enough: property changes and the
+/// full-resend experiment deliberately emit full input while keeping it held.
+pub fn shouldReanchorRequest(body: []const u8, message: []const u8, code: ?[]const u8) bool {
+    return std.mem.indexOf(u8, body, "\"previous_response_id\"") != null and shouldDropChain(message, code);
+}
+
 pub fn chainUsable(self: *const Agent) bool {
     if (g_force_full_resend) return false;
     const xai_chain = g_xai_ws_chain and std.mem.eql(u8, self.provider.id, "xai");
@@ -182,4 +189,13 @@ test "shouldDropChain: not-found and 25-minute cap evict the in-memory id" {
     try std.testing.expect(shouldDropChain("Responses websocket connection limit reached (25 minutes).", "websocket_connection_limit_reached"));
     try std.testing.expect(shouldDropChain("unsupported previous_response_id", null));
     try std.testing.expect(!shouldDropChain("rate limited", "rate_limit_exceeded"));
+}
+
+test "shouldReanchorRequest requires a rejected previous_response_id request" {
+    const chained = "{\"previous_response_id\":\"resp_1\",\"input\":[]}";
+    const full = "{\"input\":[]}";
+    try std.testing.expect(shouldReanchorRequest(chained, "missing", "previous_response_not_found"));
+    try std.testing.expect(shouldReanchorRequest(chained, "unsupported previous_response_id", "invalid_request_error"));
+    try std.testing.expect(!shouldReanchorRequest(full, "missing", "previous_response_not_found"));
+    try std.testing.expect(!shouldReanchorRequest(chained, "bad request", "invalid_request_error"));
 }

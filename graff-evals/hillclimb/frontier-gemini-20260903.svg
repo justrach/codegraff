@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 490" width="880" height="490" role="img">
+<title>Pareto Frontier: graff-dev vs gemini-cli</title>
+<rect width="880" height="490" fill="#ffffff"/>
+<text x="20" y="22" font-size="16" font-weight="700" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">Pareto Frontier: graff-dev vs gemini-cli</text>
+<text x="20" y="40" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">7 head-to-head tasks (Core + SWE) on Gemini Flash</text>
+<rect x="72" y="62" width="340" height="280" fill="#fafcfb" stroke="#d1d5db"/>
+<rect x="500" y="62" width="340" height="280" fill="#fafcfb" stroke="#d1d5db"/>
+<text x="72" y="56" font-size="13" font-weight="600" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">wall vs list$</text>
+<text x="500" y="56" font-size="13" font-weight="600" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">calls vs list$</text>
+<text x="242" y="376" text-anchor="middle" font-size="12" fill="#334155" font-family="ui-sans-serif, system-ui, sans-serif">wall (s) →</text>
+<text x="670" y="376" text-anchor="middle" font-size="12" fill="#334155" font-family="ui-sans-serif, system-ui, sans-serif">tool calls →</text>
+<line x1="72" y1="342.0" x2="412" y2="342.0" stroke="#e5e7eb"/>
+<line x1="500" y1="342.0" x2="840" y2="342.0" stroke="#e5e7eb"/>
+<text x="64" y="346.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.000</text>
+<text x="492" y="346.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.000</text>
+<line x1="72" y1="278.0" x2="412" y2="278.0" stroke="#e5e7eb"/>
+<line x1="500" y1="278.0" x2="840" y2="278.0" stroke="#e5e7eb"/>
+<text x="64" y="282.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.104</text>
+<text x="492" y="282.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.104</text>
+<line x1="72" y1="214.0" x2="412" y2="214.0" stroke="#e5e7eb"/>
+<line x1="500" y1="214.0" x2="840" y2="214.0" stroke="#e5e7eb"/>
+<text x="64" y="218.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.209</text>
+<text x="492" y="218.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.209</text>
+<line x1="72" y1="150.0" x2="412" y2="150.0" stroke="#e5e7eb"/>
+<line x1="500" y1="150.0" x2="840" y2="150.0" stroke="#e5e7eb"/>
+<text x="64" y="154.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.313</text>
+<text x="492" y="154.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.313</text>
+<line x1="72" y1="86.0" x2="412" y2="86.0" stroke="#e5e7eb"/>
+<line x1="500" y1="86.0" x2="840" y2="86.0" stroke="#e5e7eb"/>
+<text x="64" y="90.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.417</text>
+<text x="492" y="90.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.417</text>
+<line x1="72.0" y1="62" x2="72.0" y2="342" stroke="#e5e7eb"/>
+<text x="72.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">69s</text>
+<line x1="157.0" y1="62" x2="157.0" y2="342" stroke="#e5e7eb"/>
+<text x="157.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">147s</text>
+<line x1="242.0" y1="62" x2="242.0" y2="342" stroke="#e5e7eb"/>
+<text x="242.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">225s</text>
+<line x1="327.0" y1="62" x2="327.0" y2="342" stroke="#e5e7eb"/>
+<text x="327.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">303s</text>
+<line x1="412.0" y1="62" x2="412.0" y2="342" stroke="#e5e7eb"/>
+<text x="412.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">381s</text>
+<line x1="516.1" y1="62" x2="516.1" y2="342" stroke="#e5e7eb"/>
+<text x="516.1" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">30</text>
+<line x1="529.4" y1="62" x2="529.4" y2="342" stroke="#e5e7eb"/>
+<text x="529.4" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">31</text>
+<line x1="542.8" y1="62" x2="542.8" y2="342" stroke="#e5e7eb"/>
+<text x="542.8" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">32</text>
+<line x1="556.2" y1="62" x2="556.2" y2="342" stroke="#e5e7eb"/>
+<text x="556.2" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">33</text>
+<line x1="569.6" y1="62" x2="569.6" y2="342" stroke="#e5e7eb"/>
+<text x="569.6" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">34</text>
+<line x1="583.0" y1="62" x2="583.0" y2="342" stroke="#e5e7eb"/>
+<text x="583.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">35</text>
+<line x1="596.4" y1="62" x2="596.4" y2="342" stroke="#e5e7eb"/>
+<text x="596.4" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">36</text>
+<line x1="609.8" y1="62" x2="609.8" y2="342" stroke="#e5e7eb"/>
+<text x="609.8" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">37</text>
+<line x1="623.1" y1="62" x2="623.1" y2="342" stroke="#e5e7eb"/>
+<text x="623.1" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">38</text>
+<line x1="636.5" y1="62" x2="636.5" y2="342" stroke="#e5e7eb"/>
+<text x="636.5" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">39</text>
+<line x1="649.9" y1="62" x2="649.9" y2="342" stroke="#e5e7eb"/>
+<text x="649.9" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">40</text>
+<line x1="663.3" y1="62" x2="663.3" y2="342" stroke="#e5e7eb"/>
+<text x="663.3" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">41</text>
+<line x1="676.7" y1="62" x2="676.7" y2="342" stroke="#e5e7eb"/>
+<text x="676.7" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">42</text>
+<line x1="690.1" y1="62" x2="690.1" y2="342" stroke="#e5e7eb"/>
+<text x="690.1" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">43</text>
+<line x1="703.5" y1="62" x2="703.5" y2="342" stroke="#e5e7eb"/>
+<text x="703.5" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">44</text>
+<line x1="716.9" y1="62" x2="716.9" y2="342" stroke="#e5e7eb"/>
+<text x="716.9" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">45</text>
+<line x1="730.2" y1="62" x2="730.2" y2="342" stroke="#e5e7eb"/>
+<text x="730.2" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">46</text>
+<line x1="743.6" y1="62" x2="743.6" y2="342" stroke="#e5e7eb"/>
+<text x="743.6" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">47</text>
+<line x1="757.0" y1="62" x2="757.0" y2="342" stroke="#e5e7eb"/>
+<text x="757.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">48</text>
+<line x1="770.4" y1="62" x2="770.4" y2="342" stroke="#e5e7eb"/>
+<text x="770.4" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">49</text>
+<line x1="783.8" y1="62" x2="783.8" y2="342" stroke="#e5e7eb"/>
+<text x="783.8" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">50</text>
+<line x1="797.2" y1="62" x2="797.2" y2="342" stroke="#e5e7eb"/>
+<text x="797.2" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">51</text>
+<line x1="810.6" y1="62" x2="810.6" y2="342" stroke="#e5e7eb"/>
+<text x="810.6" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">52</text>
+<line x1="823.9" y1="62" x2="823.9" y2="342" stroke="#e5e7eb"/>
+<text x="823.9" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">53</text>
+<circle cx="85.4" cy="250.2" r="6.5" fill="#059669" stroke="#047857" stroke-width="1.4"/>
+<text x="95.4" y="242.2" font-size="11" font-weight="600" fill="#047857" font-family="ui-sans-serif, system-ui, sans-serif">graff-dev  81.7s · $0.1496</text>
+<circle cx="516.1" cy="250.2" r="6.5" fill="#059669" stroke="#047857" stroke-width="1.4"/>
+<text x="526.1" y="242.2" font-size="11" font-weight="600" fill="#047857" font-family="ui-sans-serif, system-ui, sans-serif">graff-dev  30 · $0.1496</text>
+<circle cx="28" cy="410" r="6.5" fill="#059669" stroke="#047857" stroke-width="1.4"/>
+<text x="40" y="414" font-size="12" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">graff-dev — 7/7 · on wall/$ + calls/$</text>
+<circle cx="367.4" cy="119.4" r="6.5" fill="#4285f4" stroke="#1a73e8" stroke-width="1.4"/>
+<text x="377.4" y="111.4" font-size="11" font-weight="600" fill="#1a73e8" font-family="ui-sans-serif, system-ui, sans-serif">gemini-cli  340.1s · $0.3628</text>
+<circle cx="823.9" cy="119.4" r="6.5" fill="#4285f4" stroke="#1a73e8" stroke-width="1.4"/>
+<text x="833.9" y="111.4" font-size="11" font-weight="600" fill="#1a73e8" font-family="ui-sans-serif, system-ui, sans-serif">gemini-cli  53 · $0.3628</text>
+<circle cx="28" cy="430" r="6.5" fill="#4285f4" stroke="#1a73e8" stroke-width="1.4"/>
+<text x="40" y="434" font-size="12" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">gemini-cli — 7/7 · interior</text>
+</svg>

@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 490" width="880" height="490" role="img">
+<title>Pareto Frontier: graff-dev vs pi-dev vs gemini-cli</title>
+<rect width="880" height="490" fill="#ffffff"/>
+<text x="20" y="22" font-size="16" font-weight="700" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">Pareto Frontier: graff-dev vs pi-dev vs gemini-cli</text>
+<text x="20" y="40" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">7 head-to-head tasks (Core + SWE) on Gemini Flash</text>
+<rect x="72" y="62" width="340" height="280" fill="#fafcfb" stroke="#d1d5db"/>
+<rect x="500" y="62" width="340" height="280" fill="#fafcfb" stroke="#d1d5db"/>
+<text x="72" y="56" font-size="13" font-weight="600" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">wall vs list$</text>
+<text x="500" y="56" font-size="13" font-weight="600" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">calls vs list$</text>
+<text x="242" y="376" text-anchor="middle" font-size="12" fill="#334155" font-family="ui-sans-serif, system-ui, sans-serif">wall (s) →</text>
+<text x="670" y="376" text-anchor="middle" font-size="12" fill="#334155" font-family="ui-sans-serif, system-ui, sans-serif">tool calls →</text>
+<line x1="72" y1="342.0" x2="412" y2="342.0" stroke="#e5e7eb"/>
+<line x1="500" y1="342.0" x2="840" y2="342.0" stroke="#e5e7eb"/>
+<text x="64" y="346.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.000</text>
+<text x="492" y="346.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.000</text>
+<line x1="72" y1="278.0" x2="412" y2="278.0" stroke="#e5e7eb"/>
+<line x1="500" y1="278.0" x2="840" y2="278.0" stroke="#e5e7eb"/>
+<text x="64" y="282.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.130</text>
+<text x="492" y="282.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.130</text>
+<line x1="72" y1="214.0" x2="412" y2="214.0" stroke="#e5e7eb"/>
+<line x1="500" y1="214.0" x2="840" y2="214.0" stroke="#e5e7eb"/>
+<text x="64" y="218.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.261</text>
+<text x="492" y="218.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.261</text>
+<line x1="72" y1="150.0" x2="412" y2="150.0" stroke="#e5e7eb"/>
+<line x1="500" y1="150.0" x2="840" y2="150.0" stroke="#e5e7eb"/>
+<text x="64" y="154.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.391</text>
+<text x="492" y="154.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.391</text>
+<line x1="72" y1="86.0" x2="412" y2="86.0" stroke="#e5e7eb"/>
+<line x1="500" y1="86.0" x2="840" y2="86.0" stroke="#e5e7eb"/>
+<text x="64" y="90.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.521</text>
+<text x="492" y="90.0" text-anchor="end" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">$0.521</text>
+<line x1="72.0" y1="62" x2="72.0" y2="342" stroke="#e5e7eb"/>
+<text x="72.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">69s</text>
+<line x1="157.0" y1="62" x2="157.0" y2="342" stroke="#e5e7eb"/>
+<text x="157.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">147s</text>
+<line x1="242.0" y1="62" x2="242.0" y2="342" stroke="#e5e7eb"/>
+<text x="242.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">225s</text>
+<line x1="327.0" y1="62" x2="327.0" y2="342" stroke="#e5e7eb"/>
+<text x="327.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">303s</text>
+<line x1="412.0" y1="62" x2="412.0" y2="342" stroke="#e5e7eb"/>
+<text x="412.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">381s</text>
+<line x1="510.1" y1="62" x2="510.1" y2="342" stroke="#e5e7eb"/>
+<text x="510.1" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">30</text>
+<line x1="518.5" y1="62" x2="518.5" y2="342" stroke="#e5e7eb"/>
+<text x="518.5" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">31</text>
+<line x1="526.9" y1="62" x2="526.9" y2="342" stroke="#e5e7eb"/>
+<text x="526.9" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">32</text>
+<line x1="535.3" y1="62" x2="535.3" y2="342" stroke="#e5e7eb"/>
+<text x="535.3" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">33</text>
+<line x1="543.8" y1="62" x2="543.8" y2="342" stroke="#e5e7eb"/>
+<text x="543.8" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">34</text>
+<line x1="552.2" y1="62" x2="552.2" y2="342" stroke="#e5e7eb"/>
+<text x="552.2" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">35</text>
+<line x1="560.6" y1="62" x2="560.6" y2="342" stroke="#e5e7eb"/>
+<text x="560.6" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">36</text>
+<line x1="569.0" y1="62" x2="569.0" y2="342" stroke="#e5e7eb"/>
+<text x="569.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">37</text>
+<line x1="577.4" y1="62" x2="577.4" y2="342" stroke="#e5e7eb"/>
+<text x="577.4" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">38</text>
+<line x1="585.8" y1="62" x2="585.8" y2="342" stroke="#e5e7eb"/>
+<text x="585.8" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">39</text>
+<line x1="594.3" y1="62" x2="594.3" y2="342" stroke="#e5e7eb"/>
+<text x="594.3" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">40</text>
+<line x1="602.7" y1="62" x2="602.7" y2="342" stroke="#e5e7eb"/>
+<text x="602.7" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">41</text>
+<line x1="611.1" y1="62" x2="611.1" y2="342" stroke="#e5e7eb"/>
+<text x="611.1" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">42</text>
+<line x1="619.5" y1="62" x2="619.5" y2="342" stroke="#e5e7eb"/>
+<text x="619.5" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">43</text>
+<line x1="627.9" y1="62" x2="627.9" y2="342" stroke="#e5e7eb"/>
+<text x="627.9" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">44</text>
+<line x1="636.3" y1="62" x2="636.3" y2="342" stroke="#e5e7eb"/>
+<text x="636.3" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">45</text>
+<line x1="644.8" y1="62" x2="644.8" y2="342" stroke="#e5e7eb"/>
+<text x="644.8" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">46</text>
+<line x1="653.2" y1="62" x2="653.2" y2="342" stroke="#e5e7eb"/>
+<text x="653.2" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">47</text>
+<line x1="661.6" y1="62" x2="661.6" y2="342" stroke="#e5e7eb"/>
+<text x="661.6" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">48</text>
+<line x1="670.0" y1="62" x2="670.0" y2="342" stroke="#e5e7eb"/>
+<text x="670.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">49</text>
+<line x1="678.4" y1="62" x2="678.4" y2="342" stroke="#e5e7eb"/>
+<text x="678.4" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">50</text>
+<line x1="686.8" y1="62" x2="686.8" y2="342" stroke="#e5e7eb"/>
+<text x="686.8" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">51</text>
+<line x1="695.2" y1="62" x2="695.2" y2="342" stroke="#e5e7eb"/>
+<text x="695.2" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">52</text>
+<line x1="703.7" y1="62" x2="703.7" y2="342" stroke="#e5e7eb"/>
+<text x="703.7" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">53</text>
+<line x1="712.1" y1="62" x2="712.1" y2="342" stroke="#e5e7eb"/>
+<text x="712.1" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">54</text>
+<line x1="720.5" y1="62" x2="720.5" y2="342" stroke="#e5e7eb"/>
+<text x="720.5" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">55</text>
+<line x1="728.9" y1="62" x2="728.9" y2="342" stroke="#e5e7eb"/>
+<text x="728.9" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">56</text>
+<line x1="737.3" y1="62" x2="737.3" y2="342" stroke="#e5e7eb"/>
+<text x="737.3" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">57</text>
+<line x1="745.7" y1="62" x2="745.7" y2="342" stroke="#e5e7eb"/>
+<text x="745.7" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">58</text>
+<line x1="754.2" y1="62" x2="754.2" y2="342" stroke="#e5e7eb"/>
+<text x="754.2" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">59</text>
+<line x1="762.6" y1="62" x2="762.6" y2="342" stroke="#e5e7eb"/>
+<text x="762.6" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">60</text>
+<line x1="771.0" y1="62" x2="771.0" y2="342" stroke="#e5e7eb"/>
+<text x="771.0" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">61</text>
+<line x1="779.4" y1="62" x2="779.4" y2="342" stroke="#e5e7eb"/>
+<text x="779.4" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">62</text>
+<line x1="787.8" y1="62" x2="787.8" y2="342" stroke="#e5e7eb"/>
+<text x="787.8" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">63</text>
+<line x1="796.2" y1="62" x2="796.2" y2="342" stroke="#e5e7eb"/>
+<text x="796.2" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">64</text>
+<line x1="804.7" y1="62" x2="804.7" y2="342" stroke="#e5e7eb"/>
+<text x="804.7" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">65</text>
+<line x1="813.1" y1="62" x2="813.1" y2="342" stroke="#e5e7eb"/>
+<text x="813.1" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">66</text>
+<line x1="821.5" y1="62" x2="821.5" y2="342" stroke="#e5e7eb"/>
+<text x="821.5" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">67</text>
+<line x1="829.9" y1="62" x2="829.9" y2="342" stroke="#e5e7eb"/>
+<text x="829.9" y="358" text-anchor="middle" font-size="11" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif">68</text>
+<circle cx="85.4" cy="268.6" r="6.5" fill="#059669" stroke="#047857" stroke-width="1.4"/>
+<text x="95.4" y="260.6" font-size="11" font-weight="600" fill="#047857" font-family="ui-sans-serif, system-ui, sans-serif">graff-dev  81.7s · $0.1496</text>
+<circle cx="510.1" cy="268.6" r="6.5" fill="#059669" stroke="#047857" stroke-width="1.4"/>
+<text x="520.1" y="260.6" font-size="11" font-weight="600" fill="#047857" font-family="ui-sans-serif, system-ui, sans-serif">graff-dev  30 · $0.1496</text>
+<circle cx="28" cy="410" r="6.5" fill="#059669" stroke="#047857" stroke-width="1.4"/>
+<text x="40" y="414" font-size="12" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">graff-dev — 7/7 · on wall/$ + calls/$</text>
+<circle cx="367.4" cy="163.9" r="6.5" fill="#4285f4" stroke="#1a73e8" stroke-width="1.4"/>
+<text x="377.4" y="155.9" font-size="11" font-weight="600" fill="#1a73e8" font-family="ui-sans-serif, system-ui, sans-serif">gemini-cli  340.1s · $0.3628</text>
+<circle cx="703.7" cy="163.9" r="6.5" fill="#4285f4" stroke="#1a73e8" stroke-width="1.4"/>
+<text x="713.7" y="155.9" font-size="11" font-weight="600" fill="#1a73e8" font-family="ui-sans-serif, system-ui, sans-serif">gemini-cli  53 · $0.3628</text>
+<circle cx="28" cy="430" r="6.5" fill="#4285f4" stroke="#1a73e8" stroke-width="1.4"/>
+<text x="40" y="434" font-size="12" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">gemini-cli — 7/7 · interior</text>
+<circle cx="304.1" cy="119.4" r="6.5" fill="#f97316" stroke="#ea580c" stroke-width="1.4"/>
+<text x="314.1" y="111.4" font-size="11" font-weight="600" fill="#ea580c" font-family="ui-sans-serif, system-ui, sans-serif">pi-dev  282.1s · $0.4534</text>
+<circle cx="829.9" cy="119.4" r="6.5" fill="#f97316" stroke="#ea580c" stroke-width="1.4"/>
+<text x="839.9" y="111.4" font-size="11" font-weight="600" fill="#ea580c" font-family="ui-sans-serif, system-ui, sans-serif">pi-dev  68 · $0.4534</text>
+<circle cx="28" cy="450" r="6.5" fill="#f97316" stroke="#ea580c" stroke-width="1.4"/>
+<text x="40" y="454" font-size="12" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif">pi-dev — 7/7 · interior</text>
+</svg>

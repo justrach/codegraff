@@ -19,8 +19,14 @@ current is part of cutting a release.
 - Native tools interleave with the answer instead of stacking above it;
   settled tool batches fold; ACP patches paint once per frame.
 - `#721`: `workspace` switch stars and reports the process cwd.
+- `#717`: Codex WS `type:error` retires the socket immediately and keeps
+  a one-request marker for the bounded diagnostic. Re-anchor only when
+  the rejected body actually sent `previous_response_id`. Unparseable
+  Responses envelopes no longer copy raw bytes into `last_api_error`.
+- TUI mid-turn steer / `/btw` bakes composer `[Image #N]` chips into the
+  queued payload as `@[path]`.
 - TUI streams the live answer instead of a Thinking placeholder while
-  tokens arrive.
+  tokens arrive; codedb folds as “Looked up N items”.
 - 284 stays published as-is. This is not a retag.
 
 ## v0.0.284 (2026-09-01)

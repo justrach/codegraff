@@ -73,10 +73,9 @@ pub const Goal = struct {
 pub const Agent = struct {
     gpa: Allocator,
     arena: Allocator,
-    /// #124: per-turn transient parse garbage (per-SSE-event envelope parses,
-    /// isStreamEnd) allocates here and is reset each request(), so the long-lived
-    /// ROOT agent's session arena stops growing unboundedly. Optional — null on
-    /// subagents/one-shots (scratchAlloc() then falls back to arena, unchanged).
+    /// #124: per-turn parse garbage (SSE envelopes, isStreamEnd) lives here and
+    /// is reset each request() so the root session arena stays bounded. Null on
+    /// subagents/one-shots (scratchAlloc() falls back to arena).
     scratch_arena: ?*std.heap.ArenaAllocator = null,
     /// Optional allocator for a temporary request transaction. compact() points
     /// this at its arena so failed summaries do not leak message rewrites or
@@ -214,6 +213,7 @@ pub const Agent = struct {
     named_work_settled: []const u8 = "", // mention already nudged or tooled
     precompact_note_gen: ?u32 = null, // #391: one pre-compaction note per history generation
     ws_off: bool = false, // codex ws transport disabled for this session after a handshake/transport fallback to SSE (#codex-ws)
+    ws_api_error_pending: bool = false, // terminal WS error awaits Responses parsing/tracing; socket is already retired
     ws_transport_failures: u8 = 0, // consecutive WS failures; retry once before latching persistent SSE
     streamed_text: bool = false, // the last request printed its text live
     stall: @import("http_stall.zig").State = .{}, // #680: reconnects made this request (each widens the between-lines budget) + the budget that last tripped
