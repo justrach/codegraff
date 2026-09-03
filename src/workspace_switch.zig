@@ -110,21 +110,17 @@ pub fn parsePorcelain(arena: Allocator, text: []const u8) []Entry {
     return list.items;
 }
 
-fn zpath(path: []const u8, z: *[std.fs.max_path_bytes + 1]u8) ?[:0]const u8 {
-    if (path.len >= z.len) return null;
-    @memcpy(z[0..path.len], path);
-    z[path.len] = 0;
-    return z[0..path.len :0];
+/// Resolve `path` via a freshly opened Dir — not libc `realpath`, which
+/// `graff` does not link, and not `Dir.cwd().realPath`, which Threaded Io
+/// can keep stale across posix.chdir (#721).
+fn realpathOs(io: Io, path: []const u8, out: []u8) ?[]const u8 {
+    var dir = Io.Dir.cwd().openDir(io, path, .{}) catch return null;
+    defer dir.close(io);
+    const n = dir.realPath(io, out) catch return null;
+    return out[0..n];
 }
 
-fn realpathOs(path: []const u8, out: []u8) ?[]const u8 {
-    var z: [std.fs.max_path_bytes + 1]u8 = undefined;
-    const src = zpath(path, &z) orelse return null;
-    const p = std.c.realpath(src, out.ptr) orelse return null;
-    return std.mem.sliceTo(p, 0);
-}
-
-fn samePath(a: []const u8, b: []const u8) bool {
+fn samePath(io: Io, a: []const u8, b: []const u8) bool {
     const left = std.mem.trimEnd(u8, a, "/");
     const right = std.mem.trimEnd(u8, b, "/");
     if (std.mem.eql(u8, left, right)) return true;
@@ -134,15 +130,15 @@ fn samePath(a: []const u8, b: []const u8) bool {
     // compare the resolved directories, not the strings git printed (#721).
     var ab: [std.fs.max_path_bytes]u8 = undefined;
     var bb: [std.fs.max_path_bytes]u8 = undefined;
-    const ar = realpathOs(left, &ab) orelse return false;
-    const br = realpathOs(right, &bb) orelse return false;
+    const ar = realpathOs(io, left, &ab) orelse return false;
+    const br = realpathOs(io, right, &bb) orelse return false;
     return std.mem.eql(u8, std.mem.trimEnd(u8, ar, "/"), std.mem.trimEnd(u8, br, "/"));
 }
 
 const Rank = enum(u8) { substring = 1, exact_branch, exact_base, exact_path };
 
-fn matchRank(entry: Entry, want: []const u8) ?Rank {
-    if (samePath(entry.path, want)) return .exact_path;
+fn matchRank(io: Io, entry: Entry, want: []const u8) ?Rank {
+    if (samePath(io, entry.path, want)) return .exact_path;
     if (std.mem.eql(u8, basename(entry.path), want)) return .exact_base;
     if (std.mem.eql(u8, entry.branch, want)) return .exact_branch;
     if (std.mem.indexOf(u8, entry.path, want) != null or std.mem.indexOf(u8, entry.branch, want) != null)
@@ -150,13 +146,13 @@ fn matchRank(entry: Entry, want: []const u8) ?Rank {
     return null;
 }
 
-pub fn resolve(arena: Allocator, entries: []const Entry, want: []const u8, current: []const u8) Resolve {
+pub fn resolve(arena: Allocator, entries: []const Entry, want: []const u8, current: []const u8, io: Io) Resolve {
     const needle = std.mem.trim(u8, want, " \t");
     if (needle.len == 0 or entries.len == 0) return .none;
     var best: ?Rank = null;
     var hits: std.ArrayList(Entry) = .empty;
     for (entries) |e| {
-        const rank = matchRank(e, needle) orelse continue;
+        const rank = matchRank(io, e, needle) orelse continue;
         if (best == null or @intFromEnum(rank) > @intFromEnum(best.?)) {
             best = rank;
             hits.clearRetainingCapacity();
@@ -167,18 +163,18 @@ pub fn resolve(arena: Allocator, entries: []const Entry, want: []const u8, curre
     }
     if (hits.items.len == 0) return .none;
     if (hits.items.len == 1) {
-        if (current.len > 0 and samePath(hits.items[0].path, current)) return .{ .already = hits.items[0] };
+        if (current.len > 0 and samePath(io, hits.items[0].path, current)) return .{ .already = hits.items[0] };
         return .{ .one = hits.items[0] };
     }
     return .{ .ambiguous = hits.items };
 }
 
-pub fn formatList(arena: Allocator, entries: []const Entry, current: []const u8) []const u8 {
+pub fn formatList(arena: Allocator, entries: []const Entry, current: []const u8, io: Io) []const u8 {
     if (entries.len == 0) return "no git worktrees here — this cwd is not a repository, or git worktree list failed";
     var buf: std.ArrayList(u8) = .empty;
     buf.appendSlice(arena, "git worktrees (star = this session). workspace action=use path=<folder or fragment> to switch.\n") catch {};
     for (entries) |e| {
-        const star: []const u8 = if (current.len > 0 and samePath(e.path, current)) "* " else "  ";
+        const star: []const u8 = if (current.len > 0 and samePath(io, e.path, current)) "* " else "  ";
         const br = if (e.branch.len > 0) e.branch else "(detached)";
         const line = std.fmt.allocPrint(arena, "{s}{s}  {s}\n", .{ star, e.path, br }) catch continue;
         buf.appendSlice(arena, line) catch {};
@@ -187,14 +183,13 @@ pub fn formatList(arena: Allocator, entries: []const Entry, current: []const u8)
 }
 
 fn currentAbs(io: Io, arena: Allocator) []const u8 {
-    _ = io;
-    // OS getcwd, not Io.Dir.cwd().realPath: Threaded Io can keep a stale Dir
-    // across posix.chdir, so the listing starred one tree while bash still
-    // ran in another, and `use` of the starred tree returned .already
-    // without chdir'ing (#721).
+    // Process cwd via Io's processCurrentPath (linux getcwd syscall /
+    // RtlGetCurrentDirectory_U) — not Io.Dir.cwd().realPath, which Threaded
+    // Io can keep stale across posix.chdir, and not std.c.getcwd, which
+    // `graff` does not link (#721).
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const ptr = std.c.getcwd(&buf, buf.len) orelse return main_mod.g_cwd_display;
-    return arena.dupe(u8, std.mem.sliceTo(ptr, 0)) catch main_mod.g_cwd_display;
+    const n = std.process.currentPath(io, &buf) catch return main_mod.g_cwd_display;
+    return arena.dupe(u8, buf[0..n]) catch main_mod.g_cwd_display;
 }
 
 fn listEntries(gpa: Allocator, io: Io, arena: Allocator) []Entry {
@@ -212,7 +207,7 @@ fn enterPath(gpa: Allocator, io: Io, arena: Allocator, path: []const u8) ![]cons
     const z = try arena.dupeSentinel(u8, path, 0);
     if (std.posix.system.chdir(z.ptr) != 0) return error.ChdirFailed;
     const abs = currentAbs(io, arena);
-    if (!samePath(abs, path)) return error.ChdirFailed;
+    if (!samePath(io, abs, path)) return error.ChdirFailed;
     adoptDisplay(gpa, abs);
     main_mod.g_worktree_branch = null;
     tool_spill.enable(.{ .io = io, .dir = .cwd(), .base_abs = main_mod.g_cwd_display });
@@ -227,7 +222,7 @@ fn run(gpa: Allocator, io: Io, arena: Allocator, from_sub: bool, action: []const
     };
     const current = currentAbs(io, arena);
     if (std.mem.eql(u8, action, "list") or action.len == 0) {
-        return .{ .text = formatList(arena, listEntries(gpa, io, arena), current), .is_error = false };
+        return .{ .text = formatList(arena, listEntries(gpa, io, arena), current, io), .is_error = false };
     }
     if (!std.mem.eql(u8, action, "use")) return .{
         .text = "workspace action must be list or use",
@@ -238,13 +233,13 @@ fn run(gpa: Allocator, io: Io, arena: Allocator, from_sub: bool, action: []const
         .is_error = true,
     };
     const entries = listEntries(gpa, io, arena);
-    return switch (resolve(arena, entries, path, current)) {
+    return switch (resolve(arena, entries, path, current, io)) {
         .none => .{
             .text = tryText(arena, "no worktree matches \"{s}\" — action=list to see them", .{path}),
             .is_error = true,
         },
         .ambiguous => |hits| .{
-            .text = tryText(arena, "more than one worktree matches \"{s}\":\n{s}", .{ path, formatList(arena, hits, current) }),
+            .text = tryText(arena, "more than one worktree matches \"{s}\":\n{s}", .{ path, formatList(arena, hits, current, io) }),
             .is_error = true,
         },
         .already => |e| .{
@@ -367,11 +362,11 @@ test "#715: rows outlive the git output they were parsed from" {
         rows[1].path,
     );
     // ...and a freshly added tree stays selectable by fragment and by full path.
-    switch (resolve(a, rows, "cursor-peer-pull-554f", "/Users/rach/codegraff")) {
+    switch (resolve(a, rows, "cursor-peer-pull-554f", "/Users/rach/codegraff", std.testing.io)) {
         .one => |e| try std.testing.expectEqualStrings(rows[1].path, e.path),
         else => return error.TestExpectedWorktreeMatch,
     }
-    switch (resolve(a, rows, "/Users/rach/codegraff/.graff/worktrees/agent1", "/Users/rach/codegraff")) {
+    switch (resolve(a, rows, "/Users/rach/codegraff/.graff/worktrees/agent1", "/Users/rach/codegraff", std.testing.io)) {
         .one => |e| try std.testing.expectEqualStrings("worktree-agent1", e.branch),
         else => return error.TestExpectedWorktreeMatch,
     }
@@ -396,7 +391,7 @@ test "#715: real git rows survive listEntries freeing git's stdout" {
         try std.testing.expect(std.mem.indexOfScalar(u8, e.path, 0) == null);
         try std.testing.expect(std.mem.indexOfScalar(u8, e.branch, 0) == null);
         // ...and every row git listed is one `action=use` can actually select.
-        switch (resolve(a, rows, e.path, "")) {
+        switch (resolve(a, rows, e.path, "", std.testing.io)) {
             .one, .already => {},
             else => return error.TestExpectedWorktreeMatch,
         }
@@ -409,24 +404,25 @@ test "resolve: unique fragment, basename, branch, already, none, ambiguous" {
     const a = arena_state.allocator();
     const rows = parsePorcelain(a, sample_porcelain);
     const here = rows[0].path;
-    switch (resolve(a, rows, "cursor-peer-pull-554f", here)) {
+    const io = std.testing.io;
+    switch (resolve(a, rows, "cursor-peer-pull-554f", here, io)) {
         .one => |e| try std.testing.expectEqualStrings(rows[1].path, e.path),
         else => return error.TestUnexpectedResult,
     }
-    switch (resolve(a, rows, "cursor/peer-pull-554f", here)) {
+    switch (resolve(a, rows, "cursor/peer-pull-554f", here, io)) {
         .one => |e| try std.testing.expectEqualStrings(rows[1].path, e.path),
         else => return error.TestUnexpectedResult,
     }
-    switch (resolve(a, rows, here, here)) {
+    switch (resolve(a, rows, here, here, io)) {
         .already => |e| try std.testing.expectEqualStrings(here, e.path),
         else => return error.TestUnexpectedResult,
     }
-    try std.testing.expect(resolve(a, rows, "no-such-tree", here) == .none);
-    switch (resolve(a, rows, "codegraff", here)) {
+    try std.testing.expect(resolve(a, rows, "no-such-tree", here, io) == .none);
+    switch (resolve(a, rows, "codegraff", here, io)) {
         .already => |e| try std.testing.expectEqualStrings(here, e.path),
         else => return error.TestUnexpectedResult,
     }
-    switch (resolve(a, rows, "worktrees", here)) {
+    switch (resolve(a, rows, "worktrees", here, io)) {
         .ambiguous => |hits| try std.testing.expectEqual(@as(usize, 2), hits.len),
         else => return error.TestUnexpectedResult,
     }
@@ -437,10 +433,10 @@ test "formatList: stars the current tree and stays pull (no dump of bodies)" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
     const rows = parsePorcelain(a, sample_porcelain);
-    const text = formatList(a, rows, rows[1].path);
+    const text = formatList(a, rows, rows[1].path, std.testing.io);
     try std.testing.expect(std.mem.indexOf(u8, text, "* /Users/rach/codegraff/.claude/worktrees/cursor-peer-pull-554f") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "action=use") != null);
-    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, formatList(a, &.{}, ""), "*"));
+    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, formatList(a, &.{}, "", std.testing.io), "*"));
 }
 
 test "run: subagent is refused; bad action and empty use name the fix" {
@@ -485,8 +481,8 @@ test "enterPath: chdir then restore; display follows the new tree" {
         tool_spill.resetForTest();
     }
     const abs = try enterPath(gpa, io, a, dest);
-    try std.testing.expect(samePath(dest, abs));
-    try std.testing.expect(samePath(dest, main_mod.g_cwd_display));
+    try std.testing.expect(samePath(io, dest, abs));
+    try std.testing.expect(samePath(io, dest, main_mod.g_cwd_display));
 }
 
 test "#721: round-trip switch keeps posix cwd, display, and list star in lockstep" {
@@ -504,10 +500,20 @@ test "#721: round-trip switch keeps posix cwd, display, and list star in lockste
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwdNow = struct {
+        fn get(io_: Io, buf_: *[std.fs.max_path_bytes]u8) []const u8 {
+            const n = std.process.currentPath(io_, buf_) catch return "";
+            return buf_[0..n];
+        }
+    }.get;
     if (std.posix.system.fchdir(dir_a.dir.handle) != 0) return error.ChdirFailed;
-    const path_a = try a.dupe(u8, std.mem.sliceTo(std.c.getcwd(&buf, buf.len) orelse return error.SkipZigTest, 0));
+    const got_a = cwdNow(io, &buf);
+    if (got_a.len == 0) return error.SkipZigTest;
+    const path_a = try a.dupe(u8, got_a);
     if (std.posix.system.fchdir(dir_b.dir.handle) != 0) return error.ChdirFailed;
-    const path_b = try a.dupe(u8, std.mem.sliceTo(std.c.getcwd(&buf, buf.len) orelse return error.SkipZigTest, 0));
+    const got_b = cwdNow(io, &buf);
+    if (got_b.len == 0) return error.SkipZigTest;
+    const path_b = try a.dupe(u8, got_b);
     _ = std.posix.system.fchdir(orig.handle);
     const saved = main_mod.g_cwd_display;
     const saved_branch = main_mod.g_worktree_branch;
@@ -518,24 +524,24 @@ test "#721: round-trip switch keeps posix cwd, display, and list star in lockste
         tool_spill.resetForTest();
     }
     _ = try enterPath(gpa, io, a, path_a);
-    try std.testing.expect(samePath(std.mem.sliceTo(std.c.getcwd(&buf, buf.len) orelse "", 0), path_a));
-    try std.testing.expect(samePath(main_mod.g_cwd_display, path_a));
+    try std.testing.expect(samePath(io, cwdNow(io, &buf), path_a));
+    try std.testing.expect(samePath(io, main_mod.g_cwd_display, path_a));
     _ = try enterPath(gpa, io, a, path_b);
-    try std.testing.expect(samePath(std.mem.sliceTo(std.c.getcwd(&buf, buf.len) orelse "", 0), path_b));
-    try std.testing.expect(samePath(main_mod.g_cwd_display, path_b));
+    try std.testing.expect(samePath(io, cwdNow(io, &buf), path_b));
+    try std.testing.expect(samePath(io, main_mod.g_cwd_display, path_b));
     const rows = [_]Entry{ .{ .path = path_a, .branch = "a" }, .{ .path = path_b, .branch = "b" } };
-    const listed = formatList(a, &rows, currentAbs(io, a));
+    const listed = formatList(a, &rows, currentAbs(io, a), io);
     try std.testing.expect(std.mem.indexOf(u8, listed, "* ") != null);
     try std.testing.expect(std.mem.indexOf(u8, listed, path_b) != null);
     // The #721 failure: report primary, posix still secondary.
     _ = try enterPath(gpa, io, a, path_a);
-    try std.testing.expect(samePath(std.mem.sliceTo(std.c.getcwd(&buf, buf.len) orelse "", 0), path_a));
-    try std.testing.expect(samePath(main_mod.g_cwd_display, path_a));
-    switch (resolve(a, &rows, path_a, currentAbs(io, a))) {
+    try std.testing.expect(samePath(io, cwdNow(io, &buf), path_a));
+    try std.testing.expect(samePath(io, main_mod.g_cwd_display, path_a));
+    switch (resolve(a, &rows, path_a, currentAbs(io, a), io)) {
         .already => {},
         else => return error.TestExpectedAlready,
     }
-    switch (resolve(a, &rows, path_b, currentAbs(io, a))) {
+    switch (resolve(a, &rows, path_b, currentAbs(io, a), io)) {
         .one => {},
         else => return error.TestExpectedSwitch,
     }
