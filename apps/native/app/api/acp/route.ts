@@ -1,8 +1,10 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { NextRequest } from "next/server";
+import { defaultRoot, resolveRoot } from "@/lib/server-root";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,7 +19,13 @@ type Slot = {
   model: string | null;
   /** graff session name (`--resume`): the file this agent autosaves to. */
   resume: string | null;
+  /** The workspace the agent was spawned in: its cwd, where its sessions save. */
+  cwd: string;
+  yolo: boolean;
 };
+
+type SpawnOpts = { model?: string; resume?: string; cwd: string; yolo: boolean };
+type BootstrapOpts = { model?: string; reset?: boolean; resume?: string; cwd?: string; yolo?: boolean };
 
 // One `graff acp` child per chat tab. The agent holds exactly one live
 // session per process (`session/load` is not implemented), so a tab's
@@ -42,15 +50,7 @@ function graffBin(): string {
   return "graff";
 }
 
-function workspace(): string {
-  if (process.env.GRAFF_ACP_CWD) return process.env.GRAFF_ACP_CWD;
-  if (process.env.GRAFF_CWD) return process.env.GRAFF_CWD;
-  const fromApp = path.resolve(process.cwd(), "../..");
-  if (existsSync(path.join(fromApp, "build.zig"))) return fromApp;
-  return process.cwd();
-}
-
-function yolo(): boolean {
+function defaultYolo(): boolean {
   const raw = process.env.GRAFF_YOLO;
   if (raw === "0" || raw === "false" || raw === "off" || raw === "no") return false;
   return true;
@@ -88,18 +88,27 @@ function killPage(page: string) {
   }
 }
 
-function spawnAgent(chat: string, model?: string, resume?: string): Slot {
+function spawnAgent(chat: string, opts: SpawnOpts): Slot {
   killSlot(chat);
   const args = ["acp"];
-  if (yolo()) args.push("--yolo");
-  if (model) args.push("--model", model);
-  if (resume) args.push("--resume", resume);
+  if (opts.yolo) args.push("--yolo");
+  if (opts.model) args.push("--model", opts.model);
+  if (opts.resume) args.push("--resume", opts.resume);
   const child = spawn(graffBin(), args, {
     stdio: ["pipe", "pipe", "inherit"],
-    cwd: workspace(),
+    cwd: opts.cwd,
     env: process.env,
   });
-  const slot: Slot = { child, buf: "", nextId: 1, sessionId: null, model: model ?? null, resume: resume ?? null };
+  const slot: Slot = {
+    child,
+    buf: "",
+    nextId: 1,
+    sessionId: null,
+    model: opts.model ?? null,
+    resume: opts.resume ?? null,
+    cwd: opts.cwd,
+    yolo: opts.yolo,
+  };
   child.on("exit", () => {
     if (slots.get(chat) === slot) slots.delete(chat);
   });
@@ -153,14 +162,27 @@ async function rpc(slot: Slot, method: string, params?: unknown): Promise<unknow
   }
 }
 
-async function bootstrap(chat: string, model?: string, reset = false, resume?: string): Promise<Slot> {
+/** The tab's live agent when it still matches what was asked for (model,
+ * session file, workspace, approval mode); otherwise a fresh spawn. A
+ * request that leaves a field out accepts whatever the live agent has. */
+async function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
   const live = slots.get(chat);
-  if (!reset && live && (!model || live.model === model) && (!resume || live.resume === resume) && live.sessionId) {
-    return live;
-  }
-  const slot = spawnAgent(chat, model, resume);
+  const same =
+    live !== undefined &&
+    live.sessionId !== null &&
+    (!opts.model || live.model === opts.model) &&
+    (!opts.resume || live.resume === opts.resume) &&
+    (!opts.cwd || live.cwd === opts.cwd) &&
+    (opts.yolo === undefined || live.yolo === opts.yolo);
+  if (!opts.reset && same) return live;
+  const slot = spawnAgent(chat, {
+    model: opts.model,
+    resume: opts.resume,
+    cwd: opts.cwd ?? defaultRoot(),
+    yolo: opts.yolo ?? defaultYolo(),
+  });
   await rpc(slot, "initialize", { protocolVersion: 1, clientCapabilities: { fs: {} } });
-  const created = (await rpc(slot, "session/new", { cwd: workspace() })) as {
+  const created = (await rpc(slot, "session/new", { cwd: slot.cwd })) as {
     sessionId?: string;
   };
   if (!created?.sessionId) throw new Error("session/new returned no sessionId");
@@ -184,7 +206,7 @@ export async function GET() {
       { status: 502 },
     );
   }
-  return Response.json({ ok: true, sessions: slots.size, cwd: workspace() });
+  return Response.json({ ok: true, sessions: slots.size, cwd: defaultRoot(), home: os.homedir(), yolo: defaultYolo() });
 }
 
 export async function POST(req: NextRequest) {
@@ -209,10 +231,20 @@ export async function POST(req: NextRequest) {
     if (method === "bootstrap") {
       const resume =
         typeof body.params?.resume === "string" && SESSION_NAME_RE.test(body.params.resume) ? body.params.resume : undefined;
-      const slot = await bootstrap(chat, model, body.params?.reset === true, resume);
-      return Response.json({ sessionId: slot.sessionId });
+      const cwdParam = typeof body.params?.cwd === "string" && body.params.cwd.trim() ? body.params.cwd : undefined;
+      const resolved = resolveRoot(cwdParam);
+      if ("error" in resolved) return Response.json({ error: resolved.error }, { status: resolved.status });
+      const yolo = typeof body.params?.yolo === "boolean" ? body.params.yolo : undefined;
+      const slot = await bootstrap(chat, {
+        model,
+        reset: body.params?.reset === true,
+        resume,
+        cwd: cwdParam ? resolved.root : undefined,
+        yolo,
+      });
+      return Response.json({ sessionId: slot.sessionId, cwd: slot.cwd });
     }
-    const slot = await bootstrap(chat, model);
+    const slot = await bootstrap(chat, { model });
     if (method === "session/cancel") {
       writeLine(slot, { jsonrpc: "2.0", method: "session/cancel", params: body.params });
       return Response.json({ ok: true });

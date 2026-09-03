@@ -27,14 +27,28 @@ import { isFollowingTail, pinScrollerTail } from "@/lib/follow-scroll";
 import { dropQueuedPrompt, enqueuePrompt, shiftQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
 import { dateGroup, listSessions, loadSession, relativeTime, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory, pushHistory, saveHistory } from "@/lib/prompt-history";
+import WorkspaceDialog from "@/components/site/WorkspaceDialog";
+import {
+  basename,
+  findWorkspace,
+  loadActiveWorkspace,
+  loadWorkspaces,
+  removeWorkspace,
+  saveActiveWorkspace,
+  saveWorkspaces,
+  shellQuote,
+  upsertWorkspace,
+  type Workspace,
+} from "@/lib/workspaces";
 
 type Msg =
   | { id: number; role: "user"; text: string }
   | { id: number; role: "assistant"; turn: AssistantTurn };
 
 /** `model` is what this tab's own agent was spawned with; the harness-level
- * model is only the default a new tab inherits. */
-type Chat = { id: number; title: string | null; messages: Msg[]; model?: string; session?: string };
+ * model is only the default a new tab inherits. `cwd` is the workspace the
+ * tab's agent runs in — fixed at spawn, like the model. */
+type Chat = { id: number; title: string | null; messages: Msg[]; model?: string; session?: string; cwd?: string };
 
 function newPageToken(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -74,6 +88,16 @@ export default function GraffHarness() {
   useEffect(() => {
     setHistory(loadHistory(window.localStorage));
   }, []);
+  // Workspaces are the folders graff runs in. The list and the active pick
+  // live in this browser; the server only validates a root it is handed.
+  // Refs mirror the state for the async paths (spawn, session list) that
+  // must not read a stale closure.
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [activePath, setActivePath] = useState<string | null>(null);
+  const workspacesRef = useRef<Workspace[]>([]);
+  const activePathRef = useRef<string | null>(null);
+  const [dialog, setDialog] = useState<null | { mode: "new" } | { mode: "settings" }>(null);
+  const [copiedResume, setCopiedResume] = useState(false);
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -132,8 +156,19 @@ export default function GraffHarness() {
   const requireSession = async (chatId: number, reset = false, key?: string): Promise<string> => {
     const live = sessionsRef.current.get(chatId);
     if (!reset && live) return live;
-    const spawnModel = key ?? chats.find((c) => c.id === chatId)?.model ?? model ?? undefined;
-    const id = await ensureSession(handleOf(chatId), spawnModel, reset, sessionNamesRef.current.get(chatId));
+    const chat = chatsRef.current.find((c) => c.id === chatId);
+    // A tab spawns where it was opened; the first tab, opened before the
+    // workspace list loaded, takes the active workspace.
+    const cwd = chat?.cwd ?? activePathRef.current ?? undefined;
+    const ws = findWorkspace(workspacesRef.current, cwd);
+    const spawnModel = key ?? chat?.model ?? ws?.model ?? model ?? undefined;
+    const id = await ensureSession(handleOf(chatId), {
+      model: spawnModel,
+      reset,
+      resume: sessionNamesRef.current.get(chatId),
+      cwd,
+      yolo: ws?.yolo,
+    });
     sessionsRef.current.set(chatId, id);
     setSessionIds((current) => ({ ...current, [chatId]: id }));
     setHealth({ ok: true });
@@ -147,6 +182,20 @@ export default function GraffHarness() {
       if (cancelled) return;
       setHealth(h);
       if (!h.ok) return;
+      // The server's default workspace is always a row; the remembered pick
+      // wins when it is still listed, else the default is active.
+      const root = h.cwd ?? "";
+      let list = loadWorkspaces(window.localStorage);
+      if (root && !findWorkspace(list, root)) list = upsertWorkspace(list, { path: root, name: basename(root) });
+      const remembered = loadActiveWorkspace(window.localStorage);
+      const active = findWorkspace(list, remembered)?.path ?? findWorkspace(list, root)?.path ?? list[0]?.path ?? null;
+      workspacesRef.current = list;
+      activePathRef.current = active;
+      setWorkspaces(list);
+      setActivePath(active);
+      saveWorkspaces(window.localStorage, list);
+      if (active) setChats((current) => current.map((c) => (c.id === 1 && !c.cwd ? { ...c, cwd: active } : c)));
+      void refreshStored();
       try {
         const session = newSessionName();
         sessionNamesRef.current.set(1, session);
@@ -175,10 +224,11 @@ export default function GraffHarness() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** Re-read graff's session directory; tabs adopt the titles graff saved. */
+  /** Re-read the active workspace's session directory; tabs adopt the
+   * titles graff saved. */
   const refreshStored = async () => {
     try {
-      const list = await listSessions();
+      const list = await listSessions(activePathRef.current ?? undefined);
       setStored(list);
       setChats((current) =>
         current.map((c) => {
@@ -305,7 +355,9 @@ export default function GraffHarness() {
   const openChat = (id: number) => {
     const session = newSessionName();
     sessionNamesRef.current.set(id, session);
-    setChats((current) => [...current, { id, title: null, messages: [], model: model ?? undefined, session }]);
+    const cwd = activePathRef.current ?? undefined;
+    const ws = findWorkspace(workspacesRef.current, cwd);
+    setChats((current) => [...current, { id, title: null, messages: [], model: ws?.model ?? model ?? undefined, session, cwd }]);
     setActiveId(id);
     setFilesOpen(false);
     setFollowing(true);
@@ -316,7 +368,10 @@ export default function GraffHarness() {
   /** Open a saved graff session: its transcript renders from the file at once,
    * and the tab's agent starts with `--resume` so a follow-up remembers it. */
   const openStored = async (name: string) => {
-    const existing = chats.find((c) => c.session === name);
+    // The sidebar lists the active workspace, so the session lives there;
+    // the same name in another workspace is a different conversation.
+    const cwd = activePathRef.current ?? undefined;
+    const existing = chats.find((c) => c.session === name && (c.cwd ?? null) === (cwd ?? null));
     if (existing) {
       setActiveId(existing.id);
       setFilesOpen(false);
@@ -324,9 +379,9 @@ export default function GraffHarness() {
     }
     let loaded: Awaited<ReturnType<typeof loadSession>>;
     try {
-      loaded = await loadSession(name);
+      loaded = await loadSession(name, cwd);
     } catch (err) {
-      setHealth({ ok: true, detail: err instanceof Error ? err.message : String(err) });
+      setHealth((current) => ({ ...(current ?? { ok: true }), detail: err instanceof Error ? err.message : String(err) }));
       return;
     }
     const id = (chatIdRef.current += 1);
@@ -334,7 +389,7 @@ export default function GraffHarness() {
     sessionNamesRef.current.set(id, name);
     setChats((current) => [
       ...current,
-      { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name },
+      { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name, cwd },
     ]);
     setActiveId(id);
     setFilesOpen(false);
@@ -373,6 +428,77 @@ export default function GraffHarness() {
     void openStored(id);
   };
 
+  /* ── workspaces ── */
+
+  const persistWorkspaces = (list: Workspace[]) => {
+    workspacesRef.current = list;
+    setWorkspaces(list);
+    saveWorkspaces(window.localStorage, list);
+  };
+
+  const activate = (path: string | null) => {
+    activePathRef.current = path;
+    setActivePath(path);
+    saveActiveWorkspace(window.localStorage, path);
+    void refreshStored();
+  };
+
+  /** Switch the sidebar to a workspace and land on a tab that runs there:
+   * an empty tab of its own if one is open, else a fresh one. Tabs already
+   * running elsewhere keep their agents — a workspace is fixed at spawn. */
+  const switchWorkspace = (path: string) => {
+    if (path === activePathRef.current) return;
+    activate(path);
+    const empty = chatsRef.current.find((c) => c.cwd === path && c.messages.length === 0);
+    if (empty) {
+      setActiveId(empty.id);
+      setFilesOpen(false);
+      return;
+    }
+    openChat((chatIdRef.current += 1));
+  };
+
+  const addWorkspace = (path: string) => {
+    const list = upsertWorkspace(workspacesRef.current, { path, name: basename(path) });
+    persistWorkspaces(list);
+    setDialog(null);
+    const added = findWorkspace(list, path);
+    if (added) switchWorkspace(added.path);
+  };
+
+  const saveWorkspace = (ws: Workspace) => {
+    persistWorkspaces(upsertWorkspace(workspacesRef.current, ws));
+    setDialog(null);
+  };
+
+  /** Drop a workspace from the switcher (nothing on disk changes). If it
+   * was active, the next row — or the server default — takes over. */
+  const forgetWorkspace = (path: string) => {
+    const list = removeWorkspace(workspacesRef.current, path);
+    persistWorkspaces(list);
+    setDialog(null);
+    if (activePathRef.current === path) {
+      const next = list[0]?.path ?? health?.cwd ?? null;
+      if (next) switchWorkspace(next);
+      else activate(null);
+    }
+  };
+
+  /** The footer names the tab's own graff session; clicking it copies the
+   * command that continues the same conversation in a terminal. */
+  const copyResume = () => {
+    const name = chatThread.session;
+    if (!name || typeof navigator === "undefined" || !navigator.clipboard) return;
+    const cmd = chatThread.cwd ? `cd ${shellQuote(chatThread.cwd)} && graff --resume ${name}` : `graff --resume ${name}`;
+    void navigator.clipboard
+      .writeText(cmd)
+      .then(() => {
+        setCopiedResume(true);
+        window.setTimeout(() => setCopiedResume(false), 1400);
+      })
+      .catch(() => undefined);
+  };
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -400,7 +526,17 @@ export default function GraffHarness() {
     hint: [s.model, relativeTime(s.updatedMs, now)].filter(Boolean).join(" · "),
   }));
 
-  const workspaceName = health?.cwd ? (health.cwd.split("/").pop() || health.cwd) : "workspace";
+  // The tab bar's folder chip is the *tab's* workspace; the sidebar's
+  // switcher is the *active* one (where new tabs open). They differ only
+  // after a switch, and each says so on hover.
+  const chatCwd = chatThread.cwd ?? health?.cwd;
+  const chatWorkspace = findWorkspace(workspaces, chatCwd);
+  const workspaceName = chatWorkspace?.name ?? (chatCwd ? basename(chatCwd) : "workspace");
+  const activeWorkspace = findWorkspace(workspaces, activePath);
+  const sidebarWorkspace = activeWorkspace ?? (activePath ? { path: activePath, name: basename(activePath) } : undefined);
+  const footerTitle = chatThread.session
+    ? `graff session ${chatThread.session}${sessionId ? ` · ACP ${sessionId}` : ""}${chatCwd ? ` · ${chatCwd}` : ""}\nClick to copy the command that resumes it in a terminal.`
+    : undefined;
 
   const tabBar = (
     <div className="flex h-11 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -448,7 +584,7 @@ export default function GraffHarness() {
           type="button"
           aria-pressed={filesOpen}
           onClick={() => setFilesOpen((open) => !open)}
-          title={health?.cwd ?? "Workspace files"}
+          title={chatCwd ?? "Workspace files"}
           className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
             filesOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
           }`}
@@ -475,8 +611,14 @@ export default function GraffHarness() {
         onNewChat={newChat}
         activeNav={filesOpen ? "workspace" : "chats"}
         onNavigate={(key) => setFilesOpen(key === "workspace")}
-        footerLabel={sessionId ? `Session ${sessionId.slice(0, 8)}` : "Connecting…"}
-        onFooterClick={() => undefined}
+        workspace={sidebarWorkspace}
+        workspaces={workspaces.map((w) => ({ path: w.path, name: w.name }))}
+        onSwitchWorkspace={switchWorkspace}
+        onNewWorkspace={() => setDialog({ mode: "new" })}
+        onWorkspaceSettings={() => setDialog(sidebarWorkspace ? { mode: "settings" } : { mode: "new" })}
+        footerLabel={copiedResume ? "Copied resume command" : (chatThread.session ?? "Connecting…")}
+        footerTitle={footerTitle}
+        onFooterClick={copyResume}
       />
 
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
@@ -552,6 +694,7 @@ export default function GraffHarness() {
                   onSend={send}
                   health={health}
                   history={composerHistory}
+                  cwd={chatThread.cwd}
                   offset={offset}
                   shuffle={() => setOffset((current) => (current + 3) % STARTER_PROMPTS.length)}
                   models={models}
@@ -562,7 +705,7 @@ export default function GraffHarness() {
             )}
           </section>
 
-          {filesOpen && <FilesPane requested={fileRequest} onClose={() => setFilesOpen(false)} />}
+          {filesOpen && <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />}
 
           {!filesOpen && active && paneTodos.length > 0 && (
             <aside
@@ -586,6 +729,19 @@ export default function GraffHarness() {
           )}
         </div>
       </div>
+
+      {dialog && (
+        <WorkspaceDialog
+          mode={dialog.mode}
+          workspace={dialog.mode === "settings" ? sidebarWorkspace : undefined}
+          startPath={activePath ?? health?.home ?? undefined}
+          models={models}
+          onClose={() => setDialog(null)}
+          onPick={addWorkspace}
+          onSave={saveWorkspace}
+          onForget={forgetWorkspace}
+        />
+      )}
     </main>
   );
 }

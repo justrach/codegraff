@@ -39,6 +39,7 @@ export default function EmptyState({
   modelKey,
   onModelChange,
   history,
+  cwd,
 }: {
   onSend: (text: string) => void;
   health: Health | null;
@@ -49,7 +50,10 @@ export default function EmptyState({
   onModelChange: (key: string) => void;
   /** Earlier prompts for ArrowUp recall in the composer. */
   history?: readonly string[];
+  /** This tab's workspace; absent, the server's default from `health`. */
+  cwd?: string;
 }) {
+  const where = cwd ?? health?.cwd;
   const shown = [0, 1, 2].map((i) => STARTER_PROMPTS[(offset + i) % STARTER_PROMPTS.length]);
   const [stage, setStage] = useState(0);
   useEffect(() => {
@@ -111,10 +115,10 @@ export default function EmptyState({
           </button>
         ))}
         <div className="mt-1 flex items-center gap-5 pl-0.5 text-[13px] text-ink-3">
-          <span className="flex items-center gap-2 py-1" title={health?.cwd}>
+          <span className="flex items-center gap-2 py-1" title={where}>
             <span className={`size-1.5 rounded-full ${health?.ok ? "bg-green" : "bg-orange"}`} />
             {health?.ok
-              ? `Connected · ${health.cwd ? (health.cwd.split("/").pop() ?? health.cwd) : "over ACP"}`
+              ? `Connected · ${where ? (where.split("/").pop() || where) : "over ACP"}`
               : "Waiting for graff acp"}
           </span>
           <button type="button" onClick={shuffle} className="flex items-center gap-2 py-1 transition-colors duration-150 hover:text-ink">

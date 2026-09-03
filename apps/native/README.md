@@ -75,11 +75,34 @@ tab's agent with `--resume`, so a follow-up continues the conversation with
 the model's memory intact.
 
 The workspace itself is walkable: `/api/fs` (list/read, plus macOS
-`open`/`open -R` passthroughs) is sandboxed to the agent's cwd and backs
+`open`/`open -R` passthroughs) is sandboxed to the tab's cwd and backs
 a files pane — the folder chip in the tab bar or the sidebar's
 Workspace item opens it. Tool-row chips and path-looking inline code in
 answers (`src/acp.zig`) jump straight to that file; markdown files
 render, code shows mono, binaries hand off to Open.
+
+## Workspaces
+
+A workspace is a folder graff runs in. The switcher at the top of the
+sidebar lists every workspace this browser knows (`localStorage`; the
+server only validates a root it is handed) with the active one checked:
+
+- **New workspace…** opens a folder picker (`/api/workspaces` walks one
+  level at a time, marks git roots, takes a typed or pasted path) and
+  switches to the folder you pick.
+- **Workspace settings…** edits the active workspace: display name, the
+  model new tabs spawn with, and whether tools are auto-approved
+  (`graff acp --yolo`). *Forget* removes it from the switcher only.
+- Switching workspaces changes the sidebar's session list and where new
+  tabs open. A tab's agent is spawned in the workspace that was active
+  when the tab opened and stays there — the folder chip in the tab bar
+  names the tab's own workspace, the switcher names the active one.
+
+`/api/acp` bootstrap, `/api/sessions`, `/api/fs` and `/api/git` all take
+the workspace root (`cwd` / `?root=`) and fall back to the default from
+`GRAFF_CWD` or the repo root. The sidebar footer names the tab's graff
+session (`native-…`, the `--resume` target); clicking it copies the
+command that continues the same conversation in a terminal.
 
 ## Run
 

@@ -25,15 +25,23 @@ export type TranscriptMsg =
 
 const BASE = "/api/sessions";
 
-export async function listSessions(): Promise<StoredSession[]> {
-  const res = await fetch(BASE, { cache: "no-store" });
+function withRoot(params: Record<string, string | undefined>): string {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v !== undefined) q.set(k, v);
+  const s = q.toString();
+  return s ? `?${s}` : "";
+}
+
+/** Sessions saved under `<root>/.graff/sessions`; absent root = the default workspace. */
+export async function listSessions(root?: string): Promise<StoredSession[]> {
+  const res = await fetch(`${BASE}${withRoot({ root })}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`sessions → ${res.status}`);
   const body = (await res.json()) as { sessions?: StoredSession[] };
   return body.sessions ?? [];
 }
 
-export async function loadSession(name: string): Promise<{ meta: StoredSession; messages: TranscriptMsg[] }> {
-  const res = await fetch(`${BASE}?name=${encodeURIComponent(name)}`, { cache: "no-store" });
+export async function loadSession(name: string, root?: string): Promise<{ meta: StoredSession; messages: TranscriptMsg[] }> {
+  const res = await fetch(`${BASE}${withRoot({ name, root })}`, { cache: "no-store" });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     throw new Error(`session ${name} → ${res.status}: ${detail.slice(0, 200)}`);

@@ -2,7 +2,16 @@ import { parseRpcLine, type AcpUpdate, type JsonRpcLine } from "./acp";
 
 const BASE = "/api/acp";
 
-export type Health = { ok: boolean; detail?: string; cwd?: string };
+export type Health = {
+  ok: boolean;
+  detail?: string;
+  /** The default workspace: where an agent runs when a tab names none. */
+  cwd?: string;
+  /** The user's home directory, the folder picker's starting point. */
+  home?: string;
+  /** The server's auto-approve default (`GRAFF_YOLO`). */
+  yolo?: boolean;
+};
 
 /** Server-side key for a chat tab's own `graff acp` child: `<page>:<chat>`.
  * The page half is minted per load so a reload never inherits the previous
@@ -63,10 +72,23 @@ export async function checkHealth(): Promise<Health> {
   }
 }
 
-/** `resume` names the graff session file the tab's agent autosaves to (and
- * restores from, when it already exists) — `graff acp --resume <name>`. */
-export async function ensureSession(chat: ChatHandle, model?: string, reset = false, resume?: string): Promise<string> {
-  const res = await rpc(chat, "bootstrap", { model, reset, resume });
+export type SessionOpts = {
+  model?: string;
+  /** Respawn even if the live agent matches. */
+  reset?: boolean;
+  /** The graff session file the tab's agent autosaves to (and restores
+   * from, when it already exists) — `graff acp --resume <name>`. */
+  resume?: string;
+  /** The workspace to run in; absent, the server's default. */
+  cwd?: string;
+  /** Auto-approve tools; absent, the server's default. */
+  yolo?: boolean;
+};
+
+/** The tab's agent, spawned on first use and reused while it still matches
+ * the options; a changed model, workspace or approval mode respawns it. */
+export async function ensureSession(chat: ChatHandle, opts: SessionOpts = {}): Promise<string> {
+  const res = await rpc(chat, "bootstrap", opts);
   const body = (await res.json()) as { sessionId?: string; error?: string };
   if (!body.sessionId) throw new Error(body.error ?? "ACP session/new failed");
   return body.sessionId;

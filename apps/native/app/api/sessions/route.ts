@@ -1,18 +1,10 @@
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 import { NextRequest } from "next/server";
+import { resolveRoot } from "@/lib/server-root";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-/** Same resolution as /api/acp: the workspace the agent itself runs in. */
-function workspaceRoot(): string {
-  if (process.env.GRAFF_ACP_CWD) return process.env.GRAFF_ACP_CWD;
-  if (process.env.GRAFF_CWD) return process.env.GRAFF_CWD;
-  const fromApp = path.resolve(process.cwd(), "../..");
-  if (existsSync(path.join(fromApp, "build.zig"))) return fromApp;
-  return process.cwd();
-}
 
 // graff autosaves every conversation to `<cwd>/.graff/sessions/<name>.session.json`
 // (src/session_index.zig owns the layout). The header — provider, model, title,
@@ -87,7 +79,11 @@ function rowFor(dir: string, entry: string): StoredSessionRow | null {
 }
 
 export async function GET(req: NextRequest) {
-  const root = workspaceRoot();
+  // `?root=` is the workspace whose sessions are wanted (each workspace
+  // keeps its own .graff/sessions); absent, the agent's default workspace.
+  const resolved = resolveRoot(req.nextUrl.searchParams.get("root"));
+  if ("error" in resolved) return Response.json({ error: resolved.error }, { status: resolved.status });
+  const root = resolved.root;
   const dir = path.join(root, SESSIONS_DIR);
   const name = req.nextUrl.searchParams.get("name");
   if (name !== null) {
