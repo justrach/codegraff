@@ -117,11 +117,25 @@ export function IconMagnifyingGlass(p: IconProps) {
   );
 }
 
+/** Collapse the sidebar: a panel with the chevron centred in the content
+ * half, pointing at the rail. The old glyph put the chevron on the divider
+ * and rotated the whole panel to mean "expand", which drew the rail on the
+ * wrong side. */
 export function IconSidebarLeftArrow(p: IconProps) {
   return (
     <Svg {...p}>
-      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
-      <path d="M9.5 4.5v15M13 9l-3 3 3 3" />
+      <rect x="3" y="3" width="18" height="18" rx="2.5" />
+      <path d="M9 3v18M16 15l-3-3 3-3" />
+    </Svg>
+  );
+}
+
+/** Expand the sidebar: same panel, chevron pointing away from the rail. */
+export function IconSidebarLeftOpen(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <rect x="3" y="3" width="18" height="18" rx="2.5" />
+      <path d="M9 3v18M14 9l3 3-3 3" />
     </Svg>
   );
 }
