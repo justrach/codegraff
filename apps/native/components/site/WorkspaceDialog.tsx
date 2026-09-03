@@ -285,8 +285,9 @@ function SettingsForm({
   const [name, setName] = useState(workspace.name);
   const [model, setModel] = useState(workspace.model ?? "");
   const [yolo, setYolo] = useState(workspace.yolo ?? true);
+  const [mcp, setMcp] = useState(workspace.mcp ?? true);
   const [confirmForget, setConfirmForget] = useState(false);
-  const save = () => onSave({ ...workspace, name: name.trim() || basename(workspace.path), model: model || undefined, yolo });
+  const save = () => onSave({ ...workspace, name: name.trim() || basename(workspace.path), model: model || undefined, yolo, mcp });
 
   return (
     <>
@@ -334,6 +335,16 @@ function SettingsForm({
             </div>
           </div>
           <Switch checked={yolo} onChange={setYolo} label="Auto-approve tools" />
+        </div>
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-[12.5px] font-medium text-ink">Start MCP servers</div>
+            <div className="mt-1 text-[11.5px] text-ink-3">
+              Each chat's agent starts every MCP server in <span className="font-mono text-ink-2">~/.codegraff/mcp.json</span>, which can
+              cost a gigabyte or more per tab. Off, the agent has its built-in tools only.
+            </div>
+          </div>
+          <Switch checked={mcp} onChange={setMcp} label="Start MCP servers" />
         </div>
         <p className="text-[11.5px] text-ink-3">Changes apply to new tabs. A running tab keeps the agent it spawned with.</p>
       </form>

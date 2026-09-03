@@ -385,7 +385,17 @@ export default function BrowserPane({
   const pageH = info?.height ?? 1;
   const samePage = (p: BrowserPin) => !info || p.url === info.url;
   const editingPin = editing !== null ? (pins.find((p) => p.id === editing) ?? null) : null;
-  const editingAt = editingPin ? markerAt(editingPin, map) : null;
+  // Anchor the note editor to the marker, but never unmount it while a pin is
+  // being edited: a map refresh can report the marker off screen for one tick
+  // (or the pin can really be scrolled away), and unmounting mid-typing drops
+  // the input's focus and everything typed after it. Fall back to the pin's
+  // last known point, clamped into the frame.
+  const editingAt = editingPin
+    ? (markerAt(editingPin, map) ?? { x: Math.min(pageW - 1, Math.max(0, editingPin.point.x)), y: Math.min(pageH - 1, Math.max(0, editingPin.point.y)) })
+    : null;
+  // Open the editor above the marker in the lower part of the frame so it is
+  // not clipped by the frame's bottom edge or hidden behind the pin list.
+  const editorAbove = !!editingAt && editingAt.y > pageH * 0.55;
 
   return (
     <aside
@@ -537,7 +547,9 @@ export default function BrowserPane({
                 className="absolute z-10 flex w-[280px] flex-col gap-1.5 rounded-[10px] bg-surface p-2 shadow-overlay"
                 style={{
                   left: `min(calc(${pct(editingAt.x, pageW)} + 14px), calc(100% - 290px))`,
-                  top: `min(calc(${pct(editingAt.y, pageH)} + 14px), calc(100% - 110px))`,
+                  ...(editorAbove
+                    ? { bottom: `min(calc(100% - ${pct(editingAt.y, pageH)} + 14px), calc(100% - 110px))` }
+                    : { top: `min(calc(${pct(editingAt.y, pageH)} + 14px), calc(100% - 110px))` }),
                   animation: "pop-in 160ms cubic-bezier(0.23,1,0.32,1) both",
                 }}
                 onSubmit={(e) => {

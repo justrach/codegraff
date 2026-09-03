@@ -119,3 +119,31 @@ a later step.
 Frame polling too heavy on a laptop, or the pane too narrow to be useful at
 1:1, or the annotation block not moving the agent's behaviour in practice.
 Any of those, and the branch goes; the release branch is untouched.
+
+## Memory profile (2026-09-04)
+
+Sampled every 5 s over 14 minutes of real use on macOS: a demo landing page
+served locally, opened in the pane, four elements pinned in Annotate mode,
+the pins sent to graff, which edited the files and verified them against
+the live tab through Kuri.
+
+| process group | start | peak | notes |
+|---|---|---|---|
+| Kuri | 4 MB | 5 MB | flat |
+| Kuri's Chrome tree | 1.4 GB | 1.7 GB | 10 processes for 3 tabs: 6 renderers, browser, GPU, utilities |
+| `next dev` server | 4.9 GB | 5.5 GB | hours-old dev server; 60 s at 14 frames/s added 159 MB and idling 30 s gave back 501 MB, so frame polling is churn the GC reclaims, not a leak |
+| `graff acp` (per chat) | ~100 MB | ~100 MB | |
+| MCP servers (per chat) | 1.5 GB | 1.5 GB | 21 processes per agent: every server in `~/.codegraff/mcp.json` starts with every tab |
+
+What changed because of it:
+
+- `GRAFF_BROWSER_MAX_RSS_MB` (default 3072): the supervisor measures Kuri
+  plus its Chrome tree every 30 s and stops it past the cap; the next
+  request starts a fresh browser. `kuriState()` reports `rssMb`.
+- Workspace setting **Start MCP servers**: off, each tab's agent gets
+  `GRAFF_MCP_CONFIG` pointing at an empty config, the single biggest
+  per-tab saving.
+- Kuri: `KURI_ALLOW_LOCAL=1` (its SSRF guard refused localhost, which is
+  the whole point of the pane), and the note editor stays mounted while a
+  pin is edited and flips above low markers (a map refresh could unmount
+  it mid-typing and lose the note).

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -22,10 +22,24 @@ type Slot = {
   /** The workspace the agent was spawned in: its cwd, where its sessions save. */
   cwd: string;
   yolo: boolean;
+  /** Whether the configured MCP servers were started with it. */
+  mcp: boolean;
 };
 
-type SpawnOpts = { model?: string; resume?: string; cwd: string; yolo: boolean };
-type BootstrapOpts = { model?: string; reset?: boolean; resume?: string; cwd?: string; yolo?: boolean };
+type SpawnOpts = { model?: string; resume?: string; cwd: string; yolo: boolean; mcp: boolean };
+type BootstrapOpts = { model?: string; reset?: boolean; resume?: string; cwd?: string; yolo?: boolean; mcp?: boolean };
+
+/** An empty MCP config graff accepts as "no servers" (`GRAFF_MCP_CONFIG`):
+ * every chat's agent otherwise starts every server in ~/.codegraff/mcp.json,
+ * a gigabyte or more of processes per tab with a typical config. */
+function mcpOffPath(): string {
+  const file = path.join(os.homedir(), ".codegraff", "native", "mcp-off.json");
+  if (!existsSync(file)) {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, '{"mcpServers":{}}\n');
+  }
+  return file;
+}
 
 // One `graff acp` child per chat tab. The agent holds exactly one live
 // session per process (`session/load` is not implemented), so a tab's
@@ -97,7 +111,7 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
   const child = spawn(graffBin(), args, {
     stdio: ["pipe", "pipe", "inherit"],
     cwd: opts.cwd,
-    env: process.env,
+    env: opts.mcp ? process.env : { ...process.env, GRAFF_MCP_CONFIG: mcpOffPath() },
   });
   const slot: Slot = {
     child,
@@ -108,6 +122,7 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
     resume: opts.resume ?? null,
     cwd: opts.cwd,
     yolo: opts.yolo,
+    mcp: opts.mcp,
   };
   child.on("exit", () => {
     if (slots.get(chat) === slot) slots.delete(chat);
@@ -173,13 +188,15 @@ async function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
     (!opts.model || live.model === opts.model) &&
     (!opts.resume || live.resume === opts.resume) &&
     (!opts.cwd || live.cwd === opts.cwd) &&
-    (opts.yolo === undefined || live.yolo === opts.yolo);
+    (opts.yolo === undefined || live.yolo === opts.yolo) &&
+    (opts.mcp === undefined || live.mcp === opts.mcp);
   if (!opts.reset && same) return live;
   const slot = spawnAgent(chat, {
     model: opts.model,
     resume: opts.resume,
     cwd: opts.cwd ?? defaultRoot(),
     yolo: opts.yolo ?? defaultYolo(),
+    mcp: opts.mcp ?? true,
   });
   await rpc(slot, "initialize", { protocolVersion: 1, clientCapabilities: { fs: {} } });
   const created = (await rpc(slot, "session/new", { cwd: slot.cwd })) as {
@@ -235,12 +252,14 @@ export async function POST(req: NextRequest) {
       const resolved = resolveRoot(cwdParam);
       if ("error" in resolved) return Response.json({ error: resolved.error }, { status: resolved.status });
       const yolo = typeof body.params?.yolo === "boolean" ? body.params.yolo : undefined;
+      const mcp = typeof body.params?.mcp === "boolean" ? body.params.mcp : undefined;
       const slot = await bootstrap(chat, {
         model,
         reset: body.params?.reset === true,
         resume,
         cwd: cwdParam ? resolved.root : undefined,
         yolo,
+        mcp,
       });
       return Response.json({ sessionId: slot.sessionId, cwd: slot.cwd });
     }

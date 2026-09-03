@@ -91,8 +91,12 @@ server only validates a root it is handed) with the active one checked:
   level at a time, marks git roots, takes a typed or pasted path) and
   switches to the folder you pick.
 - **Workspace settings…** edits the active workspace: display name, the
-  model new tabs spawn with, and whether tools are auto-approved
-  (`graff acp --yolo`). *Forget* removes it from the switcher only.
+  model new tabs spawn with, whether tools are auto-approved
+  (`graff acp --yolo`), and whether each tab's agent starts the MCP
+  servers from `~/.codegraff/mcp.json` (off runs it with `GRAFF_MCP_CONFIG`
+  pointing at an empty config: with a typical config every tab otherwise
+  costs a gigabyte or more of server processes). *Forget* removes it
+  from the switcher only.
 - Switching workspaces changes the sidebar's session list and where new
   tabs open. A tab's agent is spawned in the workspace that was active
   when the tab opened and stays there — the folder chip in the tab bar
@@ -110,7 +114,11 @@ opens a pane showing a live Chrome tab that belongs to the chat. It is
 over `/api/browser`; install Kuri (`curl -fsSL https://kuri.trilok.ai/download | sh`)
 or set `KURI_BIN`. Nothing runs until a pane is opened, and a browser that
 sees no requests for `GRAFF_BROWSER_IDLE_MINS` (default 20, `0` = never) is
-stopped again.
+stopped again. Its footprint is capped: when Kuri and its Chrome tree pass
+`GRAFF_BROWSER_MAX_RSS_MB` (default 3072, `0` = no cap) they are stopped
+and the next request starts a fresh browser. Kuri is started with
+`KURI_ALLOW_LOCAL=1` so dev servers on this machine open; a Kuri older
+than that flag refuses localhost.
 
 - **Browse** forwards clicks, scrolling and typing to the page.
 - **Annotate** pins the element under a click, instantly: the page's

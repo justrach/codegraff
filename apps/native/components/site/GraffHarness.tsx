@@ -180,6 +180,7 @@ export default function GraffHarness() {
       resume: sessionNamesRef.current.get(chatId),
       cwd,
       yolo: ws?.yolo,
+      mcp: ws?.mcp,
     });
     sessionsRef.current.set(chatId, id);
     setSessionIds((current) => ({ ...current, [chatId]: id }));

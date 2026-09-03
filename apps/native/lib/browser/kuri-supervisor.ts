@@ -19,6 +19,9 @@ export type KuriState = {
   lastUsedMs: number | null;
   bin: string | null;
   idleMs: number;
+  /** Last measured RSS of Kuri and its Chrome tree (MB), and the cap. */
+  rssMb: number | null;
+  maxRssMb: number;
 };
 
 type Live = {
@@ -28,6 +31,9 @@ type Live = {
   startedMs: number;
   lastUsedMs: number;
   idleTimer: NodeJS.Timeout | null;
+  rssTimer: NodeJS.Timeout | null;
+  /** Last measured RSS of Kuri and its Chrome tree, MB. */
+  rssMb: number | null;
   ready: Promise<void>;
 };
 
@@ -59,6 +65,69 @@ export function idleMs(): number {
   const mins = raw === undefined || raw === "" ? 20 : Number(raw);
   if (!Number.isFinite(mins) || mins < 0) return 20 * 60_000;
   return Math.min(mins, 7 * 24 * 60) * 60_000;
+}
+
+/** Resident memory (MB) the sidecar, Kuri plus its whole Chrome tree, may use
+ * before it is stopped; the next request starts a fresh, small one. A headless
+ * Chrome with a couple of tabs sits around 1.5 GB, so the default leaves room
+ * for a heavy page without letting a leak run away. 0 disables the cap. */
+export function maxRssMb(): number {
+  const raw = process.env.GRAFF_BROWSER_MAX_RSS_MB;
+  const mb = raw === undefined || raw === "" ? 3072 : Number(raw);
+  if (!Number.isFinite(mb) || mb < 0) return 3072;
+  return mb;
+}
+
+/** RSS of a process and everything under it, in MB; 0 where `ps` cannot say. */
+export function treeRssMb(rootPid: number): number {
+  if (process.platform === "win32") return 0;
+  let out: ReturnType<typeof spawnSync>;
+  try {
+    out = spawnSync("ps", ["-axo", "pid=,ppid=,rss="], { encoding: "utf8", timeout: 2_000 });
+  } catch {
+    return 0;
+  }
+  if (out.status !== 0 || typeof out.stdout !== "string") return 0;
+  const children = new Map<number, number[]>();
+  const rss = new Map<number, number>();
+  for (const line of out.stdout.split("\n")) {
+    const [pid, ppid, kb] = line.trim().split(/\s+/).map(Number);
+    if (!pid) continue;
+    rss.set(pid, kb || 0);
+    const list = children.get(ppid);
+    if (list) list.push(pid);
+    else children.set(ppid, [pid]);
+  }
+  let total = 0;
+  const stack = [rootPid];
+  while (stack.length) {
+    const pid = stack.pop() as number;
+    total += rss.get(pid) ?? 0;
+    for (const child of children.get(pid) ?? []) stack.push(child);
+  }
+  return Math.round(total / 1024);
+}
+
+const RSS_CHECK_MS = 30_000;
+
+/** Watch the sidecar's footprint while it runs and stop it past the cap. */
+function armRssGuard(live: Live): void {
+  const cap = maxRssMb();
+  if (cap === 0 || !live.child.pid) return;
+  const pid = live.child.pid;
+  live.rssTimer = setInterval(() => {
+    if (state.live !== live || live.child.exitCode !== null) {
+      if (live.rssTimer) clearInterval(live.rssTimer);
+      return;
+    }
+    const mb = treeRssMb(pid);
+    live.rssMb = mb;
+    if (mb > cap) {
+      console.error(`[browser] the sidecar browser is using ${mb} MB (cap ${cap} MB, GRAFF_BROWSER_MAX_RSS_MB): stopping it; the next request starts a fresh one`);
+      stopKuri();
+    }
+  }, RSS_CHECK_MS);
+  live.rssTimer.unref();
 }
 
 function portFree(port: number): Promise<boolean> {
@@ -178,6 +247,9 @@ async function spawnKuri(): Promise<{ port: number; token: string }> {
       STATE_DIR: path.join(STATE_DIR, "state"),
       KURI_API_TOKEN: token,
       KURI_NO_TELEMETRY: "1",
+      // The pane exists to look at dev servers on this machine; Kuri blocks
+      // localhost/private targets by default (SSRF guard for its crawler).
+      KURI_ALLOW_LOCAL: "1",
     },
     // Kuri's own log goes to the dev server's terminal like the agents' do.
     stdio: ["ignore", "ignore", "inherit"],
@@ -189,6 +261,8 @@ async function spawnKuri(): Promise<{ port: number; token: string }> {
     startedMs: Date.now(),
     lastUsedMs: Date.now(),
     idleTimer: null,
+    rssTimer: null,
+    rssMb: null,
     ready: Promise.resolve(),
   };
   next.ready = waitHealthy(port, token, child);
@@ -196,6 +270,7 @@ async function spawnKuri(): Promise<{ port: number; token: string }> {
     const mine = state.live === next;
     if (mine) state.live = null;
     if (next.idleTimer) clearTimeout(next.idleTimer);
+    if (next.rssTimer) clearInterval(next.rssTimer);
     // A Kuri that died on its own (not our stop) leaves its Chrome behind.
     if (mine) {
       console.error(`[browser] kuri exited unexpectedly (code=${code ?? "?"} signal=${signal ?? "none"}); the next request respawns it`);
@@ -205,6 +280,7 @@ async function spawnKuri(): Promise<{ port: number; token: string }> {
   state.live = next;
   hookExit();
   armIdle(next);
+  armRssGuard(next);
   try {
     await next.ready;
   } catch (err) {
@@ -225,6 +301,7 @@ export function stopKuri(): void {
   if (!live) return;
   state.live = null;
   if (live.idleTimer) clearTimeout(live.idleTimer);
+  if (live.rssTimer) clearInterval(live.rssTimer);
   try {
     live.child.kill("SIGTERM");
   } catch {
@@ -256,6 +333,8 @@ export function kuriState(): KuriState {
     lastUsedMs: live?.lastUsedMs ?? null,
     bin: kuriBin(),
     idleMs: idleMs(),
+    rssMb: live?.rssMb ?? null,
+    maxRssMb: maxRssMb(),
   };
 }
 
