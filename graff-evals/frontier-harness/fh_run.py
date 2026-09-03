@@ -194,6 +194,28 @@ def run_task(name: str) -> dict:
         if agent.returncode is None:
             rec["error"] = "agent produced no exit code"
 
+        swe = "swe-bench" in toml or "model.patch" in toml
+        rec["suite"] = "swe" if swe else "tb"
+        if swe:
+            run(["docker", "exec", "-u", "0", cn, "mkdir", "-p", "/logs/artifacts"], timeout=30)
+            bm = re.search(r'base_commit_hash\s*=\s*"([^"]+)"', toml)
+            base = bm.group(1) if bm else "HEAD"
+            collect = (
+                "cd /app && mkdir -p /logs/artifacts && git config --global --add safe.directory /app "
+                f"&& git add -A && git diff --cached --binary {base} > /logs/artifacts/model.patch; "
+                "wc -c /logs/artifacts/model.patch"
+            )
+            c = run(["docker", "exec", "-u", "0", "-w", "/app", cn, "sh", "-c", collect], timeout=300)
+            rec["patch_tail"] = ((c.stdout or "") + (c.stderr or ""))[-200:]
+            rec["verified"] = False
+            rec["pass_"] = None
+            rec["verify_tail"] = "DeepSWE grader hidden; patch collected, not scored"
+            host_patch = Path(__file__).resolve().parent / "patches" / f"{name}.patch"
+            host_patch.parent.mkdir(parents=True, exist_ok=True)
+            docker_cp(f"{cn}:/logs/artifacts/model.patch", str(host_patch))
+            rec["patch_bytes"] = host_patch.stat().st_size if host_patch.exists() else 0
+            return rec
+
         tests_src = f"{TB}/{name}/tests"
         run(["docker", "exec", "-u", "0", cn, "mkdir", "-p", "/tests"], timeout=30)
         docker_cp(tests_src + "/.", f"{cn}:/tests/")
@@ -233,7 +255,17 @@ def run_task(name: str) -> dict:
 def tb_tasks():
     out = []
     for d in sorted(os.listdir(f"{ROOT}/tasks")):
-        if "swe-bench" not in open(f"{ROOT}/tasks/{d}/task.toml").read():
+        t = open(f"{ROOT}/tasks/{d}/task.toml").read()
+        if "swe-bench" not in t and "model.patch" not in t:
+            out.append(d)
+    return out
+
+
+def swe_tasks():
+    out = []
+    for d in sorted(os.listdir(f"{ROOT}/tasks")):
+        t = open(f"{ROOT}/tasks/{d}/task.toml").read()
+        if "swe-bench" in t or "model.patch" in t:
             out.append(d)
     return out
 
@@ -241,13 +273,21 @@ def tb_tasks():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tasks", default="")
+    ap.add_argument("--suite", choices=["tb", "swe", "all"], default="tb")
     ap.add_argument("-j", type=int, default=1)
     ap.add_argument("--out", default=str(Path(__file__).resolve().parent / "results.jsonl"))
     ap.add_argument("--fresh", action="store_true", help="ignore existing results file")
     a = ap.parse_args()
     if not os.path.isfile(GRAFF_BIN):
         sys.exit(f"missing linux graff at {GRAFF_BIN}")
-    tasks = a.tasks.split(",") if a.tasks else tb_tasks()
+    if a.tasks:
+        tasks = a.tasks.split(",")
+    elif a.suite == "swe":
+        tasks = swe_tasks()
+    elif a.suite == "all":
+        tasks = tb_tasks() + swe_tasks()
+    else:
+        tasks = tb_tasks()
     done = set()
     if os.path.exists(a.out) and not a.fresh:
         for line in open(a.out):
@@ -265,7 +305,10 @@ def main():
             for rec in ex.map(run_task, todo):
                 out.write(json.dumps(rec) + "\n")
                 out.flush()
-                ok = "PASS" if rec.get("pass_") else "FAIL"
+                if rec.get("pass_") is None:
+                    ok = "UNVERIFIED"
+                else:
+                    ok = "PASS" if rec.get("pass_") else "FAIL"
                 print(
                     f"{ok} {rec['task']:32} wall={rec.get('wall_s', '-')}s "
                     f"exit={rec.get('agent_exit', '-')} calls={rec.get('calls', '-')} "
