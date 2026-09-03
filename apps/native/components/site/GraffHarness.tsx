@@ -4,7 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
 import FilesPane from "@/components/site/FilesPane";
-import { IconFolder } from "@/lib/icons";
+import BrowserPane from "@/components/site/BrowserPane";
+import { IconFolder, IconGlobe } from "@/lib/icons";
+import { annotationsBlock, type BrowserPin } from "@/lib/browser/annotations";
+import { browserClose, browserHandle } from "@/lib/browser-client";
 import TaskRows from "@/components/primitives/TaskRows";
 import { ThemeToggle } from "@/components/site/ThemeToggle";
 import { AssistantBody, UserBubble } from "@/components/site/ChatBubbles";
@@ -98,6 +101,11 @@ export default function GraffHarness() {
   const activePathRef = useRef<string | null>(null);
   const [dialog, setDialog] = useState<null | { mode: "new" } | { mode: "settings" }>(null);
   const [copiedResume, setCopiedResume] = useState(false);
+  // The sidecar browser: one Chrome tab per chat, and the pins the user
+  // drops on it, which ride ahead of the chat's next prompt.
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [pinsByChat, setPinsByChat] = useState<Record<number, BrowserPin[]>>({});
+  const pinsRef = useRef<Record<number, BrowserPin[]>>({});
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -136,6 +144,10 @@ export default function GraffHarness() {
   const setQueue = (chatId: number, list: QueuedPrompt[]) => {
     queuesRef.current = { ...queuesRef.current, [chatId]: list };
     setQueues(queuesRef.current);
+  };
+  const setPins = (chatId: number, list: BrowserPin[]) => {
+    pinsRef.current = { ...pinsRef.current, [chatId]: list };
+    setPinsByChat(pinsRef.current);
   };
 
   const adoptCatalog = async (chatId: number) => {
@@ -304,6 +316,16 @@ export default function GraffHarness() {
       saveHistory(window.localStorage, next);
       return next;
     });
+    // Pins from the sidecar ride behind the prompt, with the tab's handle
+    // so the agent can drive the same page; they are spent on send. Behind,
+    // not ahead: graff titles the session from the message's first line.
+    let wire = trimmed;
+    const pins = pinsRef.current[chatId] ?? [];
+    if (pins.length > 0) {
+      const handle = await browserHandle(handleOf(chatId)).catch(() => null);
+      wire = `${trimmed}\n\n${annotationsBlock(pins, handle)}`;
+      setPins(chatId, []);
+    }
     let turn: AssistantTurn = { ...emptyTurn(), model: spawnModel };
     const startedAt = Date.now();
     try {
@@ -313,7 +335,7 @@ export default function GraffHarness() {
       // markdown block in the thread.
       let paint = 0;
       const turnRef = { current: turn };
-      for await (const update of prompt(handleOf(chatId), id, trimmed)) {
+      for await (const update of prompt(handleOf(chatId), id, wire)) {
         turn = applyAcpUpdate(turn, update);
         if (turn.thoughtMs === undefined && turn.status !== "thinking") turn = { ...turn, thoughtMs: Date.now() - startedAt };
         turnRef.current = turn;
@@ -409,7 +431,9 @@ export default function GraffHarness() {
       return rest;
     });
     setBusyFor(id, false);
+    setPins(id, []);
     void disposeSession(handleOf(id));
+    void browserClose(handleOf(id)).catch(() => undefined);
   };
 
   const closeChat = (id: number) => {
@@ -532,6 +556,7 @@ export default function GraffHarness() {
   const chatCwd = chatThread.cwd ?? health?.cwd;
   const chatWorkspace = findWorkspace(workspaces, chatCwd);
   const workspaceName = chatWorkspace?.name ?? (chatCwd ? basename(chatCwd) : "workspace");
+  const pinCount = (pinsByChat[chatThread.id] ?? []).length;
   const activeWorkspace = findWorkspace(workspaces, activePath);
   const sidebarWorkspace = activeWorkspace ?? (activePath ? { path: activePath, name: basename(activePath) } : undefined);
   const footerTitle = chatThread.session
@@ -583,7 +608,10 @@ export default function GraffHarness() {
         <button
           type="button"
           aria-pressed={filesOpen}
-          onClick={() => setFilesOpen((open) => !open)}
+          onClick={() => {
+            setBrowserOpen(false);
+            setFilesOpen((open) => !open);
+          }}
           title={chatCwd ?? "Workspace files"}
           className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
             filesOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
@@ -591,6 +619,24 @@ export default function GraffHarness() {
         >
           <IconFolder size={14} />
           <span className="max-w-40 truncate font-mono text-[11.5px]">{workspaceName}</span>
+        </button>
+        <button
+          type="button"
+          aria-pressed={browserOpen}
+          onClick={() => {
+            setFilesOpen(false);
+            setBrowserOpen((open) => !open);
+          }}
+          title="Sidecar browser — a Chrome tab this chat and its agent share"
+          className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
+            browserOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+          }`}
+        >
+          <IconGlobe size={14} />
+          <span className="text-[11.5px]">Browser</span>
+          {pinCount > 0 && (
+            <span className="rounded-full bg-accent px-1.5 text-[10px] font-semibold text-white tabular-nums">{pinCount}</span>
+          )}
         </button>
         <ThemeToggle />
       </div>
@@ -609,8 +655,11 @@ export default function GraffHarness() {
         activeId={chatThread.session ?? null}
         onPick={pickRecent}
         onNewChat={newChat}
-        activeNav={filesOpen ? "workspace" : "chats"}
-        onNavigate={(key) => setFilesOpen(key === "workspace")}
+        activeNav={filesOpen ? "workspace" : browserOpen ? "browser" : "chats"}
+        onNavigate={(key) => {
+          setFilesOpen(key === "workspace");
+          setBrowserOpen(key === "browser");
+        }}
         workspace={sidebarWorkspace}
         workspaces={workspaces.map((w) => ({ path: w.path, name: w.name }))}
         onSwitchWorkspace={switchWorkspace}
@@ -647,6 +696,34 @@ export default function GraffHarness() {
                 </div>
                 <div className="shrink-0 bg-page px-4 pt-3 pb-6 sm:px-8">
                   <div className="mx-auto max-w-[720px]">
+                    {pinCount > 0 && (
+                      <div className="mb-2 flex items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline">
+                        <span className="shrink-0 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Pinned</span>
+                        <span className="min-w-0 flex-1 truncate text-ink">
+                          {pinCount} element{pinCount === 1 ? "" : "s"} in the browser go with your next message
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFilesOpen(false);
+                            setBrowserOpen(true);
+                          }}
+                          className="shrink-0 rounded px-1.5 text-[11.5px] font-medium text-ink-2 hover:bg-hover hover:text-ink"
+                        >
+                          Show
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Clear pins"
+                          onClick={() => setPins(chatThread.id, [])}
+                          className="flex size-5 shrink-0 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-ink"
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+                            <path d="M18 6L6 18M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
                     {queued.length > 0 && (
                       <ul className="mb-2 flex flex-col gap-1">
                         {queued.map((item) => (
@@ -707,7 +784,17 @@ export default function GraffHarness() {
 
           {filesOpen && <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />}
 
-          {!filesOpen && active && paneTodos.length > 0 && (
+          {browserOpen && (
+            <BrowserPane
+              key={chatThread.id}
+              chat={handleOf(chatThread.id)}
+              pins={pinsByChat[chatThread.id] ?? []}
+              onPinsChange={(next) => setPins(chatThread.id, next)}
+              onClose={() => setBrowserOpen(false)}
+            />
+          )}
+
+          {!filesOpen && !browserOpen && active && paneTodos.length > 0 && (
             <aside
               className="hidden w-[360px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page lg:flex"
               style={{ animation: "fade-in 300ms ease both" }}

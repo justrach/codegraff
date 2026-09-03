@@ -100,7 +100,29 @@ server only validates a root it is handed) with the active one checked:
 
 `/api/acp` bootstrap, `/api/sessions`, `/api/fs` and `/api/git` all take
 the workspace root (`cwd` / `?root=`) and fall back to the default from
-`GRAFF_CWD` or the repo root. The sidebar footer names the tab's graff
+`GRAFF_CWD` or the repo root.
+
+## Browser sidecar (experimental)
+
+The **Browser** button in the tab bar (or the sidebar's Browser item)
+opens a pane showing a live Chrome tab that belongs to the chat. It is
+[Kuri](https://github.com/justrach/kuri)'s managed headless Chrome, driven
+over `/api/browser`; install Kuri (`curl -fsSL https://kuri.trilok.ai/download | sh`)
+or set `KURI_BIN`. Nothing runs until a pane is opened, and a browser that
+sees no requests for `GRAFF_BROWSER_IDLE_MINS` (default 20, `0` = never) is
+stopped again.
+
+- **Browse** forwards clicks, scrolling and typing to the page.
+- **Annotate** pins the element under a click with a note. Pins are drawn
+  over the frame from geometry the page reports (one `Runtime.evaluate`
+  per hover or click; nothing is injected, so any page works). They go
+  ahead of the chat's next prompt as a block naming each element (role,
+  name, selector, box), the note, and — when Kuri's snapshot names the
+  same element — its `@eN` ref, plus the tab's address so the agent can
+  snapshot, act on, and highlight the very page the user is looking at.
+
+The design and what is deliberately left out are in
+`plans/2026-09-03-browser-sidecar.md`. The sidebar footer names the tab's graff
 session (`native-…`, the `--resume` target); clicking it copies the
 command that continues the same conversation in a terminal.
 

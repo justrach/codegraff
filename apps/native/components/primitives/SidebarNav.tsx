@@ -8,6 +8,7 @@ import {
   IconCrossSmall,
   IconEditBig,
   IconFolder,
+  IconGlobe,
   IconHome,
   IconMagnifyingGlass,
   IconPlusMedium,
@@ -31,6 +32,7 @@ const WORKSPACE = { key: "graff", name: "Codegraff", monogram: "G" };
 const NAV_ITEMS: { key: string; label: string; icon: ReactNode; count?: string }[] = [
   { key: "home", label: "Home", icon: <IconHome size={18} /> },
   { key: "workspace", label: "Workspace", icon: <IconFolder size={18} /> },
+  { key: "browser", label: "Browser", icon: <IconGlobe size={18} /> },
 ];
 
 export type SidebarRecent = {
