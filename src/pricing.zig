@@ -44,6 +44,8 @@ pub const price_table = [_]ModelPrice{
     .{ .name = "kimi-k2-thinking", .in = 0.6, .out = 2.5, .cache = 0.06 },
     .{ .name = "kimi-k2.5", .in = 0.6, .out = 3, .cache = 0.06 },
     .{ .name = "grok-4.6", .in = 2, .out = 6, .cache = 0.5, .high_at = 200_000, .high_in = 4, .high_out = 12, .high_cache = 1 },
+    .{ .name = "muse-spark-1.2", .in = 1.25, .out = 4.25, .cache = 0.125 },
+    .{ .name = "muse-spark-1.2-contributor", .in = 0.1, .out = 0.2, .cache = 0.01 },
     .{ .name = "grok-4.3", .in = 1.25, .out = 2.5, .cache = 0.3 },
     .{ .name = "grok-build", .in = 1, .out = 2, .cache = 0.1 },
     .{ .name = "glm-5.3", .in = 1.4, .out = 4.4, .cache = 0.26 },
@@ -228,6 +230,10 @@ pub const model_table = [_]ModelInfo{
     // visible rows and advertised windows from the 2026-07-10 Codex catalog.
     .{ .provider = "codex", .name = "gpt-5.6-sol", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.6-terra", .context = 272_000 },
+    .{ .provider = "codegraff", .name = "muse-spark-1.2", .context = 262_144 },
+    .{ .provider = "codegraff", .name = "muse-spark-1.2-contributor", .context = 262_144 },
+    .{ .provider = "meta", .name = "muse-spark-1.2", .context = 1_048_576 },
+    .{ .provider = "meta", .name = "muse-spark-1.2-contributor", .context = 1_048_576 },
     .{ .provider = "codex", .name = "gpt-5.6-luna", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.5", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.4", .context = 272_000 },
@@ -286,6 +292,9 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
     .{ .provider = "kimi", .name = "kimi-for-coding-highspeed", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
     .{ .provider = "moonshot", .name = "kimi-latest", .context = 131_072 },
+    .{ .provider = "moonshot", .name = "kimi-k3", .context = 1_048_576, .supports_reasoning = true, .support_efforts = &.{ "low", "high", "max" }, .default_effort = "high" },
+    .{ .provider = "moonshot", .name = "kimi-k2.7-code", .context = 262_144, .supports_reasoning = true },
+    .{ .provider = "moonshot", .name = "kimi-k2.6", .context = 262_144, .supports_reasoning = true },
     .{ .provider = "xai", .name = "grok-4.6", .context = 500_000, .supports_reasoning = true },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
@@ -489,6 +498,14 @@ pub fn familyAliasEquals(provider_id: []const u8, name: []const u8, query: []con
 /// `keys` is main.zig's Keys (anytype to keep provider wiring out of this
 /// module) — anything with `get(provider_id) ?[]const u8`.
 pub fn resolveModelName(keys: anytype, query: []const u8) ?[]const u8 {
+    // `<provider>/<model>` pins the provider (startup's explicitProvider splits
+    // on '/'), so resolve the remainder against that provider's own rows first.
+    // openrouter-style slugs keep working: "openrouter/anthropic/claude-x"
+    // strips only the leading provider id.
+    if (std.mem.indexOfScalar(u8, query, '/')) |slash| {
+        const rest = query[slash + 1 ..];
+        if (rest.len > 0 and providerModelInTable(query[0..slash], rest)) return rest;
+    }
     for (models()) |m| if (std.mem.eql(u8, m.name, query)) return m.name;
     for (models()) |m| if (modelAliasEquals(m.name, query)) return m.name;
     // #377: family-prefixed spelling of a provider's own row (`kimi-k3` → kimi's

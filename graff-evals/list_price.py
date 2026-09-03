@@ -66,6 +66,25 @@ RATES = {
         "high_cache": 0.075,
         "high_out": 3.75,
     },
+    # platform.kimi.ai/docs/pricing/chat-k3 — cache-hit / cache-miss / output
+    "k3": {
+        "high_at": 0,
+        "in": 3.0,
+        "cache": 0.30,
+        "out": 15.0,
+        "high_in": 3.0,
+        "high_cache": 0.30,
+        "high_out": 15.0,
+    },
+    "kimi-k3": {
+        "high_at": 0,
+        "in": 3.0,
+        "cache": 0.30,
+        "out": 15.0,
+        "high_in": 3.0,
+        "high_cache": 0.30,
+        "high_out": 15.0,
+    },
 }
 
 # USD per 1k invocations (xAI Tools Pricing). Token-only tools are 0.
@@ -97,6 +116,8 @@ def rates_for(model: str) -> dict | None:
         return RATES["muse-spark-1.2"]
     if model.startswith("gemini") or leaf.startswith("gemini"):
         return RATES["gemini-3.8-flash"]
+    if model in ("k3", "kimi-k3") or leaf in ("k3", "kimi-k3") or leaf.startswith("kimi-k3"):
+        return RATES["k3"]
     return None
 
 
