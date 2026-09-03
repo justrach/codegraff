@@ -23,6 +23,9 @@ COLORS = {
     "dsh": ("#7c3aed", "#5b21b6"),
     "dsh-deepseek": ("#ffffff", "#7c3aed"),
     "dsh-grok": ("#7c3aed", "#5b21b6"),
+    "gemini-cli": ("#4285f4", "#1a73e8"),
+    "pi-dev": ("#f97316", "#ea580c"),
+    "pi-codegraff": ("#f97316", "#ea580c"),
 }
 
 
