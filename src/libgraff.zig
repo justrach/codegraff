@@ -76,7 +76,7 @@ export fn graff_acp_create(new_seed: u32) void {
     session_id = null;
     seed = if (new_seed == 0) 1 else new_seed;
     engine.cancel_flag.store(false, .release);
-    engine.implementation_version = "0.0.284-core";
+    engine.implementation_version = "0.0.285-core";
 }
 
 export fn graff_acp_feed(len: usize) i32 {

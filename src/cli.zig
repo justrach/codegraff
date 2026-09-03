@@ -21,6 +21,13 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.285
+    \\  • native transcript stays put when you scroll up mid-stream; return to the tail to follow again (#724)
+    \\  • follow-ups typed while a turn is running queue and send when it ends
+    \\  • native tools land in the answer, not as a wall on top; settled batches fold
+    \\  • workspace switch stars and reports the process cwd (#721)
+    \\  • TUI streams the live answer instead of a Thinking placeholder
+    \\
     \\0.0.284
     \\  • ACP turns stage GUI @[image] attachments as native vision blocks — pasted images reach the model
     \\  • peer inbox wake is advisory ("parked; read when relevant"), never a command that displaces the turn

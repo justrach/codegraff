@@ -10,6 +10,19 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.285 (2026-09-03)
+
+- Native transcript follow-tail only while the reader is at the bottom.
+  Scrolling up mid-stream no longer yanks the thread (#724).
+- Follow-ups typed while a turn is running queue and drain in order when
+  it ends. The composer stays usable; stop stays on an empty draft.
+- Native tools interleave with the answer instead of stacking above it;
+  settled tool batches fold; ACP patches paint once per frame.
+- `#721`: `workspace` switch stars and reports the process cwd.
+- TUI streams the live answer instead of a Thinking placeholder while
+  tokens arrive.
+- 284 stays published as-is. This is not a retag.
+
 ## v0.0.284 (2026-09-01)
 
 - ACP turns stage GUI `@[image]` attachments as native vision blocks so
