@@ -6,6 +6,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
 const Agent = @import("agent.zig").Agent;
+const cancel_source = @import("cancel_source.zig"); // #728
 
 const cancelled_answer = "{\"type\":\"answer\",\"cancelled\":true}";
 
@@ -127,7 +128,7 @@ fn readerTask() void {
             var queued_turn = false;
             for (lines.items) |queued| queued_turn = queued_turn or isTurn(gpa, queued);
             if (active) {
-                Agent.esc_cancel.store(true, .release);
+                cancel_source.cancel(.json_cancel);
                 cancel_epoch +%= 1;
             } else if (pending) {
                 pending_cancelled = true;

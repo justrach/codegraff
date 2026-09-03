@@ -14,6 +14,7 @@ pub const Notice = struct {
     id: u32,
     exit_code: ?u8 = null,
     killed: bool = false,
+    idle: bool = false, // the idle policy stopped it (#199): no auto-turn wake
     preview: [48]u8 = undefined,
     preview_len: u8 = 0,
 };
@@ -39,6 +40,9 @@ fn clipCmd(cmd: []const u8) struct { buf: [48]u8, len: u8 } {
 /// One human/model line for a finished job.
 pub fn line(buf: []u8, n: Notice) []const u8 {
     const cmd = n.preview[0..n.preview_len];
+    if (n.idle) {
+        return std.fmt.bufPrint(buf, "[job {d} stopped idle: {s}]", .{ n.id, cmd }) catch buf[0..0];
+    }
     if (n.killed) {
         return std.fmt.bufPrint(buf, "[job {d} killed: {s}]", .{ n.id, cmd }) catch buf[0..0];
     }
@@ -51,6 +55,7 @@ pub fn line(buf: []u8, n: Notice) []const u8 {
 fn wakeLine(buf: []u8, n: Notice) []const u8 {
     var head: [96]u8 = undefined;
     const h = line(&head, n);
+    if (n.idle) return std.fmt.bufPrint(buf, "{s} — silent and unread past the idle stop; rerun it only if it is still needed.", .{h}) catch h;
     return std.fmt.bufPrint(buf, "{s} — unread output via bash_output; do not poll.", .{h}) catch h;
 }
 
@@ -58,9 +63,9 @@ fn wakeLine(buf: []u8, n: Notice) []const u8 {
 /// paints a TUI/REPL notice immediately. A job whose exit the model already
 /// read (dismiss ran first) still reaches the hosted sink — that event is
 /// UI, not a wake.
-pub fn record(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8) void {
+pub fn record(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8, idle: bool) void {
     const clipped = clipCmd(cmd);
-    const n = Notice{ .id = id, .exit_code = exit_code, .killed = killed, .preview = clipped.buf, .preview_len = clipped.len };
+    const n = Notice{ .id = id, .exit_code = exit_code, .killed = killed, .idle = idle, .preview = clipped.buf, .preview_len = clipped.len };
     mu.lockUncancelable(io);
     if (dismissedIndex(id)) |i| {
         std.mem.copyForwards(u32, dismissed[i .. dismissed_len - 1], dismissed[i + 1 .. dismissed_len]);
@@ -136,15 +141,34 @@ pub fn stillRunning(io: Io, id: u32, waited_ms: u64) void {
     tool_pulse.emitNotice(io, "· bash_output · job {d} still running · {s}", .{ id, tool_pulse.formatElapsed(&ebuf, waited_ms) });
 }
 
-/// Drain queued notices into `buf`. Null when nothing finished.
+/// Drain queued notices into `buf` (step boundary: everything). Null when
+/// nothing finished.
 pub fn takeWake(io: Io, buf: []u8) ?[]const u8 {
+    return drain(io, buf, true);
+}
+
+/// The idle-TUI auto-turn: an exit or a kill wakes the model; an idle stop
+/// does not — nobody was there for the whole idle budget, and a wake would
+/// spend a turn telling nobody (ADR 0061). It waits in the ring for the next
+/// real step boundary, where `deliver` hands it over.
+pub fn takeIdleWake(io: Io, buf: []u8) ?[]const u8 {
+    return drain(io, buf, false);
+}
+
+fn drain(io: Io, buf: []u8, idle_too: bool) ?[]const u8 {
     mu.lockUncancelable(io);
     defer mu.unlock(io);
     if (count == 0) return null;
     var used: usize = 0;
+    var keep: usize = 0; // notices left in the ring, compacted in order
     var i: usize = 0;
     while (i < count) : (i += 1) {
-        var one: [160]u8 = undefined;
+        if (!idle_too and ring[i].idle) {
+            ring[keep] = ring[i];
+            keep += 1;
+            continue;
+        }
+        var one: [200]u8 = undefined;
         const w = wakeLine(&one, ring[i]);
         if (used > 0) {
             if (used + 1 >= buf.len) break;
@@ -155,7 +179,11 @@ pub fn takeWake(io: Io, buf: []u8) ?[]const u8 {
         @memcpy(buf[used .. used + n], w[0..n]);
         used += n;
     }
-    count = 0;
+    while (i < count) : (i += 1) { // what did not fit stays for next time
+        ring[keep] = ring[i];
+        keep += 1;
+    }
+    count = keep;
     if (used == 0) return null;
     return buf[0..used];
 }
@@ -191,22 +219,22 @@ test "dismiss drops a queued notice, or the one the pump has not queued yet (ADR
     dismissed_len = 0;
     var buf: [256]u8 = undefined;
     // Queued, then read through bash_output: no wake.
-    record(io, 7, 0, false, "sleep 1");
+    record(io, 7, 0, false, "sleep 1", false);
     dismiss(io, 7);
     try std.testing.expect(takeWake(io, &buf) == null);
     // Read through bash_output BEFORE the pump queued it: still no wake, and
     // the remembered id is spent by that one record.
     dismiss(io, 8);
     dismiss(io, 8); // a second read of the same finished job is not a second credit
-    record(io, 8, 1, false, "false");
+    record(io, 8, 1, false, "false", false);
     try std.testing.expect(takeWake(io, &buf) == null);
     try std.testing.expectEqual(@as(usize, 0), dismissed_len);
-    record(io, 8, 1, false, "false");
+    record(io, 8, 1, false, "false", false);
     try std.testing.expect(std.mem.indexOf(u8, takeWake(io, &buf) orelse "", "[job 8 exited 1: false]") != null);
     // Only the dismissed id is dropped; a neighbour in the ring survives.
-    record(io, 9, 0, false, "a");
-    record(io, 10, 0, false, "b");
-    record(io, 11, 0, false, "c");
+    record(io, 9, 0, false, "a", false);
+    record(io, 10, 0, false, "b", false);
+    record(io, 11, 0, false, "c", false);
     dismiss(io, 10);
     const text = takeWake(io, &buf) orelse return error.Empty;
     try std.testing.expect(std.mem.indexOf(u8, text, "[job 9 exited 0: a]") != null);
@@ -228,12 +256,29 @@ test "takeWake drains and formats the grok-build do-not-poll reminder" {
     const io = std.testing.io;
     count = 0;
     dismissed_len = 0;
-    record(io, 1, 0, false, "true");
-    record(io, 2, 1, false, "false");
+    record(io, 1, 0, false, "true", false);
+    record(io, 2, 1, false, "false", false);
     var buf: [256]u8 = undefined;
     const text = takeWake(io, &buf) orelse return error.Empty;
     try std.testing.expect(std.mem.indexOf(u8, text, "[job 1 exited 0: true]") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "do not poll") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "[job 2 exited 1: false]") != null);
+    try std.testing.expect(takeWake(io, &buf) == null);
+}
+
+test "#199: an idle stop is a step-boundary notice, not an auto-turn wake" {
+    const io = std.testing.io;
+    count = 0;
+    dismissed_len = 0;
+    var buf: [512]u8 = undefined;
+    record(io, 3, null, true, "npm run dev", true);
+    try std.testing.expect(takeIdleWake(io, &buf) == null); // the idle TUI stays idle
+    record(io, 4, 0, false, "make", false);
+    const idle_text = takeIdleWake(io, &buf) orelse return error.Empty;
+    try std.testing.expect(std.mem.indexOf(u8, idle_text, "[job 4 exited 0: make]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, idle_text, "job 3") == null); // still queued
+    const step_text = takeWake(io, &buf) orelse return error.Empty;
+    try std.testing.expect(std.mem.indexOf(u8, step_text, "[job 3 stopped idle: npm run dev]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, step_text, "rerun it only if it is still needed") != null);
     try std.testing.expect(takeWake(io, &buf) == null);
 }

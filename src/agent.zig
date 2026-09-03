@@ -334,7 +334,7 @@ pub const Agent = struct {
         // No per-turn teardown: the socket and the chain span user turns, guarded by codex_chain.usable instead.
         self.completed = null;
         @import("named_work.zig").beginTurn(self);
-        if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) esc_cancel.store(false, .release);
+        if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) @import("cancel_source.zig").clear();
         while (true) {
             if (try @import("turn_chrome.zig").beforeRequest(self)) |paused| return paused;
             // Esc during a tool join lands here; root consumes, subagents bail.
@@ -515,7 +515,7 @@ pub const Agent = struct {
     /// Clear stale cancellation before the root becomes externally cancellable;
     /// runTurn consumes the marker without erasing a cancellation arriving later.
     pub fn prepareRootTurn() void {
-        esc_cancel.store(false, .release);
+        @import("cancel_source.zig").clear(); // flag + source (#728)
         root_turn_prepared.store(true, .release);
     }
 

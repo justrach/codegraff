@@ -269,7 +269,7 @@ fn bindSession(ctx: *anyopaque, sid: []const u8) void {
 }
 
 fn syncEsc() void {
-    agent_mod.Agent.esc_cancel.store(true, .release);
+    @import("cancel_source.zig").cancel(.ui_cancel); // #728
 }
 
 fn liveCancelled() bool {

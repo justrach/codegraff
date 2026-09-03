@@ -57,7 +57,7 @@ pub fn isAcpSubcommand(positional: []const u8) bool {
 }
 
 fn syncEscCancel() void {
-    agent_mod.Agent.esc_cancel.store(true, .release);
+    @import("cancel_source.zig").cancel(.acp_cancel); // #728
 }
 
 fn liveCancelled() bool {
