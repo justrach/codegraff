@@ -14,6 +14,38 @@ export type InspectHit = { element: PinElement; ref: string | null; url: string;
 
 export type HoverHit = { rect: PinElement["rect"]; tag: string };
 
+/** One pinnable element on screen, as the page reported it. */
+export type MapElement = PinElement & { i: number; ref: string | null };
+
+/** The page's pinnable elements at one moment, with the scroll offset they
+ * were measured at, so pins can be placed in page coordinates. */
+export type ElementMap = {
+  url: string;
+  title: string;
+  vw: number;
+  vh: number;
+  scrollX: number;
+  scrollY: number;
+  els: MapElement[];
+};
+
+/** The smallest mapped element under a viewport point, or null. */
+export function hitTest(map: ElementMap | null, x: number, y: number): MapElement | null {
+  if (!map) return null;
+  let best: MapElement | null = null;
+  let bestArea = Infinity;
+  for (const el of map.els) {
+    const r = el.rect;
+    if (x < r.x || y < r.y || x > r.x + r.w || y > r.y + r.h) continue;
+    const area = r.w * r.h;
+    if (area < bestArea) {
+      best = el;
+      bestArea = area;
+    }
+  }
+  return best;
+}
+
 export type InputEvent =
   | { kind: "move" | "down" | "up" | "click"; x: number; y: number; button?: "left" | "right" | "middle" }
   | { kind: "wheel"; x: number; y: number; deltaX: number; deltaY: number }
@@ -63,6 +95,7 @@ export const browserHover = (chat: string, x: number, y: number) => browserCall<
 export const browserInspect = (chat: string, x: number, y: number) => browserCall<InspectHit | null>(chat, "inspect", { x, y });
 export const browserHighlight = (chat: string, target: { ref: string } | { selector: string }) =>
   browserCall<{ ok: true }>(chat, "highlight", target);
+export const browserMap = (chat: string) => browserCall<ElementMap | null>(chat, "map");
 export const browserHandle = (chat: string) => browserCall<KuriHandle | null>(chat, "handle");
 export const browserClose = (chat: string) => browserCall<{ ok: true }>(chat, "close");
 export const browserStop = (chat: string) => browserCall<{ kuri: KuriState }>(chat, "stop");

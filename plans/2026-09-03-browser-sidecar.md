@@ -42,10 +42,19 @@ the binding survives navigation. Two things argued against it for v1:
   name, a stable selector, its box — is one `Runtime.evaluate` away, and
   drawing the outline and pins in the pane is trivial.
 
-So hover and click each cost one `/evaluate` (a ~2 KB expression built by
-`lib/browser/inspect-script.ts`), and the page is never modified. The
-injected overlay stays the right answer for a *headed* Chrome window the
-user clicks in directly; that is a later step.
+So the page is never modified. The first cut evaluated one expression per
+hover and per click; that made the outline lag the pointer and a click
+feel dead for a round trip, and it did not survive the first real try.
+Annotate now fetches an *element map* — every interactive or text-bearing
+element on screen with its box, name, selector and Kuri ref, one
+`/evaluate` plus one `/snapshot`, about 50 ms for a Hacker News page —
+and hit-tests it in the pane. Hover and pin are local and instant; the
+map refreshes 350 ms after a scroll settles, every 2.5 s, and on
+navigation. Pins are stored in page coordinates against the map's scroll
+offset, so they stay on their element when the page scrolls, and the
+wheel is forwarded in both modes. The injected overlay stays the right
+answer for a *headed* Chrome window the user clicks in directly; that is
+a later step.
 
 ## Lazy loading and resources
 

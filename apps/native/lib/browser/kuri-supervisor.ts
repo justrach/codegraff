@@ -31,8 +31,9 @@ type Live = {
   ready: Promise<void>;
 };
 
-const g = globalThis as typeof globalThis & { __graffKuri?: { live: Live | null; hooked: boolean } };
-const state = (g.__graffKuri ??= { live: null, hooked: false });
+type State = { live: Live | null; hooked: boolean; spawning: Promise<{ port: number; token: string }> | null };
+const g = globalThis as typeof globalThis & { __graffKuri?: State };
+const state: State = (g.__graffKuri ??= { live: null, hooked: false, spawning: null });
 
 const FIRST_PORT = 8091;
 // Kuri answers /health only once its Chrome is up, and a launch that hits
@@ -133,7 +134,8 @@ function reapProfileChrome(): void {
   }
 }
 
-/** The live Kuri, spawning it when there is none. */
+/** The live Kuri, spawning it when there is none. Two chats asking at once
+ * (both panes open on a dead browser) share one spawn. */
 export async function ensureKuri(): Promise<{ port: number; token: string }> {
   const live = state.live;
   if (live && live.child.exitCode === null) {
@@ -141,6 +143,17 @@ export async function ensureKuri(): Promise<{ port: number; token: string }> {
     await live.ready;
     return { port: live.port, token: live.token };
   }
+  if (state.spawning) return state.spawning;
+  const spawning = spawnKuri();
+  state.spawning = spawning;
+  try {
+    return await spawning;
+  } finally {
+    if (state.spawning === spawning) state.spawning = null;
+  }
+}
+
+async function spawnKuri(): Promise<{ port: number; token: string }> {
   const bin = kuriBin();
   if (!bin) {
     throw new Error(
@@ -179,9 +192,15 @@ export async function ensureKuri(): Promise<{ port: number; token: string }> {
     ready: Promise.resolve(),
   };
   next.ready = waitHealthy(port, token, child);
-  child.on("exit", () => {
-    if (state.live === next) state.live = null;
+  child.on("exit", (code, signal) => {
+    const mine = state.live === next;
+    if (mine) state.live = null;
     if (next.idleTimer) clearTimeout(next.idleTimer);
+    // A Kuri that died on its own (not our stop) leaves its Chrome behind.
+    if (mine) {
+      console.error(`[browser] kuri exited unexpectedly (code=${code ?? "?"} signal=${signal ?? "none"}); the next request respawns it`);
+      reapProfileChrome();
+    }
   });
   state.live = next;
   hookExit();

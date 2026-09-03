@@ -790,6 +790,7 @@ export default function GraffHarness() {
               chat={handleOf(chatThread.id)}
               pins={pinsByChat[chatThread.id] ?? []}
               onPinsChange={(next) => setPins(chatThread.id, next)}
+              onAsk={() => void send("Make the changes I pinned in the browser.")}
               onClose={() => setBrowserOpen(false)}
             />
           )}

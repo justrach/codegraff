@@ -113,13 +113,17 @@ sees no requests for `GRAFF_BROWSER_IDLE_MINS` (default 20, `0` = never) is
 stopped again.
 
 - **Browse** forwards clicks, scrolling and typing to the page.
-- **Annotate** pins the element under a click with a note. Pins are drawn
-  over the frame from geometry the page reports (one `Runtime.evaluate`
-  per hover or click; nothing is injected, so any page works). They go
-  ahead of the chat's next prompt as a block naming each element (role,
-  name, selector, box), the note, and — when Kuri's snapshot names the
-  same element — its `@eN` ref, plus the tab's address so the agent can
-  snapshot, act on, and highlight the very page the user is looking at.
+- **Annotate** pins the element under a click, instantly: the page's
+  pinnable elements (boxes, names, selectors, Kuri refs) are fetched as
+  one map and hit-tested in the pane, so hover and click never wait on
+  the network; the map refreshes after a scroll and every few seconds.
+  A note is optional. Pins keep page coordinates and follow the page as
+  it scrolls; scrolling works in both modes. Nothing is injected, so any
+  page works. Pins go behind the chat's next prompt as a block naming
+  each element (role, name, selector, box), the note, and — when Kuri's
+  snapshot names the same element — its `@eN` ref, plus the tab's address
+  so the agent can snapshot, act on, and highlight the very page the user
+  is looking at. **Ask graff** in the pane sends them right away.
 
 The design and what is deliberately left out are in
 `plans/2026-09-03-browser-sidecar.md`. The sidebar footer names the tab's graff

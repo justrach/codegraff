@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { matchRef, parseSnapshotRefs, type PinElement } from "@/lib/browser/annotations";
-import { hoverExpression, inspectExpression } from "@/lib/browser/inspect-script";
+import { hoverExpression, inspectExpression, mapExpression } from "@/lib/browser/inspect-script";
 import { ensureKuri, kuriAddress, kuriJson, kuriState, q, stopKuri } from "@/lib/browser/kuri-supervisor";
 import { normalizeUrl } from "@/lib/browser/url";
 
@@ -13,10 +13,34 @@ export const dynamic = "force-dynamic";
  * element under a point for annotations. Only `open` spawns the browser —
  * status and frames never do, so a closed pane stays free. */
 
-type Tab = { id: string; width: number; height: number };
+/** `url` is the last address the tab was known to show: if Kuri dies, the
+ * chat's tab is recreated there on the next request. */
+type Tab = { id: string; width: number; height: number; url?: string };
 
-const g = globalThis as typeof globalThis & { __graffBrowserTabs?: Map<string, Tab> };
+const g = globalThis as typeof globalThis & {
+  __graffBrowserTabs?: Map<string, Tab>;
+  __graffBrowserChains?: Map<string, Promise<void>>;
+};
 const tabs = (g.__graffBrowserTabs ??= new Map<string, Tab>());
+const chains = (g.__graffBrowserChains ??= new Map<string, Promise<void>>());
+
+/** One request at a time per chat. Kuri handles each HTTP connection on
+ * its own thread, and two of them driving the same tab's CDP client at
+ * once (a frame and an element map, say) segfaulted it in
+ * `CdpClient.send`. Different chats, different tabs, still overlap. */
+function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = chains.get(key) ?? Promise.resolve();
+  const run = prev.catch(() => undefined).then(fn);
+  const settled: Promise<void> = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  chains.set(key, settled);
+  void settled.then(() => {
+    if (chains.get(key) === settled) chains.delete(key);
+  });
+  return run;
+}
 const DEFAULT_CHAT = "default";
 const DEFAULT_SIZE = { width: 960, height: 640 };
 
@@ -58,8 +82,23 @@ async function ensureTab(chat: string, size?: { width: number; height: number })
   return tab;
 }
 
+/** The chat's tab, brought back if Kuri (and the tab with it) went away:
+ * a fresh Kuri, a fresh tab at the same size, back on the last address. */
+async function reviveTab(chat: string): Promise<Tab | null> {
+  const have = tabs.get(chat);
+  if (!have) return null;
+  if (kuriAddress() && (await tabAlive(have.id))) return have;
+  const fresh = await ensureTab(chat, { width: have.width, height: have.height });
+  if (have.url && have.url !== "about:blank") {
+    await kuriJson(`/navigate${q({ tab_id: fresh.id, url: have.url })}`).catch(() => undefined);
+    fresh.url = have.url;
+  }
+  return fresh;
+}
+
 async function pageInfo(tab: Tab): Promise<PageInfo> {
   const info = await kuriJson<KuriPageInfo>(`/page/info${q({ tab_id: tab.id })}`);
+  if (info.url) tab.url = info.url;
   return {
     tabId: tab.id,
     url: info.url ?? "",
@@ -96,8 +135,8 @@ export async function GET(req: NextRequest) {
     if (!live || !tab) return Response.json({ error: "no browser tab for this chat" }, { status: 404 });
     const quality = Math.min(95, Math.max(20, num(req.nextUrl.searchParams.get("q"), 55)));
     try {
-      const shot = await kuriJson<{ result?: { data?: string } }>(
-        `/screenshot${q({ tab_id: tab.id, format: "jpeg", quality })}`,
+      const shot = await serial(chat, () =>
+        kuriJson<{ result?: { data?: string } }>(`/screenshot${q({ tab_id: tab.id, format: "jpeg", quality })}`),
       );
       const data = shot.result?.data;
       if (!data) return Response.json({ error: "no frame" }, { status: 502 });
@@ -124,6 +163,10 @@ export async function POST(req: NextRequest) {
   const chat = typeof body.chat === "string" && body.chat ? body.chat : DEFAULT_CHAT;
   const method = body.method ?? "";
   const params = body.params ?? {};
+  return serial(chat, () => handle(chat, method, params));
+}
+
+async function handle(chat: string, method: string, params: Record<string, unknown>): Promise<Response> {
   try {
     if (method === "stop") {
       tabs.clear();
@@ -150,8 +193,9 @@ export async function POST(req: NextRequest) {
     }
     // Everything below drives a tab that must already exist; a pane that
     // was never opened has nothing to drive and must not spawn a browser.
-    const tab = tabs.get(chat);
-    if (!tab || !kuriAddress()) return Response.json({ error: "open the browser first" }, { status: 409 });
+    // One that was opened and lost its Kuri gets it back here.
+    const tab = await reviveTab(chat);
+    if (!tab) return Response.json({ error: "open the browser first" }, { status: 409 });
     switch (method) {
       case "navigate": {
         await kuriJson(`/navigate${q({ tab_id: tab.id, url: normalizeUrl(String(params.url ?? "")) })}`);
@@ -235,6 +279,24 @@ export async function POST(req: NextRequest) {
       case "snapshot": {
         const snapshot = await kuriJson<string>(`/snapshot${q({ tab_id: tab.id, filter: "interactive", format: "compact" })}`);
         return Response.json({ snapshot: typeof snapshot === "string" ? snapshot : JSON.stringify(snapshot) });
+      }
+      case "map": {
+        // Everything pinnable on screen, each with Kuri's ref when the
+        // accessibility snapshot names the same element. One evaluate plus
+        // one snapshot; the pane hit-tests the result locally.
+        type MapEl = PinElement & { i: number };
+        type Map = { url: string; title: string; vw: number; vh: number; scrollX: number; scrollY: number; els: MapEl[] };
+        const map = await evaluate<Map>(tab, mapExpression());
+        if (!map) return Response.json(null);
+        let rows: ReturnType<typeof parseSnapshotRefs> = [];
+        try {
+          const snapshot = await kuriJson<string>(`/snapshot${q({ tab_id: tab.id, filter: "interactive", format: "compact" })}`);
+          if (typeof snapshot === "string") rows = parseSnapshotRefs(snapshot);
+        } catch {
+          // mid-navigation: no refs this round
+        }
+        const els = map.els.map((el) => ({ ...el, ref: el.role ? matchRef(rows, el) : null }));
+        return Response.json({ ...map, els });
       }
       case "highlight": {
         const target = typeof params.ref === "string" ? { ref: params.ref } : { selector: String(params.selector ?? "") };

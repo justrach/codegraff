@@ -26,6 +26,9 @@ export type BrowserPin = {
   element: PinElement;
   /** Viewport point of the click, CSS pixels. */
   point: { x: number; y: number };
+  /** The element's box in page coordinates (viewport box plus the scroll
+   * offset at pin time), so the marker follows the page when it scrolls. */
+  doc?: PinRect;
 };
 
 export type SnapshotRow = { role: string; name: string; ref: string };

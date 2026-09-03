@@ -10,16 +10,17 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import {
-  browserHover,
   browserInput,
-  browserInspect,
+  browserMap,
   browserNav,
   browserNavigate,
   browserOpen,
   browserStatus,
   browserViewport,
   frameUrl,
-  type InspectHit,
+  hitTest,
+  type ElementMap,
+  type MapElement,
   type PageInfo,
 } from "@/lib/browser-client";
 import type { BrowserPin, PinRect } from "@/lib/browser/annotations";
@@ -28,10 +29,12 @@ import { IconCrossSmall, IconGlobe } from "@/lib/icons";
 /* ─────────────────────────────────────────────────────────
  * BROWSER PANE
  * The sidecar: a live picture of the headless Chrome tab Kuri drives for
- * this chat. In browse mode the pointer and keyboard are forwarded; in
- * annotate mode a click pins the element under it with a note. The pins
- * are drawn here, over the frame, from geometry the page reports — nothing
- * is injected into the page, so it works under any content security policy.
+ * this chat. Browse mode forwards the pointer, wheel and keyboard. Annotate
+ * mode pins the element under a click, instantly: the page's pinnable
+ * elements are fetched as one map (boxes, names, selectors, Kuri refs) and
+ * hit-tested here, so hover and click never wait on the network. Pins are
+ * kept in page coordinates and follow the page as it scrolls. Nothing is
+ * injected into the page, so any site works.
  * ───────────────────────────────────────────────────────── */
 
 type Mode = "browse" | "annotate";
@@ -39,8 +42,9 @@ type Mode = "browse" | "annotate";
 const FRAME_QUALITY = 55;
 const FRAME_GAP_MS = 160;
 const HIDDEN_GAP_MS = 2000;
-const HOVER_GAP_MS = 90;
 const MOVE_GAP_MS = 60;
+const MAP_REFRESH_MS = 2500;
+const MAP_SETTLE_MS = 350;
 
 const PIN_STYLE = "flex size-5 items-center justify-center rounded-full bg-accent text-[10.5px] font-semibold text-white shadow-btn";
 
@@ -71,10 +75,34 @@ function BarButton({ label, onClick, disabled, children }: { label: string; onCl
   );
 }
 
+function elementLabel(el: { role: string; tag: string; name: string }): string {
+  return `${el.role || el.tag}${el.name ? ` “${el.name}”` : ""}`;
+}
+
+/** Where a pin's marker sits now: its click point, moved by however far the
+ * page has scrolled since it was placed. Null when it is off screen. */
+function markerAt(pin: BrowserPin, map: ElementMap | null): { x: number; y: number } | null {
+  if (!pin.doc) return pin.point;
+  const scrollX = map?.scrollX ?? 0;
+  const scrollY = map?.scrollY ?? 0;
+  const x = pin.doc.x + (pin.point.x - pin.element.rect.x) - scrollX;
+  const y = pin.doc.y + (pin.point.y - pin.element.rect.y) - scrollY;
+  const vw = map?.vw ?? Infinity;
+  const vh = map?.vh ?? Infinity;
+  if (x < 0 || y < 0 || x > vw || y > vh) return null;
+  return { x, y };
+}
+
+function pinBox(pin: BrowserPin, map: ElementMap | null): PinRect {
+  if (!pin.doc) return pin.element.rect;
+  return { x: pin.doc.x - (map?.scrollX ?? 0), y: pin.doc.y - (map?.scrollY ?? 0), w: pin.doc.w, h: pin.doc.h };
+}
+
 export default function BrowserPane({
   chat,
   pins,
   onPinsChange,
+  onAsk,
   onClose,
   initialUrl,
 }: {
@@ -82,6 +110,8 @@ export default function BrowserPane({
   chat: string;
   pins: BrowserPin[];
   onPinsChange: (next: BrowserPin[]) => void;
+  /** Send the pins to the agent now, with a default request. */
+  onAsk?: () => void;
   onClose: () => void;
   initialUrl?: string;
 }) {
@@ -91,17 +121,20 @@ export default function BrowserPane({
   const [src, setSrc] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [hover, setHover] = useState<PinRect | null>(null);
-  const [draft, setDraft] = useState<{ x: number; y: number; hit: InspectHit } | null>(null);
-  const [comment, setComment] = useState("");
+  const [map, setMap] = useState<ElementMap | null>(null);
+  const [hoverEl, setHoverEl] = useState<MapElement | null>(null);
+  const [editing, setEditing] = useState<number | null>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const urlRef = useRef<HTMLInputElement>(null);
-  const commentRef = useRef<HTMLInputElement>(null);
+  const noteRef = useRef<HTMLInputElement>(null);
   const lastMove = useRef(0);
-  const lastHover = useRef(0);
+  const mapSeq = useRef(0);
+  const settleTimer = useRef(0);
   const infoRef = useRef<PageInfo | null>(null);
   infoRef.current = info;
+  const mapRef = useRef<ElementMap | null>(null);
+  mapRef.current = map;
 
   const paneSize = useCallback(() => {
     const el = frameRef.current;
@@ -182,6 +215,35 @@ export default function BrowserPane({
     };
   }, [chat, tabId]);
 
+  // The element map: what is pinnable on screen, and the scroll offset the
+  // pins are placed against. Refreshed on a timer, after a scroll settles,
+  // and whenever the page's address changes.
+  const refreshMap = useCallback(async () => {
+    if (!infoRef.current) return;
+    const n = (mapSeq.current += 1);
+    try {
+      const next = await browserMap(chat);
+      if (n !== mapSeq.current || !next) return;
+      setMap(next);
+      setHoverEl((cur) => (cur ? (next.els.find((el) => el.selector === cur.selector) ?? null) : null));
+    } catch {
+      // a page mid-navigation has no map; the last one stands until the next tick
+    }
+  }, [chat]);
+
+  const pageUrl = info?.url ?? null;
+  useEffect(() => {
+    if (!tabId) return;
+    void refreshMap();
+    const timer = window.setInterval(() => void refreshMap(), MAP_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [tabId, pageUrl, refreshMap]);
+
+  const scheduleMapRefresh = useCallback(() => {
+    window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(() => void refreshMap(), MAP_SETTLE_MS);
+  }, [refreshMap]);
+
   // The viewport follows the pane, so the picture is 1:1 and stays crisp.
   useEffect(() => {
     const el = frameRef.current;
@@ -195,6 +257,7 @@ export default function BrowserPane({
         if (!cur || (width === cur.width && height === cur.height)) return;
         void browserViewport(chat, width, height)
           .then((v) => setInfo((c) => (c ? { ...c, ...v } : c)))
+          .then(() => refreshMap())
           .catch(() => undefined);
       }, 300);
     });
@@ -203,7 +266,7 @@ export default function BrowserPane({
       observer.disconnect();
       window.clearTimeout(timer);
     };
-  }, [chat, tabId, paneSize]);
+  }, [chat, tabId, paneSize, refreshMap]);
 
   // Title and address follow the page (links clicked inside it, redirects).
   useEffect(() => {
@@ -219,6 +282,10 @@ export default function BrowserPane({
     return () => window.clearInterval(timer);
   }, [chat, tabId]);
 
+  useEffect(() => {
+    if (editing !== null) window.setTimeout(() => noteRef.current?.focus(), 0);
+  }, [editing]);
+
   /** Frame pixels → the page's CSS pixels. */
   const toPage = (e: { clientX: number; clientY: number }) => {
     const img = imgRef.current;
@@ -229,21 +296,24 @@ export default function BrowserPane({
     return { x: ((e.clientX - r.left) / r.width) * cur.width, y: ((e.clientY - r.top) / r.height) * cur.height };
   };
 
+  const updatePin = (id: number, patch: Partial<BrowserPin>) => onPinsChange(pins.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  const removePin = (id: number) => {
+    onPinsChange(pins.filter((p) => p.id !== id));
+    if (editing === id) setEditing(null);
+  };
+
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const p = toPage(e);
     if (!p || busy) return;
-    const now = performance.now();
     if (mode === "browse") {
+      const now = performance.now();
       if (now - lastMove.current < MOVE_GAP_MS) return;
       lastMove.current = now;
       void browserInput(chat, { kind: "move", x: p.x, y: p.y }).catch(() => undefined);
       return;
     }
-    if (now - lastHover.current < HOVER_GAP_MS) return;
-    lastHover.current = now;
-    void browserHover(chat, p.x, p.y)
-      .then((hit) => setHover(hit?.rect ?? null))
-      .catch(() => undefined);
+    const hit = hitTest(mapRef.current, p.x, p.y);
+    setHoverEl((cur) => (cur === hit || (cur && hit && cur.i === hit.i) ? cur : hit));
   };
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -264,52 +334,47 @@ export default function BrowserPane({
       return;
     }
     if (e.button !== 0) return;
-    setBusy("Reading the element…");
-    void browserInspect(chat, p.x, p.y)
-      .then((hit) => {
-        if (!hit) return;
-        setDraft({ x: p.x, y: p.y, hit });
-        setComment("");
-        setHover(hit.element.rect);
-        window.setTimeout(() => commentRef.current?.focus(), 0);
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setBusy(null));
+    // One click pins. The note is optional and can be typed right away.
+    const m = mapRef.current;
+    const hit = hitTest(m, p.x, p.y);
+    if (!m || !hit) {
+      setEditing(null);
+      return;
+    }
+    const { i: _i, ref, ...element } = hit;
+    const pin: BrowserPin = {
+      id: Date.now(),
+      comment: "",
+      url: m.url,
+      title: m.title,
+      ref,
+      element,
+      point: { x: p.x, y: p.y },
+      doc: { x: element.rect.x + m.scrollX, y: element.rect.y + m.scrollY, w: element.rect.w, h: element.rect.h },
+    };
+    onPinsChange([...pins, pin]);
+    setEditing(pin.id);
   };
 
   const onWheel = (e: ReactWheelEvent<HTMLDivElement>) => {
-    if (mode !== "browse" || busy) return;
+    if (busy) return;
     const p = toPage(e);
     if (!p) return;
     void browserInput(chat, { kind: "wheel", x: p.x, y: p.y, deltaX: e.deltaX, deltaY: e.deltaY }).catch(() => undefined);
+    scheduleMapRefresh();
   };
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (mode !== "browse" || busy || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.target !== frameRef.current) return;
+    if (mode === "annotate") {
+      if (e.key === "Escape") setEditing(null);
+      return;
+    }
+    if (busy || e.metaKey || e.ctrlKey || e.altKey) return;
     e.preventDefault();
     if (e.key.length === 1) void browserInput(chat, { kind: "type", text: e.key }).catch(() => undefined);
     else void browserInput(chat, { kind: "key", key: e.key }).catch(() => undefined);
   };
-
-  const commitPin = () => {
-    if (!draft) return;
-    const pin: BrowserPin = {
-      id: Date.now(),
-      comment: comment.trim(),
-      url: draft.hit.url,
-      title: draft.hit.title,
-      ref: draft.hit.ref,
-      element: draft.hit.element,
-      point: { x: draft.x, y: draft.y },
-    };
-    onPinsChange([...pins, pin]);
-    setDraft(null);
-    setComment("");
-    setHover(null);
-  };
-
-  const removePin = (id: number) => onPinsChange(pins.filter((p) => p.id !== id));
 
   const go = (target: string) => {
     const t = target.trim();
@@ -319,6 +384,8 @@ export default function BrowserPane({
   const pageW = info?.width ?? 1;
   const pageH = info?.height ?? 1;
   const samePage = (p: BrowserPin) => !info || p.url === info.url;
+  const editingPin = editing !== null ? (pins.find((p) => p.id === editing) ?? null) : null;
+  const editingAt = editingPin ? markerAt(editingPin, map) : null;
 
   return (
     <aside
@@ -340,8 +407,9 @@ export default function BrowserPane({
               aria-pressed={mode === m}
               onClick={() => {
                 setMode(m);
-                setHover(null);
-                setDraft(null);
+                setHoverEl(null);
+                setEditing(null);
+                if (m === "annotate") void refreshMap();
               }}
               className={`h-6 rounded-[6px] px-2 capitalize transition-colors ${mode === m ? "bg-surface text-ink shadow-hairline" : "text-ink-3 hover:text-ink"}`}
             >
@@ -393,101 +461,122 @@ export default function BrowserPane({
         ref={frameRef}
         tabIndex={0}
         role="application"
-        aria-label={mode === "browse" ? "Page, keyboard and pointer forwarded" : "Page, click an element to annotate it"}
+        aria-label={mode === "browse" ? "Page, keyboard and pointer forwarded" : "Page, click an element to pin it"}
         onPointerMove={onPointerMove}
         onPointerDown={onPointerDown}
         onPointerUp={onPointerUp}
-        onPointerLeave={() => setHover(null)}
+        onPointerLeave={() => setHoverEl(null)}
         onWheel={onWheel}
         onKeyDown={onKeyDown}
         onContextMenu={(e) => e.preventDefault()}
         className="relative min-h-0 flex-1 overflow-hidden bg-inset outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--accent)]"
-        style={{ cursor: mode === "annotate" ? "crosshair" : "default" }}
+        style={{ cursor: mode === "annotate" ? (hoverEl ? "pointer" : "crosshair") : "default" }}
       >
         {src && info ? (
           <div className="relative w-full">
             <img ref={imgRef} src={src} alt="" draggable={false} className="block w-full select-none" />
             <div className="pointer-events-none absolute inset-0">
-              {hover && mode === "annotate" && (
+              {hoverEl && mode === "annotate" && (
                 <div
                   className="absolute rounded-[3px]"
                   style={{
-                    left: pct(hover.x, pageW),
-                    top: pct(hover.y, pageH),
-                    width: pct(hover.w, pageW),
-                    height: pct(hover.h, pageH),
-                    boxShadow: "0 0 0 2px var(--accent), 0 0 0 9999px color-mix(in oklab, var(--accent) 10%, transparent)",
+                    left: pct(hoverEl.rect.x, pageW),
+                    top: pct(hoverEl.rect.y, pageH),
+                    width: pct(hoverEl.rect.w, pageW),
+                    height: pct(hoverEl.rect.h, pageH),
+                    boxShadow: "0 0 0 2px var(--accent), 0 0 0 9999px color-mix(in oklab, var(--accent) 8%, transparent)",
                   }}
-                />
-              )}
-              {pins.filter(samePage).map((pin) => (
-                <div
-                  key={pin.id}
-                  className="absolute"
-                  style={{ left: pct(pin.point.x, pageW), top: pct(pin.point.y, pageH), transform: "translate(-50%, -50%)" }}
-                  title={pin.comment || pin.element.name}
                 >
-                  <span className={PIN_STYLE}>{pins.indexOf(pin) + 1}</span>
-                </div>
-              ))}
-              {draft && (
-                <div
-                  className="absolute"
-                  style={{ left: pct(draft.x, pageW), top: pct(draft.y, pageH), transform: "translate(-50%, -50%)" }}
-                >
-                  <span className={`${PIN_STYLE} animate-pulse`}>{pins.length + 1}</span>
+                  <span className="absolute -top-5 left-0 max-w-full truncate rounded-[4px] bg-accent px-1 text-[10px] font-medium whitespace-nowrap text-white">
+                    {hoverEl.ref ? `@${hoverEl.ref} · ` : ""}
+                    {elementLabel(hoverEl)}
+                  </span>
                 </div>
               )}
+              {pins.filter(samePage).map((pin) => {
+                const box = pinBox(pin, map);
+                return (
+                  <div
+                    key={`box-${pin.id}`}
+                    className="absolute rounded-[3px]"
+                    style={{
+                      left: pct(box.x, pageW),
+                      top: pct(box.y, pageH),
+                      width: pct(box.w, pageW),
+                      height: pct(box.h, pageH),
+                      boxShadow: editing === pin.id ? "0 0 0 2px var(--accent)" : "0 0 0 1.5px color-mix(in oklab, var(--accent) 70%, transparent)",
+                    }}
+                  />
+                );
+              })}
             </div>
-            {draft && (
+            <div className="pointer-events-none absolute inset-0">
+              {pins.filter(samePage).map((pin) => {
+                const at = markerAt(pin, map);
+                if (!at) return null;
+                return (
+                  <button
+                    key={pin.id}
+                    type="button"
+                    title={pin.comment || elementLabel(pin.element)}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onPointerUp={(e) => {
+                      e.stopPropagation();
+                      setEditing(pin.id);
+                    }}
+                    className="pointer-events-auto absolute"
+                    style={{ left: pct(at.x, pageW), top: pct(at.y, pageH), transform: "translate(-50%, -50%)" }}
+                  >
+                    <span className={`${PIN_STYLE} ${editing === pin.id ? "ring-2 ring-white" : ""}`}>{pins.indexOf(pin) + 1}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {editingPin && editingAt && (
               <form
                 className="absolute z-10 flex w-[280px] flex-col gap-1.5 rounded-[10px] bg-surface p-2 shadow-overlay"
                 style={{
-                  left: `min(calc(${pct(draft.x, pageW)} + 14px), calc(100% - 290px))`,
-                  top: `min(calc(${pct(draft.y, pageH)} + 14px), calc(100% - 110px))`,
+                  left: `min(calc(${pct(editingAt.x, pageW)} + 14px), calc(100% - 290px))`,
+                  top: `min(calc(${pct(editingAt.y, pageH)} + 14px), calc(100% - 110px))`,
                   animation: "pop-in 160ms cubic-bezier(0.23,1,0.32,1) both",
                 }}
                 onSubmit={(e) => {
                   e.preventDefault();
-                  commitPin();
+                  setEditing(null);
                 }}
                 onPointerDown={(e) => e.stopPropagation()}
                 onPointerUp={(e) => e.stopPropagation()}
                 onPointerMove={(e) => e.stopPropagation()}
+                onWheel={(e) => e.stopPropagation()}
               >
-                <div className="truncate text-[11.5px] text-ink-3" title={draft.hit.element.selector}>
-                  {draft.hit.ref ? <span className="mr-1 font-mono text-accent-ink">@{draft.hit.ref}</span> : null}
-                  {draft.hit.element.role || draft.hit.element.tag}
-                  {draft.hit.element.name ? ` “${draft.hit.element.name}”` : ""}
+                <div className="truncate text-[11.5px] text-ink-3" title={editingPin.element.selector}>
+                  <span className="mr-1 font-semibold text-ink">#{pins.indexOf(editingPin) + 1}</span>
+                  {editingPin.ref ? <span className="mr-1 font-mono text-accent-ink">@{editingPin.ref}</span> : null}
+                  {elementLabel(editingPin.element)}
                 </div>
                 <input
-                  ref={commentRef}
-                  value={comment}
-                  onChange={(e) => setComment(e.target.value)}
+                  ref={noteRef}
+                  value={editingPin.comment}
+                  onChange={(e) => updatePin(editingPin.id, { comment: e.target.value })}
                   onKeyDown={(e) => {
                     e.stopPropagation();
-                    if (e.key === "Escape") {
-                      setDraft(null);
-                      setHover(null);
-                    }
+                    if (e.key === "Escape") setEditing(null);
                   }}
-                  placeholder="What should change here?"
-                  aria-label="Annotation"
+                  placeholder="What should change here? (optional)"
+                  aria-label="Note for this pin"
                   className="h-7 w-full rounded-[7px] bg-field px-2 text-[12.5px] text-ink shadow-hairline outline-none placeholder:text-ink-3 focus:bg-hover"
                 />
-                <div className="flex items-center justify-end gap-1">
+                <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    onClick={() => {
-                      setDraft(null);
-                      setHover(null);
-                    }}
-                    className="h-6 rounded-full px-2 text-[11.5px] font-medium text-ink-2 hover:bg-hover hover:text-ink"
+                    onClick={() => removePin(editingPin.id)}
+                    className="h-6 rounded-full px-2 text-[11.5px] font-medium text-red hover:bg-hover"
                   >
-                    Cancel
+                    Remove
                   </button>
+                  <span className="flex-1" />
                   <button type="submit" className="h-6 rounded-full bg-ink px-2.5 text-[11.5px] font-medium text-canvas hover:opacity-90">
-                    Pin
+                    Done
                   </button>
                 </div>
               </form>
@@ -510,26 +599,54 @@ export default function BrowserPane({
         )}
       </div>
 
-      <div className="max-h-44 shrink-0 overflow-y-auto border-t border-line">
+      <div className="max-h-48 shrink-0 overflow-y-auto border-t border-line">
         {pins.length === 0 ? (
           <p className="px-3 py-2 text-[11.5px] text-ink-3">
             {mode === "annotate"
-              ? "Click any element to pin it with a note. Pins go to the agent with your next message."
+              ? "Click any element to pin it. Add a note if you like. Pins go to the agent with your next message."
               : "Browse: clicks, scrolling and typing go to the page. Switch to Annotate to pin elements for the agent."}
           </p>
         ) : (
           <div className="flex flex-col px-2 py-1.5">
+            <div className="flex items-center gap-2 px-1.5 pb-1">
+              <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-3">
+                {pins.length} pin{pins.length === 1 ? "" : "s"} · sent with your next message
+              </span>
+              {onAsk && (
+                <button
+                  type="button"
+                  onClick={onAsk}
+                  className="h-6 shrink-0 rounded-full bg-ink px-2.5 text-[11.5px] font-medium text-canvas hover:opacity-90"
+                >
+                  Ask graff
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  onPinsChange([]);
+                  setEditing(null);
+                }}
+                className="h-6 shrink-0 rounded-full px-2 text-[11.5px] font-medium text-ink-3 hover:bg-hover hover:text-ink"
+              >
+                Clear
+              </button>
+            </div>
             {pins.map((pin, i) => (
-              <div key={pin.id} className="group flex min-h-8 items-center gap-2 rounded-[7px] px-1.5 py-1 hover:bg-hover">
-                <span className={`${PIN_STYLE} shrink-0`}>{i + 1}</span>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[12px] text-ink">{pin.comment || <span className="text-ink-3">no note</span>}</div>
-                  <div className="truncate font-mono text-[10.5px] text-ink-3" title={pin.element.selector}>
-                    {pin.ref ? `@${pin.ref} · ` : ""}
-                    {pin.element.role || pin.element.tag}
-                    {pin.element.name ? ` “${pin.element.name}”` : ""}
-                  </div>
-                </div>
+              <div
+                key={pin.id}
+                className={`group flex min-h-8 items-center gap-2 rounded-[7px] px-1.5 py-1 ${editing === pin.id ? "bg-hover" : "hover:bg-hover"}`}
+              >
+                <button type="button" onClick={() => setEditing(pin.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                  <span className={`${PIN_STYLE} shrink-0`}>{i + 1}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[12px] text-ink">{pin.comment || <span className="text-ink-3">no note</span>}</span>
+                    <span className="block truncate font-mono text-[10.5px] text-ink-3" title={pin.element.selector}>
+                      {pin.ref ? `@${pin.ref} · ` : ""}
+                      {elementLabel(pin.element)}
+                    </span>
+                  </span>
+                </button>
                 <button
                   type="button"
                   aria-label="Remove pin"
@@ -540,13 +657,6 @@ export default function BrowserPane({
                 </button>
               </div>
             ))}
-            <button
-              type="button"
-              onClick={() => onPinsChange([])}
-              className="mt-0.5 self-start rounded px-1.5 py-0.5 text-[11.5px] font-medium text-ink-3 hover:bg-hover hover:text-ink"
-            >
-              Clear all
-            </button>
           </div>
         )}
       </div>
