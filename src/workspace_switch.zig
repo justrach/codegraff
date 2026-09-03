@@ -118,6 +118,14 @@ fn zpath(path: []const u8, z: *[std.fs.max_path_bytes + 1]u8) ?[:0]const u8 {
 }
 
 fn realpathOs(path: []const u8, out: []u8) ?[]const u8 {
+    if (builtin.os.tag == .windows) {
+        // The Windows CRT has no realpath(3). The cases this resolves are
+        // POSIX ones (/tmp vs /private/tmp, a symlinked worktree parent), and
+        // git porcelain already prints absolute paths, so compare as printed.
+        if (path.len > out.len) return null;
+        @memcpy(out[0..path.len], path);
+        return out[0..path.len];
+    }
     var z: [std.fs.max_path_bytes + 1]u8 = undefined;
     const src = zpath(path, &z) orelse return null;
     const p = std.c.realpath(src, out.ptr) orelse return null;
