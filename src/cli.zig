@@ -22,8 +22,11 @@ pub const changelog_text =
     \\What's new
     \\──────────
     \\0.0.285
+    \\  • native transcript stays put when you scroll up mid-stream; return to the tail to follow again (#724)
+    \\  • follow-ups typed while a turn is running queue and send when it ends
+    \\  • native tools land in the answer, not as a wall on top; settled batches fold
+    \\  • workspace switch stars and reports the process cwd (#721)
     \\  • Codex WS type:error retires the socket immediately; last_api_error stays bounded (#717)
-    \\  • chain re-anchor only when the rejected body sent previous_response_id
     \\  • TUI steer / /btw queues composer image chips with the text, not text alone
     \\
     \\0.0.284
@@ -287,6 +290,8 @@ pub const usage_text =
     \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
     \\  graff worktree remove <name>     discard worktree-<name> (drops its scratch work) + delete the branch
     \\  graff worktree prune             drop git registrations for worktrees whose dirs were deleted
+    \\  graff servers                    background servers graff started (this session's or older): pid, port, age
+    \\  graff servers stop <pid>         end one (its whole process tree); `prune` drops records of dead ones
     \\  graff sandboxes                  list your gateway sandboxes (what's burning credits)
     \\  graff sandboxes stop <id>        spin a sandbox down (stops it + settles the meter)
     \\  graff cube new                   spin up a cloud graff (sandbox + serve + preview URL)

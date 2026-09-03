@@ -10,18 +10,24 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.0.285 (2026-09-01)
+## v0.0.285 (2026-09-03)
 
-- Next cut after tagged [v0.0.284](docs/releases/v0.0.284.md). No tag
-  until asked.
-- `#717` (yxlyx): Codex WS `type:error` retires the socket immediately
-  and keeps a one-request marker for the bounded diagnostic. Re-anchor
-  only when the rejected body actually sent `previous_response_id`.
-  Unparseable Responses envelopes no longer copy raw bytes into
-  `last_api_error`. Follow-up hardening for `#692` / `#693`.
-- TUI mid-turn steer / `/btw` now bakes composer `[Image #N]` chips into
-  the queued payload as `@[path]`. Previously only the typed text was
-  queued, so the follow-up turn dropped the pixels.
+- Native transcript follow-tail only while the reader is at the bottom.
+  Scrolling up mid-stream no longer yanks the thread (#724).
+- Follow-ups typed while a turn is running queue and drain in order when
+  it ends. The composer stays usable; stop stays on an empty draft.
+- Native tools interleave with the answer instead of stacking above it;
+  settled tool batches fold; ACP patches paint once per frame.
+- `#721`: `workspace` switch stars and reports the process cwd.
+- `#717`: Codex WS `type:error` retires the socket immediately and keeps
+  a one-request marker for the bounded diagnostic. Re-anchor only when
+  the rejected body actually sent `previous_response_id`. Unparseable
+  Responses envelopes no longer copy raw bytes into `last_api_error`.
+- TUI mid-turn steer / `/btw` bakes composer `[Image #N]` chips into the
+  queued payload as `@[path]`.
+- TUI streams the live answer instead of a Thinking placeholder while
+  tokens arrive; codedb folds as “Looked up N items”.
+- 284 stays published as-is. This is not a retag.
 
 ## v0.0.284 (2026-09-01)
 

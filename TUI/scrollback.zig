@@ -8,9 +8,15 @@ const app = @import("app.zig");
 const diff_mod = @import("diff.zig");
 const foldhdr = @import("foldhdr.zig");
 const glyphs = @import("glyphs.zig");
+const livetail = @import("livetail.zig");
 const theme_mod = @import("theme.zig");
 const tool_card = @import("tool_card.zig");
 const Model = app.Model;
+
+pub const liveHasBytes = livetail.liveHasBytes;
+pub const liveTail = livetail.liveTail;
+pub const strip = livetail.strip;
+pub const tail = livetail.tail;
 
 /// Soft pulse so a live turn reads as motion, not a lone spinner glyph.
 pub fn render(self: *const Model, a: std.mem.Allocator, width: usize, now_ms: u64) ![]const u8 {
@@ -27,6 +33,12 @@ pub fn render(self: *const Model, a: std.mem.Allocator, width: usize, now_ms: u6
             i = run.end;
             continue;
         }
+        // Once tokens are on the wire the pending "Thinking" row is a second
+        // spinner sitting on the answer. Skip it; liveAnswer() is the reply.
+        if (e.kind == .pending and liveHasBytes(self)) {
+            i += 1;
+            continue;
+        }
         if (!first) try out.append('\n');
         first = false;
         const selected = self.focus == .scrollback and i == self.selected;
@@ -40,7 +52,7 @@ pub fn render(self: *const Model, a: std.mem.Allocator, width: usize, now_ms: u6
             if (src.snapshot(a)) |live| {
                 if (!first) try out.append('\n');
                 first = false;
-                try out.appendSlice(try theme_mod.paint(a, self.theme().muted, try liveTail(self, a, live, raw_bash, width)));
+                try out.appendSlice(try liveAnswer(self, a, live, raw_bash, width, now_ms));
             }
             if (self.steer_queue.items.len > 0) {
                 if (!first) try out.append('\n');
@@ -65,6 +77,10 @@ pub fn indexAtVisual(self: *const Model, visual_row: usize, width: usize) ?usize
             if (visual_row >= v and visual_row < v + lines) return run.start;
             v += lines;
             i = run.end;
+            continue;
+        }
+        if (self.history.items[i].kind == .pending and liveHasBytes(self)) {
+            i += 1;
             continue;
         }
         const s = row(self, a, userNo(self, i), self.history.items[i], width, self.now_ms, false) catch "";
@@ -100,6 +116,10 @@ pub fn visualOfIndex(self: *const Model, idx: usize, width: usize) ?usize {
             i = run.end;
             continue;
         }
+        if (self.history.items[i].kind == .pending and liveHasBytes(self)) {
+            i += 1;
+            continue;
+        }
         if (i == idx) return v;
         v += lineCount(row(self, a, userNo(self, i), self.history.items[i], width, self.now_ms, false) catch "");
         i += 1;
@@ -124,6 +144,10 @@ pub fn stickyUserAbove(self: *const Model, top_line: usize, width: usize) ?[]con
             const run = self.toolRun(i);
             v += lineCount(runVisual(self, a, run.start, run.end, width, self.now_ms) catch "");
             i = run.end;
+            continue;
+        }
+        if (e.kind == .pending and liveHasBytes(self)) {
+            i += 1;
             continue;
         }
         if (e.kind == .user and v < top_line) best = e.text;
@@ -334,32 +358,14 @@ fn firstLine(s: []const u8) []const u8 {
     return s;
 }
 
-/// Drop escapes/C0 from the live tail so a CR cannot rewind the row.
-pub fn strip(a: std.mem.Allocator, s: []const u8) []const u8 {
-    return @import("markdown.zig").sanitize(a, s) catch s;
-}
-
-/// Live prose uses the same renderer as a settled assistant row. Raw bash
-/// stays sanitized-only — those bytes are a terminal, not markdown.
-pub fn liveTail(self: *const Model, a: std.mem.Allocator, live: []const u8, raw_bash: bool, width: usize) ![]const u8 {
-    const clean = strip(a, live);
-    if (raw_bash) return tail(a, clean, width, 4);
-    const painted = @import("markdown.zig").renderThemed(a, clean, self.theme(), width -| 4) catch clean;
-    return tail(a, painted, width, 8);
-}
-
-pub fn tail(a: std.mem.Allocator, s: []const u8, width: usize, max_lines: usize) ![]const u8 {
-    var lines = std.array_list.Managed([]const u8).init(a);
-    var it = std.mem.splitScalar(u8, s, '\n');
-    // Live tail is prose, or the raw bash projection when that buf is live.
-    while (it.next()) |ln| try lines.append(ln);
-    const start = if (lines.items.len > max_lines) lines.items.len - max_lines else 0;
-    var out = std.array_list.Managed(u8).init(a);
-    for (lines.items[start..], 0..) |ln, n| {
-        if (n > 0) try out.append('\n');
-        try out.appendSlice(try theme_mod.wrapToWidth(a, try std.fmt.allocPrint(a, "    {s}", .{ln}), width));
-    }
-    return out.items;
+/// The growing answer: assistant chrome + themed markdown, not a muted
+/// 8-line clip under Thinking. finishJob then swaps this for the settled row.
+pub fn liveAnswer(self: *const Model, a: std.mem.Allocator, live: []const u8, raw_bash: bool, width: usize, now_ms: u64) ![]const u8 {
+    const clean = livetail.strip(a, live);
+    if (clean.len == 0) return "";
+    if (raw_bash) return theme_mod.paint(a, self.theme().muted, try livetail.tail(a, clean, width, 4));
+    const fake: app.Entry = .{ .kind = .assistant, .text = clean };
+    return row(self, a, 0, fake, width, now_ms, false);
 }
 
 test "firstLine stops at newline" {

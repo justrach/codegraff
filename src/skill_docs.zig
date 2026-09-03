@@ -130,7 +130,7 @@ pub const builtins = blk: {
 pub var g_skills: []const Skill = &builtins;
 /// Resolved HOME for the personal tier, so execSkill's rescan finds the same
 /// set the startup scan did.
-var g_home: ?[]const u8 = null;
+pub var g_home: ?[]const u8 = null; // pub: split-out tests save/restore it
 
 pub fn load(io: Io, arena: Allocator, home: ?[]const u8) []const Skill {
     g_home = home;
@@ -215,7 +215,7 @@ fn loadDir(io: Io, arena: Allocator, list: *std.ArrayList(Skill), dir_path: []co
 fn mergeFile(io: Io, arena: Allocator, list: *std.ArrayList(Skill), dir_path: []const u8, path: []const u8, raw_name: []const u8, source: Source) void {
     // Prefix only: name + description for the prompt. The body stays on disk
     // until `skill name=` / render, same as ADR 0007 and OpenCode's catalog.
-    const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(head_cap)) catch return;
+    const data = readHead(io, arena, path) orelse return;
     // raw_name points into the directory iterator's buffer, which the next
     // entry overwrites — the parsed skill has to own it.
     const fallback = arena.dupe(u8, raw_name) catch return;
@@ -229,6 +229,16 @@ fn mergeFile(io: Io, arena: Allocator, list: *std.ArrayList(Skill), dir_path: []
         .path = path,
         .source = source,
     });
+}
+
+/// The first `head_cap` bytes of a SKILL.md, never the whole file. The
+/// catalog used `readFileAlloc(.limited(head_cap))`, which fails with
+/// StreamTooLong at the cap instead of truncating, so every playbook over
+/// 8 KB silently vanished from the catalog and `skill <name>` could not load
+/// it (#730). A truncating read keeps the catalog cheap and the skill present.
+fn readHead(io: Io, arena: Allocator, path: []const u8) ?[]const u8 {
+    const buf = arena.alloc(u8, head_cap) catch return null;
+    return Io.Dir.cwd().readFile(io, path, buf) catch null;
 }
 
 /// Append, or replace the same-named skill from a lower tier.
@@ -571,4 +581,8 @@ test "load: catalog keeps name and desc; named skill reads the body from disk" {
     defer std.testing.allocator.free(out.text);
     try std.testing.expect(!out.is_error);
     try std.testing.expect(std.mem.indexOf(u8, out.text, "CATALOG_MUST_NOT_KEEP_THIS_BODY") != null);
+}
+
+test { // split-out tests (file cap): unreferenced, they would silently never run
+    _ = @import("skill_docs_tests.zig");
 }

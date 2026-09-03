@@ -14,6 +14,7 @@ const provider_mod = @import("provider.zig");
 const agent_mod = @import("agent.zig");
 const Provider = provider_mod.Provider;
 const Agent = agent_mod.Agent;
+const cancel_source = @import("cancel_source.zig"); // #728
 const headers = @import("http_headers.zig");
 const stall = @import("http_stall.zig"); // #56: the watchdogs' pure budget arithmetic
 const http_client = @import("http_client.zig");
@@ -306,7 +307,7 @@ pub fn streamStallWatch(io: Io, poll_stdin: bool, tokens_flowing: bool) Watchdog
         io.sleep(.fromMilliseconds(50), .awake) catch return .deadline; // canceled: a line arrived
         waited += 50;
         if (poll_stdin and Agent.drainSteerStdin(true)) {
-            Agent.esc_cancel.store(true, .release);
+            cancel_source.cancelFromStdin();
             return .esc;
         }
         if (Agent.esc_cancel.load(.acquire)) return .esc;
@@ -322,7 +323,7 @@ pub fn deadlineStallTask(io: Io, poll_stdin: bool, budget_ms: u64) WatchdogFired
         io.sleep(.fromMilliseconds(50), .awake) catch return .deadline;
         waited += 50;
         if (poll_stdin and Agent.drainSteerStdin(true)) {
-            Agent.esc_cancel.store(true, .release);
+            cancel_source.cancelFromStdin();
             return .esc;
         }
         if (Agent.esc_cancel.load(.acquire)) return .esc;

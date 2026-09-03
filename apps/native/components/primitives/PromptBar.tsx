@@ -456,6 +456,7 @@ export default function PromptBar({
   };
 
   const canSend = !disabled && (draft.trim().length > 0 || attachments.length > 0);
+  const showStop = busy && !canSend;
   const send = () => {
     if (!canSend) return;
     onSend?.(draft.trim());
@@ -808,18 +809,18 @@ export default function PromptBar({
               runs it morphs into the Codex-style stop control */}
           <button
             type="button"
-            aria-label={busy ? "Stop" : "Send"}
-            disabled={busy ? !onStop : !canSend}
-            onClick={busy ? onStop : send}
+            aria-label={showStop ? "Stop" : "Send"}
+            disabled={showStop ? !onStop : !canSend}
+            onClick={showStop ? onStop : send}
             className={`flex size-7 shrink-0 items-center justify-center transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${
               pill ? "rounded-full" : "rounded-[8px]"
             } ${wide ? "col-start-5 row-start-2" : "col-start-5 row-start-1"}`}
             style={{
-              background: busy || canSend ? "var(--ink)" : "var(--line-strong)",
-              color: busy || canSend ? "var(--surface)" : "var(--ink-2)",
+              background: showStop || canSend ? "var(--ink)" : "var(--line-strong)",
+              color: showStop || canSend ? "var(--surface)" : "var(--ink-2)",
             }}
           >
-            {busy ? (
+            {showStop ? (
               <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
                 <rect x="5" y="5" width="14" height="14" rx="2.5" />
               </svg>

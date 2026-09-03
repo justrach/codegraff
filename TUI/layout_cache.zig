@@ -108,6 +108,10 @@ pub fn ensure(m: *Model, width: usize) *Cache {
             w.users += 1;
             w.user_text = e.text;
         }
+        if (e.kind == .pending and scrollback.liveHasBytes(m)) {
+            i = end;
+            continue;
+        }
         w.place(i, end, e.kind == .pending, false);
         i = end;
     }
@@ -202,7 +206,7 @@ fn liveText(m: *Model, a: std.mem.Allocator, start: usize, end: usize, width: us
     const raw_bash = job.raw.len.load(.acquire) > 0;
     const src = if (raw_bash) &job.raw else &job.stream;
     const live = src.snapshot(a) orelse return "";
-    return theme_mod.paint(a, m.theme().muted, try scrollback.liveTail(m, a, live, raw_bash, width));
+    return scrollback.liveAnswer(m, a, live, raw_bash, width, m.now_ms);
 }
 
 fn steerText(m: *Model, a: std.mem.Allocator) ![]const u8 {

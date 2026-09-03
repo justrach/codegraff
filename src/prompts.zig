@@ -477,6 +477,7 @@ pub const compact_instruction =
 
 test { // #421/#410: prompt snapshots and goal-prefix behavior must stay reachable.
     _ = @import("prompt_snapshot_tests.zig");
+    _ = @import("prompt_lean_tests.zig");
     _ = @import("prompt_goal_tests.zig");
 }
 

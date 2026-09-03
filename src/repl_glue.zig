@@ -364,7 +364,7 @@ pub fn replModelPick(ctx_ptr: ?*anyopaque, gpa: Allocator, provider_id: []const 
 /// queue. Cross-thread safe (atomic) — the same signal the TTY esc-watch uses.
 pub fn replCancelCb(ctx_ptr: ?*anyopaque) void {
     _ = ctx_ptr;
-    Agent.esc_cancel.store(true, .release);
+    @import("cancel_source.zig").cancel(.ui_cancel); // #728
 }
 
 pub const SteerEntry = struct { text: []const u8, force: bool };
