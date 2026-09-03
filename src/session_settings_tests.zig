@@ -25,6 +25,7 @@ const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig");
 const plugins = @import("plugins.zig");
 const mcp_schema_gate = @import("mcp_schema_gate.zig");
+const job_idle = @import("job_idle.zig");
 
 const Knob = struct { name: []const u8, value: []const u8 };
 
@@ -59,6 +60,8 @@ const knobs = [_]Knob{
     .{ .name = "GRAFF_NO_STABLE_CATALOG", .value = "1" },
     .{ .name = "GRAFF_VERCEL_URL", .value = "https://ai-gateway.vercel.sh/v1/chat/completions" },
     .{ .name = "GRAFF_XAI_X_SEARCH", .value = "0" },
+    .{ .name = "GRAFF_JOB_IDLE_WARN_MINS", .value = "3" },
+    .{ .name = "GRAFF_JOB_IDLE_STOP_MINS", .value = "0" },
 };
 
 /// A stand-in for the process environment that records which names were asked
@@ -109,6 +112,7 @@ const Saved = struct {
     plugins_off: bool,
     stable_catalog: bool,
     x_search: bool,
+    job_idle: job_idle.Policy,
 
     fn capture() Saved {
         return .{
@@ -138,6 +142,7 @@ const Saved = struct {
             .plugins_off = plugins.disabled,
             .stable_catalog = mcp_schema_gate.g_stable_catalog,
             .x_search = @import("xai_hosted.zig").enabled,
+            .job_idle = job_idle.policy,
         };
     }
 
@@ -169,6 +174,7 @@ const Saved = struct {
         plugins.disabled = s.plugins_off;
         mcp_schema_gate.g_stable_catalog = s.stable_catalog;
         @import("xai_hosted.zig").enabled = s.x_search;
+        job_idle.policy = s.job_idle;
     }
 };
 
@@ -213,11 +219,14 @@ test "applyEnvKnobs actually applies the values it reads" {
     tool_handle.threshold_bytes = tool_handle.default_threshold_bytes;
     plugins.disabled = false;
     mcp_schema_gate.g_stable_catalog = false;
+    job_idle.policy = .{};
     @import("xai_hosted.zig").enabled = true;
     @import("native_fold.zig").resetContextKnob();
 
     var asked: [knobs.len]bool = @splat(false);
     try session_settings.applyEnvKnobs(arena_state.allocator(), RecordingEnv{ .asked = &asked });
+    try std.testing.expectEqual(@as(u64, 3 * std.time.ms_per_min), job_idle.policy.warn_ms); // #199
+    try std.testing.expectEqual(@as(u64, 0), job_idle.policy.stop_ms);
 
     try std.testing.expect(!main_mod.g_codedb_guard); // present ⇒ guard OFF
     try std.testing.expect(main_mod.g_force_stall_once);

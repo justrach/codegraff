@@ -17,11 +17,6 @@ pub const runCapped = process_runner.runCapped;
 pub const runCappedWithOptions = process_runner.runCappedWithOptions;
 pub const ranOk = process_runner.ranOk;
 
-/// Commit-message trailer that credits the harness assist. The commit AUTHOR
-/// stays the user's own git identity (their GitHub account) — graff never
-/// overrides GIT_AUTHOR_*; codegraff is recorded as a co-author instead,
-/// mirroring how Claude Code attributes commits.
-const codegraff_coauthor = "Co-Authored-By: Codegraff <blackfloofie@codegraff.com>";
 const Agent = agent_mod.Agent;
 
 /// Same as `runCapped`, but spawns the child with an explicit working
@@ -47,6 +42,13 @@ pub fn toolRunOptions(cwd: ?[]const u8) CappedRunOptions {
     };
 }
 
+// `graff worktree …` + the per-turn checkpoint commit live in worktree_cmd.zig
+// (moved out when the pool grew its idle lifecycle, #199); callers still reach
+// them through jobs.
+const worktree_cmd = @import("worktree_cmd.zig");
+pub const worktreeAutoCommit = worktree_cmd.worktreeAutoCommit;
+pub const worktreeCommand = worktree_cmd.worktreeCommand;
+
 const agent_worktree = @import("agent_worktree.zig");
 pub const AgentWorktree = agent_worktree.AgentWorktree;
 pub const AgentWorktreeError = agent_worktree.AgentWorktreeError;
@@ -59,166 +61,18 @@ pub const agentWorktreeFinish = agent_worktree.agentWorktreeFinish;
 pub const KeepReason = agent_worktree.KeepReason;
 pub const keepReasonText = agent_worktree.keepReasonText;
 
-// #112 (list age column + `prune --older-than`) and #320 (canonical worktree
-// identity) live in their own modules: jobs.zig is at the 600-line cap.
-const worktree_prune = @import("worktree_prune.zig");
-
-/// Per-turn checkpoint commit for `-w` sessions. The worktree branch is a
-/// throwaway scratch branch, so committing every turn is free and gives durable
-/// rewind points across restarts; `graff worktree merge` later --squashes the
-/// whole trail into one clean commit. No-op outside a worktree or under
-/// --no-autocommit. Best-effort: a clean tree (nothing to commit) or a missing
-/// git identity just means no commit this turn, never a failed turn. --no-verify
-/// so a slow or strict pre-commit hook can't block a checkpoint.
-pub fn worktreeAutoCommit(gpa: Allocator, io: Io, msg: []const u8) void {
-    if (root.g_worktree_branch == null or !root.g_worktree_autocommit) return;
-    // Stage everything except graff's own runtime artifacts — trace/trajectory/
-    // sessions/keys/MCP config must never ride into the squash-merge onto the
-    // user's branch. .gitignore hides these in the graff repo, but a *target*
-    // repo (the swarm's real use case) won't, so exclude them explicitly here.
-    const add = runCapped(gpa, io, &.{
-        "git",                       "add",
-        "-A",                        "--",
-        ":(exclude).graff",          ":(exclude).harness",
-        ":(exclude)harness.*.jsonl", ":(exclude)*.session.json",
-        ":(exclude).mcp.json",       ":(exclude).simple-harness-*",
-    }, 4096, 4096, 30_000) catch return;
-    gpa.free(add.stdout);
-    gpa.free(add.stderr);
-    // Author stays the user's git identity; codegraff rides as a co-author trailer.
-    const full = std.fmt.allocPrint(gpa, "{s}\n\n{s}", .{ msg, codegraff_coauthor }) catch msg;
-    defer if (full.ptr != msg.ptr) gpa.free(full);
-    const c = runCapped(gpa, io, &.{ "git", "commit", "--no-verify", "-m", full }, 8192, 8192, 30_000) catch return;
-    gpa.free(c.stdout);
-    gpa.free(c.stderr);
-}
-
-/// `graff worktree <list|merge <name>>` — manage the per-tab scratch worktrees
-/// that `-w` creates. `list` shows them; `merge <name>` squash-merges
-/// worktree-<name> into the current branch as one clean commit, then removes the
-/// worktree and deletes its branch. Run from the main checkout.
-pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const []const u8) !void {
-    var buf: [4096]u8 = undefined;
-    var w = Io.File.stdout().writer(io, &buf);
-    const out = &w.interface;
-    defer out.flush() catch {};
-
-    const action = if (args.len > 0) args[0] else "list";
-
-    if (std.mem.eql(u8, action, "list") or std.mem.eql(u8, action, "ls")) {
-        return worktree_prune.listWithAge(gpa, io, arena, out);
-    }
-
-    if (std.mem.eql(u8, action, "merge")) {
-        if (args.len < 2) {
-            try out.writeAll("usage: graff worktree merge <name>\n");
-            return;
-        }
-        const name = args[1];
-        const wt_path = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{name});
-        const wt_branch = try std.fmt.allocPrint(arena, "worktree-{s}", .{name});
-
-        // Refuse to land into a dirty tree: the conflict-recovery below resets
-        // tracked files, which would eat uncommitted work. Untracked files (the
-        // worktrees, traces) are fine — reset --hard leaves them be.
-        if (worktree_prune.treeDirty(gpa, io)) {
-            try out.print("✗ your working tree has uncommitted changes — commit or stash them first, then `graff worktree merge {s}`\n", .{name});
-            return;
-        }
-
-        // 1) squash-merge the scratch branch into the current branch (staged, not committed).
-        const m = runCapped(gpa, io, &.{ "git", "merge", "--squash", wt_branch }, 1 << 16, 1 << 16, 60_000) catch {
-            try out.writeAll("✗ could not run git merge (is this a git repository?)\n");
-            return;
-        };
-        const merged = ranOk(m);
-        gpa.free(m.stdout);
-        gpa.free(m.stderr);
-        if (!merged) {
-            // Overlapping changes. A --squash merge leaves the index/worktree
-            // half-merged with no MERGE_HEAD to --abort, so restore the branch to
-            // clean ourselves (safe — we verified it was clean above) and leave
-            // the worktree intact for the user to land another way.
-            if (runCapped(gpa, io, &.{ "git", "reset", "--hard", "HEAD" }, 8192, 8192, 30_000)) |r| {
-                gpa.free(r.stdout);
-                gpa.free(r.stderr);
-            } else |_| {}
-            try out.print("✗ couldn't auto-land {s} — it overlaps changes already on this branch.\n  current branch left clean, worktree intact. Land it first, or merge by hand: git merge {s}\n", .{ wt_branch, wt_branch });
-            return;
-        }
-
-        // 2) commit the squashed result as one clean commit on the current branch.
-        const cmsg = std.fmt.allocPrint(arena, "{s}: land worktree\n\n{s}", .{ name, codegraff_coauthor }) catch "land worktree";
-        const c = runCapped(gpa, io, &.{ "git", "commit", "--no-verify", "-m", cmsg }, 8192, 8192, 30_000) catch {
-            try out.writeAll("✗ git commit failed — worktree left intact\n");
-            return;
-        };
-        const committed = ranOk(c);
-        gpa.free(c.stdout);
-        gpa.free(c.stderr);
-        if (!committed) {
-            try out.print("⚠ nothing to land from {s} (empty or already merged) — worktree left intact\n", .{wt_branch});
-            return;
-        }
-
-        // 3) clean up: remove the worktree dir, then delete its now-free branch.
-        if (runCapped(gpa, io, &.{ "git", "worktree", "remove", "--force", wt_path }, 8192, 8192, 30_000)) |r| {
-            gpa.free(r.stdout);
-            gpa.free(r.stderr);
-        } else |_| {}
-        if (runCapped(gpa, io, &.{ "git", "branch", "-D", wt_branch }, 8192, 8192, 30_000)) |r| {
-            gpa.free(r.stdout);
-            gpa.free(r.stderr);
-        } else |_| {}
-
-        try out.print("✓ landed {s} → current branch as one commit, removed the worktree\n", .{wt_branch});
-        return;
-    }
-
-    if (std.mem.eql(u8, action, "remove") or std.mem.eql(u8, action, "rm")) {
-        if (args.len < 2) {
-            try out.writeAll("usage: graff worktree remove <name>\n");
-            return;
-        }
-        const name = args[1];
-        const wt_path = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{name});
-        const wt_branch = try std.fmt.allocPrint(arena, "worktree-{s}", .{name});
-        // --force: discard any uncommitted scratch work — the whole point of
-        // `remove` is to throw away an abandoned tab (#112).
-        const rm = runCapped(gpa, io, &.{ "git", "worktree", "remove", "--force", wt_path }, 8192, 8192, 30_000) catch {
-            try out.print("✗ could not remove {s} (not a git repository, or no such worktree)\n", .{wt_path});
-            return;
-        };
-        defer {
-            gpa.free(rm.stdout);
-            gpa.free(rm.stderr);
-        }
-        if (!ranOk(rm)) {
-            try out.print("✗ couldn't remove {s}: {s}", .{ wt_path, rm.stderr });
-            return;
-        }
-        // -D (force) so an unmerged scratch branch is still deleted.
-        if (runCapped(gpa, io, &.{ "git", "branch", "-D", wt_branch }, 8192, 8192, 30_000)) |r| {
-            gpa.free(r.stdout);
-            gpa.free(r.stderr);
-        } else |_| {}
-        try out.print("✓ removed {s} and branch {s}\n", .{ wt_path, wt_branch });
-        return;
-    }
-
-    if (std.mem.eql(u8, action, "prune")) {
-        // Drops git's registrations for worktrees whose dirs were deleted out of
-        // band, and with `older-than <days>` the stale DIRECTORIES too (#112).
-        return worktree_prune.pruneCommand(gpa, io, arena, out, args[1..]);
-    }
-
-    try out.print("unknown worktree command '{s}' — use: graff worktree list | merge <name> | remove <name> | prune [older-than <days>]\n", .{action});
-}
-
 const Job = struct { // session-global; pump drains pipes; survives Esc
     id: u32,
     cmd: []u8,
     child: std.process.Child,
+    // #199 idle lifecycle + ownership record (job_idle.zig, job_registry.zig)
+    cwd: ?[]u8 = null, // owned copy: /jobs restart reruns in the same place
+    started_ms: i64 = 0, // unix ms, for age columns and the record
+    last_active_ms: i64 = 0, // awake ms: last output byte, read, wait tick, or pin
+    pinned: bool = false, // /jobs keep: no idle stop, retained at session end
+    idle_warned: bool = false,
+    stopped_idle: bool = false, // the idle policy killed it, not bash_kill
+    detach: bool = false, // session end kept it: the pump exits without a kill
     buf: std.ArrayList(u8) = .empty,
     cursor: usize = 0,
     exit_code: ?u8 = null,
@@ -235,6 +89,10 @@ const Job = struct { // session-global; pump drains pipes; survives Esc
 pub const job_unread_cap = 256 * 1024;
 const job_wait = @import("job_wait.zig");
 const job_notify = @import("job_notify.zig");
+const job_idle = @import("job_idle.zig"); // #199
+const job_registry = @import("job_registry.zig"); // #199
+const proc_identity = @import("proc_identity.zig");
+const util = @import("util.zig");
 const tool_pulse = @import("tool_pulse.zig"); // silence heartbeat during waitForeground
 
 /// POSIX process groups; windows/wasi have none, so the group kills below and
@@ -258,10 +116,11 @@ pub var g_jobs: Jobs = .{};
 /// Drain whatever the MultiReader has buffered into the job's output buffer,
 /// dropping the oldest *unread* bytes past the cap (a chatty server must not
 /// grow memory unboundedly between bash_output polls). Caller holds the mutex.
-fn jobDrain(job: *Job, gpa: Allocator, readers: []const *Io.Reader) void {
+fn jobDrain(job: *Job, gpa: Allocator, readers: []const *Io.Reader, now_ms: i64) void {
     for (readers, 0..) |r, i| {
         const b = r.buffered();
         if (b.len == 0) continue;
+        job.last_active_ms = now_ms; // output is activity (#199)
         if (job.stream) |emit| emit(job.stream_ctx, @intCast(i), b);
         job.buf.appendSlice(gpa, b) catch {};
         r.toss(b.len);
@@ -282,29 +141,55 @@ fn jobPump(job: *Job, gpa: Allocator, io: Io) void {
     mr.init(gpa, io, mrb.toStreams(), &.{ job.child.stdout.?, job.child.stderr.? });
     defer mr.deinit();
     const readers = [2]*Io.Reader{ mr.reader(0), mr.reader(1) };
+    // The leader's pid, taken now: kill/wait reap the child and clear `id`.
+    const pid: i32 = if (comptime posix_groups) (job.child.id orelse 0) else 0;
     var killed = false;
+    var detached = false;
     loop: while (true) {
         mr.fill(64, .{ .duration = .{ .raw = .fromMilliseconds(200), .clock = .awake } }) catch |err| switch (err) {
             error.EndOfStream => break :loop,
             error.Timeout => {}, // poll tick: check for a kill request
             else => break :loop,
         };
+        const now = nowMs(io);
         g_jobs.mutex.lockUncancelable(io);
-        jobDrain(job, gpa, &readers);
+        jobDrain(job, gpa, &readers, now);
+        // #199: silence is the idle clock — no bytes, no read, no pin.
+        const idle_ms: u64 = @intCast(@max(now - job.last_active_ms, 0));
+        var warn = false;
+        if (!job.kill_requested and !job.detach) {
+            switch (job_idle.verdict(idle_ms, job.idle_warned, job.pinned)) {
+                .none => {},
+                .warn => {
+                    job.idle_warned = true;
+                    warn = true;
+                },
+                .stop => {
+                    job.kill_requested = true;
+                    job.stopped_idle = true;
+                },
+            }
+        }
         killed = job.kill_requested;
+        detached = job.detach;
         g_jobs.mutex.unlock(io);
-        if (killed) break :loop;
+        if (warn) job_idle.warn(io, job.id, idle_ms, job.cmd);
+        if (killed or detached) break :loop;
     }
     g_jobs.mutex.lockUncancelable(io);
-    jobDrain(job, gpa, &readers); // final drain of anything left at EOF/kill
+    jobDrain(job, gpa, &readers, nowMs(io)); // final drain of anything left at EOF/kill
     killed = killed or job.kill_requested;
+    detached = detached or job.detach;
     g_jobs.mutex.unlock(io);
     var code: ?u8 = null;
-    if (killed) {
+    if (detached) {
+        // Session end kept this pinned job: no kill, no wait. Its pipes now
+        // drain into a detached cat and its record says retained (#199).
+    } else if (killed) {
         // #198: take the whole process group down first — a job's grandchildren
         // (ssh, xcodebuild, codedb) survive a bare child.kill and are then
         // reparented to init, where they sleep on for days.
-        if (comptime posix_groups) if (job.child.id) |pid| std.posix.kill(-pid, .KILL) catch {};
+        if (comptime posix_groups) if (pid != 0) std.posix.kill(-pid, .KILL) catch {};
         job.child.kill(io); // also reaps (wait would assert afterwards)
     } else if (job.child.wait(io)) |term| {
         code = switch (term) {
@@ -314,13 +199,83 @@ fn jobPump(job: *Job, gpa: Allocator, io: Io) void {
     } else |_| {}
     g_jobs.mutex.lockUncancelable(io);
     job.exit_code = code;
-    job.killed = killed;
+    job.killed = killed and !detached;
     job.done = true;
     const id = job.id;
     const cmd = job.cmd;
     const quiet = job.quiet;
+    const idle = job.stopped_idle;
     g_jobs.mutex.unlock(io);
-    if (!quiet) job_notify.record(io, id, code, killed, cmd);
+    if (detached) return;
+    if (pid != 0) job_registry.forget(io, job_registry.home, pid);
+    if (!quiet) job_notify.record(io, id, code, killed, cmd, idle);
+}
+
+fn nowMs(io: Io) i64 {
+    return @intCast(@divTrunc(Io.Timestamp.now(io, .awake).nanoseconds, std.time.ns_per_ms));
+}
+
+/// The leader's start identity (#413), so a recycled pid is never mistaken
+/// for the job. 0 where the platform has no source.
+fn startIdOf(io: Io, pid: i32) u64 {
+    return switch (proc_identity.probe(io, pid)) {
+        .id => |v| v,
+        else => 0,
+    };
+}
+
+/// Caller holds the mutex (or owns the job outright).
+fn recordOf(io: Io, job: *Job) job_registry.Record {
+    const pid: i32 = if (comptime posix_groups) (job.child.id orelse 0) else 0;
+    return .{
+        .pid = pid,
+        .start_id = startIdOf(io, pid),
+        .owner_pid = proc_identity.selfPid(),
+        .owner_start_id = proc_identity.selfStartId(io),
+        .cmd = job.cmd,
+        .cwd = job.cwd orelse "",
+        .started_ms = job.started_ms,
+        .pinned = job.pinned,
+    };
+}
+
+/// /jobs keep|unkeep (#199): exempt from the idle stop, retained at session
+/// end. Null for an unknown id, false for one that already finished.
+pub fn setPinned(io: Io, id: u32, pinned: bool) ?bool {
+    g_jobs.mutex.lockUncancelable(io);
+    defer g_jobs.mutex.unlock(io);
+    const job = g_jobs.find(id) orelse return null;
+    if (job.done) return false;
+    job.pinned = pinned;
+    job.last_active_ms = nowMs(io);
+    if (comptime posix_groups) job_registry.write(io, job_registry.home, recordOf(io, job));
+    return true;
+}
+
+/// /jobs restart (#199): rerun a finished job's command in its cwd, as a new
+/// job. The finished record stays listed until reaped.
+pub fn restartJob(gpa: Allocator, io: Io, id: u32) !*Job {
+    var cmd: []const u8 = "";
+    var cwd: ?[]const u8 = null;
+    {
+        g_jobs.mutex.lockUncancelable(io);
+        defer g_jobs.mutex.unlock(io);
+        const job = g_jobs.find(id) orelse return error.NoSuchJob;
+        if (!job.done) return error.StillRunning;
+        cmd = job.cmd;
+        cwd = job.cwd;
+    }
+    return spawnJobOpts(gpa, io, cmd, .{ .cwd = cwd });
+}
+
+/// Session end for a pinned job (#199): hand its pipes to a detached drainer
+/// and keep its record, instead of killing it. False = kill it after all.
+fn retainAtExit(io: Io, job: *Job) bool {
+    if (comptime !posix_groups) return false;
+    const rec = recordOf(io, job);
+    if (!job_registry.retain(io, job_registry.home, rec, job.child.stdout, job.child.stderr)) return false;
+    std.debug.print("kept alive: job {d} (pid {d}) {s} — `graff servers` lists it; `graff servers stop {d}` ends it\n", .{ job.id, rec.pid, job.cmd, rec.pid });
+    return true;
 }
 
 pub fn shellArgv(cmd: []const u8) [3][]const u8 { // /bin/sh -c, or cmd.exe /c on Windows
@@ -360,7 +315,18 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
         child.kill(io);
         return e;
     };
-    job.* = .{ .id = 0, .cmd = cmd_copy, .child = child, .stream = opts.stream, .stream_ctx = opts.stream_ctx, .quiet = opts.quiet };
+    const cwd_copy: ?[]u8 = if (opts.cwd) |c| (gpa.dupe(u8, c) catch null) else null;
+    job.* = .{
+        .id = 0,
+        .cmd = cmd_copy,
+        .child = child,
+        .stream = opts.stream,
+        .stream_ctx = opts.stream_ctx,
+        .quiet = opts.quiet,
+        .cwd = cwd_copy,
+        .started_ms = util.unixMs(io),
+        .last_active_ms = nowMs(io),
+    };
     g_jobs.mutex.lockUncancelable(io);
     job.id = g_jobs.next_id;
     g_jobs.next_id += 1;
@@ -371,6 +337,7 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
     g_jobs.mutex.unlock(io);
     if (!appended) {
         job.child.kill(io);
+        if (job.cwd) |c| gpa.free(c);
         gpa.free(job.cmd);
         gpa.destroy(job);
         return error.OutOfMemory;
@@ -385,10 +352,13 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
         }
         g_jobs.mutex.unlock(io);
         job.child.kill(io);
+        if (job.cwd) |c| gpa.free(c);
         gpa.free(job.cmd);
         gpa.destroy(job);
         return e;
     };
+    // #199: the ownership record outlives a graff that dies without its defers.
+    if (comptime posix_groups) job_registry.write(io, job_registry.home, recordOf(io, job));
     return job;
 }
 
@@ -405,6 +375,7 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             g_jobs.mutex.unlock(io);
             return .{ .text = try std.fmt.allocPrint(gpa, "no background job {d} — it may never have started; /jobs lists them", .{id}), .is_error = true };
         };
+        job.last_active_ms = nowMs(io); // a read or a blocking wait is activity (#199)
         const fresh = job.buf.items[job.cursor..];
         if (job.done or interrupted or waited >= deadline) {
             var aw: Io.Writer.Allocating = .init(gpa);
@@ -412,6 +383,8 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             const w = &aw.writer;
             if (!job.done) {
                 try job_notify.printRunning(w, id, waited, interrupted);
+            } else if (job.stopped_idle) {
+                try job_idle.printStopped(w, id, job_idle.policy.stop_ms);
             } else if (job.killed) {
                 try w.print("[job {d}: killed]", .{id});
             } else if (job.exit_code) |c| {
@@ -499,6 +472,7 @@ fn takeUnread(gpa: Allocator, job: *Job) error{OutOfMemory}!struct { []u8, bool 
 fn freeJob(gpa: Allocator, io: Io, job: *Job) void {
     job.future.await(io);
     job.buf.deinit(gpa);
+    if (job.cwd) |c| gpa.free(c);
     gpa.free(job.cmd);
     gpa.destroy(job);
 }
@@ -530,6 +504,7 @@ pub fn waitForeground(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !FgWait {
             g_jobs.mutex.unlock(io);
             return error.NoSuchJob;
         };
+        job.last_active_ms = nowMs(io); // the foreground wait is activity (#199)
         if (job.done) {
             const pair = takeUnread(gpa, job) catch {
                 g_jobs.mutex.unlock(io);
@@ -583,7 +558,11 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
         g_jobs.mutex.unlock(io);
         return;
     };
-    for (jobs) |job| job.kill_requested = true;
+    for (jobs) |job| {
+        // #199: a pinned, still-running job is kept, not killed — its pipes
+        // go to a detached drainer, its record stays for `graff servers`.
+        if (job.pinned and !job.done and retainAtExit(io, job)) job.detach = true else job.kill_requested = true;
+    }
     g_jobs.mutex.unlock(io);
     for (jobs) |job| freeJob(gpa, io, job);
     gpa.free(jobs);
@@ -591,8 +570,8 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
 }
 
 test { // split-out modules: unreferenced, their tests silently never run
-    _ = worktree_prune;
+    _ = worktree_cmd;
     _ = @import("worktree_lease.zig");
-    _ = .{ job_wait, job_notify };
+    _ = .{ job_wait, job_notify, job_idle, job_registry };
     _ = @import("jobs_tests.zig");
 }

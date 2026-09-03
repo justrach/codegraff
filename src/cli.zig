@@ -290,6 +290,8 @@ pub const usage_text =
     \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
     \\  graff worktree remove <name>     discard worktree-<name> (drops its scratch work) + delete the branch
     \\  graff worktree prune             drop git registrations for worktrees whose dirs were deleted
+    \\  graff servers                    background servers graff started (this session's or older): pid, port, age
+    \\  graff servers stop <pid>         end one (its whole process tree); `prune` drops records of dead ones
     \\  graff sandboxes                  list your gateway sandboxes (what's burning credits)
     \\  graff sandboxes stop <id>        spin a sandbox down (stops it + settles the meter)
     \\  graff cube new                   spin up a cloud graff (sandbox + serve + preview URL)

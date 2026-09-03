@@ -71,7 +71,7 @@ pub const commands = [_]Item{
     .{ .name = "/workspace", .usage = "/workspace [list|use <name>]", .desc = "list git worktrees or switch this session into one (file tools follow)" },
     .{ .name = "/experiment", .usage = "/experiment [N|off|status]", .desc = "pre-mint N child worktrees (1-16) and seat the next spawns in them; off clears the pool" },
     .{ .name = "/todo", .desc = "show the current task list" },
-    .{ .name = "/jobs", .desc = "list background jobs" },
+    .{ .name = "/jobs", .usage = "/jobs [keep|unkeep|stop|restart <id>]", .desc = "list background jobs (age, port, idle stop); keep pins a server, restart reruns one" },
     .{ .name = "/cost", .desc = "session token usage and cost" },
     .{ .name = "/usage", .desc = "alias for /cost" },
     .{ .name = "/debug", .desc = "live content-free observability HUD (turns, tokens, tools, last events)" },
