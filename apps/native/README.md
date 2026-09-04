@@ -122,6 +122,19 @@ own session. The prompt's first words stand in until it answers, and
 stay if it cannot. A session open in a tab shows that name in the
 sidebar too.
 
+## Keyboard
+
+| Keys | What it does |
+|---|---|
+| `⌘T` / `Ctrl+T` | New chat |
+| `⌘W` / `Ctrl+W` | Close the active chat |
+| `⇧⌘T` / `Ctrl+Shift+T` | Reopen the last closed chat, resuming its graff session so the conversation comes back |
+| `⌘\` / `Ctrl+\` | Split the view, or close the split |
+| `⌘1`…`⌘8` | Jump to that tab; `⌘9` jumps to the last one |
+
+These are the desktop app's keys. A browser keeps `⌘W`, `⌘T` and `⇧⌘T`
+for its own tabs, so in a browser use the tab bar's buttons instead.
+
 ## Browser sidecar (experimental)
 
 The **Browser** button in the tab bar (or the sidebar's Browser item)

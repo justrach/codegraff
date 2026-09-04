@@ -138,6 +138,8 @@ export default function GraffHarness() {
   const [queues, setQueues] = useState<Record<number, QueuedPrompt[]>>({});
   const queueIdRef = useRef(0);
   const runningRef = useRef(new Set<number>());
+  // Closed tabs, oldest first, for the reopen shortcut.
+  const closedRef = useRef<{ session: string | null; cwd?: string; resumable: boolean }[]>([]);
 
   const chatThread = chats.find((c) => c.id === activeId) ?? chats[0];
   const active = chatThread.messages.length > 0;
@@ -435,10 +437,11 @@ export default function GraffHarness() {
 
   /** Open a saved graff session: its transcript renders from the file at once,
    * and the tab's agent starts with `--resume` so a follow-up remembers it. */
-  const openStored = async (name: string) => {
+  const openStored = async (name: string, atCwd?: string) => {
     // The sidebar lists the active workspace, so the session lives there;
-    // the same name in another workspace is a different conversation.
-    const cwd = activePathRef.current ?? undefined;
+    // the same name in another workspace is a different conversation. A
+    // reopened tab names its own workspace instead.
+    const cwd = atCwd ?? activePathRef.current ?? undefined;
     const existing = chats.find((c) => c.session === name && (c.cwd ?? null) === (cwd ?? null));
     if (existing) {
       setActiveId(existing.id);
@@ -466,6 +469,18 @@ export default function GraffHarness() {
   };
 
   const newChat = () => openChat((chatIdRef.current += 1));
+
+  /** Bring back the tab that was closed last, resuming its graff session so
+   * the conversation comes back with it. A tab that never got a message has
+   * nothing saved, so it returns as a fresh one. */
+  const reopenClosed = () => {
+    const stack = closedRef.current;
+    const last = stack[stack.length - 1];
+    if (!last) return;
+    closedRef.current = stack.slice(0, -1);
+    if (last.session && last.resumable) void openStored(last.session, last.cwd);
+    else newChat();
+  };
 
   /** Two chats side by side. The split takes the next tab along; when the
    * active chat is the only one, it opens a fresh chat to sit beside it. */
@@ -505,6 +520,15 @@ export default function GraffHarness() {
   };
 
   const closeChat = (id: number) => {
+    const going = chatsRef.current.find((c) => c.id === id);
+    if (going) {
+      // Keep the last few closed tabs; a tab that got as far as a message
+      // has a graff session on disk to resume, an empty one has nothing.
+      closedRef.current = [
+        ...closedRef.current.slice(-9),
+        { session: going.session ?? null, cwd: going.cwd, resumable: going.messages.length > 0 },
+      ];
+    }
     dropChat(id);
     if (splitId === id) setSplitId(null);
     const remaining = chats.filter((c) => c.id !== id);
@@ -809,6 +833,7 @@ export default function GraffHarness() {
           <button
             type="button"
             aria-label="Close tab"
+            title={c.id === activeId ? "Close tab (⌘W) — ⇧⌘T brings it back" : "Close tab"}
             onClick={() => closeChat(c.id)}
             className="-my-1 flex size-6 shrink-0 items-center justify-center rounded-[5px] text-ink-3 transition-[background-color,color] duration-100 hover:bg-hover-2 hover:text-ink"
           >
@@ -821,6 +846,7 @@ export default function GraffHarness() {
       <button
         type="button"
         aria-label="New chat"
+        title="New chat (⌘T)"
         onClick={newChat}
         className="ml-0.5 flex size-7 shrink-0 items-center justify-center rounded-[7px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
       >
@@ -833,7 +859,7 @@ export default function GraffHarness() {
           type="button"
           aria-pressed={splitId !== null}
           onClick={toggleSplit}
-          title={splitId !== null ? "Close the split view" : "Split the view: two chats side by side"}
+          title={splitId !== null ? "Close the split view (⌘\\)" : "Split the view: two chats side by side (⌘\\)"}
           className={`flex size-7 items-center justify-center rounded-[7px] transition-colors duration-100 ${
             splitId !== null ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
           }`}
@@ -891,6 +917,49 @@ export default function GraffHarness() {
       </div>
     </div>
   );
+
+  // The shortcuts read the current handlers through a ref, so the window
+  // listener below is installed once instead of on every render.
+  const keysRef = useRef({ closeChat, newChat, reopenClosed, toggleSplit, setActiveId, chats, activeId });
+  keysRef.current = { closeChat, newChat, reopenClosed, toggleSplit, setActiveId, chats, activeId };
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      const keys = keysRef.current;
+      const key = event.key.toLowerCase();
+      const take = () => {
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      if (key === "w" && !event.shiftKey) {
+        take();
+        keys.closeChat(keys.activeId);
+        return;
+      }
+      if (key === "t") {
+        take();
+        if (event.shiftKey) keys.reopenClosed();
+        else keys.newChat();
+        return;
+      }
+      if (key === "\\" && !event.shiftKey) {
+        take();
+        keys.toggleSplit();
+        return;
+      }
+      // ⌘1…⌘9 jump to a tab, ⌘9 to the last one, as in a browser.
+      if (!event.shiftKey && key >= "1" && key <= "9") {
+        const nth = Number(key);
+        const target = nth === 9 ? keys.chats[keys.chats.length - 1] : keys.chats[nth - 1];
+        if (!target) return;
+        take();
+        keys.setActiveId(target.id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const paneTodos = lastAssistant?.turn.todos ?? [];
   // The right column, when the view is split; a chat that was closed or
