@@ -58,4 +58,14 @@ if [[ "${NOTARIZE:-0}" == "1" ]]; then
   echo "▸ stapled and zipped: $zip"
 fi
 
+if [[ "${INSTALL:-0}" == "1" ]]; then
+  dest="${INSTALL_DIR:-/Applications}/Codegraff.app"
+  echo "▸ installing to $dest"
+  # ditto keeps the signature intact, which cp -R does not always do.
+  rm -rf "$dest"
+  ditto "$app" "$dest"
+  codesign --verify --deep --strict "$dest"
+  echo "▸ installed: $dest"
+fi
+
 echo "▸ $app"

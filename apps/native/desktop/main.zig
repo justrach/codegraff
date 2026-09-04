@@ -74,6 +74,12 @@ const NSWindowStyleMaskMiniaturizable: NSUInteger = 4;
 const NSWindowStyleMaskResizable: NSUInteger = 8;
 const NSBackingStoreBuffered: NSUInteger = 2;
 const NSApplicationActivationPolicyRegular: NSInteger = 0;
+/// NSURLRequestReloadIgnoringLocalCacheData. The window points at a dev
+/// server whose bundle changes under it; WebKit's cache happily serves a
+/// page from a previous build, which then fails to start against the new
+/// one. Always fetch the document fresh.
+const NSURLRequestReloadIgnoringLocalCacheData: NSUInteger = 1;
+const load_timeout_s: f64 = 30;
 const YES: BOOL = 1;
 const NO: BOOL = 0;
 
@@ -118,6 +124,10 @@ fn sendWindowInit(recv: Id, s: Sel, rect: CGRect, style: NSUInteger, backing: NS
 fn sendWebViewInit(recv: Id, s: Sel, frame: CGRect, config: Id) Id {
     const F = *const fn (Id, Sel, CGRect, Id) callconv(.c) Id;
     return @as(F, @ptrCast(&objc_msgSend))(recv, s, frame, config);
+}
+fn sendRequestInit(recv: Id, s: Sel, url: Id, policy: NSUInteger, timeout: f64) Id {
+    const F = *const fn (Id, Sel, Id, NSUInteger, f64) callconv(.c) Id;
+    return @as(F, @ptrCast(&objc_msgSend))(recv, s, url, policy, timeout);
 }
 fn sendBytes(recv: Id, s: Sel, ptr: [*]const u8, len: NSUInteger) Id {
     const F = *const fn (Id, Sel, [*]const u8, NSUInteger) callconv(.c) Id;
@@ -166,7 +176,13 @@ fn runMac(url: []const u8) !void {
 
     const ns_url_str = sendStr(cls("NSString"), sel("stringWithUTF8String:"), url_z.ptr);
     const ns_url = send1(cls("NSURL"), sel("URLWithString:"), ns_url_str);
-    const request = send1(cls("NSURLRequest"), sel("requestWithURL:"), ns_url);
+    const request = sendRequestInit(
+        cls("NSURLRequest"),
+        sel("requestWithURL:cachePolicy:timeoutInterval:"),
+        ns_url,
+        NSURLRequestReloadIgnoringLocalCacheData,
+        load_timeout_s,
+    );
     _ = send1(webview, sel("loadRequest:"), request);
 
     send1v(window, sel("makeKeyAndOrderFront:"), null);

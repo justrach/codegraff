@@ -25,9 +25,14 @@ bundle for macOS to read an icon from.
 ## A signed, notarized app
 
 ```bash
-apps/native/desktop/build-app.sh              # build + sign
-NOTARIZE=1 apps/native/desktop/build-app.sh   # …and send it to Apple
+apps/native/desktop/build-app.sh                          # build + sign
+NOTARIZE=1 apps/native/desktop/build-app.sh               # …and send it to Apple
+NOTARIZE=1 INSTALL=1 apps/native/desktop/build-app.sh     # …and put it in /Applications
 ```
+
+Install what was notarized, not a later re-signed build: re-signing
+replaces the signature the stapled ticket belongs to, and the copy stops
+being notarized. `INSTALL_DIR` moves the destination.
 
 macOS only, and it refuses to run anywhere else: the shell is AppKit and
 WKWebView, and every tool it uses (`iconutil`, `codesign`, `notarytool`)
@@ -46,6 +51,12 @@ The profile is made once with `xcrun notarytool store-credentials`.
 Launched from Finder an app inherits no environment, so with
 `GRAFF_NATIVE_URL` unset the shell looks for a dev server on 3777 and then
 3000, and falls back to the first so the window still opens.
+
+The document is fetched with `NSURLRequestReloadIgnoringLocalCacheData`.
+The window points at a dev server whose bundle changes underneath it, and
+WebKit will otherwise serve a page from an earlier build: the HTML loads,
+its scripts never start against the new server, and the app sits on
+"Connecting…" for good.
 
 On Linux the same `main.zig` prints the URL and tries `xdg-open`. WKWebView
 is macOS-only — that is a merjs limitation, not a graff one. The existing
