@@ -7,7 +7,7 @@ from itertools import product
 from pathlib import Path
 from typing import Literal
 
-Kind = Literal["anthropic", "openai", "responses"]
+Kind = Literal["anthropic", "openai", "responses", "interactions"]
 Pipe = Literal["ws", "sse"]
 KINDS: tuple[Kind, ...] = ("anthropic", "openai", "responses")
 Event = tuple  # ("setKind", kind) | ("markSub",) | ("joinRoot",) | ("setCodexWs", bool) | ...

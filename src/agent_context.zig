@@ -118,6 +118,9 @@ pub fn recordUsage(self: *Agent, root: std.json.ObjectMap, req_body_len: usize) 
     if (usage != .object) return floorContextTokens(self, fallback);
     const u = usage.object;
     switch (self.provider.kind) {
+        // Interactions reports one flat set of totals; total_input_tokens
+        // already includes the cached portion that total_cached_tokens names.
+        .interactions => @import("interactions_steps.zig").recordUsage(self, u, fallback),
         .anthropic => {
             var total: i64 = 0;
             const fields = [_][]const u8{
@@ -156,15 +159,14 @@ pub fn recordUsage(self: *Agent, root: std.json.ObjectMap, req_body_len: usize) 
             if (cache > 0) self.last_cache_read = @intCast(cache);
             self.recordCost(@max(usageInt(u, "prompt_tokens") - cache - cache_write, 0), cache, cache_write, usageInt(u, "completion_tokens"));
         },
-        // codex uses recordUsageResponses on its own path.
-        .responses => {},
+        .responses => {}, // codex uses recordUsageResponses on its own path.
     }
 }
 
 /// #202: floor the context meter at the local estimate (full-input byte/4, or the
 /// request-body byte/4 when the history isn't serialized yet) when the API omits
 /// usage, so auto-compaction still triggers. Never lowers an existing higher count.
-fn floorContextTokens(self: *Agent, est: u64) void {
+pub fn floorContextTokens(self: *Agent, est: u64) void {
     const estimate = self.contextEstimate();
     self.last_context_tokens = @max(estimate.effective, @max(estimate.local, est));
     self.context_local_tokens = estimate.local;
@@ -173,7 +175,7 @@ fn floorContextTokens(self: *Agent, est: u64) void {
 /// A full-history request's nonzero provider usage is authoritative enough to
 /// correct a stale high meter after an explicit trim/provider mutation. Still
 /// retain the complete local request estimate as a structural lower bound.
-fn replaceContextTokens(self: *Agent, reported: u64) void {
+pub fn replaceContextTokens(self: *Agent, reported: u64) void {
     const local = self.fullRequestEstimateTokens();
     self.last_context_tokens = @max(local, reported);
     self.context_local_tokens = local;

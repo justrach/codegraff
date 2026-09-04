@@ -13,6 +13,7 @@ fn kindName(k: Provider.Kind) []const u8 {
         .anthropic => "anthropic",
         .openai => "openai",
         .responses => "responses",
+        .interactions => "interactions",
     };
 }
 
@@ -20,6 +21,7 @@ fn authName(a: Provider.Auth) []const u8 {
     return switch (a) {
         .x_api_key => "x_api_key",
         .bearer => "bearer",
+        .goog_api_key => "goog_api_key",
     };
 }
 

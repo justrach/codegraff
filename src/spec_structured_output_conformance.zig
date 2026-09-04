@@ -23,10 +23,12 @@ fn agentFor(arena: std.mem.Allocator, wire: []const u8) !Agent {
         .anthropic => "anthropic",
         .openai => "deepseek",
         .responses => "xai",
+        .interactions => "google",
     };
     const model: []const u8 = switch (kind) {
         .anthropic => "claude-sonnet-5",
         .openai => "deepseek-v4-flash",
+        .interactions => "gemini-3.8-flash",
         .responses => "grok-4.6",
     };
     return .{

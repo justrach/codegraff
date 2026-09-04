@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Literal
 
-Kind = Literal["anthropic", "openai", "responses"]
-Auth = Literal["x_api_key", "bearer"]
+Kind = Literal["anthropic", "openai", "responses", "interactions"]
+Auth = Literal["x_api_key", "bearer", "goog_api_key"]
 Login = Literal["api_key", "codegraff_device", "codex_device", "kimi_device", "xai_device"]
 Catalog = Literal["baked", "codex", "kimi", "openai", "anthropic"]
 
@@ -35,6 +35,7 @@ SPECS: list[dict] = [
     row("codegraff", "openai", "bearer", login="codegraff_device", catalog="openai", takes_effort=True),
     row("deepseek", "openai", "bearer", takes_effort=True),
     row("openai", "responses", "bearer"),
+    row("google", "interactions", "goog_api_key", catalog="openai", takes_effort=True),
     row("minimax", "anthropic", "bearer"),
     row("xiaomi", "openai", "bearer"),
     row("kilo", "openai", "bearer"),

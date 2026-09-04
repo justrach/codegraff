@@ -48,6 +48,7 @@ def specs : List Row :=
   , { id := "codegraff",  kind := .openai,    auth := .bearer,  login := .codegraffDevice, catalog := .openai, takesEffort := true }
   , { id := "deepseek",   kind := .openai,    auth := .bearer,  takesEffort := true }
   , { id := "openai",     kind := .responses, auth := .bearer }
+  , { id := "google",     kind := .interactions, auth := .googApiKey, catalog := .openai, takesEffort := true }
   , { id := "minimax",    kind := .anthropic, auth := .bearer }
   , { id := "xiaomi",     kind := .openai,    auth := .bearer }
   , { id := "kilo",       kind := .openai,    auth := .bearer }
@@ -83,7 +84,7 @@ def xApiKeyCount : Nat := countWhere (fun r => r.auth == .xApiKey) specs
 
 def providerRows : Nat := specs.length
 
-theorem provider_cube : providerRows = 21 := by native_decide
+theorem provider_cube : providerRows = 22 := by native_decide
 theorem responses_vendors : responsesCount = 2 := by native_decide
 theorem one_x_api_key : xApiKeyCount = 1 := by native_decide
 

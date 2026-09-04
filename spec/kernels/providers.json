@@ -39,6 +39,15 @@
       "takes_effort": false
     },
     {
+      "id": "google",
+      "kind": "interactions",
+      "auth": "goog_api_key",
+      "login": "api_key",
+      "catalog": "openai",
+      "sub_login": false,
+      "takes_effort": true
+    },
+    {
       "id": "minimax",
       "kind": "anthropic",
       "auth": "bearer",

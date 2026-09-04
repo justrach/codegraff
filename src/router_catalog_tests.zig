@@ -25,7 +25,10 @@ test "OpenAI catalog configuration carries its models endpoint" {
     try std.testing.expectEqualStrings("https://gateway.codegraff.com/v1/models", modelsUrl(spec));
     for (provider.provider_specs) |candidate| {
         if (candidate.catalog != .openai) continue;
-        try std.testing.expect(candidate.kind == .openai);
+        // `catalog` describes the MODEL-LIST shape, not the request wire: it
+        // says /models answers with a `data`/`models` array this parser reads.
+        // Google serves that list while talking Interactions for turns, so the
+        // two are deliberately decoupled — only the endpoint is required.
         try std.testing.expect(candidate.models_url.len != 0);
     }
 }
@@ -46,6 +49,29 @@ test "parseModels reads Vercel context_window and skips non-language types" {
     try std.testing.expectEqual(@as(u64, 1_000_000), snapshot.models[0].context);
     try std.testing.expect(snapshot.models[0].supports_reasoning);
     try std.testing.expectEqualStrings("no-window", snapshot.models[1].name);
+    try std.testing.expectEqual(pricing.default_context, snapshot.models[1].context);
+}
+
+test "parseModels strips Google's models/ prefix and takes the window from the baked row" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    // Google's OpenAI-compat /models lists resource names and declares no window
+    // at all, so the id must be bared for `--model gemini-3.8-flash` to match and
+    // for bakedContext to find the 1M row.
+    // Google's native list is `models`, not `data`, names each entry by its
+    // resource name, and declares the window as inputTokenLimit — with
+    // outputTokenLimit alongside it, which must never be read as the window.
+    const snapshot = parseModels(state.allocator(), "google",
+        \\{"models":[
+        \\ {"name":"models/gemini-3.8-flash","inputTokenLimit":1048576,"outputTokenLimit":65536},
+        \\ {"name":"models/not-in-the-baked-table"}
+        \\]}
+    ) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), snapshot.models.len);
+    try std.testing.expectEqualStrings("gemini-3.8-flash", snapshot.models[0].name);
+    try std.testing.expectEqual(@as(u64, 1_048_576), snapshot.models[0].context);
+    // An unlisted window falls back to the baked table, then to the default.
+    try std.testing.expectEqualStrings("not-in-the-baked-table", snapshot.models[1].name);
     try std.testing.expectEqual(pricing.default_context, snapshot.models[1].context);
 }
 

@@ -34,6 +34,7 @@ fn provider(kind: Provider.Kind) Provider {
             .anthropic => "anthropic",
             .openai => "openai",
             .responses => "codex",
+            .interactions => "google",
         },
         .kind = kind,
         .auth = .bearer,

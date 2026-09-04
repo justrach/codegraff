@@ -277,6 +277,13 @@ test "remote URL and base64 parts become native provider image blocks (#615)" {
         const content = msg.object.get("content").?.array.items;
         try std.testing.expectEqual(@as(usize, 3), content.len);
         switch (kind) {
+            // Interactions carries raw base64 + mime_type, with a remote URL
+            // degraded to a text marker (no proven inline form on that wire).
+            .interactions => {
+                try std.testing.expectEqualStrings("[image: https://images.test/code.png]", content[1].object.get("text").?.string);
+                try std.testing.expectEqualStrings("aGVsbG8=", content[2].object.get("data").?.string);
+                try std.testing.expectEqualStrings("image/png", content[2].object.get("mime_type").?.string);
+            },
             .responses => {
                 try std.testing.expectEqualStrings("https://images.test/code.png", content[1].object.get("image_url").?.string);
                 try std.testing.expectEqualStrings("data:image/png;base64,aGVsbG8=", content[2].object.get("image_url").?.string);

@@ -215,6 +215,21 @@ fn nonNegative(n: i64) u64 {
 pub fn readCompletion(kind: Provider.Kind, root: std.json.ObjectMap) Completion {
     var c: Completion = .{};
     return switch (kind) {
+        // Interactions reports totals under its own names, and any step other
+        // than a bare thought counts as content the turn actually produced.
+        .interactions => {
+            if (usageOf(root)) |u| {
+                c.input_tokens = nonNegative(usageInt(u, "total_input_tokens"));
+                c.output_tokens = nonNegative(usageInt(u, "total_output_tokens") +| usageInt(u, "total_thought_tokens"));
+            }
+            if (str(root, "status")) |s| c.stop = stopFromString(kind, s);
+            if (arr(root, "steps")) |steps| for (steps.items) |st| {
+                if (st != .object) continue;
+                const t = str(st.object, "type") orelse continue;
+                if (!std.mem.eql(u8, t, "thought")) c.has_content = true;
+            };
+            return c;
+        },
         .anthropic => {
             if (usageOf(root)) |u| {
                 c.input_tokens = nonNegative(usageInt(u, "input_tokens") +|

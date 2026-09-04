@@ -71,12 +71,22 @@ fn userPromptText(msg: Value) ?[]const u8 {
 /// `function_call_output` item. Error reporting differs per wire format:
 /// anthropic carries a separate `is_error` flag, openai inlines an `[error]`
 /// prefix, and responses has no error channel (text only).
+/// A harness-authored note injected into history as if the user said it
+/// (budget landing, repair grant, empty-completion bounce, compaction handoff).
+/// Interactions rejects a bare `{"role":"user"}` — every entry on that wire is
+/// a typed step — so the shape has to follow the wire, not the caller.
+pub fn userNote(arena: Allocator, kind: Provider.Kind, text: []const u8) !Value {
+    if (kind == .interactions) return @import("interactions_steps.zig").userInput(arena, text);
+    return textMessage(arena, "user", text);
+}
+
 pub fn toolResultMessage(arena: Allocator, kind: Provider.Kind, call_id: []const u8, raw_text: []const u8, is_error: bool) !Value {
     // Scrub raw bytes (binary tool output etc.) at the source so the result is a
     // valid JSON string, not a byte-integer array the API rejects.
     const text = sanitizeUtf8(arena, raw_text);
     var obj: std.json.ObjectMap = .empty;
     switch (kind) {
+        .interactions => return @import("interactions_steps.zig").fallbackResult(arena, call_id, text, is_error),
         .anthropic => {
             try obj.put(arena, "type", .{ .string = "tool_result" });
             try obj.put(arena, "tool_use_id", .{ .string = call_id });

@@ -10,6 +10,30 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## Unreleased
+
+- Gemini is a first-class provider, on Google's own Interactions API.
+  `GEMINI_API_KEY` serves `gemini-*` directly instead of falling through
+  to the gateway as an uncatalogued model, and `graff --model
+  gemini-3.8-flash` picks it up. This is a fourth wire format beside
+  Anthropic Messages, OpenAI chat, and OpenAI Responses: a turn POSTs one
+  Interaction and reads back execution steps (thought / model_output /
+  function_call), with its own `step.start`/`step.delta` event stream.
+- Gemini keeps its real context window. Uncatalogued, it inherited the
+  conservative 200k default and auto-compacted at 160k -- on a
+  1,048,576-token model, which compacts near 838k now.
+- Fixed two crashes found while wiring it up, both of which took down the
+  whole process rather than reporting an error: the response root was
+  dereferenced as an object, which a top-level JSON array (how Google's
+  compatibility layer returns errors) turned into a panic; and streamed
+  `extra_content` was stored pointing into the per-request scratch arena
+  that is reset before the next request, so the session held freed memory
+  and walked it on the following turn.
+- A harness-authored note (budget landing, repair grant, empty-completion
+  bounce, compaction handoff) now follows the wire's shape. Interactions
+  rejects a bare `{"role":"user"}` entry, so those notes ended the turn
+  with a 400.
+
 ## v0.0.287 (2026-09-04)
 
 - The macOS desktop app updates itself. It compares the newest release

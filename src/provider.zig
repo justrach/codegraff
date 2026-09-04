@@ -87,6 +87,12 @@ pub const provider_specs = [_]ProviderSpec{
     .{ .id = "codegraff", .display_name = "Codegraff", .kind = .openai, .auth = .bearer, .url = "https://gateway.codegraff.com/v1/chat/completions", .env_key = "CODEGRAFF_API_KEY", .default_model = "deepseek-v4-pro", .login = .codegraff_device, .catalog = .openai, .models_url = "https://gateway.codegraff.com/v1/models", .takes_effort = true },
     .{ .id = "deepseek", .display_name = "DeepSeek", .kind = .openai, .auth = .bearer, .url = "https://api.deepseek.com/chat/completions", .env_key = "DEEPSEEK_API_KEY", .default_model = "deepseek-v4-pro", .takes_effort = true },
     .{ .id = "openai", .display_name = "OpenAI", .kind = .responses, .auth = .bearer, .url = "https://api.openai.com/v1/responses", .env_key = "OPENAI_API_KEY", .default_model = "gpt-5.6" },
+    // Google AI Studio on its first-party Interactions API — the wire Google
+    // says every new model and agent capability launches on, not the
+    // OpenAI-compatibility shim. A turn POSTs one Interaction and reads back
+    // execution steps; `store:false` keeps graff's own history authoritative,
+    // matching what it already does on the Responses wire.
+    .{ .id = "google", .display_name = "Google Gemini", .kind = .interactions, .auth = .goog_api_key, .url = "https://generativelanguage.googleapis.com/v1beta/interactions", .env_key = "GEMINI_API_KEY", .default_model = "gemini-3.8-flash", .catalog = .openai, .models_url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", .takes_effort = true },
     .{ .id = "minimax", .display_name = "MiniMax", .kind = .anthropic, .auth = .bearer, .url = "https://api.minimax.io/anthropic/v1/messages", .env_key = "MINIMAX_API_KEY", .default_model = "MiniMax-M3" },
     .{ .id = "xiaomi", .display_name = "Xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
     .{ .id = "kilo", .display_name = "Kilo Gateway", .kind = .openai, .auth = .bearer, .url = "https://api.kilo.ai/api/gateway/v1/chat/completions", .env_key = "KILO_API_KEY", .default_model = "kilo-auto/small" },
@@ -186,8 +192,15 @@ pub const Provider = struct {
 
     // Wire format. `responses` is the first-party OpenAI Responses API (direct
     // API key or ChatGPT/Codex login) — input items, not chat messages.
-    pub const Kind = enum { anthropic, openai, responses };
-    pub const Auth = enum { x_api_key, bearer };
+    // `interactions` is Google's first-party Interactions API: one Interaction
+    // per turn, carrying an ordered list of execution STEPS (thought /
+    // model_output / function_call / function_result) rather than chat messages
+    // or Responses items. Its own SSE vocabulary is step.start/delta/stop.
+    pub const Kind = enum { anthropic, openai, responses, interactions };
+    // `goog_api_key` is Google's `x-goog-api-key` header. It is not
+    // interchangeable with bearer: generativelanguage rejects an API key sent
+    // as `Authorization: Bearer` with a 401 asking for an OAuth token.
+    pub const Auth = enum { x_api_key, bearer, goog_api_key };
 
     /// Auto-compact past a percentage (default 80%) of the model's context window.
     /// GRAFF_COMPACT_PCT overrides the percentage, clamped to 1..100 (#204). Unlike

@@ -122,7 +122,8 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
     errdefer aw.deinit();
 
     const bearer = switch (provider.auth) {
-        .x_api_key => "",
+        // Key-header styles carry the key in their own header; only bearer prefixes.
+        .x_api_key, .goog_api_key => "",
         .bearer => try std.fmt.allocPrint(gpa, "Bearer {s}", .{provider.api_key}),
     };
     defer if (bearer.len > 0) gpa.free(bearer);

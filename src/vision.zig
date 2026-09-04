@@ -113,6 +113,7 @@ pub fn imageMessages(arena: Allocator, kind: Provider.Kind, text: []const u8, im
                 }
                 try ib.put(arena, "source", .{ .object = src });
             },
+            .interactions => try @import("interactions_steps.zig").imagePart(arena, &ib, img),
             .openai => {
                 try ib.put(arena, "type", .{ .string = "image_url" });
                 var iu: std.json.ObjectMap = .empty;

@@ -112,7 +112,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     if (self.run_budget) |b| if (budget_permit) |p| {
         if (b.max_model_calls != 0 and p.call_number == b.max_model_calls and tools != null) {
             tools = null;
-            try self.messages.append(try wire_messages.textMessage(self.arena, "user", landing_note));
+            try self.messages.append(try wire_messages.userNote(self.arena, self.provider.kind, landing_note));
             if (self.tracer) |tr| tr.note("budget", "final call: tools withheld so the run lands its answer (#390)");
         }
     };
@@ -472,7 +472,21 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             try self.sayApiError("unparseable response: {s}", .{resp_body[0..@min(resp_body.len, 400)]});
             return error.ApiError;
         };
-        const root = resp.object;
+        // Google's OpenAI-compat layer wraps its error envelope in a ONE-ELEMENT
+        // ARRAY ([{"error":{…}}]). An unchecked `.object` here took down the
+        // whole process on a response every other provider reports as an error,
+        // so unwrap that shape and refuse any other non-object root cleanly.
+        const root = switch (resp) {
+            .object => |o| o,
+            .array => |a| if (a.items.len == 1 and a.items[0] == .object) a.items[0].object else {
+                try self.sayApiError("unexpected response shape: {s}", .{resp_body[0..@min(resp_body.len, 400)]});
+                return error.ApiError;
+            },
+            else => {
+                try self.sayApiError("unexpected response shape: {s}", .{resp_body[0..@min(resp_body.len, 400)]});
+                return error.ApiError;
+            },
+        };
 
         if (root.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "error")) {
             const eo = if (root.get("error")) |ev| (if (ev == .object) ev.object else null) else null;

@@ -296,6 +296,22 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "zai", .name = "glm-5", .context = 204_800 },
     .{ .provider = "zai", .name = "glm-4.7", .context = 204_800 },
     .{ .provider = "zai", .name = "glm-4.5", .context = 131_072 },
+    // Google AI Studio. Every gemini-3.x row is the live inputTokenLimit
+    // (1,048,576) read from generativelanguage /v1beta/models — its
+    // OpenAI-compat /models omits the window entirely, so without these rows
+    // contextFor falls to default_context and a 1M model compacts at 160k.
+    // Efforts mirror the compat layer's own rejection message: "Valid values
+    // are: high, low, medium, minimal, none".
+    .{ .provider = "google", .name = "gemini-3.8-flash", .context = 1_048_576, .supports_reasoning = true, .thinking_support = .both, .support_efforts = &.{ "minimal", "low", "medium", "high" }, .default_effort = "medium" },
+    .{ .provider = "google", .name = "gemini-3.7-flash", .context = 1_048_576, .supports_reasoning = true, .thinking_support = .both, .support_efforts = &.{ "minimal", "low", "medium", "high" }, .default_effort = "medium" },
+    .{ .provider = "google", .name = "gemini-3.6-flash", .context = 1_048_576, .supports_reasoning = true, .thinking_support = .both },
+    .{ .provider = "google", .name = "gemini-3.5-flash", .context = 1_048_576, .supports_reasoning = true, .thinking_support = .both },
+    .{ .provider = "google", .name = "gemini-3.5-flash-lite", .context = 1_048_576, .supports_reasoning = true, .thinking_support = .both },
+    .{ .provider = "google", .name = "gemini-3.1-pro-preview", .context = 1_048_576, .supports_reasoning = true, .thinking_support = .both },
+    .{ .provider = "google", .name = "gemini-3.1-flash-lite", .context = 1_048_576, .supports_reasoning = true, .thinking_support = .both },
+    .{ .provider = "google", .name = "gemini-3-flash-preview", .context = 1_048_576, .supports_reasoning = true, .thinking_support = .both },
+    .{ .provider = "google", .name = "gemma-4-31b-it", .context = 262_144 },
+    .{ .provider = "google", .name = "gemma-4-26b-a4b-it", .context = 262_144 },
     .{ .provider = "vercel", .name = "alibaba/qwen3.8-27b", .context = 1_000_000, .supports_reasoning = true },
     .{ .provider = "openrouter", .name = "anthropic/claude-sonnet-4.6", .context = 1_000_000, .supports_reasoning = true },
 };

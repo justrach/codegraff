@@ -169,7 +169,9 @@ pub fn parseModels(arena: Allocator, provider_id: []const u8, data: []const u8) 
     var rows: std.ArrayList(pricing.ModelInfo) = .empty;
     for (items.array.items) |item| {
         if (item != .object) continue;
-        const id = util.strFieldObj(item.object, "id") orelse util.strFieldObj(item.object, "name") orelse continue;
+        const raw_id = util.strFieldObj(item.object, "id") orelse util.strFieldObj(item.object, "name") orelse continue;
+        // Google lists "models/gemini-3.8-flash" but answers to the bare id.
+        const id = if (std.mem.startsWith(u8, raw_id, "models/")) raw_id["models/".len..] else raw_id;
         if (!validModelId(id)) continue;
         // Vercel AI Gateway lists image/video/embedding/rerank next to chat.
         // Anthropic uses type=model — only skip the known non-chat kinds.
@@ -193,6 +195,8 @@ pub fn parseModels(arena: Allocator, provider_id: []const u8, data: []const u8) 
         // max_tokens is the OUTPUT cap (128k on Opus 5) — never read it as a
         // window, or a 1M-context model would compact at ~102k.
         if (context == 0) context = positiveInt(item.object, "max_input_tokens");
+        // Google's window. Its sibling outputTokenLimit is the OUTPUT cap, never this.
+        if (context == 0) context = positiveInt(item.object, "inputTokenLimit");
         if (context == 0) context = bakedContext(provider_id, id) orelse pricing.default_context;
         rows.append(arena, .{
             .provider = provider_id,
