@@ -59,13 +59,31 @@ pub fn omitsDefaultFlashEffort(model: []const u8) bool {
     return std.mem.indexOf(u8, model, "flash") != null;
 }
 
+/// grok-4.6 (xAI docs): low | medium | high | xhigh. `max`/`ultra` 400.
+pub fn grokFamily(model: []const u8) bool {
+    return std.mem.startsWith(u8, model, "grok");
+}
+
+/// Hide Max/Ultra in the picker when the current seat cannot take them.
+pub fn hidesMax(provider_id: []const u8, model: []const u8) bool {
+    return std.mem.eql(u8, provider_id, "xai") or grokFamily(model);
+}
+
+pub fn allows(provider_id: []const u8, model: []const u8, tag: []const u8) bool {
+    if (!hidesMax(provider_id, model)) return true;
+    return std.mem.eql(u8, tag, "low") or std.mem.eql(u8, tag, "medium") or
+        std.mem.eql(u8, tag, "high") or std.mem.eql(u8, tag, "xhigh");
+}
+
 /// Wire `reasoning_effort` for an effort-capable provider. Flash / Gemini
-/// default `medium` becomes `low`: omit still thinks (27 reasoning_tokens
-/// on a `pong`); `low` bills 0 on GLM. DeepSeek V4 still thinks at `low`
-/// until `thinking.type=disabled` (ADR 0054). `none` is a 400. `/effort high`
-/// unchanged.
+/// default `medium` becomes `low`. grok maps max/ultra → high (xAI rejects
+/// `max`). Other seats still send ultra as `max` (Z.AI / Kimi).
 pub fn wireEffort(model: []const u8, requested: []const u8) []const u8 {
     if (std.mem.eql(u8, requested, "medium") and omitsDefaultFlashEffort(model)) return "low";
+    if (grokFamily(model)) {
+        if (std.mem.eql(u8, requested, "max") or std.mem.eql(u8, requested, "ultra")) return "high";
+        return requested;
+    }
     if (std.mem.eql(u8, requested, "ultra")) return "max";
     return requested;
 }
@@ -96,5 +114,11 @@ test "flash and Gemini map default medium to low; grok and glm-5.3 stay medium" 
     try std.testing.expectEqualStrings("low", wireEffort("glm-5.3-flash", "medium"));
     try std.testing.expectEqualStrings("high", wireEffort("glm-5.3-flash", "high"));
     try std.testing.expectEqualStrings("medium", wireEffort("grok-4.6", "medium"));
-    try std.testing.expectEqualStrings("max", wireEffort("grok-4.6", "ultra"));
+    try std.testing.expectEqualStrings("high", wireEffort("grok-4.6", "ultra"));
+    try std.testing.expectEqualStrings("high", wireEffort("grok-4.6", "max"));
+    try std.testing.expectEqualStrings("xhigh", wireEffort("grok-4.6", "xhigh"));
+    try std.testing.expect(hidesMax("xai", "grok-4.6"));
+    try std.testing.expect(!hidesMax("codex", "gpt-5.6-sol"));
+    try std.testing.expect(!allows("xai", "grok-4.6", "max"));
+    try std.testing.expect(allows("xai", "grok-4.6", "high"));
 }

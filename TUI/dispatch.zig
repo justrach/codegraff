@@ -150,6 +150,10 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         } else self.push(.system, "model switching isn't available (offline)") catch {};
     } else if (std.mem.eql(u8, canon, "/effort")) {
         if (arg.len == 0) {
+            const p = engine.g_model_provider;
+            const m = engine.g_model_name;
+            if ((std.mem.eql(u8, p, "xai") or std.mem.startsWith(u8, m, "grok")) and (self.effort == .max or self.effort == .ultra))
+                self.effort = .high;
             self.openOverlay(.effort);
             self.overlay_sel = @intFromEnum(self.effort);
             return .stay;
@@ -159,6 +163,10 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
             self.push(.system, "usage: /effort low|medium|high|xhigh|max|ultra") catch {};
             return .stay;
         };
+        const p = engine.g_model_provider;
+        const m = engine.g_model_name;
+        if ((std.mem.eql(u8, p, "xai") or std.mem.startsWith(u8, m, "grok")) and (self.effort == .max or self.effort == .ultra))
+            self.effort = .high;
         self.pushFmt(.system, "reasoning effort: {s}", .{@tagName(self.effort)}) catch {};
     } else if (std.mem.eql(u8, canon, "/always-approve")) {
         self.mode = if (self.mode == .always_approve) .normal else .always_approve;

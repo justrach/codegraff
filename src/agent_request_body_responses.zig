@@ -87,10 +87,9 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     try s.objectField("reasoning");
     try s.beginObject();
     try s.objectField("effort");
-    // Ultra preset → wire value `max`. #379: compaction summaries run at low
-    // effort — a high-effort reasoner can complete with only reasoning items
-    // and zero output text, i.e. an empty summary.
-    try s.write(if (self.compaction_request or self.server_compaction_request) "low" else if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
+    // #379: compaction summaries run at low — a high-effort reasoner can
+    // complete with only reasoning items and zero output text.
+    try s.write(if (self.compaction_request or self.server_compaction_request) "low" else @import("effort_route.zig").wireEffort(self.provider.model, @tagName(self.reasoning)));
     try s.endObject();
     try s.objectField("include");
     try s.beginArray();
@@ -413,6 +412,12 @@ test "xai Responses body is bearer-clean: no codex-isms, xAI-legal fields only (
     try std.testing.expect(std.mem.indexOf(u8, body, "prompt_cache_options") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "context_management") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "previous_response_id") == null);
+
+    agent.reasoning = .max;
+    const max_body = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(max_body);
+    try std.testing.expect(std.mem.indexOf(u8, max_body, "\"effort\":\"high\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, max_body, "\"effort\":\"max\"") == null);
 }
 
 test "xAI Responses splices hosted x_search onto a tools turn; Codex and chat do not" {

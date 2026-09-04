@@ -138,7 +138,12 @@ fn effectiveEffort(self: *Agent) ?engine_events.ReasoningEffort {
         }
         return null;
     }
-    return if (self.effortApplies()) effortTier(self.reasoning) else null;
+    if (!self.effortApplies()) return null;
+    const wire = @import("effort_route.zig").wireEffort(self.provider.model, @tagName(self.reasoning));
+    inline for (std.meta.tags(main_mod.ReasoningEffort)) |tag| {
+        if (std.mem.eql(u8, @tagName(tag), wire)) return effortTier(tag);
+    }
+    return effortTier(self.reasoning);
 }
 
 fn privacyTier(mode: learning_privacy.Mode) engine_events.PrivacyTier {
