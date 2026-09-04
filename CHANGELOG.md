@@ -10,6 +10,30 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.286 (2026-09-04)
+
+- Native harness gains a browser pane: a headless Chrome tab per chat,
+  driven by Kuri, started only when the pane is opened and stopped again
+  after a quiet spell or past a memory cap. Browse forwards clicks,
+  scrolling and typing; Annotate pins the element under a click, with an
+  optional note, and the pins ride with the chat's next message so the
+  agent can act on the page the reader is looking at.
+- Split view: another chat beside the ones on screen, up to four
+  columns, each with its own transcript, composer, model and folder.
+- Tab names are written by the model from the first prompt rather than
+  chopped out of it, and a session open in a tab lends its name to the
+  sidebar.
+- Saved chats can be archived (the file moves aside, the conversation
+  survives) or deleted from the sidebar.
+- Keyboard: new chat, close, reopen the last closed chat with its
+  session resumed, add a split, and jump between tabs.
+- Picking a workspace now changes the folder in front of you when the
+  tab is empty, instead of leaving it behind a second tab.
+- The desktop shell ships as a signed, notarized macOS app with the
+  project's icon, and no longer serves a stale page from WebKit's cache.
+- Native app moves to Next.js 16.3.
+- GUI declares its `esbuild` dependency so a clean build resolves it.
+
 ## v0.0.285 (2026-09-03)
 
 - Native transcript follow-tail only while the reader is at the bottom.
