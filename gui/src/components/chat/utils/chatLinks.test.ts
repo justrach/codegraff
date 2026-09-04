@@ -52,7 +52,18 @@ describe("getChatLinkMatches URL vs Markdown delimiters", () => {
 
   test("still trims a wrapping paren and trailing sentence punctuation", () => {
     expect(firstUrl("(https://example.com)")).toBe("https://example.com");
+    expect(firstUrl("[https://example.com]")).toBe("https://example.com");
     expect(firstUrl("visit https://example.com.")).toBe("https://example.com");
+  });
+
+  test("preserves legal URL tails after an unrelated closed emphasis span", () => {
+    const cases = [
+      ["**done** https://example.com/glob/**", "https://example.com/glob/**"],
+      ["__done__ https://example.com/path/__", "https://example.com/path/__"],
+      ["~~done~~ https://example.com/path/~~", "https://example.com/path/~~"],
+    ] as const;
+
+    expect(cases.map(([text]) => firstUrl(text))).toEqual(cases.map(([, url]) => url));
   });
 
   test("reports the correct span end after trimming the delimiters", () => {

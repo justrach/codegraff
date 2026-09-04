@@ -307,12 +307,63 @@ fn appendBlock(out: *std.array_list.Managed(u8), line: []const u8, accent: []con
     try inlineSpans(out, line, accent, text);
 }
 
-/// `code`, **bold** and `_italic_`, painted in place. Public for table.zig,
-/// which renders a cell the same way prose is rendered rather than measuring
-/// markers by hand — see the note at the head of that file.
+const WrappedUrl = struct { url: []const u8, suffix: []const u8 };
+const url_wrapper_pairs = [_]struct { open: []const u8, close: []const u8 }{
+    .{ .open = "**", .close = "**" }, .{ .open = "__", .close = "__" },
+    .{ .open = "~~", .close = "~~" }, .{ .open = "*", .close = "*" },
+    .{ .open = "_", .close = "_" },   .{ .open = "`", .close = "`" },
+};
+
+fn unwrapUrlCore(core: []const u8, suffix: []const u8) ?WrappedUrl {
+    var value = core;
+    var removed = false;
+    while (true) {
+        var matched = false;
+        for (url_wrapper_pairs) |pair| {
+            if (value.len <= pair.open.len + pair.close.len or
+                !std.mem.startsWith(u8, value, pair.open) or
+                !std.mem.endsWith(u8, value, pair.close)) continue;
+            value = value[pair.open.len .. value.len - pair.close.len];
+            removed = true;
+            matched = true;
+            break;
+        }
+        if (!matched) break;
+    }
+    if (!removed or !(std.mem.startsWith(u8, value, "http://") or std.mem.startsWith(u8, value, "https://"))) return null;
+    return .{ .url = value, .suffix = suffix };
+}
+
+fn unwrapUrlToken(token: []const u8) ?WrappedUrl {
+    if (unwrapUrlCore(token, "")) |match| return match;
+    var end = token.len;
+    while (end > 0 and std.mem.indexOfScalar(u8, ".,;!?:", token[end - 1]) != null) {
+        end -= 1;
+        if (unwrapUrlCore(token[0..end], token[end..])) |match| return match;
+    }
+    return null;
+}
+
+/// Inline Markdown spans. URL tokens are settled first so wrapper delimiters
+/// disappear while identical marker bytes inside an unwrapped URL stay opaque.
 pub fn inlineSpans(out: *std.array_list.Managed(u8), line: []const u8, accent: []const u8, text: []const u8) !void {
     var i: usize = 0;
     while (i < line.len) {
+        if (line[i] == '*' or line[i] == '_' or line[i] == '~' or line[i] == '`' or line[i] == 'h') {
+            var token_end = i;
+            while (token_end < line.len and !std.ascii.isWhitespace(line[token_end])) token_end += 1;
+            if (unwrapUrlToken(line[i..token_end])) |match| {
+                try out.appendSlice(match.url);
+                try out.appendSlice(match.suffix);
+                i = token_end;
+                continue;
+            }
+            if (std.mem.startsWith(u8, line[i..], "http://") or std.mem.startsWith(u8, line[i..], "https://")) {
+                try out.appendSlice(line[i..token_end]);
+                i = token_end;
+                continue;
+            }
+        }
         if (line[i] == '`') {
             if (std.mem.indexOfScalarPos(u8, line, i + 1, '`')) |end| {
                 try out.appendSlice(accent);

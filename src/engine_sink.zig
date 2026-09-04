@@ -207,7 +207,8 @@ fn lifecycleEmit(ctx: *anyopaque, ev: Stamped) void {
 }
 
 /// Today's interactive rendering, relocated behind the event contract. Every
-/// branch is the old inline agent_stream.zig code path, gate for gate.
+/// branch is the old inline agent_stream.zig code path, except no-color answer
+/// text now shares the Markdown renderer so link targets exclude delimiters (#729).
 fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
     const a: *Agent = @ptrCast(@alignCast(ctx));
     if (hosted_frontend) return hostedEmit(a, ev.event);
@@ -224,13 +225,9 @@ fn tuiEmit(ctx: *anyopaque, ev: Stamped) void {
         .text_delta => |d| {
             if (a.thinking_open) render.closeThinkingBlock(a); // reasoning -> answer transition
             render.spinnerStop(a); // first visible byte: clear the thinking line
-            if (main_mod.use_color) {
-                a.streamMarkdown(d.text);
-            } else if (a.out) |w| {
-                w.writeAll(d.text) catch return;
-                w.flush() catch return;
-                if (!a.sub) _ = tick_gate.setLineStart(d.text[d.text.len - 1] == '\n'); // #tui-tick
-            }
+            // Empty style strings make this plain text when color is off, but
+            // Markdown delimiters still stay out of terminal link targets (#729).
+            a.streamMarkdown(d.text);
         },
         // Meta-tool argument prose renders like answer text — spinner handoff
         // included — with two deliberate differences from .text_delta, both

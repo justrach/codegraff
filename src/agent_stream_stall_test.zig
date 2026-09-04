@@ -16,6 +16,7 @@ const http = @import("http.zig");
 const http_stall = @import("http_stall.zig");
 const agent_stream = @import("agent_stream.zig");
 const Agent = @import("agent.zig").Agent;
+const deinitMarkdown = @import("agent_render.zig").deinitMarkdown;
 const nowMs = @import("agent_ws_mock.zig").nowMs;
 
 /// One chat-completions delta with visible prose: the reader grows
@@ -184,6 +185,7 @@ test "#680: each stall reconnect widens the between-lines wait the SSE reader ar
         .label = "",
         .out = &out.writer,
     };
+    defer deinitMarkdown(&agent);
 
     // All three attempts run before any assertion, so a failure can never
     // leave the server blocked in accept() with the join waiting on it.
