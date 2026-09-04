@@ -128,7 +128,7 @@ export default function GraffHarness() {
     try {
       if (!browserOpenRestored.current) {
         browserOpenRestored.current = true;
-        if (window.localStorage.getItem(BROWSER_OPEN_KEY) === "1") setBrowserOpen(true);
+        if (window.localStorage.getItem(BROWSER_OPEN_KEY) !== "0") setBrowserOpen(true);
         return;
       }
       window.localStorage.setItem(BROWSER_OPEN_KEY, browserOpen ? "1" : "0");

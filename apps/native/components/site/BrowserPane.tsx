@@ -223,7 +223,7 @@ export default function BrowserPane({
 
   const open = useCallback(
     async (target: string) => {
-      setBusy(infoRef.current ? "Loading…" : "Starting the browser…");
+      setBusy(infoRef.current ? "Loading page…" : "Starting Chrome…");
       setError(null);
       try {
         const { width, height } = paneSize();
@@ -674,14 +674,11 @@ export default function BrowserPane({
           onChange={(e) => setUrl(e.target.value)}
           onFocus={(e) => e.currentTarget.select()}
           spellCheck={false}
-          placeholder="localhost:3000 or a URL"
+          placeholder="URL"
           aria-label="Address"
           title="Address (Cmd/Ctrl+L from the page)"
           className="h-7 min-w-0 flex-1 rounded-[7px] bg-field px-2 font-mono text-[12px] text-ink shadow-hairline outline-none placeholder:text-ink-3 focus:bg-hover"
         />
-        <button type="submit" className="h-7 shrink-0 rounded-[7px] bg-hover-2 px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-line-strong">
-          Go
-        </button>
         <select
           value={String(preset)}
           onChange={(e) => setPreset(e.target.value === "fit" ? "fit" : (Number(e.target.value) as Preset))}
@@ -826,7 +823,7 @@ export default function BrowserPane({
           </div>
         ) : (
           <div className="flex h-full items-center justify-center px-6 text-center text-[12.5px] text-ink-3">
-            {busy ?? (error ? "" : "Enter an address above.")}
+            {busy ?? (error ? "" : "Type a URL above. Chrome starts with the app.")}
           </div>
         )}
         {busy && src && (

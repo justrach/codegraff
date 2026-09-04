@@ -84,6 +84,7 @@ export function frameUrl(chat: string, quality: number, tick: number): string {
   return `${BASE}?chat=${encodeURIComponent(chat)}&frame=1&q=${quality}&t=${tick}`;
 }
 
+export const browserWarm = () => browserCall<{ kuri: KuriState }>("default", "warm");
 export const browserOpen = (chat: string, url: string, width: number, height: number) =>
   browserCall<PageInfo>(chat, "open", { url, width, height });
 export const browserNavigate = (chat: string, url: string) => browserCall<PageInfo>(chat, "navigate", { url });

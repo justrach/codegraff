@@ -168,6 +168,10 @@ export async function POST(req: NextRequest) {
 
 async function handle(chat: string, method: string, params: Record<string, unknown>): Promise<Response> {
   try {
+    if (method === "warm") {
+      await ensureKuri();
+      return Response.json({ kuri: kuriState() });
+    }
     if (method === "stop") {
       tabs.clear();
       stopKuri();

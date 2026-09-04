@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeSync } from "@/components/site/ThemeSync";
+import { BrowserWarm } from "@/components/site/BrowserWarm";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -30,6 +31,7 @@ export default function RootLayout({
       </head>
       <body className={`${inter.variable} ${mono.variable} font-sans`}>
         <ThemeSync />
+        <BrowserWarm />
         {children}
       </body>
     </html>

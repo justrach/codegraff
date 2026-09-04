@@ -83,18 +83,23 @@ pub fn main(init: std.process.Init) !void {
 }
 
 /// The URL the window opens, and whether anything is actually serving it.
-/// Order matters: an explicit pin wins, then a dev server the developer is
-/// already running, then the interface inside this bundle.
+/// A packaged `.app` always starts the copy inside the bundle: a leftover
+/// Next on :3000 from some other checkout is not this release. Loose
+/// `graff-native` binaries still attach to a dev server first.
 fn resolve(init: std.process.Init, buf: []u8) struct { []const u8, bool } {
     if (init.environ_map.get("GRAFF_NATIVE_URL")) |pinned| return .{ pinned, true };
-    for (default_urls) |candidate| {
-        if (listening(candidate)) return .{ candidate, true };
+    const bundle = bundlePath(init.gpa);
+    const packaged = if (bundle) |b| std.mem.endsWith(u8, b, ".app") else false;
+    if (!packaged) {
+        for (default_urls) |candidate| {
+            if (listening(candidate)) return .{ candidate, true };
+        }
     }
-    // Set this to debug against a server you start yourself while still
-    // running the packaged app.
+    // Set GRAFF_NATIVE_URL to debug against a server you start yourself
+    // while still running the packaged app.
     if (init.environ_map.get("GRAFF_NATIVE_NO_SERVER") == null) {
-        if (bundlePath(init.gpa)) |bundle| {
-            if (server.start(init.gpa, init.io, init.environ_map, bundle)) |port| {
+        if (bundle) |b| {
+            if (server.start(init.gpa, init.io, init.environ_map, b)) |port| {
                 const url = std.fmt.bufPrint(buf, "http://127.0.0.1:{d}", .{port}) catch
                     return .{ default_urls[0], false };
                 return .{ url, true };
