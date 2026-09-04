@@ -376,7 +376,7 @@ pub fn run(
         // A paste bigger than one read arrives as several back to back. Judge
         // the whole run, not each chunk: otherwise a chunk that ends at a line
         // boundary reads as Enter and sends half the paste (#737).
-        key_mod.setBurstRead(paste_mod.burstRead(inbuf[0..n], m.now_ms));
+        paste_mod.setBurstRead(paste_mod.burstRead(inbuf[0..n], m.now_ms));
         // Everything this tick drained is applied as ONE batch, with runs of
         // consecutive wheel reports folded into a single accumulated delta
         // (pacing.zig). Order is preserved and a keystroke BREAKS the run at

@@ -70,7 +70,13 @@ pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
     refreshRoot(agent, agent.arena);
     // ADR 0021: the user just said this. Echoing "constraint recorded" is
     // machine state, not progress. The tool result still tells the model.
-    return .{ .text = std.fmt.allocPrint(agent.arena, "constraint recorded as {s}. It is now in {s} and rides every subagent, workflow and pipeline brief from here on, in this session and in later ones — you do not need to restate it.", .{ r.id, playbook.path }) catch "constraint recorded", .is_error = false };
+    // The recorded constraint is in force NOW, not from the next user turn:
+    // the ledger was rewritten before this result was written and the root
+    // prompt refreshed above, so the very next request carries it. Saying so
+    // matters — the model was still treating built-in guidance as controlling
+    // for the rest of the turn and refusing the correction the user had just
+    // asked for (#738).
+    return .{ .text = std.fmt.allocPrint(agent.arena, "constraint recorded as {s}. It is now in {s} and rides every subagent, workflow and pipeline brief from here on, in this session and in later ones — you do not need to restate it. It takes effect immediately, in this turn: where it contradicts a built-in instruction the user has overruled that instruction, so act on the constraint now rather than waiting for the next turn.", .{ r.id, playbook.path }) catch "constraint recorded", .is_error = false };
 }
 
 /// Privacy-safe operational trace: id + success, never constraint text (#644).

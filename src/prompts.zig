@@ -62,6 +62,7 @@ pub const segments = [_]Segment{
     .{ .name = "todo", .text = text.todo_note, .gate = .todos },
     .{ .name = "trace", .text = text.trace_note, .gate = .local_tools },
     .{ .name = "harness_issue", .text = text.harness_issue_note, .gate = .local_tools },
+    .{ .name = "public_write", .text = text.public_write_note, .gate = .local_tools },
     .{ .name = "git_authoring", .text = text.git_authoring_note, .gate = .git_repo },
     .{ .name = "git_safety", .text = text.git_safety_note, .gate = .always },
     .{ .name = "work", .text = text.work_note, .gate = .always },
@@ -473,6 +474,12 @@ pub const compact_instruction =
     \\that was created or modified, command results that matter, the current
     \\task checklist and each item's status, and any pending or unfinished
     \\work. Be thorough but compact. Reply with only the summary.
+    \\Report only what this conversation actually contains. Do not write that a
+    \\rule, constraint or preference was recorded — recorded constraints live in
+    \\a durable ledger that is injected separately and in full, so a summary
+    \\that asserts one invents it, and the agent reading you cannot tell the
+    \\difference (#738). A standing instruction the user gave in words belongs
+    \\here as what they said, attributed to them, not as machine state.
 ;
 
 test { // #421/#410: prompt snapshots and goal-prefix behavior must stay reachable.

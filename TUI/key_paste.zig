@@ -52,6 +52,19 @@ pub fn inBurst(now_ms: u64) bool {
 
 pub fn resetBurst() void {
     burst_until_ms = 0;
+    active = false;
+}
+
+/// Whether the read the parser is walking belongs to a paste. The read loop
+/// decides (it holds the clock); the parser only asks.
+var active: bool = false;
+
+pub fn setBurstRead(on: bool) void {
+    active = on;
+}
+
+pub fn burstActive() bool {
+    return active;
 }
 
 /// True when this read is part of a paste: it looks like one on its own, or

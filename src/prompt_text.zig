@@ -99,6 +99,28 @@ pub const harness_issue_note =
     \\...`), never in the current working repository's issue tracker.
 ;
 
+/// Gate: `caps.local_tools`. Every outbound write goes through bash (gh, curl),
+/// so the rule earns its tokens only where bash exists (#739).
+pub const public_write_note =
+    \\
+    \\
+    \\Anything you publish outside this machine — a GitHub issue, PR, comment or
+    \\gist, a hosted page, a paste, a request to someone else's API — carries only
+    \\what the task needs. Debugging gives you far more than that: prompts and
+    \\conversation text, absolute paths, usernames and host details, model and
+    \\provider names, session, run and trace ids, logs and test data. None of it
+    \\belongs in a public artifact unless the user asked for that detail to be
+    \\public. Being told to file the issue authorizes filing it, not copying your
+    \\local context into it.
+    \\Keep the evidence, drop the identifiers: an error message the tool printed,
+    \\the failing behavior, event counts and relative timings, the cause in terms
+    \\of the code. If a detail really is necessary and it identifies the user,
+    \\their machine or their work, ask before publishing it and show what you
+    \\would disclose. Editing afterwards does not undo it — edit history,
+    \\notifications and mirrors keep the first version — so sanitize before the
+    \\write, not after. Secrets are never publishable, with or without approval.
+;
+
 /// Gate: `caps.git_repo`. Commit-identity and PR-description discipline only
 /// earn their tokens where a repository exists to commit to — a scratch-dir
 /// one-shot or an eval run pays ~250 tokens/call for guidance it can never

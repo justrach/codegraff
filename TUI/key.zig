@@ -18,15 +18,6 @@ pub fn inPaste() bool {
     return in_paste;
 }
 
-/// Set by the read loop for reads that belong to a paste spanning several
-/// tty reads. `looksLikeBurst` only sees the read in front of it, so without
-/// this a chunk ending at a line boundary submits mid-paste (#737).
-var burst_read: bool = false;
-
-pub fn setBurstRead(on: bool) void {
-    burst_read = on;
-}
-
 /// Close a bracketed paste and clear modifiers whose events were ignored
 /// inside it. The read loop also calls this when `CSI 201~` never arrived —
 /// without it the latch is permanent and every Enter, Escape and slash command
@@ -66,7 +57,6 @@ pub fn abandonSequence(bytes: []const u8, recovery: SequenceRecovery) void {
 pub fn resetInputState() void {
     abandonSequence("", .none);
     in_paste = false;
-    burst_read = false;
     paste.resetBurst();
     orphan.reset();
 }
@@ -156,9 +146,9 @@ pub fn next(bytes: []const u8, i: *usize) ?Key {
     i.* += 1;
     if (b == 0x1b) return escapeSeq(bytes, i);
     if (b == 0x0d or b == 0x0a) {
-        // Embedded newlines from a bracketed paste — or a wrap-less multiline
-        // dump in this same read — must not become the Enter/send key (#643).
-        if (in_paste or burst_read or paste.looksLikeBurst(bytes)) {
+        // Newlines inside a paste are text, not the Enter/send key: bracketed,
+        // a multiline dump in this read, or a run spanning reads (#643/#737).
+        if (in_paste or paste.burstActive() or paste.looksLikeBurst(bytes)) {
             if (paste.pasteNewline(bytes, i, b)) |nl| return .{ .char = nl };
         }
         return .enter;
