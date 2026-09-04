@@ -237,6 +237,49 @@ fn addMenu(app: Id) void {
     );
     send1v(menu, sel("addItem:"), quit);
     send1v(app_item, sel("setSubmenu:"), menu);
+
+    addEditMenu(bar);
+}
+
+/// One item, no target: the action travels the responder chain to whatever
+/// is focused, which is the web view.
+fn addItem(menu: Id, name: [*:0]const u8, action: Sel, key_equiv: [*:0]const u8) void {
+    const title = sendStr(cls("NSString"), sel("stringWithUTF8String:"), name);
+    const key = sendStr(cls("NSString"), sel("stringWithUTF8String:"), key_equiv);
+    const item = send3(
+        send(cls("NSMenuItem"), sel("alloc")),
+        sel("initWithTitle:action:keyEquivalent:"),
+        title,
+        action,
+        key,
+    );
+    send1v(menu, sel("addItem:"), item);
+}
+
+/// Cut, copy and paste are menu items before they are shortcuts: with no
+/// Edit menu those key equivalents do not exist, so the window never
+/// dispatches them and the clipboard looks broken inside the app.
+///
+/// Only the standard edit keys belong here. The interface binds Cmd-T,
+/// Cmd-W, Cmd-D, Cmd-\ and Cmd-1..9 itself, and a menu key equivalent is
+/// matched before the page sees the event, so adding those would take the
+/// shortcuts away from it.
+fn addEditMenu(bar: Id) void {
+    const item = send(send(cls("NSMenuItem"), sel("alloc")), sel("init"));
+    send1v(bar, sel("addItem:"), item);
+
+    const title = sendStr(cls("NSString"), sel("stringWithUTF8String:"), "Edit");
+    const menu = send1(send(cls("NSMenu"), sel("alloc")), sel("initWithTitle:"), title);
+    addItem(menu, "Undo", sel("undo:"), "z");
+    // An uppercase key equivalent is AppKit's spelling of "with shift".
+    addItem(menu, "Redo", sel("redo:"), "Z");
+    send1v(menu, sel("addItem:"), send(cls("NSMenuItem"), sel("separatorItem")));
+    addItem(menu, "Cut", sel("cut:"), "x");
+    addItem(menu, "Copy", sel("copy:"), "c");
+    addItem(menu, "Paste", sel("paste:"), "v");
+    send1v(menu, sel("addItem:"), send(cls("NSMenuItem"), sel("separatorItem")));
+    addItem(menu, "Select All", sel("selectAll:"), "a");
+    send1v(item, sel("setSubmenu:"), menu);
 }
 
 /// Quit when the last window closes, and tear the server down on the way
