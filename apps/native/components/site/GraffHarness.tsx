@@ -7,7 +7,7 @@ import FilesPane from "@/components/site/FilesPane";
 import BrowserPane from "@/components/site/BrowserPane";
 import { IconFolder, IconGlobe } from "@/lib/icons";
 import { annotationsBlock, type BrowserPin } from "@/lib/browser/annotations";
-import { browserClose, browserHandle } from "@/lib/browser-client";
+import { browserClose, browserHandle, browserNav } from "@/lib/browser-client";
 import TaskRows from "@/components/primitives/TaskRows";
 import { ThemeToggle } from "@/components/site/ThemeToggle";
 import { AssistantBody, UserBubble } from "@/components/site/ChatBubbles";
@@ -43,6 +43,9 @@ import {
   upsertWorkspace,
   type Workspace,
 } from "@/lib/workspaces";
+
+/** Whether the sidecar browser pane was open, restored after a reload. */
+const BROWSER_OPEN_KEY = "graff.native.browser.open";
 
 type Msg =
   | { id: number; role: "user"; text: string }
@@ -104,6 +107,21 @@ export default function GraffHarness() {
   // The sidecar browser: one Chrome tab per chat, and the pins the user
   // drops on it, which ride ahead of the chat's next prompt.
   const [browserOpen, setBrowserOpen] = useState(false);
+  // The pane comes back after a reload (with its last page: the pane
+  // remembers that itself). Read after mount so the server render matches.
+  const browserOpenRestored = useRef(false);
+  useEffect(() => {
+    try {
+      if (!browserOpenRestored.current) {
+        browserOpenRestored.current = true;
+        if (window.localStorage.getItem(BROWSER_OPEN_KEY) === "1") setBrowserOpen(true);
+        return;
+      }
+      window.localStorage.setItem(BROWSER_OPEN_KEY, browserOpen ? "1" : "0");
+    } catch {
+      // no storage
+    }
+  }, [browserOpen]);
   const [pinsByChat, setPinsByChat] = useState<Record<number, BrowserPin[]>>({});
   const pinsRef = useRef<Record<number, BrowserPin[]>>({});
   const chatIdRef = useRef(1);
@@ -348,6 +366,9 @@ export default function GraffHarness() {
         }
       }
       if (paint) cancelAnimationFrame(paint);
+      // The turn carried pins, so the agent most likely changed the page:
+      // reload the chat's tab so the pane shows the result without a click.
+      if (pins.length > 0) void browserNav(handleOf(chatId), "reload").catch(() => undefined);
       turn = finishAcpTurn(turn);
       patchAssistant(chatId, asstId, turn);
     } catch (err) {
@@ -789,6 +810,7 @@ export default function GraffHarness() {
             <BrowserPane
               key={chatThread.id}
               chat={handleOf(chatThread.id)}
+              memoryKey={chatCwd}
               pins={pinsByChat[chatThread.id] ?? []}
               onPinsChange={(next) => setPins(chatThread.id, next)}
               onAsk={() => void send("Make the changes I pinned in the browser.")}

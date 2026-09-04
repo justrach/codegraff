@@ -48,6 +48,45 @@ const MAP_SETTLE_MS = 350;
 
 const PIN_STYLE = "flex size-5 items-center justify-center rounded-full bg-accent text-[10.5px] font-semibold text-white shadow-btn";
 
+/** The page's viewport width: "fit" is the pane's own width, 1:1 pixels; a
+ * number is a wider (tablet, laptop) layout drawn scaled down to the pane,
+ * so a site can be pinned in the layout it will actually ship with. */
+type Preset = "fit" | 768 | 1024 | 1280;
+const PRESETS: readonly Preset[] = ["fit", 768, 1024, 1280];
+const PRESET_KEY = "graff.native.browser.width";
+const LAST_URL_KEY = "graff.native.browser.lastUrl";
+
+function loadPreset(): Preset {
+  try {
+    const raw = localStorage.getItem(PRESET_KEY);
+    if (raw === "fit") return "fit";
+    const n = Number(raw);
+    if (PRESETS.includes(n as Preset)) return n as Preset;
+  } catch {
+    // no storage
+  }
+  return "fit";
+}
+
+/** The page a workspace's pane last showed, so reopening it lands there. */
+function loadLastUrl(key: string | undefined): string | null {
+  if (!key) return null;
+  try {
+    return localStorage.getItem(`${LAST_URL_KEY}:${key}`);
+  } catch {
+    return null;
+  }
+}
+
+function saveLastUrl(key: string | undefined, url: string): void {
+  if (!key || !url || url === "about:blank") return;
+  try {
+    localStorage.setItem(`${LAST_URL_KEY}:${key}`, url);
+  } catch {
+    // no storage
+  }
+}
+
 function pct(n: number, of: number): string {
   return `${(n / Math.max(1, of)) * 100}%`;
 }
@@ -105,6 +144,7 @@ export default function BrowserPane({
   onAsk,
   onClose,
   initialUrl,
+  memoryKey,
 }: {
   /** The chat handle; the tab is the chat's own, like its agent. */
   chat: string;
@@ -114,6 +154,9 @@ export default function BrowserPane({
   onAsk?: () => void;
   onClose: () => void;
   initialUrl?: string;
+  /** What to remember the last page under (the workspace path): a pane
+   * that opens on a blank tab goes back there. */
+  memoryKey?: string;
 }) {
   const [info, setInfo] = useState<PageInfo | null>(null);
   const [url, setUrl] = useState(initialUrl ?? "");
@@ -124,6 +167,9 @@ export default function BrowserPane({
   const [map, setMap] = useState<ElementMap | null>(null);
   const [hoverEl, setHoverEl] = useState<MapElement | null>(null);
   const [editing, setEditing] = useState<number | null>(null);
+  const [preset, setPreset] = useState<Preset>(() => loadPreset());
+  const presetRef = useRef<Preset>(preset);
+  presetRef.current = preset;
   const frameRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const urlRef = useRef<HTMLInputElement>(null);
@@ -136,10 +182,17 @@ export default function BrowserPane({
   const mapRef = useRef<ElementMap | null>(null);
   mapRef.current = map;
 
+  /** The viewport to give the page: the frame's own size, or the chosen
+   * width with the height that keeps the frame's aspect, so the scaled
+   * picture fills the frame exactly and pins land where they were clicked. */
   const paneSize = useCallback(() => {
     const el = frameRef.current;
-    if (!el) return { width: 960, height: 640 };
-    return { width: Math.max(320, Math.round(el.clientWidth)), height: Math.max(240, Math.round(el.clientHeight)) };
+    const frame = el
+      ? { width: Math.max(320, Math.round(el.clientWidth)), height: Math.max(240, Math.round(el.clientHeight)) }
+      : { width: 960, height: 640 };
+    const p = presetRef.current;
+    if (p === "fit") return frame;
+    return { width: p, height: Math.max(240, Math.round((p * frame.height) / frame.width)) };
   }, []);
 
   const open = useCallback(
@@ -151,13 +204,14 @@ export default function BrowserPane({
         const next = infoRef.current ? await browserNavigate(chat, target) : await browserOpen(chat, target, width, height);
         setInfo(next);
         setUrl(next.url === "about:blank" ? "" : next.url);
+        saveLastUrl(memoryKey, next.url);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
         setBusy(null);
       }
     },
-    [chat, paneSize],
+    [chat, paneSize, memoryKey],
   );
 
   // Adopt the chat's tab when it already exists (the pane was closed and
@@ -173,12 +227,16 @@ export default function BrowserPane({
           setUrl(status.tab.url === "about:blank" ? "" : status.tab.url);
           const { width, height } = paneSize();
           void browserViewport(chat, width, height).catch(() => undefined);
+          // A blank tab (the browser was restarted, or the chat never
+          // navigated) goes back to the workspace's last page.
+          const back = initialUrl ?? loadLastUrl(memoryKey);
+          if (status.tab.url === "about:blank" && back) void open(back);
           return;
         }
       } catch {
         // status is best effort; fall through to open
       }
-      if (!cancelled) void open(initialUrl ?? "");
+      if (!cancelled) void open(initialUrl ?? loadLastUrl(memoryKey) ?? "");
     })();
     return () => {
       cancelled = true;
@@ -268,6 +326,23 @@ export default function BrowserPane({
     };
   }, [chat, tabId, paneSize, refreshMap]);
 
+  // A new width preset re-sizes the page's viewport; the picture, drawn at
+  // the frame's size, shows the wider layout scaled down.
+  useEffect(() => {
+    try {
+      localStorage.setItem(PRESET_KEY, String(preset));
+    } catch {
+      // no storage
+    }
+    if (!tabId) return;
+    const { width, height } = paneSize();
+    void browserViewport(chat, width, height)
+      .then((v) => setInfo((c) => (c ? { ...c, ...v } : c)))
+      .then(() => refreshMap())
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preset]);
+
   // Title and address follow the page (links clicked inside it, redirects).
   useEffect(() => {
     if (!tabId) return;
@@ -276,11 +351,12 @@ export default function BrowserPane({
         .then((next) => {
           setInfo((cur) => (cur && (cur.url !== next.url || cur.title !== next.title) ? { ...cur, url: next.url, title: next.title } : cur));
           if (document.activeElement !== urlRef.current) setUrl(next.url === "about:blank" ? "" : next.url);
+          saveLastUrl(memoryKey, next.url);
         })
         .catch(() => undefined);
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [chat, tabId]);
+  }, [chat, tabId, memoryKey]);
 
   useEffect(() => {
     if (editing !== null) window.setTimeout(() => noteRef.current?.focus(), 0);
@@ -364,10 +440,40 @@ export default function BrowserPane({
     scheduleMapRefresh();
   };
 
+  /** Scroll the page by `dy` CSS pixels from the middle of the viewport. */
+  const scrollPage = (dy: number) => {
+    const cur = infoRef.current;
+    if (!cur || busy) return;
+    void browserInput(chat, { kind: "wheel", x: cur.width / 2, y: cur.height / 2, deltaX: 0, deltaY: dy }).catch(() => undefined);
+    scheduleMapRefresh();
+  };
+
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.target !== frameRef.current) return;
+    // Cmd/Ctrl+L: the address bar, as in a browser.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "l") {
+      e.preventDefault();
+      urlRef.current?.focus();
+      urlRef.current?.select();
+      return;
+    }
     if (mode === "annotate") {
+      // Keys do not reach the page in this mode, so scroll it from here.
+      const page = (infoRef.current?.height ?? 600) * 0.85;
+      const step: Record<string, number> = {
+        ArrowDown: 80,
+        ArrowUp: -80,
+        PageDown: page,
+        PageUp: -page,
+        " ": e.shiftKey ? -page : page,
+        End: 1_000_000,
+        Home: -1_000_000,
+      };
       if (e.key === "Escape") setEditing(null);
+      else if (e.key in step && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        scrollPage(step[e.key]);
+      }
       return;
     }
     if (busy || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -457,14 +563,29 @@ export default function BrowserPane({
           ref={urlRef}
           value={url}
           onChange={(e) => setUrl(e.target.value)}
+          onFocus={(e) => e.currentTarget.select()}
           spellCheck={false}
           placeholder="localhost:3000 or a URL"
           aria-label="Address"
+          title="Address (Cmd/Ctrl+L from the page)"
           className="h-7 min-w-0 flex-1 rounded-[7px] bg-field px-2 font-mono text-[12px] text-ink shadow-hairline outline-none placeholder:text-ink-3 focus:bg-hover"
         />
         <button type="submit" className="h-7 shrink-0 rounded-[7px] bg-hover-2 px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-line-strong">
           Go
         </button>
+        <select
+          value={String(preset)}
+          onChange={(e) => setPreset(e.target.value === "fit" ? "fit" : (Number(e.target.value) as Preset))}
+          aria-label="Page width"
+          title="Page width: the pane's own width at 1:1, or a wider layout scaled to fit"
+          className="h-7 shrink-0 cursor-pointer rounded-[7px] bg-hover-2 pl-1.5 pr-1 text-[11.5px] font-medium text-ink outline-none transition-colors hover:bg-line-strong"
+        >
+          {PRESETS.map((p) => (
+            <option key={String(p)} value={String(p)}>
+              {p === "fit" ? "Fit" : `${p}px`}
+            </option>
+          ))}
+        </select>
       </form>
 
       <div
@@ -611,7 +732,7 @@ export default function BrowserPane({
         )}
       </div>
 
-      <div className="max-h-48 shrink-0 overflow-y-auto border-t border-line">
+      <div className="max-h-36 shrink-0 overflow-y-auto border-t border-line">
         {pins.length === 0 ? (
           <p className="px-3 py-2 text-[11.5px] text-ink-3">
             {mode === "annotate"
@@ -647,17 +768,19 @@ export default function BrowserPane({
             {pins.map((pin, i) => (
               <div
                 key={pin.id}
-                className={`group flex min-h-8 items-center gap-2 rounded-[7px] px-1.5 py-1 ${editing === pin.id ? "bg-hover" : "hover:bg-hover"}`}
+                className={`group flex h-7 items-center gap-2 rounded-[7px] px-1.5 ${editing === pin.id ? "bg-hover" : "hover:bg-hover"}`}
               >
-                <button type="button" onClick={() => setEditing(pin.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                <button
+                  type="button"
+                  onClick={() => setEditing(pin.id)}
+                  title={`${pin.comment ? `${pin.comment} — ` : ""}${elementLabel(pin.element)}\n${pin.element.selector}`}
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                >
                   <span className={`${PIN_STYLE} shrink-0`}>{i + 1}</span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[12px] text-ink">{pin.comment || <span className="text-ink-3">no note</span>}</span>
-                    <span className="block truncate font-mono text-[10.5px] text-ink-3" title={pin.element.selector}>
-                      {pin.ref ? `@${pin.ref} · ` : ""}
-                      {elementLabel(pin.element)}
-                    </span>
+                  <span className="min-w-0 flex-1 truncate text-[12px] text-ink">
+                    {pin.comment || <span className="text-ink-3">{elementLabel(pin.element)}</span>}
                   </span>
+                  {pin.ref ? <span className="shrink-0 font-mono text-[10.5px] text-ink-3">@{pin.ref}</span> : null}
                 </button>
                 <button
                   type="button"

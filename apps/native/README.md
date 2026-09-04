@@ -121,17 +121,26 @@ and the next request starts a fresh browser. Kuri is started with
 than that flag refuses localhost.
 
 - **Browse** forwards clicks, scrolling and typing to the page.
+- The address bar takes `localhost:3000`-style addresses; Cmd/Ctrl+L
+  focuses it from the page. The width control next to it shows the page
+  at the pane's own width (1:1) or a wider layout (768, 1024, 1280 px)
+  scaled down, so a desktop layout can be pinned as it will ship. A
+  workspace's pane remembers its last page and goes back there when it
+  opens on a blank tab (after a reload, or a browser restart).
 - **Annotate** pins the element under a click, instantly: the page's
   pinnable elements (boxes, names, selectors, Kuri refs) are fetched as
   one map and hit-tested in the pane, so hover and click never wait on
   the network; the map refreshes after a scroll and every few seconds.
-  A note is optional. Pins keep page coordinates and follow the page as
-  it scrolls; scrolling works in both modes. Nothing is injected, so any
+  A note is optional (Enter keeps it). Pins keep page coordinates and
+  follow the page as it scrolls; the wheel scrolls in both modes and, in
+  Annotate, so do the arrow keys, Page Up/Down, Space, Home and End. Nothing is injected, so any
   page works. Pins go behind the chat's next prompt as a block naming
   each element (role, name, selector, box), the note, and — when Kuri's
   snapshot names the same element — its `@eN` ref, plus the tab's address
   so the agent can snapshot, act on, and highlight the very page the user
-  is looking at. **Ask graff** in the pane sends them right away.
+  is looking at. **Ask graff** in the pane sends them right away, and
+  the tab reloads by itself once a turn that carried pins has finished,
+  so the result is on screen without a click.
 
 The design and what is deliberately left out are in
 `plans/2026-09-03-browser-sidecar.md`. The sidebar footer names the tab's graff
