@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type CSSProperties } from "react";
 import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
+import type { AcpCommand } from "@/lib/acp";
 import { STARTER_PROMPTS, type Health } from "@/lib/acp-client";
 
 function greeting(): string {
@@ -38,6 +39,7 @@ export default function EmptyState({
   onModelChange,
   history,
   cwd,
+  commands,
 }: {
   onSend: (text: string) => void;
   health: Health | null;
@@ -48,6 +50,8 @@ export default function EmptyState({
   history?: readonly string[];
   /** This tab's workspace; absent, the server's default from `health`. */
   cwd?: string;
+  /** The slash commands this tab's agent advertised, for the / menu. */
+  commands?: AcpCommand[];
 }) {
   const where = cwd ?? health?.cwd;
   const [offset, setOffset] = useState(0);
@@ -86,6 +90,7 @@ export default function EmptyState({
           onSend={onSend}
           disabled={health !== null && !health.ok}
           history={history}
+          commands={commands}
         />
         {health && !health.ok && (
           <p className="mt-3 text-[12.5px] text-orange">

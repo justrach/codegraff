@@ -896,6 +896,7 @@ export default function GraffHarness() {
                   models={models}
                   modelKey={threadModel}
                   onModelChange={(key: string) => changeModel(key, thread.id)}
+                  commands={commands[thread.id] ?? []}
                 />
               </div>
             )}
