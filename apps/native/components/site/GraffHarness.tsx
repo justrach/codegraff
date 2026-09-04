@@ -597,16 +597,38 @@ export default function GraffHarness() {
     void refreshStored();
   };
 
-  /** Switch the sidebar to a workspace and land on a tab that runs there:
-   * an empty tab of its own if one is open, else a fresh one. Tabs already
-   * running elsewhere keep their agents — a workspace is fixed at spawn. */
+  /** Move a tab to another folder. Only sound for a tab with no messages:
+   * an agent is bound to its folder at spawn, so this starts a fresh one
+   * there, and a conversation would lose the ground it was standing on. */
+  const moveChatTo = (chatId: number, path: string) => {
+    const ws = findWorkspace(workspacesRef.current, path);
+    const next = chatsRef.current.map((c) => (c.id === chatId ? { ...c, cwd: path, model: c.model ?? ws?.model } : c));
+    // requireSession reads the chat from this ref in the same tick, before
+    // React has re-rendered with the new cwd.
+    chatsRef.current = next;
+    setChats(next);
+    setActiveId(chatId);
+    void requireSession(chatId, true)
+      .then(() => adoptCatalog(chatId))
+      .catch(() => undefined);
+  };
+
+  /** Switch the sidebar to a workspace and land on a tab that runs there.
+   * The tab in front follows the switch when nothing has been asked in it
+   * yet — picking a folder should change the folder you are looking at.
+   * A tab with a conversation keeps its own folder, and says which. */
   const switchWorkspace = (path: string) => {
     if (path === activePathRef.current) return;
     activate(path);
+    setFilesOpen(false);
+    const here = chatsRef.current.find((c) => c.id === activeId);
+    if (here && here.messages.length === 0) {
+      moveChatTo(here.id, path);
+      return;
+    }
     const empty = chatsRef.current.find((c) => c.cwd === path && c.messages.length === 0);
     if (empty) {
       setActiveId(empty.id);
-      setFilesOpen(false);
       return;
     }
     openChat((chatIdRef.current += 1));
@@ -692,11 +714,12 @@ export default function GraffHarness() {
   // The tab bar's folder chip is the *tab's* workspace; the sidebar's
   // switcher is the *active* one (where new tabs open). They differ only
   // after a switch, and each says so on hover.
+  const cwdOf = (thread: Chat) => thread.cwd ?? activePath ?? health?.cwd;
   const workspaceNameOf = (thread: Chat) => {
-    const dir = thread.cwd ?? health?.cwd;
+    const dir = cwdOf(thread);
     return findWorkspace(workspaces, dir)?.name ?? (dir ? basename(dir) : "workspace");
   };
-  const chatCwd = chatThread.cwd ?? health?.cwd;
+  const chatCwd = cwdOf(chatThread);
   const chatWorkspace = findWorkspace(workspaces, chatCwd);
   const workspaceName = chatWorkspace?.name ?? (chatCwd ? basename(chatCwd) : "workspace");
   const pinCount = (pinsByChat[chatThread.id] ?? []).length;
@@ -818,7 +841,7 @@ export default function GraffHarness() {
                   onSend={(text: string) => void send(text, thread.id)}
                   health={health}
                   history={threadHistory}
-                  cwd={thread.cwd}
+                  cwd={cwdOf(thread)}
                   offset={offset}
                   shuffle={() => setOffset((current) => (current + 3) % STARTER_PROMPTS.length)}
                   models={models}
@@ -1049,7 +1072,7 @@ export default function GraffHarness() {
                     {thread.title ?? "New chat"}
                   </button>
                   <span
-                    title={thread.cwd ?? health?.cwd ?? "workspace"}
+                    title={cwdOf(thread) ?? "workspace"}
                     className="flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-1.5 text-[12px] font-medium text-ink-2"
                   >
                     <IconFolder size={14} />

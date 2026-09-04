@@ -98,10 +98,13 @@ server only validates a root it is handed) with the active one checked:
   pointing at an empty config: with a typical config every tab otherwise
   costs a gigabyte or more of server processes). *Forget* removes it
   from the switcher only.
-- Switching workspaces changes the sidebar's session list and where new
-  tabs open. A tab's agent is spawned in the workspace that was active
-  when the tab opened and stays there — the folder chip in the tab bar
-  names the tab's own workspace, the switcher names the active one.
+- Switching workspaces moves the tab you are looking at when nothing has
+  been asked in it yet: picking a folder should change the folder in
+  front of you, so its agent is respawned there rather than a second tab
+  appearing. A tab that already holds a conversation keeps its own
+  folder, because its agent is bound to that folder at spawn — the chip
+  in the tab bar and each split's header name the folder that tab runs
+  in, and the switcher names the one new tabs will use.
 
 `/api/acp` bootstrap, `/api/sessions`, `/api/fs` and `/api/git` all take
 the workspace root (`cwd` / `?root=`) and fall back to the default from
