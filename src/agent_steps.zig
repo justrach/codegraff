@@ -84,7 +84,9 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
         if (item != .object) continue;
         try self.messages.append(item); // valid as next-turn input
         const itype = if (item.object.get("type")) |t| (if (t == .string) t.string else "") else "";
-        if (std.mem.eql(u8, itype, "message")) {
+        if (@import("codex_tool_search.zig").isServerSideItem(itype)) {
+            continue;
+        } else if (std.mem.eql(u8, itype, "message")) {
             if (item.object.get("content")) |c| if (c == .array) {
                 for (c.array.items) |block| {
                     if (block != .object) continue;

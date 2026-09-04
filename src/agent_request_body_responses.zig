@@ -11,6 +11,7 @@ const http_headers = @import("http_headers.zig");
 const codex_chain = @import("codex_chain.zig");
 const server_compact = @import("agent_server_compact.zig");
 const xai_hosted = @import("xai_hosted.zig");
+const codex_tool_search = @import("codex_tool_search.zig");
 
 pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_tool: bool) !void {
     // Responses API (codex / ChatGPT, xAI, and native Codegraff aliases).
@@ -58,10 +59,17 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     for (self.messages.items[from..]) |m| try s.write(m);
     try s.endArray();
     if (tools) |t| {
-        const payload = if (xai_hosted.active(self.provider.id, self.provider.kind))
-            xai_hosted.splice(self.scratchAlloc(), t) catch t
-        else
-            t;
+        const payload = blk: {
+            var next = t;
+            if (xai_hosted.active(self.provider.id, self.provider.kind)) {
+                const login = self.provider.source == .login;
+                next = xai_hosted.splice(self.scratchAlloc(), next, login) catch next;
+            }
+            if (codex_tool_search.active(self.provider.id, self.provider.kind, self.provider.model)) {
+                next = codex_tool_search.splice(self.scratchAlloc(), next) catch next;
+            }
+            break :blk next;
+        };
         try s.objectField("tools");
         try serde.writeOpenAITools(s, self.scratchAlloc(), payload); // #261 follow-up
         try s.objectField("tool_choice");
@@ -419,11 +427,19 @@ test "xAI Responses splices hosted x_search onto a tools turn; Codex and chat do
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"x_search\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"bash\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "web_search") == null);
+
+    var login = try testAgentFor(a, "xai", .responses, "grok-4.6");
+    login.provider.source = .login;
+    const login_body = try login.buildBody(tools, false, true, true);
+    defer std.testing.allocator.free(login_body);
+    try std.testing.expect(std.mem.indexOf(u8, login_body, "\"type\":\"web_search\"") != null);
 
     var codex = try testAgentFor(a, "codex", .responses, "gpt-5.6-sol");
     const cb = try codex.buildBody(tools, false, true, true);
     defer std.testing.allocator.free(cb);
     try std.testing.expect(std.mem.indexOf(u8, cb, "x_search") == null);
+    try std.testing.expect(std.mem.indexOf(u8, cb, "\"type\":\"tool_search\"") != null);
 
     var chat = try testAgentFor(a, "xai", .openai, "grok-4.6");
     const chat_body = try chat.buildBody(tools, false, true, true);

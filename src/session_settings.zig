@@ -215,6 +215,10 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "no");
         xai_hosted.enabled = !off;
     }
+    if (environ_map.get("GRAFF_XAI_WEB_SEARCH")) |v| {
+        const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "no");
+        xai_hosted.web_search = !off;
+    }
     if (environ_map.get("GRAFF_XAI_URL")) |v| {
         if (v.len > 0) provider_mod.g_xai_url_override = v;
     }
