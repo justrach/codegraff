@@ -155,8 +155,12 @@ export default function GraffHarness() {
   const closedRef = useRef<{ session: string | null; cwd?: string; resumable: boolean }[]>([]);
 
   const chatThread = chats.find((c) => c.id === activeId) ?? chats[0];
-  // The ids on screen, in order: the active chat then its split panes.
-  const columnIds = [chatThread.id, ...panes.filter((id) => id !== chatThread.id && chats.some((c) => c.id === id))].slice(0, MAX_COLUMNS);
+  // The ids on screen, in order: the active chat then its split panes. A
+  // chat appears once — the swap below can put one in `panes` twice, and a
+  // closed chat can linger there — so this is the last word on what shows.
+  const columnIds = [chatThread.id, ...panes]
+    .filter((id, i, all) => all.indexOf(id) === i && chats.some((c) => c.id === id))
+    .slice(0, MAX_COLUMNS);
   const columnKey = columnIds.join(",");
   const active = chatThread.messages.length > 0;
   const busy = busyIds.has(chatThread.id);
@@ -509,7 +513,13 @@ export default function GraffHarness() {
    * replaces takes that pane, so the same two stay on screen. */
   const focusChat = (id: number) => {
     const here = activeId;
-    setPanes((current) => (current.includes(id) ? current.map((pane) => (pane === id ? here : pane)) : current));
+    setPanes((current) => {
+      if (!current.includes(id)) return current.filter((pane) => pane !== id);
+      const swapped = current.map((pane) => (pane === id ? here : pane));
+      // `here` may already have been a pane, and the chat now in front must
+      // not also be one: either would draw the same chat in two columns.
+      return swapped.filter((pane, i) => swapped.indexOf(pane) === i && pane !== id);
+    });
     setActiveId(id);
   };
 
@@ -625,6 +635,7 @@ export default function GraffHarness() {
     // React has re-rendered with the new cwd.
     chatsRef.current = next;
     setChats(next);
+    setPanes((current) => current.filter((pane) => pane !== chatId));
     setActiveId(chatId);
     void requireSession(chatId, true)
       .then(() => adoptCatalog(chatId))
@@ -1074,6 +1085,7 @@ export default function GraffHarness() {
           {columns.map((thread, slot) => (
             <section
               key={thread.id}
+              data-chat={thread.id}
               className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page"
             >
               {slot === 0 ? (
