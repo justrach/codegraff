@@ -87,9 +87,10 @@ A workspace is a folder graff runs in. The switcher at the top of the
 sidebar lists every workspace this browser knows (`localStorage`; the
 server only validates a root it is handed) with the active one checked:
 
-- **New workspace…** opens a folder picker (`/api/workspaces` walks one
-  level at a time, marks git roots, takes a typed or pasted path) and
-  switches to the folder you pick.
+- **Open a folder…** (also the caret beside the tab bar's folder chip)
+  opens a folder picker (`/api/workspaces` walks one level at a time,
+  marks git roots, takes a typed or pasted path) and switches to the
+  folder you pick.
 - **Workspace settings…** edits the active workspace: display name, the
   model new tabs spawn with, whether tools are auto-approved
   (`graff acp --yolo`), and whether each tab's agent starts the MCP
@@ -105,6 +106,21 @@ server only validates a root it is handed) with the active one checked:
 `/api/acp` bootstrap, `/api/sessions`, `/api/fs` and `/api/git` all take
 the workspace root (`cwd` / `?root=`) and fall back to the default from
 `GRAFF_CWD` or the repo root.
+
+## Split view and tab names
+
+The **split** button in the tab bar puts two chats side by side: the
+active tab on the left, the next tab (or a fresh one) on the right, each
+with its own transcript, composer and model. Clicking a tab that is
+already in the split swaps the two columns; the × in the right column's
+header closes the split.
+
+A tab is named by the model, not by chopping up the prompt: the first
+message of a tab goes to `graff title` through `/api/title`, which
+answers with a short phrase on a small model without touching the chat's
+own session. The prompt's first words stand in until it answers, and
+stay if it cannot. A session open in a tab shows that name in the
+sidebar too.
 
 ## Browser sidecar (experimental)
 

@@ -214,7 +214,7 @@ function WorkspaceMenu({
         ))}
         <div className="my-1 h-px bg-line" />
         {[
-          { label: "New workspace…", icon: <IconPlusMedium size={16} />, action: onNew },
+          { label: "Open a folder…", icon: <IconPlusMedium size={16} />, action: onNew },
           { label: "Workspace settings…", icon: <IconSettingsGear1 size={16} />, action: onSettings },
         ].map((item) => (
           <button

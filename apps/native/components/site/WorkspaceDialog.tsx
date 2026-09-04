@@ -406,7 +406,7 @@ export default function WorkspaceDialog({ mode, workspace, startPath, models, on
     );
   }
   return (
-    <Frame title="New workspace" onClose={onClose}>
+    <Frame title="Open a folder" onClose={onClose}>
       <FolderPicker startPath={startPath} onPick={onPick} onClose={onClose} />
     </Frame>
   );

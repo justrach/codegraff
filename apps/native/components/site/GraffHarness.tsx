@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
 import FilesPane from "@/components/site/FilesPane";
@@ -127,6 +127,10 @@ export default function GraffHarness() {
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Split view: a second chat beside the active one, with its own scroller.
+  const [splitId, setSplitId] = useState<number | null>(null);
+  const splitScrollRef = useRef<HTMLDivElement>(null);
+  const [splitFollowing, setSplitFollowing] = useState(true);
   const chatsRef = useRef(chats);
   chatsRef.current = chats;
   const [following, setFollowing] = useState(true);
@@ -282,10 +286,10 @@ export default function GraffHarness() {
     setFileRequest({ path: "", n: (fileReqRef.current += 1), changes: true });
   }, []);
 
-  const changeModel = (key: string) => {
-    // New tabs inherit the pick; the active tab respawns its agent with it
+  const changeModel = (key: string, forChat?: number) => {
+    // New tabs inherit the pick; the tab respawns its agent with it
     // (a fresh context — the agent cannot swap models mid-session).
-    const chatId = chatThread.id;
+    const chatId = forChat ?? chatThread.id;
     setModelKey(key);
     setChatModel(chatId, key);
     void requireSession(chatId, true, key)
@@ -314,6 +318,8 @@ export default function GraffHarness() {
     const userId = (msgIdRef.current += 1);
     const asstId = (msgIdRef.current += 1);
     const title = thread?.title ?? (trimmed.length > 30 ? `${trimmed.slice(0, 30).trimEnd()}…` : trimmed);
+    // The first prompt of a tab names it, in the model's words.
+    if (!thread?.title) nameChat(chatId, trimmed, thread?.cwd);
     setChats((current) =>
       current.map((c) =>
         c.id !== chatId
@@ -385,9 +391,27 @@ export default function GraffHarness() {
     }
   };
 
-  const send = async (text: string) => {
+  /** Name the tab from what was asked, in the model's words. The prompt's
+   * first words stand in until this answers (a few seconds), and stay if it
+   * cannot. Only the first message of a tab names it. */
+  const nameChat = (chatId: number, prompt: string, cwd: string | undefined) => {
+    void fetch("/api/title", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt, cwd }),
+    })
+      .then((res) => (res.ok ? (res.json() as Promise<{ title?: string | null }>) : null))
+      .then((body) => {
+        const title = body?.title?.trim();
+        if (!title) return;
+        setChats((current) => current.map((c) => (c.id === chatId ? { ...c, title } : c)));
+      })
+      .catch(() => undefined);
+  };
+
+  const send = async (text: string, forChat?: number) => {
     const trimmed = text.trim();
-    const chatId = chatThread.id;
+    const chatId = forChat ?? chatThread.id;
     if (!trimmed) return;
     if (runningRef.current.has(chatId) || busyIds.has(chatId)) {
       setQueue(chatId, enqueuePrompt(queuesRef.current[chatId] ?? [], trimmed, (queueIdRef.current += 1)));
@@ -443,6 +467,28 @@ export default function GraffHarness() {
 
   const newChat = () => openChat((chatIdRef.current += 1));
 
+  /** Two chats side by side. The split takes the next tab along; when the
+   * active chat is the only one, it opens a fresh chat to sit beside it. */
+  const toggleSplit = () => {
+    if (splitId !== null) {
+      setSplitId(null);
+      return;
+    }
+    const list = chatsRef.current;
+    const here = list.findIndex((c) => c.id === activeId);
+    const other = list[here + 1] ?? list.find((c) => c.id !== activeId);
+    if (other) {
+      setSplitId(other.id);
+      return;
+    }
+    const id = (chatIdRef.current += 1);
+    openChat(id);
+    // openChat makes the new tab active; keep the current one there and put
+    // the new one beside it.
+    setActiveId(activeId);
+    setSplitId(id);
+  };
+
   const dropChat = (id: number) => {
     sessionsRef.current.delete(id);
     sessionNamesRef.current.delete(id);
@@ -460,6 +506,7 @@ export default function GraffHarness() {
 
   const closeChat = (id: number) => {
     dropChat(id);
+    if (splitId === id) setSplitId(null);
     const remaining = chats.filter((c) => c.id !== id);
     if (remaining.length === 0) {
       setChats([]);
@@ -563,11 +610,33 @@ export default function GraffHarness() {
     pinScrollerTail(scrollRef.current, following);
   }, [active, following, lastAssistant?.turn.text, lastAssistant?.turn.reasoning, lastAssistant?.turn.tools.length]);
 
+  // The split column keeps its own place in its transcript.
+  useEffect(() => {
+    const el = splitScrollRef.current;
+    if (!el) return;
+    setSplitFollowing(true);
+    el.scrollTop = el.scrollHeight;
+    const onScroll = () => {
+      const next = isFollowingTail(el);
+      setSplitFollowing((current) => (current === next ? current : next));
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [splitId]);
+
+  const splitLast = splitId === null ? undefined : [...(chats.find((c) => c.id === splitId)?.messages ?? [])].reverse().find((m): m is Extract<Msg, { role: "assistant" }> => m.role === "assistant");
+  useEffect(() => {
+    if (splitId === null) return;
+    pinScrollerTail(splitScrollRef.current, splitFollowing);
+  }, [splitId, splitFollowing, splitLast?.turn.text, splitLast?.turn.reasoning, splitLast?.turn.tools.length]);
+
   // The sidebar is graff's session directory, newest first, bucketed by day.
   const now = Date.now();
+  // A session open in a tab shows the tab's name (the model wrote it from
+  // the first prompt); one only on disk shows whatever graff saved.
   const recents = stored.map((s) => ({
     id: s.name,
-    label: s.title ?? s.name,
+    label: chats.find((c) => c.session === s.name)?.title ?? s.title ?? s.name,
     group: dateGroup(s.updatedMs, now),
     hint: [s.model, relativeTime(s.updatedMs, now)].filter(Boolean).join(" · "),
   }));
@@ -585,6 +654,130 @@ export default function GraffHarness() {
     ? `graff session ${chatThread.session}${sessionId ? ` · ACP ${sessionId}` : ""}${chatCwd ? ` · ${chatCwd}` : ""}\nClick to copy the command that resumes it in a terminal.`
     : undefined;
 
+  /** One chat column: its transcript (or the empty state) and its composer.
+   * A plain function, not a component, so the split view can render two of
+   * them without React remounting either on every parent render. */
+  const columnBody = (thread: Chat, scroller: RefObject<HTMLDivElement | null>, isFollowing: boolean) => {
+    const hasMessages = thread.messages.length > 0;
+    const threadBusy = busyIds.has(thread.id);
+    const threadModel = thread.model ?? model ?? undefined;
+    const threadQueued = queues[thread.id] ?? [];
+    const threadPins = (pinsByChat[thread.id] ?? []).length;
+    const threadHistory = mergeHistory(history, thread.messages.flatMap((m) => (m.role === "user" ? [m.text] : [])));
+    return (
+      <>
+
+            {hasMessages ? (
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" style={{ overflowAnchor: "none" }}>
+                  <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
+                    {thread.messages.map((message, index) =>
+                      message.role === "user" ? (
+                        <UserBubble key={message.id} text={message.text} />
+                      ) : (
+                        <AssistantBody
+                          key={message.id}
+                          turn={message.turn}
+                          onOpenPath={openPath}
+                          onReview={openChanges}
+                          scroller={scrollRef}
+                          following={isFollowing && index === thread.messages.length - 1}
+                        />
+                      ),
+                    )}
+                  </div>
+                </div>
+                <div className="shrink-0 bg-page px-4 pt-3 pb-6 sm:px-8">
+                  <div className="mx-auto max-w-[720px]">
+                    {threadPins > 0 && (
+                      <div className="mb-2 flex items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline">
+                        <span className="shrink-0 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Pinned</span>
+                        <span className="min-w-0 flex-1 truncate text-ink">
+                          {threadPins} element{threadPins === 1 ? "" : "s"} in the browser go with your next message
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveId(thread.id);
+                            setFilesOpen(false);
+                            setBrowserOpen(true);
+                          }}
+                          className="shrink-0 rounded px-1.5 text-[11.5px] font-medium text-ink-2 hover:bg-hover hover:text-ink"
+                        >
+                          Show
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Clear pins"
+                          onClick={() => setPins(thread.id, [])}
+                          className="flex size-5 shrink-0 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-ink"
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+                            <path d="M18 6L6 18M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
+                    {threadQueued.length > 0 && (
+                      <ul className="mb-2 flex flex-col gap-1">
+                        {threadQueued.map((item) => (
+                          <li
+                            key={item.id}
+                            className="flex items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline"
+                          >
+                            <span className="shrink-0 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Queued</span>
+                            <span className="min-w-0 flex-1 truncate text-ink">{item.text}</span>
+                            <button
+                              type="button"
+                              aria-label="Remove from queue"
+                              onClick={() => setQueue(thread.id, dropQueuedPrompt(queuesRef.current[thread.id] ?? [], item.id))}
+                              className="flex size-5 shrink-0 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-ink"
+                            >
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+                                <path d="M18 6L6 18M6 6l12 12" />
+                              </svg>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <PromptBar
+                      demo={false}
+                      tall
+                      placeholder={threadBusy ? "Queue a follow-up…" : "Follow up"}
+                      models={models}
+                      modelKey={threadModel}
+                      onModelChange={(key: string) => changeModel(key, thread.id)}
+                      onSend={(text: string) => void send(text, thread.id)}
+                      history={threadHistory}
+                      busy={threadBusy}
+                      onStop={() => {
+                        const live = sessionsRef.current.get(thread.id);
+                        if (live) void cancel(handleOf(thread.id), live);
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <EmptyState
+                  onSend={(text: string) => void send(text, thread.id)}
+                  health={health}
+                  history={threadHistory}
+                  cwd={thread.cwd}
+                  offset={offset}
+                  shuffle={() => setOffset((current) => (current + 3) % STARTER_PROMPTS.length)}
+                  models={models}
+                  modelKey={threadModel}
+                  onModelChange={(key: string) => changeModel(key, thread.id)}
+                />
+              </div>
+            )}
+      </>
+    );
+  };
+
   const tabBar = (
     <div className="flex h-11 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {chats.map((c) => (
@@ -601,7 +794,16 @@ export default function GraffHarness() {
               aria-label="Working"
             />
           )}
-          <button type="button" aria-pressed={c.id === activeId} onClick={() => setActiveId(c.id)} title={c.title ?? "New chat"} className="min-w-0 flex-1 text-left">
+          <button
+            type="button"
+            aria-pressed={c.id === activeId}
+            onClick={() => {
+              if (splitId === c.id) setSplitId(activeId);
+              setActiveId(c.id);
+            }}
+            title={c.title ?? "New chat"}
+            className="min-w-0 flex-1 text-left"
+          >
             <span className="block truncate">{c.title ?? "New chat"}</span>
           </button>
           <button
@@ -629,18 +831,43 @@ export default function GraffHarness() {
       <div className="ml-auto flex items-center gap-2 pr-1">
         <button
           type="button"
+          aria-pressed={splitId !== null}
+          onClick={toggleSplit}
+          title={splitId !== null ? "Close the split view" : "Split the view: two chats side by side"}
+          className={`flex size-7 items-center justify-center rounded-[7px] transition-colors duration-100 ${
+            splitId !== null ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+          }`}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M12 4v16" />
+          </svg>
+        </button>
+        <button
+          type="button"
           aria-pressed={filesOpen}
           onClick={() => {
             setBrowserOpen(false);
             setFilesOpen((open) => !open);
           }}
-          title={chatCwd ?? "Workspace files"}
-          className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
+          title={`${chatCwd ?? "Workspace"}\nShow this chat's files`}
+          className={`flex h-7 items-center gap-1.5 rounded-l-[7px] pl-2 pr-1.5 text-[12px] font-medium transition-colors duration-100 ${
             filesOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
           }`}
         >
           <IconFolder size={14} />
           <span className="max-w-40 truncate font-mono text-[11.5px]">{workspaceName}</span>
+        </button>
+        <button
+          type="button"
+          aria-label="Open a folder"
+          onClick={() => setDialog({ mode: "new" })}
+          title="Open another folder to work in"
+          className="-ml-2 flex h-7 items-center rounded-r-[7px] pl-0.5 pr-1.5 text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M6 9l6 6 6-6" />
+          </svg>
         </button>
         <button
           type="button"
@@ -666,6 +893,10 @@ export default function GraffHarness() {
   );
 
   const paneTodos = lastAssistant?.turn.todos ?? [];
+  // The right column, when the view is split; a chat that was closed or
+  // became the active one leaves the split rather than showing twice.
+  const splitThread = splitId !== null && splitId !== chatThread.id ? (chats.find((c) => c.id === splitId) ?? null) : null;
+  const columns = splitThread ? [chatThread, splitThread] : [chatThread];
 
   return (
     <main className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
@@ -694,115 +925,45 @@ export default function GraffHarness() {
 
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
         <div className="flex min-h-0 flex-1 gap-2.5">
-          <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page">
-            {tabBar}
-            {active ? (
-              <div className="flex min-h-0 flex-1 flex-col">
-                <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" style={{ overflowAnchor: "none" }}>
-                  <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
-                    {chatThread.messages.map((message, index) =>
-                      message.role === "user" ? (
-                        <UserBubble key={message.id} text={message.text} />
-                      ) : (
-                        <AssistantBody
-                          key={message.id}
-                          turn={message.turn}
-                          onOpenPath={openPath}
-                          onReview={openChanges}
-                          scroller={scrollRef}
-                          following={following && index === chatThread.messages.length - 1}
-                        />
-                      ),
-                    )}
-                  </div>
+          {columns.map((thread, slot) => (
+            <section
+              key={thread.id}
+              className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page"
+            >
+              {slot === 0 ? (
+                tabBar
+              ) : (
+                <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-3">
+                  {busyIds.has(thread.id) && (
+                    <span className="size-1.5 shrink-0 animate-pulse rounded-full" style={{ background: "var(--accent)" }} aria-label="Working" />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSplitId(activeId);
+                      setActiveId(thread.id);
+                    }}
+                    title="Make this the main chat"
+                    className="min-w-0 flex-1 truncate text-left text-[12.5px] font-medium text-ink"
+                  >
+                    {thread.title ?? "New chat"}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Close the split"
+                    title="Close the split"
+                    onClick={() => setSplitId(null)}
+                    className="flex size-7 shrink-0 items-center justify-center rounded-[6px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+                      <path d="M18 6L6 18M6 6l12 12" />
+                    </svg>
+                  </button>
                 </div>
-                <div className="shrink-0 bg-page px-4 pt-3 pb-6 sm:px-8">
-                  <div className="mx-auto max-w-[720px]">
-                    {pinCount > 0 && (
-                      <div className="mb-2 flex items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline">
-                        <span className="shrink-0 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Pinned</span>
-                        <span className="min-w-0 flex-1 truncate text-ink">
-                          {pinCount} element{pinCount === 1 ? "" : "s"} in the browser go with your next message
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setFilesOpen(false);
-                            setBrowserOpen(true);
-                          }}
-                          className="shrink-0 rounded px-1.5 text-[11.5px] font-medium text-ink-2 hover:bg-hover hover:text-ink"
-                        >
-                          Show
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Clear pins"
-                          onClick={() => setPins(chatThread.id, [])}
-                          className="flex size-5 shrink-0 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-ink"
-                        >
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
-                            <path d="M18 6L6 18M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
-                    )}
-                    {queued.length > 0 && (
-                      <ul className="mb-2 flex flex-col gap-1">
-                        {queued.map((item) => (
-                          <li
-                            key={item.id}
-                            className="flex items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline"
-                          >
-                            <span className="shrink-0 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Queued</span>
-                            <span className="min-w-0 flex-1 truncate text-ink">{item.text}</span>
-                            <button
-                              type="button"
-                              aria-label="Remove from queue"
-                              onClick={() => setQueue(chatThread.id, dropQueuedPrompt(queuesRef.current[chatThread.id] ?? [], item.id))}
-                              className="flex size-5 shrink-0 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-ink"
-                            >
-                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
-                                <path d="M18 6L6 18M6 6l12 12" />
-                              </svg>
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <PromptBar
-                      demo={false}
-                      tall
-                      placeholder={busy ? "Queue a follow-up…" : "Follow up"}
-                      models={models}
-                      modelKey={chatModel}
-                      onModelChange={changeModel}
-                      onSend={send}
-                      history={composerHistory}
-                      busy={busy}
-                      onStop={() => {
-                        const live = sessionsRef.current.get(chatThread.id);
-                        if (live) void cancel(handleOf(chatThread.id), live);
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                <EmptyState
-                  onSend={send}
-                  health={health}
-                  history={composerHistory}
-                  cwd={chatThread.cwd}
-                  offset={offset}
-                  shuffle={() => setOffset((current) => (current + 3) % STARTER_PROMPTS.length)}
-                  models={models}
-                  modelKey={chatModel}
-                  onModelChange={changeModel}
-                />
-              </div>
-            )}
-          </section>
+              )}
+              {columnBody(thread, slot === 0 ? scrollRef : splitScrollRef, slot === 0 ? following : splitFollowing)}
+            </section>
+          ))}
 
           {filesOpen && <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />}
 
