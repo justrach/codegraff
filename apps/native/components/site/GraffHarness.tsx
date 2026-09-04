@@ -205,6 +205,24 @@ export default function GraffHarness() {
     }
   };
 
+  // The picker falls back to a built-in list until the agent answers with
+  // what it actually has. A window that missed that answer — its agent was
+  // not up yet, or the page outlived a restart — would show the fallback
+  // for good, so ask again whenever the window comes back to the front.
+  const catalogRef = useRef({ adopt: (_: number) => {}, activeId: 1 });
+  useEffect(() => {
+    const again = () => {
+      if (document.visibilityState === "hidden") return;
+      catalogRef.current.adopt(catalogRef.current.activeId);
+    };
+    window.addEventListener("focus", again);
+    document.addEventListener("visibilitychange", again);
+    return () => {
+      window.removeEventListener("focus", again);
+      document.removeEventListener("visibilitychange", again);
+    };
+  }, []);
+
   const requireSession = async (chatId: number, reset = false, key?: string): Promise<string> => {
     const live = sessionsRef.current.get(chatId);
     if (!reset && live) return live;
@@ -1014,6 +1032,8 @@ export default function GraffHarness() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  catalogRef.current = { adopt: (id: number) => void adoptCatalog(id).catch(() => undefined), activeId };
 
   const paneTodos = lastAssistant?.turn.todos ?? [];
   // The active chat is the first column; the panes follow it. A chat that
