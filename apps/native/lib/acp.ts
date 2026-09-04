@@ -2,6 +2,10 @@
 
 export type AcpContent = { type: "text"; text: string };
 
+/** One entry of the agent's `available_commands_update`: the slash commands
+ * this build actually services, named without the leading slash. */
+export type AcpCommand = { name: string; description: string; input?: { hint?: string } | null };
+
 export type AcpToolKind = "read" | "edit" | "delete" | "move" | "search" | "execute" | "think" | "fetch" | "other";
 
 export type AcpToolStatus = "pending" | "in_progress" | "completed" | "failed";

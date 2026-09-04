@@ -1,4 +1,4 @@
-import { parseRpcLine, type AcpUpdate, type JsonRpcLine } from "./acp";
+import { parseRpcLine, type AcpCommand, type AcpUpdate, type JsonRpcLine } from "./acp";
 
 const BASE = "/api/acp";
 
@@ -89,11 +89,14 @@ export type SessionOpts = {
 
 /** The tab's agent, spawned on first use and reused while it still matches
  * the options; a changed model, workspace or approval mode respawns it. */
-export async function ensureSession(chat: ChatHandle, opts: SessionOpts = {}): Promise<string> {
+export async function ensureSession(
+  chat: ChatHandle,
+  opts: SessionOpts = {},
+): Promise<{ sessionId: string; commands: AcpCommand[] }> {
   const res = await rpc(chat, "bootstrap", opts);
-  const body = (await res.json()) as { sessionId?: string; error?: string };
+  const body = (await res.json()) as { sessionId?: string; error?: string; commands?: AcpCommand[] };
   if (!body.sessionId) throw new Error(body.error ?? "ACP session/new failed");
-  return body.sessionId;
+  return { sessionId: body.sessionId, commands: body.commands ?? [] };
 }
 
 export async function* prompt(

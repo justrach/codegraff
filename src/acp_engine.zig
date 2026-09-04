@@ -154,7 +154,7 @@ test "in-process handleLine speaks the same initialize / new / prompt envelopes"
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
     const a = state.allocator();
-    var buf: [2048]u8 = undefined;
+    var buf: [16384]u8 = undefined; // session/new advertises the whole command catalog
     var w: Io.Writer = .fixed(&buf);
     var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .seed = 0xabc };
 

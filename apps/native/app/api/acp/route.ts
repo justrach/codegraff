@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { NextRequest } from "next/server";
+import type { AcpCommand } from "@/lib/acp";
 import { defaultRoot, resolveRoot } from "@/lib/server-root";
 
 export const runtime = "nodejs";
@@ -24,6 +25,8 @@ type Slot = {
   yolo: boolean;
   /** Whether the configured MCP servers were started with it. */
   mcp: boolean;
+  /** What the agent said it services, from `available_commands_update`. */
+  commands: AcpCommand[];
 };
 
 type SpawnOpts = { model?: string; resume?: string; cwd: string; yolo: boolean; mcp: boolean };
@@ -123,6 +126,7 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
     cwd: opts.cwd,
     yolo: opts.yolo,
     mcp: opts.mcp,
+    commands: [],
   };
   child.on("exit", () => {
     if (slots.get(chat) === slot) slots.delete(chat);
@@ -159,18 +163,50 @@ function readLine(slot: Slot, timeoutMs: number): Promise<string> {
   });
 }
 
+/** The agent advertises its command set once, unprompted, right after
+ * session/new — so it has to be picked off the stream rather than asked for. */
+function noteCommands(slot: Slot, msg: { params?: unknown }): void {
+  const update = (msg.params as { update?: { sessionUpdate?: string; availableCommands?: AcpCommand[] } } | undefined)
+    ?.update;
+  if (update?.sessionUpdate !== "available_commands_update") return;
+  if (Array.isArray(update.availableCommands)) slot.commands = update.availableCommands;
+}
+
+/** The advertisement follows the session/new result on the same stream, so
+ * the reply to that call returns before it has been read. Wait briefly for
+ * it rather than leaving the menu empty until the first prompt. */
+async function drainCommands(slot: Slot): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (slot.commands.length === 0 && Date.now() < deadline) {
+    let line: string;
+    try {
+      line = await readLine(slot, Math.max(50, deadline - Date.now()));
+    } catch {
+      return;
+    }
+    try {
+      noteCommands(slot, JSON.parse(line) as { params?: unknown });
+    } catch {
+      // not JSON: a diagnostic line, keep waiting
+    }
+  }
+}
+
 async function rpc(slot: Slot, method: string, params?: unknown): Promise<unknown> {
   const id = slot.nextId++;
   writeLine(slot, { jsonrpc: "2.0", id, method, params });
   for (;;) {
     const line = await readLine(slot, 30_000);
-    let msg: { id?: unknown; result?: unknown; error?: { message?: string }; method?: string };
+    let msg: { id?: unknown; result?: unknown; error?: { message?: string }; method?: string; params?: unknown };
     try {
       msg = JSON.parse(line) as typeof msg;
     } catch {
       continue;
     }
-    if (msg.method) continue;
+    if (msg.method) {
+      noteCommands(slot, msg);
+      continue;
+    }
     if (msg.id !== id) continue;
     if (msg.error) throw new Error(msg.error.message ?? "ACP error");
     return msg.result;
@@ -204,6 +240,7 @@ async function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
   };
   if (!created?.sessionId) throw new Error("session/new returned no sessionId");
   slot.sessionId = created.sessionId;
+  await drainCommands(slot);
   return slot;
 }
 
@@ -261,7 +298,7 @@ export async function POST(req: NextRequest) {
         yolo,
         mcp,
       });
-      return Response.json({ sessionId: slot.sessionId, cwd: slot.cwd });
+      return Response.json({ sessionId: slot.sessionId, cwd: slot.cwd, commands: slot.commands });
     }
     const slot = await bootstrap(chat, { model });
     if (method === "session/cancel") {

@@ -25,7 +25,7 @@ import {
   prompt,
   type Health,
 } from "@/lib/acp-client";
-import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
+import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AcpCommand, type AssistantTurn } from "@/lib/acp";
 import { isFollowingTail, pinScrollerTail } from "@/lib/follow-scroll";
 import { dropQueuedPrompt, enqueuePrompt, shiftQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
 import { dateGroup, listSessionsPage, loadSession, relativeTime, removeSession, toSidebarRecent, type StoredSession } from "@/lib/sessions";
@@ -87,6 +87,8 @@ export default function GraffHarness() {
   // chat id → graff session name (the `--resume` target / sidebar identity).
   const sessionNamesRef = useRef(new Map<number, string>());
   const [sessionIds, setSessionIds] = useState<Record<number, string>>({});
+  /** Per tab, the slash commands its agent advertised at session/new. */
+  const [commands, setCommands] = useState<Record<number, AcpCommand[]>>({});
   const [stored, setStored] = useState<StoredSession[]>([]);
   const [storedTotal, setStoredTotal] = useState(0);
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set());
@@ -247,7 +249,7 @@ export default function GraffHarness() {
     const cwd = chat?.cwd ?? activePathRef.current ?? undefined;
     const ws = findWorkspace(workspacesRef.current, cwd);
     const spawnModel = key ?? chat?.model ?? ws?.model ?? model ?? undefined;
-    const id = await ensureSession(handleOf(chatId), {
+    const { sessionId: id, commands } = await ensureSession(handleOf(chatId), {
       model: spawnModel,
       reset,
       resume: sessionNamesRef.current.get(chatId),
@@ -257,6 +259,9 @@ export default function GraffHarness() {
     });
     sessionsRef.current.set(chatId, id);
     setSessionIds((current) => ({ ...current, [chatId]: id }));
+    // The command menu is whatever this agent says it services — a build
+    // with different commands must not be described by a stale list here.
+    if (commands.length > 0) setCommands((current) => ({ ...current, [chatId]: commands }));
     setHealth({ ok: true });
     return id;
   };
@@ -867,6 +872,7 @@ export default function GraffHarness() {
                       tall
                       placeholder={threadBusy ? "Queue a follow-up…" : "Follow up"}
                       models={models}
+                      commands={commands[thread.id] ?? []}
                       modelKey={threadModel}
                       onModelChange={(key: string) => changeModel(key, thread.id)}
                       onSend={(text: string) => void send(text, thread.id)}

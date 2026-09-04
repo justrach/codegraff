@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createShader, playSweep, accentChain, ACCENTS } from "glimm";
+import type { AcpCommand } from "@/lib/acp";
 import { entryAt, historyKeyIntent, stepHistory } from "@/lib/prompt-history";
 
 /* The built-in "prism" palette is only cyan→indigo→magenta, so a sweep
@@ -89,12 +90,16 @@ const SOURCES: Source[] = [
   { key: "gmail", name: "Gmail", desc: "Read and manage Gmail", brand: "gmail", connect: true },
 ];
 
-const COMMANDS = [
-  { key: "compare", name: "/compare", desc: "Flavor vs. last summer" },
-  { key: "churn-plan", name: "/churn-plan", desc: "Draft a churn schedule" },
-  { key: "restock", name: "/restock", desc: "Build a reorder list" },
-  { key: "draft-email", name: "/draft-email", desc: "Write a supplier email" },
-  { key: "summarize", name: "/summarize", desc: "Digest the thread so far" },
+/* The self-running walkthrough types "/" and glides through rows, so it
+ * needs something to show. A live surface is handed the agent's real set and
+ * never falls back to these — an invented command must not reach a console
+ * where someone could run it. */
+const DEMO_COMMANDS: AcpCommand[] = [
+  { name: "compare", description: "Flavor vs. last summer" },
+  { name: "churn-plan", description: "Draft a churn schedule" },
+  { name: "restock", description: "Build a reorder list" },
+  { name: "draft-email", description: "Write a supplier email" },
+  { name: "summarize", description: "Digest the thread so far" },
 ];
 
 const MODELS = [
@@ -153,6 +158,7 @@ export default function PromptBar({
   placeholder,
   onSend,
   models,
+  commands,
   modelKey,
   onModelChange,
   disabled,
@@ -168,6 +174,9 @@ export default function PromptBar({
   placeholder?: string;
   onSend?: (text: string) => void;
   models?: PromptModel[];
+  /** The slash commands the agent advertised. Empty until it answers —
+   * an empty menu beats inventing commands this build may not service. */
+  commands?: AcpCommand[];
   modelKey?: string;
   onModelChange?: (key: string) => void;
   disabled?: boolean;
@@ -235,6 +244,12 @@ export default function PromptBar({
     if (auto && event.target === inputRef.current) setDraft("");
   };
 
+  /* ACP names commands bare; the menu shows and inserts the typed form. */
+  const slashRows = useMemo(() => {
+    const live = commands ?? (demo ? DEMO_COMMANDS : []);
+    return live.map((c) => ({ key: c.name, name: `/${c.name}`, desc: c.description }));
+  }, [commands, demo]);
+
   const token = dismissed ? null : parseToken(draft);
   const menu: "at" | "slash" | null = plusOpen ? "at" : token?.kind ?? null;
   const query = plusOpen ? "" : token?.query ?? "";
@@ -243,7 +258,7 @@ export default function PromptBar({
     menu === "at"
       ? SOURCES.filter((s) => s.name.toLowerCase().includes(query))
       : menu === "slash"
-        ? COMMANDS.filter((c) => c.name.slice(1).startsWith(query))
+        ? slashRows.filter((c) => c.name.slice(1).startsWith(query))
         : [];
 
   useEffect(() => {
