@@ -21,6 +21,15 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.286
+    \\  • native harness gains a browser pane: a Chrome tab per chat, click an element to pin it for the agent
+    \\  • split view — up to four chats side by side, each with its own model and folder (⌘D)
+    \\  • tab names are written by the model from the first prompt
+    \\  • saved chats can be archived or deleted from the sidebar
+    \\  • ⌘T/⌘W/⇧⌘T open, close and reopen a chat with its session resumed
+    \\  • picking a workspace moves the tab in front of you when it is empty
+    \\  • the desktop shell ships as a signed, notarized macOS app
+    \\
     \\0.0.285
     \\  • native transcript stays put when you scroll up mid-stream; return to the tail to follow again (#724)
     \\  • follow-ups typed while a turn is running queue and send when it ends
