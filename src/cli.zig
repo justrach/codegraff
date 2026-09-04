@@ -21,6 +21,15 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.287
+    \\  • the macOS app updates itself — verified signature, team and notarization before it installs
+    \\  • native app gains a searchable, paginated conversation library (#723)
+    \\  • one paste stays one prompt even when it spans several terminal reads (#737)
+    \\  • rendered bare URLs no longer carry trailing ** into the click target (#729)
+    \\  • workspace switch resolves paths without linking libc (#721)
+    \\  • Codex websocket transport errors retire the socket (#717)
+    \\  • outbound writes are sanitized by default; compaction can no longer invent constraints (#739, #738)
+    \\
     \\0.0.286
     \\  • native harness gains a browser pane: a Chrome tab per chat, click an element to pin it for the agent
     \\  • split view — up to four chats side by side, each with its own model and folder (⌘D)

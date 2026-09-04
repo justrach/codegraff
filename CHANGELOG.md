@@ -10,6 +10,36 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.0.287 (2026-09-04)
+
+- The macOS desktop app updates itself. It compares the newest release
+  tag with its own stamped version, and installs only after the download
+  verifies, carries the same Developer ID team as the running app, and is
+  accepted by Gatekeeper as notarized. `GRAFF_NATIVE_NO_UPDATE` turns the
+  check off. Releases carry the app as `Codegraff-macos.zip`.
+- Native app: a paginated conversation library, searchable and scoped to
+  the workspace, alongside the existing sidebar list (#723).
+- `#737`: one paste stays one prompt. A paste larger than a terminal read
+  arrives in several reads, and a chunk ending at a line boundary was
+  read as Enter, sending half of it and steering the live turn with the
+  fragments.
+- `#729`: a rendered bare URL no longer carries trailing emphasis markers
+  into its click target.
+- `#721`: the workspace switch resolves paths through an opened directory
+  rather than libc, which this binary does not link.
+- `#717`: a Codex websocket transport error retires the socket instead of
+  carrying a half-dead connection into the next request.
+- `#739`: outbound writes are sanitized by default. Anything published off
+  the machine carries what the task needs, not the local context a debug
+  session collected, and a detail that identifies the user is asked about
+  before it is published.
+- `#738`: a compaction summary may no longer claim a constraint was
+  recorded — recorded constraints live in a ledger injected separately, so
+  an asserted one is indistinguishable from an invented one. A constraint
+  recorded mid-turn now says it takes effect immediately.
+- README leads with the desktop app and documents how the project measures
+  itself.
+
 ## v0.0.286 (2026-09-04)
 
 - Native harness gains a browser pane: a headless Chrome tab per chat,
