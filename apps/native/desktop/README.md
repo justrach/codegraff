@@ -78,7 +78,9 @@ relaunches.
 
 The release must carry the app as a zip asset whose name starts with
 `Codegraff` and ends with `.zip` — what `NOTARIZE=1` writes to
-`zig-out/macos/Codegraff.zip`. Without such an asset the check finds nothing
+`zig-out/macos/Codegraff.zip`. Releases publish it as
+`Codegraff-macos.zip`, uploaded from a Mac: the tag-triggered workflow
+cross-compiles on Linux and can neither sign nor notarize. Without such an asset the check finds nothing
 and does nothing.
 
 Set `GRAFF_NATIVE_NO_UPDATE=1` to skip the check entirely, which is what you
