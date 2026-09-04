@@ -121,9 +121,8 @@ const ApiRelease = struct {
 fn latest(gpa: Allocator, io: Io, arena: Allocator) ?Release {
     const url = "https://api.github.com/repos/" ++ repo ++ "/releases/latest";
     const got = run(gpa, io, &.{
-        "curl", "-fsSL", "--max-time", net_timeout_s,
-        "-H",   "Accept: application/vnd.github+json",
-        url,
+        "curl", "-fsSL",                               "--max-time", net_timeout_s,
+        "-H",   "Accept: application/vnd.github+json", url,
     }) orelse return null;
     defer gpa.free(got.stdout);
     defer gpa.free(got.stderr);
