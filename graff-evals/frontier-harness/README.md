@@ -47,7 +47,7 @@ Both graff runs pass only `katex`; the other 8 `apply_failed` or genuine fail.
 | `fh_exo.py` | exo runner. |
 | `grade_swe.py` | `python3 grade_swe.py [grok-4.6\|kimi-k3]` — real `datacurve-ai/deep-swe` grader on a patch (needs `/tmp/deep-swe`, `/tmp/frontier-harness-eval`). |
 | `plot_tb21.py` | the chart (`tb21-graff-grok46.png`). |
-| `tb21-graff-grok46.png` | chart with palettes from zigrepper (`globals.css`). |
+| `tb21-graff-grok46.png` | chart, using the project's own palette. |
 | `results.jsonl` / `exo-results.jsonl` | grok / exo TB-21 rows. |
 | `kimi-results.jsonl` | kimi-k3 TB-21 rows. |
 | `swe-results.jsonl` / `swe-kimi-results.jsonl` | grok / kimi DeepSWE rows. |
