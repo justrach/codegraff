@@ -2,6 +2,13 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   images: { unoptimized: true },
+  // The desktop app ships this interface inside its bundle, so the build has
+  // to produce a server that runs without the repository or a node_modules
+  // tree beside it.
+  output: "standalone",
+  // Without this the tracer walks up to the repository root and copies the
+  // Zig build outputs into the payload.
+  outputFileTracingRoot: __dirname,
   // The app is opened at 127.0.0.1 (the desktop shell points there), which
   // Next 16 treats as cross-origin for its dev resources unless it is
   // listed here; without it hot reloading is refused.

@@ -3,6 +3,12 @@
 #
 #   apps/native/desktop/build-app.sh            # build + sign
 #   NOTARIZE=1 apps/native/desktop/build-app.sh # …and send it to Apple
+#   SKIP_UI=1 apps/native/desktop/build-app.sh  # window only, for shell work
+#
+# The app carries the interface it shows: a standalone build of it, the JS
+# runtime that runs it and the harness it drives, so a downloaded app works
+# with nothing else installed. That is what makes it ~150 MB; SKIP_UI is
+# the fast path for iterating on the window itself.
 #
 # macOS only: the shell is AppKit + WKWebView, and everything below
 # (codesign, iconutil, notarytool) is part of Xcode's command line tools.
@@ -40,6 +46,43 @@ iconutil -c icns "$iconset" -o "$app/Contents/Resources/icon.icns"
 
 cp "$here/Info.plist" "$app/Contents/Info.plist"
 
+if [[ "${SKIP_UI:-0}" != "1" ]]; then
+  ui="$root/apps/native"
+
+  echo "▸ building the interface"
+  # `output: standalone` in next.config.ts emits a server that runs with no
+  # node_modules tree beside it; the static assets are not traced into it
+  # and have to be copied in, or every page loads without its JS and CSS.
+  [[ -d "$ui/node_modules" ]] || npm --prefix "$ui" install
+  ( cd "$ui" && npx next build )
+  rm -rf "$app/Contents/Resources/ui"
+  ditto "$ui/.next/standalone" "$app/Contents/Resources/ui"
+  ditto "$ui/.next/static" "$app/Contents/Resources/ui/.next/static"
+  if [[ -d "$ui/public" ]]; then
+    ditto "$ui/public" "$app/Contents/Resources/ui/public"
+  fi
+  # 31 MB of image-resizing native code that this app never runs: images
+  # are `unoptimized` in next.config.ts, so nothing ever loads it. Dropping
+  # it also leaves the payload with no native code at all to sign.
+  rm -rf "$app/Contents/Resources/ui/node_modules/@img"
+
+  echo "▸ the harness"
+  # `graff` rather than the default step: the app needs the CLI, not the
+  # REPL, the TUI and the wasm target as well.
+  ( cd "$root" && zig build graff -Doptimize=ReleaseFast )
+  cp "$root/zig-out/bin/graff" "$app/Contents/Resources/graff"
+
+  echo "▸ the JS runtime"
+  # Resolved, then copied as a real file: `command -v` can hand back a
+  # symlink into a version manager's store, which would not survive being
+  # signed and shipped to someone else's machine.
+  runtime="${BUN_BIN:-$(command -v bun || true)}"
+  [[ -n "$runtime" ]] || { echo "no bun found — install it or set BUN_BIN (the app needs a JS runtime inside it)"; exit 1; }
+  cp "$(readlink -f "$runtime" 2>/dev/null || echo "$runtime")" "$app/Contents/Resources/bun"
+  chmod +x "$app/Contents/Resources/bun"
+  echo "▸ bundled bun $("$app/Contents/Resources/bun" --version)"
+fi
+
 # The app compares this against the newest release tag to decide whether it
 # is out of date, so a build that does not know its own version can never
 # update itself. Take it from the argument, else the current tag.
@@ -55,6 +98,31 @@ fi
 
 echo "▸ signing as: $identity"
 # Hardened runtime and a secure timestamp are what notarization requires.
+#
+# Inside out: the outer signature seals the bundle, so anything signed
+# afterwards invalidates it. The two nested executables get signed first,
+# each with its own hardened runtime — `--deep` is deprecated for signing
+# (it is still the right flag for *verifying*) and would not give them one.
+if [[ -f "$app/Contents/Resources/bun" ]]; then
+  # The JS runtime needs the JIT entitlements or the hardened runtime kills
+  # it as soon as it compiles anything.
+  codesign --force --options runtime --timestamp \
+    --entitlements "$here/runtime.entitlements" \
+    --sign "$identity" "$app/Contents/Resources/bun"
+fi
+if [[ -f "$app/Contents/Resources/graff" ]]; then
+  codesign --force --options runtime --timestamp --sign "$identity" "$app/Contents/Resources/graff"
+fi
+# Anything a dependency dragged in. The payload carries no native code
+# today, but one unsigned Mach-O file anywhere inside the bundle fails
+# notarization, and that is a bad thing to learn from Apple rather than here.
+if [[ -d "$app/Contents/Resources/ui" ]]; then
+  while IFS= read -r -d '' macho; do
+    echo "  signing $(basename "$macho")"
+    codesign --force --options runtime --timestamp --sign "$identity" "$macho"
+  done < <(/usr/bin/find "$app/Contents/Resources/ui" -type f \
+    \( -name '*.node' -o -name '*.dylib' -o -name '*.so' \) -print0)
+fi
 codesign --force --options runtime --timestamp --sign "$identity" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 
