@@ -48,6 +48,46 @@ from the App Store, so it is the wrong question to ask here.
 Override `CODESIGN_IDENTITY` and `NOTARY_PROFILE` to sign as someone else.
 The profile is made once with `xcrun notarytool store-credentials`.
 
+The build stamps the app's version into its `Info.plist`, from `VERSION` if
+you pass one and otherwise from the current git tag. That value is the only
+thing the app knows about itself, so a build made with no tag in sight will
+never offer an update.
+
+## Updating itself
+
+The app ships outside the App Store, so nothing updates it for us. Shortly
+after the window opens, on its own thread, it asks GitHub for the newest
+release and compares that tag with its stamped version — by number, so
+0.0.10 is correctly newer than 0.0.9. Only when the release is newer does it
+download anything, and only after all of these pass does it install:
+
+- `codesign --verify --deep --strict` on the downloaded bundle,
+- the download's Team ID equals the running app's own Team ID, both read
+  from `codesign -dv` — an attacker can produce a validly signed app, but
+  not one signed by this project's team, and nothing here hardcodes a team,
+- `spctl -a -t install` accepts it, which is what actually proves
+  notarization. `-t exec` is the wrong question: it rejects every notarized
+  app that did not come from the App Store.
+
+Any failure abandons the update, leaves the installed app untouched, and
+says why in the log. Only then does it ask, once, with a dialog offering
+"Update and restart" or "Later"; there is deliberately no dialog for "you
+are up to date" or for a failed check. Accepting replaces the bundle with
+`ditto` (which keeps the signature intact, unlike a plain copy) and
+relaunches.
+
+The release must carry the app as a zip asset whose name starts with
+`Codegraff` and ends with `.zip` — what `NOTARIZE=1` writes to
+`zig-out/macos/Codegraff.zip`. Without such an asset the check finds nothing
+and does nothing.
+
+Set `GRAFF_NATIVE_NO_UPDATE=1` to skip the check entirely, which is what you
+want on a machine that is mid-debug and should not have the app swapped
+underneath it. A loose binary has no bundle and no version, so it never
+updates itself either.
+
+The version logic has tests: `zig test apps/native/desktop/update.zig`.
+
 Launched from Finder an app inherits no environment, so with
 `GRAFF_NATIVE_URL` unset the shell looks for a dev server on 3777 and then
 3000, and falls back to the first so the window still opens.

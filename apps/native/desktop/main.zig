@@ -10,6 +10,7 @@
 //!   GRAFF_NATIVE_URL=http://127.0.0.1:3000 ./zig-out/bin/graff-native
 const std = @import("std");
 const builtin = @import("builtin");
+const update = @import("update.zig");
 
 /// The Dock and ⌘-Tab icon. A bare binary has no bundle to read an icon
 /// from, so the image travels inside it and is handed to NSApplication at
@@ -45,8 +46,11 @@ pub fn main(init: std.process.Init) !void {
         }
         break :blk default_urls[0];
     };
+    // Set this to pin a build: a machine mid-debug should not have the app
+    // swapped underneath it because a release happened to land.
+    const updates = init.environ_map.get("GRAFF_NATIVE_NO_UPDATE") == null;
     if (comptime builtin.os.tag == .macos) {
-        try runMac(url);
+        try runMac(url, updates);
     } else {
         openLinux(url);
     }
@@ -143,7 +147,27 @@ fn setAppIcon(app: Id) void {
     send1v(app, sel("setApplicationIconImage:"), image);
 }
 
-fn runMac(url: []const u8) !void {
+/// This app's own bundle directory, as NSBundle reports it. For a loose
+/// binary that is just the directory it sits in, which has no Info.plist —
+/// the updater treats that as "no version" and leaves it alone.
+fn bundlePath(gpa: std.mem.Allocator) ?[]const u8 {
+    const bundle = send(cls("NSBundle"), sel("mainBundle"));
+    if (bundle == null) return null;
+    const ns_path = send(bundle, sel("bundlePath"));
+    if (ns_path == null) return null;
+    const c_str = send(ns_path, sel("UTF8String"));
+    if (c_str == null) return null;
+    const text: [*:0]const u8 = @ptrCast(c_str.?);
+    return gpa.dupe(u8, std.mem.span(text)) catch null;
+}
+
+/// The check runs off the main thread and owns nothing the window needs, so
+/// a slow or dead network delays an update and never the UI.
+fn updateWorker(bundle: []const u8) void {
+    update.check(std.heap.page_allocator, bundle);
+}
+
+fn runMac(url: []const u8, updates: bool) !void {
     var url_buf: [256]u8 = undefined;
     const url_z = try std.fmt.bufPrintSentinel(&url_buf, "{s}", .{url}, 0);
 
@@ -187,5 +211,16 @@ fn runMac(url: []const u8) !void {
 
     send1v(window, sel("makeKeyAndOrderFront:"), null);
     sendBoolv(app, sel("activateIgnoringOtherApps:"), YES);
+
+    // Started after the window is up so the first thing the user sees is
+    // their UI, never a dialog about the app itself.
+    if (updates) {
+        if (bundlePath(std.heap.page_allocator)) |bundle| {
+            if (std.Thread.spawn(.{}, updateWorker, .{bundle})) |thread| {
+                thread.detach();
+            } else |_| {}
+        }
+    }
+
     sendv(app, sel("run"));
 }

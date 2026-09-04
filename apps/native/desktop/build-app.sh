@@ -40,6 +40,19 @@ iconutil -c icns "$iconset" -o "$app/Contents/Resources/icon.icns"
 
 cp "$here/Info.plist" "$app/Contents/Info.plist"
 
+# The app compares this against the newest release tag to decide whether it
+# is out of date, so a build that does not know its own version can never
+# update itself. Take it from the argument, else the current tag.
+version="${VERSION:-$(git -C "$root" describe --tags --abbrev=0 2>/dev/null || true)}"
+version="${version#v}"
+if [[ -n "$version" ]]; then
+  echo "▸ version $version"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$app/Contents/Info.plist"
+else
+  echo "▸ no tag found — the app keeps the plist's version and will not self-update"
+fi
+
 echo "▸ signing as: $identity"
 # Hardened runtime and a secure timestamp are what notarization requires.
 codesign --force --options runtime --timestamp --sign "$identity" "$app"
