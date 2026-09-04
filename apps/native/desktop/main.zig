@@ -11,6 +11,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// The Dock and ⌘-Tab icon. A bare binary has no bundle to read an icon
+/// from, so the image travels inside it and is handed to NSApplication at
+/// startup. Same artwork as the desktop app's own icon.
+const icon_png = @embedFile("icon.png");
+
 fn openLinux(url: []const u8) void {
     std.log.info("merjs-style shell: open {s} in a browser (WKWebView is macOS-only)", .{url});
 }
@@ -91,6 +96,19 @@ fn sendWebViewInit(recv: Id, s: Sel, frame: CGRect, config: Id) Id {
     const F = *const fn (Id, Sel, CGRect, Id) callconv(.c) Id;
     return @as(F, @ptrCast(&objc_msgSend))(recv, s, frame, config);
 }
+fn sendBytes(recv: Id, s: Sel, ptr: [*]const u8, len: NSUInteger) Id {
+    const F = *const fn (Id, Sel, [*]const u8, NSUInteger) callconv(.c) Id;
+    return @as(F, @ptrCast(&objc_msgSend))(recv, s, ptr, len);
+}
+
+/// Give the app its icon. Best effort: a shell without one still runs.
+fn setAppIcon(app: Id) void {
+    const data = sendBytes(cls("NSData"), sel("dataWithBytes:length:"), icon_png.ptr, icon_png.len);
+    if (data == null) return;
+    const image = send1(send(cls("NSImage"), sel("alloc")), sel("initWithData:"), data);
+    if (image == null) return;
+    send1v(app, sel("setApplicationIconImage:"), image);
+}
 
 fn runMac(url: []const u8) !void {
     var url_buf: [256]u8 = undefined;
@@ -98,6 +116,7 @@ fn runMac(url: []const u8) !void {
 
     const app = send(cls("NSApplication"), sel("sharedApplication"));
     sendIntv(app, sel("setActivationPolicy:"), NSApplicationActivationPolicyRegular);
+    setAppIcon(app);
 
     const frame = CGRect{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 1280, .height = 820 } };
     const style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
