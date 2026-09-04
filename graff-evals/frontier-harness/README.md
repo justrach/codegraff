@@ -2,7 +2,9 @@
 
 Replicates and extends [runta-dev/frontier-harness-eval](https://github.com/runta-dev/frontier-harness-eval)
 with graff (this repo) on two models, exo on grok-4.6, and our own grading of the
-published **Kimi K3** board. Nothing here is a credential; keys stay in the env.
+published **Kimi K3** board. No credential is committed here: the kimi-k3 path
+reads keys from the environment, and the grok path copies an existing local
+credentials file into the task container (see `PROTOCOL.md`).
 
 ## The GitHub suite is 30 tasks, we grade what the grader allows
 
@@ -62,7 +64,10 @@ Both graff runs pass only `katex`; the other 8 `apply_failed` or genuine fail.
 ## reproduce
 
 ```sh
-python3 fh_run.py --harness graff,exo --suite tb -j 2 --fresh --out results.jsonl
+export FH_GRAFF_MODEL=grok-4.6       # or kimi-k3 + MOONSHOT_API_KEY
+python3 fh_run.py --suite tb -j 2 --fresh --out results.jsonl    # TB-21
+python3 fh_run.py --suite swe -j 2 --out swe-results.jsonl       # DeepSWE patches
+python3 fh_exo.py -j 2 --fresh                                   # exo has its own runner
 python3 grade_swe.py grok-4.6        # needs /tmp/deep-swe + /tmp/frontier-harness-eval
 python3 grade_swe.py kimi-k3
 python3 plot_tb21.py && open tb21-graff-grok46.png
