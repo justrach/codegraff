@@ -28,6 +28,36 @@ fn openLinux(url: []const u8) void {
 /// the browser's own "cannot connect" page) when nothing is listening.
 const default_urls = [_][]const u8{ "http://127.0.0.1:3777", "http://127.0.0.1:3000" };
 
+/// Shown when no interface is serving. The window is a shell around a local
+/// app that is not inside the bundle, and a blank connection error tells a
+/// first-time user nothing about that.
+const no_server_html =
+    \\<meta name="viewport" content="width=device-width,initial-scale=1">
+    \\<style>
+    \\:root{color-scheme:light dark}
+    \\body{margin:0;display:grid;place-items:center;min-height:100vh;
+    \\font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    \\background:Canvas;color:CanvasText}
+    \\main{max-width:34rem;padding:2rem}
+    \\h1{font-size:1.15rem;margin:0 0 .75rem}
+    \\p{margin:0 0 1rem;opacity:.85}
+    \\pre{background:color-mix(in oklab,CanvasText 8%, Canvas);padding:.75rem 1rem;
+    \\border-radius:8px;overflow-x:auto;font-size:13px}
+    \\code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    \\</style>
+    \\<main>
+    \\<h1>The interface is not running yet</h1>
+    \\<p>This window shows the codegraff interface, which runs on your machine
+    \\and is not part of the app. Start it from a checkout of the repository:</p>
+    \\<pre><code>zig build                 # builds the graff binary
+    \\cd apps/native
+    \\npm install &amp;&amp; npm run dev   # serves the interface</code></pre>
+    \\<p>Then reopen this app. It looks for the interface on port 3777, then
+    \\3000. To point it somewhere else, launch it from a terminal with
+    \\<code>GRAFF_NATIVE_URL</code> set.</p>
+    \\</main>
+;
+
 fn listening(url: []const u8) bool {
     // "http://127.0.0.1:<port>" — the port is what follows the last colon.
     const colon = std.mem.lastIndexOfScalar(u8, url, ':') orelse return false;
@@ -40,17 +70,22 @@ fn listening(url: []const u8) bool {
 }
 
 pub fn main(init: std.process.Init) !void {
+    var serving = true;
     const url = init.environ_map.get("GRAFF_NATIVE_URL") orelse blk: {
         for (default_urls) |candidate| {
             if (listening(candidate)) break :blk candidate;
         }
+        // Nothing is listening. The app is a window onto an interface it does
+        // not contain, so this is the normal first-run state, not a fault —
+        // say what to start rather than showing WebKit's connection error.
+        serving = false;
         break :blk default_urls[0];
     };
     // Set this to pin a build: a machine mid-debug should not have the app
     // swapped underneath it because a release happened to land.
     const updates = init.environ_map.get("GRAFF_NATIVE_NO_UPDATE") == null;
     if (comptime builtin.os.tag == .macos) {
-        try runMac(url, updates);
+        try runMac(url, updates, serving);
     } else {
         openLinux(url);
     }
@@ -129,6 +164,10 @@ fn sendWebViewInit(recv: Id, s: Sel, frame: CGRect, config: Id) Id {
     const F = *const fn (Id, Sel, CGRect, Id) callconv(.c) Id;
     return @as(F, @ptrCast(&objc_msgSend))(recv, s, frame, config);
 }
+fn send2(recv: Id, s: Sel, a: Id, b: Id) Id {
+    const F = *const fn (Id, Sel, Id, Id) callconv(.c) Id;
+    return @as(F, @ptrCast(&objc_msgSend))(recv, s, a, b);
+}
 fn sendRequestInit(recv: Id, s: Sel, url: Id, policy: NSUInteger, timeout: f64) Id {
     const F = *const fn (Id, Sel, Id, NSUInteger, f64) callconv(.c) Id;
     return @as(F, @ptrCast(&objc_msgSend))(recv, s, url, policy, timeout);
@@ -167,7 +206,7 @@ fn updateWorker(bundle: []const u8) void {
     update.check(std.heap.page_allocator, bundle);
 }
 
-fn runMac(url: []const u8, updates: bool) !void {
+fn runMac(url: []const u8, updates: bool, serving: bool) !void {
     var url_buf: [256]u8 = undefined;
     const url_z = try std.fmt.bufPrintSentinel(&url_buf, "{s}", .{url}, 0);
 
@@ -207,7 +246,12 @@ fn runMac(url: []const u8, updates: bool) !void {
         NSURLRequestReloadIgnoringLocalCacheData,
         load_timeout_s,
     );
-    _ = send1(webview, sel("loadRequest:"), request);
+    if (serving) {
+        _ = send1(webview, sel("loadRequest:"), request);
+    } else {
+        const html = sendStr(cls("NSString"), sel("stringWithUTF8String:"), no_server_html.ptr);
+        _ = send2(webview, sel("loadHTMLString:baseURL:"), html, null);
+    }
 
     send1v(window, sel("makeKeyAndOrderFront:"), null);
     sendBoolv(app, sel("activateIgnoringOtherApps:"), YES);
