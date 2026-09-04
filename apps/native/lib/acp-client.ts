@@ -83,6 +83,8 @@ export type SessionOpts = {
   cwd?: string;
   /** Auto-approve tools; absent, the server's default. */
   yolo?: boolean;
+  /** Start the configured MCP servers with the agent; absent, yes. */
+  mcp?: boolean;
 };
 
 /** The tab's agent, spawned on first use and reused while it still matches

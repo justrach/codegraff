@@ -8,6 +8,7 @@ import {
   IconCrossSmall,
   IconEditBig,
   IconFolder,
+  IconGlobe,
   IconHome,
   IconMagnifyingGlass,
   IconPlusMedium,
@@ -31,6 +32,7 @@ const WORKSPACE = { key: "graff", name: "Codegraff", monogram: "G" };
 const NAV_ITEMS: { key: string; label: string; icon: ReactNode; count?: string }[] = [
   { key: "home", label: "Home", icon: <IconHome size={18} /> },
   { key: "workspace", label: "Workspace", icon: <IconFolder size={18} /> },
+  { key: "browser", label: "Browser", icon: <IconGlobe size={18} /> },
 ];
 
 export type SidebarRecent = {
@@ -75,6 +77,9 @@ type SidebarNavProps = {
   workspaces?: SidebarWorkspace[];
   onSwitchWorkspace?: (path: string) => void;
   onNewWorkspace?: () => void;
+  /** Put a saved chat away, or (deleting) remove it for good. */
+  onArchiveRecent?: (id: string) => void;
+  onDeleteRecent?: (id: string) => void;
   onWorkspaceSettings?: () => void;
 };
 
@@ -212,7 +217,7 @@ function WorkspaceMenu({
         ))}
         <div className="my-1 h-px bg-line" />
         {[
-          { label: "New workspace…", icon: <IconPlusMedium size={16} />, action: onNew },
+          { label: "Open a folder…", icon: <IconPlusMedium size={16} />, action: onNew },
           { label: "Workspace settings…", icon: <IconSettingsGear1 size={16} />, action: onSettings },
         ].map((item) => (
           <button
@@ -251,6 +256,8 @@ export default function SidebarNav({
   onSwitchWorkspace,
   onNewWorkspace,
   onWorkspaceSettings,
+  onArchiveRecent,
+  onDeleteRecent,
 }: SidebarNavProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [internalNav, setInternalNav] = useState("chats");
@@ -263,6 +270,8 @@ export default function SidebarNav({
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [workspacePosition, setWorkspacePosition] = useState({ top: 0, left: 0 });
   const [searchOpen, setSearchOpen] = useState(false);
+  /** The Chats header collapses its list; searching always opens it again. */
+  const [chatsOpen, setChatsOpen] = useState(true);
   const [query, setQuery] = useState("");
   const workspaceButtonRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -394,20 +403,31 @@ export default function SidebarNav({
 
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
           <div className="sidebar-copy relative mx-2 mb-1 h-8">
-            <div
+            <button
+              type="button"
               aria-hidden={searchOpen}
-              className={`absolute inset-0 flex items-center gap-1.5 px-2 text-[12.5px] font-medium text-ink-3 transition-[opacity,transform] ${searchOpen ? "pointer-events-none -translate-x-1 opacity-0" : "translate-x-0 opacity-100"}`}
+              aria-expanded={chatsOpen}
+              aria-controls="sidebar-chat-list"
+              title={chatsOpen ? "Hide the chat list" : "Show the chat list"}
+              onClick={() => setChatsOpen((open) => !open)}
+              className={`absolute inset-y-0 left-0 flex items-center gap-1.5 rounded-[8px] px-2 text-[12.5px] font-medium text-ink-3 transition-[opacity,transform,background-color,color] hover:bg-hover-2 hover:text-ink ${searchOpen ? "pointer-events-none -translate-x-1 opacity-0" : "translate-x-0 opacity-100"}`}
               style={{ transitionDuration: `${CHAT_SEARCH_MOTION.duration}ms`, transitionTimingFunction: CHAT_SEARCH_MOTION.easing }}
             >
-              <IconChevronDownSmall size={16} />
+              <span className={`flex transition-transform duration-150 ${chatsOpen ? "" : "-rotate-90"}`}>
+                <IconChevronDownSmall size={16} />
+              </span>
               <span>Chats</span>
-            </div>
+              {visibleRecents.length > 0 && <span className="tabular-nums text-ink-3">{visibleRecents.length}</span>}
+            </button>
 
             <button
               type="button"
               aria-label="Search chats"
               aria-expanded={searchOpen}
-              onClick={() => setSearchOpen(true)}
+              onClick={() => {
+                setSearchOpen(true);
+                setChatsOpen(true);
+              }}
               className={`absolute right-0 top-0 z-10 flex size-8 items-center justify-center rounded-[8px] text-ink-3 transition-[opacity,background-color,color,transform] hover:bg-hover-2 hover:text-ink active:scale-[0.96] ${searchOpen ? "pointer-events-none opacity-0" : "opacity-100"}`}
               style={{ transitionDuration: `${CHAT_SEARCH_MOTION.duration}ms` }}
             >
@@ -453,6 +473,7 @@ export default function SidebarNav({
             </div>
           </div>
 
+          <div id="sidebar-chat-list" hidden={!chatsOpen}>
           <GlideGroup>
             {visibleRecents.map((item, index) => {
               const active = activeId !== undefined ? item.id === activeId : item.label === selectedTitle;
@@ -464,6 +485,7 @@ export default function SidebarNav({
                     {header}
                   </div>
                 )}
+                <div className="group/row relative">
                 <button
                   data-row
                   type="button"
@@ -481,13 +503,54 @@ export default function SidebarNav({
                     {item.label}
                   </span>
                 </button>
+                {(onArchiveRecent || onDeleteRecent) && (
+                  <span className="sidebar-copy absolute inset-y-0 right-3 z-20 flex items-center gap-0.5 opacity-0 transition-opacity group-focus-within/row:opacity-100 group-hover/row:opacity-100">
+                    {onArchiveRecent && (
+                      <button
+                        type="button"
+                        aria-label={`Archive ${item.label}`}
+                        title="Archive this chat — it leaves the list but stays on disk"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onArchiveRecent(item.id);
+                        }}
+                        className="flex size-6 items-center justify-center rounded-[6px] text-ink-3 transition-colors hover:bg-hover-2 hover:text-ink"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                          <rect x="3" y="4" width="18" height="4" rx="1" />
+                          <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4" />
+                        </svg>
+                      </button>
+                    )}
+                    {onDeleteRecent && (
+                      <button
+                        type="button"
+                        aria-label={`Delete ${item.label}`}
+                        title="Delete this chat for good"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onDeleteRecent(item.id);
+                        }}
+                        className="flex size-6 items-center justify-center rounded-[6px] text-ink-3 transition-colors hover:bg-hover-2 hover:text-red"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                          <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />
+                        </svg>
+                      </button>
+                    )}
+                  </span>
+                )}
+                </div>
                 </Fragment>
               );
             })}
-            {query && visibleRecents.length === 0 && (
-              <div className="sidebar-copy mx-2 px-2 py-2 text-[12.5px] text-ink-3">No chats found</div>
+            {visibleRecents.length === 0 && (
+              <div className="sidebar-copy mx-2 px-2 py-2 text-[12.5px] text-ink-3">
+                {query ? "No chats found" : "No chats yet — start one and it appears here."}
+              </div>
             )}
           </GlideGroup>
+          </div>
         </div>
 
         <div className="sidebar-copy mx-2 mt-3 w-[208px] border-t border-line pt-3">

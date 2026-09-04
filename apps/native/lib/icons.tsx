@@ -140,6 +140,16 @@ export function IconSidebarLeftOpen(p: IconProps) {
   );
 }
 
+/** The sidecar browser. */
+export function IconGlobe(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M3.5 12h17M12 3.5c2.7 2.7 2.7 14.3 0 17M12 3.5c-2.7 2.7-2.7 14.3 0 17" />
+    </Svg>
+  );
+}
+
 /** Brand mark — graff G instead of the paid popsicle. */
 export function IconPopsicle2(p: IconProps) {
   return (

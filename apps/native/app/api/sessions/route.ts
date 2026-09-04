@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { NextRequest } from "next/server";
 import { resolveRoot } from "@/lib/server-root";
@@ -11,6 +11,9 @@ export const dynamic = "force-dynamic";
 // updated_ms — is written before the (possibly multi-MB) messages array, so the
 // list peeks the prefix instead of parsing whole files.
 const SESSIONS_DIR = ".graff/sessions";
+// Archived chats leave the list but stay on disk, next to graff's own
+// sessions, so a chat can be put away without losing the conversation.
+const ARCHIVE_DIR = ".graff/sessions/archived";
 const EXT = ".session.json";
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const PEEK_BYTES = 64 * 1024;
@@ -116,4 +119,33 @@ export async function GET(req: NextRequest) {
   }
   rows.sort((a, b) => b.updatedMs - a.updatedMs);
   return Response.json({ cwd: root, sessions: rows });
+}
+
+/** Put a chat away (`?archive=1`, the default: the file moves under
+ * `.graff/sessions/archived/`) or remove it for good. Either way it leaves
+ * the sidebar; only delete loses the conversation. */
+export async function DELETE(req: NextRequest) {
+  const resolved = resolveRoot(req.nextUrl.searchParams.get("root"));
+  if ("error" in resolved) return Response.json({ error: resolved.error }, { status: resolved.status });
+  const name = req.nextUrl.searchParams.get("name");
+  if (name === null || !NAME_RE.test(name)) return Response.json({ error: "bad session name" }, { status: 400 });
+  const dir = path.join(resolved.root, SESSIONS_DIR);
+  const file = path.join(dir, `${name}${EXT}`);
+  if (!existsSync(file)) return Response.json({ error: "no such session" }, { status: 404 });
+  const archive = req.nextUrl.searchParams.get("archive") !== "0";
+  try {
+    if (!archive) {
+      unlinkSync(file);
+      return Response.json({ ok: true, name, archived: false });
+    }
+    const target = path.join(resolved.root, ARCHIVE_DIR);
+    mkdirSync(target, { recursive: true });
+    let dest = path.join(target, `${name}${EXT}`);
+    // Never overwrite an earlier archive of the same name.
+    if (existsSync(dest)) dest = path.join(target, `${name}.${Date.now()}${EXT}`);
+    renameSync(file, dest);
+    return Response.json({ ok: true, name, archived: true });
+  } catch (err) {
+    return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+  }
 }

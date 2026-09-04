@@ -16,6 +16,9 @@ export type Workspace = {
   model?: string;
   /** Auto-approve tools (`graff acp --yolo`); unset = the server's default. */
   yolo?: boolean;
+  /** Start the configured MCP servers with each chat's agent; unset = yes.
+   * Off, the agent runs with `GRAFF_MCP_CONFIG` pointing at an empty config. */
+  mcp?: boolean;
 };
 
 /** Last path segment: `/Users/me/repo/` → `repo`; `/` stays `/`. */
