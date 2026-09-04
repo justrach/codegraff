@@ -55,6 +55,28 @@ type Preset = "fit" | 768 | 1024 | 1280;
 const PRESETS: readonly Preset[] = ["fit", 768, 1024, 1280];
 const PRESET_KEY = "graff.native.browser.width";
 const LAST_URL_KEY = "graff.native.browser.lastUrl";
+const PANE_WIDTH_KEY = "graff.native.browser.paneWidth";
+
+/** How wide the pane itself is. Wide enough to read, never so wide that the
+ * chat beside it becomes a column of single words. */
+const PANE_DEFAULT = 560;
+const PANE_MIN = 380;
+const PANE_CHAT_MIN = 520;
+
+function clampPaneWidth(px: number): number {
+  const room = typeof window === "undefined" ? 1440 : window.innerWidth;
+  return Math.round(Math.min(Math.max(px, PANE_MIN), Math.max(PANE_MIN, room - PANE_CHAT_MIN)));
+}
+
+function loadPaneWidth(): number {
+  try {
+    const n = Number(localStorage.getItem(PANE_WIDTH_KEY));
+    if (Number.isFinite(n) && n > 0) return n;
+  } catch {
+    // no storage
+  }
+  return PANE_DEFAULT;
+}
 
 function loadPreset(): Preset {
   try {
@@ -168,6 +190,10 @@ export default function BrowserPane({
   const [hoverEl, setHoverEl] = useState<MapElement | null>(null);
   const [editing, setEditing] = useState<number | null>(null);
   const [preset, setPreset] = useState<Preset>(() => loadPreset());
+  // Server and first client render must agree, so the stored width is read
+  // after mount rather than in the initial state.
+  const [paneWidth, setPaneWidth] = useState(PANE_DEFAULT);
+  const [dragging, setDragging] = useState(false);
   const presetRef = useRef<Preset>(preset);
   presetRef.current = preset;
   const frameRef = useRef<HTMLDivElement>(null);
@@ -374,6 +400,54 @@ export default function BrowserPane({
     if (editing !== null) window.setTimeout(() => noteRef.current?.focus(), 0);
   }, [editing]);
 
+  // The pane's own width: restored on mount, kept within the window as it
+  // is resized, saved once a drag ends.
+  useEffect(() => {
+    setPaneWidth(clampPaneWidth(loadPaneWidth()));
+    const onResize = () => setPaneWidth((w) => clampPaneWidth(w));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const dragFrom = useRef<{ x: number; width: number } | null>(null);
+
+  const onHandleDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragFrom.current = { x: e.clientX, width: paneWidth };
+    setDragging(true);
+  };
+
+  const onHandleMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const from = dragFrom.current;
+    if (!from) return;
+    // The pane sits on the right, so dragging left widens it.
+    setPaneWidth(clampPaneWidth(from.width - (e.clientX - from.x)));
+  };
+
+  const endHandleDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!dragFrom.current) return;
+    dragFrom.current = null;
+    setDragging(false);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    try {
+      localStorage.setItem(PANE_WIDTH_KEY, String(paneWidth));
+    } catch {
+      // no storage
+    }
+  };
+
+  /** Keyboard resizing, and double-click to go back to the default. */
+  const nudgeWidth = (px: number) => {
+    const next = clampPaneWidth(px);
+    setPaneWidth(next);
+    try {
+      localStorage.setItem(PANE_WIDTH_KEY, String(next));
+    } catch {
+      // no storage
+    }
+  };
+
   /** Frame pixels → the page's CSS pixels. */
   const toPage = (e: { clientX: number; clientY: number }) => {
     const img = imgRef.current;
@@ -517,9 +591,32 @@ export default function BrowserPane({
 
   return (
     <aside
-      className="hidden w-[560px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page lg:flex"
-      style={{ animation: "fade-in 300ms ease both" }}
+      className="relative hidden shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page lg:flex"
+      style={{ width: paneWidth, animation: "fade-in 300ms ease both" }}
     >
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the browser pane"
+        aria-valuenow={paneWidth}
+        aria-valuemin={PANE_MIN}
+        tabIndex={0}
+        onPointerDown={onHandleDown}
+        onPointerMove={onHandleMove}
+        onPointerUp={endHandleDrag}
+        onPointerCancel={endHandleDrag}
+        onDoubleClick={() => nudgeWidth(PANE_DEFAULT)}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowLeft") nudgeWidth(paneWidth + (e.shiftKey ? 80 : 20));
+          else if (e.key === "ArrowRight") nudgeWidth(paneWidth - (e.shiftKey ? 80 : 20));
+          else return;
+          e.preventDefault();
+        }}
+        title="Drag to resize · double-click to reset"
+        className={`absolute inset-y-0 left-0 z-20 w-2 cursor-col-resize touch-none transition-colors ${
+          dragging ? "bg-accent/60" : "hover:bg-accent/30 focus-visible:bg-accent/40"
+        }`}
+      />
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-3">
         <span className="flex size-5 items-center justify-center text-ink-2">
           <IconGlobe size={16} />

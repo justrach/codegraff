@@ -121,6 +121,9 @@ and the next request starts a fresh browser. Kuri is started with
 than that flag refuses localhost.
 
 - **Browse** forwards clicks, scrolling and typing to the page.
+- Drag the pane's left edge to resize it (double-click the edge for the
+  default width, arrow keys when it has focus); the width is remembered
+  and the page's viewport follows, so pins stay on their elements.
 - The address bar takes `localhost:3000`-style addresses; Cmd/Ctrl+L
   focuses it from the page. The width control next to it shows the page
   at the pane's own width (1:1) or a wider layout (768, 1024, 1280 px)
