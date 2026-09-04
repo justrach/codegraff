@@ -140,7 +140,8 @@ directory.
 | `⌘T` / `Ctrl+T` | New chat |
 | `⌘W` / `Ctrl+W` | Close the active chat |
 | `⇧⌘T` / `Ctrl+Shift+T` | Reopen the last closed chat, resuming its graff session so the conversation comes back |
-| `⌘\` / `Ctrl+\` | Split the view, or close the split |
+| `⌘D` / `Ctrl+D` | Add a split, up to four columns |
+| `⌘\` / `Ctrl+\` | Close every split, or open one when there are none |
 | `⌘1`…`⌘8` | Jump to that tab; `⌘9` jumps to the last one |
 
 These are the desktop app's keys. A browser keeps `⌘W`, `⌘T` and `⇧⌘T`
