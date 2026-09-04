@@ -244,6 +244,18 @@ export default function BrowserPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat]);
 
+  // The workspace can arrive after the pane (a pane restored on boot mounts
+  // before the chat's cwd is known): once it does, a still-blank tab goes
+  // back to that workspace's last page.
+  useEffect(() => {
+    if (!memoryKey) return;
+    const cur = infoRef.current;
+    if (cur && cur.url !== "about:blank") return;
+    const back = loadLastUrl(memoryKey);
+    if (back && url === "") void open(back);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memoryKey]);
+
   // The picture: one JPEG after another, the next requested only once the
   // last has decoded. A hidden tab drops to one frame every two seconds —
   // near free, and the picture is fresh the moment the tab comes back.
