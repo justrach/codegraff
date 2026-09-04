@@ -109,11 +109,13 @@ the workspace root (`cwd` / `?root=`) and fall back to the default from
 
 ## Split view and tab names
 
-The **split** button in the tab bar puts two chats side by side: the
-active tab on the left, the next tab (or a fresh one) on the right, each
-with its own transcript, composer and model. Clicking a tab that is
-already in the split swaps the two columns; the × in the right column's
-header closes the split.
+`⌘D` (or the split button in the tab bar) opens another chat beside the
+ones on screen, up to four columns. Each has its own transcript,
+composer, model and scroll position, and each split names the chat and
+the folder it runs in, since a split can be in a different workspace
+from the tab beside it. The × in a split's header closes that one; the
+split button closes them all. Clicking a tab that is already a split
+swaps it with the main column, so the same chats stay on screen.
 
 A tab is named by the model, not by chopping up the prompt: the first
 message of a tab goes to `graff title` through `/api/title`, which

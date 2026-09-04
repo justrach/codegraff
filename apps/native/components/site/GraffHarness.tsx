@@ -47,6 +47,9 @@ import {
 /** Whether the sidecar browser pane was open, restored after a reload. */
 const BROWSER_OPEN_KEY = "graff.native.browser.open";
 
+/** Columns the split view will show at once, the active chat included. */
+const MAX_COLUMNS = 4;
+
 type Msg =
   | { id: number; role: "user"; text: string }
   | { id: number; role: "assistant"; turn: AssistantTurn };
@@ -130,12 +133,19 @@ export default function GraffHarness() {
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Split view: a second chat beside the active one, with its own scroller.
-  const [splitId, setSplitId] = useState<number | null>(null);
-  const splitScrollRef = useRef<HTMLDivElement>(null);
-  const [splitFollowing, setSplitFollowing] = useState(true);
+  // Split view: chats shown beside the active one. Each column keeps its
+  // own scroller and its own place in its transcript.
+  const [panes, setPanes] = useState<number[]>([]);
+  const scrollEls = useRef(new Map<number, HTMLDivElement>());
+  const [tailing, setTailing] = useState<Record<number, boolean>>({});
+  const paneRef = (id: number) => (el: HTMLDivElement | null) => {
+    if (el) scrollEls.current.set(id, el);
+    else scrollEls.current.delete(id);
+  };
   const chatsRef = useRef(chats);
   chatsRef.current = chats;
+  const panesRef = useRef<number[]>([]);
+  panesRef.current = panes;
   const [following, setFollowing] = useState(true);
   const queuesRef = useRef<Record<number, QueuedPrompt[]>>({});
   const [queues, setQueues] = useState<Record<number, QueuedPrompt[]>>({});
@@ -145,6 +155,9 @@ export default function GraffHarness() {
   const closedRef = useRef<{ session: string | null; cwd?: string; resumable: boolean }[]>([]);
 
   const chatThread = chats.find((c) => c.id === activeId) ?? chats[0];
+  // The ids on screen, in order: the active chat then its split panes.
+  const columnIds = [chatThread.id, ...panes.filter((id) => id !== chatThread.id && chats.some((c) => c.id === id))].slice(0, MAX_COLUMNS);
+  const columnKey = columnIds.join(",");
   const active = chatThread.messages.length > 0;
   const busy = busyIds.has(chatThread.id);
   const chatModel = chatThread.model ?? model ?? undefined;
@@ -474,6 +487,14 @@ export default function GraffHarness() {
 
   const newChat = () => openChat((chatIdRef.current += 1));
 
+  /** Make a chat the active one. If it is already a split pane, the chat it
+   * replaces takes that pane, so the same two stay on screen. */
+  const focusChat = (id: number) => {
+    const here = activeId;
+    setPanes((current) => (current.includes(id) ? current.map((pane) => (pane === id ? here : pane)) : current));
+    setActiveId(id);
+  };
+
   /** Bring back the tab that was closed last, resuming its graff session so
    * the conversation comes back with it. A tab that never got a message has
    * nothing saved, so it returns as a fresh one. */
@@ -486,26 +507,26 @@ export default function GraffHarness() {
     else newChat();
   };
 
-  /** Two chats side by side. The split takes the next tab along; when the
-   * active chat is the only one, it opens a fresh chat to sit beside it. */
-  const toggleSplit = () => {
-    if (splitId !== null) {
-      setSplitId(null);
-      return;
-    }
-    const list = chatsRef.current;
-    const here = list.findIndex((c) => c.id === activeId);
-    const other = list[here + 1] ?? list.find((c) => c.id !== activeId);
-    if (other) {
-      setSplitId(other.id);
-      return;
-    }
+  /** Another chat beside the ones on screen, in the workspace the active
+   * chat is in. Up to four columns; past that they are too narrow to read. */
+  const addPane = () => {
+    if (panesRef.current.length + 1 >= MAX_COLUMNS) return;
+    const keep = activeId;
     const id = (chatIdRef.current += 1);
     openChat(id);
-    // openChat makes the new tab active; keep the current one there and put
-    // the new one beside it.
-    setActiveId(activeId);
-    setSplitId(id);
+    // openChat makes the new tab active; the split keeps the current chat
+    // where it is and puts the new one beside it.
+    setActiveId(keep);
+    setPanes((current) => [...current, id]);
+  };
+
+  const closePane = (id: number) => setPanes((current) => current.filter((pane) => pane !== id));
+
+  /** The toolbar button: split when there is one column, close the split
+   * when there are more. ⌘D always adds one. */
+  const toggleSplit = () => {
+    if (panesRef.current.length > 0) setPanes([]);
+    else addPane();
   };
 
   const dropChat = (id: number) => {
@@ -524,6 +545,7 @@ export default function GraffHarness() {
   };
 
   const closeChat = (id: number) => {
+    setPanes((current) => current.filter((pane) => pane !== id));
     const going = chatsRef.current.find((c) => c.id === id);
     if (going) {
       // Keep the last few closed tabs; a tab that got as far as a message
@@ -534,7 +556,6 @@ export default function GraffHarness() {
       ];
     }
     dropChat(id);
-    if (splitId === id) setSplitId(null);
     const remaining = chats.filter((c) => c.id !== id);
     if (remaining.length === 0) {
       setChats([]);
@@ -632,43 +653,30 @@ export default function GraffHarness() {
       .catch(() => undefined);
   };
 
+  // Every visible column follows its own tail: jump to the bottom when it
+  // appears, and stop following as soon as the reader scrolls up in it.
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    setFollowing(true);
-    el.scrollTop = el.scrollHeight;
-    const onScroll = () => {
-      const next = isFollowingTail(el);
-      setFollowing((current) => (current === next ? current : next));
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [activeId, active]);
+    const off: (() => void)[] = [];
+    for (const id of columnKey.split(",").filter(Boolean).map(Number)) {
+      const el = scrollEls.current.get(id);
+      if (!el) continue;
+      el.scrollTop = el.scrollHeight;
+      setTailing((current) => (current[id] === true ? current : { ...current, [id]: true }));
+      const onScroll = () => {
+        const next = isFollowingTail(el);
+        setTailing((current) => (current[id] === next ? current : { ...current, [id]: next }));
+      };
+      el.addEventListener("scroll", onScroll, { passive: true });
+      off.push(() => el.removeEventListener("scroll", onScroll));
+    }
+    return () => off.forEach((stop) => stop());
+  }, [columnKey]);
 
   useEffect(() => {
-    if (!active) return;
-    pinScrollerTail(scrollRef.current, following);
-  }, [active, following, lastAssistant?.turn.text, lastAssistant?.turn.reasoning, lastAssistant?.turn.tools.length]);
-
-  // The split column keeps its own place in its transcript.
-  useEffect(() => {
-    const el = splitScrollRef.current;
-    if (!el) return;
-    setSplitFollowing(true);
-    el.scrollTop = el.scrollHeight;
-    const onScroll = () => {
-      const next = isFollowingTail(el);
-      setSplitFollowing((current) => (current === next ? current : next));
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [splitId]);
-
-  const splitLast = splitId === null ? undefined : [...(chats.find((c) => c.id === splitId)?.messages ?? [])].reverse().find((m): m is Extract<Msg, { role: "assistant" }> => m.role === "assistant");
-  useEffect(() => {
-    if (splitId === null) return;
-    pinScrollerTail(splitScrollRef.current, splitFollowing);
-  }, [splitId, splitFollowing, splitLast?.turn.text, splitLast?.turn.reasoning, splitLast?.turn.tools.length]);
+    for (const id of columnKey.split(",").filter(Boolean).map(Number)) {
+      pinScrollerTail(scrollEls.current.get(id) ?? null, tailing[id] ?? true);
+    }
+  }, [chats, tailing, columnKey]);
 
   // The sidebar is graff's session directory, newest first, bucketed by day.
   const now = Date.now();
@@ -684,6 +692,10 @@ export default function GraffHarness() {
   // The tab bar's folder chip is the *tab's* workspace; the sidebar's
   // switcher is the *active* one (where new tabs open). They differ only
   // after a switch, and each says so on hover.
+  const workspaceNameOf = (thread: Chat) => {
+    const dir = thread.cwd ?? health?.cwd;
+    return findWorkspace(workspaces, dir)?.name ?? (dir ? basename(dir) : "workspace");
+  };
   const chatCwd = chatThread.cwd ?? health?.cwd;
   const chatWorkspace = findWorkspace(workspaces, chatCwd);
   const workspaceName = chatWorkspace?.name ?? (chatCwd ? basename(chatCwd) : "workspace");
@@ -697,7 +709,8 @@ export default function GraffHarness() {
   /** One chat column: its transcript (or the empty state) and its composer.
    * A plain function, not a component, so the split view can render two of
    * them without React remounting either on every parent render. */
-  const columnBody = (thread: Chat, scroller: RefObject<HTMLDivElement | null>, isFollowing: boolean) => {
+  const columnBody = (thread: Chat) => {
+    const isFollowing = tailing[thread.id] ?? true;
     const hasMessages = thread.messages.length > 0;
     const threadBusy = busyIds.has(thread.id);
     const threadModel = thread.model ?? model ?? undefined;
@@ -709,7 +722,7 @@ export default function GraffHarness() {
 
             {hasMessages ? (
               <div className="flex min-h-0 flex-1 flex-col">
-                <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" style={{ overflowAnchor: "none" }}>
+                <div ref={paneRef(thread.id)} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" style={{ overflowAnchor: "none" }}>
                   <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
                     {thread.messages.map((message, index) =>
                       message.role === "user" ? (
@@ -837,10 +850,7 @@ export default function GraffHarness() {
           <button
             type="button"
             aria-pressed={c.id === activeId}
-            onClick={() => {
-              if (splitId === c.id) setSplitId(activeId);
-              setActiveId(c.id);
-            }}
+            onClick={() => focusChat(c.id)}
             title={c.title ?? "New chat"}
             className="min-w-0 flex-1 text-left"
           >
@@ -873,11 +883,11 @@ export default function GraffHarness() {
       <div className="ml-auto flex items-center gap-2 pr-1">
         <button
           type="button"
-          aria-pressed={splitId !== null}
+          aria-pressed={panes.length > 0}
           onClick={toggleSplit}
-          title={splitId !== null ? "Close the split view (⌘\\)" : "Split the view: two chats side by side (⌘\\)"}
+          title={panes.length > 0 ? "Close the splits (⌘\\)" : "Split the view: another chat beside this one (⌘D adds one)"}
           className={`flex size-7 items-center justify-center rounded-[7px] transition-colors duration-100 ${
-            splitId !== null ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+            panes.length > 0 ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
           }`}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -936,8 +946,8 @@ export default function GraffHarness() {
 
   // The shortcuts read the current handlers through a ref, so the window
   // listener below is installed once instead of on every render.
-  const keysRef = useRef({ closeChat, newChat, reopenClosed, toggleSplit, setActiveId, chats, activeId });
-  keysRef.current = { closeChat, newChat, reopenClosed, toggleSplit, setActiveId, chats, activeId };
+  const keysRef = useRef({ closeChat, newChat, reopenClosed, toggleSplit, addPane, focusChat, chats, activeId });
+  keysRef.current = { closeChat, newChat, reopenClosed, toggleSplit, addPane, focusChat, chats, activeId };
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -959,6 +969,11 @@ export default function GraffHarness() {
         else keys.newChat();
         return;
       }
+      if (key === "d" && !event.shiftKey) {
+        take();
+        keys.addPane();
+        return;
+      }
       if (key === "\\" && !event.shiftKey) {
         take();
         keys.toggleSplit();
@@ -970,7 +985,7 @@ export default function GraffHarness() {
         const target = nth === 9 ? keys.chats[keys.chats.length - 1] : keys.chats[nth - 1];
         if (!target) return;
         take();
-        keys.setActiveId(target.id);
+        keys.focusChat(target.id);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -978,10 +993,11 @@ export default function GraffHarness() {
   }, []);
 
   const paneTodos = lastAssistant?.turn.todos ?? [];
-  // The right column, when the view is split; a chat that was closed or
-  // became the active one leaves the split rather than showing twice.
-  const splitThread = splitId !== null && splitId !== chatThread.id ? (chats.find((c) => c.id === splitId) ?? null) : null;
-  const columns = splitThread ? [chatThread, splitThread] : [chatThread];
+  // The active chat is the first column; the panes follow it. A chat that
+  // was closed, or became the active one, leaves the split rather than
+  // showing twice. Four columns is as narrow as a chat stays readable.
+  const columns = columnIds.map((id) => chats.find((c) => c.id === id)).filter((c): c is Chat => c !== undefined);
+
 
   return (
     <main className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
@@ -1026,20 +1042,24 @@ export default function GraffHarness() {
                   )}
                   <button
                     type="button"
-                    onClick={() => {
-                      setSplitId(activeId);
-                      setActiveId(thread.id);
-                    }}
+                    onClick={() => focusChat(thread.id)}
                     title="Make this the main chat"
                     className="min-w-0 flex-1 truncate text-left text-[12.5px] font-medium text-ink"
                   >
                     {thread.title ?? "New chat"}
                   </button>
+                  <span
+                    title={thread.cwd ?? health?.cwd ?? "workspace"}
+                    className="flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-1.5 text-[12px] font-medium text-ink-2"
+                  >
+                    <IconFolder size={14} />
+                    <span className="max-w-32 truncate font-mono text-[11.5px]">{workspaceNameOf(thread)}</span>
+                  </span>
                   <button
                     type="button"
-                    aria-label="Close the split"
-                    title="Close the split"
-                    onClick={() => setSplitId(null)}
+                    aria-label="Close this split"
+                    title="Close this split"
+                    onClick={() => closePane(thread.id)}
                     className="flex size-7 shrink-0 items-center justify-center rounded-[6px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
@@ -1048,7 +1068,7 @@ export default function GraffHarness() {
                   </button>
                 </div>
               )}
-              {columnBody(thread, slot === 0 ? scrollRef : splitScrollRef, slot === 0 ? following : splitFollowing)}
+              {columnBody(thread)}
             </section>
           ))}
 
