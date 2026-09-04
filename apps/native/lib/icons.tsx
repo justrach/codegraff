@@ -166,3 +166,11 @@ export function IconFolder(p: IconProps) {
     </Svg>
   );
 }
+
+export function IconChat(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v7A2.5 2.5 0 0 1 16.5 16H12l-4.2 3.2A.6.6 0 0 1 7 18.7V16H7.5A2.5 2.5 0 0 1 5 13.5z" />
+    </Svg>
+  );
+}

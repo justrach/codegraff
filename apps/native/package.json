@@ -10,7 +10,7 @@
     "start": "NEXT_TELEMETRY_DISABLED=1 next start --port 3000",
     "mock-serve": "node scripts/mock-serve.mjs",
     "lint": "next lint",
-    "test": "node --experimental-strip-types --test lib/graff-events.test.ts lib/acp.test.ts lib/sessions.test.ts lib/follow-scroll.test.ts lib/prompt-queue.test.ts lib/prompt-history.test.ts lib/workspaces.test.ts lib/browser/annotations.test.ts lib/browser/url.test.ts"
+    "test": "node --experimental-strip-types --test lib/graff-events.test.ts lib/acp.test.ts lib/sessions.test.ts lib/session-store.test.ts lib/follow-scroll.test.ts lib/prompt-queue.test.ts lib/prompt-history.test.ts lib/workspaces.test.ts lib/browser/annotations.test.ts lib/browser/url.test.ts"
   },
   "dependencies": {
     "@streamdown/code": "^1.1.1",

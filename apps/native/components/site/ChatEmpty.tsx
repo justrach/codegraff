@@ -33,8 +33,6 @@ function homeRevealStyle(visible: boolean): CSSProperties {
 export default function EmptyState({
   onSend,
   health,
-  offset,
-  shuffle,
   models,
   modelKey,
   onModelChange,
@@ -43,8 +41,6 @@ export default function EmptyState({
 }: {
   onSend: (text: string) => void;
   health: Health | null;
-  offset: number;
-  shuffle: () => void;
   models: PromptModel[];
   modelKey?: string;
   onModelChange: (key: string) => void;
@@ -54,7 +50,9 @@ export default function EmptyState({
   cwd?: string;
 }) {
   const where = cwd ?? health?.cwd;
+  const [offset, setOffset] = useState(0);
   const shown = [0, 1, 2].map((i) => STARTER_PROMPTS[(offset + i) % STARTER_PROMPTS.length]);
+  const shuffle = () => setOffset((current) => (current + 3) % STARTER_PROMPTS.length);
   const [stage, setStage] = useState(0);
   useEffect(() => {
     const timers = [

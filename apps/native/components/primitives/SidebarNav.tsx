@@ -11,6 +11,7 @@ import {
   IconGlobe,
   IconHome,
   IconMagnifyingGlass,
+  IconChat,
   IconPlusMedium,
   IconPopsicle2,
   IconSettingsGear1,
@@ -31,6 +32,7 @@ const WORKSPACE = { key: "graff", name: "Codegraff", monogram: "G" };
 
 const NAV_ITEMS: { key: string; label: string; icon: ReactNode; count?: string }[] = [
   { key: "home", label: "Home", icon: <IconHome size={18} /> },
+  { key: "conversations", label: "Conversations", icon: <IconChat size={18} /> },
   { key: "workspace", label: "Workspace", icon: <IconFolder size={18} /> },
   { key: "browser", label: "Browser", icon: <IconGlobe size={18} /> },
 ];
@@ -70,6 +72,9 @@ type SidebarNavProps = {
   /** Tooltip on the footer control. */
   footerTitle?: string;
   recents?: SidebarRecent[];
+  /** How many saved sessions exist (sidebar only shows a preview). */
+  recentsTotal?: number;
+  onSeeAll?: () => void;
   variant?: string;
   /** The active workspace (the folder graff runs in); the demo shows a placeholder. */
   workspace?: SidebarWorkspace;
@@ -86,7 +91,7 @@ type SidebarNavProps = {
 export type SidebarWorkspace = { path: string; name: string };
 
 const SIDEBAR_MOTION = {
-  expandedWidth: 224,
+  expandedWidth: 248,
   collapsedWidth: 52,
   duration: 280,
   copyDuration: 180,
@@ -258,6 +263,8 @@ export default function SidebarNav({
   onWorkspaceSettings,
   onArchiveRecent,
   onDeleteRecent,
+  recentsTotal,
+  onSeeAll,
 }: SidebarNavProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [internalNav, setInternalNav] = useState("chats");
@@ -316,7 +323,7 @@ export default function SidebarNav({
         "--sidebar-easing": SIDEBAR_MOTION.easing,
       } as CSSProperties}
     >
-      <div className="flex min-h-0 w-[224px] shrink-0 flex-col">
+      <div className="flex min-h-0 w-[248px] shrink-0 flex-col">
         <div className="relative mb-2.5 h-10 shrink-0">
           <button
             ref={workspaceButtonRef}
@@ -332,7 +339,7 @@ export default function SidebarNav({
               }
               setWorkspaceOpen((open) => !open);
             }}
-            className="sidebar-workspace-control absolute left-2 top-1 flex h-8 w-[164px] items-center rounded-[8px] px-2 text-left transition-[background-color,transform] duration-100 hover:bg-hover-2 active:scale-[0.99]"
+            className="sidebar-workspace-control absolute left-2 top-1 flex h-8 w-[188px] items-center rounded-[8px] px-2 text-left transition-[background-color,transform] duration-100 hover:bg-hover-2 active:scale-[0.99]"
           >
             <span className="sidebar-logo flex size-5 shrink-0 items-center justify-center text-ink">
               <IconPopsicle2 size={18} />
@@ -394,7 +401,7 @@ export default function SidebarNav({
               key={item.key}
               icon={item.icon}
               label={item.label}
-              count={item.count}
+              count={item.key === "conversations" && recentsTotal != null ? String(recentsTotal) : item.count}
               active={currentNav === item.key}
               onClick={() => selectNav(item.key)}
             />
@@ -491,16 +498,21 @@ export default function SidebarNav({
                   type="button"
                   title={item.hint ? `${item.label} — ${item.hint}` : item.label}
                   onClick={() => {
-                    selectNav("chats");
+                    selectNav("home");
                     if (activeTitle === undefined) setDemoActiveTitle(item.label);
                     onPick?.(item.id, item.label, item.prompt);
                   }}
-                  className={`sidebar-row relative z-10 mx-2 flex h-8 items-center rounded-[8px] px-2 text-left transition-[width,background-color,color,transform] duration-150 active:scale-[0.98] ${
+                  className={`sidebar-row relative z-10 mx-2 flex min-h-10 items-center rounded-[8px] px-2 py-1.5 text-left transition-[width,background-color,color,transform] duration-150 active:scale-[0.98] ${
                     active ? "bg-hover-2 group-hover/glide:bg-transparent" : ""
                   }`}
                 >
-                  <span className={`sidebar-copy min-w-0 flex-1 truncate text-[14px] font-medium ${active ? "text-ink" : "text-ink-2"}`}>
-                    {item.label}
+                  <span className="sidebar-copy flex min-w-0 flex-1 flex-col">
+                    <span className={`truncate text-[13.5px] font-medium ${active ? "text-ink" : "text-ink-2"}`}>
+                      {item.label}
+                    </span>
+                    {item.hint && (
+                      <span className="truncate text-[11px] text-ink-3">{item.hint}</span>
+                    )}
                   </span>
                 </button>
                 {(onArchiveRecent || onDeleteRecent) && (
@@ -549,11 +561,24 @@ export default function SidebarNav({
                 {query ? "No chats found" : "No chats yet — start one and it appears here."}
               </div>
             )}
+            {!query && onSeeAll && (recentsTotal ?? recents.length) > recents.length && (
+              <button
+                data-row
+                type="button"
+                onClick={() => {
+                  selectNav("conversations");
+                  onSeeAll();
+                }}
+                className="sidebar-row relative z-10 mx-2 flex h-8 items-center rounded-[8px] px-2 text-left text-[12.5px] font-medium text-ink-3 transition-[background-color,color,transform] duration-150 hover:text-ink active:scale-[0.98]"
+              >
+                See all {recentsTotal?.toLocaleString()} conversations
+              </button>
+            )}
           </GlideGroup>
           </div>
         </div>
 
-        <div className="sidebar-copy mx-2 mt-3 w-[208px] border-t border-line pt-3">
+        <div className="sidebar-copy mx-2 mt-3 w-[232px] border-t border-line pt-3">
           <button
             type="button"
             onClick={onFooterClick ?? onNewChat}

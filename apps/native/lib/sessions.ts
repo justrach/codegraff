@@ -17,7 +17,20 @@ export type StoredSession = {
   model: string | null;
   provider: string | null;
   size: number;
+  workspace?: string | null;
+  /** Set when the save is not in the current cwd (ADR 0059). */
+  origin?: string | null;
+  local?: boolean;
 };
+
+export type SessionPage = {
+  cwd?: string;
+  sessions: StoredSession[];
+  nextCursor: string | null;
+  total: number;
+};
+
+export type SessionScope = "all" | "local" | "elsewhere";
 
 export type TranscriptMsg =
   | { role: "user"; text: string }
@@ -32,7 +45,6 @@ function withRoot(params: Record<string, string | undefined>): string {
   return s ? `?${s}` : "";
 }
 
-/** Sessions saved under `<root>/.graff/sessions`; absent root = the default workspace. */
 /** Put a saved chat away (the file moves under `.graff/sessions/archived/`)
  * or, with `archive: false`, remove it for good. */
 export async function removeSession(name: string, opts: { root?: string; archive?: boolean } = {}): Promise<void> {
@@ -43,11 +55,40 @@ export async function removeSession(name: string, opts: { root?: string; archive
   if (!res.ok) throw new Error(`sessions → ${res.status}`);
 }
 
-export async function listSessions(root?: string): Promise<StoredSession[]> {
-  const res = await fetch(`${BASE}${withRoot({ root })}`, { cache: "no-store" });
+/** One page of the session index. `root` scopes it to a workspace, absent =
+ * the server's default; the rest is the cursor, the query and the scope. */
+export async function listSessionsPage(opts: {
+  limit?: number;
+  cursor?: string | null;
+  q?: string;
+  scope?: SessionScope;
+  root?: string;
+} = {}): Promise<SessionPage> {
+  const res = await fetch(
+    `${BASE}${withRoot({
+      root: opts.root,
+      limit: opts.limit ? String(opts.limit) : undefined,
+      cursor: opts.cursor ?? undefined,
+      q: opts.q?.trim() ? opts.q.trim() : undefined,
+      scope: opts.scope && opts.scope !== "all" ? opts.scope : undefined,
+    })}`,
+    { cache: "no-store" },
+  );
   if (!res.ok) throw new Error(`sessions → ${res.status}`);
-  const body = (await res.json()) as { sessions?: StoredSession[] };
-  return body.sessions ?? [];
+  const body = (await res.json()) as Partial<SessionPage>;
+  return {
+    cwd: body.cwd,
+    sessions: body.sessions ?? [],
+    nextCursor: body.nextCursor ?? null,
+    total: typeof body.total === "number" ? body.total : (body.sessions ?? []).length,
+  };
+}
+
+/** Sessions saved under `<root>/.graff/sessions`; absent root = the default
+ * workspace. The first page only — the library pages the rest. */
+export async function listSessions(root?: string): Promise<StoredSession[]> {
+  const page = await listSessionsPage({ root });
+  return page.sessions;
 }
 
 export async function loadSession(name: string, root?: string): Promise<{ meta: StoredSession; messages: TranscriptMsg[] }> {
@@ -83,6 +124,37 @@ export function relativeTime(ms: number, now = Date.now()): string {
   const days = Math.round(hours / 24);
   if (days < 30) return `${days}d ago`;
   return new Date(ms).toLocaleDateString();
+}
+
+export function sessionHint(s: StoredSession, now = Date.now()): string {
+  const where = s.local === false ? (s.origin ?? "elsewhere") : null;
+  return [where, s.model, relativeTime(s.updatedMs, now)].filter(Boolean).join(" · ");
+}
+
+export function toSidebarRecent(s: StoredSession, now = Date.now()): {
+  id: string;
+  label: string;
+  group: string;
+  hint: string;
+} {
+  return {
+    id: s.name,
+    label: s.title ?? s.name,
+    group: dateGroup(s.updatedMs, now),
+    hint: sessionHint(s, now),
+  };
+}
+
+/** Consecutive rows that share a date bucket, newest buckets first. */
+export function groupSessions(rows: StoredSession[], now = Date.now()): { group: string; items: StoredSession[] }[] {
+  const out: { group: string; items: StoredSession[] }[] = [];
+  for (const row of rows) {
+    const group = dateGroup(row.updatedMs, now);
+    const last = out[out.length - 1];
+    if (last && last.group === group) last.items.push(row);
+    else out.push({ group, items: [row] });
+  }
+  return out;
 }
 
 type RawCall = { id?: unknown; function?: { name?: unknown; arguments?: unknown } };

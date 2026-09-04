@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
+import ConversationsPane from "@/components/site/ConversationsPane";
 import FilesPane from "@/components/site/FilesPane";
 import BrowserPane from "@/components/site/BrowserPane";
-import { IconFolder, IconGlobe } from "@/lib/icons";
+import { IconChat, IconFolder, IconGlobe } from "@/lib/icons";
 import { annotationsBlock, type BrowserPin } from "@/lib/browser/annotations";
 import { browserClose, browserHandle, browserNav } from "@/lib/browser-client";
 import TaskRows from "@/components/primitives/TaskRows";
@@ -14,7 +15,6 @@ import { AssistantBody, UserBubble } from "@/components/site/ChatBubbles";
 import EmptyState from "@/components/site/ChatEmpty";
 import {
   MODELS,
-  STARTER_PROMPTS,
   cancel,
   chatHandle,
   checkHealth,
@@ -28,7 +28,7 @@ import {
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
 import { isFollowingTail, pinScrollerTail } from "@/lib/follow-scroll";
 import { dropQueuedPrompt, enqueuePrompt, shiftQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
-import { dateGroup, listSessions, loadSession, relativeTime, removeSession, type StoredSession } from "@/lib/sessions";
+import { dateGroup, listSessionsPage, loadSession, relativeTime, removeSession, toSidebarRecent, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory, pushHistory, saveHistory } from "@/lib/prompt-history";
 import WorkspaceDialog from "@/components/site/WorkspaceDialog";
 import {
@@ -49,6 +49,9 @@ const BROWSER_OPEN_KEY = "graff.native.browser.open";
 
 /** Columns the split view will show at once, the active chat included. */
 const MAX_COLUMNS = 4;
+
+/** Rows the sidebar previews; the library pages the rest. */
+const SIDEBAR_PAGE = 12;
 
 type Msg =
   | { id: number; role: "user"; text: string }
@@ -76,7 +79,6 @@ function newSessionName(): string {
 export default function GraffHarness() {
   const [chats, setChats] = useState<Chat[]>([{ id: 1, title: null, messages: [] }]);
   const [activeId, setActiveId] = useState(1);
-  const [offset, setOffset] = useState(0);
   const [health, setHealth] = useState<Health | null>(null);
   // Every tab owns a `graff acp` child (the agent keeps one session per
   // process), so sessions, busy state and the spawned model are all per chat.
@@ -86,6 +88,7 @@ export default function GraffHarness() {
   const sessionNamesRef = useRef(new Map<number, string>());
   const [sessionIds, setSessionIds] = useState<Record<number, string>>({});
   const [stored, setStored] = useState<StoredSession[]>([]);
+  const [storedTotal, setStoredTotal] = useState(0);
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set());
   // No hardcoded default: until graff/models answers, the agent's own model
   // resolution decides, and `current` from that call re-points the picker.
@@ -113,6 +116,9 @@ export default function GraffHarness() {
   // The sidecar browser: one Chrome tab per chat, and the pins the user
   // drops on it, which ride ahead of the chat's next prompt.
   const [browserOpen, setBrowserOpen] = useState(false);
+  // The conversation library: every saved chat, paged and searchable. It takes
+  // the whole chat area, so opening it leaves the other side panes.
+  const [conversationsOpen, setConversationsOpen] = useState(false);
   // The pane comes back after a reload (with its last page: the pane
   // remembers that itself). Read after mount so the server render matches.
   const browserOpenRestored = useRef(false);
@@ -128,6 +134,11 @@ export default function GraffHarness() {
       // no storage
     }
   }, [browserOpen]);
+  const openConversations = () => {
+    setFilesOpen(false);
+    setBrowserOpen(false);
+    setConversationsOpen(true);
+  };
   const [pinsByChat, setPinsByChat] = useState<Record<number, BrowserPin[]>>({});
   const pinsRef = useRef<Record<number, BrowserPin[]>>({});
   const chatIdRef = useRef(1);
@@ -303,12 +314,13 @@ export default function GraffHarness() {
    * titles graff saved. */
   const refreshStored = async () => {
     try {
-      const list = await listSessions(activePathRef.current ?? undefined);
-      setStored(list);
+      const page = await listSessionsPage({ root: activePathRef.current ?? undefined, limit: SIDEBAR_PAGE });
+      setStored(page.sessions);
+      setStoredTotal(page.total);
       setChats((current) =>
         current.map((c) => {
           if (c.titledByModel) return c;
-          const saved = c.session ? list.find((s) => s.name === c.session) : undefined;
+          const saved = c.session ? page.sessions.find((s) => s.name === c.session) : undefined;
           return saved?.title && saved.title !== c.title ? { ...c, title: saved.title } : c;
         }),
       );
@@ -318,11 +330,13 @@ export default function GraffHarness() {
   };
 
   const openPath = useCallback((path: string) => {
+    setConversationsOpen(false);
     setFilesOpen(true);
     setFileRequest({ path, n: (fileReqRef.current += 1) });
   }, []);
 
   const openChanges = useCallback(() => {
+    setConversationsOpen(false);
     setFilesOpen(true);
     setFileRequest({ path: "", n: (fileReqRef.current += 1), changes: true });
   }, []);
@@ -469,6 +483,7 @@ export default function GraffHarness() {
     setChats((current) => [...current, { id, title: null, messages: [], model: ws?.model ?? model ?? undefined, session, cwd }]);
     setActiveId(id);
     setFilesOpen(false);
+    setConversationsOpen(false);
     setFollowing(true);
     // Spawn eagerly so the first send is not stuck behind agent + MCP boot.
     void requireSession(id).catch(() => undefined);
@@ -485,6 +500,7 @@ export default function GraffHarness() {
     if (existing) {
       setActiveId(existing.id);
       setFilesOpen(false);
+      setConversationsOpen(false);
       return;
     }
     let loaded: Awaited<ReturnType<typeof loadSession>>;
@@ -503,6 +519,7 @@ export default function GraffHarness() {
     ]);
     setActiveId(id);
     setFilesOpen(false);
+    setConversationsOpen(false);
     setFollowing(true);
     void requireSession(id, false, loaded.meta.model ?? undefined).catch(() => undefined);
   };
@@ -729,16 +746,15 @@ export default function GraffHarness() {
     }
   }, [chats, tailing, columnKey]);
 
-  // The sidebar is graff's session directory, newest first, bucketed by day.
+  // Sidebar preview: the first page of the session index, newest first. A
+  // session open in a tab shows the tab's name (the model wrote it from the
+  // first prompt); one only on disk shows whatever graff saved.
   const now = Date.now();
-  // A session open in a tab shows the tab's name (the model wrote it from
-  // the first prompt); one only on disk shows whatever graff saved.
-  const recents = stored.map((s) => ({
-    id: s.name,
-    label: chats.find((c) => c.session === s.name)?.title ?? s.title ?? s.name,
-    group: dateGroup(s.updatedMs, now),
-    hint: [s.model, relativeTime(s.updatedMs, now)].filter(Boolean).join(" · "),
-  }));
+  const recents = stored.map((s) => {
+    const row = toSidebarRecent(s, now);
+    const live = chats.find((c) => c.session === s.name)?.title;
+    return live ? { ...row, label: live } : row;
+  });
 
   // The tab bar's folder chip is the *tab's* workspace; the sidebar's
   // switcher is the *active* one (where new tabs open). They differ only
@@ -871,8 +887,6 @@ export default function GraffHarness() {
                   health={health}
                   history={threadHistory}
                   cwd={cwdOf(thread)}
-                  offset={offset}
-                  shuffle={() => setOffset((current) => (current + 3) % STARTER_PROMPTS.length)}
                   models={models}
                   modelKey={threadModel}
                   onModelChange={(key: string) => changeModel(key, thread.id)}
@@ -902,7 +916,10 @@ export default function GraffHarness() {
           <button
             type="button"
             aria-pressed={c.id === activeId}
-            onClick={() => focusChat(c.id)}
+            onClick={() => {
+              focusChat(c.id);
+              setConversationsOpen(false);
+            }}
             title={c.title ?? "New chat"}
             className="min-w-0 flex-1 text-left"
           >
@@ -935,6 +952,18 @@ export default function GraffHarness() {
       <div className="ml-auto flex items-center gap-2 pr-1">
         <button
           type="button"
+          aria-pressed={conversationsOpen}
+          onClick={openConversations}
+          title="All conversations"
+          className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
+            conversationsOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+          }`}
+        >
+          <IconChat size={14} />
+          <span className="hidden sm:inline">Chats</span>
+        </button>
+        <button
+          type="button"
           aria-pressed={panes.length > 0}
           onClick={toggleSplit}
           title={panes.length > 0 ? "Close the splits (⌘\\)" : "Split the view: another chat beside this one (⌘D adds one)"}
@@ -952,6 +981,7 @@ export default function GraffHarness() {
           aria-pressed={filesOpen}
           onClick={() => {
             setBrowserOpen(false);
+            setConversationsOpen(false);
             setFilesOpen((open) => !open);
           }}
           title={`${chatCwd ?? "Workspace"}\nShow this chat's files`}
@@ -1059,14 +1089,17 @@ export default function GraffHarness() {
         fill
         className="hidden lg:flex"
         recents={recents}
+        recentsTotal={storedTotal}
         activeTitle={chatThread.title}
         activeId={chatThread.session ?? null}
         onPick={pickRecent}
         onNewChat={newChat}
-        activeNav={filesOpen ? "workspace" : browserOpen ? "browser" : "chats"}
+        onSeeAll={openConversations}
+        activeNav={filesOpen ? "workspace" : browserOpen ? "browser" : conversationsOpen ? "conversations" : "home"}
         onNavigate={(key) => {
           setFilesOpen(key === "workspace");
           setBrowserOpen(key === "browser");
+          setConversationsOpen(key === "conversations");
         }}
         workspace={sidebarWorkspace}
         workspaces={workspaces.map((w) => ({ path: w.path, name: w.name }))}
@@ -1082,54 +1115,75 @@ export default function GraffHarness() {
 
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
         <div className="flex min-h-0 flex-1 gap-2.5">
-          {columns.map((thread, slot) => (
-            <section
-              key={thread.id}
-              data-chat={thread.id}
-              className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page"
-            >
-              {slot === 0 ? (
-                tabBar
-              ) : (
-                <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-3">
-                  {busyIds.has(thread.id) && (
-                    <span className="size-1.5 shrink-0 animate-pulse rounded-full" style={{ background: "var(--accent)" }} aria-label="Working" />
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => focusChat(thread.id)}
-                    title="Make this the main chat"
-                    className="min-w-0 flex-1 truncate text-left text-[12.5px] font-medium text-ink"
-                  >
-                    {thread.title ?? "New chat"}
-                  </button>
-                  <span
-                    title={cwdOf(thread) ?? "workspace"}
-                    className="flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-1.5 text-[12px] font-medium text-ink-2"
-                  >
-                    <IconFolder size={14} />
-                    <span className="max-w-32 truncate font-mono text-[11.5px]">{workspaceNameOf(thread)}</span>
-                  </span>
-                  <button
-                    type="button"
-                    aria-label="Close this split"
-                    title="Close this split"
-                    onClick={() => closePane(thread.id)}
-                    className="flex size-7 shrink-0 items-center justify-center rounded-[6px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
-                      <path d="M18 6L6 18M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-              {columnBody(thread)}
+          {conversationsOpen ? (
+            <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page">
+              {tabBar}
+              <ConversationsPane
+                root={chatCwd}
+                activeId={chatThread.session ?? null}
+                onPick={(name) => {
+                  setConversationsOpen(false);
+                  pickRecent(name);
+                }}
+                onNewChat={() => {
+                  setConversationsOpen(false);
+                  newChat();
+                }}
+              />
             </section>
-          ))}
+          ) : (
+            <>
+            {columns.map((thread, slot) => (
+              <section
+                key={thread.id}
+                data-chat={thread.id}
+                className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page"
+              >
+                {slot === 0 ? (
+                  tabBar
+                ) : (
+                  <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-3">
+                    {busyIds.has(thread.id) && (
+                      <span className="size-1.5 shrink-0 animate-pulse rounded-full" style={{ background: "var(--accent)" }} aria-label="Working" />
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => focusChat(thread.id)}
+                      title="Make this the main chat"
+                      className="min-w-0 flex-1 truncate text-left text-[12.5px] font-medium text-ink"
+                    >
+                      {thread.title ?? "New chat"}
+                    </button>
+                    <span
+                      title={cwdOf(thread) ?? "workspace"}
+                      className="flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-1.5 text-[12px] font-medium text-ink-2"
+                    >
+                      <IconFolder size={14} />
+                      <span className="max-w-32 truncate font-mono text-[11.5px]">{workspaceNameOf(thread)}</span>
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="Close this split"
+                      title="Close this split"
+                      onClick={() => closePane(thread.id)}
+                      className="flex size-7 shrink-0 items-center justify-center rounded-[6px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+                        <path d="M18 6L6 18M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
+                {columnBody(thread)}
+              </section>
+            ))}
 
-          {filesOpen && <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />}
+            </>
+          )}
 
-          {browserOpen && (
+          {filesOpen && !conversationsOpen && <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />}
+
+          {browserOpen && !conversationsOpen && (
             <BrowserPane
               key={chatThread.id}
               chat={handleOf(chatThread.id)}
@@ -1141,7 +1195,7 @@ export default function GraffHarness() {
             />
           )}
 
-          {!filesOpen && !browserOpen && active && paneTodos.length > 0 && (
+          {!filesOpen && !browserOpen && !conversationsOpen && active && paneTodos.length > 0 && (
             <aside
               className="hidden w-[360px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page lg:flex"
               style={{ animation: "fade-in 300ms ease both" }}
