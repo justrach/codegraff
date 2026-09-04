@@ -77,6 +77,9 @@ type SidebarNavProps = {
   workspaces?: SidebarWorkspace[];
   onSwitchWorkspace?: (path: string) => void;
   onNewWorkspace?: () => void;
+  /** Put a saved chat away, or (deleting) remove it for good. */
+  onArchiveRecent?: (id: string) => void;
+  onDeleteRecent?: (id: string) => void;
   onWorkspaceSettings?: () => void;
 };
 
@@ -253,6 +256,8 @@ export default function SidebarNav({
   onSwitchWorkspace,
   onNewWorkspace,
   onWorkspaceSettings,
+  onArchiveRecent,
+  onDeleteRecent,
 }: SidebarNavProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [internalNav, setInternalNav] = useState("chats");
@@ -480,6 +485,7 @@ export default function SidebarNav({
                     {header}
                   </div>
                 )}
+                <div className="group/row relative">
                 <button
                   data-row
                   type="button"
@@ -497,6 +503,44 @@ export default function SidebarNav({
                     {item.label}
                   </span>
                 </button>
+                {(onArchiveRecent || onDeleteRecent) && (
+                  <span className="sidebar-copy absolute inset-y-0 right-3 z-20 flex items-center gap-0.5 opacity-0 transition-opacity group-focus-within/row:opacity-100 group-hover/row:opacity-100">
+                    {onArchiveRecent && (
+                      <button
+                        type="button"
+                        aria-label={`Archive ${item.label}`}
+                        title="Archive this chat — it leaves the list but stays on disk"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onArchiveRecent(item.id);
+                        }}
+                        className="flex size-6 items-center justify-center rounded-[6px] text-ink-3 transition-colors hover:bg-hover-2 hover:text-ink"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                          <rect x="3" y="4" width="18" height="4" rx="1" />
+                          <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4" />
+                        </svg>
+                      </button>
+                    )}
+                    {onDeleteRecent && (
+                      <button
+                        type="button"
+                        aria-label={`Delete ${item.label}`}
+                        title="Delete this chat for good"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onDeleteRecent(item.id);
+                        }}
+                        className="flex size-6 items-center justify-center rounded-[6px] text-ink-3 transition-colors hover:bg-hover-2 hover:text-red"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                          <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />
+                        </svg>
+                      </button>
+                    )}
+                  </span>
+                )}
+                </div>
                 </Fragment>
               );
             })}

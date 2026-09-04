@@ -122,6 +122,15 @@ own session. The prompt's first words stand in until it answers, and
 stay if it cannot. A session open in a tab shows that name in the
 sidebar too.
 
+## Managing chats
+
+Hovering a chat in the sidebar reveals two controls. **Archive** moves the
+session file under `.graff/sessions/archived/`, so the chat leaves the list
+but the conversation stays on disk and can be moved back by hand.
+**Delete** removes the file. Either way the chat's tab closes with it, and
+the row goes at once rather than after the next poll of the session
+directory.
+
 ## Keyboard
 
 | Keys | What it does |

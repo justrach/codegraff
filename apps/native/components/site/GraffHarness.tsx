@@ -28,7 +28,7 @@ import {
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
 import { isFollowingTail, pinScrollerTail } from "@/lib/follow-scroll";
 import { dropQueuedPrompt, enqueuePrompt, shiftQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
-import { dateGroup, listSessions, loadSession, relativeTime, type StoredSession } from "@/lib/sessions";
+import { dateGroup, listSessions, loadSession, relativeTime, removeSession, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory, pushHistory, saveHistory } from "@/lib/prompt-history";
 import WorkspaceDialog from "@/components/site/WorkspaceDialog";
 import {
@@ -54,7 +54,10 @@ type Msg =
 /** `model` is what this tab's own agent was spawned with; the harness-level
  * model is only the default a new tab inherits. `cwd` is the workspace the
  * tab's agent runs in — fixed at spawn, like the model. */
-type Chat = { id: number; title: string | null; messages: Msg[]; model?: string; session?: string; cwd?: string };
+type Chat = { id: number; title: string | null; messages: Msg[]; model?: string; session?: string; cwd?: string;
+  /** The model named this tab from its first prompt: the session poller,
+   * which reads graff's own saved title, must leave it alone. */
+  titledByModel?: boolean };
 
 function newPageToken(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -269,6 +272,7 @@ export default function GraffHarness() {
       setStored(list);
       setChats((current) =>
         current.map((c) => {
+          if (c.titledByModel) return c;
           const saved = c.session ? list.find((s) => s.name === c.session) : undefined;
           return saved?.title && saved.title !== c.title ? { ...c, title: saved.title } : c;
         }),
@@ -406,7 +410,7 @@ export default function GraffHarness() {
       .then((body) => {
         const title = body?.title?.trim();
         if (!title) return;
-        setChats((current) => current.map((c) => (c.id === chatId ? { ...c, title } : c)));
+        setChats((current) => current.map((c) => (c.id === chatId ? { ...c, title, titledByModel: true } : c)));
       })
       .catch(() => undefined);
   };
@@ -543,6 +547,18 @@ export default function GraffHarness() {
 
   const pickRecent = (id: string) => {
     void openStored(id);
+  };
+
+  /** Put a saved chat away, or remove it for good. Its tab closes with it,
+   * and the row goes at once rather than after the next poll. */
+  const dropStored = (name: string, archive: boolean) => {
+    const cwd = activePathRef.current ?? undefined;
+    const open = chatsRef.current.find((c) => c.session === name && (c.cwd ?? null) === (cwd ?? null));
+    if (open) closeChat(open.id);
+    setStored((current) => current.filter((s) => s.name !== name));
+    void removeSession(name, { root: cwd, archive })
+      .catch(() => undefined)
+      .then(() => refreshStored());
   };
 
   /* ── workspaces ── */
@@ -985,6 +1001,8 @@ export default function GraffHarness() {
         workspace={sidebarWorkspace}
         workspaces={workspaces.map((w) => ({ path: w.path, name: w.name }))}
         onSwitchWorkspace={switchWorkspace}
+        onArchiveRecent={(id) => dropStored(id, true)}
+        onDeleteRecent={(id) => dropStored(id, false)}
         onNewWorkspace={() => setDialog({ mode: "new" })}
         onWorkspaceSettings={() => setDialog(sidebarWorkspace ? { mode: "settings" } : { mode: "new" })}
         footerLabel={copiedResume ? "Copied resume command" : (chatThread.session ?? "Connecting…")}
