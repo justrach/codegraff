@@ -39,7 +39,8 @@ pub var g_server_compact_override: ?bool = null;
 
 /// Is the server-compaction path active for this provider?
 pub fn enabled(p: Provider) bool {
-    if (manualRoute(p) == .local) return false;
+    if (p.kind != .responses) return false;
+    if (manualRoute(p) == .local and p.serverCompactUrl() == null) return false;
     return g_server_compact_override orelse true;
 }
 

@@ -134,6 +134,11 @@ test "enabled: responses-only; server is the default; override wins" {
     try std.testing.expect(enabled(p));
     p.id = "kilo"; // third-party Responses hosts keep the local summary
     try std.testing.expect(!enabled(p));
+    p.id = "xai";
+    try std.testing.expect(enabled(p)); // ADR 0002: explicit /responses/compact
+    p.kind = .openai;
+    try std.testing.expect(!enabled(p));
+    p.kind = .responses;
     p.id = "codex";
     asc.g_server_compact_override = false;
     try std.testing.expect(!enabled(p));
