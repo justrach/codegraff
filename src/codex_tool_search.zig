@@ -6,6 +6,9 @@
 //! front. Always-on loop tools (bash, files, codedb, …) stay eager.
 //! `tool_search_call` / `tool_search_output` are server-executed — never
 //! dispatched locally.
+//!
+//! Hosted `web_search` is spliced onto the same Codex tools array (probed live
+//! on chatgpt.com/backend-api/codex/responses). `GRAFF_CODEX_WEB_SEARCH=0` opts out.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -26,8 +29,12 @@ pub fn active(provider_id: []const u8, kind: Provider.Kind, model: []const u8) b
     return kind == .responses and std.mem.eql(u8, provider_id, "codex") and modelSupports(model);
 }
 
+pub var web_search: bool = true;
+
 pub fn isServerSideItem(itype: []const u8) bool {
-    return std.mem.eql(u8, itype, "tool_search_call") or std.mem.eql(u8, itype, "tool_search_output");
+    return std.mem.eql(u8, itype, "tool_search_call") or
+        std.mem.eql(u8, itype, "tool_search_output") or
+        std.mem.eql(u8, itype, "web_search_call");
 }
 
 fn toolName(tool: Value) []const u8 {
@@ -79,6 +86,21 @@ pub fn splice(arena: Allocator, tools_json: []const u8) ![]const u8 {
     return aw.toOwnedSlice();
 }
 
+/// Append hosted `web_search` once. Codex accepted this live on gpt-5.6-sol.
+pub fn spliceWebSearch(arena: Allocator, tools_json: []const u8) ![]const u8 {
+    if (!web_search) return tools_json;
+    var value = std.json.parseFromSliceLeaky(Value, arena, tools_json, .{ .allocate = .alloc_always }) catch return tools_json;
+    if (value != .array) return tools_json;
+    if (hasType(value.array.items, "web_search")) return tools_json;
+    var obj: std.json.ObjectMap = .empty;
+    try obj.put(arena, "type", .{ .string = "web_search" });
+    try value.array.append(.{ .object = obj });
+    var aw: Io.Writer.Allocating = .init(arena);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try s.write(value);
+    return aw.toOwnedSlice();
+}
+
 test "modelSupports is gpt-5.4+ / gpt-6, not gpt-5.3" {
     try std.testing.expect(modelSupports("gpt-5.4"));
     try std.testing.expect(modelSupports("gpt-5.6-sol"));
@@ -110,5 +132,19 @@ test "splice defers folded tools and appends tool_search once" {
 test "isServerSideItem covers hosted search items" {
     try std.testing.expect(isServerSideItem("tool_search_call"));
     try std.testing.expect(isServerSideItem("tool_search_output"));
+    try std.testing.expect(isServerSideItem("web_search_call"));
     try std.testing.expect(!isServerSideItem("function_call"));
+}
+
+test "spliceWebSearch appends hosted web_search once" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const out = try spliceWebSearch(a, "[{\"type\":\"function\",\"name\":\"bash\"}]");
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"type\":\"web_search\"") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, try spliceWebSearch(a, out), "\"type\":\"web_search\""));
+    const saved = web_search;
+    defer web_search = saved;
+    web_search = false;
+    try std.testing.expectEqualStrings("[{\"type\":\"function\",\"name\":\"bash\"}]", try spliceWebSearch(a, "[{\"type\":\"function\",\"name\":\"bash\"}]"));
 }

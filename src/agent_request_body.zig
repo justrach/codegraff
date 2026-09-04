@@ -448,7 +448,7 @@ test "retained reasoning: codex full resend keeps encrypted reasoning items and 
 
     try std.testing.expect(std.mem.indexOf(u8, body, "\"parameters\":{\"type\":\"object\"}") != null); // #261 follow-up: repaired on the responses wire too
     // Ask the backend to hand reasoning back encrypted...
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"include\":[\"reasoning.encrypted_content\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"include\":[\"reasoning.encrypted_content\"") != null);
     // ...and send the prior turn's reasoning item straight back. store:false
     // means the server keeps nothing, so this resend IS the retention.
     try std.testing.expect(std.mem.indexOf(u8, body, "\"encrypted_content\":\"ENCBLOB\"") != null);

@@ -67,6 +67,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
             }
             if (codex_tool_search.active(self.provider.id, self.provider.kind, self.provider.model)) {
                 next = codex_tool_search.splice(self.scratchAlloc(), next) catch next;
+                next = codex_tool_search.spliceWebSearch(self.scratchAlloc(), next) catch next;
             }
             break :blk next;
         };
@@ -94,6 +95,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     try s.objectField("include");
     try s.beginArray();
     try s.write("reasoning.encrypted_content");
+    if (is_codex and codex_tool_search.web_search) try s.write("web_search_call.action.sources");
     try s.endArray();
     try s.objectField("store");
     try s.write(false);
@@ -440,6 +442,8 @@ test "xAI Responses splices hosted x_search onto a tools turn; Codex and chat do
     defer std.testing.allocator.free(cb);
     try std.testing.expect(std.mem.indexOf(u8, cb, "x_search") == null);
     try std.testing.expect(std.mem.indexOf(u8, cb, "\"type\":\"tool_search\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cb, "\"type\":\"web_search\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cb, "web_search_call.action.sources") != null);
 
     var chat = try testAgentFor(a, "xai", .openai, "grok-4.6");
     const chat_body = try chat.buildBody(tools, false, true, true);
