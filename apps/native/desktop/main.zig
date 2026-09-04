@@ -20,8 +20,31 @@ fn openLinux(url: []const u8) void {
     std.log.info("merjs-style shell: open {s} in a browser (WKWebView is macOS-only)", .{url});
 }
 
+/// Where the UI is served. A bundled app is launched from Finder with no
+/// environment to inherit, so when `GRAFF_NATIVE_URL` is unset the shell
+/// looks for a dev server on the ports this app uses, newest first, and
+/// falls back to the first of them so the window still opens (and shows
+/// the browser's own "cannot connect" page) when nothing is listening.
+const default_urls = [_][]const u8{ "http://127.0.0.1:3777", "http://127.0.0.1:3000" };
+
+fn listening(url: []const u8) bool {
+    // "http://127.0.0.1:<port>" — the port is what follows the last colon.
+    const colon = std.mem.lastIndexOfScalar(u8, url, ':') orelse return false;
+    const port = std.fmt.parseInt(u16, url[colon + 1 ..], 10) catch return false;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const address = std.Io.net.IpAddress.parseIp4("127.0.0.1", port) catch return false;
+    const stream = std.Io.net.IpAddress.connect(&address, io, .{ .mode = .stream }) catch return false;
+    stream.close(io);
+    return true;
+}
+
 pub fn main(init: std.process.Init) !void {
-    const url = init.environ_map.get("GRAFF_NATIVE_URL") orelse "http://127.0.0.1:3000";
+    const url = init.environ_map.get("GRAFF_NATIVE_URL") orelse blk: {
+        for (default_urls) |candidate| {
+            if (listening(candidate)) break :blk candidate;
+        }
+        break :blk default_urls[0];
+    };
     if (comptime builtin.os.tag == .macos) {
         try runMac(url);
     } else {
