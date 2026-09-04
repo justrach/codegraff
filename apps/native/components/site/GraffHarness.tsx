@@ -898,58 +898,64 @@ export default function GraffHarness() {
   };
 
   const tabBar = (
-    <div className="flex h-11 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-      {chats.map((c) => (
-        <div
-          key={c.id}
-          className={`group/tab flex h-7 w-36 shrink-0 items-center gap-0.5 rounded-[7px] pl-2.5 pr-1 text-[12.5px] font-medium transition-colors duration-100 ${
-            c.id === activeId ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
-          }`}
+    <div className="flex h-11 shrink-0 items-center border-b border-line px-2">
+      {/* The tabs scroll on their own. They used to share this row's scroller
+        * with the toolbar, so a handful of open chats pushed the split,
+        * workspace and browser controls off the edge — and with the scrollbar
+        * hidden, they were simply gone. */}
+      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {chats.map((c) => (
+          <div
+            key={c.id}
+            className={`group/tab flex h-7 w-36 shrink-0 items-center gap-0.5 rounded-[7px] pl-2.5 pr-1 text-[12.5px] font-medium transition-colors duration-100 ${
+              c.id === activeId ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+            }`}
+          >
+            {busyIds.has(c.id) && (
+              <span
+                className="mr-1 size-1.5 shrink-0 animate-pulse rounded-full"
+                style={{ background: "var(--accent)" }}
+                aria-label="Working"
+              />
+            )}
+            <button
+              type="button"
+              aria-pressed={c.id === activeId}
+              onClick={() => {
+                focusChat(c.id);
+                setConversationsOpen(false);
+              }}
+              title={c.title ?? "New chat"}
+              className="min-w-0 flex-1 text-left"
+            >
+              <span className="block truncate">{c.title ?? "New chat"}</span>
+            </button>
+            <button
+              type="button"
+              aria-label="Close tab"
+              title={c.id === activeId ? "Close tab (⌘W) — ⇧⌘T brings it back" : "Close tab"}
+              onClick={() => closeChat(c.id)}
+              className="-my-1 flex size-6 shrink-0 items-center justify-center rounded-[5px] text-ink-3 transition-[background-color,color] duration-100 hover:bg-hover-2 hover:text-ink"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          aria-label="New chat"
+          title="New chat (⌘T)"
+          onClick={newChat}
+          className="ml-0.5 flex size-7 shrink-0 items-center justify-center rounded-[7px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
         >
-          {busyIds.has(c.id) && (
-            <span
-              className="mr-1 size-1.5 shrink-0 animate-pulse rounded-full"
-              style={{ background: "var(--accent)" }}
-              aria-label="Working"
-            />
-          )}
-          <button
-            type="button"
-            aria-pressed={c.id === activeId}
-            onClick={() => {
-              focusChat(c.id);
-              setConversationsOpen(false);
-            }}
-            title={c.title ?? "New chat"}
-            className="min-w-0 flex-1 text-left"
-          >
-            <span className="block truncate">{c.title ?? "New chat"}</span>
-          </button>
-          <button
-            type="button"
-            aria-label="Close tab"
-            title={c.id === activeId ? "Close tab (⌘W) — ⇧⌘T brings it back" : "Close tab"}
-            onClick={() => closeChat(c.id)}
-            className="-my-1 flex size-6 shrink-0 items-center justify-center rounded-[5px] text-ink-3 transition-[background-color,color] duration-100 hover:bg-hover-2 hover:text-ink"
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
-              <path d="M18 6L6 18M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-      ))}
-      <button
-        type="button"
-        aria-label="New chat"
-        title="New chat (⌘T)"
-        onClick={newChat}
-        className="ml-0.5 flex size-7 shrink-0 items-center justify-center rounded-[7px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-          <path d="M12 5v14M5 12h14" />
-        </svg>
-      </button>
-      <div className="ml-auto flex items-center gap-2 pr-1">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+        </button>
+      </div>
+      <div className="flex shrink-0 items-center gap-2 pl-2 pr-1">
         <button
           type="button"
           aria-pressed={conversationsOpen}
