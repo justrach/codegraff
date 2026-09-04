@@ -132,9 +132,12 @@ function DiffView({ text }: { text: string }) {
 }
 
 export default function FilesPane({
+  root,
   requested,
   onClose,
 }: {
+  /** The workspace to walk (the active tab's cwd); absent, the server default. */
+  root?: string;
   /** A path the harness wants shown (e.g. a clicked tool chip), or the
    * changes review when `changes` is set. */
   requested?: { path: string; n: number; changes?: boolean } | null;
@@ -149,12 +152,12 @@ export default function FilesPane({
 
   const loadChanges = useCallback(async () => {
     try {
-      setChanges(await gitChanges());
+      setChanges(await gitChanges(root));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [root]);
 
   const openChangesView = useCallback(() => {
     setView("changes");
@@ -164,7 +167,7 @@ export default function FilesPane({
 
   const show = useCallback(async (path: string, keepView = false) => {
     try {
-      const res = await fsStat(path);
+      const res = await fsStat(path, root);
       setError(null);
       if (!keepView) {
         setView("files");
@@ -179,11 +182,13 @@ export default function FilesPane({
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [root]);
 
   useEffect(() => {
     // Preload the root listing without stealing the view — a Review click
-    // can land before this resolves, and changes must win that race.
+    // can land before this resolves, and changes must win that race. A
+    // workspace switch re-runs this (new `show`) and lands on its root.
+    setFile(null);
     void show("", true);
   }, [show]);
 
@@ -195,12 +200,12 @@ export default function FilesPane({
 
   const openFileDiff = useCallback(async (path: string) => {
     try {
-      setDiff({ path, text: await gitFileDiff(path) });
+      setDiff({ path, text: await gitFileDiff(path, root) });
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [root]);
 
   const here = file ? file.path : (dir?.path ?? "");
   const crumbs = here ? here.split("/") : [];
@@ -236,8 +241,8 @@ export default function FilesPane({
             </span>
           )}
         </button>
-        <ActionButton label="Reveal" onClick={() => void fsReveal(here)} />
-        {view === "files" && file && <ActionButton label="Open" onClick={() => void fsOpen(file.path)} />}
+        <ActionButton label="Reveal" onClick={() => void fsReveal(here, root)} />
+        {view === "files" && file && <ActionButton label="Open" onClick={() => void fsOpen(file.path, root)} />}
         <button
           type="button"
           aria-label="Close files"
@@ -340,7 +345,7 @@ export default function FilesPane({
             {isImage ? (
               <figure>
                 <img
-                  src={fsRawUrl(file.path)}
+                  src={fsRawUrl(file.path, root)}
                   alt={file.path}
                   className="max-w-full rounded-[10px] bg-inset shadow-hairline"
                   style={{ animation: "fade-in 250ms ease both" }}
@@ -353,7 +358,7 @@ export default function FilesPane({
               </p>
             ) : isMarkdown ? (
               <>
-                <Markdown text={file.text} onOpenPath={(p) => void show(p)} />
+                <Markdown text={file.text} asDocument onOpenPath={(p) => void show(p)} />
                 {file.truncated && (
                   <p className="mt-2 text-[11.5px] text-ink-3">Showing the first 256 KB of {formatSize(file.size)}.</p>
                 )}

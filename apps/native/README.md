@@ -75,11 +75,124 @@ tab's agent with `--resume`, so a follow-up continues the conversation with
 the model's memory intact.
 
 The workspace itself is walkable: `/api/fs` (list/read, plus macOS
-`open`/`open -R` passthroughs) is sandboxed to the agent's cwd and backs
+`open`/`open -R` passthroughs) is sandboxed to the tab's cwd and backs
 a files pane — the folder chip in the tab bar or the sidebar's
 Workspace item opens it. Tool-row chips and path-looking inline code in
 answers (`src/acp.zig`) jump straight to that file; markdown files
 render, code shows mono, binaries hand off to Open.
+
+## Workspaces
+
+A workspace is a folder graff runs in. The switcher at the top of the
+sidebar lists every workspace this browser knows (`localStorage`; the
+server only validates a root it is handed) with the active one checked:
+
+- **Open a folder…** (also the caret beside the tab bar's folder chip)
+  opens a folder picker (`/api/workspaces` walks one level at a time,
+  marks git roots, takes a typed or pasted path) and switches to the
+  folder you pick.
+- **Workspace settings…** edits the active workspace: display name, the
+  model new tabs spawn with, whether tools are auto-approved
+  (`graff acp --yolo`), and whether each tab's agent starts the MCP
+  servers from `~/.codegraff/mcp.json` (off runs it with `GRAFF_MCP_CONFIG`
+  pointing at an empty config: with a typical config every tab otherwise
+  costs a gigabyte or more of server processes). *Forget* removes it
+  from the switcher only.
+- Switching workspaces moves the tab you are looking at when nothing has
+  been asked in it yet: picking a folder should change the folder in
+  front of you, so its agent is respawned there rather than a second tab
+  appearing. A tab that already holds a conversation keeps its own
+  folder, because its agent is bound to that folder at spawn — the chip
+  in the tab bar and each split's header name the folder that tab runs
+  in, and the switcher names the one new tabs will use.
+
+`/api/acp` bootstrap, `/api/sessions`, `/api/fs` and `/api/git` all take
+the workspace root (`cwd` / `?root=`) and fall back to the default from
+`GRAFF_CWD` or the repo root.
+
+## Split view and tab names
+
+`⌘D` (or the split button in the tab bar) opens another chat beside the
+ones on screen, up to four columns. Each has its own transcript,
+composer, model and scroll position, and each split names the chat and
+the folder it runs in, since a split can be in a different workspace
+from the tab beside it. The × in a split's header closes that one; the
+split button closes them all. Clicking a tab that is already a split
+swaps it with the main column, so the same chats stay on screen.
+
+A tab is named by the model, not by chopping up the prompt: the first
+message of a tab goes to `graff title` through `/api/title`, which
+answers with a short phrase on a small model without touching the chat's
+own session. The prompt's first words stand in until it answers, and
+stay if it cannot. A session open in a tab shows that name in the
+sidebar too.
+
+## Managing chats
+
+Hovering a chat in the sidebar reveals two controls. **Archive** moves the
+session file under `.graff/sessions/archived/`, so the chat leaves the list
+but the conversation stays on disk and can be moved back by hand.
+**Delete** removes the file. Either way the chat's tab closes with it, and
+the row goes at once rather than after the next poll of the session
+directory.
+
+## Keyboard
+
+| Keys | What it does |
+|---|---|
+| `⌘T` / `Ctrl+T` | New chat |
+| `⌘W` / `Ctrl+W` | Close the active chat |
+| `⇧⌘T` / `Ctrl+Shift+T` | Reopen the last closed chat, resuming its graff session so the conversation comes back |
+| `⌘D` / `Ctrl+D` | Add a split, up to four columns |
+| `⌘\` / `Ctrl+\` | Close every split, or open one when there are none |
+| `⌘1`…`⌘8` | Jump to that tab; `⌘9` jumps to the last one |
+
+These are the desktop app's keys. A browser keeps `⌘W`, `⌘T` and `⇧⌘T`
+for its own tabs, so in a browser use the tab bar's buttons instead.
+
+## Browser sidecar (experimental)
+
+The **Browser** button in the tab bar (or the sidebar's Browser item)
+opens a pane showing a live Chrome tab that belongs to the chat. It is
+[Kuri](https://github.com/justrach/kuri)'s managed headless Chrome, driven
+over `/api/browser`; install Kuri (`curl -fsSL https://kuri.trilok.ai/download | sh`)
+or set `KURI_BIN`. Nothing runs until a pane is opened, and a browser that
+sees no requests for `GRAFF_BROWSER_IDLE_MINS` (default 20, `0` = never) is
+stopped again. Its footprint is capped: when Kuri and its Chrome tree pass
+`GRAFF_BROWSER_MAX_RSS_MB` (default 3072, `0` = no cap) they are stopped
+and the next request starts a fresh browser. Kuri is started with
+`KURI_ALLOW_LOCAL=1` so dev servers on this machine open; a Kuri older
+than that flag refuses localhost.
+
+- **Browse** forwards clicks, scrolling and typing to the page.
+- Drag the pane's left edge to resize it (double-click the edge for the
+  default width, arrow keys when it has focus); the width is remembered
+  and the page's viewport follows, so pins stay on their elements.
+- The address bar takes `localhost:3000`-style addresses; Cmd/Ctrl+L
+  focuses it from the page. The width control next to it shows the page
+  at the pane's own width (1:1) or a wider layout (768, 1024, 1280 px)
+  scaled down, so a desktop layout can be pinned as it will ship. A
+  workspace's pane remembers its last page and goes back there when it
+  opens on a blank tab (after a reload, or a browser restart).
+- **Annotate** pins the element under a click, instantly: the page's
+  pinnable elements (boxes, names, selectors, Kuri refs) are fetched as
+  one map and hit-tested in the pane, so hover and click never wait on
+  the network; the map refreshes after a scroll and every few seconds.
+  A note is optional (Enter keeps it). Pins keep page coordinates and
+  follow the page as it scrolls; the wheel scrolls in both modes and, in
+  Annotate, so do the arrow keys, Page Up/Down, Space, Home and End. Nothing is injected, so any
+  page works. Pins go behind the chat's next prompt as a block naming
+  each element (role, name, selector, box), the note, and — when Kuri's
+  snapshot names the same element — its `@eN` ref, plus the tab's address
+  so the agent can snapshot, act on, and highlight the very page the user
+  is looking at. **Ask graff** in the pane sends them right away, and
+  the tab reloads by itself once a turn that carried pins has finished,
+  so the result is on screen without a click.
+
+The design and what is deliberately left out are in
+`plans/2026-09-03-browser-sidecar.md`. The sidebar footer names the tab's graff
+session (`native-…`, the `--resume` target); clicking it copies the
+command that continues the same conversation in a terminal.
 
 ## Run
 

@@ -3,6 +3,9 @@
  * entry maps them onto Tailwind's --shadow-xs…2xl scale; our semantic tokens
  * below build on those values so the whole app picks up the smooth shadows. */
 @import "shadow-plugin/unprefixed";
+/* Streamdown renders the chat markdown with Tailwind utilities of its own;
+ * its bundle has to be scanned or those classes never make it into the CSS. */
+@source "../node_modules/streamdown/dist/*.js";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -137,6 +140,19 @@
   --color-orange-tint: var(--orange-tint);
   --color-red: var(--red);
   --color-red-tint: var(--red-tint);
+
+  /* Streamdown speaks shadcn's token names (bg-muted, border-border,
+   * text-muted-foreground…). Alias them onto the ramp above so its code
+   * blocks, tables and controls sit on our surfaces in both themes. */
+  --color-background: var(--surface);
+  --color-foreground: var(--ink);
+  --color-muted: var(--inset);
+  --color-muted-foreground: var(--ink-2);
+  --color-border: var(--line);
+  --color-primary: var(--accent);
+  --color-primary-foreground: oklch(1 0 0);
+  /* the frame around a code block or table; its body is --color-background */
+  --color-sidebar: var(--inset);
 
   /* shadows */
   --shadow-hairline: var(--shadow-hairline);

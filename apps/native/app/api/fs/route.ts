@@ -1,19 +1,11 @@
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { NextRequest } from "next/server";
+import { resolveRoot } from "@/lib/server-root";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-/** Same resolution as /api/acp: the workspace the agent itself runs in. */
-function workspaceRoot(): string {
-  if (process.env.GRAFF_ACP_CWD) return process.env.GRAFF_ACP_CWD;
-  if (process.env.GRAFF_CWD) return process.env.GRAFF_CWD;
-  const fromApp = path.resolve(process.cwd(), "../..");
-  if (existsSync(path.join(fromApp, "build.zig"))) return fromApp;
-  return process.cwd();
-}
 
 /** Heavy or generated trees that only bury the folders people navigate to. */
 const HIDDEN = new Set([".git", "node_modules", ".next", ".zig-cache", "zig-out", ".DS_Store"]);
@@ -40,7 +32,10 @@ function resolveInRoot(root: string, rel: string): string | null {
 }
 
 export async function GET(req: NextRequest) {
-  const root = workspaceRoot();
+  // `?root=` picks the workspace (a tab's own cwd); paths stay inside it.
+  const resolved = resolveRoot(req.nextUrl.searchParams.get("root"));
+  if ("error" in resolved) return Response.json({ error: resolved.error }, { status: resolved.status });
+  const root = resolved.root;
   const rel = req.nextUrl.searchParams.get("path") ?? "";
   const target = resolveInRoot(root, rel);
   if (!target) return Response.json({ error: "path escapes the workspace" }, { status: 400 });
@@ -93,8 +88,10 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const root = workspaceRoot();
-  const body = (await req.json()) as { action?: string; path?: string };
+  const body = (await req.json()) as { action?: string; path?: string; root?: string };
+  const resolved = resolveRoot(body.root);
+  if ("error" in resolved) return Response.json({ error: resolved.error }, { status: resolved.status });
+  const root = resolved.root;
   const target = resolveInRoot(root, body.path ?? "");
   if (!target) return Response.json({ error: "path escapes the workspace" }, { status: 400 });
   if (process.platform !== "darwin") {

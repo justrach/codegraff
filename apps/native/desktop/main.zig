@@ -11,12 +11,40 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// The Dock and ⌘-Tab icon. A bare binary has no bundle to read an icon
+/// from, so the image travels inside it and is handed to NSApplication at
+/// startup. Same artwork as the desktop app's own icon.
+const icon_png = @embedFile("icon.png");
+
 fn openLinux(url: []const u8) void {
     std.log.info("merjs-style shell: open {s} in a browser (WKWebView is macOS-only)", .{url});
 }
 
+/// Where the UI is served. A bundled app is launched from Finder with no
+/// environment to inherit, so when `GRAFF_NATIVE_URL` is unset the shell
+/// looks for a dev server on the ports this app uses, newest first, and
+/// falls back to the first of them so the window still opens (and shows
+/// the browser's own "cannot connect" page) when nothing is listening.
+const default_urls = [_][]const u8{ "http://127.0.0.1:3777", "http://127.0.0.1:3000" };
+
+fn listening(url: []const u8) bool {
+    // "http://127.0.0.1:<port>" — the port is what follows the last colon.
+    const colon = std.mem.lastIndexOfScalar(u8, url, ':') orelse return false;
+    const port = std.fmt.parseInt(u16, url[colon + 1 ..], 10) catch return false;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const address = std.Io.net.IpAddress.parseIp4("127.0.0.1", port) catch return false;
+    const stream = std.Io.net.IpAddress.connect(&address, io, .{ .mode = .stream }) catch return false;
+    stream.close(io);
+    return true;
+}
+
 pub fn main(init: std.process.Init) !void {
-    const url = init.environ_map.get("GRAFF_NATIVE_URL") orelse "http://127.0.0.1:3000";
+    const url = init.environ_map.get("GRAFF_NATIVE_URL") orelse blk: {
+        for (default_urls) |candidate| {
+            if (listening(candidate)) break :blk candidate;
+        }
+        break :blk default_urls[0];
+    };
     if (comptime builtin.os.tag == .macos) {
         try runMac(url);
     } else {
@@ -46,6 +74,12 @@ const NSWindowStyleMaskMiniaturizable: NSUInteger = 4;
 const NSWindowStyleMaskResizable: NSUInteger = 8;
 const NSBackingStoreBuffered: NSUInteger = 2;
 const NSApplicationActivationPolicyRegular: NSInteger = 0;
+/// NSURLRequestReloadIgnoringLocalCacheData. The window points at a dev
+/// server whose bundle changes under it; WebKit's cache happily serves a
+/// page from a previous build, which then fails to start against the new
+/// one. Always fetch the document fresh.
+const NSURLRequestReloadIgnoringLocalCacheData: NSUInteger = 1;
+const load_timeout_s: f64 = 30;
 const YES: BOOL = 1;
 const NO: BOOL = 0;
 
@@ -91,6 +125,23 @@ fn sendWebViewInit(recv: Id, s: Sel, frame: CGRect, config: Id) Id {
     const F = *const fn (Id, Sel, CGRect, Id) callconv(.c) Id;
     return @as(F, @ptrCast(&objc_msgSend))(recv, s, frame, config);
 }
+fn sendRequestInit(recv: Id, s: Sel, url: Id, policy: NSUInteger, timeout: f64) Id {
+    const F = *const fn (Id, Sel, Id, NSUInteger, f64) callconv(.c) Id;
+    return @as(F, @ptrCast(&objc_msgSend))(recv, s, url, policy, timeout);
+}
+fn sendBytes(recv: Id, s: Sel, ptr: [*]const u8, len: NSUInteger) Id {
+    const F = *const fn (Id, Sel, [*]const u8, NSUInteger) callconv(.c) Id;
+    return @as(F, @ptrCast(&objc_msgSend))(recv, s, ptr, len);
+}
+
+/// Give the app its icon. Best effort: a shell without one still runs.
+fn setAppIcon(app: Id) void {
+    const data = sendBytes(cls("NSData"), sel("dataWithBytes:length:"), icon_png.ptr, icon_png.len);
+    if (data == null) return;
+    const image = send1(send(cls("NSImage"), sel("alloc")), sel("initWithData:"), data);
+    if (image == null) return;
+    send1v(app, sel("setApplicationIconImage:"), image);
+}
 
 fn runMac(url: []const u8) !void {
     var url_buf: [256]u8 = undefined;
@@ -98,6 +149,7 @@ fn runMac(url: []const u8) !void {
 
     const app = send(cls("NSApplication"), sel("sharedApplication"));
     sendIntv(app, sel("setActivationPolicy:"), NSApplicationActivationPolicyRegular);
+    setAppIcon(app);
 
     const frame = CGRect{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 1280, .height = 820 } };
     const style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
@@ -124,7 +176,13 @@ fn runMac(url: []const u8) !void {
 
     const ns_url_str = sendStr(cls("NSString"), sel("stringWithUTF8String:"), url_z.ptr);
     const ns_url = send1(cls("NSURL"), sel("URLWithString:"), ns_url_str);
-    const request = send1(cls("NSURLRequest"), sel("requestWithURL:"), ns_url);
+    const request = sendRequestInit(
+        cls("NSURLRequest"),
+        sel("requestWithURL:cachePolicy:timeoutInterval:"),
+        ns_url,
+        NSURLRequestReloadIgnoringLocalCacheData,
+        load_timeout_s,
+    );
     _ = send1(webview, sel("loadRequest:"), request);
 
     send1v(window, sel("makeKeyAndOrderFront:"), null);
