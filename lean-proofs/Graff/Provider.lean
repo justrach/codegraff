@@ -85,7 +85,7 @@ def xApiKeyCount : Nat := countWhere (fun r => r.auth == .xApiKey) specs
 
 def providerRows : Nat := specs.length
 
-theorem provider_cube : providerRows = 22 := by native_decide
+theorem provider_cube : providerRows = 23 := by native_decide
 theorem responses_vendors : responsesCount = 2 := by native_decide
 theorem one_x_api_key : xApiKeyCount = 1 := by native_decide
 

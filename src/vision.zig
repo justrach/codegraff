@@ -1,11 +1,7 @@
-//! Image/vision support: the staged-image type + per-provider vision-capability
-//! check, media-type-from-extension, the anthropic/openai/responses image
-//! message builder, and the /image·/paste·Ctrl-V·GUI-attachment stagers.
-//! Split out of main.zig (600-line goal). Back-imports main (as main_mod,
-//! since the stagers' param is named `root`) for Agent, Provider, and
-//! isImagePath. main aliases the public surface back. The macOS pasteboard
-//! cascade itself (and the byte budget staged images live under) is one level
-//! down in vision_clipboard.zig and re-exported here.
+//! Image/vision support: staged-image type, capability check, media type,
+//! anthropic/openai/responses/interactions builders, and /image·paste stagers.
+//! Split out of main.zig. Back-imports main as main_mod. Pasteboard cascade
+//! lives in vision_clipboard.zig and is re-exported here.
 
 const std = @import("std");
 const builtin = @import("builtin");

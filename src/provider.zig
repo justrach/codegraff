@@ -24,17 +24,11 @@ pub var g_context_override: ?u64 = null;
 /// (default 80). null → 80. Unlike codex we allow lowering AND raising (1..100).
 pub var g_compact_pct_override: ?u8 = null;
 
-/// #502: xAI rides the OpenAI Responses wire at api.x.ai/v1/responses BY
-/// DEFAULT — WebSocket turns with the SSE/full-resend fallback ladder.
-/// Compaction stays on the client summarizer (it beat xAI's blob endpoint).
-/// GRAFF_XAI_WIRE=chat (or anything other than "responses") opts back into
-/// chat completions.
+/// #502: xAI defaults to api.x.ai/v1/responses (WS, SSE fallback). Compaction
+/// is the client summarizer. GRAFF_XAI_WIRE=chat opts back to chat completions.
 pub var g_xai_responses: bool = true;
 
 pub const xai_responses_url = "https://api.x.ai/v1/responses";
-/// xAI's explicit compaction endpoint (POST {model, input} → one opaque
-/// compaction item). Unlike codex there is no in-stream compaction — api.x.ai
-/// silently ignores the context_management directive (probed 2026-08-15).
 pub const xai_compact_url = "https://api.x.ai/v1/responses/compact";
 
 /// The context window for a provider+model, honoring g_context_override for an
