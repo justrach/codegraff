@@ -66,14 +66,28 @@ pub fn splice(arena: Allocator, tools_json: []const u8) ![]const u8 {
     var value = std.json.parseFromSliceLeaky(Value, arena, tools_json, .{ .allocate = .alloc_always }) catch return tools_json;
     if (value != .array) return tools_json;
     var changed = false;
+    var deferred = false;
     for (value.array.items) |*tool| {
         if (tool.* != .object) continue;
-        if (!shouldDefer(toolName(tool.*))) continue;
-        if (tool.object.get("defer_loading")) |_| continue;
-        try tool.object.put(arena, "defer_loading", .{ .bool = true });
-        changed = true;
+        if (shouldDefer(toolName(tool.*)) and !tool.object.contains("defer_loading")) {
+            try tool.object.put(arena, "defer_loading", .{ .bool = true });
+            changed = true;
+        }
+        if (tool.object.get("defer_loading")) |flag| {
+            if (flag == .bool and flag.bool) deferred = true;
+        }
     }
-    if (!hasType(value.array.items, "tool_search")) {
+    // Hosted search is invalid without a genuinely deferred tool (#746).
+    // Also remove an orphan carried by a previously processed catalog.
+    if (!deferred) {
+        var i: usize = 0;
+        while (i < value.array.items.len) {
+            if (hasType(value.array.items[i .. i + 1], "tool_search")) {
+                _ = value.array.orderedRemove(i);
+                changed = true;
+            } else i += 1;
+        }
+    } else if (!hasType(value.array.items, "tool_search")) {
         var obj: std.json.ObjectMap = .empty;
         try obj.put(arena, "type", .{ .string = "tool_search" });
         try value.array.append(.{ .object = obj });
@@ -99,6 +113,31 @@ pub fn spliceWebSearch(arena: Allocator, tools_json: []const u8) ![]const u8 {
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.write(value);
     return aw.toOwnedSlice();
+}
+
+test "#746 eager and empty catalogs never acquire hosted tool_search" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{
+        "[]",
+        "[{\"type\":\"function\",\"name\":\"bash\"}]",
+        "[{\"type\":\"function\",\"name\":\"webfetch\",\"defer_loading\":false}]",
+        "[{\"type\":\"function\",\"name\":\"webfetch\",\"defer_loading\":\"true\"}]",
+    }) |catalog| try std.testing.expectEqualStrings(catalog, try splice(arena.allocator(), catalog));
+}
+
+test "#746 existing deferred flags enable hosted search and orphan search is removed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const catalog = "[{\"type\":\"function\",\"name\":\"custom\",\"defer_loading\":true}]";
+    const out = try splice(a, catalog);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"type\":\"tool_search\""));
+    try std.testing.expectEqualStrings(out, try splice(a, out));
+    try std.testing.expectEqualStrings("[]", try splice(a, "[{\"type\":\"tool_search\"}]"));
+    const eager = try splice(a, "[{\"type\":\"function\",\"name\":\"bash\"},{\"type\":\"tool_search\"}]");
+    try std.testing.expect(std.mem.indexOf(u8, eager, "tool_search") == null);
+    try std.testing.expect(std.mem.indexOf(u8, eager, "bash") != null);
 }
 
 test "modelSupports is gpt-5.4+ / gpt-6, not gpt-5.3" {

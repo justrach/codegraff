@@ -332,6 +332,35 @@ fn testAgentFor(arena: std.mem.Allocator, id: []const u8, kind: @import("provide
 // every provider. The serialization guard in buildBody turns an empty
 // catalog string into "omit the field" on all three wires; this pins that
 // so no future invalidate-without-rebuild can reach the wire malformed.
+test "#746 emitted Responses body has hosted search only with a deferred tool" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for ([_]struct { catalog: []const u8, deferred: bool }{
+        .{ .catalog = "[]", .deferred = false },
+        .{ .catalog = "[{\"type\":\"function\",\"name\":\"bash\"}]", .deferred = false },
+        .{ .catalog = "[{\"type\":\"function\",\"name\":\"webfetch\",\"defer_loading\":false}]", .deferred = false },
+        .{ .catalog = "[{\"type\":\"function\",\"name\":\"webfetch\"}]", .deferred = true },
+    }) |case| {
+        var agent = try testAgentFor(a, "codex", .responses, "gpt-5.6-sol");
+        const body = try agent.buildBody(case.catalog, false, true, true);
+        defer std.testing.allocator.free(body);
+        const parsed = try std.json.parseFromSliceLeaky(Value, a, body, .{});
+        var searches: usize = 0;
+        var deferred = false;
+        for (parsed.object.get("tools").?.array.items) |tool| {
+            if (tool.object.get("type")) |typ| {
+                if (typ == .string and std.mem.eql(u8, typ.string, "tool_search")) searches += 1;
+            }
+            if (tool.object.get("defer_loading")) |flag| {
+                if (flag == .bool and flag.bool) deferred = true;
+            }
+        }
+        try std.testing.expectEqual(case.deferred, deferred);
+        try std.testing.expectEqual(@as(usize, if (case.deferred) 1 else 0), searches);
+    }
+}
+
 test "#695: an empty catalog string is omitted from the body, never serialized as tools:, (#695)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
