@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const Value = std.json.Value;
+const pricing = @import("pricing.zig");
 
 pub fn numberFields(num_field: anytype, u64_field: anytype) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -21,6 +22,13 @@ pub fn numberFields(num_field: anytype, u64_field: anytype) !void {
 pub fn lazyCatalog(comptime Catalog: type, source: *[]const u8) !void {
     const previous_source = source.*;
     defer source.* = previous_source;
+    // The loader installs whatever catalog it discovers into the process-wide
+    // table, allocated from the arena it is handed — here the testing
+    // allocator, whose memory dies with this test. On a machine with a real
+    // Codex cache that leaves `pricing.models()` walking freed memory for
+    // every later test, so put the baked table back.
+    const previous_table = pricing.active_model_table;
+    defer pricing.active_model_table = previous_table;
     var catalog: Catalog = .{ .codex_home = "" };
     catalog.ensureCached(std.testing.io, std.testing.allocator, std.testing.allocator, "", "", "");
     try std.testing.expect(catalog.loaded);
