@@ -74,6 +74,7 @@ record only when you need the evidence or the edge cases.
 | [0061](0061-tool-only-turns-narrate-and-ask-in-band.md) | Heads-up text rides in the same response as the tool calls; a choice for the user is an `ask_user` call; a job exit the model already read never wakes it. |
 | [0062](0062-background-servers-idle-lifecycle-and-ownership-record.md) | A background job silent and unread for 2h is stopped with its command kept; `/jobs keep` pins one (retained at exit); every job has an ownership record `graff servers` can list and stop, verified by start identity (#199). |
 | [0063](0063-unsourced-cancel-is-the-harness.md) | Every cancel records its source; a turn cancelled with no recorded source is labelled a harness cancel, never a user interrupt, and the source lands in the trace (#728). |
+| [0064](0064-plain-finals-reconcile-open-work.md) | Plain root finals with open current work get one reconciliation request; a remaining stop is explicit, not a promise of continued execution. |
 
 ## When to write one
 

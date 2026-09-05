@@ -1,6 +1,5 @@
-//! simple-harness — a minimal, dependency-free agentic loop supporting
-//! Anthropic and OpenAI-compatible providers, built-in/meta/MCP tools, parallel
-//! agents, strict tool-call mode, compaction, and JSONL traces in `.graff/traces`.
+//! Agentic loop for Anthropic and OpenAI-compatible providers: native/MCP tools,
+//! parallel agents, strict tool-call mode, compaction, and local JSONL traces.
 const std = @import("std");
 pub const panic = @import("tui").restore.Panic; // leave the alt screen BEFORE std prints a panic, or the restore sequence erases the trace (#535)
 const Io = std.Io;
@@ -581,6 +580,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("http_client_integration_tests.zig");
     _ = @import("http_client_trajectory_tests.zig");
     _ = @import("prompt_astra.zig");
+    _ = @import("agent_empty_completion.zig"); // #745: plain-final reconciliation
     _ = @import("test_hooks.zig"); // unreached modules; their tests were silently skipped
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
