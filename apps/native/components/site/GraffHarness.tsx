@@ -873,6 +873,7 @@ export default function GraffHarness() {
                       placeholder={threadBusy ? "Queue a follow-up…" : "Follow up"}
                       models={models}
                       commands={commands[thread.id] ?? []}
+                      root={cwdOf(thread)}
                       modelKey={threadModel}
                       onModelChange={(key: string) => changeModel(key, thread.id)}
                       onSend={(text: string) => void send(text, thread.id)}
