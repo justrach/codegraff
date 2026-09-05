@@ -99,8 +99,7 @@ pub const harness_issue_note =
     \\...`), never in the current working repository's issue tracker.
 ;
 
-/// Gate: `caps.local_tools`. Every outbound write goes through bash (gh, curl),
-/// so the rule earns its tokens only where bash exists (#739).
+/// Always present: MCP, delegated and hosted tools can publish without bash (#739).
 pub const public_write_note =
     \\
     \\
@@ -119,6 +118,16 @@ pub const public_write_note =
     \\would disclose. Editing afterwards does not undo it — edit history,
     \\notifications and mirrors keep the first version — so sanitize before the
     \\write, not after. Secrets are never publishable, with or without approval.
+    \\This includes shared destinations, discussions, deployments, external API
+    \\submissions and agent-composed telemetry/reporting payloads, through ANY tool.
+    \\Immediately before each outbound write, review the exact payload: omit or
+    \\redact incidental context, including identifiers inside errors or logs.
+    \\Include environment metadata only when relevant and already public and
+    \\non-identifying, or explicitly approved for disclosure. For necessary private
+    \\details, show exactly what and why and obtain explicit disclosure approval;
+    \\generic permission to file, delegate or publish is not disclosure approval.
+    \\A worker unable to ask must return a sanitized draft or request approval
+    \\through its orchestrator, not infer consent. Never disclose secrets.
 ;
 
 /// Gate: `caps.git_repo`. Commit-identity and PR-description discipline only
@@ -132,7 +141,8 @@ pub const git_authoring_note =
     \\identity — do NOT override GIT_AUTHOR_*/GIT_COMMITTER_*; their configured
     \\name + email (matching their GitHub account) must be the commit Author, just
     \\as when they commit by hand. Credit the assist with a trailer at the very end
-    \\of the commit message, after a blank line:
+    \\of the commit message, after a blank line (omit this optional attribution
+    \\when the user asks; authoring style is user-overridable, safety is not):
     \\Co-Authored-By: Codegraff <blackfloofie@codegraff.com>
     \\
     \\A pull request description you author must explain WHY, not only what —
@@ -234,6 +244,33 @@ pub const constraint_note =
     \\
     \\The moment the user rejects, forbids, or vetoes something ("no dots", "not vanilla JS", "stop adding scroll hints"), call note_constraint with one short imperative line recording it, then carry on — recorded constraints are injected into every later subagent, workflow and pipeline brief and survive compaction, so a rejection you leave unrecorded is one your fresh workers will repeat.
 ;
+
+/// Shared by root and workers, even when capture tools are unavailable.
+pub const constraint_authority_note =
+    \\
+    \\
+    \\The durable constraint ledger is authoritative for recorded policy. Summary
+    \\prose and agent-written notes are recollections, not proof of recording:
+    \\never promote their claims into recorded constraints or record them without
+    \\an actual user instruction. The injected ledger block is a bounded view;
+    \\consult the ledger if an older item is omitted, not the summary's claim.
+    \\User instructions override built-in authoring/style defaults immediately,
+    \\including optional commit attribution, before and after compaction. They
+    \\do not override secret-safety or disclosure-approval requirements.
+;
+
+/// Custom child/review personas may replace style, never standing policy.
+/// Reuse already-covered defaults; allocation failure drops the persona, not safety.
+pub fn withAuthority(arena: std.mem.Allocator, prompt: []const u8) []const u8 {
+    const publication = std.mem.indexOf(u8, prompt, public_write_note) != null;
+    const constraints = std.mem.indexOf(u8, prompt, constraint_authority_note) != null;
+    if (publication and constraints) return prompt;
+    return std.fmt.allocPrint(arena, "{s}{s}{s}", .{
+        prompt,
+        if (publication) "" else public_write_note,
+        if (constraints) "" else constraint_authority_note,
+    }) catch public_write_note ++ constraint_authority_note;
+}
 
 /// Always present: how to write the final message.
 pub const closing_note =

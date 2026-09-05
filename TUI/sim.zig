@@ -92,11 +92,7 @@ pub const Term = struct {
         @memcpy(self.inbuf[self.pending .. self.pending + bytes.len], bytes);
         const n = key_mod.joinOrphanHead(&self.inbuf, self.pending + bytes.len);
         var i: usize = 0;
-        var last: Effect = .stay;
-        while (key_mod.next(self.inbuf[0..n], &i)) |k| {
-            last = keys.handle(&self.model, k);
-            if (last != .stay) break;
-        }
+        const last = @import("sim_batch.zig").apply(&self.model, self.inbuf[0..n], &i, self.now_ms);
         self.pending = if (i < n) blk: {
             const rest = n - i;
             std.mem.copyForwards(u8, self.inbuf[0..rest], self.inbuf[i..n]);

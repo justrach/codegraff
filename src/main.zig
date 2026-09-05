@@ -1,5 +1,4 @@
-//! Agentic loop for Anthropic and OpenAI-compatible providers: native/MCP tools,
-//! parallel agents, strict tool-call mode, compaction, and local JSONL traces.
+//! Agentic loop: native/MCP tools, parallel agents, compaction, and local traces.
 const std = @import("std");
 pub const panic = @import("tui").restore.Panic; // leave the alt screen BEFORE std prints a panic, or the restore sequence erases the trace (#535)
 const Io = std.Io;
@@ -7,10 +6,8 @@ const http_client = @import("http_client.zig");
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp = @import("mcp.zig");
-// The interactive-REPL / --json-protocol loop lives in mainloop.zig; main() builds a Ctx of pointers into its own stack locals and calls run() once.
 const mainloop = @import("mainloop.zig");
 const builtin = @import("builtin");
-// Agent's method bodies are split across agent_*.zig as free `pub fn method(self: *Agent, ...)` functions, aliased back into `struct Agent`; imported here only to keep their test{} blocks running.
 const agent_table = @import("agent_table.zig");
 const agent_argstream = @import("agent_argstream.zig");
 const agent_render = @import("agent_render.zig");
@@ -557,8 +554,7 @@ const vision = @import("vision.zig"); // staged-image type, /image·/paste stage
 /// User-Agent for outbound Kimi Coding calls is `graff/<version>` (Moonshot forbids spoofing).
 /// Device headers follow kimi-code's X-Msh-* shapes. Other providers keep the default UA.
 pub const kimi_user_agent = @import("kimi_catalog.zig").user_agent;
-// HTTP transport (auth headers, raw POST, 5xx-body capture, watchdogs) lives in http.zig.
-const http = @import("http.zig");
+const http = @import("http.zig"); // HTTP transport and watchdogs.
 // Subprocess execution (runCapped, git-worktree mgmt, background bash-job pool) lives in jobs.zig; jobsReap is aliased back for main()'s cleanup defer.
 const jobs = @import("jobs.zig");
 const jobsReap = jobs.jobsReap;
@@ -581,10 +577,14 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("http_client_trajectory_tests.zig");
     _ = @import("prompt_astra.zig");
     _ = @import("agent_empty_completion.zig"); // #745: plain-final reconciliation
+    _ = @import("agent_model_loop.zig");
+    _ = @import("publication_policy_tests.zig");
+    _ = @import("jobs_completion_tests.zig");
     _ = @import("test_hooks.zig"); // unreached modules; their tests were silently skipped
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
     _ = @import("codex_tool_search.zig"); // hosted tool_search on gpt-5.4+ Codex
+    _ = @import("agent_request_search_tests.zig");
     _ = @import("agent_ws_steer.zig"); // gpt-6-astra response.steer
     _ = @import("acp_preauth.zig"); // credential-free ACP loop must stay in the test root
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events

@@ -62,7 +62,7 @@ pub const segments = [_]Segment{
     .{ .name = "todo", .text = text.todo_note, .gate = .todos },
     .{ .name = "trace", .text = text.trace_note, .gate = .local_tools },
     .{ .name = "harness_issue", .text = text.harness_issue_note, .gate = .local_tools },
-    .{ .name = "public_write", .text = text.public_write_note, .gate = .local_tools },
+    .{ .name = "public_write", .text = text.public_write_note, .gate = .always },
     .{ .name = "git_authoring", .text = text.git_authoring_note, .gate = .git_repo },
     .{ .name = "git_safety", .text = text.git_safety_note, .gate = .always },
     .{ .name = "work", .text = text.work_note, .gate = .always },
@@ -70,6 +70,7 @@ pub const segments = [_]Segment{
     .{ .name = "todo_progress", .text = text.todo_progress_note, .gate = .todos },
     .{ .name = "root_cause", .text = text.root_cause_note, .gate = .always },
     .{ .name = "constraint", .text = text.constraint_note, .gate = .constraints },
+    .{ .name = "constraint_authority", .text = text.constraint_authority_note, .gate = .always },
     .{ .name = "closing", .text = text.closing_note, .gate = .always },
     .{ .name = "parallel_core", .text = text.parallel_core_note, .gate = .always },
     .{ .name = "parallel_examples", .text = text.parallel_examples_note, .gate = .local_tools },
@@ -312,7 +313,6 @@ pub fn ultracodeActive(agent: *const Agent) bool {
 /// by setRootSystemPrompts below) so this stays a pure string funnel for the
 /// tests and for every non-root agent.
 pub fn setSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !void {
-    agent.sys_base = base;
     const with_playbook = if (playbook.g_root_inject) playbook.composeRoot(agent.io, arena, base) else base;
     // #391: the pre-compaction note-to-self rides the SAME funnel, one rung
     // below the user's constraints — a rule outranks the agent's own working
@@ -324,10 +324,14 @@ pub fn setSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !void
     // later set_agent/set_system_prompt would replace (the #326 staleness class).
     const composed = if (g_transcript_note.len == 0) with_notes else try std.fmt.allocPrint(arena, "{s}{s}", .{ with_notes, g_transcript_note });
     const with_goal = if (g_goal_line.len == 0) composed else try std.fmt.allocPrint(arena, "{s}{s}", .{ composed, g_goal_line });
+    const strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ with_goal, strict_note });
+    const ultra = try std.fmt.allocPrint(arena, "{s}{s}", .{ with_goal, ultracode_system_note });
+    const ultra_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ strict, ultracode_system_note });
+    agent.sys_base = base;
     agent.sys_normal = with_goal;
-    agent.sys_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ with_goal, strict_note });
-    agent.sys_ultra = try std.fmt.allocPrint(arena, "{s}{s}", .{ with_goal, ultracode_system_note });
-    agent.sys_ultra_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ agent.sys_strict, ultracode_system_note });
+    agent.sys_strict = strict;
+    agent.sys_ultra = ultra;
+    agent.sys_ultra_strict = ultra_strict;
 }
 
 /// Pin the live objective into the system-prompt prefix. Empty / paused /
@@ -466,7 +470,7 @@ pub const sub_system_prompt =
     \\questions — make reasonable assumptions. Do not narrate tool calls.
     \\Your final message is returned verbatim to the orchestrator: a concise
     \\report of the concrete facts you found.
-++ parallel_tools_note;
+++ parallel_tools_note ++ text.public_write_note ++ text.constraint_authority_note;
 
 pub const compact_instruction =
     \\Summarize this entire conversation for a context handoff. Capture: the
@@ -476,7 +480,7 @@ pub const compact_instruction =
     \\work. Be thorough but compact. Reply with only the summary.
     \\Report only what this conversation actually contains. Do not write that a
     \\rule, constraint or preference was recorded — recorded constraints live in
-    \\a durable ledger that is injected separately and in full, so a summary
+    \\a durable ledger injected separately (with caps), so a summary
     \\that asserts one invents it, and the agent reading you cannot tell the
     \\difference (#738). A standing instruction the user gave in words belongs
     \\here as what they said, attributed to them, not as machine state.
@@ -486,6 +490,7 @@ test { // #421/#410: prompt snapshots and goal-prefix behavior must stay reachab
     _ = @import("prompt_snapshot_tests.zig");
     _ = @import("prompt_lean_tests.zig");
     _ = @import("prompt_goal_tests.zig");
+    _ = @import("publication_policy_tests.zig");
 }
 
 // The harness has always run a returned tool batch concurrently, for subagents

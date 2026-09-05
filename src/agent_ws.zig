@@ -121,7 +121,7 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
     }
     if (!wsEligible(self)) return self.postStream(body);
     const response = postResponsesWs(self, body) catch |e| {
-        if (e == error.Interrupted or e == error.StreamStalled) return e;
+        if (e == error.Interrupted or e == error.StreamStalled or e == error.ModelLoop) return e;
         // Preemptive idle expiry is not a failed transport attempt; it only asks
         // request() to rebuild the already-created delta as full input.
         if (e == error.CodexWsReanchor) return e;
@@ -345,6 +345,7 @@ pub fn connectWatched(gpa: std.mem.Allocator, io: Io, url: []const u8, headers: 
 /// `data:` lines (parseResponses consumes it unchanged). Connect/transport
 /// failures return the ws error so postLive can fall back to SSE.
 pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
+    self.partial_text.clearRetainingCapacity(); // fresh capture even if connect/send is interrupted
     const gpa = self.gpa;
     const arena = self.arena;
     const provider = self.provider;
@@ -473,18 +474,9 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     errdefer full.deinit();
     var fbuf: std.ArrayList(u8) = .empty;
     defer fbuf.deinit(gpa);
-    // (#401) Frames received for THIS response: the "first frame" trace note
-    // that splits a hung turn into its two halves, and the head-budget gate
-    // below. It is NOT the tokens-flowing signal — see TokenSignal.
     var frames_seen: usize = 0;
-    // (#401) …and, separately, whether VISIBLE PROSE has arrived — THIS is what
-    // the read watchdog's budget keys on. Before the first token the model may
-    // reason in silence for minutes (the full stream_stall_ms); once prose has
-    // flowed and stopped, that is a dead socket and http_stall.budgetMs tightens
-    // to a quarter (#56). The WS reader used to hardcode "no tokens yet", re-arming
-    // the FULL 120s budget on every frame — why #401's mid-stream silence sat for
-    // 120s per attempt, ~4 minutes before the SSE latch, against successful turns
-    // of 3.6-11.6s. TokenSignal mirrors BOTH of the SSE reader's producers.
+    // Prose (not protocol frames) tightens the inter-frame stall budget.
+    var loop_guard: @import("agent_model_loop.zig").Stream = .{};
     var sig: TokenSignal = .{};
     var text_seen = false;
     var steer_st: @import("agent_ws_steer.zig").Session = .{};
@@ -561,6 +553,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         frames_seen += 1;
         if (frames_seen == 1) if (self.tracer) |tr| tr.note("ws", "first frame");
         if (fbuf.items.len == 0) continue :stream;
+        try loop_guard.event(self, fbuf.items, false);
         // …and THIS is the budget signal: visible prose, from EITHER event that
         // grows partial_text on SSE — an output-text delta, or the streamed
         // arguments of a whitelisted meta call (attempt_completion / ask_user),

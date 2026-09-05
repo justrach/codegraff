@@ -224,6 +224,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     var full: Io.Writer.Allocating = .init(gpa);
     errdefer full.deinit();
     var line: Io.Writer.Allocating = .init(gpa);
+    var loop_guard: @import("agent_model_loop.zig").Stream = .{};
     var got_body = false; // #134: true once response bytes have been received (gates the post-completion read-error handling)
     var saw_done = false; // #133: true only once the provider's terminal event landed — a close before this is a drop, not a clean end
     defer line.deinit();
@@ -298,6 +299,8 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
         // End of stream leaves the reader empty; otherwise the '\n' is
         // still buffered (and consumed below, after the line is handled).
         const more = if (reader.peekByte()) |_| true else |_| false;
+        if (ssePayload(line.writer.buffered())) |payload|
+            try loop_guard.event(self, payload, true);
         try full.writer.writeAll(line.writer.buffered());
         try full.writer.writeByte('\n');
         got_body = true; // #134: response bytes are in `full`; a later read error is a clean close
@@ -401,6 +404,7 @@ test "openaiComplete (#133): finish_reason marks completion, deltas do not" {
 
 test {
     _ = @import("agent_stream_stall_test.zig"); // #680: the loopback SSE stall ladder
+    _ = @import("agent_model_loop.zig");
 }
 
 /// #680: what request() does before each stall reconnect. The partial is
@@ -487,7 +491,6 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
     if (reasoning.len != 0) sink.emit(self.io, .{ .reasoning_delta = .{ .text = reasoning } });
     if (text.len == 0) return;
     self.streamed_text = true;
-    self.partial_text.appendSlice(self.arena, text) catch {}; // Esc-interrupt capture
     sink.emit(self.io, .{ .text_delta = .{ .text = text } });
 }
 

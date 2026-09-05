@@ -47,6 +47,7 @@ pub fn refreshRoot(agent: *Agent, arena: Allocator) void {
 /// root_specs, so a subagent is never even told it exists). Append-only by
 /// construction — see this file's header.
 pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
+    if (agent.sub) return .{ .text = "Only the root may record user constraints.", .is_error = true };
     const text = if (json_args.object(input)) |o| (json_args.str(o, "text") orelse "") else "";
     if (std.mem.trim(u8, text, " \t\r\n").len == 0) return .{
         .text = "note_constraint needs a `text` field: one short imperative line, e.g. \"never add scroll hints or progress dots\"",
@@ -55,7 +56,8 @@ pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
     var prov_buf: [32]u8 = undefined;
     const provenance = std.fmt.bufPrint(&prov_buf, "user:{d}", .{@import("util.zig").unixMs(agent.io)}) catch "user";
     const r = playbook.add(agent.io, agent.arena, text, .user, provenance);
-    if (!r.ok) return .{
+    const duplicate = std.mem.eql(u8, r.reason, "already recorded (same normalized text)");
+    if (!r.ok and !duplicate) return .{
         .text = std.fmt.allocPrint(agent.arena, "constraint NOT recorded ({s}){s}{s}", .{
             r.reason,
             if (r.id.len > 0) " — existing id " else "",
@@ -67,7 +69,15 @@ pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
         .is_error = !std.mem.eql(u8, r.reason, "already recorded (same normalized text)"),
     };
     @import("prompt_cache_hud.zig").noteBust(.playbook);
-    refreshRoot(agent, agent.arena);
+    // A duplicate must reconcile a stale prefix too. Never promise same-turn
+    // activation after a failed refresh (the durable write already succeeded).
+    prompts.setRootSystemPrompts(agent, agent.sys_base, agent.arena) catch
+        return .{ .text = "Constraint is durable, but active prompt refresh failed. Do not claim activation; retry note_constraint to reconcile it.", .is_error = true };
+    const block = playbook.blockNow(agent.io, agent.arena);
+    for ([_][]const u8{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |variant| {
+        if (block.len == 0 or std.mem.indexOf(u8, variant, block) == null)
+            return .{ .text = "Constraint is durable, but active ledger injection failed. Retry note_constraint to reconcile it.", .is_error = true };
+    }
     // ADR 0021: the user just said this. Echoing "constraint recorded" is
     // machine state, not progress. The tool result still tells the model.
     // The recorded constraint is in force NOW, not from the next user turn:
@@ -76,7 +86,7 @@ pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
     // matters — the model was still treating built-in guidance as controlling
     // for the rest of the turn and refusing the correction the user had just
     // asked for (#738).
-    return .{ .text = std.fmt.allocPrint(agent.arena, "constraint recorded as {s}. It is now in {s} and rides every subagent, workflow and pipeline brief from here on, in this session and in later ones — you do not need to restate it. It takes effect immediately, in this turn: where it contradicts a built-in instruction the user has overruled that instruction, so act on the constraint now rather than waiting for the next turn.", .{ r.id, playbook.path }) catch "constraint recorded", .is_error = false };
+    return .{ .text = std.fmt.allocPrint(agent.arena, "constraint recorded as {s}. It is now in {s} and rides every subagent, workflow and pipeline brief from here on, in this session and in later ones — you do not need to restate it. It takes effect immediately, in this turn: user instructions override built-in authoring/style defaults (including optional attribution), not secret-safety or disclosure-approval requirements. Act on the constraint now rather than waiting for the next turn.", .{ r.id, playbook.path }) catch "constraint recorded", .is_error = false };
 }
 
 /// Privacy-safe operational trace: id + success, never constraint text (#644).

@@ -61,8 +61,8 @@ fn root(arena: Allocator, kind: Provider.Kind) !Agent {
         .label = "root",
         .out = null,
         .session_name = "btw",
-        .sys_normal = "ROOT-BASE",
-        .sys_strict = "ROOT-BASE-STRICT",
+        .sys_normal = @import("prompt_text.zig").withAuthority(arena, "ROOT-BASE"),
+        .sys_strict = @import("prompt_text.zig").withAuthority(arena, "ROOT-BASE-STRICT"),
         .tools_anthropic = "[{\"name\":\"bash\"}]",
         .tools_openai = "[{\"name\":\"bash\"}]",
         .tools_responses = "[{\"name\":\"bash\"}]",
@@ -134,8 +134,10 @@ test "/btw shares the parent prompt_cache_key and does not rewrite instructions"
     const p_end = std.mem.indexOfScalarPos(u8, parent_body, p_from, '"') orelse return error.MissingParentKey;
     const b_end = std.mem.indexOfScalarPos(u8, body, b_from, '"') orelse return error.MissingSideKey;
     try std.testing.expectEqualStrings(parent_body[p_from..p_end], body[b_from..b_end]);
-    try std.testing.expect(std.mem.indexOf(u8, parent_body, "\"instructions\":\"ROOT-BASE\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"instructions\":\"ROOT-BASE\"") != null);
+    const parent_json = try std.json.parseFromSlice(Value, arena, parent_body, .{});
+    const side_json = try std.json.parseFromSlice(Value, arena, body, .{});
+    try std.testing.expectEqualStrings(r.sys_normal, parent_json.value.object.get("instructions").?.string);
+    try std.testing.expectEqualStrings(r.sys_normal, side_json.value.object.get("instructions").?.string);
     try std.testing.expect(std.mem.indexOf(u8, parent_body, "You have NO tools on this turn") == null);
 }
 

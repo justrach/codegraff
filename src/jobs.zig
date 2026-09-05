@@ -113,6 +113,9 @@ const Jobs = struct {
 
 pub var g_jobs: Jobs = .{};
 
+/// Deterministic test pause after done becomes observable, before UI publish.
+pub var completion_test_hook: ?*const fn (Io, u32) void = null;
+
 /// Drain whatever the MultiReader has buffered into the job's output buffer,
 /// dropping the oldest *unread* bytes past the cap (a chatty server must not
 /// grow memory unboundedly between bash_output polls). Caller holds the mutex.
@@ -205,10 +208,14 @@ fn jobPump(job: *Job, gpa: Allocator, io: Io) void {
     const cmd = job.cmd;
     const quiet = job.quiet;
     const idle = job.stopped_idle;
+    // Publish done + queue atomically against jobOutput/jobKill consuming it.
+    // A bounded dismissed-id cache cannot close a queue-after-unlock race.
+    if (!quiet and !detached) job_notify.queue(io, id, code, killed, cmd, idle);
     g_jobs.mutex.unlock(io);
     if (detached) return;
+    if (builtin.is_test) if (completion_test_hook) |hook| hook(io, id);
     if (pid != 0) job_registry.forget(io, job_registry.home, pid);
-    if (!quiet) job_notify.record(io, id, code, killed, cmd, idle);
+    if (!quiet) job_notify.publish(io, id, code, killed);
 }
 
 fn nowMs(io: Io) i64 {
@@ -430,6 +437,7 @@ pub fn jobKill(gpa: Allocator, io: Io, id: u32) !ToolOutput {
         defer g_jobs.mutex.unlock(io);
         const job = g_jobs.find(id) orelse return .{ .text = try std.fmt.allocPrint(gpa, "no background job {d} — /jobs lists them", .{id}), .is_error = true };
         if (job.done) {
+            job_notify.dismiss(io, id); // already-finished also reports the exit
             const unread = job.buf.items.len - job.cursor;
             return .{ .text = try std.fmt.allocPrint(gpa, "job {d} already finished ({d} unread byte(s) — bash_output reads them)", .{ id, unread }) };
         }
@@ -566,7 +574,7 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
     g_jobs.mutex.unlock(io);
     for (jobs) |job| freeJob(gpa, io, job);
     gpa.free(jobs);
-    g_jobs.list.deinit(gpa);
+    // toOwnedSlice already emptied the pool; deinit would poison reuse.
 }
 
 test { // split-out modules: unreferenced, their tests silently never run

@@ -23,9 +23,9 @@ const cap: usize = 16;
 var mu: Io.Mutex = .init;
 var ring: [cap]Notice = undefined;
 var count: usize = 0;
-/// Ids whose exit the model already read through bash_output / bash_kill
-/// before the pump queued the notice (it records right after flipping
-/// `done`, so the read can land in between). Bounded like the ring. ADR 0061.
+/// Legacy bounded dismiss-before-record credits (ADR 0061). The production
+/// pump no longer relies on these: done + queue and consumption share the
+/// jobs mutex, so eviction cannot resurrect a consumed completion (#728).
 var dismissed: [cap]u32 = undefined;
 var dismissed_len: usize = 0;
 
@@ -59,11 +59,18 @@ fn wakeLine(buf: []u8, n: Notice) []const u8 {
     return std.fmt.bufPrint(buf, "{s} — unread output via bash_output; do not poll.", .{h}) catch h;
 }
 
-/// Pump thread: the job is done. Queues a reminder and, if a turn is live,
-/// paints a TUI/REPL notice immediately. A job whose exit the model already
-/// read (dismiss ran first) still reaches the hosted sink — that event is
-/// UI, not a wake.
+/// Standalone notification convenience (tests). The job pump MUST split
+/// queue (under jobs mutex) from publish (outside it); calling this after
+/// exposing done reintroduces #728. Publication is UI, not a model wake.
 pub fn record(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8, idle: bool) void {
+    queue(io, id, exit_code, killed, cmd, idle);
+    publish(io, id, exit_code, killed);
+}
+
+/// Queue while holding the jobs mutex, in the same critical section as done.
+/// Consumers hold jobs -> notification mutex in that same order. Never call
+/// a frontend here: it may re-enter jobOutput.
+pub fn queue(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8, idle: bool) void {
     const clipped = clipCmd(cmd);
     const n = Notice{ .id = id, .exit_code = exit_code, .killed = killed, .idle = idle, .preview = clipped.buf, .preview_len = clipped.len };
     mu.lockUncancelable(io);
@@ -79,6 +86,10 @@ pub fn record(io: Io, id: u32, exit_code: ?u8, killed: bool, cmd: []const u8, id
         count += 1;
     }
     mu.unlock(io);
+}
+
+/// Frontend-only publication AFTER releasing the jobs mutex. No wake is queued.
+pub fn publish(io: Io, id: u32, exit_code: ?u8, killed: bool) void {
     if (engine_sink.hostedSink()) |sink| {
         sink.emit(io, .{ .job_completed = .{ .id = id, .exit_code = exit_code, .killed = killed } });
     }

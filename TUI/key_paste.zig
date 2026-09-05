@@ -53,6 +53,7 @@ pub fn inBurst(now_ms: u64) bool {
 pub fn resetBurst() void {
     burst_until_ms = 0;
     active = false;
+    split_cr = false;
 }
 
 /// Whether the read the parser is walking belongs to a paste. The read loop
@@ -77,11 +78,24 @@ pub fn burstRead(bytes: []const u8, now_ms: u64) bool {
     return true;
 }
 
+var split_cr = false;
+
+/// Consume only the immediately following LF, including across tty reads.
+/// Any other byte (notably a paste terminator) clears this one-byte carry.
+pub fn takeSplitLf(b: u8) bool {
+    const skip = split_cr and b == '\n';
+    split_cr = false;
+    return skip;
+}
+
 /// CR/LF inside a bracketed paste or a wrap-less burst is a literal newline,
 /// never the Enter/send key. Collapses `\r\n` to one `\n`.
 pub fn pasteNewline(bytes: []const u8, i: *usize, b: u8) ?u8 {
     if (b != 0x0d and b != 0x0a) return null;
-    if (b == 0x0d and i.* < bytes.len and bytes[i.*] == 0x0a) i.* += 1;
+    if (b == 0x0d) {
+        split_cr = i.* == bytes.len;
+        if (i.* < bytes.len and bytes[i.*] == 0x0a) i.* += 1;
+    }
     return '\n';
 }
 

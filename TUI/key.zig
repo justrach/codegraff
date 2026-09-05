@@ -13,15 +13,14 @@ pub var held: u32 = 0;
 /// definition, and a long paste spans several reads — so the debris guard must
 /// stay out of it or a chunk that happens to start `39;7;32M` gets eaten.
 var in_paste: bool = false;
+// A terminator makes subsequent keys in this read explicit user input.
+var paste_ended_in_read = false;
 
 pub fn inPaste() bool {
     return in_paste;
 }
 
-/// Close a bracketed paste and clear modifiers whose events were ignored
-/// inside it. The read loop also calls this when `CSI 201~` never arrived —
-/// without it the latch is permanent and every Enter, Escape and slash command
-/// becomes literal text for the rest of the session (#532/#536/#548).
+/// Close paste and ignored modifiers, also on lost-terminator recovery (#548).
 pub fn endPaste() void {
     in_paste = false;
     abandonSequence("", .none);
@@ -107,19 +106,15 @@ pub const Mouse = struct {
 };
 
 pub fn next(bytes: []const u8, i: *usize) ?Key {
-    // A full input read cannot grow to fit a carried head. key_orphan consumes
-    // exactly the completing tail and queues its decoded event ahead of every
-    // byte that was already behind it in the buffer.
+    if (i.* == 0) paste_ended_in_read = false;
+    // Full reads recover orphan events ahead of their buffered payload.
     if (i.* == 0) if (orphan.takeRecoveredEvent()) |event| {
         orphan.end = std.math.maxInt(usize);
         return event;
     };
     if (i.* >= bytes.len) return null;
-    // Orphan CSI debris can only ever be the HEAD of a read: the ESC that
-    // opened the sequence was lost BETWEEN reads (the loop dropped a truncated
-    // pending head, or the tty input queue overflowed while a slow frame
-    // painted). A digit run anywhere else is typed or pasted TEXT — swallowing
-    // it ate `0x1f`, `[12]`, `1e5` and every version string.
+    // Orphan debris is only a read HEAD after a lost ESC. Digit runs elsewhere
+    // are text: swallowing them ate `0x1f`, `[12]`, `1e5` and version strings.
     if (!in_paste and (i.* == 0 or i.* == orphan.end)) {
         switch (orphan.take(bytes, i)) {
             .took => |k| {
@@ -144,11 +139,12 @@ pub fn next(bytes: []const u8, i: *usize) ?Key {
     orphan.disarm();
     const b = bytes[i.*];
     i.* += 1;
+    if (paste.takeSplitLf(b)) return .ignore;
     if (b == 0x1b) return escapeSeq(bytes, i);
     if (b == 0x0d or b == 0x0a) {
         // Newlines inside a paste are text, not the Enter/send key: bracketed,
         // a multiline dump in this read, or a run spanning reads (#643/#737).
-        if (in_paste or paste.burstActive() or paste.looksLikeBurst(bytes)) {
+        if (in_paste or (!paste_ended_in_read and (paste.burstActive() or paste.looksLikeBurst(bytes)))) {
             if (paste.pasteNewline(bytes, i, b)) |nl| return .{ .char = nl };
         }
         return .enter;
@@ -394,6 +390,8 @@ pub fn decodeCsi(params: []const u8, final: u8) Key {
             },
             201 => blk: {
                 endPaste();
+                paste.resetBurst(); // an explicit terminator ends the read heuristic too (#737)
+                paste_ended_in_read = true;
                 break :blk .paste_end;
             },
             27 => fixterms(params),

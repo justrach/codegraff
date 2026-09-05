@@ -9,6 +9,10 @@ const job_idle = @import("job_idle.zig");
 const job_registry = @import("job_registry.zig");
 const proc_identity = @import("proc_identity.zig");
 
+test {
+    _ = @import("jobs_completion_tests.zig");
+}
+
 test "foreground tool subprocesses own their process group (#266, #198)" {
     const inherited = jobs.toolRunOptions(null);
     try std.testing.expect(inherited.kill_process_tree);

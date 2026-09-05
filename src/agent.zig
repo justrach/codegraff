@@ -252,8 +252,7 @@ pub const Agent = struct {
     pub const emit = @import("agent_output.zig").emit;
 
     pub fn systemPrompt(self: *const Agent) []const u8 {
-        if (self.review_mode) return self.sys_override orelse self.sys_normal;
-        if (self.sub) return self.sys_override orelse prompts.sub_system_prompt;
+        if (self.review_mode or self.sub) return @import("prompt_text.zig").withAuthority(self.arena, self.sys_override orelse if (self.sub) prompts.sub_system_prompt else self.sys_normal);
         // #326: ultra composes onto normal/strict rather than replacing it.
         return if (self.strict) (if (prompts.ultracodeActive(self)) self.sys_ultra_strict else self.sys_strict) else (if (prompts.ultracodeActive(self)) self.sys_ultra else self.sys_normal);
     }
@@ -387,7 +386,7 @@ pub const Agent = struct {
                 }
             }
             const hist_len = self.messages.items.len;
-            const root = try self.request(if (self.text_only) null else self.toolsJson());
+            const root = self.request(if (self.text_only) null else self.toolsJson()) catch |err| return @import("agent_model_loop.zig").finishError(self, err);
             const done = switch (self.provider.kind) {
                 .anthropic => try self.stepAnthropic(root),
                 .openai => try self.stepOpenAI(root),

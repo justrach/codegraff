@@ -221,6 +221,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 else
                     postWatched(self.gpa, self.io, self.client, self.provider, body, conv);
                 if (attempt_body) |ok| break :blk ok else |err| {
+                    if (err == error.ModelLoop) return err;
                     if (self.streamed_text) if (self.out) |w| {
                         w.writeAll("\n") catch {};
                         w.flush() catch {};
@@ -388,6 +389,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     }
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
                     if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
+                    try @import("agent_model_loop.zig").checkResponse(self, obj);
                     return obj;
                 },
                 .err => |failure| {
@@ -461,6 +463,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 if (!self.compaction_request) self.compact_transport_failures = 0;
                 if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
                 if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
+                try @import("agent_model_loop.zig").checkResponse(self, root);
                 return root;
             }
         }
@@ -537,6 +540,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         if (!self.compaction_request) self.compact_transport_failures = 0;
         if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
         if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
+        try @import("agent_model_loop.zig").checkResponse(self, root);
         return root;
     }
 }

@@ -22,6 +22,8 @@ const Agent = @import("agent.zig").Agent;
 /// same reason: the store takes no Dir parameter.
 fn inScratch(comptime body: fn (Io, std.mem.Allocator) anyerror!void) !void {
     if (@import("builtin").os.tag == .windows) return;
+    const saved_inject = playbook.g_root_inject;
+    defer playbook.g_root_inject = saved_inject;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -467,6 +469,16 @@ test "note_constraint (#381): appends user items only, is idempotent, and can ne
             const again = glue.noteConstraint(&root, call);
             try std.testing.expect(!again.is_error);
             try std.testing.expectEqual(@as(usize, 1), playbook.load(io, arena).len);
+
+            // Simulate a stale prefix: duplicate calls must refresh in this turn.
+            root.sys_normal = "stale";
+            const reconciled = glue.noteConstraint(&root, call);
+            try std.testing.expect(!reconciled.is_error);
+            try std.testing.expect(std.mem.indexOf(u8, reconciled.text, "not secret-safety") != null);
+            for ([_][]const u8{ root.sys_normal, root.sys_strict, root.sys_ultra, root.sys_ultra_strict }) |variant|
+                try std.testing.expect(std.mem.indexOf(u8, variant, items[0].text) != null);
+            const brief = playbook.rideBrief(io, arena, "worker task");
+            try std.testing.expect(std.mem.indexOf(u8, brief, items[0].text) != null);
 
             // Empty/blank text is refused rather than stored.
             const blank = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"text\":\"   \"}", .{});

@@ -471,11 +471,11 @@ test "a compaction handoff carries the live checklist across the summary (#318)"
     try std.testing.expect(std.mem.indexOf(u8, handoff, "parked by an older goal") == null);
 
     // A subagent shares the Agent struct but not the goal, so its handoff is
-    // byte-identical to the pre-#318 text - as is a session with no goal.
+    // has no standing state, just the shared policy boundary, like a root with no goal.
     agent.sub = true;
     const plain = try handoffMessage(&agent, "the model summarized the earlier work", &.{});
     try std.testing.expect(std.mem.indexOf(u8, plain, "standing state") == null);
-    try std.testing.expect(std.mem.endsWith(u8, plain, "Continue assisting the user based on this summary."));
+    try std.testing.expect(std.mem.endsWith(u8, plain, @import("prompt_text.zig").constraint_authority_note));
     agent.sub = false;
     agent.goal = null;
     try std.testing.expectEqualStrings(plain, try handoffMessage(&agent, "the model summarized the earlier work", &.{}));
@@ -553,13 +553,13 @@ test "a compacting subagent's handoff restates its task prompt verbatim" {
     const handoff = try handoffMessage(&agent, "the model summarized the earlier work", &.{});
     try std.testing.expect(std.mem.indexOf(u8, handoff, agent.task_prompt.?) != null and std.mem.indexOf(u8, handoff, "the model summarized the earlier work") != null and std.mem.indexOf(u8, handoff, "still your mandate") != null);
 }
-test "the root handoff is byte-identical to before the child pin" {
+test "the root handoff keeps its summary and appends the recorded-policy boundary" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var agent = th.subAgent(a, false);
     const handoff = try handoffMessage(&agent, "the model summarized the earlier work", &.{});
-    try std.testing.expectEqualStrings("Context: the earlier conversation was compacted to save space.\nSummary of the earlier work:\n\nthe model summarized the earlier work\n\nContinue assisting the user based on this summary.", handoff);
+    try std.testing.expectEqualStrings("Context: the earlier conversation was compacted to save space.\nSummary of the earlier work:\n\nthe model summarized the earlier work\n\nContinue assisting the user based on this summary." ++ @import("prompt_text.zig").constraint_authority_note, handoff);
 }
 test "pinChildTask captures the mandate once, never re-pins, and ignores a root agent or an unrecognised head" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
