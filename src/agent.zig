@@ -331,7 +331,7 @@ pub const Agent = struct {
         // Defensive for restored/embedded agents whose provider was assigned
         // directly instead of going through providers.applyProvider.
         try self.ensureRootTools(self.provider.kind);
-        // No per-turn teardown: the socket and the chain span user turns, guarded by codex_chain.usable instead.
+        var pending_work: empty_completion.PendingWork = .{};
         self.completed = null;
         @import("named_work.zig").beginTurn(self);
         if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) @import("cancel_source.zig").clear();
@@ -394,11 +394,11 @@ pub const Agent = struct {
                 .responses => try self.stepResponses(root),
             };
             if (done) |final_text| {
-                // A completion with no text and no tool calls used to end the turn
-                // silently — mid-task that just looks like a dead session.
+                // Retry empty replies; reconcile plain finals with live work (#745).
                 if (try empty_completion.handle(self, final_text, hist_len)) continue;
                 if (try @import("named_work.zig").handle(self, final_text)) continue;
-                return final_text;
+                if (try pending_work.finish(self, final_text)) |text| return text;
+                continue;
             }
             self.empty_completion_retries = 0;
         }
