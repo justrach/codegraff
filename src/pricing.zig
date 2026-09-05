@@ -287,6 +287,10 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
     .{ .provider = "kimi", .name = "kimi-for-coding-highspeed", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
     .{ .provider = "moonshot", .name = "kimi-latest", .context = 131_072 },
+    // Moonshot platform K3 (api.moonshot.ai, model id `kimi-k3`). Distinct from
+    // Kimi Code's native `k3` row: `--model kimi-k3` with only MOONSHOT_API_KEY
+    // must not rewrite onto the coding-plan login.
+    .{ .provider = "moonshot", .name = "kimi-k3", .context = 1_048_576, .supports_reasoning = true, .support_efforts = &.{ "low", "high", "max" }, .default_effort = "max" },
     .{ .provider = "xai", .name = "grok-4.6", .context = 500_000, .supports_reasoning = true },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
@@ -490,10 +494,16 @@ pub fn familyAliasEquals(provider_id: []const u8, name: []const u8, query: []con
 /// `keys` is main.zig's Keys (anytype to keep provider wiring out of this
 /// module) — anything with `get(provider_id) ?[]const u8`.
 pub fn resolveModelName(keys: anytype, query: []const u8) ?[]const u8 {
+    // #377: `kimi-k3` is Kimi Code's family spelling of `k3`. Moonshot's
+    // platform id is also `kimi-k3`. A keyed kimi login keeps the rewrite; a
+    // moonshot-only key keeps the Moonshot row (exact match below).
+    const kimi_keyed = keys.get("kimi") != null;
+    const moonshot_keyed = keys.get("moonshot") != null;
+    if (kimi_keyed or !moonshot_keyed) {
+        if (familyAliasEquals("kimi", "k3", query)) return "k3";
+    }
     for (models()) |m| if (std.mem.eql(u8, m.name, query)) return m.name;
     for (models()) |m| if (modelAliasEquals(m.name, query)) return m.name;
-    // #377: family-prefixed spelling of a provider's own row (`kimi-k3` → kimi's
-    // `k3`) — resolves even when no gateway catalog supplies the prefixed name.
     for (models()) |m| if (familyAliasEquals(m.provider, m.name, query)) return m.name;
     var qbuf: [128]u8 = undefined;
     const qnorm = normalizeModelAlias(&qbuf, query);

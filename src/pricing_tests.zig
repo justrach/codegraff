@@ -51,6 +51,12 @@ test "resolveModelName (#377): family-prefixed spelling resolves to the provider
     try std.testing.expect(pricing.familyAliasEquals("kimi", "k3", "kimi_k3"));
     try std.testing.expect(!pricing.familyAliasEquals("kimi", "k3", "kimi-k30"));
     try std.testing.expect(!pricing.familyAliasEquals("codex", "k3", "kimi-k3"));
+    var moon_values: [provider_mod.provider_specs.len]?[]const u8 = @splat(null);
+    for (provider_mod.provider_specs, 0..) |spec, i| {
+        if (std.mem.eql(u8, spec.id, "moonshot")) moon_values[i] = "k";
+    }
+    const moonshot_only = provider_mod.Keys{ .values = moon_values };
+    try std.testing.expectEqualStrings("kimi-k3", pricing.resolveModelName(moonshot_only, "kimi-k3").?);
 }
 
 test "resolveModelName: 5.6 sol prefers Codex gpt-5.6-sol over a gateway slug" {

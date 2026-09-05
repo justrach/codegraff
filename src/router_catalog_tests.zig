@@ -336,14 +336,28 @@ test "providerFor (#377): family-prefixed spelling routes to the direct provider
     try std.testing.expectEqualStrings("k3", p.model);
     // Exact catalog names keep absolute priority over the family alias.
     try std.testing.expectEqualStrings("gpt-5.6-sol", (try all.providerFor("gpt-5.6-sol")).model);
-    // Without the kimi credential the prefixed spelling behaves exactly as
-    // before: uncatalogued in the compiled table, so the gateway fallback.
+    // Without the kimi credential, Moonshot's platform id `kimi-k3` is an
+    // exact catalog row — not the gateway.
     var values: [provider.provider_specs.len]?[]const u8 = @splat("k");
     for (provider.provider_specs, 0..) |spec, i| {
         if (std.mem.eql(u8, spec.id, "kimi")) values[i] = null;
     }
     const no_kimi = Keys{ .values = values };
-    try std.testing.expectEqualStrings("codegraff", (try no_kimi.providerFor("kimi-k3")).id);
+    const moon = try no_kimi.providerFor("kimi-k3");
+    try std.testing.expectEqualStrings("moonshot", moon.id);
+    try std.testing.expectEqualStrings("kimi-k3", moon.model);
+}
+
+test "providerFor: moonshot-only kimi-k3 stays on api.moonshot.ai" {
+    const Keys = provider.Keys;
+    var values: [provider.provider_specs.len]?[]const u8 = @splat(null);
+    for (provider.provider_specs, 0..) |spec, i| {
+        if (std.mem.eql(u8, spec.id, "moonshot")) values[i] = "k";
+    }
+    const moonshot_only = Keys{ .values = values };
+    const p = try moonshot_only.providerFor("kimi-k3");
+    try std.testing.expectEqualStrings("moonshot", p.id);
+    try std.testing.expectEqualStrings("kimi-k3", p.model);
 }
 
 test "xAI defaults to the Responses wire; GRAFF_XAI_WIRE=chat opts out (#502)" {
