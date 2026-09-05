@@ -15,7 +15,7 @@ const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const tools_mod = @import("tools.zig");
 const Agent = agent_mod.Agent;
-const ToolCall = tools_mod.ToolCall;
+pub const ToolCall = tools_mod.ToolCall;
 
 const messages_mod = @import("messages.zig");
 const util = @import("util.zig");
@@ -24,7 +24,7 @@ const codex_chain = @import("codex_chain.zig");
 const toolResultMessage = messages_mod.toolResultMessage;
 const turn_checkpoint = @import("turn_checkpoint.zig");
 
-fn surfaceUnstreamedText(self: *Agent, text: []const u8) !void {
+pub fn surfaceUnstreamedText(self: *Agent, text: []const u8) !void {
     if (self.sub or self.streamed_text or text.len == 0) return;
     if (main_mod.json_mode) {
         self.emit(.{ .type = "text", .text = text });
@@ -45,7 +45,7 @@ const sseIndex = Agent.sseIndex;
 /// keep stepping. Bounded by max_repair_grants — reset on any green eval in
 /// runEval — so a permanently-red eval still terminates; when the budget is
 /// spent the caller falls back to the old end-the-turn behavior.
-fn grantRepairTurn(self: *Agent) !bool {
+pub fn grantRepairTurn(self: *Agent) !bool {
     if (self.eval_repair_grants >= eval_control.max_repair_grants) return false;
     // A repair turn costs at least a repair call plus a concluding call.
     // Without that headroom in the run budget, granting one just converts
@@ -54,7 +54,7 @@ fn grantRepairTurn(self: *Agent) !bool {
     // surface the hard stop instead, exactly the pre-grant contract.
     if (self.run_budget) |b| if (!b.canAfford(2)) return false;
     self.eval_repair_grants += 1;
-    try self.messages.append(try messages_mod.textMessage(self.arena, "user", eval_control.verifier_hard_stop));
+    try self.messages.append(try messages_mod.userNote(self.arena, self.provider.kind, eval_control.verifier_hard_stop));
     return true;
 }
 
@@ -315,6 +315,16 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
     return final_text;
 }
 
+/// One turn's response, handed to the step function for this wire.
+pub fn stepForWire(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
+    return switch (self.provider.kind) {
+        .anthropic => self.stepAnthropic(root),
+        .openai => self.stepOpenAI(root),
+        .responses => self.stepResponses(root),
+        .interactions => @import("interactions_steps.zig").step(self, root),
+    };
+}
+
 /// Reassemble a streamed SSE body into the non-streaming response shape
 /// the step functions expect. Returns null when the body contains no SSE
 /// events (a plain JSON body — error envelope, or a provider that
@@ -324,6 +334,7 @@ pub fn assembleStream(self: *Agent, body: []const u8) !?std.json.ObjectMap {
         .anthropic => self.assembleAnthropic(body),
         .openai => self.assembleOpenAI(body),
         .responses => unreachable, // parseResponses owns this path
+        .interactions => @import("interactions_stream.zig").assemble(self, body),
     };
 }
 
@@ -434,6 +445,9 @@ const CallAcc = struct {
     name: []const u8 = "",
     args: std.ArrayList(u8) = .empty,
     thought_signature: []const u8 = "",
+    /// Google hangs the signature off the CALL (extra_content.google.thought_signature);
+    /// echoing it on the message alone drops the binding, so keep it where it came from.
+    extra_content: ?Value = null,
 };
 
 pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
@@ -512,7 +526,10 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
                 if (tc.object.get("thought_signature")) |x| if (x == .string and x.string.len > 0) {
                     acc.thought_signature = x.string;
                 };
-                if (tc.object.get("extra_content")) |ec| extra_content = extra_content orelse ec;
+                if (tc.object.get("extra_content")) |ec| {
+                    acc.extra_content = ec;
+                    extra_content = extra_content orelse ec;
+                }
                 if (tc.object.get("function")) |f| if (f == .object) {
                     if (f.object.get("name")) |x| if (x == .string and x.string.len > 0) {
                         acc.name = x.string;
@@ -528,7 +545,11 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     try message.put(result_arena, "role", .{ .string = try result_arena.dupe(u8, role) }); // #124: role slices the scratch parse tree; dupe so it survives the per-request scratch reset
     if (message_id.len > 0) try message.put(result_arena, "id", .{ .string = try result_arena.dupe(u8, message_id) });
     if (thought_signature.len > 0) try message.put(result_arena, "thought_signature", .{ .string = try result_arena.dupe(u8, thought_signature) });
-    if (extra_content) |ec| try message.put(result_arena, "extra_content", ec);
+    // #124: extra_content slices the per-request SCRATCH parse tree, which is
+    // reset before the next request — storing it raw left the session holding
+    // freed memory (sanitizeValueUtf8 then recursed through garbage until the
+    // stack blew). Deep-copy it into the message arena like every other field.
+    if (extra_content) |ec| try message.put(result_arena, "extra_content", try util.dupeJsonValue(result_arena, ec));
     try message.put(result_arena, "content", if (content.items.len > 0) Value{ .string = content.items } else .null);
     if (reasoning_content.items.len > 0) try message.put(result_arena, "reasoning_content", .{ .string = reasoning_content.items });
     if (reasoning.items.len > 0) try message.put(result_arena, "reasoning", .{ .string = reasoning.items });
@@ -545,6 +566,7 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
             try tc.put(result_arena, "function", .{ .object = function });
             const call_sig = if (c.thought_signature.len > 0) c.thought_signature else thought_signature;
             if (call_sig.len > 0) try tc.put(result_arena, "thought_signature", .{ .string = try result_arena.dupe(u8, call_sig) });
+            if (c.extra_content) |ec| try tc.put(result_arena, "extra_content", try util.dupeJsonValue(result_arena, ec));
             try tcs.append(.{ .object = tc });
         }
         if (tcs.items.len > 0) try message.put(result_arena, "tool_calls", .{ .array = tcs });
@@ -561,39 +583,6 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     return r;
 }
 
-test "assembleOpenAI preserves streamed reasoning and Gemini echo fields" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var agent: Agent = .{
-        .gpa = std.testing.allocator,
-        .arena = arena,
-        .io = undefined,
-        .client = undefined,
-        .provider = undefined,
-        .messages = undefined,
-        .sub = false,
-        .label = "test",
-        .out = null,
-    };
-
-    const root = (try agent.assembleOpenAI(
-        "data: {\"id\":\"v1_thread\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"thought_signature\":\"SIG\"}}]}\n" ++
-            "data: {\"id\":\"v1_thread\",\"choices\":[{\"delta\":{\"reasoning_content\":\"think \"}}]}\n" ++
-            "data: {\"id\":\"v1_thread\",\"choices\":[{\"delta\":{\"reasoning_content\":\"deep\"}}]}\n" ++
-            "data: {\"id\":\"v1_thread\",\"choices\":[{\"delta\":{\"reasoning\":\"alt \"}}]}\n" ++
-            "data: {\"id\":\"v1_thread\",\"choices\":[{\"delta\":{\"reasoning\":\"path\"}}]}\n" ++
-            "data: {\"id\":\"v1_thread\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{}\"},\"thought_signature\":\"SIG\"}]}}]}\n" ++
-            "data: {\"id\":\"v1_thread\",\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"tool_calls\"}]}\n" ++
-            "data: [DONE]\n",
-    )).?;
-    const choices = root.get("choices").?;
-    const message = choices.array.items[0].object.get("message").?.object;
-    try std.testing.expectEqualStrings("assistant", message.get("role").?.string);
-    try std.testing.expectEqualStrings("done", message.get("content").?.string);
-    try std.testing.expectEqualStrings("think deep", message.get("reasoning_content").?.string);
-    try std.testing.expectEqualStrings("alt path", message.get("reasoning").?.string);
-    try std.testing.expectEqualStrings("v1_thread", message.get("id").?.string);
-    try std.testing.expectEqualStrings("SIG", message.get("thought_signature").?.string);
-    try std.testing.expectEqualStrings("SIG", message.get("tool_calls").?.array.items[0].object.get("thought_signature").?.string);
+test {
+    _ = @import("agent_steps_tests.zig");
 }

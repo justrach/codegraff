@@ -78,7 +78,9 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     const gpa = self.gpa;
     const provider = self.provider;
     const bearer = switch (provider.auth) {
-        .x_api_key => "",
+        // Key-header styles carry the key in their own header (see
+        // providerHeadersWithConv); only bearer needs the scheme prefix.
+        .x_api_key, .goog_api_key => "",
         .bearer => try std.fmt.allocPrint(gpa, "Bearer {s}", .{provider.api_key}),
     };
     defer if (bearer.len > 0) gpa.free(bearer);
@@ -370,7 +372,9 @@ pub fn isStreamEnd(arena: std.mem.Allocator, kind: anytype, raw_line: []const u8
         // xAI/OpenAI Responses: `event: response.completed` is the SSE name;
         // usage rides the following `data:` line. Ending here made -p
         // `[usage]` print 0 calls (live stream never saw the payload).
-        .responses, .openai => false,
+        // Interactions ends with `event: done` + `data: [DONE]`, caught above;
+        // `interaction.completed` carries the usage that must still be read.
+        .responses, .openai, .interactions => false,
     };
     const payload = ssePayload(raw_line) orelse return false;
     const candidate = switch (kind) {
@@ -378,7 +382,7 @@ pub fn isStreamEnd(arena: std.mem.Allocator, kind: anytype, raw_line: []const u8
         .responses => std.mem.indexOf(u8, payload, "response.completed") != null or
             std.mem.indexOf(u8, payload, "response.incomplete") != null or
             std.mem.indexOf(u8, payload, "response.failed") != null,
-        .openai => false,
+        .openai, .interactions => false,
     };
     if (!candidate) return false;
     const v = std.json.parseFromSliceLeaky(Value, arena, payload, .{ .allocate = .alloc_always }) catch return false;
@@ -390,7 +394,7 @@ pub fn isStreamEnd(arena: std.mem.Allocator, kind: anytype, raw_line: []const u8
         .responses => std.mem.eql(u8, ty.string, "response.completed") or
             std.mem.eql(u8, ty.string, "response.incomplete") or
             std.mem.eql(u8, ty.string, "response.failed"),
-        .openai => false,
+        .openai, .interactions => false,
     };
 }
 
@@ -444,6 +448,16 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
     if (modelOutputStarted(self.provider.kind, obj)) self.traceFirstToken();
     self.argLiveDelta(obj);
     const text: []const u8 = switch (self.provider.kind) {
+        // step.delta with a "text" delta is the only prose on this wire; a
+        // thought_signature delta carries an opaque blob, never display text.
+        .interactions => blk: {
+            const d = obj.get("delta") orelse break :blk "";
+            if (d != .object) break :blk "";
+            const dt = d.object.get("type") orelse break :blk "";
+            if (dt != .string or !std.mem.eql(u8, dt.string, "text")) break :blk "";
+            const x = d.object.get("text") orelse break :blk "";
+            break :blk if (x == .string) x.string else "";
+        },
         .anthropic => blk: {
             const t = obj.get("type") orelse break :blk "";
             if (t != .string or !std.mem.eql(u8, t.string, "content_block_delta")) break :blk "";
@@ -499,6 +513,13 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
 /// or function-call bytes across the three streaming wires.
 fn modelOutputStarted(kind: @import("provider.zig").Provider.Kind, obj: std.json.ObjectMap) bool {
     return switch (kind) {
+        // The first step.start/step.delta is the first model-authored byte,
+        // thought steps included (they are what the model is doing first).
+        .interactions => blk: {
+            const t = obj.get("event_type") orelse break :blk false;
+            if (t != .string) break :blk false;
+            break :blk std.mem.eql(u8, t.string, "step.start") or std.mem.eql(u8, t.string, "step.delta");
+        },
         .anthropic => blk: {
             const t = obj.get("type") orelse break :blk false;
             if (t != .string) break :blk false;

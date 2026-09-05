@@ -175,6 +175,7 @@ pub const Agent = struct {
     tools_anthropic: []const u8 = schema.tools_anthropic_sub,
     tools_openai: []const u8 = schema.tools_openai_sub,
     tools_responses: []const u8 = schema.tools_responses_sub,
+    tools_interactions: []const u8 = @import("schema_interactions.zig").tools_interactions_sub,
     todos: std.ArrayList(TodoItem) = .empty,
     eval_cmd: ?[]const u8 = null, // --eval: shell command that scores the current output (eval-driven loop)
     eval_target: u8 = 90, // --until: stop when the score reaches this (0-100)
@@ -292,6 +293,7 @@ pub const Agent = struct {
         self.tools_anthropic = "";
         self.tools_openai = "";
         self.tools_responses = "";
+        self.tools_interactions = "";
     }
 
     pub noinline fn ensureModelCatalog(self: *Agent, keys: provider_mod.Keys) void {
@@ -387,11 +389,7 @@ pub const Agent = struct {
             }
             const hist_len = self.messages.items.len;
             const root = self.request(if (self.text_only) null else self.toolsJson()) catch |err| return @import("agent_model_loop.zig").finishError(self, err);
-            const done = switch (self.provider.kind) {
-                .anthropic => try self.stepAnthropic(root),
-                .openai => try self.stepOpenAI(root),
-                .responses => try self.stepResponses(root),
-            };
+            const done = try @import("agent_steps.zig").stepForWire(self, root);
             if (done) |final_text| {
                 // Retry empty replies; reconcile plain finals with live work (#745).
                 if (try empty_completion.handle(self, final_text, hist_len)) continue;

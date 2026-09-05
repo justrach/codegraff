@@ -64,6 +64,29 @@ test "compactAt (#204): GRAFF_COMPACT_PCT overrides the 80% default, both direct
     try std.testing.expectEqual(@as(u64, 95_000), p.compactAt());
 }
 
+test "gemini routes to google, not the gateway, and carries the real 1M window" {
+    const all = Keys{ .values = @splat("k") };
+    // Before the google row existed, gemini-* was uncatalogued: providerFor fell
+    // through to the codegraff gateway and contextFor returned default_context,
+    // so a 1,048,576-token model auto-compacted at 160k instead of 838k.
+    const gemini = try all.providerFor("gemini-3.8-flash");
+    try std.testing.expectEqualStrings("google", gemini.id);
+    try std.testing.expectEqual(@as(u64, 1_048_576), gemini.context);
+    try std.testing.expect(gemini.compactAt() > 800_000);
+    // Gemini talks Google's first-party Interactions wire, not the OpenAI
+    // compatibility shim, and authenticates with x-goog-api-key.
+    try std.testing.expectEqual(Provider.Kind.interactions, gemini.kind);
+    try std.testing.expectEqual(Provider.Auth.goog_api_key, gemini.auth);
+
+    // With no GEMINI_API_KEY the model is catalogued but unkeyed, which #294
+    // says must fail loudly rather than silently bill the gateway.
+    var keyless = Keys{ .values = @splat(null) };
+    for (provider_specs, 0..) |spec, i| {
+        if (!std.mem.eql(u8, spec.id, "google")) keyless.values[i] = "k";
+    }
+    try std.testing.expectError(error.MissingKey, keyless.providerFor("gemini-3.8-flash"));
+}
+
 test "Keys.build: GRAFF_VERCEL_URL rewires only the Vercel endpoint" {
     const all = Keys{ .values = @splat("k") };
     provider_mod.g_vercel_url_override = provider_mod.vercel_v1_url;

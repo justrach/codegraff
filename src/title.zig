@@ -87,6 +87,9 @@ pub fn printSessionHeader(w: *Io.Writer, title: []const u8, folder: []const u8) 
 /// codex/responses a `response.reasoning_summary_text.delta`.
 pub fn reasoningDelta(kind: Provider.Kind, obj: std.json.ObjectMap) []const u8 {
     return switch (kind) {
+        // Gemini never streams reasoning PROSE — a thought step carries only an
+        // opaque signature, so there is nothing to show in the thinking panel.
+        .interactions => "",
         .anthropic => blk: {
             const d = obj.get("delta") orelse break :blk "";
             if (d != .object) break :blk "";
@@ -127,6 +130,24 @@ pub fn assistantText(kind: Provider.Kind, root: std.json.ObjectMap) []const u8 {
                 const bt = if (block.object.get("type")) |t| (if (t == .string) t.string else "") else "";
                 if (std.mem.eql(u8, bt, "text"))
                     if (block.object.get("text")) |txt| if (txt == .string) break :blk txt.string;
+            }
+            break :blk "";
+        },
+        // Interactions returns execution steps; the answer is the text parts of
+        // the model_output step (thought steps carry only an opaque signature).
+        .interactions => blk: {
+            const steps = root.get("steps") orelse break :blk "";
+            if (steps != .array) break :blk "";
+            for (steps.array.items) |step| {
+                if (step != .object) continue;
+                const st = if (step.object.get("type")) |t| (if (t == .string) t.string else "") else "";
+                if (!std.mem.eql(u8, st, "model_output")) continue;
+                if (step.object.get("content")) |c| if (c == .array) {
+                    for (c.array.items) |part| {
+                        if (part != .object) continue;
+                        if (part.object.get("text")) |txt| if (txt == .string) break :blk txt.string;
+                    }
+                };
             }
             break :blk "";
         },

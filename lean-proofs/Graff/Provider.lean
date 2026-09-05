@@ -48,6 +48,7 @@ def specs : List Row :=
   , { id := "codegraff",  kind := .openai,    auth := .bearer,  login := .codegraffDevice, catalog := .openai, takesEffort := true }
   , { id := "deepseek",   kind := .openai,    auth := .bearer,  takesEffort := true }
   , { id := "openai",     kind := .responses, auth := .bearer }
+  , { id := "google",     kind := .interactions, auth := .googApiKey, catalog := .openai, takesEffort := true }
   , { id := "minimax",    kind := .anthropic, auth := .bearer }
   , { id := "xiaomi",     kind := .openai,    auth := .bearer }
   , { id := "kilo",       kind := .openai,    auth := .bearer }

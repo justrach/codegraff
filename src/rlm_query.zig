@@ -73,6 +73,19 @@ pub fn buildBody(gpa: Allocator, provider: Provider, prompt: []const u8) ![]u8 {
             try s.objectField("input");
             try s.write(prompt);
         },
+        // Interactions takes a bare string as `input` like Responses, but caps
+        // output under generation_config and keeps nothing when store is false.
+        .interactions => {
+            try s.objectField("store");
+            try s.write(false);
+            try s.objectField("generation_config");
+            try s.beginObject();
+            try s.objectField("max_output_tokens");
+            try s.write(max_out_tokens);
+            try s.endObject();
+            try s.objectField("input");
+            try s.write(prompt);
+        },
         .anthropic => {
             try s.objectField("max_tokens");
             try s.write(max_out_tokens);

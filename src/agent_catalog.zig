@@ -36,6 +36,7 @@ fn slot(self: *const Agent) []const u8 {
         .anthropic => self.tools_anthropic,
         .openai => self.tools_openai,
         .responses => self.tools_responses,
+        .interactions => self.tools_interactions,
     };
 }
 
@@ -45,6 +46,7 @@ pub fn ensureRootTools(self: *Agent, kind: Provider.Kind) !void {
         .anthropic => &self.tools_anthropic,
         .openai => &self.tools_openai,
         .responses => &self.tools_responses,
+        .interactions => &self.tools_interactions,
     };
     if (dest.*.len != 0) return;
     const specs = if (self.sub)

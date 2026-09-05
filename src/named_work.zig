@@ -132,6 +132,7 @@ pub fn responsesUserMessage(arena: std.mem.Allocator, text: []const u8) !Value {
 pub fn userNudge(arena: std.mem.Allocator, kind: @import("provider.zig").Provider.Kind, text: []const u8) !Value {
     return switch (kind) {
         .responses => responsesUserMessage(arena, text),
+        .interactions => @import("interactions_steps.zig").userInput(arena, text),
         .openai, .anthropic => messages_mod.textMessage(arena, "user", text),
     };
 }

@@ -22,11 +22,15 @@ inductive Kind where
   | anthropic
   | openai
   | responses
+  /-- Google Interactions: execution steps, never WS-eligible. -/
+  | interactions
 deriving DecidableEq, Repr, BEq
 
 inductive Auth where
   | xApiKey
   | bearer
+  /-- Google's `x-goog-api-key`; rejected as an OAuth bearer. -/
+  | googApiKey
 deriving DecidableEq, Repr, BEq
 
 inductive Pipe where

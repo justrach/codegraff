@@ -79,6 +79,18 @@ pub fn requestCacheKey(io: Io, label: []const u8, agent: *const anyopaque, provi
     return promptCacheKey(io, label, agent, buf);
 }
 
+/// Write the body's `prompt_cache_key`, unless this provider rejects it.
+/// Google validates the payload strictly and fails the WHOLE request on an
+/// unknown field ("Unknown name \"prompt_cache_key\": Cannot find field."),
+/// and it caches implicitly, so it is the one openai-wire provider that
+/// carries no partition key. Everything else must still pin one.
+pub fn writeRequestCacheKey(s: anytype, io: Io, label: []const u8, agent: *const anyopaque, provider_id: []const u8) !void {
+    if (std.mem.eql(u8, provider_id, "google")) return;
+    var buf: [96]u8 = undefined;
+    try s.objectField("prompt_cache_key");
+    try s.write(requestCacheKey(io, label, agent, provider_id, &buf));
+}
+
 var project_id_buf: [36]u8 = undefined;
 var project_id_len: usize = 0;
 var project_id_lock: std.atomic.Value(bool) = .init(false);
@@ -184,6 +196,12 @@ pub fn providerHeadersWithConv(io: Io, provider: Provider, bearer: []const u8, b
         },
         .bearer => {
             buf[count] = .{ .name = "authorization", .value = bearer };
+            count += 1;
+        },
+        // generativelanguage rejects an API key sent as `Authorization: Bearer`
+        // with a 401 asking for an OAuth token — it wants its own header.
+        .goog_api_key => {
+            buf[count] = .{ .name = "x-goog-api-key", .value = provider.api_key };
             count += 1;
         },
     }

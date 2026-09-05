@@ -48,6 +48,22 @@ pub fn responsesToolsJson(comptime specs: anytype) []const u8 {
     }
 }
 
+/// Google Interactions: the Responses shape minus `strict`. The endpoint
+/// validates strictly and rejects the whole request on an unknown field
+/// ("Unknown parameter 'strict' at 'tools[0]'"), so the two cannot share a
+/// catalog even though every other byte matches.
+pub fn interactionsToolsJson(comptime specs: anytype) []const u8 {
+    comptime {
+        var out: []const u8 = "[";
+        for (specs, 0..) |t, i| {
+            if (i > 0) out = out ++ ",";
+            out = out ++ "{\"type\":\"function\",\"name\":\"" ++ t.name ++
+                "\",\"description\":\"" ++ t.desc ++ "\",\"parameters\":" ++ t.schema ++ "}";
+        }
+        return out ++ "]";
+    }
+}
+
 test "renderers emit one entry per spec in each provider shape" {
     const Spec = struct { name: []const u8, desc: []const u8, schema: []const u8 };
     const specs = [_]Spec{

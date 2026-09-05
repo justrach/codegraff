@@ -57,7 +57,13 @@ fn hasCacheControl(body: []const u8) bool {
     return std.mem.indexOf(u8, body, "\"cache_control\":{\"type\":\"ephemeral\"}") != null;
 }
 
-fn wantsKey(kind: provider_mod.Provider.Kind) bool {
+fn wantsKey(id: []const u8, kind: provider_mod.Provider.Kind) bool {
+    // Google validates the payload strictly and rejects the entire request on
+    // an unknown field, so it is the one openai-wire provider that cannot carry
+    // a partition key ("Unknown name \"prompt_cache_key\""). It caches
+    // implicitly instead. Every other openai/responses provider still must pin
+    // one — this is a named exception, not a relaxed rule.
+    if (std.mem.eql(u8, id, "google")) return false;
     return kind == .openai or kind == .responses;
 }
 
@@ -82,7 +88,7 @@ test "prompt cache: every baked provider pins a key or Anthropic prefix" {
         const kid = try child.buildBody(null, false, true, true);
         defer std.testing.allocator.free(kid);
 
-        if (wantsKey(spec.kind)) {
+        if (wantsKey(spec.id, spec.kind)) {
             const k1 = cacheKeyIn(first) orelse {
                 std.debug.print("\n{s} ({s}): missing prompt_cache_key\n", .{ spec.id, @tagName(spec.kind) });
                 return error.MissingPromptCacheKey;

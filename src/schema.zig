@@ -236,7 +236,7 @@ pub fn isMetaName(name: []const u8) bool {
 // available. They live in `base_specs`' orbit rather than the root-only block
 // because a subagent has to be able to call them: the documented way to make
 // several images is one subagent per image, each calling `imagegen` once.
-const optional_specs = [_]ToolSpec{
+pub const optional_specs = [_]ToolSpec{
     .{ .name = imagegen.tool_name, .desc = imagegen.tool_desc, .schema = imagegen.tool_schema },
 };
 
@@ -265,25 +265,10 @@ pub const tools_anthropic_sub_optional_remote = anthropicToolsJson(base_specs_op
 pub const tools_openai_sub_optional_remote = openaiToolsJson(base_specs_optional_remote);
 pub const tools_responses_sub_optional_remote = responsesToolsJson(base_specs_optional_remote);
 
-/// The catalog a SUBAGENT is served, across both gates: `--no-local-tools`
-/// subtracts, an available optional tool adds. Sole caller is Agent.toolsJson.
-pub fn subToolsJson(kind: Provider.Kind, gated: bool) []const u8 {
-    const optional = tool_gates.anyAvailable();
-    return switch (kind) {
-        .anthropic => if (gated)
-            (if (optional) tools_anthropic_sub_optional_remote else tools_anthropic_sub_remote)
-        else
-            (if (optional) tools_anthropic_sub_optional else tools_anthropic_sub),
-        .openai => if (gated)
-            (if (optional) tools_openai_sub_optional_remote else tools_openai_sub_remote)
-        else
-            (if (optional) tools_openai_sub_optional else tools_openai_sub),
-        .responses => if (gated)
-            (if (optional) tools_responses_sub_optional_remote else tools_responses_sub_remote)
-        else
-            (if (optional) tools_responses_sub_optional else tools_responses_sub),
-    };
-}
+/// The catalog a SUBAGENT is served. Lives in schema_interactions.zig with the
+/// Interactions catalogs (600-line ceiling here); re-exported so every existing
+/// `schema.subToolsJson` caller keeps resolving.
+pub const subToolsJson = @import("schema_interactions.zig").subToolsJson;
 
 /// Render built-in specs + discovered MCP tools into one provider-specific
 /// tools array (allocated with `out`). Used for the root agent at startup.
@@ -348,6 +333,20 @@ pub fn writeToolEntry(s: *std.json.Stringify, kind: Provider.Kind, name: []const
             try s.objectField("description");
             try s.write(desc);
             try s.objectField("input_schema");
+            try writeSchema(s, schema);
+            try s.endObject();
+        },
+        // Interactions is the Responses entry without `strict`, which it
+        // rejects as an unknown parameter.
+        .interactions => {
+            try s.beginObject();
+            try s.objectField("type");
+            try s.write("function");
+            try s.objectField("name");
+            try s.write(name);
+            try s.objectField("description");
+            try s.write(desc);
+            try s.objectField("parameters");
             try writeSchema(s, schema);
             try s.endObject();
         },

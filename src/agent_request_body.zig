@@ -172,9 +172,7 @@ pub fn buildBody(self: *Agent, tools_in: ?[]const u8, force_tool: bool, stream: 
             // Sticky cache partition. Same value as x-grok-conv-id (xAI
             // official maximize-hits). Root is the project id; children
             // share a role lane so sibling scouts reuse system+tools.
-            var ckbuf: [96]u8 = undefined;
-            try s.objectField("prompt_cache_key");
-            try s.write(http_headers.requestCacheKey(self.io, self.label, self, self.provider.id, &ckbuf));
+            try http_headers.writeRequestCacheKey(&s, self.io, self.label, self, self.provider.id);
             // reasoning_effort (codegraff/deepseek/zai) + Z.AI thinking + Vercel reasoning.effort.
             try @import("zai_wire.zig").writeChatExtras(&s, self.provider.id, self.provider.model, self.sendReasoningEffort(), @import("effort_route.zig").wireEffort(self.provider.model, @tagName(self.reasoning)));
             // --output-schema: structured outputs (xAI docs' response_format).
@@ -195,6 +193,8 @@ pub fn buildBody(self: *Agent, tools_in: ?[]const u8, force_tool: bool, stream: 
         // The Responses-wire body (codex / xAI / native Codegraff) lives in its own module
         // under the 600-line ceiling; structured-output writers ride along.
         .responses => try @import("agent_request_body_responses.zig").write(self, &s, tools, force_tool),
+        // Google Interactions: execution steps, not messages or items.
+        .interactions => try @import("interactions_wire.zig").write(self, &s, tools, force_tool, stream),
     }
     try s.endObject();
     return aw.toOwnedSlice();

@@ -269,6 +269,11 @@ pub fn argLiveDelta(self: *Agent, obj: std.json.ObjectMap) void {
     const ui = !main_mod.json_mode and !self.stream_quiet;
     if (!ui and !rlm_spec.available) return;
     switch (self.provider.kind) {
+        // Interactions streams arguments as `arguments_delta` chunks keyed by
+        // step index rather than the per-wire shapes this extractor models.
+        // The live argument preview is simply not rendered there; the call is
+        // still dispatched in full from the assembled step.
+        .interactions => return,
         .anthropic => {
             const t = obj.get("type") orelse return;
             if (t != .string) return;

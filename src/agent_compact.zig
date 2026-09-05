@@ -55,6 +55,9 @@ pub fn summaryResponseComplete(self: *Agent, root: std.json.ObjectMap) bool {
     if (root.get("incomplete")) |value| if (value == .bool and value.bool) return false;
     return switch (self.provider.kind) {
         .responses => true, // parseResponses marks incomplete/missing terminals above
+        // The assembler only emits a status when it saw interaction.completed;
+        // a truncated stream is already flagged via root.incomplete above.
+        .interactions => true,
         .anthropic => blk: {
             // Raw non-streaming compatibility gateways may omit stop_reason.
             // Stream reassembly marks that same absence as root.incomplete, so
@@ -224,7 +227,7 @@ pub fn compact(self: *Agent) anyerror!usize {
     }
 
     var fresh = std.json.Array.init(self.arena);
-    try fresh.append(try textMessage(self.arena, "user", try handoffMessage(self, summary, live_messages.items[0..recent_start])));
+    try fresh.append(try @import("messages.zig").userNote(self.arena, self.provider.kind, try handoffMessage(self, summary, live_messages.items[0..recent_start])));
     // Preserve a valid recent suffix verbatim (up to ~8k estimated tokens),
     // including its user boundary and paired tool calls/results.
     try peer_context.appendWorkingSet(&fresh, recent_messages, live_messages.items);
