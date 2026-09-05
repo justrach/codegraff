@@ -41,9 +41,8 @@ pub const PendingImage = struct {
     from_composer: bool = false,
 };
 
-/// Conservative vision check: only models we know accept images. Everything
-/// else (deepseek, kimi, glm, minimax, mimo, …) is treated as text-only so
-/// `/image` can point it out instead of triggering a provider 400.
+/// Conservative vision check: only known image-capable models are allowed;
+/// `/image` rejects everything else before it can trigger a provider 400.
 /// Vision support by model-name prefix (provider-agnostic): which models
 /// accept image content blocks. Used by /image, Ctrl-V, image drops, and
 /// the /models vision column.
@@ -53,6 +52,7 @@ pub fn visionModel(m_full: []const u8) bool {
     const slash = std.mem.lastIndexOfScalar(u8, m_full, '/');
     const m = if (slash) |i| m_full[i + 1 ..] else m_full;
     return std.mem.startsWith(u8, m, "claude") or
+        std.mem.startsWith(u8, m, "gpt-6-astra") or
         std.mem.startsWith(u8, m, "gpt-5") or
         std.mem.startsWith(u8, m, "gpt-4") or
         std.mem.startsWith(u8, m, "grok-4") or
@@ -388,6 +388,7 @@ test "visionCapable allowlist" {
     }.p;
     try std.testing.expect(visionCapable(mk("claude-opus-4-8")));
     try std.testing.expect(visionCapable(mk("gpt-5.5")));
+    try std.testing.expect(visionCapable(mk("gpt-6-astra")));
     try std.testing.expect(!visionCapable(mk("deepseek-v4-pro")));
     try std.testing.expect(visionCapable(mk("k3"))); // Kimi for Coding sees images
     try std.testing.expect(visionCapable(mk("glm-5.3-flash"))); // codegraff backend accepts images
@@ -398,6 +399,7 @@ test "visionCapable allowlist" {
 test "visionModel: vision-capable model families only" {
     try std.testing.expect(visionModel("claude-opus-4-8"));
     try std.testing.expect(visionModel("gpt-5.5"));
+    try std.testing.expect(visionModel("openai/gpt-6-astra"));
     try std.testing.expect(visionModel("gpt-4o"));
     try std.testing.expect(visionModel("grok-4.3"));
     try std.testing.expect(visionModel("glm-5.3-flash"));

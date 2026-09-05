@@ -137,10 +137,10 @@ fn writeCacheAnchor(s: *std.json.Stringify) !void {
 /// With --output-schema the strict grammar tempts the model to answer
 /// immediately instead of touching tools (graff-evals caught grok-4.6
 /// answering a file-inspection task without reading the file). One standing
-/// line restores tools-first behavior; without a schema the prompt is
-/// byte-identical to before.
+/// line restores tools-first behavior. Model guidance is composed here too,
+/// at request time, so provider switches cannot retain another model's note.
 pub fn schemaAwarePrompt(self: *Agent) ![]const u8 {
-    const base = self.systemPrompt();
+    const base = try @import("prompt_astra.zig").append(self, self.systemPrompt());
     if (self.output_schema == null) return base;
     // #543 degrade: this provider cannot enforce json_schema server-side —
     // learned on the chat wire (sox), or structural on minimax / kimi-anthropic

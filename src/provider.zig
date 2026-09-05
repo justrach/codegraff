@@ -387,6 +387,15 @@ pub const Keys = struct {
         // `kimi-k3` while kimi itself serves `k3`; the flat-rate login must win
         // over the gateway for the same model, so the query is rewritten to the
         // provider's native spelling. Phase 2: the gateway, exact, as fallback.
+        // Moonshot's platform id is also `kimi-k3`; when the kimi login is
+        // present it still wins. When only MOONSHOT_API_KEY is set, phase 0
+        // seats the moonshot row instead of falling through to the gateway.
+        if (keys.get("kimi")) |kimi_key| {
+            if (pricing.familyAliasEquals("kimi", "k3", model)) {
+                const spec = specFor("kimi") orelse return error.MissingKey;
+                return keys.build(spec, kimi_key, "k3");
+            }
+        }
         for ([_]u8{ 0, 1, 2 }) |phase| {
             for (0..specCount()) |i| {
                 const spec = specAt(i).?;
