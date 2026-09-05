@@ -1,6 +1,6 @@
-# 0002. xAI defaults to the Responses wire (WS + server compaction)
+# 0002. xAI defaults to the Responses wire (WS; client compact)
 
-Status: accepted 2026-08-15
+Status: accepted 2026-08-15; compaction arm amended 2026-09-05
 
 ## Context
 
@@ -20,16 +20,17 @@ endpoints reject every request; fixed alongside the flip.
 
 `g_xai_responses` defaults to true: xAI sessions run on
 api.x.ai/v1/responses, which gives WebSocket turns (with the WS→SSE
-fallback ladder), first-party server-side compaction for both
-autocompaction and manual `/compact` (#503), and structured outputs.
-`GRAFF_XAI_WIRE=chat` (any value other than `responses`) opts a session
-back onto chat completions.
+fallback ladder) and structured outputs. Compaction does **not** use
+xAI's `POST /v1/responses/compact` blob — the client summarizer
+(`agent_compact.zig`) outperformed it, so `/compact` and autocompact stay
+on that path. `GRAFF_XAI_WIRE=chat` (any value other than `responses`)
+opts a session back onto chat completions.
 
 ## Consequences
 
-- Lossless compaction by default; the intent-aware client summary remains
-  the fallback when the endpoint refuses or fails, and the chat wire keeps
-  it as primary.
+- Grok compaction is the inspectable client summary on both the Responses
+  and chat wires. xAI's compact endpoint remains in the tree unused
+  (`xai_compact_url`); do not wire it back without a new recall A/B.
 - WS eligibility stays an explicit provider list (codex, xai, and Codegraff
   when its selected alias is Responses-kind) — Platform OpenAI has no WS
   server and must never probe one.

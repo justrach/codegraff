@@ -9,7 +9,7 @@ fn build(model: []const u8) provider.Provider {
 }
 
 test "Codegraff selects the gateway wire and endpoint per model" {
-    for ([_][]const u8{ "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "grok-4.6" }) |model| {
+    for ([_][]const u8{ "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "grok-4.6" }) |model| {
         const got = build(model);
         try std.testing.expectEqual(provider.Provider.Kind.responses, got.kind);
         try std.testing.expectEqualStrings("https://gateway.codegraff.com/v1/responses", got.url);
@@ -56,7 +56,7 @@ test "Codegraff Responses aliases pin a sticky prompt_cache_key" {
         break :blk obj;
     } });
 
-    for ([_][]const u8{ "gpt-5.6", "grok-4.6" }) |model| {
+    for ([_][]const u8{ "gpt-5.6", "gpt-6-astra", "grok-4.6" }) |model| {
         var root: Agent = .{
             .gpa = std.testing.allocator,
             .arena = arena,

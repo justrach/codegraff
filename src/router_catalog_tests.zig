@@ -367,7 +367,7 @@ test "xAI defaults to the Responses wire; GRAFF_XAI_WIRE=chat opts out (#502)" {
     const saved = provider.g_xai_responses;
     defer provider.g_xai_responses = saved;
     // The compiled-in default IS the responses wire — a regression here means
-    // grok silently loses server compaction, WS turns, and structured outputs.
+    // grok silently loses WS turns and structured outputs.
     try std.testing.expect(provider.g_xai_responses);
     // GRAFF_XAI_WIRE=chat (any non-"responses" value) restores chat completions.
     provider.g_xai_responses = false;
@@ -378,7 +378,7 @@ test "xAI defaults to the Responses wire; GRAFF_XAI_WIRE=chat opts out (#502)" {
     const resp = try all.providerById("xai", "grok-4.3");
     try std.testing.expectEqual(Provider.Kind.responses, resp.kind);
     try std.testing.expectEqualStrings(provider.xai_responses_url, resp.url);
-    try std.testing.expectEqualStrings(provider.xai_compact_url, resp.serverCompactUrl().?);
+    try std.testing.expect(resp.serverCompactUrl() == null); // client summarizer, not xAI's blob
     // withModel keeps the wire choice.
     const moved = resp.withModel("grok-4.6");
     try std.testing.expectEqual(Provider.Kind.responses, moved.kind);

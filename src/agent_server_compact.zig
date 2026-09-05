@@ -121,12 +121,15 @@ pub fn writeContextManagementBody(s: anytype, threshold: u64) !void {
 
 pub const ManualRoute = enum { local, standalone, in_stream };
 
-/// Only first-party OpenAI Responses providers get server-side manual compact:
-/// direct API traffic uses `/responses/compact`; ChatGPT/Codex forces the
-/// supported in-stream directive. Every other provider stays on local summary.
+/// First-party OpenAI Responses shapes get server-side manual compact:
+/// direct API and Codegraff GPT-5.6+ use `/responses/compact`; ChatGPT/Codex
+/// forces the supported in-stream directive. Grok (Codegraff or otherwise)
+/// stays on the client summary — xAI's blob path is better there, and the
+/// OpenAI compact endpoint is the wrong shape.
 pub fn manualRoute(p: Provider) ManualRoute {
     if (p.kind != .responses) return .local;
     if (std.mem.eql(u8, p.id, "openai")) return .standalone;
+    if (std.mem.eql(u8, p.id, "codegraff") and @import("provider_codegraff.zig").openaiGptFamily(p.model)) return .standalone;
     if (std.mem.eql(u8, p.id, "codex")) return .in_stream;
     return .local;
 }
@@ -267,9 +270,9 @@ fn fallbackLocal(self: *Agent, err: anyerror) anyerror!usize {
 /// exists. A failed or malformed server result never touches live history and
 /// falls back to the existing inspectable local summary.
 pub fn manualCompact(self: *Agent) anyerror!usize {
-    // #503: an explicit-compact provider (xAI, #502) serves manual /compact
-    // from its first-party endpoint too — the same one-POST blob as the
-    // autocompaction path, with the client summary as the fallback.
+    // An explicit-compact provider (unused for xAI: client summary won)
+    // serves manual /compact from a first-party endpoint, with the client
+    // summary as the fallback.
     if (self.provider.serverCompactUrl() != null) {
         self.closeCodexWs();
         if (self.messages.items.len == 0) {
@@ -384,10 +387,10 @@ pub fn autocompactResumed(self: *Agent) void {
 }
 
 pub fn autocompactIf(self: *Agent, recovery_meter: u64, server_arm: bool) void {
-    // #502: an explicit-compact provider (xAI) gets first-party compaction —
-    // one POST folds the whole history into an opaque blob, no summary model
-    // call. Any failure falls through to the client policy so a broken
-    // endpoint can never wedge the session.
+    // An explicit-compact provider (not xAI — client summary won) gets
+    // first-party compaction: one POST folds history into an opaque blob.
+    // Any failure falls through to the client policy so a broken endpoint
+    // can never wedge the session.
     if (self.provider.serverCompactUrl() != null) {
         if (explicitCompact(self)) return;
         self.compactOrRecover(self.provider.nearContextLimit(recovery_meter));

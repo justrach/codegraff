@@ -49,9 +49,24 @@ fn item(a: std.mem.Allocator, typ: []const u8, call_id: ?[]const u8) !std.json.V
     return .{ .object = obj };
 }
 
-test "manual server compaction routes direct OpenAI and Codex only" {
+test "manual server compaction routes direct OpenAI, Codegraff, and Codex" {
     var p: Provider = .{ .id = "openai", .kind = .responses, .auth = .bearer, .url = "https://api.openai.com/v1/responses", .api_key = "k", .model = "m", .context = 272_000 };
     try std.testing.expectEqual(ManualRoute.standalone, manualRoute(p));
+    p.id = "codegraff";
+    p.url = "https://gateway.codegraff.com/v1/responses";
+    p.model = "gpt-6-astra";
+    try std.testing.expectEqual(ManualRoute.standalone, manualRoute(p));
+    try std.testing.expect(manualServerEligible(p));
+    p.model = "gpt-5.6-sol";
+    try std.testing.expectEqual(ManualRoute.standalone, manualRoute(p));
+    p.model = "grok-4.6";
+    try std.testing.expectEqual(ManualRoute.local, manualRoute(p));
+    try std.testing.expect(!manualServerEligible(p));
+    p.id = "xai";
+    p.model = "grok-4.6";
+    try std.testing.expectEqual(ManualRoute.local, manualRoute(p));
+    try std.testing.expect(!manualServerEligible(p));
+    try std.testing.expect(p.serverCompactUrl() == null);
     p.id = "codex";
     try std.testing.expectEqual(ManualRoute.in_stream, manualRoute(p));
     try std.testing.expect(manualServerEligible(p));
@@ -135,7 +150,10 @@ test "enabled: responses-only; server is the default; override wins" {
     p.id = "kilo"; // third-party Responses hosts keep the local summary
     try std.testing.expect(!enabled(p));
     p.id = "xai";
-    try std.testing.expect(enabled(p)); // ADR 0002: explicit /responses/compact
+    try std.testing.expect(!enabled(p)); // client summarizer, not xAI blob
+    p.id = "codegraff";
+    p.model = "gpt-6-astra";
+    try std.testing.expect(enabled(p)); // GPT-5.6+ on the gateway uses /responses/compact
     p.kind = .openai;
     try std.testing.expect(!enabled(p));
     p.kind = .responses;

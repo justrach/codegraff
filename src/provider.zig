@@ -25,11 +25,10 @@ pub var g_context_override: ?u64 = null;
 pub var g_compact_pct_override: ?u8 = null;
 
 /// #502: xAI rides the OpenAI Responses wire at api.x.ai/v1/responses BY
-/// DEFAULT — that unlocks first-party server compaction (lossless blob;
-/// recall A/B: blob 12/12 vs client summary 11/12 on buried facts) and
-/// WebSocket turns with the SSE/full-resend fallback ladder. Verified live
-/// on the SuperGrok OAuth path. GRAFF_XAI_WIRE=chat (or anything other than
-/// "responses") opts back into chat completions.
+/// DEFAULT — WebSocket turns with the SSE/full-resend fallback ladder.
+/// Compaction stays on the client summarizer (it beat xAI's blob endpoint).
+/// GRAFF_XAI_WIRE=chat (or anything other than "responses") opts back into
+/// chat completions.
 pub var g_xai_responses: bool = true;
 
 pub const xai_responses_url = "https://api.x.ai/v1/responses";
@@ -199,11 +198,11 @@ pub const Provider = struct {
         return p.context / 100 * pct;
     }
 
-    /// The provider's explicit server-side compaction endpoint, if it has one
-    /// (#502). codex compacts in-stream via context_management and returns null.
-    pub fn serverCompactUrl(p: Provider) ?[]const u8 {
-        if (p.kind != .responses) return null;
-        if (std.mem.eql(u8, p.id, "xai")) return xai_compact_url;
+    /// The provider's explicit server-side compaction endpoint, if we use it.
+    /// xAI still *has* POST /v1/responses/compact; we do not call it — the
+    /// client summarizer outperformed that blob. Codex/OpenAI compact through
+    /// other routes (in-stream / `/responses/compact`).
+    pub fn serverCompactUrl(_: Provider) ?[]const u8 {
         return null;
     }
 

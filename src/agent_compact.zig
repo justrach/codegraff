@@ -106,6 +106,13 @@ pub fn compactPrelude(self: *Agent) ?usize {
     // AFTER compaction; this covers the request compaction itself makes.
     self.closeCodexWs();
     if (self.messages.items.len == 0) return null;
+    // Opaque server blobs (xAI leftover, OpenAI compact item) are not
+    // summarizable — the client model cannot see inside them.
+    if (self.messages.items[0] == .object) {
+        if (self.messages.items[0].object.get("type")) |t| {
+            if (t == .string and std.mem.eql(u8, t.string, "compaction")) return null;
+        }
+    }
     pinChildTask(self);
     self.last_request_context_overflow = false;
     return self.effectiveContextTokens();

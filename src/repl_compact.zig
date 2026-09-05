@@ -1,4 +1,4 @@
-//! TUI /compact glue — run Agent.compact() on a throwaway quiet agent built
+//! TUI /compact glue — run Agent.manualCompact() on a throwaway quiet agent built
 //! from the same history the next turn would send, then hand back the
 //! rewritten turns. Split from repl_glue.zig for the 600-line cap.
 
@@ -85,12 +85,12 @@ pub fn replCompactCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl
             return false;
         };
     }
-    // Whatever compact() did to the borrowed list — rewrite, or nothing at all
+    // Whatever manualCompact() did to the borrowed list — rewrite, or nothing at all
     // on a failure that leaves history untouched — is the session's state now.
     defer if (c.convo) |cv| {
         cv.list().* = agent.messages;
     };
-    const n = agent.compact() catch |err| {
+    const n = agent.manualCompact() catch |err| {
         out.note = (switch (err) {
             error.EmptySummary => gpa.dupe(u8, "compaction failed: empty summary, history unchanged"),
             error.IncompleteSummary => gpa.dupe(u8, "compaction failed: incomplete summary, history unchanged"),
