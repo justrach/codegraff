@@ -46,7 +46,6 @@ const watchdogError = http.watchdogError;
 const signal = @import("agent_ws_signal.zig");
 pub const frameHasOutputText = signal.frameHasOutputText;
 pub const TokenSignal = signal.TokenSignal;
-const isStreamEnd = @import("agent_stream.zig").isStreamEnd;
 const escPressed = Agent.escPressed;
 const rawNonblockStdin = Agent.rawNonblockStdin;
 const drainSteerStdin = Agent.drainSteerStdin;
@@ -488,6 +487,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     // of 3.6-11.6s. TokenSignal mirrors BOTH of the SSE reader's producers.
     var sig: TokenSignal = .{};
     var text_seen = false;
+    var steer_st: @import("agent_ws_steer.zig").Session = .{};
 
     stream: while (true) {
         // Race the frame read against a stall watchdog so a dead ws can't hang
@@ -577,7 +577,6 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         try full.writer.writeAll("data: ");
         try full.writer.writeAll(fbuf.items);
         try full.writer.writeByte('\n');
-        const line = try std.fmt.allocPrint(arena, "data: {s}", .{fbuf.items});
         // Codex closes after `type:error`; return its API body instead of misclassifying the expected EOF as transport loss.
         if (signal.errorFrameAction(gpa, fbuf.items) != .none) {
             self.ws_api_error_pending = true;
@@ -586,7 +585,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
             if (self.tracer) |tr| tr.note("ws", "terminal API error frame");
             break :stream;
         }
-        if (isStreamEnd(arena, self.provider.kind, line)) {
+        if (try @import("agent_ws_steer.zig").tick(self, client, fbuf.items, orig_tio != null, &steer_st)) {
             if (self.tracer) |tr| tr.note("ws", "completed");
             break :stream;
         }
