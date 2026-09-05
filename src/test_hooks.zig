@@ -353,4 +353,5 @@ test {
     _ = @import("turn_dedup.zig"); // #714: identical user turns do not replay
     _ = @import("tui_goal.zig"); // #716: typed TUI /goal is retirable, not standing
     _ = @import("net_efficiency_test.zig");
+    _ = @import("codex_tool_search.zig"); // hosted tool_search on gpt-5.4+ Codex
 }

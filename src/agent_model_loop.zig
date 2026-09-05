@@ -51,6 +51,10 @@ pub fn delta(kind: Kind, value: Value) []const u8 {
             const d = get(choices.array.items[0], "delta") orelse return "";
             return str(get(d, "content"));
         },
+        .interactions => {
+            const d = get(value, "delta") orelse return "";
+            return if (std.mem.eql(u8, str(get(d, "type")), "text")) str(get(d, "text")) else "";
+        },
     }
 }
 
@@ -99,6 +103,20 @@ pub fn checkResponse(agent: *Agent, root: std.json.ObjectMap) !void {
                         if (std.mem.eql(u8, str(get(part, "type")), "output_text"))
                             try text.appendSlice(agent.gpa, str(get(part, "text")));
                     }
+                }
+            }
+        },
+        .interactions => {
+            const steps = root.get("steps") orelse return;
+            if (steps != .array) return;
+            for (steps.array.items) |s| {
+                const ty = str(get(s, "type"));
+                if (std.mem.eql(u8, ty, "function_call")) return;
+                if (!std.mem.eql(u8, ty, "model_output")) continue;
+                const content = get(s, "content") orelse continue;
+                if (content != .array) continue;
+                for (content.array.items) |part| {
+                    try text.appendSlice(agent.gpa, str(get(part, "text")));
                 }
             }
         },
