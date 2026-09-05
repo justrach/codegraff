@@ -44,8 +44,11 @@ test "resolveModelName exact aliases and miss" {
 
 test "resolveModelName (#377): family-prefixed spelling resolves to the provider's native row" {
     const keys = provider_mod.Keys{ .values = @splat(null) };
-    // Works from the COMPILED table alone — no gateway catalog cache needed,
-    // so a fresh machine with only a kimi login can type `--model kimi-k3`.
+    try std.testing.expectEqualStrings("kimi-k3", pricing.resolveModelName(keys, "kimi-k3").?);
+    const saved = pricing.active_model_table;
+    defer pricing.active_model_table = saved;
+    // Exercise the family alias without an exact-name catalog entry.
+    pricing.active_model_table = &.{.{ .provider = "kimi", .name = "k3", .context = 1_048_576 }};
     try std.testing.expectEqualStrings("k3", pricing.resolveModelName(keys, "kimi-k3").?);
     try std.testing.expect(pricing.familyAliasEquals("kimi", "k3", "kimi-k3"));
     try std.testing.expect(pricing.familyAliasEquals("kimi", "k3", "kimi_k3"));

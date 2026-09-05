@@ -88,6 +88,13 @@ test "seatFor: family-alias spelling seats the sub, exact names hold, unknown mi
     // Sources matter since #471: the flat-rate plan is the LOGIN, so a seat
     // only bills as .sub when its credential came from one.
     const all = provider_mod.Keys{ .values = @splat("k"), .sources = @splat(.login) };
+    try std.testing.expectEqualStrings("moonshot", seatFor(all, "kimi-k3").seat.pid);
+    const saved = pricing.active_model_table;
+    defer pricing.active_model_table = saved;
+    pricing.active_model_table = &.{
+        .{ .provider = "kimi", .name = "k3", .context = 1_048_576 },
+        .{ .provider = "codex", .name = "gpt-5.6-sol", .context = 272_000 },
+    };
     const kk = seatFor(all, "kimi-k3");
     try std.testing.expectEqualStrings("kimi", kk.seat.pid);
     try std.testing.expectEqualStrings("k3", kk.seat.model);

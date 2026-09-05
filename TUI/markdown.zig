@@ -226,7 +226,15 @@ pub fn renderUser(a: std.mem.Allocator, src: []const u8, accent: []const u8, tex
                     try out.appendSlice(label);
                 }
                 i = close + 1;
-                if (i < clean.len and clean[i] == ' ') i += 1;
+                // Keep the source space; if the next chip/prose is jammed
+                // against `]`, insert one so `[Image #1][Image #2]see` cannot
+                // happen (the transcript row looked like a run-on).
+                if (i < clean.len and clean[i] == ' ') {
+                    try out.append(' ');
+                    i += 1;
+                } else if (i < clean.len and clean[i] != '\n') {
+                    try out.append(' ');
+                }
                 continue;
             }
         }

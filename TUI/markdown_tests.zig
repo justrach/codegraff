@@ -260,6 +260,24 @@ test "renderUser leaves an unbacked @[path] uncolored (#577)" {
     try std.testing.expect(std.mem.indexOf(u8, text, theme_mod.emerald ++ "[Image #1]") == null);
 }
 
+test "renderUser keeps a space between chips and prose" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.png", .data = "png" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "b.png", .data = "png" });
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_n = try tmp.dir.realPath(io, &dir_buf);
+    const dir = dir_buf[0..dir_n];
+    const src = try std.fmt.allocPrint(std.testing.allocator, "@[{s}/a.png] @[{s}/b.png]see this", .{ dir, dir });
+    defer std.testing.allocator.free(src);
+    const text = try renderUser(std.testing.allocator, src, theme_mod.emerald, theme_mod.zinc200);
+    defer std.testing.allocator.free(text);
+    const vis = try @import("dump.zig").visible(std.testing.allocator, text);
+    defer std.testing.allocator.free(vis);
+    try std.testing.expectEqualStrings("[Image #1] [Image #2] see this", vis);
+}
+
 test "render paints a Grok-style box table and hides raw pipes" {
     const src = "| Path | What |\n| --- | --- |\n| src/ | the product |\n| `TUI/` | pager |\n";
     const text = try render(std.testing.allocator, src, theme_mod.emerald);

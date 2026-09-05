@@ -331,13 +331,20 @@ test "providerFor (#377): family-prefixed spelling routes to the direct provider
     // flat-rate subscription silently became metered/licensed usage.
     const Keys = provider.Keys;
     const all = Keys{ .values = @splat("k") };
+    try std.testing.expectEqualStrings("moonshot", (try all.providerFor("kimi-k3")).id);
+    const saved = pricing.active_model_table;
+    defer pricing.active_model_table = saved;
+    pricing.active_model_table = &.{
+        .{ .provider = "kimi", .name = "k3", .context = 1_048_576 },
+        .{ .provider = "codex", .name = "gpt-5.6-sol", .context = 272_000 },
+    };
     const p = try all.providerFor("kimi-k3");
     try std.testing.expectEqualStrings("kimi", p.id);
     try std.testing.expectEqualStrings("k3", p.model);
     // Exact catalog names keep absolute priority over the family alias.
     try std.testing.expectEqualStrings("gpt-5.6-sol", (try all.providerFor("gpt-5.6-sol")).model);
     // Without the kimi credential the prefixed spelling behaves exactly as
-    // before: uncatalogued in the compiled table, so the gateway fallback.
+    // before: uncatalogued in this fixture, so the gateway fallback.
     var values: [provider.provider_specs.len]?[]const u8 = @splat("k");
     for (provider.provider_specs, 0..) |spec, i| {
         if (std.mem.eql(u8, spec.id, "kimi")) values[i] = null;

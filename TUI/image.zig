@@ -33,9 +33,14 @@ pub fn render(self: *const Model, a: std.mem.Allocator, width: usize) ![]const u
         try out.appendSlice(try theme_mod.paint(a, th.muted, path));
         try out.append('\n');
     }
-    // Pixels stay out of the cell stream: Kitty images sit above the grid and
-    // survived scroll as a gray slab. Metadata + open is enough to inspect.
-    _ = width;
+    // Blank rows the Kitty/iTerm2 pixels cover (imgproto.zig, after paint).
+    // APC stays out of this cell stream so scroll cannot leave a gray slab.
+    const gfx = @import("imgproto.zig");
+    if (gfx.supported()) {
+        var i: usize = 0;
+        const rows = gfx.pixelBox(path, width).rows;
+        while (i < rows) : (i += 1) try out.append('\n');
+    }
     try out.appendSlice(try theme_mod.paint(a, th.muted, " backspace detach · y copy path · Enter open · Esc"));
     try out.append('\n');
     return out.toOwnedSlice();
@@ -444,18 +449,7 @@ fn normalizePath(dest: []u8, raw: []const u8) []const u8 {
     return dest[0..o];
 }
 
-const Box = struct { cols: usize, rows: usize };
-
-/// Grok Build `fit_image_to_cells`: monospace cells are ~0.5 as wide as tall.
-pub fn fitImageToCells(img_w: u32, img_h: u32, max_cols: usize, max_rows: usize) Box {
-    if (img_w == 0 or img_h == 0 or max_cols == 0 or max_rows == 0)
-        return .{ .cols = @max(max_cols, 1), .rows = @max(max_rows, 1) };
-    const cols_per_row = (@as(f64, @floatFromInt(img_w)) / @as(f64, @floatFromInt(img_h))) / 0.5;
-    const rows_by_width: usize = @intFromFloat(@round(@as(f64, @floatFromInt(max_cols)) / cols_per_row));
-    if (rows_by_width <= max_rows) return .{ .cols = max_cols, .rows = @max(rows_by_width, 1) };
-    const cols_by_height: usize = @intFromFloat(@round(@as(f64, @floatFromInt(max_rows)) * cols_per_row));
-    return .{ .cols = @min(@max(cols_by_height, 1), max_cols), .rows = max_rows };
-}
+pub const fitImageToCells = @import("imgproto.zig").fitImageToCells;
 
 test "pathInUserText finds the nth @[path]" {
     try std.testing.expectEqualStrings("/tmp/a.png", pathInUserText("@[/tmp/a.png] hi", 1).?);
@@ -478,15 +472,6 @@ test "dimsFromHeader reads PNG IHDR" {
     try std.testing.expectEqualStrings("1402×394", dimsFromHeader(&h));
 }
 
-test "fitImageToCells matches Grok cell-aspect 0.5" {
-    const wide = fitImageToCells(1512, 644, 72, 10);
-    try std.testing.expectEqual(@as(usize, 47), wide.cols);
-    try std.testing.expectEqual(@as(usize, 10), wide.rows);
-    const sq = fitImageToCells(100, 100, 40, 10);
-    try std.testing.expectEqual(@as(usize, 20), sq.cols);
-    try std.testing.expectEqual(@as(usize, 10), sq.rows);
-}
-
 test "image overlay stays in the cell grid — no Kitty APC" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
@@ -498,6 +483,26 @@ test "image overlay stays in the cell grid — no Kitty APC" {
     const text = try render(&m, arena.allocator(), 80);
     try std.testing.expect(std.mem.indexOf(u8, text, "\x1b_G") == null);
     try std.testing.expect(std.mem.indexOf(u8, text, "Image #1") != null);
+}
+
+test "image overlay reserves pixel rows when graphics are on" {
+    const gfx = @import("imgproto.zig");
+    gfx.setSupportedForTest(true);
+    defer gfx.setSupportedForTest(false);
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    m.preview_path = "/tmp/a.png";
+    m.preview_n = 1;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const text = try render(&m, arena.allocator(), 80);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\x1b_G") == null);
+    var n: usize = 0;
+    for (text) |c| {
+        if (c == '\n') n += 1;
+    }
+    try std.testing.expect(n >= 10);
 }
 
 test "fmtSize matches the Grok card" {

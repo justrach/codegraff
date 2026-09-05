@@ -128,7 +128,7 @@ pub fn run(
     var arm_ms: u64 = 0;
     var last_hash: u64 = 0;
     var last_heal_ms: u64 = 0;
-    var saw_gfx: bool = false;
+    var gfx: @import("imgproto.zig").Slot = .{};
     var prev: []u8 = &.{};
     var prev_rows: usize = 0;
     var prev_cols: usize = 0;
@@ -205,30 +205,24 @@ pub fn run(
                 const heal = resized or m.now_ms -| last_heal_ms >= heal_interval_ms;
                 if (hash != last_hash or heal) {
                     const has_gfx = std.mem.indexOf(u8, frame, "\x1b_G") != null;
+                    const imgproto = @import("imgproto.zig");
+                    const want_gfx = imgproto.place(&m, cols) != null;
                     // The theme bg is painted per ROW, not baked into the
                     // frame, and blank rows are byte-identical across
                     // themes/widths — the diff path skips them, stranding
                     // old-bg rows after /theme or the startup OSC-11 polarity
                     // flip, and stale columns after a width-only resize. Both
                     // must force a full paint.
-                    const full = prev.len == 0 or rows != prev_rows or cols != prev_cols or m.theme_id != prev_theme or saw_gfx or has_gfx or resized;
-                    // Kitty images sit above the cell grid and survive \x1b[K /
-                    // dirty paints — delete before every redraw that might have
-                    // shown one. ?2026 synchronized output: the terminal
-                    // buffers everything between begin/end and swaps
-                    // atomically, so a diff paint can never show a half-updated
-                    // frame (grok-build does the same). Terminals without it
-                    // ignore the pair — strictly no worse.
-                    // Scrolling the transcript moves CELLS, not the kitty
-                    // images that sit above the cell grid — and the self-heal
-                    // exists precisely to rewrite rows a scroll would skip.
-                    // Both take the whole-screen paths, so neither may reach
-                    // the scroll fast path; `full` already folds in graphics,
-                    // resize and theme.
-                    const hint = if (full or heal) null else m.paint_hint;
+                    const full = prev.len == 0 or rows != prev_rows or cols != prev_cols or m.theme_id != prev_theme or has_gfx or resized;
+                    // Kitty images sit above the cell grid. SU/SD would move
+                    // cells under a still image, so a live overlay skips the
+                    // scroll fast path. Placement is post-paint (imgproto.zig),
+                    // never in the frame, so a preview does not force a wipe.
+                    const hint = if (full or heal or gfx.on or want_gfx) null else m.paint_hint;
                     w.writeAll("\x1b[?2026h") catch {};
-                    if (saw_gfx or has_gfx) w.writeAll("\x1b_Ga=d,d=A,q=2\x1b\\") catch {};
+                    if (has_gfx) w.writeAll(imgproto.clear_all) catch {};
                     paint_mod.paint(w, frame, rows, cols, if (full) &.{} else prev, m.theme().bg, heal, hint) catch {};
+                    imgproto.sync(w, gpa, &gfx, &m, cols, full or heal);
                     w.writeAll("\x1b[?2026l") catch {};
                     w.flush() catch {};
                     pacing.paints += 1;
@@ -238,7 +232,6 @@ pub fn run(
                     prev_cols = cols;
                     prev_theme = m.theme_id;
                     last_hash = hash;
-                    saw_gfx = has_gfx;
                     // Only a paint that rewrote EVERY row resets the heartbeat.
                     if (full or heal) last_heal_ms = m.now_ms;
                 }
