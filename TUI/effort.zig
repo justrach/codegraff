@@ -20,9 +20,16 @@ fn blurb(e: engine.Effort) []const u8 {
     };
 }
 
+fn hidesMax() bool {
+    const p = engine.g_model_provider;
+    const m = engine.g_model_name;
+    return std.mem.eql(u8, p, "xai") or std.mem.startsWith(u8, m, "grok");
+}
+
 pub fn filter(query: []const u8, out: []engine.Effort) usize {
     var n: usize = 0;
     for (all) |e| {
+        if (hidesMax() and (e == .max or e == .ultra)) continue;
         const name = @tagName(e);
         if (query.len > 0 and std.mem.indexOf(u8, name, query) == null) continue;
         if (n >= out.len) break;
@@ -76,6 +83,21 @@ test "filter matches effort names" {
     try std.testing.expectEqual(@as(usize, 1), filter("low", &buf));
     try std.testing.expectEqual(engine.Effort.low, buf[0]);
     try std.testing.expectEqual(@as(usize, all.len), filter("", &buf));
+}
+
+test "grok seat hides max and ultra" {
+    const saved_p = engine.g_model_provider;
+    const saved_m = engine.g_model_name;
+    defer {
+        engine.g_model_provider = saved_p;
+        engine.g_model_name = saved_m;
+    }
+    engine.g_model_provider = "xai";
+    engine.g_model_name = "grok-4.6";
+    var buf: [8]engine.Effort = undefined;
+    const n = filter("", &buf);
+    try std.testing.expectEqual(@as(usize, 4), n);
+    for (buf[0..n]) |e| try std.testing.expect(e != .max and e != .ultra);
 }
 
 test "effort overlay lists levels and marks current" {

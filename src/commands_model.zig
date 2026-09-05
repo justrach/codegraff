@@ -26,7 +26,6 @@ const Rewound = @import("tools.zig").Rewound; // what one /rewind restored/skipp
 const pricing = @import("pricing.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
 const resolveModelName = pricing.resolveModelName;
-
 const pickers = @import("pickers.zig");
 const modelPicker = pickers.modelPicker;
 const PickItem = pickers.PickItem;
@@ -40,11 +39,9 @@ const providers = @import("providers.zig");
 const switchProvider = providers.switchProvider;
 const fallback_config = @import("fallback_config.zig");
 const serde = @import("serde.zig");
-
 const oauth = @import("oauth.zig");
 const images_command = @import("images_command.zig");
 const images = @import("images.zig");
-
 const reasoning_levels = [_]PickItem{
     .{ .name = "Low", .desc = "Fast responses with lighter reasoning" },
     .{ .name = "Medium", .desc = "Balances speed and reasoning depth for everyday tasks" },
@@ -321,7 +318,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/title") or std.mem.eql(u8, line, "/title on") or std.mem.eql(u8, line, "/title off")) {
         const was_on = root.ai_title;
         root.ai_title = if (std.mem.eql(u8, line, "/title on")) true else if (std.mem.eql(u8, line, "/title off")) false else !root.ai_title;
-        if (was_on and !root.ai_title) root.title_generation +%= 1; // discard any detached result already in flight
+        if (was_on and !root.ai_title) root.title_generation +%= 1;
         const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("AI session title: {s} ({s}){s}\n", .{
             if (root.ai_title) "on" else "off",
@@ -361,7 +358,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const arg = std.mem.trim(u8, line[prefix.len..], " \t");
         if (arg.len == 0 and main_mod.use_color and root.in != null) {
             const title = try std.fmt.allocPrint(arena, "Reasoning level for {s} ›", .{root.provider.model});
-            const idx = listPickerAt(root, arena, out, title, &reasoning_levels, @intFromEnum(root.reasoning)) orelse return true;
+            const er = @import("effort_route.zig");
+            const levels: []const PickItem = if (er.hidesMax(root.provider.id, root.provider.model)) reasoning_levels[0..4] else &reasoning_levels;
+            const cur = @min(@intFromEnum(root.reasoning), levels.len - 1);
+            const idx = listPickerAt(root, arena, out, title, levels, cur) orelse return true;
             root.reasoning = @enumFromInt(idx);
         } else if (std.mem.eql(u8, arg, "med")) {
             root.reasoning = .medium;
@@ -373,6 +373,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.flush();
                 return true;
             };
+            if (!@import("effort_route.zig").allows(root.provider.id, root.provider.model, @tagName(root.reasoning)))
+                root.reasoning = .high;
         } else {
             try out.print("reasoning effort: {s}\n", .{reasoning_levels[@intFromEnum(root.reasoning)].name});
             try out.flush();

@@ -2,6 +2,10 @@
 
 export type AcpContent = { type: "text"; text: string };
 
+/** One entry of the agent's `available_commands_update`: the slash commands
+ * this build actually services, named without the leading slash. */
+export type AcpCommand = { name: string; description: string; input?: { hint?: string } | null };
+
 export type AcpToolKind = "read" | "edit" | "delete" | "move" | "search" | "execute" | "think" | "fetch" | "other";
 
 export type AcpToolStatus = "pending" | "in_progress" | "completed" | "failed";
@@ -65,6 +69,10 @@ function humanize(id: string): string {
 }
 
 function labelForKind(kind: string | undefined, title: string): string {
+  const mcp = mcpParts(title);
+  if (mcp) return humanize(mcp.tool);
+  // Bare engine tools (codedb, todo_write…) beat a generic kind of "read".
+  if (/^[a-z][a-z0-9_]*$/.test(title)) return humanize(title);
   if (kind === "execute") return "Run";
   if (kind === "edit") return "Edit";
   if (kind === "delete") return "Delete";
@@ -73,10 +81,6 @@ function labelForKind(kind: string | undefined, title: string): string {
   if (kind === "fetch") return "Fetch";
   if (kind === "search") return "Search";
   if (kind === "think") return "Plan";
-  const mcp = mcpParts(title);
-  if (mcp) return humanize(mcp.tool);
-  // Bare engine tools (attempt_completion, todo_write…) read as identifiers.
-  if (/^[a-z0-9_]+$/.test(title)) return humanize(title);
   return title;
 }
 
@@ -177,18 +181,21 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
       : (prev?.detail ?? []);
   const mcp = mcpParts(title);
   const label = labelForKind(kind, title);
+  const command = typeof rawInput.command === "string" ? firstLine(rawInput.command) : undefined;
   // A raw MCP name as chip repeated the label; show the server instead, and
-  // no chip at all when it would just echo the label.
-  const chip = path ?? (mcp ? mcp.server : title);
+  // no chip at all when it would just echo the label. codedb's query lives
+  // in `command` — without it every call rendered as a blank "Read".
+  const chipRaw = path ?? command ?? (mcp ? mcp.server : title);
   const row: ToolRow = {
     id,
     name: label,
     icon: iconForKind(kind, title),
-    chip: chip === label || humanize(chip) === label ? "" : chip,
+    chip: chipRaw === label || humanize(chipRaw) === label ? "" : chipRaw,
     status,
     detail,
     path,
     startedAt: prev?.startedAt ?? Date.now(),
+    atChars: prev?.atChars ?? turn.text.length,
   };
   const tools = turn.tools.slice();
   const merged: ToolRow = idx >= 0
@@ -221,6 +228,34 @@ export function finishAcpTurn(turn: AssistantTurn): AssistantTurn {
     tools: turn.tools.map((t) => (t.status === "running" ? { ...t, status: "ok" as const } : t)),
     status: "done",
   };
+}
+
+export type TurnBlock = { kind: "text"; text: string } | { kind: "tools"; tools: ToolRow[] };
+
+/** Split a turn into the order the user should see it: text, then the tools
+ * that landed at that cursor, then the next text. Tools without `atChars`
+ * (old sessions) stay in a single group at the top. */
+export function turnBlocks(text: string, tools: ToolRow[]): TurnBlock[] {
+  if (tools.length === 0) return text ? [{ kind: "text", text }] : [];
+  const blocks: TurnBlock[] = [];
+  let cursor = 0;
+  let i = 0;
+  while (i < tools.length) {
+    const mark = tools[i].atChars ?? 0;
+    const at = Math.min(Math.max(mark, 0), text.length);
+    if (at > cursor) {
+      blocks.push({ kind: "text", text: text.slice(cursor, at) });
+      cursor = at;
+    }
+    const group: ToolRow[] = [];
+    while (i < tools.length && (tools[i].atChars ?? 0) === mark) {
+      group.push(tools[i]);
+      i += 1;
+    }
+    blocks.push({ kind: "tools", tools: group });
+  }
+  if (cursor < text.length) blocks.push({ kind: "text", text: text.slice(cursor) });
+  return blocks;
 }
 
 export function applyAcpUpdate(turn: AssistantTurn, update: AcpUpdate): AssistantTurn {

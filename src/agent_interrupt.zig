@@ -20,6 +20,7 @@ const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const repl_glue = @import("repl_glue.zig");
 const Agent = agent_mod.Agent;
+const cancel_source = @import("cancel_source.zig"); // #728
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
@@ -29,7 +30,7 @@ const tty = terminal.tty;
 pub fn escWatchTask() void {
     while (!Agent.esc_watch_done.load(.acquire)) {
         if (tty.poll(100) and escPressed(false)) {
-            Agent.esc_cancel.store(true, .release);
+            cancel_source.cancelFromStdin();
             return;
         }
     }
@@ -92,6 +93,20 @@ pub fn escPressed(echo: bool) bool {
                 // SS3 escape sequence (common for function/cursor keys):
                 // ESC O <final>. Swallow the whole sequence.
                 i = @min(i + 2, n - 1);
+                continue;
+            } else if (i + 1 < n and buf[i + 1] == ']') {
+                // OSC — a terminal's colour/title REPLY (ESC ] … BEL, or ESC \\):
+                // never a keypress, so it must not read as Esc (#728). Swallow
+                // through the terminator, pulling a split tail in like CSI.
+                var j = i + 2;
+                while (true) {
+                    while (j < n and buf[j] != 0x07 and !(buf[j] == 0x1b and j + 1 < n and buf[j + 1] == '\\')) : (j += 1) {}
+                    if (j < n or n >= buf.len or !tty.poll(50)) break;
+                    const more = tty.readStdin(buf[n..]);
+                    if (more == 0) break;
+                    n += more;
+                }
+                i = if (j < n) (if (buf[j] == 0x1b) j + 1 else j) else n - 1;
                 continue;
             } else if (i + 1 >= n) {
                 // ESC is the LAST byte of this chunk — it may be the truncated
@@ -241,4 +256,8 @@ pub fn sseIndex(obj: std.json.ObjectMap) ?usize {
     const ix = obj.get("index") orelse return null;
     if (ix != .integer or ix.integer < 0) return null;
     return @intCast(ix.integer);
+}
+
+test { // #728: cancel_source has no other path into the test root
+    _ = cancel_source;
 }

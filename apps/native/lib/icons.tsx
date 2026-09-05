@@ -117,11 +117,35 @@ export function IconMagnifyingGlass(p: IconProps) {
   );
 }
 
+/** Collapse the sidebar: a panel with the chevron centred in the content
+ * half, pointing at the rail. The old glyph put the chevron on the divider
+ * and rotated the whole panel to mean "expand", which drew the rail on the
+ * wrong side. */
 export function IconSidebarLeftArrow(p: IconProps) {
   return (
     <Svg {...p}>
-      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
-      <path d="M9.5 4.5v15M13 9l-3 3 3 3" />
+      <rect x="3" y="3" width="18" height="18" rx="2.5" />
+      <path d="M9 3v18M16 15l-3-3 3-3" />
+    </Svg>
+  );
+}
+
+/** Expand the sidebar: same panel, chevron pointing away from the rail. */
+export function IconSidebarLeftOpen(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <rect x="3" y="3" width="18" height="18" rx="2.5" />
+      <path d="M9 3v18M14 9l3 3-3 3" />
+    </Svg>
+  );
+}
+
+/** The sidecar browser. */
+export function IconGlobe(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M3.5 12h17M12 3.5c2.7 2.7 2.7 14.3 0 17M12 3.5c-2.7 2.7-2.7 14.3 0 17" />
     </Svg>
   );
 }
@@ -139,6 +163,14 @@ export function IconFolder(p: IconProps) {
   return (
     <Svg {...p}>
       <path d="M3 7.5A2 2 0 0 1 5 5.5h4.2l1.6 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    </Svg>
+  );
+}
+
+export function IconChat(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v7A2.5 2.5 0 0 1 16.5 16H12l-4.2 3.2A.6.6 0 0 1 7 18.7V16H7.5A2.5 2.5 0 0 1 5 13.5z" />
     </Svg>
   );
 }

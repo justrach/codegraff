@@ -7,6 +7,7 @@ const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
 const util = @import("util.zig");
+const cancel_source = @import("cancel_source.zig"); // #728: who cancelled, for the marker
 const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
 const ansi = @import("ansi.zig");
@@ -427,19 +428,19 @@ pub fn run(ctx: *Ctx) !void {
         }
         const final_text = turn_result catch |err| switch (err) {
             error.Interrupted => {
-                // Preserve streamed text and mark the saved assistant turn incomplete.
+                // Preserve streamed text and mark the saved assistant turn incomplete. #728: an unsourced cancel is the harness's, not the user's.
+                const src = cancel_source.take(ctx.root.tracer);
                 const partial = std.mem.trim(u8, ctx.root.partial_text.items, " \t\r\n");
                 const marker: []const u8 = if (partial.len > 0)
-                    try std.fmt.allocPrint(ctx.arena, "{s}\n\n[response interrupted by user]", .{partial})
+                    try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ partial, cancel_source.marker(src) })
                 else
-                    "[response interrupted by user]";
+                    cancel_source.marker(src);
                 try ctx.root.messages.append(try messages.textMessage(ctx.arena, "assistant", marker));
-                const int_msg: []const u8 = if (main_mod.g_force_interrupt) "✗ interrupted (force)" else "✗ interrupted (esc)";
                 main_mod.g_force_interrupt = false;
                 if (main_mod.json_mode) {
-                    ctx.root.emit(.{ .type = "error", .message = "turn cancelled" });
+                    ctx.root.emit(.{ .type = "error", .message = cancel_source.jsonMessage(src) });
                 } else {
-                    try ctx.out.print("{s}{s}{s}\n", .{ style.yellow, int_msg, style.reset });
+                    try ctx.out.print("{s}{s}{s}\n", .{ style.yellow, cancel_source.chrome(src), style.reset });
                     try ctx.out.flush();
                 }
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};

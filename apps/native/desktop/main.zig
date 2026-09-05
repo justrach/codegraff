@@ -10,18 +10,106 @@
 //!   GRAFF_NATIVE_URL=http://127.0.0.1:3000 ./zig-out/bin/graff-native
 const std = @import("std");
 const builtin = @import("builtin");
+const update = @import("update.zig");
+const server = @import("server.zig");
+
+/// The Dock and ⌘-Tab icon. A bare binary has no bundle to read an icon
+/// from, so the image travels inside it and is handed to NSApplication at
+/// startup. Same artwork as the desktop app's own icon.
+const icon_png = @embedFile("icon.png");
 
 fn openLinux(url: []const u8) void {
     std.log.info("merjs-style shell: open {s} in a browser (WKWebView is macOS-only)", .{url});
 }
 
+/// Where the UI is served. A bundled app is launched from Finder with no
+/// environment to inherit, so when `GRAFF_NATIVE_URL` is unset the shell
+/// looks for a dev server on the ports this app uses, newest first. A
+/// developer's own server is preferred over the copy inside the bundle:
+/// they are working on it, and two servers would fight over the sessions.
+const default_urls = [_][]const u8{ "http://127.0.0.1:3777", "http://127.0.0.1:3000" };
+
+/// Shown when no interface is serving. A packaged app carries its own and
+/// never gets here; a loose binary, a build made without one, or a bundled
+/// server that refused to start does, and a blank connection error tells
+/// the reader nothing about which.
+const no_server_html =
+    \\<meta name="viewport" content="width=device-width,initial-scale=1">
+    \\<style>
+    \\:root{color-scheme:light dark}
+    \\body{margin:0;display:grid;place-items:center;min-height:100vh;
+    \\font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    \\background:Canvas;color:CanvasText}
+    \\main{max-width:34rem;padding:2rem}
+    \\h1{font-size:1.15rem;margin:0 0 .75rem}
+    \\p{margin:0 0 1rem;opacity:.85}
+    \\pre{background:color-mix(in oklab,CanvasText 8%, Canvas);padding:.75rem 1rem;
+    \\border-radius:8px;overflow-x:auto;font-size:13px}
+    \\code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    \\</style>
+    \\<main>
+    \\<h1>The interface is not running yet</h1>
+    \\<p>This build does not carry the codegraff interface, so it needs one
+    \\running on your machine. Start it from a checkout of the repository:</p>
+    \\<pre><code>zig build                 # builds the graff binary
+    \\cd apps/native
+    \\npm install &amp;&amp; npm run dev   # serves the interface</code></pre>
+    \\<p>Then reopen this app. It looks for the interface on port 3777, then
+    \\3000. To point it somewhere else, launch it from a terminal with
+    \\<code>GRAFF_NATIVE_URL</code> set.</p>
+    \\</main>
+;
+
+fn listening(url: []const u8) bool {
+    // "http://127.0.0.1:<port>" — the port is what follows the last colon.
+    const colon = std.mem.lastIndexOfScalar(u8, url, ':') orelse return false;
+    const port = std.fmt.parseInt(u16, url[colon + 1 ..], 10) catch return false;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const address = std.Io.net.IpAddress.parseIp4("127.0.0.1", port) catch return false;
+    const stream = std.Io.net.IpAddress.connect(&address, io, .{ .mode = .stream }) catch return false;
+    stream.close(io);
+    return true;
+}
+
 pub fn main(init: std.process.Init) !void {
-    const url = init.environ_map.get("GRAFF_NATIVE_URL") orelse "http://127.0.0.1:3000";
+    // Set this to pin a build: a machine mid-debug should not have the app
+    // swapped underneath it because a release happened to land.
+    const updates = init.environ_map.get("GRAFF_NATIVE_NO_UPDATE") == null;
     if (comptime builtin.os.tag == .macos) {
-        try runMac(url);
+        try runMac(init, updates);
     } else {
-        openLinux(url);
+        openLinux(init.environ_map.get("GRAFF_NATIVE_URL") orelse default_urls[0]);
     }
+}
+
+/// The URL the window opens, and whether anything is actually serving it.
+/// A packaged `.app` always starts the copy inside the bundle: a leftover
+/// Next on :3000 from some other checkout is not this release. Loose
+/// `graff-native` binaries still attach to a dev server first.
+fn resolve(init: std.process.Init, buf: []u8) struct { []const u8, bool } {
+    if (init.environ_map.get("GRAFF_NATIVE_URL")) |pinned| return .{ pinned, true };
+    const bundle = bundlePath(init.gpa);
+    const packaged = if (bundle) |b| std.mem.endsWith(u8, b, ".app") else false;
+    if (!packaged) {
+        for (default_urls) |candidate| {
+            if (listening(candidate)) return .{ candidate, true };
+        }
+    }
+    // Set GRAFF_NATIVE_URL to debug against a server you start yourself
+    // while still running the packaged app.
+    if (init.environ_map.get("GRAFF_NATIVE_NO_SERVER") == null) {
+        if (bundle) |b| {
+            if (server.start(init.gpa, init.io, init.environ_map, b)) |port| {
+                const url = std.fmt.bufPrint(buf, "http://127.0.0.1:{d}", .{port}) catch
+                    return .{ default_urls[0], false };
+                return .{ url, true };
+            }
+        }
+    }
+    // Nothing to show: a loose dev binary, a build made without the
+    // interface, or a bundled server that would not start. Say what to do
+    // rather than showing WebKit's connection error.
+    return .{ default_urls[0], false };
 }
 
 // ── macOS AppKit / WKWebView (merjs examples/desktop) ─────────────────
@@ -29,6 +117,9 @@ pub fn main(init: std.process.Init) !void {
 extern fn objc_getClass(name: [*:0]const u8) ?*anyopaque;
 extern fn sel_registerName(name: [*:0]const u8) ?*anyopaque;
 extern fn objc_msgSend() void;
+extern fn objc_allocateClassPair(superclass: ?*anyopaque, name: [*:0]const u8, extra: usize) ?*anyopaque;
+extern fn class_addMethod(class: ?*anyopaque, name: ?*anyopaque, imp: *const anyopaque, types: [*:0]const u8) i8;
+extern fn objc_registerClassPair(class: ?*anyopaque) void;
 
 const Id = ?*anyopaque;
 const Sel = ?*anyopaque;
@@ -46,6 +137,12 @@ const NSWindowStyleMaskMiniaturizable: NSUInteger = 4;
 const NSWindowStyleMaskResizable: NSUInteger = 8;
 const NSBackingStoreBuffered: NSUInteger = 2;
 const NSApplicationActivationPolicyRegular: NSInteger = 0;
+/// NSURLRequestReloadIgnoringLocalCacheData. The window points at a dev
+/// server whose bundle changes under it; WebKit's cache happily serves a
+/// page from a previous build, which then fails to start against the new
+/// one. Always fetch the document fresh.
+const NSURLRequestReloadIgnoringLocalCacheData: NSUInteger = 1;
+const load_timeout_s: f64 = 30;
 const YES: BOOL = 1;
 const NO: BOOL = 0;
 
@@ -91,13 +188,166 @@ fn sendWebViewInit(recv: Id, s: Sel, frame: CGRect, config: Id) Id {
     const F = *const fn (Id, Sel, CGRect, Id) callconv(.c) Id;
     return @as(F, @ptrCast(&objc_msgSend))(recv, s, frame, config);
 }
+fn send2(recv: Id, s: Sel, a: Id, b: Id) Id {
+    const F = *const fn (Id, Sel, Id, Id) callconv(.c) Id;
+    return @as(F, @ptrCast(&objc_msgSend))(recv, s, a, b);
+}
+/// The middle argument is a selector, not an object — that is what a menu
+/// item's action is.
+fn send3(recv: Id, s: Sel, a: Id, action: Sel, c: Id) Id {
+    const F = *const fn (Id, Sel, Id, Sel, Id) callconv(.c) Id;
+    return @as(F, @ptrCast(&objc_msgSend))(recv, s, a, action, c);
+}
+fn sendRequestInit(recv: Id, s: Sel, url: Id, policy: NSUInteger, timeout: f64) Id {
+    const F = *const fn (Id, Sel, Id, NSUInteger, f64) callconv(.c) Id;
+    return @as(F, @ptrCast(&objc_msgSend))(recv, s, url, policy, timeout);
+}
+fn sendBytes(recv: Id, s: Sel, ptr: [*]const u8, len: NSUInteger) Id {
+    const F = *const fn (Id, Sel, [*]const u8, NSUInteger) callconv(.c) Id;
+    return @as(F, @ptrCast(&objc_msgSend))(recv, s, ptr, len);
+}
 
-fn runMac(url: []const u8) !void {
+/// The window is the whole app, and it now holds a server: leaving a
+/// windowless shell alive would leave that server and every harness it
+/// started running invisibly.
+fn shouldTerminate(_: Id, _: Sel, _: Id) callconv(.c) BOOL {
+    return YES;
+}
+
+/// Belt and braces with the `atexit` handler in server.zig. This is the
+/// hook that runs while the app is still a running app, so it is the one
+/// that fires on an orderly quit.
+fn willTerminate(_: Id, _: Sel, _: Id) callconv(.c) void {
+    server.stop();
+}
+
+/// An app with no menu has no Quit item, and ⌘Q lives in that item — so
+/// without this there is no way to quit but Force Quit, which skips every
+/// cleanup path and strands the server.
+fn addMenu(app: Id) void {
+    const bar = send(send(cls("NSMenu"), sel("alloc")), sel("init"));
+    const app_item = send(send(cls("NSMenuItem"), sel("alloc")), sel("init"));
+    send1v(bar, sel("addItem:"), app_item);
+    send1v(app, sel("setMainMenu:"), bar);
+
+    const menu = send(send(cls("NSMenu"), sel("alloc")), sel("init"));
+    const title = sendStr(cls("NSString"), sel("stringWithUTF8String:"), "Quit Codegraff");
+    const key = sendStr(cls("NSString"), sel("stringWithUTF8String:"), "q");
+    const quit = send3(
+        send(cls("NSMenuItem"), sel("alloc")),
+        sel("initWithTitle:action:keyEquivalent:"),
+        title,
+        sel("terminate:"),
+        key,
+    );
+    send1v(menu, sel("addItem:"), quit);
+    send1v(app_item, sel("setSubmenu:"), menu);
+
+    addEditMenu(bar);
+}
+
+/// One item, no target: the action travels the responder chain to whatever
+/// is focused, which is the web view.
+fn addItem(menu: Id, name: [*:0]const u8, action: Sel, key_equiv: [*:0]const u8) void {
+    const title = sendStr(cls("NSString"), sel("stringWithUTF8String:"), name);
+    const key = sendStr(cls("NSString"), sel("stringWithUTF8String:"), key_equiv);
+    const item = send3(
+        send(cls("NSMenuItem"), sel("alloc")),
+        sel("initWithTitle:action:keyEquivalent:"),
+        title,
+        action,
+        key,
+    );
+    send1v(menu, sel("addItem:"), item);
+}
+
+/// Cut, copy and paste are menu items before they are shortcuts: with no
+/// Edit menu those key equivalents do not exist, so the window never
+/// dispatches them and the clipboard looks broken inside the app.
+///
+/// Only the standard edit keys belong here. The interface binds Cmd-T,
+/// Cmd-W, Cmd-D, Cmd-\ and Cmd-1..9 itself, and a menu key equivalent is
+/// matched before the page sees the event, so adding those would take the
+/// shortcuts away from it.
+fn addEditMenu(bar: Id) void {
+    const item = send(send(cls("NSMenuItem"), sel("alloc")), sel("init"));
+    send1v(bar, sel("addItem:"), item);
+
+    const title = sendStr(cls("NSString"), sel("stringWithUTF8String:"), "Edit");
+    const menu = send1(send(cls("NSMenu"), sel("alloc")), sel("initWithTitle:"), title);
+    addItem(menu, "Undo", sel("undo:"), "z");
+    // An uppercase key equivalent is AppKit's spelling of "with shift".
+    addItem(menu, "Redo", sel("redo:"), "Z");
+    send1v(menu, sel("addItem:"), send(cls("NSMenuItem"), sel("separatorItem")));
+    addItem(menu, "Cut", sel("cut:"), "x");
+    addItem(menu, "Copy", sel("copy:"), "c");
+    addItem(menu, "Paste", sel("paste:"), "v");
+    send1v(menu, sel("addItem:"), send(cls("NSMenuItem"), sel("separatorItem")));
+    addItem(menu, "Select All", sel("selectAll:"), "a");
+    send1v(item, sel("setSubmenu:"), menu);
+}
+
+/// Quit when the last window closes, and tear the server down on the way
+/// out. Built at runtime because there is no ObjC compiler here — the
+/// runtime's own class API is what merjs uses for the same reason.
+fn setDelegate(app: Id) void {
+    const class = objc_allocateClassPair(cls("NSObject"), "GraffAppDelegate", 0) orelse return;
+    // ObjC type encodings: `c@:@` is "returns char, takes self, _cmd, id".
+    _ = class_addMethod(
+        class,
+        sel("applicationShouldTerminateAfterLastWindowClosed:"),
+        @ptrCast(&shouldTerminate),
+        "c@:@",
+    );
+    _ = class_addMethod(class, sel("applicationWillTerminate:"), @ptrCast(&willTerminate), "v@:@");
+    objc_registerClassPair(class);
+    const delegate = send(send(class, sel("alloc")), sel("init"));
+    send1v(app, sel("setDelegate:"), delegate);
+}
+
+/// Give the app its icon. Best effort: a shell without one still runs.
+fn setAppIcon(app: Id) void {
+    const data = sendBytes(cls("NSData"), sel("dataWithBytes:length:"), icon_png.ptr, icon_png.len);
+    if (data == null) return;
+    const image = send1(send(cls("NSImage"), sel("alloc")), sel("initWithData:"), data);
+    if (image == null) return;
+    send1v(app, sel("setApplicationIconImage:"), image);
+}
+
+/// This app's own bundle directory, as NSBundle reports it. For a loose
+/// binary that is just the directory it sits in, which has no Info.plist —
+/// the updater treats that as "no version" and leaves it alone.
+fn bundlePath(gpa: std.mem.Allocator) ?[]const u8 {
+    const bundle = send(cls("NSBundle"), sel("mainBundle"));
+    if (bundle == null) return null;
+    const ns_path = send(bundle, sel("bundlePath"));
+    if (ns_path == null) return null;
+    const c_str = send(ns_path, sel("UTF8String"));
+    if (c_str == null) return null;
+    const text: [*:0]const u8 = @ptrCast(c_str.?);
+    return gpa.dupe(u8, std.mem.span(text)) catch null;
+}
+
+/// The check runs off the main thread and owns nothing the window needs, so
+/// a slow or dead network delays an update and never the UI.
+fn updateWorker(bundle: []const u8) void {
+    update.check(std.heap.page_allocator, bundle);
+}
+
+fn runMac(init: std.process.Init, updates: bool) !void {
+    // Resolved before the window exists: starting the bundled server takes
+    // a moment, and an empty window while it boots looks like a hang.
+    var resolved_buf: [64]u8 = undefined;
+    const url, const serving = resolve(init, &resolved_buf);
+
     var url_buf: [256]u8 = undefined;
     const url_z = try std.fmt.bufPrintSentinel(&url_buf, "{s}", .{url}, 0);
 
     const app = send(cls("NSApplication"), sel("sharedApplication"));
     sendIntv(app, sel("setActivationPolicy:"), NSApplicationActivationPolicyRegular);
+    setAppIcon(app);
+    addMenu(app);
+    setDelegate(app);
 
     const frame = CGRect{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 1280, .height = 820 } };
     const style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
@@ -124,10 +374,32 @@ fn runMac(url: []const u8) !void {
 
     const ns_url_str = sendStr(cls("NSString"), sel("stringWithUTF8String:"), url_z.ptr);
     const ns_url = send1(cls("NSURL"), sel("URLWithString:"), ns_url_str);
-    const request = send1(cls("NSURLRequest"), sel("requestWithURL:"), ns_url);
-    _ = send1(webview, sel("loadRequest:"), request);
+    const request = sendRequestInit(
+        cls("NSURLRequest"),
+        sel("requestWithURL:cachePolicy:timeoutInterval:"),
+        ns_url,
+        NSURLRequestReloadIgnoringLocalCacheData,
+        load_timeout_s,
+    );
+    if (serving) {
+        _ = send1(webview, sel("loadRequest:"), request);
+    } else {
+        const html = sendStr(cls("NSString"), sel("stringWithUTF8String:"), no_server_html.ptr);
+        _ = send2(webview, sel("loadHTMLString:baseURL:"), html, null);
+    }
 
     send1v(window, sel("makeKeyAndOrderFront:"), null);
     sendBoolv(app, sel("activateIgnoringOtherApps:"), YES);
+
+    // Started after the window is up so the first thing the user sees is
+    // their UI, never a dialog about the app itself.
+    if (updates) {
+        if (bundlePath(std.heap.page_allocator)) |bundle| {
+            if (std.Thread.spawn(.{}, updateWorker, .{bundle})) |thread| {
+                thread.detach();
+            } else |_| {}
+        }
+    }
+
     sendv(app, sel("run"));
 }

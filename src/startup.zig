@@ -186,6 +186,7 @@ const mcp_cli = @import("mcp_cli.zig");
 const learn_cli = @import("learn_cli.zig");
 const cli = @import("cli.zig");
 const jobs = @import("jobs.zig");
+const job_registry = @import("job_registry.zig"); // #199
 const cube = @import("cube.zig");
 const schema = @import("schema.zig");
 const serve = @import("serve.zig");
@@ -231,6 +232,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // agents (the pre-compaction note, title, reflect) resolve the ONE file
     // the login flow writes instead of "/.kimi/...".
     oauth.initHome(keys_cli.homeEnv(init.environ_map) orelse "");
+    job_registry.home = keys_cli.homeEnv(init.environ_map) orelse ""; // #199: ownership records for background jobs
     // #557: same pin for GRAFF_PRICES_PATH, before `graff models` is dispatched
     // below — the hydration points (router_catalog, models_cache) all sit well
     // under the last call that still holds the environment.
@@ -324,6 +326,13 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // clean commit on the current branch, then removes the worktree + branch.
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "worktree")) {
         try jobs.worktreeCommand(gpa, io, arena, flags.positionals.items[1..]);
+        return true;
+    }
+
+    // `graff servers [stop <pid>|prune]`: background servers graff started —
+    // this session's or an earlier one's (#199).
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "servers")) {
+        try @import("servers_cmd.zig").command(gpa, io, arena, flags.positionals.items[1..]);
         return true;
     }
 

@@ -21,9 +21,30 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.287
+    \\  • the macOS app updates itself — verified signature, team and notarization before it installs
+    \\  • native app gains a searchable, paginated conversation library (#723)
+    \\  • one paste stays one prompt even when it spans several terminal reads (#737)
+    \\  • rendered bare URLs no longer carry trailing ** into the click target (#729)
+    \\  • workspace switch resolves paths without linking libc (#721)
+    \\  • Codex websocket transport errors retire the socket (#717)
+    \\  • outbound writes are sanitized by default; compaction can no longer invent constraints (#739, #738)
+    \\
+    \\0.0.286
+    \\  • native harness gains a browser pane: a Chrome tab per chat, click an element to pin it for the agent
+    \\  • split view — up to four chats side by side, each with its own model and folder (⌘D)
+    \\  • tab names are written by the model from the first prompt
+    \\  • saved chats can be archived or deleted from the sidebar
+    \\  • ⌘T/⌘W/⇧⌘T open, close and reopen a chat with its session resumed
+    \\  • picking a workspace moves the tab in front of you when it is empty
+    \\  • the desktop shell ships as a signed, notarized macOS app
+    \\
     \\0.0.285
+    \\  • native transcript stays put when you scroll up mid-stream; return to the tail to follow again (#724)
+    \\  • follow-ups typed while a turn is running queue and send when it ends
+    \\  • native tools land in the answer, not as a wall on top; settled batches fold
+    \\  • workspace switch stars and reports the process cwd (#721)
     \\  • Codex WS type:error retires the socket immediately; last_api_error stays bounded (#717)
-    \\  • chain re-anchor only when the rejected body sent previous_response_id
     \\  • TUI steer / /btw queues composer image chips with the text, not text alone
     \\
     \\0.0.284
@@ -287,6 +308,8 @@ pub const usage_text =
     \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
     \\  graff worktree remove <name>     discard worktree-<name> (drops its scratch work) + delete the branch
     \\  graff worktree prune             drop git registrations for worktrees whose dirs were deleted
+    \\  graff servers                    background servers graff started (this session's or older): pid, port, age
+    \\  graff servers stop <pid>         end one (its whole process tree); `prune` drops records of dead ones
     \\  graff sandboxes                  list your gateway sandboxes (what's burning credits)
     \\  graff sandboxes stop <id>        spin a sandbox down (stops it + settles the meter)
     \\  graff cube new                   spin up a cloud graff (sandbox + serve + preview URL)

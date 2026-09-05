@@ -1,19 +1,11 @@
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { NextRequest } from "next/server";
+import { resolveRoot } from "@/lib/server-root";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-/** Same resolution as /api/acp: the workspace the agent itself runs in. */
-function workspaceRoot(): string {
-  if (process.env.GRAFF_ACP_CWD) return process.env.GRAFF_ACP_CWD;
-  if (process.env.GRAFF_CWD) return process.env.GRAFF_CWD;
-  const fromApp = path.resolve(process.cwd(), "../..");
-  if (existsSync(path.join(fromApp, "build.zig"))) return fromApp;
-  return process.cwd();
-}
 
 /** Heavy or generated trees that only bury the folders people navigate to. */
 const HIDDEN = new Set([".git", "node_modules", ".next", ".zig-cache", "zig-out", ".DS_Store"]);
@@ -39,8 +31,74 @@ function resolveInRoot(root: string, rel: string): string | null {
   return target;
 }
 
+/** Bounds for the `@` picker's walk. A workspace can be someone's whole home
+ *  directory, so the walk is capped rather than exhaustive: it stops long
+ *  before it could stall the composer, and says so with `partial`. */
+const SEARCH_SCAN_LIMIT = 20_000;
+const SEARCH_RESULT_LIMIT = 40;
+const SEARCH_MAX_DEPTH = 8;
+
+/** Rank a candidate for the query, or -1 to drop it. A file-name match beats
+ *  one buried in a parent directory, because a name is what someone typing
+ *  into the picker means; shorter paths break ties, so `src/x.ts` sorts above
+ *  a deeply vendored namesake. */
+function score(rel: string, query: string): number {
+  const name = rel.slice(rel.lastIndexOf(path.sep) + 1).toLowerCase();
+  if (name.startsWith(query)) return 0;
+  if (name.includes(query)) return 1;
+  if (rel.toLowerCase().includes(query)) return 2;
+  return -1;
+}
+
+/** Files under `root` matching `query`, best first. Directories never match:
+ *  the picker mentions files, and `@[some/dir]` means nothing to the agent. */
+function searchFiles(root: string, query: string): { matches: string[]; partial: boolean } {
+  const hits: { rel: string; rank: number }[] = [];
+  const queue: { dir: string; depth: number }[] = [{ dir: root, depth: 0 }];
+  let scanned = 0;
+  let partial = false;
+  while (queue.length > 0) {
+    const { dir, depth } = queue.shift()!;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue; // unreadable directory: skip it rather than fail the whole search
+    }
+    for (const entry of entries) {
+      if (HIDDEN.has(entry.name) || entry.name.startsWith(".")) continue;
+      if (++scanned > SEARCH_SCAN_LIMIT) {
+        partial = true;
+        queue.length = 0;
+        break;
+      }
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (depth < SEARCH_MAX_DEPTH) queue.push({ dir: full, depth: depth + 1 });
+        continue;
+      }
+      const rel = path.relative(root, full);
+      const rank = score(rel, query);
+      if (rank >= 0) hits.push({ rel, rank });
+    }
+  }
+  hits.sort((a, b) => (a.rank === b.rank ? a.rel.length - b.rel.length : a.rank - b.rank));
+  if (hits.length > SEARCH_RESULT_LIMIT) partial = true;
+  return { matches: hits.slice(0, SEARCH_RESULT_LIMIT).map((h) => h.rel), partial };
+}
+
 export async function GET(req: NextRequest) {
-  const root = workspaceRoot();
+  // `?root=` picks the workspace (a tab's own cwd); paths stay inside it.
+  const resolved = resolveRoot(req.nextUrl.searchParams.get("root"));
+  if ("error" in resolved) return Response.json({ error: resolved.error }, { status: resolved.status });
+  const root = resolved.root;
+  // `?q=` is the composer's @ picker, not the files pane: search, don't list.
+  const q = req.nextUrl.searchParams.get("q");
+  if (q !== null) {
+    const query = q.trim().toLowerCase();
+    const found = query ? searchFiles(root, query) : { matches: [], partial: false };
+    return Response.json({ ok: true, root, query, ...found });
+  }
   const rel = req.nextUrl.searchParams.get("path") ?? "";
   const target = resolveInRoot(root, rel);
   if (!target) return Response.json({ error: "path escapes the workspace" }, { status: 400 });
@@ -93,8 +151,10 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const root = workspaceRoot();
-  const body = (await req.json()) as { action?: string; path?: string };
+  const body = (await req.json()) as { action?: string; path?: string; root?: string };
+  const resolved = resolveRoot(body.root);
+  if ("error" in resolved) return Response.json({ error: resolved.error }, { status: resolved.status });
+  const root = resolved.root;
   const target = resolveInRoot(root, body.path ?? "");
   if (!target) return Response.json({ error: "path escapes the workspace" }, { status: 400 });
   if (process.platform !== "darwin") {

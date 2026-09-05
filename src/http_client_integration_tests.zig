@@ -3,6 +3,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Agent = @import("agent.zig").Agent;
+const deinitMarkdown = @import("agent_render.zig").deinitMarkdown;
 const http = @import("http.zig");
 const http_client = @import("http_client.zig");
 const mock = @import("agent_ws_mock.zig");
@@ -182,6 +183,7 @@ test "TUI turn agent and actual runSub child share the recovered generation" {
     ctx.provider = p;
     var root = try repl_turn.turnAgent(&ctx, gpa, arena_state.allocator(), .{}, &output.writer, &approvals);
     defer root.tools_used.deinit(gpa);
+    defer deinitMarkdown(&root);
 
     http_client.injectConstructionTlsForTest(0);
     _ = try root.request(null);
@@ -312,6 +314,7 @@ test "later root and child recover after the retry ladder exhausts TLS generatio
     var tracer: trace.Tracer = .{ .io = io, .gpa = gpa, .out = &trace_output.writer, .start = Io.Timestamp.now(io, .awake) };
 
     var root = childAgent(gpa, arena, io, &runtime.client, provider(url));
+    defer deinitMarkdown(&root);
     root.sub = false;
     root.label = "test-root";
     root.out = &output.writer;

@@ -10,18 +10,78 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.0.285 (2026-09-01)
+## v0.0.287 (2026-09-04)
 
-- Next cut after tagged [v0.0.284](docs/releases/v0.0.284.md). No tag
-  until asked.
-- `#717` (yxlyx): Codex WS `type:error` retires the socket immediately
-  and keeps a one-request marker for the bounded diagnostic. Re-anchor
-  only when the rejected body actually sent `previous_response_id`.
-  Unparseable Responses envelopes no longer copy raw bytes into
-  `last_api_error`. Follow-up hardening for `#692` / `#693`.
-- TUI mid-turn steer / `/btw` now bakes composer `[Image #N]` chips into
-  the queued payload as `@[path]`. Previously only the typed text was
-  queued, so the follow-up turn dropped the pixels.
+- The macOS desktop app updates itself. It compares the newest release
+  tag with its own stamped version, and installs only after the download
+  verifies, carries the same Developer ID team as the running app, and is
+  accepted by Gatekeeper as notarized. `GRAFF_NATIVE_NO_UPDATE` turns the
+  check off. Releases carry the app as `Codegraff-macos.zip`.
+- Native app: a paginated conversation library, searchable and scoped to
+  the workspace, alongside the existing sidebar list (#723).
+- `#737`: one paste stays one prompt. A paste larger than a terminal read
+  arrives in several reads, and a chunk ending at a line boundary was
+  read as Enter, sending half of it and steering the live turn with the
+  fragments.
+- `#729`: a rendered bare URL no longer carries trailing emphasis markers
+  into its click target.
+- `#721`: the workspace switch resolves paths through an opened directory
+  rather than libc, which this binary does not link.
+- `#717`: a Codex websocket transport error retires the socket instead of
+  carrying a half-dead connection into the next request.
+- `#739`: outbound writes are sanitized by default. Anything published off
+  the machine carries what the task needs, not the local context a debug
+  session collected, and a detail that identifies the user is asked about
+  before it is published.
+- `#738`: a compaction summary may no longer claim a constraint was
+  recorded — recorded constraints live in a ledger injected separately, so
+  an asserted one is indistinguishable from an invented one. A constraint
+  recorded mid-turn now says it takes effect immediately.
+- README leads with the desktop app and documents how the project measures
+  itself.
+
+## v0.0.286 (2026-09-04)
+
+- Native harness gains a browser pane: a headless Chrome tab per chat,
+  driven by Kuri, started only when the pane is opened and stopped again
+  after a quiet spell or past a memory cap. Browse forwards clicks,
+  scrolling and typing; Annotate pins the element under a click, with an
+  optional note, and the pins ride with the chat's next message so the
+  agent can act on the page the reader is looking at.
+- Split view: another chat beside the ones on screen, up to four
+  columns, each with its own transcript, composer, model and folder.
+- Tab names are written by the model from the first prompt rather than
+  chopped out of it, and a session open in a tab lends its name to the
+  sidebar.
+- Saved chats can be archived (the file moves aside, the conversation
+  survives) or deleted from the sidebar.
+- Keyboard: new chat, close, reopen the last closed chat with its
+  session resumed, add a split, and jump between tabs.
+- Picking a workspace now changes the folder in front of you when the
+  tab is empty, instead of leaving it behind a second tab.
+- The desktop shell ships as a signed, notarized macOS app with the
+  project's icon, and no longer serves a stale page from WebKit's cache.
+- Native app moves to Next.js 16.3.
+- GUI declares its `esbuild` dependency so a clean build resolves it.
+
+## v0.0.285 (2026-09-03)
+
+- Native transcript follow-tail only while the reader is at the bottom.
+  Scrolling up mid-stream no longer yanks the thread (#724).
+- Follow-ups typed while a turn is running queue and drain in order when
+  it ends. The composer stays usable; stop stays on an empty draft.
+- Native tools interleave with the answer instead of stacking above it;
+  settled tool batches fold; ACP patches paint once per frame.
+- `#721`: `workspace` switch stars and reports the process cwd.
+- `#717`: Codex WS `type:error` retires the socket immediately and keeps
+  a one-request marker for the bounded diagnostic. Re-anchor only when
+  the rejected body actually sent `previous_response_id`. Unparseable
+  Responses envelopes no longer copy raw bytes into `last_api_error`.
+- TUI mid-turn steer / `/btw` bakes composer `[Image #N]` chips into the
+  queued payload as `@[path]`.
+- TUI streams the live answer instead of a Thinking placeholder while
+  tokens arrive; codedb folds as “Looked up N items”.
+- 284 stays published as-is. This is not a retag.
 
 ## v0.0.284 (2026-09-01)
 

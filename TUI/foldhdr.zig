@@ -32,7 +32,7 @@ pub const gutter_cols: usize = 2;
 
 // ── families ────────────────────────────────────────────────────────────────
 
-pub const Family = enum { read, write, edit, bash, search, web, task, todo, mcp, other, mixed };
+pub const Family = enum { read, write, edit, bash, search, web, task, todo, mcp, lookup, other, mixed };
 
 const Verb = struct {
     /// In flight.
@@ -54,6 +54,7 @@ fn verbOf(f: Family) Verb {
         .edit => .{ .present = "Editing", .past = "Edited", .noun = "file" },
         .bash => .{ .present = "Running", .past = "Ran", .noun = "command", .solo_tool = true },
         .search => .{ .present = "Searching", .past = "Searched", .noun = "pattern" },
+        .lookup => .{ .present = "Looking up", .past = "Looked up", .noun = "item" },
         .web => .{ .present = "Fetching", .past = "Fetched", .noun = "page" },
         .task => .{ .present = "Scouting", .past = "Scouted", .noun = "scout" },
         .todo => .{ .present = "Updating", .past = "Updated", .noun = "todo" },
@@ -121,7 +122,8 @@ pub fn familyOf(name: []const u8) Family {
     if (eqAny(leaf, &.{ "webfetch", "web_fetch", "web_search", "fetch", "browse" })) return .web;
     if (eqAny(leaf, &.{ "task", "subagent", "workflow", "agent_output", "dispatch_agent" })) return .task;
     if (std.mem.startsWith(u8, leaf, "todo")) return .todo;
-    if (eqAny(leaf, &.{ "grep", "glob", "search", "find", "ls", "list_dir", "codedb" })) return .search;
+    if (eqAny(leaf, &.{ "codedb" })) return .lookup;
+    if (eqAny(leaf, &.{ "grep", "glob", "search", "find", "ls", "list_dir" })) return .search;
     if (has(leaf, "search") or has(leaf, "grep") or has(leaf, "glob") or has(leaf, "find")) return .search;
     if (has(leaf, "web")) return .web;
     if (isMcp(name)) return .mcp;
@@ -271,6 +273,21 @@ test "a homogeneous run reads present-progressive live and past tense settled" {
     try testing.expectEqualStrings("Read 3 files", try phrase(a, oneRun(&m)));
 }
 
+test "codedb is a lookup, not a search-for-patterns" {
+    var m: Model = undefined;
+    m.setup(testing.allocator);
+    defer m.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try m.pushTool(.{ .name = "codedb", .detail = "context how auth works" });
+    try testing.expectEqualStrings("Looking up 1 item\u{2026}", try phrase(a, oneRun(&m)));
+    try m.pushTool(.{ .name = "codedb", .detail = "ok", .done = true });
+    try m.pushTool(.{ .name = "codedb", .detail = "around Agent" });
+    try m.pushTool(.{ .name = "codedb", .detail = "ok", .done = true });
+    try testing.expectEqualStrings("Looked up 2 items", try phrase(a, oneRun(&m)));
+}
+
 test "a single call names its tool where that is how it reads" {
     var m: Model = undefined;
     m.setup(testing.allocator);
@@ -345,6 +362,7 @@ test "familyOf reads the name, and an MCP leaf classifies like a first-party too
     try testing.expectEqual(Family.bash, familyOf("bash"));
     try testing.expectEqual(Family.search, familyOf("grep"));
     try testing.expectEqual(Family.search, familyOf("glob"));
+    try testing.expectEqual(Family.lookup, familyOf("codedb"));
     try testing.expectEqual(Family.search, familyOf("mcp__codedbpro__faster_search"));
     try testing.expectEqual(Family.read, familyOf("mcp__codedbpro__read"));
     try testing.expectEqual(Family.web, familyOf("webfetch"));

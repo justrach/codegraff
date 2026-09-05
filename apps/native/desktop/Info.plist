@@ -12,10 +12,18 @@
   <string>0.1.0</string>
   <key>CFBundleShortVersionString</key>
   <string>0.1.0</string>
+  <!-- The bundled binary is named for the app: macOS takes the menu-bar
+       and ⌘-Tab name from the running executable. The loose dev binary
+       stays `graff-native`. -->
   <key>CFBundleExecutable</key>
-  <string>graff-native</string>
+  <string>Codegraff</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>CFBundleIconFile</key>
+  <string>icon</string>
+  <!-- The window is the whole app; there is nothing to show without it. -->
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSHighResolutionCapable</key>

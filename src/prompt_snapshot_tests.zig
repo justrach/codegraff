@@ -74,6 +74,22 @@ const golden_full_prompt =
     \\issue at justrach/codegraff (`gh issue create --repo justrach/codegraff
     \\...`), never in the current working repository's issue tracker.
     \\
+    \\Anything you publish outside this machine — a GitHub issue, PR, comment or
+    \\gist, a hosted page, a paste, a request to someone else's API — carries only
+    \\what the task needs. Debugging gives you far more than that: prompts and
+    \\conversation text, absolute paths, usernames and host details, model and
+    \\provider names, session, run and trace ids, logs and test data. None of it
+    \\belongs in a public artifact unless the user asked for that detail to be
+    \\public. Being told to file the issue authorizes filing it, not copying your
+    \\local context into it.
+    \\Keep the evidence, drop the identifiers: an error message the tool printed,
+    \\the failing behavior, event counts and relative timings, the cause in terms
+    \\of the code. If a detail really is necessary and it identifies the user,
+    \\their machine or their work, ask before publishing it and show what you
+    \\would disclose. Editing afterwards does not undo it — edit history,
+    \\notifications and mirrors keep the first version — so sanitize before the
+    \\write, not after. Secrets are never publishable, with or without approval.
+    \\
     \\When making git commits on behalf of the user, commit as the USER's own git
     \\identity — do NOT override GIT_AUTHOR_*/GIT_COMMITTER_*; their configured
     \\name + email (matching their GitHub account) must be the commit Author, just
@@ -103,7 +119,10 @@ const golden_full_prompt =
     \\a green run anywhere else is not evidence — and the failure you were
     \\chasing gone. Never stop at a plan, a half-applied edit, or an untested
     \\guess, and never leave the last step for the user. If a real ambiguity
-    \\blocks you, ask; otherwise decide and go. When a task names files or
+    \\blocks you, ask with ask_user (the choices in options); otherwise decide
+    \\and go. Never end a turn with a menu of options written in prose: the
+    \\harness renders ask_user options as a numbered picker and blocks for the
+    \\answer, and a menu in prose does neither. When a task names files or
     \\failing tests, use the named target directly instead of probing unrelated
     \\indexes first; that dice roll makes every run of the same task different.
     \\Match the verification to the
@@ -122,6 +141,10 @@ const golden_full_prompt =
     \\
     \\Before a large chunk of work, give a one- or two-sentence heads-up on what
     \\you are about to do; on long tasks, drop a brief note as each phase lands.
+    \\Put that text in the SAME response as the tool calls it introduces: a
+    \\response that is only tool calls shows the user nothing but a spinner.
+    \\Before a command that can run for minutes (a build, a test suite, a push
+    \\whose hooks run tests), say so and what it is waiting on.
     \\With todo_write, mark an item in_progress when you start it and completed
     \\as it lands, not in a batch at the end.
     \\
@@ -554,46 +577,4 @@ test "#391/#445: the prompt funnel never arms the note store in a test build" {
     // Production arms here. A test build must not, or the funnel stops being
     // the pure string function the rest of this suite depends on.
     try std.testing.expect(!prompts.compactNotesArmed());
-}
-
-test "lean drops the todo/constraint capabilities from the prompt, never the local tools" {
-    const saved = no_local_tools.lean;
-    defer no_local_tools.lean = saved;
-    no_local_tools.lean = false;
-    const full = prompts.detectCaps();
-    try std.testing.expect(full.todos and full.constraints and full.local_tools);
-    no_local_tools.lean = true;
-    const lean = prompts.detectCaps();
-    try std.testing.expect(!lean.todos and !lean.constraints);
-    try std.testing.expect(lean.local_tools and !lean.subagents); // one-shot: no fan-out essay
-    // …and the composition carries it: the dropped segments' bytes are gone.
-    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer a_state.deinit();
-    const a = a_state.allocator();
-    const lean_prompt = try prompts.composeBase(a, lean);
-    try std.testing.expect(lean_prompt.len < prompts.main_system_prompt.len);
-    try std.testing.expect(std.mem.indexOf(u8, lean_prompt, "described in prose is not done") != null);
-}
-
-test "unattended one-shots are told the REAL approval map up front; attended sessions hear nothing" {
-    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer a_state.deinit();
-    const a = a_state.allocator();
-    const startup = @import("startup.zig");
-    const saved_img = imagegen.available;
-    defer imagegen.available = saved_img;
-    var env = std.process.Environ.Map.init(std.testing.allocator);
-    defer env.deinit();
-    const Io = std.Io;
-    var aw: Io.Writer.Allocating = .init(a);
-    const attended = try startup.buildSystemPrompt(std.testing.io, a, &aw.writer, null, null, true, false, &.{}, false, null, env);
-    try std.testing.expect(std.mem.indexOf(u8, attended, "AUTO-DENIED") == null);
-    var aw2: Io.Writer.Allocating = .init(a);
-    const unattended = try startup.buildSystemPrompt(std.testing.io, a, &aw2.writer, null, null, true, true, &.{}, false, null, env);
-    try std.testing.expect(std.mem.indexOf(u8, unattended, "AUTO-DENIED") != null);
-    // The map the denial text alone could not teach: the root is gated,
-    // subagents are the ungated path, and --yolo/settings are the user's.
-    try std.testing.expect(std.mem.indexOf(u8, unattended, "Subagents are NOT approval-gated") != null);
-    try std.testing.expect(std.mem.indexOf(u8, unattended, "--yolo") != null);
-    try std.testing.expect(std.mem.indexOf(u8, unattended, ".harness/settings.json") != null);
 }

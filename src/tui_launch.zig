@@ -195,7 +195,7 @@ fn historyCb(ctx: ?*anyopaque, op: tui.HistoryOp) void {
 
 fn idleWakeCb(ctx: ?*anyopaque, buf: []u8) ?[]const u8 {
     const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
-    if (job_notify.takeWake(c.io, buf)) |t| return t;
+    if (job_notify.takeIdleWake(c.io, buf)) |t| return t; // an idle stop waits for a real step boundary (#199)
     if (schedule.takeWake(c.io, buf)) |t| return t;
     return channel_worker.takeWake(c.io, buf);
 }

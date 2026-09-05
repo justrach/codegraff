@@ -57,6 +57,7 @@ pub fn abandonSequence(bytes: []const u8, recovery: SequenceRecovery) void {
 pub fn resetInputState() void {
     abandonSequence("", .none);
     in_paste = false;
+    paste.resetBurst();
     orphan.reset();
 }
 
@@ -145,9 +146,9 @@ pub fn next(bytes: []const u8, i: *usize) ?Key {
     i.* += 1;
     if (b == 0x1b) return escapeSeq(bytes, i);
     if (b == 0x0d or b == 0x0a) {
-        // Embedded newlines from a bracketed paste — or a wrap-less multiline
-        // dump in this same read — must not become the Enter/send key (#643).
-        if (in_paste or paste.looksLikeBurst(bytes)) {
+        // Newlines inside a paste are text, not the Enter/send key: bracketed,
+        // a multiline dump in this read, or a run spanning reads (#643/#737).
+        if (in_paste or paste.burstActive() or paste.looksLikeBurst(bytes)) {
             if (paste.pasteNewline(bytes, i, b)) |nl| return .{ .char = nl };
         }
         return .enter;

@@ -126,8 +126,7 @@ test { // unit_tests' root is main.zig only, so reference every split-out module
 }
 const prompts = @import("prompts.zig");
 const schema = @import("schema.zig");
-// The provider/keys core (ProviderSpec/provider_specs, Provider, Keys) lives in provider.zig; provider_specs/Keys stay local aliases for main()'s credential setup and tests.
-const provider_mod = @import("provider.zig");
+const provider_mod = @import("provider.zig"); // The provider/keys core (ProviderSpec/provider_specs, Provider, Keys) lives in provider.zig; provider_specs/Keys stay local aliases for main()'s credential setup and tests.
 const provider_specs = provider_mod.provider_specs;
 pub const Keys = provider_mod.Keys;
 // Approvals (command/tool approval gate) + confinedPath/noSymlinkEscape live in approvals.zig; main() constructs one directly for the session.
@@ -573,8 +572,7 @@ const subagent = @import("subagent.zig");
 const agentJobsReap = subagent.agentJobsReap; // #276 P0-3: background subagents die with the session, mirroring jobsReap
 const workflow = @import("workflow_test.zig"); // the engine's tests live here (workflow.zig hit the 600-line cap)
 const exec = @import("exec.zig");
-// ── Unit tests (`zig build test`) ──────────────────────────────────────────
-test { // pull in tests from imported modules (mcp.zig)
+test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
     _ = @import("mcp.zig");
     _ = @import("mcp_rpc.zig");
     _ = @import("main_test.zig");
@@ -586,6 +584,8 @@ test { // pull in tests from imported modules (mcp.zig)
     _ = @import("test_hooks.zig"); // unreached modules; their tests were silently skipped
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
+    _ = @import("codex_tool_search.zig"); // hosted tool_search on gpt-5.4+ Codex
+    _ = @import("agent_ws_steer.zig"); // gpt-6-astra response.steer
     _ = @import("acp_preauth.zig"); // credential-free ACP loop must stay in the test root
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events
     _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here

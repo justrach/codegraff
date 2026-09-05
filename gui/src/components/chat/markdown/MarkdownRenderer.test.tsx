@@ -28,6 +28,7 @@ const SHIFTED_PAIRING = [
   "**Note:** use x**2 then open **http://localhost:3003**",
   "- **Web:** 2**10 at **http://localhost:3003**",
 ];
+const GITHUB_ISSUE_URL = "https://github.com/justrach/codegraff/issues/728";
 
 function linkTargets(html: string): string[] {
   const targets: string[] = [];
@@ -38,6 +39,51 @@ function linkTargets(html: string): string[] {
   }
   return targets;
 }
+
+function renderedUrlButtons(html: string): Array<{ label: string; title: string }> {
+  const buttons: Array<{ label: string; title: string }> = [];
+  const pattern = /<button\b[^>]*\btitle="([^"]*)"[^>]*>([^<]*)<\/button>/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(html)) !== null) {
+    buttons.push({ title: match[1], label: match[2] });
+  }
+  return buttons;
+}
+
+const WRAPPED_URL = "https://example.com/docs";
+const MARKDOWN_URL_WRAPPERS = ["*", "_", "__", "**", "~~"] as const;
+
+test("linkifies URLs inside Markdown emphasis wrappers without delimiters", () => {
+  const htmlByWrapper = MARKDOWN_URL_WRAPPERS.map((wrapper) =>
+    renderToStaticMarkup(<MarkdownRenderer text={`${wrapper}${WRAPPED_URL}${wrapper}`} />),
+  );
+
+  expect(htmlByWrapper.flatMap(renderedUrlButtons)).toEqual(
+    MARKDOWN_URL_WRAPPERS.map(() => ({ label: WRAPPED_URL, title: WRAPPED_URL })),
+  );
+  for (const [html, wrapper] of htmlByWrapper.map((html, index) => [
+    html,
+    MARKDOWN_URL_WRAPPERS[index],
+  ] as const)) {
+    expect(html).not.toContain(`${wrapper}${WRAPPED_URL}`);
+    expect(html).not.toContain(`${WRAPPED_URL}${wrapper}`);
+  }
+});
+
+test("keeps brackets and parentheses outside rendered URL targets", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text={`[${WRAPPED_URL}] (${WRAPPED_URL})`} />,
+  );
+
+  expect(renderedUrlButtons(html)).toEqual([
+    { label: WRAPPED_URL, title: WRAPPED_URL },
+    { label: WRAPPED_URL, title: WRAPPED_URL },
+  ]);
+  expect(html).toContain(`[<button`);
+  expect(html).toContain(`</button>]`);
+  expect(html).toContain(`(<button`);
+  expect(html).toContain(`</button>)`);
+});
 
 test("a stray ** earlier in the line never lands in the link target", () => {
   for (const text of SHIFTED_PAIRING) {
@@ -77,6 +123,42 @@ test("does not truncate a URL whose own tail is a delimiter pair", () => {
   const url = "https://example.com/glob/**";
   const html = renderToStaticMarkup(<MarkdownRenderer text={`See ${url} for details.`} />);
   expect(linkTargets(html)).toContain(url);
+  expect(renderedUrlButtons(html)).toEqual([{ label: url, title: url }]);
+});
+
+test("renders the exact GitHub issue repro with clean visible emphasis", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text={`**${GITHUB_ISSUE_URL}**`} />,
+  );
+
+  expect(html).toContain("font-medium");
+  expect(renderedUrlButtons(html)).toEqual([
+    { label: GITHUB_ISSUE_URL, title: GITHUB_ISSUE_URL },
+  ]);
+  expect(html).not.toContain("**");
+});
+
+test("keeps a bold URL target exact beside its label and punctuation", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text={`Open GitHub issue: **${GITHUB_ISSUE_URL}**.`} />,
+  );
+
+  expect(html).toContain("Open GitHub issue: ");
+  expect(html).toContain("</button></span>.");
+  expect(renderedUrlButtons(html)).toEqual([
+    { label: GITHUB_ISSUE_URL, title: GITHUB_ISSUE_URL },
+  ]);
+});
+
+test("keeps an explicit labeled GitHub link href exact", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text={`Read [issue 728](${GITHUB_ISSUE_URL}).`} />,
+  );
+
+  expect(html).toContain(`href="${GITHUB_ISSUE_URL}"`);
+  expect(html).toContain(">issue 728</a>.");
+  expect(linkTargets(html)).toEqual([GITHUB_ISSUE_URL]);
+  expect(html).not.toContain(`${GITHUB_ISSUE_URL}**`);
 });
 
 test("keeps a bold-wrapped URL bold and its target clean", () => {
@@ -86,6 +168,47 @@ test("keeps a bold-wrapped URL bold and its target clean", () => {
   expect(html).toContain("font-medium");
   expect(linkTargets(html)).toContain("http://localhost:3003");
   expect(html).not.toContain("**");
+});
+
+// #729: the exact report — a bare GitHub issue URL directly wrapped in bold.
+// The anchor text and the target must both be the URL alone; the delimiter
+// pairs are markup (bold), never text and never part of the link.
+const ISSUE_URL = "https://github.com/justrach/codegraff/issues/728";
+
+test("#729: a bold-wrapped bare URL renders bold with the anchor text and target exactly the URL", () => {
+  const html = renderToStaticMarkup(<MarkdownRenderer text={`**${ISSUE_URL}**`} />);
+  expect(html).toContain("font-medium");
+  expect(html).toContain(`>${ISSUE_URL}</button>`);
+  expect(linkTargets(html)).toEqual([ISSUE_URL]);
+  expect(html).not.toContain("*");
+});
+
+test("#729: bold-wrapped URLs next to punctuation, parentheses, and list markers stay clean", () => {
+  const texts = [
+    `Filed **${ISSUE_URL}**.`,
+    `(see **${ISSUE_URL}**)`,
+    `- **${ISSUE_URL}** — P0`,
+    `**Filed: ${ISSUE_URL}** and **${ISSUE_URL}**`,
+  ];
+  for (const text of texts) {
+    const html = renderToStaticMarkup(<MarkdownRenderer text={text} />);
+    const targets = linkTargets(html);
+    expect(targets.length).toBeGreaterThan(0);
+    for (const target of targets) {
+      expect(target).toBe(ISSUE_URL);
+    }
+    expect(html).not.toContain("**");
+  }
+});
+
+test("#729: no streaming prefix of a bold-wrapped URL leaks a delimiter into the target", () => {
+  const text = `Filed **${ISSUE_URL}** for the crash.`;
+  for (let length = 1; length <= text.length; length += 1) {
+    const html = renderToStaticMarkup(<MarkdownRenderer text={text.slice(0, length)} />);
+    for (const target of linkTargets(html)) {
+      expect(target).not.toMatch(/(\*\*|__|~~)$/u);
+    }
+  }
 });
 
 test("renders unsafe markdown link schemes as plain text", () => {

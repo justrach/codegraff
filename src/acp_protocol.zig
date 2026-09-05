@@ -7,6 +7,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
 const util = @import("util.zig");
+const command_catalog = @import("command_catalog.zig");
 
 /// Highest ACP protocol version this agent implements (v1 shapes).
 pub const protocol_version: i64 = 1;
@@ -154,17 +155,42 @@ pub fn writeAvailableCommands(w: *Io.Writer, session_id: []const u8, commands: [
     });
 }
 
+/// Commands the menu does not offer. Each one needs a terminal the client
+/// does not have: a full-screen HUD, the raw-mode key loop a picker drives,
+/// or the browser hand-off an OAuth flow waits on. Typing one still works —
+/// it degrades to a text dump — but a menu entry that lands somewhere the
+/// client cannot show is worse than no entry.
+const terminal_only = [_][]const u8{
+    "/theme",
+    "/animation",
+    "/debug",
+    "/login",
+    "/paste",
+    "/image",
+    "/images",
+};
+
+/// The advertised set, built from the one catalog the REPL and tab
+/// completion already read, so a command cannot exist in one surface and be
+/// missing from the other. Names go out bare: ACP owns the leading slash.
 pub fn slashCommands() []const AvailableCommand {
-    return &.{
-        .{
-            .name = "never",
-            .description = "List, add, or retire a standing constraint. Bare lists them; `rm <id-or-text>` retires one.",
-            .input = .{ .hint = "[<text>|rm <id-or-text>]" },
-        },
-        .{
-            .name = "constraint",
-            .description = "Alias for never.",
-            .input = .{ .hint = "[<text>|rm <id-or-text>]" },
-        },
+    const built = comptime blk: {
+        var out: [command_catalog.commands.len]AvailableCommand = undefined;
+        var n: usize = 0;
+        for (command_catalog.commands) |c| {
+            for (terminal_only) |skip| {
+                if (std.mem.eql(u8, c.name, skip)) break;
+            } else {
+                out[n] = .{
+                    .name = c.name[1..],
+                    .description = c.desc,
+                    .input = .{ .hint = c.usage },
+                };
+                n += 1;
+            }
+        }
+        const frozen = out[0..n].*;
+        break :blk frozen;
     };
+    return &built;
 }

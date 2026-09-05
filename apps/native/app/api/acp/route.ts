@@ -1,8 +1,11 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { NextRequest } from "next/server";
+import type { AcpCommand } from "@/lib/acp";
+import { defaultRoot, resolveRoot } from "@/lib/server-root";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,7 +20,29 @@ type Slot = {
   model: string | null;
   /** graff session name (`--resume`): the file this agent autosaves to. */
   resume: string | null;
+  /** The workspace the agent was spawned in: its cwd, where its sessions save. */
+  cwd: string;
+  yolo: boolean;
+  /** Whether the configured MCP servers were started with it. */
+  mcp: boolean;
+  /** What the agent said it services, from `available_commands_update`. */
+  commands: AcpCommand[];
 };
+
+type SpawnOpts = { model?: string; resume?: string; cwd: string; yolo: boolean; mcp: boolean };
+type BootstrapOpts = { model?: string; reset?: boolean; resume?: string; cwd?: string; yolo?: boolean; mcp?: boolean };
+
+/** An empty MCP config graff accepts as "no servers" (`GRAFF_MCP_CONFIG`):
+ * every chat's agent otherwise starts every server in ~/.codegraff/mcp.json,
+ * a gigabyte or more of processes per tab with a typical config. */
+function mcpOffPath(): string {
+  const file = path.join(os.homedir(), ".codegraff", "native", "mcp-off.json");
+  if (!existsSync(file)) {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, '{"mcpServers":{}}\n');
+  }
+  return file;
+}
 
 // One `graff acp` child per chat tab. The agent holds exactly one live
 // session per process (`session/load` is not implemented), so a tab's
@@ -42,15 +67,7 @@ function graffBin(): string {
   return "graff";
 }
 
-function workspace(): string {
-  if (process.env.GRAFF_ACP_CWD) return process.env.GRAFF_ACP_CWD;
-  if (process.env.GRAFF_CWD) return process.env.GRAFF_CWD;
-  const fromApp = path.resolve(process.cwd(), "../..");
-  if (existsSync(path.join(fromApp, "build.zig"))) return fromApp;
-  return process.cwd();
-}
-
-function yolo(): boolean {
+function defaultYolo(): boolean {
   const raw = process.env.GRAFF_YOLO;
   if (raw === "0" || raw === "false" || raw === "off" || raw === "no") return false;
   return true;
@@ -88,18 +105,29 @@ function killPage(page: string) {
   }
 }
 
-function spawnAgent(chat: string, model?: string, resume?: string): Slot {
+function spawnAgent(chat: string, opts: SpawnOpts): Slot {
   killSlot(chat);
   const args = ["acp"];
-  if (yolo()) args.push("--yolo");
-  if (model) args.push("--model", model);
-  if (resume) args.push("--resume", resume);
+  if (opts.yolo) args.push("--yolo");
+  if (opts.model) args.push("--model", opts.model);
+  if (opts.resume) args.push("--resume", opts.resume);
   const child = spawn(graffBin(), args, {
     stdio: ["pipe", "pipe", "inherit"],
-    cwd: workspace(),
-    env: process.env,
+    cwd: opts.cwd,
+    env: opts.mcp ? process.env : { ...process.env, GRAFF_MCP_CONFIG: mcpOffPath() },
   });
-  const slot: Slot = { child, buf: "", nextId: 1, sessionId: null, model: model ?? null, resume: resume ?? null };
+  const slot: Slot = {
+    child,
+    buf: "",
+    nextId: 1,
+    sessionId: null,
+    model: opts.model ?? null,
+    resume: opts.resume ?? null,
+    cwd: opts.cwd,
+    yolo: opts.yolo,
+    mcp: opts.mcp,
+    commands: [],
+  };
   child.on("exit", () => {
     if (slots.get(chat) === slot) slots.delete(chat);
   });
@@ -135,36 +163,84 @@ function readLine(slot: Slot, timeoutMs: number): Promise<string> {
   });
 }
 
+/** The agent advertises its command set once, unprompted, right after
+ * session/new — so it has to be picked off the stream rather than asked for. */
+function noteCommands(slot: Slot, msg: { params?: unknown }): void {
+  const update = (msg.params as { update?: { sessionUpdate?: string; availableCommands?: AcpCommand[] } } | undefined)
+    ?.update;
+  if (update?.sessionUpdate !== "available_commands_update") return;
+  if (Array.isArray(update.availableCommands)) slot.commands = update.availableCommands;
+}
+
+/** The advertisement follows the session/new result on the same stream, so
+ * the reply to that call returns before it has been read. Wait briefly for
+ * it rather than leaving the menu empty until the first prompt. */
+async function drainCommands(slot: Slot): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (slot.commands.length === 0 && Date.now() < deadline) {
+    let line: string;
+    try {
+      line = await readLine(slot, Math.max(50, deadline - Date.now()));
+    } catch {
+      return;
+    }
+    try {
+      noteCommands(slot, JSON.parse(line) as { params?: unknown });
+    } catch {
+      // not JSON: a diagnostic line, keep waiting
+    }
+  }
+}
+
 async function rpc(slot: Slot, method: string, params?: unknown): Promise<unknown> {
   const id = slot.nextId++;
   writeLine(slot, { jsonrpc: "2.0", id, method, params });
   for (;;) {
     const line = await readLine(slot, 30_000);
-    let msg: { id?: unknown; result?: unknown; error?: { message?: string }; method?: string };
+    let msg: { id?: unknown; result?: unknown; error?: { message?: string }; method?: string; params?: unknown };
     try {
       msg = JSON.parse(line) as typeof msg;
     } catch {
       continue;
     }
-    if (msg.method) continue;
+    if (msg.method) {
+      noteCommands(slot, msg);
+      continue;
+    }
     if (msg.id !== id) continue;
     if (msg.error) throw new Error(msg.error.message ?? "ACP error");
     return msg.result;
   }
 }
 
-async function bootstrap(chat: string, model?: string, reset = false, resume?: string): Promise<Slot> {
+/** The tab's live agent when it still matches what was asked for (model,
+ * session file, workspace, approval mode); otherwise a fresh spawn. A
+ * request that leaves a field out accepts whatever the live agent has. */
+async function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
   const live = slots.get(chat);
-  if (!reset && live && (!model || live.model === model) && (!resume || live.resume === resume) && live.sessionId) {
-    return live;
-  }
-  const slot = spawnAgent(chat, model, resume);
+  const same =
+    live !== undefined &&
+    live.sessionId !== null &&
+    (!opts.model || live.model === opts.model) &&
+    (!opts.resume || live.resume === opts.resume) &&
+    (!opts.cwd || live.cwd === opts.cwd) &&
+    (opts.yolo === undefined || live.yolo === opts.yolo) &&
+    (opts.mcp === undefined || live.mcp === opts.mcp);
+  if (!opts.reset && same) return live;
+  const slot = spawnAgent(chat, {
+    model: opts.model,
+    resume: opts.resume,
+    cwd: opts.cwd ?? defaultRoot(),
+    yolo: opts.yolo ?? defaultYolo(),
+    mcp: opts.mcp ?? true,
+  });
   await rpc(slot, "initialize", { protocolVersion: 1, clientCapabilities: { fs: {} } });
-  const created = (await rpc(slot, "session/new", { cwd: workspace() })) as {
+  const created = (await rpc(slot, "session/new", { cwd: slot.cwd })) as {
     sessionId?: string;
   };
   if (!created?.sessionId) throw new Error("session/new returned no sessionId");
   slot.sessionId = created.sessionId;
+  await drainCommands(slot);
   return slot;
 }
 
@@ -184,7 +260,7 @@ export async function GET() {
       { status: 502 },
     );
   }
-  return Response.json({ ok: true, sessions: slots.size, cwd: workspace() });
+  return Response.json({ ok: true, sessions: slots.size, cwd: defaultRoot(), home: os.homedir(), yolo: defaultYolo() });
 }
 
 export async function POST(req: NextRequest) {
@@ -209,10 +285,22 @@ export async function POST(req: NextRequest) {
     if (method === "bootstrap") {
       const resume =
         typeof body.params?.resume === "string" && SESSION_NAME_RE.test(body.params.resume) ? body.params.resume : undefined;
-      const slot = await bootstrap(chat, model, body.params?.reset === true, resume);
-      return Response.json({ sessionId: slot.sessionId });
+      const cwdParam = typeof body.params?.cwd === "string" && body.params.cwd.trim() ? body.params.cwd : undefined;
+      const resolved = resolveRoot(cwdParam);
+      if ("error" in resolved) return Response.json({ error: resolved.error }, { status: resolved.status });
+      const yolo = typeof body.params?.yolo === "boolean" ? body.params.yolo : undefined;
+      const mcp = typeof body.params?.mcp === "boolean" ? body.params.mcp : undefined;
+      const slot = await bootstrap(chat, {
+        model,
+        reset: body.params?.reset === true,
+        resume,
+        cwd: cwdParam ? resolved.root : undefined,
+        yolo,
+        mcp,
+      });
+      return Response.json({ sessionId: slot.sessionId, cwd: slot.cwd, commands: slot.commands });
     }
-    const slot = await bootstrap(chat, model);
+    const slot = await bootstrap(chat, { model });
     if (method === "session/cancel") {
       writeLine(slot, { jsonrpc: "2.0", method: "session/cancel", params: body.params });
       return Response.json({ ok: true });

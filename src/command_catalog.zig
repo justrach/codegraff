@@ -20,6 +20,16 @@ pub const Item = struct {
 };
 
 /// The canonical command list, in menu / help display order.
+/// The catalog entry `line` invokes, or null when its first word is not one
+/// of ours — callers hand anything else to the model as ordinary text.
+pub fn match(line: []const u8) ?Item {
+    const t = std.mem.trim(u8, line, " \t\r\n");
+    if (t.len < 2 or t[0] != '/') return null;
+    const word = t[0 .. std.mem.indexOfAny(u8, t, " \t") orelse t.len];
+    for (commands) |c| if (std.mem.eql(u8, c.name, word)) return c;
+    return null;
+}
+
 pub const commands = [_]Item{
     .{ .name = "/model", .usage = "/model [<provider>] <name>", .desc = "switch model/provider, fuzzy match (e.g. \"sonnet\", \"opus\"); name a provider to pin the seat" },
     .{ .name = "/models", .usage = "/models [health]", .desc = "list known models: context window, compaction point, provider and what that seat costs (plan/credits/api/local); health shows live state" },
@@ -71,7 +81,7 @@ pub const commands = [_]Item{
     .{ .name = "/workspace", .usage = "/workspace [list|use <name>]", .desc = "list git worktrees or switch this session into one (file tools follow)" },
     .{ .name = "/experiment", .usage = "/experiment [N|off|status]", .desc = "pre-mint N child worktrees (1-16) and seat the next spawns in them; off clears the pool" },
     .{ .name = "/todo", .desc = "show the current task list" },
-    .{ .name = "/jobs", .desc = "list background jobs" },
+    .{ .name = "/jobs", .usage = "/jobs [keep|unkeep|stop|restart <id>]", .desc = "list background jobs (age, port, idle stop); keep pins a server, restart reruns one" },
     .{ .name = "/cost", .desc = "session token usage and cost" },
     .{ .name = "/usage", .desc = "alias for /cost" },
     .{ .name = "/debug", .desc = "live content-free observability HUD (turns, tokens, tools, last events)" },

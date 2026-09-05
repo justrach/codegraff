@@ -1,21 +1,13 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { NextRequest } from "next/server";
+import { resolveRoot } from "@/lib/server-root";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const run = promisify(execFile);
-
-/** Same resolution as /api/acp: the workspace the agent itself runs in. */
-function workspaceRoot(): string {
-  if (process.env.GRAFF_ACP_CWD) return process.env.GRAFF_ACP_CWD;
-  if (process.env.GRAFF_CWD) return process.env.GRAFF_CWD;
-  const fromApp = path.resolve(process.cwd(), "../..");
-  if (existsSync(path.join(fromApp, "build.zig"))) return fromApp;
-  return process.cwd();
-}
 
 async function git(args: string[], cwd: string): Promise<string> {
   const { stdout } = await run("git", args, { cwd, maxBuffer: 8 * 1024 * 1024 });
@@ -24,8 +16,10 @@ async function git(args: string[], cwd: string): Promise<string> {
 
 /** The working tree's uncommitted story, Codex-review shaped: per-file
  * +adds/−dels plus the unified diff, untracked files included. */
-export async function GET() {
-  const root = workspaceRoot();
+export async function GET(req: NextRequest) {
+  const resolved = resolveRoot(req.nextUrl.searchParams.get("root"));
+  if ("error" in resolved) return Response.json({ error: resolved.error }, { status: resolved.status });
+  const root = resolved.root;
   try {
     const [numstat, untrackedRaw] = await Promise.all([
       git(["diff", "--numstat"], root),
@@ -70,8 +64,10 @@ export async function GET() {
 
 /** POST {path} → the unified diff for one file (or its full content when untracked). */
 export async function POST(req: Request) {
-  const root = workspaceRoot();
-  const body = (await req.json()) as { path?: string };
+  const body = (await req.json()) as { path?: string; root?: string };
+  const resolved = resolveRoot(body.root);
+  if ("error" in resolved) return Response.json({ error: resolved.error }, { status: resolved.status });
+  const root = resolved.root;
   const file = body.path ?? "";
   const target = path.resolve(root, file);
   if (target !== root && !target.startsWith(root + path.sep)) {

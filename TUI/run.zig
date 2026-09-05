@@ -9,6 +9,7 @@ const bgop = @import("bgop.zig");
 const engine = @import("engine.zig");
 const key_mod = @import("key.zig");
 const keys = @import("keys.zig");
+const paste_mod = @import("key_paste.zig");
 const pacing = @import("pacing.zig");
 const paint_mod = @import("paint.zig");
 const render_mod = @import("render.zig");
@@ -372,6 +373,10 @@ pub fn run(
         if (stall.escapeCarryExpired(m.now_ms, stash_ms)) key_mod.expireOrphanHead();
         if (stall.armExpired(m.now_ms, arm_ms)) key_mod.armOrphan(false);
         const n = key_mod.joinOrphanHead(&inbuf, filled);
+        // A paste bigger than one read arrives as several back to back. Judge
+        // the whole run, not each chunk: otherwise a chunk that ends at a line
+        // boundary reads as Enter and sends half the paste (#737).
+        paste_mod.setBurstRead(paste_mod.burstRead(inbuf[0..n], m.now_ms));
         // Everything this tick drained is applied as ONE batch, with runs of
         // consecutive wheel reports folded into a single accumulated delta
         // (pacing.zig). Order is preserved and a keystroke BREAKS the run at

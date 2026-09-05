@@ -19,6 +19,7 @@ const agent_mod = @import("agent.zig");
 const http = @import("http.zig");
 const http_stall = @import("http_stall.zig");
 const plugins = @import("plugins.zig");
+const job_idle = @import("job_idle.zig"); // #199: GRAFF_JOB_IDLE_WARN_MINS / GRAFF_JOB_IDLE_STOP_MINS
 const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig"); // codex_ws_idle_ms override (#codex-ws)
 const agent_request = @import("agent_request.zig"); // GRAFF_REQ_STATS → g_req_stats (token-diet measurement)
@@ -66,6 +67,7 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
     main_mod.g_path_env = try arena.dupe(u8, environ_map.get("PATH") orelse "");
     plugins.applyEnv(environ_map);
     main_mod.g_codedb_guard = environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
+    job_idle.applyEnv(environ_map); // #199: background-job idle warn/stop, minutes (0 = off)
     main_mod.g_force_stall_once = environ_map.get("GRAFF_FORCE_STALL_ONCE") != null; // #134 test seam
     main_mod.g_force_drop_once = environ_map.get("GRAFF_FORCE_DROP_ONCE") != null; // #132/#133 test seam
     main_mod.g_force_stall_always = environ_map.get("GRAFF_FORCE_STALL_ALWAYS") != null; // #56 test seam (exhaust the reconnect budget)
@@ -213,6 +215,14 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "no");
         xai_hosted.enabled = !off;
     }
+    if (environ_map.get("GRAFF_XAI_WEB_SEARCH")) |v| {
+        const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "no");
+        xai_hosted.web_search = !off;
+    }
+    if (environ_map.get("GRAFF_CODEX_WEB_SEARCH")) |v| {
+        const off = std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "no");
+        @import("codex_tool_search.zig").web_search = !off;
+    }
     if (environ_map.get("GRAFF_XAI_URL")) |v| {
         if (v.len > 0) provider_mod.g_xai_url_override = v;
     }
@@ -312,6 +322,12 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
             \\- [x] Sanitize public errors.
             \\  - Preserve private incident detail.
             \\> Public errors must never expose secrets.
+            \\- Wrapped: *https://example.test/a* **https://example.test/b**
+            \\- Wrapped: _https://example.test/c_ __https://example.test/d__
+            \\- Wrapped: ~~https://example.test/e~~ `https://example.test/f`
+            \\- URL data: https://example.test/glob/** https://example.test/path/__
+            \\- URL data: https://example.test/path/~~ https://example.test/a**b
+            \\- Link: **https://github.com/justrach/codegraff/issues/728**
         );
         probe.flushStreamTail();
         out.writeByte('\n') catch {};

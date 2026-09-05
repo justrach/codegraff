@@ -11,6 +11,7 @@ const http_headers = @import("http_headers.zig");
 const codex_chain = @import("codex_chain.zig");
 const server_compact = @import("agent_server_compact.zig");
 const xai_hosted = @import("xai_hosted.zig");
+const codex_tool_search = @import("codex_tool_search.zig");
 
 pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_tool: bool) !void {
     // Responses API (codex / ChatGPT, xAI, and native Codegraff aliases).
@@ -58,10 +59,18 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     for (self.messages.items[from..]) |m| try s.write(m);
     try s.endArray();
     if (tools) |t| {
-        const payload = if (xai_hosted.active(self.provider.id, self.provider.kind))
-            xai_hosted.splice(self.scratchAlloc(), t) catch t
-        else
-            t;
+        const payload = blk: {
+            var next = t;
+            if (xai_hosted.active(self.provider.id, self.provider.kind)) {
+                const login = self.provider.source == .login;
+                next = xai_hosted.splice(self.scratchAlloc(), next, login) catch next;
+            }
+            if (codex_tool_search.active(self.provider.id, self.provider.kind, self.provider.model)) {
+                next = codex_tool_search.splice(self.scratchAlloc(), next) catch next;
+                next = codex_tool_search.spliceWebSearch(self.scratchAlloc(), next) catch next;
+            }
+            break :blk next;
+        };
         try s.objectField("tools");
         try serde.writeOpenAITools(s, self.scratchAlloc(), payload); // #261 follow-up
         try s.objectField("tool_choice");
@@ -78,14 +87,14 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     try s.objectField("reasoning");
     try s.beginObject();
     try s.objectField("effort");
-    // Ultra preset → wire value `max`. #379: compaction summaries run at low
-    // effort — a high-effort reasoner can complete with only reasoning items
-    // and zero output text, i.e. an empty summary.
-    try s.write(if (self.compaction_request or self.server_compaction_request) "low" else if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
+    // #379: compaction summaries run at low — a high-effort reasoner can
+    // complete with only reasoning items and zero output text.
+    try s.write(if (self.compaction_request or self.server_compaction_request) "low" else @import("effort_route.zig").wireEffort(self.provider.model, @tagName(self.reasoning)));
     try s.endObject();
     try s.objectField("include");
     try s.beginArray();
     try s.write("reasoning.encrypted_content");
+    if (is_codex and codex_tool_search.web_search) try s.write("web_search_call.action.sources");
     try s.endArray();
     try s.objectField("store");
     try s.write(false);
@@ -403,6 +412,12 @@ test "xai Responses body is bearer-clean: no codex-isms, xAI-legal fields only (
     try std.testing.expect(std.mem.indexOf(u8, body, "prompt_cache_options") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "context_management") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "previous_response_id") == null);
+
+    agent.reasoning = .max;
+    const max_body = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(max_body);
+    try std.testing.expect(std.mem.indexOf(u8, max_body, "\"effort\":\"high\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, max_body, "\"effort\":\"max\"") == null);
 }
 
 test "xAI Responses splices hosted x_search onto a tools turn; Codex and chat do not" {
@@ -419,11 +434,21 @@ test "xAI Responses splices hosted x_search onto a tools turn; Codex and chat do
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"x_search\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"bash\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "web_search") == null);
+
+    var login = try testAgentFor(a, "xai", .responses, "grok-4.6");
+    login.provider.source = .login;
+    const login_body = try login.buildBody(tools, false, true, true);
+    defer std.testing.allocator.free(login_body);
+    try std.testing.expect(std.mem.indexOf(u8, login_body, "\"type\":\"web_search\"") != null);
 
     var codex = try testAgentFor(a, "codex", .responses, "gpt-5.6-sol");
     const cb = try codex.buildBody(tools, false, true, true);
     defer std.testing.allocator.free(cb);
     try std.testing.expect(std.mem.indexOf(u8, cb, "x_search") == null);
+    try std.testing.expect(std.mem.indexOf(u8, cb, "\"type\":\"tool_search\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cb, "\"type\":\"web_search\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cb, "web_search_call.action.sources") != null);
 
     var chat = try testAgentFor(a, "xai", .openai, "grok-4.6");
     const chat_body = try chat.buildBody(tools, false, true, true);

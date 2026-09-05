@@ -31,6 +31,7 @@ const proto = @import("acp_protocol.zig");
 const engine = @import("acp_engine.zig");
 const stream = @import("acp_stream.zig");
 const playbook_glue = @import("playbook_glue.zig");
+const command_catalog = @import("command_catalog.zig");
 const vision = @import("vision.zig");
 const vision_queue = @import("vision_queue.zig");
 const pricing = @import("pricing.zig");
@@ -57,18 +58,28 @@ pub fn isAcpSubcommand(positional: []const u8) bool {
 }
 
 fn syncEscCancel() void {
-    agent_mod.Agent.esc_cancel.store(true, .release);
+    @import("cancel_source.zig").cancel(.acp_cancel); // #728
 }
 
 fn liveCancelled() bool {
     return agent_mod.Agent.esc_cancel.load(.acquire);
 }
 
+/// A slash command typed in a client runs the same handler the REPL runs,
+/// so the menu the agent advertises is not a menu of things that then get
+/// sent to the model as prose. Anything outside the catalog returns null
+/// and stays an ordinary prompt. Pickers here find no TTY and fall back to
+/// printing their list, so nothing waits on a keypress that cannot come.
 fn liveSlash(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror!?[]const u8 {
     const live: *LiveTurn = @ptrCast(@alignCast(ctx));
-    if (!playbook_glue.isCommand(text)) return null;
     var aw: Io.Writer.Allocating = .init(arena);
-    _ = try playbook_glue.command(live.root, arena, text, &aw.writer);
+    // /never is the playbook's own, and handleCommand does not know it.
+    if (playbook_glue.isCommand(text)) {
+        _ = try playbook_glue.command(live.root, arena, text, &aw.writer);
+        return try engine.stripSgr(arena, aw.writer.buffered());
+    }
+    if (command_catalog.match(text) == null) return null;
+    try main_mod.handleCommand(live.root, live.keys, arena, text, &aw.writer);
     return try engine.stripSgr(arena, aw.writer.buffered());
 }
 
@@ -378,7 +389,7 @@ test "handleLine: initialize, session/new, then a prompt turn" {
     var state = std.heap.ArenaAllocator.init(testing.allocator);
     defer state.deinit();
     const a = state.allocator();
-    var buf: [4096]u8 = undefined;
+    var buf: [16384]u8 = undefined; // session/new advertises the whole command catalog
     var w: Io.Writer = .fixed(&buf);
     var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .seed = 0xabc };
 
@@ -415,7 +426,7 @@ test "handleLine: a prompt with no sessionId falls back to the live session" {
     var state = std.heap.ArenaAllocator.init(testing.allocator);
     defer state.deinit();
     const a = state.allocator();
-    var buf: [2048]u8 = undefined;
+    var buf: [16384]u8 = undefined; // session/new advertises the whole command catalog
     var w: Io.Writer = .fixed(&buf);
     var d: Dispatch = .{ .turn = echoTurn, .ctx = undefined, .seed = 1 };
     try handleLine(&d, a, &w, "{\"id\":1,\"method\":\"session/new\"}");

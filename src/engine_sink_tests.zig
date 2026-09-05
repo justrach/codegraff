@@ -9,6 +9,7 @@ const Io = std.Io;
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
+const deinitMarkdown = @import("agent_render.zig").deinitMarkdown;
 
 const engine_events = @import("engine_events.zig");
 const EngineEvent = engine_events.EngineEvent;
@@ -304,12 +305,71 @@ test "TuiSink renders a plain text delta exactly as the no-color TTY did" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
     var a = testAgent(&aw.writer);
+    defer deinitMarkdown(&a);
     const s = tuiSink(&a);
     s.emit(undefined, .{ .text_delta = .{ .text = "plain\n" } });
     try std.testing.expectEqualStrings("plain\n", aw.writer.buffered());
     // Normal end after streamed text: the separating newline, as before.
     s.emit(undefined, .{ .stream_complete = .{ .streamed_text = true } });
     try std.testing.expectEqualStrings("plain\n\n", aw.writer.buffered());
+}
+
+const UrlSettlement = enum { newline, stream_complete };
+const UrlDeltaCase = struct {
+    chunks: []const []const u8,
+    want_line: []const u8,
+};
+
+const url_delta_cases = [_]UrlDeltaCase{
+    // Direct wrappers: their punctuation remains visible but outside the URL.
+    .{ .chunks = &.{ "*", "https://exam", "ple.com/a", "*." }, .want_line = "https://example.com/a.\n" },
+    .{ .chunks = &.{ "*", "*https://example.com", "/b*", "*," }, .want_line = "https://example.com/b,\n" },
+    .{ .chunks = &.{ "_https", "://example.com/c_", ";" }, .want_line = "https://example.com/c;\n" },
+    .{ .chunks = &.{ "_", "_https://example.com/d", "_", "_:" }, .want_line = "https://example.com/d:\n" },
+    .{ .chunks = &.{ "~", "~https://example.com/e~", "~!" }, .want_line = "https://example.com/e!\n" },
+    .{ .chunks = &.{ "`https://", "example.com/f", "`?" }, .want_line = "https://example.com/f?\n" },
+
+    // Without an opener, legal marker tails and interiors belong to the URL.
+    .{ .chunks = &.{ "https://example.com/gl", "ob/**", " next" }, .want_line = "https://example.com/glob/** next\n" },
+    .{ .chunks = &.{ "https://example.com/path/", "__" }, .want_line = "https://example.com/path/__\n" },
+    .{ .chunks = &.{ "https://example.com/path/~", "~" }, .want_line = "https://example.com/path/~~\n" },
+    .{ .chunks = &.{ "https://example.com/search?", "q=*" }, .want_line = "https://example.com/search?q=*\n" },
+    .{ .chunks = &.{ "https://docs.python.org/3/reference/", "datamodel.html#object.__init__" }, .want_line = "https://docs.python.org/3/reference/datamodel.html#object.__init__\n" },
+    .{ .chunks = &.{ "https://example.com/a*", "*b" }, .want_line = "https://example.com/a**b\n" },
+};
+
+fn expectUrlDeltaCase(settlement: UrlSettlement, c: UrlDeltaCase) !void {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+    defer deinitMarkdown(&a);
+    const s = tuiSink(&a);
+
+    for (c.chunks) |chunk| s.emit(undefined, .{ .text_delta = .{ .text = chunk } });
+    switch (settlement) {
+        .newline => s.emit(undefined, .{ .text_delta = .{ .text = "\n" } }),
+        .stream_complete => s.emit(undefined, .{ .stream_complete = .{ .streamed_text = false } }),
+    }
+    const want = switch (settlement) {
+        .newline => c.want_line,
+        .stream_complete => c.want_line[0 .. c.want_line.len - 1],
+    };
+    try std.testing.expectEqualStrings(want, aw.writer.buffered());
+}
+
+test "TuiSink settles no-color URL markers outside visible targets (#729)" {
+    const saved_color = main_mod.use_color;
+    main_mod.use_color = false;
+    defer main_mod.use_color = saved_color;
+    const ansi = @import("ansi.zig");
+    const saved_style = ansi.style;
+    ansi.style = .{};
+    defer ansi.style = saved_style;
+
+    for (url_delta_cases) |c| {
+        try expectUrlDeltaCase(.newline, c);
+        try expectUrlDeltaCase(.stream_complete, c);
+    }
 }
 
 const swap: engine_events.ProviderFallback = .{

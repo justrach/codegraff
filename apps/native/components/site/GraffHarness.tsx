@@ -1,18 +1,20 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import Markdown from "@/components/primitives/Markdown";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
+import ConversationsPane from "@/components/site/ConversationsPane";
 import FilesPane from "@/components/site/FilesPane";
-import { IconFolder } from "@/lib/icons";
+import BrowserPane from "@/components/site/BrowserPane";
+import { IconChat, IconFolder, IconGlobe } from "@/lib/icons";
+import { annotationsBlock, type BrowserPin } from "@/lib/browser/annotations";
+import { browserClose, browserHandle, browserNav } from "@/lib/browser-client";
 import TaskRows from "@/components/primitives/TaskRows";
-import ThinkingState from "@/components/primitives/ThinkingState";
-import ToolChips from "@/components/primitives/ToolChips";
 import { ThemeToggle } from "@/components/site/ThemeToggle";
+import { AssistantBody, UserBubble } from "@/components/site/ChatBubbles";
+import EmptyState from "@/components/site/ChatEmpty";
 import {
   MODELS,
-  STARTER_PROMPTS,
   cancel,
   chatHandle,
   checkHealth,
@@ -23,257 +25,48 @@ import {
   prompt,
   type Health,
 } from "@/lib/acp-client";
-import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AssistantTurn } from "@/lib/acp";
-import { dateGroup, listSessions, loadSession, relativeTime, type StoredSession } from "@/lib/sessions";
+import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AcpCommand, type AssistantTurn } from "@/lib/acp";
+import { isFollowingTail, pinScrollerTail } from "@/lib/follow-scroll";
+import { dropQueuedPrompt, enqueuePrompt, shiftQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
+import { dateGroup, listSessionsPage, loadSession, relativeTime, removeSession, toSidebarRecent, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory, pushHistory, saveHistory } from "@/lib/prompt-history";
+import WorkspaceDialog from "@/components/site/WorkspaceDialog";
+import {
+  basename,
+  findWorkspace,
+  loadActiveWorkspace,
+  loadWorkspaces,
+  removeWorkspace,
+  saveActiveWorkspace,
+  saveWorkspaces,
+  shellQuote,
+  upsertWorkspace,
+  type Workspace,
+} from "@/lib/workspaces";
 
-const NAME = "there";
+/** Whether the sidecar browser pane was open, restored after a reload. */
+const BROWSER_OPEN_KEY = "graff.native.browser.open";
 
-function greeting(): string {
-  const hour = new Date().getHours();
-  if (hour < 5) return "Up late";
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
-}
+/** Columns the split view will show at once, the active chat included. */
+const MAX_COLUMNS = 4;
 
-/** Typewriter reveal over the ACP text, the way every AI app streams: a
- * readable base rate with gentle backlog catch-up (capped so a one-shot
- * final answer still visibly types out), and the drain keeps playing after
- * the turn's result lands — done-state chrome waits for the last word.
- * Mounted mid-history it starts caught-up, so old messages never replay. */
-function useSmoothStream(target: string): string {
-  const [shown, setShown] = useState(target);
-  const shownRef = useRef(target);
-  useEffect(() => {
-    if (!target.startsWith(shownRef.current)) {
-      shownRef.current = target;
-      setShown(target);
-      return;
-    }
-    if (target === shownRef.current) return;
-    let raf = 0;
-    let last = performance.now();
-    const tick = (now: number) => {
-      const dt = Math.min(now - last, 100);
-      last = now;
-      const behind = target.length - shownRef.current.length;
-      if (behind <= 0) return;
-      const rate = Math.min(160 + behind * 1.2, 2400); // chars/second
-      const step = Math.max(1, Math.round((rate * dt) / 1000));
-      shownRef.current = target.slice(0, shownRef.current.length + step);
-      setShown(shownRef.current);
-      if (shownRef.current.length < target.length) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [target]);
-  return shown;
-}
-
-const HOME_REVEAL = {
-  offsetY: 23,
-  blur: 17,
-  duration: 800,
-  easing: "cubic-bezier(0.16, 1, 0.3, 1)",
-};
-
-function homeRevealStyle(visible: boolean): CSSProperties {
-  return {
-    opacity: visible ? 1 : 0,
-    transform: visible ? "translate3d(0, 0, 0)" : `translate3d(0, ${HOME_REVEAL.offsetY}px, 0)`,
-    filter: visible ? "blur(0px)" : `blur(${HOME_REVEAL.blur}px)`,
-    transition: ["opacity", "transform", "filter"]
-      .map((property) => `${property} ${HOME_REVEAL.duration}ms ${HOME_REVEAL.easing}`)
-      .join(", "),
-  };
-}
-
-/* Rows are memoized: a chunk landing in the live turn replaces that one
- * message's `turn`, and every other row keeps its props — without memo the
- * whole thread re-rendered (and re-parsed its markdown) per ACP update. */
-const UserBubble = memo(function UserBubble({ text }: { text: string }) {
-  return (
-    <div className="flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
-      <div
-        className="rounded-xl px-3.5 py-2 text-[13px] leading-relaxed text-ink shadow-hairline"
-        style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }}
-      >
-        {text}
-      </div>
-    </div>
-  );
-});
-
-const AssistantBody = memo(function AssistantBody({
-  turn,
-  onOpenPath,
-  onReview,
-}: {
-  turn: AssistantTurn;
-  onOpenPath?: (path: string) => void;
-  /** Open the workspace changes review (the Codex "Changed N files" bar). */
-  onReview?: () => void;
-}) {
-  const thinking = turn.status === "thinking";
-  const smoothText = useSmoothStream(turn.text);
-  const draining = smoothText.length < turn.text.length;
-  // "Thought for Ns": the harness stamps `thoughtMs` on the turn as it streams
-  // (ACP updates carry no timestamps); a live turn without one yet is timed here.
-  const startRef = useRef(Date.now());
-  const [thoughtSecs, setThoughtSecs] = useState<number | null>(
-    turn.thoughtMs !== undefined ? Math.max(1, Math.round(turn.thoughtMs / 1000)) : null,
-  );
-  useEffect(() => {
-    if (thinking) return;
-    setThoughtSecs((current) => {
-      if (current !== null) return current;
-      const ms = turn.thoughtMs ?? Date.now() - startRef.current;
-      return Math.max(1, Math.round(ms / 1000));
-    });
-  }, [thinking, turn.thoughtMs]);
-  const reasoningRows = turn.reasoning
-    ? turn.reasoning
-        .split(/\n+/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((primary) => ({ primary }))
-    : [];
-  const toolRows = turn.tools.map((tool) => ({
-    id: tool.id,
-    icon: tool.icon,
-    label: tool.name,
-    chip: tool.chip,
-    mono: tool.icon === "run" || tool.icon === "write" || tool.icon === "read",
-    detailMono: tool.icon === "run" || tool.icon === "write",
-    detail: tool.detail,
-    path: tool.path,
-    status: tool.status,
-    startedAt: tool.startedAt,
-    elapsedMs: tool.elapsedMs,
-  }));
-
-  return (
-    <article className="min-w-0" style={{ animation: "fade-up 450ms cubic-bezier(0.23,1,0.32,1) both" }}>
-      {/* Keep the header once the model has actually thought (streamed
-        * reasoning, or a think long enough to notice): unmounting it when the
-        * think ends made the answer jump up into the space it left. */}
-      {(thinking || reasoningRows.length > 0 || (turn.thoughtMs ?? 0) >= 1500) && (
-        <ThinkingState
-          variant="Reasoning"
-          rows={reasoningRows.length ? reasoningRows : [{ primary: "Waiting on the model…", shimmer: true }]}
-          activeLabel={turn.model ? `Thinking · ${turn.model}` : "Thinking"}
-          doneLabel={thoughtSecs ? `Thought for ${thoughtSecs}s` : "Thought"}
-          working={thinking}
-        />
-      )}
-      {toolRows.length > 0 && (
-        <div className="mt-4">
-          <ToolChips rows={toolRows} diffs={turn.diffs} onOpenPath={onOpenPath} />
-        </div>
-      )}
-      {turn.status === "streaming" && !turn.text ? (
-        /* Between the last tool and the first text token nothing streams —
-         * a lone caret here read as "stuck". Shimmer like the thinking
-         * header, and say which phase the agent is actually in. */
-        <div className="mt-4">
-          <span
-            className="bg-clip-text text-[13px] font-medium whitespace-nowrap text-transparent"
-            style={{
-              backgroundImage: "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
-              backgroundSize: "200% 100%",
-              animation: "shimmer-text 1.4s linear infinite",
-            }}
-          >
-            {turn.tools.some((tool) => tool.status === "running") ? "Running tools…" : "Writing…"}
-          </span>
-        </div>
-      ) : (
-        turn.text && (
-          <div className="mt-4 max-w-[630px]">
-            <Markdown
-              text={smoothText}
-              streaming={draining || turn.status === "streaming" || turn.status === "thinking"}
-              onOpenPath={onOpenPath}
-            />
-          </div>
-        )
-      )}
-      {turn.error && (
-        <p className="mt-4 max-w-[620px] text-[13.5px] leading-[1.65] text-red">{turn.error}</p>
-      )}
-      {turn.recap && turn.status === "done" && !draining && (
-        <p className="mt-3 text-[12px] text-ink-3">{turn.recap}</p>
-      )}
-      {turn.costUsd !== undefined && turn.status === "done" && !draining && (
-        <p className="mt-1 font-mono text-[11px] text-ink-3">${turn.costUsd.toFixed(4)}</p>
-      )}
-      {turn.status === "done" && !draining && turn.diffs.length > 0 && onReview && (
-        <button
-          type="button"
-          onClick={onReview}
-          className="mt-4 flex h-9 w-full max-w-[630px] items-center gap-2 rounded-[10px] bg-surface px-3 text-left shadow-btn transition-colors duration-100 hover:bg-hover"
-          style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-ink-3" aria-hidden>
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            <path d="M14 2v6h6" />
-          </svg>
-          <span className="text-[12.5px] font-medium text-ink">
-            Changed {turn.diffs.length} file{turn.diffs.length === 1 ? "" : "s"}
-          </span>
-          <span className="font-mono text-[11.5px] tabular-nums">
-            <span className="text-green">+{turn.diffs.reduce((n, d) => n + d.add, 0)}</span>{" "}
-            <span className="text-red">−{turn.diffs.reduce((n, d) => n + d.del, 0)}</span>
-          </span>
-          <span className="ml-auto flex items-center gap-0.5 text-[12.5px] font-medium text-ink-2">
-            Review
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <path d="M9 18l6-6-6-6" />
-            </svg>
-          </span>
-        </button>
-      )}
-    </article>
-  );
-});
+/** Rows the sidebar previews; the library pages the rest. */
+const SIDEBAR_PAGE = 12;
 
 type Msg =
   | { id: number; role: "user"; text: string }
   | { id: number; role: "assistant"; turn: AssistantTurn };
 
 /** `model` is what this tab's own agent was spawned with; the harness-level
- * model is only the default a new tab inherits. */
-type Chat = { id: number; title: string | null; messages: Msg[]; model?: string; session?: string };
+ * model is only the default a new tab inherits. `cwd` is the workspace the
+ * tab's agent runs in — fixed at spawn, like the model. */
+type Chat = { id: number; title: string | null; messages: Msg[]; model?: string; session?: string; cwd?: string;
+  /** The model named this tab from its first prompt: the session poller,
+   * which reads graff's own saved title, must leave it alone. */
+  titledByModel?: boolean };
 
 function newPageToken(): string {
   return Math.random().toString(36).slice(2, 10);
-}
-
-/** One React commit per animation frame, however many ACP chunks land in
- * it. The stream delivers `agent_message_chunk`s a few characters at a time
- * and a state update per chunk was a full render each — the thread jittered
- * under its own re-renders. Only the newest turn matters; the rest is
- * superseded before anyone could have seen it. */
-function frameCoalescer<T>(apply: (value: T) => void) {
-  let latest: T | undefined;
-  let frame = 0;
-  const flush = () => {
-    frame = 0;
-    if (latest !== undefined) apply(latest);
-  };
-  return {
-    push(value: T) {
-      latest = value;
-      if (!frame) frame = requestAnimationFrame(flush);
-    },
-    /** Drop whatever is queued; the caller commits the final value itself. */
-    cancel() {
-      if (frame) cancelAnimationFrame(frame);
-      frame = 0;
-      latest = undefined;
-    },
-  };
 }
 
 /** A fresh tab's graff session name. Not `session-…`: that prefix is what the
@@ -283,105 +76,9 @@ function newSessionName(): string {
   return `native-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function EmptyState({
-  onSend,
-  health,
-  offset,
-  shuffle,
-  models,
-  modelKey,
-  onModelChange,
-  history,
-}: {
-  onSend: (text: string) => void;
-  health: Health | null;
-  offset: number;
-  shuffle: () => void;
-  models: PromptModel[];
-  modelKey?: string;
-  onModelChange: (key: string) => void;
-  history: readonly string[];
-}) {
-  const shown = [0, 1, 2].map((i) => STARTER_PROMPTS[(offset + i) % STARTER_PROMPTS.length]);
-  const [stage, setStage] = useState(0);
-  useEffect(() => {
-    const timers = [
-      setTimeout(() => setStage(1), 170),
-      setTimeout(() => setStage(2), 330),
-      setTimeout(() => setStage(3), 400),
-      setTimeout(() => setStage(4), 550),
-    ];
-    return () => timers.forEach(clearTimeout);
-  }, []);
-
-  return (
-    <div className="mx-auto flex min-h-full max-w-[720px] flex-col justify-center px-4 py-10 sm:px-8">
-      <h1 className="text-[26px] font-normal tracking-[-0.02em] text-ink">
-        <span className="home-reveal block text-ink-3" style={homeRevealStyle(stage >= 1)}>
-          {greeting()}
-        </span>
-        <span className="home-reveal block" style={homeRevealStyle(stage >= 2)}>
-          What should graff work on?
-        </span>
-      </h1>
-
-      <div className="home-reveal relative mt-7" style={homeRevealStyle(stage >= 3)}>
-        <PromptBar
-          demo={false}
-          tall
-          placeholder="Ask graff to read, edit, or review this workspace…"
-          models={models}
-          modelKey={modelKey}
-          onModelChange={onModelChange}
-          onSend={onSend}
-          disabled={health !== null && !health.ok}
-          history={history}
-        />
-        {health && !health.ok && (
-          <p className="mt-3 text-[12.5px] text-orange">
-            graff acp is not reachable. From the repo root run{" "}
-            <span className="font-mono text-ink">zig build</span>
-            {health.detail ? ` — ${health.detail}` : ""}.
-          </p>
-        )}
-      </div>
-
-      <div className="home-reveal mt-6 flex flex-col" style={homeRevealStyle(stage >= 4)}>
-        {shown.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => onSend(item.prompt)}
-            className="-mx-2 flex items-center gap-3 rounded-control px-2 py-2.5 text-left text-[14px] text-ink transition-colors duration-150 hover:bg-hover"
-          >
-            <span className="text-ink-3">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="M8 6l-5 6 5 6M16 6l5 6-5 6" />
-              </svg>
-            </span>
-            <span className="min-w-0 truncate">{item.label}</span>
-          </button>
-        ))}
-        <div className="mt-1 flex items-center gap-5 pl-0.5 text-[13px] text-ink-3">
-          <span className="flex items-center gap-2 py-1" title={health?.cwd}>
-            <span className={`size-1.5 rounded-full ${health?.ok ? "bg-green" : "bg-orange"}`} />
-            {health?.ok
-              ? `Connected · ${health.cwd ? (health.cwd.split("/").pop() ?? health.cwd) : "over ACP"}`
-              : "Waiting for graff acp"}
-          </span>
-          <button type="button" onClick={shuffle} className="flex items-center gap-2 py-1 transition-colors duration-150 hover:text-ink">
-            Shuffle suggestions
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function GraffHarness() {
   const [chats, setChats] = useState<Chat[]>([{ id: 1, title: null, messages: [] }]);
   const [activeId, setActiveId] = useState(1);
-  const [offset, setOffset] = useState(0);
   const [health, setHealth] = useState<Health | null>(null);
   // Every tab owns a `graff acp` child (the agent keeps one session per
   // process), so sessions, busy state and the spawned model are all per chat.
@@ -390,7 +87,10 @@ export default function GraffHarness() {
   // chat id → graff session name (the `--resume` target / sidebar identity).
   const sessionNamesRef = useRef(new Map<number, string>());
   const [sessionIds, setSessionIds] = useState<Record<number, string>>({});
+  /** Per tab, the slash commands its agent advertised at session/new. */
+  const [commands, setCommands] = useState<Record<number, AcpCommand[]>>({});
   const [stored, setStored] = useState<StoredSession[]>([]);
+  const [storedTotal, setStoredTotal] = useState(0);
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set());
   // No hardcoded default: until graff/models answers, the agent's own model
   // resolution decides, and `current` from that call re-points the picker.
@@ -405,15 +105,81 @@ export default function GraffHarness() {
   useEffect(() => {
     setHistory(loadHistory(window.localStorage));
   }, []);
+  // Workspaces are the folders graff runs in. The list and the active pick
+  // live in this browser; the server only validates a root it is handed.
+  // Refs mirror the state for the async paths (spawn, session list) that
+  // must not read a stale closure.
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [activePath, setActivePath] = useState<string | null>(null);
+  const workspacesRef = useRef<Workspace[]>([]);
+  const activePathRef = useRef<string | null>(null);
+  const [dialog, setDialog] = useState<null | { mode: "new" } | { mode: "settings" }>(null);
+  const [copiedResume, setCopiedResume] = useState(false);
+  // The sidecar browser: one Chrome tab per chat, and the pins the user
+  // drops on it, which ride ahead of the chat's next prompt.
+  const [browserOpen, setBrowserOpen] = useState(false);
+  // The conversation library: every saved chat, paged and searchable. It takes
+  // the whole chat area, so opening it leaves the other side panes.
+  const [conversationsOpen, setConversationsOpen] = useState(false);
+  // The pane comes back after a reload (with its last page: the pane
+  // remembers that itself). Read after mount so the server render matches.
+  const browserOpenRestored = useRef(false);
+  useEffect(() => {
+    try {
+      if (!browserOpenRestored.current) {
+        browserOpenRestored.current = true;
+        if (window.localStorage.getItem(BROWSER_OPEN_KEY) !== "0") setBrowserOpen(true);
+        return;
+      }
+      window.localStorage.setItem(BROWSER_OPEN_KEY, browserOpen ? "1" : "0");
+    } catch {
+      // no storage
+    }
+  }, [browserOpen]);
+  const openConversations = () => {
+    setFilesOpen(false);
+    setBrowserOpen(false);
+    setConversationsOpen(true);
+  };
+  const [pinsByChat, setPinsByChat] = useState<Record<number, BrowserPin[]>>({});
+  const pinsRef = useRef<Record<number, BrowserPin[]>>({});
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Split view: chats shown beside the active one. Each column keeps its
+  // own scroller and its own place in its transcript.
+  const [panes, setPanes] = useState<number[]>([]);
+  const scrollEls = useRef(new Map<number, HTMLDivElement>());
+  const [tailing, setTailing] = useState<Record<number, boolean>>({});
+  const paneRef = (id: number) => (el: HTMLDivElement | null) => {
+    if (el) scrollEls.current.set(id, el);
+    else scrollEls.current.delete(id);
+  };
+  const chatsRef = useRef(chats);
+  chatsRef.current = chats;
+  const panesRef = useRef<number[]>([]);
+  panesRef.current = panes;
+  const [following, setFollowing] = useState(true);
+  const queuesRef = useRef<Record<number, QueuedPrompt[]>>({});
+  const [queues, setQueues] = useState<Record<number, QueuedPrompt[]>>({});
+  const queueIdRef = useRef(0);
+  const runningRef = useRef(new Set<number>());
+  // Closed tabs, oldest first, for the reopen shortcut.
+  const closedRef = useRef<{ session: string | null; cwd?: string; resumable: boolean }[]>([]);
 
   const chatThread = chats.find((c) => c.id === activeId) ?? chats[0];
+  // The ids on screen, in order: the active chat then its split panes. A
+  // chat appears once — the swap below can put one in `panes` twice, and a
+  // closed chat can linger there — so this is the last word on what shows.
+  const columnIds = [chatThread.id, ...panes]
+    .filter((id, i, all) => all.indexOf(id) === i && chats.some((c) => c.id === id))
+    .slice(0, MAX_COLUMNS);
+  const columnKey = columnIds.join(",");
   const active = chatThread.messages.length > 0;
   const busy = busyIds.has(chatThread.id);
   const chatModel = chatThread.model ?? model ?? undefined;
   const sessionId = sessionIds[chatThread.id] ?? null;
+  const queued = queues[chatThread.id] ?? [];
   const handleOf = (chatId: number) => chatHandle(pageRef.current, chatId);
   const setBusyFor = (chatId: number, on: boolean) =>
     setBusyIds((current) => {
@@ -432,6 +198,14 @@ export default function GraffHarness() {
     () => mergeHistory(history, chatThread.messages.flatMap((m) => (m.role === "user" ? [m.text] : []))),
     [history, chatThread.messages],
   );
+  const setQueue = (chatId: number, list: QueuedPrompt[]) => {
+    queuesRef.current = { ...queuesRef.current, [chatId]: list };
+    setQueues(queuesRef.current);
+  };
+  const setPins = (chatId: number, list: BrowserPin[]) => {
+    pinsRef.current = { ...pinsRef.current, [chatId]: list };
+    setPinsByChat(pinsRef.current);
+  };
 
   const adoptCatalog = async (chatId: number) => {
     // What did the agent actually resolve? The picker should show graff's
@@ -448,13 +222,46 @@ export default function GraffHarness() {
     }
   };
 
+  // The picker falls back to a built-in list until the agent answers with
+  // what it actually has. A window that missed that answer — its agent was
+  // not up yet, or the page outlived a restart — would show the fallback
+  // for good, so ask again whenever the window comes back to the front.
+  const catalogRef = useRef({ adopt: (_: number) => {}, activeId: 1 });
+  useEffect(() => {
+    const again = () => {
+      if (document.visibilityState === "hidden") return;
+      catalogRef.current.adopt(catalogRef.current.activeId);
+    };
+    window.addEventListener("focus", again);
+    document.addEventListener("visibilitychange", again);
+    return () => {
+      window.removeEventListener("focus", again);
+      document.removeEventListener("visibilitychange", again);
+    };
+  }, []);
+
   const requireSession = async (chatId: number, reset = false, key?: string): Promise<string> => {
     const live = sessionsRef.current.get(chatId);
     if (!reset && live) return live;
-    const spawnModel = key ?? chats.find((c) => c.id === chatId)?.model ?? model ?? undefined;
-    const id = await ensureSession(handleOf(chatId), spawnModel, reset, sessionNamesRef.current.get(chatId));
+    const chat = chatsRef.current.find((c) => c.id === chatId);
+    // A tab spawns where it was opened; the first tab, opened before the
+    // workspace list loaded, takes the active workspace.
+    const cwd = chat?.cwd ?? activePathRef.current ?? undefined;
+    const ws = findWorkspace(workspacesRef.current, cwd);
+    const spawnModel = key ?? chat?.model ?? ws?.model ?? model ?? undefined;
+    const { sessionId: id, commands } = await ensureSession(handleOf(chatId), {
+      model: spawnModel,
+      reset,
+      resume: sessionNamesRef.current.get(chatId),
+      cwd,
+      yolo: ws?.yolo,
+      mcp: ws?.mcp,
+    });
     sessionsRef.current.set(chatId, id);
     setSessionIds((current) => ({ ...current, [chatId]: id }));
+    // The command menu is whatever this agent says it services — a build
+    // with different commands must not be described by a stale list here.
+    if (commands.length > 0) setCommands((current) => ({ ...current, [chatId]: commands }));
     setHealth({ ok: true });
     return id;
   };
@@ -466,6 +273,20 @@ export default function GraffHarness() {
       if (cancelled) return;
       setHealth(h);
       if (!h.ok) return;
+      // The server's default workspace is always a row; the remembered pick
+      // wins when it is still listed, else the default is active.
+      const root = h.cwd ?? "";
+      let list = loadWorkspaces(window.localStorage);
+      if (root && !findWorkspace(list, root)) list = upsertWorkspace(list, { path: root, name: basename(root) });
+      const remembered = loadActiveWorkspace(window.localStorage);
+      const active = findWorkspace(list, remembered)?.path ?? findWorkspace(list, root)?.path ?? list[0]?.path ?? null;
+      workspacesRef.current = list;
+      activePathRef.current = active;
+      setWorkspaces(list);
+      setActivePath(active);
+      saveWorkspaces(window.localStorage, list);
+      if (active) setChats((current) => current.map((c) => (c.id === 1 && !c.cwd ? { ...c, cwd: active } : c)));
+      void refreshStored();
       try {
         const session = newSessionName();
         sessionNamesRef.current.set(1, session);
@@ -494,14 +315,17 @@ export default function GraffHarness() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** Re-read graff's session directory; tabs adopt the titles graff saved. */
+  /** Re-read the active workspace's session directory; tabs adopt the
+   * titles graff saved. */
   const refreshStored = async () => {
     try {
-      const list = await listSessions();
-      setStored(list);
+      const page = await listSessionsPage({ root: activePathRef.current ?? undefined, limit: SIDEBAR_PAGE });
+      setStored(page.sessions);
+      setStoredTotal(page.total);
       setChats((current) =>
         current.map((c) => {
-          const saved = c.session ? list.find((s) => s.name === c.session) : undefined;
+          if (c.titledByModel) return c;
+          const saved = c.session ? page.sessions.find((s) => s.name === c.session) : undefined;
           return saved?.title && saved.title !== c.title ? { ...c, title: saved.title } : c;
         }),
       );
@@ -510,21 +334,22 @@ export default function GraffHarness() {
     }
   };
 
-  // Stable callbacks: they are props of every memoized row.
   const openPath = useCallback((path: string) => {
+    setConversationsOpen(false);
     setFilesOpen(true);
     setFileRequest({ path, n: (fileReqRef.current += 1) });
   }, []);
 
   const openChanges = useCallback(() => {
+    setConversationsOpen(false);
     setFilesOpen(true);
     setFileRequest({ path: "", n: (fileReqRef.current += 1), changes: true });
   }, []);
 
-  const changeModel = (key: string) => {
-    // New tabs inherit the pick; the active tab respawns its agent with it
+  const changeModel = (key: string, forChat?: number) => {
+    // New tabs inherit the pick; the tab respawns its agent with it
     // (a fresh context — the agent cannot swap models mid-session).
-    const chatId = chatThread.id;
+    const chatId = forChat ?? chatThread.id;
     setModelKey(key);
     setChatModel(chatId, key);
     void requireSession(chatId, true, key)
@@ -545,13 +370,16 @@ export default function GraffHarness() {
     );
   };
 
-  const send = async (text: string) => {
-    const trimmed = text.trim();
-    const chatId = chatThread.id;
-    if (!trimmed || busyIds.has(chatId)) return;
+  const runPrompt = async (chatId: number, trimmed: string) => {
+    runningRef.current.add(chatId);
+    setFollowing(true);
+    const thread = chatsRef.current.find((c) => c.id === chatId);
+    const spawnModel = thread?.model ?? model ?? undefined;
     const userId = (msgIdRef.current += 1);
     const asstId = (msgIdRef.current += 1);
-    const title = chatThread.title ?? (trimmed.length > 30 ? `${trimmed.slice(0, 30).trimEnd()}…` : trimmed);
+    const title = thread?.title ?? (trimmed.length > 30 ? `${trimmed.slice(0, 30).trimEnd()}…` : trimmed);
+    // The first prompt of a tab names it, in the model's words.
+    if (!thread?.title) nameChat(chatId, trimmed, thread?.cwd);
     setChats((current) =>
       current.map((c) =>
         c.id !== chatId
@@ -562,7 +390,7 @@ export default function GraffHarness() {
               messages: [
                 ...c.messages,
                 { id: userId, role: "user", text: trimmed },
-                { id: asstId, role: "assistant", turn: { ...emptyTurn(), model: chatModel } },
+                { id: asstId, role: "assistant", turn: { ...emptyTurn(), model: spawnModel } },
               ],
             },
       ),
@@ -573,56 +401,118 @@ export default function GraffHarness() {
       saveHistory(window.localStorage, next);
       return next;
     });
-    let turn: AssistantTurn = { ...emptyTurn(), model: chatModel };
+    // Pins from the sidecar ride behind the prompt, with the tab's handle
+    // so the agent can drive the same page; they are spent on send. Behind,
+    // not ahead: graff titles the session from the message's first line.
+    let wire = trimmed;
+    const pins = pinsRef.current[chatId] ?? [];
+    if (pins.length > 0) {
+      const handle = await browserHandle(handleOf(chatId)).catch(() => null);
+      wire = `${trimmed}\n\n${annotationsBlock(pins, handle)}`;
+      setPins(chatId, []);
+    }
+    let turn: AssistantTurn = { ...emptyTurn(), model: spawnModel };
     const startedAt = Date.now();
-    const frames = frameCoalescer<AssistantTurn>((next) => patchAssistant(chatId, asstId, next));
     try {
       const id = await requireSession(chatId);
-      for await (const update of prompt(handleOf(chatId), id, trimmed)) {
+      // Paint at most once per frame. ACP text/tool events can arrive dozens
+      // of times per 16ms; each setChats used to re-parse every settled
+      // markdown block in the thread.
+      let paint = 0;
+      const turnRef = { current: turn };
+      for await (const update of prompt(handleOf(chatId), id, wire)) {
         turn = applyAcpUpdate(turn, update);
         if (turn.thoughtMs === undefined && turn.status !== "thinking") turn = { ...turn, thoughtMs: Date.now() - startedAt };
-        frames.push(turn);
+        turnRef.current = turn;
+        if (!paint) {
+          paint = requestAnimationFrame(() => {
+            paint = 0;
+            patchAssistant(chatId, asstId, turnRef.current);
+          });
+        }
       }
-      frames.cancel();
+      if (paint) cancelAnimationFrame(paint);
+      // The turn carried pins, so the agent most likely changed the page:
+      // reload the chat's tab so the pane shows the result without a click.
+      if (pins.length > 0) void browserNav(handleOf(chatId), "reload").catch(() => undefined);
       turn = finishAcpTurn(turn);
       patchAssistant(chatId, asstId, turn);
     } catch (err) {
-      frames.cancel();
       turn = { ...turn, error: err instanceof Error ? err.message : String(err), status: "error" };
       patchAssistant(chatId, asstId, turn);
     } finally {
+      runningRef.current.delete(chatId);
       setBusyFor(chatId, false);
-      // graff autosaves the turn in the background; look once now for the
-      // title, and again after the write has had time to land.
       void refreshStored();
       setTimeout(() => void refreshStored(), 2500);
+      const { next, rest } = shiftQueuedPrompt(queuesRef.current[chatId] ?? []);
+      setQueue(chatId, rest);
+      if (next) void runPrompt(chatId, next.text);
     }
+  };
+
+  /** Name the tab from what was asked, in the model's words. The prompt's
+   * first words stand in until this answers (a few seconds), and stay if it
+   * cannot. Only the first message of a tab names it. */
+  const nameChat = (chatId: number, prompt: string, cwd: string | undefined) => {
+    void fetch("/api/title", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt, cwd }),
+    })
+      .then((res) => (res.ok ? (res.json() as Promise<{ title?: string | null }>) : null))
+      .then((body) => {
+        const title = body?.title?.trim();
+        if (!title) return;
+        setChats((current) => current.map((c) => (c.id === chatId ? { ...c, title, titledByModel: true } : c)));
+      })
+      .catch(() => undefined);
+  };
+
+  const send = async (text: string, forChat?: number) => {
+    const trimmed = text.trim();
+    const chatId = forChat ?? chatThread.id;
+    if (!trimmed) return;
+    if (runningRef.current.has(chatId) || busyIds.has(chatId)) {
+      setQueue(chatId, enqueuePrompt(queuesRef.current[chatId] ?? [], trimmed, (queueIdRef.current += 1)));
+      return;
+    }
+    await runPrompt(chatId, trimmed);
   };
 
   const openChat = (id: number) => {
     const session = newSessionName();
     sessionNamesRef.current.set(id, session);
-    setChats((current) => [...current, { id, title: null, messages: [], model: model ?? undefined, session }]);
+    const cwd = activePathRef.current ?? undefined;
+    const ws = findWorkspace(workspacesRef.current, cwd);
+    setChats((current) => [...current, { id, title: null, messages: [], model: ws?.model ?? model ?? undefined, session, cwd }]);
     setActiveId(id);
     setFilesOpen(false);
+    setConversationsOpen(false);
+    setFollowing(true);
     // Spawn eagerly so the first send is not stuck behind agent + MCP boot.
     void requireSession(id).catch(() => undefined);
   };
 
   /** Open a saved graff session: its transcript renders from the file at once,
    * and the tab's agent starts with `--resume` so a follow-up remembers it. */
-  const openStored = async (name: string) => {
-    const existing = chats.find((c) => c.session === name);
+  const openStored = async (name: string, atCwd?: string) => {
+    // The sidebar lists the active workspace, so the session lives there;
+    // the same name in another workspace is a different conversation. A
+    // reopened tab names its own workspace instead.
+    const cwd = atCwd ?? activePathRef.current ?? undefined;
+    const existing = chats.find((c) => c.session === name && (c.cwd ?? null) === (cwd ?? null));
     if (existing) {
       setActiveId(existing.id);
       setFilesOpen(false);
+      setConversationsOpen(false);
       return;
     }
     let loaded: Awaited<ReturnType<typeof loadSession>>;
     try {
-      loaded = await loadSession(name);
+      loaded = await loadSession(name, cwd);
     } catch (err) {
-      setHealth({ ok: true, detail: err instanceof Error ? err.message : String(err) });
+      setHealth((current) => ({ ...(current ?? { ok: true }), detail: err instanceof Error ? err.message : String(err) }));
       return;
     }
     const id = (chatIdRef.current += 1);
@@ -630,27 +520,91 @@ export default function GraffHarness() {
     sessionNamesRef.current.set(id, name);
     setChats((current) => [
       ...current,
-      { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name },
+      { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name, cwd },
     ]);
     setActiveId(id);
     setFilesOpen(false);
+    setConversationsOpen(false);
+    setFollowing(true);
     void requireSession(id, false, loaded.meta.model ?? undefined).catch(() => undefined);
   };
 
   const newChat = () => openChat((chatIdRef.current += 1));
 
+  /** Make a chat the active one. If it is already a split pane, the chat it
+   * replaces takes that pane, so the same two stay on screen. */
+  const focusChat = (id: number) => {
+    const here = activeId;
+    setPanes((current) => {
+      if (!current.includes(id)) return current.filter((pane) => pane !== id);
+      const swapped = current.map((pane) => (pane === id ? here : pane));
+      // `here` may already have been a pane, and the chat now in front must
+      // not also be one: either would draw the same chat in two columns.
+      return swapped.filter((pane, i) => swapped.indexOf(pane) === i && pane !== id);
+    });
+    setActiveId(id);
+  };
+
+  /** Bring back the tab that was closed last, resuming its graff session so
+   * the conversation comes back with it. A tab that never got a message has
+   * nothing saved, so it returns as a fresh one. */
+  const reopenClosed = () => {
+    const stack = closedRef.current;
+    const last = stack[stack.length - 1];
+    if (!last) return;
+    closedRef.current = stack.slice(0, -1);
+    if (last.session && last.resumable) void openStored(last.session, last.cwd);
+    else newChat();
+  };
+
+  /** Another chat beside the ones on screen, in the workspace the active
+   * chat is in. Up to four columns; past that they are too narrow to read. */
+  const addPane = () => {
+    if (panesRef.current.length + 1 >= MAX_COLUMNS) return;
+    const keep = activeId;
+    const id = (chatIdRef.current += 1);
+    openChat(id);
+    // openChat makes the new tab active; the split keeps the current chat
+    // where it is and puts the new one beside it.
+    setActiveId(keep);
+    setPanes((current) => [...current, id]);
+  };
+
+  const closePane = (id: number) => setPanes((current) => current.filter((pane) => pane !== id));
+
+  /** The toolbar button: split when there is one column, close the split
+   * when there are more. ⌘D always adds one. */
+  const toggleSplit = () => {
+    if (panesRef.current.length > 0) setPanes([]);
+    else addPane();
+  };
+
   const dropChat = (id: number) => {
     sessionsRef.current.delete(id);
     sessionNamesRef.current.delete(id);
+    runningRef.current.delete(id);
+    setQueue(id, []);
     setSessionIds((current) => {
       const { [id]: _gone, ...rest } = current;
       return rest;
     });
     setBusyFor(id, false);
+    setPins(id, []);
     void disposeSession(handleOf(id));
+    void browserClose(handleOf(id)).catch(() => undefined);
   };
 
   const closeChat = (id: number) => {
+    setPanes((current) => current.filter((pane) => pane !== id));
+    const going = chatsRef.current.find((c) => c.id === id);
+    if (going) {
+      // Keep the last few closed tabs; a tab that got as far as a message
+      // has a graff session on disk to resume, an empty one has nothing.
+      closedRef.current = [
+        ...closedRef.current.slice(-9),
+        { session: going.session ?? null, cwd: going.cwd, resumable: going.messages.length > 0 },
+      ];
+    }
     dropChat(id);
     const remaining = chats.filter((c) => c.id !== id);
     if (remaining.length === 0) {
@@ -666,171 +620,268 @@ export default function GraffHarness() {
     void openStored(id);
   };
 
-  // A new message glides the thread to the bottom. After that the tail is
-  // followed by a ResizeObserver on the thread body: every growth — a token,
-  // a tool row, a typewriter frame — pins scrollTop instantly, so there is
-  // no smooth scroll to restart per chunk (that restart was the judder), and
-  // only while the reader is at the tail. Scrolling up to read earlier
-  // history releases the pin until they come back down, so a streaming turn
-  // never yanks the view away from them.
-  const messageCount = chatThread.messages.length;
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const stuckRef = useRef(true);
-  const glideUntilRef = useRef(0);
-  useEffect(() => {
-    const el = scrollRef.current;
-    const body = bodyRef.current;
-    if (!active || !el || !body) return;
-    const onScroll = () => {
-      const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      if (fromBottom < 48) {
-        stuckRef.current = true;
-        glideUntilRef.current = 0;
-      } else if (performance.now() >= glideUntilRef.current) {
-        // Positions mid-glide are the animation's, not the reader's.
-        stuckRef.current = false;
-      }
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    const observer = new ResizeObserver(() => {
-      if (stuckRef.current && performance.now() >= glideUntilRef.current) el.scrollTop = el.scrollHeight;
-    });
-    observer.observe(body);
-    return () => {
-      el.removeEventListener("scroll", onScroll);
-      observer.disconnect();
-    };
-  }, [active, activeId]);
-  useEffect(() => {
-    if (!active) return;
-    const el = scrollRef.current;
-    if (!el) return;
-    stuckRef.current = true;
-    glideUntilRef.current = performance.now() + 900;
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [messageCount, activeId, active]);
+  /** Put a saved chat away, or remove it for good. Its tab closes with it,
+   * and the row goes at once rather than after the next poll. */
+  const dropStored = (name: string, archive: boolean) => {
+    const cwd = activePathRef.current ?? undefined;
+    const open = chatsRef.current.find((c) => c.session === name && (c.cwd ?? null) === (cwd ?? null));
+    if (open) closeChat(open.id);
+    setStored((current) => current.filter((s) => s.name !== name));
+    void removeSession(name, { root: cwd, archive })
+      .catch(() => undefined)
+      .then(() => refreshStored());
+  };
 
-  // The sidebar is graff's session directory, newest first, bucketed by day.
+  /* ── workspaces ── */
+
+  const persistWorkspaces = (list: Workspace[]) => {
+    workspacesRef.current = list;
+    setWorkspaces(list);
+    saveWorkspaces(window.localStorage, list);
+  };
+
+  const activate = (path: string | null) => {
+    activePathRef.current = path;
+    setActivePath(path);
+    saveActiveWorkspace(window.localStorage, path);
+    void refreshStored();
+  };
+
+  /** Move a tab to another folder. Only sound for a tab with no messages:
+   * an agent is bound to its folder at spawn, so this starts a fresh one
+   * there, and a conversation would lose the ground it was standing on. */
+  const moveChatTo = (chatId: number, path: string) => {
+    const ws = findWorkspace(workspacesRef.current, path);
+    const next = chatsRef.current.map((c) => (c.id === chatId ? { ...c, cwd: path, model: c.model ?? ws?.model } : c));
+    // requireSession reads the chat from this ref in the same tick, before
+    // React has re-rendered with the new cwd.
+    chatsRef.current = next;
+    setChats(next);
+    setPanes((current) => current.filter((pane) => pane !== chatId));
+    setActiveId(chatId);
+    void requireSession(chatId, true)
+      .then(() => adoptCatalog(chatId))
+      .catch(() => undefined);
+  };
+
+  /** Switch the sidebar to a workspace and land on a tab that runs there.
+   * The tab in front follows the switch when nothing has been asked in it
+   * yet — picking a folder should change the folder you are looking at.
+   * A tab with a conversation keeps its own folder, and says which. */
+  const switchWorkspace = (path: string) => {
+    if (path === activePathRef.current) return;
+    activate(path);
+    setFilesOpen(false);
+    const here = chatsRef.current.find((c) => c.id === activeId);
+    if (here && here.messages.length === 0) {
+      moveChatTo(here.id, path);
+      return;
+    }
+    const empty = chatsRef.current.find((c) => c.cwd === path && c.messages.length === 0);
+    if (empty) {
+      setActiveId(empty.id);
+      return;
+    }
+    openChat((chatIdRef.current += 1));
+  };
+
+  const addWorkspace = (path: string) => {
+    const list = upsertWorkspace(workspacesRef.current, { path, name: basename(path) });
+    persistWorkspaces(list);
+    setDialog(null);
+    const added = findWorkspace(list, path);
+    if (added) switchWorkspace(added.path);
+  };
+
+  const saveWorkspace = (ws: Workspace) => {
+    persistWorkspaces(upsertWorkspace(workspacesRef.current, ws));
+    setDialog(null);
+  };
+
+  /** Drop a workspace from the switcher (nothing on disk changes). If it
+   * was active, the next row — or the server default — takes over. */
+  const forgetWorkspace = (path: string) => {
+    const list = removeWorkspace(workspacesRef.current, path);
+    persistWorkspaces(list);
+    setDialog(null);
+    if (activePathRef.current === path) {
+      const next = list[0]?.path ?? health?.cwd ?? null;
+      if (next) switchWorkspace(next);
+      else activate(null);
+    }
+  };
+
+  /** The footer names the tab's own graff session; clicking it copies the
+   * command that continues the same conversation in a terminal. */
+  const copyResume = () => {
+    const name = chatThread.session;
+    if (!name || typeof navigator === "undefined" || !navigator.clipboard) return;
+    const cmd = chatThread.cwd ? `cd ${shellQuote(chatThread.cwd)} && graff --resume ${name}` : `graff --resume ${name}`;
+    void navigator.clipboard
+      .writeText(cmd)
+      .then(() => {
+        setCopiedResume(true);
+        window.setTimeout(() => setCopiedResume(false), 1400);
+      })
+      .catch(() => undefined);
+  };
+
+  // Every visible column follows its own tail: jump to the bottom when it
+  // appears, and stop following as soon as the reader scrolls up in it.
+  useEffect(() => {
+    const off: (() => void)[] = [];
+    for (const id of columnKey.split(",").filter(Boolean).map(Number)) {
+      const el = scrollEls.current.get(id);
+      if (!el) continue;
+      el.scrollTop = el.scrollHeight;
+      setTailing((current) => (current[id] === true ? current : { ...current, [id]: true }));
+      const onScroll = () => {
+        const next = isFollowingTail(el);
+        setTailing((current) => (current[id] === next ? current : { ...current, [id]: next }));
+      };
+      el.addEventListener("scroll", onScroll, { passive: true });
+      off.push(() => el.removeEventListener("scroll", onScroll));
+    }
+    return () => off.forEach((stop) => stop());
+  }, [columnKey]);
+
+  useEffect(() => {
+    for (const id of columnKey.split(",").filter(Boolean).map(Number)) {
+      pinScrollerTail(scrollEls.current.get(id) ?? null, tailing[id] ?? true);
+    }
+  }, [chats, tailing, columnKey]);
+
+  // Sidebar preview: the first page of the session index, newest first. A
+  // session open in a tab shows the tab's name (the model wrote it from the
+  // first prompt); one only on disk shows whatever graff saved.
   const now = Date.now();
-  const recents = stored.map((s) => ({
-    id: s.name,
-    label: s.title ?? s.name,
-    group: dateGroup(s.updatedMs, now),
-    hint: [s.model, relativeTime(s.updatedMs, now)].filter(Boolean).join(" · "),
-  }));
+  const recents = stored.map((s) => {
+    const row = toSidebarRecent(s, now);
+    const live = chats.find((c) => c.session === s.name)?.title;
+    return live ? { ...row, label: live } : row;
+  });
 
-  const workspaceName = health?.cwd ? (health.cwd.split("/").pop() || health.cwd) : "workspace";
+  // The tab bar's folder chip is the *tab's* workspace; the sidebar's
+  // switcher is the *active* one (where new tabs open). They differ only
+  // after a switch, and each says so on hover.
+  const cwdOf = (thread: Chat) => thread.cwd ?? activePath ?? health?.cwd;
+  const workspaceNameOf = (thread: Chat) => {
+    const dir = cwdOf(thread);
+    return findWorkspace(workspaces, dir)?.name ?? (dir ? basename(dir) : "workspace");
+  };
+  const chatCwd = cwdOf(chatThread);
+  const chatWorkspace = findWorkspace(workspaces, chatCwd);
+  const workspaceName = chatWorkspace?.name ?? (chatCwd ? basename(chatCwd) : "workspace");
+  const pinCount = (pinsByChat[chatThread.id] ?? []).length;
+  const activeWorkspace = findWorkspace(workspaces, activePath);
+  const sidebarWorkspace = activeWorkspace ?? (activePath ? { path: activePath, name: basename(activePath) } : undefined);
+  const footerTitle = chatThread.session
+    ? `graff session ${chatThread.session}${sessionId ? ` · ACP ${sessionId}` : ""}${chatCwd ? ` · ${chatCwd}` : ""}\nClick to copy the command that resumes it in a terminal.`
+    : undefined;
 
-  const tabBar = (
-    <div className="flex h-11 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-      {chats.map((c) => (
-        <div
-          key={c.id}
-          className={`group/tab flex h-7 w-36 shrink-0 items-center gap-0.5 rounded-[7px] pl-2.5 pr-1 text-[12.5px] font-medium transition-colors duration-100 ${
-            c.id === activeId ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
-          }`}
-        >
-          {busyIds.has(c.id) && (
-            <span
-              className="mr-1 size-1.5 shrink-0 animate-pulse rounded-full"
-              style={{ background: "var(--accent)" }}
-              aria-label="Working"
-            />
-          )}
-          <button type="button" aria-pressed={c.id === activeId} onClick={() => setActiveId(c.id)} title={c.title ?? "New chat"} className="min-w-0 flex-1 text-left">
-            <span className="block truncate">{c.title ?? "New chat"}</span>
-          </button>
-          <button
-            type="button"
-            aria-label="Close tab"
-            onClick={() => closeChat(c.id)}
-            className="-my-1 flex size-6 shrink-0 items-center justify-center rounded-[5px] text-ink-3 transition-[background-color,color] duration-100 hover:bg-hover-2 hover:text-ink"
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
-              <path d="M18 6L6 18M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-      ))}
-      <button
-        type="button"
-        aria-label="New chat"
-        onClick={newChat}
-        className="ml-0.5 flex size-7 shrink-0 items-center justify-center rounded-[7px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-          <path d="M12 5v14M5 12h14" />
-        </svg>
-      </button>
-      <div className="ml-auto flex items-center gap-2 pr-1">
-        <button
-          type="button"
-          aria-pressed={filesOpen}
-          onClick={() => setFilesOpen((open) => !open)}
-          title={health?.cwd ?? "Workspace files"}
-          className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
-            filesOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
-          }`}
-        >
-          <IconFolder size={14} />
-          <span className="max-w-40 truncate font-mono text-[11.5px]">{workspaceName}</span>
-        </button>
-        <ThemeToggle />
-      </div>
-    </div>
-  );
+  /** One chat column: its transcript (or the empty state) and its composer.
+   * A plain function, not a component, so the split view can render two of
+   * them without React remounting either on every parent render. */
+  const columnBody = (thread: Chat) => {
+    const isFollowing = tailing[thread.id] ?? true;
+    const hasMessages = thread.messages.length > 0;
+    const threadBusy = busyIds.has(thread.id);
+    const threadModel = thread.model ?? model ?? undefined;
+    const threadQueued = queues[thread.id] ?? [];
+    const threadPins = (pinsByChat[thread.id] ?? []).length;
+    const threadHistory = mergeHistory(history, thread.messages.flatMap((m) => (m.role === "user" ? [m.text] : [])));
+    return (
+      <>
 
-  const paneTodos = lastAssistant?.turn.todos ?? [];
-
-  return (
-    <main className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
-      <SidebarNav
-        fill
-        className="hidden lg:flex"
-        recents={recents}
-        activeTitle={chatThread.title}
-        activeId={chatThread.session ?? null}
-        onPick={pickRecent}
-        onNewChat={newChat}
-        activeNav={filesOpen ? "workspace" : "chats"}
-        onNavigate={(key) => setFilesOpen(key === "workspace")}
-        footerLabel={sessionId ? `Session ${sessionId.slice(0, 8)}` : "Connecting…"}
-        onFooterClick={() => undefined}
-      />
-
-      <div className="flex min-w-0 flex-1 flex-col gap-2.5">
-        <div className="flex min-h-0 flex-1 gap-2.5">
-          <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page">
-            {tabBar}
-            {active ? (
+            {hasMessages ? (
               <div className="flex min-h-0 flex-1 flex-col">
-                <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-                  <div ref={bodyRef} className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
-                    {chatThread.messages.map((message) =>
+                <div ref={paneRef(thread.id)} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" style={{ overflowAnchor: "none" }}>
+                  <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
+                    {thread.messages.map((message, index) =>
                       message.role === "user" ? (
                         <UserBubble key={message.id} text={message.text} />
                       ) : (
-                        <AssistantBody key={message.id} turn={message.turn} onOpenPath={openPath} onReview={openChanges} />
+                        <AssistantBody
+                          key={message.id}
+                          turn={message.turn}
+                          onOpenPath={openPath}
+                          onReview={openChanges}
+                          scroller={scrollRef}
+                          following={isFollowing && index === thread.messages.length - 1}
+                        />
                       ),
                     )}
                   </div>
                 </div>
                 <div className="shrink-0 bg-page px-4 pt-3 pb-6 sm:px-8">
                   <div className="mx-auto max-w-[720px]">
+                    {threadPins > 0 && (
+                      <div className="mb-2 flex items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline">
+                        <span className="shrink-0 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Pinned</span>
+                        <span className="min-w-0 flex-1 truncate text-ink">
+                          {threadPins} element{threadPins === 1 ? "" : "s"} in the browser go with your next message
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveId(thread.id);
+                            setFilesOpen(false);
+                            setBrowserOpen(true);
+                          }}
+                          className="shrink-0 rounded px-1.5 text-[11.5px] font-medium text-ink-2 hover:bg-hover hover:text-ink"
+                        >
+                          Show
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Clear pins"
+                          onClick={() => setPins(thread.id, [])}
+                          className="flex size-5 shrink-0 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-ink"
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+                            <path d="M18 6L6 18M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
+                    {threadQueued.length > 0 && (
+                      <ul className="mb-2 flex flex-col gap-1">
+                        {threadQueued.map((item) => (
+                          <li
+                            key={item.id}
+                            className="flex items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline"
+                          >
+                            <span className="shrink-0 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Queued</span>
+                            <span className="min-w-0 flex-1 truncate text-ink">{item.text}</span>
+                            <button
+                              type="button"
+                              aria-label="Remove from queue"
+                              onClick={() => setQueue(thread.id, dropQueuedPrompt(queuesRef.current[thread.id] ?? [], item.id))}
+                              className="flex size-5 shrink-0 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-ink"
+                            >
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+                                <path d="M18 6L6 18M6 6l12 12" />
+                              </svg>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                     <PromptBar
                       demo={false}
                       tall
-                      placeholder={busy ? "Agent is working…" : "Follow up"}
+                      placeholder={threadBusy ? "Queue a follow-up…" : "Follow up"}
                       models={models}
-                      modelKey={chatModel}
-                      onModelChange={changeModel}
-                      onSend={send}
-                      disabled={busy}
-                      history={composerHistory}
-                      busy={busy}
+                      commands={commands[thread.id] ?? []}
+                      root={cwdOf(thread)}
+                      modelKey={threadModel}
+                      onModelChange={(key: string) => changeModel(key, thread.id)}
+                      onSend={(text: string) => void send(text, thread.id)}
+                      history={threadHistory}
+                      busy={threadBusy}
                       onStop={() => {
-                        const live = sessionsRef.current.get(chatThread.id);
-                        if (live) void cancel(handleOf(chatThread.id), live);
+                        const live = sessionsRef.current.get(thread.id);
+                        if (live) void cancel(handleOf(thread.id), live);
                       }}
                     />
                   </div>
@@ -839,22 +890,326 @@ export default function GraffHarness() {
             ) : (
               <div className="min-h-0 flex-1 overflow-y-auto">
                 <EmptyState
-                  onSend={send}
+                  onSend={(text: string) => void send(text, thread.id)}
                   health={health}
-                  history={composerHistory}
-                  offset={offset}
-                  shuffle={() => setOffset((current) => (current + 3) % STARTER_PROMPTS.length)}
+                  history={threadHistory}
+                  cwd={cwdOf(thread)}
                   models={models}
-                  modelKey={chatModel}
-                  onModelChange={changeModel}
+                  modelKey={threadModel}
+                  onModelChange={(key: string) => changeModel(key, thread.id)}
+                  commands={commands[thread.id] ?? []}
                 />
               </div>
             )}
-          </section>
+      </>
+    );
+  };
 
-          {filesOpen && <FilesPane requested={fileRequest} onClose={() => setFilesOpen(false)} />}
+  const tabBar = (
+    <div className="flex h-11 shrink-0 items-center border-b border-line px-2">
+      {/* The tabs scroll on their own. They used to share this row's scroller
+        * with the toolbar, so a handful of open chats pushed the split,
+        * workspace and browser controls off the edge — and with the scrollbar
+        * hidden, they were simply gone. */}
+      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {chats.map((c) => (
+          <div
+            key={c.id}
+            className={`group/tab flex h-7 w-36 shrink-0 items-center gap-0.5 rounded-[7px] pl-2.5 pr-1 text-[12.5px] font-medium transition-colors duration-100 ${
+              c.id === activeId ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+            }`}
+          >
+            {busyIds.has(c.id) && (
+              <span
+                className="mr-1 size-1.5 shrink-0 animate-pulse rounded-full"
+                style={{ background: "var(--accent)" }}
+                aria-label="Working"
+              />
+            )}
+            <button
+              type="button"
+              aria-pressed={c.id === activeId}
+              onClick={() => {
+                focusChat(c.id);
+                setConversationsOpen(false);
+              }}
+              title={c.title ?? "New chat"}
+              className="min-w-0 flex-1 text-left"
+            >
+              <span className="block truncate">{c.title ?? "New chat"}</span>
+            </button>
+            <button
+              type="button"
+              aria-label="Close tab"
+              title={c.id === activeId ? "Close tab (⌘W) — ⇧⌘T brings it back" : "Close tab"}
+              onClick={() => closeChat(c.id)}
+              className="-my-1 flex size-6 shrink-0 items-center justify-center rounded-[5px] text-ink-3 transition-[background-color,color] duration-100 hover:bg-hover-2 hover:text-ink"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          aria-label="New chat"
+          title="New chat (⌘T)"
+          onClick={newChat}
+          className="ml-0.5 flex size-7 shrink-0 items-center justify-center rounded-[7px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+        </button>
+      </div>
+      <div className="flex shrink-0 items-center gap-2 pl-2 pr-1">
+        <button
+          type="button"
+          aria-pressed={conversationsOpen}
+          onClick={openConversations}
+          title="All conversations"
+          className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
+            conversationsOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+          }`}
+        >
+          <IconChat size={14} />
+          <span className="hidden sm:inline">Chats</span>
+        </button>
+        <button
+          type="button"
+          aria-pressed={panes.length > 0}
+          onClick={toggleSplit}
+          title={panes.length > 0 ? "Close the splits (⌘\\)" : "Split the view: another chat beside this one (⌘D adds one)"}
+          className={`flex size-7 items-center justify-center rounded-[7px] transition-colors duration-100 ${
+            panes.length > 0 ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+          }`}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M12 4v16" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          aria-pressed={filesOpen}
+          onClick={() => {
+            setBrowserOpen(false);
+            setConversationsOpen(false);
+            setFilesOpen((open) => !open);
+          }}
+          title={`${chatCwd ?? "Workspace"}\nShow this chat's files`}
+          className={`flex h-7 items-center gap-1.5 rounded-l-[7px] pl-2 pr-1.5 text-[12px] font-medium transition-colors duration-100 ${
+            filesOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+          }`}
+        >
+          <IconFolder size={14} />
+          <span className="max-w-40 truncate font-mono text-[11.5px]">{workspaceName}</span>
+        </button>
+        <button
+          type="button"
+          aria-label="Open a folder"
+          onClick={() => setDialog({ mode: "new" })}
+          title="Open another folder to work in"
+          className="-ml-2 flex h-7 items-center rounded-r-[7px] pl-0.5 pr-1.5 text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          aria-pressed={browserOpen}
+          onClick={() => {
+            setFilesOpen(false);
+            setBrowserOpen((open) => !open);
+          }}
+          title="Sidecar browser — a Chrome tab this chat and its agent share"
+          className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
+            browserOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+          }`}
+        >
+          <IconGlobe size={14} />
+          <span className="text-[11.5px]">Browser</span>
+          {pinCount > 0 && (
+            <span className="rounded-full bg-accent px-1.5 text-[10px] font-semibold text-white tabular-nums">{pinCount}</span>
+          )}
+        </button>
+        <ThemeToggle />
+      </div>
+    </div>
+  );
 
-          {!filesOpen && active && paneTodos.length > 0 && (
+  // The shortcuts read the current handlers through a ref, so the window
+  // listener below is installed once instead of on every render.
+  const keysRef = useRef({ closeChat, newChat, reopenClosed, toggleSplit, addPane, focusChat, chats, activeId });
+  keysRef.current = { closeChat, newChat, reopenClosed, toggleSplit, addPane, focusChat, chats, activeId };
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      const keys = keysRef.current;
+      const key = event.key.toLowerCase();
+      const take = () => {
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      if (key === "w" && !event.shiftKey) {
+        take();
+        keys.closeChat(keys.activeId);
+        return;
+      }
+      if (key === "t") {
+        take();
+        if (event.shiftKey) keys.reopenClosed();
+        else keys.newChat();
+        return;
+      }
+      if (key === "d" && !event.shiftKey) {
+        take();
+        keys.addPane();
+        return;
+      }
+      if (key === "\\" && !event.shiftKey) {
+        take();
+        keys.toggleSplit();
+        return;
+      }
+      // ⌘1…⌘9 jump to a tab, ⌘9 to the last one, as in a browser.
+      if (!event.shiftKey && key >= "1" && key <= "9") {
+        const nth = Number(key);
+        const target = nth === 9 ? keys.chats[keys.chats.length - 1] : keys.chats[nth - 1];
+        if (!target) return;
+        take();
+        keys.focusChat(target.id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  catalogRef.current = { adopt: (id: number) => void adoptCatalog(id).catch(() => undefined), activeId };
+
+  const paneTodos = lastAssistant?.turn.todos ?? [];
+  // The active chat is the first column; the panes follow it. A chat that
+  // was closed, or became the active one, leaves the split rather than
+  // showing twice. Four columns is as narrow as a chat stays readable.
+  const columns = columnIds.map((id) => chats.find((c) => c.id === id)).filter((c): c is Chat => c !== undefined);
+
+
+  return (
+    <main className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
+      <SidebarNav
+        fill
+        className="hidden lg:flex"
+        recents={recents}
+        recentsTotal={storedTotal}
+        activeTitle={chatThread.title}
+        activeId={chatThread.session ?? null}
+        onPick={pickRecent}
+        onNewChat={newChat}
+        onSeeAll={openConversations}
+        activeNav={filesOpen ? "workspace" : browserOpen ? "browser" : conversationsOpen ? "conversations" : "home"}
+        onNavigate={(key) => {
+          setFilesOpen(key === "workspace");
+          setBrowserOpen(key === "browser");
+          setConversationsOpen(key === "conversations");
+        }}
+        workspace={sidebarWorkspace}
+        workspaces={workspaces.map((w) => ({ path: w.path, name: w.name }))}
+        onSwitchWorkspace={switchWorkspace}
+        onArchiveRecent={(id) => dropStored(id, true)}
+        onDeleteRecent={(id) => dropStored(id, false)}
+        onNewWorkspace={() => setDialog({ mode: "new" })}
+        onWorkspaceSettings={() => setDialog(sidebarWorkspace ? { mode: "settings" } : { mode: "new" })}
+        footerLabel={copiedResume ? "Copied resume command" : (chatThread.session ?? "Connecting…")}
+        footerTitle={footerTitle}
+        onFooterClick={copyResume}
+      />
+
+      <div className="flex min-w-0 flex-1 flex-col gap-2.5">
+        <div className="flex min-h-0 flex-1 gap-2.5">
+          {conversationsOpen ? (
+            <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page">
+              {tabBar}
+              <ConversationsPane
+                root={chatCwd}
+                activeId={chatThread.session ?? null}
+                onPick={(name) => {
+                  setConversationsOpen(false);
+                  pickRecent(name);
+                }}
+                onNewChat={() => {
+                  setConversationsOpen(false);
+                  newChat();
+                }}
+              />
+            </section>
+          ) : (
+            <>
+            {columns.map((thread, slot) => (
+              <section
+                key={thread.id}
+                data-chat={thread.id}
+                className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page"
+              >
+                {slot === 0 ? (
+                  tabBar
+                ) : (
+                  <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-3">
+                    {busyIds.has(thread.id) && (
+                      <span className="size-1.5 shrink-0 animate-pulse rounded-full" style={{ background: "var(--accent)" }} aria-label="Working" />
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => focusChat(thread.id)}
+                      title="Make this the main chat"
+                      className="min-w-0 flex-1 truncate text-left text-[12.5px] font-medium text-ink"
+                    >
+                      {thread.title ?? "New chat"}
+                    </button>
+                    <span
+                      title={cwdOf(thread) ?? "workspace"}
+                      className="flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-1.5 text-[12px] font-medium text-ink-2"
+                    >
+                      <IconFolder size={14} />
+                      <span className="max-w-32 truncate font-mono text-[11.5px]">{workspaceNameOf(thread)}</span>
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="Close this split"
+                      title="Close this split"
+                      onClick={() => closePane(thread.id)}
+                      className="flex size-7 shrink-0 items-center justify-center rounded-[6px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+                        <path d="M18 6L6 18M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
+                {columnBody(thread)}
+              </section>
+            ))}
+
+            </>
+          )}
+
+          {filesOpen && !conversationsOpen && <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />}
+
+          {browserOpen && !conversationsOpen && (
+            <BrowserPane
+              key={chatThread.id}
+              chat={handleOf(chatThread.id)}
+              memoryKey={chatCwd}
+              pins={pinsByChat[chatThread.id] ?? []}
+              onPinsChange={(next) => setPins(chatThread.id, next)}
+              onAsk={() => void send("Make the changes I pinned in the browser.")}
+              onClose={() => setBrowserOpen(false)}
+            />
+          )}
+
+          {!filesOpen && !browserOpen && !conversationsOpen && active && paneTodos.length > 0 && (
             <aside
               className="hidden w-[360px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page lg:flex"
               style={{ animation: "fade-in 300ms ease both" }}
@@ -876,6 +1231,19 @@ export default function GraffHarness() {
           )}
         </div>
       </div>
+
+      {dialog && (
+        <WorkspaceDialog
+          mode={dialog.mode}
+          workspace={dialog.mode === "settings" ? sidebarWorkspace : undefined}
+          startPath={activePath ?? health?.home ?? undefined}
+          models={models}
+          onClose={() => setDialog(null)}
+          onPick={addWorkspace}
+          onSave={saveWorkspace}
+          onForget={forgetWorkspace}
+        />
+      )}
     </main>
   );
 }

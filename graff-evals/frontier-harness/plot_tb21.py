@@ -23,7 +23,7 @@ OUT = HERE / "tb21-graff-grok46.png"
 
 # Fair no-append first pass was 14/21. Chart shows the final run only.
 
-# zigrepper frontend/src/app/globals.css (:root)
+# Palette taken from the project's own CSS custom properties.
 EMERALD = "#059669"
 EMERALD_LT = "#10b981"
 EMERALD_TEXT = "#047857"
