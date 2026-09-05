@@ -28,7 +28,8 @@ test "run loop enables click+hover tracking and bracketed paste" {
     try std.testing.expect(std.mem.indexOf(u8, src, &[_]u8{ '?', '1', '0', '0', '7', 'h' }) == null);
     try std.testing.expect(std.mem.indexOf(u8, src, &kitty_on) != null);
     try std.testing.expect(std.mem.indexOf(u8, src, &wrap_off) != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "a=d,d=A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "imgproto.clear_all") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "imgproto.sync(") != null);
     // The idle paste sweep must DISCARD whatever was stuck mid-sequence before
     // the stall path below can see it. Leaving it there let a lone pending ESC
     // become the Escape KEY the instant `in_paste` cleared, cancelling a live
@@ -106,7 +107,7 @@ test "the loop self-heals: a resize EVENT and a periodic sweep force a repaint" 
     // whole point is to SKIP rows that are already correct — which is exactly
     // the set of rows a heal exists to rewrite. Same for `full`, which folds in
     // kitty graphics (pixels do not move when cells scroll), resize and theme.
-    try std.testing.expect(std.mem.indexOf(u8, src, "if (full or heal) null else m.paint_hint") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "if (full or heal or gfx.on or want_gfx) null else m.paint_hint") != null);
     // Theme bg is painted per row, not baked into the frame. Blank rows are
     // byte-identical across themes, so a diff paint would strand the old
     // canvas — /theme and the startup OSC-11 flip both force a full paint.

@@ -89,6 +89,7 @@ test {
     _ = @import("keys.zig");
     _ = @import("nav.zig");
     _ = @import("image.zig");
+    _ = @import("imgproto.zig");
     _ = @import("turn.zig");
     _ = @import("turn_spawn_tests.zig");
     _ = @import("bgop.zig");

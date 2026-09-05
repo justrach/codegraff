@@ -105,6 +105,8 @@ pub const provider_specs = [_]ProviderSpec{
     // login is a SuperGrok plan while XAI_API_KEY is metered api.x.ai access.
     .{ .id = "xai", .display_name = "xAI", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.6", .login = .xai_device, .sub_login = true, .catalog = .openai, .models_url = "https://api.x.ai/v1/models" },
     .{ .id = "zai", .display_name = "Z.AI", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.3", .catalog = .openai, .models_url = "https://api.z.ai/api/paas/v4/models", .takes_effort = true },
+    // OpenAI-compatible Chat Completions with reasoning_effort support.
+    .{ .id = "meta", .display_name = "Meta", .kind = .openai, .auth = .bearer, .url = "https://api.meta.ai/v1/chat/completions", .env_key = "META_API_KEY", .default_model = "muse-spark-1.2-contributor", .catalog = .openai, .models_url = "https://api.meta.ai/v1/models", .takes_effort = true },
     // Vercel AI Gateway: one key, live /models. Coding-agent surface marks
     // harness traffic (docs: passthrough to /v1). Image/video are not seats.
     .{ .id = "vercel", .display_name = "Vercel AI Gateway", .kind = .openai, .auth = .bearer, .url = "https://ai-gateway.vercel.sh/coding-agent/v1/chat/completions", .env_key = "AI_GATEWAY_API_KEY", .default_model = "alibaba/qwen3.8-27b", .catalog = .openai, .models_url = "https://ai-gateway.vercel.sh/coding-agent/v1/models", .takes_effort = true },

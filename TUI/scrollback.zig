@@ -270,7 +270,7 @@ pub fn row(self: *const Model, a: std.mem.Allocator, user_no: u32, e: app.Entry,
     const sel = glyphs.frame(&glyphs.row_mark, @intFromBool(!selected));
     if (e.kind == .user) {
         const line = try std.fmt.allocPrint(a, "{s}{s}#{d}{s}  {s}", .{ sel, th.muted, user_no, theme_mod.reset, body });
-        return theme_mod.wrapToWidth(a, line, width);
+        return theme_mod.wrapPreferWords(a, line, width);
     }
     if (e.kind == .pending) {
         const line = try std.fmt.allocPrint(a, "{s}{s}{s}{s}{s} {s}{s}", .{ sel, th.accent, thinkingGlyph(now_ms), theme_mod.reset, th.muted, body, theme_mod.reset });

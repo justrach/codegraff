@@ -45,6 +45,7 @@ SPECS: list[dict] = [
     row("moonshot", "openai", "bearer"),
     row("xai", "openai", "bearer", login="xai_device", catalog="openai", sub_login=True),
     row("zai", "openai", "bearer", catalog="openai", takes_effort=True),
+    row("meta", "openai", "bearer", catalog="openai", takes_effort=True),
     row("vercel", "openai", "bearer", catalog="openai", takes_effort=True),
     row("openrouter", "openai", "bearer", catalog="openai", takes_effort=True),
     row("fugu", "openai", "bearer"),
