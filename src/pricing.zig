@@ -226,6 +226,7 @@ pub const model_table = [_]ModelInfo{
     // Codex slice from the account-scoped /models response (5-minute cache).
     // Keep this usable when auth/discovery is unavailable: these are the
     // visible rows and advertised windows from the 2026-07-10 Codex catalog.
+    .{ .provider = "codex", .name = "gpt-6-astra", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.6-sol", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.6-terra", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.6-luna", .context = 272_000 },

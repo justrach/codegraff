@@ -165,6 +165,7 @@ test "Codex discovery replaces only the baked Codex fallback" {
 }
 
 test "baked Codex catalog is an offline fallback, not rollout data" {
+    try std.testing.expect(pricing.providerModelInTable("codex", "gpt-6-astra"));
     try std.testing.expect(pricing.providerModelInTable("codex", "gpt-5.6-sol"));
     try std.testing.expect(pricing.providerModelInTable("codex", "gpt-5.6-terra"));
     try std.testing.expect(pricing.providerModelInTable("codex", "gpt-5.6-luna"));
@@ -172,7 +173,7 @@ test "baked Codex catalog is an offline fallback, not rollout data" {
     try std.testing.expect(pricing.providerModelInTable("codex", "gpt-5.4"));
     try std.testing.expect(pricing.providerModelInTable("codex", "gpt-5.3-codex-spark"));
     try std.testing.expectEqual(pricing.codex_context_window, pricing.contextFor("codex", "gpt-5.6-sol"));
-    try std.testing.expectEqualStrings("gpt-5.6-sol", pricing.providerDefaultModel("codex", "fallback"));
+    try std.testing.expectEqualStrings("gpt-6-astra", pricing.providerDefaultModel("codex", "fallback"));
     try std.testing.expect(!pricing.providerModelInTable("codex", "gpt-5.5-codex"));
     try std.testing.expect(!pricing.providerModelInTable("codex", "gpt-5-codex"));
     try std.testing.expect(pricing.providerModelInTable("openai", "gpt-5-codex"));

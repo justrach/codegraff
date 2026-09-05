@@ -66,7 +66,7 @@ pub fn visibleSnapshots(parse_snapshot: anytype) !void {
 
 pub fn versionFloor(floor: []const u8, effective_version: anytype, snapshot_matches: anytype) !void {
     try std.testing.expectEqualStrings(floor, effective_version("0.130.0", null));
-    try std.testing.expectEqualStrings("0.145.0", effective_version("0.145.0", null));
+    try std.testing.expectEqualStrings("0.200.0", effective_version("0.200.0", null));
     try std.testing.expectEqualStrings(floor, effective_version("invalid", null));
     try std.testing.expect(!snapshot_matches(.{
         .models = &.{},

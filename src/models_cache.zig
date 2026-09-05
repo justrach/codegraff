@@ -27,8 +27,8 @@ const codex_cache_ttl_ms: i64 = 5 * 60 * 1000;
 // sends its compiled package version, not another Codex installation on PATH.
 // This is the newest protocol Graff has verified; a newer installed/native version
 // may raise it, but an older one must never hide models Graff supports.
-// Reference: openai/codex rust-v0.144.1, codex-rs/models-manager.
-const codex_client_version_floor = "0.144.1";
+// gpt-6-astra's minimal_client_version is 0.153.0 (probed live 2026-09-04).
+const codex_client_version_floor = "0.153.0";
 pub var codex_catalog_source: []const u8 = "baked offline fallback";
 
 /// Session-owned cache-first loader, invalidated after in-session login.
