@@ -91,6 +91,7 @@ export default function EmptyState({
           disabled={health !== null && !health.ok}
           history={history}
           commands={commands}
+          root={where}
         />
         {health && !health.ok && (
           <p className="mt-3 text-[12.5px] text-orange">

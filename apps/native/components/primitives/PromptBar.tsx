@@ -3,6 +3,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createShader, playSweep, accentChain, ACCENTS } from "glimm";
 import type { AcpCommand } from "@/lib/acp";
+import {
+  filesFrom,
+  releaseAttachments,
+  uploadAttachment,
+  withAttachmentMarkers,
+  type Attachment,
+} from "@/lib/attachments";
 import { entryAt, historyKeyIntent, stepHistory } from "@/lib/prompt-history";
 
 /* The built-in "prism" palette is only cyan→indigo→magenta, so a sweep
@@ -38,6 +45,7 @@ const GLYPHS: Record<string, React.ReactNode> = {
   chart: <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />,
   layers: <g><path d="M12 2 2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5M2 12l10 5 10-5" /></g>,
   globe: <g><circle cx="12" cy="12" r="10" /><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></g>,
+  file: <g><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></g>,
 };
 
 /* real product marks, inline so the file stays self-contained */
@@ -138,13 +146,16 @@ const AUTO_STEPS: {
   { draft: "", hold: 900 },
 ];
 
-/* the last @word or /word being typed, if any */
+/* The last @word or /word being typed, if any. An @ query may carry path
+ * separators and dots, because narrowing by directory is how anyone finds a
+ * file in a large tree; a slash command never contains either. */
 function parseToken(draft: string): { kind: "at" | "slash"; query: string; start: number } | null {
-  const match = /(^|\s)([@/])([\w-]*)$/.exec(draft);
+  const match = /(^|\s)(?:@([\w./-]*)|\/([\w-]*))$/.exec(draft);
   if (!match) return null;
+  const at = match[2] !== undefined;
   return {
-    kind: match[2] === "@" ? "at" : "slash",
-    query: match[3].toLowerCase(),
+    kind: at ? "at" : "slash",
+    query: (at ? match[2] : match[3]).toLowerCase(),
     start: match.index + match[1].length,
   };
 }
@@ -165,6 +176,7 @@ export default function PromptBar({
   busy = false,
   onStop,
   history,
+  root,
 }: {
   variant?: string;
   /** the self-running walkthrough; turn off when embedding in a real surface */
@@ -186,6 +198,9 @@ export default function PromptBar({
   /** Earlier prompts, oldest first. ArrowUp on the first line of the draft
    * walks back through them like a shell; ArrowDown walks forward again. */
   history?: readonly string[];
+  /** The workspace this composer sends into. The @ picker searches it, and a
+   * picked file is mentioned by its path relative to it. */
+  root?: string;
 }) {
   const pill = variant === "Pill";
   const catalog = models && models.length > 0 ? models : MODELS;
@@ -210,7 +225,11 @@ export default function PromptBar({
     if (found && found.key !== model.key) setModel(found);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelKey, models]);
-  const [attachments, setAttachments] = useState<string[]>([]);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  /* Workspace files matching the current @ query — live surfaces only. */
+  const [fileRows, setFileRows] = useState<{ key: string; name: string; desc: string }[]>([]);
   const [connected, setConnected] = useState(false);
   const [active, setActive] = useState(0);
   const [listening, setListening] = useState(false);
@@ -229,6 +248,7 @@ export default function PromptBar({
   const composerAnchorRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);
   const modelRef = useRef<HTMLButtonElement>(null);
   const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -254,9 +274,50 @@ export default function PromptBar({
   const menu: "at" | "slash" | null = plusOpen ? "at" : token?.kind ?? null;
   const query = plusOpen ? "" : token?.query ?? "";
 
+  /* The @ picker searches the workspace. Debounced, and every in-flight
+   * search is abandoned when the query moves on, so a slow walk over a large
+   * tree can never land on top of results for what is now typed. */
+  useEffect(() => {
+    if (demo || menu !== "at") return;
+    if (!query) {
+      setFileRows([]);
+      return;
+    }
+    const abort = new AbortController();
+    const timer = setTimeout(() => {
+      const params = new URLSearchParams({ q: query });
+      if (root) params.set("root", root);
+      fetch(`/api/fs?${params}`, { signal: abort.signal })
+        .then((res) => res.json())
+        .then((json: { matches?: string[] }) => {
+          setFileRows(
+            (json.matches ?? []).map((rel) => ({
+              key: `file:${rel}`,
+              name: rel.slice(rel.lastIndexOf("/") + 1),
+              desc: rel,
+            })),
+          );
+        })
+        .catch(() => {
+          /* aborted, or the workspace went away — keep the rows we have */
+        });
+    }, 90);
+    return () => {
+      abort.abort();
+      clearTimeout(timer);
+    };
+  }, [demo, menu, query, root]);
+
+  /* The walkthrough glides through a fixed cast of sources. A live composer
+   * offers the real attach action and whatever the workspace search found —
+   * an invented data source is worse than an empty menu. */
+  const atRows = demo
+    ? SOURCES.filter((s) => s.name.toLowerCase().includes(query))
+    : [SOURCES[0], ...fileRows];
+
   const rows: { key: string; name: string; desc: string }[] =
     menu === "at"
-      ? SOURCES.filter((s) => s.name.toLowerCase().includes(query))
+      ? atRows
       : menu === "slash"
         ? slashRows.filter((c) => c.name.slice(1).startsWith(query))
         : [];
@@ -455,28 +516,62 @@ export default function PromptBar({
     setModelOpen(false);
   };
 
-  const pick = (row: { key: string; name: string }) => {
-    const source = SOURCES.find((s) => s.key === row.key);
-    if (source?.attach) {
-      setAttachments((current) => [...current, FILES[current.length % FILES.length]]);
-      if (token) setDraft(draft.slice(0, token.start));
+  const pick = (row: { key: string; name: string; desc: string }) => {
+    const before = token ? draft.slice(0, token.start) : draft;
+    if (row.key === "attach") {
+      if (demo) {
+        const name = FILES[attachments.length % FILES.length];
+        setAttachments((current) => [...current, { id: `${name}-${current.length}`, name, path: name }]);
+      } else {
+        fileInputRef.current?.click();
+      }
+      setDraft(before);
+    } else if (row.key.startsWith("file:")) {
+      /* The harness reads `@[path]` out of the prompt text: an image becomes
+       * a native vision block, anything else stays a path it opens itself. */
+      setDraft(`${before}@[${row.desc}] `);
     } else if (menu === "at") {
-      setDraft(`${token ? draft.slice(0, token.start) : draft}@${row.name} `);
+      setDraft(`${before}@${row.name} `);
     } else {
-      setDraft(`${token ? draft.slice(0, token.start) : draft}${row.name} `);
+      setDraft(`${before}${row.name} `);
     }
     setPlusOpen(false);
     setDismissed(false);
     inputRef.current?.focus();
   };
 
+  /* Bytes from a paste, a drop or the file picker. Uploaded one at a time so
+   * one refusal cannot take the others down with it. */
+  const attachFiles = async (files: File[]) => {
+    if (demo || files.length === 0) return;
+    setAttachError(null);
+    for (const file of files) {
+      try {
+        const attachment = await uploadAttachment(file);
+        setAttachments((current) => [...current, attachment]);
+      } catch (err) {
+        setAttachError(err instanceof Error ? err.message : String(err));
+      }
+    }
+    inputRef.current?.focus();
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments((current) => {
+      releaseAttachments(current.filter((a) => a.id === id));
+      return current.filter((a) => a.id !== id);
+    });
+  };
+
   const canSend = !disabled && (draft.trim().length > 0 || attachments.length > 0);
   const showStop = busy && !canSend;
   const send = () => {
     if (!canSend) return;
-    onSend?.(draft.trim());
+    onSend?.(withAttachmentMarkers(draft.trim(), attachments));
+    releaseAttachments(attachments);
     setDraft("");
     setAttachments([]);
+    setAttachError(null);
     setHistoryIndex(-1);
     stashRef.current = "";
     closeMenus();
@@ -530,6 +625,11 @@ export default function PromptBar({
           />
           {rows.map((row, i) => {
             const source = menu === "at" ? SOURCES.find((s) => s.key === row.key) : undefined;
+            const mark = source ? (
+              source.brand ? BRANDS[source.brand] : <Icon size={15}>{GLYPHS[source.glyph ?? "clip"]}</Icon>
+            ) : row.key.startsWith("file:") ? (
+              <Icon size={15}>{GLYPHS.file}</Icon>
+            ) : null;
             return (
               <button
                 key={row.key}
@@ -545,10 +645,8 @@ export default function PromptBar({
                 onClick={() => pick(row)}
                 className="relative z-10 flex h-9 w-full items-center gap-2.5 rounded-[6px] px-2 text-left"
               >
-                {source && (
-                  <span className="flex size-5.5 shrink-0 items-center justify-center text-ink-2">
-                    {source.brand ? BRANDS[source.brand] : <Icon size={15}>{GLYPHS[source.glyph ?? "clip"]}</Icon>}
-                  </span>
+                {mark && (
+                  <span className="flex size-5.5 shrink-0 items-center justify-center text-ink-2">{mark}</span>
                 )}
                 <span className="shrink-0 text-[12.5px] font-medium text-ink">
                   {row.name}
@@ -578,7 +676,11 @@ export default function PromptBar({
             </div>
           )}
           <div className="mt-1 border-t border-line px-2 pt-1.5 pb-1 text-[11px] text-ink-3">
-            {menu === "at" ? "Type to search sources & files" : "Type to search commands"}
+            {menu !== "at"
+              ? "Type to search commands"
+              : demo
+                ? "Type to search sources & files"
+                : "Type to search this workspace — or paste, drop and attach files"}
           </div>
         </div>
       )}
@@ -660,12 +762,45 @@ export default function PromptBar({
 
       {/* ── composer ───────────────────────────────────── */}
       <div
-        className={`relative isolate flex flex-col overflow-hidden border border-line bg-surface shadow-card transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${
+        onDragOver={(event) => {
+          /* Claim the drop only for files. Without preventDefault here the
+           * browser navigates away to the dropped file instead. */
+          if (demo || !event.dataTransfer.types.includes("Files")) return;
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={(event) => {
+          if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+          setDragging(false);
+        }}
+        onDrop={(event) => {
+          const files = filesFrom(event.dataTransfer);
+          if (demo || files.length === 0) return;
+          event.preventDefault();
+          setDragging(false);
+          void attachFiles(files);
+        }}
+        className={`relative isolate flex flex-col overflow-hidden border bg-surface shadow-card transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${
+          dragging ? "border-accent-ink" : "border-line"
+        } ${
           tall ? "gap-2.5 p-3.5" : "gap-1.5 p-1.5"
         } ${
           pill ? (attachments.length > 0 || wide ? "rounded-[24px]" : "rounded-full") : tall ? "rounded-[22px]" : "rounded-[14px]"
         }`}
       >
+        {/* The @ menu's attach row and the + button both open this. */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          onChange={(event) => {
+            void attachFiles(Array.from(event.target.files ?? []));
+            // Same file twice in a row is a real thing to want; without this
+            // the second pick fires no change event at all.
+            event.target.value = "";
+          }}
+        />
         {/* rainbow glimm sweep — plays across the interior on model change.
             explicit w/h: a <canvas> is a replaced element and won't stretch
             to inset-0 alone, which feeds back into the shader's ResizeObserver. */}
@@ -685,20 +820,25 @@ export default function PromptBar({
 
         {attachments.length > 0 && (
           <div className={`flex flex-wrap gap-1.5 pt-0.5 ${pill ? "px-1" : "px-0.5"}`}>
-            {attachments.map((file, i) => (
+            {attachments.map((file) => (
               <span
-                key={`${file}-${i}`}
+                key={file.id}
                 className={`flex h-6.5 items-center gap-1.5 bg-field py-1 pr-1 pl-1.5 text-[11.5px] text-ink-2 shadow-hairline ${
                   pill ? "rounded-full" : "rounded-chip"
                 }`}
                 style={{ animation: "pop-in 200ms cubic-bezier(0.23,1,0.32,1) both" }}
               >
-                <Icon size={12}><g><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></g></Icon>
-                <span className="max-w-36 truncate">{file}</span>
+                {file.preview ? (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img src={file.preview} alt="" className="-my-1 size-6 rounded-[4px] object-cover" />
+                ) : (
+                  <Icon size={12}>{GLYPHS.file}</Icon>
+                )}
+                <span className="max-w-36 truncate">{file.name}</span>
                 <button
                   type="button"
-                  aria-label={`Remove ${file}`}
-                  onClick={() => setAttachments((current) => current.filter((_, j) => j !== i))}
+                  aria-label={`Remove ${file.name}`}
+                  onClick={() => removeAttachment(file.id)}
                   className={`-my-1 flex size-6 items-center justify-center text-ink-3 transition-colors duration-100 hover:bg-line/70 hover:text-ink ${
                     pill ? "rounded-full" : "rounded-[5px]"
                   }`}
@@ -707,6 +847,12 @@ export default function PromptBar({
                 </button>
               </span>
             ))}
+          </div>
+        )}
+
+        {attachError && (
+          <div className={`text-[11.5px] text-red ${pill ? "px-2" : "px-1"}`} role="status">
+            {attachError}
           </div>
         )}
 
@@ -742,6 +888,14 @@ export default function PromptBar({
               setDraft(event.target.value);
               setDismissed(false);
               setPlusOpen(false);
+            }}
+            onPaste={(event) => {
+              /* Claim the paste only when it carries files. A text paste has
+               * to fall through untouched — that is Cmd-V doing its job. */
+              const files = filesFrom(event.clipboardData);
+              if (demo || files.length === 0) return;
+              event.preventDefault();
+              void attachFiles(files);
             }}
             onKeyDown={(event) => {
               if (menu && rows.length > 0) {
