@@ -9,6 +9,7 @@ const nextConfig: NextConfig = {
   // Without this the tracer walks up to the repository root and copies the
   // Zig build outputs into the payload.
   outputFileTracingRoot: __dirname,
+  outputFileTracingIncludes: { "/api/acp": ["./skills/*/SKILL.md"] },
   // The app is opened at 127.0.0.1 (the desktop shell points there), which
   // Next 16 treats as cross-origin for its dev resources unless it is
   // listed here; without it hot reloading is refused.

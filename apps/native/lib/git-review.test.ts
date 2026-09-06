@@ -22,3 +22,26 @@ test("shared review includes staged, unstaged, new and deleted files without she
     await assert.rejects(reviewDiff(root,'../private'), /relative workspace/);
   } finally { rmSync(root,{recursive:true,force:true}); }
 });
+test("a repository without commits displays both untracked and staged first files", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'graff-review-first-'));
+  try {
+    execFileSync('git', ['init', '-q', root]);
+    writeFileSync(path.join(root, 'first.txt'), 'first line\n');
+    assert.match(await reviewDiff(root, 'first.txt'), /\+first line/);
+    assert.equal((await reviewState(root)).files.length, 1);
+    execFileSync('git', ['add', 'first.txt'], { cwd: root });
+    assert.match(await reviewDiff(root, 'first.txt'), /\+first line/);
+    assert.match(await reviewDiff(root, 'first.txt', 'staged'), /\+first line/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+test("numstat retains tabs in file names", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'graff-review-tabs-'));
+  try {
+    execFileSync('git', ['init', '-q', root]);
+    writeFileSync(path.join(root, 'with\ttab.txt'), 'first\nsecond\n');
+    execFileSync('git', ['add', '.'], { cwd: root });
+    const state = await reviewState(root, 'staged');
+    assert.equal(state.files[0].path, 'with\ttab.txt');
+    assert.equal(state.totalAdd, 2);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

@@ -19,6 +19,7 @@ async function run({ win, browser, automation, backend, metrics, activity, compu
     await win.loadURL(backend.origin);
     await sleep(1500);
     assert.equal(browser.liveCount, 0);
+    report.ui = await require('./smoke-ui.cjs').smokeUI({ win, browser, backend });
     const catalog = await win.webContents.executeJavaScript(`fetch('/api/models').then(r=>r.json())`);
     assert.ok(catalog.result.current.model); assert.ok(catalog.result.models.length > 0);
     assert.ok(catalog.result.current.effortLevels.length > 0);

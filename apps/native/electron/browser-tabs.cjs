@@ -16,7 +16,8 @@ class BrowserTabs {
     const wc = tab.view?.webContents;
     return { tabId: tab.chat, url: wc?.getURL() || tab.url, title: wc?.getTitle() || '',
       width: tab.rect?.width || 0, height: tab.rect?.height || 0,
-      ready: wc ? 'complete' : 'suspended', suspended: !wc };
+      ready: wc ? (wc.isLoading() ? 'loading' : 'complete') : 'suspended', suspended: !wc,
+      canGoBack: wc?.navigationHistory.canGoBack() ?? false, canGoForward: wc?.navigationHistory.canGoForward() ?? false };
   }
   notify(tab) { this.emit({ chat: tab.chat, type: 'info', info: this.info(tab) }); }
   create(chat) {
@@ -36,7 +37,7 @@ class BrowserTabs {
     tab.view = view;
     const wc = view.webContents;
     let navigationStarted = 0;
-    wc.on('did-start-loading', () => { navigationStarted = performance.now(); this.profiler?.record('page-navigation'); });
+    wc.on('did-start-loading', () => { navigationStarted = performance.now(); this.profiler?.record('page-navigation'); this.notify(tab); });
     wc.on('did-finish-load', () => { this.profiler?.record('page-loaded', performance.now() - navigationStarted); wc.send('profile-enabled', !!this.profiler?.active); });
     wc.setWindowOpenHandler(({ url }) => {
       void this.navigate(chat, url).catch(() => {}); return { action: 'deny' };
@@ -64,8 +65,9 @@ class BrowserTabs {
   attach(tab) {
     if (this.visible && this.visible !== tab.chat) this.hide(this.visible);
     this.visible = tab.chat; clearTimeout(tab.timer);
-    if (tab.view && tab.rect) { tab.view.setBounds(tab.rect); tab.view.setVisible(tab.rect.width > 0 && tab.rect.height > 0); }
+    if (tab.view && tab.rect) { tab.view.setBounds(tab.rect); tab.view.setVisible(!this.overlay && tab.rect.width > 0 && tab.rect.height > 0); }
   }
+  setOverlay(blocked) { this.overlay = blocked; const tab = this.tabs.get(this.visible); if (tab) this.attach(tab); }
   setBounds(chat, rect) {
     let tab = this.tabs.get(chat);
     const size = this.window.getContentBounds();

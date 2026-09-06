@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, createReadStream, statSync } from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { filePreview } from "@/lib/file-preview";
 import { NextRequest } from "next/server";
 import { resolveRoot } from "@/lib/server-root";
 
@@ -10,7 +12,6 @@ export const dynamic = "force-dynamic";
 /** Heavy or generated trees that only bury the folders people navigate to. */
 const HIDDEN = new Set([".git", "node_modules", ".next", ".zig-cache", "zig-out", ".DS_Store"]);
 
-const MAX_TEXT = 256 * 1024;
 
 const IMAGE_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -126,25 +127,11 @@ export async function GET(req: NextRequest) {
     // ?raw=1 streams the bytes themselves — how the pane shows images.
     if (req.nextUrl.searchParams.get("raw")) {
       const type = IMAGE_TYPES[path.extname(target).toLowerCase()] ?? "application/octet-stream";
-      const bytes = readFileSync(target);
-      return new Response(new Uint8Array(bytes), {
+      return new Response(Readable.toWeb(createReadStream(target)) as ReadableStream, {
         headers: { "content-type": type, "cache-control": "no-store" },
       });
     }
-    const buf = readFileSync(target);
-    const head = buf.subarray(0, 8192);
-    const binary = head.includes(0);
-    const truncated = buf.length > MAX_TEXT;
-    return Response.json({
-      ok: true,
-      root,
-      path: relPath,
-      dir: false,
-      size: buf.length,
-      binary,
-      truncated,
-      text: binary ? "" : buf.subarray(0, MAX_TEXT).toString("utf8"),
-    });
+    return Response.json({ ok: true, root, path: relPath, dir: false, ...await filePreview(target) });
   } catch (err) {
     return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 });
   }

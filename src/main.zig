@@ -585,6 +585,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
     _ = @import("agent_request_search_tests.zig");
     _ = @import("agent_ws_steer.zig"); // gpt-6-astra response.steer
+    _ = @import("tui_acp_updates.zig");
     _ = @import("acp_preauth.zig"); // credential-free ACP loop must stay in the test root
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events
     _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here

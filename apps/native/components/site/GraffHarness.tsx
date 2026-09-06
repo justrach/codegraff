@@ -1,6 +1,8 @@
 "use client";
 
+import { createTurnPainter } from "@/lib/turn-painter";
 import { useQuietSettings } from "./useQuietSettings";
+import reviewStyles from "./ChangesPane.module.css";
 import ChangesPane from "./ChangesPane";
 import { useBrowserVisibility } from "./useBrowserVisibility";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
@@ -380,7 +382,7 @@ export default function GraffHarness() {
               messages: [
                 ...c.messages,
                 { id: userId, role: "user", text: trimmed },
-                { id: asstId, role: "assistant", turn: { ...emptyTurn(), model: spawnModel } },
+                { id: asstId, role: "assistant", turn: { ...emptyTurn(), model: spawnModel, startedAt: Date.now() } },
               ],
             },
       ),
@@ -401,37 +403,29 @@ export default function GraffHarness() {
       wire = `${trimmed}\n\n${annotationsBlock(pins, handle)}`;
       setPins(chatId, []);
     }
-    let turn: AssistantTurn = { ...emptyTurn(), model: spawnModel };
+    let turn: AssistantTurn = { ...emptyTurn(), model: spawnModel, startedAt: Date.now() };
+    const painter = createTurnPainter<AssistantTurn>(next => patchAssistant(chatId, asstId, next));
     const startedAt = Date.now();
     try {
       const id = await requireSession(chatId);
-      // Paint at most once per frame. ACP text/tool events can arrive dozens
-      // of times per 16ms; each setChats used to re-parse every settled
-      // markdown block in the thread.
-      let paint = 0;
-      const turnRef = { current: turn };
+      turn = { ...turn, connected: true, lastUpdateAt: Date.now() };
+      painter.update(turn);
       for await (const update of prompt(handleOf(chatId), id, wire)) {
         turn = applyAcpUpdate(turn, update);
         if (turn.thoughtMs === undefined && turn.status !== "thinking") turn = { ...turn, thoughtMs: Date.now() - startedAt };
-        turnRef.current = turn;
-        if (!paint) {
-          paint = requestAnimationFrame(() => {
-            paint = 0;
-            patchAssistant(chatId, asstId, turnRef.current);
-          });
-        }
+        painter.update(turn);
       }
-      if (paint) cancelAnimationFrame(paint);
       // The turn carried pins, so the agent most likely changed the page:
       // reload the chat's tab so the pane shows the result without a click.
       if (pins.length > 0) void browserNav(handleOf(chatId), "reload").catch(() => undefined);
       if (/^\/(effort|reasoning|fast)(?:\s|$)/.test(trimmed)) void adoptCatalog(chatId);
       turn = finishAcpTurn(turn);
-      patchAssistant(chatId, asstId, turn);
+      painter.finish(turn);
     } catch (err) {
-      turn = { ...turn, error: err instanceof Error ? err.message : String(err), status: "error" };
-      patchAssistant(chatId, asstId, turn);
+      turn = finishAcpTurn({ ...turn, error: err instanceof Error ? err.message : String(err), status: "error" });
+      painter.finish(turn);
     } finally {
+      painter.dispose();
       runningRef.current.delete(chatId);
       setBusyFor(chatId, false);
       void refreshStored();
@@ -889,11 +883,8 @@ export default function GraffHarness() {
   };
 
   const tabBar = (
-    <div className="flex h-11 shrink-0 items-center border-b border-line px-2">
-      {/* The tabs scroll on their own. They used to share this row's scroller
-        * with the toolbar, so a handful of open chats pushed the split,
-        * workspace and browser controls off the edge — and with the scrollbar
-        * hidden, they were simply gone. */}
+    <div className={`${reviewStyles.chatbar} flex h-11 shrink-0 items-center border-b border-line px-2`}>
+      {/* Tabs scroll independently; toolbar labels collapse in narrow panes. */}
       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {chats.map((c) => (
           <div
@@ -946,7 +937,7 @@ export default function GraffHarness() {
           </svg>
         </button>
       </div>
-      <div className="flex shrink-0 items-center gap-2 pl-2 pr-1">
+      <div className={`${reviewStyles.actions} flex shrink-0 items-center gap-2 pl-2 pr-1`}>
         <button
           type="button"
           aria-pressed={conversationsOpen}
@@ -957,7 +948,7 @@ export default function GraffHarness() {
           }`}
         >
           <IconChat size={14} />
-          <span className="hidden sm:inline">Chats</span>
+          <span data-toolbar-label className="hidden sm:inline">Chats</span>
         </button>
         <button
           type="button"
@@ -987,7 +978,7 @@ export default function GraffHarness() {
           }`}
         >
           <IconFolder size={14} />
-          <span className="max-w-40 truncate font-mono text-[11.5px]">{workspaceName}</span>
+          <span data-toolbar-label className="max-w-40 truncate font-mono text-[11.5px]">{workspaceName}</span>
         </button>
         <button
           type="button"
@@ -1000,7 +991,7 @@ export default function GraffHarness() {
             <path d="M6 9l6 6 6-6" />
           </svg>
         </button>
-        <button type="button" onClick={openChanges} className="rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover" aria-label="Review workspace changes">Changes</button>
+        <button type="button" onClick={openChanges} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover" aria-label="Review workspace changes" title="Review workspace changes"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M5 5h14v14H5zM8 9h8M8 12h8M8 15h4" /></svg><span data-toolbar-label>Changes</span></button>
         <button
           type="button"
           aria-pressed={browserOpen}
@@ -1014,7 +1005,7 @@ export default function GraffHarness() {
           }`}
         >
           <IconGlobe size={14} />
-          <span className="text-[11.5px]">Browser</span>
+          <span data-toolbar-label className="text-[11.5px]">Browser</span>
           {pinCount > 0 && (
             <span className="rounded-full bg-accent px-1.5 text-[10px] font-semibold text-white tabular-nums">{pinCount}</span>
           )}

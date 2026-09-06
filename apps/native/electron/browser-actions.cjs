@@ -29,7 +29,7 @@ async function browserAction(browser, chat, method, params = {}) {
     wc.sendInputEvent({ type: 'keyDown', keyCode: params.key, modifiers });
     wc.sendInputEvent({ type: 'keyUp', keyCode: params.key, modifiers }); return { ok: true };
   }
-  if (method === 'find') { wc.findInPage(String(params.text || ''), { forward: params.forward !== false }); return { ok: true }; }
+  if (method === 'find') { const text = String(params.text || ''); if (text) wc.findInPage(text, { forward: params.forward !== false }); else wc.stopFindInPage('clearSelection'); return { ok: true }; }
   if (method === 'zoom') { const factor = Number(params.factor); if (!Number.isFinite(factor) || factor < 0.5 || factor > 2) throw new Error('Zoom must be 0.5 to 2'); wc.setZoomFactor(factor); return { factor }; }
   throw new Error('Unsupported browser action');
 }

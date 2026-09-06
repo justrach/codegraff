@@ -55,9 +55,9 @@ export default function ModelEffortButtons({ model, buttonRef, modelOpen, openMo
   const progress = levels.length > 1 ? draft / (levels.length - 1) : 0;
   const displayName = model.name.replace(/^gpt-/i, "GPT-").replace(/-(astra|sol|terra|luna)$/i, (_, name: string) => ` ${name[0].toUpperCase()}${name.slice(1)}`);
   return <div className={`flex min-w-0 items-center gap-0.5 ${wide ? "col-start-2 row-start-2 justify-self-start" : "col-start-3 row-start-1"}`}>
-    <button ref={buttonRef} type="button" aria-expanded={modelOpen} aria-label="Choose model" disabled={saving} onClick={openModel}
+    <button ref={buttonRef} type="button" aria-expanded={modelOpen} aria-label="Choose model" disabled={saving || busy} onClick={openModel}
       className={`flex h-7 min-w-0 items-center gap-1 px-1.5 text-[12px] font-medium text-ink-2 hover:bg-hover hover:text-ink ${pill ? "rounded-full" : "rounded-lg"}`}>
-      {model.fast && model.fastSupported && <span className="text-blue-500 [&_svg]:size-3.5" aria-label="Fast mode enabled"><Bolt filled /></span>}
+      {model.fast && model.fastSupported && <span className="text-accent [&_svg]:size-3.5" aria-label="Fast mode enabled"><Bolt filled /></span>}
       <span className="truncate">{displayName}</span><Chevron />
     </button>
     {levels.length > 0 && <button ref={effortButton} type="button" aria-label="Select effort" aria-expanded={open} onClick={show}
@@ -68,8 +68,8 @@ export default function ModelEffortButtons({ model, buttonRef, modelOpen, openMo
         <button type="button" aria-label="Fast mode" aria-pressed={!!model.fast} disabled={blocked || !model.fastSupported}
           title={model.fastSupported ? "Priority service for lower latency; may use more of your allowance" : "Fast mode is available for Codex models"}
           onClick={() => void change(`/fast ${model.fast ? "off" : "on"}`)}
-          className={`flex size-8 shrink-0 items-center justify-center rounded-[10px] transition-colors disabled:opacity-30 ${model.fast ? "bg-blue-500/10 text-blue-500" : "text-ink-3 hover:bg-hover"}`}><Bolt filled={!!model.fast} /></button>
-        <div className="min-w-0 text-center"><div className="text-[17px] font-medium leading-6 text-blue-500">{labels[levels[draft]] ?? levels[draft]}</div><div className="mt-0.5 truncate text-[13px] leading-5 text-ink-3">{saving ? <span role="status">Saving…</span> : displayName}</div></div>
+          className={`flex size-8 shrink-0 items-center justify-center rounded-[10px] transition-colors disabled:opacity-30 ${model.fast ? "bg-accent-tint text-accent" : "text-ink-3 hover:bg-hover"}`}><Bolt filled={!!model.fast} /></button>
+        <div className="min-w-0 text-center"><div className="text-[17px] font-medium leading-6 text-accent">{labels[levels[draft]] ?? levels[draft]}</div><div className="mt-0.5 truncate text-[13px] leading-5 text-ink-3">{saving ? <span role="status">Saving…</span> : displayName}</div></div>
         <button type="button" aria-label="Reset effort to medium" title="Reset effort to medium" disabled={blocked || !levels.includes("medium")} onClick={() => { setDraft(levels.indexOf("medium")); void change("/effort medium"); }} className="flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover disabled:opacity-30"><svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 10a8 8 0 1 1 0 5M4 4v6h6" /></svg></button>
       </div>
       <div className={styles.slider}>
@@ -79,7 +79,7 @@ export default function ModelEffortButtons({ model, buttonRef, modelOpen, openMo
         onChange={event => setDraft(Number(event.target.value))} onPointerUp={apply} onKeyUp={apply}
         className={styles.range} />
       </div>
-      {error && <p role="alert" className="mt-2 text-xs text-red-500">{error}</p>}
+      {error && <p role="alert" className="mt-2 text-xs text-red">{error}</p>}
     </div>, document.body)}
   </div>;
 }

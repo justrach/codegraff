@@ -7,6 +7,7 @@ import { NextRequest } from "next/server";
 import type { AcpCommand } from "@/lib/acp";
 import { AcpTransport } from "@/lib/acp-transport";
 import { defaultRoot, resolveRoot } from "@/lib/server-root";
+import { prepareGuiPrompt } from "@/lib/gui-skill-context";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -260,12 +261,14 @@ export async function POST(req: NextRequest) {
     }
     if (method === "session/prompt") {
       if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
+      const promptParams = await prepareGuiPrompt(body.params);
+      if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
       slot.streaming = true;
       const encoder = new TextEncoder();
       let cancelled = false;
       const stream = new ReadableStream({
         start(controller) {
-          void slot.transport.request("session/prompt", { ...body.params, sessionId: slot.sessionId }, 24 * 60 * 60 * 1000,
+          void slot.transport.request("session/prompt", { ...promptParams, sessionId: slot.sessionId }, 24 * 60 * 60 * 1000,
             line => { if (!cancelled) controller.enqueue(encoder.encode(`${line}\n`)); })
             .then(() => { if (!cancelled) { cancelled = true; controller.close(); } })
             .catch(error => { if (!cancelled) { cancelled = true; controller.error(error); } })

@@ -1,3 +1,4 @@
+import { withoutGuiSkillContext } from "./gui-skills";
 import {
   chipFor,
   emptyTurn,
@@ -230,7 +231,7 @@ export function transcriptFromMessages(raw: unknown[], model?: string): Transcri
         ? { role: "tool", tool_call_id: saved.call_id, content: saved.output }
         : saved;
     if (msg.role === "user") {
-      const text = textOf(msg.content).trim();
+      const text = withoutGuiSkillContext(textOf(msg.content).trim());
       if (!text) continue;
       flush();
       out.push({ role: "user", text });
@@ -277,7 +278,7 @@ export function transcriptFromMessages(raw: unknown[], model?: string): Transcri
       const t = current();
       const idx = t.tools.findIndex((row) => row.id === msg.tool_call_id);
       if (idx < 0) continue;
-      const text = textOf(msg.content).trim();
+      const text = withoutGuiSkillContext(textOf(msg.content).trim());
       const failed = /^(error|failed|denied)\b/i.test(text);
       t.tools = t.tools.map((row, i) =>
         i === idx

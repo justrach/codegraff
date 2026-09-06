@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 /* ─────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ export type LiveToolRow = {
   /** Workspace file this call touched; makes the chip a jump target. */
   path?: string;
   /** Live call state — running rows get a spinner so the turn visibly moves. */
-  status?: "running" | "ok" | "error";
+  status?: "running" | "ok" | "error" | "interrupted";
   startedAt?: number;
   elapsedMs?: number;
 };
@@ -129,25 +129,17 @@ export default function ToolChips({
     ? Object.fromEntries((liveDiffs ?? []).map((d) => [d.file, d.lines ?? []]))
     : DIFF_LINES;
   const [step, setStep] = useState(0);
-  const [open, setOpen] = useState(true);
-  const userToggled = useRef(false);
+  const [open, setOpen] = useState(!live);
   /* tick once a second while any live row runs, so its timer counts up */
   const [, setClock] = useState(0);
   const anyRunning = live && rows.some((r) => "status" in r && r.status === "running");
   useEffect(() => {
-    if (!anyRunning) return;
+    if (!anyRunning || !open) return;
     const t = setInterval(() => setClock((c) => c + 1), 1000);
     return () => clearInterval(t);
-  }, [anyRunning]);
-  /* A batch of reads should not be a wall sitting on the answer. Expand
-   * while something is running so the live call is visible; fold the rest
-   * into the summary once they settle — unless the reader opened it. */
-  useEffect(() => {
-    if (!live || userToggled.current) return;
-    if (anyRunning) setOpen(true);
-    else if (rows.length > 1) setOpen(false);
-  }, [live, anyRunning, rows.length]);
-  const showHeader = !live || rows.length > 1;
+  }, [anyRunning, open]);
+  // Disclosure belongs to the reader. New calls and completion never change it.
+  const showHeader = true;
   const [openRows, setOpenRows] = useState<Set<string>>(new Set());
   /* Rendered in a body portal so animated/translated reply wrappers cannot
    * redefine the fixed-position coordinate system. */
@@ -193,9 +185,8 @@ export default function ToolChips({
       {showHeader && (
       <button
         type="button"
-        aria-expanded={open}
+        data-tool-summary aria-expanded={open}
         onClick={() => {
-          userToggled.current = true;
           setOpen((current) => !current);
         }}
         className="-mx-1.5 flex w-fit items-center gap-1.5 rounded-control px-1.5 py-1 text-[12.5px] text-ink-2 transition-colors duration-100 hover:bg-hover-2"
@@ -216,6 +207,8 @@ export default function ToolChips({
                 if (other > 0) parts.push(`${other} other`);
                 const liveN = rows.filter((r) => "status" in r && r.status === "running").length;
                 if (liveN) parts.push(liveN === 1 ? "running" : `${liveN} running`);
+                const interrupted = rows.filter(row => "status" in row && row.status === "interrupted").length;
+                if (interrupted) parts.push(`${interrupted} interrupted`);
                 return parts.join(" · ") || `${rows.length} steps`;
               })()
             : "4 tool calls, 2 messages"}
@@ -224,7 +217,7 @@ export default function ToolChips({
       )}
 
       {/* tool call rows */}
-      <div className="grid transition-[grid-template-rows,opacity] duration-300" style={{ gridTemplateRows: !showHeader || open ? "1fr" : "0fr", opacity: !showHeader || open ? 1 : 0 }}>
+      <div inert={!open} aria-hidden={!open} className="grid transition-[grid-template-rows,opacity] duration-300" style={{ gridTemplateRows: !showHeader || open ? "1fr" : "0fr", opacity: !showHeader || open ? 1 : 0 }}>
         {/* -mx-1 + px-1.5 keeps content at the same x while giving the
             row hover pills room inside this overflow-hidden clip box */}
         <div className="-mx-1 overflow-hidden px-1.5 pb-1">

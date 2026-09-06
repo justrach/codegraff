@@ -47,11 +47,12 @@ export default function ConversationsPane({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const generation = useRef(0);
   const q = useDebounced(query);
 
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
+    let cancelled = false; generation.current++;
+    setLoading(true); setLoadingMore(false);
     setError(null);
     void listSessionsPage({ limit: PAGE, q, scope, root })
       .then((page) => {
@@ -77,12 +78,14 @@ export default function ConversationsPane({
     const io = new IntersectionObserver(
       (entries) => {
         if (!entries.some((e) => e.isIntersecting)) return;
-        if (loadingMore || loading) return;
+        if (loadingMore || loading || error) return;
         const next = cursor;
         if (!next) return;
+        const request = generation.current;
         setLoadingMore(true);
         void listSessionsPage({ limit: PAGE, cursor: next, q, scope, root })
           .then((page) => {
+            if (request !== generation.current) return;
             setRows((current) => {
               const seen = new Set(current.map((r) => r.name));
               return [...current, ...page.sessions.filter((r) => !seen.has(r.name))];
@@ -90,14 +93,14 @@ export default function ConversationsPane({
             setCursor(page.nextCursor);
             setTotal(page.total);
           })
-          .catch(() => undefined)
-          .finally(() => setLoadingMore(false));
+          .catch(() => { if (request === generation.current) setError("Could not load more conversations. Choose Retry to try again."); })
+          .finally(() => { if (request === generation.current) setLoadingMore(false); });
       },
       { rootMargin: "160px" },
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [cursor, loading, loadingMore, q, scope]);
+  }, [cursor, loading, loadingMore, q, scope, root, error]);
 
   const groups = groupSessions(rows);
   const empty = !loading && rows.length === 0;
@@ -161,7 +164,7 @@ export default function ConversationsPane({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[720px] flex-col gap-6 px-5 py-5 sm:px-8">
-          {error && <p className="text-[13px] text-orange">{error}</p>}
+          {error && <p role="alert" className="text-[13px] text-orange">{error}{rows.length > 0 && <button className="ml-2 underline" onClick={() => setError(null)}>Retry</button>}</p>}
           {empty && (
             <div className="flex flex-col items-center justify-center gap-1 rounded-[14px] bg-inset px-6 py-16 text-center">
               <span className="text-[14px] font-medium text-ink">

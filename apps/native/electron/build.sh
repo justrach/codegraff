@@ -11,7 +11,13 @@ bun install --frozen-lockfile
 if [[ ! -f node_modules/electron/path.txt ]]; then bun node_modules/electron/install.js; fi
 bun run --bun build
 cd "$root"
-zig build graff -Doptimize=ReleaseFast -Dversion="$version"
+# GUI-only iteration can reuse the already-built engine without rebuilding its cache.
+if [[ "${GRAFF_REUSE_ENGINE:-0}" != "1" ]]; then
+  zig build graff -Doptimize=ReleaseFast -Dversion="$version"
+elif [[ ! -x "$root/zig-out/bin/graff" ]]; then
+  echo "No built graff executable to reuse. Run without GRAFF_REUSE_ENGINE." >&2
+  exit 1
+fi
 mkdir -p "$out"
 # This directory is an isolated build artifact, never the installed application.
 rm -rf "$bundle"

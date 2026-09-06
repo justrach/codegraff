@@ -114,3 +114,11 @@ The macOS window keeps native close/minimize/full-screen controls in a reserved
 draggable titlebar. For smoke runs while using another app, set
 `GRAFF_SMOKE_SKIP_INPUT=1` to skip native keyboard injection; the report records
 that omission.
+
+The v2 profiler adds document LCP/FCP, maximum observed interaction duration,
+recording-period layout shift, renderer heap and DOM size, GPU-process CPU/RSS
+and allowlisted Chromium acceleration status. Unavailable metrics remain null.
+It does not claim GPU utilization, dedicated VRAM, field INP/CLS or a Lighthouse
+score. Chromium chooses its supported GPU backend; no forced driver flags or
+custom Metal pipeline are needed for the current DOM-based interface.
+See [repeatable performance scenarios](VISUAL-TESTS.md) for the model-free runner.

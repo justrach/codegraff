@@ -84,6 +84,8 @@ record only when you need the evidence or the edge cases.
 | [0071](0071-desktop-tools-and-macos-computer-use.md) | Desktop MCP controls embedded Chromium and a user-enabled native macOS bridge; coding stays in graff. |
 | [0072](0072-gui-profiler-exports-measurements-only.md) | GUI profiling is bounded and off by default; feedback exports contain allowlisted measurements with no automatic upload. |
 | [0073](0073-acp-stream-and-shared-review.md) | One ACP stdout reader routes responses; shared review reads Git working trees without inferring edit authorship. |
+| [0074](0074-gui-skills-and-portable-themes.md) | Explicit desktop skills and validated themes live in the GUI; selected instructions travel over ACP. |
+| [0075](0075-acp-adapter-and-desktop-measurements.md) | ACP presentation decoding is separate from session lifecycle; desktop performance uses bounded workload measurements and default Chromium acceleration. |
 
 ## When to write one
 

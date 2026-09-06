@@ -116,7 +116,7 @@ describe("applyAcpUpdate", () => {
     assert.equal(blocks[2]?.kind, "text");
   });
 
-  it("finishAcpTurn settles running chips", () => {
+  it("finishAcpTurn stops unresolved chips without inventing success", () => {
     let turn = emptyTurn();
     turn = applyAcpUpdate(turn, {
       sessionUpdate: "tool_call",
@@ -127,6 +127,6 @@ describe("applyAcpUpdate", () => {
     });
     turn = finishAcpTurn(turn);
     assert.equal(turn.status, "done");
-    assert.equal(turn.tools[0]?.status, "ok");
+    assert.equal(turn.tools[0]?.status, "interrupted");
   });
 });

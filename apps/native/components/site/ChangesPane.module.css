@@ -1,0 +1,15 @@
+.panel { container-type: inline-size; }
+.resize { position: absolute; z-index: 20; inset: 0 auto 0 -10px; width: 10px; cursor: col-resize; touch-action: none; outline: none; }
+.resize::after { content: ""; position: absolute; top: 12px; bottom: 12px; left: 4px; width: 2px; border-radius: 2px; background: transparent; transition: background 120ms; }
+.resize:hover::after, .resize:focus-visible::after, .resize[data-dragging]::after { background: var(--accent); }
+.body { display: flex; min-height: 0; flex: 1; }
+.files { width: 180px; flex-shrink: 0; overflow: auto; border-right: 1px solid var(--line); padding: 6px; }
+@container (max-width: 540px) {
+  .body { flex-direction: column; }
+  .files { width: 100%; max-height: 150px; border-right: 0; border-bottom: 1px solid var(--line); }
+}
+.chatbar { container: chatbar / inline-size; }
+@container chatbar (max-width: 650px) {
+  .actions { gap: 2px; padding-left: 4px; }
+  .actions [data-toolbar-label] { display: none; }
+}

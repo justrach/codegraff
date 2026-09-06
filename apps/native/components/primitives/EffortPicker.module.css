@@ -14,7 +14,7 @@
 .fill {
   height: 100%;
   border-radius: inherit;
-  background: #3783fa;
+  background: var(--accent);
 }
 .stops {
   position: absolute;
@@ -64,6 +64,6 @@
   border: 1px solid rgb(0 0 0 / 10%);
   box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
 }
-.range:focus-visible { outline: 2px solid #3783fa; outline-offset: 4px; }
+.range:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .slider:has(.range:disabled) { opacity: .5; }
 .range:disabled { cursor: wait; }

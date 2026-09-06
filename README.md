@@ -35,79 +35,57 @@ curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/instal
 
 ## The desktop app
 
-A native macOS window for graff: chat tabs, each backed by its own `graff acp`
-process, in a real app window instead of a browser tab. It is an AppKit
-`NSWindow` with a `WKWebView` in it, written in Zig against the ObjC runtime —
-no Electron.
+The current desktop preview uses Electron and embedded Chromium, with native
+macOS window controls and SwiftUI Activity and computer-use panels. Coding
+continues in `graff acp`; the window is a client of the same harness used by
+the terminal.
 
-![The desktop app in a chat: workspace sidebar and chat history on the left, a transcript with collapsed thinking and tool rows in the middle, and a pinned-element strip above the composer](docs/images/native-chat.jpg)
+![CodeGraff desktop in its dark theme, with a conversation and composer](docs/images/desktop-chat-dark.png)
 
-The sidebar holds workspaces and the chat library; the footer shows the graff
-session name so you can resume the same conversation from the CLI. Thinking and
-tool calls collapse into single rows.
+Chat tabs, searchable model selection, effort and fast controls, collapsed tool
+activity, and explicit working/finished/interrupted states keep the conversation
+readable. Appearance includes White, Black, Website and the official CodeGraff
+palette. Mention `$gui-theme` or `@gui-theme` in the GUI to create a custom theme.
 
-![The browser pane open beside the chat in Annotate mode, with a button on the page pinned, labelled with its role and name, and a note attached to it](docs/images/native-browser-annotate.jpg)
+![CodeGraff palette with a resizable Changes panel beside the conversation](docs/images/desktop-review-codegraff.png)
 
-The browser pane (experimental) shows a live Chrome tab belonging to the chat.
-In Annotate mode you click an element to pin it; the pin carries the element's
-role, accessible name, selector and box, plus your note, and rides along with
-your next message. The pane is [Kuri](https://github.com/justrach/kuri)'s
-managed headless Chrome, so it needs Kuri installed or `KURI_BIN` pointed at
-it; nothing starts until a pane is opened, a browser that sees no requests for
-`GRAFF_BROWSER_IDLE_MINS` (default 20) is stopped again, and the tree is
-restarted when it passes `GRAFF_BROWSER_MAX_RSS_MB` (default 3072).
+**Changes** shows local staged, unstaged and untracked edits, diffs, worktrees
+and recent commits. Drag its divider to give the review more room. The browser
+pane renders directly in Chromium and supports navigation, find, zoom and element
+pins. Optional macOS computer use exposes native app inspection and input after
+the user enables it and grants the operating system permissions.
 
-**What it is, before you download it.** The app is a window, not a bundle of
-the product: `Contents/` holds the shell binary and an icon, and nothing else.
-It renders the local UI, and that UI spawns `graff acp` per chat tab. So you
-need two things running before the window shows anything: the UI
-(`npm install && npm run dev` in `apps/native`) and a graff binary at
-`zig-out/bin/graff` — `zig build` at the repo root — or `GRAFF_BIN` pointing at
-one. With no dev server up, double-clicking the app gives WebKit's
-cannot-connect page.
+*Screenshots show the current GUI with scripted demonstration content. No private
+conversation or workspace data is included.*
 
-**Download.** Grab `Codegraff-macos.zip` from the
-[latest release](https://github.com/justrach/codegraff/releases/latest), unzip
-it, and drag `Codegraff.app` to Applications. macOS 13 or newer, Apple Silicon —
-the shipped binary is `arm64`-only. It is signed with a Developer ID under the
-hardened runtime and notarized and stapled by Apple, so there is no
-unidentified-developer block and no right-click-Open workaround; a freshly
-downloaded copy still gets macOS's ordinary "downloaded from the Internet"
-confirmation on first open.
-
-Launched from Finder the app inherits no environment, so it looks for a dev
-server on 127.0.0.1:3777, then 3000. `GRAFF_NATIVE_URL` applies only when the
-binary is started from a shell.
-
-**Building the shell.** `zig build` at the repo root builds the CLI, not the
-window. The window is `apps/native/desktop/build-app.sh` (icon, `Info.plist`,
-signing; `NOTARIZE=1` submits it to Apple, `INSTALL=1` puts it in
-`/Applications`), or, for a loose binary with no bundle:
+**Build and launch the preview** on Apple Silicon macOS 14+ with Bun, Zig and
+Xcode command-line tools installed:
 
 ```sh
-zig build-exe apps/native/desktop/main.zig -O ReleaseSmall \
-  -femit-bin=zig-out/bin/graff-native \
-  -framework AppKit -framework WebKit
+./script/build_and_run.sh
 ```
 
-**It updates itself.** Shortly after the window opens, on its own thread, it
-asks GitHub for the newest release and compares that tag with its own stamped
-version numerically, so 0.0.10 is newer than 0.0.9. It installs only after the
-download passes `codesign --verify --deep --strict`, has a Team ID equal to the
-running app's own, and is accepted by `spctl -a -t install`; then it asks once,
-with "Later" and "Update and restart". Any failure abandons the update and
-leaves the installed app alone. Both the API call and the download are under
-the same 20-second network timeout. Setting `GRAFF_NATIVE_NO_UPDATE` disables
-the check — any value, including empty; `=1` is the readable way to write it.
-The mechanism depends on the release carrying an asset whose name starts with
-`Codegraff` and ends with `.zip`, uploaded from a Mac: the tag-triggered
-workflow cross-compiles on Linux and can neither sign nor notarize. A release
-without that asset means installed apps find nothing and do nothing.
+The development bundle contains the production UI, Chromium, Bun, graff and the
+native bridge, and starts its own local server. It does not need a separate dev
+server or Kuri. This Electron preview is signed locally; release notarization and
+an Electron updater are separate distribution work. Previously published desktop
+assets may still use the legacy shell; see the release notes before downloading.
 
-**macOS only today.** The shell is AppKit and WebKit — `NSWindow` and
-`WKWebView` — and the packaging path uses `iconutil`, `codesign` and
-`notarytool` from Xcode's command line tools. On other platforms the same
-binary only prints the URL. The CLI runs on macOS, Linux and Windows.
+**Profile and test without a model.** The Performance menu and desktop profiler
+tool record bounded, local measurement reports. Startup paint timing, streaming
+responsiveness, process resources and acceleration status are measured separately.
+No reports are uploaded automatically. From `apps/native`:
+
+```sh
+bun run build
+bun run test:desktop
+bun run test:visual
+bun run test:performance
+```
+
+The visual and performance scenarios use production GUI components with scripted
+inputs and block engine/model API calls. See the [desktop guide](apps/native/electron/README.md)
+and [visual test guide](apps/native/electron/VISUAL-TESTS.md) for scope and limitations.
 
 ## What can I ask it?
 

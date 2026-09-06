@@ -15,13 +15,10 @@ export async function reviewDiff(root: string, file: string, scope: ReviewScope 
   const resolved = path.resolve(root, file);
   if (!file || resolved === root || !resolved.startsWith(root + path.sep)) throw new Error("Expected a relative workspace file");
   const base = ["diff", "--no-ext-diff", "--no-textconv"];
-  try {
-    const diff = await git(root, [...base, ...scopeArgs(scope), "--", file]);
-    if (diff || scope === "staged") return diff;
-    const tracked = await git(root, ["ls-files", "--", file]);
-    return tracked ? diff : git(root, [...base, "--no-index", "--", "/dev/null", file], true);
-  }
-  catch (error) { if (scope !== "all") throw error; return git(root, [...base, "--cached", "--", file]); }
+  const untracked = await git(root, ["ls-files", "--others", "--exclude-standard", "--", file]);
+  if (untracked && scope !== "staged") return git(root, [...base, "--no-index", "--", "/dev/null", file], true);
+  const head = scope === "all" ? await git(root, ["rev-parse", "--verify", "HEAD"]).catch(() => "") : "";
+  return git(root, [...base, ...(scope === "all" && !head ? ["--cached"] : scopeArgs(scope)), "--", file]);
 }
 export async function reviewState(root: string, scope: ReviewScope = "all"): Promise<ReviewState> {
   const [status, branch, log, worktreeText] = await Promise.all([
@@ -43,7 +40,7 @@ export async function reviewState(root: string, scope: ReviewScope = "all"): Pro
   const stats = await git(root, ["diff", "--numstat", "-z", ...scopeArgs(scope)]).catch(() => git(root, ["diff", "--numstat", "-z", "--cached"]));
   const parts = stats.split("\0");
   for (let i = 0; i < parts.length; i++) {
-    const [add, del, name] = parts[i].split("\t"); let file = name;
+    const [add, del, ...nameParts] = parts[i].split("\t"); const name = nameParts.join("\t"); let file = name;
     if (name === "") { i++; file = parts[++i]; }
     const entry = files.find(row => row.path === file);
     if (entry) { entry.add = Number(add) || 0; entry.del = Number(del) || 0; entry.binary = add === "-"; }

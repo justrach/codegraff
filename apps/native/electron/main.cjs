@@ -4,17 +4,21 @@ const { randomBytes } = require('node:crypto');
 const { treeSample, intervalSampler } = require('./process-metrics.cjs');
 const { BrowserTabs } = require('./browser-tabs.cjs');
 const { startAutomation } = require('./automation.cjs');
+const { installExternalLinks } = require('./external-links.cjs');
 const { startServer } = require('./server.cjs');
 const { ComputerUse } = require('./computer.cjs');
 const { desktopConfig } = require('./desktop-config.cjs');
 const { browserAction } = require('./browser-actions.cjs');
 const { Profiler } = require('./profiler.cjs');
+const { rendererSample } = require('./renderer-profile.cjs');
+const { chromiumSample } = require('./hardware-profile.cjs');
 const fs = require('node:fs/promises');
 
 const root = process.env.GRAFF_CWD || app.getPath('home');
 const resources = process.env.GRAFF_ELECTRON_RESOURCES || process.resourcesPath;
 app.setName('Codegraff');
-app.setPath('userData', path.join(app.getPath('appData'), 'Codegraff Electron'));
+app.setPath('userData', process.env.GRAFF_ELECTRON_SMOKE ? path.join(require('node:os').tmpdir(), `codegraff-smoke-${process.pid}`) : path.join(app.getPath('appData'), 'Codegraff Electron'));
+if (process.env.GRAFF_ELECTRON_SMOKE) process.env.GRAFF_THEMES_DIR = path.join(app.getPath('userData'), 'themes');
 let win, browser, backend, automation, computer, profiler;
 let quitting = false;
 
@@ -49,20 +53,26 @@ app.whenReady().then(async () => {
   win = new BrowserWindow({ width: 1440, height: 920, minWidth: 900, minHeight: 600,
     title: 'Codegraff', titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 11 }, backgroundColor: '#fafaf9', show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), partition: 'persist:app',
-      contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: true } });
+      contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: !process.env.GRAFF_ELECTRON_SMOKE } });
   browser = new BrowserTabs(win, message => { if (!win.isDestroyed()) win.webContents.send('browser-event', message); });
   win.on('close', () => browser.closeAll());
   win.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
     if (mainFrame && !inPlace) browser.closeAll();
   });
   computer = new ComputerUse(resources, win);
-  profiler = new Profiler(intervalSampler(process.pid, () => browser.liveCount), enabled => {
+  const sampleTree = intervalSampler(process.pid, () => browser.liveCount);
+  profiler = new Profiler(async () => {
+    const [tree, renderer] = await Promise.all([sampleTree(), rendererSample(win.webContents).catch(() => ({}))]);
+    return { ...tree, ...renderer, ...chromiumSample(app.getAppMetrics()) };
+  }, enabled => {
+    if (!enabled) void rendererSample(win.webContents, false).catch(() => {});
     if (win.isDestroyed()) return;
     for (const contents of [win.webContents, ...[...browser.tabs.values()].map(tab => tab.view?.webContents).filter(Boolean)]) {
       if (!contents.isDestroyed()) contents.send('profile-enabled', enabled);
     }
-  });
+  }, () => app.getGPUFeatureStatus());
   browser.profiler = profiler;
+  win.webContents.on('did-finish-load', () => win.webContents.send('profile-enabled', !!profiler.active));
   win.webContents.on('render-process-gone', () => profiler.record('renderer-crash'));
   ipcMain.on('profile-longtask', (event, duration) => {
     const owned = event.sender === win.webContents || [...browser.tabs.values()].some(tab => tab.view?.webContents === event.sender);
@@ -87,14 +97,14 @@ app.whenReady().then(async () => {
     if (!['open', 'navigate', 'back', 'forward', 'reload', 'info', 'bounds', 'hide', 'close', 'stop', 'pick', 'find', 'zoom'].includes(method)) throw new Error('Unknown action');
     return ['find', 'zoom'].includes(method) ? browserAction(browser, chat, method, params) : browser.command(chat, method, params);
   });
+  ipcMain.on('browser-overlay', (event, blocked) => { trusted(event); browser.setOverlay(blocked === true); });
   ipcMain.handle('activity', event => { trusted(event); return activity(); });
   ipcMain.on('browser-pin', (event, pin) => {
     const tab = [...browser.tabs.values()].find(t => t.view?.webContents === event.sender);
     if (!tab || event.senderFrame !== event.sender.mainFrame || !pin?.element || JSON.stringify(pin).length > 16000) return;
     win.webContents.send('browser-event', { chat: tab.chat, type: 'pin', pin });
   });
-  win.webContents.on('will-navigate', (event, url) => { if (new URL(url).origin !== backend.origin) event.preventDefault(); });
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  installExternalLinks(win.webContents, backend.origin);
   win.on('minimize', () => { if (browser.visible) browser.hide(browser.visible); });
   win.on('restore', () => win.webContents.send('browser-event', { type: 'layout' }));
   Menu.setApplicationMenu(Menu.buildFromTemplate([

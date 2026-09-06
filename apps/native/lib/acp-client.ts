@@ -119,6 +119,7 @@ export async function* prompt(
     }
     if ("result" in line) {
       terminal = true;
+      yield { sessionUpdate: "gui_turn_end", stopReason: (line.result as { stopReason?: string } | null)?.stopReason ?? "end_turn" };
       break;
     }
   }

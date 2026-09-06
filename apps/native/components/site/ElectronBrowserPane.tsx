@@ -9,7 +9,7 @@ type Props = { chat: string; pins: BrowserPin[]; onPinsChange(pins: BrowserPin[]
 
 export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, onClose, initialUrl, memoryKey }: Props) {
   const [url, setUrl] = useState(initialUrl || "");
-  const [info, setInfo] = useState<PageInfo | null>(null);
+  const [info, setInfo] = useState<(PageInfo & { canGoBack?: boolean; canGoForward?: boolean }) | null>(null);
   const [error, setError] = useState("");
   const [picking, setPicking] = useState(false);
   const [width, setWidth] = useState(520);
@@ -74,21 +74,21 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
       onPointerMove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) setWidth(Math.max(320, Math.min(900, window.innerWidth - e.clientX - 24))); }}
       onPointerUp={e => e.currentTarget.releasePointerCapture(e.pointerId)} />
     <header className="flex h-11 items-center gap-2 border-b border-line px-3">
-      <span className="min-w-0 flex-1 truncate text-sm font-medium">{info?.title || "Browser"}</span>
+      <span className="min-w-0 flex-1 truncate text-sm font-medium">{info?.ready === "loading" ? "Loading page…" : info?.title || "Browser"}</span>
       <button className={button} aria-pressed={picking} disabled={!info || info.ready === "suspended"} onClick={() => { setPicking(!picking); void command("pick", { enabled: !picking }); }}>{picking ? "Cancel pin" : "Pin element"}</button>
       <button className={button} aria-label="Activity" onClick={() => void desktop()!.activity()}>Activity</button>
       <button className={button} aria-label="Close browser" onClick={() => { void desktop()!.browser(chat, "close"); onClose(); }}>×</button>
     </header>
     <form className="flex h-10 items-center gap-1 border-b border-line px-2" onSubmit={e => { e.preventDefault(); void command("open", { url }); }}>
-      <button type="button" className={button} aria-label="Back" onClick={() => void command("back")}>←</button>
-      <button type="button" className={button} aria-label="Forward" onClick={() => void command("forward")}>→</button>
+      <button type="button" className={button} aria-label="Back" disabled={!info?.canGoBack} onClick={() => void command("back")}>←</button>
+      <button type="button" className={button} aria-label="Forward" disabled={!info?.canGoForward} onClick={() => void command("forward")}>→</button>
       <button type="button" className={button} aria-label="Reload" onClick={() => void command("open", { url })}>↻</button>
       <input ref={address} className="h-7 min-w-0 flex-1 rounded-md bg-field px-2 text-xs outline-none" aria-label="Address" placeholder="Enter a URL" value={url} onChange={e => setUrl(e.target.value)} onFocus={e => e.currentTarget.select()} />
       <button className={button}>Go</button>
     </form>
     <div className="flex h-9 items-center gap-1 border-b border-line px-2">
       <input aria-label="Find in page" placeholder="Find in page" className="h-6 min-w-0 flex-1 rounded bg-field px-2 text-xs" value={find}
-        onChange={e => setFind(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && find) void command("find", { text: find }); }} />
+        onChange={e => { setFind(e.target.value); if (!e.target.value && info) void command("find", { text: "" }); }} onKeyDown={e => { if (e.key === "Enter" && find) void command("find", { text: find }); }} />
       <button className={button} disabled={!info || !find} onClick={() => void command("find", { text: find })}>Find</button>
       <button className={button} aria-label="Zoom out" disabled={!info || zoom <= 0.5} onClick={() => { const factor = Math.max(0.5, zoom - 0.1); setZoom(factor); void command("zoom", { factor }); }}>−</button>
       <button className={button} aria-label="Reset zoom" disabled={!info} onClick={() => { setZoom(1); void command("zoom", { factor: 1 }); }}>{Math.round(zoom * 100)}%</button>

@@ -1,69 +1,64 @@
 "use client";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import CustomThemes from "./CustomThemes";
+import { appearanceEvent, appearanceKey, applyAppearance, readAppearance, type Appearance } from "@/lib/appearance";
 
-import { useEffect, useState } from "react";
+const themes = [
+  { id: "codegraff", name: "CodeGraff", detail: "Official · Japanese palette", bg: "#f6eedf", surface: "#fffaf0", ink: "#1b1714", accent: "#2654d9" },
+  { id: "light", name: "White", detail: "Light and minimal", bg: "#fafafa", surface: "#ffffff", ink: "#25272b", accent: "#3785fa" },
+  { id: "dark", name: "Black", detail: "Quiet charcoal", bg: "#17181b", surface: "#24262a", ink: "#f4f4f5", accent: "#5b9cf7" },
+  { id: "website", name: "Website", detail: "CodeGraff emerald", bg: "#fafaf8", surface: "#ffffff", ink: "#18231e", accent: "#059669" },
+] as const;
 
-/** Sun/moon segmented pill from the refs. */
 export function ThemeToggle() {
-  const [dark, setDark] = useState<boolean | null>(null);
-
+  const [theme, setTheme] = useState<Appearance>("dark");
+  const [position, setPosition] = useState<{ top: number; right: number } | null>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    /* localStorage is the source of truth — the html class can be stale
-     * for a moment around hydration (see ThemeSync). */
-    try {
-      setDark(localStorage.getItem("bui-theme") !== "light");
-    } catch {
-      setDark(document.documentElement.classList.contains("dark"));
-    }
+    const sync = () => setTheme(readAppearance());
+    sync(); window.addEventListener(appearanceEvent, sync); window.addEventListener("storage", sync);
+    return () => { window.removeEventListener(appearanceEvent, sync); window.removeEventListener("storage", sync); };
   }, []);
-
-  function apply(next: boolean) {
-    if (next === dark) return;
-    setDark(next);
-    /* freeze all transitions while every token flips, so the theme change
-     * is one clean swap instead of hundreds of mismatched color fades */
-    const root = document.documentElement;
-    root.classList.add("theme-switching");
-    root.classList.toggle("dark", next);
-    requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove("theme-switching")));
-    try {
-      localStorage.setItem("bui-theme", next ? "dark" : "light");
-    } catch {}
-  }
-
-  return (
-    <div className="relative inline-grid h-9 grid-cols-2 items-center rounded-full bg-field p-0.5">
-      <span
-        aria-hidden
-        className="absolute inset-y-0.5 left-0.5 w-8 rounded-full bg-surface shadow-btn
-          transition-transform duration-200"
-        style={{
-          transform: dark ? "translateX(32px)" : "translateX(0)",
-          transitionTimingFunction: "cubic-bezier(0.23, 1, 0.32, 1)",
-          opacity: dark === null ? 0 : 1,
-        }}
-      />
-      <button
-        aria-label="Light mode"
-        onClick={() => apply(false)}
-        className={`relative z-10 flex size-8 items-center justify-center rounded-full
-          transition-colors duration-150 ${dark ? "text-ink-3 hover:text-ink-2" : "text-ink"}`}
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-          <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />
-          <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
-        </svg>
-      </button>
-      <button
-        aria-label="Dark mode"
-        onClick={() => apply(true)}
-        className={`relative z-10 flex size-8 items-center justify-center rounded-full
-          transition-colors duration-150 ${dark ? "text-ink" : "text-ink-3 hover:text-ink-2"}`}
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
-        </svg>
-      </button>
-
-    </div>
-  );
+  useEffect(() => {
+    if (!position) return;
+    panel.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus();
+    const outside = (event: PointerEvent) => { if (!panel.current?.contains(event.target as Node) && !trigger.current?.contains(event.target as Node)) setPosition(null); };
+    const keys = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.stopPropagation(); setPosition(null); trigger.current?.focus(); }
+      if (event.key === "Tab") {
+        const buttons = Array.from(panel.current?.querySelectorAll<HTMLButtonElement>("button") ?? []);
+        const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        if (index >= 0) { event.preventDefault(); buttons[(index + (event.shiftKey ? buttons.length - 1 : 1)) % buttons.length]?.focus(); }
+      }
+    };
+    const close = () => setPosition(null);
+    document.addEventListener("pointerdown", outside); document.addEventListener("keydown", keys);
+    window.addEventListener("resize", close);
+    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", keys); window.removeEventListener("resize", close); };
+  }, [position]);
+  const choose = (next: Appearance) => {
+    document.documentElement.classList.add("theme-switching");
+    applyAppearance(next); setTheme(next);
+    try { localStorage.setItem(appearanceKey, next); } catch {}
+    window.dispatchEvent(new Event(appearanceEvent));
+    requestAnimationFrame(() => requestAnimationFrame(() => document.documentElement.classList.remove("theme-switching")));
+  };
+  return <>
+    <button ref={trigger} aria-label="Appearance" title="Appearance" aria-haspopup="dialog" aria-expanded={!!position} onClick={() => {
+      const rect = trigger.current!.getBoundingClientRect();
+      setPosition(position ? null : { top: Math.max(48, Math.min(rect.bottom + 8, window.innerHeight - 420)), right: Math.max(8, window.innerWidth - rect.right) });
+    }} className="flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-3 hover:bg-hover hover:text-ink">
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" stroke="none" /></svg>
+    </button>
+    {position && createPortal(<div ref={panel} role="dialog" aria-label="Appearance" aria-modal="true" className="fixed z-[200] w-[310px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl border border-line bg-surface p-3 shadow-overlay" style={{ ...position, maxHeight: `calc(100dvh - ${position.top + 12}px)` }}>
+      <div className="mb-3 flex items-center justify-between"><strong className="text-xs font-medium">Appearance</strong><button aria-label="Close appearance" onClick={() => { setPosition(null); trigger.current?.focus(); }} className="rounded px-1.5 text-ink-3 hover:bg-hover">×</button></div>
+      <div className="grid grid-cols-2 gap-2">{themes.map(option => <button key={option.id} aria-pressed={theme === option.id} onClick={() => choose(option.id)} className={`rounded-lg border p-1.5 text-left focus-visible:outline-2 focus-visible:outline-accent ${theme === option.id ? "border-accent bg-accent-tint" : "border-line hover:bg-hover"}`}>
+        <span aria-hidden="true" className="mb-2 flex h-14 gap-1 overflow-hidden rounded p-1.5" style={{ background: option.bg }}><span className="w-3 rounded-sm" style={{ background: option.id === "codegraff" ? "#d45a43" : option.accent, opacity: .35 }} /><span className="flex flex-1 flex-col gap-1 rounded p-1" style={{ background: option.surface }}><span className="h-1 w-5 rounded" style={{ background: option.ink, opacity: .45 }} /><span className="h-1 w-8 rounded" style={{ background: option.ink, opacity: .15 }} /><span className="mt-auto h-1.5 w-4 rounded" style={{ background: option.accent }} /></span></span>
+        <span className="block text-[11px] font-medium text-ink">{option.name}</span><span className="block text-[9px] leading-4 text-ink-3">{option.detail}</span>
+      </button>)}</div>
+      <CustomThemes selected={theme} />
+    </div>, document.body)}
+  </>;
 }
