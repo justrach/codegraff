@@ -60,10 +60,12 @@ const State = struct {
 
 const Reply = struct { code: u16, body: []const u8 };
 
-fn post(self: *State, arena: Allocator, path: []const u8, payload: []const u8) !Reply {
+/// `client` is per task: the poll loop owns one, every streamed request
+/// another, so a turn's uploads never queue behind a 25s poll (or vice versa).
+fn post(self: *State, client: *std.http.Client, arena: Allocator, path: []const u8, payload: []const u8) !Reply {
     const url = try std.fmt.allocPrint(arena, "{s}{s}", .{ self.cfg.base, path });
     var aw: Io.Writer.Allocating = .init(arena);
-    const res = try self.client.fetch(.{
+    const res = try client.fetch(.{
         .location = .{ .url = url },
         .method = .POST,
         .payload = payload,
@@ -166,7 +168,7 @@ fn register(self: *State, arena: Allocator, label: []const u8) !void {
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.write(.{ .hostname = self.hostname, .name = label, .cwd = cwd, .version = harness_version });
     const path = try std.fmt.allocPrint(arena, "/v1/remote/agents/{s}/register", .{&self.agent_id});
-    const r = try post(self, arena, path, aw.writer.buffered());
+    const r = try post(self, &self.client, arena, path, aw.writer.buffered());
     if (r.code == 401 or r.code == 403) std.process.fatal("remote-control: gateway refused the key (HTTP {d}: {s}) — run `graff login`", .{ r.code, errorMessage(arena, r.body) });
     if (r.code < 200 or r.code >= 300) {
         serve.serveLog(self.st.io, "remote-control: HTTP {d}: {s}", .{ r.code, errorMessage(arena, r.body) });
@@ -186,7 +188,7 @@ pub const Command = struct {
 fn poll(self: *State, arena: Allocator) ![]const Command {
     const payload = try pollPayload(self, arena);
     const path = try std.fmt.allocPrint(arena, "/v1/remote/agents/{s}/poll", .{&self.agent_id});
-    const r = try post(self, arena, path, payload);
+    const r = try post(self, &self.client, arena, path, payload);
     if (r.code == 404) return error.UnknownDevice;
     if (r.code < 200 or r.code >= 300) {
         serve.serveLog(self.st.io, "remote-control: HTTP {d}: {s}", .{ r.code, errorMessage(arena, r.body) });
@@ -246,16 +248,17 @@ pub fn parseCommands(arena: Allocator, text: []const u8) ![]const Command {
 
 fn runCommand(self: *State, arena: Allocator, cmd: Command) void {
     const io = self.st.io;
+    const client = &self.client;
     if (std.mem.eql(u8, cmd.kind, "create")) {
         const made = serve_create.createFromBody(&self.st, arena, cmd.body) catch |err| {
             serve.serveLog(io, "remote-control: create failed ({t})", .{err});
-            return sendResult(self, arena, cmd.id, null, 500, "{\"error\":\"failed to create session\"}");
+            return sendResult(self, client, arena, cmd.id, null, 500, "{\"error\":\"failed to create session\"}");
         };
-        return sendResult(self, arena, cmd.id, null, @intFromEnum(made.status), made.body);
+        return sendResult(self, client, arena, cmd.id, null, @intFromEnum(made.status), made.body);
     }
-    const sid = cmd.session_id orelse return sendResult(self, arena, cmd.id, null, 400, "{\"error\":\"session_id required\"}");
-    if (std.mem.eql(u8, cmd.kind, "close")) return closeSession(self, arena, cmd.id, sid);
-    if (!std.mem.eql(u8, cmd.kind, "request")) return sendResult(self, arena, cmd.id, sid, 400, "{\"error\":\"unknown command kind\"}");
+    const sid = cmd.session_id orelse return sendResult(self, client, arena, cmd.id, null, 400, "{\"error\":\"session_id required\"}");
+    if (std.mem.eql(u8, cmd.kind, "close")) return spawn(self, .close, null, cmd.id, sid, "", null);
+    if (!std.mem.eql(u8, cmd.kind, "request")) return sendResult(self, client, arena, cmd.id, sid, 400, "{\"error\":\"unknown command kind\"}");
 
     const rtype = events.stringField(cmd.body, "type") orelse "";
     const from: ?u64 = blk: {
@@ -267,38 +270,100 @@ fn runCommand(self: *State, arena: Allocator, cmd: Command) void {
     // A pure reconnect replays the tape and sends nothing to the child — and
     // works for a session this supervisor never ran, straight off the disk.
     if (std.mem.eql(u8, rtype, "reattach")) {
-        var up = Uploader.init(self, arena, cmd.id, sid);
+        var up = Uploader.init(self, client, arena, cmd.id, sid);
         replayTape(self, arena, &up, sid, from orelse 1);
         return up.finish(200, "{\"ok\":true,\"type\":\"reattach\"}");
     }
     self.st.mutex.lockUncancelable(io);
     const found = self.st.find(sid);
     self.st.mutex.unlock(io);
-    const s = found orelse return sendResult(self, arena, cmd.id, sid, 404, "{\"error\":\"no such session\"}");
+    const s = found orelse return sendResult(self, client, arena, cmd.id, sid, 404, "{\"error\":\"no such session\"}");
+    // answer/cancel bypass the per-session busy lock exactly as serve's do:
+    // they are how a viewer reaches a turn that is running right now.
     if (std.mem.eql(u8, rtype, "answer")) {
         s.answer_mu.lockUncancelable(io);
         defer s.answer_mu.unlock(io);
-        if (!s.awaiting_answer) return sendResult(self, arena, cmd.id, sid, 409, "{\"error\":\"no active ask_user prompt\"}");
-        serve.writeChildLine(io, s, cmd.body) catch return sendResult(self, arena, cmd.id, sid, 502, "{\"error\":\"session process is gone\"}");
+        if (!s.awaiting_answer) return sendResult(self, client, arena, cmd.id, sid, 409, "{\"error\":\"no active ask_user prompt\"}");
+        serve.writeChildLine(io, s, cmd.body) catch return sendResult(self, client, arena, cmd.id, sid, 502, "{\"error\":\"session process is gone\"}");
         s.awaiting_answer = false;
         s.answer_call_id_len = 0;
-        return sendResult(self, arena, cmd.id, sid, 200, "{\"ok\":true,\"type\":\"answer\"}");
+        return sendResult(self, client, arena, cmd.id, sid, 200, "{\"ok\":true,\"type\":\"answer\"}");
     }
     if (std.mem.eql(u8, rtype, "cancel")) {
-        if (!s.in_flight.load(.acquire)) return sendResult(self, arena, cmd.id, sid, 409, "{\"error\":\"no request is in flight\"}");
-        serve.writeChildLine(io, s, cmd.body) catch return sendResult(self, arena, cmd.id, sid, 502, "{\"error\":\"session process is gone\"}");
-        return sendResult(self, arena, cmd.id, sid, 200, "{\"ok\":true,\"type\":\"cancel\"}");
+        if (!s.in_flight.load(.acquire)) return sendResult(self, client, arena, cmd.id, sid, 409, "{\"error\":\"no request is in flight\"}");
+        serve.writeChildLine(io, s, cmd.body) catch return sendResult(self, client, arena, cmd.id, sid, 502, "{\"error\":\"session process is gone\"}");
+        return sendResult(self, client, arena, cmd.id, sid, 200, "{\"ok\":true,\"type\":\"cancel\"}");
     }
-    drain(self, arena, s, cmd.id, cmd.body, from);
+    spawn(self, .drain, s, cmd.id, sid, cmd.body, from);
+}
+
+/// A streamed request or a close runs as its own task: both can block on a
+/// turn for minutes, and the poll loop must keep its heartbeat and keep
+/// delivering `cancel` / `answer` meanwhile — serve gets the same property
+/// from one connection per request. The job owns gpa copies of everything
+/// the poll arena would otherwise free under it.
+const Job = struct {
+    self: *State,
+    kind: enum { drain, close },
+    s: ?*ServeSession,
+    cmd_id: []u8,
+    sid: []u8,
+    line: []u8,
+    from: ?u64,
+};
+
+fn spawn(self: *State, kind: @FieldType(Job, "kind"), s: ?*ServeSession, cmd_id: []const u8, sid: []const u8, line: []const u8, from: ?u64) void {
+    const gpa = self.st.gpa;
+    const cmd_copy = gpa.dupe(u8, cmd_id) catch return;
+    const sid_copy = gpa.dupe(u8, sid) catch {
+        gpa.free(cmd_copy);
+        return;
+    };
+    const line_copy = gpa.dupe(u8, line) catch {
+        gpa.free(cmd_copy);
+        gpa.free(sid_copy);
+        return;
+    };
+    const job = gpa.create(Job) catch {
+        gpa.free(cmd_copy);
+        gpa.free(sid_copy);
+        gpa.free(line_copy);
+        return;
+    };
+    job.* = .{ .self = self, .kind = kind, .s = s, .cmd_id = cmd_copy, .sid = sid_copy, .line = line_copy, .from = from };
+    self.st.group.concurrent(self.st.io, runJob, .{job}) catch runJob(job);
+}
+
+fn runJob(job: *Job) void {
+    const self = job.self;
+    const gpa = self.st.gpa;
+    defer {
+        gpa.free(job.cmd_id);
+        gpa.free(job.sid);
+        gpa.free(job.line);
+        gpa.destroy(job);
+    }
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var client: std.http.Client = .{ .allocator = gpa, .io = self.st.io };
+    defer client.deinit();
+    switch (job.kind) {
+        .drain => drain(self, &client, arena, job.s.?, job.cmd_id, job.line, job.from),
+        .close => closeSession(self, &client, arena, job.cmd_id, job.sid),
+    }
 }
 
 /// Mirror of serveMessage: one request in, its events out until the terminal
 /// one — persisted to the tape BEFORE they go upstream, so a relay hiccup
 /// never costs the run its history.
-fn drain(self: *State, arena: Allocator, s: *ServeSession, cmd_id: []const u8, line: []const u8, from: ?u64) void {
+fn drain(self: *State, client: *std.http.Client, arena: Allocator, s: *ServeSession, cmd_id: []const u8, line: []const u8, from: ?u64) void {
     const io = self.st.io;
     var dead = false;
-    var up = Uploader.init(self, arena, cmd_id, s.name);
+    // Our own copy of the name: `s` may be closed and freed by another task
+    // the moment busy is released below, and finish() still names it.
+    const sid = arena.dupe(u8, s.name) catch s.name;
+    var up = Uploader.init(self, client, arena, cmd_id, sid);
     {
         s.busy.lockUncancelable(io); // serialize requests per session
         defer s.busy.unlock(io);
@@ -306,7 +371,7 @@ fn drain(self: *State, arena: Allocator, s: *ServeSession, cmd_id: []const u8, l
         defer s.in_flight.store(false, .release);
 
         serve.writeChildLine(io, s, line) catch return up.finish(502, "{\"error\":\"session process is gone\"}");
-        if (from) |n| replayTape(self, arena, &up, s.name, n);
+        if (from) |n| replayTape(self, arena, &up, sid, n);
         while (true) {
             const ev_line = s.rdr.interface.takeDelimiter('\n') catch |err| switch (err) {
                 error.StreamTooLong => break abort(s, &up, "event line exceeded the 1 MiB serve cap — session closed", &dead),
@@ -356,7 +421,7 @@ fn replayTape(self: *State, arena: Allocator, up: *Uploader, sid: []const u8, fr
 
 /// Graceful close, as serveDelete: wait out an in-flight request, EOF the
 /// child's stdin, reap in the background. Tape and session file stay.
-fn closeSession(self: *State, arena: Allocator, cmd_id: []const u8, sid: []const u8) void {
+fn closeSession(self: *State, client: *std.http.Client, arena: Allocator, cmd_id: []const u8, sid: []const u8) void {
     const io = self.st.io;
     self.st.mutex.lockUncancelable(io);
     const found = self.st.find(sid);
@@ -369,7 +434,7 @@ fn closeSession(self: *State, arena: Allocator, cmd_id: []const u8, sid: []const
         }
     }
     self.st.mutex.unlock(io);
-    const sess = found orelse return sendResult(self, arena, cmd_id, sid, 404, "{\"error\":\"no such session\"}");
+    const sess = found orelse return sendResult(self, client, arena, cmd_id, sid, 404, "{\"error\":\"no such session\"}");
     sess.busy.lockUncancelable(io);
     sess.busy.unlock(io);
     if (sess.child.stdin) |f| {
@@ -378,11 +443,11 @@ fn closeSession(self: *State, arena: Allocator, cmd_id: []const u8, sid: []const
     }
     self.st.group.concurrent(io, serve.serveReap, .{ &self.st, sess }) catch serve.serveReap(&self.st, sess);
     serve.serveLog(io, "remote-control: session {s} closed", .{sid});
-    sendResult(self, arena, cmd_id, sid, 200, "{\"ok\":true}");
+    sendResult(self, client, arena, cmd_id, sid, 200, "{\"ok\":true}");
 }
 
-fn sendResult(self: *State, arena: Allocator, cmd_id: []const u8, sid: ?[]const u8, status: u16, body: []const u8) void {
-    var up = Uploader.init(self, arena, cmd_id, sid orelse "");
+fn sendResult(self: *State, client: *std.http.Client, arena: Allocator, cmd_id: []const u8, sid: ?[]const u8, status: u16, body: []const u8) void {
+    var up = Uploader.init(self, client, arena, cmd_id, sid orelse "");
     up.finish(status, body);
 }
 
@@ -406,6 +471,7 @@ pub fn uploadLine(buf: []u8, line: []const u8) []const u8 {
 /// Lines are JSON objects already, so they ride as values, never re-escaped.
 const Uploader = struct {
     self: *State,
+    client: *std.http.Client,
     arena: Allocator,
     cmd_id: []const u8,
     sid: []const u8,
@@ -413,8 +479,8 @@ const Uploader = struct {
     count: usize = 0,
     last_flush_ms: i64,
 
-    fn init(self: *State, arena: Allocator, cmd_id: []const u8, sid: []const u8) Uploader {
-        return .{ .self = self, .arena = arena, .cmd_id = cmd_id, .sid = sid, .aw = .init(arena), .last_flush_ms = util.unixMs(self.st.io) };
+    fn init(self: *State, client: *std.http.Client, arena: Allocator, cmd_id: []const u8, sid: []const u8) Uploader {
+        return .{ .self = self, .client = client, .arena = arena, .cmd_id = cmd_id, .sid = sid, .aw = .init(arena), .last_flush_ms = util.unixMs(self.st.io) };
     }
 
     fn open(u: *Uploader) void {
@@ -442,7 +508,7 @@ const Uploader = struct {
         const path = std.fmt.allocPrint(u.arena, "/v1/remote/agents/{s}/events", .{&u.self.agent_id}) catch return;
         var attempt: usize = 0;
         while (attempt < 3) : (attempt += 1) {
-            if (post(u.self, u.arena, path, u.aw.writer.buffered())) |r| {
+            if (post(u.self, u.client, u.arena, path, u.aw.writer.buffered())) |r| {
                 if (r.code >= 200 and r.code < 300) break;
                 serve.serveLog(u.self.st.io, "remote-control: upload HTTP {d}: {s}", .{ r.code, errorMessage(u.arena, r.body) });
                 if (r.code < 500) break;
