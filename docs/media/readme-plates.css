@@ -1,0 +1,42 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { font-family: Body, -apple-system, sans-serif; color: #1b1714; }
+main { width: 1920px; height: 1530px; position: relative; overflow: hidden; background: #f6eedf; }
+.grain { position: absolute; inset: 0; opacity: .17; pointer-events: none; mix-blend-mode: multiply; z-index: 1; }
+.brand { position: absolute; left: 84px; top: 56px; right: 84px; display: flex; align-items: center; gap: 13px; font-size: 28px; letter-spacing: -.5px; z-index: 3; }
+.brand svg { width: 34px; height: 34px; }
+.brand small { margin-left: auto; font: 15px ui-monospace, monospace; letter-spacing: 3px; opacity: .75; }
+header { position: absolute; left: 84px; top: 150px; z-index: 3; }
+.eyebrow { font: 15px ui-monospace, monospace; letter-spacing: 2.6px; color: #ad4937; }
+h1 { font-family: Display, -apple-system, sans-serif; font-weight: 600; letter-spacing: -3.2px; line-height: 1.04; margin: 25px 0 20px; font-size: 74px; }
+header p { font-size: 27px; opacity: .76; margin: 0; }
+.art-stamp { position: absolute; right: 68px; top: 108px; width: 352px; height: 216px; border-radius: 120px 110px 90px 105px; overflow: hidden; transform: rotate(3deg); border: 1px solid #1b171425; }
+.art-stamp img { width: 100%; height: 100%; object-fit: cover; }
+.stage { position: absolute; left: 84px; right: 84px; top: 356px; z-index: 2; }
+.window { border-radius: 20px; overflow: hidden; border: 1px solid #ffffff55; box-shadow: 0 42px 65px -35px #15100d65, 0 20px 30px -18px #15100d50, 0 1px 0 #ffffff80 inset; background: #f6eedf; }
+.chrome { height: 42px; display: flex; align-items: center; position: relative; justify-content: center; border-bottom: 1px solid #1b171417; color: #6a6053; font: 14px Body, sans-serif; background: #eee4d4; }
+.lights { position: absolute; left: 19px; display: flex; gap: 9px; }
+.lights i { width: 11px; height: 11px; border-radius: 50%; background: #ed6a5e; box-shadow: inset 0 0 0 1px #00000014; }
+.lights i:nth-child(2) { background: #f4be4f; }.lights i:nth-child(3) { background: #62c554; }
+.chrome b { position:absolute; right:20px; font-size:9px; opacity:.45; }
+.screenshot { display: block; width: 100%; height: auto; }
+.dark { border-color: #f6eedf35; }.dark .chrome { background: #252526; color: #d0cbc2; border-color: #ffffff10; }
+footer { position: absolute; left: 84px; right: 84px; bottom: 43px; display: flex; align-items: center; gap: 24px; border-top: 1px solid #1b171430; padding-top: 24px; font-size: 18px; }
+.footer-label { font: 14px ui-monospace, monospace; letter-spacing: 2px; }.edition { margin-left: auto; font: 14px ui-monospace, monospace; letter-spacing: 2px; }
+.night { background: #243e73; color: #fff4df; }.night .eyebrow { color: #f5b55e; }.night footer { border-color: #f6eedf40; }
+.coral { background: #d7654d; }.coral .eyebrow { color: #4f241d; }.coral header p { opacity: .88; }
+.hero { height: 1040px; }.hero .brand { right: 1070px; }.hero .brand small { display: none; }
+.hero-copy { position: absolute; left:84px; top: 222px; width: 730px; z-index: 2; }
+.hero-copy h1 { font-size: 140px; letter-spacing: -7px; margin: 34px 0; }
+.hero-copy p { font-size: 31px; line-height:1.5; color:#695c50; margin:0; }
+.rule { width: 65px; height: 5px; background:#d45a43; margin: 42px 0 23px; }
+.signature { font-size: 20px; }
+.hero-art { position:absolute; top: 0; right: 0; width: 980px; height: 964px; overflow:hidden; border-left: 8px solid #d45a43; }
+.hero-art img { width:100%; height:100%; object-fit:cover; object-position:51% 50%; }
+.hero-bottom { position:absolute; left:84px; bottom:30px; right:84px; display:flex; justify-content:space-between; font: 14px ui-monospace, monospace; letter-spacing:3px; }
+.loop { height:1060px; }.loop .brand small { display:none; }
+.loop-art { position:absolute; left:0; top:137px; bottom:82px; width:875px; overflow:hidden; }
+.loop-art img { width:100%; height:100%; object-fit:cover; object-position:30% center; }
+.loop-copy { position:absolute; left:960px; top:164px; width:865px; }.loop-copy h1 { font-size:82px; margin:25px 0 45px; }
+.loop-copy ol { list-style:none; margin:0; padding:0; }.loop-copy li { display:flex; gap:26px; border-top:1px solid #1b171426; padding:25px 0; }
+.loop-copy li b { color:#c5533d; font:16px ui-monospace,monospace; margin-top:9px; }.loop-copy strong { font: 32px Display, sans-serif; }.loop-copy p { font-size:24px; color:#736557; margin:12px 0 0; line-height:1.4; }

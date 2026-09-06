@@ -1,0 +1,34 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const root = path.resolve(__dirname, '../..');
+const uri = file => `data:${file.endsWith('.woff2') ? 'font/woff2' : file.endsWith('.png') ? 'image/png' : 'image/jpeg'};base64,${fs.readFileSync(file).toString('base64')}`;
+const art = name => uri(path.join(__dirname, 'art', `workshop-${name}.jpg`));
+const shot = name => uri(path.join(root, 'docs/images', `desktop-${name}.png`));
+const grain = `<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency=".75" numOctaves="3" stitchTiles="stitch"/></filter><rect width="100%" height="100%" opacity=".3" filter="url(#n)"/></svg>`;
+const mark = `<svg viewBox="0 0 32 32" fill="none"><path d="M26 8a13 13 0 1 0 1 15" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><path d="m12 12-4 4 4 4m9-8 4 4-4 4m-3-10-3 12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
+function fonts() {
+  const dir = process.env.GRAFF_DESIGN_FONTS;
+  if (!dir) return '';
+  return [['Display', 'SinarGrotesk-SemiBold.woff2'], ['Body', 'Gramatika-Regular.woff2']].map(([name, file]) => `@font-face{font-family:${name};src:url('${uri(path.join(dir, file))}')} `).join('');
+}
+function page(body, theme = '') {
+  return `<!doctype html><html><head><meta charset="utf-8"><style>${fonts()}${fs.readFileSync(path.join(__dirname, 'readme-plates.css'), 'utf8')} .grain{background-image:url('data:image/svg+xml;base64,${Buffer.from(grain).toString('base64')}')}</style></head><body><main class="${theme}"><div class="grain"></div>${body}</main></body></html>`;
+}
+const brand = (label = 'DESKTOP / MACOS') => `<div class="brand">${mark}<span>codegraff</span><small>${label}</small></div>`;
+const windowFrame = (image, tone) => `<div class="window ${tone}"><div class="chrome"><div class="lights"><i></i><i></i><i></i></div><span>CodeGraff</span><b>●</b></div><img class="screenshot" src="${image}" /></div>`;
+function screen({ id, title, note, label, file, artName, theme }) {
+  return page(`${brand()}<header><div class="eyebrow">${id} / ${label}</div><h1>${title}</h1><p>${note}</p></header>
+    <div class="art-stamp"><img src="${art(artName)}" /></div><div class="stage">${windowFrame(shot(file), theme === 'night' ? 'dark' : 'paper')}</div>
+    <footer><span class="footer-label">${label}</span><span>Actual desktop UI · demonstration workspace</span><span class="edition">GRAFF / DESKTOP</span></footer>`, theme);
+}
+module.exports = [
+  { name: 'readme-workshop', width: 1920, height: 1040, html: () => page(`${brand('THE CODING WORKSHOP')}
+    <div class="hero-copy"><div class="eyebrow">OPEN SOURCE. HANDS ON.</div><h1>Small crew.<br>Real work.</h1><p>Give Graff the task.<br>Make something worth keeping.</p><div class="rule"></div><span class="signature">Code. Coordinate. Review.</span></div>
+    <div class="hero-art"><img src="${art('run')}" /></div><div class="hero-bottom">THE GRAFF WORKSHOP <span>CODEGRAFF</span></div>`, 'hero') },
+  { name: 'desktop-chat-studio', width: 1920, height: 1530, html: () => screen({ id:'01', title:'A place to do the work.', note:'A clear conversation. Your tools close at hand.', label:'THE WORKSPACE', file:'chat-dark', artName:'run', theme:'night' }) },
+  { name: 'desktop-agents-studio', width: 1920, height: 1530, html: () => screen({ id:'02', title:'Many hands. One workspace.', note:'See the crew. Share context. Pass the work along.', label:'AGENT COORDINATION', file:'agents-codegraff', artName:'agents', theme:'warm' }) },
+  { name: 'desktop-review-studio', width: 1920, height: 1530, html: () => screen({ id:'03', title:'Room for a closer look.', note:'Keep the conversation beside the changes.', label:'CHANGES & REVIEW', file:'review-codegraff', artName:'review', theme:'coral' }) },
+  { name: 'readme-context-workshop', width:1920, height:1060, html: () => page(`${brand('INSIDE THE HARNESS')}
+    <div class="loop-art"><img src="${art('review')}" /></div><div class="loop-copy"><div class="eyebrow">CONTEXT, WITH CARE</div><h1>Keep the useful.<br>Leave the noise.</h1><ol><li><b>01</b><div><strong>Stable context</strong><p>Keep reusable instructions in the cache prefix.</p></div></li><li><b>02</b><div><strong>Small programs</strong><p>Work over context and coordinate tool calls.</p></div></li><li><b>03</b><div><strong>Focused results</strong><p>Bring back what the next step needs.</p></div></li></ol></div>
+    <div class="hero-bottom">THE GRAFF WORKSHOP <span>CONTEXT → TOOLS → RESULTS</span></div>`, 'loop') },
+];
