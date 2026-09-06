@@ -56,6 +56,7 @@ async function runBrowserVisuals({ win: fixtureWindow, origin, output }) {
     fs.writeFileSync(path.join(output, 'browser-pin.png'), (await wc.capturePage()).toPNG());
     await js(`document.querySelector('[aria-label="Remove pin 1"]').click()`);
     await wait(() => page.executeJavaScript(`!document.querySelector('[data-graff-pins]')?.textContent`));
+    await wc.loadURL('about:blank'); // Leave the pane so its ResizeObserver no longer reattaches it.
     browser.hide('browser-test');
     const hidden = await browserAction(browser, 'browser-test', 'screenshot'); assert.ok(hidden.data.length > 100);
     assert.equal(browser.visible, null, 'capture leaves inactive page hidden');
