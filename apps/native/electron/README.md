@@ -4,7 +4,10 @@ Run `./script/build_and_run.sh` from the repository root, or use the Codex Run
 action. It builds the production UI with Bun, packages Chromium, Bun, graff,
 and the SwiftUI Activity sheet, then opens `zig-out/electron/Codegraff.app`.
 Builds currently target Apple Silicon macOS 14+; Liquid Glass uses macOS 26+.
-The bundle is signed locally for development, not notarized for distribution.
+Source builds are signed locally for development. The
+[packaged v0.0.289 download](https://github.com/justrach/codegraff/releases/download/v0.0.289/Codegraff-macos-arm64.zip)
+is Developer ID signed and notarized. Unzip it and move Codegraff.app to Applications;
+the runtime, engine, browser and native components are included.
 
 The application starts its own loopback server on port 3788 (a free port if
 occupied). The stable origin retains local UI preferences; a fallback port has

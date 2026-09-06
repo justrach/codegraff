@@ -17,7 +17,7 @@
 curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
 ```
 
-<p align="center"><sub>Prefer a window? Grab the <a href="#the-desktop-app">desktop app</a>. Then run <code>graff</code> and tell it what you need.</sub></p>
+<p align="center"><a href="https://github.com/justrach/codegraff/releases/download/v0.0.289/Codegraff-macos-arm64.zip"><strong>Download CodeGraff for Mac</strong></a><br><sub>Apple Silicon · macOS 14+ · signed and notarized · everything included</sub></p>
 
 **Evaluated on FrontierHarness tasks.** Graff includes a reproducible
 [FrontierHarness evaluation runner](graff-evals/frontier-harness/README.md),
@@ -27,7 +27,7 @@ and the limits of comparisons with the published board.
 
 ## The desktop app
 
-The current desktop preview uses Electron and embedded Chromium, with native
+The desktop app uses Electron and embedded Chromium, with native
 macOS window controls and SwiftUI Activity and computer-use panels. Coding
 continues in `graff acp`; the window is a client of the same harness used by
 the terminal.
@@ -61,7 +61,7 @@ the user enables it and grants the operating system permissions.
 and scripted demonstration content. Click a desktop image for the full-size UI.
 No private conversation or workspace data is included.*
 
-**Build and launch the preview** on Apple Silicon macOS 14+ with Bun, Zig and
+**Build and launch from source** on Apple Silicon macOS 14+ with Bun, Zig and
 Xcode command-line tools installed:
 
 ```sh
@@ -70,9 +70,10 @@ Xcode command-line tools installed:
 
 The development bundle contains the production UI, Chromium, Bun, graff and the
 native bridge, and starts its own local server. It does not need a separate dev
-server or Kuri. This Electron preview is signed locally; release notarization and
-an Electron updater are separate distribution work. Previously published desktop
-assets may still use the legacy shell; see the release notes before downloading.
+server or Kuri. Source builds use local development signing. The downloadable
+release is Developer ID signed and notarized. To update the desktop, download
+the newer app and replace the copy in Applications; automatic updates are not
+available yet.
 
 **Profile and test without a model.** The Performance menu and desktop profiler
 tool record bounded, local measurement reports. Startup paint timing, streaming
@@ -136,9 +137,13 @@ next step supplied with useful information while reducing repeated input.
 
 ## Install
 
-**Desktop (macOS Apple Silicon).** Download the latest signed, notarized
-[release](https://github.com/justrach/codegraff/releases/latest), drag it to
-Applications. First launch puts `graff` and `codegraff <path>` on your PATH.
+**Desktop (Apple Silicon, macOS 14+).**
+[Download CodeGraff v0.0.289](https://github.com/justrach/codegraff/releases/download/v0.0.289/Codegraff-macos-arm64.zip),
+unzip it, and drag **Codegraff.app** into **Applications**. Open the app to start.
+The notarized bundle includes Graff, Chromium, Bun and the native macOS components;
+you do not need a separate CLI, runtime, developer tools or local server.
+[Verify the download checksum](https://github.com/justrach/codegraff/releases/download/v0.0.289/Codegraff-SHA256SUMS).
+For a `graff` command in your terminal, use the CLI installer below.
 
 **CLI (macOS · Linux · Windows).**
 
