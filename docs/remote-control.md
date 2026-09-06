@@ -89,6 +89,14 @@ against `graff serve` needs only a base URL change plus the cursor loop.
 256 KiB reach the relay as an envelope-only stub (`truncated: true`); the
 full line is on the machine's tape and a `reattach` replays it.
 
+## Verifying from another computer
+
+`scripts/e2e-remote-control.py` does it without a second laptop: it spins
+up a gateway sandbox (a cloud Linux VM on your account), puts a Linux build
+of graff in it, and from there lists this machine, creates a session on it
+and asks the session to run `hostname`. The answer must name this machine,
+not the VM. Same commands work from any real computer after `graff login`.
+
 ## Not yet
 
 - Sessions this supervisor did not start (a TUI you left open) are not
