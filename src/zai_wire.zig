@@ -67,7 +67,7 @@ pub fn writeChatExtras(s: *std.json.Stringify, provider_id: []const u8, model: [
     }
     if (!std.mem.eql(u8, provider_id, "kimi") and send_effort) {
         try s.objectField("reasoning_effort");
-        try s.write(if (is_zai) reasoningEffort(requested) else if (std.mem.eql(u8, requested, "ultra")) "max" else requested);
+        try s.write(if (is_zai) reasoningEffort(requested) else @import("meta_wire.zig").chatEffort(requested, provider_id, model));
     }
 }
 

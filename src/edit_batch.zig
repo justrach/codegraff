@@ -30,9 +30,9 @@ pub fn execBatch(ctx: ToolCtx, input: Value) !ToolOutput {
     const list = input.object.get("edits").?.array;
     if (list.items.len == 0) return .{ .text = try gpa.dupe(u8, "edits must contain at least one span"), .is_error = true };
 
-    // #276 P0-1, same as execEdit: resolve under the agent's worktree.
-    const resolved: []const u8 = if (ctx.agent_cwd) |base| try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, path }) else path;
-    defer if (ctx.agent_cwd != null) gpa.free(resolved);
+    // #747: same absolute selected-tree path as execEdit (write + verify).
+    const resolved = try @import("codedbpro_paths.zig").sessionAbs(gpa, ctx.io, ctx.agent_cwd, path);
+    defer gpa.free(resolved);
 
     var applied: usize = 0;
     for (list.items, 0..) |item, i| {

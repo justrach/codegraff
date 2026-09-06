@@ -135,8 +135,20 @@ def parse(stream):
 
 
 def frame_at(fd, rows, cols, settle=1.2):
+    # #750: the parallel probe suite can miss the first full repaint after
+    # TIOCSWINSZ. Wait for a frame that exists and is stable across a second
+    # read. Do not relax DRIFT — a late frame is timing, a slide is a bug.
     resize(fd, rows, cols)
-    return parse(drain(fd, settle))
+    last = None
+    deadline = time.time() + max(settle, 1.2) + 2.4
+    while time.time() < deadline:
+        now = parse(drain(fd, 0.45))
+        if now is None:
+            continue
+        if last is not None and now == last:
+            return now
+        last = now
+    return last
 
 
 def reread(fd):
@@ -223,7 +235,11 @@ def run():
             if at is None:
                 return f"width {w} scrolled {MARK} off screen (anchor lost); seen={seen}"
             if abs(at - top) > DRIFT:
-                return f"width {w} moved {MARK} from row {top} to {at}; seen={seen}"
+                again = frame_at(fd, ROWS, w, settle=1.8)
+                at2 = find(again, MARK) if again else None
+                if at2 is None or abs(at2 - top) > DRIFT:
+                    return f"width {w} moved {MARK} from row {top} to {at2 if at2 is not None else at}; seen={seen}"
+                at = at2
             seen.append((w, at))
         print(f"    widths/rows: {seen}")
         return None

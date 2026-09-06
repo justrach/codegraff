@@ -53,3 +53,27 @@ test "assembleOpenAI preserves streamed reasoning and Gemini echo fields" {
     try std.testing.expectEqualStrings("stop", gchoice.get("finish_reason").?.string);
     try std.testing.expectEqualStrings("GSIG", gcall.get("extra_content").?.object.get("google").?.object.get("thought_signature").?.string);
 }
+
+test "#748: error-only OpenAI SSE is an error envelope, not a missing stream" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = undefined,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+    const root = (try agent.assembleOpenAI(
+        "event: error\n" ++
+            "data: {\"error\":{\"type\":\"invalid_request_error\",\"message\":\"only auto is supported\"}}\n\n",
+    )).?;
+    try std.testing.expectEqualStrings("error", root.get("type").?.string);
+    try std.testing.expectEqualStrings("invalid_request_error", root.get("error").?.object.get("type").?.string);
+    try std.testing.expectEqualStrings("only auto is supported", root.get("error").?.object.get("message").?.string);
+}

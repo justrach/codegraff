@@ -67,6 +67,23 @@ pub fn callerError(text: []const u8) bool {
     return false;
 }
 
+/// Absolute path for a model-supplied relative file, against the selected
+/// worktree. Prefer `agent_cwd`, then the session display cwd (updated by
+/// workspace switch), then the posix process cwd. Never `Io.Dir.cwd()`:
+/// Threaded Io can stay on the previous tree after `chdir` (#721 / #747).
+pub fn sessionAbs(gpa: Allocator, io: Io, agent_cwd: ?[]const u8, path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(path)) return gpa.dupe(u8, path);
+    if (agent_cwd) |worktree| return std.fs.path.resolve(gpa, &.{ worktree, path });
+    const display = @import("main.zig").g_cwd_display;
+    if (display.len > 0 and std.fs.path.isAbsolute(display))
+        return std.fs.path.resolve(gpa, &.{ display, path });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (std.process.currentPath(io, &buf)) |n|
+        return std.fs.path.resolve(gpa, &.{ buf[0..n], path })
+    else |_|
+        return std.fs.path.resolve(gpa, &.{path});
+}
+
 /// CodeDB Pro's resident daemon has one launch cwd that can outlive and differ
 /// from the Graff session using it. Normalize path-bearing calls at the client
 /// boundary so relative model arguments keep their documented session-cwd
@@ -101,14 +118,7 @@ pub fn prepareInput(gpa: Allocator, io: Io, agent_cwd: ?[]const u8, tool: []cons
         return .{ .value = working, .owned_object = owned_object };
     }
 
-    var cwd_buf: [4096]u8 = undefined;
-    const base = if (agent_cwd) |worktree|
-        worktree
-    else blk: {
-        const n = try Io.Dir.cwd().realPathFile(io, ".", &cwd_buf);
-        break :blk cwd_buf[0..n];
-    };
-    const absolute = try std.fs.path.resolve(gpa, &.{ base, path_value.string });
+    const absolute = try sessionAbs(gpa, io, agent_cwd, path_value.string);
     errdefer gpa.free(absolute);
 
     var object: std.json.ObjectMap = .empty;
