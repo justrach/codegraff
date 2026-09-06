@@ -47,7 +47,7 @@ xcrun clang -O2 -bundle -undefined dynamic_lookup -mmacosx-version-min=14.0 \
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :LSMinimumSystemVersion 14.0' "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Codegraff' "$bundle/Contents/Info.plist" 2>/dev/null || true
-cp "$root/zig-out/native-local/Codegraff.app/Contents/Resources/icon.icns" "$resources/electron.icns" 2>/dev/null || true
+bun "$here/build-icon.cjs" "$resources/electron.icns"
 # Local development signing; production notarization remains a separate release step.
 codesign --force --deep --sign - "$bundle"
 codesign --verify --deep --strict "$bundle"

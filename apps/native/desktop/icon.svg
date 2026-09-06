@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Codegraff</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0.7" y2="1">
+      <stop stop-color="#294568"/>
+      <stop offset="1" stop-color="#172C49"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="204" fill="url(#tile)"/>
+  <rect x="65" y="65" width="894" height="894" rx="203" fill="none" stroke="#F5EFE3" stroke-opacity=".12" stroke-width="2"/>
+  <g fill="none" stroke="#F5EFE3" stroke-width="58" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M366 386 240 512 366 638"/>
+    <path d="m658 386 126 126-126 126"/>
+  </g>
+  <path d="m562 340-100 344" fill="none" stroke="#EE886C" stroke-width="52" stroke-linecap="round"/>
+  <g fill="#EE886C">
+    <circle cx="562" cy="340" r="37"/>
+    <circle cx="462" cy="684" r="37"/>
+  </g>
+</svg>
