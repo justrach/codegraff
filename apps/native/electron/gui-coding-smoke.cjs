@@ -32,7 +32,8 @@ app.whenReady().then(async()=>{
  fs.writeFileSync(path.join(temp,'coding.png'),(await win.webContents.capturePage()).toPNG());
  assert.equal(checked.status,0,'The GUI coding turn must produce a passing implementation');
  assert.equal(await js(`document.querySelectorAll('article [role="alert"]').length`),0);
- console.log('Real GUI coding turn passed all four independent tests.');
+ assert.equal(await js(`Array.from(document.querySelectorAll('[data-tool-summary]')).some(e=>/\\b(?:running|interrupted)\\b/.test(e.textContent))`),false,'Finished tools must not remain running or interrupted');
+ console.log('Real GUI coding turn passed all four independent tests with completed tool rows.');
  await input('/compact');await wait(`!!document.querySelector('[role="listbox"]') || !!document.querySelector('[role="menu"]')`);
  assert.equal(await js(`document.body.textContent.includes('No matches for "compact"')`),false);
  await js(`document.querySelector('textarea[aria-label="Prompt"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);

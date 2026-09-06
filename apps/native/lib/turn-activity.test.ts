@@ -46,3 +46,13 @@ test("default painter calls browser cancellation APIs without a scheduler receiv
     expect(painted).toEqual(["working", "done"]);
   } finally { globalThis.requestAnimationFrame = originalFrame; globalThis.cancelAnimationFrame = originalCancel; }
 });
+test("parallel completions settle the right rows without a stale running count", () => {
+  let turn = emptyTurn();
+  for (const id of ['first','second']) turn = applyAcpUpdate(turn,{sessionUpdate:'tool_call',toolCallId:id,title:'read_file',status:'in_progress'});
+  turn = applyAcpUpdate(turn,{sessionUpdate:'tool_call_update',toolCallId:'first',status:'completed'});
+  expect(turn.tools.map(t=>t.status)).toEqual(['ok','running']);
+  turn = applyAcpUpdate(turn,{sessionUpdate:'tool_call_update',toolCallId:'second',status:'completed'});
+  expect(turn.tools.map(t=>t.status)).toEqual(['ok','ok']);
+  expect(turnActivity(turn,Date.now()).label).toBe('Waiting for Graff…');
+  expect(turnActivity({...turn,lastUpdateAt:1000},25000).detail).not.toContain('stop this turn');
+});

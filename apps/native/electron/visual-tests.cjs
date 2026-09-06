@@ -47,7 +47,7 @@ app.whenReady().then(async () => {
       assert.equal(await js(`getComputedStyle(document.querySelector('article')).opacity`), '1');
       const rect = await js(`(()=>{const a=document.querySelector('[data-turn-activity]').getBoundingClientRect(),b=document.querySelector('[data-fixture-composer]').getBoundingClientRect();return {top:a.top,bottom:a.bottom,width:a.width,composer:b.top,viewport:innerHeight}})()`);
       assert.ok(rect.width > 100 && rect.top > 0 && rect.bottom < rect.composer && rect.composer < rect.viewport, JSON.stringify(rect));
-      if (name === 'waiting') assert.match(await js(`document.querySelector('[data-activity-detail]').textContent`), /No update for/);
+      if (name === 'waiting') assert.match(await js(`document.querySelector('[data-activity-detail]').textContent`), /since the last event/);
       const summary = await js(`document.querySelector('[data-tool-summary]')?.getAttribute('aria-expanded')`);
       if (summary !== undefined) assert.equal(summary, 'false', 'progress never auto-expands tool details');
       if (['done', 'stopped', 'error', 'missing-result'].includes(name)) assert.equal(await js(`document.querySelector('article').getAttribute('aria-busy')`), 'false');

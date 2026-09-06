@@ -223,7 +223,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
         }
     };
     // Show a compact ✓/✗ + preview for each non-meta call (no-op for subs).
-    for (calls, results) |call, r| self.sayToolResult(call.name, r);
+    for (calls, results) |call, r| self.sayToolResult(call, r);
     return results;
 }
 
@@ -279,6 +279,7 @@ pub fn toolDedupeKey(self: *Agent, call: ToolCall) ![]const u8 {
 /// wire sink gives this moment a shape.
 pub fn emitToolRejected(self: *Agent, call: ToolCall, reason: []const u8, message: []const u8) void {
     engine_sink.forAgent(self).emit(self.io, .{ .tool_rejected = .{
+        .id = call.id,
         .name = call.name,
         .input = call.input,
         .reason = reason,
@@ -409,6 +410,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
 /// reserved for a line the wire drops (#330).
 pub fn sayToolUse(self: *Agent, call: ToolCall) !void {
     const ev: engine_events.ToolInvocation = .{
+        .id = call.id,
         .name = call.name,
         .input = call.input,
         .ask_user = std.mem.eql(u8, call.name, "ask_user"),
@@ -420,12 +422,14 @@ pub fn sayToolUse(self: *Agent, call: ToolCall) !void {
 }
 
 /// The same bracket, closing: the result a frontend shows and the finish
-/// event carrying its outcome and duration. Meta tools render their own UX,
-/// so both sinks drop them (ask_user excepted on the wire, where the typed
-/// reply IS the result).
-pub fn sayToolResult(self: *Agent, name: []const u8, r: ExecResult) void {
+/// event carrying its outcome and duration. Meta tools own their text UX;
+/// the wire still emits their correlated completion status so clients can
+/// close the announced row without duplicating the result body.
+pub fn sayToolResult(self: *Agent, call: ToolCall, r: ExecResult) void {
+    const name = call.name;
     if (self.out == null) return; // no frontend attached: nothing to tell, as ever
     const ev: engine_events.ToolOutcome = .{
+        .id = call.id,
         .name = name,
         .text = r.text,
         .is_error = r.is_error,

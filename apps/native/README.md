@@ -163,12 +163,23 @@ The desktop adapts familiar Ghostty bindings to chats and split panes:
 | `Ctrl+⌘=` | Equalize split sizes |
 | `⌘\` | Toggle splits |
 | `⌘O` | Open a workspace folder |
+| `⌘J` | Show / hide the workspace terminal |
+| `⌘K` in the terminal | Clear the visible terminal |
 | `⌘Enter` / `Ctrl+⌘F` | Toggle fullscreen |
 | `⌘+` / `⌘−` / `⌘0` | Increase / decrease / reset interface zoom |
 
 The File menu lists the main actions. Standard copy, paste, undo and text selection
 remain native. Terminal-only actions such as sending escape sequences have no
 chat equivalent. A web browser reserves some shortcuts for its own tabs.
+
+The macOS workspace terminal opens your login shell in the active folder. Drag
+its top edge to resize it. Hiding it preserves the session; **End session** stops
+it. Up to four workspace shells can stay open, with bounded output history.
+
+Native `read_file` accepts PNG, JPEG, GIF and WebP images up to 5 MiB when the
+active model supports vision. Read one image at a time: its pixels reach the
+next model request in the same turn. Unavailable images produce an explicit
+result instead of silently claiming that the model saw them.
 
 Click the workspace name to search by name **or folder path**. The current
 workspace is first; full paths distinguish folders with the same name. Arrow keys

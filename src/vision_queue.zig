@@ -105,7 +105,14 @@ pub fn consumePromptImages(arena: Allocator, root: *Agent, text: []const u8) !Va
 /// After an ask_user (or any tool that staged pixels) tool result, attach the
 /// queued images as a follow-up user message. Responses/OpenAI tool output is
 /// text-only; this is the shared multimodal shape.
+pub fn collectRegistry(root: *Agent) void {
+    const reg = root.registry orelse return;
+    var image: ?PendingImage = null;
+    if (vision.mcpImageHandoff(reg, vision.visionCapable(root.provider), &image)) stage(root, image.?);
+}
+
 pub fn flushPending(root: *Agent) !void {
+    collectRegistry(root);
     const imgs = take(root);
     if (imgs.len == 0) return;
     try root.messages.append(try vision.imageMessages(root.arena, root.provider.kind, "", imgs));

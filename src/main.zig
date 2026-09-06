@@ -313,7 +313,6 @@ pub fn main(init: std.process.Init) !void {
     try session_start.setupWorktreeAndBanner(io, gpa, arena, init.environ_map, flags, out, run_trace_path, codex_account, stale_saved_model, preferred_provider, default_provider);
     session_start.loadScoreSigningKey(io, arena, init.environ_map);
     boot.mark(io, "banner");
-
     // Session trace (best-effort: a failed open just disables tracing).
     var trace_buf: [8 * 1024]u8 = undefined;
     var trace_open = session_start.openTraceFile(io, run_trace_path, &trace_buf);
@@ -327,7 +326,6 @@ pub fn main(init: std.process.Init) !void {
         .path = run_trace_path,
     };
     boot.attach(&tracer);
-
     // One trajectory file per run; the archive reader scans the directory.
     // Node ids restart per run and cross-run lineage threads through prompt_sha.
     var traj_buf: [8 * 1024]u8 = undefined;
@@ -597,4 +595,5 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("goal_pacing.zig");
     _ = @import("presence_record.zig");
     _ = @import("acp_agents.zig");
+    _ = @import("read_image.zig");
 }

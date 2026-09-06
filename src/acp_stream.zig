@@ -148,15 +148,19 @@ pub fn translateEvent(
         const input = ev.object.get("input") orelse Value{ .object = .empty };
         // The engine brackets every call twice: `tool_call` announces it and
         // `tool_call_started` marks dispatch of the SAME call (the TUI draws
-        // only the first). An id-less start therefore updates the announced
-        // row to in_progress — minting here doubled every tool in the client.
-        if (std.mem.eql(u8, typ, "tool_call_started") and util.strFieldObj(ev.object, "id") == null and id_buf[0] != 0) {
-            try writeToolStatus(w, session_id, lastId(id_buf), "in_progress");
-            return .tool;
+        // only the first). Starts update the announced row by its ID; the
+        // last-ID fallback is reserved for older id-less event streams.
+        if (std.mem.eql(u8, typ, "tool_call_started")) {
+            const started_id = util.strFieldObj(ev.object, "id") orelse lastId(id_buf);
+            if (started_id.len != 0) {
+                try writeToolStatus(w, session_id, started_id, "in_progress");
+                return .tool;
+            }
         }
-        const id = if (util.strFieldObj(ev.object, "id")) |given|
-            storeId(id_buf, given)
-        else blk: {
+        const id = if (util.strFieldObj(ev.object, "id")) |given| blk: {
+            _ = storeId(id_buf, given);
+            break :blk given;
+        } else blk: {
             next_tool.* += 1;
             var tmp: [32]u8 = undefined;
             const minted = std.fmt.bufPrint(&tmp, "call-{d}", .{next_tool.*}) catch "call";
@@ -168,7 +172,7 @@ pub fn translateEvent(
     if (std.mem.eql(u8, typ, "tool_result") or std.mem.eql(u8, typ, "tool_call_finished") or std.mem.eql(u8, typ, "tool_rejected")) {
         if (util.strFieldObj(ev.object, "name")) |name|
             if (std.mem.eql(u8, name, "attempt_completion")) return .none;
-        const use_id = if (util.strFieldObj(ev.object, "id")) |given| storeId(id_buf, given) else lastId(id_buf);
+        const use_id = if (util.strFieldObj(ev.object, "id")) |given| given else lastId(id_buf);
         const text = util.strFieldObj(ev.object, "text") orelse util.strFieldObj(ev.object, "message") orelse "";
         const is_error = switch (ev.object.get("is_error") orelse .null) {
             .bool => |b| b,
@@ -402,4 +406,32 @@ test "EventSink translates a JSONL reasoning line through the writer" {
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "agent_thought_chunk") != null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "hmm") != null);
     try testing.expect(!saw);
+}
+
+test "parallel tool results retain their own IDs including long IDs" {
+    const a = std.testing.allocator;
+    var w: Io.Writer.Allocating = .init(a);
+    defer w.deinit();
+    var id_buf: [64]u8 = @splat(0);
+    var next: u32 = 0;
+    const events = [_][]const u8{
+        "{\"type\":\"tool_call\",\"id\":\"first\",\"name\":\"read_file\"}",
+        "{\"type\":\"tool_call\",\"id\":\"second\",\"name\":\"read_file\"}",
+        "{\"type\":\"tool_call_started\",\"id\":\"first\",\"name\":\"read_file\"}",
+        "{\"type\":\"tool_result\",\"id\":\"first\",\"name\":\"read_file\",\"text\":\"done first\"}",
+        "{\"type\":\"tool_result\",\"id\":\"second\",\"name\":\"read_file\",\"text\":\"done second\"}",
+        "{\"type\":\"tool_call\",\"id\":\"a-long-tool-id-that-exceeds-the-legacy-sixty-four-byte-fallback-storage-limit\",\"name\":\"read_file\"}",
+    };
+    for (events) |wire| {
+        const ev = try std.json.parseFromSlice(Value, a, wire, .{});
+        defer ev.deinit();
+        _ = try translateEvent(&w.writer, "test", ev.value, &id_buf, &next);
+    }
+    var lines = std.mem.tokenizeScalar(u8, w.written(), '\n');
+    for ([_][]const u8{ "first", "second", "first", "first", "second", "a-long-tool-id-that-exceeds-the-legacy-sixty-four-byte-fallback-storage-limit" }) |id| {
+        const parsed = try std.json.parseFromSlice(Value, a, lines.next().?, .{});
+        defer parsed.deinit();
+        const update = parsed.value.object.get("params").?.object.get("update").?;
+        try std.testing.expectEqualStrings(id, update.object.get("toolCallId").?.string);
+    }
 }

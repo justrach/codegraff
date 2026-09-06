@@ -19,6 +19,8 @@
   },
   "dependencies": {
     "@streamdown/code": "^1.1.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "glimm": "^0.3.0",
     "iconoir-react": "^7.11.1",
     "liveline": "^0.0.7",

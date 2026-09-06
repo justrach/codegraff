@@ -31,6 +31,7 @@ async function smokeUI({ win, browser, backend }) {
   assert.equal(await js('document.documentElement.dataset.theme'), 'codegraff');
   assert.equal(await js(`document.querySelector('[aria-label="Start dictation"]').disabled`), true);
 
+  await require('./terminal-visual.cjs').runTerminalVisual({win});
   const customization = await require('./smoke-gui-customization.cjs').smokeGuiCustomization({ win, backend });
   const modelPicker = await require('./smoke-model-picker.cjs').smokeModelPicker({ win });
 

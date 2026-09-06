@@ -18,6 +18,9 @@ at a real provider to run the same cases against one.
   python3 scripts/eval-tier2.py --list
   python3 scripts/eval-tier2.py --dump goal-checklist-completes
 
+A case can send structured setup controls with `controls_before_prompt`, such
+as selecting a local vision model before its first user message.
+
 Assertions a case can make:
 
   {"event": {...}}                        some emitted event matches this subset
@@ -164,7 +167,8 @@ def execute(case: dict[str, Any], graff: str, port: int,
                 argv += ["--subagent-provider", provider]
             argv += list(case.get("args", []))
 
-            stdin_lines = [json.dumps({"type": "user", "text": case["prompt"]})]
+            stdin_lines = [json.dumps(control) for control in case.get("controls_before_prompt", [])]
+            stdin_lines.append(json.dumps({"type": "user", "text": case["prompt"]}))
             for control in case.get("controls_after_turn", []):
                 stdin_lines.append(json.dumps(control))
             if case.get("second_prompt"):

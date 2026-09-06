@@ -74,7 +74,7 @@ pub const base_specs = [_]ToolSpec{
     },
     .{
         .name = "read_file",
-        .desc = "Read a UTF-8 text file. Call this before editing any file. For a read-only exact-key lookup, pass contains to return only matching numbered lines instead of the whole file. Whole-file reads over 256 KiB return a short preview; pass start_line/end_line (1-based, inclusive) for a byte-exact window from any size file.",
+        .desc = "Read a UTF-8 text file or view a PNG/JPEG/GIF/WebP image up to 5 MiB. Read images one at a time; pixels reach the next model request when vision is supported. Call this before editing any text file. For a read-only exact-key lookup, pass contains to return only matching numbered lines instead of the whole file. Whole-file reads over 256 KiB return a short preview; pass start_line/end_line (1-based, inclusive) for a byte-exact window from any size file.",
         .schema =
         \\{"type": "object", "properties": {"path": {"type": "string", "description": "File path, relative to the working directory"}, "start_line": {"type": "integer", "description": "Optional 1-based first line to return (byte-exact slice; omit for whole file)"}, "end_line": {"type": "integer", "description": "Optional 1-based last line to return, inclusive"}, "contains": {"type": "string", "description": "Optional exact literal; return only matching lines with line numbers instead of the whole file. Prefer this for exact-key read-only lookups. Cannot combine with start_line, end_line, or compact."}, "compact": {"type": "boolean", "description": "Exploratory only: return a comment/blank-stripped view via codedb (line numbers shown). NEVER use before an edit — re-read without compact to copy exact text."}}, "required": ["path"]}
         ,
@@ -388,7 +388,7 @@ pub fn writeToolEntry(s: *std.json.Stringify, kind: Provider.Kind, name: []const
 /// a per-commit git describe) — bump this only when the schema or JSONL
 /// protocol changes shape, so SDK regeneration stays byte-stable across
 /// commits.
-pub const schema_version = "0.12"; // cancel request interrupts active stdio/serve turns
+pub const schema_version = "0.13"; // tool lifecycle IDs correlate parallel ACP updates
 
 /// Emit the machine-readable interface description for `harness --schema`:
 /// providers, models, built-in tools (name/description/parameters), and the

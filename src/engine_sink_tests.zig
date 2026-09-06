@@ -471,3 +471,51 @@ test "hosted frontend announces read path and result preview" {
     try std.testing.expect(std.mem.indexOf(u8, got, "✓ read | const std") != null);
     try std.testing.expect(std.mem.indexOf(u8, got, "read_file") == null);
 }
+
+test "JsonSink keeps parallel tool IDs on announcements and completions" {
+    const saved_json = main_mod.json_mode;
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
+    protocol_seq.resetForTest();
+    defer protocol_seq.resetForTest();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var agent = testAgent(&aw.writer);
+    const sink = jsonSink(&agent);
+    for ([_][]const u8{ "first", "second" }) |id| {
+        const call: engine_events.ToolInvocation = .{ .id = id, .name = "read_file", .input = .null };
+        sink.emit(undefined, .{ .tool_call_announced = call });
+        sink.emit(undefined, .{ .tool_call_started = call });
+    }
+    for ([_][]const u8{ "first", "second" }) |id| {
+        const result: engine_events.ToolOutcome = .{ .id = id, .name = "read_file", .text = "done", .is_error = false };
+        sink.emit(undefined, .{ .tool_result = result });
+        sink.emit(undefined, .{ .tool_call_finished = result });
+    }
+    var lines = std.mem.tokenizeScalar(u8, aw.written(), '\n');
+    for ([_][]const u8{ "first", "first", "second", "second", "first", "first", "second", "second" }) |id| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, lines.next().?, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings(id, parsed.value.object.get("id").?.string);
+    }
+}
+
+test "correlated meta tools finish without duplicating their result body" {
+    const saved_json = main_mod.json_mode;
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
+    protocol_seq.resetForTest();
+    defer protocol_seq.resetForTest();
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var agent = testAgent(&aw.writer);
+    const sink = jsonSink(&agent);
+    const result: engine_events.ToolOutcome = .{ .id = "schema-call", .name = "load_tool_schemas", .text = "large schema body", .is_error = false, .meta = true };
+    sink.emit(undefined, .{ .tool_result = result });
+    sink.emit(undefined, .{ .tool_call_finished = result });
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, aw.written(), .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("schema-call", parsed.value.object.get("id").?.string);
+    try std.testing.expectEqualStrings("tool_call_finished", parsed.value.object.get("type").?.string);
+    try std.testing.expect(parsed.value.object.get("text") == null);
+}

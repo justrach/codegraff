@@ -20,6 +20,8 @@ Responses 16k output cap (#95's sibling) and the per-output handle contract.
 - `ask_user` returns text only. After that tool result is appended,
   `vision_queue.flushPending` adds one user message with the queued
   image blocks, same builder as the main prompt.
+- Native `read_file` and MCP image results drain the registry image slot at
+  the same post-tool checkpoint. They must not wait for another user prompt.
 - If the reply has `[Image]` markers and the queue is empty, the tool
   result names path / paste-text / next-prompt fallbacks instead of
   implying the pixels arrived.

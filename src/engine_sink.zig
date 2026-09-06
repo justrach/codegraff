@@ -15,11 +15,8 @@
 //!   byte-identical to the old inline emits. The ONE translation point from
 //!   internal type to wire shape: any change here is externally visible and
 //!   gated behind a schema_version bump. Not yet the ONLY producer of those
-//!   shapes, though: subagent_run.zig's guiEmit writes `tool_call`/
-//!   `tool_result` rows with an extra `id` (schema_protocol.zig) straight to
-//!   stdout, bypassing this sink. Routing them through it needs an optional
-//!   `id` on ToolInvocation/ToolOutcome — decide that when #429 takes the
-//!   subagent cluster, while these structs are still cheap to change.
+//! shapes, though: subagent_run.zig still writes its workflow rows directly.
+//! Optional call IDs on tool lifecycle events correlate parallel completions.
 //!
 //! Events are stamped with a {generation, sequence} Cursor at the dispatch
 //! boundary. In --json mode (the only durable sink today), durable events
@@ -419,11 +416,11 @@ fn jsonEmit(ctx: *anyopaque, ev: Stamped) void {
     switch (ev.event) {
         .reasoning_delta => |d| jsonLine(w, ev.cursor, .{ .type = "reasoning", .text = d.text }),
         .text_delta => |d| jsonLine(w, ev.cursor, .{ .type = "text", .text = d.text }),
-        .tool_call_announced => |t| jsonLine(w, ev.cursor, .{ .type = "tool_call", .name = t.name, .input = t.input }),
-        .tool_call_started => |t| jsonLine(w, ev.cursor, .{ .type = "tool_call_started", .name = t.name, .input = t.input }),
-        .tool_result => |r| jsonLine(w, ev.cursor, .{ .type = "tool_result", .name = r.name, .is_error = r.is_error, .text = r.text }),
-        .tool_call_finished => |r| jsonLine(w, ev.cursor, .{ .type = "tool_call_finished", .name = r.name, .is_error = r.is_error, .ms = r.ms }),
-        .tool_rejected => |r| jsonLine(w, ev.cursor, .{ .type = "tool_rejected", .name = r.name, .reason = r.reason, .input = r.input, .message = r.message }),
+        .tool_call_announced => |t| if (t.id.len > 0) jsonLine(w, ev.cursor, .{ .id = t.id, .type = "tool_call", .name = t.name, .input = t.input }) else jsonLine(w, ev.cursor, .{ .type = "tool_call", .name = t.name, .input = t.input }),
+        .tool_call_started => |t| if (t.id.len > 0) jsonLine(w, ev.cursor, .{ .id = t.id, .type = "tool_call_started", .name = t.name, .input = t.input }) else jsonLine(w, ev.cursor, .{ .type = "tool_call_started", .name = t.name, .input = t.input }),
+        .tool_result => |r| if (r.id.len > 0) jsonLine(w, ev.cursor, .{ .id = r.id, .type = "tool_result", .name = r.name, .is_error = r.is_error, .text = r.text }) else jsonLine(w, ev.cursor, .{ .type = "tool_result", .name = r.name, .is_error = r.is_error, .text = r.text }),
+        .tool_call_finished => |r| if (r.id.len > 0) jsonLine(w, ev.cursor, .{ .id = r.id, .type = "tool_call_finished", .name = r.name, .is_error = r.is_error, .ms = r.ms }) else jsonLine(w, ev.cursor, .{ .type = "tool_call_finished", .name = r.name, .is_error = r.is_error, .ms = r.ms }),
+        .tool_rejected => |r| if (r.id.len > 0) jsonLine(w, ev.cursor, .{ .id = r.id, .type = "tool_rejected", .name = r.name, .reason = r.reason, .input = r.input, .message = r.message }) else jsonLine(w, ev.cursor, .{ .type = "tool_rejected", .name = r.name, .reason = r.reason, .input = r.input, .message = r.message }),
         // The failover's wire half (slice 2). Its `note` is a FIXED wire
         // string, not the payload's context_note: a --json client is being
         // told the saved preference survived, while the terminal is told what

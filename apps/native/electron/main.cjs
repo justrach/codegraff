@@ -14,6 +14,7 @@ const { rendererSample } = require('./renderer-profile.cjs');
 const { observeAgents, agentSampler } = require('./agent-observer.cjs');
 const { chromiumSample } = require('./hardware-profile.cjs');
 const fs = require('node:fs/promises');
+const { Terminals } = require('./terminal.cjs');
 const { installWindowState } = require('./window-state.cjs');
 
 const root = process.env.GRAFF_CWD || app.getPath('home');
@@ -22,6 +23,7 @@ app.setName('Codegraff');
 app.setPath('userData', process.env.GRAFF_ELECTRON_SMOKE ? path.join(require('node:os').tmpdir(), `codegraff-smoke-${process.pid}`) : path.join(app.getPath('appData'), 'Codegraff Electron'));
 if (process.env.GRAFF_ELECTRON_SMOKE) process.env.GRAFF_THEMES_DIR = path.join(app.getPath('userData'), 'themes');
 let win, browser, backend, automation, computer, profiler;
+let terminals;
 let quitting = false;
 
 async function metrics() {
@@ -42,6 +44,7 @@ function trusted(event) {
 }
 function stop() {
   if (quitting) return; quitting = true;
+  terminals?.closeAll();
   profiler?.stop(); browser?.closeAll(); automation?.server.close(); backend?.stop();
 }
 app.on('before-quit', stop);
@@ -57,10 +60,12 @@ app.whenReady().then(async () => {
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), partition: 'persist:app',
       contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: !process.env.GRAFF_ELECTRON_SMOKE } });
   installWindowState(win);
+  terminals = new Terminals(path.join(resources, 'native/graff-terminal'), event => { if (!win.isDestroyed()) win.webContents.send('terminal-event', event); });
+  ipcMain.handle('terminal', (event, {action, params}) => { trusted(event); return terminals.command(action, params); });
   browser = new BrowserTabs(win, message => { if (!win.isDestroyed()) win.webContents.send('browser-event', message); });
   win.on('close', () => browser.closeAll());
   win.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
-    if (mainFrame && !inPlace) browser.closeAll();
+    if (mainFrame && !inPlace) { browser.closeAll(); terminals.closeAll(); }
   });
   computer = new ComputerUse(resources, win);
   const sampleTree = intervalSampler(process.pid, () => browser.liveCount);
@@ -123,7 +128,7 @@ app.whenReady().then(async () => {
     { label: 'File', submenu: [
       ['New chat', 'CmdOrCtrl+N', 'new'], ['New tab', 'CmdOrCtrl+T', 'new'],
       ['Close chat', 'CmdOrCtrl+W', 'close'], ['Reopen closed chat', 'CmdOrCtrl+Shift+T', 'reopen'],
-      ['Open workspace…', 'CmdOrCtrl+O', 'workspace'], ['Split right', 'CmdOrCtrl+D', 'split-right'],
+      ['Toggle terminal', 'CmdOrCtrl+J', 'terminal'], ['Open workspace…', 'CmdOrCtrl+O', 'workspace'], ['Split right', 'CmdOrCtrl+D', 'split-right'],
       ['Split down', 'CmdOrCtrl+Shift+D', 'split-down'], ['Zoom split', 'CmdOrCtrl+Shift+Enter', 'split-zoom'],
     ].map(([label, accelerator, action]) => ({ label, accelerator, click: () => win.webContents.send('desktop-action', action) })) },
     { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { role: 'togglefullscreen' }, { label: 'Release browser pages', click: () => { browser.closeAll(); win.webContents.send('browser-event', { type: 'released' }); } }] },

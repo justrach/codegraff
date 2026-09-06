@@ -3,6 +3,8 @@
 import { createTurnPainter } from "@/lib/turn-painter";
 import { useQuietSettings } from "./useQuietSettings";
 import reviewStyles from "./ChangesPane.module.css";
+import TerminalPane from "./TerminalPane";
+import { sidebarRecents, sessionFooterTitle } from "./harness-sidebar";
 import AgentsPane from "./AgentsPane";
 import { newPageToken, newSessionName, type Chat, type Msg } from "./harness-types";
 import ChangesPane from "./ChangesPane";
@@ -35,7 +37,7 @@ import {
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AcpCommand, type AssistantTurn } from "@/lib/acp";
 import { isFollowingTail, pinScrollerTail } from "@/lib/follow-scroll";
 import { dropQueuedPrompt, enqueuePrompt, shiftQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
-import { dateGroup, listSessionsPage, loadSession, relativeTime, removeSession, toSidebarRecent, type StoredSession } from "@/lib/sessions";
+import { dateGroup, listSessionsPage, loadSession, relativeTime, removeSession, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory, pushHistory, saveHistory } from "@/lib/prompt-history";
 import WorkspaceDialog from "@/components/site/WorkspaceDialog";
 import {
@@ -73,6 +75,9 @@ export default function GraffHarness() {
   const [sessionIds, setSessionIds] = useState<Record<number, string>>({});
   /** Per tab, the slash commands its agent advertised at session/new. */
   const [commands, setCommands] = useState<Record<number, AcpCommand[]>>({});
+  const [terminalVisible, setTerminalVisible] = useState(false);
+  const [terminalUsed, setTerminalUsed] = useState(false);
+  const toggleTerminal = () => { setTerminalUsed(true); setTerminalVisible(v => !v); };
   const [catalogCommands, setCatalogCommands] = useState<AcpCommand[]>([]);
   const [stored, setStored] = useState<StoredSession[]>([]);
   const [storedTotal, setStoredTotal] = useState(0);
@@ -713,15 +718,7 @@ export default function GraffHarness() {
     }
   }, [chats, tailing, columnKey]);
 
-  // Sidebar preview: the first page of the session index, newest first. A
-  // session open in a tab shows the tab's name (the model wrote it from the
-  // first prompt); one only on disk shows whatever graff saved.
-  const now = Date.now();
-  const recents = stored.map((s) => {
-    const row = toSidebarRecent(s, now);
-    const live = chats.find((c) => c.session === s.name)?.title;
-    return live ? { ...row, label: live } : row;
-  });
+  const recents = sidebarRecents(stored, chats);
 
   // The tab bar's folder chip is the *tab's* workspace; the sidebar's
   // switcher is the *active* one (where new tabs open). They differ only
@@ -737,9 +734,7 @@ export default function GraffHarness() {
   const pinCount = (pinsByChat[chatThread.id] ?? []).length;
   const activeWorkspace = findWorkspace(workspaces, activePath);
   const sidebarWorkspace = activeWorkspace ?? (activePath ? { path: activePath, name: basename(activePath) } : undefined);
-  const footerTitle = chatThread.session
-    ? `graff session ${chatThread.session}${sessionId ? ` · ACP ${sessionId}` : ""}${chatCwd ? ` · ${chatCwd}` : ""}\nClick to copy the command that resumes it in a terminal.`
-    : undefined;
+  const footerTitle = sessionFooterTitle(chatThread.session, sessionId, chatCwd);
 
   /** One chat column: its transcript (or the empty state) and its composer.
    * A plain function, not a component, so the split view can render two of
@@ -979,6 +974,7 @@ export default function GraffHarness() {
             <span className="rounded-full bg-accent px-1.5 text-[10px] font-semibold text-white tabular-nums">{pinCount}</span>
           )}
         </button>
+        <button aria-label="Toggle terminal" aria-pressed={terminalVisible} title="Terminal (⌘J)" onClick={toggleTerminal} className="rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg></button>
         <button aria-label="Show agents" aria-pressed={agentsOpen} onClick={() => { setAgentsOpen(!agentsOpen); setFilesOpen(false); setBrowserOpen(false); setConversationsOpen(false); }} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="9" cy="7" r="3"/><path d="M3 20v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2"/></svg><span data-toolbar-label>Agents</span></button>
         <ThemeToggle />
       </div>
@@ -989,7 +985,7 @@ export default function GraffHarness() {
     split: direction => { setSplitDirection(direction); setZoomedPane(false); addPane(); },
     zoomPane: () => setZoomedPane(value => !value),
     resizePane: delta => setPaneWeights(old => ({ ...old, [activeId]: Math.max(0.4, Math.min(3, (old[activeId] ?? 1) + delta)) })),
-    equalize: () => setPaneWeights({}), openWorkspace: () => setDialog({ mode: "new" }),
+    toggleTerminal, equalize: () => setPaneWeights({}), openWorkspace: () => setDialog({ mode: "new" }),
   });
 
   catalogRef.current = { adopt: (id: number) => { if (!runningRef.current.has(id)) void adoptCatalog(id).catch(() => undefined); }, activeId };
@@ -1136,6 +1132,7 @@ export default function GraffHarness() {
             </aside>
           )}
         </div>
+        {terminalUsed && chatCwd && <TerminalPane key={chatCwd} cwd={chatCwd} visible={terminalVisible} onHide={() => setTerminalVisible(false)} />}
       </div>
 
       {dialog && (

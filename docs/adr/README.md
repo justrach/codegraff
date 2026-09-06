@@ -88,6 +88,7 @@ record only when you need the evidence or the edge cases.
 | [0075](0075-acp-adapter-and-desktop-measurements.md) | ACP presentation decoding is separate from session lifecycle; desktop performance uses bounded workload measurements and default Chromium acceleration. |
 | [0076](0076-local-agent-panel.md) | Verified local peer discovery, non-consuming history, explicit queued DMs and anonymous profiler slots. |
 | [0077](0077-desktop-command-parity-and-bounded-disclosure.md) | ACP shares the complete REPL catalog; desktop menus, tool disclosure and initial history rendering stay bounded. |
+| [0078](0078-workspace-terminals-are-lazy-pty-sessions.md) | Desktop workspace terminals start lazily, preserve hidden shells and bound output through a trusted PTY bridge. |
 
 ## When to write one
 

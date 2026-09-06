@@ -32,6 +32,7 @@ ditto "$ui/.next/static" "$resources/ui/.next/static"
 rm -rf "$resources/ui/node_modules/@img"
 cp "$(command -v bun)" "$resources/bun"
 cp "$root/zig-out/bin/graff" "$resources/graff"
+xcrun clang -O2 -Wall -Wextra -mmacosx-version-min=14.0 "$here/native/terminal.c" -o "$resources/native/graff-terminal"
 xcrun swiftc -O -emit-library -module-name GraffActivity -target arm64-apple-macosx14.0 \
   "$here/native/Activity.swift" "$here/native/ComputerUse.swift" -o "$resources/native/libGraffActivity.dylib" \
   -Xlinker -install_name -Xlinker @rpath/libGraffActivity.dylib

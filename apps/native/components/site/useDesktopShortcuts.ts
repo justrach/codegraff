@@ -4,7 +4,7 @@ import { desktop } from '@/lib/desktop';
 type Actions = {
   newChat():void; closeChat(id:number):void; reopenClosed():void; toggleSplit():void;
   split(direction:'row'|'column'):void; focusChat(id:number):void; zoomPane():void;
-  resizePane(delta:number):void; equalize():void; openWorkspace():void;
+  resizePane(delta:number):void; equalize():void; openWorkspace():void; toggleTerminal():void;
   chats:{id:number}[]; columns:number[]; activeId:number;
 };
 export function useDesktopShortcuts(actions: Actions) {
@@ -19,6 +19,7 @@ export function useDesktopShortcuts(actions: Actions) {
         case 'split-right':a.split('row');return true;
         case 'split-down':a.split('column');return true;
         case 'split-zoom':a.zoomPane();return true;
+        case 'terminal':a.toggleTerminal();return true;
         case 'workspace':a.openWorkspace();return true;
       }
       return false;
@@ -27,6 +28,7 @@ export function useDesktopShortcuts(actions: Actions) {
     const onKey=(e:KeyboardEvent)=>{
       // Dialogs own their typing and navigation. Escape and Tab remain local.
       if(e.isComposing)return;
+      if(e.target instanceof Element&&e.target.closest('[data-workspace-terminal]')&&!e.metaKey)return;
       if(document.querySelector('[role="dialog"]'))return;
       const a=ref.current,k=e.key.toLowerCase();let handled=false;
       const command=e.metaKey||e.ctrlKey;
@@ -37,7 +39,8 @@ export function useDesktopShortcuts(actions: Actions) {
         else if(e.metaKey&&e.ctrlKey&&['=','+'].includes(k)){a.equalize();handled=true;}
         else if(e.altKey&&k.startsWith('arrow')){cycle(a.columns,k==='arrowleft'||k==='arrowup'?-1:1);handled=true;}
         else if(!e.altKey){
-          if(k==='n'&&!e.shiftKey)handled=dispatch('new');
+          if(k==='j'&&!e.shiftKey)handled=dispatch('terminal');
+          else if(k==='n'&&!e.shiftKey)handled=dispatch('new');
           else if(k==='t')handled=dispatch(e.shiftKey?'reopen':'new');
           else if(k==='w'&&!e.shiftKey)handled=dispatch('close');
           else if(k==='d')handled=dispatch(e.shiftKey?'split-down':'split-right');
