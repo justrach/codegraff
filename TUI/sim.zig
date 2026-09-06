@@ -393,7 +393,7 @@ test "type /help then enter opens the help overlay" {
     while (i < 4) : (i += 1) _ = term.feed("\x1b[6~");
     const paged = try term.screen();
     defer std.testing.allocator.free(paged);
-    try std.testing.expect(std.mem.indexOf(u8, paged, "/quit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, paged, "/vim-mode") != null);
 }
 
 test "type /cache then enter opens the observability overlay" {

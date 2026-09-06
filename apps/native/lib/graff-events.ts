@@ -47,7 +47,7 @@ export type ToolRow = {
   name: string;
   icon: ToolIcon;
   chip: string;
-  status: "running" | "ok" | "error";
+  status: "running" | "ok" | "error" | "interrupted";
   detail: { text: string; tone?: "add" }[];
   path?: string;
   /** Wall-clock bracket, measured client-side — rows tick while running. */
@@ -78,6 +78,11 @@ export type AskPrompt = {
 export type TurnStatus = "thinking" | "streaming" | "ask" | "done" | "error";
 
 export type AssistantTurn = {
+  startedAt?: number;
+  lastUpdateAt?: number;
+  activityKind?: string;
+  connected?: boolean;
+  stopReason?: string;
   reasoning: string;
   text: string;
   tools: ToolRow[];

@@ -1,7 +1,13 @@
 "use client";
 
+import { parseComposerToken as parseToken, guiSkillRows } from "@/lib/gui-skills";
+import { Icon, GLYPHS, SOURCES, DEMO_COMMANDS, MODELS, FILES, DICTATION, AUTO_STEPS } from "./prompt-demo";
+import ModelPicker from "./ModelPicker";
+import ModelEffortButtons from "./ModelEffortButtons";
+import type { ModelChoice } from "@/lib/acp-client";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createShader, playSweep, accentChain, ACCENTS } from "glimm";
+import ComposerMenu from "./ComposerMenu";
+import { useComposerSweep } from "./useComposerSweep";
 import type { AcpCommand } from "@/lib/acp";
 import {
   filesFrom,
@@ -12,18 +18,6 @@ import {
 } from "@/lib/attachments";
 import { entryAt, historyKeyIntent, stepHistory } from "@/lib/prompt-history";
 
-/* The built-in "prism" palette is only cyan→indigo→magenta, so a sweep
- * reads as blue/purple. Build a true full-spectrum rainbow instead. */
-const RAINBOW = accentChain([
-  ACCENTS.red,
-  ACCENTS.orange,
-  ACCENTS.yellow,
-  ACCENTS.green,
-  ACCENTS.cyan,
-  ACCENTS.blue,
-  ACCENTS.purple,
-]);
-
 /* ─────────────────────────────────────────────────────────
  * PROMPT BAR
  * A composer with real controls: attach, @ data sources,
@@ -32,142 +26,14 @@ const RAINBOW = accentChain([
  * Variants: Rounded (card radius) · Pill (full radius).
  * ───────────────────────────────────────────────────────── */
 
-function Icon({ children, size = 15, strokeWidth = 1.8 }: { children: React.ReactNode; size?: number; strokeWidth?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      {children}
-    </svg>
-  );
-}
-
-const GLYPHS: Record<string, React.ReactNode> = {
-  clip: <path d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />,
-  chart: <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />,
-  layers: <g><path d="M12 2 2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5M2 12l10 5 10-5" /></g>,
-  globe: <g><circle cx="12" cy="12" r="10" /><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></g>,
-  file: <g><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></g>,
-};
-
-/* real product marks, inline so the file stays self-contained */
-const BRANDS: Record<string, React.ReactNode> = {
-  figma: (
-    <svg width="11" height="16" viewBox="0 0 38 57" aria-hidden="true">
-      <path d="M9.5 57A9.5 9.5 0 0 0 19 47.5V38H9.5a9.5 9.5 0 0 0 0 19z" fill="#0ACF83" />
-      <path d="M0 28.5A9.5 9.5 0 0 1 9.5 19H19v19H9.5A9.5 9.5 0 0 1 0 28.5z" fill="#A259FF" />
-      <path d="M0 9.5A9.5 9.5 0 0 1 9.5 0H19v19H9.5A9.5 9.5 0 0 1 0 9.5z" fill="#F24E1E" />
-      <path d="M19 0h9.5a9.5 9.5 0 1 1 0 19H19V0z" fill="#FF7262" />
-      <path d="M38 28.5a9.5 9.5 0 1 1-19 0 9.5 9.5 0 0 1 19 0z" fill="#1ABCFE" />
-    </svg>
-  ),
-  slack: (
-    <svg width="15" height="15" viewBox="0 0 127 127" aria-hidden="true">
-      <path d="M27.2 80c0 7.3-5.9 13.2-13.2 13.2C6.7 93.2.8 87.3.8 80c0-7.3 5.9-13.2 13.2-13.2h13.2V80zm6.6 0c0-7.3 5.9-13.2 13.2-13.2 7.3 0 13.2 5.9 13.2 13.2v33c0 7.3-5.9 13.2-13.2 13.2-7.3 0-13.2-5.9-13.2-13.2V80z" fill="#E01E5A" />
-      <path d="M47 27.2c-7.3 0-13.2-5.9-13.2-13.2C33.8 6.7 39.7.8 47 .8c7.3 0 13.2 5.9 13.2 13.2v13.2H47zm0 6.7c7.3 0 13.2 5.9 13.2 13.2 0 7.3-5.9 13.2-13.2 13.2H13.9C6.6 60.3.7 54.4.7 47.1c0-7.3 5.9-13.2 13.2-13.2H47z" fill="#36C5F0" />
-      <path d="M99.9 47.1c0-7.3 5.9-13.2 13.2-13.2 7.3 0 13.2 5.9 13.2 13.2 0 7.3-5.9 13.2-13.2 13.2H99.9V47.1zm-6.6 0c0 7.3-5.9 13.2-13.2 13.2-7.3 0-13.2-5.9-13.2-13.2V13.9C66.9 6.6 72.8.7 80.1.7c7.3 0 13.2 5.9 13.2 13.2v33.2z" fill="#2EB67D" />
-      <path d="M80.1 99.8c7.3 0 13.2 5.9 13.2 13.2 0 7.3-5.9 13.2-13.2 13.2-7.3 0-13.2-5.9-13.2-13.2V99.8h13.2zm0-6.6c-7.3 0-13.2-5.9-13.2-13.2 0-7.3 5.9-13.2 13.2-13.2h33.1c7.3 0 13.2 5.9 13.2 13.2 0 7.3-5.9 13.2-13.2 13.2H80.1z" fill="#ECB22E" />
-    </svg>
-  ),
-  gmail: (
-    <svg width="15" height="12" viewBox="0 0 256 193" aria-hidden="true">
-      <path d="M58.182 192.05V93.14L27.507 65.077 0 49.504v125.091c0 9.658 7.825 17.455 17.455 17.455h40.727Z" fill="#4285F4" />
-      <path d="M197.818 192.05h40.727c9.659 0 17.455-7.826 17.455-17.455V49.505l-31.156 17.837-27.026 25.798v98.91Z" fill="#34A853" />
-      <path d="m58.182 93.14-4.174-38.647 4.174-36.989L128 69.868l69.818-52.364 4.669 34.992-4.669 40.644L128 145.504 58.182 93.14Z" fill="#EA4335" />
-      <path d="M197.818 17.504V93.14L256 49.504V26.231c0-21.585-24.64-33.89-41.89-20.945l-16.292 12.218Z" fill="#FBBC04" />
-      <path d="m0 49.504 26.759 20.07L58.182 93.14V17.504L41.89 5.286C24.61-7.66 0 4.646 0 26.23v23.273Z" fill="#C5221F" />
-    </svg>
-  ),
-};
-
-type Source = {
-  key: string;
-  name: string;
-  desc: string;
-  glyph?: string;
-  brand?: string;
-  attach?: boolean;
-  connect?: boolean;
-};
-
-const SOURCES: Source[] = [
-  { key: "attach", name: "Add photos & files", desc: "Upload from your computer", glyph: "clip", attach: true },
-  { key: "scoop", name: "Scoop Data", desc: "Sales & churn metrics", glyph: "chart" },
-  { key: "flavors", name: "Flavor records", desc: "26 makers, tags, links", glyph: "layers" },
-  { key: "web", name: "Web search", desc: "Real-time news and info", glyph: "globe" },
-  { key: "figma", name: "Figma", desc: "Design-to-code workflows", brand: "figma" },
-  { key: "slack", name: "Slack", desc: "Read and manage Slack", brand: "slack" },
-  { key: "gmail", name: "Gmail", desc: "Read and manage Gmail", brand: "gmail", connect: true },
-];
-
-/* The self-running walkthrough types "/" and glides through rows, so it
- * needs something to show. A live surface is handed the agent's real set and
- * never falls back to these — an invented command must not reach a console
- * where someone could run it. */
-const DEMO_COMMANDS: AcpCommand[] = [
-  { name: "compare", description: "Flavor vs. last summer" },
-  { name: "churn-plan", description: "Draft a churn schedule" },
-  { name: "restock", description: "Build a reorder list" },
-  { name: "draft-email", description: "Write a supplier email" },
-  { name: "summarize", description: "Digest the thread so far" },
-];
-
-const MODELS = [
-  { key: "sprinkles-5", name: "Sprinkles 5", tag: "Flagship" },
-  { key: "vanilla-1", name: "Vanilla 1", tag: "Basic" },
-  { key: "freezer-burn", name: "Freezer Burn 0.4", tag: "Stale" },
-];
-
-const FILES = ["flavor-chart.png", "summer-menu.pdf", "pos-export.csv"];
-const DICTATION = "Compare pistachio weekends to last summer";
-
-/* self-running demo: walk the @ menu, then the / menu, and repeat.
- * Any pointer or key interaction hands control to the user. */
-const AUTO_STEPS: {
-  draft: string;
-  active?: number;
-  connect?: boolean;
-  modelOpen?: boolean;
-  model?: string;
-  hold: number;
-}[] = [
-  { draft: "", connect: false, model: "vanilla-1", hold: 1100 },
-  { draft: "@", active: 0, hold: 900 },
-  { draft: "@", active: 1, hold: 620 },
-  { draft: "@", active: 4, hold: 620 },
-  { draft: "@", active: 6, hold: 700 },
-  { draft: "@", active: 6, connect: true, hold: 1000 },
-  { draft: "", hold: 700 },
-  { draft: "/", active: 0, hold: 900 },
-  { draft: "/", active: 1, hold: 620 },
-  { draft: "/", active: 3, hold: 1000 },
-  { draft: "", hold: 800 },
-  // open the model picker and upgrade to the flagship → rainbow sweep
-  { draft: "", modelOpen: true, hold: 1200 },
-  { draft: "", model: "sprinkles-5", hold: 2400 },
-  { draft: "", hold: 900 },
-];
-
-/* The last @word or /word being typed, if any. An @ query may carry path
- * separators and dots, because narrowing by directory is how anyone finds a
- * file in a large tree; a slash command never contains either. */
-function parseToken(draft: string): { kind: "at" | "slash"; query: string; start: number } | null {
-  const match = /(^|\s)(?:@([\w./-]*)|\/([\w-]*))$/.exec(draft);
-  if (!match) return null;
-  const at = match[2] !== undefined;
-  return {
-    kind: at ? "at" : "slash",
-    query: (at ? match[2] : match[3]).toLowerCase(),
-    start: match.index + match[1].length,
-  };
-}
-
-export type PromptModel = { key: string; name: string; tag?: string };
+export type PromptModel = ModelChoice;
 
 export default function PromptBar({
   variant = "Rounded",
   demo = true,
   tall = false,
   placeholder,
-  onSend,
+  onSend, onSetting,
   models,
   commands,
   modelKey,
@@ -184,7 +50,7 @@ export default function PromptBar({
   /** hero sizing: a multi-line input with controls on their own row */
   tall?: boolean;
   placeholder?: string;
-  onSend?: (text: string) => void;
+  onSend?: (text: string) => void; onSetting?: (text: string) => Promise<void>;
   models?: PromptModel[];
   /** The slash commands the agent advertised. Empty until it answers —
    * an empty menu beats inventing commands this build may not service. */
@@ -213,7 +79,7 @@ export default function PromptBar({
   const [dismissed, setDismissed] = useState(false);
   const [plusOpen, setPlusOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
-  const [model, setModel] = useState(
+  const [model, setModel] = useState<PromptModel>(
     () => catalog.find((m) => m.key === modelKey) ?? catalog[0] ?? MODELS[1],
   );
   /* Live surfaces load their catalog async (graff/models); once it lands, or
@@ -222,10 +88,11 @@ export default function PromptBar({
   useEffect(() => {
     if (!modelKey) return;
     const found = catalog.find((m) => m.key === modelKey);
-    if (found && found.key !== model.key) setModel(found);
+    if (found && found !== model) setModel(found);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelKey, models]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [uploads, setUploads] = useState(0);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   /* Workspace files matching the current @ query — live surfaces only. */
@@ -237,25 +104,14 @@ export default function PromptBar({
   const [autoStep, setAutoStep] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const wide = expanded || tall;
-  const [rowBox, setRowBox] = useState<{ top: number; height: number } | null>(null);
   const [engaged, setEngaged] = useState(false);
-  const [modelBox, setModelBox] = useState<{ top: number; height: number } | null>(null);
-  const [modelHovered, setModelHovered] = useState<number | null>(null);
-  const [modelQuery, setModelQuery] = useState("");
-  const [modelMenuLeft, setModelMenuLeft] = useState(0);
-  const [modelMenuBottom, setModelMenuBottom] = useState(0);
-  const [modelMenuMaxH, setModelMenuMaxH] = useState(560);
-  const composerAnchorRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);
   const modelRef = useRef<HTMLButtonElement>(null);
-  const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const modelRowRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const glimmRef = useRef<HTMLCanvasElement>(null);
-  const shaderRef = useRef<ReturnType<typeof createShader> | null>(null);
-  const sweepingRef = useRef(false);
+  const menuAnchor = useRef<HTMLDivElement>(null);
+  const { glimmRef, celebrate } = useComposerSweep();
 
   /* hand control to the user: stop the demo loop, and when they aim at
    * the input itself, clear the demo's leftover draft for a clean start */
@@ -271,7 +127,7 @@ export default function PromptBar({
   }, [commands, demo]);
 
   const token = dismissed ? null : parseToken(draft);
-  const menu: "at" | "slash" | null = plusOpen ? "at" : token?.kind ?? null;
+  const menu: "at" | "slash" | "skill" | null = plusOpen ? "at" : token?.kind ?? null;
   const query = plusOpen ? "" : token?.query ?? "";
 
   /* The @ picker searches the workspace. Debounced, and every in-flight
@@ -313,10 +169,10 @@ export default function PromptBar({
    * an invented data source is worse than an empty menu. */
   const atRows = demo
     ? SOURCES.filter((s) => s.name.toLowerCase().includes(query))
-    : [SOURCES[0], ...fileRows];
+    : [...guiSkillRows(query), SOURCES[0], ...fileRows];
 
   const rows: { key: string; name: string; desc: string }[] =
-    menu === "at"
+    menu === "skill" ? guiSkillRows(query) : menu === "at"
       ? atRows
       : menu === "slash"
         ? slashRows.filter((c) => c.name.slice(1).startsWith(query))
@@ -327,116 +183,10 @@ export default function PromptBar({
     setEngaged(false);
   }, [menu, query]);
 
-  /* a single highlight glides to the active row instead of each row
-   * toggling its own background — matches the gliding pill in the nav */
-  useLayoutEffect(() => {
-    const target = rowRefs.current[active];
-    if (target) setRowBox({ top: target.offsetTop, height: target.offsetHeight });
-  }, [menu, query, active, connected, rows.length]);
-
-  /* same gliding highlight in the model menu — floats to the hovered
-   * row, falling back to the currently-selected model */
-  const modelFilter = modelQuery.trim().toLowerCase();
-  const shownModels = modelFilter
-    ? catalog.filter(
-        (m) => m.name.toLowerCase().includes(modelFilter) || (m.tag ?? "").toLowerCase().includes(modelFilter),
-      )
-    : catalog;
-  const modelIndex = shownModels.findIndex((m) => m.key === model.key);
-  useLayoutEffect(() => {
-    if (!modelOpen) return;
-    const target = modelRowRefs.current[modelHovered ?? modelIndex];
-    if (target) {
-      setModelBox({ top: target.offsetTop, height: target.offsetHeight });
-      /* 40+ authenticated models: opening far from the current selection
-       * hid it off-screen — bring it into view, but never fight the mouse */
-      if (modelHovered === null) target.scrollIntoView({ block: "nearest" });
-    }
-  }, [modelOpen, modelHovered, modelIndex, modelFilter]);
-
-  /* The menu is outside the clipped composer, so align it to the model
-   * trigger by measurement instead of pinning it to the far-right edge. */
-  useLayoutEffect(() => {
-    if (!modelOpen || !composerAnchorRef.current || !modelRef.current) return;
-    const anchorRect = composerAnchorRef.current.getBoundingClientRect();
-    const triggerRect = modelRef.current.getBoundingClientRect();
-    setModelMenuLeft(Math.max(0, Math.min(triggerRect.left - anchorRect.left, anchorRect.width - 176)));
-    setModelMenuBottom(anchorRect.bottom - triggerRect.top + 8);
-    // The menu grows upward from the trigger; without this cap a 40-model
-    // list runs past the viewport top and clips its own filter input.
-    setModelMenuMaxH(Math.max(220, Math.min(560, triggerRect.top - 20)));
-  }, [modelOpen, wide, model.name]);
-
-  useEffect(() => {
-    if (!modelOpen) {
-      setModelHovered(null);
-      setModelQuery("");
-    }
-  }, [modelOpen]);
-
-  /* Build the shader with a pinned hue phase. createShader seeds its
-   * internal hueShift from Math.random(), which made the sweep a different
-   * colour on every reload — pin it so the rainbow is identical each time. */
-  const makeShader = () => {
-    const canvas = glimmRef.current;
-    if (!canvas) return null;
-    const random = Math.random;
-    Math.random = () => 0;
-    try {
-      return createShader({
-        canvas,
-        palette: RAINBOW,
-        direction: "ltr",
-        bandTight: 10,
-        swellAmount: 0.85,
-      });
-    } finally {
-      Math.random = random;
-    }
-  };
-
-  /* Glimm shader lives inside the composer, invisible at rest. Selecting
-   * the flagship model fires a one-shot rainbow sweep across the interior. */
-  useEffect(() => {
-    shaderRef.current = makeShader();
-    return () => {
-      shaderRef.current?.destroy();
-      shaderRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const celebrate = () => {
-    if (sweepingRef.current) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    // Recreate the shader per sweep so uTime restarts at 0 — the hue phase
-    // (which drifts with time) is then identical on every trigger.
-    shaderRef.current?.destroy();
-    const shader = makeShader();
-    shaderRef.current = shader;
-    if (!shader) return;
-    sweepingRef.current = true;
-    const sweep = playSweep(shader, {
-      palette: RAINBOW,
-      direction: "ltr",
-      sweepMs: 570,
-      outroMs: 80,
-      peakAlpha: 1.3,
-      bandTight: 10,
-      brightness: 1.4,
-      swellAmount: 1,
-      waveSpeed: 1.8,
-      easing: "easeOutExpo",
-    });
-    sweep.done.finally(() => {
-      sweepingRef.current = false;
-    });
-  };
-
   const selectModel = (next: PromptModel) => {
     setModel(next);
     setModelOpen(false);
-    onModelChange?.(next.key);
+    if (next.key !== model.key) onModelChange?.(next.key);
     if (next.key === "sprinkles-5") celebrate();
   };
 
@@ -456,18 +206,17 @@ export default function PromptBar({
     return () => clearTimeout(t);
   }, [auto, autoStep]);
 
-  /* dictation resolves after a beat, like a real transcript landing */
+  /* The simulated transcript is confined to the component demo. */
   useEffect(() => {
-    if (!listening) return;
+    if (!demo || !listening) return;
     const t = setTimeout(() => {
       setDraft((current) => (current ? `${current.trimEnd()} ${DICTATION}` : DICTATION));
       setListening(false);
       inputRef.current?.focus();
     }, 2200);
     return () => clearTimeout(t);
-  }, [listening]);
+  }, [demo, listening]);
 
-  /* Move wrapped text above the controls, then grow to a compact maximum. */
   useLayoutEffect(() => {
     const input = inputRef.current;
     const controls = controlsRef.current;
@@ -500,16 +249,15 @@ export default function PromptBar({
 
   /* clicking anywhere outside the composer closes the open menus */
   useEffect(() => {
-    if (!modelOpen && !plusOpen) return;
+    if (!plusOpen) return;
     const close = (event: PointerEvent) => {
       if (!(event.target as Element).closest("[data-promptbar]")) {
-        setModelOpen(false);
         setPlusOpen(false);
       }
     };
     document.addEventListener("pointerdown", close);
     return () => document.removeEventListener("pointerdown", close);
-  }, [modelOpen, plusOpen]);
+  }, [plusOpen]);
 
   const closeMenus = () => {
     setPlusOpen(false);
@@ -526,6 +274,8 @@ export default function PromptBar({
         fileInputRef.current?.click();
       }
       setDraft(before);
+    } else if (row.key.startsWith("gui-skill:")) {
+      setDraft(`${before}$${row.key.slice(10)} `);
     } else if (row.key.startsWith("file:")) {
       /* The harness reads `@[path]` out of the prompt text: an image becomes
        * a native vision block, anything else stays a path it opens itself. */
@@ -540,18 +290,16 @@ export default function PromptBar({
     inputRef.current?.focus();
   };
 
-  /* Bytes from a paste, a drop or the file picker. Uploaded one at a time so
-   * one refusal cannot take the others down with it. */
   const attachFiles = async (files: File[]) => {
     if (demo || files.length === 0) return;
-    setAttachError(null);
+    setAttachError(null); setUploads(count => count + files.length);
     for (const file of files) {
       try {
         const attachment = await uploadAttachment(file);
         setAttachments((current) => [...current, attachment]);
       } catch (err) {
         setAttachError(err instanceof Error ? err.message : String(err));
-      }
+      } finally { setUploads(count => count - 1); }
     }
     inputRef.current?.focus();
   };
@@ -563,10 +311,11 @@ export default function PromptBar({
     });
   };
 
-  const canSend = !disabled && (draft.trim().length > 0 || attachments.length > 0);
+  const canSend = !disabled && uploads === 0 && (draft.trim().length > 0 || attachments.length > 0);
   const showStop = busy && !canSend;
   const send = () => {
     if (!canSend) return;
+    if (/^\/(effort|reasoning)$/.test(draft.trim()) && model.effortLevels?.length) { modelRef.current?.dispatchEvent(new Event("graff-effort-open")); setDraft(""); return; }
     onSend?.(withAttachmentMarkers(draft.trim(), attachments));
     releaseAttachments(attachments);
     setDraft("");
@@ -603,162 +352,15 @@ export default function PromptBar({
       onKeyDownCapture={takeOver}
     >
       {/* composer is the anchor — menus grow up from its top edge */}
-      <div ref={composerAnchorRef} className="relative">
+      <div ref={menuAnchor} className="relative">
       {/* ── @ / slash menu ─────────────────────────────── */}
-      {menu && (
-        <div
-          onMouseLeave={() => setEngaged(false)}
-          className="absolute inset-x-0 bottom-full z-10 mb-2 rounded-[10px] bg-surface p-1 shadow-raised"
-          style={{ animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom center" }}
-        >
-          {/* single gliding highlight — appears once a row is hovered */}
-          <span
-            aria-hidden
-            className="pointer-events-none absolute inset-x-1 rounded-[6px] bg-hover"
-            style={{
-              top: rowBox?.top ?? 0,
-              height: rowBox?.height ?? 0,
-              opacity: rowBox && engaged && rows.length > 0 ? 1 : 0,
-              transition:
-                "top 220ms cubic-bezier(0.23,1,0.32,1), height 220ms cubic-bezier(0.23,1,0.32,1), opacity 150ms ease",
-            }}
-          />
-          {rows.map((row, i) => {
-            const source = menu === "at" ? SOURCES.find((s) => s.key === row.key) : undefined;
-            const mark = source ? (
-              source.brand ? BRANDS[source.brand] : <Icon size={15}>{GLYPHS[source.glyph ?? "clip"]}</Icon>
-            ) : row.key.startsWith("file:") ? (
-              <Icon size={15}>{GLYPHS.file}</Icon>
-            ) : null;
-            return (
-              <button
-                key={row.key}
-                type="button"
-                ref={(el) => {
-                  rowRefs.current[i] = el;
-                }}
-                onMouseDown={(event) => event.preventDefault()}
-                onMouseEnter={() => {
-                  setActive(i);
-                  setEngaged(true);
-                }}
-                onClick={() => pick(row)}
-                className="relative z-10 flex h-9 w-full items-center gap-2.5 rounded-[6px] px-2 text-left"
-              >
-                {mark && (
-                  <span className="flex size-5.5 shrink-0 items-center justify-center text-ink-2">{mark}</span>
-                )}
-                <span className="shrink-0 text-[12.5px] font-medium text-ink">
-                  {row.name}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3">{row.desc}</span>
-                {source?.connect && (
-                  <span
-                    role="button"
-                    tabIndex={-1}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setConnected((current) => !current);
-                    }}
-                    className={`shrink-0 text-[12px] font-medium transition-colors duration-100 ${
-                      connected ? "text-green" : "text-accent-ink hover:underline"
-                    }`}
-                  >
-                    {connected ? "Connected" : "Connect"}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-          {rows.length === 0 && (
-            <div className="flex h-9 items-center px-2 text-[12px] text-ink-3">
-              No matches for “{query}”
-            </div>
-          )}
-          <div className="mt-1 border-t border-line px-2 pt-1.5 pb-1 text-[11px] text-ink-3">
-            {menu !== "at"
-              ? "Type to search commands"
-              : demo
-                ? "Type to search sources & files"
-                : "Type to search this workspace — or paste, drop and attach files"}
-          </div>
-        </div>
-      )}
+      {menu && <ComposerMenu anchor={menuAnchor} menu={menu} rows={rows} query={query}
+        active={active} engaged={engaged} setActive={setActive} setEngaged={setEngaged}
+        connected={connected} setConnected={setConnected} demo={demo} onPick={pick} />}
 
-      {/* ── model menu ─────────────────────────────────── */}
-      {modelOpen && (
-        <div
-          className="absolute z-10 flex w-64 flex-col rounded-[10px] bg-surface p-1 shadow-raised"
-          style={{ left: modelMenuLeft, bottom: modelMenuBottom, maxHeight: modelMenuMaxH, animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom left" }}
-        >
-          {/* a real install lists 40+ authenticated seats — filter beats scrolling */}
-          {catalog.length > 8 && (
-            <input
-              autoFocus
-              value={modelQuery}
-              onChange={(event) => {
-                setModelQuery(event.target.value);
-                setModelHovered(null);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  setModelOpen(false);
-                  inputRef.current?.focus();
-                }
-                if (event.key === "Enter" && shownModels.length > 0) {
-                  selectModel(shownModels[0]);
-                  inputRef.current?.focus();
-                }
-              }}
-              placeholder="Filter models…"
-              aria-label="Filter models"
-              className="mb-1 h-7 shrink-0 rounded-[6px] bg-field px-2 text-[12px] text-ink shadow-hairline outline-none placeholder:text-ink-3"
-            />
-          )}
-          <div
-            onMouseLeave={() => setModelHovered(null)}
-            className="relative min-h-0 flex-1 overflow-y-auto"
-          >
-            {/* single gliding highlight — floats to the hovered / selected row */}
-            <span
-              aria-hidden
-              className="pointer-events-none absolute inset-x-0 rounded-[6px] bg-hover"
-              style={{
-                top: modelBox?.top ?? 0,
-                height: modelBox?.height ?? 0,
-                opacity: modelBox && modelHovered !== null ? 1 : 0,
-                transition:
-                  "top 220ms cubic-bezier(0.23,1,0.32,1), height 220ms cubic-bezier(0.23,1,0.32,1), opacity 150ms ease",
-              }}
-            />
-            {shownModels.map((m, i) => (
-              <button
-                key={m.key}
-                type="button"
-                ref={(el) => {
-                  modelRowRefs.current[i] = el;
-                }}
-                onMouseDown={(event) => event.preventDefault()}
-                onMouseEnter={() => setModelHovered(i)}
-                onClick={() => {
-                  selectModel(m);
-                  inputRef.current?.focus();
-                }}
-                className="relative z-10 flex h-7.5 w-full items-center gap-2 rounded-[6px] px-2 text-left"
-              >
-                <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{m.name}</span>
-                <span className="shrink-0 text-[11px] text-ink-3">{m.tag}</span>
-                <span className={`shrink-0 text-ink ${m.key === model.key ? "" : "invisible"}`}>
-                  <Icon size={13} strokeWidth={2.5}><path d="M20 6L9 17l-5-5" /></Icon>
-                </span>
-              </button>
-            ))}
-            {shownModels.length === 0 && (
-              <div className="px-2 py-2 text-[12px] text-ink-3">No models match “{modelQuery.trim()}”</div>
-            )}
-          </div>
-        </div>
-      )}
+
+      {modelOpen && <ModelPicker models={catalog} selected={model} anchor={modelRef} onClose={() => setModelOpen(false)}
+        onSelect={next => { selectModel(next); inputRef.current?.focus({ preventScroll: true }); }} />}
 
       {/* ── composer ───────────────────────────────────── */}
       <div
@@ -788,7 +390,6 @@ export default function PromptBar({
           pill ? (attachments.length > 0 || wide ? "rounded-[24px]" : "rounded-full") : tall ? "rounded-[22px]" : "rounded-[14px]"
         }`}
       >
-        {/* The @ menu's attach row and the + button both open this. */}
         <input
           ref={fileInputRef}
           type="file"
@@ -850,6 +451,7 @@ export default function PromptBar({
           </div>
         )}
 
+        {uploads > 0 && <p role="status" className="px-2 text-xs text-ink-3">Adding {uploads} {uploads === 1 ? "file" : "files"}…</p>}
         {attachError && (
           <div className={`text-[11.5px] text-red ${pill ? "px-2" : "px-1"}`} role="status">
             {attachError}
@@ -929,33 +531,16 @@ export default function PromptBar({
             }`}
           />
 
-          {/* model picker */}
-          <button
-            ref={modelRef}
-            type="button"
-            aria-expanded={modelOpen}
-            aria-label="Choose model"
-            onClick={() => {
-              setPlusOpen(false);
-              setModelOpen((current) => !current);
-            }}
-            className={`flex h-7 shrink-0 items-center gap-1 px-1.5 text-[12px] font-medium text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink ${
-              pill ? "rounded-full" : "rounded-[8px]"
-            } ${wide ? "col-start-2 row-start-2 justify-self-start" : "col-start-3 row-start-1"}`}
-          >
-            {model.name}
-            <span className="text-ink-3">
-              <Icon size={11} strokeWidth={2.4}><path d="M6 9l6 6 6-6" /></Icon>
-            </span>
-          </button>
+          <ModelEffortButtons model={model} buttonRef={modelRef} modelOpen={modelOpen} wide={wide} pill={pill} busy={busy}
+            onCommand={onSetting} openModel={() => { setPlusOpen(false); setModelOpen(current => !current); }} />
 
           {/* dictation */}
           <button
             type="button"
             aria-label={listening ? "Stop dictation" : "Start dictation"}
-            aria-pressed={listening}
+            aria-pressed={listening} disabled={!demo} title={demo ? "Demo dictation" : "Dictation is not available yet"}
             onClick={() => setListening((current) => !current)}
-            className={`flex size-7 shrink-0 items-center justify-center transition-[background-color,color,transform] duration-150 active:scale-[0.94] ${
+            className={`flex size-7 shrink-0 items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-150 active:scale-[0.94] ${
               pill ? "rounded-full" : "rounded-[8px]"
             } ${listening ? "bg-accent-tint text-accent-ink" : "text-ink-3 hover:bg-hover hover:text-ink"} ${wide ? "col-start-4 row-start-2" : "col-start-4 row-start-1"}`}
           >
@@ -981,7 +566,7 @@ export default function PromptBar({
             aria-label={showStop ? "Stop" : "Send"}
             disabled={showStop ? !onStop : !canSend}
             onClick={showStop ? onStop : send}
-            className={`flex size-7 shrink-0 items-center justify-center transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${
+            className={`flex size-7 shrink-0 items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${
               pill ? "rounded-full" : "rounded-[8px]"
             } ${wide ? "col-start-5 row-start-2" : "col-start-5 row-start-1"}`}
             style={{

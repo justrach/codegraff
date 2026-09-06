@@ -13,6 +13,32 @@ test {
     _ = @import("jobs_completion_tests.zig");
 }
 
+test "#728 consumed successful blocking output cannot inject a late completion" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    const notify = @import("job_notify.zig");
+    const Agent = @import("agent.zig").Agent;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    jobs.g_jobs = .{};
+    Agent.esc_cancel.store(false, .release);
+    var wake: [512]u8 = undefined;
+    while (notify.takeWake(io, &wake) != null) {}
+    defer jobs.jobsReap(gpa, io);
+    // More than the notice capacity: correctness must not depend on a
+    // bounded cache remembering consumed ids while pump publication lags.
+    for (0..24) |_| {
+        const id = (try jobs.spawnJob(gpa, io, "printf success; exit 0")).id;
+        const output = try jobs.jobOutput(gpa, io, id, 1);
+        defer gpa.free(output.text);
+        try std.testing.expect(!output.is_error);
+        try std.testing.expect(std.mem.indexOf(u8, output.text, "exited with code 0") != null);
+        try std.testing.expect(std.mem.indexOf(u8, output.text, "success") != null);
+        jobs.reapFinished(gpa, io, id); // await pump, including late publication
+        try std.testing.expect(notify.takeWake(io, &wake) == null);
+        try std.testing.expect(!Agent.esc_cancel.load(.acquire));
+    }
+}
+
 test "foreground tool subprocesses own their process group (#266, #198)" {
     const inherited = jobs.toolRunOptions(null);
     try std.testing.expect(inherited.kill_process_tree);

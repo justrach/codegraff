@@ -111,7 +111,7 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.push(.system, "started a new conversation") catch {};
         self.screen = .welcome;
     } else if (std.mem.eql(u8, canon, "/resume")) {
-        resume_mod.run(self, arg);
+        if (arg.len == 0) resume_mod.open(self) else resume_mod.run(self, arg);
     } else if (std.mem.eql(u8, canon, "/home")) {
         self.screen = .welcome;
         self.focus = .prompt;

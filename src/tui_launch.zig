@@ -144,6 +144,7 @@ pub fn run(
         .compact_fn = compactCb,
         .history_fn = historyCb,
         .resume_fn = tui_session.resumeCb,
+        .sessions_fn = tui_session.sessionsCb,
         .state_fn = stateCb,
         .emergency_fn = emergencyCb,
         .idle_wake_fn = idleWakeCb,

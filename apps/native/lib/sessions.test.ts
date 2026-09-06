@@ -3,6 +3,23 @@ import assert from "node:assert/strict";
 import { dateGroup, groupSessions, sessionHint, transcriptFromMessages } from "./sessions.ts";
 
 describe("transcriptFromMessages", () => {
+  it("restores Responses tool calls and completion answers without role fields", () => {
+    const messages = transcriptFromMessages([
+      { role: "user", content: [{ type: "input_text", text: "Summarize the readme" }] },
+      { type: "function_call", call_id: "read", name: "read_file", arguments: '{"path":"README.md"}' },
+      { type: "function_call_output", call_id: "read", output: "Project overview" },
+      { type: "function_call", call_id: "done", name: "attempt_completion", arguments: '{"result":"The project is a coding harness."}' },
+      { type: "function_call_output", call_id: "done", output: "completion recorded" },
+    ]);
+    assert.equal(messages.length, 2);
+    const answer = messages[1];
+    assert.equal(answer.role, "assistant");
+    if (answer.role !== "assistant") return;
+    assert.equal(answer.turn.text, "The project is a coding harness.");
+    assert.equal(answer.turn.tools.length, 1);
+    assert.equal(answer.turn.tools[0].status, "ok");
+    assert.match(JSON.stringify(answer.turn.tools[0].detail), /Project overview/);
+  });
   it("folds assistant + tool messages into one turn per user message", () => {
     const raw = [
       { role: "user", content: "write a haiku file" },

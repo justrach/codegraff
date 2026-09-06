@@ -106,9 +106,11 @@ fn userMessage(arena: Allocator, root: *agent_mod.Agent, text: []const u8) !Valu
 /// ACP client can offer only the models this install can actually reach.
 /// Rows come back in election order (plan, then local, credits, api).
 fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request) anyerror!bool {
+    const live: *LiveTurn = @ptrCast(@alignCast(ctx));
+    if (try @import("acp_agents.zig").handle(arena, live.root.io, live.root.home, w, req)) return true;
+    if (try @import("acp_changes.zig").handle(arena, live.root.io, w, req)) return true;
     if (!std.mem.eql(u8, req.method, "graff/models")) return false;
     if (req.id == null) return true;
-    const live: *LiveTurn = @ptrCast(@alignCast(ctx));
     const keys = live.keys;
     const root = live.root;
     const catalog = pricing.models();
@@ -141,9 +143,12 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
             .current = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id),
         };
     }
+    const all_efforts = [_][]const u8{ "low", "medium", "high", "xhigh", "max", "ultra" };
+    const levels: []const []const u8 = if (!root.effortApplies()) &.{} else if (@import("effort_route.zig").hidesMax(root.provider.id, root.provider.model)) all_efforts[0..4] else &all_efforts;
     try proto.writeResult(w, req.id, .{
         .models = rows,
-        .current = .{ .model = root.provider.model, .provider = root.provider.id },
+        .commands = proto.slashCommands(),
+        .current = .{ .model = root.provider.model, .provider = root.provider.id, .effort = @tagName(root.reasoning), .fast = root.fast, .effortLevels = levels, .fastSupported = std.mem.eql(u8, root.provider.id, "codex") },
     });
     return true;
 }
@@ -164,6 +169,7 @@ const LiveTurn = struct {
 
     fn run(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
+        agent_mod.Agent.prepareRootTurn(); // #753: a prior stream cancel must not steal the continuation
         switch (try @import("turn_dedup.zig").enqueue(self.root, arena, self.out, text)) {
             .started => {},
             .skipped => return "",
@@ -181,7 +187,17 @@ const LiveTurn = struct {
             self.root.out = null;
             main_mod.g_out = null;
         }
-        const final = try providers.runTurnWithFallback(self.root, self.keys, arena, null);
+        const final = providers.runTurnWithFallback(self.root, self.keys, arena, null) catch |err| {
+            // #753: an API interruption is a failed turn, not a dead ACP
+            // process. Save so the next prompt (and a respawn --resume) still
+            // sees the tool results and the background-agent ledger.
+            session.saveSession(self.root, self.root.arena, self.root.session_name) catch {};
+            if (err == error.ApiError) {
+                const msg = self.root.last_api_error orelse "provider API error";
+                return std.fmt.allocPrint(arena, "{s}", .{msg});
+            }
+            return err;
+        };
         // The REPL checkpoints after every turn (mainloop); an ACP host's
         // conversation deserves the same durability. Without this a text-only
         // turn reached .graff/sessions only at stdin EOF, and a tab the host
@@ -493,4 +509,13 @@ test "isAcpSubcommand claims only `acp`, and arms the stdout discipline" {
 test {
     _ = @import("acp_protocol.zig");
     _ = @import("acp_stream.zig");
+}
+
+test "ACP advertises the complete REPL command catalog including compact" {
+    const catalog = @import("command_catalog.zig").commands;
+    const advertised = proto.slashCommands();
+    try std.testing.expectEqual(catalog.len, advertised.len);
+    for (catalog, advertised) |command, exposed| {
+        try std.testing.expectEqualStrings(command.name[1..], exposed.name);
+    }
 }

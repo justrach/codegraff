@@ -66,6 +66,7 @@ pub const TransportAbort = struct {
 /// still-in-flight arguments (agent_argstream.zig), so an announcement line
 /// would repeat what the reader just watched arrive.
 pub const ToolInvocation = struct {
+    id: []const u8 = "",
     name: []const u8,
     input: std.json.Value,
     ask_user: bool = false,
@@ -77,6 +78,7 @@ pub const ToolInvocation = struct {
 /// marks a meta tool (schema.isMetaName) — those own their UX and, except
 /// for ask_user, never carried a result on the wire.
 pub const ToolOutcome = struct {
+    id: []const u8 = "",
     name: []const u8,
     text: []const u8,
     is_error: bool,
@@ -89,6 +91,7 @@ pub const ToolOutcome = struct {
 /// A tool call the harness refused before it ran: the verifier boundary, a
 /// stale eval, the --max-tool-calls budget, the dedupe rule, or review mode.
 pub const ToolRejection = struct {
+    id: []const u8 = "",
     name: []const u8,
     input: std.json.Value,
     reason: []const u8,
@@ -418,9 +421,10 @@ pub fn durable(ev: EngineEvent) bool {
         // --json client is handed that moment as its own `ask_user` event,
         // and answers it on stdin.
         .tool_call_announced, .tool_call_started => |t| !t.ask_user,
-        // Meta tools render their own UX and never carried a wire result —
-        // except ask_user, whose typed reply IS the result.
-        .tool_result, .tool_call_finished => |r| !r.meta or r.ask_user,
+        // Meta tools own their text UX, but correlated calls still need a
+        // completion status so clients can close every announced tool row.
+        .tool_result => |r| !r.meta or r.ask_user,
+        .tool_call_finished => |r| !r.meta or r.ask_user or r.id.len != 0,
         .tool_rejected => true,
         // The lifecycle cluster is presentation-only except the failover,
         // which has always been the wire's `model` event.

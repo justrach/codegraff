@@ -10,10 +10,17 @@
     "start": "NEXT_TELEMETRY_DISABLED=1 next start --port 3000",
     "mock-serve": "node scripts/mock-serve.mjs",
     "lint": "next lint",
-    "test": "node --experimental-strip-types --test lib/graff-events.test.ts lib/acp.test.ts lib/sessions.test.ts lib/session-store.test.ts lib/follow-scroll.test.ts lib/prompt-queue.test.ts lib/prompt-history.test.ts lib/attachments.test.ts lib/workspaces.test.ts lib/browser/annotations.test.ts lib/browser/url.test.ts"
+    "test": "node --experimental-strip-types --test lib/graff-events.test.ts lib/acp.test.ts lib/sessions.test.ts lib/session-store.test.ts lib/follow-scroll.test.ts lib/prompt-queue.test.ts lib/prompt-history.test.ts lib/attachments.test.ts lib/workspaces.test.ts lib/browser/annotations.test.ts lib/browser/url.test.ts",
+    "electron:build": "bash electron/build.sh",
+    "test:electron": "bun test electron/policy.test.cjs",
+    "test:desktop": "bun test lib ./electron/*.test.cjs",
+    "test:visual": "bun scripts/test-visual.mjs",
+    "test:performance": "GRAFF_PERFORMANCE_TESTS=1 bun scripts/test-visual.mjs"
   },
   "dependencies": {
     "@streamdown/code": "^1.1.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "glimm": "^0.3.0",
     "iconoir-react": "^7.11.1",
     "liveline": "^0.0.7",
@@ -28,6 +35,8 @@
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "electron": "^44.2.0",
+    "node-api-headers": "^1.9.0",
     "tailwindcss": "^4.1.8",
     "typescript": "^5"
   }

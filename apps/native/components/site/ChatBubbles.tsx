@@ -4,6 +4,7 @@ import { memo, useEffect, useRef, useState, type RefObject } from "react";
 import Markdown from "@/components/primitives/Markdown";
 import ThinkingState from "@/components/primitives/ThinkingState";
 import ToolChips from "@/components/primitives/ToolChips";
+import TurnActivity from "./TurnActivity";
 import { pinScrollerTail } from "@/lib/follow-scroll";
 import { turnBlocks, type AssistantTurn } from "@/lib/acp";
 
@@ -55,7 +56,7 @@ export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   return (
     <div className="flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
       <div
-        className="rounded-xl px-3.5 py-2 text-[13px] leading-relaxed text-ink shadow-hairline"
+        className="rounded-xl px-3.5 py-2 min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-relaxed text-ink shadow-hairline"
         style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }}
       >
         {text}
@@ -123,14 +124,10 @@ export const AssistantBody = memo(function AssistantBody({
 
   const lastTextIndex = blocks.reduce((acc, b, i) => (b.kind === "text" ? i : acc), -1);
   const lastBlock = blocks[blocks.length - 1];
-  const waitingOnTools =
-    turn.status === "streaming" &&
-    !lastTextBody &&
-    (lastBlock?.kind === "tools" || blocks.length === 0);
 
   return (
-    <article className="min-w-0" style={{ overflowAnchor: "none", animation: "fade-in 280ms ease both" }}>
-      {(thinking || reasoningRows.length > 0 || (turn.thoughtMs ?? 0) >= 1500) && (
+    <article data-turn-status={turn.status} aria-busy={live} className="min-w-0" style={{ overflowAnchor: "none", animation: "fade-in 280ms ease both" }}>
+      {((thinking && turn.activityKind === "agent_thought_chunk") || reasoningRows.length > 0 || (turn.thoughtMs ?? 0) >= 1500) && (
         <ThinkingState
           variant="Reasoning"
           rows={reasoningRows.length ? reasoningRows : [{ primary: "Waiting on the model…", shimmer: true }]}
@@ -152,28 +149,15 @@ export const AssistantBody = memo(function AssistantBody({
           <div key={`text-${i}`} className="mt-3 max-w-[630px]">
             <Markdown
               text={i === lastTextIndex ? smoothText : block.text}
-              streaming={i === lastTextIndex && (draining || turn.status === "streaming" || turn.status === "thinking")}
+              streaming={i === lastTextIndex && live && draining}
               onOpenPath={onOpenPath}
             />
           </div>
         ),
       )}
-      {waitingOnTools && (
-        <div className="mt-4">
-          <span
-            className="bg-clip-text text-[13px] font-medium whitespace-nowrap text-transparent"
-            style={{
-              backgroundImage: "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
-              backgroundSize: "200% 100%",
-              animation: "shimmer-text 1.4s linear infinite",
-            }}
-          >
-            {turn.tools.some((tool) => tool.status === "running") ? "Running tools…" : "Writing…"}
-          </span>
-        </div>
-      )}
+      <TurnActivity turn={turn} />
       {turn.error && (
-        <p className="mt-4 max-w-[620px] text-[13.5px] leading-[1.65] text-red">{turn.error}</p>
+        <p role="alert" className="mt-4 max-w-[620px] text-[13.5px] leading-[1.65] text-red">{turn.error}</p>
       )}
       {turn.recap && turn.status === "done" && !draining && (
         <p className="mt-3 text-[12px] text-ink-3">{turn.recap}</p>

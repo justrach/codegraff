@@ -78,6 +78,17 @@ record only when you need the evidence or the edge cases.
 | [0065](0065-stop-bounded-prose-repetition.md) | Stop bounded lexical prose loops before delivery without user cancellation, transport retries, or completion nudges. |
 | [0066](0066-publication-policy-and-ledger-authority.md) | Publication safeguards survive custom prompts; recaps cannot change ledger authority, and constraint writes refresh active prompts atomically. |
 | [0067](0067-recorded-constraints-are-ledger-state.md) | Recorded constraints are live ledger JSON in the root prefix; recap prose is not authority, and a write refreshes instructions in the same turn. |
+| [0068](0068-background-agent-handles-survive-interrupt.md) | Background-agent ids are a session ledger; an interrupted parent turn must not report them as never started (#753). |
+| [0069](0069-cache-affinity-is-the-git-root.md) | Prompt-cache affinity is the git root (or a shared scratch seed), not the leaf cwd. |
+| [0070](0070-electron-browser-and-native-panels.md) | The local Electron desktop renders browser pages directly, keeps coding in graff ACP, and hosts narrow SwiftUI panels through a native bridge. |
+| [0071](0071-desktop-tools-and-macos-computer-use.md) | Desktop MCP controls embedded Chromium and a user-enabled native macOS bridge; coding stays in graff. |
+| [0072](0072-gui-profiler-exports-measurements-only.md) | GUI profiling is bounded and off by default; feedback exports contain allowlisted measurements with no automatic upload. |
+| [0073](0073-acp-stream-and-shared-review.md) | One ACP stdout reader routes responses; shared review reads Git working trees without inferring edit authorship. |
+| [0074](0074-gui-skills-and-portable-themes.md) | Explicit desktop skills and validated themes live in the GUI; selected instructions travel over ACP. |
+| [0075](0075-acp-adapter-and-desktop-measurements.md) | ACP presentation decoding is separate from session lifecycle; desktop performance uses bounded workload measurements and default Chromium acceleration. |
+| [0076](0076-local-agent-panel.md) | Verified local peer discovery, non-consuming history, explicit queued DMs and anonymous profiler slots. |
+| [0077](0077-desktop-command-parity-and-bounded-disclosure.md) | ACP shares the complete REPL catalog; desktop menus, tool disclosure and initial history rendering stay bounded. |
+| [0078](0078-workspace-terminals-are-lazy-pty-sessions.md) | Desktop workspace terminals start lazily, preserve hidden shells and bound output through a trusted PTY bridge. |
 
 ## When to write one
 

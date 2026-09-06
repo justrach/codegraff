@@ -70,9 +70,9 @@ pub fn visionCapable(p: Provider) bool {
 
 /// Guess an image media type from a file extension (default image/png).
 pub fn imageMediaType(path: []const u8) []const u8 {
-    if (std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg")) return "image/jpeg";
-    if (std.mem.endsWith(u8, path, ".gif")) return "image/gif";
-    if (std.mem.endsWith(u8, path, ".webp")) return "image/webp";
+    if (std.ascii.endsWithIgnoreCase(path, ".jpg") or std.ascii.endsWithIgnoreCase(path, ".jpeg")) return "image/jpeg";
+    if (std.ascii.endsWithIgnoreCase(path, ".gif")) return "image/gif";
+    if (std.ascii.endsWithIgnoreCase(path, ".webp")) return "image/webp";
     return "image/png";
 }
 
@@ -242,7 +242,7 @@ pub fn tracePasteResult(root: *Agent, flavor: Flavor, r: StageResult) void {
 /// once per user message with the root agent in hand, which is the only place
 /// that holds both the registry and the provider.
 pub fn stageGuiImageAttachment(root: *Agent, msg: []const u8) void {
-    if (root.registry) |reg| if (mcpImageHandoff(reg, visionCapable(root.provider), &root.pending_image)) return; // #249
+    @import("vision_queue.zig").collectRegistry(root);
     if (!visionCapable(root.provider)) return;
     var search: usize = 0;
     while (std.mem.indexOfPos(u8, msg, search, "@[")) |open| {

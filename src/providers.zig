@@ -1,9 +1,7 @@
 //! Provider-switch core: resolve a /model or set_model request to a
 //! Provider, apply it to the running Agent (translating or clearing history
 //! across a wire-format change), and announce the switch. Split
-//! out of main.zig (600-line goal). The interactive pickers + ultracode
-//! steering + login-auth flow that build on top of this live in
-//! pickers.zig, which back-imports switchProvider from here. Back-imports
+//! out of main.zig. Interactive pickers live in pickers.zig. Back-imports
 //! main (as main_mod, since several params are named `root`) for Agent,
 //! Keys, Provider, provider_specs, and extractText.
 
@@ -221,6 +219,8 @@ pub fn failoverEligible(provider_id: []const u8, detail: []const u8) bool {
 /// fallback becomes active for this session but does not replace the saved
 /// model preference.
 pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer) anyerror![]const u8 {
+    if (!root.sub) @import("presence.zig").noteActivity(root.io, arena, true);
+    defer if (!root.sub) @import("presence.zig").noteActivity(root.io, arena, false);
     const behavior_turn = trace.beginRootTurn(root.tracer);
     defer trace.endRootTurn(root.tracer, behavior_turn);
     if (root.fallback_blocked) return error.FallbackConsentRequired;

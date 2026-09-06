@@ -13,13 +13,13 @@ import {
   IconMagnifyingGlass,
   IconChat,
   IconPlusMedium,
-  IconPopsicle2,
   IconSettingsGear1,
   IconSidebarLeftArrow,
   IconSidebarLeftOpen,
 } from "@/lib/icons";
+import CodeGraffMark from "./CodeGraffMark";
 import GlideMenu from "@/components/primitives/GlideMenu";
-import { monogram } from "@/lib/workspaces";
+import WorkspaceMenu from "./WorkspaceMenu";
 
 /* ─────────────────────────────────────────────────────────
  * SIDEBAR NAV
@@ -161,87 +161,6 @@ function RailButton({
   );
 }
 
-/** The switcher: every known workspace (check on the active one), then the
- * two actions that lead somewhere — a folder picker and the settings sheet.
- * The demo (no workspaces wired) shows the placeholder row alone. */
-function WorkspaceMenu({
-  position,
-  current,
-  rows,
-  onSwitch,
-  onNew,
-  onSettings,
-  onClose,
-}: {
-  position: { top: number; left: number };
-  current?: string;
-  rows: SidebarWorkspace[];
-  onSwitch?: (path: string) => void;
-  onNew?: () => void;
-  onSettings?: () => void;
-  onClose: () => void;
-}) {
-  const list: SidebarWorkspace[] = rows.length > 0 ? rows : [{ path: WORKSPACE.key, name: WORKSPACE.name }];
-  const active = current ?? list[0]?.path;
-  const pick = (action?: () => void) => () => {
-    onClose();
-    action?.();
-  };
-  return createPortal(
-    <div
-      data-workspace-menu
-      className="fixed z-50 w-64 rounded-[14px] bg-surface p-1.5 shadow-overlay"
-      style={{
-        top: position.top,
-        left: position.left,
-        animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both",
-        transformOrigin: "top left",
-      }}
-    >
-      <GlideMenu className="flex flex-col gap-px" highlightClassName="inset-x-0 rounded-[8px] bg-hover-2">
-        {list.map((row) => (
-          <button
-            key={row.path}
-            data-menu-row
-            type="button"
-            title={row.path}
-            aria-current={row.path === active ? "true" : undefined}
-            onClick={pick(row.path === active ? undefined : () => onSwitch?.(row.path))}
-            className="relative z-10 flex h-10 w-full items-center gap-1.5 rounded-[8px] px-2 text-left"
-          >
-            <span className="flex size-6 shrink-0 items-center justify-center rounded-[7px] bg-ink text-[11px] font-semibold text-surface">
-              {monogram(row.name)}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-ink">{row.name}</span>
-            {row.path === active && (
-              <span className="shrink-0 text-ink">
-                <IconCheckmark1Small size={18} />
-              </span>
-            )}
-          </button>
-        ))}
-        <div className="my-1 h-px bg-line" />
-        {[
-          { label: "Open a folder…", icon: <IconPlusMedium size={16} />, action: onNew },
-          { label: "Workspace settings…", icon: <IconSettingsGear1 size={16} />, action: onSettings },
-        ].map((item) => (
-          <button
-            key={item.label}
-            data-menu-row
-            type="button"
-            onClick={pick(item.action)}
-            className="relative z-10 flex h-9 w-full items-center gap-1.5 rounded-[8px] px-2 text-left"
-          >
-            <span className="flex size-5 shrink-0 items-center justify-center text-ink-2">{item.icon}</span>
-            <span className="min-w-0 flex-1 truncate text-[13.5px] text-ink">{item.label}</span>
-          </button>
-        ))}
-      </GlideMenu>
-    </div>,
-    document.body,
-  );
-}
-
 export default function SidebarNav({
   activeTitle,
   activeId,
@@ -342,7 +261,7 @@ export default function SidebarNav({
             className="sidebar-workspace-control absolute left-2 top-1 flex h-8 w-[188px] items-center rounded-[8px] px-2 text-left transition-[background-color,transform] duration-100 hover:bg-hover-2 active:scale-[0.99]"
           >
             <span className="sidebar-logo flex size-5 shrink-0 items-center justify-center text-ink">
-              <IconPopsicle2 size={18} />
+              <CodeGraffMark size={20} />
             </span>
             <span className="sidebar-copy ml-1.5 min-w-0 flex-1 truncate text-[14px] font-medium text-ink-2" title={workspace?.path}>
               {workspace?.name ?? WORKSPACE.name}
@@ -506,7 +425,7 @@ export default function SidebarNav({
                     active ? "bg-hover-2 group-hover/glide:bg-transparent" : ""
                   }`}
                 >
-                  <span className="sidebar-copy flex min-w-0 flex-1 flex-col">
+                  <span className={`sidebar-copy flex min-w-0 flex-1 flex-col ${onArchiveRecent || onDeleteRecent ? "pr-14" : ""}`}>
                     <span className={`truncate text-[13.5px] font-medium ${active ? "text-ink" : "text-ink-2"}`}>
                       {item.label}
                     </span>

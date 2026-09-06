@@ -239,14 +239,13 @@ const startup_timing = @import("startup_timing.zig"); // .shutdown_trace re-expo
 const session_start = @import("session_start.zig");
 const session_run = @import("session_run.zig");
 pub fn main(init: std.process.Init) !void {
+    if (init.environ_map.get("GRAFF_AGENT_OBSERVER") != null) return @import("acp_agents.zig").run(init);
     var boot = startup_timing.Tracker.init(startup_timing.shutdown_trace.arm(init.io, init.environ_map), init.environ_map.get("GRAFF_BOOT_DEBUG") != null); // #364: arm() passes io through, so the teardown below stamps phases without a line of its own
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
     // #122: raise the open-file soft limit to the OS hard cap (Darwin defaults
-    // to 256) so parallel tool/subagent/MCP fan-out in one turn doesn't blow up
-    // shell tools with ProcessFdQuotaExceeded. Best-effort, no-op where rlimits
-    // don't exist.
+    // to 256). Raising it avoids ProcessFdQuotaExceeded during parallel tools.
     std.process.raiseFileDescriptorLimit();
     // #124: a per-turn scratch arena for the root agent's transient parse garbage,
     // reset each request() so a long REPL/--json/serve session's RSS stays flat.
@@ -314,7 +313,6 @@ pub fn main(init: std.process.Init) !void {
     try session_start.setupWorktreeAndBanner(io, gpa, arena, init.environ_map, flags, out, run_trace_path, codex_account, stale_saved_model, preferred_provider, default_provider);
     session_start.loadScoreSigningKey(io, arena, init.environ_map);
     boot.mark(io, "banner");
-
     // Session trace (best-effort: a failed open just disables tracing).
     var trace_buf: [8 * 1024]u8 = undefined;
     var trace_open = session_start.openTraceFile(io, run_trace_path, &trace_buf);
@@ -328,7 +326,6 @@ pub fn main(init: std.process.Init) !void {
         .path = run_trace_path,
     };
     boot.attach(&tracer);
-
     // One trajectory file per run; the archive reader scans the directory.
     // Node ids restart per run and cross-run lineage threads through prompt_sha.
     var traj_buf: [8 * 1024]u8 = undefined;
@@ -585,6 +582,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
     _ = @import("agent_request_search_tests.zig");
     _ = @import("agent_ws_steer.zig"); // gpt-6-astra response.steer
+    _ = @import("tui_acp_updates.zig");
     _ = @import("acp_preauth.zig"); // credential-free ACP loop must stay in the test root
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events
     _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here
@@ -596,4 +594,6 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("goal_todo.zig");
     _ = @import("goal_pacing.zig");
     _ = @import("presence_record.zig");
+    _ = @import("acp_agents.zig");
+    _ = @import("read_image.zig");
 }

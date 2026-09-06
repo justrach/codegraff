@@ -144,7 +144,8 @@ pub fn next(bytes: []const u8, i: *usize) ?Key {
     if (b == 0x0d or b == 0x0a) {
         // Newlines inside a paste are text, not the Enter/send key: bracketed,
         // a multiline dump in this read, or a run spanning reads (#643/#737).
-        if (in_paste or (!paste_ended_in_read and (paste.burstActive() or paste.looksLikeBurst(bytes)))) {
+        if (in_paste) return .{ .char = b }; // preserve bracketed CRLF across reads (#737)
+        if (!paste_ended_in_read and (paste.burstActive() or paste.looksLikeBurst(bytes))) {
             if (paste.pasteNewline(bytes, i, b)) |nl| return .{ .char = nl };
         }
         return .enter;

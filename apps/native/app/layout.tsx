@@ -1,25 +1,27 @@
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import "./appearance.css";
+import { appearanceScript } from "@/lib/appearance";
 import { ThemeSync } from "@/components/site/ThemeSync";
+import DesktopTitlebar from "@/components/site/DesktopTitlebar";
 import { BrowserWarm } from "@/components/site/BrowserWarm";
 
-const inter = Inter({
+const inter = Geist({
   subsets: ["latin"],
   variable: "--font-inter",
 });
 
-const mono = JetBrains_Mono({
+const mono = Geist_Mono({
   subsets: ["latin"],
   variable: "--font-mono-face",
 });
 
 export const metadata: Metadata = {
   title: "Codegraff",
-  description: "Native graff harness — Beautiful UI primitives in a merjs desktop shell.",
+  description: "CodeGraff desktop workspace.",
 };
 
-const themeScript = `(function(){try{var t=localStorage.getItem("bui-theme");document.documentElement.classList.toggle("dark",t!=="light")}catch(e){document.documentElement.classList.add("dark")}})()`;
 
 export default function RootLayout({
   children,
@@ -27,11 +29,12 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <script dangerouslySetInnerHTML={{ __html: appearanceScript }} />
       </head>
       <body className={`${inter.variable} ${mono.variable} font-sans`}>
         <ThemeSync />
         <BrowserWarm />
+        <DesktopTitlebar />
         {children}
       </body>
     </html>

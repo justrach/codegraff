@@ -1,0 +1,53 @@
+/* CodeGraff website palette. White and Black retain the neutral desktop tokens. */
+:root[data-theme="website"] {
+  --page: #fafaf8;
+  --canvas: #f1f3ef;
+  --surface: #ffffff;
+  --inset: #f5f6f2;
+  --hover: #edf1eb;
+  --hover-2: #e3eae2;
+  --ink: #18231e;
+  --ink-2: #526157;
+  --ink-3: #737f75;
+  --line: #e0e6de;
+  --line-strong: #cbd6cb;
+  --field: #f0f3ed;
+  --stripe: #18231e0d;
+  --stripe-bg: #f4f5f0;
+  --accent: #059669;
+  --accent-ink: #047857;
+  --accent-tint: #e3f3e9;
+  --green: #047857;
+  --green-tint: #e6f2e8;
+  --red: #b54735;
+  --red-tint: #f9ece6;
+}
+
+/* Official palette: paper, rice, ink, cobalt, coral and gold. */
+:root[data-theme="codegraff"] {
+  --page: #f6eedf;
+  --canvas: #eee4d3;
+  --surface: #fffaf0;
+  --inset: #f2e8d8;
+  --hover: #eae0cf;
+  --hover-2: #e0d4c1;
+  --ink: #1b1714;
+  --ink-2: #51483f;
+  --ink-3: #74685b;
+  --line: #d7cbb8;
+  --line-strong: #bbae99;
+  --field: #eee4d3;
+  --stripe: #1b17140d;
+  --stripe-bg: #f6eedf;
+  --accent: #2654d9;
+  --accent-ink: #2147b7;
+  --accent-tint: #e3e7f5;
+  --green: #486841;
+  --green-tint: #e4ebd9;
+  --red: #a83f2d;
+  --red-tint: #f2ddd2;
+  --orange: #96601c;
+  --orange-tint: #f9e5c2;
+  --brand-coral: #d45a43;
+  --brand-gold: #f7a63b;
+}

@@ -206,6 +206,7 @@ function reapProfileChrome(): void {
 /** The live Kuri, spawning it when there is none. Two chats asking at once
  * (both panes open on a dead browser) share one spawn. */
 export async function ensureKuri(): Promise<{ port: number; token: string }> {
+  if (process.env.GRAFF_DESKTOP_ENDPOINT) throw new Error("Kuri is disabled in the Electron desktop; use embedded Chromium");
   const live = state.live;
   if (live && live.child.exitCode === null) {
     live.lastUsedMs = Date.now();

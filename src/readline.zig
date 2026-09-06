@@ -439,8 +439,7 @@ pub fn readLine(
                                     break;
                                 }
                             }
-                            var pasted = blob.items;
-                            if (pasted.len > 0 and pasted[pasted.len - 1] == '\n') pasted = pasted[0 .. pasted.len - 1];
+                            const pasted = blob.items; // preserve the complete draft, including trailing LF/CRLF (#737)
                             const lines = std.mem.count(u8, pasted, "\n") + 1;
                             const dropped = cleanDroppedPath(gpa, root.home, pasted);
                             defer if (dropped) |dp| gpa.free(dp);

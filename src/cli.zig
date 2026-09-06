@@ -21,6 +21,10 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.289
+    \\  • background-agent handles survive an interrupted API turn (#753)
+    \\  • prompt-cache affinity is the git root, not the leaf cwd
+    \\
     \\0.0.288
     \\  • GPT-6 Astra is the default Codex model: mid-turn steer, vision, hosted search, OpenAI compact
     \\  • Gemini is a first-class provider on Google's Interactions API

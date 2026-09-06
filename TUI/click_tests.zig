@@ -473,6 +473,15 @@ test "the click map names the rows the settings, theme and jump panels drew" {
     try checkSpan(&m, 80, &.{ "first turn", "second turn" });
 }
 
+test "the click map names the rows the resume picker drew" {
+    var m: Model = undefined;
+    m.setup(alloc);
+    defer m.deinit();
+    m.sessions_cache = try alloc.dupe(u8, "alpha\tAlpha title\t2h ago\nbeta\tbeta\tjust now");
+    m.openOverlay(.sessions);
+    try checkSpan(&m, 80, &.{ "Alpha title", "beta" });
+}
+
 test "the click map names the rows the command palette drew" {
     var m: Model = undefined;
     m.setup(alloc);

@@ -1,19 +1,5 @@
 <p align="center">
-  <img src="codegraff.png" alt="codegraff" width="360">
-</p>
-
-<h1 align="center">graff</h1>
-
-<p align="center">
-  <strong>An AI that actually does the work. Not just talks about it.</strong>
-</p>
-
-<p align="center">
-  Install it on your Mac, Linux, or Windows machine, sign in with the AI
-  subscription you <em>already have</em>, and hand it real tasks. graff writes
-  and runs code, automates the boring stuff, digs through your files, researches
-  the web, and runs its own experiments until the job is done.<br/>
-  <strong>You don't chat with it. You give it work.</strong>
+  <img src="docs/images/readme-rats.png" alt="CodeGraff workshop rats in coral coats" width="280" height="280">
 </p>
 
 <p align="center">
@@ -33,81 +19,76 @@ curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/instal
 
 <p align="center"><sub>Prefer a window? Grab the <a href="#the-desktop-app">desktop app</a>. Then run <code>graff</code> and tell it what you need.</sub></p>
 
+**Evaluated on FrontierHarness tasks.** Graff includes a reproducible
+[FrontierHarness evaluation runner](graff-evals/frontier-harness/README.md),
+with recorded outcomes and explicit protocol differences. See
+[how we measure it](#how-we-measure-it) for the public task suite, grading,
+and the limits of comparisons with the published board.
+
 ## The desktop app
 
-A native macOS window for graff: chat tabs, each backed by its own `graff acp`
-process, in a real app window instead of a browser tab. It is an AppKit
-`NSWindow` with a `WKWebView` in it, written in Zig against the ObjC runtime —
-no Electron.
+The current desktop preview uses Electron and embedded Chromium, with native
+macOS window controls and SwiftUI Activity and computer-use panels. Coding
+continues in `graff acp`; the window is a client of the same harness used by
+the terminal.
 
-![The desktop app in a chat: workspace sidebar and chat history on the left, a transcript with collapsed thinking and tool rows in the middle, and a pinned-element strip above the composer](docs/images/native-chat.jpg)
+[![CodeGraff's bright desktop, framed in rice paper with workshop artwork](docs/images/desktop-chat-studio.png)](docs/images/desktop-chat-light.png)
 
-The sidebar holds workspaces and the chat library; the footer shows the graff
-session name so you can resume the same conversation from the CLI. Thinking and
-tool calls collapse into single rows.
+Chat tabs, searchable model selection, effort and fast controls, collapsed tool
+activity, and explicit working/finished/interrupted states keep the conversation
+readable. Appearance includes White, Black, Website and the official CodeGraff
+palette. Mention `$gui-theme` or `@gui-theme` in the GUI to create a custom theme.
 
-![The browser pane open beside the chat in Annotate mode, with a button on the page pinned, labelled with its role and name, and a note attached to it](docs/images/native-browser-annotate.jpg)
+[![CodeGraff Agents panel with local peers and a handoff request, framed in coral with the workshop crew](docs/images/desktop-agents-studio.png)](docs/images/desktop-agents-codegraff.png)
 
-The browser pane (experimental) shows a live Chrome tab belonging to the chat.
-In Annotate mode you click an element to pin it; the pin carries the element's
-role, accessible name, selector and box, plus your note, and rides along with
-your next message. The pane is [Kuri](https://github.com/justrach/kuri)'s
-managed headless Chrome, so it needs Kuri installed or `KURI_BIN` pointed at
-it; nothing starts until a pane is opened, a browser that sees no requests for
-`GRAFF_BROWSER_IDLE_MINS` (default 20) is stopped again, and the tree is
-restarted when it passes `GRAFF_BROWSER_MAX_RSS_MB` (default 3072).
+**Agents** brings Graff-to-Graff coordination into the GUI. See sessions in the
+current workspace or across the laptop, their published tasks and activity,
+and recent messages. Select a peer in the panel's composer to send a message
+or handoff request. Delivery is queued to the recipient's next step; browsing
+history does not consume their inbox. The optional profiler records anonymous
+per-agent resource measurements, with identities and message contents excluded
+from feedback exports. See the [Agents guide](docs/agents-panel.md).
 
-**What it is, before you download it.** The app is a window, not a bundle of
-the product: `Contents/` holds the shell binary and an icon, and nothing else.
-It renders the local UI, and that UI spawns `graff acp` per chat tab. So you
-need two things running before the window shows anything: the UI
-(`npm install && npm run dev` in `apps/native`) and a graff binary at
-`zig-out/bin/graff` — `zig build` at the repo root — or `GRAFF_BIN` pointing at
-one. With no dev server up, double-clicking the app gives WebKit's
-cannot-connect page.
+[![CodeGraff's dark Changes panel beside the conversation, framed in cobalt with a rat reviewing a proof](docs/images/desktop-review-studio.png)](docs/images/desktop-review-dark.png)
 
-**Download.** Grab `Codegraff-macos.zip` from the
-[latest release](https://github.com/justrach/codegraff/releases/latest), unzip
-it, and drag `Codegraff.app` to Applications. macOS 13 or newer, Apple Silicon —
-the shipped binary is `arm64`-only. It is signed with a Developer ID under the
-hardened runtime and notarized and stapled by Apple, so there is no
-unidentified-developer block and no right-click-Open workaround; a freshly
-downloaded copy still gets macOS's ordinary "downloaded from the Internet"
-confirmation on first open.
+**Changes** shows local staged, unstaged and untracked edits, diffs, worktrees
+and recent commits. Drag its divider to give the review more room. The browser
+pane renders directly in Chromium and supports navigation, find, zoom and element
+pins. Optional macOS computer use exposes native app inspection and input after
+the user enables it and grants the operating system permissions.
 
-Launched from Finder the app inherits no environment, so it looks for a dev
-server on 127.0.0.1:3777, then 3000. `GRAFF_NATIVE_URL` applies only when the
-binary is started from a shell.
+*Presentation frames pair CodeGraff workshop artwork with unchanged GUI captures
+and scripted demonstration content. Click a desktop image for the full-size UI.
+No private conversation or workspace data is included.*
 
-**Building the shell.** `zig build` at the repo root builds the CLI, not the
-window. The window is `apps/native/desktop/build-app.sh` (icon, `Info.plist`,
-signing; `NOTARIZE=1` submits it to Apple, `INSTALL=1` puts it in
-`/Applications`), or, for a loose binary with no bundle:
+**Build and launch the preview** on Apple Silicon macOS 14+ with Bun, Zig and
+Xcode command-line tools installed:
 
 ```sh
-zig build-exe apps/native/desktop/main.zig -O ReleaseSmall \
-  -femit-bin=zig-out/bin/graff-native \
-  -framework AppKit -framework WebKit
+./script/build_and_run.sh
 ```
 
-**It updates itself.** Shortly after the window opens, on its own thread, it
-asks GitHub for the newest release and compares that tag with its own stamped
-version numerically, so 0.0.10 is newer than 0.0.9. It installs only after the
-download passes `codesign --verify --deep --strict`, has a Team ID equal to the
-running app's own, and is accepted by `spctl -a -t install`; then it asks once,
-with "Later" and "Update and restart". Any failure abandons the update and
-leaves the installed app alone. Both the API call and the download are under
-the same 20-second network timeout. Setting `GRAFF_NATIVE_NO_UPDATE` disables
-the check — any value, including empty; `=1` is the readable way to write it.
-The mechanism depends on the release carrying an asset whose name starts with
-`Codegraff` and ends with `.zip`, uploaded from a Mac: the tag-triggered
-workflow cross-compiles on Linux and can neither sign nor notarize. A release
-without that asset means installed apps find nothing and do nothing.
+The development bundle contains the production UI, Chromium, Bun, graff and the
+native bridge, and starts its own local server. It does not need a separate dev
+server or Kuri. This Electron preview is signed locally; release notarization and
+an Electron updater are separate distribution work. Previously published desktop
+assets may still use the legacy shell; see the release notes before downloading.
 
-**macOS only today.** The shell is AppKit and WebKit — `NSWindow` and
-`WKWebView` — and the packaging path uses `iconutil`, `codesign` and
-`notarytool` from Xcode's command line tools. On other platforms the same
-binary only prints the URL. The CLI runs on macOS, Linux and Windows.
+**Profile and test without a model.** The Performance menu and desktop profiler
+tool record bounded, local measurement reports. Startup paint timing, streaming
+responsiveness, process resources and acceleration status are measured separately.
+No reports are uploaded automatically. From `apps/native`:
+
+```sh
+bun run build
+bun run test:desktop
+bun run test:visual
+bun run test:performance
+```
+
+The visual and performance scenarios use production GUI components with scripted
+inputs and block engine/model API calls. See the [desktop guide](apps/native/electron/README.md)
+and [visual test guide](apps/native/electron/VISUAL-TESTS.md) for scope and limitations.
 
 ## What can I ask it?
 
@@ -145,15 +126,12 @@ mark, not first model SSE. RSS is ReleaseSafe process peak.)
 On the 3-task spine (exact-reply + file-ops + fix-fib) graff was **19.9s /
 8 calls / $0.048** vs grok 32.3s / 8 / $0.147 and OpenCode 31.2s / 8 / $0.101.
 
-How: a stable prompt-cache prefix, an RLM + spec-ptc loop that programs over
-context instead of pasting it back, and slim tool results (4 KB handles,
-learnt MCP shapes). The learn pin is a **hardlink**, not a 127M copy, and
-`learn init` is detached so `-p` and the REPL share one path. Hosted `x_search`
-stays on (ADR 0031). We do not steal grok-build's heap or a 4-tool catalog
-(ADR 0024).
+Graff carries context through three steps: reuse the stable setup, run small
+programs over the working context, and return focused results. That keeps the
+next step supplied with useful information while reducing repeated input.
 
 <p align="center">
-  <img src="token-efficient-loop.png" alt="Stable cache layers feed a small programmatic loop that tests parallel tool paths and keeps a slim result" width="960">
+  <img src="docs/images/readme-context-workshop.png" alt="A workshop rat examines a proof: stable context, small programs, and focused results keep useful context in the harness" width="960">
 </p>
 
 ## Install
@@ -293,7 +271,7 @@ deterministic task set. What it does not prove: anything about the live repo —
 the `inhouse` fixtures are distilled shapes, not the codebase.
 
 **Layer 2 — `frontier-harness/`.** It runs the same 30 tasks as
-[runta-dev/frontier-harness-eval](https://github.com/runta-dev/frontier-harness-eval)
+[FrontierHarness Eval](https://github.com/frontier-harness-eval/eval)
 — 21 from Terminal-Bench 2.1 and 9 from DeepSWE — in Docker, under a protocol
 that is deliberately not the same bench seat (see "What these runs are not"
 below, and `PROTOCOL.md`). The board side is a pinned snapshot of the published

@@ -17,6 +17,7 @@ const RecordJson = struct {
     identity: []const u8 = "",
     goal: []const u8 = "",
     last_seen_ms: i64 = 0,
+    activity: []const u8 = "connected",
     title: []const u8 = "",
     session_base: []const u8 = "",
 };
@@ -31,6 +32,7 @@ pub fn formatRecord(arena: Allocator, owner: Owner) ![]const u8 {
         .identity = owner.identity,
         .goal = owner.goal,
         .last_seen_ms = owner.last_seen_ms,
+        .activity = owner.activity,
         .title = owner.title,
         .session_base = owner.session_base,
     });
@@ -47,6 +49,7 @@ pub fn parseRecord(arena: Allocator, text: []const u8) ?Owner {
         .identity = rec.identity,
         .goal = rec.goal,
         .last_seen_ms = rec.last_seen_ms,
+        .activity = rec.activity,
         .title = rec.title,
         .session_base = rec.session_base,
     };

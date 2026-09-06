@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "@/components/primitives/Markdown";
 import {
   formatSize,
@@ -143,6 +143,7 @@ export default function FilesPane({
   requested?: { path: string; n: number; changes?: boolean } | null;
   onClose: () => void;
 }) {
+  const navigation = useRef(0);
   const [dir, setDir] = useState<FsDir | null>(null);
   const [file, setFile] = useState<FsFile | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -166,8 +167,10 @@ export default function FilesPane({
   }, [loadChanges]);
 
   const show = useCallback(async (path: string, keepView = false) => {
+    const request = ++navigation.current;
     try {
       const res = await fsStat(path, root);
+      if (request !== navigation.current) return;
       setError(null);
       if (!keepView) {
         setView("files");
@@ -180,7 +183,7 @@ export default function FilesPane({
         setFile(res);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (request === navigation.current) setError(err instanceof Error ? err.message : String(err));
     }
   }, [root]);
 
@@ -190,6 +193,7 @@ export default function FilesPane({
     // workspace switch re-runs this (new `show`) and lands on its root.
     setFile(null);
     void show("", true);
+    return () => { navigation.current++; };
   }, [show]);
 
   useEffect(() => {
@@ -215,7 +219,7 @@ export default function FilesPane({
 
   return (
     <aside
-      className="hidden w-[400px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page lg:flex"
+      className="flex w-[400px] max-w-[55%] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page"
       style={{ animation: "fade-in 300ms ease both" }}
     >
       {/* header: workspace root + close */}

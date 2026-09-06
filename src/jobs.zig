@@ -205,12 +205,11 @@ fn jobPump(job: *Job, gpa: Allocator, io: Io) void {
     job.killed = killed and !detached;
     job.done = true;
     const id = job.id;
-    const cmd = job.cmd;
     const quiet = job.quiet;
     const idle = job.stopped_idle;
     // Publish done + queue atomically against jobOutput/jobKill consuming it.
     // A bounded dismissed-id cache cannot close a queue-after-unlock race.
-    if (!quiet and !detached) job_notify.queue(io, id, code, killed, cmd, idle);
+    if (!quiet and !detached) job_notify.queue(io, id, code, killed, job.cmd, idle);
     g_jobs.mutex.unlock(io);
     if (detached) return;
     if (builtin.is_test) if (completion_test_hook) |hook| hook(io, id);
@@ -385,6 +384,7 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
         job.last_active_ms = nowMs(io); // a read or a blocking wait is activity (#199)
         const fresh = job.buf.items[job.cursor..];
         if (job.done or interrupted or waited >= deadline) {
+            errdefer g_jobs.mutex.unlock(io);
             var aw: Io.Writer.Allocating = .init(gpa);
             errdefer aw.deinit();
             const w = &aw.writer;
@@ -409,10 +409,11 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             } else {
                 try w.writeAll("\n(no new output)");
             }
+            const text = try aw.toOwnedSlice();
             job.cursor = job.buf.items.len;
             if (job.done) job_notify.dismiss(io, id); // the exit was just read here; no wake for it (ADR 0061)
             g_jobs.mutex.unlock(io);
-            return .{ .text = try aw.toOwnedSlice() };
+            return .{ .text = text };
         }
         g_jobs.mutex.unlock(io);
         if (Agent.esc_cancel.load(.acquire)) {
@@ -518,6 +519,7 @@ pub fn waitForeground(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !FgWait {
                 g_jobs.mutex.unlock(io);
                 return error.OutOfMemory;
             };
+            job_notify.dismiss(io, id);
             const result: FgWait = .{ .done = .{ .exit_code = job.exit_code, .killed = job.killed, .output = pair[0], .dropped = pair[1] } };
             g_jobs.mutex.unlock(io);
             return result;
@@ -559,7 +561,6 @@ pub fn waitForeground(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !FgWait {
     }
 }
 
-/// Session end: kill every job, await pumps, free. From main's defer.
 pub fn jobsReap(gpa: Allocator, io: Io) void {
     g_jobs.mutex.lockUncancelable(io);
     const jobs = g_jobs.list.toOwnedSlice(gpa) catch {

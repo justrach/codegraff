@@ -50,100 +50,10 @@ pub fn cancel() void {
     acp.handleLine(&s.dispatch, arena_state.allocator(), &w, "{\"jsonrpc\":\"2.0\",\"method\":\"session/cancel\"}") catch {};
 }
 
-/// Maps one ACP `session/update` line onto the TUI stream / event queue.
-pub const Apply = struct {
-    queue: *tui.EventQueue,
-    stream: *repl.StreamBuf,
-    show_thinking: bool = false,
-    reasoning_open: bool = false,
-    last_title: [160]u8 = undefined,
-    last_title_len: usize = 0,
-};
-
-pub fn applyBuffered(a: *Apply, gpa: Allocator, bytes: []const u8) void {
-    var it = std.mem.splitScalar(u8, bytes, '\n');
-    while (it.next()) |line| applyLine(a, gpa, line);
-}
-
-pub fn applyLine(a: *Apply, gpa: Allocator, line: []const u8) void {
-    const trimmed = std.mem.trim(u8, line, " \t\r\n");
-    if (trimmed.len == 0) return;
-    var parsed = std.json.parseFromSlice(Value, gpa, trimmed, .{}) catch return;
-    defer parsed.deinit();
-    if (parsed.value != .object) return;
-    const method = util.strFieldObj(parsed.value.object, "method") orelse return;
-    if (!std.mem.eql(u8, method, "session/update")) return;
-    const params = parsed.value.object.get("params") orelse return;
-    if (params != .object) return;
-    const update = params.object.get("update") orelse return;
-    if (update != .object) return;
-    const kind = util.strFieldObj(update.object, "sessionUpdate") orelse return;
-    if (std.mem.eql(u8, kind, "agent_thought_chunk")) {
-        const text = contentText(update.object) orelse return;
-        if (text.len == 0 or !a.show_thinking) return;
-        a.reasoning_open = true;
-        a.stream.appendBytes(text);
-        return;
-    }
-    if (std.mem.eql(u8, kind, "agent_message_chunk")) {
-        const text = contentText(update.object) orelse return;
-        if (text.len == 0) return;
-        if (a.reasoning_open) {
-            a.reasoning_open = false;
-            a.stream.appendBytes("\n");
-        }
-        a.stream.appendBytes(text);
-        return;
-    }
-    if (std.mem.eql(u8, kind, "tool_call")) {
-        const title = util.strFieldObj(update.object, "title") orelse "tool";
-        const name = util.strFieldObj(update.object, "name") orelse title;
-        rememberTitle(a, name);
-        if (label.skipTranscript(name)) return;
-        a.queue.push(.{ .tool_started = .{ .name = name, .detail = cap(title, 160) } });
-        return;
-    }
-    if (std.mem.eql(u8, kind, "tool_call_update")) {
-        if (tui.rawStream()) |raw| raw.len.store(0, .release);
-        const title = a.last_title[0..a.last_title_len];
-        if (title.len == 0 or label.skipTranscript(title)) return;
-        const status = util.strFieldObj(update.object, "status") orelse "completed";
-        const failed = std.mem.eql(u8, status, "failed");
-        const text = updateText(update.object);
-        a.queue.push(.{ .tool_finished = .{
-            .name = title,
-            .detail = cap(text, 80),
-            .is_error = failed,
-        } });
-    }
-}
-
-fn contentText(update: std.json.ObjectMap) ?[]const u8 {
-    const content = update.get("content") orelse return null;
-    if (content != .object) return null;
-    return util.strFieldObj(content.object, "text");
-}
-
-fn updateText(update: std.json.ObjectMap) []const u8 {
-    const content = update.get("content") orelse return "";
-    if (content != .array or content.array.items.len == 0) return "";
-    const first = content.array.items[0];
-    if (first != .object) return "";
-    const inner = first.object.get("content") orelse return "";
-    if (inner != .object) return "";
-    return util.strFieldObj(inner.object, "text") orelse "";
-}
-
-fn rememberTitle(a: *Apply, title: []const u8) void {
-    const n = @min(title.len, a.last_title.len);
-    @memcpy(a.last_title[0..n], title[0..n]);
-    a.last_title_len = n;
-}
-
-fn cap(s: []const u8, n: usize) []const u8 {
-    const line = if (std.mem.indexOfScalar(u8, s, '\n')) |i| s[0..i] else s;
-    return line[0..@min(line.len, n)];
-}
+const updates = @import("tui_acp_updates.zig");
+pub const Apply = updates.Apply;
+pub const applyLine = updates.applyLine;
+pub const applyBuffered = updates.applyBuffered;
 
 fn toolTitle(name: []const u8, input: Value) []const u8 {
     if (input == .object) {
@@ -164,6 +74,13 @@ const transcript_vt: engine_sink.VTable = .{ .emit = transcriptEmit, .durable = 
 
 fn transcriptEmit(ctx: *anyopaque, ev: engine_sink.Stamped) void {
     const t: *Transcript = @ptrCast(@alignCast(ctx));
+    // Text carries no JSON-only fields. Use the decoder's normalized path,
+    // avoiding a writer allocation + JSON parse for each in-process chunk.
+    switch (ev.event) {
+        .reasoning_delta => |d| return updates.applyChunk(t.apply, true, d.text),
+        .text_delta, .tool_arg_delta => |d| return updates.applyChunk(t.apply, false, d.text),
+        else => {},
+    }
     var aw: Io.Writer.Allocating = .init(t.gpa);
     defer aw.deinit();
     writeUpdate(&aw.writer, t.session_id, ev.event) catch return;
@@ -288,7 +205,7 @@ fn dispatchTurn(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]
 fn liveStream(stream: *tui.StreamBuf) *repl.StreamBuf {
     comptime {
         if (@sizeOf(tui.StreamBuf) != @sizeOf(repl.StreamBuf) or
-            @offsetOf(tui.StreamBuf, "buf") != @offsetOf(tui.StreamBuf, "buf") or
+            @offsetOf(tui.StreamBuf, "buf") != @offsetOf(repl.StreamBuf, "buf") or
             @offsetOf(tui.StreamBuf, "len") != @offsetOf(repl.StreamBuf, "len"))
             @compileError("tui.StreamBuf and repl.StreamBuf must stay layout-identical");
     }
@@ -403,38 +320,6 @@ pub fn turn(
 
 fn echoTurn(_: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
     return std.fmt.allocPrint(arena, "echo:{s}", .{text});
-}
-
-test "applyLine: thought then text land on the live tail" {
-    var q: tui.EventQueue = .{};
-    q.attach(std.testing.allocator);
-    defer q.deinit();
-    var buf: [128]u8 = undefined;
-    var stream: repl.StreamBuf = .{ .buf = &buf };
-    var a: Apply = .{ .queue = &q, .stream = &stream, .show_thinking = true };
-    applyLine(&a, std.testing.allocator, "{\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_thought_chunk\",\"content\":{\"type\":\"text\",\"text\":\"why\"}}}}");
-    applyLine(&a, std.testing.allocator, "{\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"hi\"}}}}");
-    const snap = stream.snapshot(std.testing.allocator) orelse return error.NoStream;
-    defer std.testing.allocator.free(snap);
-    try std.testing.expectEqualStrings("why\nhi", snap);
-}
-
-test "applyLine: tool_call then tool_call_update become typed rows" {
-    var q: tui.EventQueue = .{};
-    q.attach(std.testing.allocator);
-    defer q.deinit();
-    var buf: [32]u8 = undefined;
-    var stream: repl.StreamBuf = .{ .buf = &buf };
-    var a: Apply = .{ .queue = &q, .stream = &stream };
-    applyLine(&a, std.testing.allocator, "{\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"tool_call\",\"name\":\"read_file\",\"title\":\"note.txt\",\"kind\":\"read\",\"status\":\"in_progress\"}}}");
-    applyLine(&a, std.testing.allocator, "{\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"tool_call_update\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"ok\\nmore\"}}]}}}");
-    const evs = q.drain();
-    defer q.free(evs);
-    try std.testing.expectEqual(@as(usize, 2), evs.len);
-    try std.testing.expectEqualStrings("read_file", evs[0].tool_started.name);
-    try std.testing.expectEqualStrings("note.txt", evs[0].tool_started.detail);
-    try std.testing.expectEqualStrings("ok", evs[1].tool_finished.detail);
-    try std.testing.expect(!evs[1].tool_finished.is_error);
 }
 
 test "transcript sink: tool_call keeps the catalog name, title is the path" {

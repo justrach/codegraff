@@ -44,6 +44,10 @@ pub const Peers = struct {
 /// return the survivors. Best-effort throughout: an unreadable registry means
 /// "no peers", never an error propagated into a tool call.
 pub fn listPeers(io: Io, arena: Allocator, dir: Io.Dir) Peers {
+    return listPeersBounded(io, arena, dir, max_peers);
+}
+
+pub fn listPeersBounded(io: Io, arena: Allocator, dir: Io.Dir, limit: usize) Peers {
     var records: std.ArrayList(Owner) = .empty;
     var probes: std.ArrayList(proc_identity.Probe) = .empty;
     var d = dir;
@@ -51,7 +55,7 @@ pub fn listPeers(io: Io, arena: Allocator, dir: Io.Dir) Peers {
     while (it.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
-        if (records.items.len >= max_peers) break;
+        if (records.items.len >= @min(limit, 128)) break;
         const text = d.readFileAlloc(io, entry.name, arena, .limited(record_max)) catch continue;
         const rec = parseRecord(arena, text) orelse continue;
         const live = proc_identity.probe(io, rec.pid);
@@ -119,11 +123,18 @@ var g_tail_seeked: bool = false; // one-shots fast-forward both rooms exactly on
 var g_acked: [max_peers]u64 = undefined;
 var g_acked_len: usize = 0;
 
+var g_activity: []const u8 = "waiting";
+pub fn noteActivity(io: Io, arena: Allocator, working: bool) void {
+    g_activity = if (working) "working" else "waiting";
+    writeOwn(io, arena);
+}
+
 fn writeOwn(io: Io, arena: Allocator) void {
     const dir_path = g_dir orelse return;
     const name = g_own_name orelse return;
     var owner = worktree_lease.selfOwner(io, g_identity, g_session, unixMs(io));
     owner.goal = g_goal;
+    owner.activity = g_activity;
     owner.title = g_title;
     owner.session_base = g_session_base;
     const text = formatRecord(arena, owner) catch return;

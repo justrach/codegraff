@@ -39,7 +39,7 @@ test "#737 long bracketed single/LF/CRLF paste across reads and batches stays un
             for (0..33) |p| {
                 if (p != 0) {
                     try payload.appendSlice(a, ending);
-                    if (ending.len != 0) try expected.append(a, '\n');
+                    try expected.appendSlice(a, ending);
                 }
                 try payload.appendSlice(a, &paragraph);
                 try expected.appendSlice(a, &paragraph);

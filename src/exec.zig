@@ -64,7 +64,7 @@ const telemetry = @import("telemetry.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-local-tools gate
 const native_fold = @import("native_fold.zig"); // folded native power tools: layer-2 refusal until load_tool_schemas unfolds
-const vision = @import("vision.zig"); // read_file stages images like MCP image results (#249)
+const stageReadFileImage = @import("read_image.zig").stage;
 const input_util = @import("input_util.zig");
 const imagegen = @import("imagegen.zig"); // #352: the codex-gated image tool (advertising lives in schema.zig/tool_gates.zig)
 const local_tools = @import("local_tools.zig");
@@ -80,41 +80,6 @@ fn learningArgv(argv: *[10][]const u8, exe_path: []const u8, contribute: bool) u
         argc += 1;
     }
     return argc;
-}
-
-/// Runs on a pool thread; never throws — failures become is_error results.
-/// Every execution is timed (out.ms) and traced.
-/// read_file on an image: stage the pixels on the registry's pending-image
-/// slot — the same place MCP image results land (#249) — so the per-turn
-/// handoff attaches them to the agent's next turn. Null means "fall back to
-/// the generic binary-file error" (no registry, unreadable, over the ceiling).
-fn stageReadFileImage(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: []const u8, size: u64) !?ToolOutput {
-    const reg = ctx.registry orelse return null;
-    if (size == 0 or size > 5 * 1024 * 1024) return null; // vision ceiling, same as stageImagePath
-    const media_type = vision.imageMediaType(path);
-    if (!vision.visionCapable(ctx.provider)) return .{
-        .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — the active model does not accept images, so it was not attached]", .{ media_type, size }),
-    };
-    const data = Io.Dir.cwd().readFileAlloc(io, resolved, gpa, .limited(5 * 1024 * 1024)) catch return null;
-    defer gpa.free(data);
-    const enc = std.base64.standard.Encoder;
-    const b64 = try gpa.alloc(u8, enc.calcSize(data.len));
-    defer gpa.free(b64);
-    _ = enc.encode(b64, data);
-    reg.mutex.lockUncancelable(reg.io);
-    defer reg.mutex.unlock(reg.io);
-    if (reg.pending_image != null) return .{
-        .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — not attached: another image is already queued for the next turn]", .{ media_type, size }),
-    };
-    const arena = reg.arena();
-    reg.pending_image = .{
-        .media_type = try arena.dupe(u8, media_type),
-        .b64 = try arena.dupe(u8, b64),
-        .label = try arena.dupe(u8, path),
-    };
-    return .{
-        .text = try std.fmt.allocPrint(gpa, "[image: {s}, {d} bytes — attached to your next turn]", .{ media_type, size }),
-    };
 }
 
 pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {

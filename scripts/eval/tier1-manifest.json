@@ -15,7 +15,7 @@
     "src/repl.zig",
     "TUI/root.zig"
   ],
-  "test_count_baseline": 1942,
+  "test_count_baseline": 1997,
   "test_count_slack": 25,
   "required_invariants": [
     {
@@ -62,6 +62,11 @@
       "id": "child-deadline",
       "test": "childTaskPrompt: the same absolute deadline reaches every child, minus a margin",
       "why": "d33c4a4: a timed /loop must hand its deadline down, or children outlive the run."
+    },
+    {
+      "id": "cache-affinity-scratch",
+      "test": "affinity: two scratch sandboxes share one project cache id",
+      "why": "289 remasure: hashing the leaf cwd minted a unique xAI partition per eval sandbox and paid the system+tools prefix at $2/M."
     }
   ],
   "docs_only_paths": [

@@ -1,0 +1,55 @@
+const {BrowserWindow,ipcMain}=require('electron');
+const {installGalleryFixture}=require('./gallery-fixture.cjs');
+const {installWindowState}=require('./window-state.cjs');
+const assert=require('node:assert/strict');const path=require('node:path');const fs=require('node:fs');
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
+  const win=new BrowserWindow({width:1100,height:760,show:true,titleBarStyle:'hiddenInset',webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
+  installWindowState(win);ipcMain.handle('browser',()=>null);
+  // The demo workspace name maps to a disposable real folder for PTY checks.
+  const terminalRoot=path.join(output,'terminal-workspace');fs.mkdirSync(terminalRoot,{recursive:true});
+  const helper=path.join(output,'graff-terminal');
+  if(process.platform==='darwin')require('node:child_process').execFileSync('xcrun',['clang','-O2',path.join(__dirname,'native/terminal.c'),'-o',helper]);
+  const terminals=new (require('./terminal.cjs').Terminals)(helper,event=>{if(!win.isDestroyed())win.webContents.send('terminal-event',event);},{shell:'/bin/sh'});
+  ipcMain.handle('terminal',(_event,{action,params})=>terminals.command(action,action==='open'?{...params,cwd:terminalRoot}:params));
+  const wc=win.webContents,js=async c=>{try{return await wc.executeJavaScript(c);}catch(error){console.error("Navigation expression:",c);throw error;}};
+  wc.on("console-message",event=>{if(event.level>=2)console.error("Navigation renderer:",event.message);});
+  const wait=async c=>{for(let i=0;i<150;i++){if(await js(c))return;await sleep(50);}throw Error(`Navigation timeout: ${c}`);};
+  const key=async(key,extra={})=>{await js(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown',${JSON.stringify({key,bubbles:true,cancelable:true,...extra})}))`);await sleep(100);};
+  const input=async text=>{await js(`(()=>{const e=document.querySelector('textarea[aria-label="Prompt"]');e.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);await sleep(100);};
+  const tabs=()=>js(`document.querySelectorAll('[aria-label="Close tab"]').length`);
+  try {
+    fixtureWindow.hide();await wc.loadURL('about:blank');wc.debugger.attach('1.3');await wc.debugger.sendCommand('Page.enable');
+    await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument',{source:`(${installGalleryFixture.toString()})();
+      localStorage.setItem('graff.native.workspaces',JSON.stringify(Array.from({length:50},(_,i)=>({name:'Project '+(i%10),path:'/demo/folder-'+i}))));
+      const commands=[{name:'compact',description:'Compact conversation context'},...Array.from({length:100},(_,i)=>({name:'command-'+i,description:'Command '+i}))];
+      const galleryFetch=window.fetch;window.fetch=async(input,options)=>{const response=await galleryFetch(input,options);if(options?.body&&JSON.parse(options.body).method==='bootstrap')return new Response(JSON.stringify({sessionId:'demo',commands}),{headers:{'content-type':'application/json'}});if(String(input).includes('/api/models')){const data=await response.json();data.result.commands=commands;return new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}});}return response;};`});
+    await wc.loadURL(origin);win.focus();await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+    await input('/compact');await wait(`!!document.querySelector('[role="option"]')`);assert.match(await js(`document.querySelector('[role="option"]').textContent`),/compact/);
+    await key('Escape');await key('n',{metaKey:true});assert.equal(await tabs(),2);
+    await input('/compact');await wait(`!!document.querySelector('[role="option"]')`);assert.match(await js(`document.querySelector('[role="option"]').textContent`),/compact/,'new chats inherit the command catalog');
+    await input('/');await wait(`document.querySelectorAll('[role="option"]').length===101`);
+    const bounds=await js(`(()=>{const r=document.querySelector('[data-composer-menu]').getBoundingClientRect(),l=document.querySelector('[role="listbox"]');return {top:r.top,bottom:r.bottom,height:innerHeight,scroll:l.scrollHeight>l.clientHeight}})()`);
+    assert.ok(bounds.top>=0&&bounds.bottom<=bounds.height&&bounds.scroll,JSON.stringify(bounds));
+    for(let i=0;i<15;i++)await key('ArrowDown');
+    assert.ok(await js(`document.querySelector('[role="listbox"]').scrollTop>0`));await key('Enter');assert.match(await js(`document.querySelector('textarea').value`),/command-14/);
+    await input('');await key('t',{metaKey:true});assert.equal(await tabs(),3);await key('w',{metaKey:true});assert.equal(await tabs(),2);await key('t',{metaKey:true,shiftKey:true});assert.equal(await tabs(),3);
+    await key('d',{metaKey:true});await wait(`document.querySelectorAll('[data-chat]').length===2`);
+    assert.equal(await js(`getComputedStyle(document.querySelector('[data-chat]').parentElement).flexDirection`),'row');
+    await key('Enter',{metaKey:true,shiftKey:true});assert.equal(await js(`document.querySelectorAll('[data-chat]').length`),1);await key('Enter',{metaKey:true,shiftKey:true});
+    await key('d',{metaKey:true,shiftKey:true});assert.equal(await js(`getComputedStyle(document.querySelector('[data-chat]').parentElement).flexDirection`),'column');
+    await key('ArrowUp',{metaKey:true,ctrlKey:true});assert.ok(await js(`Array.from(document.querySelectorAll('[data-chat]')).some(e=>e.style.flexGrow!=='1')`));
+    await key('=',{metaKey:true,ctrlKey:true});assert.ok(await js(`Array.from(document.querySelectorAll('[data-chat]')).every(e=>e.style.flexGrow==='1')`));
+    assert.ok(await js(`Array.from(document.querySelectorAll('[data-chat]')).every(p=>{const r=p.getBoundingClientRect(),c=p.querySelector('[data-promptbar]').getBoundingClientRect();return c.top>=r.top&&c.bottom<=r.bottom})`),'stacked panes keep their composers visible');
+    await key('o',{metaKey:true});await wait(`!!document.querySelector('[role="dialog"]')`);await key('Escape');
+    await js(`document.querySelector('[aria-label="Workspace navigation"] button').click()`);await wait(`!!document.querySelector('[aria-label="Search workspaces"]')`);
+    await js(`(()=>{const e=document.querySelector('[aria-label="Search workspaces"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'folder-42');e.dispatchEvent(new Event('input',{bubbles:true}));})()`);await wait(`document.querySelector('[aria-label="Workspaces"]').querySelectorAll('button').length===1`);
+    assert.match(await js(`document.querySelector('[aria-label="Workspaces"]').textContent`),/folder-42/);
+    await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+    fs.writeFileSync(path.join(output,'workspace-search.png'),(await wc.capturePage()).toPNG());await key('Escape');
+    assert.equal(await js(`!!document.querySelector('[data-workspace-menu]')`),false);
+    if(process.platform==='darwin')await require('./terminal-visual.cjs').runTerminalVisual({win,output});
+    console.log('Navigation visual checks passed: command catalog/new tabs, bounded keyboard menu, new/close/reopen, splits/zoom/resize, workspace search.');
+  } finally {terminals.closeAll();ipcMain.removeHandler('terminal');ipcMain.removeHandler('browser');win.destroy();fixtureWindow.show();fixtureWindow.focus();}
+}
+module.exports={runNavigationVisuals};

@@ -57,6 +57,7 @@ pub fn run(
     engine.g_compact_fn = opts.compact_fn;
     engine.g_history_fn = opts.history_fn;
     engine.g_resume_fn = opts.resume_fn;
+    engine.g_sessions_fn = opts.sessions_fn;
     engine.g_state_fn = opts.state_fn;
     engine.g_idle_wake_fn = opts.idle_wake_fn;
     engine.g_peer_fn = opts.peer_fn;

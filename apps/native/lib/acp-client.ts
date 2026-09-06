@@ -119,6 +119,7 @@ export async function* prompt(
     }
     if ("result" in line) {
       terminal = true;
+      yield { sessionUpdate: "gui_turn_end", stopReason: (line.result as { stopReason?: string } | null)?.stopReason ?? "end_turn" };
       break;
     }
   }
@@ -173,6 +174,10 @@ export type ModelChoice = {
   context?: number;
   cost?: string;
   current?: boolean;
+  effort?: string;
+  fast?: boolean;
+  effortLevels?: string[];
+  fastSupported?: boolean;
 };
 
 type GraffModelsResult = {
@@ -184,20 +189,25 @@ type GraffModelsResult = {
     cost: string;
     current: boolean;
   }[];
-  current?: { model: string; provider: string };
+  current?: { model: string; provider: string; effort?: string; fast?: boolean; effortLevels?: string[]; fastSupported?: boolean };
+  commands?: AcpCommand[];
 };
 
 /** The models THIS install can reach: `graff/models` filtered to providers
  * with live credentials, already in the agent's election order. The same
  * model name can be served by several providers; the highest-ranked seat
  * wins its row (spawn-by-name resolves through graff's own routing anyway). */
-export async function fetchModels(chat: ChatHandle): Promise<{ models: ModelChoice[]; current: string | null }> {
-  const res = await rpc(chat, "graff/models");
+export async function fetchModels(chat?: ChatHandle, root?: string): Promise<{ models: ModelChoice[]; current: string | null; commands?: AcpCommand[] }> {
+  const res = chat ? await rpc(chat, "graff/models") : await fetch(`/api/models?${new URLSearchParams(root ? { root } : {})}`, { cache: "no-store" });
   const body = (await res.json()) as { result?: GraffModelsResult; error?: string };
   if (!body.result) throw new Error(body.error ?? "graff/models failed");
+  return modelChoices(body.result);
+}
+
+export function modelChoices(result: GraffModelsResult): { models: ModelChoice[]; current: string | null; commands?: AcpCommand[] } {
   const seen = new Set<string>();
   const models: ModelChoice[] = [];
-  for (const m of body.result.models ?? []) {
+  for (const m of result.models ?? []) {
     if (!m.authenticated || seen.has(m.name)) continue;
     seen.add(m.name);
     models.push({
@@ -210,7 +220,13 @@ export async function fetchModels(chat: ChatHandle): Promise<{ models: ModelChoi
       current: m.current,
     });
   }
-  return { models, current: body.result.current?.model ?? null };
+  const current = result.current;
+  if (current && !seen.has(current.model)) models.unshift({ key: current.model, name: current.model, provider: current.provider, tag: current.provider, current: true });
+  if (current) {
+    const selected = models.find(m => m.key === current.model);
+    if (selected) Object.assign(selected, { provider: current.provider, effort: current.effort, fast: current.fast, effortLevels: current.effortLevels, fastSupported: current.fastSupported });
+  }
+  return { models, current: current?.model ?? null, commands: result.commands };
 }
 
 /** Fallback until `graff/models` answers (or when nothing is authenticated). */

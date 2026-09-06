@@ -93,6 +93,11 @@ fn spec(self: *const Model, a: std.mem.Allocator) !panel.Spec {
             .footer = "↑↓ move · click or Enter jumps · Esc",
             .body = try jumpBody(self, a),
         },
+        .sessions => blk: {
+            const resume_mod = @import("resume.zig");
+            const head = try resume_mod.head(self, a);
+            break :blk .{ .title = head.title, .note = head.note, .footer = resume_mod.hint, .body = try resume_mod.render(self, a) };
+        },
         else => .{ .body = "" },
     };
 }
@@ -254,6 +259,7 @@ const help_body =
     \\  /always-approve   skip permission prompts
     \\  /import-claude    copy Claude and Cursor MCP + skills
     \\  /jump             jump to a previous turn
+    \\  /resume           list saved sessions
     \\  /copy             copy the last reply
     \\  /btw              queue an aside mid-turn
     \\  /tell             message a live graff (/tell all broadcasts)
@@ -272,8 +278,8 @@ test "help overlay names the advertised pager commands" {
     defer arena.deinit();
     const text = try overlay(&m, arena.allocator(), 80);
     for ([_][]const u8{
-        "/quit", "/help", "/new",      "/home", "/model", "/settings", "/usage", "/debug", "/cache", "/plan", "/always-approve",
-        "/tell", "/peek", "Shift+Tab", "PgUp",  "PgDn",
+        "/quit", "/help", "/new",    "/home",     "/model", "/settings", "/usage", "/debug", "/cache", "/plan", "/always-approve",
+        "/tell", "/peek", "/resume", "Shift+Tab", "PgUp",   "PgDn",
         "←",
         "→",
         "Tab",   "Enter", "Esc",
@@ -356,6 +362,7 @@ test "every overlay is a bordered panel with its name in the frame" {
         .{ .o = .file, .name = "File" },
         .{ .o = .settings, .name = "Settings" },
         .{ .o = .jump, .name = "Jump to turn" },
+        .{ .o = .sessions, .name = "Resume session" },
     };
     for (cases) |c| {
         for ([_]usize{ 40, 60, 80, 120 }) |w| {

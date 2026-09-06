@@ -1,20 +1,29 @@
 "use client";
 
+import { createTurnPainter } from "@/lib/turn-painter";
+import { useQuietSettings } from "./useQuietSettings";
+import reviewStyles from "./ChangesPane.module.css";
+import TerminalPane from "./TerminalPane";
+import { sidebarRecents, sessionFooterTitle } from "./harness-sidebar";
+import AgentsPane from "./AgentsPane";
+import { newPageToken, newSessionName, type Chat, type Msg } from "./harness-types";
+import ChangesPane from "./ChangesPane";
+import { useBrowserVisibility } from "./useBrowserVisibility";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
 import ConversationsPane from "@/components/site/ConversationsPane";
 import FilesPane from "@/components/site/FilesPane";
-import BrowserPane from "@/components/site/BrowserPane";
+import BrowserPane from "@/components/site/DesktopBrowserPane";
 import { IconChat, IconFolder, IconGlobe } from "@/lib/icons";
 import { annotationsBlock, type BrowserPin } from "@/lib/browser/annotations";
 import { browserClose, browserHandle, browserNav } from "@/lib/browser-client";
 import TaskRows from "@/components/primitives/TaskRows";
 import { ThemeToggle } from "@/components/site/ThemeToggle";
-import { AssistantBody, UserBubble } from "@/components/site/ChatBubbles";
+import ChatTranscript from "./ChatTranscript";
+import { useDesktopShortcuts } from "./useDesktopShortcuts";
 import EmptyState from "@/components/site/ChatEmpty";
 import {
-  MODELS,
   cancel,
   chatHandle,
   checkHealth,
@@ -28,7 +37,7 @@ import {
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AcpCommand, type AssistantTurn } from "@/lib/acp";
 import { isFollowingTail, pinScrollerTail } from "@/lib/follow-scroll";
 import { dropQueuedPrompt, enqueuePrompt, shiftQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
-import { dateGroup, listSessionsPage, loadSession, relativeTime, removeSession, toSidebarRecent, type StoredSession } from "@/lib/sessions";
+import { dateGroup, listSessionsPage, loadSession, relativeTime, removeSession, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory, pushHistory, saveHistory } from "@/lib/prompt-history";
 import WorkspaceDialog from "@/components/site/WorkspaceDialog";
 import {
@@ -53,29 +62,6 @@ const MAX_COLUMNS = 4;
 /** Rows the sidebar previews; the library pages the rest. */
 const SIDEBAR_PAGE = 12;
 
-type Msg =
-  | { id: number; role: "user"; text: string }
-  | { id: number; role: "assistant"; turn: AssistantTurn };
-
-/** `model` is what this tab's own agent was spawned with; the harness-level
- * model is only the default a new tab inherits. `cwd` is the workspace the
- * tab's agent runs in — fixed at spawn, like the model. */
-type Chat = { id: number; title: string | null; messages: Msg[]; model?: string; session?: string; cwd?: string;
-  /** The model named this tab from its first prompt: the session poller,
-   * which reads graff's own saved title, must leave it alone. */
-  titledByModel?: boolean };
-
-function newPageToken(): string {
-  return Math.random().toString(36).slice(2, 10);
-}
-
-/** A fresh tab's graff session name. Not `session-…`: that prefix is what the
- * REPL's auto-title renames, and a tab needs a name that stays put so the
- * sidebar row and the running agent keep pointing at the same file. */
-function newSessionName(): string {
-  return `native-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-}
-
 export default function GraffHarness() {
   const [chats, setChats] = useState<Chat[]>([{ id: 1, title: null, messages: [] }]);
   const [activeId, setActiveId] = useState(1);
@@ -89,13 +75,18 @@ export default function GraffHarness() {
   const [sessionIds, setSessionIds] = useState<Record<number, string>>({});
   /** Per tab, the slash commands its agent advertised at session/new. */
   const [commands, setCommands] = useState<Record<number, AcpCommand[]>>({});
+  const [terminalVisible, setTerminalVisible] = useState(false);
+  const [terminalUsed, setTerminalUsed] = useState(false);
+  const toggleTerminal = () => { setTerminalUsed(true); setTerminalVisible(v => !v); };
+  const [catalogCommands, setCatalogCommands] = useState<AcpCommand[]>([]);
   const [stored, setStored] = useState<StoredSession[]>([]);
   const [storedTotal, setStoredTotal] = useState(0);
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set());
   // No hardcoded default: until graff/models answers, the agent's own model
   // resolution decides, and `current` from that call re-points the picker.
-  const [models, setModels] = useState<PromptModel[]>(MODELS);
+  const [models, setModels] = useState<PromptModel[]>([{ key: "", name: "Loading graff models…" }]);
   const [model, setModelKey] = useState<string | null>(process.env.NEXT_PUBLIC_GRAFF_MODEL || null);
+  const [agentsOpen, setAgentsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [fileRequest, setFileRequest] = useState<{ path: string; n: number; changes?: boolean } | null>(null);
   const fileReqRef = useRef(0);
@@ -117,25 +108,13 @@ export default function GraffHarness() {
   const [copiedResume, setCopiedResume] = useState(false);
   // The sidecar browser: one Chrome tab per chat, and the pins the user
   // drops on it, which ride ahead of the chat's next prompt.
-  const [browserOpen, setBrowserOpen] = useState(false);
+  const [browserOpen, setBrowserOpen] = useBrowserVisibility(BROWSER_OPEN_KEY, (chat) => {
+    const target = chats.find(c => chatHandle(pageRef.current, c.id) === chat);
+    if (target) { setActiveId(target.id); setConversationsOpen(false); setFilesOpen(false); } return !!target;
+  });
   // The conversation library: every saved chat, paged and searchable. It takes
   // the whole chat area, so opening it leaves the other side panes.
   const [conversationsOpen, setConversationsOpen] = useState(false);
-  // The pane comes back after a reload (with its last page: the pane
-  // remembers that itself). Read after mount so the server render matches.
-  const browserOpenRestored = useRef(false);
-  useEffect(() => {
-    try {
-      if (!browserOpenRestored.current) {
-        browserOpenRestored.current = true;
-        if (window.localStorage.getItem(BROWSER_OPEN_KEY) !== "0") setBrowserOpen(true);
-        return;
-      }
-      window.localStorage.setItem(BROWSER_OPEN_KEY, browserOpen ? "1" : "0");
-    } catch {
-      // no storage
-    }
-  }, [browserOpen]);
   const openConversations = () => {
     setFilesOpen(false);
     setBrowserOpen(false);
@@ -145,10 +124,12 @@ export default function GraffHarness() {
   const pinsRef = useRef<Record<number, BrowserPin[]>>({});
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
-  const scrollRef = useRef<HTMLDivElement>(null);
   // Split view: chats shown beside the active one. Each column keeps its
   // own scroller and its own place in its transcript.
   const [panes, setPanes] = useState<number[]>([]);
+  const [splitDirection, setSplitDirection] = useState<"row" | "column">("row");
+  const [zoomedPane, setZoomedPane] = useState(false);
+  const [paneWeights, setPaneWeights] = useState<Record<number, number>>({});
   const scrollEls = useRef(new Map<number, HTMLDivElement>());
   const [tailing, setTailing] = useState<Record<number, boolean>>({});
   const paneRef = (id: number) => (el: HTMLDivElement | null) => {
@@ -208,22 +189,21 @@ export default function GraffHarness() {
   };
 
   const adoptCatalog = async (chatId: number) => {
-    // What did the agent actually resolve? The picker should show graff's
-    // answer (fuzzy --model resolution, election-ranked seats), not our guess.
+    // Use the provider and model actually resolved by graff.
     try {
-      const { models: live, current } = await fetchModels(handleOf(chatId));
+      const { models: live, current, commands: available } = await fetchModels(sessionsRef.current.has(chatId) ? handleOf(chatId) : undefined, activePathRef.current ?? undefined);
       if (live.length > 0) setModels(live);
+      if (available?.length) { setCatalogCommands(available); setCommands(old => ({ ...old, [chatId]: available })); }
       if (current) {
         setChatModel(chatId, current);
         setModelKey((fallback) => fallback ?? current);
       }
     } catch {
-      // keep the static fallback; the picker still works
+      // Do not invent a selected model when the catalog is unavailable.
     }
   };
 
-  // The picker falls back to a built-in list until the agent answers with
-  // what it actually has. A window that missed that answer — its agent was
+  // Refresh the catalog on focus. If its agent was
   // not up yet, or the page outlived a restart — would show the fallback
   // for good, so ask again whenever the window comes back to the front.
   const catalogRef = useRef({ adopt: (_: number) => {}, activeId: 1 });
@@ -259,10 +239,10 @@ export default function GraffHarness() {
     });
     sessionsRef.current.set(chatId, id);
     setSessionIds((current) => ({ ...current, [chatId]: id }));
-    // The command menu is whatever this agent says it services — a build
-    // with different commands must not be described by a stale list here.
+    // Populate the command menu from this agent's advertisement.
     if (commands.length > 0) setCommands((current) => ({ ...current, [chatId]: commands }));
     setHealth({ ok: true });
+    await adoptCatalog(chatId);
     return id;
   };
 
@@ -291,6 +271,7 @@ export default function GraffHarness() {
         const session = newSessionName();
         sessionNamesRef.current.set(1, session);
         setChats((current) => current.map((c) => (c.id === 1 ? { ...c, session } : c)));
+        if (window.graffDesktop) { await adoptCatalog(1); return; } // No coding session needed.
         await requireSession(1);
         if (cancelled) return;
         await adoptCatalog(1);
@@ -341,7 +322,8 @@ export default function GraffHarness() {
   }, []);
 
   const openChanges = useCallback(() => {
-    setConversationsOpen(false);
+    setAgentsOpen(false);
+    setBrowserOpen(false); setConversationsOpen(false);
     setFilesOpen(true);
     setFileRequest({ path: "", n: (fileReqRef.current += 1), changes: true });
   }, []);
@@ -390,7 +372,7 @@ export default function GraffHarness() {
               messages: [
                 ...c.messages,
                 { id: userId, role: "user", text: trimmed },
-                { id: asstId, role: "assistant", turn: { ...emptyTurn(), model: spawnModel } },
+                { id: asstId, role: "assistant", turn: { ...emptyTurn(), model: spawnModel, startedAt: Date.now() } },
               ],
             },
       ),
@@ -405,42 +387,35 @@ export default function GraffHarness() {
     // so the agent can drive the same page; they are spent on send. Behind,
     // not ahead: graff titles the session from the message's first line.
     let wire = trimmed;
-    const pins = pinsRef.current[chatId] ?? [];
+    const pins = /^\/(effort|reasoning|fast)(?:\s|$)/.test(trimmed) ? [] : pinsRef.current[chatId] ?? [];
     if (pins.length > 0) {
       const handle = await browserHandle(handleOf(chatId)).catch(() => null);
       wire = `${trimmed}\n\n${annotationsBlock(pins, handle)}`;
       setPins(chatId, []);
     }
-    let turn: AssistantTurn = { ...emptyTurn(), model: spawnModel };
+    let turn: AssistantTurn = { ...emptyTurn(), model: spawnModel, startedAt: Date.now() };
+    const painter = createTurnPainter<AssistantTurn>(next => patchAssistant(chatId, asstId, next));
     const startedAt = Date.now();
     try {
       const id = await requireSession(chatId);
-      // Paint at most once per frame. ACP text/tool events can arrive dozens
-      // of times per 16ms; each setChats used to re-parse every settled
-      // markdown block in the thread.
-      let paint = 0;
-      const turnRef = { current: turn };
+      turn = { ...turn, connected: true, lastUpdateAt: Date.now() };
+      painter.update(turn);
       for await (const update of prompt(handleOf(chatId), id, wire)) {
         turn = applyAcpUpdate(turn, update);
         if (turn.thoughtMs === undefined && turn.status !== "thinking") turn = { ...turn, thoughtMs: Date.now() - startedAt };
-        turnRef.current = turn;
-        if (!paint) {
-          paint = requestAnimationFrame(() => {
-            paint = 0;
-            patchAssistant(chatId, asstId, turnRef.current);
-          });
-        }
+        painter.update(turn);
       }
-      if (paint) cancelAnimationFrame(paint);
       // The turn carried pins, so the agent most likely changed the page:
       // reload the chat's tab so the pane shows the result without a click.
       if (pins.length > 0) void browserNav(handleOf(chatId), "reload").catch(() => undefined);
+      if (/^\/(effort|reasoning|fast)(?:\s|$)/.test(trimmed)) void adoptCatalog(chatId);
       turn = finishAcpTurn(turn);
-      patchAssistant(chatId, asstId, turn);
+      painter.finish(turn);
     } catch (err) {
-      turn = { ...turn, error: err instanceof Error ? err.message : String(err), status: "error" };
-      patchAssistant(chatId, asstId, turn);
+      turn = finishAcpTurn({ ...turn, error: err instanceof Error ? err.message : String(err), status: "error" });
+      painter.finish(turn);
     } finally {
+      painter.dispose();
       runningRef.current.delete(chatId);
       setBusyFor(chatId, false);
       void refreshStored();
@@ -451,28 +426,20 @@ export default function GraffHarness() {
     }
   };
 
-  /** Name the tab from what was asked, in the model's words. The prompt's
-   * first words stand in until this answers (a few seconds), and stay if it
-   * cannot. Only the first message of a tab names it. */
   const nameChat = (chatId: number, prompt: string, cwd: string | undefined) => {
-    void fetch("/api/title", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ prompt, cwd }),
-    })
-      .then((res) => (res.ok ? (res.json() as Promise<{ title?: string | null }>) : null))
-      .then((body) => {
+    void fetch("/api/title", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, cwd }) })
+      .then(res => res.ok ? res.json() : null).then(body => {
         const title = body?.title?.trim();
-        if (!title) return;
-        setChats((current) => current.map((c) => (c.id === chatId ? { ...c, title, titledByModel: true } : c)));
-      })
-      .catch(() => undefined);
+        if (title) setChats(current => current.map(c => c.id === chatId ? { ...c, title, titledByModel: true } : c));
+      }).catch(() => undefined);
   };
+  const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: (catalog) => setModels(catalog.models) });
 
   const send = async (text: string, forChat?: number) => {
     const trimmed = text.trim();
     const chatId = forChat ?? chatThread.id;
     if (!trimmed) return;
+    await settings.wait(chatId);
     if (runningRef.current.has(chatId) || busyIds.has(chatId)) {
       setQueue(chatId, enqueuePrompt(queuesRef.current[chatId] ?? [], trimmed, (queueIdRef.current += 1)));
       return;
@@ -490,8 +457,8 @@ export default function GraffHarness() {
     setFilesOpen(false);
     setConversationsOpen(false);
     setFollowing(true);
-    // Spawn eagerly so the first send is not stuck behind agent + MCP boot.
-    void requireSession(id).catch(() => undefined);
+    // The desktop defers agent + MCP boot until the first request.
+    if (!window.graffDesktop) void requireSession(id).catch(() => undefined);
   };
 
   /** Open a saved graff session: its transcript renders from the file at once,
@@ -751,15 +718,7 @@ export default function GraffHarness() {
     }
   }, [chats, tailing, columnKey]);
 
-  // Sidebar preview: the first page of the session index, newest first. A
-  // session open in a tab shows the tab's name (the model wrote it from the
-  // first prompt); one only on disk shows whatever graff saved.
-  const now = Date.now();
-  const recents = stored.map((s) => {
-    const row = toSidebarRecent(s, now);
-    const live = chats.find((c) => c.session === s.name)?.title;
-    return live ? { ...row, label: live } : row;
-  });
+  const recents = sidebarRecents(stored, chats);
 
   // The tab bar's folder chip is the *tab's* workspace; the sidebar's
   // switcher is the *active* one (where new tabs open). They differ only
@@ -775,9 +734,7 @@ export default function GraffHarness() {
   const pinCount = (pinsByChat[chatThread.id] ?? []).length;
   const activeWorkspace = findWorkspace(workspaces, activePath);
   const sidebarWorkspace = activeWorkspace ?? (activePath ? { path: activePath, name: basename(activePath) } : undefined);
-  const footerTitle = chatThread.session
-    ? `graff session ${chatThread.session}${sessionId ? ` · ACP ${sessionId}` : ""}${chatCwd ? ` · ${chatCwd}` : ""}\nClick to copy the command that resumes it in a terminal.`
-    : undefined;
+  const footerTitle = sessionFooterTitle(chatThread.session, sessionId, chatCwd);
 
   /** One chat column: its transcript (or the empty state) and its composer.
    * A plain function, not a component, so the split view can render two of
@@ -785,6 +742,7 @@ export default function GraffHarness() {
   const columnBody = (thread: Chat) => {
     const isFollowing = tailing[thread.id] ?? true;
     const hasMessages = thread.messages.length > 0;
+    const compactPane = splitDirection === "column" && columns.length > 1;
     const threadBusy = busyIds.has(thread.id);
     const threadModel = thread.model ?? model ?? undefined;
     const threadQueued = queues[thread.id] ?? [];
@@ -795,25 +753,8 @@ export default function GraffHarness() {
 
             {hasMessages ? (
               <div className="flex min-h-0 flex-1 flex-col">
-                <div ref={paneRef(thread.id)} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" style={{ overflowAnchor: "none" }}>
-                  <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
-                    {thread.messages.map((message, index) =>
-                      message.role === "user" ? (
-                        <UserBubble key={message.id} text={message.text} />
-                      ) : (
-                        <AssistantBody
-                          key={message.id}
-                          turn={message.turn}
-                          onOpenPath={openPath}
-                          onReview={openChanges}
-                          scroller={scrollRef}
-                          following={isFollowing && index === thread.messages.length - 1}
-                        />
-                      ),
-                    )}
-                  </div>
-                </div>
-                <div className="shrink-0 bg-page px-4 pt-3 pb-6 sm:px-8">
+                <ChatTranscript key={thread.id} messages={thread.messages} register={paneRef(thread.id)} following={isFollowing} onOpenPath={openPath} onReview={openChanges} />
+                <div className={`shrink-0 bg-page px-4 ${compactPane ? "py-2" : "pt-3 pb-6 sm:px-8"}`}>
                   <div className="mx-auto max-w-[720px]">
                     {threadPins > 0 && (
                       <div className="mb-2 flex items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline">
@@ -869,14 +810,14 @@ export default function GraffHarness() {
                     )}
                     <PromptBar
                       demo={false}
-                      tall
+                      tall={!compactPane}
                       placeholder={threadBusy ? "Queue a follow-up…" : "Follow up"}
                       models={models}
-                      commands={commands[thread.id] ?? []}
+                      commands={commands[thread.id] ?? catalogCommands}
                       root={cwdOf(thread)}
                       modelKey={threadModel}
                       onModelChange={(key: string) => changeModel(key, thread.id)}
-                      onSend={(text: string) => void send(text, thread.id)}
+                      onSend={(text: string) => void send(text, thread.id)} onSetting={text => settings.change(thread.id, text)}
                       history={threadHistory}
                       busy={threadBusy}
                       onStop={() => {
@@ -889,15 +830,15 @@ export default function GraffHarness() {
               </div>
             ) : (
               <div className="min-h-0 flex-1 overflow-y-auto">
-                <EmptyState
-                  onSend={(text: string) => void send(text, thread.id)}
+                <EmptyState compact={compactPane}
+                  onSend={(text: string) => void send(text, thread.id)} onSetting={text => settings.change(thread.id, text)}
                   health={health}
                   history={threadHistory}
                   cwd={cwdOf(thread)}
                   models={models}
                   modelKey={threadModel}
                   onModelChange={(key: string) => changeModel(key, thread.id)}
-                  commands={commands[thread.id] ?? []}
+                  commands={commands[thread.id] ?? catalogCommands}
                 />
               </div>
             )}
@@ -906,11 +847,8 @@ export default function GraffHarness() {
   };
 
   const tabBar = (
-    <div className="flex h-11 shrink-0 items-center border-b border-line px-2">
-      {/* The tabs scroll on their own. They used to share this row's scroller
-        * with the toolbar, so a handful of open chats pushed the split,
-        * workspace and browser controls off the edge — and with the scrollbar
-        * hidden, they were simply gone. */}
+    <div className={`${reviewStyles.chatbar} flex h-11 shrink-0 items-center border-b border-line px-2`}>
+      {/* Tabs scroll independently; toolbar labels collapse in narrow panes. */}
       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {chats.map((c) => (
           <div
@@ -963,7 +901,7 @@ export default function GraffHarness() {
           </svg>
         </button>
       </div>
-      <div className="flex shrink-0 items-center gap-2 pl-2 pr-1">
+      <div className={`${reviewStyles.actions} flex shrink-0 items-center gap-2 pl-2 pr-1`}>
         <button
           type="button"
           aria-pressed={conversationsOpen}
@@ -974,7 +912,7 @@ export default function GraffHarness() {
           }`}
         >
           <IconChat size={14} />
-          <span className="hidden sm:inline">Chats</span>
+          <span data-toolbar-label className="hidden sm:inline">Chats</span>
         </button>
         <button
           type="button"
@@ -1004,7 +942,7 @@ export default function GraffHarness() {
           }`}
         >
           <IconFolder size={14} />
-          <span className="max-w-40 truncate font-mono text-[11.5px]">{workspaceName}</span>
+          <span data-toolbar-label className="max-w-40 truncate font-mono text-[11.5px]">{workspaceName}</span>
         </button>
         <button
           type="button"
@@ -1017,6 +955,7 @@ export default function GraffHarness() {
             <path d="M6 9l6 6 6-6" />
           </svg>
         </button>
+        <button type="button" onClick={openChanges} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover" aria-label="Review workspace changes" title="Review workspace changes"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M5 5h14v14H5zM8 9h8M8 12h8M8 15h4" /></svg><span data-toolbar-label>Changes</span></button>
         <button
           type="button"
           aria-pressed={browserOpen}
@@ -1030,75 +969,36 @@ export default function GraffHarness() {
           }`}
         >
           <IconGlobe size={14} />
-          <span className="text-[11.5px]">Browser</span>
+          <span data-toolbar-label className="text-[11.5px]">Browser</span>
           {pinCount > 0 && (
             <span className="rounded-full bg-accent px-1.5 text-[10px] font-semibold text-white tabular-nums">{pinCount}</span>
           )}
         </button>
+        <button aria-label="Toggle terminal" aria-pressed={terminalVisible} title="Terminal (⌘J)" onClick={toggleTerminal} className="rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg></button>
+        <button aria-label="Show agents" aria-pressed={agentsOpen} onClick={() => { setAgentsOpen(!agentsOpen); setFilesOpen(false); setBrowserOpen(false); setConversationsOpen(false); }} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="9" cy="7" r="3"/><path d="M3 20v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2"/></svg><span data-toolbar-label>Agents</span></button>
         <ThemeToggle />
       </div>
     </div>
   );
 
-  // The shortcuts read the current handlers through a ref, so the window
-  // listener below is installed once instead of on every render.
-  const keysRef = useRef({ closeChat, newChat, reopenClosed, toggleSplit, addPane, focusChat, chats, activeId });
-  keysRef.current = { closeChat, newChat, reopenClosed, toggleSplit, addPane, focusChat, chats, activeId };
+  useDesktopShortcuts({ closeChat, newChat, reopenClosed, toggleSplit, focusChat, chats, activeId, columns: columnIds,
+    split: direction => { setSplitDirection(direction); setZoomedPane(false); addPane(); },
+    zoomPane: () => setZoomedPane(value => !value),
+    resizePane: delta => setPaneWeights(old => ({ ...old, [activeId]: Math.max(0.4, Math.min(3, (old[activeId] ?? 1) + delta)) })),
+    toggleTerminal, equalize: () => setPaneWeights({}), openWorkspace: () => setDialog({ mode: "new" }),
+  });
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-      const keys = keysRef.current;
-      const key = event.key.toLowerCase();
-      const take = () => {
-        event.preventDefault();
-        event.stopPropagation();
-      };
-      if (key === "w" && !event.shiftKey) {
-        take();
-        keys.closeChat(keys.activeId);
-        return;
-      }
-      if (key === "t") {
-        take();
-        if (event.shiftKey) keys.reopenClosed();
-        else keys.newChat();
-        return;
-      }
-      if (key === "d" && !event.shiftKey) {
-        take();
-        keys.addPane();
-        return;
-      }
-      if (key === "\\" && !event.shiftKey) {
-        take();
-        keys.toggleSplit();
-        return;
-      }
-      // ⌘1…⌘9 jump to a tab, ⌘9 to the last one, as in a browser.
-      if (!event.shiftKey && key >= "1" && key <= "9") {
-        const nth = Number(key);
-        const target = nth === 9 ? keys.chats[keys.chats.length - 1] : keys.chats[nth - 1];
-        if (!target) return;
-        take();
-        keys.focusChat(target.id);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  catalogRef.current = { adopt: (id: number) => void adoptCatalog(id).catch(() => undefined), activeId };
+  catalogRef.current = { adopt: (id: number) => { if (!runningRef.current.has(id)) void adoptCatalog(id).catch(() => undefined); }, activeId };
 
   const paneTodos = lastAssistant?.turn.todos ?? [];
   // The active chat is the first column; the panes follow it. A chat that
   // was closed, or became the active one, leaves the split rather than
   // showing twice. Four columns is as narrow as a chat stays readable.
-  const columns = columnIds.map((id) => chats.find((c) => c.id === id)).filter((c): c is Chat => c !== undefined);
+  const columns = (zoomedPane ? [activeId] : columnIds).map((id) => chats.find((c) => c.id === id)).filter((c): c is Chat => c !== undefined);
 
 
   return (
-    <main className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
+    <main data-graff-main className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
       <SidebarNav
         fill
         className="hidden lg:flex"
@@ -1128,7 +1028,7 @@ export default function GraffHarness() {
       />
 
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
-        <div className="flex min-h-0 flex-1 gap-2.5">
+        <div className="flex min-h-0 flex-1 gap-2.5" style={{ flexDirection: splitDirection }}>
           {conversationsOpen ? (
             <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page">
               {tabBar}
@@ -1151,6 +1051,7 @@ export default function GraffHarness() {
               <section
                 key={thread.id}
                 data-chat={thread.id}
+                style={{ flexGrow: paneWeights[thread.id] ?? 1, minHeight: 0 }}
                 className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page"
               >
                 {slot === 0 ? (
@@ -1195,7 +1096,8 @@ export default function GraffHarness() {
             </>
           )}
 
-          {filesOpen && !conversationsOpen && <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />}
+          {agentsOpen && !filesOpen && !browserOpen && !conversationsOpen && <AgentsPane key={chatCwd} root={chatCwd} onClose={() => setAgentsOpen(false)} />}
+          {filesOpen && !conversationsOpen && (fileRequest?.changes ? <ChangesPane root={chatThread.cwd} onClose={() => setFilesOpen(false)} /> : <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />)}
 
           {browserOpen && !conversationsOpen && (
             <BrowserPane
@@ -1230,6 +1132,7 @@ export default function GraffHarness() {
             </aside>
           )}
         </div>
+        {terminalUsed && chatCwd && <TerminalPane key={chatCwd} cwd={chatCwd} visible={terminalVisible} onHide={() => setTerminalVisible(false)} />}
       </div>
 
       {dialog && (

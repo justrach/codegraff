@@ -24,6 +24,7 @@ const provider_mod = @import("provider.zig");
 const util = @import("util.zig");
 const goal_state = @import("goal_state.zig");
 const session_writer = @import("session_writer.zig"); // #273: the fingerprint + the background write
+const subagent_ledger = @import("subagent_ledger.zig"); // #753: persist background-agent handles
 const shutdown_trace = @import("shutdown_trace.zig"); // #364: teardown phase stamps
 const protocol_seq = @import("protocol_seq.zig"); // #330: the --json event sequence survives a resume
 const http_headers = @import("http_headers.zig"); // the k3/codex prompt-cache key survives one too
@@ -177,6 +178,7 @@ fn fingerprint(root: *Agent, name: []const u8) u64 {
     f.num(protocol_seq.current());
     f.json(Value{ .array = root.messages });
     session_peer.mixFingerprint(&f);
+    subagent_ledger.mixFingerprint(&f);
     return f.final();
 }
 
@@ -339,6 +341,7 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     try s.objectField("cache_key");
     try s.write(http_headers.sessionId(root.io));
     try session_peer.writeFields(&s);
+    try subagent_ledger.writeFields(&s, root.io);
     try s.endObject();
 
     // #289: two graffs in one workspace share this file — the writer makes the
@@ -536,4 +539,8 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     root.fallback_active = false;
     root.fallback_blocked = false;
     session_peer.restore(root, obj);
+    subagent_ledger.restore(root.gpa, root.io, obj.get("background_agents"));
+    const subagent = @import("subagent.zig");
+    if (subagent_ledger.nextId() > subagent.g_agent_jobs.next_id)
+        subagent.g_agent_jobs.next_id = subagent_ledger.nextId();
 }
