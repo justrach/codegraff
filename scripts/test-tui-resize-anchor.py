@@ -139,6 +139,24 @@ def frame_at(fd, rows, cols, settle=1.2):
     return parse(drain(fd, settle))
 
 
+def stable_frame(fd, rows, cols, budget=1.5):
+    # #750: a width change can emit two full frames (old wrap, then anchored).
+    # The first parse is a real frame — it just is not the settled one — so
+    # the parallel suite saw a marker jump. Wait for two identical parses
+    # inside the original settle budget. Do not relax DRIFT.
+    resize(fd, rows, cols)
+    last = None
+    deadline = time.time() + budget
+    while time.time() < deadline:
+        now = parse(drain(fd, 0.12))
+        if now is None:
+            continue
+        if last is not None and now == last:
+            return now
+        last = now
+    return last
+
+
 def reread(fd):
     """A full frame at the current width, via a HEIGHT-only jiggle.
 
@@ -190,7 +208,7 @@ def run():
         # Every step must CHANGE the height: an identical winsize is not a
         # resize, so no full repaint follows it and there is nothing to read.
         for h in (18, 34, 22, ROWS):
-            rows = frame_at(fd, h, COLS)
+            rows = stable_frame(fd, h, COLS)
             if rows is None:
                 return f"no full repaint at height {h}"
             if find(rows, TAIL) is None:
@@ -216,14 +234,18 @@ def run():
         # --- the width sweep --------------------------------------------------
         seen = [(COLS, top)]
         for w in (76, 58, 44, 92, COLS):
-            rows = frame_at(fd, ROWS, w)
+            rows = stable_frame(fd, ROWS, w)
             if rows is None:
                 return f"no full repaint at width {w}"
             at = find(rows, MARK)
             if at is None:
                 return f"width {w} scrolled {MARK} off screen (anchor lost); seen={seen}"
             if abs(at - top) > DRIFT:
-                return f"width {w} moved {MARK} from row {top} to {at}; seen={seen}"
+                again = stable_frame(fd, ROWS, w, budget=1.8)
+                at2 = find(again, MARK) if again else None
+                if at2 is None or abs(at2 - top) > DRIFT:
+                    return f"width {w} moved {MARK} from row {top} to {at2 if at2 is not None else at}; seen={seen}"
+                at = at2
             seen.append((w, at))
         print(f"    widths/rows: {seen}")
         return None

@@ -137,9 +137,9 @@ pub fn buildBody(self: *Agent, tools_in: ?[]const u8, force_tool: bool, stream: 
                     try writeKimiTools(&s, self.scratchAlloc(), t)
                 else
                     try serde.writeOpenAITools(&s, self.scratchAlloc(), t);
-                if (force_tool) {
-                    try s.objectField("tool_choice");
-                    try s.write("required");
+                if (force_tool or @import("meta_wire.zig").restricted(self.provider.id, self.provider.model)) {
+                    try s.objectField("tool_choice"); // #751: Meta is auto-only
+                    try s.write(@import("meta_wire.zig").toolChoice(force_tool, self.provider.id, self.provider.model));
                 }
             }
             try s.objectField("messages");
@@ -255,14 +255,10 @@ test "Kimi request body follows live native or Anthropic protocol metadata" {
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"prompt_cache_key\"") == null); // native-transport field only
 }
 
-// ── Retained-reasoning wire-format regressions ──────────────────────────────
-// OpenAI's ARC-AGI-3 result showed that keeping a model's reasoning across
-// turns (rather than dropping it once a turn ends) is worth a large capability
-// jump. graff already retains it on all three wire formats, but only as a side
-// effect of echoing provider output verbatim into history — nothing pinned that
-// behavior down, so a future normalization pass could silently drop it and no
-// test would fail. These three tests assert the retention at the point it
-// matters: the bytes that go on the wire.
+// Retained-reasoning wire-format regressions. OpenAI's ARC-AGI-3 result
+// showed keeping reasoning across turns is a capability jump. graff retains
+// it by echoing provider output into history — these three tests pin the
+// bytes on the wire so a later normalization pass cannot silently drop it.
 
 fn testUserMessage(arena: std.mem.Allocator, text: []const u8) !Value {
     var m: std.json.ObjectMap = .empty;

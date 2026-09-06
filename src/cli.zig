@@ -24,6 +24,8 @@ pub const changelog_text =
     \\0.0.289
     \\  • background-agent handles survive an interrupted API turn (#753)
     \\  • prompt-cache affinity is the git root, not the leaf cwd
+    \\  • Meta tool_choice is auto-only; error-only SSE is not a truncate-retry (#751 #748)
+    \\  • worktree edits land on the selected root (#747)
     \\
     \\0.0.288
     \\  • Gemini is a first-class provider on Google's Interactions API

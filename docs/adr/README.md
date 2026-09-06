@@ -80,6 +80,7 @@ record only when you need the evidence or the edge cases.
 | [0067](0067-recorded-constraints-are-ledger-state.md) | Recorded constraints are live ledger JSON in the root prefix; recap prose is not authority, and a write refreshes instructions in the same turn. |
 | [0068](0068-background-agent-handles-survive-interrupt.md) | Background-agent ids are a session ledger; an interrupted parent turn must not report them as never started (#753). |
 | [0069](0069-cache-affinity-is-the-git-root.md) | Prompt-cache affinity is the git root (or a shared scratch seed), not the leaf cwd. |
+| [0070](0070-meta-tool-choice-is-auto-only.md) | Meta / Muse Spark `tool_choice` is `auto` at the source; `max` effort folds to `xhigh` (#751). |
 
 ## When to write one
 

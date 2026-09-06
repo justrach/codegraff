@@ -187,9 +187,9 @@ pub fn execEdit(ctx: ToolCtx, input: Value) !ToolOutput {
     const all = tools.json_args.flag(input, "replace_all");
     if (old.len == 0) return .{ .text = try gpa.dupe(u8, "old_string must not be empty"), .is_error = true };
 
-    // #276 P0-1: resolve under the agent's isolated worktree when set.
-    const resolved: []const u8 = if (ctx.agent_cwd) |base| try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, path }) else path;
-    defer if (ctx.agent_cwd != null) gpa.free(resolved);
+    // #747: write and verify share one absolute path (selected tree).
+    const resolved = try @import("codedbpro_paths.zig").sessionAbs(gpa, ctx.io, ctx.agent_cwd, path);
+    defer gpa.free(resolved);
     return applyEdit(ctx, path, resolved, old, new, all);
 }
 

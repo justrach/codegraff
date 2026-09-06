@@ -325,12 +325,9 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (want_compact) {
             if (try codedb_exec.maybeCompactRead(ctx, path, start_line, end_line)) |out| return out;
         }
-        // #276 P0-1: resolve under the agent's isolated worktree when set —
-        // path itself stays relative (that's the agent's own view, used in
-        // every message below); only the actual syscall targets the resolved
-        // absolute path.
-        const resolved: []const u8 = if (ctx.agent_cwd) |base| try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, path }) else path;
-        defer if (ctx.agent_cwd != null) gpa.free(resolved);
+        // #747: same selected-tree absolute path as edit_file (sessionAbs).
+        const resolved = try codedbpro_paths.sessionAbs(gpa, io, ctx.agent_cwd, path);
+        defer gpa.free(resolved);
         const outcome = read_file.read(io, gpa, .cwd(), resolved, start_line, end_line, contains) catch |err| {
             if (fsErrorText(gpa, .read, path, err)) |t| return .{ .text = t, .is_error = true };
             return err;
@@ -376,11 +373,10 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         const path = strField(input, "path") orelse return missingArg(gpa, "path");
         const content = strField(input, "content") orelse return missingArg(gpa, "content");
         if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
-        // #276 P0-1: resolve under the agent's isolated worktree when set.
-        // (snapshots are root-only — `ctx.agent_cwd` is only ever set for a
-        // subagent, so the branch below never runs together with isolation.)
-        const resolved: []const u8 = if (ctx.agent_cwd) |base| try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, path }) else path;
-        defer if (ctx.agent_cwd != null) gpa.free(resolved);
+        // #747: share sessionAbs with edit_file so a write cannot land in
+        // posix cwd while the next edit looks at a stale display cwd.
+        const resolved = try codedbpro_paths.sessionAbs(gpa, io, ctx.agent_cwd, path);
+        defer gpa.free(resolved);
         // #337: a write_file racing an edit_file on the same path in the same
         // assistant turn (agent_tools.zig runs them concurrently) would drop
         // one of the two. Same stripe as edit_file, so they take turns.
