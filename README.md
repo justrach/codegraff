@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/readme-workshop.png" alt="The CodeGraff workshop: a crew of rats in coral coats coordinating work. Small crew. Real work." width="960">
+  <img src="docs/images/readme-workshop.png" alt="CodeGraff workshop rats in coral coats" width="280" height="280">
 </p>
 
 <h1 align="center">graff</h1>

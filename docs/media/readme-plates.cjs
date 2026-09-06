@@ -22,9 +22,7 @@ function screen({ id, title, note, label, file, artName, theme }) {
     <footer><span class="footer-label">${label}</span><span>Actual desktop UI · demonstration workspace</span><span class="edition">GRAFF / DESKTOP</span></footer>`, theme);
 }
 module.exports = [
-  { name: 'readme-workshop', width: 1920, height: 1040, html: () => page(`${brand('THE CODING WORKSHOP')}
-    <div class="hero-copy"><div class="eyebrow">OPEN SOURCE. HANDS ON.</div><h1>Small crew.<br>Real work.</h1><p>Give Graff the task.<br>Make something worth keeping.</p><div class="rule"></div><span class="signature">Code. Coordinate. Review.</span></div>
-    <div class="hero-art"><img src="${art('run')}" /></div><div class="hero-bottom">THE GRAFF WORKSHOP <span>CODEGRAFF</span></div>`, 'hero') },
+  { name: 'readme-workshop', width: 512, height: 512, html: () => page(`<img class="workshop-icon" src="${art('run')}" />`, 'square') },
   { name: 'desktop-chat-studio', width: 1920, height: 1530, html: () => screen({ id:'01', title:'A place to do the work.', note:'A clear conversation. Your tools close at hand.', label:'THE WORKSPACE', file:'chat-light', artName:'run', theme:'bright' }) },
   { name: 'desktop-agents-studio', width: 1920, height: 1530, html: () => screen({ id:'02', title:'Many hands. One workspace.', note:'See the crew. Share context. Pass the work along.', label:'AGENT COORDINATION', file:'agents-codegraff', artName:'agents', theme:'coral' }) },
   { name: 'desktop-review-studio', width: 1920, height: 1530, html: () => screen({ id:'03', title:'Room for a closer look.', note:'Keep the conversation beside the changes.', label:'CHANGES & REVIEW', file:'review-dark', artName:'review', theme:'night' }) },
