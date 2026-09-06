@@ -3,7 +3,8 @@
 The README uses CodeGraff's workshop artwork: black field mice in coral coats,
 textured paper, ink, cobalt, and restrained editorial typography. Desktop plates
 add rounded presentation frames and soft shadows around actual GUI captures.
-The screenshots are unchanged; the window chrome outside them is presentation
+The desktop sequence moves from White on rice paper, through the warm CodeGraff
+palette on coral, to Black on cobalt. The screenshots are unchanged; the window chrome outside them is presentation
 decoration. README links open the original PNGs for closer inspection.
 
 ## Regenerate

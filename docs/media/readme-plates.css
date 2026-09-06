@@ -23,6 +23,7 @@ header p { font-size: 27px; opacity: .76; margin: 0; }
 .dark { border-color: #f6eedf35; }.dark .chrome { background: #252526; color: #d0cbc2; border-color: #ffffff10; }
 footer { position: absolute; left: 84px; right: 84px; bottom: 43px; display: flex; align-items: center; gap: 24px; border-top: 1px solid #1b171430; padding-top: 24px; font-size: 18px; }
 .footer-label { font: 14px ui-monospace, monospace; letter-spacing: 2px; }.edition { margin-left: auto; font: 14px ui-monospace, monospace; letter-spacing: 2px; }
+.bright { background: #fffaf0; }.bright .chrome { background: #f5f5f6; color: #62636a; }
 .night { background: #243e73; color: #fff4df; }.night .eyebrow { color: #f5b55e; }.night footer { border-color: #f6eedf40; }
 .coral { background: #d7654d; }.coral .eyebrow { color: #4f241d; }.coral header p { opacity: .88; }
 .hero { height: 1040px; }.hero .brand { right: 1070px; }.hero .brand small { display: none; }

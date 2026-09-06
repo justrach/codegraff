@@ -56,10 +56,13 @@ async function runPerformance({ win: fixtureWindow, origin, output }) {
       await sleep(200);
       fs.writeFileSync(path.join(output, name), (await wc.capturePage()).toPNG());
     };
-    for (const [label, name] of [['Black', 'desktop-chat-dark.png'], ['CodeGraff', 'desktop-chat-codegraff.png']]) {
+    const chooseTheme = async label => {
       await click('[aria-label="Appearance"]');
       await wait(`!!document.querySelector('[aria-label="Close appearance"]')`);
       await js(`[...document.querySelectorAll('[role="dialog"] button')].find(b=>b.textContent.startsWith(${JSON.stringify(label)})).click(); document.querySelector('[aria-label="Close appearance"]').click()`);
+    };
+    for (const [label, name] of [['White', 'desktop-chat-light.png'], ['Black', 'desktop-chat-dark.png'], ['CodeGraff', 'desktop-chat-codegraff.png']]) {
+      await chooseTheme(label);
       await capture(name);
     }
     await js(`document.querySelector('[aria-label="Review workspace changes"]').click()`);
@@ -69,7 +72,12 @@ async function runPerformance({ win: fixtureWindow, origin, output }) {
     await wait(`document.querySelector('[aria-label="Agents panel"]')?.textContent.includes('Refine navigation')`);
     assert.ok(await js(`!!document.querySelector('.sidebar-logo [data-codegraff-mark] use')`));
     await capture('desktop-agents-codegraff.png');
-    await js(`document.querySelector('[aria-label="Close agents"]').click(); window.galleryBenchmark=true`);
+    await js(`document.querySelector('[aria-label="Close agents"]').click(); document.querySelector('[aria-label="Review workspace changes"]').click()`);
+    await wait(`document.querySelector('[aria-label="File diff"]')?.getAttribute('aria-busy')==='false'`);
+    await chooseTheme('Black');
+    await capture('desktop-review-dark.png');
+    await chooseTheme('CodeGraff');
+    await js(`document.querySelector('[aria-label="Close changes"]').click(); window.galleryBenchmark=true`);
     console.log('Performance: stream');
     profiler.mark('candidate');
     await send('Stream the demonstration transcript.');
