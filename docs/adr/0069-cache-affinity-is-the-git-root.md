@@ -31,3 +31,8 @@ The offline guard is `affinity: two scratch sandboxes share one project
 cache id` (tier 1 `cache-affinity-scratch`): two `/tmp` leaves must mint
 the same UUID `projectRootId` would send. Hashing the leaf cwd is a
 forced miss, asserted separately. No provider call.
+
+Confirm on latest 289 (`46f13c6`, `run-20260906-125222`): graff-dev
+**12/12 · 167.2s · 55 · $0.3392 · 10.1M**. Ordinary input returned to
+95k (cached 190k) vs the leaf-cwd miss of 150k / $0.4205. Wall is
+under the 284 pin. Graff-only; not a three-harness table.

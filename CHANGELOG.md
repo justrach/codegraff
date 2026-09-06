@@ -12,6 +12,11 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- In-house remasure on this tip (`run-20260906-125222`): graff-dev
+  **12/12 · 167s · 55 calls · $0.34 · 10.1M**. Wall beats the 284 pin
+  (220s) and the pre-affinity 289 table (180s). list$ is down from the
+  $0.42 leaf-cwd miss (ADR 0069) toward the 284 pin ($0.32). Graff-only;
+  not a three-harness Pareto claim.
 - Prompt-cache affinity is the git root, or one scratch seed when there is
   no `.git`. Eval sandboxes and worktrees can reuse a warm system+tools
   prefix instead of paying it on every leaf cwd. An offline test fails if

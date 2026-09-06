@@ -7,6 +7,23 @@ Graff must be ≤ every named axis vs both rivals and strictly better on
 at least one. Do not claim Pareto until a new same-session table says so.
 Do not regress $, RSS, calls, or tokens to close wall / first-token / pass.
 
+## 12-task in-house remasure on latest 289 (`run-20260906-125222`)
+
+Same SuperGrok seat, jobs=1, grok-4.6, `x_search` on, ReleaseSafe
+`graff-dev` from `release/v0.0.289` (`46f13c6`). Graff-only — not a
+three-harness Pareto claim.
+
+| harness | pass | wall | first | calls | tokens | list$ | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| graff-dev | **12/12** | **167.2s** | 0.0s† | 55 | 294231 | **$0.3392** | **10.1M** |
+
+† Graff `first_out_s` is boot/`›`, not TTFT. Wall beats the 284 pin
+(219.6s) and the pre-affinity 289 table (179.6s). list$ is down from
+the leaf-cwd miss ($0.4205, 150k ordinary) after ADR 0069: ordinary
+input is 95k and cached is 190k. Calls are 55 (284 pin 53). RSS is
+ReleaseSafe process peak. Do not read this as unique frontier vs grok
+or OpenCode.
+
 ## 12-task in-house remasure on 284 (`run-20260901-121759-composite`)
 
 Same SuperGrok seat, jobs=1, grok-4.6, `x_search` on, ReleaseSafe
