@@ -10,6 +10,14 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## Unreleased
+
+- `#753`: a background-agent handle survives a recoverable API interruption.
+  `agent_output` replays a finished report, or says the launch ended with the
+  parent turn, instead of "it may never have started". The ids ride in the
+  session file. An ACP API error is a failed turn (saved), not a dead process.
+  ADR 0068.
+
 ## v0.0.288 (2026-09-06)
 
 - Recorded user constraints ride the root prefix as live ledger JSON, including

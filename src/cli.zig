@@ -21,6 +21,9 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.289
+    \\  • background-agent handles survive an interrupted API turn (#753)
+    \\
     \\0.0.288
     \\  • Gemini is a first-class provider on Google's Interactions API
     \\  • recorded constraints ride the prefix as ledger JSON; recaps cannot invent them (#738)

@@ -308,6 +308,7 @@ export async function POST(req: NextRequest) {
     if (method === "session/prompt") {
       const id = slot.nextId++;
       const encoder = new TextEncoder();
+      let finished = false;
       const stream = new ReadableStream({
         start(controller) {
           const onData = (chunk: Buffer) => {
@@ -325,6 +326,7 @@ export async function POST(req: NextRequest) {
               }
               controller.enqueue(encoder.encode(`${line}\n`));
               if (msg.id === id && !msg.method) {
+                finished = true;
                 slot.child.stdout.off("data", onData);
                 controller.close();
                 return;
@@ -340,6 +342,9 @@ export async function POST(req: NextRequest) {
           });
         },
         cancel() {
+          // #753: reader.cancel() after a completed error/result must not
+          // raise session/cancel — that stole the next continuation's handles.
+          if (finished) return;
           writeLine(slot, { jsonrpc: "2.0", method: "session/cancel", params: { sessionId: slot.sessionId } });
         },
       });

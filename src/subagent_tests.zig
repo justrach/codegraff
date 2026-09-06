@@ -97,3 +97,39 @@ test "agentStatusText: composes with isolation:\"worktree\" — a kept-worktree 
     try std.testing.expect(std.mem.indexOf(u8, out, "[worktree kept (has changes) — path:") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "branch: graff/agents/sa-001-aa11") != null);
 }
+
+test "admitOneLocked: admits up to the cap, queues the rest, FIFO order (#276 P0-3 design point 6)" {
+    const gpa = std.testing.allocator;
+    var registry: subagent.AgentJobs = .{};
+    defer registry.list.deinit(gpa);
+
+    var stub_jobs: [subagent.max_concurrent_background_agents + 3]subagent.AgentJob = undefined;
+    for (&stub_jobs, 0..) |*j, i| j.* = .{
+        .id = @intCast(i + 1),
+        .label = @constCast(""),
+        .prompt = @constCast(""),
+        .niche = @constCast(""),
+        .isolation = .shared_cwd,
+        .isolation_fallback = false,
+        .ctx = undefined,
+    };
+    for (&stub_jobs) |*j| try registry.list.append(gpa, j);
+
+    var admitted_order: [stub_jobs.len]u32 = undefined;
+    var n: usize = 0;
+    while (subagent.admitOneLocked(&registry)) |j| : (n += 1) admitted_order[n] = j.id;
+
+    try std.testing.expectEqual(@as(usize, subagent.max_concurrent_background_agents), n);
+    try std.testing.expectEqual(subagent.max_concurrent_background_agents, registry.active);
+    for (admitted_order[0..n], 1..) |id, expect| try std.testing.expectEqual(@as(u32, @intCast(expect)), id);
+
+    var still_queued: usize = 0;
+    for (stub_jobs) |j| if (!j.admitted) {
+        still_queued += 1;
+    };
+    try std.testing.expectEqual(stub_jobs.len - n, still_queued);
+
+    registry.active -= 1;
+    const next = subagent.admitOneLocked(&registry).?;
+    try std.testing.expectEqual(@as(u32, subagent.max_concurrent_background_agents + 1), next.id);
+}

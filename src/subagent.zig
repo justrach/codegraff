@@ -35,6 +35,7 @@ const learning_privacy = @import("learning_privacy.zig");
 const agentTypePrompt = fleet.agentTypePrompt;
 const Isolation = fleet.Isolation;
 const jobs = @import("jobs.zig"); // #276 P0-1: agentWorktreeCreate/agentWorktreeFinish/isolationFailureText
+const ledger = @import("subagent_ledger.zig"); // #753: handles survive an interrupted parent turn
 const run_budget = @import("run_budget.zig"); // #276 P0-3: default_max_concurrency, reused as the background-agent cap's default value
 const cards = @import("cards.zig");
 const trace = @import("trace.zig");
@@ -117,14 +118,14 @@ const classifyFailure = subagent_run.classifyFailure;
 /// each job needs to ever finish and release it — a deadlock. Same admission
 /// SHAPE as RunBudget.acquireConcurrency (spin-wait, no failure on saturation)
 /// and the same default value, but an independent resource.
-const max_concurrent_background_agents: u32 = run_budget.default_max_concurrency;
+pub const max_concurrent_background_agents: u32 = run_budget.default_max_concurrency;
 
 /// One background subagent spawn: the runSub arguments (gpa-owned copies —
 /// the caller's ToolCtx.arena-backed strings do not outlive this tool call's
 /// return, the whole point of fire-and-forget) plus its outcome once done.
 /// `admitted` is false while queued behind max_concurrent_background_agents;
 /// jobs.zig's Job mirrors this shape (id/cmd there ~ id/label+prompt here).
-const AgentJob = struct {
+pub const AgentJob = struct {
     id: u32,
     label: []u8,
     prompt: []u8,
@@ -151,7 +152,7 @@ const AgentJob = struct {
     future: Io.Future(void) = undefined, // pump; awaited only by agentJobsReap
 };
 
-const AgentJobs = struct {
+pub const AgentJobs = struct {
     mutex: Io.Mutex = .init,
     list: std.ArrayList(*AgentJob) = .empty,
     active: u32 = 0, // admitted and not yet done
@@ -170,7 +171,7 @@ pub var g_agent_jobs: AgentJobs = .{};
 /// nothing is queued. No Io — callers hold AgentJobs.mutex around it; kept
 /// separate so the queue-not-fail contract (design point 6) is unit-testable
 /// without a real Io/thread pool.
-fn admitOneLocked(registry: *AgentJobs) ?*AgentJob {
+pub fn admitOneLocked(registry: *AgentJobs) ?*AgentJob {
     if (registry.active >= max_concurrent_background_agents) return null;
     for (registry.list.items) |j| {
         if (!j.admitted) {
@@ -223,6 +224,7 @@ fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
     job.done = true;
     g_agent_jobs.active -= 1;
     g_agent_jobs.mutex.unlock(io);
+    ledger.finish(gpa, io, job.id, job.is_error, job.result, job.usage);
     admitNext(gpa, io);
 }
 
@@ -273,6 +275,7 @@ fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_o
         return error.OutOfMemory;
     }
     admitNext(gpa, ctx.io);
+    ledger.remember(gpa, ctx.io, job.id, job.label);
     return .{ .text = try std.fmt.allocPrint(
         gpa,
         "[agent {d} started: {s}]\nIt runs in the background across turns. Do not poll. agent_output(id {d}, wait_ms>0) blocks until it finishes; omit wait_ms for a snapshot. After completion, agent_output keeps returning the same result.",
@@ -317,7 +320,7 @@ pub fn agentOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
         g_agent_jobs.mutex.lockUncancelable(io);
         const job = g_agent_jobs.find(id) orelse {
             g_agent_jobs.mutex.unlock(io);
-            return .{ .text = try std.fmt.allocPrint(gpa, "no background agent {d} — it may never have started; subagent with run_in_background:true returns the id when it launches", .{id}), .is_error = true };
+            return ledger.missing(gpa, io, id);
         };
         if (job.done or waited >= deadline) {
             const text = try agentStatusText(gpa, id, job.done, job.is_error, job.usage, job.result);
@@ -348,6 +351,7 @@ pub fn agentOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
 /// at shutdown never started, so it's simply dropped: nothing ran, nothing
 /// to lose.
 pub fn agentJobsReap(gpa: Allocator, io: Io) void {
+    ledger.markRunningInterrupted(io);
     g_agent_jobs.mutex.lockUncancelable(io);
     const list = g_agent_jobs.list.toOwnedSlice(gpa) catch {
         g_agent_jobs.mutex.unlock(io);
@@ -364,43 +368,6 @@ pub fn agentJobsReap(gpa: Allocator, io: Io) void {
         gpa.destroy(job);
     }
     gpa.free(list);
-}
-
-test "admitOneLocked: admits up to the cap, queues the rest, FIFO order (#276 P0-3 design point 6)" {
-    const gpa = std.testing.allocator;
-    var registry: AgentJobs = .{};
-    defer registry.list.deinit(gpa);
-
-    var stub_jobs: [max_concurrent_background_agents + 3]AgentJob = undefined;
-    for (&stub_jobs, 0..) |*j, i| j.* = .{
-        .id = @intCast(i + 1),
-        .label = @constCast(""),
-        .prompt = @constCast(""),
-        .niche = @constCast(""),
-        .isolation = .shared_cwd,
-        .isolation_fallback = false,
-        .ctx = undefined,
-    };
-    for (&stub_jobs) |*j| try registry.list.append(gpa, j);
-
-    var admitted_order: [stub_jobs.len]u32 = undefined;
-    var n: usize = 0;
-    while (admitOneLocked(&registry)) |j| : (n += 1) admitted_order[n] = j.id;
-
-    try std.testing.expectEqual(@as(usize, max_concurrent_background_agents), n); // only the cap gets admitted immediately
-    try std.testing.expectEqual(max_concurrent_background_agents, registry.active);
-    for (admitted_order[0..n], 1..) |id, expect| try std.testing.expectEqual(@as(u32, @intCast(expect)), id); // FIFO
-
-    var still_queued: usize = 0;
-    for (stub_jobs) |j| if (!j.admitted) {
-        still_queued += 1;
-    };
-    try std.testing.expectEqual(stub_jobs.len - n, still_queued); // the remainder stay queued, not failed
-
-    // A finished job frees its slot; the next queued one is then admittable.
-    registry.active -= 1;
-    const next = admitOneLocked(&registry).?;
-    try std.testing.expectEqual(@as(u32, max_concurrent_background_agents + 1), next.id);
 }
 
 /// One task inside a workflow phase; never throws, suitable for io.async.
