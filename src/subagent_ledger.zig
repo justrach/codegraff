@@ -40,24 +40,37 @@ const Ledger = struct {
 
 var g_ledger: Ledger = .{};
 
-fn dup(gpa: Allocator, s: []const u8) []u8 {
-    return gpa.dupe(u8, s) catch &.{};
+/// One allocator for every ledger row. The table is process-global and
+/// `remember` is called with whatever gpa the spawn used (root, a test, a
+/// child); mixing those in one ArrayList crashes `reset` in the suite.
+fn heap() Allocator {
+    return std.heap.page_allocator;
+}
+
+fn dup(s: []const u8) []u8 {
+    return heap().dupe(u8, s) catch &.{};
+}
+
+fn freeOwned(s: []u8) void {
+    if (s.len == 0) return;
+    heap().free(s);
 }
 
 /// Record a freshly issued handle. Best-effort: a failed append still leaves
 /// the live job in `g_agent_jobs`.
 pub fn remember(gpa: Allocator, io: Io, id: u32, label: []const u8) void {
+    _ = gpa;
     g_ledger.mutex.lockUncancelable(io);
     defer g_ledger.mutex.unlock(io);
     if (g_ledger.find(id) != null) {
         if (id >= g_ledger.next_id) g_ledger.next_id = id + 1;
         return;
     }
-    const e = gpa.create(Entry) catch return;
-    e.* = .{ .id = id, .label = dup(gpa, label) };
-    g_ledger.list.append(gpa, e) catch {
-        gpa.free(e.label);
-        gpa.destroy(e);
+    const e = heap().create(Entry) catch return;
+    e.* = .{ .id = id, .label = dup(label) };
+    g_ledger.list.append(heap(), e) catch {
+        freeOwned(e.label);
+        heap().destroy(e);
         return;
     };
     if (id >= g_ledger.next_id) g_ledger.next_id = id + 1;
@@ -66,11 +79,12 @@ pub fn remember(gpa: Allocator, io: Io, id: u32, label: []const u8) void {
 /// Pump finished: keep the report so a later `agent_output` can replay it
 /// after the live table is gone.
 pub fn finish(gpa: Allocator, io: Io, id: u32, is_error: bool, result: []const u8, usage: AgentUsage) void {
+    _ = gpa;
     g_ledger.mutex.lockUncancelable(io);
     defer g_ledger.mutex.unlock(io);
     const e = g_ledger.find(id) orelse return;
-    if (e.result.len > 0) gpa.free(e.result);
-    e.result = dup(gpa, result);
+    freeOwned(e.result);
+    e.result = dup(result);
     e.is_error = is_error;
     e.usage = usage;
     e.done = true;
@@ -155,6 +169,7 @@ pub fn mixFingerprint(f: anytype) void {
 /// interrupted (pumps do not survive a new process). Advances `next_id` so
 /// a later spawn does not reuse a handle from the saved turn.
 pub fn restore(gpa: Allocator, io: Io, v: ?Value) void {
+    _ = gpa;
     const arr = if (v) |val| (if (val == .array) val.array else return) else return;
     g_ledger.mutex.lockUncancelable(io);
     defer g_ledger.mutex.unlock(io);
@@ -173,23 +188,23 @@ pub fn restore(gpa: Allocator, io: Io, v: ?Value) void {
         const done = if (obj.get("done")) |x| (x == .bool and x.bool) else false;
         const is_err = if (obj.get("is_error")) |x| (x == .bool and x.bool) else false;
         const interrupted = !done or (if (obj.get("interrupted")) |x| (x == .bool and x.bool) else false);
-        const e = gpa.create(Entry) catch continue;
+        const e = heap().create(Entry) catch continue;
         e.* = .{
             .id = id,
-            .label = dup(gpa, label),
+            .label = dup(label),
             .done = done,
             .is_error = is_err,
             .interrupted = interrupted,
-            .result = dup(gpa, result),
+            .result = dup(result),
             .usage = .{
                 .duration_ms = intUsage64(obj, "duration_ms"),
                 .tool_calls = intUsage(obj, "tool_calls"),
             },
         };
-        g_ledger.list.append(gpa, e) catch {
-            gpa.free(e.label);
-            gpa.free(e.result);
-            gpa.destroy(e);
+        g_ledger.list.append(heap(), e) catch {
+            freeOwned(e.label);
+            freeOwned(e.result);
+            heap().destroy(e);
             continue;
         };
         if (id >= g_ledger.next_id) g_ledger.next_id = id + 1;
@@ -213,12 +228,13 @@ fn intUsage64(obj: std.json.ObjectMap, field: []const u8) u64 {
 }
 
 pub fn reset(gpa: Allocator) void {
+    _ = gpa;
     for (g_ledger.list.items) |e| {
-        gpa.free(e.label);
-        gpa.free(e.result);
-        gpa.destroy(e);
+        freeOwned(e.label);
+        freeOwned(e.result);
+        heap().destroy(e);
     }
-    g_ledger.list.deinit(gpa);
+    g_ledger.list.deinit(heap());
     g_ledger = .{};
 }
 
