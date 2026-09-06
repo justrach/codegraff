@@ -128,6 +128,7 @@ function num(v: unknown, fallback = 0): number {
 }
 
 export async function GET(req: NextRequest) {
+  if (process.env.GRAFF_DESKTOP_ENDPOINT) return Response.json({ error: "Use the embedded Chromium browser" }, { status: 410 });
   const chat = req.nextUrl.searchParams.get("chat") || DEFAULT_CHAT;
   const tab = tabs.get(chat) ?? null;
   const live = kuriAddress();
@@ -159,6 +160,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (process.env.GRAFF_DESKTOP_ENDPOINT) return Response.json({ error: "Use the embedded Chromium browser" }, { status: 410 });
   const body = (await req.json()) as { chat?: string; method?: string; params?: Record<string, unknown> };
   const chat = typeof body.chat === "string" && body.chat ? body.chat : DEFAULT_CHAT;
   const method = body.method ?? "";

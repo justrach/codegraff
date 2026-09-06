@@ -506,7 +506,7 @@ export default function SidebarNav({
                     active ? "bg-hover-2 group-hover/glide:bg-transparent" : ""
                   }`}
                 >
-                  <span className="sidebar-copy flex min-w-0 flex-1 flex-col">
+                  <span className={`sidebar-copy flex min-w-0 flex-1 flex-col ${onArchiveRecent || onDeleteRecent ? "pr-14" : ""}`}>
                     <span className={`truncate text-[13.5px] font-medium ${active ? "text-ink" : "text-ink-2"}`}>
                       {item.label}
                     </span>

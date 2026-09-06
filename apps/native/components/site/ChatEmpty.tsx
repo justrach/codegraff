@@ -32,7 +32,7 @@ function homeRevealStyle(visible: boolean): CSSProperties {
 }
 
 export default function EmptyState({
-  onSend,
+  onSend, onSetting,
   health,
   models,
   modelKey,
@@ -41,7 +41,7 @@ export default function EmptyState({
   cwd,
   commands,
 }: {
-  onSend: (text: string) => void;
+  onSend: (text: string) => void; onSetting?: (text: string) => Promise<void>;
   health: Health | null;
   models: PromptModel[];
   modelKey?: string;
@@ -87,7 +87,7 @@ export default function EmptyState({
           models={models}
           modelKey={modelKey}
           onModelChange={onModelChange}
-          onSend={onSend}
+          onSend={onSend} onSetting={onSetting}
           disabled={health !== null && !health.ok}
           history={history}
           commands={commands}

@@ -5,6 +5,7 @@ import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { NextRequest } from "next/server";
 import type { AcpCommand } from "@/lib/acp";
+import { AcpTransport } from "@/lib/acp-transport";
 import { defaultRoot, resolveRoot } from "@/lib/server-root";
 
 export const runtime = "nodejs";
@@ -14,8 +15,8 @@ type Slot = {
   // stderr is "inherit" (null here): the agent's diagnostics land in the dev
   // server's terminal instead of being buffered and lost.
   child: ChildProcessByStdio<Writable, Readable, null>;
-  buf: string;
-  nextId: number;
+  transport: AcpTransport;
+  streaming: boolean;
   sessionId: string | null;
   model: string | null;
   /** graff session name (`--resume`): the file this agent autosaves to. */
@@ -27,7 +28,11 @@ type Slot = {
   mcp: boolean;
   /** What the agent said it services, from `available_commands_update`. */
   commands: AcpCommand[];
+  spawnError: Error | null;
 };
+
+const HANDSHAKE_MS = 120_000;
+const RPC_MS = 30_000;
 
 type SpawnOpts = { model?: string; resume?: string; cwd: string; yolo: boolean; mcp: boolean };
 type BootstrapOpts = { model?: string; reset?: boolean; resume?: string; cwd?: string; yolo?: boolean; mcp?: boolean };
@@ -114,12 +119,12 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
   const child = spawn(graffBin(), args, {
     stdio: ["pipe", "pipe", "inherit"],
     cwd: opts.cwd,
-    env: opts.mcp ? process.env : { ...process.env, GRAFF_MCP_CONFIG: mcpOffPath() },
+    env: { ...process.env, GRAFF_DESKTOP_CHAT: chat, ...(!opts.mcp ? { GRAFF_MCP_CONFIG: mcpOffPath() } : {}) },
   });
   const slot: Slot = {
     child,
-    buf: "",
-    nextId: 1,
+    transport: null as unknown as AcpTransport,
+    streaming: false,
     sessionId: null,
     model: opts.model ?? null,
     resume: opts.resume ?? null,
@@ -127,40 +132,17 @@ function spawnAgent(chat: string, opts: SpawnOpts): Slot {
     yolo: opts.yolo,
     mcp: opts.mcp,
     commands: [],
+    spawnError: null,
   };
+  slot.transport = new AcpTransport(child, message => noteCommands(slot, message));
+  child.on("error", (err) => {
+    slot.spawnError = err;
+  });
   child.on("exit", () => {
     if (slots.get(chat) === slot) slots.delete(chat);
   });
   slots.set(chat, slot);
   return slot;
-}
-
-function writeLine(slot: Slot, obj: unknown) {
-  slot.child.stdin.write(`${JSON.stringify(obj)}\n`);
-}
-
-function readLine(slot: Slot, timeoutMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    // The chunk handler itself must be what gets removed — detaching a
-    // different function leaks a listener that keeps consuming stdout lines
-    // (and re-appending chunks to the shared buffer) for the slot's lifetime.
-    const onData = (chunk?: Buffer) => {
-      if (chunk) slot.buf += chunk.toString("utf8");
-      const nl = slot.buf.indexOf("\n");
-      if (nl < 0) return;
-      const line = slot.buf.slice(0, nl);
-      slot.buf = slot.buf.slice(nl + 1);
-      clearTimeout(timer);
-      slot.child.stdout.off("data", onData);
-      resolve(line);
-    };
-    const timer = setTimeout(() => {
-      slot.child.stdout.off("data", onData);
-      reject(new Error("ACP agent timed out"));
-    }, timeoutMs);
-    slot.child.stdout.on("data", onData);
-    onData();
-  });
 }
 
 /** The agent advertises its command set once, unprompted, right after
@@ -177,40 +159,11 @@ function noteCommands(slot: Slot, msg: { params?: unknown }): void {
  * it rather than leaving the menu empty until the first prompt. */
 async function drainCommands(slot: Slot): Promise<void> {
   const deadline = Date.now() + 2_000;
-  while (slot.commands.length === 0 && Date.now() < deadline) {
-    let line: string;
-    try {
-      line = await readLine(slot, Math.max(50, deadline - Date.now()));
-    } catch {
-      return;
-    }
-    try {
-      noteCommands(slot, JSON.parse(line) as { params?: unknown });
-    } catch {
-      // not JSON: a diagnostic line, keep waiting
-    }
-  }
+  while (!slot.commands.length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
 }
-
-async function rpc(slot: Slot, method: string, params?: unknown): Promise<unknown> {
-  const id = slot.nextId++;
-  writeLine(slot, { jsonrpc: "2.0", id, method, params });
-  for (;;) {
-    const line = await readLine(slot, 30_000);
-    let msg: { id?: unknown; result?: unknown; error?: { message?: string }; method?: string; params?: unknown };
-    try {
-      msg = JSON.parse(line) as typeof msg;
-    } catch {
-      continue;
-    }
-    if (msg.method) {
-      noteCommands(slot, msg);
-      continue;
-    }
-    if (msg.id !== id) continue;
-    if (msg.error) throw new Error(msg.error.message ?? "ACP error");
-    return msg.result;
-  }
+function rpc(slot: Slot, method: string, params?: unknown, timeoutMs = RPC_MS): Promise<unknown> {
+  if (slot.streaming) return Promise.reject(new Error("A turn is active; retry this request after it finishes"));
+  return slot.transport.request(method, params, timeoutMs);
 }
 
 /** The tab's live agent when it still matches what was asked for (model,
@@ -234,8 +187,8 @@ async function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
     yolo: opts.yolo ?? defaultYolo(),
     mcp: opts.mcp ?? true,
   });
-  await rpc(slot, "initialize", { protocolVersion: 1, clientCapabilities: { fs: {} } });
-  const created = (await rpc(slot, "session/new", { cwd: slot.cwd })) as {
+  await rpc(slot, "initialize", { protocolVersion: 1, clientCapabilities: { fs: {} } }, HANDSHAKE_MS);
+  const created = (await rpc(slot, "session/new", { cwd: slot.cwd }, HANDSHAKE_MS)) as {
     sessionId?: string;
   };
   if (!created?.sessionId) throw new Error("session/new returned no sessionId");
@@ -302,50 +255,28 @@ export async function POST(req: NextRequest) {
     }
     const slot = await bootstrap(chat, { model });
     if (method === "session/cancel") {
-      writeLine(slot, { jsonrpc: "2.0", method: "session/cancel", params: body.params });
+      slot.transport.notify("session/cancel", body.params);
       return Response.json({ ok: true });
     }
     if (method === "session/prompt") {
-      const id = slot.nextId++;
+      if (slot.streaming) return Response.json({ error: "A turn is already active" }, { status: 409 });
+      slot.streaming = true;
       const encoder = new TextEncoder();
+      let cancelled = false;
       const stream = new ReadableStream({
         start(controller) {
-          const onData = (chunk: Buffer) => {
-            slot.buf += chunk.toString("utf8");
-            let nl: number;
-            while ((nl = slot.buf.indexOf("\n")) >= 0) {
-              const line = slot.buf.slice(0, nl);
-              slot.buf = slot.buf.slice(nl + 1);
-              if (!line.trim()) continue;
-              let msg: { id?: unknown; method?: string };
-              try {
-                msg = JSON.parse(line) as typeof msg;
-              } catch {
-                continue;
-              }
-              controller.enqueue(encoder.encode(`${line}\n`));
-              if (msg.id === id && !msg.method) {
-                slot.child.stdout.off("data", onData);
-                controller.close();
-                return;
-              }
-            }
-          };
-          slot.child.stdout.on("data", onData);
-          writeLine(slot, {
-            jsonrpc: "2.0",
-            id,
-            method: "session/prompt",
-            params: { sessionId: slot.sessionId, ...body.params },
-          });
+          void slot.transport.request("session/prompt", { ...body.params, sessionId: slot.sessionId }, 24 * 60 * 60 * 1000,
+            line => { if (!cancelled) controller.enqueue(encoder.encode(`${line}\n`)); })
+            .then(() => { if (!cancelled) { cancelled = true; controller.close(); } })
+            .catch(error => { if (!cancelled) { cancelled = true; controller.error(error); } })
+            .finally(() => { slot.streaming = false; });
         },
         cancel() {
-          writeLine(slot, { jsonrpc: "2.0", method: "session/cancel", params: { sessionId: slot.sessionId } });
+          cancelled = true;
+          try { slot.transport.notify("session/cancel", { sessionId: slot.sessionId }); } catch {}
         },
       });
-      return new Response(stream, {
-        headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" },
-      });
+      return new Response(stream, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" } });
     }
     const result = await rpc(slot, method, body.params);
     return Response.json({ result });

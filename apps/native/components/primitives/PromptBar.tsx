@@ -1,5 +1,7 @@
 "use client";
 
+import ModelEffortButtons from "./ModelEffortButtons";
+import type { ModelChoice } from "@/lib/acp-client";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createShader, playSweep, accentChain, ACCENTS } from "glimm";
 import type { AcpCommand } from "@/lib/acp";
@@ -160,14 +162,14 @@ function parseToken(draft: string): { kind: "at" | "slash"; query: string; start
   };
 }
 
-export type PromptModel = { key: string; name: string; tag?: string };
+export type PromptModel = ModelChoice;
 
 export default function PromptBar({
   variant = "Rounded",
   demo = true,
   tall = false,
   placeholder,
-  onSend,
+  onSend, onSetting,
   models,
   commands,
   modelKey,
@@ -184,7 +186,7 @@ export default function PromptBar({
   /** hero sizing: a multi-line input with controls on their own row */
   tall?: boolean;
   placeholder?: string;
-  onSend?: (text: string) => void;
+  onSend?: (text: string) => void; onSetting?: (text: string) => Promise<void>;
   models?: PromptModel[];
   /** The slash commands the agent advertised. Empty until it answers —
    * an empty menu beats inventing commands this build may not service. */
@@ -213,7 +215,7 @@ export default function PromptBar({
   const [dismissed, setDismissed] = useState(false);
   const [plusOpen, setPlusOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
-  const [model, setModel] = useState(
+  const [model, setModel] = useState<PromptModel>(
     () => catalog.find((m) => m.key === modelKey) ?? catalog[0] ?? MODELS[1],
   );
   /* Live surfaces load their catalog async (graff/models); once it lands, or
@@ -222,7 +224,7 @@ export default function PromptBar({
   useEffect(() => {
     if (!modelKey) return;
     const found = catalog.find((m) => m.key === modelKey);
-    if (found && found.key !== model.key) setModel(found);
+    if (found && found !== model) setModel(found);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelKey, models]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -567,6 +569,7 @@ export default function PromptBar({
   const showStop = busy && !canSend;
   const send = () => {
     if (!canSend) return;
+    if (/^\/(effort|reasoning)$/.test(draft.trim()) && model.effortLevels?.length) { modelRef.current?.dispatchEvent(new Event("graff-effort-open")); setDraft(""); return; }
     onSend?.(withAttachmentMarkers(draft.trim(), attachments));
     releaseAttachments(attachments);
     setDraft("");
@@ -929,25 +932,8 @@ export default function PromptBar({
             }`}
           />
 
-          {/* model picker */}
-          <button
-            ref={modelRef}
-            type="button"
-            aria-expanded={modelOpen}
-            aria-label="Choose model"
-            onClick={() => {
-              setPlusOpen(false);
-              setModelOpen((current) => !current);
-            }}
-            className={`flex h-7 shrink-0 items-center gap-1 px-1.5 text-[12px] font-medium text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink ${
-              pill ? "rounded-full" : "rounded-[8px]"
-            } ${wide ? "col-start-2 row-start-2 justify-self-start" : "col-start-3 row-start-1"}`}
-          >
-            {model.name}
-            <span className="text-ink-3">
-              <Icon size={11} strokeWidth={2.4}><path d="M6 9l6 6 6-6" /></Icon>
-            </span>
-          </button>
+          <ModelEffortButtons model={model} buttonRef={modelRef} modelOpen={modelOpen} wide={wide} pill={pill} busy={busy}
+            onCommand={onSetting} openModel={() => { setPlusOpen(false); setModelOpen(current => !current); }} />
 
           {/* dictation */}
           <button

@@ -1,11 +1,14 @@
 "use client";
 
+import { useQuietSettings } from "./useQuietSettings";
+import ChangesPane from "./ChangesPane";
+import { useBrowserVisibility } from "./useBrowserVisibility";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
 import SidebarNav from "@/components/primitives/SidebarNav";
 import ConversationsPane from "@/components/site/ConversationsPane";
 import FilesPane from "@/components/site/FilesPane";
-import BrowserPane from "@/components/site/BrowserPane";
+import BrowserPane from "@/components/site/DesktopBrowserPane";
 import { IconChat, IconFolder, IconGlobe } from "@/lib/icons";
 import { annotationsBlock, type BrowserPin } from "@/lib/browser/annotations";
 import { browserClose, browserHandle, browserNav } from "@/lib/browser-client";
@@ -14,7 +17,6 @@ import { ThemeToggle } from "@/components/site/ThemeToggle";
 import { AssistantBody, UserBubble } from "@/components/site/ChatBubbles";
 import EmptyState from "@/components/site/ChatEmpty";
 import {
-  MODELS,
   cancel,
   chatHandle,
   checkHealth,
@@ -94,7 +96,7 @@ export default function GraffHarness() {
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set());
   // No hardcoded default: until graff/models answers, the agent's own model
   // resolution decides, and `current` from that call re-points the picker.
-  const [models, setModels] = useState<PromptModel[]>(MODELS);
+  const [models, setModels] = useState<PromptModel[]>([{ key: "", name: "Loading graff models…" }]);
   const [model, setModelKey] = useState<string | null>(process.env.NEXT_PUBLIC_GRAFF_MODEL || null);
   const [filesOpen, setFilesOpen] = useState(false);
   const [fileRequest, setFileRequest] = useState<{ path: string; n: number; changes?: boolean } | null>(null);
@@ -117,25 +119,13 @@ export default function GraffHarness() {
   const [copiedResume, setCopiedResume] = useState(false);
   // The sidecar browser: one Chrome tab per chat, and the pins the user
   // drops on it, which ride ahead of the chat's next prompt.
-  const [browserOpen, setBrowserOpen] = useState(false);
+  const [browserOpen, setBrowserOpen] = useBrowserVisibility(BROWSER_OPEN_KEY, (chat) => {
+    const target = chats.find(c => chatHandle(pageRef.current, c.id) === chat);
+    if (target) { setActiveId(target.id); setConversationsOpen(false); setFilesOpen(false); } return !!target;
+  });
   // The conversation library: every saved chat, paged and searchable. It takes
   // the whole chat area, so opening it leaves the other side panes.
   const [conversationsOpen, setConversationsOpen] = useState(false);
-  // The pane comes back after a reload (with its last page: the pane
-  // remembers that itself). Read after mount so the server render matches.
-  const browserOpenRestored = useRef(false);
-  useEffect(() => {
-    try {
-      if (!browserOpenRestored.current) {
-        browserOpenRestored.current = true;
-        if (window.localStorage.getItem(BROWSER_OPEN_KEY) !== "0") setBrowserOpen(true);
-        return;
-      }
-      window.localStorage.setItem(BROWSER_OPEN_KEY, browserOpen ? "1" : "0");
-    } catch {
-      // no storage
-    }
-  }, [browserOpen]);
   const openConversations = () => {
     setFilesOpen(false);
     setBrowserOpen(false);
@@ -208,22 +198,21 @@ export default function GraffHarness() {
   };
 
   const adoptCatalog = async (chatId: number) => {
-    // What did the agent actually resolve? The picker should show graff's
-    // answer (fuzzy --model resolution, election-ranked seats), not our guess.
+    // Use the provider and model actually resolved by graff.
     try {
-      const { models: live, current } = await fetchModels(handleOf(chatId));
+      const { models: live, current, commands: available } = await fetchModels(sessionsRef.current.has(chatId) ? handleOf(chatId) : undefined, activePathRef.current ?? undefined);
       if (live.length > 0) setModels(live);
+      if (available) setCommands(old => ({ ...old, [chatId]: available }));
       if (current) {
         setChatModel(chatId, current);
         setModelKey((fallback) => fallback ?? current);
       }
     } catch {
-      // keep the static fallback; the picker still works
+      // Do not invent a selected model when the catalog is unavailable.
     }
   };
 
-  // The picker falls back to a built-in list until the agent answers with
-  // what it actually has. A window that missed that answer — its agent was
+  // Refresh the catalog on focus. If its agent was
   // not up yet, or the page outlived a restart — would show the fallback
   // for good, so ask again whenever the window comes back to the front.
   const catalogRef = useRef({ adopt: (_: number) => {}, activeId: 1 });
@@ -259,10 +248,10 @@ export default function GraffHarness() {
     });
     sessionsRef.current.set(chatId, id);
     setSessionIds((current) => ({ ...current, [chatId]: id }));
-    // The command menu is whatever this agent says it services — a build
-    // with different commands must not be described by a stale list here.
+    // Populate the command menu from this agent's advertisement.
     if (commands.length > 0) setCommands((current) => ({ ...current, [chatId]: commands }));
     setHealth({ ok: true });
+    await adoptCatalog(chatId);
     return id;
   };
 
@@ -291,6 +280,7 @@ export default function GraffHarness() {
         const session = newSessionName();
         sessionNamesRef.current.set(1, session);
         setChats((current) => current.map((c) => (c.id === 1 ? { ...c, session } : c)));
+        if (window.graffDesktop) { await adoptCatalog(1); return; } // No coding session needed.
         await requireSession(1);
         if (cancelled) return;
         await adoptCatalog(1);
@@ -341,7 +331,7 @@ export default function GraffHarness() {
   }, []);
 
   const openChanges = useCallback(() => {
-    setConversationsOpen(false);
+    setBrowserOpen(false); setConversationsOpen(false);
     setFilesOpen(true);
     setFileRequest({ path: "", n: (fileReqRef.current += 1), changes: true });
   }, []);
@@ -405,7 +395,7 @@ export default function GraffHarness() {
     // so the agent can drive the same page; they are spent on send. Behind,
     // not ahead: graff titles the session from the message's first line.
     let wire = trimmed;
-    const pins = pinsRef.current[chatId] ?? [];
+    const pins = /^\/(effort|reasoning|fast)(?:\s|$)/.test(trimmed) ? [] : pinsRef.current[chatId] ?? [];
     if (pins.length > 0) {
       const handle = await browserHandle(handleOf(chatId)).catch(() => null);
       wire = `${trimmed}\n\n${annotationsBlock(pins, handle)}`;
@@ -435,6 +425,7 @@ export default function GraffHarness() {
       // The turn carried pins, so the agent most likely changed the page:
       // reload the chat's tab so the pane shows the result without a click.
       if (pins.length > 0) void browserNav(handleOf(chatId), "reload").catch(() => undefined);
+      if (/^\/(effort|reasoning|fast)(?:\s|$)/.test(trimmed)) void adoptCatalog(chatId);
       turn = finishAcpTurn(turn);
       patchAssistant(chatId, asstId, turn);
     } catch (err) {
@@ -451,28 +442,20 @@ export default function GraffHarness() {
     }
   };
 
-  /** Name the tab from what was asked, in the model's words. The prompt's
-   * first words stand in until this answers (a few seconds), and stay if it
-   * cannot. Only the first message of a tab names it. */
   const nameChat = (chatId: number, prompt: string, cwd: string | undefined) => {
-    void fetch("/api/title", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ prompt, cwd }),
-    })
-      .then((res) => (res.ok ? (res.json() as Promise<{ title?: string | null }>) : null))
-      .then((body) => {
+    void fetch("/api/title", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, cwd }) })
+      .then(res => res.ok ? res.json() : null).then(body => {
         const title = body?.title?.trim();
-        if (!title) return;
-        setChats((current) => current.map((c) => (c.id === chatId ? { ...c, title, titledByModel: true } : c)));
-      })
-      .catch(() => undefined);
+        if (title) setChats(current => current.map(c => c.id === chatId ? { ...c, title, titledByModel: true } : c));
+      }).catch(() => undefined);
   };
+  const settings = useQuietSettings({ requireSession, handleOf, running: runningRef.current, apply: (catalog) => setModels(catalog.models) });
 
   const send = async (text: string, forChat?: number) => {
     const trimmed = text.trim();
     const chatId = forChat ?? chatThread.id;
     if (!trimmed) return;
+    await settings.wait(chatId);
     if (runningRef.current.has(chatId) || busyIds.has(chatId)) {
       setQueue(chatId, enqueuePrompt(queuesRef.current[chatId] ?? [], trimmed, (queueIdRef.current += 1)));
       return;
@@ -490,8 +473,8 @@ export default function GraffHarness() {
     setFilesOpen(false);
     setConversationsOpen(false);
     setFollowing(true);
-    // Spawn eagerly so the first send is not stuck behind agent + MCP boot.
-    void requireSession(id).catch(() => undefined);
+    // The desktop defers agent + MCP boot until the first request.
+    if (!window.graffDesktop) void requireSession(id).catch(() => undefined);
   };
 
   /** Open a saved graff session: its transcript renders from the file at once,
@@ -876,7 +859,7 @@ export default function GraffHarness() {
                       root={cwdOf(thread)}
                       modelKey={threadModel}
                       onModelChange={(key: string) => changeModel(key, thread.id)}
-                      onSend={(text: string) => void send(text, thread.id)}
+                      onSend={(text: string) => void send(text, thread.id)} onSetting={text => settings.change(thread.id, text)}
                       history={threadHistory}
                       busy={threadBusy}
                       onStop={() => {
@@ -890,7 +873,7 @@ export default function GraffHarness() {
             ) : (
               <div className="min-h-0 flex-1 overflow-y-auto">
                 <EmptyState
-                  onSend={(text: string) => void send(text, thread.id)}
+                  onSend={(text: string) => void send(text, thread.id)} onSetting={text => settings.change(thread.id, text)}
                   health={health}
                   history={threadHistory}
                   cwd={cwdOf(thread)}
@@ -1017,6 +1000,7 @@ export default function GraffHarness() {
             <path d="M6 9l6 6 6-6" />
           </svg>
         </button>
+        <button type="button" onClick={openChanges} className="rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover" aria-label="Review workspace changes">Changes</button>
         <button
           type="button"
           aria-pressed={browserOpen}
@@ -1088,7 +1072,7 @@ export default function GraffHarness() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  catalogRef.current = { adopt: (id: number) => void adoptCatalog(id).catch(() => undefined), activeId };
+  catalogRef.current = { adopt: (id: number) => { if (!runningRef.current.has(id)) void adoptCatalog(id).catch(() => undefined); }, activeId };
 
   const paneTodos = lastAssistant?.turn.todos ?? [];
   // The active chat is the first column; the panes follow it. A chat that
@@ -1098,7 +1082,7 @@ export default function GraffHarness() {
 
 
   return (
-    <main className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
+    <main data-graff-main className="flex h-[100dvh] gap-0 bg-canvas p-2.5 text-ink lg:pl-0">
       <SidebarNav
         fill
         className="hidden lg:flex"
@@ -1195,7 +1179,7 @@ export default function GraffHarness() {
             </>
           )}
 
-          {filesOpen && !conversationsOpen && <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />}
+          {filesOpen && !conversationsOpen && (fileRequest?.changes ? <ChangesPane root={chatThread.cwd} onClose={() => setFilesOpen(false)} /> : <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />)}
 
           {browserOpen && !conversationsOpen && (
             <BrowserPane

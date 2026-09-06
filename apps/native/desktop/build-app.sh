@@ -53,8 +53,7 @@ if [[ "${SKIP_UI:-0}" != "1" ]]; then
   # `output: standalone` in next.config.ts emits a server that runs with no
   # node_modules tree beside it; the static assets are not traced into it
   # and have to be copied in, or every page loads without its JS and CSS.
-  [[ -d "$ui/node_modules" ]] || npm --prefix "$ui" install
-  ( cd "$ui" && npx next build )
+  ( cd "$ui" && bun install --frozen-lockfile && bun run --bun build )
   rm -rf "$app/Contents/Resources/ui"
   ditto "$ui/.next/standalone" "$app/Contents/Resources/ui"
   ditto "$ui/.next/static" "$app/Contents/Resources/ui/.next/static"

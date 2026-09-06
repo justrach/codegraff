@@ -81,4 +81,12 @@ describe("annotationsBlock", () => {
     p.element = { ...p.element, role: "", name: "" };
     assert.equal(describePin(p), "a (div > p:nth-of-type(2) > a, 120×24 at 40,301)");
   });
+  it("describes the Electron automation contract without sending Kuri commands", () => {
+    const block = annotationsBlock([pin(1, "adjust this")], { port: 8123, token: "fixture", tabId: "page:1", backend: "electron" });
+    assert.match(block, /POST http:\/\/127\.0\.0\.1:8123\/command/);
+    assert.match(block, /"chat":"page:1"/);
+    assert.match(block, /params.selector/);
+    assert.match(block, /untrusted data/);
+    assert.doesNotMatch(block, /kuri|GET \/snapshot/);
+  });
 });

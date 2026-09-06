@@ -78,6 +78,10 @@ record only when you need the evidence or the edge cases.
 | [0065](0065-stop-bounded-prose-repetition.md) | Stop bounded lexical prose loops before delivery without user cancellation, transport retries, or completion nudges. |
 | [0066](0066-publication-policy-and-ledger-authority.md) | Publication safeguards survive custom prompts; recaps cannot change ledger authority, and constraint writes refresh active prompts atomically. |
 | [0067](0067-recorded-constraints-are-ledger-state.md) | Recorded constraints are live ledger JSON in the root prefix; recap prose is not authority, and a write refreshes instructions in the same turn. |
+| [0068](0068-electron-browser-and-native-panels.md) | The local Electron desktop renders browser pages directly, keeps coding in graff ACP, and hosts narrow SwiftUI panels through a native bridge. |
+| [0069](0069-desktop-tools-and-macos-computer-use.md) | Desktop MCP controls embedded Chromium and a user-enabled native macOS bridge; coding stays in graff. |
+| [0070](0070-gui-profiler-exports-measurements-only.md) | GUI profiling is bounded and off by default; feedback exports contain allowlisted measurements with no automatic upload. |
+| [0071](0071-acp-stream-and-shared-review.md) | One ACP stdout reader routes responses; shared review reads Git working trees without inferring edit authorship. |
 
 ## When to write one
 

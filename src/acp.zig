@@ -106,9 +106,10 @@ fn userMessage(arena: Allocator, root: *agent_mod.Agent, text: []const u8) !Valu
 /// ACP client can offer only the models this install can actually reach.
 /// Rows come back in election order (plan, then local, credits, api).
 fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request) anyerror!bool {
+    const live: *LiveTurn = @ptrCast(@alignCast(ctx));
+    if (try @import("acp_changes.zig").handle(arena, live.root.io, w, req)) return true;
     if (!std.mem.eql(u8, req.method, "graff/models")) return false;
     if (req.id == null) return true;
-    const live: *LiveTurn = @ptrCast(@alignCast(ctx));
     const keys = live.keys;
     const root = live.root;
     const catalog = pricing.models();
@@ -141,9 +142,12 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
             .current = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id),
         };
     }
+    const all_efforts = [_][]const u8{ "low", "medium", "high", "xhigh", "max", "ultra" };
+    const levels: []const []const u8 = if (!root.effortApplies()) &.{} else if (@import("effort_route.zig").hidesMax(root.provider.id, root.provider.model)) all_efforts[0..4] else &all_efforts;
     try proto.writeResult(w, req.id, .{
         .models = rows,
-        .current = .{ .model = root.provider.model, .provider = root.provider.id },
+        .commands = proto.slashCommands(),
+        .current = .{ .model = root.provider.model, .provider = root.provider.id, .effort = @tagName(root.reasoning), .fast = root.fast, .effortLevels = levels, .fastSupported = std.mem.eql(u8, root.provider.id, "codex") },
     });
     return true;
 }

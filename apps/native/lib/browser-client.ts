@@ -4,6 +4,8 @@
 import type { KuriState } from "@/lib/browser/kuri-supervisor";
 import type { KuriHandle, PinElement } from "@/lib/browser/annotations";
 
+import { desktop } from "./desktop";
+
 const BASE = "/api/browser";
 
 export type PageInfo = { tabId: string; url: string; title: string; width: number; height: number; ready: string };
@@ -53,6 +55,7 @@ export type InputEvent =
   | { kind: "type"; text: string };
 
 export async function browserCall<T>(chat: string, method: string, params?: Record<string, unknown>): Promise<T> {
+  if (desktop()) return desktop()!.browser<T>(chat, method, params);
   const res = await fetch(BASE, {
     method: "POST",
     headers: { "content-type": "application/json" },
