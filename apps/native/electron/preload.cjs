@@ -1,5 +1,12 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('graffDesktop', {
+  projects: (action, value) => ipcRenderer.invoke('projects', { action, value }),
+  updates: action => ipcRenderer.invoke('updates', action),
+  updateSubscribe: callback => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('update-state', listener);
+    return () => ipcRenderer.removeListener('update-state', listener);
+  },
   browser: (chat, method, params) => ipcRenderer.invoke('browser', { chat, method, params }),
   terminal: (action, params) => ipcRenderer.invoke('terminal', { action, params }),
   terminalSubscribe: callback => {

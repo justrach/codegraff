@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Codegraff — the little builder</title>
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="0.65" y2="1">
+      <stop stop-color="#FFF7E7"/>
+      <stop offset="1" stop-color="#EDE1C9"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="204" fill="url(#paper)"/>
+  <rect x="65" y="65" width="894" height="894" rx="203" fill="none" stroke="#CABB9F" stroke-opacity=".45" stroke-width="2"/>
+  <!-- Three connected points: a small crew, working together. -->
+  <g transform="translate(0 -70)">
+  <path d="m674 274 96 80-32 98" fill="none" stroke="#284968" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#284968">
+    <circle cx="674" cy="274" r="29"/>
+    <circle cx="770" cy="354" r="29"/>
+  </g>
+  <circle cx="738" cy="452" r="29" fill="#D76847"/>
+  </g>
+  <!-- The workshop rat: big listening ear, long snout, bright curious eye. -->
+  <path d="M341 594c-49-54-64-108-35-170 31-69 104-115 180-104 65 9 94 60 140 88l72 42c19 11 19 32 0 44l-99 58-8 78-139 55Z" fill="#20394D"/>
+  <circle cx="351" cy="344" r="109" fill="#20394D"/>
+  <circle cx="351" cy="344" r="64" fill="#D99A79"/>
+  <path d="M319 319c12-22 37-27 57-16" fill="none" stroke="#ECCBB0" stroke-width="13" stroke-linecap="round"/>
+  <ellipse cx="554" cy="418" rx="13" ry="17" fill="#FFF7E7"/>
+  <circle cx="704" cy="472" r="20" fill="#20394D"/>
+  <g fill="none" stroke="#20394D" stroke-width="10" stroke-linecap="round">
+    <path d="m657 510 92 15"/>
+    <path d="m644 533 72 42"/>
+  </g>
+  <!-- A vermilion work jacket, carried over from the workshop illustrations. -->
+  <path d="m359 576 90 62 130-49 81 79c27 26 41 64 41 109v34H280v-34c0-81 26-143 79-201Z" fill="#D76847"/>
+  <path d="m359 576 90 62-55 55-49-103m234-1-130 49 62 58 76-91" fill="#F7EAD3"/>
+  <path d="m449 641 7 170" fill="none" stroke="#A94834" stroke-width="12"/>
+  <path d="M528 718h77v57h-77Z" fill="#B84F37"/>
+  <path d="M528 719h77" fill="none" stroke="#F0A27D" stroke-width="10"/>
+  <circle cx="479" cy="749" r="8" fill="#F7EAD3"/>
+</svg>

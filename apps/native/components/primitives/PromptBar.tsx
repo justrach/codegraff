@@ -9,6 +9,7 @@ import type { ModelChoice } from "@/lib/acp-client";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ComposerMenu from "./ComposerMenu";
 import { useComposerSweep } from "./useComposerSweep";
+import { useComposerSize } from "./useComposerSize";
 import type { AcpCommand } from "@/lib/acp";
 import {
   filesFrom,
@@ -218,28 +219,7 @@ export default function PromptBar({
     return () => clearTimeout(t);
   }, [demo, listening]);
 
-  useLayoutEffect(() => {
-    const input = inputRef.current;
-    const controls = controlsRef.current;
-    const measure = measureRef.current;
-    const modelButton = modelRef.current;
-    if (!input || !controls || !measure || !modelButton) return;
-
-    const fixedControlsWidth = 28 * 3 + modelButton.offsetWidth;
-    const inlineGaps = 4 * 4;
-    const inlineInputWidth = controls.clientWidth - fixedControlsWidth - inlineGaps;
-    const needsFullWidth = draft.includes("\n") || measure.offsetWidth + 8 > inlineInputWidth;
-    if (needsFullWidth !== expanded) {
-      setExpanded(needsFullWidth);
-    }
-
-    const minHeight = 28;
-    const maxHeight = 100;
-    input.style.height = "0px";
-    const contentHeight = input.scrollHeight;
-    input.style.height = `${Math.min(Math.max(contentHeight, minHeight), maxHeight)}px`;
-    input.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
-  }, [draft, expanded]);
+  useComposerSize({ inputRef, controlsRef, measureRef, modelRef, draft, expanded, setExpanded });
 
   /* A recalled prompt lands with the caret at its end, ready to edit or send. */
   useLayoutEffect(() => {

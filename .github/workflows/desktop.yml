@@ -1,0 +1,25 @@
+name: desktop
+on:
+  pull_request:
+    paths: ['apps/native/**', '.github/workflows/desktop.yml']
+  push:
+    branches: [main]
+    paths: ['apps/native/**', '.github/workflows/desktop.yml']
+permissions:
+  contents: read
+jobs:
+  desktop:
+    runs-on: macos-14
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/native
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: bun install --frozen-lockfile
+      - run: bun run test:desktop
+      - run: bun run build
+      - run: bun build electron/updater-runtime.cjs --target=node --format=cjs --external electron --outfile /tmp/updater-runtime.cjs

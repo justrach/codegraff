@@ -32,8 +32,10 @@ const WORKSPACE = { key: "graff", name: "Codegraff", monogram: "G" };
 
 const NAV_ITEMS: { key: string; label: string; icon: ReactNode; count?: string }[] = [
   { key: "home", label: "Home", icon: <IconHome size={18} /> },
+  { key: "projects", label: "Projects", icon: <IconFolder size={18} /> },
   { key: "conversations", label: "Conversations", icon: <IconChat size={18} /> },
-  { key: "workspace", label: "Workspace", icon: <IconFolder size={18} /> },
+  { key: "workspace", label: "Files", icon: <IconFolder size={18} /> },
+  { key: "changes", label: "Changes", icon: <IconEditBig size={18} /> },
   { key: "browser", label: "Browser", icon: <IconGlobe size={18} /> },
 ];
 
@@ -141,6 +143,9 @@ function RailButton({
     <button
       data-row
       type="button"
+      aria-label={label}
+      aria-current={active ? "page" : undefined}
+      title={label}
       onClick={onClick}
       className={`sidebar-row relative z-10 mx-2 flex h-8 items-center rounded-[8px] px-2 text-left
         transition-[width,background-color,color,transform] duration-150 active:scale-[0.98]
@@ -306,6 +311,7 @@ export default function SidebarNav({
         </div>
 
         <GlideGroup>
+          {onNewWorkspace && <RailButton icon={<IconPlusMedium size={18} />} label="Open folder…" onClick={onNewWorkspace} />}
           <RailButton
             icon={<IconEditBig size={18} />}
             label="New chat"

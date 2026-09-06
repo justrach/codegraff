@@ -5,7 +5,7 @@ action. It builds the production UI with Bun, packages Chromium, Bun, graff,
 and the SwiftUI Activity sheet, then opens `zig-out/electron/Codegraff.app`.
 Builds currently target Apple Silicon macOS 14+; Liquid Glass uses macOS 26+.
 Source builds are signed locally for development. The
-[packaged v0.0.289 download](https://github.com/justrach/codegraff/releases/download/v0.0.289/Codegraff-macos-arm64.zip)
+[packaged desktop download](https://github.com/justrach/codegraff/releases/latest/download/Codegraff-macos-arm64.dmg)
 is Developer ID signed and notarized. Open the disk image and drag Codegraff.app onto Applications;
 the runtime, engine, browser and native components are included.
 
@@ -143,5 +143,33 @@ The command signs nested executables, notarizes and staples the app, creates the
 Finder drag-to-Applications layout, then signs, notarizes and staples the DMG.
 It verifies both artifacts with Gatekeeper and writes a separate DMG checksum.
 The output directory must be new. Notarization logs stay there for local review;
-only the DMG and checksum are release assets. Never publish a development bundle
-as the signed download.
+only the DMG, checksum, versioned update ZIP and `latest-mac.yml` are release assets.
+Never publish a development bundle as the signed download.
+
+## Automatic updates
+
+Signed distribution builds check the public GitHub release feed shortly after
+launch and every six hours. Downloads happen in the background. The notification
+shows progress and offers **Restart to update**; downloading never stops a task,
+and closing the app does not silently install an update. The Codegraff menu has
+**Check for Updates…** and an **Automatically Download Updates** preference.
+Development builds, smoke tests and apps running from a mounted disk image do not
+check online. Install the app in Applications first.
+
+The updater verifies the archive checksum; macOS Squirrel verifies the application
+signature before replacement. The updater receives no conversation or workspace
+contents. HTTP requests still disclose ordinary connection information to the
+release host. Only stable, newer releases are eligible.
+
+`distribute.sh` adds the feed configuration before signing and creates the update
+ZIP after the app has been stapled. To attach all desktop assets together:
+
+```sh
+bash apps/native/electron/publish-updates.sh vVERSION zig-out/distribution
+```
+
+The release must remain a draft until its CI checks pass and all desktop assets
+are attached. Every latest stable release must carry `latest-mac.yml` and its
+versioned ZIP alongside the DMG; a CLI-only latest release cannot serve a desktop
+update. Publish the complete release atomically. Versions older than the first
+updater-enabled release need one manual DMG installation.

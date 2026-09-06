@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -11,6 +11,7 @@ app.setPath('userData', path.join(temporary, 'profile'));
 let server, win;
 const deadline = setTimeout(() => { console.error('Visual run exceeded 240 seconds'); finish(1); }, 240000);
 app.whenReady().then(async () => {
+  ipcMain.handle('updates', () => ({ status: 'unavailable', currentVersion: '1.0.0', automatic: false, interactive: false }));
   const root = path.resolve(__dirname, '..'), output = process.env.GRAFF_VISUAL_OUTPUT || path.resolve(root, '../../zig-out/visual-tests');
   fs.mkdirSync(output, { recursive: true });
   assert.ok(fs.existsSync(path.join(root, '.next/BUILD_ID')), 'Run bun run build before visual tests.');
@@ -29,6 +30,21 @@ app.whenReady().then(async () => {
     if (url.origin === origin && url.pathname.startsWith('/api/')) apiRequests.push(url.pathname);
     callback({ cancel: !details.url.startsWith(origin) && !details.url.startsWith('data:') || url.pathname.startsWith('/api/') });
   });
+  if (process.env.GRAFF_VISUAL_SUITE === 'updates') {
+    await require('./updates-visual.cjs').runUpdateVisuals({ origin, output });
+    await require('./updates-transport.cjs').runUpdateTransport();
+    assert.deepEqual(apiRequests, [], 'Update fixtures never call engine or model APIs');
+    fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: ['update UI', 'update transport'], apiRequests }, null, 2));
+    return;
+  }
+  if (process.env.GRAFF_VISUAL_SUITE === 'projects') {
+    await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
+    await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
+    await require('./dev-preview-visual.cjs').runDevPreview({ output });
+    assert.deepEqual(apiRequests, [], 'Project fixtures never call engine or model APIs');
+    fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: ['projects and navigation', 'browser'], apiRequests }, null, 2));
+    return;
+  }
   await win.loadURL(`${origin}/visual-tests`);
   const js = source => win.webContents.executeJavaScript(source);
   const wait = async source => { for (let i = 0; i < 100; i++) { if (await js(source)) return; await sleep(50); } throw Error(`Visual check timed out: ${source}`); };
@@ -59,6 +75,8 @@ app.whenReady().then(async () => {
   await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
   await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
   await require('./agents-visual.cjs').runAgentVisuals({ win, origin, output });
+  await require('./updates-visual.cjs').runUpdateVisuals({ origin, output });
+  await require('./updates-transport.cjs').runUpdateTransport();
   if (process.env.GRAFF_PERFORMANCE_TESTS) await require('./performance-scenarios.cjs').runPerformance({ win, origin, output });
   assert.deepEqual(apiRequests, [], 'Visual fixtures must not call the engine or model APIs');
   fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: results, apiRequests }, null, 2));

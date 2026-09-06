@@ -6,6 +6,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
   const win=new BrowserWindow({width:1100,height:760,show:true,titleBarStyle:'hiddenInset',webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
   installWindowState(win);ipcMain.handle('browser',()=>null);
+  ipcMain.handle('projects',()=>null);
   // The demo workspace name maps to a disposable real folder for PTY checks.
   const terminalRoot=path.join(output,'terminal-workspace');fs.mkdirSync(terminalRoot,{recursive:true});
   const helper=path.join(output,'graff-terminal');
@@ -25,7 +26,9 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
       const commands=[{name:'compact',description:'Compact conversation context'},...Array.from({length:100},(_,i)=>({name:'command-'+i,description:'Command '+i}))];
       const galleryFetch=window.fetch;window.fetch=async(input,options)=>{const response=await galleryFetch(input,options);if(options?.body&&JSON.parse(options.body).method==='bootstrap')return new Response(JSON.stringify({sessionId:'demo',commands}),{headers:{'content-type':'application/json'}});if(String(input).includes('/api/models')){const data=await response.json();data.result.commands=commands;data.result.current.model='example-model-with-a-long-name';data.result.models[0].name=data.result.current.model;return new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}});}return response;};`});
     await wc.loadURL(origin);win.focus();await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
+    await require('./projects-visual.cjs').runProjectVisuals({win,origin,output});
     await require('./composer-visual.cjs').runComposerVisual({win,output});
+    await require('./split-composer-visual.cjs').runSplitComposerVisual({win,output,key});
     await input('/compact');await wait(`!!document.querySelector('[role="option"]')`);assert.match(await js(`document.querySelector('[role="option"]').textContent`),/compact/);
     await key('Escape');await key('n',{metaKey:true});assert.equal(await tabs(),2);
     await input('/compact');await wait(`!!document.querySelector('[role="option"]')`);assert.match(await js(`document.querySelector('[role="option"]').textContent`),/compact/,'new chats inherit the command catalog');
@@ -51,6 +54,6 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
     assert.equal(await js(`!!document.querySelector('[data-workspace-menu]')`),false);
     if(process.platform==='darwin')await require('./terminal-visual.cjs').runTerminalVisual({win,output});
     console.log('Navigation visual checks passed: command catalog/new tabs, bounded keyboard menu, new/close/reopen, splits/zoom/resize, workspace search.');
-  } finally {terminals.closeAll();ipcMain.removeHandler('terminal');ipcMain.removeHandler('browser');win.destroy();fixtureWindow.show();fixtureWindow.focus();}
+  } finally {terminals.closeAll();ipcMain.removeHandler('terminal');ipcMain.removeHandler('browser');ipcMain.removeHandler('projects');win.destroy();fixtureWindow.show();fixtureWindow.focus();}
 }
 module.exports={runNavigationVisuals};

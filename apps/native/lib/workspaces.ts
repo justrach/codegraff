@@ -1,6 +1,6 @@
 /** Workspaces the native app knows about: the folders graff runs in. The
- * list and the active pick live in this browser (localStorage); the server
- * only validates a root it is handed. Pure helpers here so the list rules
+ * list and active pick use localStorage in the web client; the desktop also
+ * persists them in its settings independently of the UI origin. Pure helpers so the list rules
  * are testable without a DOM. */
 
 export const WORKSPACES_KEY = "graff.native.workspaces";

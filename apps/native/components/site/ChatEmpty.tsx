@@ -4,6 +4,7 @@ import { useEffect, useState, type CSSProperties } from "react";
 import PromptBar, { type PromptModel } from "@/components/primitives/PromptBar";
 import type { AcpCommand } from "@/lib/acp";
 import { STARTER_PROMPTS, type Health } from "@/lib/acp-client";
+import { basename } from "@/lib/workspaces";
 
 function greeting(): string {
   const hour = new Date().getHours();
@@ -40,6 +41,7 @@ export default function EmptyState({
   history,
   cwd,
   commands, compact = false,
+  onOpenProject, onContinue, onReview, onProjects,
 }: {
   onSend: (text: string) => void; onSetting?: (text: string) => Promise<void>;
   health: Health | null;
@@ -53,6 +55,10 @@ export default function EmptyState({
   /** The slash commands this tab's agent advertised, for the / menu. */
   commands?: AcpCommand[];
   compact?: boolean;
+  onOpenProject?: () => void;
+  onContinue?: () => void;
+  onReview?: () => void;
+  onProjects?: () => void;
 }) {
   const where = cwd ?? health?.cwd;
   const [offset, setOffset] = useState(0);
@@ -79,6 +85,16 @@ export default function EmptyState({
           What should graff work on?
         </span>
       </h1>}
+
+      {!compact && onOpenProject && <div className="mt-5 rounded-control border border-line bg-surface px-3 py-3" data-project-context>
+        <div className="flex items-center justify-between gap-2"><span className="truncate text-sm font-medium text-ink">{where ? basename(where) : "Choose a project folder"}</span><button type="button" onClick={onOpenProject} className="shrink-0 rounded-control px-2 py-1 text-xs text-ink-2 hover:bg-hover">Change folder…</button></div>
+        {where && <p className="mt-1 break-all font-mono text-xs text-ink-3">{where}</p>}
+        <div className="mt-2 flex flex-wrap gap-3 text-xs text-ink-2">
+          {onProjects && <button type="button" onClick={onProjects} className="rounded py-1 hover:text-ink">All projects</button>}
+          {onContinue && <button type="button" onClick={onContinue} className="rounded py-1 hover:text-ink">Continue conversation</button>}
+          {onReview && <button type="button" onClick={onReview} className="rounded py-1 hover:text-ink">Review changes</button>}
+        </div>
+      </div>}
 
       <div className={`relative ${compact ? "" : "home-reveal mt-7"}`} style={compact ? undefined : homeRevealStyle(stage >= 3)}>
         <PromptBar

@@ -25,6 +25,10 @@ if (process.env.GRAFF_ELECTRON_SMOKE) process.env.GRAFF_THEMES_DIR = path.join(a
 let win, browser, backend, automation, computer, profiler;
 let terminals;
 let quitting = false;
+if (!require('./single-instance.cjs').claimDesktopInstance(app, () => win)) {
+  app.quit();
+  return;
+}
 
 async function metrics() {
   const { rssMiB, cpuPercent, processes } = await treeSample(process.pid);
@@ -59,6 +63,8 @@ app.whenReady().then(async () => {
     title: 'Codegraff', titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 11 }, backgroundColor: '#fafaf9', show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), partition: 'persist:app',
       contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: !process.env.GRAFF_ELECTRON_SMOKE } });
+  const projects = require('./project-store.cjs').projectStore(app.getPath('userData'));
+  ipcMain.handle('projects', (event, { action, value }) => { trusted(event); if (action === 'load') return projects.load(); if (action === 'save') return projects.save(value); throw Error('Unknown project action'); });
   installWindowState(win);
   terminals = new Terminals(path.join(resources, 'native/graff-terminal'), event => { if (!win.isDestroyed()) win.webContents.send('terminal-event', event); });
   ipcMain.handle('terminal', (event, {action, params}) => { trusted(event); return terminals.command(action, params); });
@@ -128,8 +134,9 @@ app.whenReady().then(async () => {
   installExternalLinks(win.webContents, backend.origin);
   win.on('minimize', () => { if (browser.visible) browser.hide(browser.visible); });
   win.on('restore', () => win.webContents.send('browser-event', { type: 'layout' }));
+  const updateMenu = require('./updates.cjs').installUpdates({ app, win, ipcMain, trusted, resources });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { label: 'Codegraff', submenu: [{ role: 'about' }, { label: 'Activity…', accelerator: 'CmdOrCtrl+,', click: () => void activity().catch(error => dialog.showErrorBox('Activity', error.message)) }, { label: 'Computer use…', click: () => void computer.configure().catch(error => dialog.showErrorBox('Computer use', error.message)) }, { type: 'separator' }, { role: 'quit' }] },
+    { label: 'Codegraff', submenu: [{ role: 'about' }, ...updateMenu, { type: 'separator' }, { label: 'Activity…', accelerator: 'CmdOrCtrl+,', click: () => void activity().catch(error => dialog.showErrorBox('Activity', error.message)) }, { label: 'Computer use…', click: () => void computer.configure().catch(error => dialog.showErrorBox('Computer use', error.message)) }, { type: 'separator' }, { role: 'quit' }] },
     { label: 'File', submenu: [
       ['New chat', 'CmdOrCtrl+N', 'new'], ['New tab', 'CmdOrCtrl+T', 'new'],
       ['Close chat', 'CmdOrCtrl+W', 'close'], ['Reopen closed chat', 'CmdOrCtrl+Shift+T', 'reopen'],
