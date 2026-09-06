@@ -81,6 +81,7 @@ pub fn resetConversationSteering(root: *Agent) void {
     if (root.goal_flag) |g| root.goal = goal_flow.standingGoalFromFlag(g, null, root.todos.items, 0);
     @import("rlm_spec.zig").resetBindsSession(root.io);
     @import("native_fold.zig").resetSession();
+    @import("subagent_ledger.zig").reset(root.gpa); // #753: handles belong to the conversation
 }
 
 /// Try to handle a session/environment slash command. Returns false (line

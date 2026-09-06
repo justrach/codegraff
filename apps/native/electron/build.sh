@@ -2,6 +2,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../../.." && pwd)"
+version="${GRAFF_VERSION:-0.0.289}"
 ui="$root/apps/native"
 out="$root/zig-out/electron"
 bundle="$out/Codegraff.app"
@@ -10,7 +11,7 @@ bun install --frozen-lockfile
 if [[ ! -f node_modules/electron/path.txt ]]; then bun node_modules/electron/install.js; fi
 bun run --bun build
 cd "$root"
-zig build graff -Doptimize=ReleaseFast
+zig build graff -Doptimize=ReleaseFast -Dversion="$version"
 mkdir -p "$out"
 # This directory is an isolated build artifact, never the installed application.
 rm -rf "$bundle"
@@ -18,7 +19,7 @@ ditto "$ui/node_modules/electron/dist/Electron.app" "$bundle"
 resources="$bundle/Contents/Resources"
 mkdir -p "$resources/app" "$resources/native"
 cp "$here/"*.cjs "$resources/app/"
-printf '{"name":"codegraff","productName":"Codegraff","version":"0.0.288","main":"main.cjs"}\n' > "$resources/app/package.json"
+printf '{"name":"codegraff","productName":"Codegraff","version":"%s","main":"main.cjs"}\n' "$version" > "$resources/app/package.json"
 ditto "$ui/.next/standalone" "$resources/ui"
 ditto "$ui/.next/static" "$resources/ui/.next/static"
 [[ ! -d "$ui/public" ]] || ditto "$ui/public" "$resources/ui/public"

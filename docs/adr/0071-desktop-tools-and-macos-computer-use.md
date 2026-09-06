@@ -1,4 +1,4 @@
-# 0069. Desktop tools use the app's browser and a native macOS bridge
+# 0071. Desktop tools use the app's browser and a native macOS bridge
 
 Status: accepted for the local desktop trial
 

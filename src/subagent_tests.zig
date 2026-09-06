@@ -6,6 +6,7 @@ const std = @import("std");
 const util = @import("util.zig");
 const repl_glue = @import("repl_glue.zig");
 const subagent = @import("subagent.zig");
+const subagent_ledger = @import("subagent_ledger.zig");
 const subagent_run = @import("subagent_run.zig");
 
 const FailKind = subagent_run.FailKind;
@@ -96,4 +97,94 @@ test "agentStatusText: composes with isolation:\"worktree\" — a kept-worktree 
     defer gpa.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "[worktree kept (has changes) — path:") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "branch: graff/agents/sa-001-aa11") != null);
+}
+
+test "admitOneLocked: admits up to the cap, queues the rest, FIFO order (#276 P0-3 design point 6)" {
+    const gpa = std.testing.allocator;
+    var registry: subagent.AgentJobs = .{};
+    defer registry.list.deinit(gpa);
+
+    var stub_jobs: [subagent.max_concurrent_background_agents + 3]subagent.AgentJob = undefined;
+    for (&stub_jobs, 0..) |*j, i| j.* = .{
+        .id = @intCast(i + 1),
+        .label = @constCast(""),
+        .prompt = @constCast(""),
+        .niche = @constCast(""),
+        .isolation = .shared_cwd,
+        .isolation_fallback = false,
+        .ctx = undefined,
+    };
+    for (&stub_jobs) |*j| try registry.list.append(gpa, j);
+
+    var admitted_order: [stub_jobs.len]u32 = undefined;
+    var n: usize = 0;
+    while (subagent.admitOneLocked(&registry)) |j| : (n += 1) admitted_order[n] = j.id;
+
+    try std.testing.expectEqual(@as(usize, subagent.max_concurrent_background_agents), n);
+    try std.testing.expectEqual(subagent.max_concurrent_background_agents, registry.active);
+    for (admitted_order[0..n], 1..) |id, expect| try std.testing.expectEqual(@as(u32, @intCast(expect)), id);
+
+    var still_queued: usize = 0;
+    for (stub_jobs) |j| if (!j.admitted) {
+        still_queued += 1;
+    };
+    try std.testing.expectEqual(stub_jobs.len - n, still_queued);
+
+    registry.active -= 1;
+    const next = subagent.admitOneLocked(&registry).?;
+    try std.testing.expectEqual(@as(u32, subagent.max_concurrent_background_agents + 1), next.id);
+}
+
+// The issue report: three run_in_background:true launches returned numeric
+// ids; after an API interrupt and a continuation, agent_output said each
+// "may never have started". This is that sequence through the model-facing
+// tool: persist (ACP save on ApiError), new process (empty ledger + empty
+// live table), then agent_output on all three.
+test "#753 backtest: three issued handles survive process death through agent_output" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    subagent_ledger.reset(gpa);
+    defer subagent_ledger.reset(gpa);
+
+    subagent_ledger.remember(gpa, io, 7531, "scan auth");
+    subagent_ledger.remember(gpa, io, 7532, "scan payments");
+    subagent_ledger.remember(gpa, io, 7533, "scan sessions");
+    // One finished before the interrupt; the other two were still running.
+    subagent_ledger.finish(gpa, io, 7531, false, "auth looks fine", .{ .duration_ms = 80, .tool_calls = 1 });
+
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try s.beginObject();
+    try subagent_ledger.writeFields(&s, io);
+    try s.endObject();
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, aw.writer.buffered(), .{});
+    defer parsed.deinit();
+    subagent_ledger.reset(gpa);
+    const saved = if (parsed.value == .object) parsed.value.object.get("background_agents") else null;
+    subagent_ledger.restore(gpa, io, saved);
+
+    const done = try subagent.agentOutput(gpa, io, 7531, 0);
+    defer gpa.free(done.text);
+    try std.testing.expect(!done.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, done.text, "auth looks fine") != null);
+    try std.testing.expect(std.mem.indexOf(u8, done.text, "may never have started") == null);
+
+    const pay = try subagent.agentOutput(gpa, io, 7532, 0);
+    defer gpa.free(pay.text);
+    try std.testing.expect(pay.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, pay.text, "interrupted") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pay.text, "scan payments") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pay.text, "may never have started") == null);
+
+    const ses = try subagent.agentOutput(gpa, io, 7533, 0);
+    defer gpa.free(ses.text);
+    try std.testing.expect(ses.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, ses.text, "interrupted") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ses.text, "may never have started") == null);
+
+    const unknown = try subagent.agentOutput(gpa, io, 99, 0);
+    defer gpa.free(unknown.text);
+    try std.testing.expect(std.mem.indexOf(u8, unknown.text, "may never have started") != null);
 }

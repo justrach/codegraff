@@ -1,4 +1,4 @@
-# 0068. Electron renders browser pages; graff owns coding
+# 0070. Electron renders browser pages; graff owns coding
 
 Status: accepted 2026-09-06 for the local desktop trial
 

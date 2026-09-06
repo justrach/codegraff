@@ -272,6 +272,7 @@ export async function POST(req: NextRequest) {
             .finally(() => { slot.streaming = false; });
         },
         cancel() {
+          if (cancelled) return; // Completed streams must not cancel a later turn.
           cancelled = true;
           try { slot.transport.notify("session/cancel", { sessionId: slot.sessionId }); } catch {}
         },
