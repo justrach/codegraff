@@ -139,7 +139,7 @@ next step supplied with useful information while reducing repeated input.
 
 **Desktop (Apple Silicon, macOS 14+).**
 [Download CodeGraff v0.0.291](https://github.com/justrach/codegraff/releases/download/v0.0.291/Codegraff-macos-arm64.dmg),
-open the disk image, and drag **Codegraff.app** onto **Applications**. Eject the disk image and open Codegraff from Applications.
+quit any running Codegraff copies, open the disk image, and drag **Codegraff.app** onto **Applications**. Eject the disk image and open Codegraff from Applications.
 The notarized bundle includes Graff, Chromium, Bun and the native macOS components;
 you do not need a separate CLI, runtime, developer tools or local server.
 [Verify the download checksum](https://github.com/justrach/codegraff/releases/download/v0.0.291/Codegraff-DMG-SHA256SUMS).

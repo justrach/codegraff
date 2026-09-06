@@ -5,6 +5,7 @@ async function runUpdateVisuals({ origin, output }) {
   const wc = win.webContents, js = source => wc.executeJavaScript(source);
   const wait = async source => { for (let i = 0; i < 100; i++) { if (await js(source)) return; await new Promise(r => setTimeout(r, 30)); } throw Error(source); };
   try {
+    await wc.loadURL('about:blank');
     wc.debugger.attach('1.3');
     await wc.debugger.sendCommand('Page.enable');
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: `
@@ -28,8 +29,16 @@ async function runUpdateVisuals({ origin, output }) {
     await js(`window.__update({status:'ready',version:'1.0.1'})`);
     await wait(`document.querySelector('[data-desktop-update]')?.textContent.includes('Restart to update')`);
     assert.equal(await js('window.__restarts'), 0);
+    await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const target = await js(`(()=>{
+      const b=Array.from(document.querySelectorAll('[data-desktop-update] button')).find(b=>b.textContent==='Restart to update'),r=b.getBoundingClientRect();
+      const x=r.x+r.width/2,y=r.y+r.height/2;return {x,y,visible:x>0&&y>0&&x<innerWidth&&y<innerHeight&&b.contains(document.elementFromPoint(x,y))};
+    })()`);
+    assert.equal(target.visible, true, 'restart action is visible and receives pointer input');
     fs.writeFileSync(path.join(output, 'update-ready.png'), (await wc.capturePage(undefined, { stayAwake: true })).toPNG());
-    await js(`Array.from(document.querySelectorAll('[data-desktop-update] button')).find(b=>b.textContent==='Restart to update').click()`);
+    wc.sendInputEvent({ type: 'mouseDown', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
+    wc.sendInputEvent({ type: 'mouseUp', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
     await wait(`window.__restarts===1`);
     await wait(`document.querySelector('[data-desktop-update]')?.textContent.includes('Preparing to restart')`);
     console.log('Update UI passed: quiet checks/errors, download progress, explicit restart only.');

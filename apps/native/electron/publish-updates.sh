@@ -4,6 +4,12 @@ set -euo pipefail
 tag="${1:?Usage: publish-updates.sh vVERSION distribution-directory}"
 out="${2:?Provide the notarized distribution directory}"
 repo=justrach/codegraff
+codesign --verify --deep --strict "$out/Codegraff.app"
+xcrun stapler validate "$out/Codegraff.app"
+xcrun stapler validate "$out/Codegraff-macos-arm64.dmg"
+spctl --assess --type execute "$out/Codegraff.app"
+spctl --assess --type open --context context:primary-signature "$out/Codegraff-macos-arm64.dmg"
+(cd "$out" && shasum -a 256 -c Codegraff-DMG-SHA256SUMS)
 [[ "$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft)" == true ]] || {
   echo 'Desktop assets must be uploaded together to a draft release.' >&2; exit 1;
 }
