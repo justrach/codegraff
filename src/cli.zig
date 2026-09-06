@@ -22,12 +22,12 @@ pub const changelog_text =
     \\What's new
     \\──────────
     \\0.0.288
+    \\  • GPT-6 Astra is the default Codex model: mid-turn steer, vision, hosted search, OpenAI compact
     \\  • Gemini is a first-class provider on Google's Interactions API
     \\  • recorded constraints ride the prefix as ledger JSON; recaps cannot invent them (#738)
     \\  • a second paste in the same batch no longer sends on its first newline (#737)
     \\  • truncated tool-call arguments cannot poison later requests (#752)
     \\  • a plain final with open work gets one reconciliation request (#745)
-    \\  • GPT-6+ on Codegraff uses OpenAI compact; Grok keeps the client summarizer
     \\  • native composer: real @ files, image paste and drop
     \\
     \\0.0.287

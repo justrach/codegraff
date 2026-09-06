@@ -12,6 +12,11 @@ current is part of cutting a release.
 
 ## v0.0.288 (2026-09-06)
 
+- GPT-6 Astra is the default Codex model (`gpt-6-astra`, 272k context).
+  ChatGPT login surfaces it; `/model codex` picks it. Mid-turn
+  `response.steer`, vision, hosted `tool_search` / `web_search`, and OpenAI
+  server-side compact all run on the Responses wire. Astra working guidance
+  attaches only while Astra is selected.
 - Recorded user constraints ride the root prefix as live ledger JSON, including
   the empty set, so a compaction recap cannot invent a recording. A write
   refreshes instructions in the same turn and drops a cached Responses
