@@ -107,7 +107,7 @@ export default function ElectronBrowserPane({ chat, pins, onPinsChange, onAsk, o
     </div>
     <footer className="max-h-44 overflow-y-auto border-t border-line p-2 text-xs">
       {pins.length === 0 ? <p className="p-1 text-ink-3">{picking ? "Click an element in the page to attach it to your prompt." : "Select and type directly in the page. Pin an element to discuss it with graff."}</p> : <>
-        <div className="flex items-center justify-between"><span>{pins.length} pinned elements</span><button className={`${button} bg-accent-tint text-accent-ink`} onClick={onAsk}>Use pins in chat</button></div>
+        <div className="flex items-center justify-between"><span>{pins.length} pinned {pins.length === 1 ? "element" : "elements"}</span><button className={`${button} bg-accent-tint text-accent-ink`} onClick={onAsk}>Send pins</button></div>
         {pins.map((pin, i) => <div key={pin.id} className="flex items-center gap-2 py-1">
           <span title={`${pin.element.selector} · ${pin.url}`} className="max-w-32 truncate">{i + 1}. {pin.element.name || pin.element.tag}</span>
           <input autoFocus={i === pins.length - 1} aria-label={`Note for pin ${i + 1}`} className="min-w-0 flex-1 rounded bg-field px-2 py-1" placeholder="What should change?" value={pin.comment} onChange={e => onPinsChange(pins.map(p => p.id === pin.id ? { ...p, comment: e.target.value } : p))} />
