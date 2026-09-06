@@ -100,15 +100,20 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
   // Only the newest navigation may land: a slow listing of a big folder
   // must not overwrite the one the user has already moved on to.
   const seq = useRef(0);
-  const go = useCallback(async (target: string) => {
+  const pickRef = useRef(onPick);
+  pickRef.current = onPick;
+  const go = useCallback(async (target: string, pick = false) => {
     const n = (seq.current += 1);
     setBusy(true);
+    setListing(null);
+    setError(null);
     try {
       const next = await browseFolders(target);
       if (n !== seq.current) return;
       setListing(next);
       setTyped(next.path);
       setError(null);
+      if (pick) pickRef.current(next.path);
     } catch (err) {
       if (n !== seq.current) return;
       setError(err instanceof Error ? err.message : String(err));
@@ -118,6 +123,7 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
   }, []);
   useEffect(() => {
     void go(startPath ?? "~");
+    return () => { seq.current++; };
   }, [go, startPath]);
 
   const crumbs = listing ? listing.path.split("/").filter(Boolean) : [];
@@ -140,7 +146,7 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
           </span>
           <input
             value={typed}
-            onChange={(event) => setTyped(event.target.value)}
+            onChange={(event) => { seq.current++; setTyped(event.target.value); setBusy(false); setError(null); setListing(null); }}
             spellCheck={false}
             autoFocus
             aria-label="Folder path"
@@ -191,7 +197,9 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto" style={{ minHeight: 200 }}>
-        {error && <p className="px-4 py-3 text-[12.5px] text-red">{error}</p>}
+        {busy && <p role="status" className="px-4 py-3 text-[12.5px] text-ink-3">Reading folder…</p>}
+        {error && <p role="alert" className="px-4 py-3 text-[12.5px] text-red">{error}</p>}
+        {!listing && !busy && !error && <p className="px-4 py-3 text-[12.5px] text-ink-3">Press Enter to browse, or open this folder directly.</p>}
         {listing && (
           <div className="flex flex-col px-2 py-1.5">
             {listing.parent && (
@@ -248,11 +256,11 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
         </button>
         <button
           type="button"
-          disabled={listing === null || busy}
-          onClick={() => listing && onPick(listing.path)}
+          disabled={!typed.trim() || busy}
+          onClick={() => void go(typed, true)}
           className="h-8 rounded-full bg-ink px-3.5 text-[12.5px] font-medium text-canvas transition-opacity hover:opacity-90 disabled:opacity-50"
         >
-          Use this folder
+          Open folder
         </button>
       </div>
     </>

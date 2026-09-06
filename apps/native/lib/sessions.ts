@@ -92,8 +92,8 @@ export async function listSessions(root?: string): Promise<StoredSession[]> {
   return page.sessions;
 }
 
-export async function loadSession(name: string, root?: string): Promise<{ meta: StoredSession; messages: TranscriptMsg[] }> {
-  const res = await fetch(`${BASE}${withRoot({ name, root })}`, { cache: "no-store" });
+export async function loadSession(name: string, root?: string, signal?: AbortSignal): Promise<{ meta: StoredSession; messages: TranscriptMsg[] }> {
+  const res = await fetch(`${BASE}${withRoot({ name, root })}`, { cache: "no-store", signal });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     throw new Error(`session ${name} → ${res.status}: ${detail.slice(0, 200)}`);

@@ -22,4 +22,6 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run test:desktop
       - run: bun run build
+      - run: bun run test:projects
+      - run: bun run test:stress
       - run: bun build electron/updater-runtime.cjs --target=node --format=cjs --external electron --outfile /tmp/updater-runtime.cjs

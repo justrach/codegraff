@@ -203,6 +203,12 @@ collapsed; expanded groups page their rows, and large output previews preserve
 the beginning and end with an explicit omission marker. Older messages load on
 request. These bounds limit rendering; they do not cap stored conversation size.
 
+For a focused pass, `bun run test:projects` covers folder selection, conversation
+and review recovery, navigation, terminals, and browser previews. `bun run
+test:stress` covers long transcripts and tool output without changing macOS
+Spaces. The full `test:visual` suite additionally checks native fullscreen
+transitions; the stress results explicitly report fullscreen as not run.
+
 For a separate, opt-in real coding trial, run `electron/gui-coding-smoke.cjs` with
 the package's Electron executable. It uses configured credentials in a disposable
 workspace, checks the resulting code independently with Bun, then runs `/compact`.

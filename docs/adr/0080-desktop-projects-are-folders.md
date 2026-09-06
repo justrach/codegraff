@@ -26,3 +26,8 @@ The project-store test covers restart persistence and ordered writes. The offlin
 desktop project suite covers folder selection, scoped conversation discovery,
 new chat inheritance, and separate Files/Changes navigation. Its preview fixture
 starts Bun and exercises the browser tool transport without a model call.
+
+Recovery fixtures also cover failed initial loads and pagination, stale search
+results, cancellable conversation restoration, and invalid typed folder paths.
+Review errors remain distinct from clean working trees, and delayed responses
+cannot replace the currently selected filter or worktree.

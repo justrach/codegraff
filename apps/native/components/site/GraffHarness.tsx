@@ -2,6 +2,7 @@
 
 import { workspaceActions } from "./harness-workspace-actions";
 import ProjectsPane from "./ProjectsPane";
+import { useSavedConversation, ConversationOpenNotice } from "./useSavedConversation";
 import { restoreProjects, persistProjects } from "@/lib/project-preferences";
 import { createTurnPainter } from "@/lib/turn-painter";
 import { useQuietSettings } from "./useQuietSettings";
@@ -40,7 +41,7 @@ import {
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AcpCommand, type AssistantTurn } from "@/lib/acp";
 import { isFollowingTail, pinScrollerTail } from "@/lib/follow-scroll";
 import { dropQueuedPrompt, enqueuePrompt, shiftQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
-import { dateGroup, listSessionsPage, loadSession, relativeTime, removeSession, type StoredSession } from "@/lib/sessions";
+import { dateGroup, listSessionsPage, relativeTime, removeSession, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory, pushHistory, saveHistory } from "@/lib/prompt-history";
 import WorkspaceDialog from "@/components/site/WorkspaceDialog";
 import {
@@ -465,40 +466,25 @@ export default function GraffHarness() {
     if (!window.graffDesktop) void requireSession(id).catch(() => undefined);
   };
 
-  /** Open a saved graff session: its transcript renders from the file at once,
-   * and the tab's agent starts with `--resume` so a follow-up remembers it. */
-  const openStored = async (name: string, atCwd?: string) => {
-    // The sidebar lists the active workspace, so the session lives there;
-    // the same name in another workspace is a different conversation. A
-    // reopened tab names its own workspace instead.
-    const cwd = atCwd ?? activePathRef.current ?? undefined;
-    const existing = chats.find((c) => c.session === name && (c.cwd ?? null) === (cwd ?? null));
-    if (existing) {
-      setActiveId(existing.id);
-      setFilesOpen(false);
-      setConversationsOpen(false);
-      return;
-    }
-    let loaded: Awaited<ReturnType<typeof loadSession>>;
-    try {
-      loaded = await loadSession(name, cwd);
-    } catch (err) {
-      setHealth((current) => ({ ...(current ?? { ok: true }), detail: err instanceof Error ? err.message : String(err) }));
-      return;
-    }
-    const id = (chatIdRef.current += 1);
-    const messages: Msg[] = loaded.messages.map((m) => ({ id: (msgIdRef.current += 1), ...m }));
-    sessionNamesRef.current.set(id, name);
-    setChats((current) => [
-      ...current,
-      { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name, cwd },
-    ]);
-    setActiveId(id);
-    setFilesOpen(false);
-    setConversationsOpen(false);
-    setFollowing(true);
-    void requireSession(id, false, loaded.meta.model ?? undefined).catch(() => undefined);
+  const selectStored = (id: number, cwd?: string) => {
+    if (cwd) activateWorkspace(cwd);
+    setActiveId(id); setFilesOpen(false); setConversationsOpen(false); setProjectsOpen(false); setFollowing(true);
   };
+  const savedConversation = useSavedConversation({
+    context: `${activePath ?? ""}:${activeId}`,
+    findOpen: (name, cwd) => chatsRef.current.find(c => c.session === name && (c.cwd ?? null) === (cwd ?? null))?.id,
+    select: selectStored,
+    restore: (name, cwd, loaded) => {
+      const id = ++chatIdRef.current;
+      const messages: Msg[] = loaded.messages.map(m => ({ id: ++msgIdRef.current, ...m }));
+      sessionNamesRef.current.set(id, name);
+      const next = [...chatsRef.current, { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name, cwd }];
+      chatsRef.current = next; setChats(next);
+      selectStored(id, cwd);
+      void requireSession(id, false, loaded.meta.model ?? undefined).catch(() => undefined);
+    },
+  });
+  const openStored = (name: string, cwd = activePathRef.current ?? undefined) => savedConversation.open(name, cwd);
 
   const newChat = () => openChat((chatIdRef.current += 1));
 
@@ -968,6 +954,7 @@ export default function GraffHarness() {
       />
 
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
+        <ConversationOpenNotice request={savedConversation.request} onCancel={savedConversation.cancel} onRetry={savedConversation.retry} />
         <div className="flex min-h-0 flex-1 gap-2.5" style={{ flexDirection: splitDirection }}>
           {projectsOpen ? (
             <ProjectsPane workspaces={workspaces} current={activePath} onOpen={() => setDialog({ mode: "new" })}
@@ -980,10 +967,7 @@ export default function GraffHarness() {
               <ConversationsPane
                 root={chatCwd}
                 activeId={chatThread.session ?? null}
-                onPick={(name) => {
-                  setConversationsOpen(false);
-                  pickRecent(name);
-                }}
+                onPick={pickRecent}
                 onNewChat={() => {
                   setConversationsOpen(false);
                   newChat();

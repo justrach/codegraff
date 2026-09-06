@@ -45,6 +45,11 @@ app.whenReady().then(async () => {
     fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: ['projects and navigation', 'browser'], apiRequests }, null, 2));
     return;
   }
+  if (process.env.GRAFF_VISUAL_SUITE === 'stress') {
+    await require('./stress-visual.cjs').runStressVisuals({ win, origin, output, fullscreen: false });
+    assert.deepEqual(apiRequests, [], 'Stress fixtures never call engine or model APIs');
+    return;
+  }
   await win.loadURL(`${origin}/visual-tests`);
   const js = source => win.webContents.executeJavaScript(source);
   const wait = async source => { for (let i = 0; i < 100; i++) { if (await js(source)) return; await sleep(50); } throw Error(`Visual check timed out: ${source}`); };

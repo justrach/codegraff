@@ -45,7 +45,8 @@ export default function ConversationsPane({
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; more: boolean } | null>(null);
+  const [reload, setReload] = useState(0);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const generation = useRef(0);
   const q = useDebounced(query);
@@ -53,6 +54,7 @@ export default function ConversationsPane({
   useEffect(() => {
     let cancelled = false; generation.current++;
     setLoading(true); setLoadingMore(false);
+    setRows([]); setCursor(null); setTotal(0);
     setError(null);
     void listSessionsPage({ limit: PAGE, q, scope, root })
       .then((page) => {
@@ -62,15 +64,16 @@ export default function ConversationsPane({
         setTotal(page.total);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError({ message: `Could not load conversations. ${err instanceof Error ? err.message : String(err)}`, more: false });
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
+      generation.current++;
     };
-  }, [q, scope, root]);
+  }, [q, scope, root, reload]);
 
   useEffect(() => {
     const el = sentinelRef.current;
@@ -93,7 +96,7 @@ export default function ConversationsPane({
             setCursor(page.nextCursor);
             setTotal(page.total);
           })
-          .catch(() => { if (request === generation.current) setError("Could not load more conversations. Choose Retry to try again."); })
+          .catch(() => { if (request === generation.current) setError({ message: "Could not load more conversations.", more: true }); })
           .finally(() => { if (request === generation.current) setLoadingMore(false); });
       },
       { rootMargin: "160px" },
@@ -103,10 +106,10 @@ export default function ConversationsPane({
   }, [cursor, loading, loadingMore, q, scope, root, error]);
 
   const groups = groupSessions(rows);
-  const empty = !loading && rows.length === 0;
+  const empty = !loading && !error && rows.length === 0;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col" data-conversation-library>
       <header className="shrink-0 border-b border-line px-5 pt-5 pb-4 sm:px-8">
         <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4">
           <div className="flex items-end justify-between gap-4">
@@ -114,12 +117,12 @@ export default function ConversationsPane({
               <h1 className="text-[22px] font-medium tracking-[-0.02em] text-ink">Conversations</h1>
               {root && <p className="mt-1 break-all font-mono text-xs text-ink-3" data-conversation-project>{root}</p>}
               <p className="mt-0.5 text-[12.5px] text-ink-3">
-                {loading && rows.length === 0
+                {loading
                   ? "Reading saved sessions…"
                   : total === 1
                     ? "1 saved session"
                     : `${total.toLocaleString()} saved sessions`}
-                {scope === "elsewhere" ? " from other workspaces" : scope === "local" ? " in this workspace" : " · this workspace and home"}
+                {scope === "elsewhere" ? " from other folders" : scope === "local" ? " in this project" : " · this project and home"}
               </p>
             </div>
             {onNewChat && (
@@ -139,7 +142,7 @@ export default function ConversationsPane({
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search title, model, or workspace"
+              placeholder="Search title, model, or folder"
               aria-label="Search conversations"
               className="min-w-0 flex-1 bg-transparent text-[13.5px] font-medium text-ink outline-none placeholder:text-ink-3"
             />
@@ -163,18 +166,19 @@ export default function ConversationsPane({
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto" aria-busy={loading || loadingMore}>
         <div className="mx-auto flex w-full max-w-[720px] flex-col gap-6 px-5 py-5 sm:px-8">
-          {error && <p role="alert" className="text-[13px] text-orange">{error}{rows.length > 0 && <button className="ml-2 underline" onClick={() => setError(null)}>Retry</button>}</p>}
+          {loading && <p role="status" className="py-8 text-center text-sm text-ink-3">Loading conversations…</p>}
+          {error && <p role="alert" className="text-[13px] text-orange">{error.message}<button type="button" className="ml-2 rounded px-2 py-1 underline" onClick={() => error.more ? setError(null) : setReload(n => n + 1)}>Retry</button></p>}
           {empty && (
             <div className="flex flex-col items-center justify-center gap-1 rounded-[14px] bg-inset px-6 py-16 text-center">
               <span className="text-[14px] font-medium text-ink">
-                {query.trim() || scope !== "all" ? "No conversations match" : "No saved conversations yet"}
+                {query.trim() || scope === "elsewhere" ? "No conversations match" : scope === "local" ? "No conversations in this project yet" : "No saved conversations yet"}
               </span>
               <span className="text-[12.5px] text-ink-3">
-                {query.trim() || scope !== "all"
+                {query.trim() || scope === "elsewhere"
                   ? "Try another search or show all sessions."
-                  : "A turn autosaves here. New chat starts a fresh one."}
+                  : "Start a chat in this folder. Your conversation will be saved here."}
               </span>
             </div>
           )}
@@ -200,8 +204,8 @@ export default function ConversationsPane({
                           </span>
                           <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-ink-3">
                             {row.model && <span className="font-mono text-[11.5px]">{row.model}</span>}
-                            {row.local === false && <span>{row.origin ?? "another workspace"}</span>}
-                            {row.local !== false && <span>This workspace</span>}
+                            {row.local === false && <span>{row.origin ?? "another folder"}</span>}
+                            {row.local !== false && <span>This project</span>}
                           </span>
                         </span>
                         <span className="shrink-0 pt-0.5 text-[12px] tabular-nums text-ink-3">{relativeTime(row.updatedMs)}</span>
