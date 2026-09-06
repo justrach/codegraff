@@ -5,6 +5,7 @@ const Io = std.Io;
 const Provider = @import("provider.zig").Provider;
 const root = @import("main.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
+const cache_affinity = @import("cache_affinity.zig"); // ADR 0069: git-root / scratch seed
 
 var session_id_buf: [36]u8 = undefined;
 var session_id_len: usize = 0;
@@ -95,7 +96,7 @@ var project_id_buf: [36]u8 = undefined;
 var project_id_len: usize = 0;
 var project_id_lock: std.atomic.Value(bool) = .init(false);
 
-/// Durable per-project id (cwd-derived UUIDv5, no state to persist). A new
+/// Durable per-project id (affinity-seed UUIDv5, no state to persist). A new
 /// session in the same repo reuses the bucket the last session wrote, so
 /// turn 1 can hit the warm system+tools prefix if the provider still has
 /// it. Different models do not share a cache (the server keys by model);
@@ -114,10 +115,12 @@ pub fn projectRootId(io: Io) []const u8 {
                 break :blk 1;
             };
             const cwd = cwd_buf[0..n];
+            var seed_buf: [4096]u8 = undefined;
+            const seed = cache_affinity.affinitySeed(io, cwd, &seed_buf);
             var digest: [32]u8 = undefined;
             var h = std.crypto.hash.sha2.Sha256.init(.{});
             h.update("graff-kimi-project-cache-v1");
-            h.update(cwd);
+            h.update(seed);
             h.final(&digest);
             @memcpy(&raw, digest[0..16]);
             raw[6] = (raw[6] & 0x0f) | 0x50; // version 5: name-derived

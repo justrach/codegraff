@@ -79,6 +79,7 @@ record only when you need the evidence or the edge cases.
 | [0066](0066-publication-policy-and-ledger-authority.md) | Publication safeguards survive custom prompts; recaps cannot change ledger authority, and constraint writes refresh active prompts atomically. |
 | [0067](0067-recorded-constraints-are-ledger-state.md) | Recorded constraints are live ledger JSON in the root prefix; recap prose is not authority, and a write refreshes instructions in the same turn. |
 | [0068](0068-background-agent-handles-survive-interrupt.md) | Background-agent ids are a session ledger; an interrupted parent turn must not report them as never started (#753). |
+| [0069](0069-cache-affinity-is-the-git-root.md) | Prompt-cache affinity is the git root (or a shared scratch seed), not the leaf cwd. |
 
 ## When to write one
 

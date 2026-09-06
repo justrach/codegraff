@@ -23,6 +23,7 @@ pub const changelog_text =
     \\──────────
     \\0.0.289
     \\  • background-agent handles survive an interrupted API turn (#753)
+    \\  • prompt-cache affinity is the git root, not the leaf cwd
     \\
     \\0.0.288
     \\  • Gemini is a first-class provider on Google's Interactions API
