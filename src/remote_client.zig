@@ -113,7 +113,7 @@ pub fn command(io: Io, gpa: Allocator, arena: Allocator, base: []const u8, key: 
     } else if (std.mem.eql(u8, sub, "cancel")) {
         if (rest.len < 1) std.process.fatal("{s}", .{usage});
         _ = try request(&c, arena, sessionArg(rest[0]), "cancel", null);
-        try out.print("{s}✓{s} cancel queued\n", .{ style.green, style.reset });
+        try out.print("{s}✓{s} cancel delivered — the turn ends with an error event; `graff remote tail {s}` shows it\n", .{ style.green, style.reset, rest[0] });
     } else if (std.mem.eql(u8, sub, "close")) {
         if (rest.len < 1) std.process.fatal("{s}", .{usage});
         const sid = sessionArg(rest[0]);
