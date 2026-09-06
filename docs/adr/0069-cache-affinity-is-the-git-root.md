@@ -26,3 +26,8 @@ First request after the seed change is a one-time miss, then sibling
 jobs share a routing id and may evict each other's tails; the prefix
 still hits when the bytes match. Revisit only if a same-session table
 shows pass or wall regressing to buy the cache.
+
+The offline guard is `affinity: two scratch sandboxes share one project
+cache id` (tier 1 `cache-affinity-scratch`): two `/tmp` leaves must mint
+the same UUID `projectRootId` would send. Hashing the leaf cwd is a
+forced miss, asserted separately. No provider call.

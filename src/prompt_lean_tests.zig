@@ -48,3 +48,21 @@ test "unattended one-shots are told the REAL approval map up front; attended ses
     try std.testing.expect(std.mem.indexOf(u8, unattended, "--yolo") != null);
     try std.testing.expect(std.mem.indexOf(u8, unattended, ".harness/settings.json") != null);
 }
+
+test "lean prefix hash is stable and does not name a sandbox path" {
+    // Second bust vector: even with a shared cache key, a prefix that
+    // interpolates the cwd is a miss on every eval sandbox. Offline.
+    const saved = no_local_tools.lean;
+    defer no_local_tools.lean = saved;
+    no_local_tools.lean = true;
+    const hud = @import("prompt_cache_hud.zig");
+    var a_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a_state.deinit();
+    const a = a_state.allocator();
+    const lean = prompts.detectCaps();
+    const first = try prompts.composeBase(a, lean);
+    const second = try prompts.composeBase(a, lean);
+    try std.testing.expectEqual(hud.prefixHash(first, ""), hud.prefixHash(second, ""));
+    try std.testing.expect(std.mem.indexOf(u8, first, ".sandboxes") == null);
+    try std.testing.expect(std.mem.indexOf(u8, first, "/tmp/") == null);
+}

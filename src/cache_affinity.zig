@@ -11,6 +11,42 @@ const Io = std.Io;
 
 pub const scratch_seed = "graff-scratch";
 
+/// Salt mixed into the durable project id. Keep in one place so a rename
+/// here moves `prompt_cache_key` / `x-grok-conv-id` together.
+pub const cache_salt = "graff-kimi-project-cache-v1";
+
+/// UUIDv5-shaped project cache id from an already-resolved seed. Same bytes
+/// `projectRootId` sends as `prompt_cache_key` / `x-grok-conv-id`.
+pub fn projectIdFromSeed(seed: []const u8, out: *[36]u8) []const u8 {
+    var raw: [16]u8 = undefined;
+    var digest: [32]u8 = undefined;
+    var h = std.crypto.hash.sha2.Sha256.init(.{});
+    h.update(cache_salt);
+    h.update(seed);
+    h.final(&digest);
+    @memcpy(&raw, digest[0..16]);
+    raw[6] = (raw[6] & 0x0f) | 0x50; // version 5: name-derived
+    raw[8] = (raw[8] & 0x3f) | 0x80; // variant 1
+    const hex = std.fmt.bytesToHex(raw, .lower);
+    @memcpy(out[0..8], hex[0..8]);
+    out[8] = '-';
+    @memcpy(out[9..13], hex[8..12]);
+    out[13] = '-';
+    @memcpy(out[14..18], hex[12..16]);
+    out[18] = '-';
+    @memcpy(out[19..23], hex[16..20]);
+    out[23] = '-';
+    @memcpy(out[24..36], hex[20..32]);
+    return out[0..36];
+}
+
+/// Project cache id for an absolute cwd: git root when one exists, otherwise
+/// the shared scratch seed. Never hashes the leaf of a throwaway tree.
+pub fn projectIdForCwd(io: Io, cwd_abs: []const u8, out: *[36]u8) []const u8 {
+    var seed_buf: [4096]u8 = undefined;
+    return projectIdFromSeed(affinitySeed(io, cwd_abs, &seed_buf), out);
+}
+
 /// Directory that owns `.git` (file or dir), walking parents of `cwd_abs`.
 /// `buf` holds the returned path. Null if the walk hits the filesystem root.
 pub fn gitRootOf(io: Io, cwd_abs: []const u8, buf: []u8) ?[]const u8 {
@@ -100,4 +136,61 @@ test "affinity: scratch trees without .git share one seed, not the leaf cwd" {
     try std.testing.expectEqualStrings(scratch_seed, affinitySeed(io, a, &a_buf));
     try std.testing.expectEqualStrings(scratch_seed, affinitySeed(io, b, &b_buf));
     try std.testing.expect(!std.mem.eql(u8, a, scratch_seed));
+}
+
+test "affinity: two scratch sandboxes share one project cache id" {
+    // 289 list$: hashing the leaf cwd minted a unique prompt_cache_key per
+    // eval sandbox, so the system+tools prefix never warmed. Offline — no
+    // provider, no model. Would have failed on the cwd-hash.
+    if (@import("builtin").os.tag == .windows) return;
+    const io = std.testing.io;
+    const a_base = "/tmp/graff-aff-id-a";
+    const b_base = "/tmp/graff-aff-id-b";
+    Io.Dir.cwd().createDirPath(io, a_base ++ "/leaf") catch return error.SkipZigTest;
+    defer Io.Dir.cwd().deleteTree(io, a_base) catch {};
+    Io.Dir.cwd().createDirPath(io, b_base ++ "/other") catch return error.SkipZigTest;
+    defer Io.Dir.cwd().deleteTree(io, b_base) catch {};
+
+    var a_path: [160]u8 = undefined;
+    var b_path: [160]u8 = undefined;
+    const a = try std.fmt.bufPrint(&a_path, "{s}/leaf", .{a_base});
+    const b = try std.fmt.bufPrint(&b_path, "{s}/other", .{b_base});
+
+    var id_a: [36]u8 = undefined;
+    var id_b: [36]u8 = undefined;
+    var id_seed: [36]u8 = undefined;
+    try std.testing.expectEqualStrings(projectIdForCwd(io, a, &id_a), projectIdForCwd(io, b, &id_b));
+    try std.testing.expectEqualStrings(projectIdFromSeed(scratch_seed, &id_seed), projectIdForCwd(io, a, &id_a));
+}
+
+test "affinity: hashing the leaf cwd is a forced miss" {
+    // The 289 bug, spelled as ids: two sibling sandbox paths hash to
+    // different UUIDs, and neither is the shared scratch id.
+    const a = "/tmp/graff-evals/.sandboxes/task-a-r1";
+    const b = "/tmp/graff-evals/.sandboxes/task-b-r1";
+    var id_a: [36]u8 = undefined;
+    var id_b: [36]u8 = undefined;
+    var id_scratch: [36]u8 = undefined;
+    try std.testing.expect(!std.mem.eql(u8, projectIdFromSeed(a, &id_a), projectIdFromSeed(b, &id_b)));
+    try std.testing.expect(!std.mem.eql(u8, projectIdFromSeed(a, &id_a), projectIdFromSeed(scratch_seed, &id_scratch)));
+}
+
+test "affinity: nested repo dirs share one project cache id" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, ".git");
+    try tmp.dir.createDirPath(io, "a/b");
+
+    var root_buf: [4096]u8 = undefined;
+    const root = root_buf[0..try tmp.dir.realPath(io, &root_buf)];
+    var child_buf: [4096]u8 = undefined;
+    const child = try std.fmt.bufPrint(&child_buf, "{s}/a/b", .{root});
+
+    var id_root: [36]u8 = undefined;
+    var id_child: [36]u8 = undefined;
+    var id_leaf: [36]u8 = undefined;
+    try std.testing.expectEqualStrings(projectIdForCwd(io, root, &id_root), projectIdForCwd(io, child, &id_child));
+    // Old hash of the leaf path would have missed the root's warm prefix.
+    try std.testing.expect(!std.mem.eql(u8, projectIdFromSeed(child, &id_leaf), projectIdForCwd(io, child, &id_child)));
 }

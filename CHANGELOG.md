@@ -14,7 +14,8 @@ current is part of cutting a release.
 
 - Prompt-cache affinity is the git root, or one scratch seed when there is
   no `.git`. Eval sandboxes and worktrees can reuse a warm system+tools
-  prefix instead of paying it on every leaf cwd. ADR 0069.
+  prefix instead of paying it on every leaf cwd. An offline test fails if
+  two scratch trees mint different `prompt_cache_key`s. ADR 0069.
 - `#753`: a background-agent handle survives a recoverable API interruption.
   `agent_output` replays a finished report, or says the launch ended with the
   parent turn, instead of "it may never have started". The ids ride in the
