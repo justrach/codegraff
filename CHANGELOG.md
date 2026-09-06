@@ -19,9 +19,9 @@ current is part of cutting a release.
   width change instead of asserting on the first (possibly stale) repaint.
 - `#748`: an error-only SSE event is reported as that error, not retried
   as a truncated gateway body.
-- `#747`: `edit_file` writes and verifies the selected worktree (absolute
-  path from the session cwd), so a switch cannot report success on the
-  previous tree.
+- `#747`: `edit_file` / `write_file` / `read_file` share one absolute path
+  from the posix session cwd (not a stale Io cwd or a disagreeing display
+  cwd), so a worktree switch cannot report success on the previous tree.
 - Prompt-cache affinity is the git root, or one scratch seed when there is
   no `.git`. Eval sandboxes and worktrees can reuse a warm system+tools
   prefix instead of paying it on every leaf cwd. An offline test fails if

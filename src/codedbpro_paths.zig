@@ -68,20 +68,24 @@ pub fn callerError(text: []const u8) bool {
 }
 
 /// Absolute path for a model-supplied relative file, against the selected
-/// worktree. Prefer `agent_cwd`, then the session display cwd (updated by
-/// workspace switch), then the posix process cwd. Never `Io.Dir.cwd()`:
+/// worktree. Prefer `agent_cwd`, then the posix process cwd (`/workspace use`
+/// chdirs this), then the session display cwd. Never `Io.Dir.cwd()`:
 /// Threaded Io can stay on the previous tree after `chdir` (#721 / #747).
+/// Prefer posix over `g_cwd_display`: display can be a stale `realPath` of
+/// Io cwd while the child was launched with a different posix cwd (tier-2
+/// `cwd=` vs inherited `PWD`).
 pub fn sessionAbs(gpa: Allocator, io: Io, agent_cwd: ?[]const u8, path: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(path)) return gpa.dupe(u8, path);
     if (agent_cwd) |worktree| return std.fs.path.resolve(gpa, &.{ worktree, path });
-    const display = @import("main.zig").g_cwd_display;
-    if (display.len > 0 and std.fs.path.isAbsolute(display))
-        return std.fs.path.resolve(gpa, &.{ display, path });
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    if (std.process.currentPath(io, &buf)) |n|
-        return std.fs.path.resolve(gpa, &.{ buf[0..n], path })
-    else |_|
+    if (std.process.currentPath(io, &buf)) |n| {
+        return std.fs.path.resolve(gpa, &.{ buf[0..n], path });
+    } else |_| {
+        const display = @import("main.zig").g_cwd_display;
+        if (display.len > 0 and std.fs.path.isAbsolute(display))
+            return std.fs.path.resolve(gpa, &.{ display, path });
         return std.fs.path.resolve(gpa, &.{path});
+    }
 }
 
 /// CodeDB Pro's resident daemon has one launch cwd that can outlive and differ
