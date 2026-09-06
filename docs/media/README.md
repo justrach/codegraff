@@ -16,7 +16,9 @@ apps/native/node_modules/.bin/electron docs/media/render-readme.cjs
 ```
 
 The renderer uses a temporary Electron profile, blocks network requests, waits
-for fonts and images, checks viewport bounds, and writes JPEGs into `docs/images`.
+for fonts and images, checks viewport bounds, and writes PNGs into `docs/images`.
+The outer corners have a 48-pixel radius and transparent pixels, so they blend
+into either GitHub theme. Export checks verify all four corners are transparent.
 Exports have a fixed width of 1920 pixels on both standard and Retina displays.
 
 `readme-plates.cjs` owns the copy, artwork selection, and source screenshot paths;

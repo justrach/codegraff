@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/readme-workshop.jpg" alt="The CodeGraff workshop: a crew of rats in coral coats coordinating work. Small crew. Real work." width="960">
+  <img src="docs/images/readme-workshop.png" alt="The CodeGraff workshop: a crew of rats in coral coats coordinating work. Small crew. Real work." width="960">
 </p>
 
 <h1 align="center">graff</h1>
@@ -46,14 +46,14 @@ macOS window controls and SwiftUI Activity and computer-use panels. Coding
 continues in `graff acp`; the window is a client of the same harness used by
 the terminal.
 
-[![CodeGraff's dark desktop, framed in cobalt with workshop artwork](docs/images/desktop-chat-studio.jpg)](docs/images/desktop-chat-dark.png)
+[![CodeGraff's dark desktop, framed in cobalt with workshop artwork](docs/images/desktop-chat-studio.png)](docs/images/desktop-chat-dark.png)
 
 Chat tabs, searchable model selection, effort and fast controls, collapsed tool
 activity, and explicit working/finished/interrupted states keep the conversation
 readable. Appearance includes White, Black, Website and the official CodeGraff
 palette. Mention `$gui-theme` or `@gui-theme` in the GUI to create a custom theme.
 
-[![CodeGraff Agents panel with local peers and a handoff request, on warm paper with the workshop crew](docs/images/desktop-agents-studio.jpg)](docs/images/desktop-agents-codegraff.png)
+[![CodeGraff Agents panel with local peers and a handoff request, on warm paper with the workshop crew](docs/images/desktop-agents-studio.png)](docs/images/desktop-agents-codegraff.png)
 
 **Agents** brings Graff-to-Graff coordination into the GUI. See sessions in the
 current workspace or across the laptop, their published tasks and activity,
@@ -63,7 +63,7 @@ history does not consume their inbox. The optional profiler records anonymous
 per-agent resource measurements, with identities and message contents excluded
 from feedback exports. See the [Agents guide](docs/agents-panel.md).
 
-[![CodeGraff's resizable Changes panel beside the conversation, framed in coral with a rat reviewing a proof](docs/images/desktop-review-studio.jpg)](docs/images/desktop-review-codegraff.png)
+[![CodeGraff's resizable Changes panel beside the conversation, framed in coral with a rat reviewing a proof](docs/images/desktop-review-studio.png)](docs/images/desktop-review-codegraff.png)
 
 **Changes** shows local staged, unstaged and untracked edits, diffs, worktrees
 and recent commits. Drag its divider to give the review more room. The browser
@@ -148,7 +148,7 @@ stays on (ADR 0031). We do not steal grok-build's heap or a 4-tool catalog
 (ADR 0024).
 
 <p align="center">
-  <img src="docs/images/readme-context-workshop.jpg" alt="A workshop rat examines a proof: stable context, small programs, and focused results keep useful context in the harness" width="960">
+  <img src="docs/images/readme-context-workshop.png" alt="A workshop rat examines a proof: stable context, small programs, and focused results keep useful context in the harness" width="960">
 </p>
 
 ## Install

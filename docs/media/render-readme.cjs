@@ -11,7 +11,7 @@ app.commandLine.appendSwitch('force-device-scale-factor', '1');
 let win;
 const output = path.resolve(__dirname, '../images');
 app.whenReady().then(async () => {
-  win = new BrowserWindow({ show:false, width:1920, height:1530, useContentSize:true, webPreferences:{ sandbox:true, contextIsolation:true, nodeIntegration:false, backgroundThrottling:false } });
+  win = new BrowserWindow({ show:false, frame:false, transparent:true, backgroundColor:'#00000000', width:1920, height:1530, useContentSize:true, webPreferences:{ sandbox:true, contextIsolation:true, nodeIntegration:false, backgroundThrottling:false } });
   win.webContents.session.webRequest.onBeforeRequest((details, callback) => callback({cancel: /^https?:/.test(details.url)}));
   for (const plate of plates) {
     win.setContentSize(plate.width, plate.height);
@@ -23,8 +23,15 @@ app.whenReady().then(async () => {
     const capture = await win.webContents.capturePage();
     // Normalize Retina captures so export size is independent of the display.
     const frame = capture.resize({width:plate.width,height:plate.height,quality:'best'});
-    const file = path.join(output, `${plate.name}.jpg`);
-    fs.writeFileSync(file, frame.toJPEG(94));
+    // Keep corners transparent on both light and dark README backgrounds.
+    const pixels = frame.toBitmap();
+    const alpha = (x, y) => pixels[(y * plate.width + x) * 4 + 3];
+    for (const x of [0, plate.width - 1]) {
+      for (const y of [0, plate.height - 1]) assert.equal(alpha(x, y), 0);
+    }
+    assert.equal(alpha(plate.width / 2, plate.height / 2), 255);
+    const file = path.join(output, `${plate.name}.png`);
+    fs.writeFileSync(file, frame.toPNG());
     console.log(`${plate.name}: ${frame.getSize().width}×${frame.getSize().height}, ${Math.round(fs.statSync(file).size/1024)} KiB`);
   }
 }).then(()=>finish(0)).catch(error=>{console.error(error);finish(1)});

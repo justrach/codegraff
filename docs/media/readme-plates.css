@@ -1,7 +1,7 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; }
 body { font-family: Body, -apple-system, sans-serif; color: #1b1714; }
-main { width: 1920px; height: 1530px; position: relative; overflow: hidden; background: #f6eedf; }
+main { width: 1920px; height: 1530px; position: relative; overflow: hidden; border-radius: 48px; background: #f6eedf; }
 .grain { position: absolute; inset: 0; opacity: .17; pointer-events: none; mix-blend-mode: multiply; z-index: 1; }
 .brand { position: absolute; left: 84px; top: 56px; right: 84px; display: flex; align-items: center; gap: 13px; font-size: 28px; letter-spacing: -.5px; z-index: 3; }
 .brand svg { width: 34px; height: 34px; }
