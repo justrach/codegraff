@@ -1,19 +1,5 @@
 <p align="center">
-  <img src="docs/images/readme-workshop.png" alt="CodeGraff workshop rats in coral coats" width="280" height="280">
-</p>
-
-<h1 align="center">graff</h1>
-
-<p align="center">
-  <strong>An AI that actually does the work. Not just talks about it.</strong>
-</p>
-
-<p align="center">
-  Install it on your Mac, Linux, or Windows machine, sign in with the AI
-  subscription you <em>already have</em>, and hand it real tasks. graff writes
-  and runs code, automates the boring stuff, digs through your files, researches
-  the web, and runs its own experiments until the job is done.<br/>
-  <strong>You don't chat with it. You give it work.</strong>
+  <img src="docs/images/readme-rats.png" alt="CodeGraff workshop rats in coral coats" width="280" height="280">
 </p>
 
 <p align="center">
