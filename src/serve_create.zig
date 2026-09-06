@@ -21,7 +21,6 @@ const ServeState = serve.ServeState;
 const ServeSession = serve.ServeSession;
 
 pub fn create(st: *ServeState, req: *std.http.Server.Request) !void {
-    const io = st.io;
     const gpa = st.gpa;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -31,6 +30,20 @@ pub fn create(st: *ServeState, req: *std.http.Server.Request) !void {
     const br = req.readerExpectContinue(&bbuf) catch return error.WriteFailed;
     const body = br.allocRemaining(arena, .limited(64 * 1024)) catch
         return serve.respondJson(st, req, .payload_too_large, "{\"error\":\"body too large\"}");
+    const made = try createFromBody(st, arena, body);
+    return serve.respondJson(st, req, made.status, made.body);
+}
+
+/// What creating a session came to, as the HTTP bridge reports it.
+pub const Created = struct { status: std.http.Status, body: []const u8 };
+
+/// The transport-free half of `POST /v1/sessions`: parse the options object,
+/// spawn (or attach to) the durable session, and describe the outcome as an
+/// HTTP status + JSON body. Shared by the HTTP bridge and remote control,
+/// which delivers the same object from the relay instead of a socket.
+pub fn createFromBody(st: *ServeState, arena: Allocator, body: []const u8) !Created {
+    const io = st.io;
+    const gpa = st.gpa;
 
     var model = st.cfg.model;
     var subagent_provider = st.cfg.subagent_provider;
@@ -46,11 +59,11 @@ pub fn create(st: *ServeState, req: *std.http.Server.Request) !void {
     var name = try newSessionName(io, arena);
     if (std.mem.trim(u8, body, " \t\r\n").len > 0) {
         const v = std.json.parseFromSliceLeaky(Value, arena, body, .{ .allocate = .alloc_always }) catch
-            return serve.respondJson(st, req, .bad_request, "{\"error\":\"body must be a JSON object\"}");
-        if (v != .object) return serve.respondJson(st, req, .bad_request, "{\"error\":\"body must be a JSON object\"}");
+            return .{ .status = .bad_request, .body = "{\"error\":\"body must be a JSON object\"}" };
+        if (v != .object) return .{ .status = .bad_request, .body = "{\"error\":\"body must be a JSON object\"}" };
         if (v.object.get("session") orelse v.object.get("session_id") orelse v.object.get("resume")) |n| if (n == .string) {
             if (!events.validName(n.string))
-                return serve.respondJson(st, req, .bad_request, "{\"error\":\"session must be 1-64 chars of [A-Za-z0-9._-] and must not start with . or -\"}");
+                return .{ .status = .bad_request, .body = "{\"error\":\"session must be 1-64 chars of [A-Za-z0-9._-] and must not start with . or -\"}" };
             name = n.string;
         };
         if (v.object.get("model")) |m| if (m == .string) {
@@ -95,7 +108,7 @@ pub fn create(st: *ServeState, req: *std.http.Server.Request) !void {
     const live = st.find(name);
     const live_seq = if (live) |s| s.last_seq else 0;
     st.mutex.unlock(io);
-    if (live != null) return serve.respondJson(st, req, .ok, try createdBody(arena, name, true, live_seq));
+    if (live != null) return .{ .status = .ok, .body = try createdBody(arena, name, true, live_seq) };
 
     const log_path = try events.logPath(arena, name);
     const resumed = sessionOnDisk(io, arena, name);
@@ -122,7 +135,7 @@ pub fn create(st: *ServeState, req: *std.http.Server.Request) !void {
         .stdin = .pipe,
         .stdout = .pipe,
         .stderr = .inherit, // tool progress → the server's terminal
-    }) catch return serve.respondJson(st, req, .internal_server_error, "{\"error\":\"failed to spawn harness child\"}");
+    }) catch return .{ .status = .internal_server_error, .body = "{\"error\":\"failed to spawn harness child\"}" };
 
     const sess = newSession(st, &child, name, log_path, last_seq) catch {
         child.kill(io);
@@ -143,7 +156,7 @@ pub fn create(st: *ServeState, req: *std.http.Server.Request) !void {
     serve.serveLog(io, "serve: session {s} {s} (model={s} yolo={} last_seq={d})", .{
         sess.name, if (resumed) "resumed" else "created", model orelse "default", yolo, last_seq,
     });
-    return serve.respondJson(st, req, .created, try createdBody(arena, sess.name, resumed, last_seq));
+    return .{ .status = .created, .body = try createdBody(arena, sess.name, resumed, last_seq) };
 }
 
 fn createdBody(arena: Allocator, name: []const u8, resumed: bool, last_seq: u64) ![]const u8 {
