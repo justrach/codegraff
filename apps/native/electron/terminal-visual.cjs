@@ -12,8 +12,10 @@ async function runTerminalVisual({win,output}) {
   await wait(`Array.from(document.querySelectorAll('.xterm-rows > div')).some(row=>row.textContent.trim()==='TERMINAL_GUI_READY')`);
   const before=await js(`document.querySelector('[data-workspace-terminal]').getBoundingClientRect().height`);
   await js(`document.querySelector('[aria-label="Resize terminal"]').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',bubbles:true}))`);
+  await wait(`document.querySelector('[data-workspace-terminal]').getBoundingClientRect().height>${before}`);
   assert.ok(await js(`document.querySelector('[data-workspace-terminal]').getBoundingClientRect().height`)>before);
-  await toggle();assert.equal(await js(`document.querySelector('[data-workspace-terminal]').hidden`),true);
+  await toggle();await wait(`document.querySelector('[data-workspace-terminal]').hidden`);
+  assert.equal(await js(`document.querySelector('[data-workspace-terminal]').hidden`),true);
   await toggle();await wait(`!document.querySelector('[data-workspace-terminal]').hidden`);
   assert.ok(await js(`Array.from(document.querySelectorAll('.xterm-rows > div')).some(row=>row.textContent.trim()==='TERMINAL_GUI_READY')`));
   await js(`new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
