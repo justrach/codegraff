@@ -12,6 +12,16 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#722`: remote control. `graff remote-control` is `graff serve` with no
+  listener: it dials out to your Codegraff account and takes commands from
+  the account's relay, so nothing on the machine is ever bound. From anywhere
+  the same `graff login` is valid, `graff remote` lists the machines and
+  their sessions; `graff remote new` / `send` / `answer` / `tail` / `cancel`
+  / `close` drive them, with the same NDJSON events a serve client gets. The
+  machine keeps the complete tape; the relay keeps a recent window and a
+  viewer that falls behind gets a replay from the machine. Gated on the
+  `sessions` key scope, so a plain `api` key can never reach a machine.
+  `docs/remote-control.md`.
 - Prompt-cache affinity is the git root, or one scratch seed when there is
   no `.git`. Eval sandboxes and worktrees can reuse a warm system+tools
   prefix instead of paying it on every leaf cwd. An offline test fails if

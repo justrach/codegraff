@@ -322,6 +322,9 @@ pub const usage_text =
     \\  graff --schema                   print the machine-readable interface (SDK codegen)
     \\  graff serve                      HTTP/NDJSON bridge over the --json protocol
     \\                                   (--host/--port/--token; sessions are --json children)
+    \\  graff remote-control [--name n]  serve with no listener: dial out to your Codegraff account so
+    \\                                   `graff remote` anywhere can drive sessions on this machine
+    \\  graff remote [new|send|tail|…]   list and drive the sessions of machines running remote-control
     \\  graff acp                        Agent Client Protocol agent on stdio (Zed and other ACP editors)
     \\  graff update [--force|--check]   update graff to the latest GitHub release
     \\  graff title <prompt>            print the AI tab-title for a prompt (test title styles)

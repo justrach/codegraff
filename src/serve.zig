@@ -29,7 +29,7 @@ const emitSchema = schema.emitSchema;
 const harness_version = root.harness_version;
 const schema_version = schema.schema_version;
 
-const ServeConfig = struct {
+pub const ServeConfig = struct {
     host: []const u8,
     port: u16,
     token: ?[]const u8,
@@ -495,7 +495,7 @@ fn serveCancel(st: *ServeState, req: *std.http.Server.Request, s: *ServeSession,
     return respondJson(st, req, .ok, "{\"ok\":true,\"type\":\"cancel\"}");
 }
 
-fn writeChildLine(io: Io, s: *ServeSession, line: []const u8) !void {
+pub fn writeChildLine(io: Io, s: *ServeSession, line: []const u8) !void {
     s.stdin_mu.lockUncancelable(io);
     defer s.stdin_mu.unlock(io);
     var buf: [1024]u8 = undefined;
@@ -505,7 +505,7 @@ fn writeChildLine(io: Io, s: *ServeSession, line: []const u8) !void {
     try writer.interface.flush();
 }
 
-fn serveUpdateAnswerState(io: Io, s: *ServeSession, line: []const u8) void {
+pub fn serveUpdateAnswerState(io: Io, s: *ServeSession, line: []const u8) void {
     const ty = events.stringField(line, "type") orelse return;
     if (!std.mem.eql(u8, ty, "ask_user")) return;
     const call_id = events.stringField(line, "call_id") orelse "";
@@ -517,7 +517,7 @@ fn serveUpdateAnswerState(io: Io, s: *ServeSession, line: []const u8) void {
     s.awaiting_answer = true;
 }
 
-fn serveClearAnswerState(io: Io, s: *ServeSession) void {
+pub fn serveClearAnswerState(io: Io, s: *ServeSession) void {
     s.answer_mu.lockUncancelable(io);
     defer s.answer_mu.unlock(io);
     s.awaiting_answer = false;
@@ -525,7 +525,7 @@ fn serveClearAnswerState(io: Io, s: *ServeSession) void {
 }
 
 /// Remove a dead session and free it (child already gone or being killed).
-fn serveDrop(st: *ServeState, sess: *ServeSession) void {
+pub fn serveDrop(st: *ServeState, sess: *ServeSession) void {
     const io = st.io;
     st.mutex.lockUncancelable(io);
     for (st.sessions.items, 0..) |p, i| {
@@ -542,7 +542,7 @@ fn serveDrop(st: *ServeState, sess: *ServeSession) void {
 /// Background reaper for a gracefully-closed session: the child exits on
 /// stdin EOF (after finishing any in-flight turn) and flushes telemetry and
 /// trajectory records on the way out — kill would race (and lose) that flush.
-fn serveReap(st: *ServeState, sess: *ServeSession) void {
+pub fn serveReap(st: *ServeState, sess: *ServeSession) void {
     _ = sess.child.wait(st.io) catch {};
     freeSession(st, sess);
 }
