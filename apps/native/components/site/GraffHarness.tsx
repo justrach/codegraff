@@ -3,6 +3,8 @@
 import { createTurnPainter } from "@/lib/turn-painter";
 import { useQuietSettings } from "./useQuietSettings";
 import reviewStyles from "./ChangesPane.module.css";
+import AgentsPane from "./AgentsPane";
+import { newPageToken, newSessionName, type Chat, type Msg } from "./harness-types";
 import ChangesPane from "./ChangesPane";
 import { useBrowserVisibility } from "./useBrowserVisibility";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
@@ -57,29 +59,6 @@ const MAX_COLUMNS = 4;
 /** Rows the sidebar previews; the library pages the rest. */
 const SIDEBAR_PAGE = 12;
 
-type Msg =
-  | { id: number; role: "user"; text: string }
-  | { id: number; role: "assistant"; turn: AssistantTurn };
-
-/** `model` is what this tab's own agent was spawned with; the harness-level
- * model is only the default a new tab inherits. `cwd` is the workspace the
- * tab's agent runs in — fixed at spawn, like the model. */
-type Chat = { id: number; title: string | null; messages: Msg[]; model?: string; session?: string; cwd?: string;
-  /** The model named this tab from its first prompt: the session poller,
-   * which reads graff's own saved title, must leave it alone. */
-  titledByModel?: boolean };
-
-function newPageToken(): string {
-  return Math.random().toString(36).slice(2, 10);
-}
-
-/** A fresh tab's graff session name. Not `session-…`: that prefix is what the
- * REPL's auto-title renames, and a tab needs a name that stays put so the
- * sidebar row and the running agent keep pointing at the same file. */
-function newSessionName(): string {
-  return `native-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-}
-
 export default function GraffHarness() {
   const [chats, setChats] = useState<Chat[]>([{ id: 1, title: null, messages: [] }]);
   const [activeId, setActiveId] = useState(1);
@@ -100,6 +79,7 @@ export default function GraffHarness() {
   // resolution decides, and `current` from that call re-points the picker.
   const [models, setModels] = useState<PromptModel[]>([{ key: "", name: "Loading graff models…" }]);
   const [model, setModelKey] = useState<string | null>(process.env.NEXT_PUBLIC_GRAFF_MODEL || null);
+  const [agentsOpen, setAgentsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [fileRequest, setFileRequest] = useState<{ path: string; n: number; changes?: boolean } | null>(null);
   const fileReqRef = useRef(0);
@@ -333,6 +313,7 @@ export default function GraffHarness() {
   }, []);
 
   const openChanges = useCallback(() => {
+    setAgentsOpen(false);
     setBrowserOpen(false); setConversationsOpen(false);
     setFilesOpen(true);
     setFileRequest({ path: "", n: (fileReqRef.current += 1), changes: true });
@@ -1010,6 +991,7 @@ export default function GraffHarness() {
             <span className="rounded-full bg-accent px-1.5 text-[10px] font-semibold text-white tabular-nums">{pinCount}</span>
           )}
         </button>
+        <button aria-label="Show agents" aria-pressed={agentsOpen} onClick={() => { setAgentsOpen(!agentsOpen); setFilesOpen(false); setBrowserOpen(false); setConversationsOpen(false); }} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="9" cy="7" r="3"/><path d="M3 20v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2"/></svg><span data-toolbar-label>Agents</span></button>
         <ThemeToggle />
       </div>
     </div>
@@ -1170,6 +1152,7 @@ export default function GraffHarness() {
             </>
           )}
 
+          {agentsOpen && !filesOpen && !browserOpen && !conversationsOpen && <AgentsPane key={chatCwd} root={chatCwd} onClose={() => setAgentsOpen(false)} />}
           {filesOpen && !conversationsOpen && (fileRequest?.changes ? <ChangesPane root={chatThread.cwd} onClose={() => setFilesOpen(false)} /> : <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />)}
 
           {browserOpen && !conversationsOpen && (

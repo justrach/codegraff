@@ -13,11 +13,11 @@ import {
   IconMagnifyingGlass,
   IconChat,
   IconPlusMedium,
-  IconPopsicle2,
   IconSettingsGear1,
   IconSidebarLeftArrow,
   IconSidebarLeftOpen,
 } from "@/lib/icons";
+import CodeGraffMark from "./CodeGraffMark";
 import GlideMenu from "@/components/primitives/GlideMenu";
 import { monogram } from "@/lib/workspaces";
 
@@ -342,7 +342,7 @@ export default function SidebarNav({
             className="sidebar-workspace-control absolute left-2 top-1 flex h-8 w-[188px] items-center rounded-[8px] px-2 text-left transition-[background-color,transform] duration-100 hover:bg-hover-2 active:scale-[0.99]"
           >
             <span className="sidebar-logo flex size-5 shrink-0 items-center justify-center text-ink">
-              <IconPopsicle2 size={18} />
+              <CodeGraffMark size={20} />
             </span>
             <span className="sidebar-copy ml-1.5 min-w-0 flex-1 truncate text-[14px] font-medium text-ink-2" title={workspace?.path}>
               {workspace?.name ?? WORKSPACE.name}

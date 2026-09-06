@@ -2,9 +2,8 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import styles from "./ChangesPane.module.css";
 
-const storageKey = "graff.changes.width";
-const defaultWidth = 650;
-export default function ResizableReviewPane({ children }: { children: ReactNode }) {
+export default function ResizableReviewPane({ children, label = "changes", defaultWidth = 650 }: { children: ReactNode; label?: string; defaultWidth?: number }) {
+  const storageKey = `graff.${label}.width`;
   const frame = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; width: number } | null>(null);
   const [preferred, setPreferred] = useState(defaultWidth);
@@ -35,7 +34,7 @@ export default function ResizableReviewPane({ children }: { children: ReactNode 
     return () => { document.body.style.cursor = cursor; document.body.style.userSelect = userSelect; };
   }, [dragging]);
   return <div ref={frame} className="relative flex min-h-0 min-w-0 shrink-0" style={{ width }}>
-    <div role="separator" aria-label="Resize changes panel" aria-orientation="vertical" tabIndex={0}
+    <div role="separator" aria-label={`Resize ${label} panel`} aria-orientation="vertical" tabIndex={0}
       aria-valuemin={Math.round(minimum)} aria-valuemax={Math.round(maximum)} aria-valuenow={Math.round(width)}
       title="Drag to resize · Double-click to reset" className={styles.resize} data-dragging={dragging || undefined}
       onPointerDown={event => {

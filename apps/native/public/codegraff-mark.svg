@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <title>CodeGraff</title>
+  <g id="mark">
+    <!-- An open ink circle around code brackets, simplified for small sizes. -->
+    <path fill="currentColor" d="M27.2 8.5C23.9 3.4 17.4 1.9 11.9 4.1 5.8 6.5 2.9 13.3 4.7 19.5 6.5 25.5 12.9 29.1 19 27.6c4.2-1 7.2-3.7 8.7-7.3-1 5.5-5.2 9.8-10.9 10.2C9.1 31.2 2.1 25.6 1.6 18 1 10.1 6.1 3.1 13.7 1.8c5.7-1 11.3 1.6 13.5 6.7Z"/>
+    <path stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m12 12-4 4 4 4m9-8 4 4-4 4m-3-10-3 12"/>
+    <path fill="currentColor" d="M28 16h2v2h-2zm1-5h2v2h-2zm-3-1h1.5v1.5H26z"/>
+  </g>
+</svg>

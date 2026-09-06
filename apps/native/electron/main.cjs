@@ -11,6 +11,7 @@ const { desktopConfig } = require('./desktop-config.cjs');
 const { browserAction } = require('./browser-actions.cjs');
 const { Profiler } = require('./profiler.cjs');
 const { rendererSample } = require('./renderer-profile.cjs');
+const { observeAgents, agentSampler } = require('./agent-observer.cjs');
 const { chromiumSample } = require('./hardware-profile.cjs');
 const fs = require('node:fs/promises');
 
@@ -61,9 +62,11 @@ app.whenReady().then(async () => {
   });
   computer = new ComputerUse(resources, win);
   const sampleTree = intervalSampler(process.pid, () => browser.liveCount);
+  const sampleAgents = agentSampler();
   profiler = new Profiler(async () => {
-    const [tree, renderer] = await Promise.all([sampleTree(), rendererSample(win.webContents).catch(() => ({}))]);
-    return { ...tree, ...renderer, ...chromiumSample(app.getAppMetrics()) };
+    const [tree, renderer, agents] = await Promise.all([sampleTree(), rendererSample(win.webContents).catch(() => ({})),
+      observeAgents(path.join(resources, "graff"), root, { scope: "device", history: "off" }).then(data => sampleAgents(data.agents)).catch(() => [])]);
+    return { ...tree, ...renderer, agents, ...chromiumSample(app.getAppMetrics()) };
   }, enabled => {
     if (!enabled) void rendererSample(win.webContents, false).catch(() => {});
     if (win.isDestroyed()) return;

@@ -33,6 +33,12 @@ curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/instal
 
 <p align="center"><sub>Prefer a window? Grab the <a href="#the-desktop-app">desktop app</a>. Then run <code>graff</code> and tell it what you need.</sub></p>
 
+**Evaluated on FrontierHarness tasks.** Graff includes a reproducible
+[FrontierHarness evaluation runner](graff-evals/frontier-harness/README.md),
+with recorded outcomes and explicit protocol differences. See
+[how we measure it](#how-we-measure-it) for the public task suite, grading,
+and the limits of comparisons with the published board.
+
 ## The desktop app
 
 The current desktop preview uses Electron and embedded Chromium, with native
@@ -46,6 +52,16 @@ Chat tabs, searchable model selection, effort and fast controls, collapsed tool
 activity, and explicit working/finished/interrupted states keep the conversation
 readable. Appearance includes White, Black, Website and the official CodeGraff
 palette. Mention `$gui-theme` or `@gui-theme` in the GUI to create a custom theme.
+
+![CodeGraff Agents panel with local peers and a handoff request](docs/images/desktop-agents-codegraff.png)
+
+**Agents** brings Graff-to-Graff coordination into the GUI. See sessions in the
+current workspace or across the laptop, their published tasks and activity,
+and recent messages. Select a peer in the panel's composer to send a message
+or handoff request. Delivery is queued to the recipient's next step; browsing
+history does not consume their inbox. The optional profiler records anonymous
+per-agent resource measurements, with identities and message contents excluded
+from feedback exports. See the [Agents guide](docs/agents-panel.md).
 
 ![CodeGraff palette with a resizable Changes panel beside the conversation](docs/images/desktop-review-codegraff.png)
 
@@ -271,7 +287,7 @@ deterministic task set. What it does not prove: anything about the live repo —
 the `inhouse` fixtures are distilled shapes, not the codebase.
 
 **Layer 2 — `frontier-harness/`.** It runs the same 30 tasks as
-[runta-dev/frontier-harness-eval](https://github.com/runta-dev/frontier-harness-eval)
+[FrontierHarness Eval](https://github.com/frontier-harness-eval/eval)
 — 21 from Terminal-Bench 2.1 and 9 from DeepSWE — in Docker, under a protocol
 that is deliberately not the same bench seat (see "What these runs are not"
 below, and `PROTOCOL.md`). The board side is a pinned snapshot of the published

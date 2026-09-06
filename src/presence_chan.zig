@@ -36,6 +36,7 @@ pub const Message = struct {
     ts_ms: i64 = 0,
     text: []const u8 = "",
     from_user: bool = false,
+    kind: []const u8 = "message",
 };
 
 /// The channel file for a worktree identity: content-hash, so it is stable

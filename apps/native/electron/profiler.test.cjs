@@ -66,3 +66,12 @@ test('renderer observers stay off until recording and disconnect on stop', () =>
     collectRendererMetrics(false); assert.ok(observers.every(observer => observer.disconnected));
   } finally { collectRendererMetrics(false); globalThis.PerformanceObserver = originalObserver; globalThis.document = originalDocument; }
 });
+test('agent resources use recording-local slots and exclude messages and identities', async () => {
+  let startId = 'secret-start';
+  const p = new Profiler(async () => ({ agents: [{ pid: 92741, startId, session: 'SECRET', title: 'PRIVATE', workspace: '/Users/private', messages: ['PRIVATE'], resources: { rssMiB: 12, cpuPercent: null, text: 'SECRET' } }] }));
+  await p.start(); await p.capture(0);
+  startId = 'reused-pid'; await p.capture(0); p.stop();
+  assert.deepEqual(p.report().samples.map(s => s.agents[0]), [{ slot: 1, rssMiB: 12, cpuPercent: null }, { slot: 1, rssMiB: 12, cpuPercent: null }, { slot: 2, rssMiB: 12, cpuPercent: null }]);
+  assert.doesNotMatch(JSON.stringify(p.report()), /SECRET|PRIVATE|92741|secret-start|reused-pid|\/Users/);
+  await p.start(); p.stop(); assert.equal(p.report().samples[0].agents[0].slot, 1);
+});

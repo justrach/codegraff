@@ -86,6 +86,7 @@ record only when you need the evidence or the edge cases.
 | [0073](0073-acp-stream-and-shared-review.md) | One ACP stdout reader routes responses; shared review reads Git working trees without inferring edit authorship. |
 | [0074](0074-gui-skills-and-portable-themes.md) | Explicit desktop skills and validated themes live in the GUI; selected instructions travel over ACP. |
 | [0075](0075-acp-adapter-and-desktop-measurements.md) | ACP presentation decoding is separate from session lifecycle; desktop performance uses bounded workload measurements and default Chromium acceleration. |
+| [0076](0076-local-agent-panel.md) | Verified local peer discovery, non-consuming history, explicit queued DMs and anonymous profiler slots. |
 
 ## When to write one
 

@@ -239,14 +239,13 @@ const startup_timing = @import("startup_timing.zig"); // .shutdown_trace re-expo
 const session_start = @import("session_start.zig");
 const session_run = @import("session_run.zig");
 pub fn main(init: std.process.Init) !void {
+    if (init.environ_map.get("GRAFF_AGENT_OBSERVER") != null) return @import("acp_agents.zig").run(init);
     var boot = startup_timing.Tracker.init(startup_timing.shutdown_trace.arm(init.io, init.environ_map), init.environ_map.get("GRAFF_BOOT_DEBUG") != null); // #364: arm() passes io through, so the teardown below stamps phases without a line of its own
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
     // #122: raise the open-file soft limit to the OS hard cap (Darwin defaults
-    // to 256) so parallel tool/subagent/MCP fan-out in one turn doesn't blow up
-    // shell tools with ProcessFdQuotaExceeded. Best-effort, no-op where rlimits
-    // don't exist.
+    // to 256). Raising it avoids ProcessFdQuotaExceeded during parallel tools.
     std.process.raiseFileDescriptorLimit();
     // #124: a per-turn scratch arena for the root agent's transient parse garbage,
     // reset each request() so a long REPL/--json/serve session's RSS stays flat.
@@ -597,4 +596,5 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("goal_todo.zig");
     _ = @import("goal_pacing.zig");
     _ = @import("presence_record.zig");
+    _ = @import("acp_agents.zig");
 }

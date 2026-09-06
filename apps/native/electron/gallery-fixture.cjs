@@ -9,6 +9,10 @@ function installGalleryFixture() {
   window.fetch = async (input, options) => {
     const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
     if (!url.pathname.startsWith('/api/')) return original(input, options);
+    if (url.pathname === '/api/agents') return json({ agents: [
+      { session: 'navigation', startId: '1', pid: 1, title: 'Refine navigation', task: 'Improve focus order and keyboard shortcuts', workspace: root, status: 'working', resources: null },
+      { session: 'review', startId: '2', pid: 2, title: 'Review accessibility', task: 'Check the updated sidebar', workspace: root, status: 'waiting', resources: null }
+    ], messages: [{ from_session: 'navigation', to: 'review', text: 'The sidebar update is ready. Please check keyboard navigation.', kind: 'handoff', ts_ms: 1788652800000 }], delivery: 'Queued' });
     if (url.pathname === '/api/models') return json(catalog);
     if (url.pathname === '/api/sessions') return json({ cwd: root, sessions: [], total: 0, nextCursor: null });
     if (url.pathname === '/api/themes') return json({ themes: [], issues: [] });

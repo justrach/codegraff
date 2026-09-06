@@ -55,6 +55,7 @@ app.whenReady().then(async () => {
       results.push(`${theme}/${name}`);
     }
   }
+  await require('./agents-visual.cjs').runAgentVisuals({ win, origin, output });
   if (process.env.GRAFF_PERFORMANCE_TESTS) await require('./performance-scenarios.cjs').runPerformance({ win, origin, output });
   assert.deepEqual(apiRequests, [], 'Visual fixtures must not call the engine or model APIs');
   fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: results, apiRequests }, null, 2));

@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const assert = require('node:assert/strict');
 const path = require('node:path');
 const { app, BrowserWindow, ipcMain } = require('electron');
 const { Profiler } = require('./profiler.cjs');
@@ -64,7 +65,11 @@ async function runPerformance({ win: fixtureWindow, origin, output }) {
     await js(`document.querySelector('[aria-label="Review workspace changes"]').click()`);
     await wait(`document.querySelector('[aria-label="File diff"]')?.getAttribute('aria-busy')==='false'`);
     await capture('desktop-review-codegraff.png');
-    await js(`document.querySelector('[aria-label="Close changes"]').click(); window.galleryBenchmark=true`);
+    await js(`document.querySelector('[aria-label="Close changes"]').click(); document.querySelector('[aria-label="Show agents"]').click()`);
+    await wait(`document.querySelector('[aria-label="Agents panel"]')?.textContent.includes('Refine navigation')`);
+    assert.ok(await js(`!!document.querySelector('.sidebar-logo [data-codegraff-mark] use')`));
+    await capture('desktop-agents-codegraff.png');
+    await js(`document.querySelector('[aria-label="Close agents"]').click(); window.galleryBenchmark=true`);
     console.log('Performance: stream');
     profiler.mark('candidate');
     await send('Stream the demonstration transcript.');

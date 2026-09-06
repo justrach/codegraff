@@ -107,6 +107,7 @@ fn userMessage(arena: Allocator, root: *agent_mod.Agent, text: []const u8) !Valu
 /// Rows come back in election order (plan, then local, credits, api).
 fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request) anyerror!bool {
     const live: *LiveTurn = @ptrCast(@alignCast(ctx));
+    if (try @import("acp_agents.zig").handle(arena, live.root.io, live.root.home, w, req)) return true;
     if (try @import("acp_changes.zig").handle(arena, live.root.io, w, req)) return true;
     if (!std.mem.eql(u8, req.method, "graff/models")) return false;
     if (req.id == null) return true;

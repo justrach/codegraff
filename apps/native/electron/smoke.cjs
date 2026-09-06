@@ -86,6 +86,13 @@ async function run({ win, browser, automation, backend, metrics, activity, compu
     assert.match(review.result.status, /review.txt/);
     const diff = await win.webContents.executeJavaScript(`fetch('/api/acp',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat:'electron-smoke',method:'graff/changes',params:{action:'diff',path:'review.txt'}})}).then(r=>r.json())`);
     assert.match(diff.result.diff, /Shared review fixture/);
+    const agents = await win.webContents.executeJavaScript(`fetch('/api/agents',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({root:${JSON.stringify(cwd)},action:'list',scope:'workspace'})}).then(async r=>({status:r.status,body:await r.json()}))`);
+    assert.equal(agents.status, 200, JSON.stringify(agents.body));
+    assert.ok(Array.isArray(agents.body.agents));
+    assert.ok(agents.body.agents.length > 0, 'Observer sees the temporary ACP session');
+    const extension = await win.webContents.executeJavaScript(`fetch('/api/acp',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat:'electron-smoke',method:'graff/agents',params:{action:'list',history:'off'}})}).then(r=>r.json())`);
+    assert.ok(Array.isArray(extension.result.agents));
+    report.agents = 'packaged observer and live ACP expose peer discovery; no messages sent';
     report.review = 'real ACP shared status and untracked diff';
     report.settings = 'real ACP effort and fast commands updated harness state';
 
