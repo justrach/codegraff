@@ -22,6 +22,7 @@ SPEC.loader.exec_module(tuiguard)
 
 
 class DeadlineTests(unittest.TestCase):
+    @mock.patch.dict(os.environ, {"GRAFF_TUIGUARD_PROBE_TIMEOUT": ""})
     def test_probe_timeout_uses_long_list_and_env(self) -> None:
         self.assertEqual(tuiguard.probe_timeout("test-tui-click.py"), 90.0)
         self.assertEqual(tuiguard.probe_timeout("tui-pty-guard.py"), 60.0)
