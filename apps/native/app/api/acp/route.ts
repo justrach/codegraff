@@ -174,7 +174,7 @@ async function bootstrap(chat: string, opts: BootstrapOpts): Promise<Slot> {
   const live = slots.get(chat);
   const same =
     live !== undefined &&
-    live.sessionId !== null &&
+    live.sessionId !== null && live.transport.usable &&
     (!opts.model || live.model === opts.model) &&
     (!opts.resume || live.resume === opts.resume) &&
     (!opts.cwd || live.cwd === opts.cwd) &&

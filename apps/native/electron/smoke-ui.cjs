@@ -12,6 +12,12 @@ async function smokeUI({ win, browser, backend }) {
     await js(`document.querySelector(${JSON.stringify(selector)}).click()`); await sleep(100);
   };
   await wait(`!!document.querySelector('[aria-label="Appearance"]')`);
+  const fileMenu = require('electron').Menu.getApplicationMenu().items.find(item => item.label === 'File').submenu;
+  const beforeTabs = await js(`document.querySelectorAll('[aria-label="Close tab"]').length`);
+  fileMenu.items.find(item => item.accelerator === 'CmdOrCtrl+N').click();
+  await wait(`document.querySelectorAll('[aria-label="Close tab"]').length===${beforeTabs + 1}`);
+  fileMenu.items.find(item => item.accelerator === 'CmdOrCtrl+W').click();
+  await wait(`document.querySelectorAll('[aria-label="Close tab"]').length===${beforeTabs}`);
   await click('[aria-label="Appearance"]');
   await wait(`!!document.querySelector('[role="dialog"][aria-label="Appearance"]')`);
   for (const [name, expected] of [['White', 'light'], ['Black', 'dark'], ['Website', 'website'], ['CodeGraff', 'codegraff']]) {

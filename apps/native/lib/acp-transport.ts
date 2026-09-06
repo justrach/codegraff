@@ -16,14 +16,16 @@ export class AcpTransport {
   constructor(private child: Child, private notification: (message: Message) => void = () => {}) {
     child.stdout.on("data", chunk => this.feed(this.decoder.write(chunk)));
     child.once("error", error => this.fail(error));
-    child.once("exit", (code, signal) => this.fail(new Error(`graff acp exited (${code ?? signal})`)));
+    // stdout may still deliver the final reply after exit, but never after close.
+    child.once("close", (code, signal) => this.fail(new Error(`graff acp exited (${code ?? signal})`)));
     child.stdin.on("error", error => this.fail(error));
   }
   private feed(text: string) {
+    if (this.failure) return;
     this.buffer += text;
-    if (this.buffer.length > 8 * 1024 * 1024) { this.fail(new Error("ACP line exceeds limit")); return; }
     let newline;
     while ((newline = this.buffer.indexOf("\n")) >= 0) {
+      if (newline > 8 * 1024 * 1024) { this.fail(new Error("ACP line exceeds limit")); return; }
       const line = this.buffer.slice(0, newline); this.buffer = this.buffer.slice(newline + 1);
       let message: Message;
       try { message = JSON.parse(line); } catch { continue; }
@@ -38,12 +40,16 @@ export class AcpTransport {
         else pending.resolve(message.result);
       }
     }
+    if (this.buffer.length > 8 * 1024 * 1024) this.fail(new Error("ACP line exceeds limit"));
   }
   private fail(error: Error) {
+    if (this.failure) return;
     this.failure = error;
+    this.buffer = "";
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pending.clear(); this.listeners.clear();
   }
+  get usable(): boolean { return this.failure === null; }
   notify(method: string, params?: unknown) {
     if (this.failure) throw this.failure;
     this.child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");

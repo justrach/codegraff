@@ -87,6 +87,7 @@ record only when you need the evidence or the edge cases.
 | [0074](0074-gui-skills-and-portable-themes.md) | Explicit desktop skills and validated themes live in the GUI; selected instructions travel over ACP. |
 | [0075](0075-acp-adapter-and-desktop-measurements.md) | ACP presentation decoding is separate from session lifecycle; desktop performance uses bounded workload measurements and default Chromium acceleration. |
 | [0076](0076-local-agent-panel.md) | Verified local peer discovery, non-consuming history, explicit queued DMs and anonymous profiler slots. |
+| [0077](0077-desktop-command-parity-and-bounded-disclosure.md) | ACP shares the complete REPL catalog; desktop menus, tool disclosure and initial history rendering stay bounded. |
 
 ## When to write one
 

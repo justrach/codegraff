@@ -21,5 +21,28 @@ test("catalog replies cannot steal assistant notifications or close the prompt s
 });
 test("a child exit rejects pending requests instead of leaving a blank conversation", async () => {
   const { child, transport } = fixture(); const pending = transport.request("session/prompt", {}, 1000);
-  child.emit("exit", 1, null); await assert.rejects(pending, /exited/);
+  child.emit("close", 1, null); await assert.rejects(pending, /exited/);
+});
+
+test("an exit before stdout drains does not lose the terminal reply", async () => {
+  const { child, transport } = fixture(); const pending = transport.request("session/prompt", {}, 1000);
+  child.emit("exit", 0, null);
+  child.stdout.write(JSON.stringify({ id: 1, result: { stopReason: "end_turn" } }) + "\n");
+  child.emit("close", 0, null);
+  assert.deepEqual(await pending, { stopReason: "end_turn" });
+});
+test("a large batch of individually valid lines is not an oversized line", async () => {
+  const { child, transport } = fixture(); let count = 0;
+  const pending = transport.request("session/prompt", {}, 5000, () => count++);
+  const line = JSON.stringify({ method: "session/update", params: { text: "x".repeat(1024) } }) + "\n";
+  child.stdout.write(line.repeat(8200) + JSON.stringify({id:1,result:{}}) + "\n");
+  await pending; assert.equal(count, 8201);
+});
+
+test("an oversized protocol line marks its session unusable so bootstrap can replace it", async () => {
+  const { child, transport } = fixture(); const pending = transport.request("session/prompt", {}, 1000);
+  assert.equal(transport.usable, true);
+  child.stdout.write("x".repeat(8 * 1024 * 1024 + 1));
+  await assert.rejects(pending, /exceeds limit/); assert.equal(transport.usable, false);
+  await assert.rejects(transport.request("session/prompt"), /exceeds limit/);
 });

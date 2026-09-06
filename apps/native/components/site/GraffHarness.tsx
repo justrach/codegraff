@@ -18,7 +18,8 @@ import { annotationsBlock, type BrowserPin } from "@/lib/browser/annotations";
 import { browserClose, browserHandle, browserNav } from "@/lib/browser-client";
 import TaskRows from "@/components/primitives/TaskRows";
 import { ThemeToggle } from "@/components/site/ThemeToggle";
-import { AssistantBody, UserBubble } from "@/components/site/ChatBubbles";
+import ChatTranscript from "./ChatTranscript";
+import { useDesktopShortcuts } from "./useDesktopShortcuts";
 import EmptyState from "@/components/site/ChatEmpty";
 import {
   cancel,
@@ -72,6 +73,7 @@ export default function GraffHarness() {
   const [sessionIds, setSessionIds] = useState<Record<number, string>>({});
   /** Per tab, the slash commands its agent advertised at session/new. */
   const [commands, setCommands] = useState<Record<number, AcpCommand[]>>({});
+  const [catalogCommands, setCatalogCommands] = useState<AcpCommand[]>([]);
   const [stored, setStored] = useState<StoredSession[]>([]);
   const [storedTotal, setStoredTotal] = useState(0);
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set());
@@ -117,10 +119,12 @@ export default function GraffHarness() {
   const pinsRef = useRef<Record<number, BrowserPin[]>>({});
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
-  const scrollRef = useRef<HTMLDivElement>(null);
   // Split view: chats shown beside the active one. Each column keeps its
   // own scroller and its own place in its transcript.
   const [panes, setPanes] = useState<number[]>([]);
+  const [splitDirection, setSplitDirection] = useState<"row" | "column">("row");
+  const [zoomedPane, setZoomedPane] = useState(false);
+  const [paneWeights, setPaneWeights] = useState<Record<number, number>>({});
   const scrollEls = useRef(new Map<number, HTMLDivElement>());
   const [tailing, setTailing] = useState<Record<number, boolean>>({});
   const paneRef = (id: number) => (el: HTMLDivElement | null) => {
@@ -184,7 +188,7 @@ export default function GraffHarness() {
     try {
       const { models: live, current, commands: available } = await fetchModels(sessionsRef.current.has(chatId) ? handleOf(chatId) : undefined, activePathRef.current ?? undefined);
       if (live.length > 0) setModels(live);
-      if (available) setCommands(old => ({ ...old, [chatId]: available }));
+      if (available?.length) { setCatalogCommands(available); setCommands(old => ({ ...old, [chatId]: available })); }
       if (current) {
         setChatModel(chatId, current);
         setModelKey((fallback) => fallback ?? current);
@@ -743,6 +747,7 @@ export default function GraffHarness() {
   const columnBody = (thread: Chat) => {
     const isFollowing = tailing[thread.id] ?? true;
     const hasMessages = thread.messages.length > 0;
+    const compactPane = splitDirection === "column" && columns.length > 1;
     const threadBusy = busyIds.has(thread.id);
     const threadModel = thread.model ?? model ?? undefined;
     const threadQueued = queues[thread.id] ?? [];
@@ -753,25 +758,8 @@ export default function GraffHarness() {
 
             {hasMessages ? (
               <div className="flex min-h-0 flex-1 flex-col">
-                <div ref={paneRef(thread.id)} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" style={{ overflowAnchor: "none" }}>
-                  <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
-                    {thread.messages.map((message, index) =>
-                      message.role === "user" ? (
-                        <UserBubble key={message.id} text={message.text} />
-                      ) : (
-                        <AssistantBody
-                          key={message.id}
-                          turn={message.turn}
-                          onOpenPath={openPath}
-                          onReview={openChanges}
-                          scroller={scrollRef}
-                          following={isFollowing && index === thread.messages.length - 1}
-                        />
-                      ),
-                    )}
-                  </div>
-                </div>
-                <div className="shrink-0 bg-page px-4 pt-3 pb-6 sm:px-8">
+                <ChatTranscript key={thread.id} messages={thread.messages} register={paneRef(thread.id)} following={isFollowing} onOpenPath={openPath} onReview={openChanges} />
+                <div className={`shrink-0 bg-page px-4 ${compactPane ? "py-2" : "pt-3 pb-6 sm:px-8"}`}>
                   <div className="mx-auto max-w-[720px]">
                     {threadPins > 0 && (
                       <div className="mb-2 flex items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline">
@@ -827,10 +815,10 @@ export default function GraffHarness() {
                     )}
                     <PromptBar
                       demo={false}
-                      tall
+                      tall={!compactPane}
                       placeholder={threadBusy ? "Queue a follow-up…" : "Follow up"}
                       models={models}
-                      commands={commands[thread.id] ?? []}
+                      commands={commands[thread.id] ?? catalogCommands}
                       root={cwdOf(thread)}
                       modelKey={threadModel}
                       onModelChange={(key: string) => changeModel(key, thread.id)}
@@ -847,7 +835,7 @@ export default function GraffHarness() {
               </div>
             ) : (
               <div className="min-h-0 flex-1 overflow-y-auto">
-                <EmptyState
+                <EmptyState compact={compactPane}
                   onSend={(text: string) => void send(text, thread.id)} onSetting={text => settings.change(thread.id, text)}
                   health={health}
                   history={threadHistory}
@@ -855,7 +843,7 @@ export default function GraffHarness() {
                   models={models}
                   modelKey={threadModel}
                   onModelChange={(key: string) => changeModel(key, thread.id)}
-                  commands={commands[thread.id] ?? []}
+                  commands={commands[thread.id] ?? catalogCommands}
                 />
               </div>
             )}
@@ -997,53 +985,12 @@ export default function GraffHarness() {
     </div>
   );
 
-  // The shortcuts read the current handlers through a ref, so the window
-  // listener below is installed once instead of on every render.
-  const keysRef = useRef({ closeChat, newChat, reopenClosed, toggleSplit, addPane, focusChat, chats, activeId });
-  keysRef.current = { closeChat, newChat, reopenClosed, toggleSplit, addPane, focusChat, chats, activeId };
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-      const keys = keysRef.current;
-      const key = event.key.toLowerCase();
-      const take = () => {
-        event.preventDefault();
-        event.stopPropagation();
-      };
-      if (key === "w" && !event.shiftKey) {
-        take();
-        keys.closeChat(keys.activeId);
-        return;
-      }
-      if (key === "t") {
-        take();
-        if (event.shiftKey) keys.reopenClosed();
-        else keys.newChat();
-        return;
-      }
-      if (key === "d" && !event.shiftKey) {
-        take();
-        keys.addPane();
-        return;
-      }
-      if (key === "\\" && !event.shiftKey) {
-        take();
-        keys.toggleSplit();
-        return;
-      }
-      // ⌘1…⌘9 jump to a tab, ⌘9 to the last one, as in a browser.
-      if (!event.shiftKey && key >= "1" && key <= "9") {
-        const nth = Number(key);
-        const target = nth === 9 ? keys.chats[keys.chats.length - 1] : keys.chats[nth - 1];
-        if (!target) return;
-        take();
-        keys.focusChat(target.id);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  useDesktopShortcuts({ closeChat, newChat, reopenClosed, toggleSplit, focusChat, chats, activeId, columns: columnIds,
+    split: direction => { setSplitDirection(direction); setZoomedPane(false); addPane(); },
+    zoomPane: () => setZoomedPane(value => !value),
+    resizePane: delta => setPaneWeights(old => ({ ...old, [activeId]: Math.max(0.4, Math.min(3, (old[activeId] ?? 1) + delta)) })),
+    equalize: () => setPaneWeights({}), openWorkspace: () => setDialog({ mode: "new" }),
+  });
 
   catalogRef.current = { adopt: (id: number) => { if (!runningRef.current.has(id)) void adoptCatalog(id).catch(() => undefined); }, activeId };
 
@@ -1051,7 +998,7 @@ export default function GraffHarness() {
   // The active chat is the first column; the panes follow it. A chat that
   // was closed, or became the active one, leaves the split rather than
   // showing twice. Four columns is as narrow as a chat stays readable.
-  const columns = columnIds.map((id) => chats.find((c) => c.id === id)).filter((c): c is Chat => c !== undefined);
+  const columns = (zoomedPane ? [activeId] : columnIds).map((id) => chats.find((c) => c.id === id)).filter((c): c is Chat => c !== undefined);
 
 
   return (
@@ -1085,7 +1032,7 @@ export default function GraffHarness() {
       />
 
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
-        <div className="flex min-h-0 flex-1 gap-2.5">
+        <div className="flex min-h-0 flex-1 gap-2.5" style={{ flexDirection: splitDirection }}>
           {conversationsOpen ? (
             <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page">
               {tabBar}
@@ -1108,6 +1055,7 @@ export default function GraffHarness() {
               <section
                 key={thread.id}
                 data-chat={thread.id}
+                style={{ flexGrow: paneWeights[thread.id] ?? 1, minHeight: 0 }}
                 className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page"
               >
                 {slot === 0 ? (

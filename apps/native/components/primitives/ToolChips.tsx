@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import ToolOutput from "./ToolOutput";
 
 /* ─────────────────────────────────────────────────────────
  * TOOL CHIPS
@@ -129,6 +130,9 @@ export default function ToolChips({
     ? Object.fromEntries((liveDiffs ?? []).map((d) => [d.file, d.lines ?? []]))
     : DIFF_LINES;
   const [step, setStep] = useState(0);
+  const [page, setPage] = useState(0);
+  const pageSize = 50;
+  const pageIndex = Math.min(page, Math.max(0, Math.ceil(rows.length / pageSize) - 1));
   const [open, setOpen] = useState(!live);
   /* tick once a second while any live row runs, so its timer counts up */
   const [, setClock] = useState(0);
@@ -208,6 +212,8 @@ export default function ToolChips({
                 const liveN = rows.filter((r) => "status" in r && r.status === "running").length;
                 if (liveN) parts.push(liveN === 1 ? "running" : `${liveN} running`);
                 const interrupted = rows.filter(row => "status" in row && row.status === "interrupted").length;
+                const failed = rows.filter(row => "status" in row && row.status === "error").length;
+                if (failed) parts.push(`${failed} failed`);
                 if (interrupted) parts.push(`${interrupted} interrupted`);
                 return parts.join(" · ") || `${rows.length} steps`;
               })()
@@ -217,18 +223,24 @@ export default function ToolChips({
       )}
 
       {/* tool call rows */}
-      <div inert={!open} aria-hidden={!open} className="grid transition-[grid-template-rows,opacity] duration-300" style={{ gridTemplateRows: !showHeader || open ? "1fr" : "0fr", opacity: !showHeader || open ? 1 : 0 }}>
+      {open && <div data-tool-group>
+        {live && rows.length > pageSize && <div className="my-2 flex items-center gap-3 text-xs text-ink-2" aria-label="Tool pages">
+          <button type="button" aria-label="Previous tools" disabled={pageIndex === 0} onClick={() => setPage(pageIndex - 1)} className="rounded px-2 py-1 hover:bg-hover disabled:opacity-40">Previous</button>
+          <span>{pageIndex * pageSize + 1}–{Math.min(rows.length, (pageIndex + 1) * pageSize)} of {rows.length}</span>
+          <button type="button" aria-label="Next tools" disabled={(pageIndex + 1) * pageSize >= rows.length} onClick={() => setPage(pageIndex + 1)} className="rounded px-2 py-1 hover:bg-hover disabled:opacity-40">Next</button>
+        </div>}
         {/* -mx-1 + px-1.5 keeps content at the same x while giving the
             row hover pills room inside this overflow-hidden clip box */}
-        <div className="-mx-1 overflow-hidden px-1.5 pb-1">
+        <div className="-mx-1 max-h-[min(55vh,480px)] overflow-auto overscroll-contain px-1.5 pb-1">
         <div className="mt-1.5 flex flex-col gap-1">
-          {(live ? rows : rows.slice(0, step)).map((row, i) => {
+          {(live ? rows.slice(pageIndex * pageSize, (pageIndex + 1) * pageSize) : rows.slice(0, step)).map((row, i) => {
             const rowKey = "id" in row && row.id ? row.id : `${row.label}-${i}`;
             const rowOpen = openRows.has(rowKey);
             return (
             <div key={rowKey} style={live ? undefined : { animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
               <button
                 type="button"
+                data-tool-row
                 aria-expanded={rowOpen}
                 onClick={() => toggleRow(rowKey)}
                 className="group/row -mx-[3px] flex h-7 w-[calc(100%+6px)] min-w-0 items-center gap-2 rounded-control px-[3px] text-left transition-colors duration-100 hover:bg-hover-2"
@@ -291,24 +303,8 @@ export default function ToolChips({
                 })()}
               </button>
 
-              {/* expanded detail */}
-              <div
-                className="grid transition-[grid-template-rows,opacity] duration-300"
-                style={{ gridTemplateRows: rowOpen ? "1fr" : "0fr", opacity: rowOpen ? 1 : 0, transitionTimingFunction: "cubic-bezier(0.23, 1, 0.32, 1)" }}
-              >
-                <div className="min-h-0 overflow-hidden">
-                  <div className="mt-0.5 mb-1 ml-2 flex flex-col gap-0.5 border-l border-line py-0.5 pl-3.5">
-                    {row.detail.map((line, lineIdx) => (
-                      <span
-                        key={`${lineIdx}:${line.text}`}
-                        className={`truncate text-[11.5px] leading-[1.6] ${row.detailMono ? "font-mono" : ""} ${line.tone === "add" ? "text-green" : "text-ink-2"}`}
-                      >
-                        {line.text}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </div>
+              {rowOpen && <ToolOutput detail={row.detail} mono={row.detailMono} />}
+
             </div>
             );
           })}
@@ -355,7 +351,7 @@ export default function ToolChips({
         </div>
       )}
         </div>
-      </div>
+      </div>}
       {preview && typeof document !== "undefined" && createPortal(
         <div
           className="fixed z-50 w-72 overflow-hidden rounded-[10px] bg-surface shadow-overlay"

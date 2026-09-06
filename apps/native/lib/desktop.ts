@@ -3,6 +3,7 @@ import type { PageInfo } from "./browser-client";
 
 export type DesktopEvent = { type: string; chat?: string; info?: PageInfo; pin?: BrowserPin };
 export type DesktopBridge = {
+  windowControl?(action: "fullscreen" | "zoom-in" | "zoom-out" | "reset-zoom"): Promise<void>;
   browser<T = PageInfo | null>(chat: string, method: string, params?: Record<string, unknown>): Promise<T>;
   activity(): Promise<{ rssMiB: number; cpuPercent: number; processes: number; browsers: number }>;
   subscribe(callback: (event: DesktopEvent) => void): () => void;

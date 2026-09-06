@@ -14,6 +14,7 @@ const { rendererSample } = require('./renderer-profile.cjs');
 const { observeAgents, agentSampler } = require('./agent-observer.cjs');
 const { chromiumSample } = require('./hardware-profile.cjs');
 const fs = require('node:fs/promises');
+const { installWindowState } = require('./window-state.cjs');
 
 const root = process.env.GRAFF_CWD || app.getPath('home');
 const resources = process.env.GRAFF_ELECTRON_RESOURCES || process.resourcesPath;
@@ -55,6 +56,7 @@ app.whenReady().then(async () => {
     title: 'Codegraff', titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 11 }, backgroundColor: '#fafaf9', show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), partition: 'persist:app',
       contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: !process.env.GRAFF_ELECTRON_SMOKE } });
+  installWindowState(win);
   browser = new BrowserTabs(win, message => { if (!win.isDestroyed()) win.webContents.send('browser-event', message); });
   win.on('close', () => browser.closeAll());
   win.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
@@ -101,6 +103,12 @@ app.whenReady().then(async () => {
     return ['find', 'zoom'].includes(method) ? browserAction(browser, chat, method, params) : browser.command(chat, method, params);
   });
   ipcMain.on('browser-overlay', (event, blocked) => { trusted(event); browser.setOverlay(blocked === true); });
+  ipcMain.handle('window-control', (event, action) => {
+    trusted(event);
+    if (action === 'fullscreen') win.setFullScreen(!win.isFullScreen());
+    else if (['zoom-in', 'zoom-out', 'reset-zoom'].includes(action)) win.webContents.setZoomLevel(action === 'reset-zoom' ? 0 : Math.max(-3, Math.min(4, win.webContents.getZoomLevel() + (action === 'zoom-in' ? 0.5 : -0.5))));
+    else throw new Error('Unknown window action');
+  });
   ipcMain.handle('activity', event => { trusted(event); return activity(); });
   ipcMain.on('browser-pin', (event, pin) => {
     const tab = [...browser.tabs.values()].find(t => t.view?.webContents === event.sender);
@@ -112,6 +120,12 @@ app.whenReady().then(async () => {
   win.on('restore', () => win.webContents.send('browser-event', { type: 'layout' }));
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: 'Codegraff', submenu: [{ role: 'about' }, { label: 'Activity…', accelerator: 'CmdOrCtrl+,', click: () => void activity().catch(error => dialog.showErrorBox('Activity', error.message)) }, { label: 'Computer use…', click: () => void computer.configure().catch(error => dialog.showErrorBox('Computer use', error.message)) }, { type: 'separator' }, { role: 'quit' }] },
+    { label: 'File', submenu: [
+      ['New chat', 'CmdOrCtrl+N', 'new'], ['New tab', 'CmdOrCtrl+T', 'new'],
+      ['Close chat', 'CmdOrCtrl+W', 'close'], ['Reopen closed chat', 'CmdOrCtrl+Shift+T', 'reopen'],
+      ['Open workspace…', 'CmdOrCtrl+O', 'workspace'], ['Split right', 'CmdOrCtrl+D', 'split-right'],
+      ['Split down', 'CmdOrCtrl+Shift+D', 'split-down'], ['Zoom split', 'CmdOrCtrl+Shift+Enter', 'split-zoom'],
+    ].map(([label, accelerator, action]) => ({ label, accelerator, click: () => win.webContents.send('desktop-action', action) })) },
     { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { role: 'togglefullscreen' }, { label: 'Release browser pages', click: () => { browser.closeAll(); win.webContents.send('browser-event', { type: 'released' }); } }] },
     { label: 'Performance', submenu: [
       { label: 'Start recording', click: () => void profiler.start() },

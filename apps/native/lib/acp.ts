@@ -1,3 +1,4 @@
+import { boundToolDetail } from "./tool-detail";
 /** ACP v1 session/update shapes the native harness renders. */
 
 export type AcpContent = { type: "text"; text: string };
@@ -94,8 +95,8 @@ function detailFromInput(input: Record<string, unknown>): ToolRow["detail"] {
   const newS = typeof input.new_string === "string" ? input.new_string : "";
   if (oldS || newS) {
     const lines: ToolRow["detail"] = [];
-    if (oldS) lines.push({ text: firstLine(oldS) });
-    if (newS) lines.push({ text: firstLine(newS), tone: "add" });
+    if (oldS) lines.push({ text: oldS });
+    if (newS) lines.push({ text: newS, tone: "add" });
     return lines;
   }
   if (typeof input.command === "string") return [{ text: input.command }];
@@ -175,7 +176,7 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     .join("\n");
   const fromInput = detailFromInput(rawInput);
   const detail = contentText
-    ? [...(prev?.detail ?? fromInput), { text: firstLine(contentText) }]
+    ? [...(prev?.detail ?? fromInput), { text: contentText }]
     : fromInput.length
       ? fromInput
       : (prev?.detail ?? []);
@@ -192,7 +193,7 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
     icon: iconForKind(kind, title),
     chip: chipRaw === label || humanize(chipRaw) === label ? "" : chipRaw,
     status,
-    detail,
+    detail: boundToolDetail(detail),
     path,
     startedAt: prev?.startedAt ?? Date.now(),
     atChars: prev?.atChars ?? turn.text.length,

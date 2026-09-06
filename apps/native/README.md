@@ -139,19 +139,64 @@ but the conversation stays on disk and can be moved back by hand.
 the row goes at once rather than after the next poll of the session
 directory.
 
-## Keyboard
+## Keyboard and commands
 
-| Keys | What it does |
+Type `/` in any composer to search the complete command catalog advertised by
+Graff, including `/compact`. New tabs inherit it before starting a coding session.
+Command behavior belongs to the engine; terminal display settings retain their
+terminal meaning. Menus remain inside the window and scroll independently.
+
+The desktop adapts familiar Ghostty bindings to chats and split panes:
+
+| Keys | Action |
 |---|---|
-| `⌘T` / `Ctrl+T` | New chat |
-| `⌘W` / `Ctrl+W` | Close the active chat |
-| `⇧⌘T` / `Ctrl+Shift+T` | Reopen the last closed chat, resuming its graff session so the conversation comes back |
-| `⌘D` / `Ctrl+D` | Add a split, up to four columns |
-| `⌘\` / `Ctrl+\` | Close every split, or open one when there are none |
-| `⌘1`…`⌘8` | Jump to that tab; `⌘9` jumps to the last one |
+| `⌘N` / `⌘T` | New chat |
+| `⌘W` | Close the active chat |
+| `⇧⌘T` | Reopen the last closed chat |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous chat |
+| `⇧⌘]` / `⇧⌘[` | Next / previous chat |
+| `⌘1`…`⌘8` / `⌘9` | Select a tab / select the last tab |
+| `⌘D` / `⇧⌘D` | Split right / down, up to four panes |
+| `⌘]` / `⌘[` or `⌥⌘` + arrow | Focus the next / previous split |
+| `⇧⌘Enter` | Zoom the active split / restore all splits |
+| `Ctrl+⌘` + arrow | Resize the active split |
+| `Ctrl+⌘=` | Equalize split sizes |
+| `⌘\` | Toggle splits |
+| `⌘O` | Open a workspace folder |
+| `⌘Enter` / `Ctrl+⌘F` | Toggle fullscreen |
+| `⌘+` / `⌘−` / `⌘0` | Increase / decrease / reset interface zoom |
 
-These are the desktop app's keys. A browser keeps `⌘W`, `⌘T` and `⇧⌘T`
-for its own tabs, so in a browser use the tab bar's buttons instead.
+The File menu lists the main actions. Standard copy, paste, undo and text selection
+remain native. Terminal-only actions such as sending escape sequences have no
+chat equivalent. A web browser reserves some shortcuts for its own tabs.
+
+Click the workspace name to search by name **or folder path**. The current
+workspace is first; full paths distinguish folders with the same name. Arrow keys
+browse results, Enter selects, and Escape returns to the previous control.
+
+## GUI regression checks
+
+Run these from this package with Bun:
+
+```sh
+bun run build
+bun run test:desktop
+bun run test:visual
+```
+
+The visual runner uses isolated synthetic data and makes no engine or model API
+calls. It checks turn progress, interruption states, large tool groups and output,
+long history, reading position during streaming, fullscreen transitions, command
+menus, keyboard splits, workspace search and the Agents panel. Tool groups start
+collapsed; expanded groups page their rows, and large output previews preserve
+the beginning and end with an explicit omission marker. Older messages load on
+request. These bounds limit rendering; they do not cap stored conversation size.
+
+For a separate, opt-in real coding trial, run `electron/gui-coding-smoke.cjs` with
+the package's Electron executable. It uses configured credentials in a disposable
+workspace, checks the resulting code independently with Bun, then runs `/compact`.
+Keep its logs and screenshots local. `bun run test:performance` adds synthetic
+workload measurements; startup paint alone does not measure conversation UX.
 
 ## Browser sidecar (experimental)
 

@@ -1,12 +1,13 @@
 "use client";
 
 import { parseComposerToken as parseToken, guiSkillRows } from "@/lib/gui-skills";
-import { Icon, GLYPHS, BRANDS, SOURCES, DEMO_COMMANDS, MODELS, FILES, DICTATION, AUTO_STEPS } from "./prompt-demo";
+import { Icon, GLYPHS, SOURCES, DEMO_COMMANDS, MODELS, FILES, DICTATION, AUTO_STEPS } from "./prompt-demo";
 import ModelPicker from "./ModelPicker";
 import ModelEffortButtons from "./ModelEffortButtons";
 import type { ModelChoice } from "@/lib/acp-client";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createShader, playSweep, accentChain, ACCENTS } from "glimm";
+import ComposerMenu from "./ComposerMenu";
+import { useComposerSweep } from "./useComposerSweep";
 import type { AcpCommand } from "@/lib/acp";
 import {
   filesFrom,
@@ -16,18 +17,6 @@ import {
   type Attachment,
 } from "@/lib/attachments";
 import { entryAt, historyKeyIntent, stepHistory } from "@/lib/prompt-history";
-
-/* The built-in "prism" palette is only cyan→indigo→magenta, so a sweep
- * reads as blue/purple. Build a true full-spectrum rainbow instead. */
-const RAINBOW = accentChain([
-  ACCENTS.red,
-  ACCENTS.orange,
-  ACCENTS.yellow,
-  ACCENTS.green,
-  ACCENTS.cyan,
-  ACCENTS.blue,
-  ACCENTS.purple,
-]);
 
 /* ─────────────────────────────────────────────────────────
  * PROMPT BAR
@@ -115,17 +104,14 @@ export default function PromptBar({
   const [autoStep, setAutoStep] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const wide = expanded || tall;
-  const [rowBox, setRowBox] = useState<{ top: number; height: number } | null>(null);
   const [engaged, setEngaged] = useState(false);
   const controlsRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);
   const modelRef = useRef<HTMLButtonElement>(null);
-  const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const glimmRef = useRef<HTMLCanvasElement>(null);
-  const shaderRef = useRef<ReturnType<typeof createShader> | null>(null);
-  const sweepingRef = useRef(false);
+  const menuAnchor = useRef<HTMLDivElement>(null);
+  const { glimmRef, celebrate } = useComposerSweep();
 
   /* hand control to the user: stop the demo loop, and when they aim at
    * the input itself, clear the demo's leftover draft for a clean start */
@@ -196,72 +182,6 @@ export default function PromptBar({
     setActive(0);
     setEngaged(false);
   }, [menu, query]);
-
-  /* a single highlight glides to the active row instead of each row
-   * toggling its own background — matches the gliding pill in the nav */
-  useLayoutEffect(() => {
-    const target = rowRefs.current[active];
-    if (target) setRowBox({ top: target.offsetTop, height: target.offsetHeight });
-  }, [menu, query, active, connected, rows.length]);
-
-  /* Build the shader with a pinned hue phase. createShader seeds its
-   * internal hueShift from Math.random(), which made the sweep a different
-   * colour on every reload — pin it so the rainbow is identical each time. */
-  const makeShader = () => {
-    const canvas = glimmRef.current;
-    if (!canvas) return null;
-    const random = Math.random;
-    Math.random = () => 0;
-    try {
-      return createShader({
-        canvas,
-        palette: RAINBOW,
-        direction: "ltr",
-        bandTight: 10,
-        swellAmount: 0.85,
-      });
-    } finally {
-      Math.random = random;
-    }
-  };
-
-  /* Glimm shader lives inside the composer, invisible at rest. Selecting
-   * the flagship model fires a one-shot rainbow sweep across the interior. */
-  useEffect(() => {
-    shaderRef.current = makeShader();
-    return () => {
-      shaderRef.current?.destroy();
-      shaderRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const celebrate = () => {
-    if (sweepingRef.current) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    // Recreate the shader per sweep so uTime restarts at 0 — the hue phase
-    // (which drifts with time) is then identical on every trigger.
-    shaderRef.current?.destroy();
-    const shader = makeShader();
-    shaderRef.current = shader;
-    if (!shader) return;
-    sweepingRef.current = true;
-    const sweep = playSweep(shader, {
-      palette: RAINBOW,
-      direction: "ltr",
-      sweepMs: 570,
-      outroMs: 80,
-      peakAlpha: 1.3,
-      bandTight: 10,
-      brightness: 1.4,
-      swellAmount: 1,
-      waveSpeed: 1.8,
-      easing: "easeOutExpo",
-    });
-    sweep.done.finally(() => {
-      sweepingRef.current = false;
-    });
-  };
 
   const selectModel = (next: PromptModel) => {
     setModel(next);
@@ -432,87 +352,12 @@ export default function PromptBar({
       onKeyDownCapture={takeOver}
     >
       {/* composer is the anchor — menus grow up from its top edge */}
-      <div className="relative">
+      <div ref={menuAnchor} className="relative">
       {/* ── @ / slash menu ─────────────────────────────── */}
-      {menu && (
-        <div
-          onMouseLeave={() => setEngaged(false)}
-          className="absolute inset-x-0 bottom-full z-10 mb-2 rounded-[10px] bg-surface p-1 shadow-raised"
-          style={{ animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom center" }}
-        >
-          {/* single gliding highlight — appears once a row is hovered */}
-          <span
-            aria-hidden
-            className="pointer-events-none absolute inset-x-1 rounded-[6px] bg-hover"
-            style={{
-              top: rowBox?.top ?? 0,
-              height: rowBox?.height ?? 0,
-              opacity: rowBox && engaged && rows.length > 0 ? 1 : 0,
-              transition:
-                "top 220ms cubic-bezier(0.23,1,0.32,1), height 220ms cubic-bezier(0.23,1,0.32,1), opacity 150ms ease",
-            }}
-          />
-          {rows.map((row, i) => {
-            const source = menu === "at" ? SOURCES.find((s) => s.key === row.key) : undefined;
-            const mark = source ? (
-              source.brand ? BRANDS[source.brand] : <Icon size={15}>{GLYPHS[source.glyph ?? "clip"]}</Icon>
-            ) : row.key.startsWith("file:") ? (
-              <Icon size={15}>{GLYPHS.file}</Icon>
-            ) : null;
-            return (
-              <button
-                key={row.key}
-                type="button"
-                ref={(el) => {
-                  rowRefs.current[i] = el;
-                }}
-                onMouseDown={(event) => event.preventDefault()}
-                onMouseEnter={() => {
-                  setActive(i);
-                  setEngaged(true);
-                }}
-                onClick={() => pick(row)}
-                className="relative z-10 flex h-9 w-full items-center gap-2.5 rounded-[6px] px-2 text-left"
-              >
-                {mark && (
-                  <span className="flex size-5.5 shrink-0 items-center justify-center text-ink-2">{mark}</span>
-                )}
-                <span className="shrink-0 text-[12.5px] font-medium text-ink">
-                  {row.name}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3">{row.desc}</span>
-                {source?.connect && (
-                  <span
-                    role="button"
-                    tabIndex={-1}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setConnected((current) => !current);
-                    }}
-                    className={`shrink-0 text-[12px] font-medium transition-colors duration-100 ${
-                      connected ? "text-green" : "text-accent-ink hover:underline"
-                    }`}
-                  >
-                    {connected ? "Connected" : "Connect"}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-          {rows.length === 0 && (
-            <div className="flex h-9 items-center px-2 text-[12px] text-ink-3">
-              No matches for “{query}”
-            </div>
-          )}
-          <div className="mt-1 border-t border-line px-2 pt-1.5 pb-1 text-[11px] text-ink-3">
-            {menu === "skill" ? "GUI skills · ↑↓ then Enter to select" : menu !== "at"
-              ? "Type to search commands"
-              : demo
-                ? "Type to search sources & files"
-                : "Search files or GUI skills · use $ for skills only"}
-          </div>
-        </div>
-      )}
+      {menu && <ComposerMenu anchor={menuAnchor} menu={menu} rows={rows} query={query}
+        active={active} engaged={engaged} setActive={setActive} setEngaged={setEngaged}
+        connected={connected} setConnected={setConnected} demo={demo} onPick={pick} />}
+
 
       {modelOpen && <ModelPicker models={catalog} selected={model} anchor={modelRef} onClose={() => setModelOpen(false)}
         onSelect={next => { selectModel(next); inputRef.current?.focus({ preventScroll: true }); }} />}

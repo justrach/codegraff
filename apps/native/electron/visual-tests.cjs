@@ -9,7 +9,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'graff-visual-'));
 app.setPath('userData', path.join(temporary, 'profile'));
 let server, win;
-const deadline = setTimeout(() => { console.error('Visual run exceeded 120 seconds'); finish(1); }, 120000);
+const deadline = setTimeout(() => { console.error('Visual run exceeded 240 seconds'); finish(1); }, 240000);
 app.whenReady().then(async () => {
   const root = path.resolve(__dirname, '..'), output = process.env.GRAFF_VISUAL_OUTPUT || path.resolve(root, '../../zig-out/visual-tests');
   fs.mkdirSync(output, { recursive: true });
@@ -55,6 +55,8 @@ app.whenReady().then(async () => {
       results.push(`${theme}/${name}`);
     }
   }
+  await require('./stress-visual.cjs').runStressVisuals({ win, origin, output });
+  await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
   await require('./agents-visual.cjs').runAgentVisuals({ win, origin, output });
   if (process.env.GRAFF_PERFORMANCE_TESTS) await require('./performance-scenarios.cjs').runPerformance({ win, origin, output });
   assert.deepEqual(apiRequests, [], 'Visual fixtures must not call the engine or model APIs');

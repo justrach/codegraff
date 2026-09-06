@@ -56,7 +56,7 @@ export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   return (
     <div className="flex justify-end pl-10 sm:pl-24" style={{ animation: "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" }}>
       <div
-        className="rounded-xl px-3.5 py-2 text-[13px] leading-relaxed text-ink shadow-hairline"
+        className="rounded-xl px-3.5 py-2 min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13px] leading-relaxed text-ink shadow-hairline"
         style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--surface))" }}
       >
         {text}

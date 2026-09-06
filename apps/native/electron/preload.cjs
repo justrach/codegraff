@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('graffDesktop', {
   browser: (chat, method, params) => ipcRenderer.invoke('browser', { chat, method, params }),
   activity: () => ipcRenderer.invoke('activity'),
+  windowControl: action => ipcRenderer.invoke('window-control', action),
   subscribe: callback => {
     const listener = (_event, message) => callback(message);
     ipcRenderer.on('browser-event', listener);
@@ -10,6 +11,12 @@ contextBridge.exposeInMainWorld('graffDesktop', {
 });
 
 let longTasks;
+let fullscreen = false;
+const applyWindowState = () => {
+  if (document.documentElement) document.documentElement.dataset.desktopFullscreen = String(fullscreen);
+};
+ipcRenderer.on('window-state', (_event, state) => { fullscreen = state.fullscreen === true; applyWindowState(); });
+window.addEventListener('DOMContentLoaded', applyWindowState);
 ipcRenderer.on('profile-enabled', (_event, enabled) => {
   longTasks?.disconnect();
   if (!enabled) return;
@@ -43,3 +50,5 @@ window.addEventListener('DOMContentLoaded', () => {
   }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'aria-hidden', 'role'] });
   update();
 });
+
+ipcRenderer.on('desktop-action', (_event, action) => window.dispatchEvent(new CustomEvent('graff-desktop-action', { detail: action })));

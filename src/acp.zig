@@ -510,3 +510,12 @@ test {
     _ = @import("acp_protocol.zig");
     _ = @import("acp_stream.zig");
 }
+
+test "ACP advertises the complete REPL command catalog including compact" {
+    const catalog = @import("command_catalog.zig").commands;
+    const advertised = proto.slashCommands();
+    try std.testing.expectEqual(catalog.len, advertised.len);
+    for (catalog, advertised) |command, exposed| {
+        try std.testing.expectEqualStrings(command.name[1..], exposed.name);
+    }
+}

@@ -39,7 +39,7 @@ export default function EmptyState({
   onModelChange,
   history,
   cwd,
-  commands,
+  commands, compact = false,
 }: {
   onSend: (text: string) => void; onSetting?: (text: string) => Promise<void>;
   health: Health | null;
@@ -52,6 +52,7 @@ export default function EmptyState({
   cwd?: string;
   /** The slash commands this tab's agent advertised, for the / menu. */
   commands?: AcpCommand[];
+  compact?: boolean;
 }) {
   const where = cwd ?? health?.cwd;
   const [offset, setOffset] = useState(0);
@@ -69,20 +70,20 @@ export default function EmptyState({
   }, []);
 
   return (
-    <div className="mx-auto flex min-h-full max-w-[720px] flex-col justify-center px-4 py-10 sm:px-8">
-      <h1 className="text-[26px] font-normal tracking-[-0.02em] text-ink">
+    <div className={`mx-auto flex min-h-full max-w-[720px] flex-col justify-center px-4 ${compact ? "py-2" : "py-10 sm:px-8"}`}>
+      {!compact && <h1 className="text-[26px] font-normal tracking-[-0.02em] text-ink">
         <span className="home-reveal block text-ink-3" style={homeRevealStyle(stage >= 1)}>
           {greeting()}
         </span>
         <span className="home-reveal block" style={homeRevealStyle(stage >= 2)}>
           What should graff work on?
         </span>
-      </h1>
+      </h1>}
 
-      <div className="home-reveal relative mt-7" style={homeRevealStyle(stage >= 3)}>
+      <div className={`relative ${compact ? "" : "home-reveal mt-7"}`} style={compact ? undefined : homeRevealStyle(stage >= 3)}>
         <PromptBar
           demo={false}
-          tall
+          tall={!compact}
           placeholder="Ask graff to read, edit, or review this workspace…"
           models={models}
           modelKey={modelKey}
@@ -102,7 +103,7 @@ export default function EmptyState({
         )}
       </div>
 
-      <div className="home-reveal mt-6 flex flex-col" style={homeRevealStyle(stage >= 4)}>
+      {!compact && <div className="home-reveal mt-6 flex flex-col" style={homeRevealStyle(stage >= 4)}>
         {shown.map((item) => (
           <button
             key={item.id}
@@ -129,7 +130,7 @@ export default function EmptyState({
             Shuffle suggestions
           </button>
         </div>
-      </div>
+      </div>}
     </div>
   );
 }
