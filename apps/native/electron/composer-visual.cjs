@@ -6,8 +6,9 @@ async function runComposerVisual({ win, output }) {
   await new Promise(r => setTimeout(r, 1600));
   await js(`document.querySelector('[aria-label="Choose model"] span.truncate').textContent='Example model with a long display name'`);
   for (const width of [220, 280, 360, 420, 520]) {
+    console.log('Composer geometry:', width);
     await js(`document.querySelector('[data-promptbar]').style.width='${width}px'`);
-    await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+    await js('Promise.race([new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))),new Promise((_,reject)=>setTimeout(()=>reject(Error("Composer did not receive a paint frame")),3000))])');
     const result = await js(`(()=>{
       const p=document.querySelector('[data-promptbar]'),area=p.getBoundingClientRect();
       const labels=['Add attachments and sources','Choose model','Select effort','Start dictation','Send'];

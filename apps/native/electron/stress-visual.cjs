@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function runStressVisuals({win: fixtureWindow, origin, output}) {
+async function runStressVisuals({win: fixtureWindow, origin, output, fullscreen = true}) {
   const win = new BrowserWindow({width:1000,height:760,show:true,titleBarStyle:'hiddenInset',webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
   installWindowState(win);
   const js = code => win.webContents.executeJavaScript(code);
@@ -49,15 +49,16 @@ async function runStressVisuals({win: fixtureWindow, origin, output}) {
     await click('[data-stream]');
     const titleHeight=()=>js(`document.querySelector('[data-desktop-titlebar]').getBoundingClientRect().height`);
     assert.equal(await titleHeight(),36);
-    if(process.platform==='darwin') {
+    const checkedFullscreen = fullscreen && process.platform === 'darwin';
+    if(checkedFullscreen) {
       win.setFullScreen(true);await wait(`document.documentElement.dataset.desktopFullscreen==='true'`);
       assert.equal(await titleHeight(),0);await bounds();
       fs.writeFileSync(path.join(output,'stress-fullscreen.png'),(await win.webContents.capturePage()).toPNG());
       await win.reload();await wait(`document.documentElement.dataset.desktopFullscreen==='true'`);assert.equal(await titleHeight(),0);
       win.setFullScreen(false);await wait(`document.documentElement.dataset.desktopFullscreen==='false'`);assert.equal(await titleHeight(),36);
     }
-    fs.writeFileSync(path.join(output,'stress-results.json'),JSON.stringify({passed:['5000 tools','bounded output','1000 messages','unbroken input','long markdown','stream reading position','fullscreen and reload'],metrics},null,2));
-    console.log('Stress visual checks passed: long tools/output/history/text, reading position, fullscreen.');
+    fs.writeFileSync(path.join(output,'stress-results.json'),JSON.stringify({passed:['5000 tools','bounded output','1000 messages','unbroken input','long markdown','stream reading position',...(checkedFullscreen?['fullscreen and reload']:[])],fullscreen:checkedFullscreen?'passed':'not run',metrics},null,2));
+    console.log('Stress visual checks passed: long tools/output/history/text, reading position. Fullscreen:', checkedFullscreen?'passed':'not run in this suite');
   } finally {win.destroy();fixtureWindow.show();fixtureWindow.focus();}
 }
 module.exports={runStressVisuals};

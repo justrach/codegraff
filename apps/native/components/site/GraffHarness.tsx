@@ -2,10 +2,12 @@
 
 import { workspaceActions } from "./harness-workspace-actions";
 import ProjectsPane from "./ProjectsPane";
+import { useSavedConversation, ConversationOpenNotice } from "./useSavedConversation";
 import { restoreProjects, persistProjects } from "@/lib/project-preferences";
 import { createTurnPainter } from "@/lib/turn-painter";
 import { useQuietSettings } from "./useQuietSettings";
-import reviewStyles from "./ChangesPane.module.css";
+import HarnessChrome from "./HarnessChrome";
+import ChatSplitLayout from "./ChatSplitLayout";
 import TerminalPane from "./TerminalPane";
 import { sidebarRecents, sessionFooterTitle } from "./harness-sidebar";
 import AgentsPane from "./AgentsPane";
@@ -18,11 +20,9 @@ import SidebarNav from "@/components/primitives/SidebarNav";
 import ConversationsPane from "@/components/site/ConversationsPane";
 import FilesPane from "@/components/site/FilesPane";
 import BrowserPane from "@/components/site/DesktopBrowserPane";
-import { IconChat, IconFolder, IconGlobe } from "@/lib/icons";
 import { annotationsBlock, type BrowserPin } from "@/lib/browser/annotations";
 import { browserClose, browserHandle, browserNav } from "@/lib/browser-client";
 import TaskRows from "@/components/primitives/TaskRows";
-import { ThemeToggle } from "@/components/site/ThemeToggle";
 import ChatTranscript from "./ChatTranscript";
 import { useDesktopShortcuts } from "./useDesktopShortcuts";
 import EmptyState from "@/components/site/ChatEmpty";
@@ -40,7 +40,7 @@ import {
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AcpCommand, type AssistantTurn } from "@/lib/acp";
 import { isFollowingTail, pinScrollerTail } from "@/lib/follow-scroll";
 import { dropQueuedPrompt, enqueuePrompt, shiftQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
-import { dateGroup, listSessionsPage, loadSession, relativeTime, removeSession, type StoredSession } from "@/lib/sessions";
+import { dateGroup, listSessionsPage, relativeTime, removeSession, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory, pushHistory, saveHistory } from "@/lib/prompt-history";
 import WorkspaceDialog from "@/components/site/WorkspaceDialog";
 import {
@@ -108,7 +108,7 @@ export default function GraffHarness() {
   // drops on it, which ride ahead of the chat's next prompt.
   const [browserOpen, setBrowserOpen] = useBrowserVisibility(BROWSER_OPEN_KEY, (chat) => {
     const target = chats.find(c => chatHandle(pageRef.current, c.id) === chat);
-    if (target) { setActiveId(target.id); setConversationsOpen(false); setFilesOpen(false); } return !!target;
+    if (target) { focusChat(target.id); setFilesOpen(false); } return !!target;
   });
   // The conversation library: every saved chat, paged and searchable. It takes
   // the whole chat area, so opening it leaves the other side panes.
@@ -116,6 +116,7 @@ export default function GraffHarness() {
   const [conversationsOpen, setConversationsOpen] = useState(false);
   const openConversations = () => {
     setProjectsOpen(false);
+    setAgentsOpen(false);
     setFilesOpen(false);
     setBrowserOpen(false);
     setConversationsOpen(true);
@@ -124,7 +125,7 @@ export default function GraffHarness() {
   const pinsRef = useRef<Record<number, BrowserPin[]>>({});
   const chatIdRef = useRef(1);
   const msgIdRef = useRef(0);
-  // Split view: chats shown beside the active one. Each column keeps its
+  // Split view: ordered visible chats, independent of focus. Each keeps its
   // own scroller and its own place in its transcript.
   const [panes, setPanes] = useState<number[]>([]);
   const [splitDirection, setSplitDirection] = useState<"row" | "column">("row");
@@ -149,10 +150,8 @@ export default function GraffHarness() {
   const closedRef = useRef<{ session: string | null; cwd?: string; resumable: boolean }[]>([]);
 
   const chatThread = chats.find((c) => c.id === activeId) ?? chats[0];
-  // The ids on screen, in order: the active chat then its split panes. A
-  // chat appears once — the swap below can put one in `panes` twice, and a
-  // closed chat can linger there — so this is the last word on what shows.
-  const columnIds = [chatThread.id, ...panes]
+  // Split positions are independent of keyboard focus.
+  const columnIds = (panes.length ? panes : [chatThread.id])
     .filter((id, i, all) => all.indexOf(id) === i && chats.some((c) => c.id === id))
     .slice(0, MAX_COLUMNS);
   const columnKey = columnIds.join(",");
@@ -318,6 +317,7 @@ export default function GraffHarness() {
   };
 
   const openPath = useCallback((path: string) => {
+    setProjectsOpen(false); setAgentsOpen(false); setBrowserOpen(false);
     setConversationsOpen(false);
     setFilesOpen(true);
     setFileRequest({ path, n: (fileReqRef.current += 1) });
@@ -456,7 +456,9 @@ export default function GraffHarness() {
     sessionNamesRef.current.set(id, session);
     const cwd = activePathRef.current ?? undefined;
     const ws = findWorkspace(workspacesRef.current, cwd);
-    setChats((current) => [...current, { id, title: null, messages: [], model: ws?.model ?? model ?? undefined, session, cwd }]);
+    const next = [...chatsRef.current, { id, title: null, messages: [], model: ws?.model ?? model ?? undefined, session, cwd }];
+    chatsRef.current = next; setChats(next);
+    setPanes(current => current.map(pane => pane === activeId ? id : pane));
     setActiveId(id);
     setFilesOpen(false);
     setConversationsOpen(false);
@@ -465,57 +467,34 @@ export default function GraffHarness() {
     if (!window.graffDesktop) void requireSession(id).catch(() => undefined);
   };
 
-  /** Open a saved graff session: its transcript renders from the file at once,
-   * and the tab's agent starts with `--resume` so a follow-up remembers it. */
-  const openStored = async (name: string, atCwd?: string) => {
-    // The sidebar lists the active workspace, so the session lives there;
-    // the same name in another workspace is a different conversation. A
-    // reopened tab names its own workspace instead.
-    const cwd = atCwd ?? activePathRef.current ?? undefined;
-    const existing = chats.find((c) => c.session === name && (c.cwd ?? null) === (cwd ?? null));
-    if (existing) {
-      setActiveId(existing.id);
-      setFilesOpen(false);
-      setConversationsOpen(false);
-      return;
-    }
-    let loaded: Awaited<ReturnType<typeof loadSession>>;
-    try {
-      loaded = await loadSession(name, cwd);
-    } catch (err) {
-      setHealth((current) => ({ ...(current ?? { ok: true }), detail: err instanceof Error ? err.message : String(err) }));
-      return;
-    }
-    const id = (chatIdRef.current += 1);
-    const messages: Msg[] = loaded.messages.map((m) => ({ id: (msgIdRef.current += 1), ...m }));
-    sessionNamesRef.current.set(id, name);
-    setChats((current) => [
-      ...current,
-      { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name, cwd },
-    ]);
-    setActiveId(id);
-    setFilesOpen(false);
-    setConversationsOpen(false);
-    setFollowing(true);
-    void requireSession(id, false, loaded.meta.model ?? undefined).catch(() => undefined);
+  const selectStored = (id: number, cwd?: string) => {
+    focusChat(id); setFilesOpen(false); setFollowing(true);
   };
+  const savedConversation = useSavedConversation({
+    context: `${activePath ?? ""}:${activeId}`,
+    findOpen: (name, cwd) => chatsRef.current.find(c => c.session === name && (c.cwd ?? null) === (cwd ?? null))?.id,
+    select: selectStored,
+    restore: (name, cwd, loaded) => {
+      const id = ++chatIdRef.current;
+      const messages: Msg[] = loaded.messages.map(m => ({ id: ++msgIdRef.current, ...m }));
+      sessionNamesRef.current.set(id, name);
+      const next = [...chatsRef.current, { id, title: loaded.meta.title ?? name, messages, model: loaded.meta.model ?? undefined, session: name, cwd }];
+      chatsRef.current = next; setChats(next);
+      selectStored(id, cwd);
+      void requireSession(id, false, loaded.meta.model ?? undefined).catch(() => undefined);
+    },
+  });
+  const openStored = (name: string, cwd = activePathRef.current ?? undefined) => savedConversation.open(name, cwd);
 
   const newChat = () => openChat((chatIdRef.current += 1));
 
-  /** Make a chat the active one. If it is already a split pane, the chat it
-   * replaces takes that pane, so the same two stay on screen. */
+  /** Focus a visible chat in place, or replace only the focused split. */
   const focusChat = (id: number) => {
     setProjectsOpen(false);
+    setConversationsOpen(false);
     const folder = chatsRef.current.find(chat => chat.id === id)?.cwd;
     if (folder && folder !== activePathRef.current) activateWorkspace(folder);
-    const here = activeId;
-    setPanes((current) => {
-      if (!current.includes(id)) return current.filter((pane) => pane !== id);
-      const swapped = current.map((pane) => (pane === id ? here : pane));
-      // `here` may already have been a pane, and the chat now in front must
-      // not also be one: either would draw the same chat in two columns.
-      return swapped.filter((pane, i) => swapped.indexOf(pane) === i && pane !== id);
-    });
+    setPanes(current => current.includes(id) ? current : current.map(pane => pane === activeId ? id : pane));
     setActiveId(id);
   };
 
@@ -534,17 +513,11 @@ export default function GraffHarness() {
   /** Another chat beside the ones on screen, in the workspace the active
    * chat is in. Up to four columns; past that they are too narrow to read. */
   const addPane = () => {
-    if (panesRef.current.length + 1 >= MAX_COLUMNS) return;
-    const keep = activeId;
+    if (columnIds.length >= MAX_COLUMNS) return;
     const id = (chatIdRef.current += 1);
     openChat(id);
-    // openChat makes the new tab active; the split keeps the current chat
-    // where it is and puts the new one beside it.
-    setActiveId(keep);
-    setPanes((current) => [...current, id]);
+    setPanes([...columnIds, id]);
   };
-
-  const closePane = (id: number) => setPanes((current) => current.filter((pane) => pane !== id));
 
   /** The toolbar button: split when there is one column, close the split
    * when there are more. ⌘D always adds one. */
@@ -569,7 +542,8 @@ export default function GraffHarness() {
   };
 
   const closeChat = (id: number) => {
-    setPanes((current) => current.filter((pane) => pane !== id));
+    const visible = columnIds.filter(pane => pane !== id);
+    setPanes(visible.length > 1 ? visible : []);
     const going = chatsRef.current.find((c) => c.id === id);
     if (going) {
       // Keep the last few closed tabs; a tab that got as far as a message
@@ -580,14 +554,15 @@ export default function GraffHarness() {
       ];
     }
     dropChat(id);
-    const remaining = chats.filter((c) => c.id !== id);
+    const remaining = chatsRef.current.filter((c) => c.id !== id);
+    chatsRef.current = remaining;
     if (remaining.length === 0) {
       setChats([]);
       openChat((chatIdRef.current += 1));
       return;
     }
     setChats(remaining);
-    if (id === activeId) setActiveId(remaining[remaining.length - 1].id);
+    if (id === activeId) focusChat(visible[Math.min(columnIds.indexOf(id), visible.length - 1)] ?? remaining[remaining.length - 1].id);
   };
 
   const pickRecent = (id: string) => {
@@ -608,7 +583,7 @@ export default function GraffHarness() {
 
   const { switchWorkspace, addWorkspace, saveWorkspace, forgetWorkspace, newProjectChat, activateWorkspace } = workspaceActions({
     workspacesRef, activePathRef, chatsRef, chatIdRef, activeId, root: health?.cwd,
-    setWorkspaces, setActivePath, setChats, setPanes, setActiveId, setFilesOpen, setDialog,
+    setWorkspaces, setActivePath, setChats, setActiveId: focusChat, setFilesOpen, setDialog,
     refreshStored, requireSession, adoptCatalog, openChat,
   });
 
@@ -629,13 +604,17 @@ export default function GraffHarness() {
 
   // Every visible column follows its own tail: jump to the bottom when it
   // appears, and stop following as soon as the reader scrolls up in it.
+  const initializedScrollers = useRef(new WeakSet<HTMLElement>());
   useEffect(() => {
     const off: (() => void)[] = [];
     for (const id of columnKey.split(",").filter(Boolean).map(Number)) {
       const el = scrollEls.current.get(id);
       if (!el) continue;
-      el.scrollTop = el.scrollHeight;
-      setTailing((current) => (current[id] === true ? current : { ...current, [id]: true }));
+      if (!initializedScrollers.current.has(el)) {
+        el.scrollTop = el.scrollHeight;
+        initializedScrollers.current.add(el);
+        setTailing(current => ({ ...current, [id]: true }));
+      }
       const onScroll = () => {
         const next = isFollowingTail(el);
         setTailing((current) => (current[id] === next ? current : { ...current, [id]: next }));
@@ -676,7 +655,7 @@ export default function GraffHarness() {
   const columnBody = (thread: Chat) => {
     const isFollowing = tailing[thread.id] ?? true;
     const hasMessages = thread.messages.length > 0;
-    const compactPane = splitDirection === "column" && columns.length > 1;
+    const compactPane = columnIds.length > 1;
     const threadBusy = busyIds.has(thread.id);
     const threadModel = thread.model ?? model ?? undefined;
     const threadQueued = queues[thread.id] ?? [];
@@ -699,7 +678,7 @@ export default function GraffHarness() {
                         <button
                           type="button"
                           onClick={() => {
-                            setActiveId(thread.id);
+                            focusChat(thread.id);
                             setFilesOpen(false);
                             setBrowserOpen(true);
                           }}
@@ -783,140 +762,6 @@ export default function GraffHarness() {
     );
   };
 
-  const tabBar = (
-    <div className={`${reviewStyles.chatbar} flex h-11 shrink-0 items-center border-b border-line px-2`}>
-      {/* Tabs scroll independently; toolbar labels collapse in narrow panes. */}
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {chats.map((c) => (
-          <div
-            key={c.id}
-            className={`group/tab flex h-7 w-36 shrink-0 items-center gap-0.5 rounded-[7px] pl-2.5 pr-1 text-[12.5px] font-medium transition-colors duration-100 ${
-              c.id === activeId ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
-            }`}
-          >
-            {busyIds.has(c.id) && (
-              <span
-                className="mr-1 size-1.5 shrink-0 animate-pulse rounded-full"
-                style={{ background: "var(--accent)" }}
-                aria-label="Working"
-              />
-            )}
-            <button
-              type="button"
-              aria-pressed={c.id === activeId}
-              onClick={() => {
-                focusChat(c.id);
-                setConversationsOpen(false);
-              }}
-              title={c.title ?? "New chat"}
-              className="min-w-0 flex-1 text-left"
-            >
-              <span className="block truncate">{c.title ?? "New chat"}</span>
-            </button>
-            <button
-              type="button"
-              aria-label="Close tab"
-              title={c.id === activeId ? "Close tab (⌘W) — ⇧⌘T brings it back" : "Close tab"}
-              onClick={() => closeChat(c.id)}
-              className="-my-1 flex size-6 shrink-0 items-center justify-center rounded-[5px] text-ink-3 transition-[background-color,color] duration-100 hover:bg-hover-2 hover:text-ink"
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-        ))}
-        <button
-          type="button"
-          aria-label="New chat"
-          title="New chat (⌘T)"
-          onClick={newChat}
-          className="ml-0.5 flex size-7 shrink-0 items-center justify-center rounded-[7px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-        </button>
-      </div>
-      <div className={`${reviewStyles.actions} flex shrink-0 items-center gap-2 pl-2 pr-1`}>
-        <button
-          type="button"
-          aria-pressed={conversationsOpen}
-          onClick={openConversations}
-          title="All conversations"
-          className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
-            conversationsOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
-          }`}
-        >
-          <IconChat size={14} />
-          <span data-toolbar-label className="hidden sm:inline">Chats</span>
-        </button>
-        <button
-          type="button"
-          aria-pressed={panes.length > 0}
-          onClick={toggleSplit}
-          title={panes.length > 0 ? "Close the splits (⌘\\)" : "Split the view: another chat beside this one (⌘D adds one)"}
-          className={`flex size-7 items-center justify-center rounded-[7px] transition-colors duration-100 ${
-            panes.length > 0 ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
-          }`}
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <rect x="3" y="4" width="18" height="16" rx="2" />
-            <path d="M12 4v16" />
-          </svg>
-        </button>
-        <button
-          type="button"
-          aria-pressed={filesOpen}
-          onClick={() => {
-            setBrowserOpen(false);
-            setConversationsOpen(false);
-            setFilesOpen((open) => !open);
-          }}
-          title={`${chatCwd ?? "Workspace"}\nShow this chat's files`}
-          className={`flex h-7 items-center gap-1.5 rounded-l-[7px] pl-2 pr-1.5 text-[12px] font-medium transition-colors duration-100 ${
-            filesOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
-          }`}
-        >
-          <IconFolder size={14} />
-          <span data-toolbar-label className="max-w-40 truncate font-mono text-[11.5px]">{workspaceName}</span>
-        </button>
-        <button
-          type="button"
-          aria-label="Open a folder"
-          onClick={() => setDialog({ mode: "new" })}
-          title="Open another folder to work in"
-          className="-ml-2 flex h-7 items-center rounded-r-[7px] pl-0.5 pr-1.5 text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="M6 9l6 6 6-6" />
-          </svg>
-        </button>
-        <button type="button" onClick={openChanges} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover" aria-label="Review workspace changes" title="Review workspace changes"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M5 5h14v14H5zM8 9h8M8 12h8M8 15h4" /></svg><span data-toolbar-label>Changes</span></button>
-        <button
-          type="button"
-          aria-pressed={browserOpen}
-          onClick={() => {
-            setFilesOpen(false);
-            setBrowserOpen((open) => !open);
-          }}
-          title="Sidecar browser — a Chrome tab this chat and its agent share"
-          className={`flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium transition-colors duration-100 ${
-            browserOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
-          }`}
-        >
-          <IconGlobe size={14} />
-          <span data-toolbar-label className="text-[11.5px]">Browser</span>
-          {pinCount > 0 && (
-            <span className="rounded-full bg-accent px-1.5 text-[10px] font-semibold text-white tabular-nums">{pinCount}</span>
-          )}
-        </button>
-        <button aria-label="Toggle terminal" aria-pressed={terminalVisible} title="Terminal (⌘J)" onClick={toggleTerminal} className="rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg></button>
-        <button aria-label="Show agents" aria-pressed={agentsOpen} onClick={() => { setAgentsOpen(!agentsOpen); setFilesOpen(false); setBrowserOpen(false); setConversationsOpen(false); }} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="9" cy="7" r="3"/><path d="M3 20v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2"/></svg><span data-toolbar-label>Agents</span></button>
-        <ThemeToggle />
-      </div>
-    </div>
-  );
 
   useDesktopShortcuts({ closeChat, newChat, reopenClosed, toggleSplit, focusChat, chats, activeId, columns: columnIds,
     split: direction => { setSplitDirection(direction); setZoomedPane(false); addPane(); },
@@ -928,9 +773,7 @@ export default function GraffHarness() {
   catalogRef.current = { adopt: (id: number) => { if (!runningRef.current.has(id)) void adoptCatalog(id).catch(() => undefined); }, activeId };
 
   const paneTodos = lastAssistant?.turn.todos ?? [];
-  // The active chat is the first column; the panes follow it. A chat that
-  // was closed, or became the active one, leaves the split rather than
-  // showing twice. Four columns is as narrow as a chat stays readable.
+  // Zoom only changes visibility; the split order is retained.
   const columns = (zoomedPane ? [activeId] : columnIds).map((id) => chats.find((c) => c.id === id)).filter((c): c is Chat => c !== undefined);
 
 
@@ -948,6 +791,7 @@ export default function GraffHarness() {
         onSeeAll={openConversations}
         activeNav={projectsOpen ? "projects" : filesOpen ? (fileRequest?.changes ? "changes" : "workspace") : browserOpen ? "browser" : conversationsOpen ? "conversations" : "home"}
         onNavigate={(key) => {
+          setAgentsOpen(false);
           setProjectsOpen(key === "projects");
           if (key === "changes") { openChanges(); return; }
           if (key === "workspace") setFileRequest(null);
@@ -968,7 +812,15 @@ export default function GraffHarness() {
       />
 
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
-        <div className="flex min-h-0 flex-1 gap-2.5" style={{ flexDirection: splitDirection }}>
+        <HarnessChrome chats={chats} activeId={activeId} busyIds={busyIds} focusChat={focusChat} closeChat={closeChat} newChat={newChat}
+          conversationsOpen={conversationsOpen} openConversations={openConversations} split={panes.length > 0} toggleSplit={toggleSplit}
+          filesOpen={filesOpen} onFiles={() => { setAgentsOpen(false); setFileRequest(null); setProjectsOpen(false); setBrowserOpen(false); setConversationsOpen(false); setFilesOpen(fileRequest?.changes ? true : !filesOpen); }}
+          chatCwd={chatCwd} workspaceName={workspaceName} onFolder={() => setDialog({ mode: "new" })} openChanges={openChanges}
+          browserOpen={browserOpen} onBrowser={() => { setAgentsOpen(false); setProjectsOpen(false); setConversationsOpen(false); setFilesOpen(false); setBrowserOpen(open => !open); }} pinCount={pinCount}
+          terminalVisible={terminalVisible} toggleTerminal={toggleTerminal} agentsOpen={agentsOpen}
+          onAgents={() => { setProjectsOpen(false); setAgentsOpen(!agentsOpen); setFilesOpen(false); setBrowserOpen(false); setConversationsOpen(false); }} />
+        <ConversationOpenNotice request={savedConversation.request} onCancel={savedConversation.cancel} onRetry={savedConversation.retry} />
+        <div className="flex min-h-0 flex-1 gap-2.5">
           {projectsOpen ? (
             <ProjectsPane workspaces={workspaces} current={activePath} onOpen={() => setDialog({ mode: "new" })}
               onClose={() => setProjectsOpen(false)}
@@ -976,70 +828,22 @@ export default function GraffHarness() {
               onNewChat={newProjectChat} />
           ) : conversationsOpen ? (
             <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page">
-              {tabBar}
               <ConversationsPane
                 root={chatCwd}
                 activeId={chatThread.session ?? null}
-                onPick={(name) => {
-                  setConversationsOpen(false);
-                  pickRecent(name);
-                }}
+                onPick={pickRecent}
                 onNewChat={() => {
                   setConversationsOpen(false);
                   newChat();
                 }}
               />
             </section>
-          ) : (
-            <>
-            {columns.map((thread, slot) => (
-              <section
-                key={thread.id}
-                data-chat={thread.id}
-                style={{ flexGrow: paneWeights[thread.id] ?? 1, minHeight: 0 }}
-                className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page"
-              >
-                {slot === 0 ? (
-                  tabBar
-                ) : (
-                  <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-3">
-                    {busyIds.has(thread.id) && (
-                      <span className="size-1.5 shrink-0 animate-pulse rounded-full" style={{ background: "var(--accent)" }} aria-label="Working" />
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => focusChat(thread.id)}
-                      title="Make this the main chat"
-                      className="min-w-0 flex-1 truncate text-left text-[12.5px] font-medium text-ink"
-                    >
-                      {thread.title ?? "New chat"}
-                    </button>
-                    <span
-                      title={cwdOf(thread) ?? "workspace"}
-                      className="flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-1.5 text-[12px] font-medium text-ink-2"
-                    >
-                      <IconFolder size={14} />
-                      <span className="max-w-32 truncate font-mono text-[11.5px]">{workspaceNameOf(thread)}</span>
-                    </span>
-                    <button
-                      type="button"
-                      aria-label="Close this split"
-                      title="Close this split"
-                      onClick={() => closePane(thread.id)}
-                      className="flex size-7 shrink-0 items-center justify-center rounded-[6px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
-                    >
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
-                        <path d="M18 6L6 18M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </div>
-                )}
-                {columnBody(thread)}
-              </section>
-            ))}
-
-            </>
-          )}
+          ) : null}
+          <div className="min-h-0 min-w-0 flex-1" style={{ display: projectsOpen || conversationsOpen ? "none" : "flex" }}>
+            <ChatSplitLayout threads={columns} activeId={activeId} direction={splitDirection} weights={paneWeights} setWeights={setPaneWeights}
+              onFocus={focusChat} onClose={closeChat} folder={thread => ({name: workspaceNameOf(thread), path: cwdOf(thread)})}
+              body={columnBody} split={columnIds.length > 1} />
+          </div>
 
           {agentsOpen && !projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && <AgentsPane key={chatCwd} root={chatCwd} onClose={() => setAgentsOpen(false)} />}
           {filesOpen && !projectsOpen && !conversationsOpen && (fileRequest?.changes ? <ChangesPane root={chatThread.cwd} onClose={() => setFilesOpen(false)} /> : <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />)}

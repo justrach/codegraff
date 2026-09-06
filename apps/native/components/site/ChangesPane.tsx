@@ -26,25 +26,30 @@ export default function ChangesPane({ root, onClose }: { root?: string; onClose(
   const [wrap, setWrap] = useState(true);
   const [revision, setRevision] = useState(0);
   const [loading, setLoading] = useState(true);
+  const identity = useRef("");
   useEffect(() => { setWorkspace(root); setSelected(""); }, [root]);
   useEffect(() => {
     setLoading(true);
+    setDiff(""); setError("");
+    const nextIdentity = JSON.stringify([workspace, scope]);
+    if (identity.current !== nextIdentity) { identity.current = nextIdentity; setState(null); }
     let stopped = false, timer: ReturnType<typeof setTimeout>;
     const refresh = async () => {
       if (document.visibilityState === "hidden") { timer = setTimeout(refresh, 5000); return; }
+      let listed = false;
       try {
         const query = new URLSearchParams({ scope, ...(workspace ? { root: workspace } : {}) });
         const response = await fetch(`/api/git?${query}`, { cache: "no-store" });
-        const data = await response.json(); if (!response.ok) throw Error(data.error);
-        if (stopped) return; setState(data); setError("");
+        const data = await response.json(); if (!response.ok) throw Error(data.error || `Could not load changes (${response.status}).`);
+        if (stopped) return; setState(data); setError(""); listed = true;
         const file = data.files.some((row: { path: string }) => row.path === selectedRef.current) ? selectedRef.current : data.files[0]?.path || "";
         if (file !== selectedRef.current) setSelected(file);
         if (file) {
           const reply = await fetch('/api/git', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ root: workspace, path: file, scope }) });
-          const content = await reply.json(); if (!reply.ok) throw Error(content.error);
+          const content = await reply.json(); if (!reply.ok) throw Error(content.error || `Could not load the diff (${reply.status}).`);
           if (!stopped && file === selectedRef.current) setDiff(content.diff);
         } else setDiff("");
-      } catch (err) { if (!stopped) setError(err instanceof Error ? err.message : String(err)); }
+      } catch (err) { if (!stopped) { setError(err instanceof Error ? err.message : String(err)); setDiff(""); if (!listed) setState(null); } }
       finally { if (!stopped) { setLoading(false); timer = setTimeout(refresh, 5000); } }
     };
     void refresh(); return () => { stopped = true; clearTimeout(timer); };
@@ -63,7 +68,7 @@ export default function ChangesPane({ root, onClose }: { root?: string; onClose(
       <strong className="text-[13px] font-medium">Changes</strong>
       <span className="rounded-md bg-hover px-1.5 py-0.5 text-[10px] tabular-nums text-ink-3">{files.length}</span>
       <div className="min-w-0 flex-1 truncate pl-1 text-[11px] text-ink-3" title={state?.branch}>{state?.branch}</div>
-      <span className="size-1.5 shrink-0 rounded-full bg-green/70" title="Refreshes every five seconds while visible" aria-label="Live updates" />
+      <span className={`size-1.5 shrink-0 rounded-full ${error ? "bg-orange" : "bg-green/70"}`} title={error ? "Updates unavailable; retrying every five seconds" : "Refreshes every five seconds while visible"} aria-label={error ? "Updates unavailable" : "Live updates"} />
       <button className={button} title="Refresh changes" aria-label="Refresh changes" onClick={() => setRevision(value => value + 1)}><Icon kind="refresh" /></button>
       <button className={button} title="Close changes" aria-label="Close changes" onClick={onClose}><Icon kind="close" /></button>
     </header>
@@ -77,7 +82,7 @@ export default function ChangesPane({ root, onClose }: { root?: string; onClose(
       </div>
       <button aria-label="Show recent commits" title="Recent commits" aria-pressed={history} onClick={() => setHistory(!history)} className={`${button} ${history ? "bg-hover text-ink" : ""}`}><Icon kind="history" /></button>
     </div>
-    {error && <p role="alert" className="border-b border-line px-3 py-2 text-xs text-red">{error}</p>}
+    {error && <p role="alert" className="border-b border-line px-3 py-2 text-xs text-red">{error}<button type="button" onClick={() => setRevision(value => value + 1)} className="ml-2 rounded px-2 py-1 underline">Retry</button></p>}
     {history && <div className="max-h-44 shrink-0 overflow-auto border-b border-line px-3 py-2">{state?.commits.length ? state.commits.map(commit => <div key={commit.hash} className="py-1.5 text-xs"><div className="truncate text-ink-2" title={commit.subject}>{commit.subject}</div><div className="mt-0.5 text-[10px] text-ink-3"><code>{commit.hash}</code> · {commit.author}</div></div>) : <p className="py-2 text-xs text-ink-3">No commits yet.</p>}</div>}
     {files.length > 0 && <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-line px-2">
       <button className={`${button} ${showFiles ? "bg-hover" : ""}`} title="Toggle file list" aria-label="Toggle changed file list" aria-pressed={showFiles} onClick={() => setShowFiles(!showFiles)}><Icon kind="files" /></button>
@@ -91,9 +96,9 @@ export default function ChangesPane({ root, onClose }: { root?: string; onClose(
     <div className={styles.body}>
       {showFiles && files.length > 0 && <nav aria-label="Changed files" className={styles.files}><input aria-label="Filter changed files" placeholder="Find a file…" value={filter} onChange={event => setFilter(event.target.value)} className="mb-2 w-full rounded-md border border-line bg-field px-2 py-1.5 text-xs outline-accent" />{!filteredFiles.length && <p className="px-2 py-3 text-xs text-ink-3">No matching files.</p>}{filteredFiles.map(file => <button key={file.path} onClick={() => choose(file.path)} title={file.path} className={`mb-0.5 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs ${file.path === selected ? "bg-hover text-ink" : "text-ink-3 hover:bg-hover"}`}><span className="min-w-0 flex-1"><span className="block truncate">{file.path.split('/').pop()}</span>{file.path.includes("/") && <span className="mt-0.5 block truncate font-mono text-[9px] text-ink-3">{file.path.slice(0, file.path.lastIndexOf("/"))}</span>}</span><span className="text-[9px]">{file.untracked ? "NEW" : file.status.trim()}</span></button>)}</nav>}
       <section ref={viewport} aria-label="File diff" aria-busy={loading} className="min-h-0 min-w-0 flex-1 overflow-auto">
-        {rows.length ? <ReviewDiff rows={rows} wrap={wrap} /> : <div className="flex min-h-40 h-full flex-col items-center justify-center gap-2 px-8 text-center"><span className="text-sm text-ink-2">{loading ? "Loading changes…" : selected ? "No text changes to display" : "Working tree is clean"}</span><p className="max-w-60 text-xs leading-relaxed text-ink-3">{loading ? "" : selected ? "Binary files and metadata-only changes have no line diff." : "Edits in this workspace will appear here automatically."}</p></div>}
+        {rows.length ? <ReviewDiff rows={rows} wrap={wrap} /> : <div className="flex min-h-40 h-full flex-col items-center justify-center gap-2 px-8 text-center"><span className="text-sm text-ink-2">{loading ? "Loading changes…" : error ? "Changes unavailable" : selected ? "No text changes to display" : "Working tree is clean"}</span><p className="max-w-60 text-xs leading-relaxed text-ink-3">{loading ? "" : error ? "Retry to read this folder’s current changes." : selected ? "Binary files and metadata-only changes have no line diff." : "Edits in this workspace will appear here automatically."}</p></div>}
       </section>
     </div>
-    {selected && <ReviewActions diff={diff} path={selected} root={workspace} viewport={viewport} count={rows.slice(0, 12000).filter(row => row.kind === "hunk").length} />}
+    {file && !error && !loading && <ReviewActions diff={diff} path={selected} root={workspace} viewport={viewport} count={rows.slice(0, 12000).filter(row => row.kind === "hunk").length} />}
   </aside></ResizableReviewPane>;
 }
