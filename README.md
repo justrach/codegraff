@@ -71,9 +71,9 @@ Xcode command-line tools installed:
 The development bundle contains the production UI, Chromium, Bun, graff and the
 native bridge, and starts its own local server. It does not need a separate dev
 server or Kuri. Source builds use local development signing. The downloadable
-release is Developer ID signed and notarized. To update the desktop, download
-the newer app and replace the copy in Applications; automatic updates are not
-available yet.
+release is Developer ID signed and notarized. Installed releases from v0.0.291
+download updates in the background and wait for **Restart to update**. Earlier
+versions need one manual replacement in Applications to enable the updater.
 
 **Profile and test without a model.** The Performance menu and desktop profiler
 tool record bounded, local measurement reports. Startup paint timing, streaming
