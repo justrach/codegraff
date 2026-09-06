@@ -10,7 +10,7 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## Unreleased
+## v0.0.288 (2026-09-06)
 
 - Recorded user constraints ride the root prefix as live ledger JSON, including
   the empty set, so a compaction recap cannot invent a recording. A write
@@ -18,6 +18,13 @@ current is part of cutting a release.
   continuation.
 - A second bracketed paste in the same input batch no longer turns its first
   newline into Enter after the previous paste ends.
+- `#752`: a truncated tool-call argument stream can no longer poison later
+  requests in the same turn.
+- `#745`: a plain final reply with unfinished current work gets one
+  reconciliation request; a remaining stop is explicit.
+- `#746`: hosted search is not emitted until deferred tools are ready.
+- GPT-6+ on Codegraff uses OpenAI compact; Grok keeps the client summarizer.
+- Native composer: real `@` files, image paste and drop.
 - Gemini is a first-class provider, on Google's own Interactions API.
   `GEMINI_API_KEY` serves `gemini-*` directly instead of falling through
   to the gateway as an uncatalogued model, and `graff --model

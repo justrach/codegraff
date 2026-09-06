@@ -21,6 +21,15 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.288
+    \\  • Gemini is a first-class provider on Google's Interactions API
+    \\  • recorded constraints ride the prefix as ledger JSON; recaps cannot invent them (#738)
+    \\  • a second paste in the same batch no longer sends on its first newline (#737)
+    \\  • truncated tool-call arguments cannot poison later requests (#752)
+    \\  • a plain final with open work gets one reconciliation request (#745)
+    \\  • GPT-6+ on Codegraff uses OpenAI compact; Grok keeps the client summarizer
+    \\  • native composer: real @ files, image paste and drop
+    \\
     \\0.0.287
     \\  • the macOS app updates itself — verified signature, team and notarization before it installs
     \\  • native app gains a searchable, paginated conversation library (#723)
@@ -84,14 +93,6 @@ pub const changelog_text =
     \\  • leftover 279 work: TUI stall/resize, experiment fan-out, /tell /peek, ACP graff-login
     \\  • local tools (.graff/tools), /schedule due-claim, JSONL channel workers
     \\  • native codedb / read_file stay the default readers; codedb-pro is extra search (ADR 0040)
-    \\
-    \\0.0.279
-    \\  • native Beautiful UI app speaks ACP: thinking and tool chips stream mid-turn (ADR 0032)
-    \\  • graff acp emits thought / tool_call / text session/update; /never is an ACP slash command
-    \\  • /never on a TTY is a searchable picker with two confirms; rm and ACP list still work (#638)
-    \\  • bash_output wait_ms>0 always waits for exit — mid-range values are not a timeout (#640)
-    \\  • host recipe: docs/embedding.md; @codegraff/sdk/acp spawns graff acp
-    \\  • first-turn tools: no MCP handshake wait, live chips show elapsed from start (ADR 0035)
     \\
     \\0.0.278
     \\  • deleted composer screenshots are not sent: submit keeps [Image #N] / @[path] only (#634)
