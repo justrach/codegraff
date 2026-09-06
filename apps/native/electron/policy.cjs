@@ -17,8 +17,10 @@ function authorized(req, token) {
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-function bounds(rect, size) {
+function bounds(rect, size, zoom = 1) {
   if (!rect || !['x', 'y', 'width', 'height'].every(k => Number.isFinite(rect[k]))) return null;
+  if (!Number.isFinite(zoom) || zoom <= 0) return null;
+  rect = Object.fromEntries(['x', 'y', 'width', 'height'].map(key => [key, rect[key] * zoom]));
   const x = Math.max(0, Math.min(size.width, Math.round(rect.x)));
   const y = Math.max(0, Math.min(size.height, Math.round(rect.y)));
   return { x, y, width: Math.max(0, Math.min(size.width - x, Math.round(rect.width))),

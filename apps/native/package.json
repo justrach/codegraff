@@ -31,6 +31,7 @@
     "streamdown": "^2.6.0"
   },
   "devDependencies": {
+    "@electron/osx-sign": "2.7.0",
     "@tailwindcss/postcss": "^4.1.8",
     "@types/node": "^22",
     "@types/react": "^19",

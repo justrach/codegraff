@@ -57,6 +57,7 @@ app.whenReady().then(async () => {
   }
   await require('./stress-visual.cjs').runStressVisuals({ win, origin, output });
   await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
+  await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
   await require('./agents-visual.cjs').runAgentVisuals({ win, origin, output });
   if (process.env.GRAFF_PERFORMANCE_TESTS) await require('./performance-scenarios.cjs').runPerformance({ win, origin, output });
   assert.deepEqual(apiRequests, [], 'Visual fixtures must not call the engine or model APIs');

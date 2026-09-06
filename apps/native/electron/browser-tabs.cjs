@@ -38,7 +38,7 @@ class BrowserTabs {
     const wc = view.webContents;
     let navigationStarted = 0;
     wc.on('did-start-loading', () => { navigationStarted = performance.now(); this.profiler?.record('page-navigation'); this.notify(tab); });
-    wc.on('did-finish-load', () => { this.profiler?.record('page-loaded', performance.now() - navigationStarted); wc.send('profile-enabled', !!this.profiler?.active); });
+    wc.on('did-finish-load', () => { this.profiler?.record('page-loaded', performance.now() - navigationStarted); wc.send('profile-enabled', !!this.profiler?.active); wc.send('pins-sync', tab.pins || []); });
     wc.setWindowOpenHandler(({ url }) => {
       void this.navigate(chat, url).catch(() => {}); return { action: 'deny' };
     });
@@ -71,7 +71,7 @@ class BrowserTabs {
   setBounds(chat, rect) {
     let tab = this.tabs.get(chat);
     const size = this.window.getContentBounds();
-    const safe = bounds(rect, size);
+    const safe = bounds(rect, size, this.window.webContents.getZoomFactor());
     if (!safe || !safe.width || !safe.height) { this.hide(chat); return; }
     if (!tab) { tab = { chat, url: 'about:blank', view: null, timer: null, rect: safe }; this.tabs.set(chat, tab); }
     tab.rect = safe; this.attach(tab);
@@ -100,6 +100,11 @@ class BrowserTabs {
       const tab = this.tabs.get(chat);
       return tab && (tab.view || tab.url !== 'about:blank') ? this.info(tab) : null;
     }
+    if (method === 'pins') {
+      const tab = this.tabs.get(chat);
+      if (tab) { tab.pins = Array.isArray(params.pins) ? params.pins.slice(0, 100) : []; tab.view?.webContents.send('pins-sync', tab.pins); }
+      return { ok: true };
+    }
     if (method === 'open' || method === 'navigate') return this.navigate(chat, params.url);
     const tab = this.tabs.get(chat);
     if (!tab?.view) throw new Error('Open the browser page first');
@@ -107,7 +112,7 @@ class BrowserTabs {
     if (method === 'back' && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
     else if (method === 'forward' && wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
     else if (method === 'reload') wc.reload();
-    else if (method === 'pick') wc.send('pick-mode', !!params.enabled);
+    else if (method === 'pick') { wc.send('pick-mode', !!params.enabled); if (params.enabled) wc.focus(); }
     return this.info(tab);
   }
   get liveCount() { return [...this.tabs.values()].filter(t => t.view).length; }
