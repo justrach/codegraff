@@ -54,14 +54,14 @@ export default function ModelEffortButtons({ model, buttonRef, modelOpen, openMo
   const apply = () => { if (levels[draft] && levels[draft] !== model.effort) void change(`/effort ${levels[draft]}`); };
   const progress = levels.length > 1 ? draft / (levels.length - 1) : 0;
   const displayName = model.name.replace(/^gpt-/i, "GPT-").replace(/-(astra|sol|terra|luna)$/i, (_, name: string) => ` ${name[0].toUpperCase()}${name.slice(1)}`);
-  return <div className={`flex min-w-0 items-center gap-0.5 ${wide ? "col-start-2 row-start-2 justify-self-start" : "col-start-3 row-start-1"}`}>
+  return <div data-model-controls className={`flex w-full min-w-0 items-center gap-0.5 ${wide ? "col-start-2 row-start-2 justify-self-start" : "col-start-3 row-start-1"}`}>
     <button ref={buttonRef} type="button" aria-expanded={modelOpen} aria-label="Choose model" disabled={saving || busy} onClick={openModel}
       className={`flex h-7 min-w-0 items-center gap-1 px-1.5 text-[12px] font-medium text-ink-2 hover:bg-hover hover:text-ink ${pill ? "rounded-full" : "rounded-lg"}`}>
       {model.fast && model.fastSupported && <span className="text-accent [&_svg]:size-3.5" aria-label="Fast mode enabled"><Bolt filled /></span>}
-      <span className="truncate">{displayName}</span><Chevron />
+      <span className="truncate" title={displayName}>{displayName}</span><span className="shrink-0"><Chevron /></span>
     </button>
     {levels.length > 0 && <button ref={effortButton} type="button" aria-label="Select effort" aria-expanded={open} onClick={show}
-      className="flex h-7 items-center gap-1.5 rounded-full px-2 text-xs text-ink-3 hover:bg-hover">{labels[model.effort ?? ""] ?? "Effort"}<Chevron /></button>}
+      className="flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs text-ink-3 hover:bg-hover">{labels[model.effort ?? ""] ?? "Effort"}<Chevron /></button>}
     {open && createPortal(<div ref={panel} role="dialog" aria-label="Reasoning effort" style={position}
       className="fixed z-[100] w-80 max-w-[calc(100vw-24px)] rounded-[22px] border border-line bg-page px-4 pb-4 pt-3 text-ink shadow-[0_8px_24px_-8px_rgb(0_0_0/18%)]">
       <div className="flex items-center justify-between gap-3">

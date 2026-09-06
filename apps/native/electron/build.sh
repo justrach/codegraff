@@ -2,7 +2,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../../.." && pwd)"
-version="${GRAFF_VERSION:-0.0.289}"
+version="${GRAFF_VERSION:-0.0.290}"
 ui="$root/apps/native"
 out="$root/zig-out/electron"
 bundle="$out/Codegraff.app"
@@ -29,6 +29,7 @@ printf '{"name":"codegraff","productName":"Codegraff","version":"%s","main":"mai
 ditto "$ui/.next/standalone" "$resources/ui"
 ditto "$ui/.next/static" "$resources/ui/.next/static"
 [[ ! -d "$ui/public" ]] || ditto "$ui/public" "$resources/ui/public"
+bun "$here/prepare-bundle.cjs" "$resources/ui"
 rm -rf "$resources/ui/node_modules/@img"
 cp "$(command -v bun)" "$resources/bun"
 cp "$root/zig-out/bin/graff" "$resources/graff"
@@ -41,6 +42,9 @@ xcrun clang -O2 -bundle -undefined dynamic_lookup -mmacosx-version-min=14.0 \
   -L "$resources/native" -lGraffActivity -Wl,-rpath,@loader_path -o "$resources/native/activity.node"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier dev.codegraff.electron.local' "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleName Codegraff' "$bundle/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$bundle/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$bundle/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Set :LSMinimumSystemVersion 14.0' "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Codegraff' "$bundle/Contents/Info.plist" 2>/dev/null || true
 cp "$root/zig-out/native-local/Codegraff.app/Contents/Resources/icon.icns" "$resources/electron.icns" 2>/dev/null || true
 # Local development signing; production notarization remains a separate release step.

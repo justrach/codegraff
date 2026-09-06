@@ -70,7 +70,7 @@ export default function EmptyState({
   }, []);
 
   return (
-    <div className={`mx-auto flex min-h-full max-w-[720px] flex-col justify-center px-4 ${compact ? "py-2" : "py-10 sm:px-8"}`}>
+    <div className={`mx-auto flex min-h-full w-full min-w-0 max-w-[720px] flex-col justify-center px-4 ${compact ? "py-2" : "py-10 sm:px-8"}`}>
       {!compact && <h1 className="text-[26px] font-normal tracking-[-0.02em] text-ink">
         <span className="home-reveal block text-ink-3" style={homeRevealStyle(stage >= 1)}>
           {greeting()}
@@ -119,7 +119,7 @@ export default function EmptyState({
             <span className="min-w-0 truncate">{item.label}</span>
           </button>
         ))}
-        <div className="mt-1 flex items-center gap-5 pl-0.5 text-[13px] text-ink-3">
+        <div className="mt-1 flex flex-wrap items-center gap-x-5 gap-y-1 pl-0.5 text-[13px] text-ink-3">
           <span className="flex items-center gap-2 py-1" title={where}>
             <span className={`size-1.5 rounded-full ${health?.ok ? "bg-green" : "bg-orange"}`} />
             {health?.ok

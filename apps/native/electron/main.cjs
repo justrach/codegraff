@@ -104,7 +104,7 @@ app.whenReady().then(async () => {
     trusted(event);
     if (typeof chat !== 'string' || chat.length > 256) throw new Error('Invalid chat');
     if (method === 'handle') return browser.tabs.get(chat)?.view ? automation.handle(chat) : null;
-    if (!['open', 'navigate', 'back', 'forward', 'reload', 'info', 'bounds', 'hide', 'close', 'stop', 'pick', 'find', 'zoom'].includes(method)) throw new Error('Unknown action');
+    if (!['open', 'navigate', 'back', 'forward', 'reload', 'info', 'bounds', 'hide', 'close', 'stop', 'pick', 'pins', 'find', 'zoom'].includes(method)) throw new Error('Unknown action');
     return ['find', 'zoom'].includes(method) ? browserAction(browser, chat, method, params) : browser.command(chat, method, params);
   });
   ipcMain.on('browser-overlay', (event, blocked) => { trusted(event); browser.setOverlay(blocked === true); });
@@ -115,9 +115,14 @@ app.whenReady().then(async () => {
     else throw new Error('Unknown window action');
   });
   ipcMain.handle('activity', event => { trusted(event); return activity(); });
+  ipcMain.on('browser-pick-cancelled', event => {
+    const tab = [...browser.tabs.values()].find(t => t.view?.webContents === event.sender);
+    if (tab && event.senderFrame === event.sender.mainFrame) win.webContents.send('browser-event', { chat: tab.chat, type: 'pick-cancelled' });
+  });
   ipcMain.on('browser-pin', (event, pin) => {
     const tab = [...browser.tabs.values()].find(t => t.view?.webContents === event.sender);
     if (!tab || event.senderFrame !== event.sender.mainFrame || !pin?.element || JSON.stringify(pin).length > 16000) return;
+    win.webContents.focus();
     win.webContents.send('browser-event', { chat: tab.chat, type: 'pin', pin });
   });
   installExternalLinks(win.webContents, backend.origin);

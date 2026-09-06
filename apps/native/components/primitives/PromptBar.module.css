@@ -1,0 +1,24 @@
+.composer {
+  container-type: inline-size;
+  min-width: 0;
+}
+
+/* Split panes can be narrow even on a large display. Keep settings legible
+   on their own row and reserve separate space for attachment/send actions. */
+@container (max-width: 420px) {
+  .controls {
+    grid-template-columns: 28px minmax(0, 1fr) 0px 28px 28px;
+  }
+  .controls > textarea {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+  .controls > [data-model-controls] {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: space-between;
+  }
+  .controls > button {
+    grid-row: 3;
+  }
+}

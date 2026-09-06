@@ -6,7 +6,7 @@ and the SwiftUI Activity sheet, then opens `zig-out/electron/Codegraff.app`.
 Builds currently target Apple Silicon macOS 14+; Liquid Glass uses macOS 26+.
 Source builds are signed locally for development. The
 [packaged v0.0.289 download](https://github.com/justrach/codegraff/releases/download/v0.0.289/Codegraff-macos-arm64.zip)
-is Developer ID signed and notarized. Unzip it and move Codegraff.app to Applications;
+is Developer ID signed and notarized. Open the disk image and drag Codegraff.app onto Applications;
 the runtime, engine, browser and native components are included.
 
 The application starts its own loopback server on port 3788 (a free port if
@@ -125,3 +125,23 @@ It does not claim GPU utilization, dedicated VRAM, field INP/CLS or a Lighthouse
 score. Chromium chooses its supported GPU backend; no forced driver flags or
 custom Metal pipeline are needed for the current DOM-based interface.
 See [repeatable performance scenarios](VISUAL-TESTS.md) for the model-free runner.
+
+## Building a distribution disk image
+
+`build.sh` produces a development app with a local signature. For public downloads,
+run `distribute.sh` with a Developer ID Application identity and a `notarytool`
+keychain profile. Bun installs the pinned Electron signing utility with the other
+development dependencies.
+
+```sh
+GRAFF_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+GRAFF_NOTARY_PROFILE="notary-local" \
+bash apps/native/electron/distribute.sh zig-out/electron/Codegraff.app zig-out/distribution
+```
+
+The command signs nested executables, notarizes and staples the app, creates the
+Finder drag-to-Applications layout, then signs, notarizes and staples the DMG.
+It verifies both artifacts with Gatekeeper and writes a separate DMG checksum.
+The output directory must be new. Notarization logs stay there for local review;
+only the DMG and checksum are release assets. Never publish a development bundle
+as the signed download.

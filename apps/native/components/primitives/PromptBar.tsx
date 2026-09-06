@@ -3,6 +3,7 @@
 import { parseComposerToken as parseToken, guiSkillRows } from "@/lib/gui-skills";
 import { Icon, GLYPHS, SOURCES, DEMO_COMMANDS, MODELS, FILES, DICTATION, AUTO_STEPS } from "./prompt-demo";
 import ModelPicker from "./ModelPicker";
+import layout from "./PromptBar.module.css";
 import ModelEffortButtons from "./ModelEffortButtons";
 import type { ModelChoice } from "@/lib/acp-client";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -347,7 +348,7 @@ export default function PromptBar({
   return (
     <div
       data-promptbar
-      className={demo ? "flex min-h-[384px] w-full max-w-105 flex-col justify-end pb-8" : "w-full"}
+      className={`${layout.composer} ${demo ? "flex min-h-[384px] w-full max-w-105 flex-col justify-end pb-8" : "w-full"}`}
       onPointerDownCapture={takeOver}
       onKeyDownCapture={takeOver}
     >
@@ -460,9 +461,9 @@ export default function PromptBar({
 
         <div
           ref={controlsRef}
-          className={`grid items-end gap-x-1 gap-y-1.5 ${
+          className={`${layout.controls} grid items-end gap-x-1 gap-y-1.5 ${
             wide
-              ? "grid-cols-[28px_auto_minmax(0,1fr)_28px_28px]"
+              ? "grid-cols-[28px_minmax(0,1fr)_0px_28px_28px]"
               : "grid-cols-[28px_minmax(0,1fr)_auto_28px_28px]"
           }`}
         >
