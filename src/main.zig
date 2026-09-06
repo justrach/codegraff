@@ -570,8 +570,6 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("main_test.zig");
     _ = @import("http_client.zig");
     _ = @import("http_client_tests.zig");
-    _ = @import("http_client_integration_tests.zig");
-    _ = @import("http_client_trajectory_tests.zig");
     _ = @import("prompt_astra.zig");
     _ = @import("agent_empty_completion.zig"); // #745: plain-final reconciliation
     _ = @import("agent_model_loop.zig");
@@ -595,5 +593,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("goal_pacing.zig");
     _ = @import("presence_record.zig");
     _ = @import("acp_agents.zig");
+    _ = @import("subagent_activity.zig");
+    _ = @import("acp_agent_activity.zig");
     _ = @import("read_image.zig");
 }

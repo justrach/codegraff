@@ -51,6 +51,11 @@ app.whenReady().then(async () => {
     assert.deepEqual(apiRequests, [], 'Stress fixtures never call engine or model APIs');
     return;
   }
+  if (process.env.GRAFF_VISUAL_SUITE === 'agents') {
+    await require('./agents-visual.cjs').runAgentVisuals({ win, origin, output });
+    assert.deepEqual(apiRequests, [], 'Agent fixtures never call engine or model APIs');
+    return;
+  }
   await win.loadURL(`${origin}/visual-tests`);
   const js = source => win.webContents.executeJavaScript(source);
   const wait = async source => { for (let i = 0; i < 100; i++) { if (await js(source)) return; await sleep(50); } throw Error(`Visual check timed out: ${source}`); };

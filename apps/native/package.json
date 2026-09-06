@@ -19,6 +19,7 @@
     "test:projects": "GRAFF_VISUAL_SUITE=projects bun scripts/test-visual.mjs",
     "test:splits": "GRAFF_VISUAL_SUITE=splits bun scripts/test-visual.mjs",
     "test:stress": "GRAFF_VISUAL_SUITE=stress bun scripts/test-visual.mjs",
+    "test:agents": "GRAFF_VISUAL_SUITE=agents bun scripts/test-visual.mjs",
     "test:performance": "GRAFF_PERFORMANCE_TESTS=1 bun scripts/test-visual.mjs"
   },
   "dependencies": {

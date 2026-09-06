@@ -438,7 +438,7 @@ pub fn stallGiveUpMessage(self: *Agent, retries: usize) ?[]const u8 {
 /// typed events through the sink. Best-effort: parse failures are ignored
 /// (the buffered body is parsed afterwards).
 pub fn printDelta(self: *Agent, raw_line: []const u8) void {
-    const no_ui = self.out == null;
+    const no_ui = self.out == null and self.sink == null;
     if (no_ui and !rlm_spec.available and !(main_mod.unattended and !main_mod.json_mode)) return;
     const payload = ssePayload(raw_line) orelse return;
     const parsed = std.json.parseFromSlice(Value, self.gpa, payload, .{}) catch return;
