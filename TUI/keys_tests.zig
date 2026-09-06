@@ -443,7 +443,7 @@ test "bracketed CRLF paste cannot invoke Enter/send (#643)" {
         term.deinit();
     }
     _ = term.feed("\x1b[200~one\r\ntwo\r\nthree\x1b[201~");
-    try std.testing.expectEqualStrings("one\ntwo\nthree", term.model.input.getValue());
+    try std.testing.expectEqualStrings("one\r\ntwo\r\nthree", term.model.input.getValue());
     try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
     try std.testing.expect(!term.model.cancel_requested);
     var forced: usize = 0;
@@ -451,6 +451,62 @@ test "bracketed CRLF paste cannot invoke Enter/send (#643)" {
         if (std.mem.eql(u8, e.text, "↳ force › interrupting…")) forced += 1;
     }
     try std.testing.expectEqual(@as(usize, 0), forced);
+}
+
+test "#737 streaming large single paragraph crosses real read and batch boundaries" {
+    try streamingPaste737("a long single paragraph ", 2500);
+}
+
+test "#737 streaming multiline paste preserves LF CRLF and trailing newline across reads" {
+    try streamingPaste737("first paragraph\n\nsecond paragraph\r\n", 1800);
+}
+
+fn streamingPaste737(unit: []const u8, repeats: usize) !void {
+    var term = try pendingTerm();
+    defer {
+        dropPending(&term);
+        term.deinit();
+    }
+    const a = std.testing.allocator;
+    const body = try a.alloc(u8, unit.len * repeats);
+    defer a.free(body);
+    for (0..repeats) |j| @memcpy(body[j * unit.len ..][0..unit.len], unit);
+    // Both markers arrive split, with enough body to overflow the production
+    // 16KiB input read and 64-event batch many times. No timing/model calls.
+    for ([_][]const u8{ "\x1b", "[2", "00~" }) |part| _ = term.feed(part);
+    var at: usize = 0;
+    while (at < body.len) {
+        const end = @min(at + 16381, body.len);
+        _ = term.feed(body[at..end]);
+        try std.testing.expectEqualStrings(body[0..end], term.model.input.getValue());
+        try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
+        try std.testing.expect(!term.model.cancel_requested);
+        for (term.model.history.items) |entry| try std.testing.expect(entry.kind != .user);
+        at = end;
+    }
+    for ([_][]const u8{ "\x1b[", "20", "1~" }) |part| _ = term.feed(part);
+    try std.testing.expectEqualStrings(body, term.model.input.getValue());
+    try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
+    _ = term.enter();
+    try std.testing.expectEqual(@as(usize, 1), term.model.steer_queue.items.len);
+    // steerEnter trims surrounding whitespace, so don't confuse its existing
+    // submit policy with the lossless unsent draft assertion above.
+    try std.testing.expectEqualStrings(std.mem.trim(u8, body, " \t\r\n"), term.model.steer_queue.items[0]);
+    try std.testing.expectEqualStrings("", term.model.input.getValue());
+}
+
+test "#737 delayed paste_end dispatch cannot reset a subsequent decoded paste" {
+    var term = try pendingTerm();
+    defer {
+        dropPending(&term);
+        term.deinit();
+    }
+    _ = term.feed("\x1b[200~first\x1b[201~\x1b[200~second");
+    _ = term.feed("\r");
+    _ = term.feed("\nthird\x1b[201~");
+    try std.testing.expectEqualStrings("firstsecond\r\nthird", term.model.input.getValue());
+    try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
+    try std.testing.expect(!term.model.cancel_requested);
 }
 
 test "wrap-less CRLF dump while streaming stays one draft (#643)" {

@@ -362,6 +362,7 @@ test "next: embedded paste newlines are chars, not Enter (#643)" {
     const p = "\x1b[200~a\r\nb\x1b[201~";
     try std.testing.expectEqual(Key.paste_start, next(p, &i).?);
     try std.testing.expectEqual(Key{ .char = 'a' }, next(p, &i).?);
+    try std.testing.expectEqual(Key{ .char = '\r' }, next(p, &i).?);
     try std.testing.expectEqual(Key{ .char = '\n' }, next(p, &i).?);
     try std.testing.expectEqual(Key{ .char = 'b' }, next(p, &i).?);
     try std.testing.expectEqual(Key.paste_end, next(p, &i).?);
