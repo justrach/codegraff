@@ -17,6 +17,10 @@ mounted=0
 cleanup() { if [[ "$mounted" == 1 ]]; then hdiutil detach "$work/mount" -quiet || true; fi; rm -rf "$work"; }
 trap cleanup EXIT
 ditto "$source_app" "$app"
+version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Distribution requires a stable version.' >&2; exit 1; }
+# Only distribution builds opt into online updates; include the feed in the signature.
+bun "$here/update-artifacts.cjs" config "$app/Contents/Resources/app-update.yml"
 bun "$here/sign-bundle.mjs" "$app"
 codesign --verify --deep --strict "$app"
 ditto -c -k --keepParent "$app" "$work/app.zip"
@@ -25,6 +29,10 @@ bun -e 'if(JSON.parse(require("fs").readFileSync(process.argv[1])).status!=="Acc
 xcrun stapler staple "$app"
 xcrun stapler validate "$app"
 spctl --assess --type execute --verbose=2 "$app"
+# Squirrel.Mac needs a ZIP of the signed, stapled app, not a disk image.
+archive="$out/Codegraff-$version-macos-arm64.zip"
+ditto -c -k --keepParent "$app" "$archive"
+bun "$here/update-artifacts.cjs" "$version" "$archive" "$out/latest-mac.yml"
 mkdir "$work/staging"
 ditto "$app" "$work/staging/Codegraff.app"
 ln -s /Applications "$work/staging/Applications"

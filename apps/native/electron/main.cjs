@@ -25,6 +25,10 @@ if (process.env.GRAFF_ELECTRON_SMOKE) process.env.GRAFF_THEMES_DIR = path.join(a
 let win, browser, backend, automation, computer, profiler;
 let terminals;
 let quitting = false;
+if (!require('./single-instance.cjs').claimDesktopInstance(app, () => win)) {
+  app.quit();
+  return;
+}
 
 async function metrics() {
   const { rssMiB, cpuPercent, processes } = await treeSample(process.pid);
@@ -128,8 +132,9 @@ app.whenReady().then(async () => {
   installExternalLinks(win.webContents, backend.origin);
   win.on('minimize', () => { if (browser.visible) browser.hide(browser.visible); });
   win.on('restore', () => win.webContents.send('browser-event', { type: 'layout' }));
+  const updateMenu = require('./updates.cjs').installUpdates({ app, win, ipcMain, trusted, resources });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { label: 'Codegraff', submenu: [{ role: 'about' }, { label: 'Activity…', accelerator: 'CmdOrCtrl+,', click: () => void activity().catch(error => dialog.showErrorBox('Activity', error.message)) }, { label: 'Computer use…', click: () => void computer.configure().catch(error => dialog.showErrorBox('Computer use', error.message)) }, { type: 'separator' }, { role: 'quit' }] },
+    { label: 'Codegraff', submenu: [{ role: 'about' }, ...updateMenu, { type: 'separator' }, { label: 'Activity…', accelerator: 'CmdOrCtrl+,', click: () => void activity().catch(error => dialog.showErrorBox('Activity', error.message)) }, { label: 'Computer use…', click: () => void computer.configure().catch(error => dialog.showErrorBox('Computer use', error.message)) }, { type: 'separator' }, { role: 'quit' }] },
     { label: 'File', submenu: [
       ['New chat', 'CmdOrCtrl+N', 'new'], ['New tab', 'CmdOrCtrl+T', 'new'],
       ['Close chat', 'CmdOrCtrl+W', 'close'], ['Reopen closed chat', 'CmdOrCtrl+Shift+T', 'reopen'],

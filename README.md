@@ -17,7 +17,7 @@
 curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
 ```
 
-<p align="center"><a href="https://github.com/justrach/codegraff/releases/download/v0.0.290/Codegraff-macos-arm64.dmg"><strong>Download CodeGraff for Mac</strong></a><br><sub>Apple Silicon · macOS 14+ · signed and notarized · everything included</sub></p>
+<p align="center"><a href="https://github.com/justrach/codegraff/releases/download/v0.0.291/Codegraff-macos-arm64.dmg"><strong>Download CodeGraff for Mac</strong></a><br><sub>Apple Silicon · macOS 14+ · signed and notarized · everything included</sub></p>
 
 **Evaluated on FrontierHarness tasks.** Graff includes a reproducible
 [FrontierHarness evaluation runner](graff-evals/frontier-harness/README.md),
@@ -138,12 +138,17 @@ next step supplied with useful information while reducing repeated input.
 ## Install
 
 **Desktop (Apple Silicon, macOS 14+).**
-[Download CodeGraff v0.0.290](https://github.com/justrach/codegraff/releases/download/v0.0.290/Codegraff-macos-arm64.dmg),
+[Download CodeGraff v0.0.291](https://github.com/justrach/codegraff/releases/download/v0.0.291/Codegraff-macos-arm64.dmg),
 open the disk image, and drag **Codegraff.app** onto **Applications**. Eject the disk image and open Codegraff from Applications.
 The notarized bundle includes Graff, Chromium, Bun and the native macOS components;
 you do not need a separate CLI, runtime, developer tools or local server.
-[Verify the download checksum](https://github.com/justrach/codegraff/releases/download/v0.0.290/Codegraff-DMG-SHA256SUMS).
+[Verify the download checksum](https://github.com/justrach/codegraff/releases/download/v0.0.291/Codegraff-DMG-SHA256SUMS).
 For a `graff` command in your terminal, use the CLI installer below.
+
+Desktop builds from v0.0.291 check for updates online and download them in the
+background. Choose **Restart to update** when your work is finished, or use
+**Codegraff → Check for Updates…**. Automatic downloads can be disabled in that
+menu. Earlier builds need one manual installation to enable the updater.
 
 **CLI (macOS · Linux · Windows).**
 

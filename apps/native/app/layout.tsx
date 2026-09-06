@@ -5,6 +5,7 @@ import "./appearance.css";
 import { appearanceScript } from "@/lib/appearance";
 import { ThemeSync } from "@/components/site/ThemeSync";
 import DesktopTitlebar from "@/components/site/DesktopTitlebar";
+import DesktopUpdates from "@/components/site/DesktopUpdates";
 import { BrowserWarm } from "@/components/site/BrowserWarm";
 
 const inter = Geist({
@@ -35,6 +36,7 @@ export default function RootLayout({
         <ThemeSync />
         <BrowserWarm />
         <DesktopTitlebar />
+        <DesktopUpdates />
         {children}
       </body>
     </html>

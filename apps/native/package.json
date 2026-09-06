@@ -15,12 +15,14 @@
     "test:electron": "bun test electron/policy.test.cjs",
     "test:desktop": "bun test lib ./electron/*.test.cjs",
     "test:visual": "bun scripts/test-visual.mjs",
+    "test:updates": "GRAFF_VISUAL_SUITE=updates bun scripts/test-visual.mjs",
     "test:performance": "GRAFF_PERFORMANCE_TESTS=1 bun scripts/test-visual.mjs"
   },
   "dependencies": {
     "@streamdown/code": "^1.1.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "electron-updater": "6.8.9",
     "glimm": "^0.3.0",
     "iconoir-react": "^7.11.1",
     "liveline": "^0.0.7",
