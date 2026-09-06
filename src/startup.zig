@@ -330,6 +330,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
             .key = cg_key,
             .home = home,
             .name = flags.name_flag,
+            .hostname_env = init.environ_map.get("COMPUTERNAME") orelse init.environ_map.get("HOSTNAME"),
             .serve = serveConfig(flags, init.environ_map),
         }, exe);
         return true;
