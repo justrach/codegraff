@@ -34,6 +34,7 @@ const task_outcome = @import("task_outcome.zig");
 const goal_todo = @import("goal_todo.zig"); // todo_write's replace path + the omitted-completed preserve rule
 const peer_channel = @import("peer_channel.zig");
 const workspace_switch = @import("workspace_switch.zig");
+const tool_call_args = @import("tool_call_args.zig");
 pub const toolInvalidatesEval = eval_control.toolInvalidatesEval;
 pub const gateTool = @import("agent_tool_gate.zig").gateTool;
 pub const firstWord = @import("agent_tool_gate.zig").firstWord;
@@ -227,6 +228,10 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
 }
 
 pub fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
+    if (!call.args_ok) {
+        self.emitToolRejected(call, "invalid_arguments", tool_call_args.invalid_exec_message);
+        return .{ .text = tool_call_args.invalid_exec_message, .is_error = true };
+    }
     if (self.sub) return null;
     if (self.review_mode) if (try review.rejectTool(self.arena, call)) |denied| {
         self.emitToolRejected(call, "review_mode", denied.text);
@@ -552,4 +557,31 @@ test "clock_sleep counts against --max-tool-calls and --dedupe-tool-calls like a
     try std.testing.expect(dupe_denied != null);
     try std.testing.expect(dupe_denied.?.is_error);
     try std.testing.expect(std.mem.indexOf(u8, dupe_denied.?.text, "duplicate") != null);
+}
+
+test "rejectToolCall: truncated arguments are a local error, not an executed call (#752)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent: Agent = .{
+        .gpa = a,
+        .arena = a,
+        .io = undefined,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+    const call: ToolCall = .{
+        .id = "c1",
+        .name = "bash",
+        .input = .{ .object = .empty },
+        .args_ok = false,
+    };
+    const denied = (try rejectToolCall(&agent, call)).?;
+    try std.testing.expect(denied.is_error);
+    try std.testing.expectEqualStrings(tool_call_args.invalid_exec_message, denied.text);
+    try std.testing.expectEqual(@as(u64, 0), agent.tool_calls_this_turn);
 }

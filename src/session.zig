@@ -29,6 +29,7 @@ const protocol_seq = @import("protocol_seq.zig"); // #330: the --json event sequ
 const http_headers = @import("http_headers.zig"); // the k3/codex prompt-cache key survives one too
 const session_transcript = @import("session_transcript.zig"); // #441: the append-only history this file's rewrites discard
 const session_peer = @import("session_peer.zig"); // ADR 0014: room cursor + inbox ride the session file
+const tool_call_args = @import("tool_call_args.zig"); // #752: quarantine truncated tool-call arguments on resume
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
 const unixMs = util.unixMs;
@@ -497,6 +498,8 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
         }
         try m.object.put(arena, "output", .{ .string = repaired.items });
     }
+    // #752: truncated `function.arguments` strings 400 every later request.
+    tool_call_args.repairHistory(root.gpa, arena, root.messages.items);
     root.strict = strict;
     root.ultracode_mode = ultracode_mode;
     root.goal = goal;

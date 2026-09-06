@@ -354,4 +354,5 @@ test {
     _ = @import("tui_goal.zig"); // #716: typed TUI /goal is retirable, not standing
     _ = @import("net_efficiency_test.zig");
     _ = @import("codex_tool_search.zig"); // hosted tool_search on gpt-5.4+ Codex
+    _ = @import("tool_call_args.zig"); // #752: truncated tool-call arguments must not poison history
 }

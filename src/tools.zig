@@ -24,6 +24,8 @@ pub const ToolCall = struct {
     id: []const u8,
     name: []const u8,
     input: Value,
+    /// False when assembled `arguments` were not a JSON object (#752).
+    args_ok: bool = true,
 };
 
 /// A tool's outcome, arena-owned, ready to wire into either format.

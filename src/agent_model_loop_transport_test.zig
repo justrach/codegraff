@@ -29,6 +29,7 @@ const Peer = struct {
             .openai => "{\"choices\":[{\"delta\":{\"content\":\"I will wait for your reply.\\n\"}}]}",
             .anthropic => "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"I will wait for your reply.\\n\"}}",
             .responses => "{\"type\":\"response.output_text.delta\",\"delta\":\"I will wait for your reply.\\n\"}",
+            .interactions => "{\"delta\":{\"type\":\"text\",\"text\":\"I will wait for your reply.\\n\"}}",
         };
         for (0..1000) |_| {
             if (websocket) {

@@ -23,6 +23,7 @@ const eval_control = @import("agent_eval_control.zig");
 const codex_chain = @import("codex_chain.zig");
 const toolResultMessage = messages_mod.toolResultMessage;
 const turn_checkpoint = @import("turn_checkpoint.zig");
+const tool_call_args = @import("tool_call_args.zig");
 
 pub fn surfaceUnstreamedText(self: *Agent, text: []const u8) !void {
     if (self.sub or self.streamed_text or text.len == 0) return;
@@ -104,13 +105,11 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
             if (@import("xai_hosted.zig").isServerSideCall(itype, name)) continue;
             const call_id = if (item.object.get("call_id")) |c| (if (c == .string) c.string else continue) else continue;
             const args = if (item.object.get("arguments")) |a| (if (a == .string) a.string else "") else "";
-            const input: Value = if (args.len == 0)
-                .{ .object = .empty }
-            else
-                std.json.parseFromSliceLeaky(Value, self.scratchAlloc(), args, .{ .allocate = .alloc_always }) catch .{ .object = .empty }; // #124: execution-only, same contract as the openai site below
-            try calls.append(self.gpa, .{ .id = call_id, .name = name, .input = input });
+            const parsed = tool_call_args.parse(self.scratchAlloc(), args); // #124: execution-only tree
+            try calls.append(self.gpa, .{ .id = call_id, .name = name, .input = parsed.input, .args_ok = parsed.valid });
         }
     }
+    tool_call_args.repairHistory(self.gpa, self.arena, self.messages.items);
     self.pairContextMeterWithCurrentLocal();
 
     // Codex WS delta: the server now holds up to here (the output items appended
@@ -277,16 +276,14 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
             const function = tc.object.get("function") orelse continue;
             if (function != .object) continue;
             const args_str = if (function.object.get("arguments")) |a| (if (a == .string) a.string else "") else "";
-            const input: Value = if (args_str.len == 0)
-                .{ .object = .empty }
-            else
-                (std.json.parseFromSliceLeaky(Value, self.scratchAlloc(), args_str, .{ .allocate = .alloc_always }) catch .{ .object = .empty }); // #124: execution-only — every consumer (runTools, gate prompts, emits) finishes before the next request()'s scratch reset; the history message carries the arguments STRING, not this tree
+            const parsed = tool_call_args.parse(self.scratchAlloc(), args_str); // #124: execution-only tree
             const name = if (function.object.get("name")) |n| (if (n == .string) n.string else "") else "";
             if (name.len == 0) continue; // can't dispatch a nameless call
             const id = if (tc.object.get("id")) |x| (if (x == .string) x.string else "") else "";
-            try calls.append(self.gpa, .{ .id = id, .name = name, .input = input });
+            try calls.append(self.gpa, .{ .id = id, .name = name, .input = parsed.input, .args_ok = parsed.valid });
         }
     };
+    tool_call_args.repairMessage(self.gpa, self.arena, &self.messages.items[self.messages.items.len - 1]);
     self.pairContextMeterWithCurrentLocal();
 
     if (calls.items.len > 0) {
