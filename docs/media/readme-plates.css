@@ -34,9 +34,11 @@ footer { position: absolute; left: 84px; right: 84px; bottom: 43px; display: fle
 .hero-art { position:absolute; top: 0; right: 0; width: 980px; height: 964px; overflow:hidden; border-left: 8px solid #d45a43; }
 .hero-art img { width:100%; height:100%; object-fit:cover; object-position:51% 50%; }
 .hero-bottom { position:absolute; left:84px; bottom:30px; right:84px; display:flex; justify-content:space-between; font: 14px ui-monospace, monospace; letter-spacing:3px; }
-.loop { height:1060px; }.loop .brand small { display:none; }
-.loop-art { position:absolute; left:0; top:137px; bottom:82px; width:875px; overflow:hidden; }
+.loop { height:920px; }.loop .brand small { display:none; }
+.loop-art { position:absolute; left:84px; top:150px; bottom:88px; width:704px; overflow:hidden; border-radius:28px; }
 .loop-art img { width:100%; height:100%; object-fit:cover; object-position:30% center; }
-.loop-copy { position:absolute; left:960px; top:164px; width:865px; }.loop-copy h1 { font-size:82px; margin:25px 0 45px; }
-.loop-copy ol { list-style:none; margin:0; padding:0; }.loop-copy li { display:flex; gap:26px; border-top:1px solid #1b171426; padding:25px 0; }
-.loop-copy li b { color:#c5533d; font:16px ui-monospace,monospace; margin-top:9px; }.loop-copy strong { font: 32px Display, sans-serif; }.loop-copy p { font-size:24px; color:#736557; margin:12px 0 0; line-height:1.4; }
+.loop-copy { position:absolute; left:860px; top:170px; width:976px; }.loop-copy h1 { font-size:64px; letter-spacing:-2px; margin:25px 0 40px; }
+.loop-copy ol { list-style:none; margin:0; padding:0; }.loop-copy li { display:flex; align-items:flex-start; gap:26px; padding:24px 0; position:relative; }
+.loop-copy li:not(:last-child)::after { content:''; position:absolute; left:23px; top:76px; bottom:-12px; width:1px; background:#d9caba; }
+.loop-copy li b { color:#ad4937; background:#ecdfce; border-radius:50%; width:48px; height:48px; display:grid; place-items:center; flex-shrink:0; font:16px ui-monospace,monospace; }
+.loop-copy strong { font:32px Display,sans-serif; }.loop-copy p { font-size:24px; color:#736557; margin:12px 0 0; line-height:1.4; }

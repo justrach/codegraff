@@ -140,12 +140,9 @@ mark, not first model SSE. RSS is ReleaseSafe process peak.)
 On the 3-task spine (exact-reply + file-ops + fix-fib) graff was **19.9s /
 8 calls / $0.048** vs grok 32.3s / 8 / $0.147 and OpenCode 31.2s / 8 / $0.101.
 
-How: a stable prompt-cache prefix, an RLM + spec-ptc loop that programs over
-context instead of pasting it back, and slim tool results (4 KB handles,
-learnt MCP shapes). The learn pin is a **hardlink**, not a 127M copy, and
-`learn init` is detached so `-p` and the REPL share one path. Hosted `x_search`
-stays on (ADR 0031). We do not steal grok-build's heap or a 4-tool catalog
-(ADR 0024).
+Graff carries context through three steps: reuse the stable setup, run small
+programs over the working context, and return focused results. That keeps the
+next step supplied with useful information while reducing repeated input.
 
 <p align="center">
   <img src="docs/images/readme-context-workshop.png" alt="A workshop rat examines a proof: stable context, small programs, and focused results keep useful context in the harness" width="960">
