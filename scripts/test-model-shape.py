@@ -93,7 +93,7 @@ def main() -> None:
                 },
             }), encoding="utf-8")
             (root / ".codegraff-codex-models.json").write_text(json.dumps({
-                "client_version": "0.144.1",
+                "client_version": "0.153.0",
                 "fetched_at_ms": int(time.time() * 1000),
                 "models": [
                     {"name": ROOT_MODEL, "context": 372000},

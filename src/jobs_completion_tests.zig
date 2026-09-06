@@ -21,6 +21,7 @@ fn consumeBeforePublish(io: std.Io, id: u32) void {
 }
 
 test "#728 completion consumed before frontend publish cannot resurrect a wake after cache churn" {
+    if (@import("builtin").os.tag == .windows) return; // `printf` is not a Windows shell builtin
     const a = std.testing.allocator;
     const io = std.testing.io;
     jobs.g_jobs = .{};

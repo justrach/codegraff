@@ -91,7 +91,7 @@ def main() -> None:
         cache.write_text(
             json.dumps(
                 {
-                    "client_version": "0.144.1",
+                    "client_version": "0.153.0",
                     "fetched_at_ms": int(time.time() * 1000),
                     "models": [{"name": "gpt-5.6-sol", "context": 372000}],
                 }
@@ -151,7 +151,7 @@ def main() -> None:
         cache.write_text(
             json.dumps(
                 {
-                    "client_version": "0.144.1",
+                    "client_version": "0.153.0",
                     "fetched_at_ms": int(time.time() * 1000),
                     "models": [{"name": "gpt-5.6-luna", "context": 372000}],
                 }
