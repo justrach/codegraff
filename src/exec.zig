@@ -460,6 +460,8 @@ test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, 
     _ = @import("codedb_around.zig");
     _ = @import("codedb_health.zig");
     _ = @import("list_dir.zig");
+    _ = @import("list_dir_nearmiss.zig"); // not-found hints
+    _ = @import("repo_map.zig"); // breadth-first Project layout selection
     _ = @import("rlm.zig");
     _ = @import("rlm_spec.zig");
     _ = @import("rlm_query.zig");

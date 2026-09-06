@@ -242,7 +242,7 @@ pub const root_cause_note =
 pub const constraint_note =
     \\
     \\
-    \\The moment the user rejects, forbids, or vetoes something ("no dots", "not vanilla JS", "stop adding scroll hints"), call note_constraint with one short imperative line recording it, then carry on — recorded constraints are injected into every later subagent, workflow and pipeline brief and survive compaction, so a rejection you leave unrecorded is one your fresh workers will repeat.
+    \\When the user forbids or vetoes a way of working ("no dots", "not vanilla JS", "stop adding scroll hints"), call note_constraint with one short imperative line recording it, then carry on — recorded constraints are injected into every later subagent, workflow and pipeline brief and survive compaction, so a rejection you leave unrecorded is one your fresh workers will repeat. A redirect is not a veto: "no, I meant X" or "look at Y instead" changes this turn's target — follow it and record nothing.
 ;
 
 /// Shared by root and workers, even when capture tools are unavailable.

@@ -12,6 +12,8 @@
 //! unexpanded dirs collapse to `[N files in subtree: K *.ext, …]`.
 //! `.git` is never listed. Other dotfiles stay visible (`.github` is load-
 //! bearing here; grok-build hides every dot).
+//! A path that does not exist answers with its closest siblings and the
+//! parent's entries (list_dir_nearmiss.zig) instead of a bare not-found.
 
 const std = @import("std");
 const Io = std.Io;
@@ -20,6 +22,7 @@ const Allocator = std.mem.Allocator;
 const tools = @import("tools.zig");
 const approvals = @import("approvals.zig");
 const gitignore = @import("gitignore.zig");
+const nearmiss = @import("list_dir_nearmiss.zig");
 
 pub const max_output_chars: usize = 10_000;
 pub const max_walk_items: usize = 20_000;
@@ -346,7 +349,7 @@ pub fn run(io: Io, gpa: Allocator, rest: []const u8, agent_cwd: ?[]const u8) !to
 
     const st = Io.Dir.cwd().statFile(io, resolved, .{}) catch |err| switch (err) {
         error.FileNotFound => return .{
-            .text = try std.fmt.allocPrint(gpa, "Error: {s} was not found.", .{path}),
+            .text = try std.fmt.allocPrint(gpa, "Error: {s} was not found.{s}", .{ path, nearmiss.suggest(io, arena, resolved, path, agent_cwd) orelse "" }),
             .is_error = true,
         },
         error.AccessDenied => return .{
@@ -473,6 +476,20 @@ test "run refuses a file and an escaped path" {
     defer std.testing.allocator.free(listing.text);
     try std.testing.expect(!listing.is_error);
     try std.testing.expect(std.mem.indexOf(u8, listing.text, "only.txt") != null);
+}
+
+test "not found names the closest sibling instead of a dead end" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    tmp.dir.createDirPath(io, "rachs-servers") catch unreachable;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs = try tmpAbs(io, &tmp, &buf);
+
+    const out = try run(io, std.testing.allocator, "rach-server", abs);
+    defer std.testing.allocator.free(out.text);
+    try std.testing.expect(out.is_error);
+    try std.testing.expectEqualStrings("Error: rach-server was not found. Closest match: rachs-servers/. Entries in . (1): rachs-servers/.", out.text);
 }
 
 test "empty directory is a header only" {
