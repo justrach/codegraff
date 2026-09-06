@@ -16,6 +16,8 @@ current is part of cutting a release.
   `agent_output` replays a finished report, or says the launch ended with the
   parent turn, instead of "it may never have started". The ids ride in the
   session file. An ACP API error is a failed turn (saved), not a dead process.
+  Backtested as the issue's three-handle sequence (persist → new process →
+  `agent_output`) and as three live launches that still replay after reap.
   ADR 0068.
 
 ## v0.0.288 (2026-09-06)
