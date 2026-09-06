@@ -66,8 +66,10 @@ const persists_note =
     \\summary. Record NAMES, not contents: file paths, directories, artifact paths,
     \\the command lines that worked, identifiers. Spend the words instead on what
     \\disk cannot give back - the decisions and why they were made, what was tried
-    \\and failed, the constraints the user set, and the exact state of the
-    \\unfinished work. Peer-channel notes are a working set, not the conversation:
+    \\and failed, explicit user requests (not invented standing rules), and the exact state of the
+    \\unfinished work. Recorded user constraints are durable harness state, supplied structurally
+    \\in the active instructions. Do not regenerate a recorded-constraints section
+    \\or claim note_constraint succeeded from memory. Peer-channel notes are a working set, not the conversation:
     \\do not transcribe [peer message] or [presence] lines or [peer] wakes; the
     \\harness drops them. Who is live and what they said are pull: peer_message
     \\action=list / action=inbox (the room log stays on disk).

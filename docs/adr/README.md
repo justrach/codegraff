@@ -77,6 +77,7 @@ record only when you need the evidence or the edge cases.
 | [0064](0064-plain-finals-reconcile-open-work.md) | Plain root finals with open current work get one reconciliation request; a remaining stop is explicit, not a promise of continued execution. |
 | [0065](0065-stop-bounded-prose-repetition.md) | Stop bounded lexical prose loops before delivery without user cancellation, transport retries, or completion nudges. |
 | [0066](0066-publication-policy-and-ledger-authority.md) | Publication safeguards survive custom prompts; recaps cannot change ledger authority, and constraint writes refresh active prompts atomically. |
+| [0067](0067-recorded-constraints-are-ledger-state.md) | Recorded constraints are live ledger JSON in the root prefix; recap prose is not authority, and a write refreshes instructions in the same turn. |
 
 ## When to write one
 

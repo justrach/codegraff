@@ -27,7 +27,8 @@ pub fn handle(self: *Model, k: Key) Effect {
     }
     if (k == .paste_end) {
         self.pasting = false;
-        key_mod.endPaste(); // the two latches must never drift apart
+        // Decoder owns its latch: batching may already have decoded the next
+        // paste_start. Rewinding it here turns that paste's LF into Enter (#737).
         const v = std.mem.trim(u8, self.input.getValue(), " \t\r\n");
         if (@import("image.zig").attachDropped(self, v)) {
             self.input.setValue("") catch {};

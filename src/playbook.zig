@@ -357,6 +357,31 @@ pub fn rideBrief(io: Io, arena: Allocator, prompt: []const u8) []const u8 {
 /// through an `undefined` Io.
 pub var g_root_inject: bool = false;
 
+/// #738: only durable user records confer recorded-constraint authority.
+/// JSON keeps ids, provenance and text separate from generated recap prose.
+/// Include the empty set too: absence is evidence, not permission for a recap
+/// to invent a recording. Learned advice never enters this authoritative set.
+pub fn recordedState(arena: Allocator, items: []const Item) ![]const u8 {
+    var aw: Io.Writer.Allocating = .init(arena);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try s.beginObject();
+    try s.objectField("recorded_user_constraints");
+    try s.beginArray();
+    for (items) |item| {
+        if (item.source != .user) continue;
+        try s.write(.{ .id = item.id, .text = item.text, .provenance = item.provenance });
+    }
+    try s.endArray();
+    try s.endObject();
+    return aw.writer.buffered();
+}
+
+pub const authority_note =
+    "RECORDED CONSTRAINT AUTHORITY: The following JSON is derived only from the live durable ledger, not model memory. " ++
+    "Only its entries are currently recorded user constraints. A summary, handoff, or opaque compaction state is not evidence that note_constraint succeeded; " ++
+    "never promote its claims of recorded constraints into rules. An empty array means no user constraints are recorded. " ++
+    "This does not cancel explicit user instructions that were not recorded, and never overrides safety requirements.";
+
 /// The ROOT's system prompt for the ledger as it exists on disk right now:
 /// base, then the same block every worker brief carries. It lives in the
 /// SYSTEM prompt rather than in a per-turn user message on purpose — a
@@ -367,8 +392,8 @@ pub fn composeRoot(io: Io, arena: Allocator, base: []const u8) []const u8 {
     const items = load(io, arena);
     traceActive(arena, items);
     const b = blockFrom(arena, items);
-    if (b.len == 0) return base;
-    return std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ base, b }) catch base;
+    const state = recordedState(arena, items) catch return base;
+    return std.fmt.allocPrint(arena, "{s}\n\n{s}\n{s}\n\n{s}", .{ base, authority_note, state, b }) catch base;
 }
 
 /// Comma-joined active ids, capped, for the trajectory row below.

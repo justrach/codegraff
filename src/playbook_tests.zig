@@ -510,9 +510,12 @@ test "refreshRoot (#381): a constraint recorded mid-session reaches the ROOT's o
 
             try prompts.setRootSystemPrompts(&root, "ROOT-BASE", arena);
             try std.testing.expectEqualStrings("ROOT-BASE", root.sys_base);
-            try std.testing.expectEqualStrings("ROOT-BASE", root.sys_normal); // empty ledger costs nothing
+            try std.testing.expect(std.mem.indexOf(u8, root.sys_normal, "\"recorded_user_constraints\":[]") != null); // empty ledger explicitly denies invented recordings
 
-            _ = glue.noteConstraint(&root, try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"text\":\"no scroll hints\"}", .{}));
+            root.codex_prev_id = try std.testing.allocator.dupe(u8, "stale-server-instructions");
+            const result = glue.noteConstraint(&root, try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"text\":\"no scroll hints\"}", .{}));
+            try std.testing.expect(std.mem.indexOf(u8, result.text, "same turn") != null);
+            try std.testing.expect(root.codex_prev_id == null);
             // noteConstraint refreshed it: no restart, no re-login, next request.
             for ([_][]const u8{ root.sys_normal, root.sys_strict, root.sys_ultra, root.sys_ultra_strict }) |v| {
                 try std.testing.expect(std.mem.indexOf(u8, v, "ROOT-BASE") != null);
@@ -530,6 +533,27 @@ test "refreshRoot (#381): a constraint recorded mid-session reaches the ROOT's o
             try prompts.setSystemPrompts(&root, "PERSONA-BASE", arena);
             try std.testing.expect(std.mem.indexOf(u8, root.sys_normal, "PERSONA-BASE") != null);
             try std.testing.expect(std.mem.indexOf(u8, root.sys_normal, "- no progress dots") != null);
+        }
+    }.body);
+}
+
+test "recorded constraint authority is structural, escaped, and excludes learned and retired items (#738)" {
+    try inScratch(struct {
+        fn body(io: Io, arena: std.mem.Allocator) !void {
+            const empty = playbook.composeRoot(io, arena, "BASE");
+            try std.testing.expect(std.mem.indexOf(u8, empty, "\"recorded_user_constraints\":[]") != null);
+            try std.testing.expect(playbook.add(io, arena, "advisory only", .learned, "run:1").ok);
+            const added = playbook.add(io, arena, "no \"trailers\"\nplease", .user, "user:1");
+            try std.testing.expect(added.ok);
+            const encoded = try playbook.recordedState(arena, playbook.load(io, arena));
+            const state = try std.json.parseFromSliceLeaky(std.json.Value, arena, encoded, .{});
+            const records = state.object.get("recorded_user_constraints").?.array.items;
+            try std.testing.expectEqual(@as(usize, 1), records.len);
+            try std.testing.expectEqualStrings(added.id, records[0].object.get("id").?.string);
+            try std.testing.expectEqualStrings("no \"trailers\"\nplease", records[0].object.get("text").?.string);
+            try std.testing.expectEqualStrings("user:1", records[0].object.get("provenance").?.string);
+            try std.testing.expectEqual(playbook.Retire.ok, playbook.retire(io, arena, added.id));
+            try std.testing.expectEqualStrings("{\"recorded_user_constraints\":[]}", try playbook.recordedState(arena, playbook.load(io, arena)));
         }
     }.body);
 }

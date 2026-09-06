@@ -91,3 +91,26 @@ test "#737 Enter coalesced with bracketed terminator submits once, not a paste n
     try std.testing.expectEqualStrings("", term.model.input.getValue());
     try std.testing.expect(!term.model.cancel_requested);
 }
+
+test "#737 delayed paste_end dispatch cannot reset a subsequent decoded paste" {
+    const a = std.testing.allocator;
+    var term: sim.Term = undefined;
+    term.init(a, 80, 24);
+    defer term.deinit();
+    const job = try a.create(engine.Job);
+    job.* = .{ .gpa = a, .history = &.{}, .params = .{}, .stream = .{}, .threaded = false };
+    term.model.pending = job;
+    defer {
+        term.model.pending = null;
+        a.destroy(job);
+    }
+    try term.model.push(.pending, "active turn");
+    _ = term.feed("\x1b[200~first\x1b[201~\x1b[200~second");
+    _ = term.feed("\r");
+    _ = term.feed("\nthird\x1b[201~");
+    const got = term.model.input.getValue();
+    try std.testing.expect(std.mem.startsWith(u8, got, "firstsecond"));
+    try std.testing.expect(std.mem.endsWith(u8, got, "third"));
+    try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
+    try std.testing.expect(!term.model.cancel_requested);
+}

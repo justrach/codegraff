@@ -376,25 +376,17 @@ pub fn run(
         // its exact position, so typing is never starved behind a flood — and
         // because only one frame follows the whole batch, no intermediate
         // scroll position is ever painted.
-        var batch: pacing.Batch = .{};
         var i: usize = 0;
-        var drained = false;
-        while (!drained) {
-            const arrived: ?key_mod.Key = key_mod.next(inbuf[0..n], &i);
-            if (arrived) |k| {
-                pacing.events += 1;
-                if (pacing.wheelNotch(k) != null) pacing.wheel_events += 1;
-                if (batch.push(k) == .ok) continue;
-            } else drained = true;
-            for (batch.items()) |item| {
+        var batch: @import("input_batch.zig").Decoder = .{};
+        batches: while (batch.next(inbuf[0..n], &i)) |items| {
+            for (items) |item| {
                 if (item == .wheel) pacing.wheel_batches += 1;
                 const effect = keys.handleBatchItem(&m, item);
                 switch (effect) {
                     .stay => {},
                     .quit => {
                         m.running = false;
-                        drained = true;
-                        break;
+                        break :batches;
                     },
                     .background => {
                         parkToShell(io, w, &raw);
@@ -404,12 +396,6 @@ pub fn run(
                         prev = &.{};
                     },
                 }
-            }
-            batch.reset();
-            // The batch filled mid-stream: the event that did not fit opens the
-            // next one, so nothing is dropped and nothing is reordered.
-            if (!drained) {
-                if (arrived) |k| _ = batch.push(k);
             }
         }
         if (i < n) {

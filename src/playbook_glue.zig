@@ -39,8 +39,28 @@ const style = &ansi.style;
 /// previous (still valid) prompt in place, and the ledger on disk is already
 /// correct for every brief assembled after it.
 pub fn refreshRoot(agent: *Agent, arena: Allocator) void {
-    if (agent.sub or agent.sys_base.len == 0) return;
-    prompts.setSystemPrompts(agent, agent.sys_base, arena) catch {};
+    _ = refreshFrom(agent, arena, false);
+}
+
+fn refreshFrom(agent: *Agent, arena: Allocator, arm_root: bool) bool {
+    if (agent.sub) return false;
+    if (!arm_root and agent.sys_base.len == 0) return false;
+    const old = .{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict };
+    const result = if (arm_root)
+        prompts.setRootSystemPrompts(agent, agent.sys_base, arena)
+    else
+        prompts.setSystemPrompts(agent, agent.sys_base, arena);
+    result catch {
+        agent.sys_normal = old[0];
+        agent.sys_strict = old[1];
+        agent.sys_ultra = old[2];
+        agent.sys_ultra_strict = old[3];
+        return false;
+    };
+    // A Responses continuation may otherwise retain the old instructions on
+    // the server. Re-send the refreshed prefix on this turn's next request.
+    if (!std.mem.eql(u8, old[0], agent.sys_normal)) agent.closeCodexWs();
+    return true;
 }
 
 /// The `note_constraint` meta-tool handler (root-only; the spec lives in
@@ -71,22 +91,15 @@ pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
     @import("prompt_cache_hud.zig").noteBust(.playbook);
     // A duplicate must reconcile a stale prefix too. Never promise same-turn
     // activation after a failed refresh (the durable write already succeeded).
-    prompts.setRootSystemPrompts(agent, agent.sys_base, agent.arena) catch
-        return .{ .text = "Constraint is durable, but active prompt refresh failed. Do not claim activation; retry note_constraint to reconcile it.", .is_error = true };
-    const block = playbook.blockNow(agent.io, agent.arena);
-    for ([_][]const u8{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |variant| {
-        if (block.len == 0 or std.mem.indexOf(u8, variant, block) == null)
-            return .{ .text = "Constraint is durable, but active ledger injection failed. Retry note_constraint to reconcile it.", .is_error = true };
-    }
+    const refreshed = refreshFrom(agent, agent.arena, true) and
+        std.mem.indexOf(u8, agent.sys_normal, r.id) != null;
+    const effect = if (refreshed)
+        "It takes effect immediately, in this same turn: user instructions override built-in authoring/style defaults (including optional attribution), not secret-safety or disclosure-approval requirements. Act on the constraint now rather than waiting for the next turn."
+    else
+        "Durable state is saved, but the active prompt could not be refreshed. Do not claim activation; retry note_constraint to reconcile it.";
     // ADR 0021: the user just said this. Echoing "constraint recorded" is
     // machine state, not progress. The tool result still tells the model.
-    // The recorded constraint is in force NOW, not from the next user turn:
-    // the ledger was rewritten before this result was written and the root
-    // prompt refreshed above, so the very next request carries it. Saying so
-    // matters — the model was still treating built-in guidance as controlling
-    // for the rest of the turn and refusing the correction the user had just
-    // asked for (#738).
-    return .{ .text = std.fmt.allocPrint(agent.arena, "constraint recorded as {s}. It is now in {s} and rides every subagent, workflow and pipeline brief from here on, in this session and in later ones — you do not need to restate it. It takes effect immediately, in this turn: user instructions override built-in authoring/style defaults (including optional attribution), not secret-safety or disclosure-approval requirements. Act on the constraint now rather than waiting for the next turn.", .{ r.id, playbook.path }) catch "constraint recorded", .is_error = false };
+    return .{ .text = std.fmt.allocPrint(agent.arena, "constraint recorded as {s}. It is now in {s} and rides every subagent, workflow and pipeline brief from here on, in this session and in later ones — you do not need to restate it. {s}", .{ r.id, playbook.path, effect }) catch "constraint recorded; active prompt refresh status unavailable", .is_error = false };
 }
 
 /// Privacy-safe operational trace: id + success, never constraint text (#644).

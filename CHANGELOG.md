@@ -12,6 +12,12 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- Recorded user constraints ride the root prefix as live ledger JSON, including
+  the empty set, so a compaction recap cannot invent a recording. A write
+  refreshes instructions in the same turn and drops a cached Responses
+  continuation.
+- A second bracketed paste in the same input batch no longer turns its first
+  newline into Enter after the previous paste ends.
 - Gemini is a first-class provider, on Google's own Interactions API.
   `GEMINI_API_KEY` serves `gemini-*` directly instead of falling through
   to the gateway as an uncatalogued model, and `graff --model

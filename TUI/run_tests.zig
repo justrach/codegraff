@@ -56,14 +56,14 @@ test "one tick drains the whole tty, coalesces the wheel, and paints once" {
     // (a) Every byte the tty already holds joins THIS tick before dispatch —
     // one read per frame is what made momentum scrolling lag and then jump.
     const read_at = std.mem.indexOf(u8, src, "const got = tty.readStdin(").?;
-    const dispatch_at = std.mem.indexOfPos(u8, src, read_at, "key_mod.next(inbuf[0..n]").?;
+    const dispatch_at = std.mem.indexOfPos(u8, src, read_at, "batch.next(inbuf[0..n]").?;
     const drain = src[read_at..dispatch_at];
     try std.testing.expect(std.mem.indexOf(u8, drain, "while (filled < inbuf.len and tty.poll(0))") != null);
     // ...bounded, or an endless flood would be drained and never painted.
     try std.testing.expect(std.mem.indexOf(u8, drain, "pacing.drainExpired(") != null);
     // (b) The batch is applied as one unit and the wheel run goes through the
     // same door a single report does.
-    try std.testing.expect(std.mem.indexOf(u8, src, "var batch: pacing.Batch") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "@import(\"input_batch.zig\").Decoder") != null);
     try std.testing.expect(std.mem.indexOf(u8, src, "keys.handleBatchItem(&m, item)") != null);
     // (c) The frame is gated on the budget, and the gate sits BEFORE the render
     // — gating only the paint would still pay for composing every frame.
