@@ -12,6 +12,7 @@ let server, win;
 const deadline = setTimeout(() => { console.error('Visual run exceeded 240 seconds'); finish(1); }, 240000);
 app.whenReady().then(async () => {
   ipcMain.handle('updates', () => ({ status: 'unavailable', currentVersion: '1.0.0', automatic: false, interactive: false }));
+  ipcMain.handle('projects', () => null);
   const root = path.resolve(__dirname, '..'), output = process.env.GRAFF_VISUAL_OUTPUT || path.resolve(root, '../../zig-out/visual-tests');
   fs.mkdirSync(output, { recursive: true });
   assert.ok(fs.existsSync(path.join(root, '.next/BUILD_ID')), 'Run bun run build before visual tests.');
@@ -37,7 +38,7 @@ app.whenReady().then(async () => {
     fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: ['update UI', 'update transport'], apiRequests }, null, 2));
     return;
   }
-  if (process.env.GRAFF_VISUAL_SUITE === 'projects') {
+  if (['projects', 'splits'].includes(process.env.GRAFF_VISUAL_SUITE)) {
     await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
     await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
     await require('./dev-preview-visual.cjs').runDevPreview({ output });

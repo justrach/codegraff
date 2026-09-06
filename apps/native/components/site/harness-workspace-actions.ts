@@ -8,13 +8,13 @@ type Actions = {
   workspacesRef: Ref<Workspace[]>; activePathRef: Ref<string | null>;
   chatsRef: Ref<Chat[]>; chatIdRef: Ref<number>; activeId: number; root?: string;
   setWorkspaces: Setter<Workspace[]>; setActivePath: Setter<string | null>;
-  setChats: Setter<Chat[]>; setPanes: Setter<number[]>; setActiveId: Setter<number>;
+  setChats: Setter<Chat[]>; setActiveId: (id: number) => void;
   setFilesOpen: Setter<boolean>; setDialog: (value: null) => void;
   refreshStored: () => Promise<void>; requireSession: (id: number, force: boolean) => Promise<string>;
   adoptCatalog: (id: number) => Promise<unknown>; openChat: (id: number) => void;
 };
 export function workspaceActions({workspacesRef, activePathRef, chatsRef, chatIdRef, activeId, root,
-  setWorkspaces, setActivePath, setChats, setPanes, setActiveId, setFilesOpen, setDialog,
+  setWorkspaces, setActivePath, setChats, setActiveId, setFilesOpen, setDialog,
   refreshStored, requireSession, adoptCatalog, openChat}: Actions) {
   const persistWorkspaces = (list: Workspace[]) => {
     workspacesRef.current = list;
@@ -39,7 +39,6 @@ export function workspaceActions({workspacesRef, activePathRef, chatsRef, chatId
     // React has re-rendered with the new cwd.
     chatsRef.current = next;
     setChats(next);
-    setPanes((current) => current.filter((pane) => pane !== chatId));
     setActiveId(chatId);
     void requireSession(chatId, true)
       .then(() => adoptCatalog(chatId))

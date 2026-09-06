@@ -91,6 +91,7 @@ record only when you need the evidence or the edge cases.
 | [0078](0078-workspace-terminals-are-lazy-pty-sessions.md) | Desktop workspace terminals start lazily, preserve hidden shells and bound output through a trusted PTY bridge. |
 | [0079](0079-desktop-updates-are-signed-and-user-restarted.md) | Signed desktop updates download in the background and install only on explicit restart; one process owns each profile. |
 | [0080](0080-desktop-projects-are-folders.md) | Desktop projects are folders; preferences survive local UI origin changes, and new chats inherit the focused project's folder. |
+| [0081](0081-desktop-split-focus-and-layout.md) | Split positions remain stable as focus changes; shared controls and draggable separators keep navigation usable. |
 
 ## When to write one
 

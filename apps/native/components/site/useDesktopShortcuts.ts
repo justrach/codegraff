@@ -14,6 +14,8 @@ export function useDesktopShortcuts(actions: Actions) {
       const a=ref.current;
       switch(action){
         case 'new':a.newChat();return true;
+        // Pointer/focus capture and pane navigation share one active pane.
+        // The text cursor can still be in the previous pane after a shortcut.
         case 'close':a.closeChat(a.activeId);return true;
         case 'reopen':a.reopenClosed();return true;
         case 'split-right':a.split('row');return true;
@@ -32,7 +34,11 @@ export function useDesktopShortcuts(actions: Actions) {
       if(document.querySelector('[role="dialog"]'))return;
       const a=ref.current,k=e.key.toLowerCase();let handled=false;
       const command=e.metaKey||e.ctrlKey;
-      const cycle=(ids:number[],delta:number)=>{const index=ids.indexOf(a.activeId);const id=ids[(index+delta+ids.length)%ids.length];if(id!==undefined)a.focusChat(id);};
+      const focus=(id:number)=>{
+        a.focusChat(id);
+        requestAnimationFrame(()=>document.querySelector<HTMLTextAreaElement>(`[data-chat="${id}"] textarea`)?.focus({preventScroll:true}));
+      };
+      const cycle=(ids:number[],delta:number)=>{const index=ids.indexOf(a.activeId);const id=ids[(index+delta+ids.length)%ids.length];if(id!==undefined)focus(id);};
       if(e.ctrlKey&&!e.metaKey&&k==='tab'){cycle(a.chats.map(c=>c.id),e.shiftKey?-1:1);handled=true;}
       else if(command){
         if(e.metaKey&&e.ctrlKey&&k.startsWith('arrow')){a.resizePane(k==='arrowleft'||k==='arrowup'?-0.2:0.2);handled=true;}
@@ -48,7 +54,7 @@ export function useDesktopShortcuts(actions: Actions) {
           else if(k==='o'&&!e.shiftKey)handled=dispatch('workspace');
           else if(k==='\\'){a.toggleSplit();handled=true;}
           else if(['[',']','{','}'].includes(k)){cycle(e.shiftKey?a.chats.map(c=>c.id):a.columns,k==='['||k==='{'?-1:1);handled=true;}
-          else if(!e.shiftKey&&/^[1-9]$/.test(k)){const chat=k==='9'?a.chats.at(-1):a.chats[Number(k)-1];if(chat)a.focusChat(chat.id);handled=true;}
+          else if(!e.shiftKey&&/^[1-9]$/.test(k)){const chat=k==='9'?a.chats.at(-1):a.chats[Number(k)-1];if(chat)focus(chat.id);handled=true;}
           else if(k==='enter'||(e.ctrlKey&&k==='f')){void desktop()?.windowControl?.('fullscreen');handled=true;}
           else if(['=','+','-','0'].includes(k)){void desktop()?.windowControl?.(k==='0'?'reset-zoom':k==='-'?'zoom-out':'zoom-in');handled=true;}
         }

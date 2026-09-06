@@ -204,8 +204,10 @@ the beginning and end with an explicit omission marker. Older messages load on
 request. These bounds limit rendering; they do not cap stored conversation size.
 
 For a focused pass, `bun run test:projects` covers folder selection, conversation
-and review recovery, navigation, terminals, and browser previews. `bun run
-test:stress` covers long transcripts and tool output without changing macOS
+and review recovery, navigation, terminals, and browser previews. `bun run test:splits`
+checks native close routing, stable pane order, draft preservation while visiting
+Projects, and mouse resizing in both directions. `bun run test:stress`
+covers long transcripts and tool output without changing macOS
 Spaces. The full `test:visual` suite additionally checks native fullscreen
 transitions; the stress results explicitly report fullscreen as not run.
 
