@@ -15,6 +15,7 @@
 //! so a viewer whose cursor fell behind asks for `reattach` and gets a replay.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
@@ -34,6 +35,7 @@ pub const Config = struct {
     key: []const u8, // the account's cg_sk_ key
     home: []const u8,
     name: ?[]const u8, // display name for this machine; default hostname
+    hostname_env: ?[]const u8, // COMPUTERNAME / HOSTNAME: the only source on Windows
     serve: serve.ServeConfig,
 };
 
@@ -54,9 +56,24 @@ const State = struct {
     cfg: Config,
     client: std.http.Client,
     agent_id: [16]u8 = undefined,
-    hostname_buf: [std.posix.HOST_NAME_MAX]u8 = undefined,
+    hostname_buf: [256]u8 = undefined,
     hostname: []const u8 = "",
 };
+
+/// The kernel's idea of this machine's name where std has one (libc /
+/// Linux); Windows has no std.posix.gethostname, so the environment's
+/// COMPUTERNAME stands in there (the comptime branch keeps it unanalyzed).
+fn hostName(buf: *[256]u8, from_env: ?[]const u8) []const u8 {
+    if (builtin.os.tag != .windows) {
+        var raw: [std.posix.HOST_NAME_MAX]u8 = undefined;
+        if (std.posix.gethostname(&raw)) |h| {
+            const n = @min(h.len, buf.len);
+            @memcpy(buf[0..n], h[0..n]);
+            return buf[0..n];
+        } else |_| {}
+    }
+    return from_env orelse "unknown";
+}
 
 const Reply = struct { code: u16, body: []const u8 };
 
@@ -97,7 +114,7 @@ pub fn remoteControlMain(gpa: Allocator, io: Io, cfg: Config, exe: []const u8) !
         .client = .{ .allocator = gpa, .io = io },
     };
     defer self.client.deinit();
-    self.hostname = std.posix.gethostname(&self.hostname_buf) catch "unknown";
+    self.hostname = hostName(&self.hostname_buf, cfg.hostname_env);
     self.agent_id = try deviceId(io, gpa, cfg.home);
     const label = cfg.name orelse self.hostname;
 
@@ -306,43 +323,35 @@ const Job = struct {
     self: *State,
     kind: enum { drain, close },
     s: ?*ServeSession,
-    cmd_id: []u8,
-    sid: []u8,
-    line: []u8,
+    cmd_id: []const u8 = "",
+    sid: []const u8 = "",
+    line: []const u8 = "",
     from: ?u64,
 };
 
+/// An OOM here drops the command: the relay reports the device did not answer.
 fn spawn(self: *State, kind: @FieldType(Job, "kind"), s: ?*ServeSession, cmd_id: []const u8, sid: []const u8, line: []const u8, from: ?u64) void {
     const gpa = self.st.gpa;
-    const cmd_copy = gpa.dupe(u8, cmd_id) catch return;
-    const sid_copy = gpa.dupe(u8, sid) catch {
-        gpa.free(cmd_copy);
-        return;
-    };
-    const line_copy = gpa.dupe(u8, line) catch {
-        gpa.free(cmd_copy);
-        gpa.free(sid_copy);
-        return;
-    };
-    const job = gpa.create(Job) catch {
-        gpa.free(cmd_copy);
-        gpa.free(sid_copy);
-        gpa.free(line_copy);
-        return;
-    };
-    job.* = .{ .self = self, .kind = kind, .s = s, .cmd_id = cmd_copy, .sid = sid_copy, .line = line_copy, .from = from };
+    const job = gpa.create(Job) catch return;
+    job.* = .{ .self = self, .kind = kind, .s = s, .from = from };
+    job.cmd_id = gpa.dupe(u8, cmd_id) catch return freeJob(job);
+    job.sid = gpa.dupe(u8, sid) catch return freeJob(job);
+    job.line = gpa.dupe(u8, line) catch return freeJob(job);
     self.st.group.concurrent(self.st.io, runJob, .{job}) catch runJob(job);
+}
+
+fn freeJob(job: *Job) void {
+    const gpa = job.self.st.gpa;
+    gpa.free(job.cmd_id);
+    gpa.free(job.sid);
+    gpa.free(job.line);
+    gpa.destroy(job);
 }
 
 fn runJob(job: *Job) void {
     const self = job.self;
     const gpa = self.st.gpa;
-    defer {
-        gpa.free(job.cmd_id);
-        gpa.free(job.sid);
-        gpa.free(job.line);
-        gpa.destroy(job);
-    }
+    defer freeJob(job);
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
