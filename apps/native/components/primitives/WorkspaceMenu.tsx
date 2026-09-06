@@ -32,7 +32,7 @@ export default function WorkspaceMenu({position,current,rows,onSwitch,onNew,onSe
     </div>
     <div className="shrink-0 border-t border-line p-1.5">
       <button type="button" onClick={pick(onNew)} className="flex w-full justify-between rounded-lg px-3 py-2 text-sm text-ink hover:bg-hover">Open a folder…<kbd className="text-xs text-ink-3">⌘O</kbd></button>
-      <button type="button" onClick={pick(onSettings)} className="w-full rounded-lg px-3 py-2 text-left text-sm text-ink hover:bg-hover">Workspace settings…</button>
+      <button type="button" onClick={pick(onSettings)} className="w-full rounded-lg px-3 py-2 text-left text-sm text-ink hover:bg-hover">Project settings…</button>
     </div>
   </div>,document.body);
 }

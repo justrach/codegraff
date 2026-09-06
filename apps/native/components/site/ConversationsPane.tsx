@@ -13,7 +13,7 @@ import {
 const PAGE = 24;
 const SCOPES: { key: SessionScope; label: string }[] = [
   { key: "all", label: "All" },
-  { key: "local", label: "This workspace" },
+  { key: "local", label: "This project" },
   { key: "elsewhere", label: "Saved elsewhere" },
 ];
 
@@ -39,7 +39,7 @@ export default function ConversationsPane({
   root?: string;
 }) {
   const [query, setQuery] = useState("");
-  const [scope, setScope] = useState<SessionScope>("all");
+  const [scope, setScope] = useState<SessionScope>("local");
   const [rows, setRows] = useState<StoredSession[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
@@ -112,6 +112,7 @@ export default function ConversationsPane({
           <div className="flex items-end justify-between gap-4">
             <div>
               <h1 className="text-[22px] font-medium tracking-[-0.02em] text-ink">Conversations</h1>
+              {root && <p className="mt-1 break-all font-mono text-xs text-ink-3" data-conversation-project>{root}</p>}
               <p className="mt-0.5 text-[12.5px] text-ink-3">
                 {loading && rows.length === 0
                   ? "Reading saved sessions…"

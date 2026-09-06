@@ -63,6 +63,8 @@ app.whenReady().then(async () => {
     title: 'Codegraff', titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 11 }, backgroundColor: '#fafaf9', show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), partition: 'persist:app',
       contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: !process.env.GRAFF_ELECTRON_SMOKE } });
+  const projects = require('./project-store.cjs').projectStore(app.getPath('userData'));
+  ipcMain.handle('projects', (event, { action, value }) => { trusted(event); if (action === 'load') return projects.load(); if (action === 'save') return projects.save(value); throw Error('Unknown project action'); });
   installWindowState(win);
   terminals = new Terminals(path.join(resources, 'native/graff-terminal'), event => { if (!win.isDestroyed()) win.webContents.send('terminal-event', event); });
   ipcMain.handle('terminal', (event, {action, params}) => { trusted(event); return terminals.command(action, params); });

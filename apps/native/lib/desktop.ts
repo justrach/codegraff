@@ -5,6 +5,7 @@ export type DesktopEvent = { type: string; chat?: string; info?: PageInfo; pin?:
 export type TerminalEvent = { id: string; seq: number; data?: string; exit?: number };
 export type UpdateState = { status: 'idle' | 'unavailable' | 'checking' | 'current' | 'downloading' | 'ready' | 'installing' | 'error'; currentVersion: string; version?: string; percent?: number; automatic: boolean; interactive: boolean; message?: string };
 export type DesktopBridge = {
+  projects?(action: 'load' | 'save', value?: { list: import('./workspaces').Workspace[]; active: string | null }): Promise<{ list: import('./workspaces').Workspace[]; active: string | null } | null | void>;
   updates?(action: 'state' | 'check' | 'restart'): Promise<UpdateState>;
   updateSubscribe?(callback: (state: UpdateState) => void): () => void;
   terminal?(action: string, params?: Record<string, unknown>): Promise<{id: string; seq: number; history: string; exit: number | null}>;

@@ -1,6 +1,8 @@
 // Synthetic content for reproducible screenshots; never reads the user's workspace.
 function installGalleryFixture() {
   const original = window.fetch;
+  // Page unload must use the mocked fetch path too, never a real ACP beacon.
+  navigator.sendBeacon = () => false;
   localStorage.setItem('graff.native.browser.open', '0');
   const root = '/demo/field-notes';
   const catalog = { result: { current: { model: 'Graff', provider: '', effort: 'medium', fast: false, effortLevels: ['low', 'medium', 'high'] }, models: [{ name: 'Graff', provider: '', context: 128000, authenticated: true, cost: 'local', current: true }] } };

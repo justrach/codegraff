@@ -30,6 +30,7 @@ async function runBrowserVisuals({ win: fixtureWindow, origin, output }) {
     await wait(async () => !page.isLoading());
     await js(`document.querySelector('button[aria-pressed]').click()`);
     await wait(() => js(`document.querySelector('button[aria-pressed]').getAttribute('aria-pressed')==='true'`));
+    win.focus(); page.focus();
     page.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
     await wait(() => js(`document.querySelector('button[aria-pressed]').getAttribute('aria-pressed')==='false'`));
     await js(`document.querySelector('button[aria-pressed]').click()`); await sleep(100);

@@ -37,6 +37,14 @@ app.whenReady().then(async () => {
     fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: ['update UI', 'update transport'], apiRequests }, null, 2));
     return;
   }
+  if (process.env.GRAFF_VISUAL_SUITE === 'projects') {
+    await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
+    await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
+    await require('./dev-preview-visual.cjs').runDevPreview({ output });
+    assert.deepEqual(apiRequests, [], 'Project fixtures never call engine or model APIs');
+    fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: ['projects and navigation', 'browser'], apiRequests }, null, 2));
+    return;
+  }
   await win.loadURL(`${origin}/visual-tests`);
   const js = source => win.webContents.executeJavaScript(source);
   const wait = async source => { for (let i = 0; i < 100; i++) { if (await js(source)) return; await sleep(50); } throw Error(`Visual check timed out: ${source}`); };

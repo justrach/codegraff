@@ -149,6 +149,9 @@ Desktop builds from v0.0.291 check for updates online and download them in the
 background. Choose **Restart to update** when your work is finished, or use
 **Codegraff → Check for Updates…**. Automatic downloads can be disabled in that
 menu. Earlier builds need one manual installation to enable the updater.
+An app update replaces the bundled Graff engine together with the interface.
+A CLI installed separately by the command below has its own update lifecycle;
+that command downloads a CLI archive, not the notarized desktop installer.
 
 **CLI (macOS · Linux · Windows).**
 

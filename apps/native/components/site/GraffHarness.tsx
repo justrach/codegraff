@@ -1,5 +1,8 @@
 "use client";
 
+import { workspaceActions } from "./harness-workspace-actions";
+import ProjectsPane from "./ProjectsPane";
+import { restoreProjects, persistProjects } from "@/lib/project-preferences";
 import { createTurnPainter } from "@/lib/turn-painter";
 import { useQuietSettings } from "./useQuietSettings";
 import reviewStyles from "./ChangesPane.module.css";
@@ -43,11 +46,6 @@ import WorkspaceDialog from "@/components/site/WorkspaceDialog";
 import {
   basename,
   findWorkspace,
-  loadActiveWorkspace,
-  loadWorkspaces,
-  removeWorkspace,
-  saveActiveWorkspace,
-  saveWorkspaces,
   shellQuote,
   upsertWorkspace,
   type Workspace,
@@ -97,7 +95,7 @@ export default function GraffHarness() {
     setHistory(loadHistory(window.localStorage));
   }, []);
   // Workspaces are the folders graff runs in. The list and the active pick
-  // live in this browser; the server only validates a root it is handed.
+  // persist in desktop settings, with browser storage as a migration/fallback.
   // Refs mirror the state for the async paths (spawn, session list) that
   // must not read a stale closure.
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -114,8 +112,10 @@ export default function GraffHarness() {
   });
   // The conversation library: every saved chat, paged and searchable. It takes
   // the whole chat area, so opening it leaves the other side panes.
+  const [projectsOpen, setProjectsOpen] = useState(false);
   const [conversationsOpen, setConversationsOpen] = useState(false);
   const openConversations = () => {
+    setProjectsOpen(false);
     setFilesOpen(false);
     setBrowserOpen(false);
     setConversationsOpen(true);
@@ -256,15 +256,17 @@ export default function GraffHarness() {
       // The server's default workspace is always a row; the remembered pick
       // wins when it is still listed, else the default is active.
       const root = h.cwd ?? "";
-      let list = loadWorkspaces(window.localStorage);
+      const savedProjects = await restoreProjects(window.localStorage);
+      if (cancelled) return;
+      let list = savedProjects.list;
       if (root && !findWorkspace(list, root)) list = upsertWorkspace(list, { path: root, name: basename(root) });
-      const remembered = loadActiveWorkspace(window.localStorage);
+      const remembered = savedProjects.active;
       const active = findWorkspace(list, remembered)?.path ?? findWorkspace(list, root)?.path ?? list[0]?.path ?? null;
       workspacesRef.current = list;
       activePathRef.current = active;
       setWorkspaces(list);
       setActivePath(active);
-      saveWorkspaces(window.localStorage, list);
+      persistProjects(window.localStorage, list, active);
       if (active) setChats((current) => current.map((c) => (c.id === 1 && !c.cwd ? { ...c, cwd: active } : c)));
       void refreshStored();
       try {
@@ -322,6 +324,7 @@ export default function GraffHarness() {
   }, []);
 
   const openChanges = useCallback(() => {
+    setProjectsOpen(false);
     setAgentsOpen(false);
     setBrowserOpen(false); setConversationsOpen(false);
     setFilesOpen(true);
@@ -448,6 +451,7 @@ export default function GraffHarness() {
   };
 
   const openChat = (id: number) => {
+    setProjectsOpen(false);
     const session = newSessionName();
     sessionNamesRef.current.set(id, session);
     const cwd = activePathRef.current ?? undefined;
@@ -501,6 +505,9 @@ export default function GraffHarness() {
   /** Make a chat the active one. If it is already a split pane, the chat it
    * replaces takes that pane, so the same two stay on screen. */
   const focusChat = (id: number) => {
+    setProjectsOpen(false);
+    const folder = chatsRef.current.find(chat => chat.id === id)?.cwd;
+    if (folder && folder !== activePathRef.current) activateWorkspace(folder);
     const here = activeId;
     setPanes((current) => {
       if (!current.includes(id)) return current.filter((pane) => pane !== id);
@@ -599,84 +606,11 @@ export default function GraffHarness() {
       .then(() => refreshStored());
   };
 
-  /* ── workspaces ── */
-
-  const persistWorkspaces = (list: Workspace[]) => {
-    workspacesRef.current = list;
-    setWorkspaces(list);
-    saveWorkspaces(window.localStorage, list);
-  };
-
-  const activate = (path: string | null) => {
-    activePathRef.current = path;
-    setActivePath(path);
-    saveActiveWorkspace(window.localStorage, path);
-    void refreshStored();
-  };
-
-  /** Move a tab to another folder. Only sound for a tab with no messages:
-   * an agent is bound to its folder at spawn, so this starts a fresh one
-   * there, and a conversation would lose the ground it was standing on. */
-  const moveChatTo = (chatId: number, path: string) => {
-    const ws = findWorkspace(workspacesRef.current, path);
-    const next = chatsRef.current.map((c) => (c.id === chatId ? { ...c, cwd: path, model: c.model ?? ws?.model } : c));
-    // requireSession reads the chat from this ref in the same tick, before
-    // React has re-rendered with the new cwd.
-    chatsRef.current = next;
-    setChats(next);
-    setPanes((current) => current.filter((pane) => pane !== chatId));
-    setActiveId(chatId);
-    void requireSession(chatId, true)
-      .then(() => adoptCatalog(chatId))
-      .catch(() => undefined);
-  };
-
-  /** Switch the sidebar to a workspace and land on a tab that runs there.
-   * The tab in front follows the switch when nothing has been asked in it
-   * yet — picking a folder should change the folder you are looking at.
-   * A tab with a conversation keeps its own folder, and says which. */
-  const switchWorkspace = (path: string) => {
-    if (path === activePathRef.current) return;
-    activate(path);
-    setFilesOpen(false);
-    const here = chatsRef.current.find((c) => c.id === activeId);
-    if (here && here.messages.length === 0) {
-      moveChatTo(here.id, path);
-      return;
-    }
-    const empty = chatsRef.current.find((c) => c.cwd === path && c.messages.length === 0);
-    if (empty) {
-      setActiveId(empty.id);
-      return;
-    }
-    openChat((chatIdRef.current += 1));
-  };
-
-  const addWorkspace = (path: string) => {
-    const list = upsertWorkspace(workspacesRef.current, { path, name: basename(path) });
-    persistWorkspaces(list);
-    setDialog(null);
-    const added = findWorkspace(list, path);
-    if (added) switchWorkspace(added.path);
-  };
-
-  const saveWorkspace = (ws: Workspace) => {
-    persistWorkspaces(upsertWorkspace(workspacesRef.current, ws));
-    setDialog(null);
-  };
-
-  /** Drop a workspace from the switcher (nothing on disk changes). If it
-   * was active, the next row — or the server default — takes over. */
-  const forgetWorkspace = (path: string) => {
-    const list = removeWorkspace(workspacesRef.current, path);
-    persistWorkspaces(list);
-    setDialog(null);
-    if (activePathRef.current === path) {
-      const next = list[0]?.path ?? health?.cwd ?? null;
-      if (next) switchWorkspace(next);
-      else activate(null);
-    }
-  };
+  const { switchWorkspace, addWorkspace, saveWorkspace, forgetWorkspace, newProjectChat, activateWorkspace } = workspaceActions({
+    workspacesRef, activePathRef, chatsRef, chatIdRef, activeId, root: health?.cwd,
+    setWorkspaces, setActivePath, setChats, setPanes, setActiveId, setFilesOpen, setDialog,
+    refreshStored, requireSession, adoptCatalog, openChat,
+  });
 
   /** The footer names the tab's own graff session; clicking it copies the
    * command that continues the same conversation in a terminal. */
@@ -831,6 +765,9 @@ export default function GraffHarness() {
             ) : (
               <div className="min-h-0 flex-1 overflow-y-auto">
                 <EmptyState compact={compactPane}
+                  onOpenProject={() => setDialog({ mode: "new" })}
+                  onProjects={() => setProjectsOpen(true)}
+                  onContinue={openConversations} onReview={openChanges}
                   onSend={(text: string) => void send(text, thread.id)} onSetting={text => settings.change(thread.id, text)}
                   health={health}
                   history={threadHistory}
@@ -1009,8 +946,11 @@ export default function GraffHarness() {
         onPick={pickRecent}
         onNewChat={newChat}
         onSeeAll={openConversations}
-        activeNav={filesOpen ? "workspace" : browserOpen ? "browser" : conversationsOpen ? "conversations" : "home"}
+        activeNav={projectsOpen ? "projects" : filesOpen ? (fileRequest?.changes ? "changes" : "workspace") : browserOpen ? "browser" : conversationsOpen ? "conversations" : "home"}
         onNavigate={(key) => {
+          setProjectsOpen(key === "projects");
+          if (key === "changes") { openChanges(); return; }
+          if (key === "workspace") setFileRequest(null);
           setFilesOpen(key === "workspace");
           setBrowserOpen(key === "browser");
           setConversationsOpen(key === "conversations");
@@ -1029,7 +969,12 @@ export default function GraffHarness() {
 
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
         <div className="flex min-h-0 flex-1 gap-2.5" style={{ flexDirection: splitDirection }}>
-          {conversationsOpen ? (
+          {projectsOpen ? (
+            <ProjectsPane workspaces={workspaces} current={activePath} onOpen={() => setDialog({ mode: "new" })}
+              onClose={() => setProjectsOpen(false)}
+              onContinue={path => { switchWorkspace(path); openConversations(); }}
+              onNewChat={newProjectChat} />
+          ) : conversationsOpen ? (
             <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-page">
               {tabBar}
               <ConversationsPane
@@ -1096,10 +1041,10 @@ export default function GraffHarness() {
             </>
           )}
 
-          {agentsOpen && !filesOpen && !browserOpen && !conversationsOpen && <AgentsPane key={chatCwd} root={chatCwd} onClose={() => setAgentsOpen(false)} />}
-          {filesOpen && !conversationsOpen && (fileRequest?.changes ? <ChangesPane root={chatThread.cwd} onClose={() => setFilesOpen(false)} /> : <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />)}
+          {agentsOpen && !projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && <AgentsPane key={chatCwd} root={chatCwd} onClose={() => setAgentsOpen(false)} />}
+          {filesOpen && !projectsOpen && !conversationsOpen && (fileRequest?.changes ? <ChangesPane root={chatThread.cwd} onClose={() => setFilesOpen(false)} /> : <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />)}
 
-          {browserOpen && !conversationsOpen && (
+          {browserOpen && !projectsOpen && !conversationsOpen && (
             <BrowserPane
               key={chatThread.id}
               chat={handleOf(chatThread.id)}
@@ -1111,7 +1056,7 @@ export default function GraffHarness() {
             />
           )}
 
-          {!filesOpen && !browserOpen && !conversationsOpen && active && paneTodos.length > 0 && (
+          {!projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && active && paneTodos.length > 0 && (
             <aside
               className="hidden w-[360px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page lg:flex"
               style={{ animation: "fade-in 300ms ease both" }}
@@ -1142,7 +1087,7 @@ export default function GraffHarness() {
           startPath={activePath ?? health?.home ?? undefined}
           models={models}
           onClose={() => setDialog(null)}
-          onPick={addWorkspace}
+          onPick={path => { addWorkspace(path); setProjectsOpen(false); }}
           onSave={saveWorkspace}
           onForget={forgetWorkspace}
         />

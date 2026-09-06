@@ -16,6 +16,7 @@
     "test:desktop": "bun test lib ./electron/*.test.cjs",
     "test:visual": "bun scripts/test-visual.mjs",
     "test:updates": "GRAFF_VISUAL_SUITE=updates bun scripts/test-visual.mjs",
+    "test:projects": "GRAFF_VISUAL_SUITE=projects bun scripts/test-visual.mjs",
     "test:performance": "GRAFF_PERFORMANCE_TESTS=1 bun scripts/test-visual.mjs"
   },
   "dependencies": {
