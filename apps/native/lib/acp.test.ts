@@ -18,6 +18,13 @@ describe("parseRpcLine", () => {
 });
 
 describe("applyAcpUpdate", () => {
+  it("keeps the file chip when a completion update omits its title and input", () => {
+    let turn = applyAcpUpdate(emptyTurn(), {sessionUpdate:'tool_call', toolCallId:'read-one', title:'read_file', kind:'read', rawInput:{path:'navigation.ts'}, status:'in_progress'});
+    turn = applyAcpUpdate(turn, {sessionUpdate:'tool_call_update', toolCallId:'read-one', status:'completed'});
+    assert.equal(turn.tools[0].name, 'Read file');
+    assert.equal(turn.tools[0].chip, 'navigation.ts');
+    assert.equal(turn.tools[0].path, 'navigation.ts');
+  });
   it("streams thought then text onto a live turn", () => {
     let turn = emptyTurn();
     turn = applyAcpUpdate(turn, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "look around" } });

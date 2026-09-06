@@ -185,6 +185,31 @@ Click the workspace name to search by name **or folder path**. The current
 workspace is first; full paths distinguish folders with the same name. Arrow keys
 browse results, Enter selects, and Escape returns to the previous control.
 
+## Sub-agent activity
+
+Open **Agents**, select a connected Graff, then select one of its **Sub-agents**.
+The view shows emitted progress, tool calls and results, and completion or failure.
+Tool details stay collapsed until opened. **Message this Graff** opens the parent
+message composer separately; inspecting a child sends no instructions.
+
+Both the GUI and Graff binary must support this feed. Activity belongs to a live
+parent session and is not restored after that process exits. Large output and
+older events are bounded and marked as shortened. Resource measurements remain
+for the shared parent process. Activity text is excluded from profiler feedback.
+
+The existing `graff/agents` ACP extension accepts two read-only actions:
+
+| Action | Parameters | Result |
+|---|---|---|
+| `children` | `target`, `startId`, `scope` | Recent child metadata, availability and truncation |
+| `activity` | Same fields plus `child` | Child metadata, ACP `session/update` envelopes and final response |
+
+Use the parent identity returned by `list`; `scope` defaults to the workspace.
+The observer revalidates identity and scope, and each update carries the child
+identifier as `sessionId`. Responses are complete recent snapshots, not incremental
+patches: replace the inspected snapshot on refresh. This does not add independent
+child prompting, cancellation or session restoration.
+
 ## GUI regression checks
 
 Run these from this package with Bun:
@@ -210,6 +235,8 @@ Projects, and mouse resizing in both directions. `bun run test:stress`
 covers long transcripts and tool output without changing macOS
 Spaces. The full `test:visual` suite additionally checks native fullscreen
 transitions; the stress results explicitly report fullscreen as not run.
+`bun run test:agents` covers live, completed and failed children, tool disclosure,
+late replies after selection changes, and inspection without sending messages.
 
 For a separate, opt-in real coding trial, run `electron/gui-coding-smoke.cjs` with
 the package's Electron executable. It uses configured credentials in a disposable

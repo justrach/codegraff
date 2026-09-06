@@ -427,7 +427,7 @@ pub fn sayToolUse(self: *Agent, call: ToolCall) !void {
 /// close the announced row without duplicating the result body.
 pub fn sayToolResult(self: *Agent, call: ToolCall, r: ExecResult) void {
     const name = call.name;
-    if (self.out == null) return; // no frontend attached: nothing to tell, as ever
+    if (self.out == null and self.sink == null) return;
     const ev: engine_events.ToolOutcome = .{
         .id = call.id,
         .name = name,

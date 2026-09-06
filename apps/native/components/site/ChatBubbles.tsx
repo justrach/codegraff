@@ -71,12 +71,14 @@ export const AssistantBody = memo(function AssistantBody({
   onReview,
   scroller,
   following,
+  reasoningLabel,
 }: {
   turn: AssistantTurn;
   onOpenPath?: (path: string) => void;
   onReview?: () => void;
   scroller?: RefObject<HTMLDivElement | null>;
   following: boolean;
+  reasoningLabel?: string;
 }) {
   const thinking = turn.status === "thinking";
   const live = thinking || turn.status === "streaming";
@@ -131,8 +133,8 @@ export const AssistantBody = memo(function AssistantBody({
         <ThinkingState
           variant="Reasoning"
           rows={reasoningRows.length ? reasoningRows : [{ primary: "Waiting on the model…", shimmer: true }]}
-          activeLabel={turn.model ? `Thinking · ${turn.model}` : "Thinking"}
-          doneLabel={thoughtSecs ? `Thought for ${thoughtSecs}s` : "Thought"}
+          activeLabel={reasoningLabel ?? (turn.model ? `Thinking · ${turn.model}` : "Thinking")}
+          doneLabel={reasoningLabel ?? (thoughtSecs ? `Thought for ${thoughtSecs}s` : "Thought")}
           working={thinking}
         />
       )}

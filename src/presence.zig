@@ -62,6 +62,7 @@ pub fn listPeersBounded(io: Io, arena: Allocator, dir: Io.Dir, limit: usize) Pee
         if (live == .gone) {
             // Provably dead (#413): reap on read so the registry self-cleans
             // even when the owner crashed without retire().
+            @import("subagent_activity.zig").cleanup(io, d, rec.pid, rec.start_id);
             d.deleteFile(io, entry.name) catch {};
             continue;
         }
@@ -236,6 +237,7 @@ pub fn retire(io: Io) void {
     const name = g_own_name orelse return;
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{}) catch return;
     defer dir.close(io);
+    @import("subagent_activity.zig").cleanup(io, dir, g_self.pid, g_self.start_id);
     dir.deleteFile(io, name) catch {};
     // The shared channel is NOT ours to delete: co-resident sessions may still be mid-drain, and its bytes are the room's history.
 }
@@ -382,6 +384,10 @@ pub fn drainChannel(io: Io, arena: Allocator) []const Message {
         if (!isOwn(m, g_self.pid, g_self.start_id)) out.append(arena, m) catch break;
     }
     return out.items;
+}
+
+pub fn registryPath() ?[]const u8 {
+    return g_dir;
 }
 
 pub fn ownSession() []const u8 {
