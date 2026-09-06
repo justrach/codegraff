@@ -60,6 +60,7 @@ pub const Flags = struct {
     host_flag: []const u8 = "127.0.0.1", // harness serve
     port_flag: u16 = 8787, // harness serve
     token_flag: ?[]const u8 = null, // harness serve
+    name_flag: ?[]const u8 = null, // graff remote-control --name: how this machine is listed
     resume_flag: ?[]const u8 = null, // restore this named session
     branch_flag: ?[]const u8 = null, // clone --resume into this independent autosave target
     goal_flag: ?[]const u8 = null, // --goal: standing objective (todos) every turn gets, incl. --json/-p
@@ -242,6 +243,9 @@ pub fn parse(init: std.process.Init) !Flags {
                 } else if (std.mem.eql(u8, arg, "--token")) {
                     const tv = it.next() orelse std.process.fatal("--token needs a value — harness --help", .{});
                     flags.token_flag = try arena.dupe(u8, tv);
+                } else if (std.mem.eql(u8, arg, "--name")) {
+                    const nv = it.next() orelse std.process.fatal("--name needs a value — harness --help", .{});
+                    flags.name_flag = try arena.dupe(u8, nv);
                 } else {
                     std.process.fatal("unknown flag '{s}' — harness --help lists them", .{arg});
                 }
@@ -260,7 +264,8 @@ pub fn parse(init: std.process.Init) !Flags {
     flags.is_subcommand = flags.positionals.items.len > 0 and
         (std.mem.eql(u8, flags.positionals.items[0], "login") or std.mem.eql(u8, flags.positionals.items[0], "key") or std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "learn") or
             std.mem.eql(u8, flags.positionals.items[0], "serve") or std.mem.eql(u8, flags.positionals.items[0], "update") or std.mem.eql(u8, flags.positionals.items[0], "title") or std.mem.eql(u8, flags.positionals.items[0], "repl") or std.mem.eql(u8, flags.positionals.items[0], "tui") or
-            std.mem.eql(u8, flags.positionals.items[0], "worktree") or std.mem.eql(u8, flags.positionals.items[0], "sandboxes") or std.mem.eql(u8, flags.positionals.items[0], "cube") or std.mem.eql(u8, flags.positionals.items[0], "models") or @import("acp.zig").isAcpSubcommand(flags.positionals.items[0])); // `acp` also arms ACP's stdout discipline (json_mode) — see acp.isAcpSubcommand
+            std.mem.eql(u8, flags.positionals.items[0], "worktree") or std.mem.eql(u8, flags.positionals.items[0], "sandboxes") or std.mem.eql(u8, flags.positionals.items[0], "cube") or std.mem.eql(u8, flags.positionals.items[0], "models") or
+            std.mem.eql(u8, flags.positionals.items[0], "remote-control") or std.mem.eql(u8, flags.positionals.items[0], "remote") or @import("acp.zig").isAcpSubcommand(flags.positionals.items[0])); // `acp` also arms ACP's stdout discipline (json_mode) — see acp.isAcpSubcommand
     if (!flags.is_subcommand and flags.positionals.items.len > 0) {
         flags.oneshot_prompt = try std.mem.join(arena, " ", flags.positionals.items);
     }
