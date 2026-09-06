@@ -19,9 +19,11 @@ current is part of cutting a release.
   their sessions; `graff remote new` / `send` / `answer` / `tail` / `cancel`
   / `close` drive them, with the same NDJSON events a serve client gets. The
   machine keeps the complete tape; the relay keeps a recent window and a
-  viewer that falls behind gets a replay from the machine. Gated on the
-  `sessions` key scope, so a plain `api` key can never reach a machine.
-  `docs/remote-control.md`.
+  viewer that falls behind gets a replay from the machine. Gated on the new
+  `remote` key scope, so neither a plain `api` key nor a history-only
+  `sessions` key can reach a machine, and a viewer cannot start an
+  unattended session unless the machine was started with `--yolo`.
+  `docs/remote-control.md`, `docs/remote-control-security.md`.
 - Prompt-cache affinity is the git root, or one scratch seed when there is
   no `.git`. Eval sandboxes and worktrees can reuse a warm system+tools
   prefix instead of paying it on every leaf cwd. An offline test fails if

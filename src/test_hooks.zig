@@ -358,6 +358,7 @@ test {
     _ = @import("codex_tool_search.zig"); // hosted tool_search on gpt-5.4+ Codex
     _ = @import("tool_call_args.zig"); // #752: truncated tool-call arguments must not poison history
     _ = @import("cache_affinity.zig"); // ADR 0069: git-root / scratch cache seed
-    _ = @import("remote_control.zig"); // #722: relay command parsing, upload stubs, device id
+    _ = @import("remote_control.zig"); // #722: relay command parsing, yolo ceiling, device id
+    _ = @import("remote_upload.zig"); // #722: batch body shape, upload stubs, urgent flushes
     _ = @import("remote_client.zig"); // #722: event painting, gateway error shapes
 }

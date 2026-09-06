@@ -59,10 +59,16 @@ the connection it opened, and revoking the key ends the pipe.
 ## Auth
 
 - Machine → gateway: the `graff login` device key. Remote control requires
-  the `sessions` scope (device keys have it; dashboard keys opt in), so a
-  plain `api` key embedded in a product can never drive anyone's machine.
+  the `remote` scope (device keys have it; dashboard keys opt in), so a
+  plain `api` key embedded in a product, or a `sessions` key that only reads
+  history, can never drive anyone's machine. A refused key stops the machine.
 - Viewer → gateway: the same account login.
 - Gateway → machine: nothing inbound.
+- Unattended (`yolo`) sessions are the machine's decision: a viewer can
+  request one only if the machine was started with `--yolo`.
+
+The full model, including what the relay bounds, is in
+[remote-control-security.md](remote-control-security.md).
 
 `CODEGRAFF_API_KEY` overrides the login file on either side.
 `GRAFF_REMOTE_BASE` points both at a different gateway (a local one while

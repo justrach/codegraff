@@ -10,9 +10,14 @@
 //!
 //! Sessions are serve's ServeSession (durable `--resume <id>` children with
 //! the seq-stamped tape under .graff/serve/); serve_create spawns them and the
-//! drain here mirrors serveMessage with the socket replaced by coalesced
-//! uploads. The relay keeps a bounded recent window; the tape here is complete,
-//! so a viewer whose cursor fell behind asks for `reattach` and gets a replay.
+//! drain here mirrors serveMessage with the socket replaced by the coalesced
+//! uploads in remote_upload.zig. The relay keeps a bounded recent window; the
+//! tape here is complete, so a viewer whose cursor fell behind asks for
+//! `reattach` and gets a replay.
+//!
+//! Trust: the relay only carries what an account key with the `remote` scope
+//! sent, and this process is the last word — a viewer cannot make it run an
+//! unattended (`yolo`) session unless it was started with --yolo itself.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -24,6 +29,7 @@ const root = @import("main.zig");
 const serve = @import("serve.zig");
 const serve_create = @import("serve_create.zig");
 const events = @import("serve_events.zig");
+const upload = @import("remote_upload.zig");
 const util = @import("util.zig");
 
 const ServeState = serve.ServeState;
@@ -43,11 +49,6 @@ pub const Config = struct {
 pub const device_file = ".graff/remote-device.json";
 /// Longest one poll is held server-side before an empty answer.
 const poll_wait_ms: u64 = 25_000;
-/// Event lines above this go upstream as a stub; the local tape stays complete.
-pub const upload_line_cap: usize = 256 * 1024;
-/// Coalesce uploads: a burst of text deltas becomes one POST per window.
-const flush_window_ms: i64 = 60;
-const flush_bytes: usize = 32 * 1024;
 const backoff_min_ms: i64 = 1_000;
 const backoff_max_ms: i64 = 30_000;
 
@@ -75,34 +76,8 @@ fn hostName(buf: *[256]u8, from_env: ?[]const u8) []const u8 {
     return from_env orelse "unknown";
 }
 
-const Reply = struct { code: u16, body: []const u8 };
-
-/// `client` is per task: the poll loop owns one, every streamed request
-/// another, so a turn's uploads never queue behind a 25s poll (or vice versa).
-fn post(self: *State, client: *std.http.Client, arena: Allocator, path: []const u8, payload: []const u8) !Reply {
-    const url = try std.fmt.allocPrint(arena, "{s}{s}", .{ self.cfg.base, path });
-    var aw: Io.Writer.Allocating = .init(arena);
-    const res = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .POST,
-        .payload = payload,
-        .response_writer = &aw.writer,
-        .headers = .{
-            .content_type = .{ .override = "application/json" },
-            .authorization = .{ .override = try std.fmt.allocPrint(arena, "Bearer {s}", .{self.cfg.key}) },
-            .user_agent = .{ .override = "simple-harness/" ++ harness_version },
-        },
-    });
-    return .{ .code = @intFromEnum(res.status), .body = aw.writer.buffered() };
-}
-
-/// The gateway's error message out of a non-2xx body, or the raw body.
-fn errorMessage(arena: Allocator, body: []const u8) []const u8 {
-    if (std.json.parseFromSliceLeaky(Value, arena, body, .{ .allocate = .alloc_always })) |v| {
-        if (v == .object) if (v.object.get("error")) |e| if (e == .object)
-            if (util.strFieldObj(e.object, "message")) |m| return m;
-    } else |_| {}
-    return body[0..@min(body.len, 200)];
+fn link(self: *State, client: *std.http.Client) upload.Link {
+    return .{ .io = self.st.io, .base = self.cfg.base, .key = self.cfg.key, .agent_id = self.agent_id, .client = client };
 }
 
 pub fn remoteControlMain(gpa: Allocator, io: Io, cfg: Config, exe: []const u8) !void {
@@ -132,8 +107,8 @@ pub fn remoteControlMain(gpa: Allocator, io: Io, cfg: Config, exe: []const u8) !
                 continue;
             };
             registered = true;
-            serve.serveLog(io, "graff remote-control · {s} ({s}) · device {s} · relay {s} · sessions are `{s} --json` children · Ctrl-C disconnects", .{
-                label, self.hostname, &self.agent_id, cfg.base, exe,
+            serve.serveLog(io, "graff remote-control · {s} ({s}) · device {s} · relay {s} · unattended sessions: {s} · sessions are `{s} --json` children · Ctrl-C disconnects", .{
+                label, self.hostname, &self.agent_id, cfg.base, if (cfg.serve.yolo) "allowed (--yolo)" else "refused (start with --yolo to allow)", exe,
             });
         }
         const cmds = poll(&self, arena) catch |err| {
@@ -178,6 +153,13 @@ pub fn parseDeviceId(data: []const u8) ?[16]u8 {
     return out;
 }
 
+/// The key was refused: revoked, or missing the `remote` scope. Nothing this
+/// process can do fixes that, and retrying forever would just hammer the
+/// gateway with a dead credential — exit and say what to run.
+fn refused(arena: Allocator, code: u16, body: []const u8) noreturn {
+    std.process.fatal("remote-control: gateway refused the key (HTTP {d}: {s}) — run `graff login` again (keys need the `remote` scope)", .{ code, upload.errorMessage(arena, body) });
+}
+
 fn register(self: *State, arena: Allocator, label: []const u8) !void {
     // AT_FDCWD has no path of its own; resolve "." through it instead.
     const cwd: []const u8 = Io.Dir.cwd().realPathFileAlloc(self.st.io, ".", arena) catch "";
@@ -185,10 +167,10 @@ fn register(self: *State, arena: Allocator, label: []const u8) !void {
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.write(.{ .hostname = self.hostname, .name = label, .cwd = cwd, .version = harness_version });
     const path = try std.fmt.allocPrint(arena, "/v1/remote/agents/{s}/register", .{&self.agent_id});
-    const r = try post(self, &self.client, arena, path, aw.writer.buffered());
-    if (r.code == 401 or r.code == 403) std.process.fatal("remote-control: gateway refused the key (HTTP {d}: {s}) — run `graff login`", .{ r.code, errorMessage(arena, r.body) });
+    const r = try upload.post(link(self, &self.client), arena, path, aw.writer.buffered());
+    if (r.code == 401 or r.code == 403) refused(arena, r.code, r.body);
     if (r.code < 200 or r.code >= 300) {
-        serve.serveLog(self.st.io, "remote-control: HTTP {d}: {s}", .{ r.code, errorMessage(arena, r.body) });
+        serve.serveLog(self.st.io, "remote-control: HTTP {d}: {s}", .{ r.code, upload.errorMessage(arena, r.body) });
         return error.RegisterFailed;
     }
 }
@@ -205,10 +187,11 @@ pub const Command = struct {
 fn poll(self: *State, arena: Allocator) ![]const Command {
     const payload = try pollPayload(self, arena);
     const path = try std.fmt.allocPrint(arena, "/v1/remote/agents/{s}/poll", .{&self.agent_id});
-    const r = try post(self, &self.client, arena, path, payload);
+    const r = try upload.post(link(self, &self.client), arena, path, payload);
+    if (r.code == 401 or r.code == 403) refused(arena, r.code, r.body);
     if (r.code == 404) return error.UnknownDevice;
     if (r.code < 200 or r.code >= 300) {
-        serve.serveLog(self.st.io, "remote-control: HTTP {d}: {s}", .{ r.code, errorMessage(arena, r.body) });
+        serve.serveLog(self.st.io, "remote-control: HTTP {d}: {s}", .{ r.code, upload.errorMessage(arena, r.body) });
         return error.PollFailed;
     }
     return parseCommands(arena, r.body);
@@ -263,10 +246,23 @@ pub fn parseCommands(arena: Allocator, text: []const u8) ![]const Command {
     return out.items;
 }
 
+/// Does a create request ask for an unattended session? Only a real JSON
+/// `true` counts; anything unparseable reads as "no".
+pub fn yoloRequested(arena: Allocator, body: []const u8) bool {
+    const v = std.json.parseFromSliceLeaky(Value, arena, body, .{ .allocate = .alloc_always }) catch return false;
+    if (v != .object) return false;
+    const y = v.object.get("yolo") orelse return false;
+    return y == .bool and y.bool;
+}
+
 fn runCommand(self: *State, arena: Allocator, cmd: Command) void {
     const io = self.st.io;
     const client = &self.client;
     if (std.mem.eql(u8, cmd.kind, "create")) {
+        // The machine's own flag is the ceiling: a viewer cannot escalate a
+        // session past what whoever started this process allowed.
+        if (yoloRequested(arena, cmd.body) and !self.cfg.serve.yolo)
+            return sendResult(self, client, arena, cmd.id, null, 403, "{\"error\":\"this machine refuses unattended sessions — start `graff remote-control --yolo` there to allow them\"}");
         const made = serve_create.createFromBody(&self.st, arena, cmd.body) catch |err| {
             serve.serveLog(io, "remote-control: create failed ({t})", .{err});
             return sendResult(self, client, arena, cmd.id, null, 500, "{\"error\":\"failed to create session\"}");
@@ -287,7 +283,7 @@ fn runCommand(self: *State, arena: Allocator, cmd: Command) void {
     // A pure reconnect replays the tape and sends nothing to the child — and
     // works for a session this supervisor never ran, straight off the disk.
     if (std.mem.eql(u8, rtype, "reattach")) {
-        var up = Uploader.init(self, client, arena, cmd.id, sid);
+        var up = upload.Uploader.init(link(self, client), arena, cmd.id, sid);
         replayTape(self, arena, &up, sid, from orelse 1);
         return up.finish(200, "{\"ok\":true,\"type\":\"reattach\"}");
     }
@@ -372,7 +368,7 @@ fn drain(self: *State, client: *std.http.Client, arena: Allocator, s: *ServeSess
     // Our own copy of the name: `s` may be closed and freed by another task
     // the moment busy is released below, and finish() still names it.
     const sid = arena.dupe(u8, s.name) catch s.name;
-    var up = Uploader.init(self, client, arena, cmd_id, sid);
+    var up = upload.Uploader.init(link(self, client), arena, cmd_id, sid);
     {
         s.busy.lockUncancelable(io); // serialize requests per session
         defer s.busy.unlock(io);
@@ -404,7 +400,7 @@ fn drain(self: *State, client: *std.http.Client, arena: Allocator, s: *ServeSess
 
 /// The child died mid-request: a terminal error with the next seq goes on the
 /// tape and upstream, so a viewer sees the failure, not a hole.
-fn abort(s: *ServeSession, up: *Uploader, message: []const u8, dead: *bool) void {
+fn abort(s: *ServeSession, up: *upload.Uploader, message: []const u8, dead: *bool) void {
     s.last_seq += 1;
     var buf: [256]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "{{\"seq\":{d},\"type\":\"error\",\"message\":\"{s}\"}}", .{ s.last_seq, message }) catch
@@ -415,7 +411,7 @@ fn abort(s: *ServeSession, up: *Uploader, message: []const u8, dead: *bool) void
 }
 
 /// Every complete tape line with seq >= from, in order.
-fn replayTape(self: *State, arena: Allocator, up: *Uploader, sid: []const u8, from: u64) void {
+fn replayTape(self: *State, arena: Allocator, up: *upload.Uploader, sid: []const u8, from: u64) void {
     const path = events.logPath(arena, sid) catch return;
     const data = Io.Dir.cwd().readFileAlloc(self.st.io, path, arena, .limited(events.max_log_bytes)) catch return;
     var rest = data;
@@ -456,83 +452,9 @@ fn closeSession(self: *State, client: *std.http.Client, arena: Allocator, cmd_id
 }
 
 fn sendResult(self: *State, client: *std.http.Client, arena: Allocator, cmd_id: []const u8, sid: ?[]const u8, status: u16, body: []const u8) void {
-    var up = Uploader.init(self, client, arena, cmd_id, sid orelse "");
+    var up = upload.Uploader.init(link(self, client), arena, cmd_id, sid orelse "");
     up.finish(status, body);
 }
-
-/// Event types a viewer must see NOW rather than at the end of a window.
-pub fn urgent(line: []const u8) bool {
-    const t = events.stringField(line, "type") orelse return false;
-    return std.mem.eql(u8, t, "tool_call") or std.mem.eql(u8, t, "ask_user") or events.terminalEvent(line);
-}
-
-/// A line too big for the relay window becomes an envelope-only stub. Only the
-/// upload shrinks: the tape and a later `reattach` still carry the full line.
-pub fn uploadLine(buf: []u8, line: []const u8) []const u8 {
-    if (line.len <= upload_line_cap) return line;
-    const seq = events.seqOf(line) orelse 0;
-    const t = events.stringField(line, "type") orelse "event";
-    return std.fmt.bufPrint(buf, "{{\"seq\":{d},\"type\":\"{s}\",\"truncated\":true,\"bytes\":{d}}}", .{ seq, t[0..@min(t.len, 64)], line.len }) catch line[0..0];
-}
-
-/// Batches event lines for one command into `POST …/events` bodies:
-/// `{"command_id","session_id","events":[<line>,…][,"result":{status,body}]}`.
-/// Lines are JSON objects already, so they ride as values, never re-escaped.
-const Uploader = struct {
-    self: *State,
-    client: *std.http.Client,
-    arena: Allocator,
-    cmd_id: []const u8,
-    sid: []const u8,
-    aw: Io.Writer.Allocating,
-    count: usize = 0,
-    last_flush_ms: i64,
-
-    fn init(self: *State, client: *std.http.Client, arena: Allocator, cmd_id: []const u8, sid: []const u8) Uploader {
-        return .{ .self = self, .client = client, .arena = arena, .cmd_id = cmd_id, .sid = sid, .aw = .init(arena), .last_flush_ms = util.unixMs(self.st.io) };
-    }
-
-    fn open(u: *Uploader) void {
-        u.aw.writer.print("{{\"command_id\":\"{s}\",\"session_id\":\"{s}\",\"events\":[", .{ u.cmd_id, u.sid }) catch {};
-    }
-
-    fn push(u: *Uploader, line: []const u8) void {
-        if (u.count == 0) u.open();
-        if (u.count > 0) u.aw.writer.writeByte(',') catch {};
-        var stub: [256]u8 = undefined;
-        u.aw.writer.writeAll(uploadLine(&stub, line)) catch {};
-        u.count += 1;
-        const now = util.unixMs(u.self.st.io);
-        if (u.aw.writer.buffered().len >= flush_bytes or now - u.last_flush_ms >= flush_window_ms or urgent(line)) u.flush(null);
-    }
-
-    /// One POST. A failed upload is logged and dropped: the tape is complete
-    /// and the viewer's next `reattach` fills the hole from it.
-    fn flush(u: *Uploader, result: ?struct { status: u16, body: []const u8 }) void {
-        if (u.count == 0 and result == null) return;
-        if (u.count == 0) u.open();
-        u.aw.writer.writeByte(']') catch {};
-        if (result) |r| u.aw.writer.print(",\"result\":{{\"status\":{d},\"body\":{s}}}", .{ r.status, r.body }) catch {};
-        u.aw.writer.writeByte('}') catch {};
-        const path = std.fmt.allocPrint(u.arena, "/v1/remote/agents/{s}/events", .{&u.self.agent_id}) catch return;
-        var attempt: usize = 0;
-        while (attempt < 3) : (attempt += 1) {
-            if (post(u.self, u.client, u.arena, path, u.aw.writer.buffered())) |r| {
-                if (r.code >= 200 and r.code < 300) break;
-                serve.serveLog(u.self.st.io, "remote-control: upload HTTP {d}: {s}", .{ r.code, errorMessage(u.arena, r.body) });
-                if (r.code < 500) break;
-            } else |err| serve.serveLog(u.self.st.io, "remote-control: upload failed ({t})", .{err});
-            u.self.st.io.sleep(.fromMilliseconds(250 * @as(i64, @intCast(attempt + 1))), .awake) catch break;
-        }
-        u.aw = .init(u.arena);
-        u.count = 0;
-        u.last_flush_ms = util.unixMs(u.self.st.io);
-    }
-
-    fn finish(u: *Uploader, status: u16, body: []const u8) void {
-        u.flush(.{ .status = status, .body = body });
-    }
-};
 
 test "parseDeviceId accepts exactly 16 lowercase hex, nothing else" {
     try std.testing.expectEqualStrings("00ff00ff00ff00ff", &(parseDeviceId("{\"device_id\":\"00ff00ff00ff00ff\"}\n").?));
@@ -565,28 +487,15 @@ test "parseCommands: ids validated, session names validated, bodies re-lined" {
     try std.testing.expectError(error.BadReply, parseCommands(arena, "[]"));
 }
 
-test "urgent: tool calls, prompts and terminals flush immediately; deltas batch" {
-    try std.testing.expect(urgent("{\"seq\":1,\"type\":\"tool_call\",\"name\":\"bash\"}"));
-    try std.testing.expect(urgent("{\"seq\":2,\"type\":\"ask_user\",\"call_id\":\"q\"}"));
-    try std.testing.expect(urgent("{\"seq\":3,\"type\":\"turn\"}"));
-    try std.testing.expect(!urgent("{\"seq\":4,\"type\":\"text\",\"text\":\"turn\"}"));
-    try std.testing.expect(!urgent("{\"seq\":5,\"type\":\"reasoning\",\"text\":\"…\"}"));
-}
-
-test "uploadLine: small lines pass through, oversized ones become an envelope stub" {
-    var buf: [256]u8 = undefined;
-    const small = "{\"seq\":7,\"type\":\"text\",\"text\":\"hi\"}";
-    try std.testing.expectEqualStrings(small, uploadLine(&buf, small));
-    const big = try std.testing.allocator.alloc(u8, upload_line_cap + 100);
-    defer std.testing.allocator.free(big);
-    const head = "{\"seq\":9,\"type\":\"tool_result\",\"output\":\"";
-    @memset(big, 'x');
-    @memcpy(big[0..head.len], head);
-    big[big.len - 2] = '"';
-    big[big.len - 1] = '}';
-    const stub = uploadLine(&buf, big);
-    try std.testing.expect(std.mem.startsWith(u8, stub, "{\"seq\":9,\"type\":\"tool_result\",\"truncated\":true,\"bytes\":"));
-    try std.testing.expect(events.seqOf(stub).? == 9);
+test "yoloRequested: only a JSON true asks for an unattended session" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try std.testing.expect(yoloRequested(arena, "{\"yolo\":true}"));
+    try std.testing.expect(!yoloRequested(arena, "{\"yolo\":false}"));
+    try std.testing.expect(!yoloRequested(arena, "{\"yolo\":\"true\"}"));
+    try std.testing.expect(!yoloRequested(arena, "{\"model\":\"m\"}"));
+    try std.testing.expect(!yoloRequested(arena, "not json"));
 }
 
 test "validCommandId keeps relay ids inside a JSON string" {
