@@ -5,6 +5,8 @@ const A = std.mem.Allocator;
 const sink = @import("engine_sink.zig");
 const util = @import("util.zig");
 const proc = @import("proc_identity.zig");
+const private_file: Io.File.Permissions = if (@import("builtin").os.tag == .windows) .default_file else .fromMode(0o600);
+const private_dir: Io.File.Permissions = if (@import("builtin").os.tag == .windows) .default_dir else .fromMode(0o700);
 pub const max_events = 96;
 pub const max_text = 2048;
 pub const file_limit = 2 * 1024 * 1024;
@@ -34,7 +36,7 @@ pub fn cleanup(io: Io, registry: Io.Dir, pid: i32, start_id: u64) void {
 fn writeAtomic(io: Io, a: A, dir: Io.Dir, name: []const u8, value: anytype) !void {
     const bytes = try std.json.Stringify.valueAlloc(a, value, .{});
     defer a.free(bytes);
-    var f = try dir.createFileAtomic(io, name, .{ .permissions = .fromMode(0o600), .replace = true });
+    var f = try dir.createFileAtomic(io, name, .{ .permissions = private_file, .replace = true });
     defer f.deinit(io);
     try f.file.writeStreamingAll(io, bytes);
     try f.replace(io);
@@ -56,7 +58,7 @@ pub const Recorder = struct {
         const self = proc.selfRecord(io);
         var buf: [80]u8 = undefined;
         const name = try directory(&buf, self.pid, self.start_id);
-        registry.createDir(io, name, .fromMode(0o700)) catch |err| if (err != error.PathAlreadyExists) return err;
+        registry.createDir(io, name, private_dir) catch |err| if (err != error.PathAlreadyExists) return err;
         const dir = try registry.openDir(io, name, .{ .iterate = true });
         var result: Recorder = .{ .a = a, .io = io, .dir = dir, .meta = .{ .id = id, .label = util.utf8Prefix(label, 256), .task = util.utf8Prefix(task, 2048) } };
         result.publish(true);

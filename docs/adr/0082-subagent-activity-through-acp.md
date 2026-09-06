@@ -16,8 +16,9 @@ text, response text, tool calls and results, followed by completion or failure.
 It never reserves parent transcript sequence numbers. Stream delivery checks
 for an injected sink independently of an output writer.
 
-The local presence registry holds atomic, owner-readable snapshots under the
-parent's PID and process-start identity. The read-only `graff/agents` actions
+The local presence registry holds atomic snapshots under the parent's PID and
+process-start identity. Unix uses owner-only permissions; Windows inherits the
+home directory's ACL, matching the other local stores. The read-only `graff/agents` actions
 `children` and `activity` revalidate the parent and workspace scope on every
 request. Activity returns standard ACP session-update envelopes keyed to the
 child identifier. Inspection neither consumes inboxes nor sends instructions.
