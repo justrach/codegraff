@@ -11,7 +11,7 @@ pub const accent = zz.Color.fromRgb(0x05, 0x96, 0x69); // codegraff.com emerald 
 pub const HELP_CHAT =
     \\Commands (mirrors the graff session):
     \\  /help /clear /new /quit          conversation
-    \\  /rewind /compact /cost           history
+    \\  /rewind /compact /cost /version  history and running binary
     \\  /model [name] /models            model (switch / list)
     \\  /effort low|med|high|xhigh|max|ultra   reasoning depth
     \\  /fast /thinking /ultracode       thinking controls (toggles)

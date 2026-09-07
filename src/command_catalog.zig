@@ -84,6 +84,7 @@ pub const commands = [_]Item{
     .{ .name = "/jobs", .usage = "/jobs [keep|unkeep|stop|restart <id>]", .desc = "list background jobs (age, port, idle stop); keep pins a server, restart reruns one" },
     .{ .name = "/cost", .desc = "session token usage and cost" },
     .{ .name = "/usage", .desc = "alias for /cost" },
+    .{ .name = "/version", .desc = "show the version in this process and compare it with the latest release" },
     .{ .name = "/debug", .desc = "live content-free observability HUD (turns, tokens, tools, last events)" },
     .{ .name = "/cache", .desc = "prompt-cache posture: prefix hash, hit rate, last bust, remaining max levers" },
     .{ .name = "/tools", .desc = "session tool balance: codedb-pro vs zigrep vs native usage, gate refusals, skew" },

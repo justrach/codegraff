@@ -203,6 +203,8 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.pushFmt(.system, "session: {s}", .{self.session_name orelse "untitled"}) catch {};
     } else if (std.mem.eql(u8, canon, "/session-info")) {
         meters.sessionInfo(self);
+    } else if (std.mem.eql(u8, canon, "/version")) {
+        if (!bgop.start(self, .version, &.{}, "", "checking version")) self.push(.system, busy_note) catch {};
     } else if (std.mem.eql(u8, canon, "/debug") or std.mem.eql(u8, canon, "/cache")) {
         self.openOverlay(.debug);
     } else if (std.mem.eql(u8, canon, "/usage")) {

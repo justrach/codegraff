@@ -13,6 +13,7 @@ const pricing = @import("pricing.zig");
 const providers = @import("providers.zig");
 const process_runner = @import("process_runner.zig");
 const repl = @import("repl.zig");
+const version_status = @import("version_status.zig");
 const repl_bash = @import("repl_bash.zig");
 const repl_glue = @import("repl_glue.zig");
 const session = @import("session.zig");
@@ -149,6 +150,7 @@ pub fn run(
         .emergency_fn = emergencyCb,
         .idle_wake_fn = idleWakeCb,
         .peer_fn = tui_peer.peerCb,
+        .version_fn = versionCb,
     });
     try tui_session.syncRoot(&convo, root);
 }
@@ -199,6 +201,11 @@ fn idleWakeCb(ctx: ?*anyopaque, buf: []u8) ?[]const u8 {
     if (job_notify.takeIdleWake(c.io, buf)) |t| return t; // an idle stop waits for a real step boundary (#199)
     if (schedule.takeWake(c.io, buf)) |t| return t;
     return channel_worker.takeWake(c.io, buf);
+}
+
+fn versionCb(ctx: ?*anyopaque, gpa: Allocator) ?[]const u8 {
+    const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
+    return version_status.commandText(c.io, gpa, @import("build_options").version) catch null;
 }
 
 /// Overlay the TUI preview buffer as a repl.StreamBuf so replTurnCb's

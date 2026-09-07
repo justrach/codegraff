@@ -41,6 +41,7 @@ pub const SessionState = engine.SessionState;
 pub const GoalOp = engine.GoalOp;
 pub const StateFn = engine.StateFn;
 pub const PeerFn = engine.PeerFn;
+pub const VersionFn = engine.VersionFn;
 pub const RunOpts = run_mod.RunOpts;
 pub const run = run_mod.run;
 pub fn setCurrentModel(name: []const u8, provider: []const u8) void {

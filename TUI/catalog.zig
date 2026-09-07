@@ -16,6 +16,7 @@ pub const items = [_]Item{
     .{ .name = "/compact", .desc = "Engine-compact model-visible history" },
     .{ .name = "/context", .desc = "Show context-window use" },
     .{ .name = "/session-info", .desc = "Session details", .aliases = &.{ "/status", "/info" } },
+    .{ .name = "/version", .desc = "Running binary and latest release status" },
     .{ .name = "/usage", .desc = "Token usage and cost", .aliases = &.{"/cost"} },
     .{ .name = "/debug", .desc = "Live observability HUD" },
     .{ .name = "/cache", .desc = "Prompt-cache posture and remaining max levers" },

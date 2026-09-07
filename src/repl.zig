@@ -73,6 +73,8 @@ pub var g_models: []const u8 = ""; // comma-joined model names (for /models)
 pub var g_model_fn: ?ModelFn = null; // switch the active model by name
 pub const CancelFn = *const fn (turn_ctx: ?*anyopaque) void;
 pub var g_cancel_fn: ?CancelFn = null; // force-interrupt the running turn (steer drain)
+pub const VersionFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator) ?[]const u8;
+pub var g_version_fn: ?VersionFn = null;
 pub var g_debug: bool = false; // GRAFF_REPL_DEBUG / `/debug` → dump raw stream + frames to stderr
 
 // ---------------------------------------------------------------------------
@@ -356,6 +358,7 @@ pub const HELP_CALC =
     \\Commands:
     \\  /help     this help
     \\  /clear    clear the conversation
+    \\  /version  running binary and latest release status
     \\  /animation enso|braille|dragon   spinner style
     \\  /quit     exit  (also /q, ctrl-c)
     \\

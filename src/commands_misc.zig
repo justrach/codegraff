@@ -16,6 +16,7 @@ const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
 const utf8Prefix = util.utf8Prefix;
 const harness_version = main_mod.harness_version;
+const version_status = @import("version_status.zig");
 const mcp_config_path = main_mod.mcp_config_path;
 const session_ext = session.session_ext;
 const saveSession = session.saveSession;
@@ -165,6 +166,13 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.startsWith(u8, line, "/schedule") and (line.len == 9 or line[9] == ' ' or line[9] == '\t')) return @import("schedule.zig").slashCommand(root, arena, line, out);
     if (std.mem.startsWith(u8, line, "/adapter") and (line.len == 8 or line[8] == ' ' or line[8] == '\t')) return @import("channel_worker.zig").slashCommand(root, arena, line, out);
     if (try side_question.command(root, arena, line, out)) return true; // #415 /btw
+    if (std.mem.eql(u8, line, "/version")) {
+        const text = try version_status.commandText(root.io, root.gpa, harness_version);
+        defer root.gpa.free(text);
+        try out.writeAll(text);
+        try out.flush();
+        return true;
+    }
     // #321: doctor.zig shipped with a catalog entry but no dispatch, so /doctor
     // was advertised in /help and the `/` menu while answering "unknown command".
     if (std.mem.eql(u8, line, "/doctor")) {
