@@ -12,6 +12,13 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#751`: Meta / Muse Spark requests send `tool_choice: auto` only, and
+  fold `reasoning_effort: max` to `xhigh`. The gateway rewrite stays a
+  safety net. ADR 0083.
+- `#750`: the resize-anchor PTY probe waits for a stable frame after a
+  width change instead of asserting on the first (possibly stale) repaint.
+- `#748`: an error-only SSE event is reported as that error, not retried
+  as a truncated gateway body.
 - `#761`: `read_file` optional fields stay out of `required[]` (path only).
   Null or empty `contains` / null bounds / null `compact` are a whole-file
   read, so strict tool calling can omit unused mutually exclusive fields.

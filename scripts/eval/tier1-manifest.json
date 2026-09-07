@@ -15,7 +15,7 @@
     "src/repl.zig",
     "TUI/root.zig"
   ],
-  "test_count_baseline": 2011,
+  "test_count_baseline": 2017,
   "test_count_slack": 25,
   "required_invariants": [
     {
@@ -67,6 +67,11 @@
       "id": "cache-affinity-scratch",
       "test": "affinity: two scratch sandboxes share one project cache id",
       "why": "289 remasure: hashing the leaf cwd minted a unique xAI partition per eval sandbox and paid the system+tools prefix at $2/M."
+    },
+    {
+      "id": "sse-error-not-truncated",
+      "test": "#748: error-only OpenAI SSE is an error envelope, not a missing stream",
+      "why": "#748: an explicit streamed error was retried as a truncated gateway body."
     }
   ],
   "docs_only_paths": [
