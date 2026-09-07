@@ -12,6 +12,13 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#751`: Meta / Muse Spark requests send `tool_choice: auto` only, and
+  fold `reasoning_effort: max` to `xhigh`. The gateway rewrite stays a
+  safety net. ADR 0083.
+- `#750`: the resize-anchor PTY probe waits for a stable frame after a
+  width change instead of asserting on the first (possibly stale) repaint.
+- `#748`: an error-only SSE event is reported as that error, not retried
+  as a truncated gateway body.
 - Prompt-cache affinity is the git root, or one scratch seed when there is
   no `.git`. Eval sandboxes and worktrees can reuse a warm system+tools
   prefix instead of paying it on every leaf cwd. An offline test fails if

@@ -24,6 +24,7 @@ pub const changelog_text =
     \\0.0.289
     \\  • background-agent handles survive an interrupted API turn (#753)
     \\  • prompt-cache affinity is the git root, not the leaf cwd
+    \\  • Meta tool_choice is auto-only; error-only SSE is not a truncate-retry (#751 #748)
     \\
     \\0.0.288
     \\  • GPT-6 Astra is the default Codex model: mid-turn steer, vision, hosted search, OpenAI compact
