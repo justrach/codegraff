@@ -78,6 +78,7 @@ test { // unit_tests' root is main.zig only, so reference every split-out module
     _ = mcp_cli;
     _ = @import("adopt.zig");
     _ = cli;
+    _ = @import("version_status.zig");
     _ = prompts;
     _ = session;
     _ = keys_cli;

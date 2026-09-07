@@ -10,11 +10,11 @@
 
 const std = @import("std");
 const Io = std.Io;
-const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const root = @import("main.zig");
 const harness_version = root.harness_version;
+const version_status = @import("version_status.zig");
 
 /// Shown under `graff --version` — a terse "what's new" for recent releases.
 /// Keep it short and current; bump alongside the version each release.
@@ -384,89 +384,13 @@ pub const usage_text =
     \\
 ;
 
-const Version = struct {
-    major: u32,
-    minor: u32,
-    patch: u32,
-
-    fn eql(self: Version, other: Version) bool {
-        return self.major == other.major and self.minor == other.minor and self.patch == other.patch;
-    }
-
-    fn order(self: Version, other: Version) std.math.Order {
-        if (self.major != other.major) return std.math.order(self.major, other.major);
-        if (self.minor != other.minor) return std.math.order(self.minor, other.minor);
-        return std.math.order(self.patch, other.patch);
-    }
-};
-
-/// Parse a leading `MAJOR.MINOR.PATCH` from `s` (after any leading 'v' is
-/// stripped by the caller). Returns null if the numeric triple isn't present.
-fn parseVersion(s: []const u8) ?Version {
-    var it = std.mem.splitScalar(u8, s, '.');
-    const major_s = it.next() orelse return null;
-    const minor_s = it.next() orelse return null;
-    const patch_s = it.next() orelse return null;
-    // Each component must be all digits up to the next '.' (or end). `patch`
-    // may trail a pre-release suffix ("-3-gabc", "-dev"); take only the leading
-    // digits so "0.0.14-3-gabc" parses as 0.0.14.
-    const major = std.fmt.parseInt(u32, major_s, 10) catch return null;
-    const minor = std.fmt.parseInt(u32, minor_s, 10) catch return null;
-    const patch_digits = std.mem.indexOfAny(u8, patch_s, "-+") orelse patch_s.len;
-    const patch = std.fmt.parseInt(u32, patch_s[0..patch_digits], 10) catch return null;
-    return .{ .major = major, .minor = minor, .patch = patch };
-}
-
-/// True when `s` is a bare release version with no `git describe` suffix — i.e.
-/// exactly `MAJOR.MINOR.PATCH` (optionally 'v'-prefixed), no "-N-gHASH",
-/// "-dirty", "-dev", or "+build". A dev/dirty/commit-ahead build is not a clean
-/// release and shouldn't be silently "updated" (downgraded) to an older tag.
-fn isCleanReleaseVersion(s: []const u8) bool {
-    if (s.len == 0) return false;
-    var dots: u8 = 0;
-    for (s) |c| {
-        switch (c) {
-            '0'...'9' => {},
-            '.' => dots += 1,
-            else => return false, // any '-','+','g',... means it's not a bare tag
-        }
-    }
-    return dots == 2;
-}
-
-fn fetchLatestReleaseTag(io: Io, gpa: Allocator, arena: Allocator, repo_api: []const u8) ?[]const u8 {
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    var aw: Io.Writer.Allocating = .init(arena);
-    defer aw.deinit();
-    const extra = [_]std.http.Header{.{ .name = "Accept", .value = "application/vnd.github+json" }};
-    const res = client.fetch(.{
-        .location = .{ .url = repo_api },
-        .method = .GET,
-        .response_writer = &aw.writer,
-        .headers = .{ .user_agent = .{ .override = "simple-harness/" ++ harness_version } },
-        .extra_headers = &extra,
-    }) catch return null;
-    if (@intFromEnum(res.status) != 200) return null;
-    if (aw.writer.buffered().len > 64 * 1024) return null;
-    const v = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch return null;
-    if (v != .object) return null;
-    const t = v.object.get("tag_name") orelse return null;
-    return if (t == .string) t.string else null;
-}
-
 /// Dim REPL/TUI line when GitHub has a newer release. Null if current, newer,
 /// offline, or GRAFF_NO_UPDATE_CHECK is set.
 pub fn updateAvailableLine(io: Io, gpa: Allocator, arena: Allocator, skip: bool) ?[]const u8 {
     if (skip) return null;
-    const repo_api = "https://api.github.com/repos/justrach/codegraff/releases/latest";
-    const latest_tag = fetchLatestReleaseTag(io, gpa, arena, repo_api) orelse return null;
-    const cur_raw = if (std.mem.startsWith(u8, harness_version, "v")) harness_version[1..] else harness_version;
-    const latest_raw = if (std.mem.startsWith(u8, latest_tag, "v")) latest_tag[1..] else latest_tag;
-    const cur = parseVersion(cur_raw) orelse return null;
-    const latest = parseVersion(latest_raw) orelse return null;
-    if (cur.order(latest) != .lt) return null;
-    return std.fmt.allocPrint(arena, "graff v{s} is available (you have {s}) — graff update", .{ latest_raw, cur_raw }) catch null;
+    const check = version_status.checkLatest(io, gpa, arena, harness_version);
+    if (check.order != .lt) return null;
+    return std.fmt.allocPrint(arena, "graff v{s} is available (you have {s}) — graff update", .{ check.latest.?, check.running }) catch null;
 }
 
 /// `graff update [--force|--check]` — bring the installed binary up to the
@@ -484,7 +408,6 @@ pub fn updateCommand(
     force: bool,
     check_only: bool,
 ) !void {
-    const repo_api = "https://api.github.com/repos/justrach/codegraff/releases/latest";
     const install_url = environ.get("GRAFF_INSTALL_URL") orelse environ.get("HARNESS_INSTALL_URL") orelse
         "https://github.com/justrach/codegraff/releases/latest/download/install.sh";
 
@@ -492,34 +415,20 @@ pub fn updateCommand(
     var ow = Io.File.stdout().writer(io, &obuf);
     const out = &ow.interface;
 
-    // current version, leading 'v' stripped so the comparison ignores tag style.
-    const cur_raw = if (std.mem.startsWith(u8, harness_version, "v")) harness_version[1..] else harness_version;
+    const check = version_status.checkLatest(io, gpa, arena, harness_version);
+    const cur_raw = check.running;
+    const latest_tag = check.latest_tag;
+    const latest_raw = check.latest;
 
-    // A release tag is a bare "MAJOR.MINOR.PATCH". A dev/dirty/commit-ahead
-    // build (from `git describe --tags --always --dirty`) carries a suffix
-    // ("-3-gabc", "-dirty", "-dev+hash", "0.1.0-dev") and is NOT a clean
-    // release version. Comparing such a string against a release tag with exact
-    // equality always mismatched, so `graff update` would "update" (downgrade)
-    // a newer dev build to an older release, and `--check` always reported an
-    // update available. Parse the leading numeric triple instead, and refuse to
-    // act on a non-release local build rather than silently downgrading it.
-    const cur = parseVersion(cur_raw);
-    const cur_is_release = cur != null and isCleanReleaseVersion(cur_raw);
-
-    const latest_tag = fetchLatestReleaseTag(io, gpa, arena, repo_api);
-
-    // `latest` is a release tag from GitHub, so it parses to a clean triple.
-    const latest_raw = if (latest_tag) |tag| (if (std.mem.startsWith(u8, tag, "v")) tag[1..] else tag) else null;
-    const latest = if (latest_raw) |r| parseVersion(r) else null;
-
-    if (latest_tag != null and latest == null) {
+    if (check.failure == .latest_tag) {
         // The release endpoint returned a tag we couldn't parse — treat like a
         // failed check rather than guessing.
         if (check_only) std.process.fatal("update check failed — unparseable release tag '{s}'", .{latest_tag.?});
         try out.print("could not parse latest release tag '{s}'; running installer anyway…\n", .{latest_tag.?});
-    } else if (latest != null) {
-        const up_to_date = cur != null and cur.?.eql(latest.?);
-        const cur_newer = cur != null and cur.?.order(latest.?) == .gt;
+    } else if (latest_raw != null) {
+        const up_to_date = check.order == .eq;
+        const cur_newer = check.order == .gt;
+        const cur_is_release = check.clean_release;
 
         if (check_only) {
             if (cur_is_release and up_to_date) {
