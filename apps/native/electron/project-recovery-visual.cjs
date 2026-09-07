@@ -3,13 +3,23 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 async function runProjectRecovery({ win, origin, output }) {
-  const wc = win.webContents, js = code => wc.executeJavaScript(code);
+  const wc = win.webContents;
+  const js = async code => {
+    let last;
+    for (let i = 0; i < 8; i++) {
+      try { return await wc.executeJavaScript(code); } catch (error) {
+        last = error;
+        await new Promise(r => setTimeout(r, 50));
+      }
+    }
+    throw last;
+  };
   const wait = async code => { for (let i = 0; i < 120; i++) { if (await js(code)) return; await new Promise(r => setTimeout(r, 50)); } throw Error(`Recovery check timed out: ${code}`); };
   const click = (selector, text) => js(`Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find(e=>e.textContent.trim()===${JSON.stringify(text)}).click()`);
   const input = (label, value) => js(`(()=>{const e=document.querySelector('[aria-label="${label}"]');e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   const library = '[data-conversation-library]';
   await wc.loadURL(origin);
-  await wait(`!!document.querySelector('[data-project-context]')`);
+  await wait(`document.readyState==='complete'&&!!document.querySelector('[data-project-context]')`);
   await js(`(() => {
     const previous = window.fetch;
     const json = (value, status=200) => new Response(JSON.stringify(value), {status,headers:{'content-type':'application/json'}});
