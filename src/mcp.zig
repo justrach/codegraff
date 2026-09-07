@@ -24,6 +24,7 @@ const mcp_stdio = @import("mcp_stdio.zig");
 const mcp_teardown = @import("mcp_teardown.zig");
 const shutdown_trace = @import("shutdown_trace.zig"); // #364: teardown phase stamps
 const mcp_rpc = @import("mcp_rpc.zig");
+const mcp_elicitation = @import("mcp_elicitation.zig");
 const mcp_cache = @import("mcp_cache.zig");
 const util = @import("util.zig");
 const vision = @import("vision.zig"); // #249: MCP image results become staged vision blocks
@@ -489,6 +490,8 @@ pub const Registry = struct {
         defer response_arena_state.deinit();
         const response_alloc = response_arena_state.allocator();
         if (!server.initialized) try initializeServer(server, response_alloc, reg.arena(), null);
+        server.elicit_source = pw.writer.buffered();
+        defer server.elicit_source = "";
         const resp = request(server, response_alloc, pw.writer.buffered(), "tools/call", tool.original_name) catch |err| switch (err) {
             // Streamable HTTP servers use 404 to expire a session. Re-run the
             // MCP handshake once, then retry the call without the stale ID.
@@ -518,6 +521,8 @@ pub const Registry = struct {
                 const c = e.object.get("code") orelse break :blk 0;
                 break :blk if (c == .integer) c.integer else 0;
             } else 0;
+            if (mcp_elicitation.looksUnavailable(msg))
+                return .{ .text = try out_alloc.dupe(u8, mcp_elicitation.fallback), .is_error = true };
             const text = if (code != 0)
                 try std.fmt.allocPrint(out_alloc, "MCP error {d}: {s}", .{ code, msg })
             else
@@ -556,11 +561,17 @@ pub const Registry = struct {
                 try sw.write(sc);
             }
         }
-        return .{ .text = try ow.toOwnedSlice(), .is_error = is_error };
+        const text = try ow.toOwnedSlice();
+        if (mcp_elicitation.looksUnavailable(text)) {
+            out_alloc.free(text);
+            return .{ .text = try out_alloc.dupe(u8, mcp_elicitation.fallback), .is_error = true };
+        }
+        return .{ .text = text, .is_error = is_error };
     }
 };
 
 test {
     _ = @import("mcp_cache.zig");
     _ = @import("mcp_boot.zig");
+    _ = @import("mcp_elicitation.zig");
 }

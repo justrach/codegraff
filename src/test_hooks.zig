@@ -358,4 +358,6 @@ test {
     _ = @import("codex_tool_search.zig"); // hosted tool_search on gpt-5.4+ Codex
     _ = @import("tool_call_args.zig"); // #752: truncated tool-call arguments must not poison history
     _ = @import("cache_affinity.zig"); // ADR 0069: git-root / scratch cache seed
+    _ = @import("mcp_elicitation.zig"); // #768: Computer Use form elicitation
+    _ = @import("skill_runtime_adapter.zig"); // #768: read-only get_app_state adapter
 }

@@ -12,6 +12,12 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#768`: the Computer Use `node_repl` bridge no longer dies on
+  `createElicitation is unavailable` during a read-only
+  `sky.get_app_state({ disableDiff: true })`. Graff advertises MCP form
+  elicitation, accepts that inspect mid-call, and otherwise returns an
+  actionable fallback that names the desktop `computer` tool. ADR 0036,
+  ADR 0071.
 - Prompt-cache affinity is the git root, or one scratch seed when there is
   no `.git`. Eval sandboxes and worktrees can reuse a warm system+tools
   prefix instead of paying it on every leaf cwd. An offline test fails if
