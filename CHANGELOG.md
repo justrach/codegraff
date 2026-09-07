@@ -12,6 +12,12 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#773`: `/update` checks a GitHub release and, after an explicit human
+  confirm, installs it for the next launch. The live process, conversation,
+  and permissions stay on the original version; `/new` and `/resume` do not
+  activate it. The in-session service pins the tag, verifies SHA256SUMS, and
+  writes atomically — it does not run `install.sh` or restart. `graff update
+  --check` shares the same running/latest comparison.
 - Prompt-cache affinity is the git root, or one scratch seed when there is
   no `.git`. Eval sandboxes and worktrees can reuse a warm system+tools
   prefix instead of paying it on every leaf cwd. An offline test fails if

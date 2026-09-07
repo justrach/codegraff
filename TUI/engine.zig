@@ -71,13 +71,15 @@ pub var g_idle_wake_fn: ?IdleWakeFn = null;
 /// mailbox (`tellCommand` / `peekCommand`). Caller frees the returned text.
 pub const PeerFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, line: []const u8) ?[]const u8;
 pub var g_peer_fn: ?PeerFn = null;
+pub const UpdateFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, action: []const u8) ?[]const u8;
+pub var g_update_fn: ?UpdateFn = null;
 
 /// A background engine op: `/compact`, `!cmd`, or the @-file list. Same
 /// thread + done-flag contract as Job, so the render+input loop keeps painting
 /// and Esc keeps reaching keys.handle while the engine works (#533). Every
 /// field the worker writes is read only after `done`.
 pub const BgOp = struct {
-    pub const Kind = enum { compact, bash, files };
+    pub const Kind = enum { compact, bash, files, update };
 
     kind: Kind,
     gpa: std.mem.Allocator,
@@ -112,6 +114,9 @@ pub fn bgRun(op: *BgOp) void {
         },
         .files => if (g_files_fn) |f| {
             op.text = f(g_turn_ctx, op.gpa);
+        },
+        .update => if (g_update_fn) |f| {
+            op.text = f(g_turn_ctx, op.gpa, op.cmd);
         },
     }
     op.done.store(true, .release);
@@ -152,6 +157,7 @@ pub const RunOpts = struct {
     emergency_fn: ?*const fn (turn_ctx: ?*anyopaque) void = null,
     idle_wake_fn: ?IdleWakeFn = null,
     peer_fn: ?PeerFn = null,
+    update_fn: ?UpdateFn = null,
 };
 
 pub var g_turn_fn: ?TurnFn = null;

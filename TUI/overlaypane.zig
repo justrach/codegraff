@@ -253,6 +253,7 @@ const help_body =
     \\  /effort           reasoning depth (type to filter)
     \\  /settings         model · effort · mode · theme
     \\  /usage /cost      live token/cost line
+    \\  /update           install a release for the next launch
     \\  /debug            observability HUD
     \\  /cache            prompt-cache posture
     \\  /plan             toggle plan mode

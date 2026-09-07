@@ -205,6 +205,8 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         meters.sessionInfo(self);
     } else if (std.mem.eql(u8, canon, "/debug") or std.mem.eql(u8, canon, "/cache")) {
         self.openOverlay(.debug);
+    } else if (std.mem.eql(u8, canon, "/update")) {
+        startUpdate(self, arg);
     } else if (std.mem.eql(u8, canon, "/usage")) {
         var buf: [512]u8 = undefined;
         if (engine.g_hud_fn) |f| {
@@ -447,6 +449,22 @@ pub fn looksLikeImagePath(s: []const u8) bool {
         return t[0] == '/' or t[0] == '~' or t[0] == '.';
     }
     return true;
+}
+
+fn startUpdate(self: *Model, arg: []const u8) void {
+    const action = if (std.mem.eql(u8, arg, "install")) "install" else "check";
+    if (engine.g_update_fn == null) {
+        self.push(.system, "check for a release with /update; install it for the next launch only after you confirm. This session keeps running.") catch {};
+        return;
+    }
+    const cmd = self.alloc.dupe(u8, action) catch {
+        self.push(.err, "update check unavailable") catch {};
+        return;
+    };
+    if (!bgop.start(self, .update, &.{}, cmd, if (std.mem.eql(u8, action, "install")) "installing update" else "checking for update")) {
+        self.alloc.free(cmd);
+        self.push(.system, busy_note) catch {};
+    }
 }
 
 fn onOff(v: bool) []const u8 {

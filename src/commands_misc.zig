@@ -165,6 +165,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.startsWith(u8, line, "/schedule") and (line.len == 9 or line[9] == ' ' or line[9] == '\t')) return @import("schedule.zig").slashCommand(root, arena, line, out);
     if (std.mem.startsWith(u8, line, "/adapter") and (line.len == 8 or line[8] == ' ' or line[8] == '\t')) return @import("channel_worker.zig").slashCommand(root, arena, line, out);
     if (try side_question.command(root, arena, line, out)) return true; // #415 /btw
+    if (try @import("update_cmd.zig").tryHandle(root, arena, line, out)) return true; // #773 /update
     // #321: doctor.zig shipped with a catalog entry but no dispatch, so /doctor
     // was advertised in /help and the `/` menu while answering "unknown command".
     if (std.mem.eql(u8, line, "/doctor")) {

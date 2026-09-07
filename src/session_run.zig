@@ -45,6 +45,7 @@ const engine_events = @import("engine_events.zig");
 const harness_policy = @import("harness_policy.zig");
 const title_mod = @import("title.zig");
 const repl = @import("repl.zig");
+const update_cmd = @import("update_cmd.zig");
 const tui_launch = @import("tui_launch.zig");
 const shapes = @import("shapes.zig"); // applyUltracodeSteering lives here (#326)
 const repl_glue = @import("repl_glue.zig");
@@ -114,12 +115,19 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
         if (models_buf.items.len != 0) models_buf.appendSlice(", ") catch {};
         models_buf.appendSlice(mi.name) catch {};
     }
+    repl.g_update_fn = replUpdateCb;
+    defer repl.g_update_fn = null;
     try repl.runScripted(gpa, io, environ_map, in, out, &repl_ctx, repl_glue.replTurnCb, repl_glue.replModelCb, repl_glue.replCancelCb, root.provider.model, models_buf.items);
     // Same stderr footer as `-p`, so evals can score the scripted REPL the
     // same way. TTY `graff repl` is the TUI and keeps the restore tail clean.
     pricing.printUsageFooter(io);
     root.messages = try convo.cloneInto(root.arena);
     return true;
+}
+
+fn replUpdateCb(ctx: ?*anyopaque, gpa: Allocator, action: []const u8) ?[]const u8 {
+    const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
+    return update_cmd.hostAction(c.io, gpa, c.home, action);
 }
 
 pub fn runFrontendCommands(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, keys: *provider_mod.Keys, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags, json_mode: bool, cwd: []const u8, final_io: Io) !bool {
