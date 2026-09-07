@@ -2,6 +2,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
+import { displayDirPath, joinDir } from "@/lib/folder-picker";
 import { defaultRoot, expandHome } from "@/lib/server-root";
 
 export const runtime = "nodejs";
@@ -35,13 +36,13 @@ export async function GET(req: NextRequest) {
       if (entry.name.startsWith(".") || HIDDEN.has(entry.name)) continue;
       const full = path.join(target, entry.name);
       if (!(entry.isDirectory() || (entry.isSymbolicLink() && isDir(full)))) continue;
-      entries.push({ name: entry.name, path: full, git: existsSync(path.join(full, ".git")) });
+      entries.push({ name: entry.name, path: joinDir(target, entry.name), git: existsSync(path.join(full, ".git")) });
     }
     entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     const parent = path.dirname(target);
     return Response.json({
       ok: true,
-      path: target,
+      path: displayDirPath(target),
       parent: parent === target ? null : parent,
       git: existsSync(path.join(target, ".git")),
       home,

@@ -12,6 +12,10 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#776`: the native Open a folder picker keeps listing candidates while you
+  type, ranks them like `/model` (closest name first), and shows a resolved
+  directory with a trailing `/` (never `//`). Exact-path Go / Open folder
+  and row selection are unchanged.
 - Prompt-cache affinity is the git root, or one scratch seed when there is
   no `.git`. Eval sandboxes and worktrees can reuse a warm system+tools
   prefix instead of paying it on every leaf cwd. An offline test fails if
