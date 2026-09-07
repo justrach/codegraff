@@ -12,6 +12,14 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#765`: native `codedb context` honors local-only repository policy.
+  Project instructions and `.graff` policy files that forbid transmitting
+  working data, or a per-call `local_only` argument, dispatch
+  `codedb context --local` (on-device BM25/symbol/graph) and never invoke
+  remote advisory rerank. If local-only cannot be guaranteed — including
+  an explicit `--hybrid`/`--semantic` under that policy — the call is
+  refused before spawn. Ordinary reads stay native codedb (ADR 0040).
+  ADR 0084.
 - `#751`: Meta / Muse Spark requests send `tool_choice: auto` only, and
   fold `reasoning_effort: max` to `xhigh`. The gateway rewrite stays a
   safety net. ADR 0083.

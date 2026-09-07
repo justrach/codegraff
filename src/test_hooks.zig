@@ -359,4 +359,5 @@ test {
     _ = @import("tool_call_args.zig"); // #752: truncated tool-call arguments must not poison history
     _ = @import("cache_affinity.zig"); // ADR 0069: git-root / scratch cache seed
     _ = @import("meta_wire.zig"); // #751 / ADR 0083: Meta tool_choice is auto-only
+    _ = @import("codedb_local.zig"); // #765: local-only codedb context (no remote rerank)
 }
