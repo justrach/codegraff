@@ -234,12 +234,11 @@ pub fn goalCompleted(a: *Agent) void {
     sayText(a, "\xf0\x9f\x8e\xaf standing goal complete\n");
 }
 
-/// A meta tool's own user-facing text, one line, exactly as it came.
+/// Completion prose shares the answer renderer, including tables and tail flush.
 pub fn toolTextLine(a: *Agent, text: []const u8) void {
-    var line: Io.Writer.Allocating = .init(a.gpa);
-    defer line.deinit();
-    line.writer.print("{s}\n", .{text}) catch return;
-    sayText(a, line.writer.buffered());
+    a.streamMarkdown(text);
+    a.flushStreamTail();
+    sayText(a, "\n");
 }
 
 fn testAgent(w: *Io.Writer) Agent {
@@ -378,6 +377,7 @@ test "batch tallies and meta notices render the old wording verbatim" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
     var a = testAgent(&aw.writer);
+    defer @import("agent_render.zig").deinitMarkdown(&a);
 
     parallelBatchStarted(&a, 3);
     try std.testing.expectEqualStrings("", aw.writer.buffered());

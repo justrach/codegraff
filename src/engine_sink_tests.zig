@@ -372,6 +372,34 @@ test "TuiSink settles no-color URL markers outside visible targets (#729)" {
     }
 }
 
+test "TuiSink completion text renders Markdown instead of source" {
+    const saved_json = main_mod.json_mode;
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = saved_json;
+    const ansi = @import("ansi.zig");
+    const saved_style = ansi.style;
+    ansi.style = .{};
+    defer ansi.style = saved_style;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a = testAgent(&aw.writer);
+    defer deinitMarkdown(&a);
+    a.md_width = 80;
+    tuiSink(&a).emit(std.testing.io, .{ .completion_text = .{
+        .text = "## Changes\n**Ready** with `code`.\n- Inspect workers\n\n" ++
+            "| Change | Status |\n|---|---|\n| Tabs | Ready |",
+    } });
+    const text = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, text, "◆ Changes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Ready with code.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "• Inspect workers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Change │ Status") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "───────┼───────") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Tabs   │ Ready") != null);
+    for ([_][]const u8{ "##", "**", "`", "|---|" }) |marker|
+        try std.testing.expect(std.mem.indexOf(u8, text, marker) == null);
+}
+
 const swap: engine_events.ProviderFallback = .{
     .from_provider = "codex",
     .from_model = "gpt-5.5",
