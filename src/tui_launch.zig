@@ -14,6 +14,7 @@ const providers = @import("providers.zig");
 const process_runner = @import("process_runner.zig");
 const repl = @import("repl.zig");
 const version_status = @import("version_status.zig");
+const update_cmd = @import("update_cmd.zig");
 const repl_bash = @import("repl_bash.zig");
 const repl_glue = @import("repl_glue.zig");
 const session = @import("session.zig");
@@ -151,6 +152,7 @@ pub fn run(
         .idle_wake_fn = idleWakeCb,
         .peer_fn = tui_peer.peerCb,
         .version_fn = versionCb,
+        .update_fn = updateCb,
     });
     try tui_session.syncRoot(&convo, root);
 }
@@ -194,6 +196,11 @@ fn historyCb(ctx: ?*anyopaque, op: tui.HistoryOp) void {
         },
         .rewind => convo.rewind(),
     }
+}
+
+fn updateCb(ctx: ?*anyopaque, gpa: Allocator, action: []const u8) ?[]const u8 {
+    const c: *repl_glue.ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
+    return update_cmd.hostAction(c.io, gpa, c.home, action);
 }
 
 fn idleWakeCb(ctx: ?*anyopaque, buf: []u8) ?[]const u8 {

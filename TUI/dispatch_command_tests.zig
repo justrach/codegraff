@@ -34,6 +34,37 @@ test "/debug opens the observability overlay" {
     try std.testing.expectEqual(app.Overlay.debug, m.overlay);
 }
 
+test "/update checks in the background and does not activate via /new" {
+    engine.g_update_fn = struct {
+        fn f(_: ?*anyopaque, gpa: std.mem.Allocator, action: []const u8) ?[]const u8 {
+            return std.fmt.allocPrint(gpa, "running: v0.0.289 (this process)\ninstalled: v0.0.292\nlatest: v0.0.292\n{s}\n/new and /resume keep this process and do not activate the update.\n", .{action}) catch null;
+        }
+    }.f;
+    defer engine.g_update_fn = null;
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.push(.user, "keep talking");
+    _ = applyLine(&m, "/update");
+    try std.testing.expect(m.bg != null);
+    try std.testing.expectEqual(engine.BgOp.Kind.update, m.bg.?.kind);
+    var spins: usize = 0;
+    while (!m.bg.?.done.load(.acquire)) : (spins += 1) {
+        if (spins > 1_000_000) return error.UpdateCheckNeverFinished;
+        std.Thread.yield() catch {};
+    }
+    bgop.finish(&m);
+    const text = m.history.items[m.history.items.len - 1].text;
+    try std.testing.expect(std.mem.indexOf(u8, text, "running:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "do not activate") != null);
+    const before = m.history.items.len;
+    _ = applyLine(&m, "/new");
+    const new_text = m.history.items[m.history.items.len - 1].text;
+    try std.testing.expect(std.mem.indexOf(u8, new_text, "update") == null);
+    try std.testing.expect(std.mem.indexOf(u8, new_text, "activate") == null);
+    try std.testing.expect(m.history.items.len < before + 3);
+}
+
 test "/cache opens the same observability overlay" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);

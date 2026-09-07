@@ -1,5 +1,6 @@
-//! Running-binary versus latest-release status shared by `graff update --check`,
-//! the startup update notice, and the terminal `/version` commands.
+//! Running / installed / latest comparison shared by `graff update --check`,
+//! the startup update notice, and the terminal `/update` (and `/version`)
+//! surfaces. One policy so the CLI and the in-session command cannot drift.
 
 const std = @import("std");
 const Io = std.Io;
@@ -24,6 +25,10 @@ const Version = struct {
     minor: u32,
     patch: u32,
 
+    fn eql(self: Version, other: Version) bool {
+        return self.major == other.major and self.minor == other.minor and self.patch == other.patch;
+    }
+
     fn order(self: Version, other: Version) std.math.Order {
         if (self.major != other.major) return std.math.order(self.major, other.major);
         if (self.minor != other.minor) return std.math.order(self.minor, other.minor);
@@ -32,8 +37,9 @@ const Version = struct {
 };
 
 pub const repo_api = "https://api.github.com/repos/justrach/codegraff/releases/latest";
+pub const repo_download_base = "https://github.com/justrach/codegraff/releases/download";
 
-fn stripV(s: []const u8) []const u8 {
+pub fn stripV(s: []const u8) []const u8 {
     return if (std.mem.startsWith(u8, s, "v")) s[1..] else s;
 }
 
@@ -60,9 +66,8 @@ fn isCleanReleaseVersion(s: []const u8) bool {
     return dots == 2;
 }
 
-/// Pure comparison policy. `latest_tag` is the GitHub release tag, with or
-/// without a leading `v`; `running_version` is the build option baked into the
-/// process and may carry a git-describe/dev suffix.
+/// Pure comparison. `latest_tag` is the GitHub tag (with or without `v`);
+/// `running_version` is the build option baked into this process.
 pub fn compare(running_version: []const u8, latest_tag: ?[]const u8) Check {
     const running = stripV(running_version);
     const tag = latest_tag orelse return .{ .running = running, .state = .unable, .failure = .fetch };
@@ -97,7 +102,19 @@ pub fn compare(running_version: []const u8, latest_tag: ?[]const u8) Check {
     };
 }
 
-fn fetchLatestReleaseTag(io: Io, gpa: Allocator, arena: Allocator, running_version: []const u8) ?[]const u8 {
+/// True when `candidate` is a clean release at or newer than `latest_tag`.
+/// Used to refuse a reinstall or implicit downgrade of an already-installed
+/// binary that is current even when this process is older.
+pub fn alreadyHasRelease(installed_version: []const u8, latest_tag: []const u8) bool {
+    const check = compare(installed_version, latest_tag);
+    return switch (check.state) {
+        .current, .newer => true,
+        .dev => check.order == .gt or check.order == .eq,
+        .older, .unable => false,
+    };
+}
+
+pub fn fetchLatestReleaseTag(io: Io, gpa: Allocator, arena: Allocator, running_version: []const u8) ?[]const u8 {
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
     var aw: Io.Writer.Allocating = .init(arena);
@@ -120,6 +137,17 @@ fn fetchLatestReleaseTag(io: Io, gpa: Allocator, arena: Allocator, running_versi
 
 pub fn checkLatest(io: Io, gpa: Allocator, arena: Allocator, running_version: []const u8) Check {
     return compare(running_version, fetchLatestReleaseTag(io, gpa, arena, running_version));
+}
+
+/// Leak-free tag extract for tests and the update service: copies into `buf`.
+pub fn copyTagName(body: []const u8, buf: []u8) ?[]const u8 {
+    var parsed = std.json.parseFromSlice(Value, std.heap.page_allocator, body, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const tag = parsed.value.object.get("tag_name") orelse return null;
+    if (tag != .string or tag.string.len == 0 or tag.string.len > buf.len) return null;
+    @memcpy(buf[0..tag.string.len], tag.string);
+    return buf[0..tag.string.len];
 }
 
 /// Human-facing `/version` response. The final note is deliberately present
@@ -162,6 +190,13 @@ test "comparison classifies release and dev builds with one policy" {
 test "unavailable and unparseable latest checks do not guess" {
     try std.testing.expectEqual(Failure.fetch, compare("0.0.292", null).failure);
     try std.testing.expectEqual(Failure.latest_tag, compare("0.0.292", "latest").failure);
+}
+
+test "alreadyHasRelease refuses a reinstall when disk is current or newer" {
+    try std.testing.expect(alreadyHasRelease("0.0.292", "v0.0.292"));
+    try std.testing.expect(alreadyHasRelease("0.0.293", "v0.0.292"));
+    try std.testing.expect(!alreadyHasRelease("0.0.291", "v0.0.292"));
+    try std.testing.expect(!alreadyHasRelease("0.0.291-3-gabc", "v0.0.292"));
 }
 
 test "version response names the running process and reload boundary" {

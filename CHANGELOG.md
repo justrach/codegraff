@@ -12,6 +12,12 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#773`: `/update` checks a GitHub release and, after an explicit human
+  confirm, installs it for the next launch. The live process, conversation,
+  and permissions stay on the original version; `/new` and `/resume` do not
+  activate it. The in-session service pins the tag, verifies SHA256SUMS, and
+  writes atomically — it does not run `install.sh` or restart. `graff update
+  --check` shares the same running/latest comparison. ADR 0085.
 - `#765`: native `codedb context` honors local-only repository policy.
   Project instructions and `.graff` policy files that forbid transmitting
   working data, or a per-call `local_only` argument, dispatch

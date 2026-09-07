@@ -73,13 +73,15 @@ pub const PeerFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, lin
 pub var g_peer_fn: ?PeerFn = null;
 pub const VersionFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator) ?[]const u8;
 pub var g_version_fn: ?VersionFn = null;
+pub const UpdateFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, action: []const u8) ?[]const u8;
+pub var g_update_fn: ?UpdateFn = null;
 
-/// A background engine op: `/compact`, `/version`, `!cmd`, or the @-file list. Same
+/// A background engine op: `/compact`, `/version`, `/update`, `!cmd`, or the @-file list. Same
 /// thread + done-flag contract as Job, so the render+input loop keeps painting
 /// and Esc keeps reaching keys.handle while the engine works (#533). Every
 /// field the worker writes is read only after `done`.
 pub const BgOp = struct {
-    pub const Kind = enum { compact, bash, files, version };
+    pub const Kind = enum { compact, bash, files, version, update };
 
     kind: Kind,
     gpa: std.mem.Allocator,
@@ -100,7 +102,7 @@ pub const BgOp = struct {
     /// compact output — gpa-owned.
     compact: CompactOut = .{},
     ok: bool = false,
-    /// bash / files / version output — gpa-owned.
+    /// bash / files / version / update output — gpa-owned.
     text: ?[]const u8 = null,
 };
 
@@ -117,6 +119,9 @@ pub fn bgRun(op: *BgOp) void {
         },
         .version => if (g_version_fn) |f| {
             op.text = f(g_turn_ctx, op.gpa);
+        },
+        .update => if (g_update_fn) |f| {
+            op.text = f(g_turn_ctx, op.gpa, op.cmd);
         },
     }
     op.done.store(true, .release);
@@ -158,6 +163,7 @@ pub const RunOpts = struct {
     idle_wake_fn: ?IdleWakeFn = null,
     peer_fn: ?PeerFn = null,
     version_fn: ?VersionFn = null,
+    update_fn: ?UpdateFn = null,
 };
 
 pub var g_turn_fn: ?TurnFn = null;

@@ -75,6 +75,8 @@ pub const CancelFn = *const fn (turn_ctx: ?*anyopaque) void;
 pub var g_cancel_fn: ?CancelFn = null; // force-interrupt the running turn (steer drain)
 pub const VersionFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator) ?[]const u8;
 pub var g_version_fn: ?VersionFn = null;
+pub const UpdateFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, action: []const u8) ?[]const u8;
+pub var g_update_fn: ?UpdateFn = null;
 pub var g_debug: bool = false; // GRAFF_REPL_DEBUG / `/debug` → dump raw stream + frames to stderr
 
 // ---------------------------------------------------------------------------
@@ -359,6 +361,7 @@ pub const HELP_CALC =
     \\  /help     this help
     \\  /clear    clear the conversation
     \\  /version  running binary and latest release status
+    \\  /update   install a release for the next launch (this session keeps running)
     \\  /animation enso|braille|dragon   spinner style
     \\  /quit     exit  (also /q, ctrl-c)
     \\

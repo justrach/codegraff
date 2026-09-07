@@ -173,6 +173,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
+    if (try @import("update_cmd.zig").tryHandle(root, arena, line, out)) return true; // #773 /update
     // #321: doctor.zig shipped with a catalog entry but no dispatch, so /doctor
     // was advertised in /help and the `/` menu while answering "unknown command".
     if (std.mem.eql(u8, line, "/doctor")) {

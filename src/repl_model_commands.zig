@@ -45,6 +45,8 @@ pub fn runCommand(self: *Model, line: []const u8) void {
         self.push(.info, if (self.chat) HELP_CHAT else repl.HELP_CALC) catch {};
     } else if (std.mem.eql(u8, cmd, "/version")) {
         showVersion(self);
+    } else if (std.mem.eql(u8, cmd, "/update")) {
+        showUpdate(self, arg);
     } else if (std.mem.eql(u8, cmd, "/model")) {
         if (arg.len == 0) {
             if (repl.g_model_name.len > 0) self.pushFmt(.info, "model: {s}", .{repl.g_model_name}) catch {} else self.push(.info, "no model configured") catch {};
@@ -151,6 +153,14 @@ fn showVersion(self: *Model) void {
     self.pushOwned(.info, text) catch self.alloc.free(text);
 }
 
+fn showUpdate(self: *Model, action: []const u8) void {
+    if (repl.g_update_fn) |f| if (f(repl.g_turn_ctx, self.alloc, if (action.len == 0) "check" else action)) |text| {
+        self.pushOwned(.info, text) catch self.alloc.free(text);
+        return;
+    };
+    self.push(.info, "check for a release with /update; install it for the next launch only after you confirm. This session keeps running.") catch {};
+}
+
 test "/version identifies the running process even without a release callback" {
     repl.g_version_fn = null;
     var m: Model = undefined;
@@ -160,6 +170,21 @@ test "/version identifies the running process even without a release callback" {
     const text = m.history.items[m.history.items.len - 1].text;
     try std.testing.expect(std.mem.indexOf(u8, text, "running process") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "/new and /resume") != null);
+}
+
+test "/update does not claim /new activates a binary" {
+    repl.g_update_fn = null;
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    runCommand(&m, "/update");
+    const text = m.history.items[m.history.items.len - 1].text;
+    try std.testing.expect(std.mem.indexOf(u8, text, "next launch") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "keeps running") != null);
+    runCommand(&m, "/new");
+    const new_text = m.history.items[m.history.items.len - 1].text;
+    try std.testing.expect(std.mem.indexOf(u8, new_text, "update") == null);
+    try std.testing.expect(std.mem.indexOf(u8, new_text, "activate") == null);
 }
 
 /// Remove the last user turn and everything after it (its reply).
