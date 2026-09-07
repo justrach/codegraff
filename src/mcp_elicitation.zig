@@ -234,10 +234,11 @@ pub fn replyStdio(w: *Io.Writer, arena: Allocator, line: []const u8, source: []c
     var content: []const u8 = "{}";
     if (action == .accept) {
         const schema = if (params == .object) params.object.get("requestedSchema") else null;
-        content = acceptContent(arena, schema) orelse {
+        if (acceptContent(arena, schema)) |filled| {
+            content = filled;
+        } else {
             action = .decline;
-            content = "{}";
-        };
+        }
     }
     try mcp_stdio.writeRequest(w, try replyBody(arena, id, action, content));
     return true;
