@@ -12,6 +12,10 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#761`: `read_file` optional fields stay out of `required[]` (path only).
+  Null or empty `contains` / null bounds / null `compact` are a whole-file
+  read, so strict tool calling can omit unused mutually exclusive fields.
+  Nonempty `contains` still cannot combine with bounds or `compact`.
 - `#776`: the native Open a folder picker keeps listing candidates while you
   type, ranks them like `/model` (closest name first), and shows a resolved
   directory with a trailing `/` (never `//`). Exact-path Go / Open folder
