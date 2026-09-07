@@ -265,6 +265,7 @@ test "execContext refuses remote rerank under local_only before spawn" {
         .io = std.testing.io,
         .client = &client,
         .provider = undefined,
+        .registry = null,
         .from_sub = false,
         .approvals = null,
         .tracer = null,
