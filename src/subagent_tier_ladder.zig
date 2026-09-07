@@ -62,7 +62,7 @@ pub const TierLadder = struct {
 };
 
 pub const ladders = [_]TierLadder{
-    .{ .provider = "codex", .frontier = "gpt-5.6-sol", .mid = "gpt-5.6-terra", .small = "gpt-5.6-luna" },
+    .{ .provider = "codex", .frontier = "gpt-6-astra", .mid = "gpt-5.6-terra", .small = "gpt-5.6-luna" },
     .{ .provider = "openai", .frontier = "gpt-5.6", .mid = "gpt-5.6-terra", .small = "gpt-5.6-luna" },
     // #471: opus-5 and sonnet-5 are the current lineup, and the rungs below
     // frontier must be cheaper SEATS. Every opus generation bills the same
@@ -161,7 +161,7 @@ fn inShippedTable(provider_id: []const u8, model: []const u8) bool {
 }
 
 test "forProvider: known providers found, others null" {
-    try std.testing.expectEqualStrings("gpt-5.6-sol", forProvider("codex").?.frontier);
+    try std.testing.expectEqualStrings("gpt-6-astra", forProvider("codex").?.frontier);
     try std.testing.expectEqualStrings("deepseek-v4-flash", forProvider("deepseek").?.small.?);
     try std.testing.expectEqualStrings("deepseek-v4-flash", forProvider("codegraff").?.small.?);
     try std.testing.expect(forProvider("xai") == null);
@@ -179,7 +179,7 @@ test "Tier.parse/modelFor: the rung vocabulary #292 pins against (#291 names)" {
     try std.testing.expectEqualStrings("small", Tier.small.label());
 
     const codex = forProvider("codex").?;
-    try std.testing.expectEqualStrings("gpt-5.6-sol", codex.modelFor(.frontier).?);
+    try std.testing.expectEqualStrings("gpt-6-astra", codex.modelFor(.frontier).?);
     try std.testing.expectEqualStrings("gpt-5.6-terra", codex.modelFor(.mid).?);
     try std.testing.expectEqualStrings("gpt-5.6-luna", codex.modelFor(.small).?);
     // A family with no such rung answers null rather than the nearest rung.

@@ -156,6 +156,7 @@ const tool_surface = @import("tool_surface.zig");
 const agent_catalog = @import("agent_catalog.zig");
 const session_connect_tests = @import("session_connect_tests.zig");
 const effort_route = @import("effort_route.zig");
+const agent_request_encrypted_tests = @import("agent_request_encrypted_tests.zig");
 
 // #416: two-phase MCP tool exposure. schema.zig/exec.zig reach the gate, but
 // its tests live in a sibling file that nothing in production imports.

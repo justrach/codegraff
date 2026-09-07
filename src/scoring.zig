@@ -44,6 +44,7 @@ pub fn providerClass(model: []const u8) []const u8 {
         .{ .needle = "terra", .tier = "mid" },
         .{ .needle = "luna", .tier = "small" },
         .{ .needle = "opus", .tier = "frontier" },
+        .{ .needle = "gpt-6", .tier = "frontier" }, // astra and later GPT-6 flagships
         .{ .needle = "gpt-5", .tier = "frontier" }, // sol and bare gpt-5.x stay frontier
         .{ .needle = "deepseek-v4", .tier = "frontier" },
         .{ .needle = "grok-4", .tier = "frontier" },
@@ -260,6 +261,7 @@ test "providerClass buckets models by capability tier" {
     try std.testing.expectEqualStrings("frontier", providerClass("claude-opus-4-8"));
     try std.testing.expectEqualStrings("frontier", providerClass("gpt-5.5"));
     try std.testing.expectEqualStrings("frontier", providerClass("gpt-5.6-sol"));
+    try std.testing.expectEqualStrings("frontier", providerClass("gpt-6-astra"));
     try std.testing.expectEqualStrings("mid", providerClass("gpt-5.6-terra")); // rung needle beats "gpt-5"
     try std.testing.expectEqualStrings("small", providerClass("gpt-5.6-luna"));
     try std.testing.expectEqualStrings("frontier", providerClass("deepseek-v4-pro"));

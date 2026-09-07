@@ -314,7 +314,10 @@ fn subscriptionRung(tier: Tier, base: Provider) ?Resolved {
         const rung = ladder.modelFor(tier) orelse continue;
         const resolved = selection.modelForProvider(sid, rung) orelse continue;
         const prov = keys.providerById(sid, resolved) catch continue; // not logged in → not a candidate
-        const s = bench_priors.scoreFor(sid, resolved) orelse 0;
+        // Unbenched compiled frontier (gpt-6-astra) must not lose to a
+        // scored older seat at 0. Treat missing as 1.0 only for that rung.
+        const s = bench_priors.scoreFor(sid, resolved) orelse
+            if (std.mem.eql(u8, resolved, ladder.frontier)) @as(f64, 1.0) else 0;
         if (best == null or s > best_score) {
             // source=ladder: it IS a ladder rung, just the subscription's own.
             best = .{ .provider = prov, .outcome = .sub_routed, .source = .ladder };

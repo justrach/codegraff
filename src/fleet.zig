@@ -88,6 +88,7 @@ const builtin_agent_types = [_]AgentType{
         .desc = "evidence gatherer — reads widely, cites precisely, never edits",
         .prompt = "You are a research agent. Your job is to READ and REPORT, never to modify anything. Explore the files or sources you are pointed at, follow the references that matter, and produce a tight evidence-backed summary: every claim cites its file:line or source. Separate what you verified from what you infer. End with the 3 facts most load-bearing for the task and 1 open question.",
         .builtin = true,
+        .tier = .small, // luna / flash / sonnet — cheap search seat, same as sol+luna
     },
     .{
         .name = "implementer",
@@ -445,6 +446,16 @@ pub fn resolveIsolation(obj: std.json.ObjectMap) Isolation {
 pub fn resolveIsolationFallback(obj: std.json.ObjectMap) bool {
     if (obj.get("isolation_fallback")) |v| return v == .bool and v.bool;
     return false;
+}
+
+test "builtin researcher is the small search seat (luna on Codex)" {
+    for (builtin_agent_types) |at| {
+        if (std.mem.eql(u8, at.name, "researcher")) {
+            try std.testing.expectEqual(Tier.small, at.tier.?);
+            return;
+        }
+    }
+    try std.testing.expect(false);
 }
 
 test "resolveIsolation: explicit field wins, then the named persona's default, then shared_cwd" {

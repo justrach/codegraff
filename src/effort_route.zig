@@ -56,6 +56,7 @@ pub fn shouldRouteLookupLow(_: bool, _: bool, _: []const u8) bool {
 /// Do not treat this as a 4-tool catalog shrink.
 pub fn omitsDefaultFlashEffort(model: []const u8) bool {
     if (std.mem.startsWith(u8, model, "gemini")) return true;
+    if (std.mem.indexOf(u8, model, "astra") != null) return true; // Astra-low > Sol-high on SWE-bench
     return std.mem.indexOf(u8, model, "flash") != null;
 }
 
@@ -111,6 +112,10 @@ test "flash and Gemini map default medium to low; grok and glm-5.3 stay medium" 
     try std.testing.expect(!omitsDefaultFlashEffort("grok-4.6"));
     try std.testing.expect(!omitsDefaultFlashEffort("glm-5.3"));
     try std.testing.expect(!omitsDefaultFlashEffort("deepseek-v4-pro"));
+    try std.testing.expect(omitsDefaultFlashEffort("gpt-6-astra"));
+    try std.testing.expectEqualStrings("low", wireEffort("gpt-6-astra", "medium"));
+    try std.testing.expectEqualStrings("high", wireEffort("gpt-5.6-sol", "high"));
+    try std.testing.expectEqualStrings("high", wireEffort("gpt-6-astra", "high"));
     try std.testing.expectEqualStrings("low", wireEffort("glm-5.3-flash", "medium"));
     try std.testing.expectEqualStrings("high", wireEffort("glm-5.3-flash", "high"));
     try std.testing.expectEqualStrings("medium", wireEffort("grok-4.6", "medium"));

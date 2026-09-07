@@ -60,6 +60,26 @@ test "persona frontmatter parse: model/tier land on AgentType, a bad tier is dro
     try std.testing.expect(pin_mod.forSpawn(codexBase(), obj(a, "{\"agent\":\"plain\"}"), true).provider == null);
 }
 
+test "researcher is the small/luna search seat on Codex, including Astra roots" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const saved = fleet.g_agent_types;
+    defer fleet.g_agent_types = saved;
+    fleet.g_agent_types = &.{
+        .{ .name = "researcher", .desc = "", .prompt = "x", .tier = .small },
+    };
+
+    try std.testing.expectEqual(Tier.small, pin_mod.personaPin("researcher").tier.?);
+    const sol = pin_mod.forSpawn(codexBase(), obj(a, "{\"agent\":\"researcher\"}"), true);
+    try std.testing.expectEqualStrings("gpt-5.6-luna", sol.provider.?.model);
+
+    var astra = codexBase();
+    astra.model = "gpt-6-astra";
+    const from_astra = pin_mod.forSpawn(astra, obj(a, "{\"agent\":\"researcher\"}"), true);
+    try std.testing.expectEqualStrings("gpt-5.6-luna", from_astra.provider.?.model);
+}
+
 test "spawn override resolution: exact name, alias, ladder rung, and no-op" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -85,8 +105,11 @@ test "spawn override resolution: exact name, alias, ladder rung, and no-op" {
     try std.testing.expectEqualStrings("gpt-5.6-luna", rung.provider.?.model);
     try std.testing.expectEqualStrings("gpt-5.6-terra", pin_mod.forSpawn(base, obj(a, "{\"tier\":\"mid\"}"), true).provider.?.model);
 
-    // A pin naming the model the child already has changes nothing, and says so.
-    const same = pin_mod.forSpawn(base, obj(a, "{\"tier\":\"frontier\"}"), true);
+    // Codex frontier is Astra; a Sol child asking for frontier is a real pin.
+    const flagship = pin_mod.forSpawn(base, obj(a, "{\"tier\":\"frontier\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, flagship.outcome);
+    try std.testing.expectEqualStrings("gpt-6-astra", flagship.provider.?.model);
+    const same = pin_mod.forSpawn(base, obj(a, "{\"model\":\"gpt-5.6-sol\"}"), true);
     try std.testing.expectEqual(pin_mod.Outcome.same, same.outcome);
     try std.testing.expect(same.provider == null);
 
@@ -296,14 +319,14 @@ test "two logins split the tiers: k3 is mid, luna is the mechanical rung (#471)"
 
     // Both plans logged in, metered anthropic root. The three tiers land on
     // three different paid-for seats, and none of them costs a cent extra:
-    //   frontier -> codex sol   (73 beats k3's 68 on the bench sheet)
-    //   mid      -> kimi k3     (codex has no mid rung; terra is dominated)
+    //   frontier -> codex astra (compiled flagship; unbenched beats k3)
+    //   mid      -> kimi k3     (codex mid is terra, dominated on the sheet)
     //   small    -> codex luna  (kimi declares no small rung, so k3's higher
     //                            score cannot swallow the mechanical tier —
     //                            code search and greps stay on the cheap seat)
     const claude: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude-opus-5", .context = 1_000_000 };
     const want = [_]struct { tier: []const u8, pid: []const u8, model: []const u8 }{
-        .{ .tier = "frontier", .pid = "codex", .model = "gpt-5.6-sol" },
+        .{ .tier = "frontier", .pid = "codex", .model = "gpt-6-astra" },
         .{ .tier = "mid", .pid = "kimi", .model = "k3" },
         .{ .tier = "small", .pid = "codex", .model = "gpt-5.6-luna" },
     };

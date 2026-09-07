@@ -62,9 +62,16 @@ pub fn modelForProvider(provider_id: []const u8, query: []const u8) ?[]const u8 
 /// one rung. `root.model` must exactly match a rung name (frontier or mid)
 /// for this provider's ladder — an off-ladder or unrecognized root model
 /// returns null rather than guessing at the nearest rung.
+///
+/// GPT-6 Astra stays on Astra. Demoting it onto gpt-5.6-sol/terra is a
+/// SWE-bench regression (Astra-low beats Sol-high). Unpinned workers inherit;
+/// `tier: small` still seats luna for cheap search. A Sol root still drops
+/// one rung onto terra.
 fn defaultLadderModel(root: provider_mod.Provider) ?[]const u8 {
     const ladder = tier_ladder.forProvider(root.id) orelse return null;
-    if (std.mem.eql(u8, root.model, ladder.frontier)) return ladder.mid orelse ladder.small;
+    if (std.mem.startsWith(u8, root.model, "gpt-6")) return null;
+    if (std.mem.eql(u8, root.model, ladder.frontier) or std.mem.eql(u8, root.model, "gpt-5.6-sol"))
+        return ladder.mid orelse ladder.small;
     if (ladder.mid) |mid| {
         if (std.mem.eql(u8, root.model, mid)) return ladder.small;
     }
@@ -183,10 +190,12 @@ test "defaultLadderModel: descends one rung per provider, bottom rung inherits" 
     }.p;
     // codex: sol -> terra -> luna -> (bottom, inherit)
     try std.testing.expectEqualStrings("gpt-5.6-terra", defaultLadderModel(mk("codex", "gpt-5.6-sol")).?);
+    try std.testing.expect(defaultLadderModel(mk("codex", "gpt-6-astra")) == null);
     try std.testing.expectEqualStrings("gpt-5.6-luna", defaultLadderModel(mk("codex", "gpt-5.6-terra")).?);
     try std.testing.expect(defaultLadderModel(mk("codex", "gpt-5.6-luna")) == null);
     // openai: same shape, sibling names
     try std.testing.expectEqualStrings("gpt-5.6-terra", defaultLadderModel(mk("openai", "gpt-5.6")).?);
+    try std.testing.expect(defaultLadderModel(mk("openai", "gpt-6-astra")) == null);
     // anthropic: opus-5 -> sonnet-5 -> (bottom). #471 dropped the opus-4-8 and
     // sonnet-4-6 rungs: every opus generation bills the same $5/$25 per MTok,
     // so descending within the family is not a cheaper seat at all.
@@ -215,6 +224,9 @@ test "default ladder: resolves the mid sibling when no flags are given" {
     const worker = resolveSubagentProvider(keys, codex_root, null, null, false, false).?;
     try std.testing.expectEqualStrings("codex", worker.id); // provider-local, unpinned
     try std.testing.expectEqualStrings("gpt-5.6-terra", worker.model);
+
+    const astra_root = try keys.providerById("codex", "gpt-6-astra");
+    try std.testing.expect(resolveSubagentProvider(keys, astra_root, null, null, false, false) == null);
 
     const anthropic_root = try keys.providerById("anthropic", "claude-opus-5");
     const anthropic_worker = resolveSubagentProvider(keys, anthropic_root, null, null, false, false).?;

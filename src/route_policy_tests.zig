@@ -128,7 +128,8 @@ test "#372: the shape is read off the phase titles the root model authored" {
     try std.testing.expectEqualStrings("", policy.roleOf("do the thing", "some-persona"));
     // tierOf is the ladder inverse the trace needs for an unpinned worker.
     try std.testing.expectEqual(tier_ladder.Tier.mid, policy.tierOf("codex", "gpt-5.6-terra").?);
-    try std.testing.expectEqual(tier_ladder.Tier.frontier, policy.tierOf("codex", "gpt-5.6-sol").?);
+    try std.testing.expectEqual(tier_ladder.Tier.frontier, policy.tierOf("codex", "gpt-6-astra").?);
+    try std.testing.expect(policy.tierOf("codex", "gpt-5.6-sol") == null);
     try std.testing.expect(policy.tierOf("codex", "claude-opus-4-8") == null); // off this ladder
     try std.testing.expectEqualStrings("", policy.tierLabelFor("xai", "grok-4.3")); // no ladder at all
 }
