@@ -128,7 +128,7 @@ pub const lean_subagent_desc = "Spawn a sidecar for a self-contained task. Child
 pub const lean_bash_desc = "Run /bin/sh -c in cwd. Returns stdout, stderr, exit. Foreground still running after 15s (or timeout ms) backgrounds — bash_output(wait_ms>0) waits; do not poll.";
 pub const lean_read_file_desc = "Read a UTF-8 file. Call before editing. contains=exact-key numbered lines; start_line/end_line for a window.";
 pub const lean_edit_file_desc = "Replace exact text. Prefer one batched edits[] over many calls. Prefer over write_file for an existing file.";
-pub const lean_codedb_desc = "Indexed nav: context <task> · around <name> · callpath A B · list_dir <path> · status. Prefer over bash grep/find/ls.";
+pub const lean_codedb_desc = "Indexed nav: context <task> (local) · around <name> · callpath A B · list_dir <path> · status. Prefer over bash grep/find/ls.";
 pub const lean_attempt_completion_desc = "Task is done. Put the final answer in result.";
 
 fn leanCompactDesc(name: []const u8) ?[]const u8 {

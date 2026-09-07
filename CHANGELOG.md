@@ -12,6 +12,9 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- Bare `codedb context <task>` defaults to on-device retrieval. Remote
+  reranking remains an explicit opt-in and is refused under local-only
+  policy (ADR 0084, ADR 0092).
 - `#794`: the tier-1 suite ratchet counts skipped Zig tests with passed
   ones. `2079 passed; 1 skipped` is a 2080-test suite, not a shrink
   against a 2080 baseline.
