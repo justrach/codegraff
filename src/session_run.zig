@@ -114,6 +114,8 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
         if (models_buf.items.len != 0) models_buf.appendSlice(", ") catch {};
         models_buf.appendSlice(mi.name) catch {};
     }
+    repl_glue.bindHostCommands();
+    defer repl_glue.unbindHostCommands();
     try repl.runScripted(gpa, io, environ_map, in, out, &repl_ctx, repl_glue.replTurnCb, repl_glue.replModelCb, repl_glue.replCancelCb, root.provider.model, models_buf.items);
     // Same stderr footer as `-p`, so evals can score the scripted REPL the
     // same way. TTY `graff repl` is the TUI and keeps the restore tail clean.

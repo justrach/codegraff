@@ -92,6 +92,9 @@ record only when you need the evidence or the edge cases.
 | [0079](0079-desktop-updates-are-signed-and-user-restarted.md) | Signed desktop updates download in the background and install only on explicit restart; one process owns each profile. |
 | [0080](0080-desktop-projects-are-folders.md) | Desktop projects are folders; preferences survive local UI origin changes, and new chats inherit the focused project's folder. |
 | [0081](0081-desktop-split-focus-and-layout.md) | Split positions remain stable as focus changes; shared controls and draggable separators keep navigation usable. |
+| [0083](0083-meta-tool-choice-is-auto-only.md) | Meta / Muse Spark `tool_choice` is `auto` at the source; `max` effort folds to `xhigh` (#751). |
+| [0084](0084-codedb-context-honors-local-only.md) | Native `codedb context` is `--local` (or refused before spawn) when repository policy or `local_only` forbids transmitting working data; no-retention hybrid is not no egress. |
+| [0085](0085-in-session-update-is-next-launch.md) | `/update` installs a verified release for the next launch; this session keeps its original binary. |
 
 ## When to write one
 

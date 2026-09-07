@@ -137,9 +137,9 @@ pub fn buildBody(self: *Agent, tools_in: ?[]const u8, force_tool: bool, stream: 
                     try writeKimiTools(&s, self.scratchAlloc(), t)
                 else
                     try serde.writeOpenAITools(&s, self.scratchAlloc(), t);
-                if (force_tool) {
-                    try s.objectField("tool_choice");
-                    try s.write("required");
+                if (force_tool or @import("meta_wire.zig").restricted(self.provider.id, self.provider.model)) {
+                    try s.objectField("tool_choice"); // #751: Meta is auto-only
+                    try s.write(@import("meta_wire.zig").toolChoice(force_tool, self.provider.id, self.provider.model));
                 }
             }
             try s.objectField("messages");

@@ -16,6 +16,7 @@ const harness_policy = @import("harness_policy.zig");
 const list_dir = @import("list_dir.zig");
 const codedb_health = @import("codedb_health.zig");
 const codedb_around = @import("codedb_around.zig");
+const codedb_local = @import("codedb_local.zig");
 const jobs = @import("jobs.zig");
 const main_mod = @import("main.zig");
 const hooks = @import("hooks.zig");
@@ -90,6 +91,8 @@ pub fn exec(ctx: ToolCtx, input: std.json.Value) !ToolOutput {
         .is_error = true,
     };
 
+    if (std.mem.eql(u8, sub, "context")) return execContext(ctx, it.rest(), input);
+
     if (isPathSub(sub)) {
         if (firstPathArg(it.rest())) |path| {
             if (!harness_policy.confinedPath(path) or !harness_policy.noSymlinkEscape(io, path, ctx.agent_cwd))
@@ -122,6 +125,53 @@ pub fn exec(ctx: ToolCtx, input: std.json.Value) !ToolOutput {
         defer gpa.free(text);
         return .{
             .text = try std.fmt.allocPrint(gpa, "codedb {s} timed out after {d}s and was killed — narrow the query, or run it through bash if it really needs that long", .{ sub, deadline_ms / 1000 }),
+            .is_error = true,
+        };
+    }
+    if (text.len == 0) {
+        defer gpa.free(text);
+        return .{ .text = try gpa.dupe(u8, "(codedb returned nothing — try `codedb status` or `codedb tree` to confirm the repo is indexed, or refine the query)") };
+    }
+    return .{ .text = text };
+}
+
+fn requiredLocal(ctx: ToolCtx, input: std.json.Value) bool {
+    if (codedb_local.inputRequiresLocal(input)) return true;
+    if (ctx.agent_cwd) |root| {
+        var dir = Io.Dir.cwd().openDir(ctx.io, root, .{}) catch
+            return codedb_local.dirRequiresLocal(ctx.io, ctx.gpa, Io.Dir.cwd());
+        defer dir.close(ctx.io);
+        return codedb_local.dirRequiresLocal(ctx.io, ctx.gpa, dir);
+    }
+    return codedb_local.dirRequiresLocal(ctx.io, ctx.gpa, Io.Dir.cwd());
+}
+
+fn execContext(ctx: ToolCtx, rest: []const u8, input: std.json.Value) !ToolOutput {
+    const gpa = ctx.gpa;
+    const plan = codedb_local.planContext(requiredLocal(ctx, input), rest);
+    if (plan.kind == .refuse) {
+        return .{ .text = try gpa.dupe(u8, plan.refuse_reason), .is_error = true };
+    }
+
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(gpa);
+    try argv.append(gpa, "codedb");
+    try argv.append(gpa, "context");
+    try codedb_local.appendContextArgs(gpa, &argv, plan, rest);
+
+    const run = jobs.runCappedWithOptions(gpa, ctx.io, argv.items, 512 * 1024, 4096, deadline_ms, jobs.toolRunOptions(ctx.agent_cwd)) catch |e| switch (e) {
+        error.FileNotFound => return .{
+            .text = try gpa.dupe(u8, "codedb isn't installed — it's open source at github.com/justrach/codedb; install it, then run `codedb` once in the repo to index it. Folder listing still works: codedb list_dir ."),
+            .is_error = true,
+        },
+        else => return tools.failure(gpa, e),
+    };
+    gpa.free(run.stderr);
+    const text = run.stdout;
+    if (run.timed_out) {
+        defer gpa.free(text);
+        return .{
+            .text = try std.fmt.allocPrint(gpa, "codedb context timed out after {d}s and was killed — narrow the query, or run it through bash if it really needs that long", .{deadline_ms / 1000}),
             .is_error = true,
         };
     }
@@ -203,4 +253,26 @@ test "advertised surface is the one-shots, hop verbs stay callable" {
         try std.testing.expect(!std.mem.eql(u8, s, "outline"));
         try std.testing.expect(!std.mem.eql(u8, s, "read"));
     }
+}
+
+test "execContext refuses remote rerank under local_only before spawn" {
+    const gpa = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, "{\"command\":\"context --hybrid auth\",\"local_only\":true}", .{});
+    defer parsed.deinit();
+    var client: std.http.Client = undefined;
+    const ctx = ToolCtx{
+        .gpa = gpa,
+        .io = std.testing.io,
+        .client = &client,
+        .provider = undefined,
+        .registry = null,
+        .from_sub = false,
+        .approvals = null,
+        .tracer = null,
+    };
+    const out = try execContext(ctx, "--hybrid auth", parsed.value);
+    defer gpa.free(out.text);
+    try std.testing.expect(out.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "not dispatched") != null);
+    try std.testing.expect(!codedb_local.wouldInvokeRemoteRerank(codedb_local.planContext(true, "--hybrid auth")));
 }

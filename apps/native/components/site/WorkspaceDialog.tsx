@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Switch } from "@/components/atoms/Switch";
 import type { PromptModel } from "@/components/primitives/PromptBar";
+import { displayDirPath, rankFolderEntries, sameDir, splitFolderQuery } from "@/lib/folder-picker";
 import { browseFolders, fsReveal, type FolderListing } from "@/lib/fs-client";
 import { IconCrossSmall, IconFolder } from "@/lib/icons";
 import { basename, type Workspace } from "@/lib/workspaces";
@@ -11,8 +12,9 @@ import { basename, type Workspace } from "@/lib/workspaces";
 /* ─────────────────────────────────────────────────────────
  * WORKSPACE DIALOG
  * The two faces of the sidebar's workspace menu. "New workspace" walks
- * the machine's folders one level at a time (or takes a typed path) and
- * hands back the folder graff should run in. "Workspace settings" edits
+ * the machine's folders one level at a time (typed paths stay listed and
+ * fuzzy-ranked like /model) and hands back the folder graff should run in.
+ * "Workspace settings" edits
  * how new tabs in a workspace spawn: its name, default model and whether
  * tools are auto-approved.
  * ───────────────────────────────────────────────────────── */
@@ -94,7 +96,7 @@ function GitBadge() {
 
 function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPick: (path: string) => void; onClose: () => void }) {
   const [listing, setListing] = useState<FolderListing | null>(null);
-  const [typed, setTyped] = useState(startPath ?? "~");
+  const [typed, setTyped] = useState(displayDirPath(startPath ?? "~"));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // Only the newest navigation may land: a slow listing of a big folder
@@ -102,21 +104,24 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
   const seq = useRef(0);
   const pickRef = useRef(onPick);
   pickRef.current = onPick;
-  const go = useCallback(async (target: string, pick = false) => {
+  const go = useCallback(async (target: string, opts: { pick?: boolean; refresh?: boolean } = {}) => {
     const n = (seq.current += 1);
-    setBusy(true);
-    setListing(null);
+    const refresh = opts.refresh === true;
+    if (!refresh) {
+      setBusy(true);
+      setListing(null);
+    }
     setError(null);
     try {
       const next = await browseFolders(target);
       if (n !== seq.current) return;
       setListing(next);
-      setTyped(next.path);
+      if (!refresh) setTyped(displayDirPath(next.path));
       setError(null);
-      if (pick) pickRef.current(next.path);
+      if (opts.pick) pickRef.current(next.path);
     } catch (err) {
       if (n !== seq.current) return;
-      setError(err instanceof Error ? err.message : String(err));
+      if (!refresh) setError(err instanceof Error ? err.message : String(err));
     } finally {
       if (n === seq.current) setBusy(false);
     }
@@ -125,6 +130,18 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
     void go(startPath ?? "~");
     return () => { seq.current++; };
   }, [go, startPath]);
+
+  const parsed = splitFolderQuery(typed, listing?.path);
+  const listingPath = listing?.path ?? null;
+  useEffect(() => {
+    if (!listingPath || !parsed.browse) return;
+    if (sameDir(parsed.browse, listingPath)) return;
+    void go(parsed.browse, { refresh: true });
+  }, [go, listingPath, parsed.browse]);
+  const shown = useMemo(
+    () => (listing ? rankFolderEntries(listing.entries, parsed.needle) : []),
+    [listing, parsed.needle],
+  );
 
   const crumbs = listing ? listing.path.split("/").filter(Boolean) : [];
   const crumbPath = (i: number) => `/${crumbs.slice(0, i + 1).join("/")}`;
@@ -146,7 +163,7 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
           </span>
           <input
             value={typed}
-            onChange={(event) => { seq.current++; setTyped(event.target.value); setBusy(false); setError(null); setListing(null); }}
+            onChange={(event) => { setTyped(event.target.value); setError(null); }}
             spellCheck={false}
             autoFocus
             aria-label="Folder path"
@@ -161,11 +178,11 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
           </button>
         </form>
         <div className="flex items-center gap-1.5 text-[11.5px] text-ink-3">
-          <Chip onClick={() => void go("~")} active={listing?.path === home}>
+          <Chip onClick={() => void go("~")} active={sameDir(listing?.path, home)}>
             Home
           </Chip>
           {repo && (
-            <Chip onClick={() => void go(repo)} active={listing?.path === repo}>
+            <Chip onClick={() => void go(repo)} active={sameDir(listing?.path, repo)}>
               {basename(repo)}
             </Chip>
           )}
@@ -212,7 +229,7 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
                 <span>Up one level</span>
               </button>
             )}
-            {listing.entries.map((entry) => (
+            {shown.map((entry) => (
               <div
                 key={entry.path}
                 className="group flex h-8 items-center gap-2 rounded-[7px] px-2 transition-colors duration-100 hover:bg-hover"
@@ -238,14 +255,16 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
                 </button>
               </div>
             ))}
-            {listing.entries.length === 0 && <p className="px-2 py-2 text-[12.5px] text-ink-3">No folders here</p>}
+            {shown.length === 0 && (
+              <p className="px-2 py-2 text-[12.5px] text-ink-3">{parsed.needle ? "No folders match this name." : "No folders here"}</p>
+            )}
           </div>
         )}
       </div>
 
       <div className="flex shrink-0 items-center gap-2 border-t border-line px-4 py-3">
-        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink-3" title={listing?.path}>
-          {listing?.path ?? ""}
+        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink-3" title={listing ? displayDirPath(listing.path) : ""}>
+          {listing ? displayDirPath(listing.path) : ""}
         </span>
         <button
           type="button"
@@ -257,7 +276,7 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
         <button
           type="button"
           disabled={!typed.trim() || busy}
-          onClick={() => void go(typed, true)}
+          onClick={() => void go(typed, { pick: true })}
           className="h-8 rounded-full bg-ink px-3.5 text-[12.5px] font-medium text-canvas transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           Open folder

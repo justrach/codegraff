@@ -11,6 +11,7 @@ export function Switch({
 }) {
   return (
     <button
+      type="button"
       role="switch"
       aria-checked={checked}
       aria-label={label}

@@ -233,3 +233,27 @@ test "probeStdio (#327): the DEFAULT deadline covers a cold-starting server" {
     try std.testing.expectEqual(mcp_rpc.StdioProbeOutcome.modern, try mcp_rpc.probeStdio(spawned.server, a, io));
     try std.testing.expect(spawned.server.probe_fallback == null);
 }
+
+test "request (#768): mid-call form elicitation for get_app_state is accepted" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // First JSON-RPC id is 1 (`Server.next_id`). The fixture emits a form
+    // elicitation, then the tools/call result only after it reads the accept.
+    var spawned = try spawnReplying(a, io,
+        \\read line
+        \\printf '%s\n' '{"jsonrpc":"2.0","id":99,"method":"elicitation/create","params":{"message":"Inspect app state","requestedSchema":{"type":"object","properties":{}}}}'
+        \\read reply
+        \\printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}'
+        \\cat >/dev/null
+    );
+    defer mcp_stdio.stopChild(io, &spawned.child);
+    spawned.server.elicit_source = "sky.get_app_state({ app: \"Codegraff\", disableDiff: true })";
+    spawned.server.era = .legacy;
+    spawned.server.initialized = true;
+    const resp = try mcp_rpc.request(spawned.server, a, "{\"name\":\"js\",\"arguments\":{}}", "tools/call", "js");
+    try std.testing.expect(resp.object.get("result").?.object.get("ok").?.bool);
+}

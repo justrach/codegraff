@@ -9,6 +9,7 @@ const std = @import("std");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
+const mcp_elicitation = @import("mcp_elicitation.zig");
 const mcp_http = @import("mcp_http.zig");
 const mcp_protocol = @import("mcp_protocol.zig");
 const mcp_stdio = @import("mcp_stdio.zig");
@@ -49,6 +50,9 @@ pub const Server = struct {
     probe_fallback: ?LegacyReason = null,
     /// In-flight HTTP `notifications/initialized` (not awaited before tools/list).
     pending_initialized: ?Io.Future(void) = null,
+    /// Borrowed `tools/call` JSON while `request` is in flight; used to accept
+    /// read-only Computer Use `get_app_state` elicitation (#768).
+    elicit_source: []const u8 = "",
 };
 
 pub fn deinitServer(server: *Server, io: Io, budget: mcp_teardown.Budget) void {
@@ -141,11 +145,7 @@ fn handshakeRequest(server: *Server, a: Allocator, bound_io: ?Io, params: []cons
 }
 
 pub fn initializeServer(server: *Server, response_alloc: Allocator, session_alloc: Allocator, bound_io: ?Io) !void {
-    const init_resp = try handshakeRequest(server, response_alloc, bound_io,
-        \\{"protocolVersion":"
-    ++ legacy_protocol ++
-        \\","capabilities":{},"clientInfo":{"name":"simple-harness","version":"0.1"}}
-    , "initialize");
+    const init_resp = try handshakeRequest(server, response_alloc, bound_io, mcp_elicitation.initialize_params, "initialize");
     const protocol_transport: mcp_protocol.Transport = switch (server.transport) {
         .stdio => .stdio,
         .http => .streamable_http,
@@ -185,6 +185,7 @@ pub fn request(server: *Server, response_alloc: Allocator, params: []const u8, m
             const r = &stdio.stdout_reader.interface;
             while (true) {
                 const line = try mcp_stdio.takeLine(r);
+                if (try mcp_elicitation.replyStdio(&stdio.stdin_writer.interface, response_alloc, line, server.elicit_source)) continue;
                 if (mcp_http.matchingResponse(response_alloc, line, id)) |parsed| return parsed;
             }
         },

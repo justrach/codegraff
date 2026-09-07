@@ -12,6 +12,41 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#768`: the Computer Use `node_repl` bridge no longer dies on
+  `createElicitation is unavailable` during a read-only
+  `sky.get_app_state({ disableDiff: true })`. Graff advertises MCP form
+  elicitation, accepts that inspect mid-call, and otherwise returns an
+  actionable fallback that names the desktop `computer` tool. ADR 0036,
+  ADR 0071.
+- `#773`: `/update` checks a GitHub release and, after an explicit human
+  confirm, installs it for the next launch. The live process, conversation,
+  and permissions stay on the original version; `/new` and `/resume` do not
+  activate it. The in-session service pins the tag, verifies SHA256SUMS, and
+  writes atomically — it does not run `install.sh` or restart. `graff update
+  --check` shares the same running/latest comparison. ADR 0085.
+- `#765`: native `codedb context` honors local-only repository policy.
+  Project instructions and `.graff` policy files that forbid transmitting
+  working data, or a per-call `local_only` argument, dispatch
+  `codedb context --local` (on-device BM25/symbol/graph) and never invoke
+  remote advisory rerank. If local-only cannot be guaranteed — including
+  an explicit `--hybrid`/`--semantic` under that policy — the call is
+  refused before spawn. Ordinary reads stay native codedb (ADR 0040).
+  ADR 0084.
+- `#751`: Meta / Muse Spark requests send `tool_choice: auto` only, and
+  fold `reasoning_effort: max` to `xhigh`. The gateway rewrite stays a
+  safety net. ADR 0083.
+- `#750`: the resize-anchor PTY probe waits for a stable frame after a
+  width change instead of asserting on the first (possibly stale) repaint.
+- `#748`: an error-only SSE event is reported as that error, not retried
+  as a truncated gateway body.
+- `#761`: `read_file` optional fields stay out of `required[]` (path only).
+  Null or empty `contains` / null bounds / null `compact` are a whole-file
+  read, so strict tool calling can omit unused mutually exclusive fields.
+  Nonempty `contains` still cannot combine with bounds or `compact`.
+- `#776`: the native Open a folder picker keeps listing candidates while you
+  type, ranks them like `/model` (closest name first), and shows a resolved
+  directory with a trailing `/` (never `//`). Exact-path Go / Open folder
+  and row selection are unchanged.
 - Prompt-cache affinity is the git root, or one scratch seed when there is
   no `.git`. Eval sandboxes and worktrees can reuse a warm system+tools
   prefix instead of paying it on every leaf cwd. An offline test fails if

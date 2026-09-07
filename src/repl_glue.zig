@@ -26,6 +26,8 @@ const ReasoningEffort = main_mod.ReasoningEffort;
 
 const mcp = @import("mcp.zig");
 const repl = @import("repl.zig");
+const version_status = @import("version_status.zig");
+const update_cmd = @import("update_cmd.zig");
 const approvals_mod = @import("approvals.zig");
 const Approvals = approvals_mod.Approvals;
 const pricing = @import("pricing.zig");
@@ -539,4 +541,26 @@ pub fn goalPromptFromLine(line: []const u8) ?[]const u8 {
     for ([_][]const u8{ "clear", "off", "pause", "resume", "status" }) |sub|
         if (std.ascii.eqlIgnoreCase(g, sub)) return null;
     return g;
+}
+
+/// Scripted `graff repl` host commands. The TUI path wires the same actions
+/// through tui_launch; this bind is the zigzag / headless equivalent.
+pub fn bindHostCommands() void {
+    repl.g_version_fn = versionCb;
+    repl.g_update_fn = updateCb;
+}
+
+pub fn unbindHostCommands() void {
+    repl.g_version_fn = null;
+    repl.g_update_fn = null;
+}
+
+pub fn versionCb(ctx: ?*anyopaque, gpa: Allocator) ?[]const u8 {
+    const c: *ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
+    return version_status.commandText(c.io, gpa, main_mod.harness_version) catch null;
+}
+
+pub fn updateCb(ctx: ?*anyopaque, gpa: Allocator, action: []const u8) ?[]const u8 {
+    const c: *ReplCtx = @ptrCast(@alignCast(ctx orelse return null));
+    return update_cmd.hostAction(c.io, gpa, c.home, action);
 }

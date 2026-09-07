@@ -274,12 +274,13 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
         const start_line = intField(input, "start_line");
         const end_line = intField(input, "end_line");
-        const contains = strField(input, "contains");
+        // Strict tool calling often sends null/"" for unused optionals (#761).
+        // Empty contains is omitted so a whole-file or window read stays legal.
+        const contains_raw = strField(input, "contains");
+        const contains: ?[]const u8 = if (contains_raw) |n| (if (n.len == 0) null else n) else null;
         const want_compact = tools.json_args.flag(input, "compact");
-        if (contains) |needle| {
-            if (needle.len == 0) return .{ .text = try gpa.dupe(u8, "read_file: contains must not be empty"), .is_error = true };
-            if (start_line != null or end_line != null or want_compact) return .{ .text = try gpa.dupe(u8, "read_file: contains cannot be combined with start_line, end_line, or compact"), .is_error = true };
-        }
+        if (contains != null and (start_line != null or end_line != null or want_compact))
+            return .{ .text = try gpa.dupe(u8, "read_file: contains cannot be combined with start_line, end_line, or compact"), .is_error = true };
         // #66: opt-in compact view routes to `codedb read <path> [-L a-b] --compact`
         // when codedb is present and this file is indexed. Lossy (strips comments/
         // blanks, shows line numbers) so it is NEVER the default and is labeled
@@ -435,4 +436,5 @@ test { // main.zig is at the 600-line cap; exec.zig is these modules' importer, 
     _ = @import("mcp_shapes.zig");
     _ = @import("spec_ptc.zig");
     _ = @import("xai_hosted.zig");
+    _ = @import("read_file_schema_tests.zig"); // #761: optional read_file fields
 }

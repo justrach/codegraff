@@ -92,8 +92,9 @@ server only validates a root it is handed) with the active one checked:
 
 - **Open a folder…** (also the caret beside the tab bar's folder chip)
   opens a folder picker (`/api/workspaces` walks one level at a time,
-  marks git roots, takes a typed or pasted path) and switches to the
-  folder you pick.
+  marks git roots, takes a typed or pasted path, ranks fuzzy name matches
+  like `/model`) and switches to the folder you pick. Resolved directories
+  show a trailing `/`.
 - **Workspace settings…** edits the active workspace: display name, the
   model new tabs spawn with, whether tools are auto-approved
   (`graff acp --yolo`), and whether each tab's agent starts the MCP

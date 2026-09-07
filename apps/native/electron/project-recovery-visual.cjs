@@ -20,9 +20,11 @@ async function runProjectRecovery({ win, origin, output }) {
       r.requests.push({url:String(input),body:options?.body});
       if(url.pathname==='/api/workspaces') {
         const folder=url.searchParams.get('path');
-        const listing={path:folder,parent:'/demo',home:'/demo',default:'/demo/field-notes',git:false,entries:[{name:'child',path:folder+'/child',git:false}]};
-        if(folder==='/demo/missing') return json({error:'Folder does not exist'},404);
-        if(folder==='/demo/slow') await new Promise(resolve=>r.holds.folder=resolve);
+        const root=String(folder||'').replace(/\/+$/,'')||'/';
+        const join=(name)=>root==='/'?'/'+name:root+'/'+name;
+        const listing={path:root==='/'?'/':root+'/',parent:'/demo',home:'/demo',default:'/demo/field-notes',git:false,entries:[{name:'alpha',path:join('alpha'),git:false},{name:'codegraff',path:join('codegraff'),git:false},{name:'child',path:join('child'),git:false}]};
+        if(root==='/demo/missing') return json({error:'Folder does not exist'},404);
+        if(root==='/demo/slow') await new Promise(resolve=>r.holds.folder=resolve);
         return json(listing);
       }
       if(url.pathname==='/api/sessions'&&url.searchParams.has('name')) {
@@ -100,6 +102,10 @@ async function runProjectRecovery({ win, origin, output }) {
 
   await js(`document.querySelector('button[aria-label="Open folder…"]').click()`);
   await wait(`!!document.querySelector('[role="dialog"] button[title$="/child"]')`);
+  assert.ok(await js(`document.querySelector('[aria-label="Folder path"]').value.endsWith('/')`),'Resolved folder paths show a trailing slash');
+  await input('Folder path','codeg');
+  await wait(`!!document.querySelector('[role="dialog"] button[title$="/codegraff"]')`);
+  assert.equal(await js(`document.querySelector('[role="dialog"] .group button[title]')?.title?.endsWith('/codegraff')`),true,'Closest fuzzy match is listed first');
   await input('Folder path','/demo/missing');
   await click('[role="dialog"] button','Open folder');
   await wait(`!!document.querySelector('[role="dialog"] [role="alert"]')`);

@@ -465,6 +465,18 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
         const payload = ssePayload(raw_line) orelse continue;
         const v = std.json.parseFromSliceLeaky(Value, self.scratchAlloc(), payload, .{ .allocate = .alloc_always }) catch continue; // #124: per-event parse tree is transient (deltas are appendSlice'd into session accumulators)
         if (v != .object) continue;
+        // Error-only SSE (`event: error` / `data: {"error":…}`) has no
+        // choices chunk. Hand the envelope back so request() reports it
+        // instead of falling through to the truncated-body retry (#748).
+        if (v.object.get("error")) |err| if (err != .null) {
+            var env: std.json.ObjectMap = .empty;
+            try env.put(result_arena, "type", .{ .string = "error" });
+            try env.put(result_arena, "error", try util.dupeJsonValue(result_arena, err));
+            return env;
+        };
+        if (v.object.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "error")) {
+            return (try util.dupeJsonValue(result_arena, v)).object;
+        };
         // The final usage chunk (stream_options.include_usage) may have
         // an empty choices array.
         if (v.object.get("usage")) |u| if (u == .object) {

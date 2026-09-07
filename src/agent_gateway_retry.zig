@@ -113,10 +113,22 @@ pub fn isShortGatewayFlake(etype: []const u8, code: ?[]const u8, msg: []const u8
     return generic and std.mem.trim(u8, msg, " \t\r\n").len == 0;
 }
 
+/// An explicit streamed error (not a truncated JSON body). Must not be
+/// classified as a gateway flake — invalid_request is deterministic (#748).
+pub fn sseLooksLikeError(body: []const u8) bool {
+    if (std.mem.indexOf(u8, body, "event: error") != null) return true;
+    if (std.mem.indexOf(u8, body, "event:error") != null) return true;
+    if (std.mem.indexOf(u8, body, "\"error\"") != null and
+        std.mem.indexOf(u8, body, "\"choices\"") == null)
+        return true;
+    return false;
+}
+
 /// Unparseable body that is keep-alive comments or a tiny truncated
 /// payload (the 110-byte follow-up). Bounded. Real JSON error envelopes
 /// do not reach this — they go through `afterServerErrorOrParseReject`.
 pub fn retryDegenerateBody(self: *Agent, body: []const u8, retries: *usize) !bool {
+    if (sseLooksLikeError(body)) return false;
     const tiny = body.len > 0 and body.len <= 256;
     if (!policy.sseKeepAliveOnly(body) and !tiny) return false;
     if (retries.* >= max_short_flake_retries) return false;
@@ -194,4 +206,12 @@ test "isShortGatewayFlake: internal/empty api_error retry; invalid/auth/quota do
     try std.testing.expect(isShortGatewayFlake("invalid_request_error", null, "Body must be valid JSON"));
     try std.testing.expect(isShortGatewayFlake("api_error", null, "Malformed JSON in request body"));
     try std.testing.expect(!isShortGatewayFlake("invalid_request_error", null, "invalid prompt"));
+}
+
+test "#748: error-only SSE is not a truncated gateway body" {
+    const err_sse = "event: error\ndata: {\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad\"}}\n";
+    try std.testing.expect(sseLooksLikeError(err_sse));
+    try std.testing.expect(sseLooksLikeError("data: {\"error\":{\"message\":\"only auto\"}}\n"));
+    try std.testing.expect(!sseLooksLikeError(": OPENROUTER PROCESSING\n"));
+    try std.testing.expect(!sseLooksLikeError("data: {\"choices\":[{\"delta\":{}}]}\n"));
 }

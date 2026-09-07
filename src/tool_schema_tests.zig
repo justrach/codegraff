@@ -384,6 +384,57 @@ test "note_constraint (#381): root-only, append-only, and a valid one-property s
     try std.testing.expect(std.mem.indexOf(u8, schema.tools_anthropic_sub, "note_constraint") == null);
 }
 
+fn requiredNames(sch: Value) []const Value {
+    if (sch.object.get("required")) |req| if (req == .array) return req.array.items;
+    return &.{};
+}
+
+fn assertReadFileOptionals(name: []const u8, sch: Value) anyerror!void {
+    if (!std.mem.eql(u8, name, "read_file")) return;
+    try testing.expect(sch.object.get("properties").?.object.get("path") != null);
+    for ([_][]const u8{ "start_line", "end_line", "contains", "compact" }) |field| {
+        try testing.expect(sch.object.get("properties").?.object.get(field) != null);
+        for (requiredNames(sch)) |r| {
+            if (r == .string) try testing.expect(!std.mem.eql(u8, r.string, field));
+        }
+    }
+    var saw_path = false;
+    for (requiredNames(sch)) |r| {
+        if (r == .string and std.mem.eql(u8, r.string, "path")) saw_path = true;
+    }
+    try testing.expect(saw_path);
+}
+
+test "read_file (#761): optional fields stay out of required[] in every emitted catalog" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var found_spec = false;
+    for (schema.root_specs ++ schema.optional_specs) |t| {
+        if (!std.mem.eql(u8, t.name, "read_file")) continue;
+        found_spec = true;
+        const parsed = try std.json.parseFromSliceLeaky(Value, arena, t.schema, .{});
+        try assertReadFileOptionals(t.name, parsed);
+    }
+    try testing.expect(found_spec);
+
+    const saved_gate = no_local_tools.enabled;
+    const saved_imagegen = imagegen.available;
+    defer {
+        no_local_tools.enabled = saved_gate;
+        imagegen.available = saved_imagegen;
+    }
+    no_local_tools.enabled = false;
+    imagegen.available = false;
+    const specs = try schema.effectiveRootSpecs(arena);
+    for ([_]Provider.Kind{ .anthropic, .openai, .responses }) |kind| {
+        const catalog = try schema.renderRootTools(arena, kind, specs, &.{});
+        try forEachServedSchema(arena, catalog, assertReadFileOptionals);
+        try forEachServedSchema(arena, schema.subToolsJson(kind, false), assertReadFileOptionals);
+    }
+}
+
 test "subagent desc: Codex sidecar rules, no routing essay on the catalog prefix" {
     var found = false;
     for (schema.root_specs) |t| if (std.mem.eql(u8, t.name, "subagent")) {
@@ -395,6 +446,17 @@ test "subagent desc: Codex sidecar rules, no routing essay on the catalog prefix
         try std.testing.expect(std.mem.indexOf(u8, t.desc, "default tier ladder") == null);
         try std.testing.expect(std.mem.indexOf(u8, t.desc, "sub-first routing") == null);
         try std.testing.expect(t.desc.len < 900);
+    };
+    try std.testing.expect(found);
+}
+
+test "codedb schema exposes per-call local_only (#765)" {
+    var found = false;
+    for (schema.root_specs) |t| if (std.mem.eql(u8, t.name, "codedb")) {
+        found = true;
+        try std.testing.expect(std.mem.indexOf(u8, t.schema, "\"local_only\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, t.schema, "no remote rerank") != null);
+        try std.testing.expect(std.mem.indexOf(u8, t.desc, "local_only") != null);
     };
     try std.testing.expect(found);
 }
