@@ -93,6 +93,7 @@ record only when you need the evidence or the edge cases.
 | [0080](0080-desktop-projects-are-folders.md) | Desktop projects are folders; preferences survive local UI origin changes, and new chats inherit the focused project's folder. |
 | [0081](0081-desktop-split-focus-and-layout.md) | Split positions remain stable as focus changes; shared controls and draggable separators keep navigation usable. |
 | [0082](0082-subagent-activity-through-acp.md) | Sub-agents publish bounded, independent activity snapshots for read-only ACP inspection without mixing parent transcripts. |
+| [0083](0083-codedb-context-honors-local-only.md) | Native `codedb context` is `--local` (or refused before spawn) when repository policy or `local_only` forbids transmitting working data; no-retention hybrid is not no egress. |
 
 ## When to write one
 

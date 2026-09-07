@@ -105,9 +105,9 @@ pub const base_specs = [_]ToolSpec{
     .{ .name = skill_docs.tool_name, .desc = skill_docs.tool_desc, .schema = skill_docs.tool_schema },
     .{
         .name = "codedb",
-        .desc = "Indexed code nav (github.com/justrach/codedb). ONE command — not a hop chain: context <task> · around <name> · callpath A B · list_dir <path> · status. Prefer over bash grep/find/ls. list_dir is in-process (gitignore, PathConfine; no binary). status reports codedb.snapshot. Paths stay in the cwd.",
+        .desc = "Indexed code nav (github.com/justrach/codedb). ONE command — not a hop chain: context <task> · around <name> · callpath A B · list_dir <path> · status. Prefer over bash grep/find/ls. list_dir is in-process (gitignore, PathConfine; no binary). status reports codedb.snapshot. Paths stay in the cwd. context is local-only when local_only is set or repository policy forbids transmitting working data (no remote rerank).",
         .schema =
-        \\{"type": "object", "properties": {"command": {"type": "string", "description": "One of: \"context how does auth work\", \"around codedbGuard\", \"callpath exec codedbGuard\", \"list_dir src\", \"status\"."}}, "required": ["command"]}
+        \\{"type": "object", "properties": {"command": {"type": "string", "description": "One of: \"context how does auth work\", \"around codedbGuard\", \"callpath exec codedbGuard\", \"list_dir src\", \"status\"."}, "local_only": {"type": "boolean", "description": "Force on-device retrieval: dispatch `codedb context --local` with no remote rerank. Also applied automatically when repository policy requires local-only retrieval. If local-only cannot be guaranteed, the call is refused before spawn."}}, "required": ["command"]}
         ,
     },
     .{ .name = result_read.tool_name, .desc = result_read.tool_desc, .schema = result_read.tool_schema },

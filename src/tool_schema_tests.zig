@@ -398,3 +398,14 @@ test "subagent desc: Codex sidecar rules, no routing essay on the catalog prefix
     };
     try std.testing.expect(found);
 }
+
+test "codedb schema exposes per-call local_only (#765)" {
+    var found = false;
+    for (schema.root_specs) |t| if (std.mem.eql(u8, t.name, "codedb")) {
+        found = true;
+        try std.testing.expect(std.mem.indexOf(u8, t.schema, "\"local_only\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, t.schema, "no remote rerank") != null);
+        try std.testing.expect(std.mem.indexOf(u8, t.desc, "local_only") != null);
+    };
+    try std.testing.expect(found);
+}

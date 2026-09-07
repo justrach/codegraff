@@ -12,6 +12,14 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#765`: native `codedb context` honors local-only repository policy.
+  Project instructions and `.graff` policy files that forbid transmitting
+  working data, or a per-call `local_only` argument, dispatch
+  `codedb context --local` (on-device BM25/symbol/graph) and never invoke
+  remote advisory rerank. If local-only cannot be guaranteed — including
+  an explicit `--hybrid`/`--semantic` under that policy — the call is
+  refused before spawn. Ordinary reads stay native codedb (ADR 0040).
+  ADR 0083.
 - Prompt-cache affinity is the git root, or one scratch seed when there is
   no `.git`. Eval sandboxes and worktrees can reuse a warm system+tools
   prefix instead of paying it on every leaf cwd. An offline test fails if
