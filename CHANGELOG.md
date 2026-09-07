@@ -12,6 +12,10 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#761`: `read_file` optional fields stay out of `required[]` (path only).
+  Null or empty `contains` / null bounds / null `compact` are a whole-file
+  read, so strict tool calling can omit unused mutually exclusive fields.
+  Nonempty `contains` still cannot combine with bounds or `compact`.
 - Prompt-cache affinity is the git root, or one scratch seed when there is
   no `.git`. Eval sandboxes and worktrees can reuse a warm system+tools
   prefix instead of paying it on every leaf cwd. An offline test fails if
