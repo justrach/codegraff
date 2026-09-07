@@ -12,6 +12,12 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#768`: the Computer Use `node_repl` bridge no longer dies on
+  `createElicitation is unavailable` during a read-only
+  `sky.get_app_state({ disableDiff: true })`. Graff advertises MCP form
+  elicitation, accepts that inspect mid-call, and otherwise returns an
+  actionable fallback that names the desktop `computer` tool. ADR 0036,
+  ADR 0071.
 - `#773`: `/update` checks a GitHub release and, after an explicit human
   confirm, installs it for the next launch. The live process, conversation,
   and permissions stay on the original version; `/new` and `/resume` do not

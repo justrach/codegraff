@@ -67,10 +67,10 @@ pub fn negotiatedProtocol(response: Value, transport: Transport) ![]const u8 {
 
 /// The three reserved `_meta` keys (basic/index § `_meta`), pre-rendered as a
 /// single JSON object member. graff supports exactly one modern version and
-/// declares no client capabilities, so this is a comptime constant rather
-/// than something built per request.
+/// advertises form elicitation so Computer Use `node_repl` can confirm
+/// (`elicitation/create`) instead of crashing (#768).
 pub const modern_meta =
-    \\"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"codegraff","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}
+    \\"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"codegraff","version":"1"},"io.modelcontextprotocol/clientCapabilities":{"elicitation":{"form":{}}}}
 ;
 
 /// Build a JSON-RPC request line. Modern era splices the `_meta` envelope
@@ -265,6 +265,8 @@ test "buildRequest: modern with empty params splices the full _meta envelope" {
     try std.testing.expect(meta.object.get("io.modelcontextprotocol/protocolVersion") != null);
     try std.testing.expect(meta.object.get("io.modelcontextprotocol/clientCapabilities") != null);
     try std.testing.expect(meta.object.get("io.modelcontextprotocol/clientInfo") != null);
+    const caps = meta.object.get("io.modelcontextprotocol/clientCapabilities").?.object;
+    try std.testing.expect(caps.get("elicitation").?.object.get("form") != null);
 }
 
 test "buildRequest: modern with non-empty params preserves them and adds no stray comma" {

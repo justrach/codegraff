@@ -366,4 +366,6 @@ test {
     _ = @import("update_service.zig");
     _ = @import("update_cmd.zig");
     _ = @import("update_tests.zig");
+    _ = @import("mcp_elicitation.zig"); // #768: Computer Use form elicitation
+    _ = @import("skill_runtime_adapter.zig"); // #768: read-only get_app_state adapter
 }
