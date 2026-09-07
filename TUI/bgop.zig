@@ -1,4 +1,4 @@
-//! Background engine ops. `/compact`, `!cmd` and the @-file list used to call
+//! Background engine ops. `/compact`, `/version`, `!cmd` and the @-file list used to call
 //! straight into the engine from keys.handle, i.e. from inside run.zig's byte
 //! parse loop: no render, no poll, no key handling, no cancel for the whole
 //! round trip — a 5-60 s freeze indistinguishable from a hang (#533).
@@ -72,11 +72,13 @@ pub fn finish(self: *Model) void {
             .compact => "compaction failed to start",
             .bash => "command failed to start",
             .files => "file list failed to start",
+            .version => "version check failed to start",
         }) catch {};
     } else switch (op.kind) {
         .compact => applyCompact(self, op),
         .bash => applyBash(self, op),
         .files => applyFiles(self, op),
+        .version => applyVersion(self, op),
     }
     release(self, op);
     self.scroll = 0;
@@ -159,6 +161,16 @@ fn applyFiles(self: *Model, op: *Op) void {
     if (self.files_cache != null) return;
     const t = op.text orelse return;
     self.files_cache = self.alloc.dupe(u8, t) catch null;
+}
+
+fn applyVersion(self: *Model, op: *Op) void {
+    if (op.text) |text| {
+        self.push(.system, text) catch {};
+    } else if (op.cancelled) {
+        self.push(.system, "version check cancelled") catch {};
+    } else {
+        self.push(.err, "version check unavailable") catch {};
+    }
 }
 
 const testing = std.testing;
@@ -284,20 +296,27 @@ test "thread spawn failure completes through finish without inline engine work (
             calls += 1;
             return null;
         }
+        fn version(_: ?*anyopaque, _: std.mem.Allocator) ?[]const u8 {
+            calls += 1;
+            return null;
+        }
     };
     Fake.calls = 0;
     engine.g_compact_fn = Fake.compact;
     engine.g_bash_fn = Fake.bash;
     engine.g_files_fn = Fake.files;
+    engine.g_version_fn = Fake.version;
     defer {
         engine.g_compact_fn = null;
         engine.g_bash_fn = null;
         engine.g_files_fn = null;
+        engine.g_version_fn = null;
     }
     const cases = [_]struct { kind: Op.Kind, message: []const u8 }{
         .{ .kind = .compact, .message = "compaction failed to start" },
         .{ .kind = .bash, .message = "command failed to start" },
         .{ .kind = .files, .message = "file list failed to start" },
+        .{ .kind = .version, .message = "version check failed to start" },
     };
     for (cases) |case| {
         var m: Model = undefined;

@@ -169,6 +169,7 @@ pub fn build(b: *std.Build) void {
             .strip = lean_release,
         }),
     });
+    repl_exe.root_module.addOptions("build_options", opts);
     repl_exe.root_module.addImport("zigzag", zigzag.module("zigzag"));
     b.installArtifact(repl_exe);
 

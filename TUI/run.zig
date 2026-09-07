@@ -61,6 +61,7 @@ pub fn run(
     engine.g_state_fn = opts.state_fn;
     engine.g_idle_wake_fn = opts.idle_wake_fn;
     engine.g_peer_fn = opts.peer_fn;
+    engine.g_version_fn = opts.version_fn;
     engine.g_model_name = opts.model_name;
     engine.g_model_provider = opts.model_provider;
     engine.g_model_entries = opts.model_entries;
