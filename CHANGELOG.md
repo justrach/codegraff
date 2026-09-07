@@ -12,6 +12,10 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- Bare `codedb context <task>` dispatches `codedb context --local` so
+  retrieval stays on-device (BM25/symbol/graph) instead of waiting on
+  hybrid embeddings rerank. `--hybrid` / `--semantic` remain available
+  and are still refused under local-only policy (ADR 0084). ADR 0086.
 - `#768`: the Computer Use `node_repl` bridge no longer dies on
   `createElicitation is unavailable` during a read-only
   `sky.get_app_state({ disableDiff: true })`. Graff advertises MCP form

@@ -26,6 +26,7 @@ ordinary reads to codedb-pro (ADR 0040).
 - Repos that forbid transmitting working data stay on local BM25/symbol/graph.
 - Callers can enforce the boundary with `local_only` even when policy files
   are silent.
-- Hybrid remains the default where policy does not require local-only.
+- Hybrid is opt-in (`--hybrid` / `--semantic`); bare `context` is `--local`
+  (ADR 0086). Policy still refuses those remote flags before spawn.
 - Revisit only if codedb grows a stronger in-process local composer that
   graff should prefer over `--local`.

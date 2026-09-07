@@ -95,6 +95,7 @@ record only when you need the evidence or the edge cases.
 | [0083](0083-meta-tool-choice-is-auto-only.md) | Meta / Muse Spark `tool_choice` is `auto` at the source; `max` effort folds to `xhigh` (#751). |
 | [0084](0084-codedb-context-honors-local-only.md) | Native `codedb context` is `--local` (or refused before spawn) when repository policy or `local_only` forbids transmitting working data; no-retention hybrid is not no egress. |
 | [0085](0085-in-session-update-is-next-launch.md) | `/update` installs a verified release for the next launch; this session keeps its original binary. |
+| [0086](0086-codedb-context-is-local-first.md) | Bare `codedb context` is `--local`; `--hybrid` / `--semantic` are opt-in remote rerank (and still refused under ADR 0084 policy). |
 
 ## When to write one
 

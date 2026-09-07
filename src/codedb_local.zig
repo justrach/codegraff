@@ -4,9 +4,11 @@
 //! hosted embeddings lane for advisory rerank. "No remote retention" is not no
 //! egress. When repository policy or the per-call `local_only` argument
 //! requires on-device retrieval, graff injects `context --local` before spawn
-//! and never dispatches hybrid/semantic rerank. If that boundary cannot be
-//! guaranteed, dispatch is refused. Ordinary reads stay native codedb
-//! (ADR 0040) — this is not a codedb-pro redirect.
+//! and never dispatches hybrid/semantic rerank. Bare `context <task>` is also
+//! `--local` (ADR 0086): hybrid is the slow remote-rerank path and is opt-in.
+//! If a local-only boundary cannot be guaranteed, dispatch is refused.
+//! Ordinary reads stay native codedb (ADR 0040) — this is not a codedb-pro
+//! redirect.
 
 const std = @import("std");
 const Io = std.Io;
@@ -130,19 +132,22 @@ pub fn restHasFlag(rest: []const u8, check: *const fn ([]const u8) bool) bool {
     return false;
 }
 
-/// Default `context` is hybrid (remote advisory rerank) unless `--local`.
-pub fn defaultWouldRemoteRerank(rest: []const u8) bool {
-    return !restHasFlag(rest, tokenIsLocalFlag);
+/// Explicit `--hybrid` / `--semantic` opt into remote advisory rerank.
+/// Bare `context <task>` is on-device (ADR 0086).
+pub fn restAsksRemoteRerank(rest: []const u8) bool {
+    return restHasFlag(rest, tokenIsRemoteFlag);
 }
 
 pub fn planContext(required_local: bool, rest: []const u8) Plan {
-    if (!required_local) {
-        if (restHasFlag(rest, tokenIsLocalFlag)) return .{ .kind = .local, .inject_local = false };
+    if (restAsksRemoteRerank(rest)) {
+        if (required_local) {
+            return .{ .kind = .refuse, .inject_local = false, .refuse_reason = refuse_remote };
+        }
         return .{ .kind = .remote, .inject_local = false };
     }
-    if (restHasFlag(rest, tokenIsRemoteFlag)) {
-        return .{ .kind = .refuse, .inject_local = false, .refuse_reason = refuse_remote };
-    }
+    // Default and explicit `--local`/`--no-semantic`: on-device. Inject
+    // `--local` unless the caller already passed a local flag, so codedb
+    // does not fall through to its hybrid composer (seconds of network).
     return .{ .kind = .local, .inject_local = !restHasFlag(rest, tokenIsLocalFlag) };
 }
 
@@ -218,7 +223,7 @@ test "local-only context never selects remote rerank" {
     try std.testing.expectEqual(Kind.local, plan.kind);
     try std.testing.expect(plan.inject_local);
     try std.testing.expect(!wouldInvokeRemoteRerank(plan));
-    try std.testing.expect(defaultWouldRemoteRerank(task));
+    try std.testing.expect(!restAsksRemoteRerank(task));
 
     const argv = try contextArgv(gpa, plan, task);
     defer gpa.free(argv);
@@ -273,11 +278,21 @@ test "per-call local_only and existing --local stay on-device" {
     try std.testing.expectEqual(@as(usize, 1), locals);
 }
 
-test "without local-only policy default context still allows remote rerank" {
+test "default context is local; hybrid is opt-in (ADR 0086)" {
+    const gpa = std.testing.allocator;
     const plan = planContext(false, "find auth");
-    try std.testing.expectEqual(Kind.remote, plan.kind);
-    try std.testing.expect(wouldInvokeRemoteRerank(plan));
-    try std.testing.expect(defaultWouldRemoteRerank("find auth"));
-    try std.testing.expect(!defaultWouldRemoteRerank("--local find auth"));
-    try std.testing.expect(!defaultWouldRemoteRerank("--no-semantic find auth"));
+    try std.testing.expectEqual(Kind.local, plan.kind);
+    try std.testing.expect(plan.inject_local);
+    try std.testing.expect(!wouldInvokeRemoteRerank(plan));
+    try std.testing.expect(!restAsksRemoteRerank("find auth"));
+    try std.testing.expect(!restAsksRemoteRerank("--local find auth"));
+    try std.testing.expect(!restAsksRemoteRerank("--no-semantic find auth"));
+    try std.testing.expect(restAsksRemoteRerank("--hybrid find auth"));
+    const argv = try contextArgv(gpa, plan, "find auth");
+    defer gpa.free(argv);
+    try std.testing.expectEqualStrings("--local", argv[2]);
+
+    const hybrid = planContext(false, "--hybrid find auth");
+    try std.testing.expectEqual(Kind.remote, hybrid.kind);
+    try std.testing.expect(wouldInvokeRemoteRerank(hybrid));
 }
