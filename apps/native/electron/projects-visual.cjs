@@ -36,6 +36,10 @@ async function runProjectVisuals({ win, origin, output }) {
   assert.equal(await js(`document.querySelector('button[aria-label="Changes"]')?.getAttribute('aria-current')`), null);
   await js(`document.querySelector('button[aria-label="Open folder…"]').click()`);
   await wait(`!!document.querySelector('[role="dialog"]')`);
+  // Unmount the picker before navigating: an in-flight listing + loadURL
+  // left the renderer unable to run the next suite's scripts.
+  await js(`document.querySelector('[role="dialog"] button[aria-label="Close"]').click()`);
+  await wait(`!document.querySelector('[role="dialog"]')`);
   await wc.loadURL(origin);
   await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
   win.setSize(900, 680);

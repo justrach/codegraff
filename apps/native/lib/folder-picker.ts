@@ -19,6 +19,18 @@ export function sameDir(a: string | null | undefined, b: string | null | undefin
   return normalizeDir(a) === normalizeDir(b);
 }
 
+/** True when `browse` is the listing already on screen.
+ * `~` / `~/` is the listing's home, so typing it must not refetch. */
+export function sameBrowse(
+  browse: string | null | undefined,
+  listingPath: string | null | undefined,
+  home?: string | null,
+): boolean {
+  if (sameDir(browse, listingPath)) return true;
+  if (!browse || !home) return false;
+  return normalizeDir(browse) === "~" && sameDir(listingPath, home);
+}
+
 export function normalizeDir(p: string): string {
   const n = p.replace(/\\/g, "/").replace(/\/+$/, "");
   return n.length > 0 ? n : "/";

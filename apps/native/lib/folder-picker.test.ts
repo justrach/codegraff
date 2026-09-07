@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { displayDirPath, joinDir, rankFolderEntries, sameDir, splitFolderQuery } from "./folder-picker.ts";
+import { displayDirPath, joinDir, rankFolderEntries, sameBrowse, sameDir, splitFolderQuery } from "./folder-picker.ts";
 
 describe("displayDirPath", () => {
   it("adds a single trailing separator and leaves root alone", () => {
@@ -23,6 +23,12 @@ describe("joinDir / sameDir", () => {
     assert.equal(sameDir("/", "/"), true);
     assert.equal(sameDir("/a", "/b"), false);
     assert.equal(sameDir("/a", null), false);
+  });
+  it("treats ~ as the listing home so the picker does not refetch", () => {
+    assert.equal(sameBrowse("~", "/Users/example", "/Users/example"), true);
+    assert.equal(sameBrowse("~/", "/Users/example/", "/Users/example"), true);
+    assert.equal(sameBrowse("~", "/demo", "/Users/example"), false);
+    assert.equal(sameBrowse("/Users/example/", "/Users/example", "/Users/example"), true);
   });
 });
 

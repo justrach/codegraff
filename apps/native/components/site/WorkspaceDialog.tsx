@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { createPortal } from "react-dom";
 import { Switch } from "@/components/atoms/Switch";
 import type { PromptModel } from "@/components/primitives/PromptBar";
-import { displayDirPath, rankFolderEntries, sameDir, splitFolderQuery } from "@/lib/folder-picker";
+import { displayDirPath, rankFolderEntries, sameBrowse, sameDir, splitFolderQuery } from "@/lib/folder-picker";
 import { browseFolders, fsReveal, type FolderListing } from "@/lib/fs-client";
 import { IconCrossSmall, IconFolder } from "@/lib/icons";
 import { basename, type Workspace } from "@/lib/workspaces";
@@ -133,11 +133,12 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
 
   const parsed = splitFolderQuery(typed, listing?.path);
   const listingPath = listing?.path ?? null;
+  const listingHome = listing?.home ?? null;
   useEffect(() => {
     if (!listingPath || !parsed.browse) return;
-    if (sameDir(parsed.browse, listingPath)) return;
+    if (sameBrowse(parsed.browse, listingPath, listingHome)) return;
     void go(parsed.browse, { refresh: true });
-  }, [go, listingPath, parsed.browse]);
+  }, [go, listingHome, listingPath, parsed.browse]);
   const shown = useMemo(
     () => (listing ? rankFolderEntries(listing.entries, parsed.needle) : []),
     [listing, parsed.needle],
