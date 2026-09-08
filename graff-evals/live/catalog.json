@@ -1,0 +1,196 @@
+{
+  "cap": 12,
+  "core": ["graff-195", "graff-726", "graff-727"],
+  "score": {
+    "reps": 3,
+    "task_pass": ">=2/3",
+    "cost": "passing reps only",
+    "failed_usd": 0,
+    "wall": "hang detector",
+    "first_token": "do not score Graff (boot ›)"
+  },
+  "published": [
+    {
+      "id": "graff-195",
+      "pr": "codegraff #195",
+      "why": "pre-send compact gate; ranking of meters, not a crash",
+      "repo": "justrach/codegraff",
+      "historical_parent": "ba8bc5afe410a40cece6fbc105333d8276f315e6",
+      "historical_merge": "346c8461e79cbe4e26ac9a994217f093fab411b5",
+      "followup": "ed69f29e78459531aabb5ec9e6b7b8552dfd6b5e",
+      "parent_note": "July 2026 tree is Zig 0.16; reconstructed on 0.17 (current package minus the gate) so G1–G6 are runnable, not a lie.",
+      "public_filter": "inputOverCompactThreshold (#193)",
+      "hidden": "hidden/graff-195.sh",
+      "sibling_filter": "rebaseContextMeter preserves hidden context",
+      "check_timeout_s": 300,
+      "source": "local-reconstructed"
+    },
+    {
+      "id": "graff-726",
+      "pr": "codegraff #726/#727",
+      "why": "dismiss a finished job so it does not wake the model again",
+      "repo": "justrach/codegraff",
+      "historical_parent": "a2472789a9ba1efb4babff4b7a52cbbad1e0f9d6",
+      "historical_merge": "61b6acff4694d91ab0a3fcb7ae1bb0d210324bc3",
+      "public_filter": "dismiss drops a queued notice",
+      "hidden": "hidden/graff-726.sh",
+      "sibling_filter": "line names exit, kill, and abnormal end",
+      "check_timeout_s": 180,
+      "source": "local-reconstructed"
+    },
+    {
+      "id": "graff-727",
+      "pr": "codegraff #727",
+      "why": "interrupted wait reports elapsed time, not the 10h sentinel",
+      "repo": "justrach/codegraff",
+      "historical_parent": "a2472789a9ba1efb4babff4b7a52cbbad1e0f9d6",
+      "historical_merge": "61b6acff4694d91ab0a3fcb7ae1bb0d210324bc3",
+      "public_filter": "printRunning reports the wait that happened",
+      "hidden": "hidden/graff-727.sh",
+      "sibling_filter": "line names exit, kill, and abnormal end",
+      "check_timeout_s": 180,
+      "source": "local-reconstructed"
+    },
+    {
+      "id": "codedb-arch",
+      "pr": "codedb #720",
+      "why": "ranking + generated caches, not a crash",
+      "repo": "justrach/codedb",
+      "historical_parent": "a6c69c2d9509b01839a291ed0123a687c30f8b12",
+      "historical_merge": "71fc4f3600cabfd617d0b1ffaba1d8c244c222b8",
+      "public_cmd": "zig build test --summary none -Dtest-filter=architecture",
+      "hidden": "hidden/codedb-arch.sh",
+      "check_timeout_s": 180,
+      "source": "clone",
+      "sparse": ["src", "build.zig", "build.zig.zon"]
+    },
+    {
+      "id": "codedb-hybrid",
+      "pr": "codedb #736",
+      "why": "production-source prior after fusion",
+      "repo": "justrach/codedb",
+      "historical_parent": "163420b9fb11b9172b3b72e28c08a21dc73a31e5",
+      "historical_merge": "086050166cf90a3a2153febb144512f30088cf6a",
+      "public_cmd": "zig build test --summary none -Dtest-filter=hybrid",
+      "hidden": "hidden/codedb-hybrid.sh",
+      "check_timeout_s": 180,
+      "source": "clone"
+    },
+    {
+      "id": "graff-servers",
+      "pr": "codegraff #732",
+      "why": "idle lifecycle, ownership files, 8 KB cap",
+      "repo": "justrach/codegraff",
+      "historical_parent": "61b6acff4694d91ab0a3fcb7ae1bb0d210324bc3",
+      "historical_merge": "7066bbb1980f2510e4ab46ff17776841d13063f5",
+      "public_filter": "#199: a spawn writes an ownership record",
+      "hidden": "hidden/graff-servers.sh",
+      "sibling_filter": "#199: output keeps a job alive past the budget",
+      "check_timeout_s": 180,
+      "source": "local-reconstructed"
+    },
+    {
+      "id": "graff-interrupt",
+      "pr": "codegraff #753/#754",
+      "why": "handle survives a mid-turn drop",
+      "repo": "justrach/codegraff",
+      "historical_parent": "e9c65820c13f287718846455a81ee46ed03fe339",
+      "historical_merge": "ab2dc248024668821d483d0c64c1db50b63e1f36",
+      "public_filter": "#753: missing names an interrupted launch",
+      "hidden": "hidden/graff-interrupt.sh",
+      "sibling_filter": "#753: a finished ledger row replays the report",
+      "check_timeout_s": 180,
+      "source": "local-reconstructed"
+    },
+    {
+      "id": "graff-acp-pixels",
+      "pr": "codegraff #710",
+      "why": "image parts, not the path string",
+      "repo": "justrach/codegraff",
+      "historical_parent": "d4b12155f3948e78ba02ca3ef182310b7a81311b",
+      "historical_merge": "055d69b9265a585c050764c74311bd3b23bda533",
+      "public_filter": "userMessage promotes a GUI @[image] attachment",
+      "hidden": "hidden/graff-acp-pixels.sh",
+      "check_timeout_s": 180,
+      "source": "local-reconstructed"
+    },
+    {
+      "id": "graff-gemini-ix",
+      "pr": "codegraff #741",
+      "why": "new provider surface",
+      "repo": "justrach/codegraff",
+      "historical_parent": "b81939c772215fc14c68a43149c3b68e8b871c11",
+      "historical_merge": "f08dab88b6028140d84d2f804bb9232f8be59c0a",
+      "public_filter": "Gemini",
+      "hidden": "hidden/graff-gemini-ix.sh",
+      "check_timeout_s": 180,
+      "source": "local-reconstructed"
+    },
+    {
+      "id": "turbo-ws-load",
+      "pr": "turboAPI #200",
+      "why": "HTTP still works under WS load",
+      "repo": "justrach/turboAPI",
+      "historical_parent": "2e6c93bad370c184f4ce4ba3a0646097c17ecc09",
+      "historical_merge": "960ada95d64a79ed6e078ff6ca551b6df829a91f",
+      "hidden": "hidden/turbo-ws-load.sh",
+      "check_timeout_s": 180,
+      "source": "clone"
+    },
+    {
+      "id": "turbo-ws-duplex",
+      "pr": "turboAPI #225",
+      "why": "bounded full-duplex",
+      "repo": "justrach/turboAPI",
+      "historical_parent": "f3ceac99df857c0670f7d2a7f81c6757b27fe805",
+      "historical_merge": "dc2b645d6aed53b4b5e0d238566dd29beadd6820",
+      "hidden": "hidden/turbo-ws-duplex.sh",
+      "check_timeout_s": 180,
+      "source": "clone"
+    },
+    {
+      "id": "turbo-asgi",
+      "pr": "turboAPI #190",
+      "why": "FastAPI surface parity",
+      "repo": "justrach/turboAPI",
+      "historical_parent": "221493f7692981a0e86cd62c78f94b11a55b40cf",
+      "historical_merge": "2b243d059ce318e5a5d8f3d8df56e153f8fd3544",
+      "hidden": "hidden/turbo-asgi.sh",
+      "check_timeout_s": 180,
+      "source": "clone"
+    }
+  ],
+  "reserve": [
+    {
+      "id": "turbo-cache-meta",
+      "pr": "turboAPI #228",
+      "why": "cache hit must keep status/metadata",
+      "when": "published set still >=80% pass @ n=3",
+      "historical_parent": "dc2b645d6aed53b4b5e0d238566dd29beadd6820",
+      "historical_merge": "f29143307221df67816bf0b7d19bf9264626b084"
+    },
+    {"id": "graff-766", "pr": "codegraff #766", "when": "published set still >=80% pass @ n=3"},
+    {"id": "graff-800", "pr": "codegraff #800/#802", "when": "published set still >=80% pass @ n=3"},
+    {"id": "graff-733", "pr": "codegraff #733", "when": "published set still >=80% pass @ n=3"},
+    {"id": "graff-730", "pr": "codegraff #730", "when": "already the hidden invariant on graff-servers"},
+    {"id": "turbo-224", "pr": "turboAPI #224", "when": "published set still >=80% pass @ n=3"}
+  ],
+  "dropped": [
+    {
+      "id": "core-oom-insert",
+      "pr": "turboapi-core #8",
+      "why_dropped": "single-function OOM rollback is the grease-patch shape; likely lite-in-a-live-badge (G3)."
+    },
+    {
+      "id": "codedb-win17",
+      "pr": "codedb #737",
+      "why_dropped": "native Windows index on Zig 0.17; this Linux eval host cannot G1/G2 it."
+    }
+  ],
+  "retire_lite": {
+    "keep": ["core", "rlm", "swe"],
+    "opt_in": ["mcp"],
+    "demote": ["inhouse"],
+    "reason": "inhouse is the distilled 12 with SPEC.md — the live badge's opposite. Keep the fixtures for cheap harness A/B; do not headline them once live gates hold."
+  }
+}

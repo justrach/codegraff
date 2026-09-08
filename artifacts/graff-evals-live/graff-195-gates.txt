@@ -1,0 +1,18 @@
+graff-195 G1–G6 (no model) — 2026-09-08
+work: /tmp/live-gates-a49v0rcp
+
+G1 parent+public is red          PASS
+G2 grade+public+hidden is green  PASS
+G3 grease passes public, fails hidden  PASS
+G4 sibling still green on grade  PASS
+G5 no spoilers                   PASS
+G6 setup refuses an already-green tree  PASS
+
+result: PASS
+
+July parent ba8bc5a is Zig 0.16 and does not compile on 0.17.
+The published task uses a reconstructed 0.17 parent (current package
+minus the gate) so these gates are real, not a SHA we never ran.
+
+Zig 0.17 -Dtest-filter only runs anonymous test {} hooks (45 always-green).
+Public/hidden checks parse `zig build test --summary all` via named_check.py.

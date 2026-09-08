@@ -1,0 +1,12 @@
+{
+  "id": "codedb-arch",
+  "suite": "live",
+  "category": "live",
+  "source": "codedb #720 — ranking + generated caches, not a crash",
+  "prompt": "Architecture overview retrieval is ranking the wrong files (generated caches and e2e paths outrank canonical docs). Fix the package so the architecture-overview tests pass. Do not add SPEC.md.",
+  "setup": ["python3 \"$TASK_ROOT/live_setup.py\" codedb-arch ."],
+  "check": "sh \"$TASK_ROOT/live/codedb-arch/check_public.sh\" && sh \"$TASK_ROOT/hidden/codedb-arch.sh\"",
+  "timeout_s": 600,
+  "setup_timeout_s": 180,
+  "check_timeout_s": 300
+}

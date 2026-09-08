@@ -1,0 +1,12 @@
+{
+  "id": "graff-727",
+  "suite": "live",
+  "category": "live",
+  "source": "codegraff #727 — interrupted wait is elapsed time, not the 10h sentinel",
+  "prompt": "An Esc during a blocking job wait rendered \"36000s elapsed\". Fix src/job_notify.zig so the test named \"printRunning reports the wait that happened, not the deadline\" passes under `zig build test --summary all`. Do not edit that test. Do not add SPEC.md.",
+  "setup": ["python3 \"$TASK_ROOT/live_setup.py\" graff-727 ."],
+  "check": "sh \"$TASK_ROOT/live/graff-727/check_public.sh\" && sh \"$TASK_ROOT/hidden/graff-727.sh\"",
+  "timeout_s": 600,
+  "setup_timeout_s": 180,
+  "check_timeout_s": 300
+}

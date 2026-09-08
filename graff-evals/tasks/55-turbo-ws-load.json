@@ -1,0 +1,12 @@
+{
+  "id": "turbo-ws-load",
+  "suite": "live",
+  "category": "live",
+  "source": "turboAPI #200 — HTTP still works under WS load",
+  "prompt": "HTTP request handling must keep working while WebSocket connections are under load. Fix the package so the reserved-capacity tests pass. Do not add SPEC.md.",
+  "setup": ["python3 \"$TASK_ROOT/live_setup.py\" turbo-ws-load ."],
+  "check": "sh \"$TASK_ROOT/live/turbo-ws-load/check_public.sh\" && sh \"$TASK_ROOT/hidden/turbo-ws-load.sh\"",
+  "timeout_s": 600,
+  "setup_timeout_s": 180,
+  "check_timeout_s": 300
+}

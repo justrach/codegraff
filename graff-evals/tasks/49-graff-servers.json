@@ -1,0 +1,12 @@
+{
+  "id": "graff-servers",
+  "suite": "live",
+  "category": "live",
+  "source": "codegraff #732 — idle lifecycle, ownership files, 8 KB skill cap",
+  "prompt": "Background servers graff starts need an ownership record, and a SKILL.md over 8 KB must still appear in the catalog. Fix the package so `zig build test --summary all` reports \"#199: a spawn writes an ownership record with the leader's identity\" as passed. Do not edit that test. Do not add SPEC.md.",
+  "setup": ["python3 \"$TASK_ROOT/live_setup.py\" graff-servers ."],
+  "check": "sh \"$TASK_ROOT/live/graff-servers/check_public.sh\" && sh \"$TASK_ROOT/hidden/graff-servers.sh\"",
+  "timeout_s": 600,
+  "setup_timeout_s": 180,
+  "check_timeout_s": 300
+}
