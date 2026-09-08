@@ -41,6 +41,7 @@ pub const SessionState = engine.SessionState;
 pub const GoalOp = engine.GoalOp;
 pub const StateFn = engine.StateFn;
 pub const PeerFn = engine.PeerFn;
+pub const ConstraintFn = engine.ConstraintFn;
 pub const VersionFn = engine.VersionFn;
 pub const UpdateFn = engine.UpdateFn;
 pub const RunOpts = run_mod.RunOpts;
@@ -87,6 +88,7 @@ test {
     _ = @import("issue_537_reviewer_tests.zig");
     _ = @import("issue_524_tests.zig");
     _ = @import("issue_737_tests.zig");
+    _ = @import("issue_789_tests.zig");
     _ = @import("input.zig");
     _ = @import("keys.zig");
     _ = @import("nav.zig");

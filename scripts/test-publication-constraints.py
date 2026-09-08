@@ -18,6 +18,8 @@ for case in (
     "publication-workflow-local-capture-739",
     "publication-custom-override-739",
     "constraint-same-turn-738",
+    "constraint-temporary-stays-local-789",
+    "constraint-missing-scope-rejected-789",
 ):
     command += ["--only", case]
 raise SystemExit(subprocess.call(command))

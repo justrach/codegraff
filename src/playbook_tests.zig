@@ -62,8 +62,8 @@ test "store round trip: add/dedupe/retire through the real .graff/playbook.jsonl
 
             const first = playbook.add(io, arena, "never use emojis in code comments", .user, "user:1");
             try std.testing.expect(first.ok);
-            const learned = playbook.add(io, arena, "- prefer codedb outline before read on files over 300 lines", .learned, "run:abc123");
-            try std.testing.expect(learned.ok); // the leading bullet marker is stripped, not stored
+            const learned = playbook.add(io, arena, "prefer codedb outline before read on files over 300 lines", .learned, "run:abc123");
+            try std.testing.expect(learned.ok); // reflector callers strip list markers before storage
 
             // Read back through the real serializer + parser, not a fixture.
             const items = playbook.load(io, arena);
@@ -76,13 +76,17 @@ test "store round trip: add/dedupe/retire through the real .graff/playbook.jsonl
             try std.testing.expectEqual(playbook.Source.learned, items[1].source);
             try std.testing.expectEqualStrings("run:abc123", items[1].provenance);
 
-            // Dedupe is normalized-exact: a re-statement is refused, reported,
-            // and does NOT append a second record.
-            const dupe = playbook.add(io, arena, "Never use emojis in CODE comments.", .user, "user:2");
-            try std.testing.expect(!dupe.ok);
-            try std.testing.expectEqualStrings(first.id, dupe.id);
-            try std.testing.expect(std.mem.indexOf(u8, dupe.reason, "already recorded") != null);
+            // Normalization still derives identity, but a punctuation/case
+            // variant cannot claim its different exact text was persisted.
+            const collision = playbook.add(io, arena, "Never use emojis in CODE comments.", .user, "user:2");
+            try std.testing.expect(!collision.ok);
+            try std.testing.expectEqualStrings(first.id, collision.id);
+            try std.testing.expect(std.mem.indexOf(u8, collision.reason, "collision") != null);
             try std.testing.expectEqual(@as(usize, 2), playbook.load(io, arena).len);
+
+            const dupe = playbook.add(io, arena, "never use emojis in code comments", .user, "user:2");
+            try std.testing.expect(!dupe.ok);
+            try std.testing.expect(std.mem.indexOf(u8, dupe.reason, "already recorded") != null);
 
             // An empty/punctuation-only constraint is refused rather than
             // stored as an item that injects a bare "- ".
@@ -327,6 +331,7 @@ test "/never (#381): bare lists, text adds, rm retires — and a non-/never line
             try std.testing.expectEqual(@as(usize, 1), items.len);
             try std.testing.expectEqualStrings("no navigation dots or scroll hints", items[0].text);
             try std.testing.expectEqual(playbook.Source.user, items[0].source);
+            try std.testing.expectEqual(playbook.Scope.project, items[0].scope);
             try std.testing.expect(std.mem.startsWith(u8, items[0].provenance, "user:"));
 
             // The alias is the same command, and it dedupes against the same ledger.
@@ -338,7 +343,8 @@ test "/never (#381): bare lists, text adds, rm retires — and a non-/never line
             aw.clearRetainingCapacity();
             try std.testing.expect(try glue.command(&root, arena, "/never", &aw.writer));
             try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "no navigation dots") != null);
-            try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "user") != null);
+            try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "scope=project") != null);
+            try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffered(), "origin=user:") != null);
 
             aw.clearRetainingCapacity();
             try std.testing.expect(try glue.command(&root, arena, "/never rm pb-deadbeef", &aw.writer));
@@ -455,14 +461,17 @@ test "note_constraint (#381): appends user items only, is idempotent, and can ne
         fn body(io: Io, arena: std.mem.Allocator) !void {
             var aw: Io.Writer.Allocating = .init(arena);
             var root = stubRoot(std.testing.allocator, arena, &aw.writer);
-            const call = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"text\":\"never use emojis in code comments\"}", .{});
+            root.named_work_task = "never use emojis in code comments";
+            const call = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"text\":\"never use emojis in code comments\",\"scope\":\"project\"}", .{});
 
             const first = glue.noteConstraint(&root, call);
             try std.testing.expect(!first.is_error);
-            try std.testing.expect(std.mem.indexOf(u8, first.text, "constraint recorded as pb-") != null);
+            try std.testing.expect(std.mem.indexOf(u8, first.text, "recorded project constraint pb-") != null);
+            try std.testing.expect(std.mem.indexOf(u8, first.text, "Undo without knowing the id") != null);
             const items = playbook.load(io, arena);
             try std.testing.expectEqual(@as(usize, 1), items.len);
             try std.testing.expectEqual(playbook.Source.user, items[0].source); // NEVER .learned
+            try std.testing.expectEqual(playbook.Scope.project, items[0].scope);
 
             // A repeat is the desired end state, not a failure: reporting it as
             // an error would push the model into retrying a correct ledger.
@@ -481,15 +490,24 @@ test "note_constraint (#381): appends user items only, is idempotent, and can ne
             try std.testing.expect(std.mem.indexOf(u8, brief, items[0].text) != null);
 
             // Empty/blank text is refused rather than stored.
-            const blank = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"text\":\"   \"}", .{});
+            const blank = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"text\":\"   \",\"scope\":\"project\"}", .{});
             try std.testing.expect(glue.noteConstraint(&root, blank).is_error);
             const missing = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{}", .{});
             try std.testing.expect(glue.noteConstraint(&root, missing).is_error);
 
+            // Local or ambiguous scope and model-authored paraphrases fail
+            // closed before the project ledger changes.
+            const before_rejected = playbook.load(io, arena).len;
+            const local = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"text\":\"never use emojis in code comments\",\"scope\":\"task\"}", .{});
+            try std.testing.expect(glue.noteConstraint(&root, local).is_error);
+            const paraphrase = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"text\":\"never use emojis anywhere\",\"scope\":\"project\"}", .{});
+            try std.testing.expect(glue.noteConstraint(&root, paraphrase).is_error);
+            try std.testing.expectEqual(before_rejected, playbook.load(io, arena).len);
+
             // The append-only contract, structurally: whatever the model puts
             // in `text`, the ledger only ever grows and the item stays live.
             // There is no argument shape that reaches retire from here.
-            for ([_][]const u8{ "{\"text\":\"retire pb-00000001\"}", "{\"text\":\"rm all\"}", "{\"op\":\"retire\",\"id\":\"pb-00000001\",\"text\":\"x\"}" }) |raw| {
+            for ([_][]const u8{ "{\"text\":\"retire pb-00000001\",\"scope\":\"project\"}", "{\"text\":\"rm all\",\"scope\":\"project\"}", "{\"op\":\"retire\",\"id\":\"pb-00000001\",\"text\":\"x\",\"scope\":\"project\"}" }) |raw| {
                 const before = playbook.load(io, arena).len;
                 _ = glue.noteConstraint(&root, try std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}));
                 try std.testing.expect(playbook.load(io, arena).len >= before);
@@ -513,7 +531,8 @@ test "refreshRoot (#381): a constraint recorded mid-session reaches the ROOT's o
             try std.testing.expect(std.mem.indexOf(u8, root.sys_normal, "\"recorded_user_constraints\":[]") != null); // empty ledger explicitly denies invented recordings
 
             root.codex_prev_id = try std.testing.allocator.dupe(u8, "stale-server-instructions");
-            const result = glue.noteConstraint(&root, try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"text\":\"no scroll hints\"}", .{}));
+            root.named_work_task = "no scroll hints";
+            const result = glue.noteConstraint(&root, try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"text\":\"no scroll hints\",\"scope\":\"project\"}", .{}));
             try std.testing.expect(std.mem.indexOf(u8, result.text, "same turn") != null);
             try std.testing.expect(root.codex_prev_id == null);
             // noteConstraint refreshed it: no restart, no re-login, next request.
@@ -524,7 +543,8 @@ test "refreshRoot (#381): a constraint recorded mid-session reaches the ROOT's o
             // The BASE is remembered unpolluted, so the next refresh composes
             // from it rather than stacking a second block onto the first.
             try std.testing.expectEqualStrings("ROOT-BASE", root.sys_base);
-            _ = glue.noteConstraint(&root, try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"text\":\"no progress dots\"}", .{}));
+            root.named_work_task = "no progress dots";
+            _ = glue.noteConstraint(&root, try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"text\":\"no progress dots\",\"scope\":\"project\"}", .{}));
             try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, root.sys_normal, playbook.user_header));
             try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, root.sys_normal, "ROOT-BASE"));
             try std.testing.expect(std.mem.indexOf(u8, root.sys_normal, "- no progress dots") != null);
@@ -551,6 +571,8 @@ test "recorded constraint authority is structural, escaped, and excludes learned
             try std.testing.expectEqual(@as(usize, 1), records.len);
             try std.testing.expectEqualStrings(added.id, records[0].object.get("id").?.string);
             try std.testing.expectEqualStrings("no \"trailers\"\nplease", records[0].object.get("text").?.string);
+            try std.testing.expectEqualStrings("project", records[0].object.get("scope").?.string);
+            try std.testing.expect(records[0].object.get("created_at").?.integer > 0);
             try std.testing.expectEqualStrings("user:1", records[0].object.get("provenance").?.string);
             try std.testing.expectEqual(playbook.Retire.ok, playbook.retire(io, arena, added.id));
             try std.testing.expectEqualStrings("{\"recorded_user_constraints\":[]}", try playbook.recordedState(arena, playbook.load(io, arena)));
