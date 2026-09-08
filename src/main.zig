@@ -580,6 +580,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("compact_status.zig");
     _ = @import("agent_request_search_tests.zig");
     _ = @import("agent_ws_steer.zig"); // gpt-6-astra response.steer
+    _ = @import("agent_ws_prewarm.zig"); // codex generate:false prewarm
     _ = @import("tui_acp_updates.zig");
     _ = @import("acp_preauth.zig"); // credential-free ACP loop must stay in the test root
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events

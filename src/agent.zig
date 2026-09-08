@@ -91,6 +91,10 @@ pub const Agent = struct {
     // Codex Responses WS delta transport: one WS held ACROSS user turns (codex_chain.zig), sending previous_response_id + only new items. Reset by closeCodexWs.
     codex_ws: ?*ws.WsClient = null,
     codex_prev_id: ?[]const u8 = null, // last response.id (gpa-owned); null = re-anchor with full input
+    /// Codex WS prewarm in flight (openai/codex `generate:false`): the body
+    /// writer emits no input items and no transport fields, so the server
+    /// prepares instructions+tools state that turn 1 chains onto.
+    ws_prewarm: bool = false,
     codex_sent_upto: usize = 0, // messages the server already holds; delta = messages[codex_sent_upto..]
     codex_chain_rewrites: u32 = 0, // history_rewrites when the chain was anchored; a later compaction/trim invalidates it
     codex_props_fp: u64 = 0, // request properties the server anchored on (model/effort/fast/tools/instructions)

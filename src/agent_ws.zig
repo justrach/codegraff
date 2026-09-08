@@ -350,8 +350,11 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     const arena = self.arena;
     const provider = self.provider;
 
-    const frame = try std.fmt.allocPrint(gpa, "{{\"type\":\"response.create\",{s}", .{body[1..]});
+    var frame = try std.fmt.allocPrint(gpa, "{{\"type\":\"response.create\",{s}", .{body[1..]});
     defer gpa.free(frame);
+    // WS responses.create omits transport-only fields (xAI spec; codex tolerates):
+    // the body builder writes `stream:true` for SSE; shorten it in place here.
+    frame = @import("agent_ws_prewarm.zig").stripTransportFields(frame);
 
     const bearer = try std.fmt.allocPrint(arena, "Bearer {s}", .{provider.api_key});
     // ChatGPT tail is codex-only (#502); xAI takes grok-build's affinity
@@ -442,6 +445,13 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         if (self.tracer) |tr| tr.note("ws", "connected");
     } else if (self.tracer) |tr| tr.note("ws", "reuse (delta)");
     const client = self.codex_ws.?;
+    // Codex-style prewarm (generate:false) on a fresh socket: prepare
+    // instructions+tools server-side, chain turn 1 onto the warmup id.
+    // Best-effort — on any failure warm() returns the original frame.
+    const frame_to_send: []const u8 = if (reused)
+        frame
+    else
+        @import("agent_ws_prewarm.zig").warm(self, arena, client, frame);
     // Any error → close + reset the session so the next request re-anchors (fresh
     // WS full history, or SSE fallback via postLive's ws_off path). Never leaks.
     // (#401) …and mark it dead first: deinit's courtesy close frame is another
@@ -450,7 +460,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         if (self.codex_ws) |c| c.dead = true;
         self.closeCodexWs();
     }
-    sendFrameWatched(self.io, client, frame, orig_tio != null) catch |e| {
+    sendFrameWatched(self.io, client, frame_to_send, orig_tio != null) catch |e| {
         // No user-facing "stream stalled — ending turn" line here: a send
         // failure is a TRANSPORT failure (HungRequest), which postLive retries
         // on a fresh socket — the turn is not over.
@@ -467,7 +477,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     // quiet — the distinction that made #401 undiagnosable from its trace.
     if (self.tracer) |tr| {
         var nbuf: [48]u8 = undefined;
-        tr.note("ws", std.fmt.bufPrint(&nbuf, "sent {d}b — awaiting frames", .{frame.len}) catch "sent — awaiting frames");
+        tr.note("ws", std.fmt.bufPrint(&nbuf, "sent {d}b — awaiting frames", .{frame_to_send.len}) catch "sent — awaiting frames");
     }
 
     var full: Io.Writer.Allocating = .init(gpa);

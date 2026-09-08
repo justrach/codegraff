@@ -385,6 +385,18 @@ class CodexMock:
             self._log(f"ws <- {etype} ({len(message.payload)}b)")
             if etype != "response.create":
                 continue
+            # Codex-style generate:false prewarm: connection setup, not an
+            # inference turn — answer with a terminal completed frame carrying
+            # an id the client can chain from, and do NOT count it in ws_turns
+            # (the transport smoke assertions count real model turns).
+            if event.get("generate") is False:
+                prewarm_id = f"resp_prewarm_{self.ws_turns + 1}"
+                _send_frame(conn, OP_TEXT, json.dumps(
+                    {"type": "response.completed",
+                     "response": {"id": prewarm_id, "usage": dict(USAGE)}},
+                    separators=(",", ":")).encode("utf-8"))
+                self._log("ws -> response.completed (prewarm)")
+                continue
             events = self._events("ws", connection_id, event, headers)
             for ev in events:
                 _send_frame(

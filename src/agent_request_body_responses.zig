@@ -56,8 +56,14 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     // this item server-side, so only a full anchor writes it.
     if (!chain and explicit_cache) try writeCacheAnchor(s);
     const from = if (chain) self.codex_sent_upto else 0;
-    for (self.messages.items[from..]) |m| try s.write(m);
-    try s.endArray();
+    // Prewarm (openai/codex `generate:false`): prepare instructions+tools state
+    // with NO input items — the real turn chains onto the warmup response id.
+    if (self.ws_prewarm) {
+        try s.endArray();
+    } else {
+        for (self.messages.items[from..]) |m| try s.write(m);
+        try s.endArray();
+    }
     if (tools) |t| {
         const payload = blk: {
             var next = t;
@@ -101,6 +107,13 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     server_compact.noteExposure(self);
     try server_compact.writeContextManagement(self, s);
     if (self.output_schema) |schema_json| try writeTextFormat(s, schema_json);
+    // Prewarm: no transport fields (stream) and generate:false — connection
+    // setup, not inference (openai/codex prewarm_websocket, Responses WS docs).
+    if (self.ws_prewarm) {
+        try s.objectField("generate");
+        try s.write(false);
+        return;
+    }
     // No top-level max_output_tokens: the codex backend rejects it
     // ("Unsupported parameter") on gpt-5.6-* — codex sets it only as a tool argument.
     try s.objectField("stream");
