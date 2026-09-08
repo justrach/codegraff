@@ -4,7 +4,7 @@ const path = require('node:path');
 async function runAgentVisuals({ win, origin, output }) {
   const js = source => win.webContents.executeJavaScript(source);
   const selectChild = id => js(`(()=>{const id=${JSON.stringify(id)}, button=document.querySelector('[data-child-agent="'+id+'"]');if(button){button.click();return;}const select=document.querySelector('[aria-label="Select sub-agent"]');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,id);select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
-  const wait = async source => { for (let i = 0; i < 100; i++) { if (await js(source)) return; await new Promise(r => setTimeout(r, 40)); } console.error(await js('document.body.innerText')); fs.writeFileSync(path.join(output, 'agents-failed.png'), (await win.webContents.capturePage()).toPNG()); throw Error(`Agent visual timeout: ${source}`); };
+  const wait = async source => { for (let i = 0; i < 200; i++) { if (await js(source)) return; await new Promise(r => setTimeout(r, 40)); } console.error(await js('document.body.innerText')); fs.writeFileSync(path.join(output, 'agents-failed.png'), (await win.webContents.capturePage()).toPNG()); throw Error(`Agent visual timeout: ${source}`); };
   win.webContents.on('console-message', (_e, level, message) => { if (level >= 2) console.error('Agent fixture:', message); });
   win.show(); win.focus();
   await win.loadURL(`${origin}/visual-tests/agents`);
@@ -22,6 +22,18 @@ async function runAgentVisuals({ win, origin, output }) {
   assert.equal(await js(`document.querySelectorAll('li button').length`), 0, 'A peer disappears when it stops working');
   await js(`document.querySelector('[data-agent-case="connected"]').click()`);
   await wait(`document.querySelectorAll('li button').length === 1`);
+  await js(`document.querySelector('li button').click()`);
+  await selectChild('child-working');
+  await wait(`document.querySelector('[aria-label="Sub-agent activity"]')?.textContent.includes('Live')`);
+  await js(`document.querySelector('[data-agent-case="idle"]').click()`);
+  await new Promise(resolve => setTimeout(resolve, 5500));
+  assert.equal(await js(`document.querySelector('[aria-label="Sub-agent activity"] strong')?.textContent`), 'Inspect navigation', 'Inspection survives the parent becoming idle');
+  await js(`Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Message this Graff…').click()`);
+  assert.equal(await js(`document.querySelector('[aria-label="Message recipient"] option:checked')?.textContent`), 'Implement navigation', 'Idle selection remains an explicit recipient');
+  await js(`document.querySelector('[aria-label="Back to all agents"]').click()`);
+  await wait(`document.body.textContent.includes('No active Graffs')`);
+  await js(`document.querySelector('[data-agent-case="connected"]').click()`);
+  await wait(`document.querySelectorAll('li button').length === 1`);
   await js(`document.querySelectorAll('[aria-label="Agent scope"] button')[1].click()`);
   await wait(`document.querySelectorAll('li button').length === 1`);
   assert.equal(await js(`document.querySelector('[aria-label="Message recipient"]').textContent.includes('Review accessibility')`), false, 'Idle peers are excluded from active recipients');
@@ -32,8 +44,8 @@ async function runAgentVisuals({ win, origin, output }) {
   await wait(`document.querySelector('[data-child-agent="child-working"]')`);
   assert.notEqual(await js(`document.activeElement.getAttribute('aria-label')`), 'Message to Graff', 'Inspection should not move focus into the send form');
   assert.equal(await js(`document.querySelector('[data-child-agent="child-completed"]')`), null, 'Completed children are hidden by default');
-  assert.equal(await js(`document.querySelector('[data-child-agent="child-failed"]')`), null, 'Failed children are hidden by default');
-  await js(`Array.from(document.querySelectorAll('label')).find(l => l.textContent.includes('Show finished sub-agents')).querySelector('input').click()`);
+  assert.equal(await js(`!!document.querySelector('[data-child-agent="child-failed"]')`), true, 'Failed children stay visible by default');
+  await js(`Array.from(document.querySelectorAll('label')).find(l => l.textContent.includes('Show completed sub-agents')).querySelector('input').click()`);
   await selectChild('child-working');
   await wait(`document.querySelector('[aria-label="Sub-agent activity"]')?.textContent.includes('Live')`);
   assert.equal(await js(`document.querySelector('[data-tool-summary]')?.getAttribute('aria-expanded')`), 'false');

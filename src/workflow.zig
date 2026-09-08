@@ -138,8 +138,8 @@ pub fn failExcerpt(arena: Allocator, text: []const u8) []const u8 {
     for (flat) |*c| if (c.* == '\n' or c.* == '\r' or c.* == '\t') {
         c.* = ' ';
     };
-    if (head.len == trimmed.len) return flat;
-    return std.fmt.allocPrint(arena, "{s}…", .{flat}) catch flat;
+    const cause = if (head.len == trimmed.len) flat else std.fmt.allocPrint(arena, "{s}…", .{flat}) catch flat;
+    return @import("subagent_recovery.zig").excerpt(arena, text, cause);
 }
 
 /// #5 conditional-phase gate: a phase carrying a non-empty `when` runs only when

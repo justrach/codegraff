@@ -514,7 +514,6 @@ pub fn main(init: std.process.Init) !void {
     try mainloop.run(&loop_ctx);
     try session_run.finalizeSession(gpa, startup_timing.shutdown_trace.at(io, "final-save"), arena, out, &root, json_mode);
 }
-// The `graff mcp` CLI (list/add servers in .mcp.json) + the trusted-companion check live in mcp_cli.zig.
 const mcp_cli = @import("mcp_cli.zig");
 // Provider-switch core lives in providers.zig; the interactive pickers, ultracode steering, and login/auth flow live in pickers.zig.
 const providers = @import("providers.zig");
@@ -595,6 +594,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("presence_record.zig");
     _ = @import("acp_agents.zig");
     _ = @import("subagent_activity.zig");
+    _ = @import("subagent_recovery.zig");
     _ = @import("acp_agent_activity.zig");
     _ = @import("read_image.zig");
 }
