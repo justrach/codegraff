@@ -363,6 +363,42 @@ test "rows past the end of the frame are blanked, not left stale" {
     try screen.expectMatches(&want);
 }
 
+test "composer shrink clears rows exposed by a taller transcript band" {
+    const app_mod = @import("app.zig");
+    const render_mod = @import("render.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var m: app_mod.Model = undefined;
+    m.setup(a);
+    defer m.deinit();
+    for (0..80) |i| try m.pushFmt(.assistant, "transcript line {d} with enough words to wrap", .{i});
+
+    try m.input.setValue("old composer text with enough words to occupy many wrapped rows " ++
+        "before the draft gets shorter and exposes transcript cells");
+    const before = try render_mod.render(&m, a, 40, 24, 0);
+    const before_band = m.band;
+    const before_prompt = m.prompt_origin;
+
+    try m.input.setValue("new draft");
+    const after = try render_mod.render(&m, a, 40, 24, 0);
+    const after_band = m.band;
+
+    // The composer lost several wrapped rows, so the transcript both grew and
+    // moved its viewport. That geometry change must refuse scrollpaint and use
+    // the row diff, including rows that used to contain the old composer.
+    try std.testing.expect(m.prompt_origin >= before_prompt + 2);
+    try std.testing.expect(after_band.len >= before_band.len + 2);
+    try std.testing.expect(after_band.off != before_band.off);
+    try std.testing.expect(m.paint_hint == null);
+
+    var screen = try Screen.init(a, 24, 40);
+    screen.feed(try paintToBuf(a, before, 24, 40, ""));
+    screen.feed(try paintToBuf(a, after, 24, 40, before));
+    var want = try Screen.expect(a, after, 24, 40, true);
+    try screen.expectMatches(&want);
+}
+
 test "the real band's rows are exactly the rows the painter rewrites (#529)" {
     // The band is a post-pass over the composed frame, so when it CLEARS the
     // only thing that puts those rows back is the byte comparison in
