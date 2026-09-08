@@ -228,14 +228,19 @@ pub const Input = struct {
         for (self.spans.items) |span| {
             if (cursor > span.start and cursor <= span.end) return span.start;
         }
-        return cursor -| 1;
+        // Land on a scalar start, never inside a multi-byte sequence (#788).
+        var c = cursor -| 1;
+        while (c > 0 and c < self.buf.items.len and self.buf.items[c] & 0xc0 == 0x80) c -= 1;
+        return c;
     }
 
     fn right(self: *const Input, cursor: usize) usize {
         for (self.spans.items) |span| {
             if (cursor >= span.start and cursor < span.end) return span.end;
         }
-        return @min(cursor + 1, self.buf.items.len);
+        var c = @min(cursor + 1, self.buf.items.len);
+        while (c < self.buf.items.len and self.buf.items[c] & 0xc0 == 0x80) c += 1;
+        return c;
     }
 
     fn prevWord(self: *const Input, cursor: usize) usize {
