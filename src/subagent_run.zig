@@ -418,6 +418,11 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     if (telemetry.g_telem) |t| t.runEvent(&fp, sys_override != null, run_ok, run_ms, used_tools);
     const text = report catch |err| {
         var out = subagentFailure(gpa, sub_id, err, agent.last_api_error, attempts);
+        const recovered = @import("subagent_recovery.zig").append(gpa, out.text, agent.messages.items, agent.partial_text.items) catch null;
+        if (recovered) |body| {
+            gpa.free(out.text);
+            out.text = body;
+        }
         if (wt) |w| {
             const tail = if (pool_seat)
                 @import("experiment_pool.zig").deliverNote(gpa, ctx.io, .{ .path = w.path, .branch = w.branch, .base = w.base })
