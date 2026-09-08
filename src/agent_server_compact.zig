@@ -174,7 +174,9 @@ pub fn installCompactedOutput(self: *Agent, response: std.json.Value) !usize {
     if (response != .object) return error.InvalidCompactionResponse;
     const output = response.object.get("output") orelse return error.InvalidCompactionResponse;
     if (output != .array or output.array.items.len == 0) return error.InvalidCompactionResponse;
+    const window = try @import("compaction_window.zig").State.canonical(self.gpa, output.array.items);
     try installItems(self, output.array.items);
+    self.compaction_window = window;
     return output.array.items.len;
 }
 
@@ -199,6 +201,7 @@ pub fn installInStreamCompaction(self: *Agent, response: std.json.ObjectMap) !us
     }
     const k = compact_idx orelse return error.MissingCompactionItem;
     try installItems(self, output.array.items[k .. k + 1]); // discard any quiet post-blob reply
+    self.compaction_window = .{};
     return payload_len;
 }
 
@@ -219,7 +222,7 @@ fn compactStandalone(self: *Agent) !usize {
         if (self.tracer) |tr| tr.note("server_compact_error", response_body[0..@min(response_body.len, 400)]);
         return err;
     };
-    if (!main_mod.json_mode) try self.say("[OpenAI compacted context into {d} canonical item(s)]\n", .{items});
+    if (!main_mod.json_mode and @import("repl.zig").g_debug) try self.say("[OpenAI compacted context into {d} canonical item(s)]\n", .{items});
     return response_body.len;
 }
 
@@ -255,12 +258,16 @@ fn compactInStream(self: *Agent) !usize {
     const response = try self.request(null);
     const payload_len = try installInStreamCompaction(self, response);
     self.closeCodexWs();
-    if (!main_mod.json_mode) try self.say("[OpenAI compacted context into server state]\n", .{});
+    if (!main_mod.json_mode and @import("repl.zig").g_debug) try self.say("[OpenAI compacted context into server state]\n", .{});
     return payload_len;
 }
 
 fn fallbackLocal(self: *Agent, err: anyerror) anyerror!usize {
     if (err == error.Interrupted or err == error.OutOfMemory) return err;
+    if (@import("compaction_window.zig").latestBlob(self.messages.items) != null) {
+        if (self.tracer) |tr| tr.note("server_compact_failed", @errorName(err));
+        return err; // local summaries cannot replace opaque state; caller reports the failure
+    }
     if (self.tracer) |tr| tr.note("server_compact_fallback", @errorName(err));
     if (!main_mod.json_mode) try self.say("[OpenAI server compaction unavailable; falling back to local summary]\n", .{});
     return self.compact();
@@ -287,8 +294,7 @@ pub fn manualCompact(self: *Agent) anyerror!usize {
         if (items[0] == .object) {
             if (items[0].object.get("type")) |t| {
                 if (t == .string and std.mem.eql(u8, t.string, "compaction")) {
-                    if (!main_mod.json_mode) try self.say("[history already anchored on a server compaction blob]\n", .{});
-                    return 0;
+                    return error.ServerCompactionRequired;
                 }
             }
         }
@@ -303,11 +309,18 @@ pub fn manualCompact(self: *Agent) anyerror!usize {
     }
     const pending_tokens = self.effectiveContextTokens();
     if (!main_mod.json_mode and @import("repl.zig").g_debug) try self.say("[compacting ~{d} tokens with OpenAI…]\n", .{pending_tokens});
+    var progress = @import("compact_status.zig").begin(self);
+    defer progress.end(self);
     const result = switch (route) {
         .standalone => compactStandalone(self),
         .in_stream => compactInStream(self),
         .local => unreachable,
-    } catch |err| return fallbackLocal(self, err);
+    } catch |err| {
+        progress.end(self);
+        return fallbackLocal(self, err);
+    };
+    progress.end(self);
+    if (!main_mod.json_mode) try self.say("Compacted context.\n", .{});
     return result;
 }
 
@@ -335,6 +348,7 @@ pub fn pruneIf(self: *Agent, server_arm: bool) bool {
     }
     const k = blob_idx orelse return false;
     if (k == 0) return false; // already anchored on the blob
+    if (self.compaction_window.protects(self.gpa, items[k])) return false;
     // #581: a blob after the live unresolved prompt would drop its images.
     if (compact_cut.pinOpening(items)) |t| {
         if (k > t) return false;
@@ -364,6 +378,7 @@ pub fn pruneIf(self: *Agent, server_arm: bool) bool {
     var fresh = std.json.Array.init(self.arena);
     fresh.appendSlice(items[k..]) catch return false;
     self.messages = fresh;
+    self.compaction_window = .{}; // a newer in-stream blob supersedes the canonical window
     // Mirror compact()'s post-install meter reset: both anchors recompute
     // lazily, and the goal note died with the pruned prefix (#318).
     self.last_context_tokens = 0;
@@ -371,7 +386,12 @@ pub fn pruneIf(self: *Agent, server_arm: bool) bool {
     self.goal_note_fp = 0;
     self.history_rewrites +%= 1; // breaks the codex chain → next request re-anchors
     notePrune(dropped);
-    if (!main_mod.json_mode) self.say("[server compacted context: {d} earlier item(s) now carried by the model's compaction state]\n", .{dropped}) catch {};
+    if (!main_mod.json_mode) {
+        if (@import("repl.zig").g_debug)
+            self.say("[server compacted context: {d} earlier item(s) now carried by the model's compaction state]\n", .{dropped}) catch {}
+        else
+            self.say("Compacted context.\n", .{}) catch {};
+    }
     return true;
 }
 

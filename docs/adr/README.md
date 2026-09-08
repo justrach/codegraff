@@ -99,6 +99,7 @@ record only when you need the evidence or the edge cases.
 | [0086](0086-desktop-drafts-belong-to-open-chats.md) | Unsent desktop drafts and uploads belong to open chats and survive hidden panes; closing a chat disposes them. |
 | [0087](0087-bounded-desktop-presentation-work.md) | Bound syntax caches and live code rendering; project saved transcripts before sending them to the renderer and measure identical desktop workloads. |
 | [0088](0088-failed-children-return-partial-evidence.md) | Failed children return bounded partial evidence with error status intact, including an excerpt for workflow synthesis. |
+| [0089](0089-canonical-compaction-windows-survive-recovery.md) | Preserve standalone compaction windows across pruning and resume; opaque recovery uses the server or reports failure without discarding history. |
 
 ## When to write one
 

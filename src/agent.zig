@@ -201,6 +201,7 @@ pub const Agent = struct {
     stream_quiet: bool = false, // mute live paint (one-shot / compact); transport still streams
     compaction_request: bool = false, // the current model call is the synthetic compaction-summary request
     server_compaction_request: bool = false, // force one explicit Codex in-stream compaction pass
+    compaction_window: @import("compaction_window.zig").State = .{}, // durable standalone-window provenance
     responses_output_limit: ?u32 = null, // auxiliary override (title=64); compaction always uses 4096
     last_request_context_overflow: bool = false, // explicit provider rejection, not an inferred meter threshold
     last_request_write_failed: bool = false, // transport gave up specifically with WriteFailed this request

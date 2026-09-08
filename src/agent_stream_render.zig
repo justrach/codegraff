@@ -28,6 +28,10 @@ const termCols = terminal.termCols;
 const termRows = terminal.termRows;
 const advanceThinkingRows = terminal.advanceThinkingRows;
 
+test {
+    _ = @import("compact_status.zig");
+}
+
 pub fn spinnerTask(io: Io) void {
     var i: usize = 0;
     var buf: [512]u8 = undefined;
@@ -39,7 +43,11 @@ pub fn spinnerTask(io: Io) void {
         }
         // Clear-then-draw each frame: animations may vary in width.
         w.interface.writeAll("\r\x1b[2K\x1b[?7l") catch return; // ?7l: autowrap off so a wide spinner truncates instead of wrapping in a narrow window (the "goes on and on" bug)
-        anim.anims[anim.g_anim_current].frame(&w.interface, i) catch return;
+        if (@import("compact_status.zig").isActive()) {
+            w.interface.writeAll(@import("compact_status.zig").label) catch return;
+        } else {
+            anim.anims[anim.g_anim_current].frame(&w.interface, i) catch return;
+        }
         w.interface.writeAll("\x1b[?7h") catch return; // restore autowrap
         w.interface.flush() catch return;
         i += 1;

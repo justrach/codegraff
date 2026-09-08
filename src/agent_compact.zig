@@ -109,19 +109,14 @@ pub fn compactPrelude(self: *Agent) ?usize {
     // AFTER compaction; this covers the request compaction itself makes.
     self.closeCodexWs();
     if (self.messages.items.len == 0) return null;
-    // Opaque server blobs (xAI leftover, OpenAI compact item) are not
-    // summarizable — the client model cannot see inside them.
-    if (self.messages.items[0] == .object) {
-        if (self.messages.items[0].object.get("type")) |t| {
-            if (t == .string and std.mem.eql(u8, t.string, "compaction")) return null;
-        }
-    }
     pinChildTask(self);
     self.last_request_context_overflow = false;
     return self.effectiveContextTokens();
 }
 
 pub fn compact(self: *Agent) anyerror!usize {
+    // An opaque item anywhere in history needs the server, never a local summary.
+    if (@import("compaction_window.zig").latestBlob(self.messages.items) != null) return error.ServerCompactionRequired;
     const pending_tokens = compactPrelude(self) orelse {
         if (!main_mod.json_mode) try self.say("nothing to compact\n", .{});
         return 0;
@@ -202,6 +197,8 @@ pub fn compact(self: *Agent) anyerror!usize {
     _ = dropPriorTurnReasoning(self);
     _ = trimOldestToolOutputsAlloc(self, compact_arena);
 
+    var progress = @import("compact_status.zig").begin(self);
+    defer progress.end(self);
     // The handoff summary is internal — don't stream it to the terminal.
     const was_quiet = self.stream_quiet;
     const was_compaction_request = self.compaction_request;
@@ -213,6 +210,7 @@ pub fn compact(self: *Agent) anyerror!usize {
     defer self.compaction_request = was_compaction_request;
     defer self.message_mutation_arena = was_message_mutation_arena;
     const root = try self.request(null);
+    progress.end(self);
     // Any complete transport response proves the previous opaque failure was
     // transient/non-wedging, even when its summary text is empty or truncated.
     self.compact_transport_failures = 0;
@@ -543,7 +541,9 @@ pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
         compact_cut.resetStall(&self.compact_stall);
     }
     if (self.compact_pin_degraded and !trim_on_fail) return;
-    if (self.compact()) |_| {
+    const has_opaque = @import("compaction_window.zig").latestBlob(self.messages.items) != null;
+    const result = if (has_opaque) server_compact.manualCompact(self) else self.compact();
+    if (result) |_| {
         self.compact_transport_failures = 0;
         return;
     } else |err| {
@@ -560,6 +560,7 @@ pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
                     self.say("[auto-compaction failed: {t}]\n", .{err}) catch {};
             },
         }
+        if (has_opaque) return; // server failed: preserve its canonical window, never emergency-trim it
         const repeated_opaque_overflow = repeatedOpaqueCompactionFailure(self, err);
         const repeated_empty_summary = repeatedEmptySummaryFailure(self, err);
         // The caller's policy is computed before compact() makes its summary

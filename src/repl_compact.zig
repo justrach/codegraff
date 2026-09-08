@@ -72,6 +72,7 @@ pub fn replCompactCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl
     if (c.convo) |cv| {
         agent.scratch_arena = &scratch_state;
         agent.messages = cv.list().*;
+        agent.compaction_window = cv.compaction_window;
     } else for (history) |t| {
         const role = switch (t.role) {
             .user => "user",
@@ -89,6 +90,7 @@ pub fn replCompactCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl
     // on a failure that leaves history untouched — is the session's state now.
     defer if (c.convo) |cv| {
         cv.list().* = agent.messages;
+        cv.compaction_window = agent.compaction_window;
     };
     const n = agent.manualCompact() catch |err| {
         out.note = (switch (err) {

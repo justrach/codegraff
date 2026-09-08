@@ -89,6 +89,7 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
     var convo = repl_glue.Conversation.init(gpa);
     defer convo.deinit();
     try convo.seed(root.messages);
+    convo.compaction_window = root.compaction_window;
     var repl_ctx = repl_glue.ReplCtx{
         .io = io,
         .client = client,
@@ -121,6 +122,7 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
     // same way. TTY `graff repl` is the TUI and keeps the restore tail clean.
     pricing.printUsageFooter(io);
     root.messages = try convo.cloneInto(root.arena);
+    root.compaction_window = convo.compaction_window;
     return true;
 }
 

@@ -157,6 +157,7 @@ fn borrowHistory(c: *ReplCtx, agent: *Agent, history: []const repl.Turn, arena: 
     try cv.adopt(history);
     try promoteTailImages(agent, cv, history);
     agent.messages = cv.list().*;
+    agent.compaction_window = cv.compaction_window;
     // Transient parse garbage goes here instead of the session arena (#124).
     agent.scratch_arena = scratch;
 }
@@ -183,7 +184,10 @@ fn promoteTailImages(agent: *Agent, cv: anytype, history: []const repl.Turn) !vo
 /// and every tool_use/tool_result pair to the borrowed list, and a managed
 /// ArrayList is a VALUE — not copying it back would drop the whole turn.
 fn returnHistory(c: *ReplCtx, agent: *Agent) void {
-    if (c.convo) |cv| cv.list().* = agent.messages;
+    if (c.convo) |cv| {
+        cv.list().* = agent.messages;
+        cv.compaction_window = agent.compaction_window;
+    }
     const root = c.root orelse return;
     root.strict = agent.strict;
     root.ultracode_mode = agent.ultracode_mode;
@@ -414,6 +418,7 @@ test "turn 2 carries turn 1's tool_use and tool_result; /clear drops both (#551)
         var agent = try turnAgent(&c, gpa, convo.alloc(), .{}, &discarding.writer, &approvals);
         defer agent.tools_used.deinit(gpa);
         try borrowHistory(&c, &agent, &.{.{ .role = .user, .text = "count the files" }}, convo.alloc(), &scratch);
+        agent.compaction_window = .{ .canonical_blob = @as([32]u8, @splat(7)) };
         try fakeToolTurn(&agent, "call-1", "ls | wc -l", "42");
         try agent.messages.append(try textMessage(agent.arena, "assistant", "there are 42"));
         returnHistory(&c, &agent);
@@ -430,6 +435,7 @@ test "turn 2 carries turn 1's tool_use and tool_result; /clear drops both (#551)
             .{ .role = .assistant, .text = "there are 42" },
             .{ .role = .user, .text = "and how many are zig?" },
         }, convo.alloc(), &scratch);
+        try testing.expectEqual(@as(?[32]u8, @as([32]u8, @splat(7))), agent.compaction_window.canonical_blob);
         const body = try agent.buildBody(tools, false, true, true);
         defer gpa.free(body);
         try testing.expect(std.mem.indexOf(u8, body, "tool_use") != null);

@@ -32,6 +32,7 @@ pub const Conversation = struct {
     /// has settled at its final address.
     messages: std.json.Array = undefined,
     live: bool = false,
+    compaction_window: @import("compaction_window.zig").State = .{},
 
     pub fn init(gpa: Allocator) Conversation {
         return .{ .arena = std.heap.ArenaAllocator.init(gpa) };
@@ -72,6 +73,7 @@ pub const Conversation = struct {
     pub fn reset(self: *Conversation) void {
         _ = self.arena.reset(.free_all);
         self.live = false;
+        self.compaction_window = .{};
     }
 
     /// `/rewind`: drop back to just before the last human prompt, so the
@@ -125,6 +127,7 @@ pub const Conversation = struct {
     pub fn replace(self: *Conversation, rewritten: []const Value) !void {
         const msgs = self.list();
         msgs.clearRetainingCapacity();
+        self.compaction_window = .{};
         try msgs.appendSlice(rewritten);
     }
 };
@@ -223,11 +226,14 @@ test "reset clears the conversation; rewind drops back to before the last prompt
     try convo.adopt(&.{ .{ .role = .user, .text = "first" }, .{ .role = .assistant, .text = "reply" }, .{ .role = .user, .text = "second" } });
     try testing.expectEqual(@as(usize, 3), convo.len());
 
+    convo.compaction_window = .{ .canonical_blob = @as([32]u8, @splat(7)) };
     convo.rewind();
+    try testing.expectEqual(@as(?[32]u8, @as([32]u8, @splat(7))), convo.compaction_window.canonical_blob);
     try testing.expectEqual(@as(usize, 2), convo.len());
     try testing.expectEqualStrings("assistant", roleOf(convo.list().items[1]));
 
     convo.reset();
+    try testing.expectEqual(@as(?[32]u8, null), convo.compaction_window.canonical_blob);
     try testing.expectEqual(@as(usize, 0), convo.len());
     // Usable again after a reset — the arena was freed, not poisoned.
     try convo.adopt(&.{.{ .role = .user, .text = "fresh" }});
