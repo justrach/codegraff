@@ -62,6 +62,7 @@ pub const Input = struct {
 
     pub fn insertSlice(self: *Input, text: []const u8) void {
         if (text.len == 0) return;
+        self.cursor = scalarBoundary(self.buf.items, self.cursor);
         self.pushUndo();
         self.buf.insertSlice(self.cursor, text) catch return;
         self.cursor += text.len;
@@ -74,7 +75,11 @@ pub const Input = struct {
     pub fn handle(self: *Input, k: Key) void {
         switch (k) {
             .char => |c| {
-                self.pushUndo();
+                self.cursor = scalarBoundary(self.buf.items, self.cursor);
+                // Raw terminal UTF-8 arrives one byte at a time. Continuation
+                // bytes belong to the leading byte's edit, or undo could
+                // restore a lone prefix and leave the draft malformed.
+                if (c & 0xc0 != 0x80) self.pushUndo();
                 self.buf.insert(self.cursor, c) catch return;
                 self.cursor += 1;
             },
@@ -84,15 +89,14 @@ pub const Input = struct {
                 self.insertSlice(b[0..n]);
             },
             .backspace => {
-                if (self.cursor == 0) return;
-                self.pushUndo();
-                _ = self.buf.orderedRemove(self.cursor - 1);
-                self.cursor -= 1;
+                const end = scalarBoundary(self.buf.items, self.cursor);
+                const start = prevScalar(self.buf.items, end);
+                if (start == end) return;
+                self.killRange(start, end);
+                self.cursor = start;
             },
-            .left => self.cursor -|= 1,
-            .right => {
-                if (self.cursor < self.buf.items.len) self.cursor += 1;
-            },
+            .left => self.cursor = prevScalar(self.buf.items, self.cursor),
+            .right => self.cursor = nextScalar(self.buf.items, self.cursor),
             .home => self.cursor = 0,
             .end => self.cursor = self.buf.items.len,
             .word_left => self.cursor = prevWord(self.buf.items, self.cursor),
@@ -100,14 +104,20 @@ pub const Input = struct {
             .delete_word => self.killTo(prevWord(self.buf.items, self.cursor)),
             .delete_to_start => self.killTo(0),
             .delete_to_end => self.killRange(self.cursor, self.buf.items.len),
-            .delete => self.killRange(self.cursor, if (self.cursor < self.buf.items.len) self.cursor + 1 else self.cursor),
+            .delete => {
+                self.cursor = scalarBoundary(self.buf.items, self.cursor);
+                self.killRange(self.cursor, nextScalar(self.buf.items, self.cursor));
+            },
             .ctrl => |c| switch (c) {
                 'a' => self.cursor = 0,
                 'e' => self.cursor = self.buf.items.len,
                 'k' => self.killRange(self.cursor, self.buf.items.len),
                 'u' => self.killTo(0),
                 'w' => self.killTo(prevWord(self.buf.items, self.cursor)),
-                'd' => self.killRange(self.cursor, if (self.cursor < self.buf.items.len) self.cursor + 1 else self.cursor),
+                'd' => {
+                    self.cursor = scalarBoundary(self.buf.items, self.cursor);
+                    self.killRange(self.cursor, nextScalar(self.buf.items, self.cursor));
+                },
                 else => {},
             },
             else => {},
@@ -143,6 +153,28 @@ pub const Input = struct {
     }
 };
 
+fn scalarBoundary(s: []const u8, cursor: usize) usize {
+    var i = @min(cursor, s.len);
+    while (i > 0 and i < s.len and s[i] & 0xc0 == 0x80) i -= 1;
+    return i;
+}
+
+fn prevScalar(s: []const u8, cursor: usize) usize {
+    var i = scalarBoundary(s, cursor);
+    if (i == 0) return 0;
+    i -= 1;
+    while (i > 0 and s[i] & 0xc0 == 0x80) i -= 1;
+    return i;
+}
+
+fn nextScalar(s: []const u8, cursor: usize) usize {
+    var i = scalarBoundary(s, cursor);
+    if (i >= s.len) return s.len;
+    i += 1;
+    while (i < s.len and s[i] & 0xc0 == 0x80) i += 1;
+    return i;
+}
+
 fn prevWord(s: []const u8, cur: usize) usize {
     var i = cur;
     while (i > 0 and s[i - 1] == ' ') i -= 1;
@@ -169,6 +201,22 @@ test "insert and backspace" {
     try std.testing.expectEqualStrings("héllo", in.getValue());
 }
 
+test "cursor movement and deletion keep UTF-8 scalar boundaries" {
+    var in = Input.init(std.testing.allocator);
+    defer in.deinit();
+    try in.setValue("aé日");
+    in.handle(.left);
+    try std.testing.expectEqual(@as(usize, 3), in.cursor);
+    in.handle(.left);
+    try std.testing.expectEqual(@as(usize, 1), in.cursor);
+    in.handle(.{ .char = 'x' });
+    try std.testing.expectEqualStrings("axé日", in.getValue());
+    in.handle(.delete);
+    try std.testing.expectEqualStrings("ax日", in.getValue());
+    in.handle(.backspace);
+    try std.testing.expectEqualStrings("a日", in.getValue());
+}
+
 test "cmd-delete and alt-backspace kill the line and the word" {
     var in = Input.init(std.testing.allocator);
     defer in.deinit();
@@ -190,6 +238,16 @@ test "ctrl-z undoes the last edit" {
     try std.testing.expect(in.undo());
     try std.testing.expectEqualStrings("", in.getValue());
     try std.testing.expect(!in.undo());
+}
+
+test "raw UTF-8 bytes undo as one scalar edit" {
+    var in = Input.init(std.testing.allocator);
+    defer in.deinit();
+    in.handle(.{ .char = 0xc3 });
+    in.handle(.{ .char = 0xa9 });
+    try std.testing.expectEqualStrings("é", in.getValue());
+    try std.testing.expect(in.undo());
+    try std.testing.expectEqualStrings("", in.getValue());
 }
 
 test "kitty codepoint inserts UTF-8" {
