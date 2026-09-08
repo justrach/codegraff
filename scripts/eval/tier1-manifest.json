@@ -72,6 +72,11 @@
       "id": "sse-error-not-truncated",
       "test": "#748: error-only OpenAI SSE is an error envelope, not a missing stream",
       "why": "#748: an explicit streamed error was retried as a truncated gateway body."
+    },
+    {
+      "id": "edit-selected-worktree",
+      "test": "#747: editing the same relative name after a tree switch lands on the selected root",
+      "why": "#747: an edit could report success while the selected worktree stayed unchanged."
     }
   ],
   "docs_only_paths": [

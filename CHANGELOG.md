@@ -39,6 +39,9 @@ current is part of cutting a release.
   width change instead of asserting on the first (possibly stale) repaint.
 - `#748`: an error-only SSE event is reported as that error, not retried
   as a truncated gateway body.
+- `#747`: `edit_file` / `write_file` / `read_file` share one absolute path
+  from the posix session cwd (not a stale Io cwd or a disagreeing display
+  cwd), so a worktree switch cannot report success on the previous tree.
 - `#761`: `read_file` optional fields stay out of `required[]` (path only).
   Null or empty `contains` / null bounds / null `compact` are a whole-file
   read, so strict tool calling can omit unused mutually exclusive fields.
