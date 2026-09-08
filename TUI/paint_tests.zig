@@ -480,13 +480,29 @@ test "a smuggled CR or BEL in a frame row never reaches the terminal" {
     try screen.expectMatches(&want);
 }
 
-test "SGR and tab survive the cell filter; only C0 is dropped" {
+test "SGR survives the cell filter and tabs expand to terminal stops" {
     const a = std.testing.allocator;
+    // "red" is 3 cells; tab -> 5 spaces (stop 8); "a" then tab -> 7 spaces.
     const frame = "\x1b[31mred\x1b[0m\ta\tb";
     const out = try paintToBuf(a, frame, 1, 20, "");
     defer a.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[31mred\x1b[0m") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\ta\tb") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[31mred\x1b[0m     a       b") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, out, '\t') == null);
+}
+
+test "a tabbed code row shrinks without leaving the previous prompt behind (#798)" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const ar = arena.allocator();
+    const cols: usize = 20;
+    const recalled = "XXXXXXXXXXXXXXXXXXXX";
+    const fresh = "ab\tcd";
+    var screen = try Screen.init(ar, 1, cols);
+    screen.feed(try paintToBuf(ar, recalled, 1, cols, ""));
+    screen.feed(try paintToBuf(ar, fresh, 1, cols, recalled));
+    var want = try Screen.expect(ar, "ab      cd", 1, cols, true);
+    try screen.expectMatches(&want);
 }
 
 test "history C0 never reaches the composed frame or the paint stream" {
