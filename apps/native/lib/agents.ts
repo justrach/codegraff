@@ -10,3 +10,6 @@ export async function agentRequest(root: string | undefined, params: Record<stri
   if (!res.ok) throw new Error(body.error || 'Agents unavailable');
   return body;
 }
+
+export type ChildAgent = { id: string; label: string; task: string; status: 'working' | 'completed' | 'failed'; updatedAt: number; truncated: boolean };
+export type ChildActivity = { agent: ChildAgent; updates: import('./acp').JsonRpcLine[]; response: string };

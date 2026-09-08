@@ -316,6 +316,9 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     const sub_id = cards.subagentId(&id_buf, ordinal, label, prompt);
     const sprite = cards.subagentSprite(ordinal);
     cards.subagentLaunchCard(arena, sub_id, sprite, label, kind, prompt);
+    var activity = @import("subagent_activity.zig").start(gpa, ctx.io, sub_id, label, prompt);
+    defer if (activity) |*recorder| recorder.deinit();
+    if (activity) |*recorder| agent.sink = recorder.engineSink();
 
     var wt: ?jobs.AgentWorktree = null;
     var isolation_note: []const u8 = "";
@@ -355,14 +358,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     const task_prompt = playbook.rideBrief(ctx.io, arena, try goal_pacing.childTaskPrompt(arena, prompt, ctx.loop_deadline_ms, util.unixMs(ctx.io)));
     try agent.messages.append(try textMessage(arena, "user", task_prompt));
     defer agent.tools_used.deinit(gpa);
-    // Bounded in-worker re-ask. The ROOT has failover (runTurnWithFallback);
-    // a worker had one shot, so a single flaky response cost a whole report
-    // while its siblings on the same credential finished. subagent_retry owns
-    // the ceiling and the class filter — this loop only spends them, on the
-    // SAME provider (no worker cross-provider failover: see that module).
-    // Resuming runTurn re-issues a request against the history as it stands,
-    // so nothing already executed is replayed; a wire failure lands before any
-    // assistant message is appended, which is what keeps that true.
+    // Retry transient failures against the same child history.
     var attempts: u8 = 0;
     const report: anyerror![]const u8 = ask: {
         while (true) {
@@ -380,6 +376,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     };
     const run_ms: i64 = @intCast(@max(0, sub_start.untilNow(ctx.io, .awake).toMilliseconds()));
     const run_ok = if (report) |r| r.len > 0 else |_| false;
+    if (activity) |*recorder| recorder.finish(run_ok, if (report) |r| r else |_| (agent.last_api_error orelse "Sub-agent failed"));
     if (wf_task) {
         // The sa- id (shared with agent_usage) pairs parallel workflow rows;
         // without it a consumer can only match tool_call/tool_result by order.

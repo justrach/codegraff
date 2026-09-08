@@ -8,6 +8,23 @@ export default function Fixture() {
   const request = useCallback(async (_root: string | undefined, params: Record<string, unknown>) => {
     if (scenario === 'error') throw new Error('Observer unavailable');
     if (params.action === 'send') { setSent(JSON.stringify(params)); return { delivery: 'queued' }; }
+    if (params.action === 'children') return {children: [
+      {id:'child-working', label:'Inspect navigation', task:'Check keyboard focus', status:'working', updatedAt:1, truncated:false},
+      {id:'child-completed', label:'Review complete', task:'Review the changes', status:'completed', updatedAt:2, truncated:true},
+      {id:'child-failed', label:'Interrupted worker', task:'Check failure recovery', status:'failed', updatedAt:3, truncated:false},
+    ]};
+    if (params.action === 'activity') {
+      const id = String(params.child), working = id === 'child-working', failed = id === 'child-failed';
+      // A deliberately late reply must never replace the newly selected child.
+      if (working) await new Promise(resolve => setTimeout(resolve, 350));
+      const update = (value: object) => ({jsonrpc:'2.0', method:'session/update', params:{sessionId:id, update:value}});
+      return {agent:{id, label:working ? 'Inspect navigation' : failed ? 'Interrupted worker' : 'Review complete', task:'Check the changes', status:working ? 'working' : failed ? 'failed' : 'completed', updatedAt:Date.now(), truncated:!working && !failed},
+        updates:[
+          update({sessionUpdate:'agent_thought_chunk', content:{type:'text', text:'Checking the focus boundary.'}}),
+          update({sessionUpdate:'tool_call', toolCallId:'read-1', kind:'read', title:'Read navigation.ts', rawInput:{path:'navigation.ts'}, status:'in_progress'}),
+          ...(!working ? [update({sessionUpdate:'tool_call_update', toolCallId:'read-1', status:failed ? 'failed' : 'completed', content:[{type:'content', content:{type:'text', text:'navigation result\n'.repeat(100)}}]})] : []),
+        ], response:working ? '' : failed ? 'Worker could not finish.' : 'The focus order is correct.'};
+    }
     return { agents: scenario === 'empty' ? [] : [
       { session: 'peer-a', title: 'Implement navigation', startId: '11', pid: 1, task: 'Refine keyboard navigation', workspace: '/demo/workspace', status: 'working', resources: { rssMiB: 20, cpuPercent: 1.2 } },
       ...(params.scope === 'device' ? [{ session: 'peer-b', title: 'Review accessibility', startId: '12', pid: 2, task: 'Check focus order', workspace: '/demo/second', status: 'waiting', resources: null }] : []),

@@ -181,7 +181,7 @@ function upsertTool(turn: AssistantTurn, update: Extract<AcpUpdate, { toolCallId
       ? fromInput
       : (prev?.detail ?? []);
   const mcp = mcpParts(title);
-  const label = labelForKind(kind, title);
+  const label = prev && !kind ? prev.name : labelForKind(kind, title);
   const command = typeof rawInput.command === "string" ? firstLine(rawInput.command) : undefined;
   // A raw MCP name as chip repeated the label; show the server instead, and
   // no chip at all when it would just echo the label. codedb's query lives

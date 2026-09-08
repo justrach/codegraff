@@ -13,11 +13,12 @@ export async function POST(req: Request) {
     const body = await req.json();
     const resolved = resolveRoot(typeof body.root === 'string' ? body.root : undefined);
     if ('error' in resolved) return Response.json({ error: resolved.error }, { status: resolved.status });
-    if (!['list', 'send'].includes(body.action)) return Response.json({ error: 'Unknown agents action' }, { status: 400 });
+    if (!['list', 'send', 'children', 'activity'].includes(body.action)) return Response.json({ error: 'Unknown agents action' }, { status: 400 });
     if (body.action === 'send' && (typeof body.text !== 'string' || body.text.length > 8192)) return Response.json({ error: 'Message too large' }, { status: 400 });
     const built = path.resolve(process.cwd(), '../../zig-out/bin/graff');
     const binary = process.env.GRAFF_BIN || (existsSync(built) ? built : 'graff');
     const result = await observeAgents(binary, resolved.root, { action: body.action, scope: body.scope === 'device' ? 'device' : 'workspace',
+      ...(body.action === 'children' || body.action === 'activity' ? { target: body.target, startId: body.startId, child: body.child } : {}),
       ...(body.action === 'send' ? { target: body.target, startId: body.startId, text: body.text, kind: body.kind } : {}) });
     if (body.action === 'list') (result as AgentSnapshot).agents = await sample(result.agents);
     return Response.json(result, { headers: { 'cache-control': 'no-store' } });

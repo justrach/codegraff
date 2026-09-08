@@ -5,6 +5,11 @@ const http_client = @import("http_client.zig");
 const Recovery = http_client.Recovery;
 const RecoveryOutcome = http_client.RecoveryOutcome;
 
+test "HTTP client integration coverage" {
+    _ = @import("http_client_integration_tests.zig");
+    _ = @import("http_client_trajectory_tests.zig");
+}
+
 fn recoverTask(recovery: *Recovery, client: *std.http.Client) RecoveryOutcome {
     return recovery.recoverConstructionTls(client);
 }
