@@ -12,6 +12,9 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#794`: the tier-1 suite ratchet counts skipped Zig tests with passed
+  ones. `2079 passed; 1 skipped` is a 2080-test suite, not a shrink
+  against a 2080 baseline.
 - `#768`: the Computer Use `node_repl` bridge no longer dies on
   `createElicitation is unavailable` during a read-only
   `sky.get_app_state({ disableDiff: true })`. Graff advertises MCP form

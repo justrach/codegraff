@@ -27,6 +27,8 @@ means none of them. mtime only breaks ties.
   count   [--filter TEXT]...  run that artifact and print how many tests it holds
   scan                        count named + anonymous tests from the unfiltered
                               artifact without executing it (#641)
+  summary                     read `zig build test --summary all` on stdin and
+                              print the suite size (passed + skipped, #794)
 
 Both exit non-zero with a reason on stderr rather than guess. Neither builds:
 the caller runs `zig build test` (with the same filters) first, so a compile
@@ -49,6 +51,10 @@ TEST_NAME = re.compile(r'^test "((?:[^"\\]|\\.)*)"', re.M)
 ANON_TEST = re.compile(r"(?m)^test \{")
 ALL_PASSED = re.compile(r"^All (\d+) tests passed\.$", re.M)
 MIXED = re.compile(r"^(\d+) passed; (\d+) skipped; (\d+) failed\.$", re.M)
+# zig 0.17 `--summary all`: "2079/2080 tests passed (1 skipped)". The first
+# number is passed-only; the denominator is the suite (passed + skipped).
+BUILD_SUMMARY_TOTAL = re.compile(r"Build Summary:.*; \d+/(\d+) tests passed")
+RUN_STEP_TOTAL = re.compile(r"\d+ pass(?:, \d+ skip)? \((\d+) total\)")
 
 
 class ArtifactError(Exception):
@@ -258,6 +264,31 @@ def scan_count(filters: list[str] | None = None) -> int:
     return named + anonymous_tests()
 
 
+def suite_count_from_summary(text: str) -> int | None:
+    """Suite size from `zig build test --summary all` output.
+
+    A skipped test is still in the suite. Using the passed count alone makes
+    the ratchet report a shrink whenever anything is skipped (#794). Cached
+    builds that print only `Build Summary: N/N steps succeeded` return None
+    so the caller can fall back to a scan of the artifact (#439).
+    """
+    matches = BUILD_SUMMARY_TOTAL.findall(text)
+    if matches:
+        return int(matches[-1])
+    matches = RUN_STEP_TOTAL.findall(text)
+    if matches:
+        return int(matches[-1])
+    mixed = MIXED.search(text)
+    if mixed:
+        ok, skipped, failed = (int(g) for g in mixed.groups())
+        if failed == 0:
+            return ok + skipped
+    passed = ALL_PASSED.search(text)
+    if passed:
+        return int(passed.group(1))
+    return None
+
+
 def artifact_count(path: pathlib.Path) -> tuple[int, str]:
     """Run the artifact and read its own tally. Raises if it does not pass."""
     proc = subprocess.run(
@@ -292,7 +323,15 @@ def main() -> int:
             default=[],
             help="a -Dtest-filter value the build used (repeatable; none = the full build)",
         )
+    sub.add_parser("summary", help="print suite size (passed+skipped) from a build summary on stdin")
     args = parser.parse_args()
+
+    if args.cmd == "summary":
+        n = suite_count_from_summary(sys.stdin.read())
+        if n is None:
+            return 1
+        print(n)
+        return 0
 
     try:
         chosen = select(args.filter)
