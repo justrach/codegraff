@@ -363,6 +363,42 @@ test "rows past the end of the frame are blanked, not left stale" {
     try screen.expectMatches(&want);
 }
 
+test "composer shrink clears rows exposed by a taller transcript band" {
+    const app_mod = @import("app.zig");
+    const render_mod = @import("render.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var m: app_mod.Model = undefined;
+    m.setup(a);
+    defer m.deinit();
+    for (0..80) |i| try m.pushFmt(.assistant, "transcript line {d} with enough words to wrap", .{i});
+
+    try m.input.setValue("old composer text with enough words to occupy many wrapped rows " ++
+        "before the draft gets shorter and exposes transcript cells");
+    const before = try render_mod.render(&m, a, 40, 24, 0);
+    const before_band = m.band;
+    const before_prompt = m.prompt_origin;
+
+    try m.input.setValue("new draft");
+    const after = try render_mod.render(&m, a, 40, 24, 0);
+    const after_band = m.band;
+
+    // The composer lost several wrapped rows, so the transcript both grew and
+    // moved its viewport. That geometry change must refuse scrollpaint and use
+    // the row diff, including rows that used to contain the old composer.
+    try std.testing.expect(m.prompt_origin >= before_prompt + 2);
+    try std.testing.expect(after_band.len >= before_band.len + 2);
+    try std.testing.expect(after_band.off != before_band.off);
+    try std.testing.expect(m.paint_hint == null);
+
+    var screen = try Screen.init(a, 24, 40);
+    screen.feed(try paintToBuf(a, before, 24, 40, ""));
+    screen.feed(try paintToBuf(a, after, 24, 40, before));
+    var want = try Screen.expect(a, after, 24, 40, true);
+    try screen.expectMatches(&want);
+}
+
 test "the real band's rows are exactly the rows the painter rewrites (#529)" {
     // The band is a post-pass over the composed frame, so when it CLEARS the
     // only thing that puts those rows back is the byte comparison in
@@ -444,13 +480,29 @@ test "a smuggled CR or BEL in a frame row never reaches the terminal" {
     try screen.expectMatches(&want);
 }
 
-test "SGR and tab survive the cell filter; only C0 is dropped" {
+test "SGR survives the cell filter and tabs expand to terminal stops" {
     const a = std.testing.allocator;
+    // "red" is 3 cells; tab -> 5 spaces (stop 8); "a" then tab -> 7 spaces.
     const frame = "\x1b[31mred\x1b[0m\ta\tb";
     const out = try paintToBuf(a, frame, 1, 20, "");
     defer a.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[31mred\x1b[0m") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\ta\tb") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[31mred\x1b[0m     a       b") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, out, '\t') == null);
+}
+
+test "a tabbed code row shrinks without leaving the previous prompt behind (#798)" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const ar = arena.allocator();
+    const cols: usize = 20;
+    const recalled = "XXXXXXXXXXXXXXXXXXXX";
+    const fresh = "ab\tcd";
+    var screen = try Screen.init(ar, 1, cols);
+    screen.feed(try paintToBuf(ar, recalled, 1, cols, ""));
+    screen.feed(try paintToBuf(ar, fresh, 1, cols, recalled));
+    var want = try Screen.expect(ar, "ab      cd", 1, cols, true);
+    try screen.expectMatches(&want);
 }
 
 test "history C0 never reaches the composed frame or the paint stream" {
