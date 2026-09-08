@@ -171,11 +171,13 @@ skip_dependent() {
 
 # --- tests -------------------------------------------------------------
 suite_count() {
-  # `--summary all` prints "N/N tests passed" only when the run step actually
-  # ran. A fully cached `zig build test` on zig 0.17 prints "Build Summary: 4/4
-  # steps succeeded" and nothing else, so this comes back empty and the caller
-  # falls back to artifact_count - it does NOT mean the build is red (#439).
-  sed -n 's/.*Build Summary:.*; \([0-9][0-9]*\)\/[0-9][0-9]* tests passed.*/\1/p' <<<"$1" | tail -1
+  # `--summary all` prints "P/T tests passed (S skipped)" when the run step
+  # actually ran. T (passed + skipped) is the suite size — using P alone
+  # falsely reports a shrink whenever anything is skipped (#794). A fully
+  # cached `zig build test` on zig 0.17 prints only "Build Summary: 4/4
+  # steps succeeded", so this comes back empty and the caller falls back
+  # to a scan of the artifact (#439).
+  printf '%s\n' "$1" | python3 scripts/eval/tier1_test_binary.py summary
 }
 
 # The count off the compiled artifact instead of off the build summary: a test
@@ -192,6 +194,10 @@ if wanted tests; then
     skip_dependent tests
   else
     announce tests "zig build test, and the suite count never shrinks"
+    if ! python3 scripts/eval/test_tier1_count.py; then
+      printf '    fix: skipped tests must count toward the suite ratchet (#794)\n'
+      record_fail tests
+    else
     out=$(zig build test --summary all 2>&1)
     status=$?
     printf '%s\n' "$out" | tail -4
@@ -216,6 +222,7 @@ if wanted tests; then
           *) record_fail tests ;;
         esac
       fi
+    fi
     fi
   fi
 fi

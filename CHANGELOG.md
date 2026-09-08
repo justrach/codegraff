@@ -12,6 +12,10 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#794`: the tier-1 suite ratchet counts skipped Zig tests with passed
+  ones. `2079 passed; 1 skipped` is a 2080-test suite, not a shrink
+  against a 2080 baseline.
+
 ## v0.0.294
 
 - Streaming stalls are no longer silent: a watchdog reconnect now prints one
