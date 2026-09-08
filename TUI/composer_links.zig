@@ -354,7 +354,7 @@ test "composer links allowlist web targets and preserve visible text" {
         .{ .source = "file:///tmp/a", .target = null },
         .{ .source = "https://:80/path", .target = null },
         .{ .source = "https://a.-b.example/path", .target = null },
-        .{ .source = "https://" ++ ("a" ** 64) ++ ".example/path", .target = null },
+        .{ .source = "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example/path", .target = null },
         .{ .source = "https://[:::]/path", .target = null },
         .{ .source = "www.example.test:bad/path", .target = null },
         .{ .source = "www.", .target = null },
@@ -419,7 +419,11 @@ test "wrapped composer links are balanced on every retained physical row" {
 }
 
 test "long composer links stay linear before the eight-row window" {
-    const value = "https://example.test/" ++ ("a" ** 10_000);
+    var value_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer value_buf.deinit();
+    try value_buf.appendSlice("https://example.test/");
+    try value_buf.appendNTimes('a', 10_000);
+    const value = value_buf.items;
     const linked = try inputView(std.testing.allocator, value, value.len);
     defer std.testing.allocator.free(linked);
     const got = try wrap(std.testing.allocator, linked, 38, 8);
@@ -430,7 +434,10 @@ test "long composer links stay linear before the eight-row window" {
 }
 
 test "malformed repeated link candidates are scanned once" {
-    const value = "(www." ** 2_000;
+    var value_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer value_buf.deinit();
+    for (0..2_000) |_| try value_buf.appendSlice("(www.");
+    const value = value_buf.items;
     const got = try inputView(std.testing.allocator, value, value.len);
     defer std.testing.allocator.free(got);
     try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, got, osc_open_prefix));
