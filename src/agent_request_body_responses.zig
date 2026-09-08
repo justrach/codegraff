@@ -56,14 +56,8 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     // this item server-side, so only a full anchor writes it.
     if (!chain and explicit_cache) try writeCacheAnchor(s);
     const from = if (chain) self.codex_sent_upto else 0;
-    // Prewarm (openai/codex `generate:false`): prepare instructions+tools state
-    // with NO input items — the real turn chains onto the warmup response id.
-    if (self.ws_prewarm) {
-        try s.endArray();
-    } else {
-        for (self.messages.items[from..]) |m| try s.write(m);
-        try s.endArray();
-    }
+    if (!self.ws_prewarm) for (self.messages.items[from..]) |m| try s.write(m); // prewarm: NO input items; turn 1 chains onto the warmup id
+    try s.endArray();
     if (tools) |t| {
         const payload = blk: {
             var next = t;
@@ -96,6 +90,11 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     // #379: compaction summaries run at low — a high-effort reasoner can
     // complete with only reasoning items and zero output text.
     try s.write(if (self.compaction_request or self.server_compaction_request) "low" else @import("effort_route.zig").wireEffort(self.provider.model, @tagName(self.reasoning)));
+    // summary:auto streams reasoning_summary_text.delta (reasoningDelta already parses it); without it silent reasoning emits NO frames — the stall watchdog cannot tell thinking from a dead socket.
+    if (is_codex) {
+        try s.objectField("summary");
+        try s.write("auto");
+    }
     try s.endObject();
     try s.objectField("include");
     try s.beginArray();
@@ -107,17 +106,10 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     server_compact.noteExposure(self);
     try server_compact.writeContextManagement(self, s);
     if (self.output_schema) |schema_json| try writeTextFormat(s, schema_json);
-    // Prewarm: no transport fields (stream) and generate:false — connection
-    // setup, not inference (openai/codex prewarm_websocket, Responses WS docs).
-    if (self.ws_prewarm) {
-        try s.objectField("generate");
-        try s.write(false);
-        return;
-    }
-    // No top-level max_output_tokens: the codex backend rejects it
-    // ("Unsupported parameter") on gpt-5.6-* — codex sets it only as a tool argument.
-    try s.objectField("stream");
-    try s.write(true);
+    // Prewarm: generate:false and no transport fields — connection setup, not inference (openai/codex).
+    if (self.ws_prewarm) try s.objectField("generate") else try s.objectField("stream");
+    // No top-level max_output_tokens: codex rejects it ("Unsupported parameter") on gpt-5.6-*.
+    if (self.ws_prewarm) try s.write(false) else try s.write(true);
 }
 
 fn supportsExplicitPromptCache(self: *const Agent) bool {
