@@ -17,11 +17,23 @@ async function runAgentVisuals({ win, origin, output }) {
     assert.ok(bounds.right <= bounds.width && bounds.bottom < bounds.height, JSON.stringify(bounds));
     fs.writeFileSync(path.join(output, `agents-${theme}.png`), (await win.webContents.capturePage()).toPNG());
   }
+  await js(`document.querySelector('[data-agent-case="idle"]').click()`);
+  await wait(`document.body.textContent.includes('No active Graffs')`);
+  assert.equal(await js(`document.querySelectorAll('li button').length`), 0, 'A peer disappears when it stops working');
+  await js(`document.querySelector('[data-agent-case="connected"]').click()`);
+  await wait(`document.querySelectorAll('li button').length === 1`);
   await js(`document.querySelectorAll('[aria-label="Agent scope"] button')[1].click()`);
-  await wait(`document.body.textContent.includes('Review accessibility')`);
+  await wait(`document.querySelectorAll('li button').length === 1`);
+  assert.equal(await js(`document.querySelector('[aria-label="Message recipient"]').textContent.includes('Review accessibility')`), false, 'Idle peers are excluded from active recipients');
+  assert.equal(await js(`document.querySelector('[aria-label="Peer messages"]').open`), false, 'Old coordination stays collapsed');
+  await js(`Array.from(document.querySelectorAll('label')).find(l => l.textContent.includes('Show idle agents')).querySelector('input').click()`);
+  await wait(`document.querySelectorAll('li button').length === 2`);
   await js(`document.querySelectorAll('li button')[1].click()`);
   await wait(`document.querySelector('[data-child-agent="child-working"]')`);
   assert.notEqual(await js(`document.activeElement.getAttribute('aria-label')`), 'Message to Graff', 'Inspection should not move focus into the send form');
+  assert.equal(await js(`document.querySelector('[data-child-agent="child-completed"]')`), null, 'Completed children are hidden by default');
+  assert.equal(await js(`document.querySelector('[data-child-agent="child-failed"]')`), null, 'Failed children are hidden by default');
+  await js(`Array.from(document.querySelectorAll('label')).find(l => l.textContent.includes('Show finished sub-agents')).querySelector('input').click()`);
   await selectChild('child-working');
   await wait(`document.querySelector('[aria-label="Sub-agent activity"]')?.textContent.includes('Live')`);
   assert.equal(await js(`document.querySelector('[data-tool-summary]')?.getAttribute('aria-expanded')`), 'false');

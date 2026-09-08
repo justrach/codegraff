@@ -26,7 +26,9 @@ child identifier. Inspection neither consumes inboxes nor sends instructions.
 The GUI opens a focused child selector after selecting a parent Graff. It reuses
 the existing transcript and collapsed tool disclosures. Late responses from a
 previous selection are discarded. Polling pauses when the window is hidden and
-stops for completed children. Messaging remains an explicit separate action.
+stops for completed children. The list defaults to working children, with an
+explicit “Show finished sub-agents” option for completed and failed results.
+An already-open activity remains readable when that child finishes. Messaging remains an explicit separate action.
 
 ## Consequences
 
