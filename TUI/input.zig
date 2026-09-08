@@ -3,6 +3,7 @@
 const std = @import("std");
 const glyphs = @import("glyphs.zig");
 const Key = @import("key.zig").Key;
+const spans_mod = @import("spans.zig");
 
 const Snap = struct { text: []u8, cursor: usize };
 
@@ -12,6 +13,7 @@ pub const Input = struct {
     undo_stack: std.array_list.Managed(Snap),
     cursor: usize = 0,
     placeholder: []const u8 = "",
+    spans: spans_mod.Store = .{},
 
     pub fn init(alloc: std.mem.Allocator) Input {
         return .{
@@ -24,6 +26,7 @@ pub const Input = struct {
     pub fn deinit(self: *Input) void {
         for (self.undo_stack.items) |sn| self.alloc.free(sn.text);
         self.undo_stack.deinit();
+        self.spans.deinit(self.alloc);
         self.buf.deinit();
     }
 
@@ -55,6 +58,7 @@ pub const Input = struct {
 
     pub fn setValue(self: *Input, text: []const u8) !void {
         if (!std.mem.eql(u8, self.buf.items, text)) self.pushUndo();
+        self.spans.entries.clearRetainingCapacity();
         self.buf.clearRetainingCapacity();
         try self.buf.appendSlice(text);
         self.cursor = self.buf.items.len;
@@ -64,7 +68,22 @@ pub const Input = struct {
         if (text.len == 0) return;
         self.pushUndo();
         self.buf.insertSlice(self.cursor, text) catch return;
+        self.spans.edited(self.cursor, self.cursor, text.len);
         self.cursor += text.len;
+    }
+
+    pub fn insertFile(self: *Input, path: []const u8) void {
+        if (path.len == 0) return;
+        self.pushUndo();
+        self.spans.insertFile(self.alloc, &self.buf, &self.cursor, path);
+    }
+
+    pub fn beginPaste(self: *Input) void {
+        self.spans.beginPaste(self.cursor);
+    }
+
+    pub fn finishPaste(self: *Input) void {
+        self.spans.finishPaste(self.alloc, &self.buf, &self.cursor);
     }
 
     pub fn setPlaceholder(self: *Input, text: []const u8) void {
@@ -76,6 +95,7 @@ pub const Input = struct {
             .char => |c| {
                 self.pushUndo();
                 self.buf.insert(self.cursor, c) catch return;
+                self.spans.edited(self.cursor, self.cursor, 1);
                 self.cursor += 1;
             },
             .codepoint => |cp| {
@@ -85,19 +105,17 @@ pub const Input = struct {
             },
             .backspace => {
                 if (self.cursor == 0) return;
-                self.pushUndo();
-                _ = self.buf.orderedRemove(self.cursor - 1);
-                self.cursor -= 1;
+                const start = self.spans.left(self.cursor);
+                self.killRange(start, self.cursor);
+                self.cursor = start;
             },
-            .left => self.cursor -|= 1,
-            .right => {
-                if (self.cursor < self.buf.items.len) self.cursor += 1;
-            },
+            .left => self.cursor = self.spans.left(self.cursor),
+            .right => self.cursor = self.spans.right(self.cursor, self.buf.items.len),
             .home => self.cursor = 0,
             .end => self.cursor = self.buf.items.len,
-            .word_left => self.cursor = prevWord(self.buf.items, self.cursor),
-            .word_right => self.cursor = nextWord(self.buf.items, self.cursor),
-            .delete_word => self.killTo(prevWord(self.buf.items, self.cursor)),
+            .word_left => self.cursor = self.spans.prevWord(self.cursor, prevWord(self.buf.items, self.cursor)),
+            .word_right => self.cursor = self.spans.nextWord(self.cursor, nextWord(self.buf.items, self.cursor)),
+            .delete_word => self.killTo(self.spans.prevWord(self.cursor, prevWord(self.buf.items, self.cursor))),
             .delete_to_start => self.killTo(0),
             .delete_to_end => self.killRange(self.cursor, self.buf.items.len),
             .delete => self.killRange(self.cursor, if (self.cursor < self.buf.items.len) self.cursor + 1 else self.cursor),
@@ -106,7 +124,7 @@ pub const Input = struct {
                 'e' => self.cursor = self.buf.items.len,
                 'k' => self.killRange(self.cursor, self.buf.items.len),
                 'u' => self.killTo(0),
-                'w' => self.killTo(prevWord(self.buf.items, self.cursor)),
+                'w' => self.killTo(self.spans.prevWord(self.cursor, prevWord(self.buf.items, self.cursor))),
                 'd' => self.killRange(self.cursor, if (self.cursor < self.buf.items.len) self.cursor + 1 else self.cursor),
                 else => {},
             },
@@ -122,6 +140,7 @@ pub const Input = struct {
     fn killRange(self: *Input, from: usize, to: usize) void {
         if (from >= to or to > self.buf.items.len) return;
         self.pushUndo();
+        self.spans.edited(from, to, 0);
         var i = to;
         while (i > from) {
             i -= 1;
@@ -197,4 +216,28 @@ test "kitty codepoint inserts UTF-8" {
     defer in.deinit();
     in.handle(.{ .codepoint = 0xe9 });
     try std.testing.expectEqualStrings("é", in.getValue());
+}
+
+test "#792: paste hello then type world is separated; file spans are atomic" {
+    var in = Input.init(std.testing.allocator);
+    defer in.deinit();
+    in.beginPaste();
+    in.insertSlice("hello");
+    in.finishPaste();
+    try std.testing.expectEqualStrings("hello ", in.getValue());
+    in.insertSlice("world");
+    try std.testing.expectEqualStrings("hello world", in.getValue());
+
+    try in.setValue("");
+    in.insertFile("/tmp/a");
+    in.insertFile("/tmp/b");
+    try std.testing.expectEqualStrings("/tmp/a /tmp/b ", in.getValue());
+    in.handle(.backspace); // separator first — the user can concatenate
+    try std.testing.expectEqualStrings("/tmp/a /tmp/b", in.getValue());
+    in.handle(.backspace); // then the atomic file span
+    try std.testing.expectEqualStrings("/tmp/a ", in.getValue());
+    in.insertSlice("/tmp/typed");
+    try std.testing.expectEqualStrings("/tmp/a /tmp/typed", in.getValue());
+    in.handle(.backspace);
+    try std.testing.expectEqualStrings("/tmp/a /tmp/type", in.getValue());
 }

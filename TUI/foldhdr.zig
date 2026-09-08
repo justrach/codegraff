@@ -122,7 +122,7 @@ pub fn familyOf(name: []const u8) Family {
     if (eqAny(leaf, &.{ "webfetch", "web_fetch", "web_search", "fetch", "browse" })) return .web;
     if (eqAny(leaf, &.{ "task", "subagent", "workflow", "agent_output", "dispatch_agent" })) return .task;
     if (std.mem.startsWith(u8, leaf, "todo")) return .todo;
-    if (eqAny(leaf, &.{ "codedb" })) return .lookup;
+    if (eqAny(leaf, &.{"codedb"})) return .lookup;
     if (eqAny(leaf, &.{ "grep", "glob", "search", "find", "ls", "list_dir" })) return .search;
     if (has(leaf, "search") or has(leaf, "grep") or has(leaf, "glob") or has(leaf, "find")) return .search;
     if (has(leaf, "web")) return .web;

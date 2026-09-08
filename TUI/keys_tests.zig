@@ -286,7 +286,7 @@ test "bracketed paste lands in the prompt as text" {
     _ = handle(&m, .enter);
     _ = handle(&m, .{ .char = '!' });
     _ = handle(&m, .paste_end);
-    try std.testing.expectEqualStrings("hi\n!", m.input.getValue());
+    try std.testing.expectEqualStrings("hi\n! ", m.input.getValue());
     try std.testing.expect(m.focus == .prompt);
     try std.testing.expect(!m.pasting);
 }
@@ -403,7 +403,7 @@ test "idle bracketed multiline paste stays one unsent draft (#643)" {
     term.init(std.testing.allocator, 80, 24);
     defer term.deinit();
     _ = term.feed("\x1b[200~line1\nline2\nline3\x1b[201~");
-    try std.testing.expectEqualStrings("line1\nline2\nline3", term.model.input.getValue());
+    try std.testing.expectEqualStrings("line1\nline2\nline3 ", term.model.input.getValue());
     try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
     var users: usize = 0;
     for (term.model.history.items) |e| {
@@ -427,7 +427,7 @@ test "streaming bracketed paste does not steer, Enter queues one (#643)" {
         term.deinit();
     }
     _ = term.feed("\x1b[200~first\nsecond\nthird\x1b[201~");
-    try std.testing.expectEqualStrings("first\nsecond\nthird", term.model.input.getValue());
+    try std.testing.expectEqualStrings("first\nsecond\nthird ", term.model.input.getValue());
     try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
     try std.testing.expect(!term.model.cancel_requested);
     _ = term.enter();
@@ -443,7 +443,7 @@ test "bracketed CRLF paste cannot invoke Enter/send (#643)" {
         term.deinit();
     }
     _ = term.feed("\x1b[200~one\r\ntwo\r\nthree\x1b[201~");
-    try std.testing.expectEqualStrings("one\r\ntwo\r\nthree", term.model.input.getValue());
+    try std.testing.expectEqualStrings("one\r\ntwo\r\nthree ", term.model.input.getValue());
     try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
     try std.testing.expect(!term.model.cancel_requested);
     var forced: usize = 0;
@@ -485,7 +485,7 @@ fn streamingPaste737(unit: []const u8, repeats: usize) !void {
         at = end;
     }
     for ([_][]const u8{ "\x1b[", "20", "1~" }) |part| _ = term.feed(part);
-    try std.testing.expectEqualStrings(body, term.model.input.getValue());
+    try @import("spans.zig").expectComposer(term.model.input.getValue(), body);
     try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
     _ = term.enter();
     try std.testing.expectEqual(@as(usize, 1), term.model.steer_queue.items.len);
@@ -504,7 +504,7 @@ test "#737 delayed paste_end dispatch cannot reset a subsequent decoded paste" {
     _ = term.feed("\x1b[200~first\x1b[201~\x1b[200~second");
     _ = term.feed("\r");
     _ = term.feed("\nthird\x1b[201~");
-    try std.testing.expectEqualStrings("firstsecond\r\nthird", term.model.input.getValue());
+    try std.testing.expectEqualStrings("first second\r\nthird ", term.model.input.getValue());
     try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
     try std.testing.expect(!term.model.cancel_requested);
 }

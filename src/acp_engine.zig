@@ -46,6 +46,10 @@ pub const Dispatch = struct {
     after_user: ?AfterUserFn = null,
     bind_session: ?BindSessionFn = null,
     extra: ?ExtraFn = null,
+    /// Turn-scoped: set by `session/cancel` or the stdin reader. A new
+    /// `session/prompt` clears it so a prior stop cannot cancel the next turn.
+    cancel: std.atomic.Value(bool) = .init(false),
+    extra_cancelled: ?*const fn () bool = null,
 };
 
 fn respond(w: *Io.Writer, req: proto.Request, result: anytype) !void {
@@ -95,8 +99,8 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
         return respondError(w, req, err_internal, @errorName(err));
     };
     if (final.len > 0) try writeSessionUpdate(w, sid, final);
-    const extra = if (extra_cancelled) |f| f() else false;
-    const stop: []const u8 = if (cancel_flag.load(.acquire) or extra) "cancelled" else "end_turn";
+    const extra = if (d.extra_cancelled) |f| f() else false;
+    const stop: []const u8 = if (d.cancel.load(.acquire) or extra) "cancelled" else "end_turn";
     try respond(w, req, .{ .stopReason = stop });
 }
 
@@ -133,12 +137,17 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
         return;
     }
     if (std.mem.eql(u8, req.method, "session/cancel")) {
+        d.cancel.store(true, .release);
         cancel_flag.store(true, .release);
         if (on_cancel) |hook| hook();
         if (req.id != null) return respond(w, req, .{});
         return;
     }
-    if (std.mem.eql(u8, req.method, "session/prompt")) return promptTurn(d, arena, w, req);
+    if (std.mem.eql(u8, req.method, "session/prompt")) {
+        d.cancel.store(false, .release);
+        cancel_flag.store(false, .release);
+        return promptTurn(d, arena, w, req);
+    }
     if (d.extra) |extra| if (try extra(d.ctx, arena, w, req)) return;
     if (req.id == null) return;
     try writeError(w, req.id, err_method_not_found, try std.fmt.allocPrint(arena, "method not found: {s}", .{req.method}));
@@ -192,4 +201,51 @@ test "stripSgr drops CSI sequences" {
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
     try std.testing.expectEqualStrings("ok", try stripSgr(state.allocator(), "\x1b[2mok\x1b[0m"));
+}
+
+var wait_turn_started = std.atomic.Value(bool).init(false);
+
+fn waitCancelTurn(_: *anyopaque, arena: Allocator, _: []const u8) anyerror![]const u8 {
+    wait_turn_started.store(true, .release);
+    var n: usize = 0;
+    while (!cancel_flag.load(.acquire) and n < 2_000_000) : (n += 1)
+        std.Thread.yield() catch {};
+    if (!cancel_flag.load(.acquire)) return error.Timeout;
+    return arena.dupe(u8, "stopped") catch "";
+}
+
+const PromptWait = struct {
+    d: *Dispatch,
+    buf: []u8,
+    err: ?anyerror = null,
+};
+
+fn runPromptWait(ctx: *PromptWait) void {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    var w: Io.Writer = .fixed(ctx.buf);
+    handleLine(ctx.d, state.allocator(), &w, "{\"id\":3,\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"hi\"}]}}") catch |e| {
+        ctx.err = e;
+    };
+}
+
+test "#791: session/cancel interrupts an in-flight prompt" {
+    cancel_flag.store(false, .release);
+    var d: Dispatch = .{ .turn = waitCancelTurn, .ctx = undefined, .seed = 1 };
+    var buf: [4096]u8 = undefined;
+    var ctx: PromptWait = .{ .d = &d, .buf = &buf };
+    wait_turn_started.store(false, .release);
+    const thr = try std.Thread.spawn(.{}, runPromptWait, .{&ctx});
+    var spins: usize = 0;
+    while (!wait_turn_started.load(.acquire) and spins < 2_000_000) : (spins += 1)
+        std.Thread.yield() catch {};
+    var ack: [256]u8 = undefined;
+    var w: Io.Writer = .fixed(&ack);
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    try handleLine(&d, state.allocator(), &w, "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"session/cancel\"}");
+    thr.join();
+    try std.testing.expect(ctx.err == null);
+    try std.testing.expect(cancel_flag.load(.acquire));
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\"id\":9") != null);
 }

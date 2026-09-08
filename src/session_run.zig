@@ -340,6 +340,7 @@ pub fn buildRootAgent(
     // (#289 contention) and collide as presence peers (#469).
     const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}-{d}", .{ util.unixMs(io), proc_identity.selfPid() });
     root.session_name = if (flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) (flags.branch_flag orelse flags.resume_flag.?) else fresh_session_name;
+    @import("playbook.zig").inject_session = root.session_name;
     root.session_parent = if (flags.branch_flag != null) flags.resume_flag else null;
     try prompts.setRootSystemPrompts(&root, sys_normal, arena); // #381: same funnel + the live .graff/playbook.jsonl constraint block
     local_tools.load(io, arena);

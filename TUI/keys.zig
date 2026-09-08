@@ -23,10 +23,12 @@ pub fn handle(self: *Model, k: Key) Effect {
     if (k == .paste_start) {
         self.pasting = true;
         self.focus = .prompt;
+        self.input.beginPaste();
         return .stay;
     }
     if (k == .paste_end) {
         self.pasting = false;
+        self.input.finishPaste();
         // Decoder owns its latch: batching may already have decoded the next
         // paste_start. Rewinding it here turns that paste's LF into Enter (#737).
         const v = std.mem.trim(u8, self.input.getValue(), " \t\r\n");

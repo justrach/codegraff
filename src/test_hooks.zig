@@ -370,4 +370,8 @@ test {
     _ = @import("update_tests.zig");
     _ = @import("mcp_elicitation.zig"); // #768: Computer Use form elicitation
     _ = @import("skill_runtime_adapter.zig"); // #768: read-only get_app_state adapter
+    _ = @import("composer_sep.zig"); // #792: paste separators + file-path atoms
+    _ = @import("playbook_scope.zig"); // #789: constraint scope
+    _ = @import("subagent_evidence.zig"); // #793: partial evidence on failed sub-agents
+    _ = @import("acp_inbox.zig"); // #791: cancel independent of prompt dispatch
 }

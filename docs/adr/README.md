@@ -98,6 +98,8 @@ record only when you need the evidence or the edge cases.
 | [0085](0085-in-session-update-is-next-launch.md) | `/update` installs a verified release for the next launch; this session keeps its original binary. |
 | [0086](0086-desktop-drafts-belong-to-open-chats.md) | Unsent desktop drafts and uploads belong to open chats and survive hidden panes; closing a chat disposes them. |
 | [0087](0087-bounded-desktop-presentation-work.md) | Bound syntax caches and live code rendering; project saved transcripts before sending them to the renderer and measure identical desktop workloads. |
+| [0088](0088-constraint-scope-is-ledger-state.md) | Recorded constraints have a scope; implicit rejections stay local, project policy needs standing language (#789). |
+| [0089](0089-acp-cancel-is-independent-of-dispatch.md) | ACP cancel is read independently of turn dispatch; Stop holds the queue; Steer continues the session (#791). |
 
 ## When to write one
 

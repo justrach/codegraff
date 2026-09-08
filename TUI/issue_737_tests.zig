@@ -58,7 +58,12 @@ test "#737 long bracketed single/LF/CRLF paste across reads and batches stays un
                 try std.testing.expect(!term.model.cancel_requested);
                 offset = end;
             }
-            try draft(&term, expected.items, history_len);
+            try @import("spans.zig").expectComposer(term.model.input.getValue(), expected.items);
+            try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
+            try std.testing.expectEqual(history_len, term.model.history.items.len);
+            try std.testing.expect(term.model.pending != null);
+            try std.testing.expect(!term.model.cancel_requested);
+            try std.testing.expect(!term.model.quit_requested);
             try std.testing.expect(!term.model.pasting and !key.inPaste());
             // No synthetic delay: explicit termination must retire burst carry.
             _ = term.feed("\r");
@@ -109,8 +114,8 @@ test "#737 delayed paste_end dispatch cannot reset a subsequent decoded paste" {
     _ = term.feed("\r");
     _ = term.feed("\nthird\x1b[201~");
     const got = term.model.input.getValue();
-    try std.testing.expect(std.mem.startsWith(u8, got, "firstsecond"));
-    try std.testing.expect(std.mem.endsWith(u8, got, "third"));
+    try std.testing.expect(std.mem.startsWith(u8, got, "first second"));
+    try std.testing.expect(std.mem.endsWith(u8, got, "third "));
     try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
     try std.testing.expect(!term.model.cancel_requested);
 }

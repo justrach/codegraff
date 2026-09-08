@@ -133,6 +133,8 @@ pub const fail_excerpt_cap = 200;
 pub fn failExcerpt(arena: Allocator, text: []const u8) []const u8 {
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     if (trimmed.len == 0) return "";
+    if (std.mem.indexOf(u8, trimmed, @import("subagent_evidence.zig").marker) != null)
+        return @import("subagent_evidence.zig").excerpt(arena, trimmed, fail_excerpt_cap, 280);
     const head = util.utf8Prefix(trimmed, fail_excerpt_cap);
     const flat = arena.dupe(u8, head) catch return "";
     for (flat) |*c| if (c.* == '\n' or c.* == '\r' or c.* == '\t') {

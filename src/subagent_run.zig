@@ -418,6 +418,13 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     if (telemetry.g_telem) |t| t.runEvent(&fp, sys_override != null, run_ok, run_ms, used_tools);
     const text = report catch |err| {
         var out = subagentFailure(gpa, sub_id, err, agent.last_api_error, attempts);
+        const findings = if (activity) |*rec| rec.response else "";
+        const ev = @import("subagent_evidence.zig").append(gpa, out.text, used_tools, findings);
+        if (ev.ptr != out.text.ptr) {
+            gpa.free(out.text);
+            out.text = ev;
+        }
+        _ = cards.writeSubagentDetail(ctx.io, arena, sub_id, label, kind, task_prompt, out.text, false, run_ms, used_tools);
         if (wt) |w| {
             const tail = if (pool_seat)
                 @import("experiment_pool.zig").deliverNote(gpa, ctx.io, .{ .path = w.path, .branch = w.branch, .base = w.base })

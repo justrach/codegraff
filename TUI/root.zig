@@ -113,6 +113,8 @@ test {
     _ = @import("scrollbar.zig");
     _ = @import("scrollbar_tests.zig");
     _ = @import("chrome.zig");
+    _ = @import("link.zig"); // #788: wrapped composer URLs keep one OSC 8 target
+    _ = @import("spans.zig"); // #792: paste separators + atomic file spans
     _ = @import("panel.zig");
     _ = @import("overlaypane.zig");
     _ = @import("models.zig");

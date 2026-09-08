@@ -43,6 +43,7 @@ export default function PromptBar({
   disabled,
   busy = false,
   onStop,
+  onSteer,
   history,
   root,
 }: {
@@ -63,6 +64,8 @@ export default function PromptBar({
   /** A turn is running: the send arrow morphs into a stop square. */
   busy?: boolean;
   onStop?: () => void;
+  /** Stop the live turn and continue this session with the current draft. */
+  onSteer?: (text: string) => void;
   /** Earlier prompts, oldest first. ArrowUp on the first line of the draft
    * walks back through them like a shell; ArrowDown walks forward again. */
   history?: readonly string[];
@@ -550,6 +553,18 @@ export default function PromptBar({
               <Icon size={15} strokeWidth={2}><g><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3" /></g></Icon>
             )}
           </button>
+
+          {showStop && onSteer && draft.trim() ? (
+            <button
+              type="button"
+              aria-label="Steer"
+              title="Stop and continue this session with the draft"
+              onClick={() => onSteer(draft)}
+              className={`px-1.5 text-[10px] font-medium disabled:opacity-30 ${pill ? "rounded-full" : "rounded-[8px]"} text-ink-3 hover:bg-hover hover:text-ink`}
+            >
+              Steer
+            </button>
+          ) : null}
 
           {/* send — tactile square (round in the pill variant); while a turn
               runs it morphs into the Codex-style stop control */}

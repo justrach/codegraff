@@ -127,11 +127,15 @@ export async function* prompt(
 }
 
 export async function cancel(chat: ChatHandle, sessionId: string): Promise<void> {
-  await fetch(BASE, {
+  const res = await fetch(BASE, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ chat, method: "session/cancel", params: { sessionId } }),
-  }).catch(() => {});
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(body || `cancel failed (${res.status})`);
+  }
 }
 
 /** Kill a closed tab's agent. `keepalive` so a close-then-navigate still lands. */

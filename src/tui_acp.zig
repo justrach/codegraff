@@ -157,6 +157,7 @@ pub const Session = struct {
                 .ctx = @ptrCast(self),
                 .seed = seed,
                 .bind_session = bindSession,
+                .extra_cancelled = liveCancelled,
             },
         };
     }
@@ -165,7 +166,6 @@ pub const Session = struct {
         if (self.session_id.len != 0) return;
         acp_engine.implementation_version = main_mod.harness_version;
         acp_engine.on_cancel = syncEsc;
-        acp_engine.extra_cancelled = liveCancelled;
         var buf: [2048]u8 = undefined;
         var w: Io.Writer = .fixed(&buf);
         var arena_state = std.heap.ArenaAllocator.init(self.gpa);

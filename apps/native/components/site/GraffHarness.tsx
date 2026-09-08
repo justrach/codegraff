@@ -137,6 +137,8 @@ export default function GraffHarness() {
   panesRef.current = panes;
   const [following, setFollowing] = useState(true);
   const queuesRef = useRef<Record<number, QueuedPrompt[]>>({});
+  const holdQueueRef = useRef<Record<number, boolean>>({});
+  const steerRef = useRef<Record<number, string>>({});
   const [queues, setQueues] = useState<Record<number, QueuedPrompt[]>>({});
   const queueIdRef = useRef(0);
   const runningRef = useRef(new Set<number>());
@@ -418,9 +420,17 @@ export default function GraffHarness() {
       setBusyFor(chatId, false);
       void refreshStored();
       setTimeout(() => void refreshStored(), 2500);
-      const { next, rest } = shiftQueuedPrompt(queuesRef.current[chatId] ?? []);
-      setQueue(chatId, rest);
-      if (next) void runPrompt(chatId, next.text);
+      const steer = steerRef.current[chatId];
+      delete steerRef.current[chatId];
+      const hold = holdQueueRef.current[chatId];
+      delete holdQueueRef.current[chatId];
+      if (steer) {
+        void runPrompt(chatId, steer);
+      } else if (!hold) {
+        const { next, rest } = shiftQueuedPrompt(queuesRef.current[chatId] ?? []);
+        setQueue(chatId, rest);
+        if (next) void runPrompt(chatId, next.text);
+      }
     }
   };
 
@@ -701,7 +711,29 @@ export default function GraffHarness() {
                       busy={threadBusy}
                       onStop={() => {
                         const live = sessionsRef.current.get(thread.id);
-                        if (live) void cancel(handleOf(thread.id), live);
+                        if (!live) return;
+                        holdQueueRef.current[thread.id] = true;
+                        void cancel(handleOf(thread.id), live).catch((err: unknown) => {
+                          const msg = err instanceof Error ? err.message : String(err);
+                          const id = (msgIdRef.current += 1);
+                          setChats((cur) => cur.map((c) => c.id === thread.id
+                            ? { ...c, messages: [...c.messages, { id, role: "assistant", turn: { ...emptyTurn(), error: `Stop failed: ${msg}`, status: "error" } }] }
+                            : c));
+                        });
+                      }}
+                      onSteer={(text: string) => {
+                        const live = sessionsRef.current.get(thread.id);
+                        if (!live) return;
+                        holdQueueRef.current[thread.id] = true;
+                        steerRef.current[thread.id] = text;
+                        void cancel(handleOf(thread.id), live).catch((err: unknown) => {
+                          const msg = err instanceof Error ? err.message : String(err);
+                          delete steerRef.current[thread.id];
+                          const id = (msgIdRef.current += 1);
+                          setChats((cur) => cur.map((c) => c.id === thread.id
+                            ? { ...c, messages: [...c.messages, { id, role: "assistant", turn: { ...emptyTurn(), error: `Steer failed: ${msg}`, status: "error" } }] }
+                            : c));
+                        });
                       }}
                     />
                   </div>

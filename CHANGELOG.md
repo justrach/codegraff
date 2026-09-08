@@ -12,6 +12,19 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- `#788`: a wrapped composer URL stays one OSC 8 hyperlink (`http(s)` and
+  `www.`), so modifier-click opens the unbroken target.
+- `#792`: completed pastes, drops, and file-picker inserts leave a trailing
+  space; pasted/dropped file paths are atomic spans (typed paths stay
+  ordinary text).
+- `#793`: a failed sub-agent still returns bounded, labelled partial
+  evidence (tools + findings); workflow excerpts include that section.
+- `#791`: `session/cancel` is applied while a prompt is in flight. Stop
+  surfaces cancel failures and holds the follow-up queue. Steer stops and
+  continues the same session. ADR 0089.
+- `#789`: `note_constraint` records an explicit scope. Implicit rejections
+  default to session; "right now" is turn-local; project policy requires
+  standing language. `/never` shows scope and flags legacy items. ADR 0088.
 - `#768`: the Computer Use `node_repl` bridge no longer dies on
   `createElicitation is unavailable` during a read-only
   `sky.get_app_state({ disableDiff: true })`. Graff advertises MCP form

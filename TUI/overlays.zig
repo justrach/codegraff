@@ -283,8 +283,7 @@ pub fn activate(self: *Model) Effect {
             self.closeOverlay();
             if (n == 0) return .stay;
             // names point into files_cache, which closeOverlay leaves alone.
-            self.input.insertSlice(names[sel]);
-            self.input.handle(.{ .char = ' ' });
+            self.input.insertFile(names[sel]);
             self.focus = .prompt;
         },
         .jump => {

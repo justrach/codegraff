@@ -49,7 +49,9 @@ pub fn promptBox(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
         try body.appendSlice(try imageChips(self, a, th.accent, th.text));
         try body.appendSlice("  ");
     }
-    try body.appendSlice(try self.input.view(a));
+    const linked = try @import("link.zig").linkifyView(a, self.input.getValue(), self.input.cursor);
+    try body.appendSlice(linked);
+    a.free(linked);
     const wrapped = try theme_mod.wrapPreferWords(a, body.items, inner);
     var lines = std.array_list.Managed([]const u8).init(a);
     var it = std.mem.splitScalar(u8, wrapped, '\n');
@@ -401,6 +403,19 @@ test "composer footer prints last-turn cache hit next to context share" {
     const box = try promptBox(&m, arena.allocator(), 80);
     try std.testing.expect(std.mem.indexOf(u8, box, "  6%") != null);
     try std.testing.expect(std.mem.indexOf(u8, box, " 16%c") != null);
+}
+
+test "#788: a wrapped https URL keeps one OSC 8 target" {
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    const url = "https://example.com/this/is/a/long/path/for/the/composer";
+    try m.input.setValue(url);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const box = try promptBox(&m, arena.allocator(), 28);
+    try std.testing.expect(std.mem.indexOf(u8, box, "\x1b]8;;https://example.com/this/is/a/long/path/for/the/composer\x07") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "\x1b]8;;\x07") != null);
 }
 
 test "prompt box wraps a long draft onto several rows" {

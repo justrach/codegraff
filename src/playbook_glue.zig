@@ -68,14 +68,27 @@ fn refreshFrom(agent: *Agent, arena: Allocator, arm_root: bool) bool {
 /// construction — see this file's header.
 pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
     if (agent.sub) return .{ .text = "Only the root may record user constraints.", .is_error = true };
-    const text = if (json_args.object(input)) |o| (json_args.str(o, "text") orelse "") else "";
+    const obj = json_args.object(input);
+    const text = if (obj) |o| (json_args.str(o, "text") orelse "") else "";
     if (std.mem.trim(u8, text, " \t\r\n").len == 0) return .{
         .text = "note_constraint needs a `text` field: one short imperative line, e.g. \"never add scroll hints or progress dots\"",
         .is_error = true,
     };
+    const hint = if (obj) |o| json_args.str(o, "scope") else null;
+    const scope_mod = @import("playbook_scope.zig");
+    var scope = scope_mod.classify(text, hint);
+    const session = agent.session_name;
+    playbook.inject_session = session;
+    if (scope == .task and playbook.inject_task.len == 0) scope = .session;
+    if (scope == .turn) {
+        return .{
+            .text = "noted for this turn only — not recorded as project policy. Say \"never do this in this project\" if it should stand, or /never to review.",
+            .is_error = false,
+        };
+    }
     var prov_buf: [32]u8 = undefined;
     const provenance = std.fmt.bufPrint(&prov_buf, "user:{d}", .{@import("util.zig").unixMs(agent.io)}) catch "user";
-    const r = playbook.add(agent.io, agent.arena, text, .user, provenance);
+    const r = playbook.addEx(agent.io, agent.arena, text, .user, provenance, scope, session, playbook.inject_task);
     const duplicate = std.mem.eql(u8, r.reason, "already recorded (same normalized text)");
     if (!r.ok and !duplicate) return .{
         .text = std.fmt.allocPrint(agent.arena, "constraint NOT recorded ({s}){s}{s}", .{
@@ -99,7 +112,11 @@ pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
         "Durable state is saved, but the active prompt could not be refreshed. Do not claim activation; retry note_constraint to reconcile it.";
     // ADR 0021: the user just said this. Echoing "constraint recorded" is
     // machine state, not progress. The tool result still tells the model.
-    return .{ .text = std.fmt.allocPrint(agent.arena, "constraint recorded as {s}. It is now in {s} and rides every subagent, workflow and pipeline brief from here on, in this session and in later ones — you do not need to restate it. {s}", .{ r.id, playbook.path, effect }) catch "constraint recorded; active prompt refresh status unavailable", .is_error = false };
+    const ride = if (scope.durable())
+        "It rides later sessions and workers as project policy."
+    else
+        "It is scoped to this session/task and is not project-wide policy.";
+    return .{ .text = std.fmt.allocPrint(agent.arena, "constraint recorded as {s} (scope={s}). {s} Visible in /never. {s}", .{ r.id, @tagName(scope), ride, effect }) catch "constraint recorded; active prompt refresh status unavailable", .is_error = false };
 }
 
 /// Privacy-safe operational trace: id + success, never constraint text (#644).
@@ -147,7 +164,10 @@ fn list(io: Io, arena: Allocator, out: *Io.Writer) !void {
         return;
     }
     try out.print("{s}playbook{s} — {s}\n", .{ style.bold, style.reset, playbook.path });
-    for (items) |item| try out.print("  {s}  {s:<9} {s}\n", .{ item.id, @tagName(item.source), item.text });
+    for (items) |item| {
+        const review: []const u8 = if (item.scope == .legacy) " [review: captured without scope]" else "";
+        try out.print("  {s}  {s:<9} {s:<8} {s}{s}\n", .{ item.id, @tagName(item.source), @tagName(item.scope), item.text, review });
+    }
     try out.print("{d} item(s) · /never <text> adds one · /never rm <id-or-text> retires one\n", .{items.len});
     try out.flush();
 }

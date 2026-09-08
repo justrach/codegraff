@@ -515,7 +515,7 @@ test "giving up on a split paste terminator closes the paste, tail and all (#532
     try std.testing.expect(!term.model.pasting);
     // The late `~` rejoins its carried head instead of typing itself.
     _ = term.feed("~");
-    try std.testing.expectEqualStrings("hello", term.model.input.getValue());
+    try std.testing.expectEqualStrings("hello ", term.model.input.getValue());
 }
 
 test "the idle paste sweep never fires a phantom Escape at a live turn" {
@@ -557,12 +557,12 @@ test "the idle paste sweep never fires a phantom Escape at a live turn" {
     try std.testing.expect(!term.model.pasting);
     try std.testing.expect(!term.model.cancel_requested);
     try std.testing.expectEqual(@as(usize, 0), term.pending);
-    try std.testing.expectEqualStrings("draft text", term.model.input.getValue());
+    try std.testing.expectEqualStrings("draft text ", term.model.input.getValue());
 
     // ...and the late terminator still rejoins its carried head rather than
     // typing `[201~` on the end of the draft.
     _ = term.feed("[201~");
-    try std.testing.expectEqualStrings("draft text", term.model.input.getValue());
+    try std.testing.expectEqualStrings("draft text ", term.model.input.getValue());
 }
 
 test "live prose tail paints markdown before the turn settles" {

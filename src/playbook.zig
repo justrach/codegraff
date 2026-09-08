@@ -48,6 +48,8 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const scope_mod = @import("playbook_scope.zig");
+pub const Scope = scope_mod.Scope;
 const util = @import("util.zig");
 const trace = @import("trace.zig");
 
@@ -95,7 +97,14 @@ pub const Item = struct {
     /// `run:<trajectory run id>` for a distilled one.
     provenance: []const u8 = "",
     created_at: i64 = 0,
+    scope: Scope = .legacy,
+    session: []const u8 = "",
+    task: []const u8 = "",
 };
+
+/// Current session / task ids for injection filtering (#789).
+pub var inject_session: []const u8 = "";
+pub var inject_task: []const u8 = "";
 
 /// Why an `add` did or did not land. A refusal is reported, never silent:
 /// the model and the user both need to know a constraint was NOT recorded.
@@ -196,6 +205,9 @@ pub fn parse(arena: Allocator, data: []const u8) []const Item {
             .source = Source.parse(strOf(v.object, "source") orelse "user"),
             .provenance = strOf(v.object, "provenance") orelse "",
             .created_at = if (created) |c| (if (c == .integer) c.integer else 0) else 0,
+            .scope = Scope.parse(strOf(v.object, "scope") orelse "legacy"),
+            .session = strOf(v.object, "session") orelse "",
+            .task = strOf(v.object, "task") orelse "",
         };
         if (at) |i| list.items[i] = item else list.append(arena, item) catch break;
     }
@@ -255,6 +267,19 @@ fn appendLine(io: Io, line: []const u8) bool {
 /// derive the id, refuse an exact-normalized duplicate, enforce the learned
 /// ceiling, append. No model is consulted and nothing existing is rewritten.
 pub fn add(io: Io, arena: Allocator, text_in: []const u8, source: Source, provenance: []const u8) Add {
+    return addEx(io, arena, text_in, source, provenance, .project, "", "");
+}
+
+pub fn addEx(
+    io: Io,
+    arena: Allocator,
+    text_in: []const u8,
+    source: Source,
+    provenance: []const u8,
+    scope: Scope,
+    session: []const u8,
+    task: []const u8,
+) Add {
     const trimmed = std.mem.trim(u8, text_in, " \t\r\n-*");
     const text = util.utf8Prefix(trimmed, max_text);
     var nbuf: [max_text]u8 = undefined;
@@ -275,6 +300,9 @@ pub fn add(io: Io, arena: Allocator, text_in: []const u8, source: Source, proven
         .source = @tagName(source),
         .provenance = provenance,
         .created_at = util.unixMs(io),
+        .scope = @tagName(scope),
+        .session = session,
+        .task = task,
     }) catch return .{ .id = id, .reason = "could not serialize the record" };
     aw.writer.writeByte('\n') catch return .{ .id = id, .reason = "could not serialize the record" };
     if (!appendLine(io, aw.writer.buffered())) return .{ .id = id, .reason = "could not write " ++ path };
@@ -308,6 +336,8 @@ fn writeSection(w: *Io.Writer, items: []const Item, source: Source, header: []co
         i -= 1;
         const item = items[i];
         if (item.source != source) continue;
+        if (source == .user and !scope_mod.visible(item.scope, item.session, item.task, inject_session, inject_task))
+            continue;
         if (shown >= cap_items or used + item.text.len + 3 > cap_bytes) {
             omitted += 1;
             continue;
@@ -369,7 +399,8 @@ pub fn recordedState(arena: Allocator, items: []const Item) ![]const u8 {
     try s.beginArray();
     for (items) |item| {
         if (item.source != .user) continue;
-        try s.write(.{ .id = item.id, .text = item.text, .provenance = item.provenance });
+        if (!scope_mod.visible(item.scope, item.session, item.task, inject_session, inject_task)) continue;
+        try s.write(.{ .id = item.id, .text = item.text, .provenance = item.provenance, .scope = @tagName(item.scope) });
     }
     try s.endArray();
     try s.endObject();

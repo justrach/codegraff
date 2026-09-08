@@ -156,7 +156,6 @@ fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Reque
 pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u8) !void {
     engine.implementation_version = main_mod.harness_version;
     engine.on_cancel = syncEscCancel;
-    engine.extra_cancelled = liveCancelled;
     return engine.handleLine(d, arena, w, line);
 }
 
@@ -238,14 +237,44 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .after_user = liveAfter,
         .bind_session = liveBind,
         .extra = liveModels,
+        .extra_cancelled = liveCancelled,
     };
-    while (true) {
-        const line = (in.takeDelimiter('\n') catch break) orelse break;
-        handleLine(&d, arena, out, line) catch |err| {
-            std.debug.print("acp: dispatch failed: {t}\n", .{err});
-            break;
-        };
-        out.flush() catch break;
+    // #791: read stdin on a side thread so session/cancel is applied while
+    // session/prompt is still blocked in turn dispatch.
+    const inbox_mod = @import("acp_inbox.zig");
+    var inbox: inbox_mod.Inbox = .{};
+    const Reader = struct {
+        fn run(rd: *Io.Reader, box: *inbox_mod.Inbox, alloc: Allocator, disp: *Dispatch) void {
+            while (true) {
+                const line = (rd.takeDelimiter('\n') catch break) orelse break;
+                if (inbox_mod.isCancelLine(line)) {
+                    disp.cancel.store(true, .release);
+                    inbox_mod.applyCancel();
+                }
+                box.push(alloc, line);
+            }
+            box.close();
+        }
+    };
+    if (std.Thread.spawn(.{}, Reader.run, .{ in, &inbox, gpa, &d })) |thr| {
+        while (inbox.pop(gpa)) |line| {
+            defer gpa.free(line);
+            handleLine(&d, arena, out, line) catch |err| {
+                std.debug.print("acp: dispatch failed: {t}\n", .{err});
+                break;
+            };
+            out.flush() catch break;
+        }
+        thr.join();
+    } else |_| {
+        while (true) {
+            const line = (in.takeDelimiter('\n') catch break) orelse break;
+            handleLine(&d, arena, out, line) catch |err| {
+                std.debug.print("acp: dispatch failed: {t}\n", .{err});
+                break;
+            };
+            out.flush() catch break;
+        }
     }
     session.saveSession(root, arena, root.session_name) catch {};
     root.md_buf.deinit(gpa);

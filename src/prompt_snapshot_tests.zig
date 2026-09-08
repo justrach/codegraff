@@ -163,7 +163,7 @@ const golden_full_prompt =
     \\fix. Match the surrounding file's style and keep diffs minimal: no drive-by
     \\refactors, renames, or reformatting the task did not require.
     \\
-    \\The moment the user rejects, forbids, or vetoes something ("no dots", "not vanilla JS", "stop adding scroll hints"), call note_constraint with one short imperative line recording it, then carry on — recorded constraints are injected into every later subagent, workflow and pipeline brief and survive compaction, so a rejection you leave unrecorded is one your fresh workers will repeat.
+    \\When the user states a standing project rule ("never do X in this project"), call note_constraint with one short imperative line and scope=project. Implicit or temporary steering ("I don't want this right now", "for this task", "here") is local — pass scope=turn, scope=task, or scope=session and preserve that limiting language. Do not widen "right now" / "this task" / "here" into project policy. Ambiguous rejections default to session. /never lists scope and origin so the user can undo a bad capture.
 ++ @import("prompt_text.zig").constraint_authority_note ++
     \\
     \\

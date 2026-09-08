@@ -41,6 +41,7 @@ const isImagePath = input_util.isImagePath;
 const redraw = input_util.redraw;
 const editByte = input_util.editByte; // #396: job-control-aware continuation reads
 const addMark = input_util.addMark;
+const sep = @import("composer_sep.zig");
 const rl_image = @import("readline_image.zig");
 const util = @import("util.zig");
 
@@ -239,7 +240,7 @@ pub fn readLine(
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
             },
             0x02 => if (cur > 0) { // Ctrl-B → left
-                cur = rl_image.left(buf.items, cur) orelse pastes.left(cur);
+                cur = rl_image.left(buf.items, cur) orelse sep.markLeft(buf.items, marks.items, cur) orelse pastes.left(cur);
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
             },
             0x06 => if (cur < buf.items.len) { // Ctrl-F → right
@@ -297,7 +298,7 @@ pub fn readLine(
                 }
             },
             0x7f, 0x08 => if (cur > 0) { // backspace → delete previous atom
-                const start = rl_image.left(buf.items, cur) orelse pastes.left(cur);
+                const start = rl_image.left(buf.items, cur) orelse sep.markLeft(buf.items, marks.items, cur) orelse pastes.left(cur);
                 rl_image.deleteAtom(root, gpa, buf, &cur, &pastes, start, cur);
                 cur = start;
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
@@ -478,6 +479,7 @@ pub fn readLine(
                                         pastes.edited(gpa, at, at, dropped.?.len);
                                         cur += dropped.?.len;
                                         addMark(gpa, &marks, dropped.?);
+                                        sep.ensureSpace(gpa, buf, &cur);
                                     }
                                 }
                                 if (dmsg) |m| { // feedback below the input, then redraw fresh (below)
@@ -493,6 +495,7 @@ pub fn readLine(
                                 if (buf.items.len == old_len + pasted.len) {
                                     pastes.edited(gpa, at, at, pasted.len);
                                     cur += pasted.len;
+                                    sep.ensureSpace(gpa, buf, &cur);
                                 }
                             } else { // multi-line/long: semantic chip, expanded on submit
                                 pastes.insert(gpa, buf, &cur, pasted, lines) catch {};
@@ -543,6 +546,7 @@ pub fn readLine(
                                 pastes.edited(gpa, at, at, files.items[idx].len);
                                 cur += files.items[idx].len;
                                 addMark(gpa, &marks, files.items[idx]);
+                                sep.ensureSpace(gpa, buf, &cur);
                             }
                         }
                         redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
