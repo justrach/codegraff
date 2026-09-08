@@ -1,0 +1,12 @@
+{
+  "id": "graff-gemini-ix",
+  "suite": "live",
+  "category": "live",
+  "source": "codegraff #741 — Gemini on Google's Interactions API",
+  "prompt": "Gemini must talk Google's first-party Interactions wire, not the OpenAI compatibility shim. Fix src/provider.zig so the test named \"gemini routes to google, not the gateway, and carries the real 1M window\" passes. Do not edit that test. Do not add SPEC.md.",
+  "setup": ["python3 \"$TASK_ROOT/live_setup.py\" graff-gemini-ix ."],
+  "check": "sh \"$TASK_ROOT/live/graff-gemini-ix/check_public.sh\" && sh \"$TASK_ROOT/hidden/graff-gemini-ix.sh\"",
+  "timeout_s": 600,
+  "setup_timeout_s": 180,
+  "check_timeout_s": 300
+}

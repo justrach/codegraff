@@ -1,0 +1,12 @@
+{
+  "id": "graff-726",
+  "suite": "live",
+  "category": "live",
+  "source": "codegraff #726/#727 — finished job must not wake the model again",
+  "prompt": "A background job the model already waited on still injects an unread-output wake. Fix src/job_notify.zig so `zig build test --summary all` reports the test named \"dismiss drops a queued notice, or the one the pump has not queued yet\" as passed. Do not edit that test. Do not add SPEC.md.",
+  "setup": ["python3 \"$TASK_ROOT/live_setup.py\" graff-726 ."],
+  "check": "sh \"$TASK_ROOT/live/graff-726/check_public.sh\" && sh \"$TASK_ROOT/hidden/graff-726.sh\"",
+  "timeout_s": 600,
+  "setup_timeout_s": 180,
+  "check_timeout_s": 300
+}

@@ -1,0 +1,12 @@
+{
+  "id": "graff-interrupt",
+  "suite": "live",
+  "category": "live",
+  "source": "codegraff #753/#754 — handle survives a mid-turn drop",
+  "prompt": "A background-agent id issued this turn must not become \"never started\" if the parent API turn drops. Fix src/subagent_ledger.zig so the test named \"#753: missing names an interrupted launch, not 'never started'\" passes. Do not edit that test. Do not add SPEC.md.",
+  "setup": ["python3 \"$TASK_ROOT/live_setup.py\" graff-interrupt ."],
+  "check": "sh \"$TASK_ROOT/live/graff-interrupt/check_public.sh\" && sh \"$TASK_ROOT/hidden/graff-interrupt.sh\"",
+  "timeout_s": 600,
+  "setup_timeout_s": 180,
+  "check_timeout_s": 300
+}

@@ -12,7 +12,8 @@ outcome, and writes JSONL results plus a summary table.
   ./run.py --suite swe --harness graff-dev-old,graff-dev -j 12  # DeepSWE-shaped A/B, parallel
   ./run.py --suite swe --harness graff-dev,pi-xai --model grok-4.6 -j 6  # same SuperGrok seat
   ./run.py --suite mcp --harness graff-dev-old-nolean,graff-dev-rlm-struct,graff-dev-nolean
-  ./run.py --suite inhouse --harness graff-dev,grok,opencode  # shipped-PR fixtures
+  ./run.py --suite inhouse --harness graff-dev,grok,opencode  # distilled PR fixtures
+  ./run.py --suite live --harness graff-dev --reps 3      # gated live PRs (no SPEC.md)
   ./run.py --harness grok --task fix-fib --reps 3        # one task, 3 reps
   ./run.py --interactive                                 # pick + watch live
 """
@@ -20,6 +21,7 @@ import argparse, json, os, re, resource, shutil, subprocess, sys, threading, tim
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from list_price import attach as attach_list_price
+import report as eval_report
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(ROOT)
@@ -69,8 +71,9 @@ def materialize(task, sandbox):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w") as f:
             f.write(content)
+    setup_timeout = int(task.get("setup_timeout_s", 60))
     for cmd in task.get("setup", []):
-        subprocess.run(["/bin/sh", "-c", cmd], cwd=sandbox, capture_output=True, timeout=60)
+        subprocess.run(["/bin/sh", "-c", cmd], cwd=sandbox, capture_output=True, timeout=setup_timeout)
 
 
 def _resolve_model(harness, model):
@@ -346,12 +349,6 @@ def _rusage_children():
     return u.ru_utime, u.ru_stime, u.ru_maxrss
 
 
-def _fmt_mib(kb):
-    if not kb:
-        return "—"
-    return f"{kb / 1024:.1f}M"
-
-
 def one_run(hname, harness, task, model, rep, live=False):
     sandbox = os.path.join(SANDBOX_DIR, f"{hname}-{task['id']}-r{rep}")
     materialize(task, sandbox)
@@ -436,12 +433,21 @@ def one_run(hname, harness, task, model, rep, live=False):
     with open(os.path.join(sandbox, ".eval-answer.txt"), "w") as f:
         f.write(answer)
     check_env = dict(os.environ, ANSWER_FILE=".eval-answer.txt", TASK_ROOT=ROOT)
-    check = subprocess.run(["/bin/sh", "-c", task["check"]], cwd=sandbox,
-                           capture_output=True, text=True, timeout=60, env=check_env)
+    check_timeout = int(task.get("check_timeout_s", 60))
+    try:
+        check = subprocess.run(["/bin/sh", "-c", task["check"]], cwd=sandbox,
+                               capture_output=True, text=True, timeout=check_timeout, env=check_env)
+        check_note = None
+        if check.returncode != 0 and (check.stderr.strip() or check.stdout.strip()):
+            check_note = (check.stderr.strip() or check.stdout.strip())[:200]
+        check_ok = check.returncode == 0
+    except subprocess.TimeoutExpired:
+        check_note = f"check timed out after {check_timeout}s"
+        check_ok = False
     rec = {"harness": hname, "task": task["id"], "suite": task.get("suite", "core"),
            "category": task.get("category", ""), "model": model, "rep": rep,
            "wall_s": wall, "first_out_s": first_out, "exit": rc, "timed_out": timed_out,
-           "outcome_ok": check.returncode == 0, "answer_head": answer[:120],
+           "outcome_ok": check_ok, "answer_head": answer[:120],
            "rss_peak_kb": rss_peak, "rss_child_hwm_kb": ru1[2],
            "cpu_user_s": round(max(0.0, ru1[0] - ru0[0]), 3),
            "cpu_sys_s": round(max(0.0, ru1[1] - ru0[1]), 3),
@@ -452,70 +458,9 @@ def one_run(hname, harness, task, model, rep, live=False):
     if pin is not None:
         rec["learn_pin"] = pin
     attach_list_price(rec, inclusive=harness.get("usage") != "grok-stream")
-    if check.returncode != 0 and (check.stderr.strip() or check.stdout.strip()):
-        rec["check_note"] = (check.stderr.strip() or check.stdout.strip())[:200]
+    if check_note:
+        rec["check_note"] = check_note
     return rec
-
-
-def _bucket(records):
-    by = {}
-    for r in records:
-        b = by.setdefault(r["harness"], {
-            "n": 0, "ok": 0, "wall": 0.0, "first": 0.0, "first_n": 0,
-            "tin": 0, "tcached": 0, "tout": 0, "calls": 0, "rss": 0, "cpu": 0.0,
-            "usd": 0.0, "usd_n": 0,
-        })
-        b["n"] += 1
-        b["ok"] += bool(r.get("outcome_ok"))
-        b["wall"] += r.get("wall_s", 0) or 0
-        if r.get("first_out_s") is not None:
-            b["first"] += r["first_out_s"]
-            b["first_n"] += 1
-        b["tin"] += r.get("list_ordinary") if r.get("list_ordinary") is not None else (r.get("tok_in") or 0)
-        b["tcached"] += r.get("list_cached") if r.get("list_cached") is not None else (r.get("tok_cached") or 0)
-        b["tout"] += r.get("tok_out") or 0
-        b["calls"] += r.get("tok_calls") or 0
-        if r.get("list_usd") is not None:
-            b["usd"] += r["list_usd"]
-            b["usd_n"] += 1
-        elif r.get("tok_cost_usd") is not None:
-            b["usd"] += r["tok_cost_usd"]
-            b["usd_n"] += 1
-        b["rss"] = max(b["rss"], r.get("rss_peak_kb") or 0)
-        cpu = r.get("cpu_sample_s")
-        if not cpu:
-            cpu = (r.get("cpu_user_s") or 0) + (r.get("cpu_sys_s") or 0)
-        b["cpu"] += cpu
-    return by
-
-
-def _print_table(title, by):
-    print(f"\n{title}")
-    print(f"{'harness':<16} {'pass':>7} {'wall':>8} {'first':>7} {'rss':>8} {'cpu':>7} {'in':>8} {'cached':>8} {'out':>8} {'calls':>6} {'list$':>8}")
-    for h, b in by.items():
-        first = (b["first"] / b["first_n"]) if b["first_n"] else 0.0
-        usd = f"${b['usd']:.4f}" if b["usd_n"] else "—"
-        print(f"{h:<16} {b['ok']}/{b['n']:<5} {b['wall']:>7.1f}s {first:>6.1f}s "
-              f"{_fmt_mib(b['rss']):>8} {b['cpu']:>6.1f}s {b['tin']:>8} {b.get('tcached', 0):>8} {b['tout']:>8} {b['calls']:>6} {usd:>8}")
-
-
-def summarize(records):
-    _print_table("all", _bucket(records))
-    suites = sorted({r.get("suite") or "core" for r in records})
-    if len(suites) > 1:
-        for s in suites:
-            _print_table(f"suite {s}", _bucket([r for r in records if (r.get("suite") or "core") == s]))
-
-
-def _line(rec):
-    cpu = rec.get("cpu_sample_s") or ((rec.get("cpu_user_s") or 0) + (rec.get("cpu_sys_s") or 0))
-    ok = "✓" if rec.get("outcome_ok") else "✗"
-    return (f"{ok} {rec.get('harness', '?'):<16} {rec.get('task', '?'):<18} "
-            f"r{rec.get('rep', '?')} {rec.get('wall_s', '?')}s "
-            f"first={rec.get('first_out_s', '—')}s rss={_fmt_mib(rec.get('rss_peak_kb'))} "
-            f"cpu={cpu:.1f}s in={rec.get('list_ordinary', rec.get('tok_in', '?'))} "
-            f"cached={rec.get('list_cached', rec.get('tok_cached', '—'))} "
-            f"out={rec.get('tok_out', '?')} list=${rec.get('list_usd', '—')}")
 
 
 def interactive(tasks, harnesses):
@@ -544,7 +489,7 @@ def main():
     ap.add_argument("--model", default=None, help="model id (default: per-harness default_model)")
     ap.add_argument("--task", action="append", help="task id filter (repeatable)")
     ap.add_argument("--suite", default="all",
-                    help="core, rlm, swe, mcp, inhouse, comma-mix, or all (core+rlm+swe; mcp/inhouse are opt-in)")
+                    help="core, rlm, swe, mcp, inhouse, live, comma-mix, or all (core+rlm+swe; mcp/inhouse/live are opt-in)")
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--jobs", "-j", type=int, default=1,
                     help="parallel task×harness runs (default 1; each has its own sandbox)")
@@ -593,7 +538,7 @@ def main():
                 records.append(rec)
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 f.flush()
-                print(_line(rec), flush=True)
+                print(eval_report.line(rec), flush=True)
 
         if jobs == 1:
             for item in work:
@@ -603,7 +548,7 @@ def main():
                 futs = [pool.submit(one_run, *item) for item in work]
                 for fut in as_completed(futs):
                     finish(fut.result())
-    summarize(records)
+    eval_report.summarize(records)
     print(f"\nresults: {out_path}")
 
 

@@ -1,0 +1,12 @@
+{
+  "id": "codedb-hybrid",
+  "suite": "live",
+  "category": "live",
+  "source": "codedb #736 — production-source prior after fusion",
+  "prompt": "Hybrid ranking prefers tests and docs over production source after fusion. Fix the package so the hybrid / production-source tests pass. Do not add SPEC.md.",
+  "setup": ["python3 \"$TASK_ROOT/live_setup.py\" codedb-hybrid ."],
+  "check": "sh \"$TASK_ROOT/live/codedb-hybrid/check_public.sh\" && sh \"$TASK_ROOT/hidden/codedb-hybrid.sh\"",
+  "timeout_s": 600,
+  "setup_timeout_s": 180,
+  "check_timeout_s": 300
+}
