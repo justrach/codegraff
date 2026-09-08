@@ -1,0 +1,10 @@
+import { createRequire } from 'node:module';
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const require = createRequire(import.meta.url);
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const args = [path.join(root, 'electron/performance-benchmark.cjs'), ...process.argv.slice(2)];
+const child = spawn(require('electron'), args, { cwd: root, stdio: 'inherit', env: { ...process.env, GRAFF_TEST_BUN: process.execPath } });
+child.on('error', error => { console.error(error.message); process.exitCode = 1; });
+child.on('exit', code => { process.exitCode = code ?? 1; });

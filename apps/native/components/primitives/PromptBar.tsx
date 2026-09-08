@@ -6,17 +6,17 @@ import ModelPicker from "./ModelPicker";
 import layout from "./PromptBar.module.css";
 import ModelEffortButtons from "./ModelEffortButtons";
 import type { ModelChoice } from "@/lib/acp-client";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ComposerMenu from "./ComposerMenu";
 import { useComposerSweep } from "./useComposerSweep";
 import { useComposerSize } from "./useComposerSize";
+import { useComposerDraft } from "./useComposerDraft";
 import type { AcpCommand } from "@/lib/acp";
 import {
   filesFrom,
   releaseAttachments,
   uploadAttachment,
   withAttachmentMarkers,
-  type Attachment,
 } from "@/lib/attachments";
 import { entryAt, historyKeyIntent, stepHistory } from "@/lib/prompt-history";
 
@@ -72,7 +72,7 @@ export default function PromptBar({
 }) {
   const pill = variant === "Pill";
   const catalog = models && models.length > 0 ? models : MODELS;
-  const [draft, setDraft] = useState("");
+  const { draft, setDraft, attachments, setAttachments, uploads, setUploads, attachError, setAttachError } = useComposerDraft();
   /* Recall cursor: -1 is the live draft. Whatever was being typed is kept
    * aside so ArrowDown past the newest entry hands it back untouched. */
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -93,9 +93,6 @@ export default function PromptBar({
     if (found && found !== model) setModel(found);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelKey, models]);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [uploads, setUploads] = useState(0);
-  const [attachError, setAttachError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   /* Workspace files matching the current @ query — live surfaces only. */
   const [fileRows, setFileRows] = useState<{ key: string; name: string; desc: string }[]>([]);
@@ -113,6 +110,8 @@ export default function PromptBar({
   const measureRef = useRef<HTMLSpanElement>(null);
   const modelRef = useRef<HTMLButtonElement>(null);
   const menuAnchor = useRef<HTMLDivElement>(null);
+  const menuPanel = useRef<HTMLDivElement>(null);
+  const menuId = useId();
   const { glimmRef, celebrate } = useComposerSweep();
 
   /* hand control to the user: stop the demo loop, and when they aim at
@@ -179,6 +178,7 @@ export default function PromptBar({
       : menu === "slash"
         ? slashRows.filter((c) => c.name.slice(1).startsWith(query))
         : [];
+  const activeIndex = Math.min(active, Math.max(0, rows.length - 1));
 
   useEffect(() => {
     setActive(0);
@@ -228,17 +228,19 @@ export default function PromptBar({
     inputRef.current?.setSelectionRange(draft.length, draft.length);
   }, [draft]);
 
-  /* clicking anywhere outside the composer closes the open menus */
+  /* The menu is portaled: its own pointer events are still inside this
+   * composer. A different split's composer is outside. */
   useEffect(() => {
-    if (!plusOpen) return;
+    if (!menu) return;
     const close = (event: PointerEvent) => {
-      if (!(event.target as Element).closest("[data-promptbar]")) {
-        setPlusOpen(false);
-      }
+      const target = event.target as Node;
+      if (menuAnchor.current?.contains(target) || menuPanel.current?.contains(target)) return;
+      setPlusOpen(false);
+      setDismissed(true);
     };
     document.addEventListener("pointerdown", close);
     return () => document.removeEventListener("pointerdown", close);
-  }, [plusOpen]);
+  }, [menu]);
 
   const closeMenus = () => {
     setPlusOpen(false);
@@ -282,7 +284,7 @@ export default function PromptBar({
         setAttachError(err instanceof Error ? err.message : String(err));
       } finally { setUploads(count => count - 1); }
     }
-    inputRef.current?.focus();
+    if (inputRef.current?.closest("[data-promptbar]")?.contains(document.activeElement)) inputRef.current.focus();
   };
 
   const removeAttachment = (id: string) => {
@@ -293,7 +295,7 @@ export default function PromptBar({
   };
 
   const canSend = !disabled && uploads === 0 && (draft.trim().length > 0 || attachments.length > 0);
-  const showStop = busy && !canSend;
+  const showStop = busy;
   const send = () => {
     if (!canSend) return;
     if (/^\/(effort|reasoning)$/.test(draft.trim()) && model.effortLevels?.length) { modelRef.current?.dispatchEvent(new Event("graff-effort-open")); setDraft(""); return; }
@@ -335,8 +337,8 @@ export default function PromptBar({
       {/* composer is the anchor — menus grow up from its top edge */}
       <div ref={menuAnchor} className="relative">
       {/* ── @ / slash menu ─────────────────────────────── */}
-      {menu && <ComposerMenu anchor={menuAnchor} menu={menu} rows={rows} query={query}
-        active={active} engaged={engaged} setActive={setActive} setEngaged={setEngaged}
+      {menu && <ComposerMenu anchor={menuAnchor} panel={menuPanel} id={menuId} menu={menu} rows={rows} query={query}
+        active={activeIndex} engaged={engaged} setActive={setActive} setEngaged={setEngaged}
         connected={connected} setConnected={setConnected} demo={demo} onPick={pick} />}
 
 
@@ -481,32 +483,40 @@ export default function PromptBar({
               void attachFiles(files);
             }}
             onKeyDown={(event) => {
+              // IME candidate keys belong to the input method. Modified keys
+              // belong to desktop shortcuts, never completion or submission.
+              if (event.nativeEvent.isComposing || event.keyCode === 229 || event.metaKey || event.ctrlKey || event.altKey) return;
               if (menu && rows.length > 0) {
-                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                if (!event.shiftKey && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
                   event.preventDefault();
+                  event.stopPropagation();
                   setEngaged(true);
-                  setActive((current) => (current + (event.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length);
+                  setActive((activeIndex + (event.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length);
                   return;
                 }
-                if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+                if (!event.shiftKey && (event.key === "Enter" || event.key === "Tab")) {
                   event.preventDefault();
-                  pick(rows[active]);
+                  event.stopPropagation();
+                  pick(rows[activeIndex]);
                   return;
                 }
               }
-              if (recall(event)) return;
+              if (!event.shiftKey && recall(event)) return;
               if (event.key === "Escape") {
                 setDismissed(true);
                 closeMenus();
                 return;
               }
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
+                event.stopPropagation();
                 send();
               }
             }}
             placeholder={listening ? "Listening…" : placeholder ?? "Write a message…"}
             aria-label="Prompt"
+            aria-autocomplete="list" aria-controls={menu ? menuId : undefined}
+            aria-activedescendant={menu && rows.length ? `${menuId}-${activeIndex}` : undefined}
             className={`${tall ? "min-h-[68px] px-2 py-2 text-[14px] leading-5" : "min-h-7 px-1 py-[5px] text-[13px] leading-[18px]"} min-w-0 w-full resize-none bg-transparent text-ink outline-none [overflow-wrap:anywhere] placeholder:text-ink-3 ${
               wide ? "col-span-full col-start-1 row-start-1" : "col-start-2 row-start-1"
             }`}
@@ -515,17 +525,18 @@ export default function PromptBar({
           <ModelEffortButtons model={model} buttonRef={modelRef} modelOpen={modelOpen} wide={wide} pill={pill} busy={busy}
             onCommand={onSetting} openModel={() => { setPlusOpen(false); setModelOpen(current => !current); }} />
 
-          {/* dictation */}
+          {/* Keep cancellation available while a follow-up is being drafted. */}
           <button
             type="button"
-            aria-label={listening ? "Stop dictation" : "Start dictation"}
-            aria-pressed={listening} disabled={!demo} title={demo ? "Demo dictation" : "Dictation is not available yet"}
-            onClick={() => setListening((current) => !current)}
+            aria-label={busy ? "Queue follow-up" : listening ? "Stop dictation" : "Start dictation"}
+            aria-pressed={busy ? undefined : listening} disabled={busy ? !canSend : !demo}
+            title={busy ? "Queue this follow-up" : demo ? "Demo dictation" : "Dictation is not available yet"}
+            onClick={busy ? send : () => setListening((current) => !current)}
             className={`flex size-7 shrink-0 items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-[background-color,color,transform] duration-150 active:scale-[0.94] ${
               pill ? "rounded-full" : "rounded-[8px]"
             } ${listening ? "bg-accent-tint text-accent-ink" : "text-ink-3 hover:bg-hover hover:text-ink"} ${wide ? "col-start-4 row-start-2" : "col-start-4 row-start-1"}`}
           >
-            {listening ? (
+            {busy ? <Icon size={16} strokeWidth={2.4}><path d="M12 19V5M5 12l7-7 7 7" /></Icon> : listening ? (
               <span className="flex h-3.5 items-center gap-[2.5px]">
                 {[0, 1, 2].map((i) => (
                   <span

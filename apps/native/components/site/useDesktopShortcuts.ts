@@ -11,6 +11,8 @@ export function useDesktopShortcuts(actions: Actions) {
   const ref=useRef(actions);ref.current=actions;
   useEffect(()=>{
     const dispatch=(action:string)=>{
+      // Native menu accelerators reach this path without a DOM keydown.
+      if(document.querySelector('[role="dialog"]'))return false;
       const a=ref.current;
       switch(action){
         case 'new':a.newChat();return true;

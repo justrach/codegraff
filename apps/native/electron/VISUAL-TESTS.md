@@ -15,7 +15,39 @@ transcript components, with deterministic input data rather than model output.
 the deferred-render race. The packaged Electron smoke suite exercises the
 composer and scripted streaming path in addition to its engine integration.
 
+`bun run test:interactions` runs the keyboard, composer, Files and first-reply
+scrolling regressions on their own. It exercises actual mouse and Tab input,
+per-chat drafts, delayed uploads, request failures and late responses. These
+checks also run in the full visual suite and the Projects suite.
+
 ## Repeatable performance and README captures
+
+### Comparing production builds
+
+Build and preserve the baseline before editing, then build the candidate. Run
+the same benchmark against each package directory, one window at a time:
+
+```sh
+bun run benchmark:desktop /absolute/baseline/apps/native /absolute/local-results/baseline
+bun run benchmark:desktop /absolute/candidate/apps/native /absolute/local-results/candidate
+```
+
+The runner creates a fresh profile and uses synthetic code fences, long prose,
+and native wheel input. It measures renderer heap after collection, summed
+process RSS, script/layout work and frame callback intervals. Repeat both runs
+and compare matching scenarios. Keep the window visible on the same display;
+the runner retains production background throttling and hardware acceleration.
+RSS includes shared pages and is not an exclusive physical-memory measurement.
+
+Set `GRAFF_BENCHMARK_TRACE=scroll` or `code` for a separate local Chromium trace.
+Tracing adds memory overhead, so use untraced runs for RAM comparisons. Frame
+callbacks measure scheduling; verify presentation from trace display-feedback
+and sequence counters before making refresh-rate claims. Keep reports and raw
+traces local. The library-only memory checks are
+`node scripts/benchmark-code-memory.mjs` and
+`node scripts/benchmark-session-memory.mjs`; they do not measure the whole app.
+
+### Capturing the demonstration gallery
 
 `bun run test:performance` runs the visual suite followed by a synthetic full-GUI
 workload: startup, a reply, Appearance changes, review, and a longer streamed

@@ -38,17 +38,29 @@ app.whenReady().then(async () => {
     fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: ['update UI', 'update transport'], apiRequests }, null, 2));
     return;
   }
-  if (['projects', 'splits'].includes(process.env.GRAFF_VISUAL_SUITE)) {
+  if (['projects', 'splits', 'interactions'].includes(process.env.GRAFF_VISUAL_SUITE)) {
     await require('./navigation-visual.cjs').runNavigationVisuals({ win, origin, output });
-    await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
-    await require('./dev-preview-visual.cjs').runDevPreview({ output });
+    if (process.env.GRAFF_VISUAL_SUITE !== 'interactions') {
+      await require('./browser-visual.cjs').runBrowserVisuals({ win, origin, output });
+      await require('./dev-preview-visual.cjs').runDevPreview({ output });
+    }
     assert.deepEqual(apiRequests, [], 'Project fixtures never call engine or model APIs');
-    fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: ['projects and navigation', 'browser'], apiRequests }, null, 2));
+    fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ passed: process.env.GRAFF_VISUAL_SUITE === 'interactions' ? ['keyboard, composer, files and reading'] : ['projects and navigation', 'browser'], apiRequests }, null, 2));
     return;
   }
   if (process.env.GRAFF_VISUAL_SUITE === 'stress') {
     await require('./stress-visual.cjs').runStressVisuals({ win, origin, output, fullscreen: false });
     assert.deepEqual(apiRequests, [], 'Stress fixtures never call engine or model APIs');
+    return;
+  }
+  if (process.env.GRAFF_VISUAL_SUITE === 'code') {
+    await require('./streaming-code-visual.cjs').runStreamingCodeVisuals({ win, origin, output });
+    assert.deepEqual(apiRequests, [], 'Code fixtures never call engine or model APIs');
+    return;
+  }
+  if (process.env.GRAFF_VISUAL_SUITE === 'agents') {
+    await require('./agents-visual.cjs').runAgentVisuals({ win, origin, output });
+    assert.deepEqual(apiRequests, [], 'Agent fixtures never call engine or model APIs');
     return;
   }
   await win.loadURL(`${origin}/visual-tests`);

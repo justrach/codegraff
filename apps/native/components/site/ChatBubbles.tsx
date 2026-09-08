@@ -1,56 +1,60 @@
 "use client";
 
-import { memo, useEffect, useRef, useState, type RefObject } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import Markdown from "@/components/primitives/Markdown";
 import ThinkingState from "@/components/primitives/ThinkingState";
-import ToolChips from "@/components/primitives/ToolChips";
+import ToolChips, { type LiveDiff } from "@/components/primitives/ToolChips";
 import TurnActivity from "./TurnActivity";
 import { pinScrollerTail } from "@/lib/follow-scroll";
 import { turnBlocks, type AssistantTurn } from "@/lib/acp";
+import { createSmoothStream } from "@/lib/smooth-stream";
 
 /** Typewriter reveal over the ACP text. Catch-up lands on whitespace so
  * markdown chips/lists don't reflow every mid-token character. */
 function useSmoothStream(target: string, live: boolean): string {
   const [shown, setShown] = useState(target);
-  const shownRef = useRef(target);
+  const stream = useRef<ReturnType<typeof createSmoothStream> | null>(null);
   useEffect(() => {
-    if (!live) {
-      shownRef.current = target;
-      setShown(target);
-      return;
-    }
-    if (!target.startsWith(shownRef.current)) {
-      shownRef.current = target;
-      setShown(target);
-      return;
-    }
-    if (target === shownRef.current) return;
-    let raf = 0;
-    let last = performance.now();
-    const tick = (now: number) => {
-      const dt = Math.min(now - last, 80);
-      last = now;
-      const have = shownRef.current.length;
-      const behind = target.length - have;
-      if (behind <= 0) return;
-      const rate = Math.min(180 + behind * 1.4, 2800);
-      let next = have + Math.max(1, Math.round((rate * dt) / 1000));
-      if (next < target.length) {
-        const rest = target.slice(next, next + 24);
-        const cut = rest.search(/[\s\n]/);
-        if (cut > 0) next += cut + 1;
-      } else {
-        next = target.length;
-      }
-      shownRef.current = target.slice(0, next);
-      setShown(shownRef.current);
-      if (shownRef.current.length < target.length) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    if (!live) return;
+    stream.current = createSmoothStream(target, setShown);
+    return () => { stream.current?.dispose(); stream.current = null; };
+    // The controller owns subsequent targets without restarting its frame.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live]);
+  useEffect(() => {
+    if (live) stream.current?.update(target, true);
+    else setShown(target);
   }, [target, live]);
-  return live ? shown : target;
+  return live && target.startsWith(shown) ? shown : target;
 }
+
+/** Reveal updates belong to this text block, not the entire tool/reasoning tree. */
+const StreamingMarkdown = memo(function StreamingMarkdown({ text, live, onOpenPath, scroller, following }: {
+  text: string; live: boolean; onOpenPath?: (path: string) => void;
+  scroller?: RefObject<HTMLDivElement | null>; following: boolean;
+}) {
+  const shown = useSmoothStream(text, live);
+  useLayoutEffect(() => {
+    pinScrollerTail(scroller?.current ?? null, following);
+  }, [shown, scroller, following]);
+  return <Markdown text={shown} streaming={live} onOpenPath={onOpenPath} />;
+});
+
+const EMPTY_DIFFS: LiveDiff[] = [];
+const WAITING_ROWS = [{ primary: "Waiting on the model…", shimmer: true }];
+const Reasoning = memo(ThinkingState);
+const ToolGroup = memo(function ToolGroup({ tools, diffs, onOpenPath }: {
+  tools: AssistantTurn["tools"]; diffs: LiveDiff[]; onOpenPath?: (path: string) => void;
+}) {
+  const rows = tools.map(tool => ({
+    id: tool.id, icon: tool.icon, label: tool.name, chip: tool.chip,
+    mono: tool.icon === "run" || tool.icon === "write" || tool.icon === "read",
+    detailMono: tool.icon === "run" || tool.icon === "write", detail: tool.detail,
+    path: tool.path, status: tool.status, startedAt: tool.startedAt, elapsedMs: tool.elapsedMs,
+  }));
+  return <ToolChips rows={rows} diffs={diffs} onOpenPath={onOpenPath} />;
+}, (previous, next) => previous.diffs === next.diffs && previous.onOpenPath === next.onOpenPath &&
+  previous.tools.length === next.tools.length && previous.tools.every((tool, index) => tool === next.tools[index]));
 
 export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   return (
@@ -71,23 +75,18 @@ export const AssistantBody = memo(function AssistantBody({
   onReview,
   scroller,
   following,
+  reasoningLabel,
 }: {
   turn: AssistantTurn;
   onOpenPath?: (path: string) => void;
   onReview?: () => void;
   scroller?: RefObject<HTMLDivElement | null>;
   following: boolean;
+  reasoningLabel?: string;
 }) {
   const thinking = turn.status === "thinking";
   const live = thinking || turn.status === "streaming";
-  const blocks = turnBlocks(turn.text, turn.tools);
-  const lastText = [...blocks].reverse().find((b) => b.kind === "text");
-  const lastTextBody = lastText?.kind === "text" ? lastText.text : "";
-  const smoothText = useSmoothStream(lastTextBody, live);
-  const draining = smoothText.length < lastTextBody.length;
-  useEffect(() => {
-    if (draining) pinScrollerTail(scroller?.current ?? null, following);
-  }, [smoothText, draining, scroller, following]);
+  const blocks = useMemo(() => turnBlocks(turn.text, turn.tools), [turn.text, turn.tools]);
   const startRef = useRef(Date.now());
   const [thoughtSecs, setThoughtSecs] = useState<number | null>(
     turn.thoughtMs !== undefined ? Math.max(1, Math.round(turn.thoughtMs / 1000)) : null,
@@ -100,27 +99,13 @@ export const AssistantBody = memo(function AssistantBody({
       return Math.max(1, Math.round(ms / 1000));
     });
   }, [thinking, turn.thoughtMs]);
-  const reasoningRows = turn.reasoning
+  const reasoningRows = useMemo(() => turn.reasoning
     ? turn.reasoning
         .split(/\n+/)
         .map((line) => line.trim())
         .filter(Boolean)
         .map((primary) => ({ primary }))
-    : [];
-  const toChipRows = (tools: typeof turn.tools) =>
-    tools.map((tool) => ({
-      id: tool.id,
-      icon: tool.icon,
-      label: tool.name,
-      chip: tool.chip,
-      mono: tool.icon === "run" || tool.icon === "write" || tool.icon === "read",
-      detailMono: tool.icon === "run" || tool.icon === "write",
-      detail: tool.detail,
-      path: tool.path,
-      status: tool.status,
-      startedAt: tool.startedAt,
-      elapsedMs: tool.elapsedMs,
-    }));
+    : [], [turn.reasoning]);
 
   const lastTextIndex = blocks.reduce((acc, b, i) => (b.kind === "text" ? i : acc), -1);
   const lastBlock = blocks[blocks.length - 1];
@@ -128,30 +113,27 @@ export const AssistantBody = memo(function AssistantBody({
   return (
     <article data-turn-status={turn.status} aria-busy={live} className="min-w-0" style={{ overflowAnchor: "none", animation: "fade-in 280ms ease both" }}>
       {((thinking && turn.activityKind === "agent_thought_chunk") || reasoningRows.length > 0 || (turn.thoughtMs ?? 0) >= 1500) && (
-        <ThinkingState
+        <Reasoning
           variant="Reasoning"
-          rows={reasoningRows.length ? reasoningRows : [{ primary: "Waiting on the model…", shimmer: true }]}
-          activeLabel={turn.model ? `Thinking · ${turn.model}` : "Thinking"}
-          doneLabel={thoughtSecs ? `Thought for ${thoughtSecs}s` : "Thought"}
+          rows={reasoningRows.length ? reasoningRows : WAITING_ROWS}
+          activeLabel={reasoningLabel ?? (turn.model ? `Thinking · ${turn.model}` : "Thinking")}
+          doneLabel={reasoningLabel ?? (thoughtSecs ? `Thought for ${thoughtSecs}s` : "Thought")}
           working={thinking}
         />
       )}
       {blocks.map((block, i) =>
         block.kind === "tools" ? (
           <div key={`tools-${block.tools[0]?.id ?? i}`} className="mt-3">
-            <ToolChips
-              rows={toChipRows(block.tools)}
-              diffs={i === blocks.length - 1 || (i === blocks.length - 2 && lastBlock?.kind === "text") ? turn.diffs : []}
+            <ToolGroup
+              tools={block.tools}
+              diffs={i === blocks.length - 1 || (i === blocks.length - 2 && lastBlock?.kind === "text") ? turn.diffs : EMPTY_DIFFS}
               onOpenPath={onOpenPath}
             />
           </div>
         ) : (
           <div key={`text-${i}`} className="mt-3 max-w-[630px]">
-            <Markdown
-              text={i === lastTextIndex ? smoothText : block.text}
-              streaming={i === lastTextIndex && live && draining}
-              onOpenPath={onOpenPath}
-            />
+            <StreamingMarkdown text={block.text} live={i === lastTextIndex && live}
+              onOpenPath={onOpenPath} scroller={scroller} following={i === lastTextIndex && following} />
           </div>
         ),
       )}
@@ -159,13 +141,13 @@ export const AssistantBody = memo(function AssistantBody({
       {turn.error && (
         <p role="alert" className="mt-4 max-w-[620px] text-[13.5px] leading-[1.65] text-red">{turn.error}</p>
       )}
-      {turn.recap && turn.status === "done" && !draining && (
+      {turn.recap && turn.status === "done" && (
         <p className="mt-3 text-[12px] text-ink-3">{turn.recap}</p>
       )}
-      {turn.costUsd !== undefined && turn.status === "done" && !draining && (
+      {turn.costUsd !== undefined && turn.status === "done" && (
         <p className="mt-1 font-mono text-[11px] text-ink-3">${turn.costUsd.toFixed(4)}</p>
       )}
-      {turn.status === "done" && !draining && turn.diffs.length > 0 && onReview && (
+      {turn.status === "done" && turn.diffs.length > 0 && onReview && (
         <button
           type="button"
           onClick={onReview}

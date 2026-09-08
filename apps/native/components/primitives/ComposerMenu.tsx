@@ -4,12 +4,13 @@ import { createPortal } from "react-dom";
 import { Icon, GLYPHS, BRANDS, SOURCES } from "./prompt-demo";
 type Row = { key: string; name: string; desc: string };
 type Props = {
-  anchor: RefObject<HTMLDivElement | null>; menu: "at" | "slash" | "skill"; rows: Row[]; query: string;
+  anchor: RefObject<HTMLDivElement | null>; panel: RefObject<HTMLDivElement | null>; id: string;
+  menu: "at" | "slash" | "skill"; rows: Row[]; query: string;
   active: number; engaged: boolean; setActive: (index: number) => void; setEngaged: (value: boolean) => void;
   connected: boolean; setConnected: (value: boolean) => void; demo: boolean; onPick: (row: Row) => void;
 };
-export default function ComposerMenu({ anchor, menu, rows, query, active, engaged, setActive, setEngaged, connected, setConnected, demo, onPick }: Props) {
-  const panel = useRef<HTMLDivElement>(null), list = useRef<HTMLDivElement>(null);
+export default function ComposerMenu({ anchor, panel, id, menu, rows, query, active, engaged, setActive, setEngaged, connected, setConnected, demo, onPick }: Props) {
+  const list = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ top: number; left: number; width: number; maxHeight: number }>();
   useLayoutEffect(() => {
     const place = () => {
@@ -27,7 +28,7 @@ export default function ComposerMenu({ anchor, menu, rows, query, active, engage
     window.addEventListener('resize', place); document.addEventListener('scroll', scroll, true);
     const observer = new ResizeObserver(place); if (anchor.current) observer.observe(anchor.current);
     return () => { window.removeEventListener('resize', place); document.removeEventListener('scroll', scroll, true); observer.disconnect(); };
-  }, [anchor, rows.length]);
+  }, [anchor, panel, rows.length]);
   useLayoutEffect(() => {
     const viewport = list.current, row = viewport?.children[active] as HTMLElement | undefined;
     if (!viewport || !row) return;
@@ -36,12 +37,12 @@ export default function ComposerMenu({ anchor, menu, rows, query, active, engage
   }, [active, query, position]);
   return createPortal(<div ref={panel} data-composer-menu className="fixed z-[200] flex flex-col overflow-hidden rounded-xl border border-line bg-surface p-1 shadow-raised"
     style={{ ...position, visibility: position ? "visible" : "hidden" }} onMouseLeave={() => setEngaged(false)}>
-    <div ref={list} role="listbox" aria-label={menu === "slash" ? "Commands" : menu === "skill" ? "GUI skills" : "Sources and files"} className="relative min-h-0 overflow-y-auto overscroll-contain">
+    <div ref={list} id={id} role="listbox" aria-label={menu === "slash" ? "Commands" : menu === "skill" ? "GUI skills" : "Sources and files"} className="relative min-h-0 overflow-y-auto overscroll-contain">
       {rows.map((row, i) => {
         const source = menu === "at" ? SOURCES.find(s => s.key === row.key) : undefined;
         const mark = source ? source.brand ? BRANDS[source.brand] : <Icon size={15}>{GLYPHS[source.glyph ?? "clip"]}</Icon>
           : row.key.startsWith("file:") ? <Icon size={15}>{GLYPHS.file}</Icon> : null;
-        return <button key={row.key} type="button" role="option" aria-selected={i === active} title={`${row.name} — ${row.desc}`}
+        return <button key={row.key} id={`${id}-${i}`} type="button" role="option" aria-selected={i === active} title={`${row.name} — ${row.desc}`}
           onMouseDown={event => event.preventDefault()} onMouseEnter={() => { setActive(i); setEngaged(true); }} onClick={() => onPick(row)}
           className={`flex h-9 w-full items-center gap-2.5 rounded-md px-2 text-left ${engaged && i === active ? "bg-hover" : "hover:bg-hover"}`}>
           {mark && <span className="flex size-5 shrink-0 items-center justify-center text-ink-2">{mark}</span>}

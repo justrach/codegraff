@@ -2,7 +2,8 @@
 
 import { useMemo, type JSX, type ReactNode } from "react";
 import { Streamdown, type Components, type ControlsConfig, type ExtraProps } from "streamdown";
-import { code } from "@streamdown/code";
+import { code } from "@/lib/code-highlighter";
+import StreamingCode from "./StreamingCode";
 
 /* ─────────────────────────────────────────────────────────
  * MARKDOWN
@@ -55,6 +56,7 @@ function heading(level: 1 | 2 | 3 | 4 | 5 | 6) {
 /** Everything but inline code, which needs the files-pane callback. The
  * `node` prop is Streamdown's hast handle and must not reach the DOM. */
 const STATIC_COMPONENTS: Components = {
+  code: StreamingCode,
   h1: heading(1),
   h2: heading(2),
   h3: heading(3),

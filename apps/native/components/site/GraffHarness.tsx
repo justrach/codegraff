@@ -38,7 +38,7 @@ import {
   type Health,
 } from "@/lib/acp-client";
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AcpCommand, type AssistantTurn } from "@/lib/acp";
-import { isFollowingTail, pinScrollerTail } from "@/lib/follow-scroll";
+import { useChatScroll } from "./useChatScroll";
 import { dropQueuedPrompt, enqueuePrompt, shiftQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
 import { dateGroup, listSessionsPage, relativeTime, removeSession, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory, pushHistory, saveHistory } from "@/lib/prompt-history";
@@ -131,12 +131,6 @@ export default function GraffHarness() {
   const [splitDirection, setSplitDirection] = useState<"row" | "column">("row");
   const [zoomedPane, setZoomedPane] = useState(false);
   const [paneWeights, setPaneWeights] = useState<Record<number, number>>({});
-  const scrollEls = useRef(new Map<number, HTMLDivElement>());
-  const [tailing, setTailing] = useState<Record<number, boolean>>({});
-  const paneRef = (id: number) => (el: HTMLDivElement | null) => {
-    if (el) scrollEls.current.set(id, el);
-    else scrollEls.current.delete(id);
-  };
   const chatsRef = useRef(chats);
   chatsRef.current = chats;
   const panesRef = useRef<number[]>([]);
@@ -155,6 +149,7 @@ export default function GraffHarness() {
     .filter((id, i, all) => all.indexOf(id) === i && chats.some((c) => c.id === id))
     .slice(0, MAX_COLUMNS);
   const columnKey = columnIds.join(",");
+  const { paneRef, tailing } = useChatScroll(chats, columnKey);
   const active = chatThread.messages.length > 0;
   const busy = busyIds.has(chatThread.id);
   const chatModel = chatThread.model ?? model ?? undefined;
@@ -602,35 +597,6 @@ export default function GraffHarness() {
       .catch(() => undefined);
   };
 
-  // Every visible column follows its own tail: jump to the bottom when it
-  // appears, and stop following as soon as the reader scrolls up in it.
-  const initializedScrollers = useRef(new WeakSet<HTMLElement>());
-  useEffect(() => {
-    const off: (() => void)[] = [];
-    for (const id of columnKey.split(",").filter(Boolean).map(Number)) {
-      const el = scrollEls.current.get(id);
-      if (!el) continue;
-      if (!initializedScrollers.current.has(el)) {
-        el.scrollTop = el.scrollHeight;
-        initializedScrollers.current.add(el);
-        setTailing(current => ({ ...current, [id]: true }));
-      }
-      const onScroll = () => {
-        const next = isFollowingTail(el);
-        setTailing((current) => (current[id] === next ? current : { ...current, [id]: next }));
-      };
-      el.addEventListener("scroll", onScroll, { passive: true });
-      off.push(() => el.removeEventListener("scroll", onScroll));
-    }
-    return () => off.forEach((stop) => stop());
-  }, [columnKey]);
-
-  useEffect(() => {
-    for (const id of columnKey.split(",").filter(Boolean).map(Number)) {
-      pinScrollerTail(scrollEls.current.get(id) ?? null, tailing[id] ?? true);
-    }
-  }, [chats, tailing, columnKey]);
-
   const recents = sidebarRecents(stored, chats);
 
   // The tab bar's folder chip is the *tab's* workspace; the sidebar's
@@ -840,7 +806,7 @@ export default function GraffHarness() {
             </section>
           ) : null}
           <div className="min-h-0 min-w-0 flex-1" style={{ display: projectsOpen || conversationsOpen ? "none" : "flex" }}>
-            <ChatSplitLayout threads={columns} activeId={activeId} direction={splitDirection} weights={paneWeights} setWeights={setPaneWeights}
+            <ChatSplitLayout threads={columns} liveChatIds={chats.map(chat => chat.id)} activeId={activeId} direction={splitDirection} weights={paneWeights} setWeights={setPaneWeights}
               onFocus={focusChat} onClose={closeChat} folder={thread => ({name: workspaceNameOf(thread), path: cwdOf(thread)})}
               body={columnBody} split={columnIds.length > 1} />
           </div>

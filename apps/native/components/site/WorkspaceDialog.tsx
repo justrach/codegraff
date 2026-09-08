@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Switch } from "@/components/atoms/Switch";
 import type { PromptModel } from "@/components/primitives/PromptBar";
-import { displayDirPath, rankFolderEntries, sameDir, splitFolderQuery } from "@/lib/folder-picker";
+import { displayDirPath, rankFolderEntries, sameBrowse, sameDir, splitFolderQuery } from "@/lib/folder-picker";
 import { browseFolders, fsReveal, type FolderListing } from "@/lib/fs-client";
 import { IconCrossSmall, IconFolder } from "@/lib/icons";
 import { basename, type Workspace } from "@/lib/workspaces";
@@ -36,13 +36,56 @@ const FIELD =
   "h-8 w-full rounded-[8px] bg-field px-2.5 text-[13px] text-ink shadow-hairline outline-none placeholder:text-ink-3 focus:bg-hover";
 
 function Frame({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+  const panel = useRef<HTMLDivElement>(null);
+  // Capture before the child input's autoFocus runs during the commit.
+  const previous = useRef(document.activeElement as HTMLElement | null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  useLayoutEffect(() => {
+    const dialog = panel.current!;
+    // The portal is a direct body child. Inert background roots prevent
+    // native or programmatic focus from reaching the chat behind the modal.
+    const background = Array.from(document.body.children)
+      .filter((element): element is HTMLElement => element instanceof HTMLElement && !element.contains(dialog))
+      .map(element => ({ element, inert: element.inert }));
+    background.forEach(({ element }) => { element.inert = true; });
+    const controls = () => Array.from(dialog.querySelectorAll<HTMLElement>("button, a[href], input, select, textarea, [tabindex]"))
+      .filter(element => element.tabIndex >= 0 && !element.matches(":disabled") && !element.closest("[inert], [hidden]") && element.getClientRects().length > 0 && getComputedStyle(element).visibility === "visible");
+    const focusInside = (preferred?: HTMLElement) => {
+      const items = controls();
+      (preferred && items.includes(preferred) ? preferred : items[0] ?? dialog).focus({ preventScroll: true });
+      // A control may have become unavailable since it last held focus.
+      if (!dialog.contains(document.activeElement)) dialog.focus({ preventScroll: true });
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    if (!dialog.contains(document.activeElement)) focusInside();
+    let lastFocused = document.activeElement as HTMLElement;
+    const keepFocus = (event: FocusEvent) => {
+      if (dialog.contains(event.target as Node)) lastFocused = event.target as HTMLElement;
+      else { event.stopPropagation(); focusInside(lastFocused); }
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
+      if (event.key === "Escape") {
+        event.preventDefault(); event.stopPropagation(); close.current();
+      } else if (event.key === "Tab") {
+        const items = controls(), first = items[0], last = items.at(-1);
+        if (!first || !items.includes(document.activeElement as HTMLElement) || (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+          event.preventDefault();
+          (event.shiftKey ? last ?? dialog : first ?? dialog).focus({ preventScroll: true });
+        }
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("focusin", keepFocus, true);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("focusin", keepFocus, true);
+      background.forEach(({ element, inert }) => { element.inert = inert; });
+      // The switcher search which opened settings has already unmounted.
+      const target = previous.current?.isConnected ? previous.current : document.querySelector<HTMLElement>("[data-workspace-trigger]");
+      target?.focus({ preventScroll: true });
+    };
+  }, []);
   return createPortal(
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4"
@@ -52,7 +95,9 @@ function Frame({ title, onClose, children }: { title: string; onClose: () => voi
       }}
     >
       <div
+        ref={panel}
         role="dialog"
+        tabIndex={-1}
         aria-modal="true"
         aria-label={title}
         className="flex w-full max-w-[560px] flex-col overflow-hidden rounded-[14px] bg-surface shadow-overlay"
@@ -133,11 +178,14 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
 
   const parsed = splitFolderQuery(typed, listing?.path);
   const listingPath = listing?.path ?? null;
+  const listingHome = listing?.home ?? null;
   useEffect(() => {
     if (!listingPath || !parsed.browse) return;
-    if (sameDir(parsed.browse, listingPath)) return;
+    if (sameBrowse(parsed.browse, listingPath, listingHome)) return;
     void go(parsed.browse, { refresh: true });
-  }, [go, listingPath, parsed.browse]);
+    const request = seq.current;
+    return () => { if (seq.current === request) seq.current++; };
+  }, [go, listingHome, listingPath, parsed.browse]);
   const shown = useMemo(
     () => (listing ? rankFolderEntries(listing.entries, parsed.needle) : []),
     [listing, parsed.needle],
@@ -163,7 +211,12 @@ function FolderPicker({ startPath, onPick, onClose }: { startPath?: string; onPi
           </span>
           <input
             value={typed}
-            onChange={(event) => { setTyped(event.target.value); setError(null); }}
+            onChange={(event) => {
+              // Editing an explicit lookup retires it and makes the new path
+              // actionable immediately, even if the old folder is still loading.
+              if (busy) { seq.current++; setBusy(false); }
+              setTyped(event.target.value); setError(null);
+            }}
             spellCheck={false}
             autoFocus
             aria-label="Folder path"
@@ -314,6 +367,7 @@ function SettingsForm({
   const [yolo, setYolo] = useState(workspace.yolo ?? true);
   const [mcp, setMcp] = useState(workspace.mcp ?? true);
   const [confirmForget, setConfirmForget] = useState(false);
+  const [revealError, setRevealError] = useState<string | null>(null);
   const save = () => onSave({ ...workspace, name: name.trim() || basename(workspace.path), model: model || undefined, yolo, mcp });
 
   return (
@@ -335,13 +389,17 @@ function SettingsForm({
             </span>
             <button
               type="button"
-              onClick={() => void fsReveal("", workspace.path)}
+              onClick={() => {
+                setRevealError(null);
+                void fsReveal("", workspace.path).catch(error => setRevealError(error instanceof Error ? error.message : "Could not reveal this folder."));
+              }}
               className="h-8 shrink-0 rounded-[8px] bg-hover-2 px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-line-strong"
             >
               Reveal
             </button>
           </div>
         </Field>
+        {revealError && <p role="alert" className="text-[12px] text-red">{revealError}</p>}
         <Field label="Default model" hint="What a new tab here spawns with. The composer's picker still changes it per tab.">
           <select value={model} onChange={(event) => setModel(event.target.value)} className={FIELD}>
             <option value="">Harness default</option>

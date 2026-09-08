@@ -206,6 +206,9 @@ export default function SidebarNav({
   const [query, setQuery] = useState("");
   const workspaceButtonRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const searchButtonRef = useRef<HTMLButtonElement>(null);
+  const expandButtonRef = useRef<HTMLButtonElement>(null);
+  const collapseButtonRef = useRef<HTMLButtonElement>(null);
 
   const selectedTitle = activeTitle === undefined ? demoActiveTitle : activeTitle;
   const visibleRecents = recents.filter((item) => item.label.toLowerCase().includes(query.trim().toLowerCase()));
@@ -231,6 +234,12 @@ export default function SidebarNav({
     setWorkspaceOpen(false);
     setSearchOpen(false);
     setQuery("");
+    requestAnimationFrame(() => expandButtonRef.current?.focus());
+  };
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setQuery("");
+    searchButtonRef.current?.focus();
   };
 
   return (
@@ -289,6 +298,7 @@ export default function SidebarNav({
           )}
 
           <button
+            ref={collapseButtonRef}
             type="button"
             aria-label="Collapse sidebar"
             aria-hidden={collapsed}
@@ -299,11 +309,12 @@ export default function SidebarNav({
             <IconSidebarLeftArrow size={18} />
           </button>
           <button
+            ref={expandButtonRef}
             type="button"
             aria-label="Expand sidebar"
             aria-hidden={!collapsed}
             tabIndex={collapsed ? 0 : -1}
-            onClick={() => setCollapsed(false)}
+            onClick={() => { setCollapsed(false); requestAnimationFrame(() => collapseButtonRef.current?.focus()); }}
             className="sidebar-expand-control absolute left-2 top-0.5 flex size-9 items-center justify-center rounded-[8px] text-ink-3 transition-[opacity,background-color,color] duration-150 hover:bg-hover-2 hover:text-ink"
           >
             <IconSidebarLeftOpen size={18} />
@@ -333,11 +344,12 @@ export default function SidebarNav({
           ))}
         </GlideGroup>
 
-        <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
+        <div inert={collapsed} aria-hidden={collapsed} className="mt-3 min-h-0 flex-1 overflow-y-auto">
           <div className="sidebar-copy relative mx-2 mb-1 h-8">
             <button
               type="button"
               aria-hidden={searchOpen}
+              tabIndex={searchOpen ? -1 : 0}
               aria-expanded={chatsOpen}
               aria-controls="sidebar-chat-list"
               title={chatsOpen ? "Hide the chat list" : "Show the chat list"}
@@ -353,8 +365,11 @@ export default function SidebarNav({
             </button>
 
             <button
+              ref={searchButtonRef}
               type="button"
               aria-label="Search chats"
+              aria-hidden={searchOpen}
+              tabIndex={searchOpen ? -1 : 0}
               aria-expanded={searchOpen}
               onClick={() => {
                 setSearchOpen(true);
@@ -367,6 +382,8 @@ export default function SidebarNav({
             </button>
 
             <div
+              inert={!searchOpen}
+              aria-hidden={!searchOpen}
               className={`absolute right-0 top-0 z-20 flex h-8 items-center overflow-hidden rounded-[8px] bg-field text-ink-3 shadow-hairline transition-[width,opacity] focus-within:text-ink-2 ${searchOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`}
               style={{
                 width: searchOpen ? "100%" : CHAT_SEARCH_MOTION.closedWidth,
@@ -383,8 +400,9 @@ export default function SidebarNav({
                 onChange={(event) => setQuery(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Escape") {
-                    setSearchOpen(false);
-                    setQuery("");
+                    event.preventDefault();
+                    event.stopPropagation();
+                    closeSearch();
                   }
                 }}
                 placeholder="Search chats"
@@ -394,10 +412,7 @@ export default function SidebarNav({
               <button
                 type="button"
                 aria-label="Close chat search"
-                onClick={() => {
-                  setSearchOpen(false);
-                  setQuery("");
-                }}
+                onClick={closeSearch}
                 className="flex size-8 shrink-0 items-center justify-center rounded-[8px] text-ink-3 transition-[background-color,color,transform] duration-150 hover:bg-hover-2 hover:text-ink active:scale-[0.96]"
               >
                 <IconCrossSmall size={16} />
@@ -503,7 +518,7 @@ export default function SidebarNav({
           </div>
         </div>
 
-        <div className="sidebar-copy mx-2 mt-3 w-[232px] border-t border-line pt-3">
+        <div inert={collapsed} aria-hidden={collapsed} className="sidebar-copy mx-2 mt-3 w-[232px] border-t border-line pt-3">
           <button
             type="button"
             onClick={onFooterClick ?? onNewChat}

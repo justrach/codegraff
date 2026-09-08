@@ -1,10 +1,9 @@
-# Codegraff native app (merjs + Beautiful UI)
+# Codegraff desktop app
 
-The Tauri desktop app in `gui/` is unchanged. This directory is a new native
-surface:
+The current desktop shell is in `electron/`; the earlier Tauri and merjs
+prototypes remain in the repository.
 
-- **Shell:** merjs `examples/desktop` — Zig → ObjC → `NSWindow` + `WKWebView`
-  (no Electron). merjs is a separate repo; we copied only the window pattern.
+- **Shell:** Electron with Chromium rendering and native browser views.
 - **UI:** [Beautiful UI](https://github.com/slev12397/beautiful-ui) primitives
   (MIT) + design tokens, composed as a graff harness.
 - **Backend:** this repo's `graff acp` (Agent Client Protocol over stdio).
@@ -121,8 +120,13 @@ ones on screen, up to four columns. Each has its own transcript,
 composer, model and scroll position, and each split names the chat and
 the folder it runs in, since a split can be in a different workspace
 from the tab beside it. The × in a split's header closes that one; the
-split button closes them all. Clicking a tab that is already a split
-swaps it with the main column, so the same chats stay on screen.
+split button closes them all. Clicking a tab that is already a split focuses
+it without moving the panes. Selecting a hidden tab replaces the focused pane.
+
+Unsent text and attachments stay with their chat when switching tabs or zooming
+a split, including uploads that finish while the chat is hidden. Closing the
+chat discards its draft. While a reply is running, **Stop** remains available
+beside **Queue follow-up**, so writing a draft never hides cancellation.
 
 A tab is named by the model, not by chopping up the prompt: the first
 message of a tab goes to `graff title` through `/api/title`, which
@@ -204,7 +208,10 @@ collapsed; expanded groups page their rows, and large output previews preserve
 the beginning and end with an explicit omission marker. Older messages load on
 request. These bounds limit rendering; they do not cap stored conversation size.
 
-For a focused pass, `bun run test:projects` covers folder selection, conversation
+For a focused pass, `bun run test:interactions` checks real keyboard focus in
+dialogs, native menu guards, composer menus and IME input, drafts and uploads,
+file-loading recovery, stale responses, and reading position during a first reply.
+`bun run test:projects` covers folder selection, conversation
 and review recovery, navigation, terminals, and browser previews. `bun run test:splits`
 checks native close routing, stable pane order, draft preservation while visiting
 Projects, and mouse resizing in both directions. `bun run test:stress`
@@ -217,6 +224,9 @@ the package's Electron executable. It uses configured credentials in a disposabl
 workspace, checks the resulting code independently with Bun, then runs `/compact`.
 Keep its logs and screenshots local. `bun run test:performance` adds synthetic
 workload measurements; startup paint alone does not measure conversation UX.
+For an optimization comparison, `bun run benchmark:desktop` runs identical
+streaming and scrolling workloads against a selected production build. See
+[the benchmark instructions](electron/VISUAL-TESTS.md#comparing-production-builds).
 
 ## Browser sidecar (experimental)
 

@@ -16,10 +16,14 @@
     "test:desktop": "bun test lib ./electron/*.test.cjs",
     "test:visual": "bun scripts/test-visual.mjs",
     "test:updates": "GRAFF_VISUAL_SUITE=updates bun scripts/test-visual.mjs",
+    "test:interactions": "GRAFF_VISUAL_SUITE=interactions bun scripts/test-visual.mjs",
     "test:projects": "GRAFF_VISUAL_SUITE=projects bun scripts/test-visual.mjs",
     "test:splits": "GRAFF_VISUAL_SUITE=splits bun scripts/test-visual.mjs",
     "test:stress": "GRAFF_VISUAL_SUITE=stress bun scripts/test-visual.mjs",
-    "test:performance": "GRAFF_PERFORMANCE_TESTS=1 bun scripts/test-visual.mjs"
+    "test:code": "GRAFF_VISUAL_SUITE=code bun scripts/test-visual.mjs",
+    "test:agents": "GRAFF_VISUAL_SUITE=agents bun scripts/test-visual.mjs",
+    "test:performance": "GRAFF_PERFORMANCE_TESTS=1 bun scripts/test-visual.mjs",
+    "benchmark:desktop": "bun scripts/benchmark-desktop.mjs"
   },
   "dependencies": {
     "@streamdown/code": "^1.1.1",
@@ -33,6 +37,7 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "shadow-plugin": "^2.1.0",
+    "shiki": "3.23.0",
     "streamdown": "^2.6.0"
   },
   "devDependencies": {

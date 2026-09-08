@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync }
 import path from "node:path";
 import { NextRequest } from "next/server";
 import { resolveRoot } from "@/lib/server-root";
+import { transcriptFromMessages } from "@/lib/sessions";
 import {
   MAX_FULL_BYTES,
   NAME_RE,
@@ -68,7 +69,11 @@ export async function GET(req: NextRequest) {
         size: st.size,
         workspace: str(parsed.workspace) ?? str(header?.workspace) ?? found.workspace,
         local: found.local,
-        messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+        // The desktop never displayed raw provider history. Avoid allocating
+        // its tool bodies and image payloads again in Chromium just to drop them.
+        ...(req.nextUrl.searchParams.get("view") === "transcript"
+          ? { presentation: "transcript-v1", transcript: transcriptFromMessages(Array.isArray(parsed.messages) ? parsed.messages : [], str(parsed.model) ?? undefined) }
+          : { messages: Array.isArray(parsed.messages) ? parsed.messages : [] }),
       });
     } catch (err) {
       return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });

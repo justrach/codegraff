@@ -1,14 +1,20 @@
 "use client";
-import { useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { AssistantBody, UserBubble } from "./ChatBubbles";
 import type { Msg } from "./harness-types";
+import { pinScrollerTail } from "@/lib/follow-scroll";
 
 const PAGE_SIZE = 80;
-export default function ChatTranscript({ messages, register, following, onOpenPath, onReview }: {
+export default memo(function ChatTranscript({ messages, register, following, onOpenPath, onReview }: {
   messages: Msg[]; register: (element: HTMLDivElement | null) => void; following: boolean;
   onOpenPath: (path: string) => void; onReview: () => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
+  const registerScroller = useCallback((element: HTMLDivElement | null) => {
+    scroller.current = element; register(element);
+  }, [register]);
+  const followingRef = useRef(following);
+  followingRef.current = following;
   const [shown, setShown] = useState(PAGE_SIZE);
   const anchor = useRef<{ height: number; top: number } | null>(null);
   // Freeze the start after loading older messages so streaming cannot remove them.
@@ -20,7 +26,17 @@ export default function ChatTranscript({ messages, register, following, onOpenPa
       anchor.current = null;
     }
   }, [shown]);
-  return <div ref={element => { scroller.current = element; register(element); }} data-chat-transcript
+  useLayoutEffect(() => {
+    pinScrollerTail(scroller.current, following);
+  }, [messages, following]);
+  useLayoutEffect(() => {
+    const element = scroller.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => pinScrollerTail(element, followingRef.current));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return <div ref={registerScroller} data-chat-transcript
     className="min-h-0 flex-1 overflow-y-auto overscroll-contain" style={{ overflowAnchor: "none" }}>
     <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-4 py-8 sm:px-8">
       {start > 0 && <button type="button" className="self-center rounded-lg bg-field px-3 py-2 text-xs text-ink-2 hover:bg-hover" onClick={() => {
@@ -34,4 +50,4 @@ export default function ChatTranscript({ messages, register, following, onOpenPa
             scroller={scroller} following={following && start + index === messages.length - 1} />)}
     </div>
   </div>;
-}
+});

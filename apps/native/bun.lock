@@ -16,6 +16,7 @@
         "react": "^19.1.0",
         "react-dom": "^19.1.0",
         "shadow-plugin": "^2.1.0",
+        "shiki": "3.23.0",
         "streamdown": "^2.6.0",
       },
       "devDependencies": {

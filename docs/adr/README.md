@@ -95,6 +95,8 @@ record only when you need the evidence or the edge cases.
 | [0083](0083-meta-tool-choice-is-auto-only.md) | Meta / Muse Spark `tool_choice` is `auto` at the source; `max` effort folds to `xhigh` (#751). |
 | [0084](0084-codedb-context-honors-local-only.md) | Native `codedb context` is `--local` (or refused before spawn) when repository policy or `local_only` forbids transmitting working data; no-retention hybrid is not no egress. |
 | [0085](0085-in-session-update-is-next-launch.md) | `/update` installs a verified release for the next launch; this session keeps its original binary. |
+| [0086](0086-desktop-drafts-belong-to-open-chats.md) | Unsent desktop drafts and uploads belong to open chats and survive hidden panes; closing a chat disposes them. |
+| [0087](0087-bounded-desktop-presentation-work.md) | Bound syntax caches and live code rendering; project saved transcripts before sending them to the renderer and measure identical desktop workloads. |
 
 ## When to write one
 

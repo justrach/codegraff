@@ -3,14 +3,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 async function runProjectRecovery({ win, origin, output }) {
-  const wc = win.webContents, js = code => wc.executeJavaScript(code);
+  const wc = win.webContents;
+  const js = async code => {
+    try { return await wc.executeJavaScript(code); }
+    catch (error) { console.error('Recovery expression:', code); throw error; }
+  };
   const wait = async code => { for (let i = 0; i < 120; i++) { if (await js(code)) return; await new Promise(r => setTimeout(r, 50)); } throw Error(`Recovery check timed out: ${code}`); };
   const click = (selector, text) => js(`Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find(e=>e.textContent.trim()===${JSON.stringify(text)}).click()`);
   const input = (label, value) => js(`(()=>{const e=document.querySelector('[aria-label="${label}"]');e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   const library = '[data-conversation-library]';
   await wc.loadURL(origin);
-  await wait(`!!document.querySelector('[data-project-context]')`);
-  await js(`(() => {
+  await wait(`document.readyState==='complete'&&!!document.querySelector('[data-project-context]')`);
+  await js(String.raw`(() => {
     const previous = window.fetch;
     const json = (value, status=200) => new Response(JSON.stringify(value), {status,headers:{'content-type':'application/json'}});
     window.recovery = {mode:'fail',detail:'fail',holds:{},requests:[],pageFailures:0};
@@ -103,9 +107,18 @@ async function runProjectRecovery({ win, origin, output }) {
   await js(`document.querySelector('button[aria-label="Open folder…"]').click()`);
   await wait(`!!document.querySelector('[role="dialog"] button[title$="/child"]')`);
   assert.ok(await js(`document.querySelector('[aria-label="Folder path"]').value.endsWith('/')`),'Resolved folder paths show a trailing slash');
+  const originalFolder = await js(`document.querySelector('[aria-label="Folder path"]').value`);
   await input('Folder path','codeg');
   await wait(`!!document.querySelector('[role="dialog"] button[title$="/codegraff"]')`);
   assert.equal(await js(`document.querySelector('[role="dialog"] .group button[title]')?.title?.endsWith('/codegraff')`),true,'Closest fuzzy match is listed first');
+  await input('Folder path','/demo/slow/');
+  await wait(`!!window.recovery.holds.folder`);
+  const browseRequests = await js(`window.recovery.requests.filter(r=>r.url.startsWith('/api/workspaces')).length`);
+  await input('Folder path',originalFolder);
+  await js(`window.recovery.holds.folder();delete window.recovery.holds.folder`);
+  await js(`new Promise(r=>setTimeout(r,100))`);
+  assert.equal(await js(`!!document.querySelector('[role="dialog"] button[title="/demo/slow/child"]')`),false,'Reverting a folder query retires its delayed background listing');
+  assert.equal(await js(`window.recovery.requests.filter(r=>r.url.startsWith('/api/workspaces')).length`),browseRequests,'A retired listing cannot trigger another lookup to repair stale results');
   await input('Folder path','/demo/missing');
   await click('[role="dialog"] button','Open folder');
   await wait(`!!document.querySelector('[role="dialog"] [role="alert"]')`);

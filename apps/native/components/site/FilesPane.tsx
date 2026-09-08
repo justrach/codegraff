@@ -1,21 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import Markdown from "@/components/primitives/Markdown";
 import {
   formatSize,
-  fsOpen,
   fsRawUrl,
-  fsReveal,
-  fsStat,
-  gitChanges,
-  gitFileDiff,
   IMAGE_RE,
-  type FsDir,
   type FsFile,
-  type GitChanges,
 } from "@/lib/fs-client";
 import { IconCrossSmall, IconFolder } from "@/lib/icons";
+import { useFilesPane, type FileRequest } from "./useFilesPane";
 
 /* ─────────────────────────────────────────────────────────
  * FILES PANE
@@ -31,19 +25,27 @@ const FileGlyph = ({ size = 13 }: { size?: number }) => (
   </svg>
 );
 
-function ActionButton({ label, active = false, onClick }: { label: string; active?: boolean; onClick: () => void }) {
+function ActionButton({ label, active = false, disabled = false, onClick }: { label: string; active?: boolean; disabled?: boolean; onClick: () => void }) {
   return (
     <button
       type="button"
       aria-pressed={active}
+      disabled={disabled}
       onClick={onClick}
-      className={`flex h-6 items-center rounded-[6px] px-1.5 text-[11.5px] font-medium transition-colors duration-100 hover:bg-hover hover:text-ink ${
+      className={`disabled:opacity-40 disabled:pointer-events-none flex h-6 items-center rounded-[6px] px-1.5 text-[11.5px] font-medium transition-colors duration-100 hover:bg-hover hover:text-ink ${
         active ? "bg-hover text-ink" : "text-ink-3"
       }`}
     >
       {label}
     </button>
   );
+}
+
+function PaneError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return <div role="alert" className="flex items-start gap-2 px-4 py-3 text-[12.5px]">
+    <p className="min-w-0 flex-1 break-words text-red">{message}</p>
+    <button type="button" onClick={onRetry} className="shrink-0 rounded px-2 py-0.5 font-medium text-ink hover:bg-hover">Retry</button>
+  </div>;
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -131,94 +133,34 @@ function DiffView({ text }: { text: string }) {
   );
 }
 
-export default function FilesPane({
-  root,
-  requested,
-  onClose,
-}: {
-  /** The workspace to walk (the active tab's cwd); absent, the server default. */
+type Props = {
+  /** The active tab's workspace; absent, the server default. */
   root?: string;
-  /** A path the harness wants shown (e.g. a clicked tool chip), or the
-   * changes review when `changes` is set. */
-  requested?: { path: string; n: number; changes?: boolean } | null;
+  requested?: FileRequest;
   onClose: () => void;
-}) {
-  const navigation = useRef(0);
-  const [dir, setDir] = useState<FsDir | null>(null);
-  const [file, setFile] = useState<FsFile | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<"files" | "changes">("files");
-  const [changes, setChanges] = useState<GitChanges | null>(null);
-  const [diff, setDiff] = useState<{ path: string; text: string } | null>(null);
+};
 
-  const loadChanges = useCallback(async () => {
-    try {
-      setChanges(await gitChanges(root));
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [root]);
+export default function FilesPane(props: Props) {
+  // A different project gets a fresh pane before the first paint. No folder,
+  // change count, pending operation or retry can leak across this boundary.
+  return <FilesPaneContent key={props.root ?? ""} {...props} />;
+}
 
-  const openChangesView = useCallback(() => {
-    setView("changes");
-    setDiff(null);
-    void loadChanges();
-  }, [loadChanges]);
-
-  const show = useCallback(async (path: string, keepView = false) => {
-    const request = ++navigation.current;
-    try {
-      const res = await fsStat(path, root);
-      if (request !== navigation.current) return;
-      setError(null);
-      if (!keepView) {
-        setView("files");
-        setDiff(null);
-      }
-      if (res.dir) {
-        setDir(res);
-        setFile(null);
-      } else {
-        setFile(res);
-      }
-    } catch (err) {
-      if (request === navigation.current) setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [root]);
-
-  useEffect(() => {
-    // Preload the root listing without stealing the view — a Review click
-    // can land before this resolves, and changes must win that race. A
-    // workspace switch re-runs this (new `show`) and lands on its root.
-    setFile(null);
-    void show("", true);
-    return () => { navigation.current++; };
-  }, [show]);
-
-  useEffect(() => {
-    if (!requested) return;
-    if (requested.changes) openChangesView();
-    else void show(requested.path);
-  }, [requested, show, openChangesView]);
-
-  const openFileDiff = useCallback(async (path: string) => {
-    try {
-      setDiff({ path, text: await gitFileDiff(path, root) });
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [root]);
-
+function FilesPaneContent({ root, requested, onClose }: Props) {
+  const { dir, file, view, changes, diff, loading, error, actionError, actionLoading,
+    show, loadChanges, openFileDiff, backToChanges, openFilesView, act, retry, retryAction } = useFilesPane(root, requested);
   const here = file ? file.path : (dir?.path ?? "");
   const crumbs = here ? here.split("/") : [];
-  const rootName = dir?.root.split("/").pop() ?? file?.root.split("/").pop() ?? "workspace";
+  const rootPath = root ?? dir?.root ?? file?.root;
+  const rootName = rootPath?.replace(/\/+$/, "").split("/").pop() || (rootPath === "/" ? "/" : "workspace");
   const isMarkdown = file && /\.(md|mdx|markdown)$/i.test(file.path);
   const isImage = file && IMAGE_RE.test(file.path);
 
   return (
     <aside
+      data-files-pane
+      aria-label="Workspace files"
+      aria-busy={!!loading}
       className="flex w-[400px] max-w-[55%] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-page"
       style={{ animation: "fade-in 300ms ease both" }}
     >
@@ -227,13 +169,13 @@ export default function FilesPane({
         <span className="flex size-5 items-center justify-center text-ink-2">
           <IconFolder size={16} />
         </span>
-        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink" title={dir?.root ?? file?.root}>
+        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink" title={rootPath}>
           {rootName}
         </span>
         <button
           type="button"
           aria-pressed={view === "changes"}
-          onClick={() => (view === "changes" ? (setView("files"), setDiff(null)) : openChangesView())}
+          onClick={() => view === "changes" ? openFilesView() : void loadChanges()}
           className={`flex h-6 items-center gap-1 rounded-[6px] px-1.5 text-[11.5px] font-medium transition-colors duration-100 hover:bg-hover hover:text-ink ${
             view === "changes" ? "bg-hover text-ink" : "text-ink-3"
           }`}
@@ -245,8 +187,8 @@ export default function FilesPane({
             </span>
           )}
         </button>
-        <ActionButton label="Reveal" onClick={() => void fsReveal(here, root)} />
-        {view === "files" && file && <ActionButton label="Open" onClick={() => void fsOpen(file.path, root)} />}
+        <ActionButton label="Reveal" disabled={!!loading || !!error || !!actionLoading} onClick={() => void act({ kind: "reveal", path: view === "changes" ? diff?.path ?? "" : here })} />
+        {view === "files" && file && <ActionButton label="Open" disabled={!!loading || !!error || !!actionLoading} onClick={() => void act({ kind: "open", path: file.path })} />}
         <button
           type="button"
           aria-label="Close files"
@@ -264,7 +206,7 @@ export default function FilesPane({
             <>
               <button
                 type="button"
-                onClick={() => setDiff(null)}
+                onClick={backToChanges}
                 className="rounded px-1 py-0.5 font-medium text-ink-3 transition-colors hover:bg-hover hover:text-ink"
               >
                 ‹ Changes
@@ -311,13 +253,16 @@ export default function FilesPane({
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {error && <p className="px-4 py-3 text-[12.5px] text-red">{error}</p>}
+        {loading && <p role="status" className="px-4 py-3 text-[12.5px] text-ink-3">{loading}</p>}
+        {error && <PaneError message={error} onRetry={retry} />}
+        {actionLoading && <p role="status" className="px-4 py-2 text-[12.5px] text-ink-3">{actionLoading}</p>}
+        {actionError && <PaneError message={actionError} onRetry={retryAction} />}
 
         {/* changes review: per-file diff */}
-        {!error && view === "changes" && diff && <DiffView key={diff.path} text={diff.text} />}
+        {!error && !loading && view === "changes" && diff && <DiffView key={diff.path} text={diff.text} />}
 
         {/* changes review: changed-file list */}
-        {!error && view === "changes" && !diff && (
+        {!error && !loading && view === "changes" && !diff && (
           <div className="flex flex-col px-2 py-1.5">
             {(changes?.files ?? []).map((entry) => (
               <button
@@ -344,7 +289,7 @@ export default function FilesPane({
         )}
 
         {/* file viewer */}
-        {!error && view === "files" && file && (
+        {!error && !loading && view === "files" && file && (
           <div className="px-3 py-3">
             {isImage ? (
               <figure>
@@ -374,7 +319,7 @@ export default function FilesPane({
         )}
 
         {/* folder listing */}
-        {!error && view === "files" && !file && dir && (
+        {!error && !loading && view === "files" && !file && dir && (
           <div className="flex flex-col px-2 py-1.5">
             {dir.path && (
               <button

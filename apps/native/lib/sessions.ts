@@ -37,6 +37,16 @@ export type TranscriptMsg =
   | { role: "user"; text: string }
   | { role: "assistant"; turn: AssistantTurn };
 
+export type SessionResponse = StoredSession & { messages?: unknown[]; presentation?: "transcript-v1"; transcript?: TranscriptMsg[] };
+
+/** New servers project the existing GUI transcript before crossing into the
+ * renderer. Keep raw responses readable for older servers and local fixtures. */
+export function sessionFromResponse(body: SessionResponse): { meta: StoredSession; messages: TranscriptMsg[] } {
+  const { messages, presentation, transcript, ...meta } = body;
+  return { meta, messages: presentation === "transcript-v1" && Array.isArray(transcript)
+    ? transcript : transcriptFromMessages(messages ?? [], meta.model ?? undefined) };
+}
+
 const BASE = "/api/sessions";
 
 function withRoot(params: Record<string, string | undefined>): string {
@@ -93,14 +103,12 @@ export async function listSessions(root?: string): Promise<StoredSession[]> {
 }
 
 export async function loadSession(name: string, root?: string, signal?: AbortSignal): Promise<{ meta: StoredSession; messages: TranscriptMsg[] }> {
-  const res = await fetch(`${BASE}${withRoot({ name, root })}`, { cache: "no-store", signal });
+  const res = await fetch(`${BASE}${withRoot({ name, root, view: "transcript" })}`, { cache: "no-store", signal });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     throw new Error(`session ${name} → ${res.status}: ${detail.slice(0, 200)}`);
   }
-  const body = (await res.json()) as StoredSession & { messages?: unknown[] };
-  const { messages, ...meta } = body;
-  return { meta, messages: transcriptFromMessages(messages ?? [], meta.model ?? undefined) };
+  return sessionFromResponse(await res.json() as SessionResponse);
 }
 
 /** Sidebar bucket for a session's last activity, newest buckets first. */

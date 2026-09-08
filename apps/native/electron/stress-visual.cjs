@@ -51,6 +51,7 @@ async function runStressVisuals({win: fixtureWindow, origin, output, fullscreen 
     assert.equal(await titleHeight(),36);
     const checkedFullscreen = fullscreen && process.platform === 'darwin';
     if(checkedFullscreen) {
+      win.show(); win.focus(); win.webContents.focus();
       win.setFullScreen(true);await wait(`document.documentElement.dataset.desktopFullscreen==='true'`);
       assert.equal(await titleHeight(),0);await bounds();
       fs.writeFileSync(path.join(output,'stress-fullscreen.png'),(await win.webContents.capturePage()).toPNG());

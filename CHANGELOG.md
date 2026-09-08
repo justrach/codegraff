@@ -43,6 +43,15 @@ current is part of cutting a release.
   Null or empty `contains` / null bounds / null `compact` are a whole-file
   read, so strict tool calling can omit unused mutually exclusive fields.
   Nonempty `contains` still cannot combine with bounds or `compact`.
+- Desktop code highlighting uses a bounded cache, saved conversations avoid
+  loading discarded tool payloads into the renderer, and split resizing avoids
+  rerendering the full conversation on each pointer event.
+- Desktop drafts and attachments survive tab changes and split zoom. Stop stays
+  available while writing a follow-up, and completion menus respect pointer
+  input, IME composition and window shortcuts.
+- Desktop dialogs keep keyboard focus, settings switches wait for Save, and
+  Files provides loading and retry states without accepting stale responses.
+  First-reply streaming respects the reader's position.
 - `#776`: the native Open a folder picker keeps listing candidates while you
   type, ranks them like `/model` (closest name first), and shows a resolved
   directory with a trailing `/` (never `//`). Exact-path Go / Open folder

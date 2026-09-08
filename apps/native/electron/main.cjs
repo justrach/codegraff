@@ -157,5 +157,5 @@ app.whenReady().then(async () => {
     { role: 'windowMenu' },
   ]));
   await win.loadURL(backend.origin); win.setWindowButtonVisibility(true); win.show(); profiler.record('ui-ready');
-  if (process.env.GRAFF_ELECTRON_SMOKE) require('./smoke.cjs').run({ win, browser, automation, backend, metrics, activity, computer, profiler }).then(() => app.quit()).catch(error => { console.error(error); stop(); app.exit(1); });
+  if (process.env.GRAFF_ELECTRON_SMOKE) require(process.env.GRAFF_SMOKE_LAUNCH_ONLY ? './smoke-launch.cjs' : './smoke.cjs').run({ win, browser, automation, backend, metrics, activity, computer, profiler }).then(() => app.quit()).catch(error => { console.error(error); stop(); app.exit(1); });
 }).catch(error => { console.error(error); stop(); app.exit(1); });

@@ -34,11 +34,15 @@ export async function fsStat(path: string, root?: string): Promise<FsDir | FsFil
 }
 
 async function act(action: "open" | "reveal", path: string, root?: string): Promise<void> {
-  await fetch(BASE, {
+  const res = await fetch(BASE, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ action, path, root }),
-  }).catch(() => {});
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error ?? `Could not ${action} this item (${res.status}).`);
+  }
 }
 
 /** Reveal in Finder. */

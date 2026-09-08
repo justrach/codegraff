@@ -26,9 +26,17 @@ async function runNavigationVisuals({win:fixtureWindow,origin,output}) {
       const galleryFetch=window.fetch;window.fetch=async(input,options)=>{const response=await galleryFetch(input,options);if(options?.body&&JSON.parse(options.body).method==='bootstrap')return new Response(JSON.stringify({sessionId:'demo',commands}),{headers:{'content-type':'application/json'}});if(String(input).includes('/api/models')){const data=await response.json();data.result.commands=commands;data.result.current.model='example-model-with-a-long-name';data.result.models[0].name=data.result.current.model;return new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}});}return response;};`});
     await wc.loadURL(origin);win.focus();await wait(`!!document.querySelector('textarea[aria-label="Prompt"]')`);
     if(process.env.GRAFF_VISUAL_SUITE==='splits'){await require('./split-focus-visual.cjs').runSplitFocus({win,origin,output});return;}
+    const interactions = async () => {
+      await require('./navigation-keyboard-visual.cjs').runNavigationKeyboard({win,origin});
+      await require('./composer-interaction-visual.cjs').runComposerInteractions({win,origin,output});
+      await require('./files-recovery-visual.cjs').runFilesRecovery({win,origin,output});
+      await require('./chat-scroll-visual.cjs').runChatScroll({win,origin,output});
+    };
+    if(process.env.GRAFF_VISUAL_SUITE==='interactions'){await interactions();return;}
     await require('./projects-visual.cjs').runProjectVisuals({win,origin,output});
     await require('./project-recovery-visual.cjs').runProjectRecovery({win,origin,output});
     await require('./review-recovery-visual.cjs').runReviewRecovery({win,origin,output});
+    await interactions();
     await require('./split-focus-visual.cjs').runSplitFocus({win,origin,output});
     await require('./composer-visual.cjs').runComposerVisual({win,output});
     await require('./split-composer-visual.cjs').runSplitComposerVisual({win,output,key});
