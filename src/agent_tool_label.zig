@@ -143,7 +143,6 @@ pub fn skipTranscript(name: []const u8) bool {
     const leaf = mcpLeaf(name);
     if (std.mem.eql(u8, name, "skill") or std.mem.eql(u8, leaf, "skill")) return true;
     if (std.mem.eql(u8, name, "read_tool_result")) return true;
-    if (std.mem.eql(u8, name, "note_constraint")) return true;
     if (std.mem.eql(u8, name, "load_tool_schemas")) return true;
     return false;
 }

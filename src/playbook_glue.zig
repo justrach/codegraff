@@ -29,6 +29,7 @@ const json_args = @import("json_args.zig");
 const prompts = @import("prompts.zig");
 const playbook = @import("playbook.zig");
 const playbook_pick = @import("playbook_pick.zig");
+const messages = @import("messages.zig");
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
@@ -63,20 +64,63 @@ fn refreshFrom(agent: *Agent, arena: Allocator, arm_root: bool) bool {
     return true;
 }
 
+fn sentenceEnd(c: u8) bool {
+    return c == '.' or c == '!' or c == '?';
+}
+
+/// Accept a whole trimmed line or sentence, never an arbitrary substring that
+/// can drop a leading task qualifier or trailing exception. Multiple exact
+/// occurrences are checked because one may be embedded while another is a
+/// complete sentence.
+fn exactUserSegment(user: []const u8, text: []const u8) bool {
+    var search: usize = 0;
+    while (search <= user.len) {
+        const rel = std.mem.indexOf(u8, user[search..], text) orelse return false;
+        const start = search + rel;
+        const end = start + text.len;
+
+        var left = start;
+        while (left > 0 and (user[left - 1] == ' ' or user[left - 1] == '\t')) left -= 1;
+        const starts_segment = left == 0 or user[left - 1] == '\n' or user[left - 1] == '\r' or sentenceEnd(user[left - 1]);
+
+        var right = end;
+        while (right < user.len and (user[right] == ' ' or user[right] == '\t')) right += 1;
+        const at_line_end = right == user.len or user[right] == '\n' or user[right] == '\r';
+        const ends_sentence = right > end and sentenceEnd(text[text.len - 1]);
+        if (starts_segment and (at_line_end or ends_sentence)) return true;
+
+        search = start + 1;
+    }
+    return false;
+}
+
 /// The `note_constraint` meta-tool handler (root-only; the spec lives in
 /// root_specs, so a subagent is never even told it exists). Append-only by
 /// construction — see this file's header.
 pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
     if (agent.sub) return .{ .text = "Only the root may record user constraints.", .is_error = true };
-    const text = if (json_args.object(input)) |o| (json_args.str(o, "text") orelse "") else "";
-    if (std.mem.trim(u8, text, " \t\r\n").len == 0) return .{
-        .text = "note_constraint needs a `text` field: one short imperative line, e.g. \"never add scroll hints or progress dots\"",
+    const object = json_args.object(input) orelse return .{ .text = "note_constraint needs `text` and `scope: project`", .is_error = true };
+    const text = std.mem.trim(u8, json_args.str(object, "text") orelse "", " \t\r\n");
+    const scope = json_args.str(object, "scope") orelse "";
+    if (!std.mem.eql(u8, scope, "project")) return .{
+        .text = "constraint NOT recorded: durable capture requires explicit `scope: project`; temporary, task, session, and ambiguous steering stays local and must not be widened",
+        .is_error = true,
+    };
+    if (text.len == 0) return .{ .text = "note_constraint needs non-empty exact text from the current user message", .is_error = true };
+    if (text.len > playbook.max_text) return .{ .text = "constraint NOT recorded: exact text exceeds the 240-byte project-constraint limit; ask the user for a shorter standing rule", .is_error = true };
+    const current_user = if (agent.named_work_task.len > 0)
+        agent.named_work_task
+    else
+        messages.latestUserText(agent.messages.items);
+    if (current_user.len == 0 or !exactUserSegment(current_user, text)) return .{
+        .text = "constraint NOT recorded: `text` must be a complete verbatim sentence or line from the current user message; do not drop task qualifiers, exceptions, or other limiting language",
         .is_error = true,
     };
     var prov_buf: [32]u8 = undefined;
-    const provenance = std.fmt.bufPrint(&prov_buf, "user:{d}", .{@import("util.zig").unixMs(agent.io)}) catch "user";
+    const now = @import("util.zig").unixMs(agent.io);
+    const provenance = std.fmt.bufPrint(&prov_buf, "user:{d}", .{now}) catch "user";
     const r = playbook.add(agent.io, agent.arena, text, .user, provenance);
-    const duplicate = std.mem.eql(u8, r.reason, "already recorded (same normalized text)");
+    const duplicate = std.mem.eql(u8, r.reason, "already recorded (same exact text, source, and scope)");
     if (!r.ok and !duplicate) return .{
         .text = std.fmt.allocPrint(agent.arena, "constraint NOT recorded ({s}){s}{s}", .{
             r.reason,
@@ -86,7 +130,7 @@ pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
         // An already-recorded constraint is the desired end state, not a
         // failure: flagging it as an error would push the model into
         // retrying or apologising for a ledger that is already correct.
-        .is_error = !std.mem.eql(u8, r.reason, "already recorded (same normalized text)"),
+        .is_error = true,
     };
     @import("prompt_cache_hud.zig").noteBust(.playbook);
     // A duplicate must reconcile a stale prefix too. Never promise same-turn
@@ -99,7 +143,7 @@ pub fn noteConstraint(agent: *Agent, input: std.json.Value) ExecResult {
         "Durable state is saved, but the active prompt could not be refreshed. Do not claim activation; retry note_constraint to reconcile it.";
     // ADR 0021: the user just said this. Echoing "constraint recorded" is
     // machine state, not progress. The tool result still tells the model.
-    return .{ .text = std.fmt.allocPrint(agent.arena, "constraint recorded as {s}. It is now in {s} and rides every subagent, workflow and pipeline brief from here on, in this session and in later ones — you do not need to restate it. {s}", .{ r.id, playbook.path, effect }) catch "constraint recorded; active prompt refresh status unavailable", .is_error = false };
+    return .{ .text = std.fmt.allocPrint(agent.arena, "recorded project constraint {s}: \"{s}\" (scope=project, origin=current user message at {d}). It rides later root, subagent, workflow, and pipeline briefs in this project. Undo without knowing the id via `/never rm <unique text>` or review with `/never`. {s}", .{ r.id, text, now, effect }) catch "project constraint recorded; active prompt refresh status unavailable", .is_error = false };
 }
 
 /// Privacy-safe operational trace: id + success, never constraint text (#644).
@@ -118,11 +162,11 @@ fn applyRetire(root: *Agent, arena: Allocator, id: []const u8) playbook.Retire {
     return result;
 }
 
-fn retireOne(root: *Agent, arena: Allocator, out: *Io.Writer, id: []const u8, needle: []const u8) !void {
+fn retireOne(root: *Agent, arena: Allocator, prompt_arena: Allocator, out: *Io.Writer, id: []const u8, needle: []const u8) !void {
     switch (applyRetire(root, arena, id)) {
         .ok => {
             @import("prompt_cache_hud.zig").noteBust(.playbook);
-            refreshRoot(root, arena);
+            refreshRoot(root, prompt_arena);
             try out.print("retired {s} — it no longer rides new briefs (the record stays in the log as a tombstone)\n", .{id});
         },
         .write_failed => try out.print("could not write the retirement tombstone to {s} — {s} is still active\n", .{ playbook.path, id }),
@@ -147,8 +191,13 @@ fn list(io: Io, arena: Allocator, out: *Io.Writer) !void {
         return;
     }
     try out.print("{s}playbook{s} — {s}\n", .{ style.bold, style.reset, playbook.path });
-    for (items) |item| try out.print("  {s}  {s:<9} {s}\n", .{ item.id, @tagName(item.source), item.text });
-    try out.print("{d} item(s) · /never <text> adds one · /never rm <id-or-text> retires one\n", .{items.len});
+    var legacy: usize = 0;
+    for (items) |item| {
+        legacy += @intFromBool(item.scope == .legacy_unscoped);
+        try out.print("  {s}  scope={s}  source={s}  created={d}  origin={s}\n      {s}\n", .{ item.id, @tagName(item.scope), @tagName(item.source), item.created_at, item.provenance, item.text });
+    }
+    if (legacy > 0) try out.print("{d} legacy unscoped item(s) need review; keep them or retire by visible text with /never rm <text>\n", .{legacy});
+    try out.print("{d} item(s) · /never <text> adds an explicit project rule · /never rm <id-or-text> retires one\n", .{items.len});
     try out.flush();
 }
 
@@ -220,6 +269,12 @@ pub fn applyUserOverride(root: *Agent, arena: Allocator, user_text: []const u8) 
 ///   /never rm <id|text>     retire one (id, or a unique text fragment)
 ///   /never rm               TTY picker, else list + usage — never add "rm" (#644)
 pub fn command(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
+    return commandWithPromptAllocator(root, arena, arena, line, out);
+}
+
+/// TUI callers use a short-lived allocator for ledger parsing while refreshed
+/// prompt variants must remain in the root's session-lifetime arena.
+pub fn commandWithPromptAllocator(root: *Agent, arena: Allocator, prompt_arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     const trimmed = std.mem.trim(u8, line, " \t\r");
     const rest = for ([_][]const u8{ "/never", "/constraint" }) |name| {
         if (std.mem.eql(u8, trimmed, name)) break "";
@@ -230,7 +285,7 @@ pub fn command(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer
         switch (try playbook_pick.interactive(root, arena, out)) {
             .fallback => try list(root.io, arena, out),
             .handled => {},
-            .retire => |id| try retireOne(root, arena, out, id, id),
+            .retire => |id| try retireOne(root, arena, prompt_arena, out, id, id),
         }
         return true;
     }
@@ -246,23 +301,28 @@ pub fn command(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer
                     try list(root.io, arena, out);
                 },
                 .handled => {},
-                .retire => |id| try retireOne(root, arena, out, id, id),
+                .retire => |id| try retireOne(root, arena, prompt_arena, out, id, id),
             }
             return true;
         }
         const needle = parts.rest;
         const items = playbook.load(root.io, arena);
         const id = if (playbook.find(items, needle) != null) needle else if (playbook.findByUniqueText(items, needle)) |item| item.id else needle;
-        try retireOne(root, arena, out, id, needle);
+        try retireOne(root, arena, prompt_arena, out, id, needle);
         return true;
     }
     var prov_buf: [32]u8 = undefined;
     const provenance = std.fmt.bufPrint(&prov_buf, "user:{d}", .{@import("util.zig").unixMs(root.io)}) catch "user";
+    if (arg.len > playbook.max_text) {
+        try out.print("not recorded: project constraint exceeds {d} bytes; shorten it so no qualifier is truncated\n", .{playbook.max_text});
+        try out.flush();
+        return true;
+    }
     const r = playbook.add(root.io, arena, arg, .user, provenance);
     if (r.ok) {
         @import("prompt_cache_hud.zig").noteBust(.playbook);
-        refreshRoot(root, arena);
-        try out.print("{s}⛔ recorded {s}{s} — this now rides every brief, in this session and later ones\n", .{ style.yellow, r.id, style.reset });
+        refreshRoot(root, prompt_arena);
+        try out.print("{s}⛔ recorded {s}{s} — scope=project, origin={s}; review or undo by text with /never\n", .{ style.yellow, r.id, style.reset, provenance });
     } else try out.print("not recorded: {s}\n", .{r.reason});
     try out.flush();
     return true;
