@@ -8,7 +8,10 @@ The GUI defaults to peers in the current worktree, with an explicit device-wide
 view. The `graff/agents` ACP extension exposes verified live peers, bounded recent
 room history, and explicit addressed human messages. Discovery compares process
 start identities, not PID alone. Old peers without a verifiable identity are
-excluded. Legacy activity is shown as connected, never inferred from CPU usage.
+excluded. The panel defaults to currently working peers; “Show idle agents”
+reveals other verified connected sessions, including waiting and legacy peers.
+The count and recipient picker follow this filter as presence refreshes.
+Coordination history is collapsed by default. Legacy activity is shown as connected, never inferred from CPU usage.
 
 A lightweight observer entry point bypasses provider, MCP and session startup.
 It serves the same extension independently of a busy model turn. It creates no

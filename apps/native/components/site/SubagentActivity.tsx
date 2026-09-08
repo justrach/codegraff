@@ -6,6 +6,7 @@ import { AssistantBody } from './ChatBubbles';
 
 export default function SubagentActivity({root, parent, scope, request}: {root?: string; parent: LocalAgent; scope: string; request: typeof agentRequest}) {
   const [children, setChildren] = useState<ChildAgent[]>([]);
+  const [showFinished, setShowFinished] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [activity, setActivity] = useState<ChildActivity | null>(null);
   const [error, setError] = useState('');
@@ -62,13 +63,16 @@ export default function SubagentActivity({root, parent, scope, request}: {root?:
     // Snapshot replay time is not the child's execution time.
     return {...value, tools:value.tools.map(tool => ({...tool, startedAt:undefined, elapsedMs:undefined}))};
   }, [activity, selected]);
+  const visibleChildren = children.filter(child => showFinished || child.status === 'working');
   return <section aria-label="Sub-agents" className="space-y-3 rounded-xl border border-line p-3">
     <h3 className="text-sm font-medium">Sub-agents</h3>
+    <label className="flex items-center gap-2 text-xs text-ink-3"><input type="checkbox" checked={showFinished} onChange={e => setShowFinished(e.target.checked)} />Show finished sub-agents</label>
+    {loaded && children.length > 0 && !visibleChildren.length && <p className="text-xs text-ink-3">No active sub-agents.</p>}
     {error ? <p role="alert" className="text-xs text-ink-2">{error} <button className="underline" onClick={() => setRefresh(n => n + 1)}>Retry</button></p>
       : !loaded ? <p role="status" className="text-xs text-ink-3">Finding sub-agents…</p>
       : !children.length ? <p className="text-xs text-ink-3">No sub-agent activity published by this session yet. Older Graff binaries do not publish this feed.</p> : null}
-    {selected ? <select aria-label="Select sub-agent" className="w-full min-w-0 rounded-lg bg-hover p-2 text-xs text-ink" value={selected} onChange={e => setSelected(e.target.value)}>{!children.some(child => child.id === selected) && <option value={selected}>Selected sub-agent</option>}{children.map(child => <option key={child.id} value={child.id}>{child.label || 'Sub-agent'} · {child.status}</option>)}</select>
-    : <div className="max-h-48 space-y-1 overflow-y-auto">{children.map(child => <button key={child.id} data-child-agent={child.id} onClick={() => setSelected(child.id)} className="w-full rounded-lg p-2 text-left text-xs hover:bg-hover">
+    {selected ? <select aria-label="Select sub-agent" className="w-full min-w-0 rounded-lg bg-hover p-2 text-xs text-ink" value={selected} onChange={e => setSelected(e.target.value)}>{!visibleChildren.some(child => child.id === selected) && <option value={selected}>{children.find(child => child.id === selected)?.label || 'Selected sub-agent'}</option>}{visibleChildren.map(child => <option key={child.id} value={child.id}>{child.label || 'Sub-agent'} · {child.status}</option>)}</select>
+    : <div className="max-h-48 space-y-1 overflow-y-auto">{visibleChildren.map(child => <button key={child.id} data-child-agent={child.id} onClick={() => setSelected(child.id)} className="w-full rounded-lg p-2 text-left text-xs hover:bg-hover">
       <span className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate font-medium">{child.label || 'Sub-agent'}</span><span className="text-ink-3">{child.status === 'working' ? 'Working' : child.status === 'completed' ? 'Completed' : 'Failed'}</span></span>
       <span className="mt-1 block truncate text-ink-3" title={child.task}>{child.task}</span>
     </button>)}</div>}
