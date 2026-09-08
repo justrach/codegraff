@@ -49,7 +49,7 @@ pub fn promptBox(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
         try body.appendSlice(try imageChips(self, a, th.accent, th.text));
         try body.appendSlice("  ");
     }
-    try body.appendSlice(try self.input.view(a));
+    try body.appendSlice(try self.input.viewStyled(a, th.accent, th.text));
     const wrapped = try theme_mod.wrapPreferWords(a, body.items, inner);
     var lines = std.array_list.Managed([]const u8).init(a);
     var it = std.mem.splitScalar(u8, wrapped, '\n');
