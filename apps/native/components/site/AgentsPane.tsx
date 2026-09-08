@@ -20,6 +20,10 @@ export default function AgentsPane({ root, onClose, request = agentRequest }: { 
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { setRecipient(null); setNotice(''); setText(''); }, [root]);
   useEffect(() => {
+    if (!snapshot || !recipient || snapshot.agents.some(agent => agentKey(agent) === agentKey(recipient))) return;
+    setRecipient(null); setNotice(''); setText(''); setComposing(false);
+  }, [snapshot, recipient]);
+  useEffect(() => {
     let disposed = false, timer: ReturnType<typeof setTimeout>;
     const controller = new AbortController();
     setSnapshot(null); setError('');

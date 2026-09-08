@@ -43,12 +43,13 @@ export default function ComposerMenu({ anchor, panel, id, menu, rows, query, act
         const mark = source ? source.brand ? BRANDS[source.brand] : <Icon size={15}>{GLYPHS[source.glyph ?? "clip"]}</Icon>
           : row.key.startsWith("file:") ? <Icon size={15}>{GLYPHS.file}</Icon> : null;
         return <button key={row.key} id={`${id}-${i}`} type="button" role="option" aria-selected={i === active} title={`${row.name} — ${row.desc}`}
-          onMouseDown={event => event.preventDefault()} onMouseEnter={() => { setActive(i); setEngaged(true); }} onClick={() => onPick(row)}
+          onPointerDown={event => { event.preventDefault(); onPick(row); }} onMouseEnter={() => { setActive(i); setEngaged(true); }}
+          onClick={event => { if (event.detail === 0) onPick(row); }}
           className={`flex h-9 w-full items-center gap-2.5 rounded-md px-2 text-left ${engaged && i === active ? "bg-hover" : "hover:bg-hover"}`}>
           {mark && <span className="flex size-5 shrink-0 items-center justify-center text-ink-2">{mark}</span>}
           <span className="max-w-[55%] shrink-0 truncate text-[12.5px] font-medium text-ink">{row.name}</span>
           <span className="min-w-0 flex-1 truncate text-xs text-ink-3">{row.desc}</span>
-          {source?.connect && <span onClick={event => { event.stopPropagation(); setConnected(!connected); }} className="shrink-0 text-xs text-accent-ink">{connected ? "Connected" : "Connect"}</span>}
+          {source?.connect && <span onPointerDown={event => { event.preventDefault(); event.stopPropagation(); }} onClick={event => { event.stopPropagation(); setConnected(!connected); }} className="shrink-0 text-xs text-accent-ink">{connected ? "Connected" : "Connect"}</span>}
         </button>;
       })}
       {!rows.length && <div role="status" className="px-2 py-3 text-xs text-ink-3">No matches for “{query}”</div>}

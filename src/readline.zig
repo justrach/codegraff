@@ -41,6 +41,7 @@ const isImagePath = input_util.isImagePath;
 const redraw = input_util.redraw;
 const editByte = input_util.editByte; // #396: job-control-aware continuation reads
 const addMark = input_util.addMark;
+const readline_commit = @import("readline_commit.zig");
 const rl_image = @import("readline_image.zig");
 const util = @import("util.zig");
 
@@ -218,14 +219,10 @@ pub fn readLine(
                 redraw(out, buf.items, cur, marks.items, &pastes, &rstate, prompt_col);
             },
             '\r', '\n' => {
-                // The cursor may be mid-block; step past the last input row so
-                // the submitted line and whatever prints next start cleanly.
-                // The second newline leaves a blank-line gutter between the
-                // submitted prompt and the model output, so it is easy to see
-                // where the response starts.
-                if (rstate.rows - 1 > rstate.crow) out.print("\x1b[{d}B", .{rstate.rows - 1 - rstate.crow}) catch {};
-                out.writeAll("\r\n\r\n") catch {};
-                out.flush() catch {};
+                // Replace the manually wrapped editor block with one logical
+                // terminal line. Soft wraps can then reflow after a resize;
+                // authored newlines remain hard and the blank gutter remains.
+                readline_commit.commit(out, buf.items, marks.items, &pastes, rstate.rows, rstate.crow, prompt_col, main_mod.use_color);
                 // Expand live semantic paste spans; typed lookalikes stay text.
                 try pastes.expand(gpa, buf);
                 break;

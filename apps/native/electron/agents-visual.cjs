@@ -82,7 +82,11 @@ async function runAgentVisuals({ win, origin, output }) {
   assert.equal(sent.target, 'peer-b'); assert.equal(sent.startId, '12'); assert.equal(sent.kind, 'message');
   await js(`document.querySelector('[data-agent-case="empty"]').click()`);
   await wait(`document.body.textContent.includes('No connected Graffs')`);
+  await wait(`!document.body.textContent.includes('Recipient is unavailable')`);
   assert.equal(await js(`document.querySelector('button[type="submit"]').disabled`), true);
+  await js(`document.querySelector('[data-agent-case="connected"]').click()`);
+  await wait(`document.querySelectorAll('li button').length === 2`);
+  assert.equal(await js(`document.querySelector('[aria-label="Sub-agent activity"]')`), null, 'A disconnected selection does not return when the peer reconnects');
   await js(`document.querySelector('[data-agent-case="error"]').click()`);
   await wait(`document.querySelector('[role="alert"]')?.textContent.includes('Observer unavailable')`);
   console.log('Agents visual checks passed: themes, scope, live/completed/failed children, tool disclosure, selection races, read-only inspection, explicit send, disconnection and errors.');

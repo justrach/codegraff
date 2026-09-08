@@ -4,6 +4,7 @@ const std = @import("std");
 
 const app = @import("app.zig");
 const catalog = @import("catalog.zig");
+const composer_links = @import("composer_links.zig");
 const engine = @import("engine.zig");
 const glyphs = @import("glyphs.zig");
 const panel = @import("panel.zig");
@@ -49,14 +50,24 @@ pub fn promptBox(self: *const Model, a: std.mem.Allocator, width: usize) ![]cons
         try body.appendSlice(try imageChips(self, a, th.accent, th.text));
         try body.appendSlice("  ");
     }
-    try body.appendSlice(try self.input.viewStyled(a, th.accent, th.text));
-    const wrapped = try theme_mod.wrapPreferWords(a, body.items, inner);
+    // Paste/file spans get styled emphasis; otherwise allowlisted web links
+    // become OSC 8 targets. Both paths wrap with balanced link state per row.
+    if (self.input.semanticSpans().len > 0) {
+        try body.appendSlice(try self.input.viewStyled(a, th.accent, th.text));
+    } else {
+        const value = self.input.getValue();
+        if (value.len == 0) {
+            try body.appendSlice(try self.input.view(a));
+        } else {
+            try body.appendSlice(try composer_links.inputView(a, value, self.input.cursor));
+        }
+    }
+    const max_body: usize = 8;
+    const wrapped = try composer_links.wrap(a, body.items, inner, max_body);
     var lines = std.array_list.Managed([]const u8).init(a);
     var it = std.mem.splitScalar(u8, wrapped, '\n');
     while (it.next()) |ln| try lines.append(ln);
-    const max_body: usize = 8;
-    const start: usize = if (lines.items.len > max_body) lines.items.len - max_body else 0;
-    for (lines.items[start..]) |ln| {
+    for (lines.items) |ln| {
         try out.appendSlice(try rowInner(a, border, th.text, ln, inner));
         try out.append('\n');
     }

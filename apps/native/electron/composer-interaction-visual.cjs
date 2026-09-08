@@ -47,7 +47,9 @@ async function runComposerInteractions({ win, origin, output }) {
     await wait(`!!document.querySelector('[data-composer-menu]')`);
     await pointer('[data-composer-menu] [role="option"][title^="Add photos"]');
     assert.equal(await js('window.fileChooserClicks'), 1, 'A portaled attach option must open the file chooser');
+    await wait(`!document.querySelector('[data-composer-menu]')`);
     await pointer('[aria-label="Add attachments and sources"]');
+    await wait(`!!document.querySelector('[data-composer-menu] [role="option"][title^="$gui-theme"]')`);
     await pointer('[data-composer-menu] [role="option"][title^="$gui-theme"]');
     assert.equal(await js('document.querySelector("textarea").value'), '$gui-theme ', 'A portaled skill selection must reach the composer');
 

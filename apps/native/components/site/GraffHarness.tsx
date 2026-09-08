@@ -129,7 +129,7 @@ export default function GraffHarness() {
   // own scroller and its own place in its transcript.
   const [panes, setPanes] = useState<number[]>([]);
   const [splitDirection, setSplitDirection] = useState<"row" | "column">("row");
-  const [zoomedPane, setZoomedPane] = useState(false);
+  const [zoomedPane, setZoomedPane] = useState<number | null>(null);
   const [paneWeights, setPaneWeights] = useState<Record<number, number>>({});
   const chatsRef = useRef(chats);
   chatsRef.current = chats;
@@ -730,8 +730,8 @@ export default function GraffHarness() {
 
 
   useDesktopShortcuts({ closeChat, newChat, reopenClosed, toggleSplit, focusChat, chats, activeId, columns: columnIds,
-    split: direction => { setSplitDirection(direction); setZoomedPane(false); addPane(); },
-    zoomPane: () => setZoomedPane(value => !value),
+    split: direction => { setSplitDirection(direction); setZoomedPane(null); addPane(); },
+    zoomPane: () => setZoomedPane(value => value === null ? activeId : null),
     resizePane: delta => setPaneWeights(old => ({ ...old, [activeId]: Math.max(0.4, Math.min(3, (old[activeId] ?? 1) + delta)) })),
     toggleTerminal, equalize: () => setPaneWeights({}), openWorkspace: () => setDialog({ mode: "new" }),
   });
@@ -740,7 +740,7 @@ export default function GraffHarness() {
 
   const paneTodos = lastAssistant?.turn.todos ?? [];
   // Zoom only changes visibility; the split order is retained.
-  const columns = (zoomedPane ? [activeId] : columnIds).map((id) => chats.find((c) => c.id === id)).filter((c): c is Chat => c !== undefined);
+  const columns = (zoomedPane !== null ? [zoomedPane] : columnIds).map((id) => chats.find((c) => c.id === id)).filter((c): c is Chat => c !== undefined);
 
 
   return (
