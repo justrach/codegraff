@@ -179,8 +179,6 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     self.stall = .{}; // #680: a fresh widen ladder + tripped budget per request
     var stall_retries: usize = 0;
     const max_stall_retries: usize = 2;
-    var doomloop_retries: usize = 0; // grok-build parity: bounded resample after a latched stream_repetition
-    const max_doomloop_retries: usize = 1;
     const stall_reconnect_backoff_ms = 750; // brief pause before reconnecting on a fresh stream
     var server_retries: usize = 0; // #opencode-parity: bounded retries for a transient in-stream server overload
     var openai404_retries: usize = 0; // #opencode-parity: bounded retries for OpenAI's spurious model 404s
@@ -223,23 +221,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 else
                     postWatched(self.gpa, self.io, self.client, self.provider, body, conv);
                 if (attempt_body) |ok| break :blk ok else |err| {
-                    // Doom-loop (stream_repetition latched mid-stream): grok-build
-                    // treats this as a RETRYABLE attempt failure — abort + bounded
-                    // resample — rather than ending the turn on the marker. One
-                    // bounded resample; a loop that survives a fresh sample is a
-                    // real model failure and still ends the turn recorded.
-                    if (err == error.ModelLoop) {
-                        if (doomloop_retries < max_doomloop_retries) {
-                            doomloop_retries += 1;
-                            self.say("[model output loop detected — resampling ({d}/{d})]\n", .{ doomloop_retries, max_doomloop_retries }) catch {};
-                            if (self.tracer) |tr| tr.note("doom_loop", "resample");
-                            if (telemetry.g_telem) |t| t.errorEvent("doom_loop", "bounded resample");
-                            @import("agent_stream.zig").noteStallRetry(self, stall_retries); // fresh stream, no concat
-                            self.closeCodexWs();
-                            continue :rebuild;
-                        }
-                        return err;
-                    }
+                    if (err == error.ModelLoop) return err; // #743: repeated prose ends the turn WITHOUT retry (tier2 model-loop-bounded-prose)
                     if (self.streamed_text) if (self.out) |w| {
                         w.writeAll("\n") catch {};
                         w.flush() catch {};
