@@ -88,6 +88,7 @@ test {
     _ = @import("issue_524_tests.zig");
     _ = @import("issue_737_tests.zig");
     _ = @import("issue_788_tests.zig");
+    _ = @import("issue_798_tests.zig");
     _ = @import("composer_links.zig");
     _ = @import("input.zig");
     _ = @import("keys.zig");
