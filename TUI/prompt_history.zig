@@ -38,7 +38,7 @@ pub fn recallNext(self: *Model) void {
     const i = self.hist_idx orelse return;
     if (i + 1 >= self.prompt_hist.items.len) {
         self.hist_idx = null;
-        apply(self, self.draft_text orelse "", self.draft_images orelse &.{});
+        restoreDraft(self);
         return;
     }
     self.hist_idx = i + 1;
@@ -67,7 +67,7 @@ fn recordImages(self: *Model) void {
 
 fn snapshotDraft(self: *Model) void {
     clearDraft(self);
-    self.draft_text = self.alloc.dupe(u8, self.input.getValue()) catch null;
+    self.draft_input = self.input.snapshot() catch null;
     if (self.images.items.len == 0) return;
     var paths = std.array_list.Managed([]const u8).init(self.alloc);
     for (self.images.items) |p| {
@@ -82,14 +82,21 @@ fn snapshotDraft(self: *Model) void {
 }
 
 fn clearDraft(self: *Model) void {
-    if (self.draft_text) |t| {
-        self.alloc.free(t);
-        self.draft_text = null;
+    if (self.draft_input) |state| {
+        self.input.freeSnapshot(state);
+        self.draft_input = null;
     }
     if (self.draft_images) |paths| {
         freePaths(self, paths);
         self.draft_images = null;
     }
+}
+
+fn restoreDraft(self: *Model) void {
+    if (self.draft_input) |state| {
+        self.input.setState(state) catch {};
+    } else self.input.setValue("") catch {};
+    replaceImages(self, self.draft_images orelse &.{});
 }
 
 fn apply(self: *Model, text: []const u8, paths: []const []const u8) void {

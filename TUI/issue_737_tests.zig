@@ -5,7 +5,12 @@ const engine = @import("engine.zig");
 const key = @import("key.zig");
 
 fn draft(term: *sim.Term, expected: []const u8, history_len: usize) !void {
-    try std.testing.expectEqualStrings(expected, term.model.input.getValue());
+    const got = term.model.input.getValue();
+    if (expected.len > 0 and !std.ascii.isWhitespace(expected[expected.len - 1])) {
+        try std.testing.expectEqual(expected.len + 1, got.len);
+        try std.testing.expectEqualStrings(expected, got[0..expected.len]);
+        try std.testing.expectEqual(@as(u8, ' '), got[got.len - 1]);
+    } else try std.testing.expectEqualStrings(expected, got);
     try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
     try std.testing.expectEqual(history_len, term.model.history.items.len);
     try std.testing.expect(term.model.pending != null);
@@ -109,8 +114,8 @@ test "#737 delayed paste_end dispatch cannot reset a subsequent decoded paste" {
     _ = term.feed("\r");
     _ = term.feed("\nthird\x1b[201~");
     const got = term.model.input.getValue();
-    try std.testing.expect(std.mem.startsWith(u8, got, "firstsecond"));
-    try std.testing.expect(std.mem.endsWith(u8, got, "third"));
+    try std.testing.expect(std.mem.startsWith(u8, got, "first second"));
+    try std.testing.expect(std.mem.endsWith(u8, got, "third "));
     try std.testing.expectEqual(@as(usize, 0), term.model.steer_queue.items.len);
     try std.testing.expect(!term.model.cancel_requested);
 }

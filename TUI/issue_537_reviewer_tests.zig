@@ -315,7 +315,7 @@ test "production folded SGR and X10 wheels are paste-aware on every trajectory" 
         fixture.term.model.sel.active = true;
         fixture.term.model.sel.pressed = true;
         try std.testing.expectEqual(Effect.stay, try dispatchProductionBatch(&fixture.term.model, bytes));
-        try std.testing.expectEqualStrings("leftright", fixture.term.model.input.getValue());
+        try std.testing.expectEqualStrings("leftright ", fixture.term.model.input.getValue());
         try std.testing.expectEqual(@as(usize, 7), fixture.term.model.scroll);
         try std.testing.expect(!fixture.term.model.follow);
         try std.testing.expect(fixture.term.model.sel.active and fixture.term.model.sel.pressed);
@@ -553,7 +553,10 @@ test "one feed carries a 16KiB paste payload through its later terminator" {
         defer fixture.deinit();
         const history_len = fixture.term.model.history.items.len;
         try std.testing.expectEqual(Effect.stay, fixture.term.feed(&wire));
-        try std.testing.expectEqualStrings(&payload, fixture.term.model.input.getValue());
+        const got = fixture.term.model.input.getValue();
+        try std.testing.expectEqual(payload.len + 1, got.len);
+        try std.testing.expectEqualStrings(&payload, got[0..payload.len]);
+        try std.testing.expectEqual(@as(u8, ' '), got[got.len - 1]);
         try std.testing.expect(!fixture.term.model.pasting and !key_mod.inPaste());
         try std.testing.expectEqual(@as(usize, 0), fixture.term.pending);
         try std.testing.expectEqual(history_len, fixture.term.model.history.items.len);
@@ -581,8 +584,10 @@ test "feed stops at Ctrl-Q across a 16KiB+1 paste-start/paste-end wire" {
         var fixture = try Fixture.init(trajectory);
         defer fixture.deinit();
         try std.testing.expectEqual(Effect.quit, fixture.term.feed(&wire));
-        try std.testing.expectEqual(payload_len, fixture.term.model.input.getValue().len);
-        try std.testing.expectEqualStrings(wire[start.len .. start.len + payload_len], fixture.term.model.input.getValue());
+        const got = fixture.term.model.input.getValue();
+        try std.testing.expectEqual(payload_len + 1, got.len);
+        try std.testing.expectEqualStrings(wire[start.len .. start.len + payload_len], got[0..payload_len]);
+        try std.testing.expectEqual(@as(u8, ' '), got[got.len - 1]);
         try std.testing.expect(!fixture.term.model.pasting and !key_mod.inPaste());
     }
 }
