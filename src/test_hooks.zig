@@ -326,6 +326,7 @@ test {
     _ = side_question_tests;
     _ = json_controls;
     _ = effort_route;
+    _ = agent_request_encrypted_tests;
     _ = sandbox;
     _ = sandbox_docker;
     _ = commands_sandbox;
