@@ -57,15 +57,15 @@ pub fn handle(a: A, io: Io, home: []const u8, out: *Io.Writer, req: proto.Reques
     defer dir.close(io);
     const all = presence.listPeersBounded(io, a, dir, 128);
     const action = field(req.params, "action");
-    if (std.mem.eql(u8, action, "children") or std.mem.eql(u8, action, "activity")) {
+    if (std.mem.eql(u8, action, "children") or std.mem.eql(u8, action, "activity") or std.mem.eql(u8, action, "cancel")) {
         const target = field(req.params, "target");
         const start = std.fmt.parseInt(u64, field(req.params, "startId"), 10) catch 0;
         const device = std.mem.eql(u8, field(req.params, "scope"), "device");
         for (all.records, all.probes) |owner, probe| {
             if (!verified(owner, probe) or owner.start_id != start or !std.mem.eql(u8, target, owner.session_id)) continue;
             if (!device and !std.mem.eql(u8, root, owner.identity)) continue;
-            const child = if (std.mem.eql(u8, action, "activity")) field(req.params, "child") else "";
-            if (std.mem.eql(u8, action, "activity") and child.len == 0) break;
+            const child = if (std.mem.eql(u8, action, "activity") or std.mem.eql(u8, action, "cancel")) field(req.params, "child") else "";
+            if ((std.mem.eql(u8, action, "activity") or std.mem.eql(u8, action, "cancel")) and child.len == 0) break;
             try @import("acp_agent_activity.zig").handle(a, io, dir, out, req, owner.pid, owner.start_id, child);
             return true;
         }

@@ -29,6 +29,21 @@ pub fn validId(id: []const u8) bool {
     for (id) |c| if (!std.ascii.isAlphanumeric(c) and c != '-') return false;
     return true;
 }
+
+pub fn requestInterrupt(io: Io, dir: Io.Dir, id: []const u8) !void {
+    if (!validId(id)) return error.InvalidChildId;
+    var buf: [80]u8 = undefined;
+    const name = try std.fmt.bufPrint(&buf, "{s}.cancel", .{id});
+    var f = try dir.createFile(io, name, .{});
+    f.close(io);
+}
+
+pub fn interruptRequested(io: Io, dir: Io.Dir, id: []const u8) bool {
+    var buf: [80]u8 = undefined;
+    const name = std.fmt.bufPrint(&buf, "{s}.cancel", .{id}) catch return false;
+    _ = dir.statFile(io, name, .{}) catch return false;
+    return true;
+}
 pub fn cleanup(io: Io, registry: Io.Dir, pid: i32, start_id: u64) void {
     var buf: [80]u8 = undefined;
     registry.deleteTree(io, directory(&buf, pid, start_id) catch return) catch {};
@@ -78,6 +93,12 @@ pub const Recorder = struct {
         const self: *Recorder = @ptrCast(@alignCast(ctx));
         self.mu.lockUncancelable(self.io);
         defer self.mu.unlock(self.io);
+        if (interruptRequested(self.io, self.dir, self.meta.id) and std.mem.eql(u8, self.meta.status, "working")) {
+            self.meta.status = "failed";
+            self.response = "Interrupted.";
+            self.publish(true);
+            return;
+        }
         const ev: Event = switch (stamped.event) {
             .reasoning_delta => |v| .{ .type = "reasoning", .text = v.text },
             .text_delta => |v| .{ .type = "text", .text = v.text },
@@ -132,8 +153,9 @@ pub const Recorder = struct {
     pub fn finish(self: *Recorder, ok: bool, report: []const u8) void {
         self.mu.lockUncancelable(self.io);
         defer self.mu.unlock(self.io);
-        self.meta.status = if (ok) "completed" else "failed";
-        self.response = util.utf8Prefix(report, 32768);
+        const interrupted = interruptRequested(self.io, self.dir, self.meta.id);
+        self.meta.status = if (interrupted or !ok) "failed" else "completed";
+        self.response = util.utf8Prefix(if (interrupted) "Interrupted." else report, 32768);
         if (self.response.len != report.len) self.meta.truncated = true;
         self.publish(true);
         self.prune();
@@ -180,6 +202,18 @@ pub const Recorder = struct {
 pub fn start(a: A, io: Io, id: []const u8, label: []const u8, task: []const u8) ?Recorder {
     const dir = @import("presence.zig").registryPath() orelse return null;
     return Recorder.init(a, io, dir, id, label, task) catch null;
+}
+
+test "cancel file marks a working child interrupted even if it later finishes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    var r: Recorder = .{ .a = std.testing.allocator, .io = io, .dir = try tmp.dir.openDir(io, ".", .{}), .meta = .{ .id = "child", .label = "test", .task = "test" } };
+    defer r.deinit();
+    try requestInterrupt(io, r.dir, "child");
+    try std.testing.expect(interruptRequested(io, r.dir, "child"));
+    r.finish(true, "I still wrote a report.");
+    try std.testing.expectEqualStrings("failed", r.meta.status);
 }
 
 test "child activity coalesces deltas and bounds retained events and text" {

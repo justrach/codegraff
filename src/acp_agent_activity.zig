@@ -65,6 +65,20 @@ pub fn handle(a: A, io: Io, registry: Io.Dir, out: *Io.Writer, req: proto.Reques
         try proto.writeError(out, req.id, -32602, "Invalid sub-agent identifier");
         return;
     }
+    const action = blk: {
+        const p = req.params orelse break :blk "";
+        if (p != .object) break :blk "";
+        const v = p.object.get("action") orelse break :blk "";
+        break :blk if (v == .string) v.string else "";
+    };
+    if (std.mem.eql(u8, action, "cancel")) {
+        activity.requestInterrupt(io, dir, child) catch {
+            try proto.writeError(out, req.id, -32001, "Sub-agent could not be interrupted");
+            return;
+        };
+        try proto.writeResult(out, req.id, .{ .status = "interrupted" });
+        return;
+    }
     const name = try std.fmt.allocPrint(a, "{s}.json", .{child});
     const bytes = dir.readFileAlloc(io, name, a, .limited(activity.file_limit)) catch {
         try proto.writeError(out, req.id, -32001, "Sub-agent activity is no longer available");
@@ -130,6 +144,8 @@ test "child inspection verifies parent identity scope and child without consumin
         .{ "activity", "workspace", self.start_id, "child-a", "Parent session changed", "!First child result" },
         .{ "activity", "device", @as(u64, 0), "child-a", "Parent session changed", "!First child result" },
         .{ "activity", "device", self.start_id, "../child-a", "Invalid sub-agent", "!First child result" },
+        .{ "cancel", "device", self.start_id, "child-a", "interrupted", "!Parent session changed" },
+        .{ "cancel", "workspace", self.start_id, "child-a", "Parent session changed", "!interrupted" },
     };
     inline for (cases) |case| {
         const line = try std.json.Stringify.valueAlloc(a, .{ .id = 1, .method = "graff/agents", .params = .{ .action = case[0], .scope = case[1], .target = "parent", .startId = try std.fmt.allocPrint(a, "{d}", .{case[2]}), .child = case[3] } }, .{});

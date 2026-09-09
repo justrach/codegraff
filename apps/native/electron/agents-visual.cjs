@@ -10,6 +10,8 @@ async function runAgentVisuals({ win, origin, output }) {
   await win.loadURL(`${origin}/visual-tests/agents`);
   await wait(`document.body.textContent.includes('Implement navigation')`);
   assert.equal(await js(`document.querySelector('button[type="submit"]').disabled`), true);
+  assert.equal(await js(`document.querySelector('[aria-label="Recent coordination"] h3')?.textContent`), 'How they talk');
+  assert.ok(await js(`document.querySelector('[aria-label="Recent coordination"]').textContent.includes('The navigation update is ready for review.')`));
   for (const theme of ['light', 'dark', 'codegraff']) {
     await js(`document.querySelector('[data-agent-theme="${theme}"]').click()`);
     await js('document.fonts.ready.then(()=>true)');
@@ -25,6 +27,10 @@ async function runAgentVisuals({ win, origin, output }) {
   await js(`document.querySelector('li button').click()`);
   await selectChild('child-working');
   await wait(`document.querySelector('[aria-label="Sub-agent activity"]')?.textContent.includes('Live')`);
+  assert.equal(await js(`document.querySelector('[aria-label="Stop sub-agent"]')?.textContent`), 'Stop');
+  await js(`document.querySelector('[aria-label="Stop sub-agent"]').click()`);
+  await wait(`document.querySelector('[data-agent-cancelled]')?.textContent.includes('child-working')`);
+  assert.equal(await js(`document.querySelector('[data-agent-sent]').textContent`), '', 'Stop must interrupt, not send a peer message');
   await js(`document.querySelector('[data-agent-case="idle"]').click()`);
   await new Promise(resolve => setTimeout(resolve, 5500));
   assert.equal(await js(`document.querySelector('[aria-label="Sub-agent activity"] strong')?.textContent`), 'Inspect navigation', 'Inspection survives the parent becoming idle');
@@ -51,6 +57,7 @@ async function runAgentVisuals({ win, origin, output }) {
   assert.equal(await js(`document.querySelector('[data-tool-summary]')?.getAttribute('aria-expanded')`), 'false');
   await selectChild('child-completed');
   await wait(`document.querySelector('[aria-label="Sub-agent activity"]')?.textContent.includes('The focus order is correct.')`);
+  assert.equal(await js(`document.querySelector('[aria-label="Stop sub-agent"]')`), null, 'Completed children cannot be interrupted');
   await js(`document.querySelector('[data-tool-summary]').click()`);
   await wait(`document.querySelector('[aria-label="Sub-agent activity"]')?.textContent.includes('navigation.ts')`);
   await js(`document.querySelector('[data-tool-row]').click()`);

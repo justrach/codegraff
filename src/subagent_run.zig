@@ -318,7 +318,13 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     cards.subagentLaunchCard(arena, sub_id, sprite, label, kind, prompt);
     var activity = @import("subagent_activity.zig").start(gpa, ctx.io, sub_id, label, prompt);
     defer if (activity) |*recorder| recorder.deinit();
-    if (activity) |*recorder| agent.sink = recorder.engineSink();
+    if (activity) |*recorder| {
+        if (@import("subagent_activity.zig").interruptRequested(ctx.io, recorder.dir, sub_id)) {
+            recorder.finish(false, "Interrupted.");
+            return .{ .output = .{ .text = try gpa.dupe(u8, "Interrupted."), .is_error = true }, .usage = .{} };
+        }
+        agent.sink = recorder.engineSink();
+    }
 
     var wt: ?jobs.AgentWorktree = null;
     var isolation_note: []const u8 = "";
@@ -344,17 +350,8 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
 
     const wf_task = std.mem.eql(u8, kind, "workflow_task");
     if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label }, .id = sub_id });
-    // A /loop deadline on the parent reaches the child as guidance on its own
-    // task prompt (goal_pacing.childTaskPrompt): same absolute deadline, minus
-    // the margin the parent needs to integrate the result. No-op without one.
-    //
-    // #381/#383: playbook.rideBrief then prepends the live constraint +
-    // learned block. THIS is the one injection point for every spawn path
-    // there is — the `subagent` tool (sync and background), workflow phase
-    // tasks, workflow retries, pipeline stages and the judge all funnel
-    // through runSub — and it reads .graff/playbook.jsonl at assembly time,
-    // never a copy held in the parent's conversation, which is exactly why a
-    // compacted (or brand-new) session still carries the user's "no"s.
+    // Loop deadline + playbook.rideBrief: every spawn path (subagent, workflow,
+    // retry, judge) injects live constraints here from .graff/playbook.jsonl.
     const task_prompt = playbook.rideBrief(ctx.io, arena, try goal_pacing.childTaskPrompt(arena, prompt, ctx.loop_deadline_ms, util.unixMs(ctx.io)));
     try agent.messages.append(try textMessage(arena, "user", task_prompt));
     defer agent.tools_used.deinit(gpa);

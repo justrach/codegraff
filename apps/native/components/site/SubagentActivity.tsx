@@ -13,6 +13,7 @@ export default function SubagentActivity({root, parent, scope, request}: {root?:
   const [loaded, setLoaded] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [limited, setLimited] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const key = agentKey(parent);
   useEffect(() => {
     let disposed = false, timer: ReturnType<typeof setTimeout>;
@@ -64,6 +65,16 @@ export default function SubagentActivity({root, parent, scope, request}: {root?:
     return {...value, tools:value.tools.map(tool => ({...tool, startedAt:undefined, elapsedMs:undefined}))};
   }, [activity, selected]);
   const visibleChildren = children.filter(child => showFinished || child.status !== 'completed');
+  const stop = async (id: string) => {
+    if (!id || stopping) return;
+    setStopping(true);
+    try {
+      await request(root, {action:'cancel', scope, target:parent.session, startId:parent.startId, child:id});
+      setSelected(id);
+      setRetry(n => n + 1);
+    } catch (e) { setDetailError(e instanceof Error ? e.message : 'Could not interrupt this sub-agent'); }
+    finally { setStopping(false); }
+  };
   return <section aria-label="Sub-agents" className="space-y-3 rounded-xl border border-line p-3">
     <h3 className="text-sm font-medium">Sub-agents</h3>
     <label className="flex items-center gap-2 text-xs text-ink-3"><input type="checkbox" checked={showFinished} onChange={e => setShowFinished(e.target.checked)} />Show completed sub-agents</label>
@@ -72,13 +83,16 @@ export default function SubagentActivity({root, parent, scope, request}: {root?:
       : !loaded ? <p role="status" className="text-xs text-ink-3">Finding sub-agents…</p>
       : !children.length ? <p className="text-xs text-ink-3">No sub-agent activity published by this session yet. Older Graff binaries do not publish this feed.</p> : null}
     {selected ? <select aria-label="Select sub-agent" className="w-full min-w-0 rounded-lg bg-hover p-2 text-xs text-ink" value={selected} onChange={e => setSelected(e.target.value)}>{!visibleChildren.some(child => child.id === selected) && <option value={selected}>{children.find(child => child.id === selected)?.label || 'Selected sub-agent'}</option>}{visibleChildren.map(child => <option key={child.id} value={child.id}>{child.label || 'Sub-agent'} · {child.status}</option>)}</select>
-    : <div className="max-h-48 space-y-1 overflow-y-auto">{visibleChildren.map(child => <button key={child.id} data-child-agent={child.id} onClick={() => setSelected(child.id)} className="w-full rounded-lg p-2 text-left text-xs hover:bg-hover">
+    : <div className="max-h-48 space-y-1 overflow-y-auto">{visibleChildren.map(child => <div key={child.id} className="flex items-start gap-1">
+      <button data-child-agent={child.id} onClick={() => setSelected(child.id)} className="min-w-0 flex-1 rounded-lg p-2 text-left text-xs hover:bg-hover">
       <span className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate font-medium">{child.label || 'Sub-agent'}</span><span className="text-ink-3">{child.status === 'working' ? 'Working' : child.status === 'completed' ? 'Completed' : 'Failed'}</span></span>
       <span className="mt-1 block truncate text-ink-3" title={child.task}>{child.task}</span>
-    </button>)}</div>}
+    </button>
+    {child.status === 'working' && <button type="button" aria-label="Stop sub-agent" disabled={stopping} onClick={() => void stop(child.id)} className="mt-1 shrink-0 rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover disabled:opacity-40">Stop</button>}
+    </div>)}</div>}
     {limited && <p className="text-xs text-ink-3">Showing the most recent sub-agents.</p>}
     {selected && <section aria-label="Sub-agent activity" className="border-t border-line pt-3">
-      <div className="mb-3 flex items-center gap-2 text-xs"><strong className="min-w-0 flex-1 truncate">{activity?.agent.label || children.find(c => c.id === selected)?.label || 'Activity'}</strong><span role="status" className="text-ink-3">{detailError ? 'Updates unavailable' : activity?.agent.status === 'working' ? 'Live' : activity ? activity.agent.status === 'completed' ? 'Completed' : 'Failed' : 'Loading…'}</span><button aria-label="Close sub-agent activity" onClick={() => setSelected(null)}>×</button></div>
+      <div className="mb-3 flex items-center gap-2 text-xs"><strong className="min-w-0 flex-1 truncate">{activity?.agent.label || children.find(c => c.id === selected)?.label || 'Activity'}</strong><span role="status" className="text-ink-3">{detailError ? 'Updates unavailable' : activity?.agent.status === 'working' ? 'Live' : activity ? activity.agent.status === 'completed' ? 'Completed' : 'Failed' : 'Loading…'}</span>{activity?.agent.status === 'working' && <button type="button" aria-label="Stop sub-agent" disabled={stopping} onClick={() => void stop(selected)} className="rounded-lg px-2 py-1 text-ink-2 hover:bg-hover disabled:opacity-40">{stopping ? 'Stopping…' : 'Stop'}</button>}<button aria-label="Close sub-agent activity" onClick={() => setSelected(null)}>×</button></div>
       {detailError && <p role="alert" className="mb-3 text-xs text-ink-2">{detailError} <button className="underline" onClick={() => setRetry(n => n + 1)}>Retry</button></p>}
       {activity?.agent.truncated && <p className="mb-3 text-xs text-ink-3">Recent activity only. Older events or large outputs were shortened.</p>}
       <div className="max-h-[50vh] overflow-y-auto overscroll-contain [overflow-wrap:anywhere]">{turn && <AssistantBody key={selected} turn={turn} following={false} reasoningLabel="Reported reasoning" />}</div>

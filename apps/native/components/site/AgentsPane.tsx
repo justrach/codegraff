@@ -1,8 +1,16 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { agentKey, agentName, agentRequest, type AgentSnapshot, type LocalAgent } from '@/lib/agents';
+import { agentKey, agentName, agentRequest, type AgentSnapshot, type LocalAgent, type PeerMessage } from '@/lib/agents';
 import ResizableReviewPane from './ResizableReviewPane';
 import SubagentActivity from './SubagentActivity';
+
+
+function talkLine(message: PeerMessage, name: (session: string) => string) {
+  return <article className="rounded-xl border border-line p-3">
+    <div className="flex items-center gap-2 text-[11px] text-ink-3"><span className="min-w-0 flex-1 truncate">{message.from_user ? 'You' : name(message.from_session)} → {name(message.to)}</span><time>{new Date(message.ts_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>
+    {message.kind === 'handoff' && <span className="text-xs text-accent">Handoff request</span>}<p className="mt-2 whitespace-pre-wrap break-words text-sm">{message.text}</p>
+  </article>;
+}
 
 export default function AgentsPane({ root, onClose, request = agentRequest }: { root?: string; onClose(): void; request?: typeof agentRequest }) {
   const [scope, setScope] = useState('workspace');
@@ -67,14 +75,15 @@ export default function AgentsPane({ root, onClose, request = agentRequest }: { 
         {!selected && <ul className="space-y-2">{agents.map(agent => <li key={agentKey(agent)}><button onClick={() => choose(agent)} aria-pressed={false} className="w-full rounded-xl border border-line p-3 text-left hover:bg-hover">
           <span className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm font-medium">{agentName(agent)}</span><span className="text-xs text-ink-3">{agent.status === 'working' ? 'Working' : agent.status === 'waiting' ? 'Waiting' : 'Connected'}</span></span>
           <span className="mt-1 block text-xs text-ink-2 break-words">{agent.task || 'No task published'}</span>
+          {snapshot?.messages.filter(m => m.to === agent.session || m.from_session === agent.session).slice(-1).map(m => <span key={m.ts_ms} className="mt-2 block truncate text-xs text-ink-3">{m.from_user ? 'You' : name(m.from_session)} → {name(m.to)}: {m.text}</span>)}
           {scope === 'device' && <span title={agent.workspace} className="mt-1 block truncate text-xs text-ink-3">{agent.workspace}</span>}
           <span title="Graff process only; shared workers and GPU are not attributed" className="mt-2 block text-[11px] text-ink-3 tabular-nums">{agent.resources ? `${agent.resources.rssMiB.toFixed(1)} MiB · ${agent.resources.cpuPercent === null ? 'CPU sampling…' : `${agent.resources.cpuPercent.toFixed(1)}% CPU`}` : 'Resource measurements unavailable'}</span>
         </button></li>)}</ul>}
-        {selected && <><div className="flex min-w-0 items-center gap-3 text-xs"><button aria-label="Back to all agents" className="shrink-0 rounded-lg px-2 py-1 hover:bg-hover" onClick={() => setRecipient(null)}>← Agents</button><strong className="truncate">{agentName(selected)}</strong></div><SubagentActivity key={agentKey(selected)} root={root} parent={selected} scope={scope} request={request} /></>}
-        {!selected && !!snapshot?.messages.length && <details aria-label="Peer messages" className="space-y-3"><summary className="cursor-pointer text-xs font-medium text-ink-3">Coordination history</summary>{snapshot.messages.map((message, i) => <article key={`${message.ts_ms}:${i}`} className="rounded-xl border border-line p-3">
-          <div className="flex items-center gap-2 text-[11px] text-ink-3"><span className="min-w-0 flex-1 truncate">{message.from_user ? 'You' : name(message.from_session)} → {name(message.to)}</span><time>{new Date(message.ts_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>
-          {message.kind === 'handoff' && <span className="text-xs text-accent">Handoff request</span>}<p className="mt-2 whitespace-pre-wrap break-words text-sm">{message.text}</p>
-        </article>)}</details>}
+        {selected && <><div className="flex min-w-0 items-center gap-3 text-xs"><button aria-label="Back to all agents" className="shrink-0 rounded-lg px-2 py-1 hover:bg-hover" onClick={() => setRecipient(null)}>← Agents</button><strong className="truncate">{agentName(selected)}</strong></div>
+          {!!snapshot?.messages.filter(m => m.to === selected.session || m.from_session === selected.session).length && <section aria-label="Recent coordination" className="space-y-2"><h3 className="text-xs font-medium text-ink-2">How they talk</h3>{snapshot.messages.filter(m => m.to === selected.session || m.from_session === selected.session).slice(-8).map((message, i) => <div key={`${message.ts_ms}:${i}`}>{talkLine(message, name)}</div>)}</section>}
+          <SubagentActivity key={agentKey(selected)} root={root} parent={selected} scope={scope} request={request} /></>}
+        {!selected && !!snapshot?.messages.length && <section aria-label="Recent coordination" className="space-y-2"><h3 className="text-xs font-medium text-ink-2">How they talk</h3>{snapshot.messages.slice(-8).map((message, i) => <div key={`${message.ts_ms}:${i}`}>{talkLine(message, name)}</div>)}</section>}
+        {!selected && !!snapshot?.messages.length && <details aria-label="Peer messages" className="space-y-3"><summary className="cursor-pointer text-xs font-medium text-ink-3">Coordination history</summary>{snapshot.messages.map((message, i) => <div key={`${message.ts_ms}:${i}`}>{talkLine(message, name)}</div>)}</details>}
       </div>
       {selected && <button className="shrink-0 border-t border-line px-4 py-3 text-left text-xs hover:bg-hover" aria-expanded={composing} onClick={() => setComposing(value => !value)}>{composing ? 'Hide message composer' : 'Message this Graff…'}</button>}
       {(!selected || composing) && <form className="space-y-2 border-t border-line p-3" onSubmit={e => { e.preventDefault(); void submit(); }}>
