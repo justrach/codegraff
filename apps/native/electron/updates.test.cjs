@@ -77,3 +77,17 @@ test('the ready modal pops once per version, never in a dismiss loop', async () 
   f.updater.emit('update-downloaded', { version: '1.0.2' });
   expect(f.ready).toEqual(['1.0.1', '1.0.2']);
 });
+
+test('automatic checks wait 30s after launch then every six hours', () => {
+  const { FIRST_CHECK_MS, POLL_MS } = require('./updates.cjs');
+  expect(FIRST_CHECK_MS).toBe(30_000);
+  expect(POLL_MS).toBe(6 * 60 * 60 * 1000);
+});
+
+test('in-app settings expose check and the six-hour automatic poll', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../components/site/DesktopUpdates.tsx'), 'utf8');
+  expect(src).toContain('data-desktop-update-settings');
+  expect(src).toContain('Check for Updates');
+  expect(src).toContain('every six hours');
+  expect(src).toContain('data-desktop-update-automatic');
+});

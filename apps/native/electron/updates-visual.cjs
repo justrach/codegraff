@@ -9,8 +9,15 @@ async function runUpdateVisuals({ origin, output }) {
     wc.debugger.attach('1.3');
     await wc.debugger.sendCommand('Page.enable');
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: `
-      window.__restarts=0;let listener;window.__update=state=>listener?.({currentVersion:'1.0.0',automatic:true,interactive:false,...state});
-      window.graffDesktop={updateSubscribe:fn=>{listener=fn;return()=>{}},updates:async action=>{if(action==='restart'){window.__restarts++;return {status:'installing'}}return {status:'idle'}}};` });
+      window.__restarts=0;window.__automatic=true;let listener;
+      const base=()=>({currentVersion:'1.0.0',automatic:window.__automatic,interactive:false});
+      window.__update=state=>listener?.({...base(),...state});
+      window.graffDesktop={updateSubscribe:fn=>{listener=fn;return()=>{}},updates:async(action,value)=>{
+        if(action==='restart'){window.__restarts++;const s={...base(),status:'installing'};listener?.(s);return s;}
+        if(action==='check'){const s={...base(),status:'checking',interactive:true};listener?.(s);return s;}
+        if(action==='automatic'){window.__automatic=!!value;const s={...base(),status:'idle'};listener?.(s);return s;}
+        return {...base(),status:'idle'};
+      }};` });
     await win.loadURL(`${origin}/visual-tests`);
     win.focus();
     console.log('Update visual fixture loaded.');
@@ -41,7 +48,16 @@ async function runUpdateVisuals({ origin, output }) {
     wc.sendInputEvent({ type: 'mouseUp', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
     await wait(`window.__restarts===1`);
     await wait(`document.querySelector('[data-desktop-update]')?.textContent.includes('Preparing to restart')`);
-    console.log('Update UI passed: quiet checks/errors, download progress, explicit restart only.');
+    await js(`document.querySelector('[data-desktop-update-settings]').click()`);
+    await wait(`!!document.querySelector('[data-desktop-update-panel]')`);
+    assert.equal(await js(`document.querySelector('[data-desktop-update-panel]')?.textContent.includes('every six hours')`), true, 'settings explain the six-hour poll');
+    await js(`document.querySelector('[data-desktop-update-check]').click()`);
+    await wait(`document.querySelector('[data-desktop-update-panel]')?.textContent.includes('Checking for updates')`);
+    await js(`document.querySelector('[data-desktop-update-automatic]').click()`);
+    await wait(`document.querySelector('[data-desktop-update-automatic]')?.getAttribute('aria-checked')==='false'`);
+    assert.equal(await js('window.__automatic'), false, 'settings toggle persists automatic downloads');
+    fs.writeFileSync(path.join(output, 'update-settings.png'), (await wc.capturePage(undefined, { stayAwake: true })).toPNG());
+    console.log('Update UI passed: quiet checks/errors, download progress, explicit restart, in-app settings.');
   } finally { win.destroy(); }
 }
 module.exports = { runUpdateVisuals };

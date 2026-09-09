@@ -151,8 +151,8 @@ Never publish a development bundle as the signed download.
 Signed distribution builds check the public GitHub release feed shortly after
 launch and every six hours. Downloads happen in the background. The notification
 shows progress and offers **Restart to update**; downloading never stops a task,
-and closing the app does not silently install an update. The Codegraff menu has
-**Check for Updates…** and an **Automatically Download Updates** preference.
+and closing the app does not silently install an update. The Codegraff menu has **Check for Updates…** and **Automatically Download Updates**.
+The app chrome also has an **Updates** settings panel for the same check and preference.
 Development builds, smoke tests and apps running from a mounted disk image do not
 check online. Install the app in Applications first.
 

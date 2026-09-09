@@ -1,6 +1,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+const FIRST_CHECK_MS = 30_000;
+const POLL_MS = 6 * 60 * 60 * 1000;
+
 function createUpdates({ updater, version, available = true, automatic = true, notify, save = () => {}, onReady }) {
   let state = { status: available ? 'idle' : 'unavailable', currentVersion: version, automatic, interactive: false };
   let checking = false;
@@ -64,10 +67,14 @@ function installUpdates({ app, win, ipcMain, trusted, resources }) {
   try { automatic = JSON.parse(fs.readFileSync(prefs, 'utf8')).automatic !== false; } catch {}
   const available = app.isPackaged && process.platform === 'darwin' && !process.env.GRAFF_ELECTRON_SMOKE &&
     !process.execPath.startsWith('/Volumes/') && fs.existsSync(path.join(resources, 'app-update.yml'));
+  let autoItem;
   const controller = createUpdates({ version: app.getVersion(), automatic, available,
     updater: available ? require('./updater-runtime.cjs') : null,
     save: value => { fs.mkdirSync(path.dirname(prefs), { recursive: true }); fs.writeFileSync(prefs, JSON.stringify({ automatic: value })); },
-    notify: state => { if (!win.isDestroyed()) { win.webContents.send('update-state', state); win.setProgressBar(state.status === 'downloading' ? (state.percent ?? 0) / 100 : -1); } },
+    notify: state => {
+      if (autoItem) autoItem.checked = state.automatic;
+      if (!win.isDestroyed()) { win.webContents.send('update-state', state); win.setProgressBar(state.status === 'downloading' ? (state.percent ?? 0) / 100 : -1); }
+    },
     onReady: readyVersion => {
       // The standard update modal (Sparkle/electron-updater style): pops once
       // per downloaded version, after the download — never mid-conversation.
@@ -83,21 +90,23 @@ function installUpdates({ app, win, ipcMain, trusted, resources }) {
       }).catch(() => {});
     },
   });
-  ipcMain.handle('updates', async (event, action) => {
+  autoItem = { label: 'Automatically Download Updates', type: 'checkbox', checked: automatic,
+    click: item => controller.setAutomatic(item.checked) };
+  ipcMain.handle('updates', async (event, action, value) => {
     trusted(event);
     if (action === 'check') await controller.check(true);
     else if (action === 'restart') controller.restart();
+    else if (action === 'automatic') controller.setAutomatic(!!value);
     else if (action !== 'state') throw Error('Unknown update action');
     return controller.state();
   });
   const check = () => { if (controller.state().automatic) void controller.check(); };
-  const first = setTimeout(check, 30000), repeat = setInterval(check, 6 * 60 * 60 * 1000);
+  const first = setTimeout(check, FIRST_CHECK_MS), repeat = setInterval(check, POLL_MS);
   first.unref(); repeat.unref();
   app.once('before-quit', () => { clearTimeout(first); clearInterval(repeat); });
   return [
     { label: 'Check for Updates…', click: () => void controller.check(true) },
-    { label: 'Automatically Download Updates', type: 'checkbox', checked: automatic,
-      click: item => controller.setAutomatic(item.checked) },
+    autoItem,
   ];
 }
-module.exports = { createUpdates, installUpdates };
+module.exports = { createUpdates, installUpdates, FIRST_CHECK_MS, POLL_MS };

@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('graffDesktop', {
   projects: (action, value) => ipcRenderer.invoke('projects', { action, value }),
-  updates: action => ipcRenderer.invoke('updates', action),
+  updates: (action, value) => ipcRenderer.invoke('updates', action, value),
   updateSubscribe: callback => {
     const listener = (_event, state) => callback(state);
     ipcRenderer.on('update-state', listener);
