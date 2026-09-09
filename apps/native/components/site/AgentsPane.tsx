@@ -20,6 +20,10 @@ export default function AgentsPane({ root, onClose, request = agentRequest }: { 
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { setRecipient(null); setNotice(''); setText(''); }, [root]);
   useEffect(() => {
+    if (!snapshot || !recipient || snapshot.agents.some(agent => agentKey(agent) === agentKey(recipient))) return;
+    setRecipient(null); setNotice(''); setText(''); setComposing(false);
+  }, [snapshot, recipient]);
+  useEffect(() => {
     let disposed = false, timer: ReturnType<typeof setTimeout>;
     const controller = new AbortController();
     setSnapshot(null); setError('');
@@ -37,7 +41,7 @@ export default function AgentsPane({ root, onClose, request = agentRequest }: { 
   }, [root, scope, refresh, request]);
   const connected = snapshot?.agents ?? [];
   const agents = connected.filter(agent => showIdle || agent.status === 'working');
-  const selected = agents.find(a => recipient && agentKey(a) === agentKey(recipient));
+  const selected = connected.find(a => recipient && agentKey(a) === agentKey(recipient));
   const name = (session: string) => connected.find(a => a.session === session)?.title || session || 'Workspace';
   const choose = (agent: LocalAgent) => { setRecipient(agent); setNotice(''); setComposing(false); content.current?.scrollTo({top:0}); };
   const submit = async () => {
@@ -59,7 +63,7 @@ export default function AgentsPane({ root, onClose, request = agentRequest }: { 
       <div ref={content} className="min-h-0 flex-1 overflow-y-auto p-3 space-y-4">
         {error && <p role="alert" className="text-sm text-ink-2">{error} <button className="underline" onClick={() => setRefresh(n => n + 1)}>Retry</button></p>}
         {!snapshot && !error && <p role="status" className="text-sm text-ink-3">Finding local Graffs…</p>}
-        {snapshot && !agents.length && <p className="text-sm text-ink-3">No {showIdle ? 'connected' : 'active'} Graffs {scope === 'workspace' ? 'in this workspace' : 'on this laptop'}.{!showIdle && connected.length > 0 ? ' Show idle agents to see connected sessions waiting for input.' : ' Start a Graff session to coordinate.'}</p>}
+        {snapshot && !selected && !agents.length && <p className="text-sm text-ink-3">No {showIdle ? 'connected' : 'active'} Graffs {scope === 'workspace' ? 'in this workspace' : 'on this laptop'}.{!showIdle && connected.length > 0 ? ' Show idle agents to see connected sessions waiting for input.' : ' Start a Graff session to coordinate.'}</p>}
         {!selected && <ul className="space-y-2">{agents.map(agent => <li key={agentKey(agent)}><button onClick={() => choose(agent)} aria-pressed={false} className="w-full rounded-xl border border-line p-3 text-left hover:bg-hover">
           <span className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm font-medium">{agentName(agent)}</span><span className="text-xs text-ink-3">{agent.status === 'working' ? 'Working' : agent.status === 'waiting' ? 'Waiting' : 'Connected'}</span></span>
           <span className="mt-1 block text-xs text-ink-2 break-words">{agent.task || 'No task published'}</span>
@@ -74,7 +78,7 @@ export default function AgentsPane({ root, onClose, request = agentRequest }: { 
       </div>
       {selected && <button className="shrink-0 border-t border-line px-4 py-3 text-left text-xs hover:bg-hover" aria-expanded={composing} onClick={() => setComposing(value => !value)}>{composing ? 'Hide message composer' : 'Message this Graff…'}</button>}
       {(!selected || composing) && <form className="space-y-2 border-t border-line p-3" onSubmit={e => { e.preventDefault(); void submit(); }}>
-        <label className="block text-xs text-ink-2">To<select aria-label="Message recipient" value={selected ? agentKey(selected) : ''} onChange={e => { setRecipient(agents.find(a => agentKey(a) === e.target.value) ?? null); setNotice(''); }} className="ml-2 max-w-[85%] rounded-lg bg-hover px-2 py-1 text-ink"><option value="">Select a Graff</option>{agents.map(a => <option key={agentKey(a)} value={agentKey(a)}>{agentName(a)}</option>)}</select></label>
+        <label className="block text-xs text-ink-2">To<select aria-label="Message recipient" value={selected ? agentKey(selected) : ''} onChange={e => { setRecipient(agents.find(a => agentKey(a) === e.target.value) ?? null); setNotice(''); }} className="ml-2 max-w-[85%] rounded-lg bg-hover px-2 py-1 text-ink"><option value="">Select a Graff</option>{selected && !agents.some(a => agentKey(a) === agentKey(selected)) && <option value={agentKey(selected)}>{agentName(selected)}</option>}{agents.map(a => <option key={agentKey(a)} value={agentKey(a)}>{agentName(a)}</option>)}</select></label>
         {recipient && !selected && <p className="text-xs text-ink-3">Recipient is unavailable in this view. Select another Graff or show idle agents.</p>}
         <textarea ref={input} aria-label="Message to Graff" value={text} onChange={e => setText(e.target.value)} maxLength={8192} rows={2} placeholder="Ask a peer, share context, or request a handoff…" className="w-full resize-y rounded-xl border border-line bg-surface p-3 text-sm outline-none focus:border-accent" />
         <div className="flex items-center gap-2"><select aria-label="Coordination type" value={kind} onChange={e => setKind(e.target.value)} className="rounded-lg bg-hover p-2 text-xs"><option value="message">Message</option><option value="handoff">Handoff request</option></select><button type="submit" disabled={!selected || !text.trim() || sending || !!error} className="ml-auto rounded-lg bg-hover-2 px-3 py-2 text-sm disabled:opacity-40">{sending ? 'Queuing…' : 'Send to Graff'}</button></div>

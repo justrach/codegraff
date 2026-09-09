@@ -24,7 +24,7 @@ const Peer = struct {
             "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
         sw.interface.writeAll(head) catch return;
         sw.interface.flush() catch return;
-        if (websocket) mock.Mock.readClientFrame(&sr.interface) catch return;
+        if (websocket) mock.Mock.readRealFrame(io, &sr.interface, &sw.interface) catch return;
         const raw = switch (kind) {
             .openai => "{\"choices\":[{\"delta\":{\"content\":\"I will wait for your reply.\\n\"}}]}",
             .anthropic => "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"I will wait for your reply.\\n\"}}",

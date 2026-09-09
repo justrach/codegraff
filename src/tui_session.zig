@@ -12,10 +12,12 @@ const tui = @import("tui");
 
 pub fn seed(convo: *repl_glue.Conversation, root: *agent_mod.Agent) !void {
     try convo.seed(root.messages);
+    convo.compaction_window = root.compaction_window;
 }
 
 pub fn syncRoot(convo: *repl_glue.Conversation, root: *agent_mod.Agent) !void {
     root.messages = try convo.cloneInto(root.arena);
+    root.compaction_window = convo.compaction_window;
 }
 
 pub fn visibleTurns(arena: Allocator, messages: std.json.Array) ![]tui.Turn {

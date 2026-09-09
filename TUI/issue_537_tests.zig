@@ -121,15 +121,15 @@ const C0PasteCase = struct {
 // These are the actual single-byte tty encodings, not synthetic Key values.
 // In particular, Ctrl-J is LF and is intentionally retained as paste newline.
 const c0_paste_cases = [_]C0PasteCase{
-    .{ .name = "Ctrl-Q", .byte = 0x11, .expected = "leftright" },
-    .{ .name = "Ctrl-C", .byte = 0x03, .expected = "leftright" },
-    .{ .name = "Ctrl-Z", .byte = 0x1a, .expected = "leftright" },
-    .{ .name = "Ctrl-N", .byte = 0x0e, .expected = "leftright" },
-    .{ .name = "Ctrl-J", .byte = 0x0a, .expected = "left\nright" },
-    .{ .name = "Ctrl-K", .byte = 0x0b, .expected = "leftright" },
-    .{ .name = "Tab", .byte = 0x09, .expected = "leftright" },
-    .{ .name = "Backspace (DEL)", .byte = 0x7f, .expected = "leftright" },
-    .{ .name = "Backspace (BS)", .byte = 0x08, .expected = "leftright" },
+    .{ .name = "Ctrl-Q", .byte = 0x11, .expected = "leftright " },
+    .{ .name = "Ctrl-C", .byte = 0x03, .expected = "leftright " },
+    .{ .name = "Ctrl-Z", .byte = 0x1a, .expected = "leftright " },
+    .{ .name = "Ctrl-N", .byte = 0x0e, .expected = "leftright " },
+    .{ .name = "Ctrl-J", .byte = 0x0a, .expected = "left\nright " },
+    .{ .name = "Ctrl-K", .byte = 0x0b, .expected = "leftright " },
+    .{ .name = "Tab", .byte = 0x09, .expected = "leftright " },
+    .{ .name = "Backspace (DEL)", .byte = 0x7f, .expected = "leftright " },
+    .{ .name = "Backspace (BS)", .byte = 0x08, .expected = "leftright " },
 };
 
 fn pasteInvariantFailure(failures: *usize, trajectory: PasteTrajectory, case: C0PasteCase, what: []const u8) void {
@@ -178,7 +178,7 @@ const ParsedPasteCase = struct {
     name: []const u8,
     bytes: []const u8,
     middle: []const u8 = "left",
-    final: []const u8 = "leftright",
+    final: []const u8 = "leftright ",
     held: u32 = 0,
 };
 
@@ -189,7 +189,7 @@ const parsed_paste_cases = [_]ParsedPasteCase{
     .{ .name = "kitty Super down", .bytes = "\x1b[57444;1:1u" },
     .{ .name = "kitty Super release", .bytes = "\x1b[57444;1:3u", .held = 8 },
     .{ .name = "kitty modified Backspace", .bytes = "\x1b[127;9u" },
-    .{ .name = "kitty text", .bytes = "\x1b[97u", .middle = "lefta", .final = "leftaright", .held = 8 },
+    .{ .name = "kitty text", .bytes = "\x1b[97u", .middle = "lefta", .final = "leftaright ", .held = 8 },
     .{ .name = "CSI arrow", .bytes = "\x1b[A" },
     .{ .name = "CSI Delete", .bytes = "\x1b[3~" },
     .{ .name = "SS3 arrow", .bytes = "\x1bOA" },
@@ -257,7 +257,7 @@ test "Escape remains the intentional bracketed paste hatch (#536/#548)" {
     try std.testing.expect(!term.model.pasting);
     try std.testing.expect(!key_mod.inPaste());
     try std.testing.expectEqual(@as(u32, 0), key_mod.held);
-    try std.testing.expectEqualStrings("draft", term.model.input.getValue());
+    try std.testing.expectEqualStrings("draft ", term.model.input.getValue());
     // Once Escape intentionally closes the paste, a subsequent Ctrl-Q is an
     // ordinary key again; the hatch is not a permanent suppression switch.
     try std.testing.expectEqual(Effect.quit, term.feed("\x11"));
@@ -373,7 +373,7 @@ test "X10 mouse survives every split on every TUI trajectory and in paste (#537)
                         try std.testing.expect(key_mod.inPaste() and fixture.term.model.pasting);
                         try std.testing.expectEqualStrings("left", fixture.term.model.input.getValue());
                         _ = fixture.term.feed("right\x1b[201~");
-                        try std.testing.expectEqualStrings("leftright", fixture.term.model.input.getValue());
+                        try std.testing.expectEqualStrings("leftright ", fixture.term.model.input.getValue());
                     } else if (trajectory == .idle) {
                         try std.testing.expectEqualStrings("draft survives", fixture.term.model.input.getValue());
                     } else try std.testing.expectEqualStrings("", fixture.term.model.input.getValue());
@@ -411,7 +411,7 @@ test "an ESC inside X10 payload reparses a paste terminator at every split (#537
         try std.testing.expectEqual(Effect.stay, fixture.term.feed(broken[cut..]));
         errdefer std.debug.print("X10 paste terminator failure [{s} / split {d}]\n", .{ trajectoryName(trajectory), cut });
         try std.testing.expect(!key_mod.inPaste() and !fixture.term.model.pasting);
-        try std.testing.expectEqualStrings("left", fixture.term.model.input.getValue());
+        try std.testing.expectEqualStrings("left ", fixture.term.model.input.getValue());
         try std.testing.expectEqual(@as(usize, 0), fixture.term.pending);
         try expectOperationAlive(&fixture, trajectory);
     };
@@ -576,7 +576,7 @@ test "abandoned kitty releases clear Super before a bare DEL (#537)" {
         try std.testing.expectEqual(@as(u32, 0), key_mod.held);
         _ = term.feed("\x1b[201~");
         try std.testing.expect(!key_mod.inPaste() and !term.model.pasting);
-        try std.testing.expectEqualStrings("left", term.model.input.getValue());
+        try std.testing.expectEqualStrings("left ", term.model.input.getValue());
     }
 }
 

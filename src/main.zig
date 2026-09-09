@@ -514,7 +514,6 @@ pub fn main(init: std.process.Init) !void {
     try mainloop.run(&loop_ctx);
     try session_run.finalizeSession(gpa, startup_timing.shutdown_trace.at(io, "final-save"), arena, out, &root, json_mode);
 }
-// The `graff mcp` CLI (list/add servers in .mcp.json) + the trusted-companion check live in mcp_cli.zig.
 const mcp_cli = @import("mcp_cli.zig");
 // Provider-switch core lives in providers.zig; the interactive pickers, ultracode steering, and login/auth flow live in pickers.zig.
 const providers = @import("providers.zig");
@@ -547,7 +546,6 @@ const agent_mod = @import("agent.zig");
 pub const Agent = agent_mod.Agent;
 // Wire-format message construction lives in messages.zig, imported as messages_mod to avoid shadowing the `messages` params/fields.
 const messages_mod = @import("messages.zig");
-/// A base64-encoded image staged by `/image`, sent with the next user turn.
 const vision = @import("vision.zig"); // staged-image type, /image·/paste stagers, macOS clipboard grab
 /// User-Agent for outbound Kimi Coding calls is `graff/<version>` (Moonshot forbids spoofing).
 /// Device headers follow kimi-code's X-Msh-* shapes. Other providers keep the default UA.
@@ -579,8 +577,9 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("test_hooks.zig"); // unreached modules; their tests were silently skipped
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
+    _ = @import("compact_status.zig");
     _ = @import("agent_request_search_tests.zig");
-    _ = @import("agent_ws_steer.zig"); // gpt-6-astra response.steer
+    _ = @import("agent_ws_steer.zig");
     _ = @import("tui_acp_updates.zig");
     _ = @import("acp_preauth.zig"); // credential-free ACP loop must stay in the test root
     _ = @import("task_outcome.zig"); // goal-outcome telemetry events
@@ -595,6 +594,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("presence_record.zig");
     _ = @import("acp_agents.zig");
     _ = @import("subagent_activity.zig");
+    _ = @import("subagent_recovery.zig");
     _ = @import("acp_agent_activity.zig");
     _ = @import("read_image.zig");
 }

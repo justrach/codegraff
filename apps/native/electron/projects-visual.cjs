@@ -5,8 +5,10 @@ async function runProjectVisuals({ win, origin, output }) {
   const wc = win.webContents, js = code => wc.executeJavaScript(code);
   const wait = async code => { for (let i = 0; i < 100; i++) { if (await js(code)) return; await new Promise(r => setTimeout(r, 50)); } throw Error(`Project check timed out: ${code}`); };
   const openSettings = async () => {
+    await wait(`!!document.querySelector('[data-workspace-trigger]')`);
     await js(`document.querySelector('[data-workspace-trigger]').click()`);
     await wait(`!!document.querySelector('[data-workspace-menu]')`);
+    await wait(`!!Array.from(document.querySelectorAll('[data-workspace-menu] button')).find(b=>b.textContent.includes('Project settings'))`);
     await js(`Array.from(document.querySelectorAll('[data-workspace-menu] button')).find(b=>b.textContent.includes('Project settings')).click()`);
     await wait(`!!document.querySelector('[role="dialog"]')`);
   };

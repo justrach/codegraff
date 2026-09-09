@@ -5,6 +5,7 @@ const std = @import("std");
 const app = @import("app.zig");
 const catalog = @import("catalog.zig");
 const click = @import("click.zig");
+const composer_paste = @import("composer_paste.zig");
 const dispatch = @import("dispatch.zig");
 const hover = @import("hover.zig");
 const layout_cache = @import("layout_cache.zig");
@@ -23,16 +24,14 @@ pub fn handle(self: *Model, k: Key) Effect {
     if (k == .paste_start) {
         self.pasting = true;
         self.focus = .prompt;
+        composer_paste.begin(self);
         return .stay;
     }
     if (k == .paste_end) {
         self.pasting = false;
         // Decoder owns its latch: batching may already have decoded the next
         // paste_start. Rewinding it here turns that paste's LF into Enter (#737).
-        const v = std.mem.trim(u8, self.input.getValue(), " \t\r\n");
-        if (@import("image.zig").attachDropped(self, v)) {
-            self.input.setValue("") catch {};
-        }
+        composer_paste.finish(self);
         return .stay;
     }
     if (self.pasting) {
@@ -47,6 +46,7 @@ pub fn handle(self: *Model, k: Key) Effect {
             .escape => {
                 self.pasting = false;
                 key_mod.endPaste();
+                composer_paste.finish(self);
                 self.setToast("paste ended");
             },
             // Editor actions and non-newline controls are not paste text.

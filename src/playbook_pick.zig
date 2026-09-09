@@ -55,7 +55,7 @@ pub fn pickRows(arena: Allocator, items: []const playbook.Item) ![]pickers.PickI
     for (items, rows) |item, *row| {
         row.* = .{
             .name = item.text,
-            .desc = try std.fmt.allocPrint(arena, "{s} · {s}", .{ item.id, @tagName(item.source) }),
+            .desc = try std.fmt.allocPrint(arena, "scope={s} · created={d} · {s} · {s}", .{ @tagName(item.scope), item.created_at, item.id, @tagName(item.source) }),
         };
     }
     return rows;

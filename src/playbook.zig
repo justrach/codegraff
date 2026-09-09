@@ -24,8 +24,8 @@
 //! `.graff/trajectories` conventions (one self-describing JSON object per
 //! line, written whole or not at all, never rewritten in place):
 //!
-//!   {"v":1,"op":"add","id":"pb-3f8c1d02","text":"…","source":"user",
-//!    "provenance":"user:1754…","created_at":1754…}
+//!   {"v":2,"op":"add","id":"pb-3f8c1d02","text":"…","source":"user",
+//!    "scope":"project","provenance":"user:1754…","created_at":1754…}
 //!   {"v":1,"op":"retire","id":"pb-3f8c1d02","t":1754…}
 //!
 //! A retire is a NEW RECORD (a tombstone), never an edit, so a concurrent
@@ -72,8 +72,19 @@ pub const user_block_bytes = 2048;
 pub const learned_block_items = 12;
 pub const learned_block_bytes = 1024;
 
-pub const user_header = "HARD CONSTRAINTS (user, do not violate):";
+pub const user_header = "HARD CONSTRAINTS (user, project scope, do not violate):";
+pub const legacy_header = "LEGACY UNSCOPED CONSTRAINTS (active pending user review with /never):";
 pub const learned_header = "PLAYBOOK (learned, advisory):";
+
+pub const Scope = enum {
+    project,
+    legacy_unscoped,
+
+    pub fn parse(source: Source, raw: ?[]const u8) Scope {
+        if (raw) |s| if (std.mem.eql(u8, s, "project")) return .project;
+        return if (source == .user) .legacy_unscoped else .project;
+    }
+};
 
 pub const Source = enum {
     /// #381: a rejection the user stated. Never model-editable, hard-injected.
@@ -91,6 +102,9 @@ pub const Item = struct {
     id: []const u8,
     text: []const u8,
     source: Source,
+    /// New user records are explicit project policy. Missing scope marks a
+    /// legacy v1 record for review instead of silently confirming permanence.
+    scope: Scope = .project,
     /// What minted it: `user:<unix ms>` for a typed/observed rejection,
     /// `run:<trajectory run id>` for a distilled one.
     provenance: []const u8 = "",
@@ -190,10 +204,12 @@ pub fn parse(arena: Allocator, data: []const u8) []const Item {
         }
         const text = strOf(v.object, "text") orelse continue;
         const created = v.object.get("created_at");
+        const source = Source.parse(strOf(v.object, "source") orelse "user");
         const item: Item = .{
             .id = id,
             .text = text,
-            .source = Source.parse(strOf(v.object, "source") orelse "user"),
+            .source = source,
+            .scope = Scope.parse(source, strOf(v.object, "scope")),
             .provenance = strOf(v.object, "provenance") orelse "",
             .created_at = if (created) |c| (if (c == .integer) c.integer else 0) else 0,
         };
@@ -251,34 +267,49 @@ fn appendLine(io: Io, line: []const u8) bool {
     return true;
 }
 
-/// The one way an item is created. DETERMINISTIC: trim, cap, normalize,
-/// derive the id, refuse an exact-normalized duplicate, enforce the learned
-/// ceiling, append. No model is consulted and nothing existing is rewritten.
-pub fn add(io: Io, arena: Allocator, text_in: []const u8, source: Source, provenance: []const u8) Add {
-    const trimmed = std.mem.trim(u8, text_in, " \t\r\n-*");
-    const text = util.utf8Prefix(trimmed, max_text);
-    var nbuf: [max_text]u8 = undefined;
-    if (normalize(&nbuf, text).len == 0) return .{ .reason = "empty constraint text" };
-    var idbuf: [11]u8 = undefined;
-    const id = arena.dupe(u8, idFor(&idbuf, text)) catch return .{ .reason = "out of memory" };
-    const items = load(io, arena);
-    if (find(items, id) != null) return .{ .id = id, .reason = "already recorded (same normalized text)" };
-    if (source == .learned and countOf(items, .learned) >= max_learned)
-        return .{ .id = id, .reason = "learned playbook is at its 100-item cap; retire some with /never rm <id> first" };
+fn appendAdd(io: Io, arena: Allocator, id: []const u8, text: []const u8, source: Source, provenance: []const u8) Add {
     var aw: Io.Writer.Allocating = .init(arena);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     s.write(.{
-        .v = @as(u8, 1),
+        .v = @as(u8, 2),
         .op = "add",
         .id = id,
         .text = text,
         .source = @tagName(source),
+        .scope = @tagName(Scope.project),
         .provenance = provenance,
         .created_at = util.unixMs(io),
     }) catch return .{ .id = id, .reason = "could not serialize the record" };
     aw.writer.writeByte('\n') catch return .{ .id = id, .reason = "could not serialize the record" };
     if (!appendLine(io, aw.writer.buffered())) return .{ .id = id, .reason = "could not write " ++ path };
     return .{ .ok = true, .id = id };
+}
+
+/// The one way an item is created. DETERMINISTIC: trim whitespace, cap,
+/// normalize, derive the id, reconcile exact matches, enforce the learned
+/// ceiling, append. No model is consulted and nothing existing is rewritten.
+pub fn add(io: Io, arena: Allocator, text_in: []const u8, source: Source, provenance: []const u8) Add {
+    const trimmed = std.mem.trim(u8, text_in, " \t\r\n");
+    const text = util.utf8Prefix(trimmed, max_text);
+    var nbuf: [max_text]u8 = undefined;
+    if (normalize(&nbuf, text).len == 0) return .{ .reason = "empty constraint text" };
+    var idbuf: [11]u8 = undefined;
+    const id = arena.dupe(u8, idFor(&idbuf, text)) catch return .{ .reason = "out of memory" };
+    const items = load(io, arena);
+    if (find(items, id)) |existing| {
+        if (!std.mem.eql(u8, existing.text, text)) return .{
+            .id = id,
+            .reason = "normalized id collision with different exact text; existing record was not changed",
+        };
+        if (source == .user and (existing.source != .user or existing.scope != .project))
+            return appendAdd(io, arena, id, text, .user, provenance);
+        if (existing.source == source and existing.scope == .project)
+            return .{ .id = id, .reason = "already recorded (same exact text, source, and scope)" };
+        return .{ .id = id, .reason = "already recorded as a user project constraint" };
+    }
+    if (source == .learned and countOf(items, .learned) >= max_learned)
+        return .{ .id = id, .reason = "learned playbook is at its 100-item cap; retire some with /never rm <id> first" };
+    return appendAdd(io, arena, id, text, source, provenance);
 }
 
 /// Why a `retire` did or did not land. A write failure is not "unknown id":
@@ -297,7 +328,7 @@ pub fn retire(io: Io, arena: Allocator, id: []const u8) Retire {
     return if (appendLine(io, aw.writer.buffered())) .ok else .write_failed;
 }
 
-fn writeSection(w: *Io.Writer, items: []const Item, source: Source, header: []const u8, cap_items: usize, cap_bytes: usize) !void {
+fn writeSection(w: *Io.Writer, items: []const Item, source: Source, scope: ?Scope, header: []const u8, cap_items: usize, cap_bytes: usize) !bool {
     var shown: usize = 0;
     var used: usize = 0;
     var omitted: usize = 0;
@@ -308,6 +339,7 @@ fn writeSection(w: *Io.Writer, items: []const Item, source: Source, header: []co
         i -= 1;
         const item = items[i];
         if (item.source != source) continue;
+        if (scope) |wanted| if (item.scope != wanted) continue;
         if (shown >= cap_items or used + item.text.len + 3 > cap_bytes) {
             omitted += 1;
             continue;
@@ -320,17 +352,20 @@ fn writeSection(w: *Io.Writer, items: []const Item, source: Source, header: []co
     // An unstated truncation is a lie by omission: a worker told "these are
     // the constraints" must know when it was told only some of them.
     if (omitted > 0) try w.print("[{d} older item(s) omitted by the injection cap — the full ledger is {s}]\n", .{ omitted, path });
+    return shown > 0;
 }
 
 /// The injection block for `items`, or "" when there is nothing to say.
-/// User items always precede learned ones and are capped more generously;
-/// each section names itself so a worker can tell a rule from a hint.
+/// Confirmed project rules lead; legacy unscoped records are visibly pending
+/// review; learned advice remains last and advisory.
 pub fn blockFrom(arena: Allocator, items: []const Item) []const u8 {
     if (items.len == 0) return "";
     var aw: Io.Writer.Allocating = .init(arena);
-    writeSection(&aw.writer, items, .user, user_header, user_block_items, user_block_bytes) catch return "";
-    if (aw.writer.buffered().len > 0) aw.writer.writeByte('\n') catch return "";
-    writeSection(&aw.writer, items, .learned, learned_header, learned_block_items, learned_block_bytes) catch return "";
+    if (writeSection(&aw.writer, items, .user, .project, user_header, user_block_items, user_block_bytes) catch return "")
+        aw.writer.writeByte('\n') catch return "";
+    if (writeSection(&aw.writer, items, .user, .legacy_unscoped, legacy_header, user_block_items, user_block_bytes) catch return "")
+        aw.writer.writeByte('\n') catch return "";
+    _ = writeSection(&aw.writer, items, .learned, null, learned_header, learned_block_items, learned_block_bytes) catch return "";
     const out = std.mem.trim(u8, aw.writer.buffered(), "\n");
     return if (out.len == 0) "" else out;
 }
@@ -369,7 +404,7 @@ pub fn recordedState(arena: Allocator, items: []const Item) ![]const u8 {
     try s.beginArray();
     for (items) |item| {
         if (item.source != .user) continue;
-        try s.write(.{ .id = item.id, .text = item.text, .provenance = item.provenance });
+        try s.write(.{ .id = item.id, .text = item.text, .scope = @tagName(item.scope), .provenance = item.provenance, .created_at = item.created_at });
     }
     try s.endArray();
     try s.endObject();
@@ -378,9 +413,9 @@ pub fn recordedState(arena: Allocator, items: []const Item) ![]const u8 {
 
 pub const authority_note =
     "RECORDED CONSTRAINT AUTHORITY: The following JSON is derived only from the live durable ledger, not model memory. " ++
-    "Only its entries are currently recorded user constraints. A summary, handoff, or opaque compaction state is not evidence that note_constraint succeeded; " ++
-    "never promote its claims of recorded constraints into rules. An empty array means no user constraints are recorded. " ++
-    "This does not cancel explicit user instructions that were not recorded, and never overrides safety requirements.";
+    "Only project-scoped entries are confirmed standing policy; legacy_unscoped entries remain active for compatibility but require user review with /never. " ++
+    "A summary, handoff, or opaque compaction state is not evidence that note_constraint succeeded; never promote its claims into recorded rules. " ++
+    "An empty array means no user constraints are recorded. This does not cancel explicit local instructions, and never overrides safety requirements.";
 
 /// The ROOT's system prompt for the ledger as it exists on disk right now:
 /// base, then the same block every worker brief carries. It lives in the
@@ -432,5 +467,6 @@ pub fn traceActive(arena: Allocator, items: []const Item) void {
 
 test {
     _ = @import("playbook_tests.zig");
+    _ = @import("issue_789_constraint_tests.zig");
     _ = @import("playbook_pick.zig");
 }

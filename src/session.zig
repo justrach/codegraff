@@ -332,6 +332,7 @@ fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64
     // this component with today's prompt/tool-schema estimate.
     try s.objectField("context_local_tokens");
     try s.write(@min(context_estimate.local, @as(u64, std.math.maxInt(i64))));
+    try root.compaction_window.write(&s);
     // #330: the --json protocol sequence high-water mark. A REPLACEMENT graff
     // resuming this session continues the numbering from here instead of
     // reissuing ids the supervisor has already read off the event log.
@@ -479,7 +480,9 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     // default. Materialize that catalog before rebasing its saved context
     // meter, and keep every still-unused format lazy.
     try root.ensureRootTools(root.provider.kind);
+    const compaction_window = try @import("compaction_window.zig").State.restore(arena, obj, msgs.items);
     root.messages = msgs;
+    root.compaction_window = compaction_window;
     // Repair histories written by older builds where a Responses
     // `function_call_output.output` was persisted as a byte array instead of a
     // string. The Responses API rejects that ("input[N].output[0]: expected an

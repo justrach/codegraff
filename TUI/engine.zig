@@ -71,6 +71,8 @@ pub var g_idle_wake_fn: ?IdleWakeFn = null;
 /// mailbox (`tellCommand` / `peekCommand`). Caller frees the returned text.
 pub const PeerFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, line: []const u8) ?[]const u8;
 pub var g_peer_fn: ?PeerFn = null;
+pub const ConstraintFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, line: []const u8) ?[]const u8;
+pub var g_constraint_fn: ?ConstraintFn = null;
 pub const VersionFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator) ?[]const u8;
 pub var g_version_fn: ?VersionFn = null;
 pub const UpdateFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, action: []const u8) ?[]const u8;
@@ -162,6 +164,7 @@ pub const RunOpts = struct {
     emergency_fn: ?*const fn (turn_ctx: ?*anyopaque) void = null,
     idle_wake_fn: ?IdleWakeFn = null,
     peer_fn: ?PeerFn = null,
+    constraint_fn: ?ConstraintFn = null,
     version_fn: ?VersionFn = null,
     update_fn: ?UpdateFn = null,
 };

@@ -10,7 +10,10 @@ room history, and explicit addressed human messages. Discovery compares process
 start identities, not PID alone. Old peers without a verifiable identity are
 excluded. The panel defaults to currently working peers; “Show idle agents”
 reveals other verified connected sessions, including waiting and legacy peers.
-The count and recipient picker follow this filter as presence refreshes.
+The count and recipient picker follow this filter as presence refreshes, except
+that an explicitly selected connected peer remains inspectable and addressable
+when it becomes idle. Filtering the list must not tear down an open inspection;
+disconnection still invalidates the selection.
 Coordination history is collapsed by default. Legacy activity is shown as connected, never inferred from CPU usage.
 
 A lightweight observer entry point bypasses provider, MCP and session startup.

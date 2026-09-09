@@ -242,7 +242,7 @@ pub const root_cause_note =
 pub const constraint_note =
     \\
     \\
-    \\The moment the user rejects, forbids, or vetoes something ("no dots", "not vanilla JS", "stop adding scroll hints"), call note_constraint with one short imperative line recording it, then carry on — recorded constraints are injected into every later subagent, workflow and pipeline brief and survive compaction, so a rejection you leave unrecorded is one your fresh workers will repeat.
+    \\Temporary, task-limited, session-limited, and ambiguous steering stays local: follow the user's exact limiting language, but do not call note_constraint or turn it into project policy. Only when the user clearly states a standing rule for this project, call note_constraint with `scope: project` and copy the constraint verbatim from the current user message. If durable intent is unclear, keep it local or ask before recording; never paraphrase a narrower instruction into a broader one.
 ;
 
 /// Shared by root and workers, even when capture tools are unavailable.

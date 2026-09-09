@@ -84,7 +84,7 @@ pub const Model = struct {
     prompt_hist: std.array_list.Managed([]const u8),
     /// Image paths index-aligned with `prompt_hist` (#577). Empty slice = text-only.
     prompt_hist_images: std.array_list.Managed([]const []const u8),
-    draft_text: ?[]u8 = null,
+    draft_input: ?input_mod.State = null,
     draft_images: ?[]const []const u8 = null,
     steer_queue: std.array_list.Managed([]const u8),
     images: std.array_list.Managed([]const u8),

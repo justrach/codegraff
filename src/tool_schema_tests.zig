@@ -364,18 +364,24 @@ test "isMetaName: every orchestrator-handled meta tool, and nothing else" {
     }
 }
 
-test "note_constraint (#381): root-only, append-only, and a valid one-property schema" {
+test "note_constraint (#789): root-only, project-explicit, append-only schema" {
     var found = false;
     for (schema.root_specs) |t| if (std.mem.eql(u8, t.name, "note_constraint")) {
         found = true;
         var parsed = try std.json.parseFromSlice(Value, std.testing.allocator, t.schema, .{});
         defer parsed.deinit();
-        try std.testing.expectEqualStrings("text", parsed.value.object.get("required").?.array.items[0].string);
-        try std.testing.expectEqual(@as(usize, 1), parsed.value.object.get("properties").?.object.count());
-        // The append-only contract is ADVERTISED, not merely implemented: a
-        // model that believed it could retire an item would keep trying.
+        const required = parsed.value.object.get("required").?.array.items;
+        try std.testing.expectEqualStrings("text", required[0].string);
+        try std.testing.expectEqualStrings("scope", required[1].string);
+        const properties = parsed.value.object.get("properties").?.object;
+        try std.testing.expectEqual(@as(usize, 2), properties.count());
+        try std.testing.expectEqualStrings("project", properties.get("scope").?.object.get("enum").?.array.items[0].string);
+        // The append-only and local-by-default contracts are advertised, not
+        // left to unreliable model inference.
         try std.testing.expect(std.mem.indexOf(u8, t.desc, "Append-only") != null);
-        try std.testing.expect(std.mem.indexOf(u8, t.desc, "survives compaction") != null);
+        try std.testing.expect(std.mem.indexOf(u8, t.desc, "Do not call for temporary") != null);
+        try std.testing.expect(std.mem.indexOf(u8, t.desc, "copy text verbatim") != null);
+        try std.testing.expect(std.mem.indexOf(u8, t.desc, "survive compaction") != null);
     };
     try std.testing.expect(found);
     // A subagent must never be handed it: a child never saw the rejection, so

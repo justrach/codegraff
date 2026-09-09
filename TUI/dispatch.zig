@@ -102,6 +102,12 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.push(.system, busy_note) catch {};
         return .stay;
     }
+    // Constraint mutation refreshes the live root prompt. Never race that
+    // against a turn or background engine operation; refuse without cancelling.
+    if (std.mem.eql(u8, canon, "/never") and (self.pending != null or self.bg != null)) {
+        self.push(.system, busy_note) catch {};
+        return .stay;
+    }
 
     if (std.mem.eql(u8, canon, "/quit")) {
         self.quit_requested = true;
@@ -196,6 +202,13 @@ pub fn runCommand(self: *Model, line: []const u8) Effect {
         self.pushFmt(.system, "strict: {s}", .{onOff(self.strict)}) catch {};
     } else if (std.mem.eql(u8, canon, "/goal")) {
         applyGoal(self, arg);
+    } else if (std.mem.eql(u8, canon, "/never")) {
+        if (engine.g_constraint_fn) |f| {
+            if (f(engine.g_turn_ctx, self.alloc, line)) |text| {
+                defer self.alloc.free(text);
+                self.push(.system, text) catch {};
+            } else self.push(.err, "constraint command failed; ledger unchanged") catch {};
+        } else self.push(.system, "constraint review unavailable (no live session)") catch {};
     } else if (std.mem.eql(u8, canon, "/rename")) {
         if (self.session_name) |s| self.alloc.free(s);
         self.session_name = if (arg.len > 0) (self.alloc.dupe(u8, arg) catch null) else null;

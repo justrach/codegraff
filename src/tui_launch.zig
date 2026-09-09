@@ -20,6 +20,7 @@ const repl_glue = @import("repl_glue.zig");
 const session = @import("session.zig");
 const tui = @import("tui");
 const tui_peer = @import("tui_peer.zig");
+const tui_constraint = @import("tui_constraint.zig");
 const tui_session = @import("tui_session.zig");
 const engine_sink = @import("engine_sink.zig");
 const tui_sink = @import("tui_sink.zig");
@@ -97,7 +98,10 @@ pub fn run(
         .registry = root.registry,
         .tracer = root.tracer,
         .run_budget = root.run_budget,
-        .sys_normal = root.sys_normal,
+        // Keep the uncomposed base: each turn reads the live ledger once.
+        // Reusing root.sys_normal here would retain retired rules and stack
+        // another playbook block when repl_turn calls setSystemPrompts.
+        .sys_normal = if (root.sys_base.len > 0) root.sys_base else root.sys_normal,
         .tools_anthropic = root.tools_anthropic,
         .tools_openai = root.tools_openai,
         .tools_responses = root.tools_responses,
@@ -151,6 +155,7 @@ pub fn run(
         .emergency_fn = emergencyCb,
         .idle_wake_fn = idleWakeCb,
         .peer_fn = tui_peer.peerCb,
+        .constraint_fn = tui_constraint.constraintCb,
         .version_fn = versionCb,
         .update_fn = updateCb,
     });

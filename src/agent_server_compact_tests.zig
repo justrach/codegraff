@@ -39,6 +39,9 @@ fn testAgent(a: std.mem.Allocator, kind: Provider.Kind) Agent {
     agent.goal_note_fp = 0;
     agent.history_rewrites = 0;
     agent.messages = std.json.Array.init(a);
+    agent.compaction_window = .{};
+    agent.call_kind = .root;
+    agent.stream_quiet = true;
     return agent;
 }
 
@@ -385,7 +388,7 @@ test "explicitCompact anti-thrash: a fresh blob head with little growth refuses 
     try std.testing.expectEqual(@as(u32, 0), agent.history_rewrites);
 }
 
-test "manualCompact (#503): a blob-anchored history on an explicit-compact provider no-ops instead of client-summarizing the blob" {
+test "manualCompact (#804): unsupported opaque history reports failure instead of a successful no-op" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -402,7 +405,166 @@ test "manualCompact (#503): a blob-anchored history on an explicit-compact provi
     try blob.put(a, "encrypted_content", .{ .string = "opaque" });
     try agent.messages.append(.{ .object = blob });
     try agent.messages.append(try item(a, "message", null));
-    const n = try manualCompact(&agent);
-    try std.testing.expectEqual(@as(usize, 0), n);
+    try std.testing.expectError(error.ServerCompactionRequired, manualCompact(&agent));
     try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len); // untouched
+}
+
+test "standalone compaction window survives pruning and save restore until a new blob (#804)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = testAgent(a, .responses);
+    const response = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"output":[{"type":"message","role":"user","content":"retained"},{"type":"compaction","encrypted_content":"old"},{"type":"message","role":"assistant","content":"retained too"}]}
+    , .{});
+    _ = try installCompactedOutput(&agent, response);
+    const before = try std.json.Stringify.valueAlloc(a, Value{ .array = agent.messages }, .{});
+    try std.testing.expect(!pruneIf(&agent, true));
+    // Simulate the exact provenance field the session serializer/loader carries.
+    var aw: Io.Writer.Allocating = .init(a);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try s.beginObject();
+    try agent.compaction_window.write(&s);
+    try s.endObject();
+    const saved = try std.json.parseFromSliceLeaky(Value, a, aw.written(), .{});
+    agent.compaction_window = try @import("compaction_window.zig").State.restore(a, saved.object, agent.messages.items);
+    autocompactIf(&agent, 85_000, true);
+    const after = try std.json.Stringify.valueAlloc(a, Value{ .array = agent.messages }, .{});
+    try std.testing.expectEqualStrings(before, after);
+    const body = try compactBody(&agent);
+    const request = try std.json.parseFromSliceLeaky(Value, a, body, .{});
+    const input = try std.json.Stringify.valueAlloc(a, request.object.get("input").?, .{});
+    try std.testing.expectEqualStrings(before, input);
+    // Only a distinct, newly returned in-stream blob may retire the window.
+    const next = try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"compaction\",\"encrypted_content\":\"new\"}", .{});
+    try agent.messages.append(next);
+    try agent.messages.append(try item(a, "function_call", "c1"));
+    try agent.messages.append(try item(a, "function_call_output", "c1"));
+    try std.testing.expect(pruneIf(&agent, true));
+    try std.testing.expectEqual(@as(usize, 3), agent.messages.items.len);
+    try std.testing.expect(agent.compaction_window.canonical_blob == null);
+}
+
+test "legacy saved compaction windows retain their prefix (#804)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = testAgent(a, .responses);
+    try agent.messages.append(try item(a, "message", null));
+    try agent.messages.append(try item(a, "compaction", null));
+    agent.compaction_window = try @import("compaction_window.zig").State.restore(a, .empty, agent.messages.items);
+    try std.testing.expect(!pruneIf(&agent, true));
+    try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
+    // An explicit null belongs to a newer save whose blob was automatic.
+    var obj: std.json.ObjectMap = .empty;
+    try obj.put(a, "canonical_compaction", .null);
+    agent.compaction_window = try @import("compaction_window.zig").State.restore(a, obj, agent.messages.items);
+    try std.testing.expect(pruneIf(&agent, true));
+}
+
+test "local compaction rejects opaque items anywhere without changing history (#804)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    for ([_][]const u8{ "compaction", "compaction_summary" }) |kind| {
+        var agent = testAgent(a, .responses);
+        try agent.messages.append(try item(a, "message", null));
+        try agent.messages.append(try item(a, kind, null));
+        try std.testing.expectError(error.ServerCompactionRequired, agent.compact());
+        try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
+        try std.testing.expectEqual(@as(u32, 0), agent.history_rewrites);
+    }
+}
+
+test "opaque recovery failure is visible and never emergency trims (#804)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = testAgent(a, .responses); // unsupported server route, no network
+    agent.compact_pin_degraded = false;
+    agent.compact_stall = .{};
+    agent.compact_transport_failures = 1;
+    var aw: Io.Writer.Allocating = .init(a);
+    agent.out = &aw.writer;
+    const was_json = main_mod.json_mode;
+    main_mod.json_mode = false;
+    defer main_mod.json_mode = was_json;
+    try agent.messages.append(try item(a, "compaction", null));
+    for (0..20) |_| try agent.messages.append(try item(a, "message", null));
+    agent.compactOrRecover(true);
+    try std.testing.expectEqual(@as(usize, 21), agent.messages.items.len);
+    try std.testing.expectEqual(@as(u32, 0), agent.history_rewrites);
+    try std.testing.expectEqual(@as(u8, 1), agent.compact_transport_failures);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "auto-compaction failed: ServerCompactionRequired") != null);
+}
+
+test "near-limit opaque recovery uses the standalone server and preserves failed output (#804)" {
+    const io = std.testing.io;
+    const Server = struct {
+        fn run(io_: Io, server: *Io.net.Server, payload: []const u8, saw: *std.atomic.Value(bool)) void {
+            const conn = server.accept(io_) catch return;
+            defer conn.close(io_);
+            var rbuf: [8192]u8 = undefined;
+            var reader = Io.net.Stream.Reader.init(conn, io_, &rbuf);
+            const line = (reader.interface.takeDelimiter('\n') catch return) orelse return;
+            const route_ok = std.mem.startsWith(u8, line, "POST /responses/compact ");
+            var length: usize = 0;
+            while (true) {
+                const header = (reader.interface.takeDelimiter('\n') catch return) orelse return;
+                if (std.mem.eql(u8, header, "\r")) break;
+                if (std.ascii.startsWithIgnoreCase(header, "content-length:"))
+                    length = std.fmt.parseInt(usize, std.mem.trim(u8, header[15..], " \r"), 10) catch return;
+            }
+            const body = reader.interface.take(length) catch return;
+            saw.store(route_ok and std.mem.indexOf(u8, body, "old-state") != null, .release);
+            var wbuf: [1024]u8 = undefined;
+            var writer = Io.net.Stream.Writer.init(conn, io_, &wbuf);
+            writer.interface.print("HTTP/1.1 200 OK\r\ncontent-length: {d}\r\nconnection: close\r\n\r\n{s}", .{ payload.len, payload }) catch return;
+            writer.interface.flush() catch {};
+        }
+    };
+    for ([_]bool{ true, false }) |success| {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const a = arena_state.allocator();
+        var addr = try Io.net.IpAddress.parseLiteral("127.0.0.1:0");
+        var server = try Io.net.IpAddress.listen(&addr, io, .{});
+        defer server.deinit(io);
+        var saw: std.atomic.Value(bool) = .init(false);
+        var group: Io.Group = .init;
+        defer group.cancel(io);
+        const payload = if (success)
+            "{\"output\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"keep\"},{\"type\":\"compaction\",\"encrypted_content\":\"new-state\"}]}"
+        else
+            "{\"output\":[]}";
+        try group.concurrent(io, Server.run, .{ io, &server, payload, &saw });
+        var client: std.http.Client = .{ .allocator = a, .io = io };
+        defer client.deinit();
+        var agent = testAgent(a, .responses);
+        agent.io = io;
+        agent.client = &client;
+        agent.tracer = null;
+        agent.provider.id = "openai";
+        agent.provider.url = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}/responses", .{server.socket.address.getPort()});
+        agent.compact_pin_degraded = false;
+        agent.compact_stall = .{};
+        agent.compact_transport_failures = 1;
+        var aw: Io.Writer.Allocating = .init(a);
+        agent.out = &aw.writer;
+        const blob = try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"compaction\",\"encrypted_content\":\"old-state\"}", .{});
+        try agent.messages.append(blob);
+        try agent.messages.append(try item(a, "message", null));
+        autocompactIf(&agent, 96_000, true);
+        try std.testing.expect(saw.load(.acquire));
+        try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
+        try std.testing.expectEqual(@as(u32, if (success) 1 else 0), agent.history_rewrites);
+        if (success) {
+            try std.testing.expect(!pruneIf(&agent, true));
+            try std.testing.expectEqualStrings("new-state", agent.messages.items[1].object.get("encrypted_content").?.string);
+        } else {
+            try std.testing.expectEqualStrings("old-state", agent.messages.items[0].object.get("encrypted_content").?.string);
+            try std.testing.expect(std.mem.indexOf(u8, aw.written(), "auto-compaction failed") != null);
+            try std.testing.expect(std.mem.indexOf(u8, aw.written(), "falling back to local") == null);
+        }
+    }
 }

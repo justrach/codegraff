@@ -63,10 +63,10 @@ export default function SubagentActivity({root, parent, scope, request}: {root?:
     // Snapshot replay time is not the child's execution time.
     return {...value, tools:value.tools.map(tool => ({...tool, startedAt:undefined, elapsedMs:undefined}))};
   }, [activity, selected]);
-  const visibleChildren = children.filter(child => showFinished || child.status === 'working');
+  const visibleChildren = children.filter(child => showFinished || child.status !== 'completed');
   return <section aria-label="Sub-agents" className="space-y-3 rounded-xl border border-line p-3">
     <h3 className="text-sm font-medium">Sub-agents</h3>
-    <label className="flex items-center gap-2 text-xs text-ink-3"><input type="checkbox" checked={showFinished} onChange={e => setShowFinished(e.target.checked)} />Show finished sub-agents</label>
+    <label className="flex items-center gap-2 text-xs text-ink-3"><input type="checkbox" checked={showFinished} onChange={e => setShowFinished(e.target.checked)} />Show completed sub-agents</label>
     {loaded && children.length > 0 && !visibleChildren.length && <p className="text-xs text-ink-3">No active sub-agents.</p>}
     {error ? <p role="alert" className="text-xs text-ink-2">{error} <button className="underline" onClick={() => setRefresh(n => n + 1)}>Retry</button></p>
       : !loaded ? <p role="status" className="text-xs text-ink-3">Finding sub-agents…</p>

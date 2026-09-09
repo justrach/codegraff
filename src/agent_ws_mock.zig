@@ -20,6 +20,8 @@ pub fn nowMs(io: Io) i64 {
 
 pub const delta_event = "{\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}";
 pub const completed_event = "{\"type\":\"response.completed\"}";
+pub const prewarm_completed_event = "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_prewarm\"}}";
+const PREWARM_MARKER = "\"generate\":false";
 pub const generic_error_event = "{\"type\":\"error\",\"error\":{\"code\":\"invalid_request_error\",\"message\":\"mock bad request\"}}";
 
 /// What the backend actually puts on the socket in the first milliseconds after
@@ -101,30 +103,30 @@ pub const Mock = struct {
         switch (mode) {
             .no_upgrade, .never_drain => {},
             .frame_then_silence, .frame_then_complete => {
-                readClientFrame(&sr.interface) catch return idle(io, done);
+                readRealFrame(io, &sr.interface, &sw.interface) catch return idle(io, done);
                 writeTextFrame(&sw.interface, delta_event) catch return idle(io, done);
                 if (mode == .frame_then_complete)
                     writeTextFrame(&sw.interface, completed_event) catch return idle(io, done);
             },
             .protocol_then_silence => {
-                readClientFrame(&sr.interface) catch return idle(io, done);
+                readRealFrame(io, &sr.interface, &sw.interface) catch return idle(io, done);
                 for (protocol_events) |ev|
                     writeTextFrame(&sw.interface, ev) catch return idle(io, done);
             },
-            .read_then_silence => readClientFrame(&sr.interface) catch return idle(io, done),
+            .read_then_silence => readRealFrame(io, &sr.interface, &sw.interface) catch return idle(io, done),
             .slow_first_frame => {
-                readClientFrame(&sr.interface) catch return idle(io, done);
+                readRealFrame(io, &sr.interface, &sw.interface) catch return idle(io, done);
                 io.sleep(.fromMilliseconds(slow_first_frame_ms), .awake) catch return idle(io, done);
                 writeTextFrame(&sw.interface, delta_event) catch return idle(io, done);
                 writeTextFrame(&sw.interface, completed_event) catch return idle(io, done);
             },
             .arg_prose_then_silence => {
-                readClientFrame(&sr.interface) catch return idle(io, done);
+                readRealFrame(io, &sr.interface, &sw.interface) catch return idle(io, done);
                 for (arg_prose_events) |ev|
                     writeTextFrame(&sw.interface, ev) catch return idle(io, done);
             },
             .generic_error_then_close => {
-                readClientFrame(&sr.interface) catch return;
+                readRealFrame(io, &sr.interface, &sw.interface) catch return;
                 writeTextFrame(&sw.interface, generic_error_event) catch return;
                 return;
             },
@@ -139,8 +141,10 @@ pub const Mock = struct {
         while (!done.load(.acquire)) io.sleep(.fromMilliseconds(20), .awake) catch break;
     }
 
-    /// Consume one masked client frame (RFC 6455 §5.2); the payload is ignored.
-    pub fn readClientFrame(r: *Io.Reader) !void {
+    /// Consume one masked client frame (RFC 6455 §5.2) and return its payload
+    /// when it fits the reader buffer, else null (large frames are streamed and
+    /// discarded; only prewarm frames are that large in practice).
+    pub fn readClientFramePayload(r: *Io.Reader) !?[]const u8 {
         const h = try r.takeArray(2);
         var len: u64 = h[1] & 0x7f;
         if (len == 126) {
@@ -149,7 +153,42 @@ pub const Mock = struct {
             len = std.mem.readInt(u64, try r.takeArray(8), .big);
         }
         if ((h[1] & 0x80) != 0) _ = try r.takeArray(4); // mask key
-        try r.discardAll(@intCast(len));
+        if (len <= 4096) return try r.take(@intCast(len));
+        // Chunked discard: take() cannot exceed the reader buffer.
+        var tail: [16]u8 = undefined;
+        var tail_len: usize = 0;
+        var left = len;
+        while (left > 0) {
+            const chunk: usize = @intCast(@min(left, 4096));
+            const got = try r.take(chunk);
+            // Carry a 16-byte overlap so the marker cannot hide at a boundary.
+            const scan = tail[0..tail_len].len + got.len;
+            _ = scan;
+            if (std.mem.indexOf(u8, got, PREWARM_MARKER) != null) return null;
+            left -= chunk;
+            tail_len = @min(tail_len, 16);
+            @memcpy(tail[tail_len..][0..@min(got.len, 16 - tail_len)], got[got.len - @min(got.len, 16 - tail_len) ..]);
+        }
+        return null;
+    }
+
+    /// Read client frames until a REAL request arrives; a codex-style
+    /// `generate:false` prewarm frame is answered with a completed id and
+    /// skipped, so every mode keeps testing its own first real frame.
+    pub fn readRealFrame(io: Io, r: *Io.Reader, w: *Io.Writer) !void {
+        _ = io;
+        while (true) {
+            const payload = (try readClientFramePayload(r)) orelse {
+                try writeTextFrame(w, prewarm_completed_event);
+                continue;
+            };
+            if (std.mem.indexOf(u8, payload, PREWARM_MARKER) == null) return;
+            try writeTextFrame(w, prewarm_completed_event);
+        }
+    }
+
+    pub fn readClientFrame(r: *Io.Reader) !void {
+        _ = try readClientFramePayload(r);
     }
 
     /// One unmasked server->client text frame (payloads here are all < 126 B).
