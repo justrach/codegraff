@@ -57,6 +57,7 @@ pub fn visionModel(m_full: []const u8) bool {
         std.mem.startsWith(u8, m, "kimi") or
         (m.len > 1 and m[0] == 'k' and std.ascii.isDigit(m[1])) or // Kimi Code k3+
         std.mem.startsWith(u8, m, "gemini") or
+        std.mem.startsWith(u8, m, "muse-spark") or // multimodal Meta/Muse Spark family
         std.mem.startsWith(u8, m, "gemma") or // gemma-3/4 are multimodal (LM Studio etc.)
         std.mem.startsWith(u8, m, "llava") or
         std.mem.startsWith(u8, m, "pixtral") or
@@ -403,6 +404,7 @@ test "visionModel: vision-capable model families only" {
     try std.testing.expect(visionModel("glm-5v-turbo"));
     try std.testing.expect(visionModel("k3"));
     try std.testing.expect(visionModel("gemini-2.0"));
+    try std.testing.expect(visionModel("muse-spark-1.3-contributor"));
     // Local / OpenAI-compat providers report org-prefixed ids — match the bare name.
     try std.testing.expect(visionModel("google/gemma-4-26b-a4b-qat"));
     try std.testing.expect(visionModel("gemma-3-12b"));
