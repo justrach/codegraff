@@ -24,6 +24,10 @@ harness under test spends model calls.
 | `inhouse` | Distilled PR fixtures with SPEC.md. Cheap harness A/B — not the live badge. Opt-in. |
 | `live` | Capped 12 gated PRs, no SPEC.md. Pass @ n=3; list$ on passing reps only. See [LIVE.md](../artifacts/graff-evals-live/LIVE.md). |
 
+Published live board (2026-09-09, five harnesses on grok-4.6 SuperGrok):
+[artifacts/graff-evals-live/RECEIPT.md](../artifacts/graff-evals-live/RECEIPT.md).
+Rebuild the card with `python3 plot_live.py --from-jsonl` when `results/` is present.
+
 ```sh
 ./run.py --suite swe --harness graff-dev-old,graff-dev --model grok-4.6 -j 12
 ./run.py --suite core,rlm,swe --harness graff-dev-old,graff-dev -j 8

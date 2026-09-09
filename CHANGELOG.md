@@ -12,6 +12,12 @@ current is part of cutting a release.
 
 ## Unreleased
 
+## Unreleased
+
+- Live 12-PR board on grok-4.6 SuperGrok (n=3, no SPEC.md): graff / Pi /
+  OpenCode 12/12, grok 11/12 (`#727`), exo 9/12 (no-token check-greens do
+  not count). Receipt and site-palette card in `artifacts/graff-evals-live/`.
+
 ## v0.0.295
 
 - `#812`: a mid-turn native image follow-up no longer sends empty `text` with
