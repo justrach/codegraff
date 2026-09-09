@@ -14,7 +14,7 @@
   "caveats": [
     "Only graff-195 is G1\u2013G6 certified; the other 11 are published live tasks.",
     "Stored JSONL list$ high-bands the rep sum; headline $ is the official per-request low band.",
-    "exo honest $ is a floor: three timeout-ok reps recorded no usage.",
+    "A check-green with no tokens does not count (exo turbo-ws-duplex / turbo-asgi died in <1s).",
     "Wall is a hang detector. Do not score Graff first-token (boot \u203a)."
   ],
   "tasks": [
@@ -78,7 +78,7 @@
         },
         "graff-gemini-ix": {
           "n": 3,
-          "wins": 3,
+          "wins": 2,
           "pass": true,
           "cost": 0.6365,
           "timeouts": 1
@@ -120,7 +120,7 @@
         }
       },
       "honest_usd": 21.48,
-      "pass_reps": 35,
+      "pass_reps": 34,
       "n_reps": 36,
       "pass_tasks": 12,
       "n_tasks": 12,
@@ -137,7 +137,7 @@
       "tasks": {
         "graff-195": {
           "n": 3,
-          "wins": 3,
+          "wins": 2,
           "pass": true,
           "cost": 1.9414,
           "timeouts": 1
@@ -221,7 +221,7 @@
         }
       },
       "honest_usd": 33.69,
-      "pass_reps": 33,
+      "pass_reps": 32,
       "n_reps": 36,
       "pass_tasks": 11,
       "n_tasks": 12,
@@ -459,7 +459,7 @@
         },
         "graff-servers": {
           "n": 3,
-          "wins": 3,
+          "wins": 2,
           "pass": true,
           "cost": 1.0468,
           "timeouts": 1
@@ -480,14 +480,14 @@
         },
         "graff-gemini-ix": {
           "n": 3,
-          "wins": 2,
-          "pass": true,
-          "cost": 0.4635,
+          "wins": 1,
+          "pass": false,
+          "cost": 0.0,
           "timeouts": 2
         },
         "codedb-arch": {
           "n": 3,
-          "wins": 3,
+          "wins": 2,
           "pass": true,
           "cost": 1.39,
           "timeouts": 1
@@ -501,30 +501,30 @@
         },
         "turbo-ws-load": {
           "n": 3,
-          "wins": 3,
+          "wins": 2,
           "pass": true,
           "cost": 1.3484,
           "timeouts": 0
         },
         "turbo-ws-duplex": {
           "n": 3,
-          "wins": 3,
-          "pass": true,
+          "wins": 0,
+          "pass": false,
           "cost": 0.0,
           "timeouts": 0
         },
         "turbo-asgi": {
           "n": 3,
-          "wins": 3,
-          "pass": true,
+          "wins": 0,
+          "pass": false,
           "cost": 0.0,
           "timeouts": 0
         }
       },
-      "honest_usd": 16.48,
-      "pass_reps": 34,
+      "honest_usd": 16.01,
+      "pass_reps": 24,
       "n_reps": 36,
-      "pass_tasks": 12,
+      "pass_tasks": 9,
       "n_tasks": 12,
       "mean_wall_s": 281,
       "timeout_ok": 3,

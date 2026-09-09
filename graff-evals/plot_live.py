@@ -69,6 +69,11 @@ def honest(r: dict) -> float:
     return (ordinary * 2 + cached * 0.5 + out * 6) / 1e6
 
 
+def worked(r: dict) -> bool:
+    """A check-green with no tokens is not a solved task (exo turbo false greens)."""
+    return bool(r.get("tok_in") or r.get("tok_cached") or r.get("tok_out") or r.get("tok_calls"))
+
+
 def load_rows(path: Path, harness: str | None, skip: set | None) -> list[dict]:
     rows = []
     if not path.exists():
@@ -95,16 +100,16 @@ def score(rows: list[dict]) -> dict:
     pass_reps = fail_reps = to_ok = to_fail = 0
     for tid in TASKS:
         rs = sorted(by.get(tid, []), key=lambda x: x.get("rep", 0))
-        wins = sum(1 for r in rs if r.get("outcome_ok"))
+        wins = sum(1 for r in rs if r.get("outcome_ok") and worked(r))
         done = len(rs) >= 3
         ok = wins >= 2 if done else None
         cost = 0.0
         if done and ok:
-            cost = sum(honest(r) for r in rs if r.get("outcome_ok"))
+            cost = sum(honest(r) for r in rs if r.get("outcome_ok") and worked(r))
             suite += cost
         for r in rs:
             walls.append(r.get("wall_s") or 0)
-            if r.get("outcome_ok"):
+            if r.get("outcome_ok") and worked(r):
                 pass_reps += 1
             else:
                 fail_reps += 1
@@ -156,7 +161,7 @@ def build_summary() -> dict:
         "caveats": [
             "Only graff-195 is G1–G6 certified; the other 11 are published live tasks.",
             "Stored JSONL list$ high-bands the rep sum; headline $ is the official per-request low band.",
-            "exo honest $ is a floor: three timeout-ok reps recorded no usage.",
+            "A check-green with no tokens does not count (exo turbo-ws-duplex / turbo-asgi died in <1s).",
             "Wall is a hang detector. Do not score Graff first-token (boot ›).",
         ],
         "tasks": TASKS,
@@ -215,7 +220,7 @@ def svg(summary: dict) -> str:
             parts.append(f'<rect x="{x}" y="{y}" width="{cw-6}" height="{ch-6}" rx="6" fill="{fill}"/>')
             if not ok and cell["pass"] is False:
                 parts.append(f'<text x="{x+(cw-6)/2}" y="{y+16}" text-anchor="middle" font-size="11" font-weight="700" fill="{CORAL}" font-family="Inter, ui-sans-serif, system-ui, sans-serif">FAIL</text>')
-    parts.append(f'<text x="48" y="872" font-size="14" fill="{INK3}" font-family="Inter, ui-sans-serif, system-ui, sans-serif">Official low band · SuperGrok cash $0 · failed task $0 · only #195 is G1–G6 certified · exo $ is a floor (3 timeout-ok reps had no usage)</text>')
+    parts.append(f'<text x="48" y="872" font-size="14" fill="{INK3}" font-family="Inter, ui-sans-serif, system-ui, sans-serif">Official low band · SuperGrok cash $0 · failed task $0 · only #195 is G1–G6 certified · no-token check-greens do not count</text>')
     parts.append("</svg>")
     return "\n".join(parts) + "\n"
 
@@ -298,7 +303,7 @@ h1 {{ margin: 18px 0 6px; font-size: 44px; letter-spacing: -.03em; line-height: 
   {''.join(bars)}
   <div class="section">TASK GRID · FILL = PASS</div>
   {''.join(grid)}
-  <div class="foot">Official low band · SuperGrok cash $0 · failed task $0 · only #195 is G1–G6 certified · exo $ is a floor (3 timeout-ok reps had no usage)</div>
+  <div class="foot">Official low band · SuperGrok cash $0 · failed task $0 · only #195 is G1–G6 certified · no-token check-greens do not count</div>
 </div></body></html>
 """
 

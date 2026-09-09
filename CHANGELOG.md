@@ -12,18 +12,15 @@ current is part of cutting a release.
 
 ## Unreleased
 
-## Unreleased
 
 - Live 12-PR board on grok-4.6 SuperGrok (n=3, no SPEC.md): graff / Pi /
-  OpenCode 12/12, grok 11/12 (`#727`), exo 9/12 (no-token check-greens do
-  not count). Receipt and site-palette card in `artifacts/graff-evals-live/`.
+  OpenCode 12/12, grok 11/12 (`#727`), exo 9/12 (gemini + two turbos —
+  no-token check-greens do not count). Honest list$ $21.48 / $18.47 /
+  $25.71 / $33.69 / $16.01. Receipt and site-palette card in
+  `artifacts/graff-evals-live/`.
 
 ## v0.0.295
 
-- `#812`: a mid-turn native image follow-up no longer sends empty `text` with
-  the image, which some Chat Completions providers reject (Z.AI 1210). The
-  caption is `Attached image.`
-- Muse Spark models accept image inputs on the Meta/Muse vision path.
 - Bare `codedb context <task>` defaults to on-device retrieval. Remote
   reranking remains an explicit opt-in and is refused under local-only
   policy (ADR 0084, ADR 0092).

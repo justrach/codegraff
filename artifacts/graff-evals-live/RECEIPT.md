@@ -17,11 +17,13 @@ tasks, not a second gate pass.
 | grok | 33/36 | **11/12** | $33.69 | 362s |
 | OpenCode | 36/36 | **12/12** | $25.71 | 309s |
 | Pi | 35/36 | **12/12** | $18.47 | 334s |
-| exo | 34/36 | **12/12** | $16.48 | 281s |
+| exo | 25/36 | **9/12** | $16.01 | 281s |
 
-Grok is the only seat that drops a task (`graff-727`, 1/3). exo's $16.48
-is a **floor**: three timeout-ok reps recorded no usage. Stored JSONL
-`list$` high-bands the *rep* sum (~2×); do not tweet that column.
+A check-green with **no tokens does not count**. exo's last two turbo
+tasks (`turbo-ws-duplex`, `turbo-asgi`) exited in <1s with no usage —
+the public check still passed on the untouched tree. `graff-gemini-ix`
+is 1 real pass. Grok still drops `#727`. Stored JSONL `list$` high-bands
+the *rep* sum (~2×); do not tweet that column.
 
 Machine-local JSONL (gitignored): `run-20260908-173944` (#195),
 `run-20260908-182322` (graff rest), `run-20260909-011118` (grok),

@@ -29,8 +29,8 @@
 <rect x="1224" y="184" width="276" height="168" rx="18" fill="#fff" stroke="#d5e0d8"/>
 <rect x="1224" y="184" width="8" height="168" rx="4" fill="#6b8f7a"/>
 <text x="1252" y="220" font-size="16" font-weight="700" fill="#526157" font-family="Inter, ui-sans-serif, system-ui, sans-serif">exo</text>
-<text x="1252" y="280" font-size="48" font-weight="780" fill="#18231e" font-family="Inter, ui-sans-serif, system-ui, sans-serif">12/12</text>
-<text x="1252" y="316" font-size="18" fill="#526157" font-family="Inter, ui-sans-serif, system-ui, sans-serif">$16.48 · 281s</text>
+<text x="1252" y="280" font-size="48" font-weight="780" fill="#c2410c" font-family="Inter, ui-sans-serif, system-ui, sans-serif">9/12</text>
+<text x="1252" y="316" font-size="18" fill="#526157" font-family="Inter, ui-sans-serif, system-ui, sans-serif">$16.01 · 281s</text>
 <text x="48" y="392" font-size="15" font-weight="700" letter-spacing="1.4" fill="#737f75" font-family="Inter, ui-sans-serif, system-ui, sans-serif">HONEST LIST$  ·  LOWER IS BETTER</text>
 <text x="48" y="438" font-size="16" font-weight="650" fill="#18231e" font-family="Inter, ui-sans-serif, system-ui, sans-serif">graff</text>
 <rect x="220" y="420" width="1100" height="26" rx="13" fill="#e3f3e9"/>
@@ -50,8 +50,8 @@
 <text x="835" y="571" font-size="15" font-weight="650" fill="#18231e" font-family="Inter, ui-sans-serif, system-ui, sans-serif">$18.47</text>
 <text x="48" y="614" font-size="16" font-weight="650" fill="#18231e" font-family="Inter, ui-sans-serif, system-ui, sans-serif">exo</text>
 <rect x="220" y="596" width="1100" height="26" rx="13" fill="#e3f3e9"/>
-<rect x="220" y="596" width="538" height="26" rx="13" fill="#6b8f7a"/>
-<text x="770" y="615" font-size="15" font-weight="650" fill="#18231e" font-family="Inter, ui-sans-serif, system-ui, sans-serif">$16.48</text>
+<rect x="220" y="596" width="522" height="26" rx="13" fill="#6b8f7a"/>
+<text x="754" y="615" font-size="15" font-weight="650" fill="#18231e" font-family="Inter, ui-sans-serif, system-ui, sans-serif">$16.01</text>
 <text x="48" y="648" font-size="15" font-weight="700" letter-spacing="1.4" fill="#737f75" font-family="Inter, ui-sans-serif, system-ui, sans-serif">TASK GRID  ·  FILL = PASS</text>
 <text x="193.0" y="654" text-anchor="middle" font-size="12" fill="#737f75" font-family="Inter, ui-sans-serif, system-ui, sans-serif">195</text>
 <text x="311.0" y="654" text-anchor="middle" font-size="12" fill="#737f75" font-family="Inter, ui-sans-serif, system-ui, sans-serif">726</text>
@@ -125,11 +125,14 @@
 <rect x="488" y="776" width="112" height="22" rx="6" fill="#6b8f7a"/>
 <rect x="606" y="776" width="112" height="22" rx="6" fill="#6b8f7a"/>
 <rect x="724" y="776" width="112" height="22" rx="6" fill="#6b8f7a"/>
-<rect x="842" y="776" width="112" height="22" rx="6" fill="#6b8f7a"/>
+<rect x="842" y="776" width="112" height="22" rx="6" fill="#f3d6c8"/>
+<text x="898.0" y="792" text-anchor="middle" font-size="11" font-weight="700" fill="#c2410c" font-family="Inter, ui-sans-serif, system-ui, sans-serif">FAIL</text>
 <rect x="960" y="776" width="112" height="22" rx="6" fill="#6b8f7a"/>
 <rect x="1078" y="776" width="112" height="22" rx="6" fill="#6b8f7a"/>
 <rect x="1196" y="776" width="112" height="22" rx="6" fill="#6b8f7a"/>
-<rect x="1314" y="776" width="112" height="22" rx="6" fill="#6b8f7a"/>
-<rect x="1432" y="776" width="112" height="22" rx="6" fill="#6b8f7a"/>
-<text x="48" y="872" font-size="14" fill="#737f75" font-family="Inter, ui-sans-serif, system-ui, sans-serif">Official low band · SuperGrok cash $0 · failed task $0 · only #195 is G1–G6 certified · exo $ is a floor (3 timeout-ok reps had no usage)</text>
+<rect x="1314" y="776" width="112" height="22" rx="6" fill="#f3d6c8"/>
+<text x="1370.0" y="792" text-anchor="middle" font-size="11" font-weight="700" fill="#c2410c" font-family="Inter, ui-sans-serif, system-ui, sans-serif">FAIL</text>
+<rect x="1432" y="776" width="112" height="22" rx="6" fill="#f3d6c8"/>
+<text x="1488.0" y="792" text-anchor="middle" font-size="11" font-weight="700" fill="#c2410c" font-family="Inter, ui-sans-serif, system-ui, sans-serif">FAIL</text>
+<text x="48" y="872" font-size="14" fill="#737f75" font-family="Inter, ui-sans-serif, system-ui, sans-serif">Official low band · SuperGrok cash $0 · failed task $0 · only #195 is G1–G6 certified · no-token check-greens do not count</text>
 </svg>
