@@ -39,7 +39,9 @@ import {
 } from "@/lib/acp-client";
 import { applyAcpUpdate, emptyTurn, finishAcpTurn, type AcpCommand, type AssistantTurn } from "@/lib/acp";
 import { useChatScroll } from "./useChatScroll";
-import { dropQueuedPrompt, enqueuePrompt, shiftQueuedPrompt, type QueuedPrompt } from "@/lib/prompt-queue";
+import { enqueuePrompt, shiftQueuedPrompt } from "@/lib/prompt-queue";
+import PromptQueue from "./PromptQueue";
+import { usePromptQueue } from "./usePromptQueue";
 import { dateGroup, listSessionsPage, relativeTime, removeSession, type StoredSession } from "@/lib/sessions";
 import { loadHistory, mergeHistory, pushHistory, saveHistory } from "@/lib/prompt-history";
 import WorkspaceDialog from "@/components/site/WorkspaceDialog";
@@ -136,9 +138,9 @@ export default function GraffHarness() {
   const panesRef = useRef<number[]>([]);
   panesRef.current = panes;
   const [following, setFollowing] = useState(true);
-  const queuesRef = useRef<Record<number, QueuedPrompt[]>>({});
-  const [queues, setQueues] = useState<Record<number, QueuedPrompt[]>>({});
-  const queueIdRef = useRef(0);
+  const { queuesRef, queues, queueIdRef, setQueue, steerer, steerStatus, remove: removeQueued } = usePromptQueue();
+  const [workingAgents, setWorkingAgents] = useState(0);
+  const [cancelError, setCancelError] = useState<Record<number, string>>({});
   const runningRef = useRef(new Set<number>());
   // Closed tabs, oldest first, for the reopen shortcut.
   const closedRef = useRef<{ session: string | null; cwd?: string; resumable: boolean }[]>([]);
@@ -154,7 +156,6 @@ export default function GraffHarness() {
   const busy = busyIds.has(chatThread.id);
   const chatModel = chatThread.model ?? model ?? undefined;
   const sessionId = sessionIds[chatThread.id] ?? null;
-  const queued = queues[chatThread.id] ?? [];
   const handleOf = (chatId: number) => chatHandle(pageRef.current, chatId);
   const setBusyFor = (chatId: number, on: boolean) =>
     setBusyIds((current) => {
@@ -173,10 +174,6 @@ export default function GraffHarness() {
     () => mergeHistory(history, chatThread.messages.flatMap((m) => (m.role === "user" ? [m.text] : []))),
     [history, chatThread.messages],
   );
-  const setQueue = (chatId: number, list: QueuedPrompt[]) => {
-    queuesRef.current = { ...queuesRef.current, [chatId]: list };
-    setQueues(queuesRef.current);
-  };
   const setPins = (chatId: number, list: BrowserPin[]) => {
     pinsRef.current = { ...pinsRef.current, [chatId]: list };
     setPinsByChat(pinsRef.current);
@@ -376,6 +373,13 @@ export default function GraffHarness() {
       ),
     );
     setBusyFor(chatId, true);
+    setCancelError((current) => {
+      if (!current[chatId]) return current;
+      const next = { ...current };
+      delete next[chatId];
+      return next;
+    });
+    steerer.begin(chatId);
     setHistory((current) => {
       const next = pushHistory(current, trimmed);
       saveHistory(window.localStorage, next);
@@ -399,6 +403,8 @@ export default function GraffHarness() {
       turn = { ...turn, connected: true, lastUpdateAt: Date.now() };
       painter.update(turn);
       for await (const update of prompt(handleOf(chatId), id, wire)) {
+        if (update.sessionUpdate === "gui_turn_end") steerer.finish(chatId);
+        else steerer.ready(chatId);
         turn = applyAcpUpdate(turn, update);
         if (turn.thoughtMs === undefined && turn.status !== "thinking") turn = { ...turn, thoughtMs: Date.now() - startedAt };
         painter.update(turn);
@@ -414,6 +420,7 @@ export default function GraffHarness() {
       painter.finish(turn);
     } finally {
       painter.dispose();
+      steerer.finish(chatId);
       runningRef.current.delete(chatId);
       setBusyFor(chatId, false);
       void refreshStored();
@@ -664,29 +671,14 @@ export default function GraffHarness() {
                         </button>
                       </div>
                     )}
-                    {threadQueued.length > 0 && (
-                      <ul className="mb-2 flex flex-col gap-1">
-                        {threadQueued.map((item) => (
-                          <li
-                            key={item.id}
-                            className="flex items-center gap-2 rounded-[8px] bg-surface px-2.5 py-1.5 text-[12.5px] text-ink-2 shadow-hairline"
-                          >
-                            <span className="shrink-0 text-[11px] font-medium tracking-wide text-ink-3 uppercase">Queued</span>
-                            <span className="min-w-0 flex-1 truncate text-ink">{item.text}</span>
-                            <button
-                              type="button"
-                              aria-label="Remove from queue"
-                              onClick={() => setQueue(thread.id, dropQueuedPrompt(queuesRef.current[thread.id] ?? [], item.id))}
-                              className="flex size-5 shrink-0 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-ink"
-                            >
-                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
-                                <path d="M18 6L6 18M6 6l12 12" />
-                              </svg>
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
+                    <PromptQueue items={threadQueued} busy={threadBusy} status={steerStatus[thread.id]}
+                      error={cancelError[thread.id]}
+                      onRemove={item => removeQueued(thread.id, item)}
+                      onSteer={item => steerer.steer(thread.id, item, () => {
+                        const session = sessionsRef.current.get(thread.id);
+                        if (!session) return Promise.reject(new Error("Session unavailable"));
+                        return cancel(handleOf(thread.id), session);
+                      })} />
                     <PromptBar
                       demo={false}
                       tall={!compactPane}
@@ -701,7 +693,13 @@ export default function GraffHarness() {
                       busy={threadBusy}
                       onStop={() => {
                         const live = sessionsRef.current.get(thread.id);
-                        if (live) void cancel(handleOf(thread.id), live);
+                        if (!live) {
+                          setCancelError(current => ({ ...current, [thread.id]: "Nothing to interrupt yet." }));
+                          return;
+                        }
+                        void cancel(handleOf(thread.id), live).catch(err => {
+                          setCancelError(current => ({ ...current, [thread.id]: err instanceof Error ? err.message : "Could not interrupt the current turn" }));
+                        });
                       }}
                     />
                   </div>
@@ -784,6 +782,7 @@ export default function GraffHarness() {
           chatCwd={chatCwd} workspaceName={workspaceName} onFolder={() => setDialog({ mode: "new" })} openChanges={openChanges}
           browserOpen={browserOpen} onBrowser={() => { setAgentsOpen(false); setProjectsOpen(false); setConversationsOpen(false); setFilesOpen(false); setBrowserOpen(open => !open); }} pinCount={pinCount}
           terminalVisible={terminalVisible} toggleTerminal={toggleTerminal} agentsOpen={agentsOpen}
+          workingAgents={workingAgents}
           onAgents={() => { setProjectsOpen(false); setAgentsOpen(!agentsOpen); setFilesOpen(false); setBrowserOpen(false); setConversationsOpen(false); }} />
         <ConversationOpenNotice request={savedConversation.request} onCancel={savedConversation.cancel} onRetry={savedConversation.retry} />
         <div className="flex min-h-0 flex-1 gap-2.5">
@@ -811,7 +810,7 @@ export default function GraffHarness() {
               body={columnBody} split={columnIds.length > 1} />
           </div>
 
-          {agentsOpen && !projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && <AgentsPane key={chatCwd} root={chatCwd} onClose={() => setAgentsOpen(false)} />}
+          {agentsOpen && !projectsOpen && !filesOpen && !browserOpen && !conversationsOpen && <AgentsPane key={chatCwd} root={chatCwd} onClose={() => setAgentsOpen(false)} onOccupancy={setWorkingAgents} />}
           {filesOpen && !projectsOpen && !conversationsOpen && (fileRequest?.changes ? <ChangesPane root={chatThread.cwd} onClose={() => setFilesOpen(false)} /> : <FilesPane root={chatThread.cwd} requested={fileRequest} onClose={() => setFilesOpen(false)} />)}
 
           {browserOpen && !projectsOpen && !conversationsOpen && (

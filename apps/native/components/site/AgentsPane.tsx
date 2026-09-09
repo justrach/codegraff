@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { agentKey, agentName, agentRequest, type AgentSnapshot, type LocalAgent, type PeerMessage } from '@/lib/agents';
+import { agentKey, agentName, agentRequest, workingAgentCount, type AgentSnapshot, type LocalAgent, type PeerMessage } from '@/lib/agents';
 import ResizableReviewPane from './ResizableReviewPane';
 import SubagentActivity from './SubagentActivity';
 
@@ -12,7 +12,7 @@ function talkLine(message: PeerMessage, name: (session: string) => string) {
   </article>;
 }
 
-export default function AgentsPane({ root, onClose, request = agentRequest }: { root?: string; onClose(): void; request?: typeof agentRequest }) {
+export default function AgentsPane({ root, onClose, request = agentRequest, onOccupancy }: { root?: string; onClose(): void; request?: typeof agentRequest; onOccupancy?(count: number): void }) {
   const [scope, setScope] = useState('workspace');
   const [showIdle, setShowIdle] = useState(false);
   const [snapshot, setSnapshot] = useState<AgentSnapshot | null>(null);
@@ -39,7 +39,7 @@ export default function AgentsPane({ root, onClose, request = agentRequest }: { 
       try {
         if (document.visibilityState !== 'hidden') {
           const data = await request(root, { action: 'list', scope }, controller.signal);
-          if (!disposed) { setSnapshot(data); setError(''); }
+          if (!disposed) { setSnapshot(data); setError(''); onOccupancy?.(workingAgentCount(data.agents)); }
         }
       } catch (e) { if (!disposed) setError(e instanceof Error ? e.message : 'Agents unavailable'); }
       finally { if (!disposed) timer = setTimeout(poll, 5000); }
@@ -77,7 +77,7 @@ export default function AgentsPane({ root, onClose, request = agentRequest }: { 
           <span className="mt-1 block text-xs text-ink-2 break-words">{agent.task || 'No task published'}</span>
           {snapshot?.messages.filter(m => m.to === agent.session || m.from_session === agent.session).slice(-1).map(m => <span key={m.ts_ms} className="mt-2 block truncate text-xs text-ink-3">{m.from_user ? 'You' : name(m.from_session)} → {name(m.to)}: {m.text}</span>)}
           {scope === 'device' && <span title={agent.workspace} className="mt-1 block truncate text-xs text-ink-3">{agent.workspace}</span>}
-          <span title="Graff process only; shared workers and GPU are not attributed" className="mt-2 block text-[11px] text-ink-3 tabular-nums">{agent.resources ? `${agent.resources.rssMiB.toFixed(1)} MiB · ${agent.resources.cpuPercent === null ? 'CPU sampling…' : `${agent.resources.cpuPercent.toFixed(1)}% CPU`}` : 'Resource measurements unavailable'}</span>
+
         </button></li>)}</ul>}
         {selected && <><div className="flex min-w-0 items-center gap-3 text-xs"><button aria-label="Back to all agents" className="shrink-0 rounded-lg px-2 py-1 hover:bg-hover" onClick={() => setRecipient(null)}>← Agents</button><strong className="truncate">{agentName(selected)}</strong></div>
           {!!snapshot?.messages.filter(m => m.to === selected.session || m.from_session === selected.session).length && <section aria-label="Recent coordination" className="space-y-2"><h3 className="text-xs font-medium text-ink-2">How they talk</h3>{snapshot.messages.filter(m => m.to === selected.session || m.from_session === selected.session).slice(-8).map((message, i) => <div key={`${message.ts_ms}:${i}`}>{talkLine(message, name)}</div>)}</section>}

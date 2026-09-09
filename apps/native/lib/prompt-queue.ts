@@ -10,6 +10,13 @@ export function dropQueuedPrompt(list: QueuedPrompt[], id: number): QueuedPrompt
   return list.filter((item) => item.id !== id);
 }
 
+/** Move only the selected entry; preserve every other entry's relative order. */
+export function prioritizeQueuedPrompt(list: QueuedPrompt[], id: number): QueuedPrompt[] {
+  const selected = list.find(item => item.id === id);
+  if (!selected || list[0] === selected) return list;
+  return [selected, ...list.filter(item => item.id !== id)];
+}
+
 export function shiftQueuedPrompt(list: QueuedPrompt[]): {
   next: QueuedPrompt | undefined;
   rest: QueuedPrompt[];

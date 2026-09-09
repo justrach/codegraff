@@ -4,6 +4,10 @@ export type PeerMessage = { from_session: string; to: string; text: string; ts_m
 export type AgentSnapshot = { agents: LocalAgent[]; messages: PeerMessage[]; delivery: string };
 export const agentKey = (agent: LocalAgent) => `${agent.pid}:${agent.startId}`;
 export const agentName = (agent: LocalAgent) => agent.title || agent.session || 'Untitled Graff';
+/** Working peers only — occupancy for the toolbar, never RSS/CPU. */
+export function workingAgentCount(agents: { status: string }[] | undefined): number {
+  return agents?.filter(agent => agent.status === 'working').length ?? 0;
+}
 export async function agentRequest(root: string | undefined, params: Record<string, unknown>, signal?: AbortSignal) {
   const res = await fetch('/api/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ root, ...params }), signal });
   const body = await res.json();
