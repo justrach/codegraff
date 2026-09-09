@@ -455,7 +455,10 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: streamed error event overflow (by code or phrasing) → trim + retry
                     if (try policy.afterServerErrorOrParseReject(self, etype, ecode, emsg, &server_retries, &gw_retry)) continue;
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-                    try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
+                    if (ecode) |c|
+                        try self.sayApiError("api error ({s} {s}): {s}", .{ etype, c, emsg })
+                    else
+                        try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
                     return error.ApiError;
                 };
                 self.recordUsage(root, body.len);
@@ -499,7 +502,10 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: {"type":"error"} overflow (by code or phrasing) → trim + retry
             if (try policy.afterServerErrorOrParseReject(self, etype, ecode, emsg, &server_retries, &gw_retry)) continue;
             if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-            try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
+            if (ecode) |c|
+                try self.sayApiError("api error ({s} {s}): {s}", .{ etype, c, emsg })
+            else
+                try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
             return error.ApiError;
         };
         if (apiErrorMessage(root)) |msg| {
