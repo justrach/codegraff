@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const zz = @import("zigzag");
+const cite_markup = @import("cite_markup.zig");
 
 pub const accent = zz.Color.fromRgb(0x05, 0x96, 0x69); // codegraff.com emerald accent (#059669)
 
@@ -75,6 +76,11 @@ pub fn stripControl(a: std.mem.Allocator, s: []const u8) []const u8 {
         } else if (c == '\r') {
             i += 1;
         } else {
+            const skipped = cite_markup.skip(s, i);
+            if (skipped != i) {
+                i = skipped;
+                continue;
+            }
             out.append(c) catch {};
             i += 1;
         }
@@ -113,4 +119,11 @@ pub fn parseToggle(arg: []const u8, current: bool) bool {
 
 pub fn onOff(v: bool) []const u8 {
     return if (v) "on" else "off";
+}
+
+test "stripControl drops citation annotations (#811)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const got = stripControl(arena_state.allocator(), "See the docs\u{E200}cite\u{E202}turn0view0\u{E201} for details.");
+    try std.testing.expectEqualStrings("See the docs for details.", got);
 }

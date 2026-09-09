@@ -109,6 +109,19 @@ test "isolated capped runs clean descendants after timeout and normal exit" {
     try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "completed-marker", .{}));
 }
 
+test "bash_output wait_ms on a persistent job is a snapshot timeout (#810)" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    jobs.g_jobs = .{};
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const id = (try jobs.spawnJobOpts(gpa, io, "sleep 8", .{ .persistent = true })).id;
+    defer jobs.jobsReap(gpa, io);
+    const snap = try jobs.jobOutput(gpa, io, id, 400);
+    defer gpa.free(snap.text);
+    try std.testing.expect(std.mem.indexOf(u8, snap.text, "running") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snap.text, "persistent server") != null);
+}
+
 test "bash_output wait_ms>0 waits for exit, not the next byte (ADR 0010)" {
     if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
     jobs.g_jobs = .{};

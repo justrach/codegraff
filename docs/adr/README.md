@@ -101,6 +101,7 @@ record only when you need the evidence or the edge cases.
 | [0088](0088-failed-children-return-partial-evidence.md) | Failed children return bounded partial evidence with error status intact, including an excerpt for workflow synthesis. |
 | [0089](0089-canonical-compaction-windows-survive-recovery.md) | Preserve standalone compaction windows across pruning and resume; opaque recovery uses the server or reports failure without discarding history. |
 | [0090](0090-project-constraints-require-explicit-scope.md) | Local steering stays local; durable project constraints require explicit scope and exact current-user text, while legacy unscoped records are reviewable. |
+| [0091](0091-persistent-jobs-honor-wait-ms.md) | Persistent `run_in_background` jobs honor `wait_ms` as a timeout; finite jobs still wait until exit (ADR 0010). |
 
 ## When to write one
 

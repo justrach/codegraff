@@ -92,6 +92,8 @@ test {
     _ = @import("issue_789_tests.zig");
     _ = @import("issue_788_tests.zig");
     _ = @import("issue_798_tests.zig");
+    _ = @import("sanitize.zig");
+    _ = @import("issue_805_tests.zig");
     _ = @import("composer_links.zig");
     _ = @import("input.zig");
     _ = @import("keys.zig");

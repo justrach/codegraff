@@ -90,6 +90,8 @@ fn promptTurn(d: *Dispatch, arena: Allocator, w: *Io.Writer, req: proto.Request)
     }
     if (d.after_user) |after| after(d.ctx, arena, text);
     const final = d.turn(d.ctx, arena, text) catch |err| {
+        if (err == error.Interrupted or err == error.Canceled)
+            return respond(w, req, .{ .stopReason = "cancelled" });
         if (err == error.RunBudgetExhausted)
             return respond(w, req, .{ .stopReason = "max_turn_requests" });
         return respondError(w, req, err_internal, @errorName(err));

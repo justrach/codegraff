@@ -60,9 +60,9 @@ pub const base_specs = [_]ToolSpec{
     },
     .{
         .name = "bash_output",
-        .desc = "Read a background bash job's unread output and status. wait_ms=0 (or omitted) is a snapshot. wait_ms>0 blocks until the job exits (capped at 10 hours). Do not poll in a loop — one wait covers exit.",
+        .desc = "Read a background bash job's unread output and status. wait_ms=0 (or omitted) is a snapshot. For a finite job, wait_ms>0 blocks until exit (10h cap). For a job started with run_in_background (a server), wait_ms is an actual millisecond timeout before a running snapshot — it will not wait for exit. Do not poll in a loop.",
         .schema =
-        \\{"type": "object", "properties": {"id": {"type": "integer", "description": "Job id returned by bash with run_in_background"}, "wait_ms": {"type": "integer", "description": "0 = snapshot now. >0 = block until the job exits (capped at 10 hours). Do not poll every 30s."}}, "required": ["id"]}
+        \\{"type": "object", "properties": {"id": {"type": "integer", "description": "Job id returned by bash with run_in_background"}, "wait_ms": {"type": "integer", "description": "0 = snapshot now. Finite jobs: >0 waits until exit (10h cap). Persistent servers: >0 is a millisecond timeout, then a running snapshot."}}, "required": ["id"]}
         ,
     },
     .{

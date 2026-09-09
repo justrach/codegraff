@@ -57,6 +57,7 @@ const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupt
 // #440: the ONE size contract for a tool result — preview + durable handle +
 // byte count + shape hint, applied at tool time, clamped under the send-time cap.
 const tool_handle = @import("tool_handle.zig");
+const cite_markup = @import("cite_markup.zig");
 
 // escWatchTask/drainStdin/rawNonblockStdin live in agent_interrupt.zig;
 // esc_cancel/esc_watch_done STAY declared on the Agent struct (never alias
@@ -348,8 +349,9 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
             if (!self.sub) engine_sink.forAgent(self).emit(self.io, .completion_deferred); // root-only notice, as ever
             return .{ .text = refusal, .is_error = true };
         }
-        const result = if (tools_mod.json_args.object(call.input)) |o| (tools_mod.json_args.str(o, "result") orelse "") else "";
-        self.completed = try self.arena.dupe(u8, result);
+        const raw = if (tools_mod.json_args.object(call.input)) |o| (tools_mod.json_args.str(o, "result") orelse "") else "";
+        const result = try cite_markup.dupe(self.arena, raw);
+        self.completed = result;
         if (!self.sub) task_outcome.noteGoalCompleted(self);
         // .complete retires the epoch (goal_state.currentEpoch) and the checklist parks - readable, no longer current, never deleted (#318).
         // A --goal standing objective is exempt: the completion is recorded above, the steering stays, and only /goal clear|pause|<new> retires it.

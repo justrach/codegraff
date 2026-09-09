@@ -140,11 +140,11 @@ pub fn forResult(gpa: Allocator, arena: Allocator, target: Target, text: []const
     // Notable lines past the head (FAILED / ERROR / panic) ride the first
     // payload so a fat log does not cost a pager turn for "what broke?".
     const room = threshold - (marker.len + 2);
-    const excerpt_budget = @min(handle_preview.max_notable_bytes, room / 4);
-    const skip = if (room > excerpt_budget) room - excerpt_budget else room;
-    const excerpt = handle_preview.notableExcerpt(arena, text, skip, excerpt_budget) catch "";
-    const used = marker.len + excerpt.len + (if (excerpt.len == 0) @as(usize, 2) else 4);
-    const head = util.utf8Prefix(text, if (used < threshold) threshold - used else 0);
+    const preview_cap = @min(room, @as(usize, 4096));
+    const excerpt_budget = @min(handle_preview.max_notable_bytes, preview_cap / 4);
+    const head_budget = if (preview_cap > excerpt_budget) preview_cap - excerpt_budget else preview_cap;
+    const head = handle_preview.compactPreview(arena, text, head_budget) catch util.utf8Prefix(text, head_budget);
+    const excerpt = handle_preview.notableExcerpt(arena, text, head.len, excerpt_budget) catch "";
     if (excerpt.len == 0) return .{
         .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ head, marker }),
         .path = path,
@@ -162,7 +162,7 @@ pub fn forResult(gpa: Allocator, arena: Allocator, target: Target, text: []const
 /// STANDING prompt (~225 tokens on every call of every session, mostly
 /// buying nothing). agent_tools appends this to the FIRST handle an agent
 /// produces — the #445 pattern: guidance delivered when it earns its tokens.
-pub const first_note = " [handle protocol, applies to every such handle: never pull a whole handle file back into the conversation — slice ranges — and the file stays readable for the rest of the session.]";
+pub const first_note = " [handle protocol: page with read_tool_result(handle, offset, limit) or query; never pull the whole file back into the conversation. The file stays readable for the rest of the session.]";
 
 /// The #541 append, pure so the once-per-agent contract is testable without
 /// an Io or a live Agent: `shown` is the agent's own flag, flipped exactly
@@ -372,7 +372,7 @@ test "#440: over the threshold returns preview + handle path + byte count + shap
     const big = try a.alloc(u8, 40_000);
     @memset(big, 'x');
     for (0..399) |i| big[(i + 1) * 100 - 1] = '\n'; // 400 lines
-    @memcpy(big[39_000..][0..needle.len], needle);
+    @memcpy(big[20_000..][0..needle.len], needle); // middle: not in the head or tail window
 
     const threshold: usize = 4096;
     const r = try forResult(std.testing.allocator, a, testTarget(&tmp), big, threshold);
@@ -438,7 +438,8 @@ test "#440: the threshold is a knob — the same payload is bounded by whatever 
     const roomy = try forResult(std.testing.allocator, a, testTarget(&tmp), payload, 16_384);
     try std.testing.expect(tight.text.len <= 4096);
     try std.testing.expect(roomy.text.len <= 16_384);
-    try std.testing.expect(roomy.text.len > tight.text.len);
+    try std.testing.expect(std.mem.indexOf(u8, tight.text, "read_tool_result") != null);
+    try std.testing.expect(std.mem.indexOf(u8, roomy.text, "read_tool_result") != null);
     // Raise it past the payload and the handle contract does not apply at all.
     const off = try forResult(std.testing.allocator, a, testTarget(&tmp), payload, 32_768);
     try std.testing.expect(off.path == null);

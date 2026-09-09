@@ -133,9 +133,17 @@ pub fn dismiss(io: Io, id: u32) void {
 /// The tool result for a bash_output wait that ended before the job did.
 /// An Esc used to be rendered by setting the elapsed counter to the 10-hour
 /// deadline, so the model read "36000s elapsed" for a 36-second wait.
-pub fn printRunning(w: *Io.Writer, id: u32, waited_ms: u64, interrupted: bool) !void {
+pub fn printRunning(w: *Io.Writer, id: u32, waited_ms: u64, interrupted: bool, persistent: bool) !void {
     var ebuf: [16]u8 = undefined;
     const el = tool_pulse.formatElapsed(&ebuf, waited_ms);
+    if (persistent) {
+        if (interrupted) {
+            try w.print("[job {d}: running · {s} waited, then interrupted — persistent server; wait_ms is a snapshot timeout, not wait-until-exit]", .{ id, el });
+        } else {
+            try w.print("[job {d}: running · {s} elapsed — persistent server; wait_ms is a snapshot timeout. omit wait_ms for an immediate snapshot]", .{ id, el });
+        }
+        return;
+    }
     if (interrupted) {
         try w.print("[job {d}: running · {s} waited, then interrupted — you are notified on exit; do not call bash_output again]", .{ id, el });
     } else {
@@ -147,9 +155,9 @@ pub fn printRunning(w: *Io.Writer, id: u32, waited_ms: u64, interrupted: bool) !
 /// wait runs long (#607). ADR 0010 keeps the wait single-hop; this only tells
 /// the human it is alive. Presentation pulse: --json drops it, and a session
 /// with no bound sink (subagents) stays quiet.
-pub fn stillRunning(io: Io, id: u32, waited_ms: u64) void {
+pub fn stillRunning(io: Io, id: u32, waited_ms: u64, unread: usize) void {
     var ebuf: [16]u8 = undefined;
-    tool_pulse.emitNotice(io, "· bash_output · job {d} still running · {s}", .{ id, tool_pulse.formatElapsed(&ebuf, waited_ms) });
+    tool_pulse.emitNotice(io, "· bash_output · job {d} still running · {s} · {d} unread byte(s)", .{ id, tool_pulse.formatElapsed(&ebuf, waited_ms), unread });
 }
 
 /// Drain queued notices into `buf` (step boundary: everything). Null when
@@ -256,10 +264,10 @@ test "dismiss drops a queued notice, or the one the pump has not queued yet (ADR
 test "printRunning reports the wait that happened, not the deadline (ADR 0061)" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
-    try printRunning(&aw.writer, 181, 36_000, true);
+    try printRunning(&aw.writer, 181, 36_000, true, false);
     try std.testing.expectEqualStrings("[job 181: running · 36s waited, then interrupted — you are notified on exit; do not call bash_output again]", aw.written());
     aw.clearRetainingCapacity();
-    try printRunning(&aw.writer, 5, 125_000, false);
+    try printRunning(&aw.writer, 5, 125_000, false, false);
     try std.testing.expectEqualStrings("[job 5: running · 2m05s elapsed — you are notified on exit; do not call bash_output again]", aw.written());
 }
 
