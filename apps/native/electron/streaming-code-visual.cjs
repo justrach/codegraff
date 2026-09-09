@@ -50,7 +50,13 @@ async function runStreamingCodeVisuals({ win, origin, output }) {
   await set('```javascript\n' + large, 'done');
   await wait(`!document.querySelector('[data-code-streaming]')`);
   assert.equal((await js(`${body}.textContent`)).replace(/\n/g, ''), large.replace(/\n/g, ''), 'large code keeps all content after the highlighter limit');
-  fs.writeFileSync(path.join(output, 'streaming-code-results.json'), JSON.stringify({ passed: ['single text node while live', 'delivery pauses', 'append fidelity', 'closed fence highlight', 'copy and controls', 'unfinished stop/end/error highlight', 'large code fidelity'], smallCharacters: code.length, largeCharacters: large.length }, null, 2));
-  console.log('Streaming code checks passed: live fidelity, completed highlighting, controls, cancellation and large fences.');
+  await set('```mermaid\nflowchart LR\n    Start --> Done');
+  await wait(`!!document.querySelector('[data-code-streaming]')`);
+  assert.equal(await js(`!!document.querySelector('[data-streamdown="mermaid-block"]')`), false, 'an open mermaid fence stays a code block');
+  await set('```mermaid\nflowchart LR\n    Start --> Done\n```', 'done');
+  await wait(`!!document.querySelector('[data-streamdown="mermaid-block"] svg')`);
+  assert.ok(await js(`document.querySelector('[data-streamdown="mermaid-block"] svg').getBoundingClientRect().height > 0`));
+  fs.writeFileSync(path.join(output, 'streaming-code-results.json'), JSON.stringify({ passed: ['single text node while live', 'delivery pauses', 'append fidelity', 'closed fence highlight', 'copy and controls', 'unfinished stop/end/error highlight', 'large code fidelity', 'mermaid diagram'], smallCharacters: code.length, largeCharacters: large.length }, null, 2));
+  console.log('Streaming code checks passed: live fidelity, completed highlighting, controls, cancellation, large fences and mermaid diagrams.');
 }
 module.exports = { runStreamingCodeVisuals };

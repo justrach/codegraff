@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, type JSX, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type JSX, type ReactNode } from "react";
 import { Streamdown, type Components, type ControlsConfig, type ExtraProps } from "streamdown";
+import { mermaid } from "@streamdown/mermaid";
 import { code } from "@/lib/code-highlighter";
 import StreamingCode from "./StreamingCode";
 import { stripCiteMarkup } from "@/lib/cite-markup";
@@ -14,19 +15,20 @@ import { stripCiteMarkup } from "@/lib/cite-markup";
  * markdown — `**bold`, an open fence, a half-typed link — so nothing
  * flips between raw and styled as the next chunk arrives. Typography is
  * ours (component overrides on the Beautiful UI tokens); fenced code
- * gets shiki highlighting and a copy control from the code plugin.
+ * gets shiki highlighting and a copy control from the code plugin;
+ * ```mermaid fences render as diagrams once the fence closes.
  * ───────────────────────────────────────────────────────── */
 
 /** `src/acp.zig`, `README.md`, `benchmarks/` — but not `--flags` or phrases. */
 const PATHISH = /^(?:[\w@.-]+\/)+[\w@.-]*$|^[\w-][\w.-]*\.[a-z0-9]{1,8}$/i;
 
-const PLUGINS = { code };
+const PLUGINS = { code, mermaid };
 
 const CONTROLS: ControlsConfig = {
   code: { copy: true, download: false },
   table: { copy: true, download: false, fullscreen: false },
   image: { download: false },
-  mermaid: false,
+  mermaid: { copy: true, download: false, fullscreen: true, panZoom: true },
 };
 
 const HEADING_STYLE: Record<number, string> = {
@@ -119,6 +121,18 @@ function inlineCode(onOpen?: (path: string) => void) {
   };
 }
 
+function useMermaidTheme(): "dark" | "default" {
+  const [theme, setTheme] = useState<"dark" | "default">("default");
+  useEffect(() => {
+    const sync = () => setTheme(document.documentElement.classList.contains("dark") ? "dark" : "default");
+    sync();
+    const obs = new MutationObserver(sync);
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => obs.disconnect();
+  }, []);
+  return theme;
+}
+
 export default function Markdown({
   text,
   streaming = false,
@@ -136,6 +150,8 @@ export default function Markdown({
 }) {
   // Streamdown is memoized on its props; a fresh components object per
   // render would defeat that, so it changes only with the callback.
+  const mermaidTheme = useMermaidTheme();
+  const mermaidOptions = useMemo(() => ({ config: { theme: mermaidTheme, securityLevel: "strict" as const, fontFamily: "inherit" } }), [mermaidTheme]);
   const components = useMemo<Components>(
     () => ({ ...STATIC_COMPONENTS, inlineCode: inlineCode(onOpenPath) }),
     [onOpenPath],
@@ -147,6 +163,7 @@ export default function Markdown({
         isAnimating={streaming}
         caret="block"
         plugins={PLUGINS}
+        mermaid={mermaidOptions}
         components={components}
         controls={CONTROLS}
         lineNumbers={false}

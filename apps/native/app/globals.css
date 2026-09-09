@@ -6,6 +6,7 @@
 /* Streamdown renders the chat markdown with Tailwind utilities of its own;
  * its bundle has to be scanned or those classes never make it into the CSS. */
 @source "../node_modules/streamdown/dist/*.js";
+@source "../node_modules/@streamdown/mermaid/dist/*.js";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
