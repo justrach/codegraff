@@ -350,11 +350,11 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     const arena = self.arena;
     const provider = self.provider;
 
-    var frame = try std.fmt.allocPrint(gpa, "{{\"type\":\"response.create\",{s}", .{body[1..]});
-    defer gpa.free(frame);
+    const frame_full = try std.fmt.allocPrint(gpa, "{{\"type\":\"response.create\",{s}", .{body[1..]});
+    defer gpa.free(frame_full); // the ORIGINAL length — the stripped slice must not be freed
     // WS responses.create omits transport-only fields (xAI spec; codex tolerates):
-    // the body builder writes `stream:true` for SSE; shorten it in place here.
-    frame = @import("agent_ws_prewarm.zig").stripTransportFields(frame);
+    // the body builder writes `stream:true` for SSE; shorten in place, keep the full-length binding for free.
+    const frame = @import("agent_ws_prewarm.zig").stripTransportFields(frame_full);
 
     const bearer = try std.fmt.allocPrint(arena, "Bearer {s}", .{provider.api_key});
     // ChatGPT tail is codex-only (#502); xAI takes grok-build's affinity
