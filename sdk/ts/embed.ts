@@ -55,6 +55,15 @@ function takeOut(core: GraffCoreExports): string {
   return text;
 }
 
+/**
+ * Path to the graff-core.wasm shipped inside this package (npm `files`),
+ * resolved relative to the compiled embed module. JS hosts can pass this as
+ * `wasm` — or bring their own bytes/URL for sandboxed environments.
+ */
+export function bundledWasmPath(): string {
+  return new URL("../graff-core.wasm", import.meta.url).pathname;
+}
+
 async function compileWasm(
   wasm: CreateGraffAgentOptions["wasm"],
 ): Promise<WebAssembly.Module> {

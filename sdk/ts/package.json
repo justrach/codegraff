@@ -1,7 +1,7 @@
 {
   "name": "@codegraff/sdk",
-  "version": "0.4.1",
-  "description": "TypeScript / Node SDK for the codegraff agent — drives `graff --json` over stdio. Types auto-generated from `graff --schema`.",
+  "version": "0.4.2",
+  "description": "TypeScript / Node SDK for the codegraff agent \u2014 drives `graff --json` over stdio. Types auto-generated from `graff --schema`.",
   "type": "module",
   "main": "dist/harness.js",
   "types": "dist/harness.d.ts",
@@ -31,7 +31,8 @@
       "import": "./dist/embed.js",
       "default": "./dist/embed.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./core.wasm": "./graff-core.wasm"
   },
   "repository": {
     "type": "git",
@@ -39,17 +40,30 @@
     "directory": "sdk/ts"
   },
   "homepage": "https://codegraff.com",
-  "keywords": ["codegraff", "graff", "agent", "llm", "harness", "sdk"],
-  "files": ["dist", "README.md"],
-  "engines": { "node": ">=18" },
+  "keywords": [
+    "codegraff",
+    "graff",
+    "agent",
+    "llm",
+    "harness",
+    "sdk"
+  ],
+  "files": [
+    "dist",
+    "graff-core.wasm",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "license": "Apache-2.0",
   "optionalDependencies": {
-    "@codegraff/graff-darwin-arm64": "0.4.0",
-    "@codegraff/graff-darwin-x64": "0.4.0",
-    "@codegraff/graff-linux-arm64": "0.4.0",
-    "@codegraff/graff-linux-x64": "0.4.0",
-    "@codegraff/graff-win32-arm64": "0.4.0",
-    "@codegraff/graff-win32-x64": "0.4.0"
+    "@codegraff/graff-darwin-arm64": "0.4.1",
+    "@codegraff/graff-darwin-x64": "0.4.1",
+    "@codegraff/graff-linux-arm64": "0.4.1",
+    "@codegraff/graff-linux-x64": "0.4.1",
+    "@codegraff/graff-win32-arm64": "0.4.1",
+    "@codegraff/graff-win32-x64": "0.4.1"
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",

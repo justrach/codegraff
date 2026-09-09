@@ -239,6 +239,9 @@ pub fn build(b: *std.Build) void {
     libgraff_step.dependOn(&b.addInstallArtifact(libgraff, .{}).step);
 
     _ = b.option([]const u8, "wasm-surface", "wasm surface: core (use `zig build wasm-core`)");
+    // Pinned ReleaseSmall regardless of the global optimize: the wasm surface
+    // ships in @codegraff/sdk for JS hosts, so size is the axis that matters
+    // (vercel-labs/fx pins it the same way). -Doptimize still overrides.
     const wasm = b.addExecutable(.{
         .name = "graff-core",
         .root_module = b.createModule(.{
@@ -247,7 +250,7 @@ pub fn build(b: *std.Build) void {
                 .cpu_arch = .wasm32,
                 .os_tag = .freestanding,
             }),
-            .optimize = optimize,
+            .optimize = if (optimize == .Debug) .ReleaseSmall else optimize,
             .strip = true,
         }),
     });
