@@ -10,10 +10,10 @@ list$ is official low band, not SuperGrok cash; do not rank on wall.
 graff     12/12   $21.48
 Pi        12/12   $18.47
 OpenCode  12/12   $25.71
-exo       12/12   $16.48*
-grok      11/12   $33.69   (only miss: #727)
+grok      11/12   $33.69   (miss: #727)
+exo        9/12   $16.01   (miss: gemini + 2 turbos)
 
 Honest list$ = official low band on passing reps. SuperGrok cash is $0.
-*exo $ is a floor — three timeout-ok reps recorded no usage.
+exo turbos died in under a second with no tokens. Those check-greens do not count.
 
 codegraff.com

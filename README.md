@@ -138,11 +138,12 @@ G1–G6 certified. Receipt:
 | **graff** | **12/12** | **$21.48** | **264s** |
 | Pi | 12/12 | $18.47 | 334s |
 | OpenCode | 12/12 | $25.71 | 309s |
-| exo | 12/12 | $16.48† | 281s |
 | grok | 11/12 | $33.69 | 362s |
+| exo | 9/12 | $16.01 | 281s |
 
-Grok is the only seat that drops a task (`#727`). SuperGrok cash is $0.
-† exo $ is a floor: three timeout-ok reps recorded no usage.
+Grok drops `#727`. exo drops `graff-gemini-ix` plus both remaining turbos
+(wrapper died in <1s, no tokens — those check-greens do not count).
+SuperGrok cash is $0.
 
 <p align="center">
   <img src="artifacts/graff-evals-live/live-20260909.png" alt="Live eval board on the codegraff.com palette: graff 12/12 $21.48, grok 11/12 $33.69, OpenCode 12/12 $25.71, Pi 12/12 $18.47, exo 12/12 $16.48" width="960">

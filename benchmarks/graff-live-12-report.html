@@ -48,15 +48,15 @@
 
     <div class="panel">
       <h2>Board</h2>
-      <p class="muted">Failed tasks contribute $0. exo's $16.48 is a floor — three timeout-ok reps recorded no usage.</p>
+      <p class="muted">Failed tasks contribute $0. A check-green with no tokens does not count.</p>
       <table>
-        <thead><tr><th>Harness</th><th>Reps</th><th>Tasks</th><th>Honest list$</th><th>Mean wall</th></tr></thead>
+        <thead><tr><th>Harness</th><th>Real reps</th><th>Tasks</th><th>Honest list$</th><th>Mean wall</th></tr></thead>
         <tbody>
           <tr><td><strong>graff</strong></td><td class="num">35/36</td><td class="num">12/12</td><td class="num">$21.48</td><td class="num">264s</td></tr>
           <tr><td>grok</td><td class="num">33/36</td><td class="num">11/12</td><td class="num">$33.69</td><td class="num">362s</td></tr>
           <tr><td>OpenCode</td><td class="num">36/36</td><td class="num">12/12</td><td class="num">$25.71</td><td class="num">309s</td></tr>
           <tr><td>Pi</td><td class="num">35/36</td><td class="num">12/12</td><td class="num">$18.47</td><td class="num">334s</td></tr>
-          <tr><td>exo</td><td class="num">34/36</td><td class="num">12/12</td><td class="num">$16.48</td><td class="num">281s</td></tr>
+          <tr><td>exo</td><td class="num">25/36</td><td class="num">9/12</td><td class="num">$16.01</td><td class="num">281s</td></tr>
         </tbody>
       </table>
     </div>
@@ -65,7 +65,7 @@
       <h2>How to read it</h2>
       <ul>
         <li>Only <code>graff-195</code> is G1–G6 certified. The other 11 are published live tasks.</li>
-        <li>Grok is the only seat that drops a task: <code>graff-727</code> at 1/3.</li>
+        <li>Grok drops <code>graff-727</code> (1/3). exo drops <code>graff-gemini-ix</code> plus <code>turbo-ws-duplex</code> / <code>turbo-asgi</code> (wrapper exit 1 in &lt;1s, no tokens).</li>
         <li>Stored JSONL <code>list$</code> high-bands the rep sum. Do not tweet that column.</li>
         <li>Wall is a hang detector. Do not score Graff first-token (boot <code>›</code>).</li>
         <li>This is not the in-house SPEC.md suite on the README (those are $0.32-class fixtures).</li>
