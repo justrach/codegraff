@@ -1,4 +1,5 @@
 import { boundToolDetail } from "./tool-detail";
+import { stripCiteMarkup } from "./cite-markup";
 /** ACP v1 session/update shapes the native harness renders. */
 
 export type AcpContent = { type: "text"; text: string };
@@ -263,7 +264,7 @@ export function applyAcpUpdate(turn: AssistantTurn, update: AcpUpdate): Assistan
   switch (update.sessionUpdate) {
     case "gui_turn_end": return { ...turn, stopReason: typeof update.stopReason === "string" ? update.stopReason : "end_turn" };
     case "agent_thought_chunk": {
-      const text = (update as { content?: AcpContent }).content?.text ?? "";
+      const text = stripCiteMarkup((update as { content?: AcpContent }).content?.text ?? "");
       return {
         ...turn,
         reasoning: `${turn.reasoning}${text}`,
@@ -271,7 +272,7 @@ export function applyAcpUpdate(turn: AssistantTurn, update: AcpUpdate): Assistan
       };
     }
     case "agent_message_chunk": {
-      const text = (update as { content?: AcpContent }).content?.text ?? "";
+      const text = stripCiteMarkup((update as { content?: AcpContent }).content?.text ?? "");
       const needsBreak = turn.pendingBreak && turn.text.length > 0 && !/\s$/.test(turn.text) && !/^\s/.test(text);
       return {
         ...turn,

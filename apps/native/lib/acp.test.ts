@@ -36,6 +36,14 @@ describe("applyAcpUpdate", () => {
     assert.equal(turn.status, "streaming");
   });
 
+  it("strips citation markup from assistant text (#805)", () => {
+    const turn = applyAcpUpdate(emptyTurn(), {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "Seeciteturn0view0 this." },
+    });
+    assert.equal(turn.text, "See this.");
+  });
+
   it("pairs tool_call and tool_call_update onto one chip", () => {
     let turn = emptyTurn();
     turn = applyAcpUpdate(turn, {

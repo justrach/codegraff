@@ -4,6 +4,7 @@ import { useMemo, type JSX, type ReactNode } from "react";
 import { Streamdown, type Components, type ControlsConfig, type ExtraProps } from "streamdown";
 import { code } from "@/lib/code-highlighter";
 import StreamingCode from "./StreamingCode";
+import { stripCiteMarkup } from "@/lib/cite-markup";
 
 /* ─────────────────────────────────────────────────────────
  * MARKDOWN
@@ -107,7 +108,7 @@ function inlineCode(onOpen?: (path: string) => void) {
       <code
         {...rest}
         onClick={pathish ? () => onOpen(target) : undefined}
-        title={pathish ? `Open ${text} in the files pane` : undefined}
+        title={pathish ? `Open ${stripCiteMarkup(text)} in the files pane` : undefined}
         className={`rounded-[4px] bg-inset px-1 py-px font-mono text-[0.92em] text-ink shadow-hairline ${
           pathish ? "cursor-pointer underline decoration-line underline-offset-2 transition-colors hover:bg-hover hover:decoration-ink" : ""
         }`}
@@ -153,7 +154,7 @@ export default function Markdown({
         tableMaxHeight={0}
         className="space-y-3"
       >
-        {text}
+        {stripCiteMarkup(text)}
       </Streamdown>
     </div>
   );
