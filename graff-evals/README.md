@@ -39,6 +39,8 @@ CODEGRAFF_API_KEY=cg_sk_… ./run.py --suite swe --harness graff-dev,opencode-co
 ./run.py --suite inhouse --harness graff-dev,grok,opencode --model grok-4.6 -j 1
 # live PRs (no SPEC.md). Smoke gates first: python3 verify_live_gates.py --only graff-195
 ./run.py --suite live --harness graff-dev --reps 3 -j 1
+# same SuperGrok seat, other harnesses (OpenCode / Pi / exo local-process):
+./run.py --suite live --harness opencode,pi-xai,exo --reps 3 -j 1
 ```
 
 ## Run it
@@ -109,8 +111,10 @@ grok-build's heap or a 4-tool catalog (ADR 0024). First keep:
 
 Add a harness by adding an entry; add a model by passing `--model`.
 
-Same-model grok-4.6 series: `graff-dev`, `grok`, `opencode` (needs xAI
-auth), `dsh-grok` (needs `dsh` + an xAI key dsh will accept; 0.1.1-rc.2
+Same-model grok-4.6 series: `graff-dev`, `grok`, `opencode` / `pi-xai`
+(SuperGrok JWT + `X-XAI-Token-Auth`), `exo` (exoharness CLI,
+`--provider local-process`, no Docker; same header via a localhost
+proxy), `dsh-grok` (needs `dsh` + an xAI key dsh will accept; 0.1.1-rc.2
 catalog has no grok-4.6 — use `dsh-xai` / grok-4.5 for a live dsh point).
 Mixed-model native defaults — `opencode-zen`, `dsh-deepseek` — are a
 **different comparison**; do not read them as grok-4.6 list-price points.
