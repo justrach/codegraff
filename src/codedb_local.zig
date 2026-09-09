@@ -133,7 +133,7 @@ pub fn restHasFlag(rest: []const u8, check: *const fn ([]const u8) bool) bool {
 }
 
 /// Explicit `--hybrid` / `--semantic` opt into remote advisory rerank.
-/// Bare `context <task>` is on-device (ADR 0086).
+/// Bare `context <task>` is on-device (ADR 0092).
 pub fn restAsksRemoteRerank(rest: []const u8) bool {
     return restHasFlag(rest, tokenIsRemoteFlag);
 }

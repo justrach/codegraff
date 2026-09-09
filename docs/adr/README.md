@@ -102,6 +102,7 @@ record only when you need the evidence or the edge cases.
 | [0089](0089-canonical-compaction-windows-survive-recovery.md) | Preserve standalone compaction windows across pruning and resume; opaque recovery uses the server or reports failure without discarding history. |
 | [0090](0090-project-constraints-require-explicit-scope.md) | Local steering stays local; durable project constraints require explicit scope and exact current-user text, while legacy unscoped records are reviewable. |
 | [0092](0092-codedb-context-is-local-first.md) | Bare `codedb context` is `--local`; `--hybrid` / `--semantic` are opt-in remote rerank (and still refused under ADR 0084 policy). |
+| [0093](0093-project-layout-breadth-and-directory-hints.md) | Project layout favors breadth under its caps; missing directories offer bounded sibling hints without changing confinement or ADR 0090 constraint policy. |
 
 ## When to write one
 

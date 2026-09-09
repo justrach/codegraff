@@ -12,6 +12,9 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- Project layout selection favors breadth across directories, with explicit
+  truncation notices. Missing `codedb list_dir` paths suggest close siblings
+  without relaxing confinement or changing constraint policy (ADR 0093).
 - Bare `codedb context <task>` defaults to on-device retrieval. Remote
   reranking remains an explicit opt-in and is refused under local-only
   policy (ADR 0084, ADR 0092).

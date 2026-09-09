@@ -27,6 +27,6 @@ ordinary reads to codedb-pro (ADR 0040).
 - Callers can enforce the boundary with `local_only` even when policy files
   are silent.
 - Hybrid is opt-in (`--hybrid` / `--semantic`); bare `context` is `--local`
-  (ADR 0086). Policy still refuses those remote flags before spawn.
+  (ADR 0092). Policy still refuses those remote flags before spawn.
 - Revisit only if codedb grows a stronger in-process local composer that
   graff should prefer over `--local`.

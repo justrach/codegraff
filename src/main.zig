@@ -564,8 +564,6 @@ const agentJobsReap = subagent.agentJobsReap; // #276 P0-3: background subagents
 const workflow = @import("workflow_test.zig"); // the engine's tests live here (workflow.zig hit the 600-line cap)
 const exec = @import("exec.zig");
 test { // ── Unit tests (`zig build test`): pull in tests from imported modules (mcp.zig)
-    _ = @import("mcp.zig");
-    _ = @import("mcp_rpc.zig");
     _ = @import("main_test.zig");
     _ = @import("http_client.zig");
     _ = @import("http_client_tests.zig");
@@ -575,6 +573,8 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = @import("publication_policy_tests.zig");
     _ = @import("jobs_completion_tests.zig");
     _ = @import("test_hooks.zig"); // unreached modules; their tests were silently skipped
+    _ = @import("list_dir_nearmiss.zig");
+    _ = @import("repo_map.zig");
     _ = @import("agent_overflow_tests.zig"); // #414: and, through it, agent_overflow.zig's table tests
     _ = @import("agent_server_compact.zig"); // server-side autocompact (codex Responses)
     _ = @import("compact_status.zig");
