@@ -4,10 +4,11 @@ const { createUpdates } = require('./updates.cjs');
 function fixture(options = {}) {
   const updater = new EventEmitter(), events = [], saved = [];
   let checks = 0, installs = 0;
+  const ready = [];
   updater.checkForUpdates = async () => { checks++; updater.emit('checking-for-update'); return null; };
   updater.quitAndInstall = () => { installs++; };
-  const updates = createUpdates({ updater, version: '1.0.0', notify: state => events.push(state), save: value => saved.push(value), ...options });
-  return { updater, updates, events, saved, checks: () => checks, installs: () => installs };
+  const updates = createUpdates({ updater, version: '1.0.0', notify: state => events.push(state), save: value => saved.push(value), onReady: v => ready.push(v), ...options });
+  return { updater, updates, events, saved, ready, checks: () => checks, installs: () => installs };
 }
 test('downloads in the background but never interrupts a running task automatically', async () => {
   const f = fixture();
@@ -62,4 +63,17 @@ test('concurrent checks are coalesced and automatic-download preference persists
   f.updates.setAutomatic(false);
   expect(f.saved).toEqual([false]);
   expect(f.updates.state().automatic).toBe(false);
+});
+
+test('the ready modal pops once per version, never in a dismiss loop', async () => {
+  const f = fixture();
+  await f.updates.check();
+  f.updater.emit('update-available', { version: '1.0.1' });
+  f.updater.emit('update-downloaded', { version: '1.0.1' });
+  f.updater.emit('update-downloaded', { version: '1.0.1' }); // duplicate event after a redownload
+  expect(f.ready).toEqual(['1.0.1']);
+  await f.updates.check(); // checks while ready do not re-prompt
+  expect(f.ready).toEqual(['1.0.1']);
+  f.updater.emit('update-downloaded', { version: '1.0.2' });
+  expect(f.ready).toEqual(['1.0.1', '1.0.2']);
 });

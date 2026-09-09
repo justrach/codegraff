@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-function createUpdates({ updater, version, available = true, automatic = true, notify, save = () => {} }) {
+function createUpdates({ updater, version, available = true, automatic = true, notify, save = () => {}, onReady }) {
   let state = { status: available ? 'idle' : 'unavailable', currentVersion: version, automatic, interactive: false };
   let checking = false;
   const emit = patch => { state = { ...state, ...patch }; notify({ ...state }); };
@@ -19,7 +19,13 @@ function createUpdates({ updater, version, available = true, automatic = true, n
       if (percent !== state.percent) emit({ status: 'downloading', percent });
     });
     updater.on('update-not-available', () => emit({ status: 'current', version: undefined, percent: undefined }));
-    updater.on('update-downloaded', info => emit({ status: 'ready', version: info.version, percent: 100 }));
+    updater.on('update-downloaded', info => {
+      emit({ status: 'ready', version: info.version, percent: 100 });
+      if (onReady && info.version && info.version !== state.prompted) {
+        state.prompted = info.version; // once per version: dismiss means Later, never a loop
+        onReady(info.version);
+      }
+    });
     updater.on('error', () => emit({ status: 'error', message: 'Could not update. Check your connection and try again.' }));
   }
   return {
@@ -52,6 +58,7 @@ function createUpdates({ updater, version, available = true, automatic = true, n
 }
 
 function installUpdates({ app, win, ipcMain, trusted, resources }) {
+  const { dialog } = require('electron');
   const prefs = path.join(app.getPath('userData'), 'updates.json');
   let automatic = true;
   try { automatic = JSON.parse(fs.readFileSync(prefs, 'utf8')).automatic !== false; } catch {}
@@ -61,6 +68,20 @@ function installUpdates({ app, win, ipcMain, trusted, resources }) {
     updater: available ? require('./updater-runtime.cjs') : null,
     save: value => { fs.mkdirSync(path.dirname(prefs), { recursive: true }); fs.writeFileSync(prefs, JSON.stringify({ automatic: value })); },
     notify: state => { if (!win.isDestroyed()) { win.webContents.send('update-state', state); win.setProgressBar(state.status === 'downloading' ? (state.percent ?? 0) / 100 : -1); } },
+    onReady: readyVersion => {
+      // The standard update modal (Sparkle/electron-updater style): pops once
+      // per downloaded version, after the download — never mid-conversation.
+      if (win.isDestroyed()) return;
+      void dialog.showMessageBox(win, {
+        type: 'info',
+        title: 'Update Available',
+        message: `Codegraff ${readyVersion} is ready to install.`,
+        detail: 'Restart to apply the update now, or keep working — Codegraff offers the restart again at next launch.',
+        buttons: ['Restart to update', 'Later'], defaultId: 0, cancelId: 1,
+      }).then(({ response }) => {
+        if (response === 0 && !win.isDestroyed()) { try { controller.restart(); } catch {} }
+      }).catch(() => {});
+    },
   });
   ipcMain.handle('updates', async (event, action) => {
     trusted(event);
