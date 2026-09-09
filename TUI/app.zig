@@ -6,6 +6,7 @@ const std = @import("std");
 const engine = @import("engine.zig");
 const input_mod = @import("input.zig");
 const theme_mod = @import("theme.zig");
+const sanitize = @import("sanitize.zig");
 
 pub const Screen = enum { welcome, agent };
 pub const Focus = enum { prompt, scrollback };
@@ -281,7 +282,7 @@ pub const Model = struct {
     }
 
     pub fn push(self: *Model, kind: EntryKind, text: []const u8) !void {
-        const owned = try sanitized(self.alloc, text);
+        const owned = try sanitize.sanitized(self.alloc, text);
         errdefer self.alloc.free(owned);
         try self.history.append(.{ .kind = kind, .text = owned, .folded = kind == .tool, .at_ms = self.now_ms });
         if (kind == .user or kind == .assistant) {
@@ -298,11 +299,11 @@ pub const Model = struct {
     pub fn pushTool(self: *Model, info: ToolInfo) !void {
         const name = try self.alloc.dupe(u8, info.name);
         errdefer self.alloc.free(name);
-        const summary = try sanitized(self.alloc, info.summary);
+        const summary = try sanitize.sanitized(self.alloc, info.summary);
         errdefer self.alloc.free(summary);
-        const detail = try sanitized(self.alloc, info.detail);
+        const detail = try sanitize.sanitized(self.alloc, info.detail);
         errdefer self.alloc.free(detail);
-        const raw = try sanitized(self.alloc, info.raw);
+        const raw = try sanitize.sanitized(self.alloc, info.raw);
         errdefer self.alloc.free(raw);
 
         const text = try self.alloc.dupe(u8, summary);
@@ -341,7 +342,7 @@ pub const Model = struct {
     pub fn pushFmt(self: *Model, kind: EntryKind, comptime fmt: []const u8, args: anytype) !void {
         const raw = try std.fmt.allocPrint(self.alloc, fmt, args);
         defer self.alloc.free(raw);
-        const text = try sanitized(self.alloc, raw);
+        const text = try sanitize.sanitized(self.alloc, raw);
         errdefer self.alloc.free(text);
         try self.history.append(.{ .kind = kind, .text = text });
     }
@@ -564,35 +565,3 @@ pub const Model = struct {
         self.overlay_sel = 0;
     }
 };
-
-/// History entries render verbatim inside the alt screen — drop escape
-/// sequences and stray C0 controls a tool result (or the model) may carry.
-/// The fast path used to look only for ESC and CR, so a BEL/BS/NUL with
-/// neither leaked into the frame and the painter wrote it to the tty.
-fn sanitized(alloc: std.mem.Allocator, text: []const u8) ![]u8 {
-    var dirty = false;
-    for (text) |c| {
-        if (c == 0x1b or c == 0x7f or (c < 0x20 and c != '\n' and c != '\t')) {
-            dirty = true;
-            break;
-        }
-    }
-    if (!dirty) return alloc.dupe(u8, text);
-    var out = std.array_list.Managed(u8).init(alloc);
-    errdefer out.deinit();
-    var i: usize = 0;
-    while (i < text.len) {
-        const c = text[i];
-        if (c == 0x1b) {
-            i = theme_mod.skipEsc(text, i);
-            continue;
-        }
-        if ((c < 0x20 and c != '\n' and c != '\t') or c == 0x7f) {
-            i += 1;
-            continue;
-        }
-        try out.append(c);
-        i += 1;
-    }
-    return out.toOwnedSlice();
-}

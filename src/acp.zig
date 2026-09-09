@@ -166,10 +166,13 @@ const LiveTurn = struct {
     out: *Io.Writer,
     session_id: []const u8 = "",
     saw_text: bool = false,
+    inbox: ?*@import("acp_inbox.zig").Inbox = null,
 
     fn run(ctx: *anyopaque, arena: Allocator, text: []const u8) anyerror![]const u8 {
         const self: *LiveTurn = @ptrCast(@alignCast(ctx));
         agent_mod.Agent.prepareRootTurn(); // #753: a prior stream cancel must not steal the continuation
+        if (self.inbox) |inbox| inbox.begin();
+        defer if (self.inbox) |inbox| inbox.end();
         switch (try @import("turn_dedup.zig").enqueue(self.root, arena, self.out, text)) {
             .started => {},
             .skipped => return "",
@@ -229,7 +232,10 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
     engine.implementation_version = main_mod.harness_version;
     engine.cancel_flag.store(false, .release);
     engine.on_cancel = syncEscCancel;
-    var live: LiveTurn = .{ .root = root, .keys = keys, .out = out };
+    var inbox: @import("acp_inbox.zig").Inbox = .{ .gpa = gpa, .io = io, .reader = in };
+    inbox.start();
+    defer inbox.deinit();
+    var live: LiveTurn = .{ .root = root, .keys = keys, .out = out, .inbox = &inbox };
     var d: Dispatch = .{
         .turn = LiveTurn.run,
         .ctx = &live,
@@ -240,7 +246,7 @@ pub fn runAcpCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_
         .extra = liveModels,
     };
     while (true) {
-        const line = (in.takeDelimiter('\n') catch break) orelse break;
+        const line = (inbox.next(arena) catch break) orelse break;
         handleLine(&d, arena, out, line) catch |err| {
             std.debug.print("acp: dispatch failed: {t}\n", .{err});
             break;

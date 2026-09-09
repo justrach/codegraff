@@ -74,9 +74,10 @@ fn startedText(gpa: Allocator, id: u32, cmd: []const u8, ssh: bool, auto_bg: boo
     const w = &aw.writer;
     try w.print("[job {d} started: {s}]\n", .{ id, cmd });
     if (auto_bg) {
-        try w.print("Command exceeded the {d}s foreground wait and was automatically moved to the background. Process is still running. ", .{wait_s});
+        try w.print("Command exceeded the {d}s foreground wait and was automatically moved to the background. Process is still running. Waiting via bash_output shows elapsed-time pulses so a long rebuild is distinguishable from a hang. You are notified on exit — do not poll. bash_output(id {d}, wait_ms>0) waits until it exits; omit wait_ms for a snapshot. bash_kill stops it.", .{ wait_s, id });
+    } else {
+        try w.print("This is a persistent job. bash_output wait_ms is a snapshot timeout, not wait-until-exit — omit wait_ms for an immediate snapshot. You are notified on exit — do not poll. bash_output(id {d}) reads unread output. bash_kill stops it.", .{id});
     }
-    try w.print("You are notified on exit — do not poll. bash_output(id {d}, wait_ms>0) blocks until it exits; omit wait_ms for a snapshot. bash_kill stops it.", .{id});
     if (ssh) try w.writeAll(" Killing the local SSH job cannot prove a detached remote process stopped; verify the remote host.");
     if (partial.len > 0) {
         try w.writeAll("\n");
@@ -220,6 +221,7 @@ pub fn exec(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
             .stream = if (!ctx.from_sub and !bg) exec_bash_stream.emit else null,
             .stream_ctx = if (!ctx.from_sub and !bg) &live else null,
             .quiet = !bg, // foreground wait is not a /jobs event until auto-bg
+            .persistent = bg,
         }) catch |err| return .{ .text = try spawnFailText(gpa, err), .is_error = true };
         if (bg) {
             return .{ .text = try startedText(gpa, job.id, job.cmd, ssh, false, 0, "") };

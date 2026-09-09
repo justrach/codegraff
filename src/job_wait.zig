@@ -19,11 +19,18 @@ pub const legacy_poll_ms: u64 = 30_000;
 /// Map a model-supplied `wait_ms` onto a real deadline.
 ///
 /// * `0` — snapshot now (do not block).
-/// * `> 0` — wait until exit (or Esc), always `wait_cap_ms`. Mid-range
-///   "safety timeouts" (60s–240s) used to be honored as a bounded
-///   deadline (#640) and bounced the model every few minutes.
+/// * `> 0` on a finite job — wait until exit (or Esc), always `wait_cap_ms`.
+///   Mid-range "safety timeouts" used to bounce the model every few minutes
+///   (#640 / ADR 0010).
+/// * `> 0` on a persistent server (`run_in_background`) — honor `wait_ms` as
+///   a millisecond cap, then return a running snapshot (ADR 0091 / #810).
 pub fn resolveDeadline(wait_ms: u64) u64 {
+    return resolveDeadlineFor(wait_ms, false);
+}
+
+pub fn resolveDeadlineFor(wait_ms: u64, persistent: bool) u64 {
     if (wait_ms == 0) return 0;
+    if (persistent) return @min(wait_ms, wait_cap_ms);
     return wait_cap_ms;
 }
 
@@ -45,4 +52,11 @@ test "resolveDeadline: mid-range and huge values are the 10h exit cap (#640)" {
 
 test "resolveDeadline: 10h is 36_000_000 ms" {
     try std.testing.expectEqual(@as(u64, 36_000_000), wait_cap_ms);
+}
+
+test "resolveDeadlineFor: persistent jobs honor wait_ms as a timeout (#810)" {
+    try std.testing.expectEqual(@as(u64, 0), resolveDeadlineFor(0, true));
+    try std.testing.expectEqual(@as(u64, 1000), resolveDeadlineFor(1000, true));
+    try std.testing.expectEqual(wait_cap_ms, resolveDeadlineFor(wait_cap_ms + 1, true));
+    try std.testing.expectEqual(wait_cap_ms, resolveDeadlineFor(1000, false));
 }

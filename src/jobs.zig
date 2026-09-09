@@ -81,6 +81,7 @@ const Job = struct { // session-global; pump drains pipes; survives Esc
     kill_requested: bool = false,
     dropped: bool = false,
     quiet: bool = false, // skip job_notify until auto-bg (#620)
+    persistent: bool = false, // started with run_in_background (#810)
     future: Io.Future(void) = undefined,
     stream: ?process_runner.StreamFn = null,
     stream_ctx: ?*anyopaque = null,
@@ -296,6 +297,7 @@ pub const SpawnOpts = struct {
     stream: ?process_runner.StreamFn = null,
     stream_ctx: ?*anyopaque = null,
     quiet: bool = false,
+    persistent: bool = false,
 };
 
 pub fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8) !*Job {
@@ -329,6 +331,7 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
         .stream = opts.stream,
         .stream_ctx = opts.stream_ctx,
         .quiet = opts.quiet,
+        .persistent = opts.persistent,
         .cwd = cwd_copy,
         .started_ms = util.unixMs(io),
         .last_active_ms = nowMs(io),
@@ -369,12 +372,13 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
 }
 
 /// bash_output: unread output + status. wait_ms=0 is a snapshot. wait_ms>0
-/// blocks until the job exits (or Esc), not until the next byte (ADR 0010).
+/// blocks until the job exits (or Esc) for finite jobs (ADR 0010). Persistent
+/// servers honor wait_ms as a millisecond cap (ADR 0091 / #810).
 pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
-    const deadline = job_wait.resolveDeadline(wait_ms);
     var waited: u64 = 0;
     var interrupted = false; // Esc: report what was waited, not the 10h cap (ADR 0061)
-    var still = tool_pulse.Pulse{}; // #607: dim chrome per silence threshold; ADR 0010 keeps the wait single-hop
+    var still = tool_pulse.Pulse{ .interval_ms = 15_000 }; // #807: pulse often enough to tell hang from work
+    var unread: usize = 0;
     while (true) {
         g_jobs.mutex.lockUncancelable(io);
         const job = g_jobs.find(id) orelse {
@@ -382,6 +386,8 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             return .{ .text = try std.fmt.allocPrint(gpa, "no background job {d} — it may never have started; /jobs lists them", .{id}), .is_error = true };
         };
         job.last_active_ms = nowMs(io); // a read or a blocking wait is activity (#199)
+        const deadline = job_wait.resolveDeadlineFor(wait_ms, job.persistent);
+        unread = job.buf.items.len - job.cursor;
         const fresh = job.buf.items[job.cursor..];
         if (job.done or interrupted or waited >= deadline) {
             errdefer g_jobs.mutex.unlock(io);
@@ -389,7 +395,7 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             errdefer aw.deinit();
             const w = &aw.writer;
             if (!job.done) {
-                try job_notify.printRunning(w, id, waited, interrupted);
+                try job_notify.printRunning(w, id, waited, interrupted, job.persistent);
             } else if (job.stopped_idle) {
                 try job_idle.printStopped(w, id, job_idle.policy.stop_ms);
             } else if (job.killed) {
@@ -425,7 +431,7 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             continue;
         };
         waited += 100;
-        if (still.due(waited)) job_notify.stillRunning(io, id, waited);
+        if (still.due(waited)) job_notify.stillRunning(io, id, waited, unread);
     }
 }
 

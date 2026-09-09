@@ -107,3 +107,71 @@ test "notableExcerpt stays empty when nothing looks like a failure" {
     const excerpt = try notableExcerpt(a, "cache=miss status=OK\nall good\n", 0, 512);
     try std.testing.expectEqualStrings("", excerpt);
 }
+
+pub const head_lines: usize = 24;
+pub const tail_lines: usize = 12;
+pub const head_bytes: usize = 2048;
+pub const tail_bytes: usize = 1024;
+
+fn takeLines(text: []const u8, from_start: bool, max_lines: usize, max_bytes: usize) []const u8 {
+    if (text.len == 0 or max_lines == 0 or max_bytes == 0) return "";
+    if (from_start) {
+        var lines: usize = 0;
+        var i: usize = 0;
+        while (i < text.len and i < max_bytes and lines < max_lines) {
+            if (text[i] == '\n') lines += 1;
+            i += 1;
+        }
+        while (i > 0 and i < text.len and (text[i] & 0xC0) == 0x80) i -= 1;
+        return text[0..i];
+    }
+    var lines: usize = 0;
+    var i = text.len;
+    while (i > 0 and (text.len - i) < max_bytes and lines < max_lines) {
+        i -= 1;
+        if (text[i] == '\n') lines += 1;
+    }
+    if (i > 0 and text[i] == '\n') i += 1;
+    while (i < text.len and (text[i] & 0xC0) == 0x80) i += 1;
+    return text[i..];
+}
+
+/// First/last excerpt for a spilled result. Empty when `budget` cannot hold
+/// a useful head. The full bytes stay on the handle.
+pub fn compactPreview(arena: Allocator, text: []const u8, budget: usize) ![]const u8 {
+    if (budget < 80) return utilUtf8Prefix(text, budget);
+    const head = takeLines(text, true, head_lines, @min(head_bytes, budget / 2));
+    const tail = takeLines(text, false, tail_lines, @min(tail_bytes, budget / 4));
+    if (tail.len == 0 or std.mem.endsWith(u8, head, tail) or head.len + tail.len >= text.len)
+        return arena.dupe(u8, utilUtf8Prefix(text, budget));
+    const gap = "[... {d} bytes omitted; page with read_tool_result(handle, offset, limit) or query ...]\n";
+    const omitted = text.len - head.len - tail.len;
+    var aw: std.Io.Writer.Allocating = .init(arena);
+    try aw.writer.writeAll(head);
+    if (head.len == 0 or head[head.len - 1] != '\n') try aw.writer.writeByte('\n');
+    try aw.writer.print(gap, .{omitted});
+    try aw.writer.writeAll(tail);
+    const out = aw.writer.buffered();
+    if (out.len > budget) return arena.dupe(u8, utilUtf8Prefix(text, budget));
+    return out;
+}
+
+fn utilUtf8Prefix(text: []const u8, n: usize) []const u8 {
+    return @import("util.zig").utf8Prefix(text, n);
+}
+
+test "compactPreview keeps the head and a tail window (#808)" {
+    const a = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(a);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const big = try arena.alloc(u8, 8000);
+    @memset(big, 'x');
+    @memcpy(big[0..5], "HEAD\n");
+    @memcpy(big[big.len - 5 ..], "\nTAIL");
+    const got = try compactPreview(arena, big, 4096);
+    try std.testing.expect(std.mem.startsWith(u8, got, "HEAD"));
+    try std.testing.expect(std.mem.indexOf(u8, got, "TAIL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "read_tool_result") != null);
+    try std.testing.expect(got.len < big.len);
+}
