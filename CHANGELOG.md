@@ -12,15 +12,34 @@ current is part of cutting a release.
 
 ## Unreleased
 
-- Project layout selection favors breadth across directories, with explicit
-  truncation notices. Missing `codedb list_dir` paths suggest close siblings
-  without relaxing confinement or changing constraint policy (ADR 0093).
+## v0.0.295
+
+- `#812`: a mid-turn native image follow-up no longer sends empty `text` with
+  the image, which some Chat Completions providers reject (Z.AI 1210). The
+  caption is `Attached image.`
+- Muse Spark models accept image inputs on the Meta/Muse vision path.
 - Bare `codedb context <task>` defaults to on-device retrieval. Remote
   reranking remains an explicit opt-in and is refused under local-only
   policy (ADR 0084, ADR 0092).
+- Project layout selection favors breadth across directories, with explicit
+  truncation notices. Missing `codedb list_dir` paths suggest close siblings
+  without relaxing confinement (ADR 0093).
 - `#794`: the tier-1 suite ratchet counts skipped Zig tests with passed
-  ones. `2079 passed; 1 skipped` is a 2080-test suite, not a shrink
-  against a 2080 baseline.
+  ones.
+- Provider citation annotations no longer leak as private-use glyphs in
+  copy-ready text (TUI and line REPL). The GUI strips the same control
+  markup from ACP assistant text (#805).
+- ACP `session/cancel` applies to the live turn instead of waiting behind
+  the active prompt (#807).
+- `wait_ms>0` on a persistent background server is a timeout, not wait-until
+  exit (ADR 0091, #808). Finite auto-backgrounded jobs still wait for exit.
+- Oversized tool-result previews are first/last windows plus explicit
+  `read_tool_result` paging (#809).
+- Desktop mermaid fences render as diagrams instead of code blocks.
+- Working agents show occupancy, peer talk, and Stop; queued follow-ups
+  can be steered.
+- Updates settings: Check for Updates and a six-hour auto-download switch
+  sit above the split panes. Restart stays explicit (ADR 0079).
 
 ## v0.0.294
 

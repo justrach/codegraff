@@ -21,6 +21,13 @@ const version_status = @import("version_status.zig");
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.295
+    \\  • GLM image follow-ups keep a caption so Chat Completions does not 400 (#812)
+    \\  • codedb context is local by default; project layout listing stays broad
+    \\  • citation control glyphs stripped; ACP cancel reaches the live turn
+    \\  • mermaid fences render as diagrams; working agents show occupancy, talk, and Stop
+    \\  • Updates settings: check now, auto-download on a six-hour poll
+    \\
     \\0.0.294
     \\  • streaming stalls recover out loud: one bounded reconnect notice, honest trace regimes
     \\  • codex streams reasoning summaries; a fresh WS prewarms with generate:false before turn 1
